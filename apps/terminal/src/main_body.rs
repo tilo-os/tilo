@@ -1,24 +1,44 @@
 use ui::ColorCompat;
-use ui::{Theme, widget::Widget, text_render::{TextRenderer, TextWeight}};
+use ui::{Theme, widget::Widget, text_render::{TextRenderer, TextWeight, FontChoice}};
+// Shared text-selection + clipboard primitives from the toolkit — the terminal
+// reuses these rather than re-implementing word/line boundary walking, multi-
+// click gesture detection, or clipboard access.
+use ui::{
+    clipboard_copy, clipboard_copy_primary, clipboard_paste, clipboard_paste_primary,
+    extend_span_drag, line_boundaries, word_boundaries, DragSelect, Granularity,
+};
+use ui::presence::{PresenceCtx, PresenceKey};
+use ui::permissions::{AppKind as PermAppKind, PermissionContext};
+use ui::collaboration::PresencePayload;
 use automerge::{AutoCommit, ObjId, Value, transaction::Transactable, ObjType, ReadDoc};
+use base64::Engine as _;
 use vello::Scene;
 use vello::kurbo::{Affine, Rect, Point};
 use vello::peniko::Color;
 use winit::event::{WindowEvent, ElementState, KeyEvent, MouseButton, MouseScrollDelta};
+use winit::event_loop::EventLoopProxy;
 use winit::keyboard::{Key, NamedKey};
+use ui::app::UserEvent;
 use taffy::{TaffyTree, NodeId, Style, Size, Dimension};
 use portable_pty::{native_pty_system, CommandBuilder, PtySize, MasterPty};
+use std::collections::HashMap;
 use std::io::{Read, Write};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
 use vte::{Parser, Perform};
 use crossbeam_channel::Receiver;
 use unicode_width::UnicodeWidthChar;
 
-/// Cell coordinate within the rendered terminal grid. (row, col) are
-/// indexed relative to the visible viewport (the slice of `grid` that's
-/// currently on screen — see `start_y` in `draw`). The selection model
-/// stores these as viewport-local so highlight rendering can use them
-/// without re-translating through the scrollback offset.
+/// Cell coordinate within the terminal buffer. `row` is an **absolute** index
+/// into the full `grid` (scrollback included), not a viewport-local row — the
+/// selection model anchors to the buffer so a selection stays on the same
+/// cells when the viewport scrolls. `col` is a grid column. Rendering
+/// translates absolute rows into on-screen rows via the current scrollback
+/// offset (`viewport_start_y`); pointer hit-testing does the inverse.
+///
+/// `Ord` is derived and, because `row` is declared first, orders in reading
+/// order (row then column) — which is exactly what the span-walker and
+/// `extend_span_drag` rely on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct GridPos {
     pub row: usize,
@@ -53,32 +73,26 @@ impl Selection {
     }
 }
 
-/// Process-wide clipboard handle, lazily initialised on first use. Mirrors
-/// `ui::widget::text_input::clipboard()` — once a parallel subagent extracts
-/// a shared `ui::clipboard_copy` helper, this fallback can be removed.
-fn clipboard_handle() -> Option<&'static Mutex<arboard::Clipboard>> {
-    static CB: OnceLock<Option<Mutex<arboard::Clipboard>>> = OnceLock::new();
-    CB.get_or_init(|| arboard::Clipboard::new().ok().map(Mutex::new))
-        .as_ref()
-}
-
-/// Best-effort clipboard write. Silent on failure — clipboard absence
-/// shouldn't crash the terminal.
-pub(crate) fn clipboard_copy(text: &str) {
-    if let Some(cb) = clipboard_handle() {
-        if let Ok(mut handle) = cb.lock() {
-            let _ = handle.set_text(text.to_string());
-        }
+/// Open a URL from an OSC 8 hyperlink click. Best-effort: spawns the OS opener
+/// (`xdg-open`) detached and never blocks or panics — a missing opener or a
+/// malformed URL is silently ignored, exactly like the clipboard helpers.
+/// Only `http(s)`, `file`, and `mailto` schemes are launched so a hostile
+/// program can't smuggle a `javascript:`/`data:` URI (or a shell argument)
+/// into the opener.
+pub(crate) fn open_url(url: &str) {
+    let ok = url.starts_with("http://")
+        || url.starts_with("https://")
+        || url.starts_with("file://")
+        || url.starts_with("mailto:");
+    if !ok {
+        return;
     }
-}
-
-/// Best-effort clipboard read for paste. Returns `None` when no clipboard
-/// backend is available (e.g. headless CI) — paste is then a no-op rather
-/// than a crash.
-pub(crate) fn clipboard_paste() -> Option<String> {
-    let cb = clipboard_handle()?;
-    let mut handle = cb.lock().ok()?;
-    handle.get_text().ok()
+    let _ = std::process::Command::new("xdg-open")
+        .arg(url)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
 }
 
 /// A single foreground/background color, as produced by SGR. `Default`
@@ -126,10 +140,17 @@ pub struct Attr {
     /// SGR 9 — crossed-out (strikethrough).
     pub strike: bool,
     pub is_wide_cont: bool,
+    /// OSC 8 hyperlink id. `0` means "no link"; any other value indexes the
+    /// widget's link registry (`TerminalWidget::links`, mirrored from the
+    /// CRDT `terminal_links` map) to resolve the target URL for rendering
+    /// (underline + link tint) and click-to-open. Packed alongside the cell
+    /// so it rides the same CRDT + render-mirror path as every other attr.
+    pub link_id: u16,
 }
 
-/// Bytes per cell in the packed `attrs` blob: fg(4) + bg(4) + flags(1).
-const ATTR_BYTES: usize = 9;
+/// Bytes per cell in the packed `attrs` blob: fg(4) + bg(4) + flags(1) +
+/// link_id(2, little-endian).
+const ATTR_BYTES: usize = 11;
 
 impl Attr {
     pub fn pack(self) -> [u8; ATTR_BYTES] {
@@ -143,7 +164,8 @@ impl Attr {
         if self.is_wide_cont { flags |= 0b001_0000; }
         if self.dim { flags |= 0b010_0000; }
         if self.strike { flags |= 0b100_0000; }
-        [f[0], f[1], f[2], f[3], b[0], b[1], b[2], b[3], flags]
+        let l = self.link_id.to_le_bytes();
+        [f[0], f[1], f[2], f[3], b[0], b[1], b[2], b[3], flags, l[0], l[1]]
     }
     pub fn unpack(bytes: &[u8]) -> Self {
         if bytes.len() < ATTR_BYTES { return Self::default(); }
@@ -158,6 +180,7 @@ impl Attr {
             is_wide_cont: flags & 0b001_0000 != 0,
             dim: flags & 0b010_0000 != 0,
             strike: flags & 0b100_0000 != 0,
+            link_id: u16::from_le_bytes([bytes[9], bytes[10]]),
         }
     }
 }
@@ -174,6 +197,7 @@ impl Default for Attr {
             dim: false,
             strike: false,
             is_wide_cont: false,
+            link_id: 0,
         }
     }
 }
@@ -308,13 +332,25 @@ pub struct TerminalWidget {
     last_bg_default: Color,
 
     /// Active flow-selection. `None` when nothing is selected (idle, or
-    /// just after a lone click). Coordinates are viewport-local rows /
-    /// grid columns; conversion to grid pixels uses `char_w`/`char_h`
-    /// and `self.rect`.
+    /// just after a lone click). Coordinates are **buffer-absolute** rows /
+    /// grid columns (see [`GridPos`]); conversion to grid pixels subtracts
+    /// the scrollback offset and uses `char_w`/`char_h` and `self.rect`.
     selection: Option<Selection>,
-    /// True between left-mouse-press and left-mouse-release. While set,
-    /// `CursorMoved` events update `selection.cursor` to track the drag.
-    dragging: bool,
+    /// Multi-click gesture recognizer from the toolkit — single→char,
+    /// double→word, triple→line, with shift-extend. Owns the click-count /
+    /// timing / distance thresholds so the terminal doesn't re-derive them.
+    drag_select: DragSelect,
+    /// Granularity of the in-progress drag (char / word / line), captured on
+    /// press so `CursorMoved` extends by whole words or lines, not just cells.
+    drag_granularity: Granularity,
+    /// The word/line span the pointer first anchored on (buffer-absolute),
+    /// used by `extend_span_drag` to keep that original unit inside the
+    /// selection while a word-/line-granularity drag grows by whole units.
+    drag_anchor_span: Option<(GridPos, GridPos)>,
+    /// When true, finishing a (non-empty) selection also copies it to the
+    /// system clipboard, not just the primary selection. Off by default;
+    /// the primary selection is always set so middle-click paste works.
+    select_to_copy: bool,
     /// Cursor position cached on every `CursorMoved` so the press arm
     /// can hit-test without receiving a fresh position. Logical coords
     /// (post scale-factor divide), matching `text_input`'s convention.
@@ -353,6 +389,43 @@ pub struct TerminalWidget {
     /// live screen *at the time they were written* — re-reading only the
     /// current screen would miss them.
     synced_len: usize,
+
+    /// Window title set by OSC 0 / OSC 2. Mirrored from the CRDT
+    /// (`terminal_title`) each `sync` so a collaborator sees the same title;
+    /// surfaced through `AppWidget::app_title`. Defaults to "Terminal".
+    title: String,
+    /// CRDT map id for `terminal_links`: string(link_id) → URL. Populated by
+    /// OSC 8 during `feed`; read back into `links` on `sync`.
+    links_id: Option<ObjId>,
+    /// Local fast-lookup mirror of the OSC 8 hyperlink registry (id → URL),
+    /// rebuilt from the CRDT `terminal_links` map on `sync`. Used to render
+    /// link tint/underline and to resolve a click into a URL to open.
+    links: HashMap<u16, String>,
+    /// Monotonic OSC 8 link-id allocator (host side). `0` is reserved for
+    /// "no link"; the first hyperlink gets id 1.
+    next_link_id: u16,
+    /// The link id currently open (between `OSC 8 ; ; URL` and its close);
+    /// every printed cell adopts it so a multi-cell link shares one id.
+    /// Survives across `feed` calls so a link spanning PTY reads stays whole.
+    current_link_id: u16,
+
+    /// Stable per-instance id used to scope this terminal's collaboration
+    /// presence (`PresenceKey::App { sub }`), so a peer's caret/selection is
+    /// attributed to this pane rather than colliding with another terminal.
+    pane_id: String,
+
+    /// Wakes the `ui::App` event loop when the PTY reader has new output, so a
+    /// standalone terminal can idle (`ControlFlow::Wait`) instead of polling at
+    /// ~60 Hz. The binary arms it via `App::run_with_setup` (see
+    /// [`waker_handle`](Self::waker_handle)); it stays `None` when the terminal
+    /// is embedded in a host that pumps it, or before the loop starts, in which
+    /// case [`needs_animation_frame`](Widget::needs_animation_frame) keeps
+    /// requesting frames.
+    waker: Arc<Mutex<Option<EventLoopProxy<UserEvent>>>>,
+    /// Coalesces reader wakes: set when a wake is in flight, cleared when the
+    /// App delivers the resulting `External` event (`on_external_event`), so a
+    /// burst of PTY reads sends at most one wake per processed frame.
+    wake_pending: Arc<AtomicBool>,
 }
 
 impl TerminalWidget {
@@ -404,7 +477,10 @@ impl TerminalWidget {
             last_fg_default: Color::from_rgba8(0, 0, 0, 0),
             last_bg_default: Color::from_rgba8(0, 0, 0, 0),
             selection: None,
-            dragging: false,
+            drag_select: DragSelect::default(),
+            drag_granularity: Granularity::Char,
+            drag_anchor_span: None,
+            select_to_copy: false,
             last_cursor_pos: Point::ZERO,
             viewport_start_y: 0,
             last_padding_x: 4.0,
@@ -412,7 +488,24 @@ impl TerminalWidget {
             mirror_valid: false,
             pending_local_edit: false,
             synced_len: 0,
+            title: "Terminal".to_string(),
+            links_id: None,
+            links: HashMap::new(),
+            next_link_id: 0,
+            current_link_id: 0,
+            pane_id: uuid::Uuid::new_v4().to_string(),
+            waker: Arc::new(Mutex::new(None)),
+            wake_pending: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    /// Handle used to arm the event-loop waker. A binary running the terminal
+    /// under `ui::App` calls this before moving the widget into the App, then
+    /// stores the `EventLoopProxy` inside `App::run_with_setup`'s closure. Once
+    /// armed, the PTY reader thread wakes the loop on new output and the
+    /// terminal stops polling at ~60 Hz while idle.
+    pub fn waker_handle(&self) -> Arc<Mutex<Option<EventLoopProxy<UserEvent>>>> {
+        self.waker.clone()
     }
 
     /// Color used for the block cursor on the last `draw`. Test-only accessor
@@ -423,7 +516,42 @@ impl TerminalWidget {
     /// the widget directly inside `draw` / `handle_event`.
     pub fn selection(&self) -> Option<Selection> { self.selection }
     /// True between left-mouse-press and left-mouse-release. Test-only.
-    pub fn is_dragging(&self) -> bool { self.dragging }
+    pub fn is_dragging(&self) -> bool { self.drag_select.is_dragging() }
+    /// Current window title (OSC 0/2), defaulting to "Terminal". Host/test
+    /// accessor — also what `AppWidget::app_title` returns.
+    pub fn title(&self) -> &str { &self.title }
+    /// Enable/disable "select to copy": when on, finishing a selection also
+    /// writes it to the system clipboard (in addition to the always-set
+    /// primary selection used by middle-click paste).
+    pub fn set_select_to_copy(&mut self, on: bool) { self.select_to_copy = on; }
+    /// Set (or clear) the selection programmatically over buffer-absolute
+    /// cells. Host/demo API — e.g. "select all", or a screenshot scenario
+    /// that highlights a range. Coordinates are absolute grid rows/columns
+    /// (see [`GridPos`]).
+    pub fn set_selection_cells(&mut self, anchor: GridPos, cursor: GridPos) {
+        self.selection = Some(Selection { anchor, cursor });
+    }
+    /// Absolute row index (into the full buffer, scrollback included) of the
+    /// first grid row whose text contains `needle`. Host/demo helper for
+    /// locating content to select without a GPU.
+    pub fn find_row(&self, needle: &str) -> Option<usize> {
+        self.grid.iter().position(|l| l.contains(needle))
+    }
+    /// Like [`find_row`](Self::find_row) but returns the *last* matching row —
+    /// useful when a shell echoes a command (which contains the text) before
+    /// the program prints the real output line (also containing it).
+    pub fn find_row_last(&self, needle: &str) -> Option<usize> {
+        self.grid.iter().rposition(|l| l.contains(needle))
+    }
+    /// Resolve the OSC 8 hyperlink URL for the cell at absolute buffer
+    /// `(row, col)`, if any. Host/test accessor: powers click-to-open and
+    /// lets a test assert a parsed hyperlink landed on the right cells.
+    pub fn hyperlink_at(&self, row: usize, col: usize) -> Option<&str> {
+        let attrs = self.grid_attrs.get(row)?;
+        let link_id = attrs.get(col)?.link_id;
+        if link_id == 0 { return None; }
+        self.links.get(&link_id).map(String::as_str)
+    }
     /// True while the alternate screen buffer is active. Test/host accessor.
     pub fn is_alt_screen(&self) -> bool { self.alt_active }
     /// Current terminal mode flags. Test/host accessor.
@@ -584,11 +712,13 @@ impl TerminalWidget {
         self.cursor_y = self.cursor_y.min(self.height.saturating_sub(1));
 
         let was_alt = self.alt_active;
+        let mut title_out: Option<String> = None;
         let mut performer = TerminalPerformer {
             state,
             main_grid_id: self.grid_id.clone().unwrap(),
             alt_grid_id: self.alt_grid_id.clone().unwrap(),
             cursor_id: self.cursor_id.clone().unwrap(),
+            links_id: self.links_id.clone().unwrap(),
             main_line_ids: &mut self.line_ids,
             alt_line_ids: &mut self.alt_line_ids,
             alt_active: &mut self.alt_active,
@@ -603,6 +733,9 @@ impl TerminalWidget {
             scroll_top: self.scroll_top,
             scroll_bottom: self.scroll_bottom,
             trimmed_front: &mut self.trimmed_front,
+            next_link_id: &mut self.next_link_id,
+            current_link_id: self.current_link_id,
+            title_out: &mut title_out,
         };
         // vte 0.15: `advance` takes `&[u8]` instead of one byte at a time.
         self.parser.advance(&mut performer, bytes);
@@ -616,6 +749,16 @@ impl TerminalWidget {
         self.pending_wrap = performer.pending_wrap;
         self.scroll_top = performer.scroll_top;
         self.scroll_bottom = performer.scroll_bottom;
+        self.current_link_id = performer.current_link_id;
+
+        // Persist an OSC 0/2 title change into the CRDT so a collaborator sees
+        // it, and reflect it locally for `app_title`.
+        if let Some(t) = title_out {
+            if t != self.title {
+                let _ = state.put(root, "terminal_title", t.clone());
+                self.title = t;
+            }
+        }
 
         // We just mutated the grid: let `sync` take the cheap incremental
         // re-read path (only the live screen + appended tail changed).
@@ -727,6 +870,27 @@ impl TerminalWidget {
             }
         }
         Self::ensure_lines(state, self.alt_grid_id.as_ref().unwrap(), self.height, self.width, &mut self.alt_line_ids);
+
+        if self.links_id.is_none() {
+            if let Ok(Some((Value::Object(ObjType::Map), id))) = state.get(root, "terminal_links") {
+                self.links_id = Some(id);
+            } else {
+                let id = state.put_object(root, "terminal_links", ObjType::Map).unwrap();
+                self.links_id = Some(id);
+            }
+        }
+
+        // Adopt (or seed) a shared pane id so both peers of a shared terminal
+        // scope their collaboration presence under the *same* `PresenceKey`,
+        // and a peer's caret/selection is found when rendering. The first peer
+        // to touch the doc writes its id; late joiners read it back.
+        if let Ok(Some((Value::Scalar(v), _))) = state.get(root, "terminal_pane_id") {
+            if let Some(s) = v.to_str() {
+                self.pane_id = s.to_string();
+            }
+        } else {
+            let _ = state.put(root, "terminal_pane_id", self.pane_id.clone());
+        }
 
         if self.cursor_id.is_none() {
             if let Ok(Some((Value::Object(ObjType::Map), id))) = state.get(root, "cursor") {
@@ -888,6 +1052,26 @@ impl Widget for TerminalWidget {
         self.mirror_valid = true;
         self.synced_len = len;
 
+        // Refresh the window title + hyperlink registry from the CRDT so a
+        // collaborator picking up a remote OSC 0/2/8 sees the same title and
+        // can resolve the same links. Cheap: title is one scalar, links is a
+        // small map keyed by link id.
+        if let Ok(Some((Value::Scalar(v), _))) = state.get(root, "terminal_title") {
+            if let Some(t) = v.to_str() {
+                self.title = t.to_string();
+            }
+        }
+        if let Some(links_id) = self.links_id.clone() {
+            self.links.clear();
+            for key in state.keys(&links_id) {
+                if let Ok(Some((Value::Scalar(v), _))) = state.get(&links_id, &key) {
+                    if let (Ok(id), Some(url)) = (key.parse::<u16>(), v.to_str()) {
+                        self.links.insert(id, url.to_string());
+                    }
+                }
+            }
+        }
+
         let active_len = line_ids.len();
         if let Some(cursor_id) = self.cursor_id.as_ref() {
             if let Ok(Some((Value::Scalar(v), _))) = state.get(cursor_id, "x") {
@@ -907,13 +1091,23 @@ impl Widget for TerminalWidget {
         self.pump(state, root)
     }
 
-    /// A live PTY may produce output at any time, but the reader thread has no
-    /// handle to the winit event loop to wake it. Reporting that we always want
-    /// another frame keeps `ui::App` ticking at ~60 Hz (its `about_to_wait`
-    /// bounded `WaitUntil`) so `sync` re-runs and drains the PTY promptly. A
-    /// host that embeds the terminal gates this behind its own visibility check.
+    /// Whether the App should keep ticking at ~60 Hz. Once the PTY reader can
+    /// wake the loop (a standalone terminal that armed its `waker` via
+    /// `App::run_with_setup`), we idle instead: the reader sends a
+    /// `UserEvent::External` on new output, which drives a re-sync + redraw, so
+    /// there is no reason to poll while nothing is happening. Until the waker is
+    /// armed — embedded in a host that pumps us, or during startup before the
+    /// loop runs — we keep requesting frames so output still surfaces.
     fn needs_animation_frame(&self) -> bool {
-        true
+        self.waker.lock().map(|g| g.is_none()).unwrap_or(true)
+    }
+
+    /// The event-loop wake we requested has been delivered. Clear the coalescing
+    /// flag so the reader can request the next one; the App's redraw drives
+    /// `sync`, which drains the queued PTY bytes. The payload is unused — the
+    /// wake itself is the signal.
+    fn on_external_event(&mut self, _payload: &str, _state: &mut AutoCommit, _root: &ObjId) {
+        self.wake_pending.store(false, Ordering::Release);
     }
 
     fn build_layout(&mut self, taffy: &mut TaffyTree<()>, _theme: &Theme, node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>) -> NodeId {
@@ -957,9 +1151,13 @@ impl Widget for TerminalWidget {
 
         scene.fill(vello::peniko::Fill::NonZero, transform, palette.bg_default, None, &self.rect);
 
-        // Measure the space glyph in the monospace family — that's the cell
-        // advance the mono glyph runs will use.
-        let (w, _h) = text_renderer.measure_styled(" ", font_size, None, TextWeight::Regular, false, true);
+        // Resolve the terminal font from the theme's canonical monospace token
+        // (`theme.tokens.font_mono`) rather than the generic monospace class, so
+        // the OS's chosen mono face is what gets shaped. Measure the space glyph
+        // in that exact family — that's the cell advance the glyph runs use, so
+        // pointer hit-testing and rendering stay on the same grid.
+        let mono = mono_font_choice(theme);
+        let (w, _h) = text_renderer.measure_font(" ", font_size, None, TextWeight::Regular, false, &mono);
         self.char_w = (w as f64).max(1.0);
         self.char_h = ((font_size as f64) * 1.25f64).ceil().max(1.0);
 
@@ -976,14 +1174,16 @@ impl Widget for TerminalWidget {
         // directly to find the row in `self.grid`.
         self.viewport_start_y = start_y;
 
-        // Paint the selection BEFORE the cell text so glyphs read on top
-        // of the highlight. The selection model is viewport-local — row 0
-        // is the first visible row, regardless of scrollback.
+        // Paint the selection BEFORE the cell text so glyphs read on top of
+        // the highlight. Selection rows are buffer-absolute, so a row only
+        // paints when it falls inside the current viewport window
+        // `[start_y, start_y + visible_rows)`, translated to an on-screen row.
         if let Some(sel) = self.selection {
             let sel_color = theme.accent_primary.with_alpha_factor(0.30);
             for (row, start_col, end_col) in selection_row_spans(&sel, self.width) {
-                if row >= visible_rows { continue; }
-                let py = (self.rect.y0 + row as f64 * self.char_h).floor();
+                if row < start_y || row >= start_y + visible_rows { continue; }
+                let vrow = row - start_y;
+                let py = (self.rect.y0 + vrow as f64 * self.char_h).floor();
                 let x0 = self.rect.x0 + padding_x + start_col as f64 * self.char_w;
                 let x1 = self.rect.x0 + padding_x + end_col as f64 * self.char_w;
                 let band = Rect::new(x0, py, x1, py + self.char_h);
@@ -1009,7 +1209,7 @@ impl Widget for TerminalWidget {
 
                 if Some(attr) != current_attr {
                     if !current_run.is_empty() {
-                        self.draw_run(scene, &current_run, current_attr.unwrap(), py, run_start_cell_idx as f64 * self.char_w + padding_x, text_renderer, transform, font_size, palette);
+                        self.draw_run(scene, &current_run, current_attr.unwrap(), py, run_start_cell_idx as f64 * self.char_w + padding_x, text_renderer, transform, font_size, palette, &mono);
                     }
                     current_run.clear();
                     current_attr = Some(attr);
@@ -1019,7 +1219,7 @@ impl Widget for TerminalWidget {
                 cell_idx += c_w;
             }
             if !current_run.is_empty() {
-                self.draw_run(scene, &current_run, current_attr.unwrap(), py, run_start_cell_idx as f64 * self.char_w + padding_x, text_renderer, transform, font_size, palette);
+                self.draw_run(scene, &current_run, current_attr.unwrap(), py, run_start_cell_idx as f64 * self.char_w + padding_x, text_renderer, transform, font_size, palette, &mono);
             }
         }
 
@@ -1059,7 +1259,7 @@ impl Widget for TerminalWidget {
                 .and_then(|line| cell_char_at(line, self.cursor_x))
             {
                 if !ch.is_whitespace() {
-                    text_renderer.draw_text_styled(
+                    text_renderer.draw_text_font(
                         scene,
                         &ch.to_string(),
                         font_size,
@@ -1068,7 +1268,7 @@ impl Widget for TerminalWidget {
                         None,
                         TextWeight::Regular,
                         false,
-                        true,
+                        &mono,
                     );
                 }
             }
@@ -1112,42 +1312,42 @@ impl Widget for TerminalWidget {
                 // winit (Pressed arrives without coordinates).
                 let logical = Point::new(position.x / scale_factor, position.y / scale_factor);
                 self.last_cursor_pos = logical;
-                if self.dragging && self.selection.is_some() {
-                    // Compute the new cursor first (only needs `&self`),
-                    // then take a mutable borrow to write it.
+                if self.drag_select.is_dragging() && self.selection.is_some() {
                     let pos = self.pos_from_logical(logical);
-                    let sel = self.selection.as_mut().expect("just checked is_some");
-                    if pos != sel.cursor {
-                        sel.cursor = pos;
-                        *handled = true;
-                    }
+                    self.extend_drag_to(pos);
+                    *handled = true;
                 }
             }
             WindowEvent::MouseInput { state: element_state, button: MouseButton::Left, .. } => {
                 // Mouse reporting (ESC[?1000h family) is parsed into `modes`
-                // but click forwarding is intentionally a stub — v1 always
-                // captures the left button for text selection.
+                // but click forwarding is intentionally a stub — the left
+                // button always drives text selection.
                 match element_state {
                     ElementState::Pressed if self.rect.contains(self.last_cursor_pos) => {
+                        let shift = modifiers.state().shift_key();
+                        let intent = self.drag_select.press(self.last_cursor_pos, shift);
                         let pos = self.pos_from_logical(self.last_cursor_pos);
-                        self.selection = Some(Selection { anchor: pos, cursor: pos });
-                        self.dragging = true;
+                        self.begin_selection(intent.extend, intent.granularity, pos);
                         *handled = true;
                     }
                     ElementState::Released => {
-                        if self.dragging {
-                            self.dragging = false;
-                            // Drop collapsed selections (a lone click should
-                            // not paint a one-cell highlight).
-                            if let Some(sel) = self.selection {
-                                if sel.is_collapsed() {
-                                    self.selection = None;
-                                }
-                            }
+                        if self.drag_select.release() {
+                            self.finish_selection();
                             *handled = true;
                         }
                     }
                     _ => {}
+                }
+            }
+            WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Middle, .. } => {
+                // X11/Wayland primary-selection paste: middle-click inserts the
+                // currently-selected text (from any app), matching every
+                // terminal. Snaps the viewport back to the live bottom.
+                if self.rect.contains(self.last_cursor_pos) {
+                    if let Some(text) = clipboard_paste_primary() {
+                        self.paste(&text);
+                    }
+                    *handled = true;
                 }
             }
             WindowEvent::KeyboardInput { event: KeyEvent { logical_key, text, state: element_state, .. }, .. } => {
@@ -1220,6 +1420,69 @@ impl Widget for TerminalWidget {
     fn name(&self) -> &str { "Terminal" }
     fn get_rect(&self) -> Rect { self.rect }
     fn is_focusable(&self) -> bool { true }
+
+    /// Scope this terminal's collaboration presence to a shared pane id (see
+    /// `terminal_pane_id` in the CRDT) so both peers of a shared session file
+    /// their caret/selection under the same key and can find each other's.
+    fn presence_key(&self) -> Option<PresenceKey> {
+        Some(PresenceKey::App {
+            app: PermAppKind::Terminal,
+            sub: self.pane_id.clone(),
+        })
+    }
+
+    /// Broadcast the local view state to peers: the active text selection when
+    /// there is one (so peers see what this user is selecting), otherwise the
+    /// cursor position. The grid/scrollback itself rides the shared CRDT, so
+    /// presence only needs to carry the per-user caret/selection.
+    fn presence_payload(&self) -> Option<(PresenceKey, PresencePayload)> {
+        let key = self.presence_key()?;
+        let payload = if let Some(sel) = self.selection {
+            let (a, b) = sel.ordered();
+            PresencePayload::Selection { start: self.lin(a), end: self.lin(b) }
+        } else {
+            let cursor_abs = self.grid.len().saturating_sub(self.height) + self.cursor_y;
+            PresencePayload::Caret {
+                pos: self.lin(GridPos { row: cursor_abs, col: self.cursor_x }),
+            }
+        };
+        Some((key, payload))
+    }
+
+    /// Paint the terminal, then overlay remote collaborators' selections and
+    /// carets in their own colours on top (following the `TextInput` model).
+    /// Grid content is shared via the CRDT; this adds the per-peer decoration.
+    fn draw_with_presence(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+        _permissions: &PermissionContext,
+    ) {
+        if presence.should_cull(self.get_rect()) {
+            return;
+        }
+        self.draw(scene, transform, text_renderer, theme, presence);
+
+        if let Some(key) = self.presence_key() {
+            if let Some(list) = presence.selections.get(&key) {
+                for (user, range) in list.iter() {
+                    for rect in self.peer_selection_rects(range.start, range.end) {
+                        presence.draw_peer_selection(scene, theme, transform, user, rect);
+                    }
+                }
+            }
+            if let Some(list) = presence.carets.get(&key) {
+                for (user, caret) in list.iter() {
+                    if let Some(rect) = self.peer_caret_rect(*caret) {
+                        presence.draw_peer_caret(scene, theme, transform, user, rect);
+                    }
+                }
+            }
+        }
+    }
 }
 
 impl TerminalWidget {
@@ -1235,6 +1498,7 @@ impl TerminalWidget {
         transform: Affine,
         font_size: f32,
         palette: &ui::tokens::TerminalPalette,
+        font: &FontChoice,
     ) {
         let (mut fg, bg_opt) = resolve_pair(attr, palette);
         // SGR 2 (faint): blend the foreground toward the background so it
@@ -1242,6 +1506,14 @@ impl TerminalWidget {
         // dimmed reverse cell dims its (swapped) text too.
         if attr.dim {
             fg = fg.with_alpha_factor(0.55);
+        }
+        // OSC 8 hyperlink cells read as links: tint the text toward the
+        // palette's link hue (bright blue anchor) unless the program already
+        // chose an explicit colour, and always underline so the affordance is
+        // obvious. `link_color` comes from the palette so it tracks the theme.
+        let is_link = attr.link_id != 0;
+        if is_link && attr.fg == CellColor::Default && !attr.reverse {
+            fg = palette.ansi[12];
         }
         let tx = self.rect.x0 + rx;
 
@@ -1256,7 +1528,7 @@ impl TerminalWidget {
         }
 
         let weight = if attr.bold { TextWeight::Bold } else { TextWeight::Regular };
-        text_renderer.draw_text_styled(
+        text_renderer.draw_text_font(
             scene,
             text,
             font_size,
@@ -1265,10 +1537,10 @@ impl TerminalWidget {
             None,
             weight,
             attr.italic,
-            true, // monospace family — a terminal must render fixed-width
+            font, // the OS's monospace face — a terminal must render fixed-width
         );
 
-        if attr.underline {
+        if attr.underline || is_link {
             let uy = py + self.char_h - 1.5;
             let line = Rect::new(tx, uy, tx + visual_width, uy + 1.0);
             scene.fill(vello::peniko::Fill::NonZero, transform, fg, None, &line);
@@ -1281,10 +1553,13 @@ impl TerminalWidget {
         }
     }
 
-    /// Convert a logical pointer position into a viewport-local
-    /// `GridPos`. Coordinates outside the cell grid are clamped to the
-    /// nearest valid cell — this matches xterm's behaviour during a
-    /// drag-select that leaves the terminal area.
+    /// Convert a logical pointer position into a **buffer-absolute**
+    /// `GridPos`. The on-screen row is offset by the current scrollback
+    /// position (`viewport_start_y`) so the returned row indexes `self.grid`
+    /// directly and a selection anchored to it survives scrolling.
+    /// Coordinates outside the cell grid are clamped to the nearest valid
+    /// visible cell — matching xterm's behaviour during a drag-select that
+    /// leaves the terminal area.
     fn pos_from_logical(&self, p: Point) -> GridPos {
         // Match the padding used in `draw` so a click on column 0 lands
         // on column 0 and not -1 due to the leading gutter.
@@ -1292,15 +1567,199 @@ impl TerminalWidget {
         let local_x = (p.x - self.rect.x0 - padding_x).max(0.0);
         let local_y = (p.y - self.rect.y0).max(0.0);
         let col = (local_x / self.char_w.max(1.0)).floor() as usize;
-        let row = (local_y / self.char_h.max(1.0)).floor() as usize;
+        let vrow = (local_y / self.char_h.max(1.0)).floor() as usize;
         // `width` is logical grid width; `viewport` height is computed
         // from `rect.height() / char_h` rather than `self.height` because
         // resize-clamp may have a stale `self.height` between frames.
         let visible_rows = (self.rect.height() / self.char_h.max(1.0)).floor() as usize;
+        let vrow = vrow.min(visible_rows.saturating_sub(1));
+        let abs_row = (self.viewport_start_y + vrow).min(self.grid.len().saturating_sub(1));
         GridPos {
-            row: row.min(visible_rows.saturating_sub(1)),
+            row: abs_row,
             col: col.min(self.width.saturating_sub(1)),
         }
+    }
+
+    /// The buffer-absolute word span containing `pos`, using the toolkit's
+    /// shared `word_boundaries` walker over the row's reconstructed text so
+    /// terminal word selection matches every other qOS text surface. Returns
+    /// `(start, end)` as `GridPos`es on the same row, `end` exclusive.
+    fn word_span_at(&self, pos: GridPos) -> (GridPos, GridPos) {
+        let line = self.grid.get(pos.row).map(String::as_str).unwrap_or("");
+        // Column → byte offset (accounting for wide glyphs), find the word in
+        // byte space, then map the byte range back to columns.
+        let byte = col_to_byte(line, pos.col);
+        let (bs, be) = word_boundaries(line, byte);
+        let cs = byte_to_col(line, bs);
+        let ce = byte_to_col(line, be);
+        (
+            GridPos { row: pos.row, col: cs },
+            GridPos { row: pos.row, col: ce.max(cs + 1).min(self.width) },
+        )
+    }
+
+    /// The buffer-absolute line span for `pos.row`: the whole grid row. Each
+    /// terminal grid row is one logical line (no embedded `\n`), so this is
+    /// column `0` through the grid width. `line_boundaries` is used for parity
+    /// with the shared primitive even though a single row has no interior
+    /// newline.
+    fn line_span_at(&self, pos: GridPos) -> (GridPos, GridPos) {
+        let line = self.grid.get(pos.row).map(String::as_str).unwrap_or("");
+        let (_bs, _be) = line_boundaries(line, col_to_byte(line, pos.col));
+        (
+            GridPos { row: pos.row, col: 0 },
+            GridPos { row: pos.row, col: self.width },
+        )
+    }
+
+    /// Start (or, with `extend`, grow) a selection at buffer-absolute `pos`
+    /// for the given multi-click `granularity`. Records the anchor unit so a
+    /// subsequent word-/line-granularity drag keeps that original word/line
+    /// inside the selection.
+    fn begin_selection(&mut self, extend: bool, granularity: Granularity, pos: GridPos) {
+        self.drag_granularity = if extend { Granularity::Char } else { granularity };
+        if extend {
+            // Shift+click: keep the existing anchor (or promote the current
+            // cursor), move the caret to the click.
+            let anchor = self.selection.map(|s| s.anchor).unwrap_or(pos);
+            self.selection = Some(Selection { anchor, cursor: pos });
+            self.drag_anchor_span = None;
+            return;
+        }
+        match granularity {
+            Granularity::Char => {
+                self.selection = Some(Selection { anchor: pos, cursor: pos });
+                self.drag_anchor_span = None;
+            }
+            Granularity::Word => {
+                let (s, e) = self.word_span_at(pos);
+                self.selection = Some(Selection { anchor: s, cursor: e });
+                self.drag_anchor_span = Some((s, e));
+            }
+            Granularity::Line => {
+                let (s, e) = self.line_span_at(pos);
+                self.selection = Some(Selection { anchor: s, cursor: e });
+                self.drag_anchor_span = Some((s, e));
+            }
+        }
+    }
+
+    /// Extend the in-progress drag to buffer-absolute `pos`, honouring the
+    /// drag granularity. Word/line drags grow by whole units via the shared
+    /// `extend_span_drag` rule so the anchored word/line stays selected.
+    fn extend_drag_to(&mut self, pos: GridPos) {
+        let new = match self.drag_granularity {
+            Granularity::Char => self.selection.map(|mut s| {
+                s.cursor = pos;
+                s
+            }),
+            Granularity::Word => self
+                .drag_anchor_span
+                .map(|(alo, ahi)| {
+                    let (ws, we) = self.word_span_at(pos);
+                    let (a, c) = extend_span_drag(alo, ahi, pos, ws, we);
+                    Selection { anchor: a, cursor: c }
+                })
+                .or_else(|| self.selection.map(|mut s| {
+                    s.cursor = pos;
+                    s
+                })),
+            Granularity::Line => self
+                .drag_anchor_span
+                .map(|(alo, ahi)| {
+                    let (ls, le) = self.line_span_at(pos);
+                    let (a, c) = extend_span_drag(alo, ahi, pos, ls, le);
+                    Selection { anchor: a, cursor: c }
+                })
+                .or_else(|| self.selection.map(|mut s| {
+                    s.cursor = pos;
+                    s
+                })),
+        };
+        if let Some(s) = new {
+            self.selection = Some(s);
+        }
+    }
+
+    /// Finish a selection gesture on mouse-up. A collapsed (no-drag) selection
+    /// is dropped — but if it was a plain click on an OSC 8 hyperlink cell,
+    /// the link opens first. A non-empty selection is published to the primary
+    /// selection (for middle-click paste) and, when "select to copy" is on,
+    /// the clipboard too.
+    fn finish_selection(&mut self) {
+        let collapsed = self.selection.map(|s| s.is_collapsed()).unwrap_or(true);
+        if collapsed {
+            if self.drag_granularity == Granularity::Char {
+                if let Some(sel) = self.selection {
+                    if let Some(url) = self.hyperlink_at(sel.anchor.row, sel.anchor.col) {
+                        open_url(url);
+                    }
+                }
+            }
+            self.selection = None;
+        } else if let Some(text) = self.selected_text() {
+            if !text.is_empty() {
+                clipboard_copy_primary(&text);
+                if self.select_to_copy {
+                    clipboard_copy(&text);
+                }
+            }
+        }
+        self.drag_anchor_span = None;
+    }
+
+    /// Encode a buffer-absolute cell as a single linear index (row-major over
+    /// the grid width) for the collaboration presence payload, which carries a
+    /// `usize` caret / `start..end` selection rather than a 2-D position.
+    fn lin(&self, p: GridPos) -> usize {
+        p.row * self.width.max(1) + p.col
+    }
+    /// Inverse of [`lin`]: decode a linear presence index back to a cell.
+    fn unlin(&self, pos: usize) -> GridPos {
+        let w = self.width.max(1);
+        GridPos { row: pos / w, col: pos % w }
+    }
+    /// Number of on-screen rows and the absolute row of the top visible row —
+    /// the viewport window used to map buffer-absolute rows to screen rows.
+    fn viewport_window(&self) -> (usize, usize) {
+        let visible_rows = (self.rect.height() / self.char_h.max(1.0)).floor().max(1.0) as usize;
+        (self.viewport_start_y, visible_rows)
+    }
+
+    /// A remote peer's caret rect (a thin vertical bar at the cell's left
+    /// edge), or `None` when the cell is scrolled out of the viewport. Built
+    /// from the same geometry the local cursor uses so a peer caret lands on
+    /// the right cell.
+    fn peer_caret_rect(&self, pos: usize) -> Option<Rect> {
+        let cell = self.unlin(pos);
+        let (start_y, visible_rows) = self.viewport_window();
+        if cell.row < start_y || cell.row >= start_y + visible_rows {
+            return None;
+        }
+        let vrow = cell.row - start_y;
+        let x = self.rect.x0 + self.last_padding_x + cell.col as f64 * self.char_w;
+        let y = (self.rect.y0 + vrow as f64 * self.char_h).floor();
+        Some(Rect::new(x, y, x + 2.0, y + self.char_h))
+    }
+
+    /// The per-row highlight rects for a remote peer's selection (linear
+    /// `start..end`), clipped to the visible viewport. Mirrors the local
+    /// selection painting so a peer's highlight aligns cell-for-cell.
+    fn peer_selection_rects(&self, start: usize, end: usize) -> Vec<Rect> {
+        let sel = Selection { anchor: self.unlin(start), cursor: self.unlin(end) };
+        let (start_y, visible_rows) = self.viewport_window();
+        let mut rects = Vec::new();
+        for (row, start_col, end_col) in selection_row_spans(&sel, self.width) {
+            if row < start_y || row >= start_y + visible_rows {
+                continue;
+            }
+            let vrow = row - start_y;
+            let py = (self.rect.y0 + vrow as f64 * self.char_h).floor();
+            let x0 = self.rect.x0 + self.last_padding_x + start_col as f64 * self.char_w;
+            let x1 = self.rect.x0 + self.last_padding_x + end_col as f64 * self.char_w;
+            rects.push(Rect::new(x0, py, x1, py + self.char_h));
+        }
+        rects
     }
 
     /// The horizontal glyph gutter the last `draw` actually used. Cached from
@@ -1323,8 +1782,8 @@ impl TerminalWidget {
         let mut out = String::new();
         for (i, (row, start_col, end_col)) in spans.iter().enumerate() {
             if i > 0 { out.push('\n'); }
-            // Translate viewport-local row to absolute grid index.
-            let abs_row = self.viewport_start_y + row;
+            // Selection rows are already buffer-absolute grid indices.
+            let abs_row = *row;
             let line = self.grid.get(abs_row).map(String::as_str).unwrap_or("");
 
             // Walk chars and pick out the cells covered by [start_col, end_col).
@@ -1470,6 +1929,9 @@ pub struct TerminalPerformer<'a> {
     pub main_grid_id: ObjId,
     pub alt_grid_id: ObjId,
     pub cursor_id: ObjId,
+    /// CRDT map (`terminal_links`) storing OSC 8 link id → URL, so hyperlinks
+    /// resolve on every peer, not just the host that parsed the sequence.
+    pub links_id: ObjId,
     pub main_line_ids: &'a mut Vec<ObjId>,
     pub alt_line_ids: &'a mut Vec<ObjId>,
     pub alt_active: &'a mut bool,
@@ -1487,6 +1949,15 @@ pub struct TerminalPerformer<'a> {
     /// front this feed, so the widget's `sync` can keep its render mirror
     /// aligned without a full re-read.
     pub trimmed_front: &'a mut usize,
+    /// Monotonic OSC 8 link-id allocator (shared with the widget so ids stay
+    /// unique across feeds). `0` is reserved for "no link".
+    pub next_link_id: &'a mut u16,
+    /// Link id of the currently-open OSC 8 hyperlink (`0` = none). Every cell
+    /// printed while this is non-zero adopts it.
+    pub current_link_id: u16,
+    /// Out-param for an OSC 0/2 window-title change parsed this feed; the
+    /// widget writes it into the CRDT and its own `title` field afterwards.
+    pub title_out: &'a mut Option<String>,
 }
 
 impl<'a> Perform for TerminalPerformer<'a> {
@@ -1519,9 +1990,13 @@ impl<'a> Perform for TerminalPerformer<'a> {
                     let end = (self.cursor_x + char_w) * ATTR_BYTES;
                     if attr_bytes.len() < end { attr_bytes.resize(end, 0); }
 
-                    attr_bytes[start..start + ATTR_BYTES].copy_from_slice(&self.current_attr.pack());
+                    // Carry the active OSC 8 hyperlink id onto the cell,
+                    // independent of SGR so a link and its styling compose.
+                    let mut cell_attr = self.current_attr;
+                    cell_attr.link_id = self.current_link_id;
+                    attr_bytes[start..start + ATTR_BYTES].copy_from_slice(&cell_attr.pack());
                     if char_w > 1 {
-                        let mut cont = self.current_attr;
+                        let mut cont = cell_attr;
                         cont.is_wide_cont = true;
                         let cont_packed = cont.pack();
                         for i in 1..char_w {
@@ -1650,6 +2125,65 @@ impl<'a> Perform for TerminalPerformer<'a> {
             _ => {}
         }
         self.update_cursor();
+    }
+
+    /// OSC — Operating System Command. vte 0.15 pre-splits the payload on `;`
+    /// into `params`, so `params[0]` is the command number as ASCII bytes.
+    /// Handles window title (0/2), clipboard (52), and hyperlinks (8).
+    fn osc_dispatch(&mut self, params: &[&[u8]], _bell_terminated: bool) {
+        let kind = params.first().copied().unwrap_or(b"");
+        let code: u32 = std::str::from_utf8(kind)
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(u32::MAX);
+        match code {
+            // OSC 0 = icon name + window title; OSC 2 = window title. Both set
+            // the title for our purposes.
+            0 | 2 => {
+                if let Some(title) = params.get(1).copied() {
+                    *self.title_out = Some(String::from_utf8_lossy(title).into_owned());
+                }
+            }
+            // OSC 52 — manipulate the selection/clipboard. Form:
+            // `OSC 52 ; <targets> ; <base64|?> ST`. We honour the *set* path
+            // (write decoded text to the clipboard / primary selection); a
+            // `?` query would need to write back to the PTY, which the parser
+            // can't do, so it's ignored.
+            52 => {
+                let targets = params.get(1).copied().unwrap_or(b"");
+                let data = params.get(2).copied().unwrap_or(b"");
+                if data == b"?" || data.is_empty() {
+                    return;
+                }
+                if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(data) {
+                    if let Ok(text) = String::from_utf8(bytes) {
+                        // `p` selects the primary selection; anything else
+                        // (`c`, `s`, default) targets the clipboard.
+                        if targets.contains(&b'p') {
+                            clipboard_copy_primary(&text);
+                        } else {
+                            clipboard_copy(&text);
+                        }
+                    }
+                }
+            }
+            // OSC 8 — hyperlink. Form: `OSC 8 ; <params> ; <URI> ST`. An empty
+            // URI closes the current link. We register the URI in the CRDT and
+            // stamp its id onto subsequent cells via `current_link_id`.
+            8 => {
+                let uri = params.get(2).copied().unwrap_or(b"");
+                if uri.is_empty() {
+                    self.current_link_id = 0;
+                } else {
+                    let url = String::from_utf8_lossy(uri).into_owned();
+                    *self.next_link_id = self.next_link_id.wrapping_add(1).max(1);
+                    let id = *self.next_link_id;
+                    let _ = self.state.put(&self.links_id, id.to_string(), url);
+                    self.current_link_id = id;
+                }
+            }
+            _ => {}
+        }
     }
 }
 
@@ -2116,6 +2650,33 @@ pub(crate) fn selection_row_spans(sel: &Selection, cols: usize) -> Vec<(usize, u
     spans
 }
 
+/// Byte offset in `line` where cell column `col` begins, honouring wide
+/// (double-width) glyphs. Clamps to the string's byte length for columns
+/// past the last glyph (padding region). Inverse of [`byte_to_col`].
+pub(crate) fn col_to_byte(line: &str, col: usize) -> usize {
+    let mut cells = 0usize;
+    for (byte, c) in line.char_indices() {
+        if cells >= col {
+            return byte;
+        }
+        cells += c.width().unwrap_or(1).max(1);
+    }
+    line.len()
+}
+
+/// Cell column corresponding to byte offset `byte` in `line`. Inverse of
+/// [`col_to_byte`]; a byte at or past the end maps to the total cell width.
+pub(crate) fn byte_to_col(line: &str, byte: usize) -> usize {
+    let mut cells = 0usize;
+    for (b, c) in line.char_indices() {
+        if b >= byte {
+            return cells;
+        }
+        cells += c.width().unwrap_or(1).max(1);
+    }
+    cells
+}
+
 /// The character occupying cell column `col` of `line`, honouring wide
 /// (double-width) glyphs. Columns that land on a wide glyph's trailing
 /// continuation cell report a space. Returns `None` past the line's end.
@@ -2186,6 +2747,20 @@ pub(crate) fn resolve_pair(attr: Attr, palette: &ui::tokens::TerminalPalette) ->
     }
 }
 
+/// Resolve the terminal's `FontChoice` from the theme's canonical monospace
+/// token. A named family (the default is "JetBrains Mono") targets that
+/// installed face; the generic `"monospace"`/empty string falls back to the
+/// portable generic monospace class so shaping still works when no specific
+/// mono face is installed.
+pub(crate) fn mono_font_choice(theme: &Theme) -> FontChoice {
+    let fam = theme.tokens.font_mono.family.trim();
+    if fam.is_empty() || fam.eq_ignore_ascii_case("monospace") {
+        FontChoice::Monospace
+    } else {
+        FontChoice::Named(fam.to_string())
+    }
+}
+
 /// Derive the block-cursor color from the palette's default foreground.
 /// Kept as a free function so the rule "the cursor always tracks the theme"
 /// is a single obvious call site and tests can invoke it directly.
@@ -2240,6 +2815,12 @@ impl TerminalWidget {
         let master = std::sync::Arc::new(std::sync::Mutex::new(backend.master));
         let (output_tx, output_rx) = crossbeam_channel::unbounded();
 
+        let widget = TerminalWidget::new(writer, master, output_rx);
+        // Share the waker + coalescing flag with the reader thread so fresh PTY
+        // output can wake an idle `ui::App` loop (instead of a ~60 Hz poll).
+        let waker = widget.waker.clone();
+        let wake_pending = widget.wake_pending.clone();
+
         let reader = std::sync::Arc::new(std::sync::Mutex::new(backend.reader));
         std::thread::spawn(move || {
             let mut buf = [0u8; 8192];
@@ -2247,13 +2828,33 @@ impl TerminalWidget {
                 let mut r = reader.lock().unwrap();
                 match std::io::Read::read(&mut *r, &mut buf) {
                     Ok(0) => break,
-                    Ok(n) => { if output_tx.send(buf[..n].to_vec()).is_err() { break; } }
+                    Ok(n) => {
+                        if output_tx.send(buf[..n].to_vec()).is_err() { break; }
+                        // Wake the event loop so `sync` drains the PTY. Coalesced
+                        // via `wake_pending`: at most one in-flight wake until the
+                        // App delivers it (`on_external_event` clears the flag).
+                        if !wake_pending.swap(true, Ordering::AcqRel) {
+                            let armed = waker
+                                .lock()
+                                .ok()
+                                .and_then(|g| g.as_ref().map(|p| {
+                                    let _ = p.send_event(UserEvent::External(String::new()));
+                                }))
+                                .is_some();
+                            if !armed {
+                                // No proxy yet (embedded host, or startup before
+                                // the loop arms it): reset so the next read retries.
+                                // `needs_animation_frame` keeps polling meanwhile.
+                                wake_pending.store(false, Ordering::Release);
+                            }
+                        }
+                    }
                     Err(_) => break,
                 }
             }
         });
 
-        TerminalWidget::new(writer, master, output_rx)
+        widget
     }
 
     /// Spawn the user's login shell (`$SHELL`) in a PTY + reader thread and

@@ -139,26 +139,6 @@ pub struct TubeApp {
     /// up. Spawned once, on the first real stream load in the online app, so the
     /// system top-bar widget + media keys drive playback. Never in `--shots`/tests.
     mpris_started: bool,
-
-    /// In-flight image count observed on the previous frame. Cards/avatars grab
-    /// their decoded image from the [`ui::ImageStore`] at BUILD time, so an image
-    /// that finishes loading *after* the tree was built would never appear unless
-    /// something re-runs `build_layout`. When this count changes (a thumbnail /
-    /// avatar started or — crucially — finished loading) we flag a structural
-    /// rebuild so the freshly-decoded image folds into the tree. See
-    /// [`images_need_refresh`].
-    images_pending_prev: usize,
-}
-
-/// Whether a change in the number of in-flight image loads should trigger a
-/// structural rebuild so freshly-decoded thumbnails/avatars get captured into
-/// the widget tree. Cards read `imgs.get(url)` at build time, so an image that
-/// lands after the last build is invisible until the next rebuild — this returns
-/// `true` on any change to the pending count (a load began, or one settled), so
-/// search results (which otherwise stop rebuilding once their one worker
-/// response has folded in) show their thumbnails the moment they decode.
-fn images_need_refresh(prev_pending: usize, pending: usize) -> bool {
-    pending != prev_pending
 }
 
 impl Default for TubeApp {
@@ -194,7 +174,6 @@ impl TubeApp {
             images: None,
             show_skip_end: None,
             mpris_started: false,
-            images_pending_prev: 0,
         }
     }
 
@@ -1043,6 +1022,7 @@ impl TubeApp {
                     let ids: Vec<String> = vids.iter().map(|v| v.id.clone()).collect();
                     for nv in vids {
                         self.model.ensure_channel_stub(&nv.channel_id, &nv.channel_name);
+                        self.model.note_channel_avatar(&nv.channel_id, &nv.channel_avatar_url);
                         self.model.upsert_video(nv);
                     }
                     self.model.search_hits_query = query.clone();
@@ -1062,6 +1042,7 @@ impl TubeApp {
                     let id = video.id.clone();
                     let channel_id = video.channel_id.clone();
                     self.model.ensure_channel_stub(&video.channel_id, &video.channel_name);
+                    self.model.note_channel_avatar(&video.channel_id, &video.channel_avatar_url);
                     self.model.upsert_video(*video);
                     // Now that we know the uploader, pull its avatar + subs if we
                     // only have a name stub (drives the watch-page channel row).
@@ -1077,6 +1058,7 @@ impl TubeApp {
                     let ids: Vec<String> = related.iter().map(|v| v.id.clone()).collect();
                     for rv in related {
                         self.model.ensure_channel_stub(&rv.channel_id, &rv.channel_name);
+                        self.model.note_channel_avatar(&rv.channel_id, &rv.channel_avatar_url);
                         self.model.upsert_video(rv);
                     }
                     if !ids.is_empty() {
@@ -1089,6 +1071,7 @@ impl TubeApp {
                     self.model.upsert_channel(*channel);
                     for uv in uploads {
                         self.model.ensure_channel_stub(&uv.channel_id, &uv.channel_name);
+                        self.model.note_channel_avatar(&uv.channel_id, &uv.channel_avatar_url);
                         self.model.upsert_video(uv);
                     }
                     changed = true;
@@ -1439,16 +1422,15 @@ impl Widget for TubeApp {
         if self.pump() {
             dirty = true;
         }
-        // Rebuild while thumbnails/avatars are still settling so each decoded
-        // image gets captured into the tree (they're grabbed at build time).
-        // Without this a search page — which stops rebuilding once its single
-        // worker response has folded in — would keep showing gradient posters
-        // even after its real thumbnails finished downloading.
-        let pending = self.images.as_ref().map(|s| s.pending()).unwrap_or(0);
-        if images_need_refresh(self.images_pending_prev, pending) {
-            self.images_pending_prev = pending;
-            dirty = true;
-        }
+        // NOTE: image loads no longer force a structural rebuild. Thumbnails,
+        // avatars and banners resolve their decoded image *lazily* in their own
+        // `sync` (they hold an `ImageStore` handle + URL) and repaint via
+        // `needs_redraw` when it lands — so a photo finishing download costs a
+        // cheap redraw, not a whole-tree rebuild + layout re-solve on every one
+        // of ~160 completions (which is what made the grids churn while loading,
+        // and reset the scroll position each time). `needs_idle_sync` /
+        // `needs_animation_frame` keep frames flowing while images are pending so
+        // each `sync` gets its chance to fold the freshly-decoded image in.
         if let Some(c) = &mut self.root_child {
             dirty |= c.take_structure_dirty();
         }
@@ -2004,22 +1986,37 @@ mod tests {
         );
     }
 
-    // --- issue 2: thumbnails/avatars fold in as they finish loading ---
+    // --- issue 2: thumbnails/avatars fold in LAZILY, without a rebuild ---
 
     #[test]
-    fn image_loads_trigger_a_rebuild_so_they_fold_in() {
-        // Cards grab their thumbnail/avatar from the image store at BUILD time,
-        // so an image that finishes loading *after* the tree was built must
-        // trigger a rebuild to be captured. `images_need_refresh` fires on any
-        // change to the in-flight count — a load starting OR, crucially,
-        // finishing — which is what makes a search page (that stops rebuilding
-        // once its one worker response folded in) show its thumbnails the moment
-        // they decode.
-        assert!(images_need_refresh(0, 3), "new loads started → rebuild to capture them");
-        assert!(images_need_refresh(3, 0), "all loads settled → a rebuild captures the final images");
-        assert!(images_need_refresh(2, 1), "one of several settled → fold it in");
-        assert!(!images_need_refresh(2, 2), "mid-flight but unchanged → no needless rebuild");
-        assert!(!images_need_refresh(0, 0), "idle → no rebuild");
+    fn image_loads_do_not_force_a_structural_rebuild() {
+        // Thumbnails / avatars / banners now resolve their decoded image LAZILY
+        // in their own `sync` (they hold an `ImageStore` handle + URL) and
+        // repaint via `needs_redraw` when it lands. So an in-flight image load
+        // must NOT make the app report a structural rebuild — the per-completion
+        // whole-tree rebuild + layout re-solve (and scroll reset) that used to
+        // fire on every one of ~160 image completions and made the grids churn.
+        use std::sync::Arc;
+        use std::time::Duration;
+        // A fetcher that blocks briefly so a load is deterministically in flight
+        // (pending ≥ 1) when we poll — the exact condition the old code turned
+        // into a rebuild.
+        let store = ui::ImageStore::new(Arc::new(|_: &str| {
+            std::thread::sleep(Duration::from_millis(200));
+            None
+        }));
+        let _ = store.get("http://x/a.png");
+        assert!(store.pending() >= 1, "a load is in flight");
+
+        let mut app = TubeApp::new().with_image_store(store);
+        let mut doc = AutoCommit::new();
+        let r = automerge::ROOT;
+        app.sync(&mut doc, &r);
+        assert!(
+            !Widget::take_structure_dirty(&mut app),
+            "an in-flight image load must NOT queue a whole-tree rebuild — images \
+             fold in lazily via sync + redraw, not via a structural rebuild",
+        );
     }
 
     // --- issue 3: the stream loads on OPEN, not on first Play ---

@@ -44,7 +44,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         // (`colors`/`tui`/`scrollback`) drive the grid entirely through `feed`
         // on a null backend to keep the frame deterministic.
         let mut widget = match scenario.as_deref() {
-            Some("shell") | None => TerminalWidget::spawn_default()?,
+            Some("shell") | Some("shell-select") | None => TerminalWidget::spawn_default()?,
             Some(_) => TerminalWidget::spawn_headless()?,
         };
         render_shot_to_png(&mut widget, DEFAULT_SHOTS_VIEWPORT, &out, scenario.as_deref())?;
@@ -52,9 +52,17 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let widget = TerminalWidget::spawn_default()?;
+    // Arm the PTY-reader waker so the event loop idles between output instead of
+    // polling at ~60 Hz: grab the handle before moving the widget into the App,
+    // then store the loop's proxy once it exists.
+    let waker = widget.waker_handle();
     let state = ui::State::new();
     let app = ui::App::new(state, Box::new(widget));
-    app.run();
+    app.run_with_setup(move |proxy| {
+        if let Ok(mut g) = waker.lock() {
+            *g = Some(proxy);
+        }
+    });
     Ok(())
 }
 
@@ -153,12 +161,17 @@ fn render_shot_to_png(
     // re-sync so the mirrored grid reflects the fed sequences. The `shell`
     // scenario drives the real PTY instead of feeding canned bytes.
     if let Some(name) = scenario {
-        if name == "shell" {
+        if name == "shell" || name == "shell-select" {
             drive_live_shell(widget, &mut state.doc, &state.root);
         } else {
             run_scenario(widget, &mut state.doc, &state.root, name);
         }
         widget.sync(&mut state.doc, &state.root);
+        // `shell-select` additionally highlights a line of real shell output so
+        // the shot demonstrates the selection highlight over a live session.
+        if name == "shell-select" {
+            apply_demo_selection(widget);
+        }
     }
 
     let mut scene = Scene::new();
@@ -205,6 +218,23 @@ fn drive_live_shell(
     for _ in 0..30 {
         widget.sync(doc, root);
         std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// Highlight a line (and a word) of the live shell output so the `shell-select`
+/// shot shows the selection highlight painted over a real session. Selects the
+/// "primes" demo line if present, otherwise the first non-empty row. Uses the
+/// same public selection API a host would.
+fn apply_demo_selection(widget: &mut TerminalWidget) {
+    use terminal::GridPos;
+    let (cols, _) = widget.grid_size();
+    // Target the printed OUTPUT line, not the shell's command echo (which also
+    // contains the text). `find_row_last` returns the later, clean output row.
+    if let Some(row) = widget.find_row_last("primes below 20:") {
+        // Whole-line selection (triple-click equivalent).
+        widget.set_selection_cells(GridPos { row, col: 0 }, GridPos { row, col: cols });
+    } else if let Some(row) = widget.find_row_last("done") {
+        widget.set_selection_cells(GridPos { row, col: 0 }, GridPos { row, col: cols });
     }
 }
 

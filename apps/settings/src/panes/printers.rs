@@ -367,48 +367,45 @@ fn printer_row(p: &Printer) -> El {
     } else {
         p.name.clone()
     };
-    let block = Column::new()
-        .with_no_padding()
-        .with_intrinsic_height()
+    // Name + status chip inline on the top line; location beneath. A single
+    // leading Text keeps the status on the same line as the name.
+    let top = Row::new()
         .push(Box::new(Text::new(&name).with_size(13.0)))
-        .push(Box::new(
-            Text::new(&p.location)
-                .with_size(11.0)
-                .with_color(ui::Theme::dark().text_dim),
-        ));
-
+        .push(Box::new(Spacer::new()))
+        .push(crate::widgets::status_pill(p.state.label(), p.state.color()));
     Box::new(
-        Row::new()
-            .push(Box::new(block))
-            .push(Box::new(Spacer::new()))
+        Column::new()
+            .with_no_padding()
+            .with_intrinsic_height()
+            .push(Box::new(top))
             .push(Box::new(
-                Text::new(p.state.label())
+                Text::new(&p.location)
                     .with_size(11.0)
-                    .with_color(p.state.color()),
+                    .with_color(ui::Theme::dark().text_dim),
             )),
     )
 }
 
 /// A job row shows the job id, owner + size, and a real Cancel button.
 fn job_row(j: &PrintJob) -> El {
-    let block = Column::new()
-        .with_no_padding()
-        .with_intrinsic_height()
-        .push(Box::new(Text::new(&j.id).with_size(13.0)))
-        .push(Box::new(
-            Text::new(&format!("{} · {}", j.owner, j.size_label()))
-                .with_size(11.0)
-                .with_color(ui::Theme::dark().text_dim),
-        ));
-
     let cancel_id = format!("settings.printers.cancel.{}", slug(&j.id));
     let cancel_key = cancel_id.clone();
 
+    // Job id + Cancel inline on the top line; owner · size beneath.
+    let top = Row::new()
+        .push(Box::new(Text::new(&j.id).with_size(13.0)))
+        .push(Box::new(Spacer::new()))
+        .push(Box::new(Button::new(&cancel_id, "Cancel", Some(&cancel_key))));
     Box::new(
-        Row::new()
-            .push(Box::new(block))
-            .push(Box::new(Spacer::new()))
-            .push(Box::new(Button::new(&cancel_id, "Cancel", Some(&cancel_key)))),
+        Column::new()
+            .with_no_padding()
+            .with_intrinsic_height()
+            .push(Box::new(top))
+            .push(Box::new(
+                Text::new(&format!("{} · {}", j.owner, j.size_label()))
+                    .with_size(11.0)
+                    .with_color(ui::Theme::dark().text_dim),
+            )),
     )
 }
 

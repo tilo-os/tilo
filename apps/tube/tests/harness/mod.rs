@@ -10,10 +10,13 @@
 use std::collections::HashMap;
 
 use taffy::prelude::*;
+use ui::permissions::PermissionContext;
+use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::Widget;
-use vello::kurbo::{Point, Rect};
+use vello::kurbo::{Affine, Point, Rect};
+use vello::Scene;
 use winit::dpi::PhysicalPosition;
 use winit::event::{DeviceId, ElementState, Modifiers, MouseButton, WindowEvent};
 
@@ -28,6 +31,10 @@ pub struct Harness<W: Widget> {
     root: NodeId,
     viewport: (f32, f32),
     modifiers: Modifiers,
+    /// The `focus_target` a widget requested during the last dispatch — exactly
+    /// what `ui::App` reads to move keyboard focus. Lets a test prove a click
+    /// targeted a specific input for focus, on the real event path.
+    last_focus: Option<NodeId>,
 }
 
 impl<W: Widget> Harness<W> {
@@ -44,6 +51,7 @@ impl<W: Widget> Harness<W> {
             root: NodeId::new(0),
             viewport,
             modifiers: Modifiers::default(),
+            last_focus: None,
         };
         h.frame();
         h
@@ -128,6 +136,47 @@ impl<W: Widget> Harness<W> {
             self.child,
             &self.taffy,
         );
+        if focus.is_some() {
+            self.last_focus = focus;
+        }
+    }
+
+    /// The taffy node of the first widget with `test_id == id` (via `node_map`).
+    fn node_by_id(&self, id: &str) -> Option<NodeId> {
+        for (node, ptr) in self.node_map.iter() {
+            if unsafe { (**ptr).test_id() } == Some(id) {
+                return Some(*node);
+            }
+        }
+        None
+    }
+
+    /// Click the centre of the widget addressed by `id` (move → press →
+    /// release) **without** a relayout afterwards, and report whether the click
+    /// asked `ui::App` to move keyboard focus to that same widget. This is the
+    /// real hit-test + event-routing path: a `true` means a real click at the
+    /// real coordinates focuses the real input.
+    pub fn click_focuses(&mut self, id: &str) -> bool {
+        let r = self
+            .rect_by_id(id)
+            .unwrap_or_else(|| panic!("no widget with test_id {id:?} in the laid-out tree"));
+        let target = self.node_by_id(id);
+        let p = r.center();
+        let pos = PhysicalPosition::new(p.x, p.y);
+        let dev = DeviceId::dummy();
+        self.last_focus = None;
+        self.dispatch(WindowEvent::CursorMoved { device_id: dev, position: pos });
+        self.dispatch(WindowEvent::MouseInput {
+            device_id: dev,
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+        });
+        self.dispatch(WindowEvent::MouseInput {
+            device_id: dev,
+            state: ElementState::Released,
+            button: MouseButton::Left,
+        });
+        target.is_some() && self.last_focus == target
     }
 
     /// Inject a full left click (move → press → release) at a point, then relayout.
@@ -192,6 +241,70 @@ impl<W: Widget> Harness<W> {
         let from = r.center();
         let to = Point::new(r.x0 + r.width() * frac.clamp(0.0, 1.0), r.center().y);
         self.drag(from, to);
+    }
+
+    /// Laid-out rects of the **direct children** of the widget with `test_id ==
+    /// id` — e.g. the card rects inside the grid, for a "no right gutter" check.
+    pub fn child_rects(&self, id: &str) -> Vec<Rect> {
+        fn find<'a>(w: &'a dyn Widget, id: &str) -> Option<&'a dyn Widget> {
+            if w.test_id() == Some(id) {
+                return Some(w);
+            }
+            for c in w.children() {
+                if let Some(f) = find(c, id) {
+                    return Some(f);
+                }
+            }
+            None
+        }
+        find(&self.app, id)
+            .map(|w| w.children().iter().map(|c| c.get_rect()).collect())
+            .unwrap_or_default()
+    }
+
+    /// Draw the current tree (with viewport culling, exactly as the live app
+    /// composites it) and return the number of IMAGE draw commands emitted —
+    /// proof that real decoded photos (thumbnails / avatars) reached the scene
+    /// rather than the gradient/initials fallback.
+    pub fn image_draw_count(&mut self) -> usize {
+        use vello_encoding::DrawTag;
+        // Sync the *built* tree first: lazy image widgets resolve their decoded
+        // image in `sync`, and `Harness::new`/`frame` sync *before* build (when
+        // the tree doesn't exist yet). In the live app the tree persists so a
+        // later `sync` folds the image in; mirror that here by syncing the tree
+        // that `frame` just built before we draw it.
+        self.app.sync(&mut self.state.doc, &self.state.root);
+        let (w, h) = self.viewport;
+        let mut scene = Scene::new();
+        let presence = PresenceCtx::default();
+        let permissions = PermissionContext::permissive();
+        let vp = presence.push_viewport(Rect::new(0.0, 0.0, w as f64, h as f64));
+        self.app.draw_with_presence(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut self.text,
+            &self.theme,
+            &presence,
+            &permissions,
+        );
+        presence.pop_viewport(vp);
+        self.app.mark_drawn();
+        scene
+            .encoding()
+            .draw_tags
+            .iter()
+            .filter(|t| **t == DrawTag::IMAGE)
+            .count()
+    }
+
+    /// Whether any widget in the laid-out tree still reports it needs a layout
+    /// re-measure. After a fully laid-out + drawn frame this must be `false`: a
+    /// widget that reports "dirty" forever (e.g. an avatar keyed off a draw-time
+    /// cache while culled off-screen) forces the enclosing split to rebuild a
+    /// cosmic-text `FontSystem` + re-solve the whole content pane every scroll
+    /// frame — the scroll-jank regression this guards.
+    pub fn layout_needs_measure(&self) -> bool {
+        Widget::layout_needs_measure(&self.app)
     }
 }
 

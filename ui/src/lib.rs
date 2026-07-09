@@ -84,9 +84,10 @@ pub use richtext::{BaselineShift, FontFamily, RichSpan, RichTextLayout, TextAlig
 pub use chrome::{LabelCue, ToolbarItem};
 pub use gesture::{DragSelect, Granularity};
 pub use text_selection::{
-    Selection, clipboard_copy, clipboard_copy_image, clipboard_paste, extend_span_drag, line_boundaries,
-    next_char_boundary, next_word_boundary, next_word_boundary_chars, prev_char_boundary,
-    prev_word_boundary, prev_word_boundary_chars, word_boundaries, word_boundaries_chars,
+    Selection, clipboard_copy, clipboard_copy_image, clipboard_copy_primary, clipboard_paste,
+    clipboard_paste_primary, extend_span_drag, line_boundaries, next_char_boundary,
+    next_word_boundary, next_word_boundary_chars, prev_char_boundary, prev_word_boundary,
+    prev_word_boundary_chars, word_boundaries, word_boundaries_chars,
 };
 
 // Unified animation primitives (foundation #17).

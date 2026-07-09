@@ -102,6 +102,23 @@ impl Default for InputPrefs {
     }
 }
 
+/// Power / session-idle preferences the compositor's power-management layer
+/// reads: whether to suspend when idle on battery, and after how many idle
+/// minutes to blank the screen (`0` = never). The active power *profile* is
+/// live system state (`powerprofilesctl`), not stored here.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PowerPrefs {
+    pub auto_suspend: bool,
+    /// Idle minutes before the screen blanks; `0` disables blanking.
+    pub blank_minutes: u32,
+}
+
+impl Default for PowerPrefs {
+    fn default() -> Self {
+        Self { auto_suspend: true, blank_minutes: 10 }
+    }
+}
+
 /// System-update policy the update timer/service reads.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct UpdatePrefs {
@@ -189,6 +206,7 @@ pub struct SystemPrefs {
     pub audio: AudioPrefs,
     pub display: DisplayPrefs,
     pub input: InputPrefs,
+    pub power: PowerPrefs,
     pub updates: UpdatePrefs,
     pub appearance: AppearancePrefs,
 }
@@ -208,6 +226,9 @@ impl SystemPrefs {
                 .and_then(|v| serde_json::from_value(v).ok())
                 .unwrap_or_default(),
             input: section("input")
+                .and_then(|v| serde_json::from_value(v).ok())
+                .unwrap_or_default(),
+            power: section("power")
                 .and_then(|v| serde_json::from_value(v).ok())
                 .unwrap_or_default(),
             updates: section("updates")
@@ -233,6 +254,7 @@ impl SystemPrefs {
         obj.insert("audio".into(), serde_json::to_value(self.audio).unwrap_or_default());
         obj.insert("display".into(), serde_json::to_value(self.display).unwrap_or_default());
         obj.insert("input".into(), serde_json::to_value(&self.input).unwrap_or_default());
+        obj.insert("power".into(), serde_json::to_value(self.power).unwrap_or_default());
         obj.insert("updates".into(), serde_json::to_value(&self.updates).unwrap_or_default());
         obj.insert(
             "appearance".into(),
@@ -329,6 +351,8 @@ mod tests {
         assert!(!p.display.night_light);
         assert!(p.input.tap_to_click);
         assert_eq!(p.input.keyboard_layout, "us");
+        assert!(p.power.auto_suspend);
+        assert_eq!(p.power.blank_minutes, 10);
         assert_eq!(p.updates.channel, "Stable");
         assert_eq!(p.updates.last_checked, "Never");
     }
@@ -340,6 +364,8 @@ mod tests {
         p.display.night_light = true;
         p.input.pointer_speed = 0.9;
         p.input.keyboard_layout = "de".into();
+        p.power.auto_suspend = false;
+        p.power.blank_minutes = 30;
         p.updates.auto = false;
         p.updates.channel = "Nightly".into();
         p.appearance.theme = "Nord".into();
