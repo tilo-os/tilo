@@ -169,7 +169,7 @@ impl Category {
     /// Nerd Font glyph rendered before the label in the sidebar.
     pub fn glyph(self) -> &'static str {
         match self {
-            Category::Network => "\u{f0816}",          // wifi
+            Category::Network => "\u{f05a9}",          // wifi (clean signal arcs)
             Category::Bluetooth => "\u{f00af}",        // bluetooth
             Category::Sound => "\u{f057e}",            // volume-high
             Category::Displays => "\u{f0379}",         // monitor
