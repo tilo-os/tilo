@@ -19,6 +19,7 @@ use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::Widget;
+use ui::ImageStore;
 
 use crate::util::seed_gradient;
 
@@ -27,7 +28,12 @@ pub struct ImageBox {
     height: f32,
     radius: f64,
     image: Option<PenikoImage>,
+    /// Lazy source (store + URL), resolved in [`sync`] so a decoded banner folds
+    /// in on a redraw without a structural rebuild.
+    store: Option<ImageStore>,
+    url: String,
     rect: Rect,
+    dirty: bool,
 }
 
 impl ImageBox {
@@ -39,8 +45,19 @@ impl ImageBox {
             height,
             radius,
             image,
+            store: None,
+            url: String::new(),
             rect: Rect::ZERO,
+            dirty: true,
         }
+    }
+
+    /// Resolve the image lazily from `store` at `url` (looked up in [`sync`]),
+    /// instead of passing a pre-decoded image at build time.
+    pub fn source(mut self, store: Option<ImageStore>, url: &str) -> Self {
+        self.store = store;
+        self.url = url.to_string();
+        self
     }
 
     fn paint(&self, scene: &mut Scene, transform: Affine) {
@@ -66,7 +83,16 @@ impl ImageBox {
 }
 
 impl Widget for ImageBox {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
+    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {
+        if self.image.is_none() && !self.url.is_empty() {
+            if let Some(store) = &self.store {
+                if let Some(img) = store.get(&self.url) {
+                    self.image = Some(img);
+                    self.dirty = true;
+                }
+            }
+        }
+    }
 
     fn build_layout(
         &mut self,
@@ -90,12 +116,16 @@ impl Widget for ImageBox {
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).unwrap();
-        self.rect = Rect::new(
+        let new = Rect::new(
             origin.x + l.location.x as f64,
             origin.y + l.location.y as f64,
             origin.x + l.location.x as f64 + l.size.width as f64,
             origin.y + l.location.y as f64 + l.size.height as f64,
         );
+        if new != self.rect {
+            self.dirty = true;
+        }
+        self.rect = new;
     }
 
     fn draw(
@@ -125,6 +155,12 @@ impl Widget for ImageBox {
 
     fn name(&self) -> &str {
         "ImageBox"
+    }
+    fn needs_redraw(&self) -> bool {
+        self.dirty
+    }
+    fn mark_drawn(&mut self) {
+        self.dirty = false;
     }
     fn is_layout_dirty(&self) -> bool {
         self.rect == Rect::ZERO

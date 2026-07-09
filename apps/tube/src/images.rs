@@ -62,6 +62,16 @@ impl<'a> Imgs<'a> {
         }
     }
 
+    /// An owned clone of the underlying store (an `Arc` bump) for a widget that
+    /// wants to resolve its own image **lazily**, in `sync`, rather than at build
+    /// time. Threading the store into the leaf lets a freshly-decoded image fold
+    /// straight into the widget on the next frame WITHOUT a whole-tree structural
+    /// rebuild — the rebuild-every-image-completion that made scrolling churn.
+    /// `None` on the hermetic offline / `--shots` path.
+    pub fn store_handle(&self) -> Option<ImageStore> {
+        self.0.cloned()
+    }
+
     /// In-flight image loads, so the app can keep redrawing until they settle.
     pub fn pending(&self) -> usize {
         self.0.map(|s| s.pending()).unwrap_or(0)

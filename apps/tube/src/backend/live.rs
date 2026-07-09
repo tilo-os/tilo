@@ -125,9 +125,9 @@ impl RustyPipeBackend {
 /// and are filled in by a later `video_details` / SponsorBlock fetch.
 fn map_video_item(it: VideoItem) -> Video {
     let channel = it.channel;
-    let (channel_id, channel_name) = channel
-        .map(|c| (c.id, c.name))
-        .unwrap_or_else(|| (String::new(), "Unknown".into()));
+    let (channel_id, channel_name, channel_avatar_url) = channel
+        .map(|c| (c.id, c.name, best_thumb(&c.avatar)))
+        .unwrap_or_else(|| (String::new(), "Unknown".into(), String::new()));
     Video {
         id: it.id.clone(),
         title: it.name,
@@ -135,6 +135,7 @@ fn map_video_item(it: VideoItem) -> Video {
         channel_id: channel_id.clone(),
         channel_name,
         channel_seed: channel_id,
+        channel_avatar_url,
         views: it.view_count.unwrap_or(0),
         published: it.publish_date_txt.unwrap_or_default(),
         duration: it.duration.unwrap_or(0),
@@ -148,6 +149,17 @@ fn map_video_item(it: VideoItem) -> Video {
         comments: Vec::new(),
         live: it.is_live,
     }
+}
+
+/// Pick the highest-resolution thumbnail URL from a rustypipe thumbnail set
+/// (largest width×height), or the empty string when none are present. Used for
+/// channel avatars carried on feed/search items so the real creator icon loads.
+fn best_thumb(thumbs: &[rustypipe::model::Thumbnail]) -> String {
+    thumbs
+        .iter()
+        .max_by_key(|t| t.width as u64 * t.height as u64)
+        .map(|t| t.url.clone())
+        .unwrap_or_default()
 }
 
 /// First one/two initials of an author name, for the comment avatar chip.
@@ -242,6 +254,7 @@ impl YtBackend for RustyPipeBackend {
             title: d.name,
             dearrow_title: None,
             channel_id: channel_id.clone(),
+            channel_avatar_url: best_thumb(&d.channel.avatar),
             channel_name: d.channel.name,
             channel_seed: channel_id,
             views: d.view_count,
@@ -276,9 +289,9 @@ impl YtBackend for RustyPipeBackend {
             verified: is_verified(ch.verification),
             description: ch.description.clone(),
             seed: ch.id.clone(),
-            // rustypipe is the fallback source; leave the real avatar/banner to
-            // the primary yt-dlp backend and show the seed gradient here.
-            avatar_url: String::new(),
+            // Real channel avatar from the channel response; the banner isn't in
+            // this payload, so the seed gradient still backs the header.
+            avatar_url: best_thumb(&ch.avatar),
             banner_url: String::new(),
         };
         let uploads = ch.content.items.into_iter().map(map_video_item).collect();
