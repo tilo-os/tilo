@@ -55,3 +55,7 @@ pollster = "0.4"
 [[example]]
 name = "dmabuf_composite_probe"
 required-features = ["wpe"]
+
+[[example]]
+name = "adblock_blank_repro"
+required-features = ["wpe"]
