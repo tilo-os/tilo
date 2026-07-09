@@ -44,6 +44,15 @@ struct HitRegion {
     hit: ChangesHit,
 }
 
+/// What a [`ChangesColumn::draw`] pass produced: the click regions plus the
+/// rect where the owner should position and draw the commit-message
+/// [`ui::widget::TextInput`] (the toolkit input draws its own chrome + caret,
+/// so the column reserves the space rather than painting the text itself).
+pub struct ChangesDraw {
+    pub hits: Vec<Box<dyn Fn(Point) -> Option<ChangesHit>>>,
+    pub commit_input: Rect,
+}
+
 /// Stateless renderer + hit-tester for the changes column.
 pub struct ChangesColumn;
 
@@ -63,8 +72,7 @@ impl ChangesColumn {
         selected: Option<(ChangeArea, usize)>,
         scroll: f64,
         message: &str,
-        msg_focused: bool,
-    ) -> Vec<Box<dyn Fn(Point) -> Option<ChangesHit>>> {
+    ) -> ChangesDraw {
         let c = &theme.tokens.colors;
         draw::fill_rect(scene, t, area, c.surfaces.raised);
         draw::vline(scene, t, area.x1, area.y0, area.y1, c.border_standard);
@@ -97,12 +105,13 @@ impl ChangesColumn {
 
         scene.pop_layer();
 
-        // Commit box pinned to the bottom.
-        Self::commit_box(scene, tr, t, theme, area, model, message, msg_focused, &mut regions);
+        // Commit box pinned to the bottom. Returns the rect the owner uses to
+        // position the commit-message TextInput.
+        let commit_input = Self::commit_box(scene, tr, t, theme, area, model, message, &mut regions);
 
         // Build closures that resolve a click to a hit. Returned as a
         // boxed list so the app can route without knowing geometry.
-        regions
+        let hits = regions
             .into_iter()
             .map(|r| {
                 Box::new(move |p: Point| {
@@ -113,7 +122,8 @@ impl ChangesColumn {
                     }
                 }) as Box<dyn Fn(Point) -> Option<ChangesHit>>
             })
-            .collect()
+            .collect();
+        ChangesDraw { hits, commit_input }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -238,9 +248,8 @@ impl ChangesColumn {
         area: Rect,
         model: &RepoModel,
         message: &str,
-        focused: bool,
         regions: &mut Vec<HitRegion>,
-    ) {
+    ) -> Rect {
         let c = &theme.tokens.colors;
         let box_rect = Rect::new(area.x0, area.y1 - COMMIT_BOX_H, area.x1, area.y1);
         draw::fill_rect(scene, t, box_rect, c.surfaces.base);
@@ -257,26 +266,11 @@ impl ChangesColumn {
         };
         draw::text(scene, tr, t, &who, 11.5, c.text_dim, ax + 30.0, ay + 4.0, Some((box_rect.width() - 60.0) as f32));
 
-        // Message input.
+        // Message input area. The owning app positions + draws a toolkit
+        // TextInput here (it paints its own frame, text and caret), and a
+        // click in this rect focuses it — so we only reserve the rect and its
+        // focus region here.
         let input = Rect::new(box_rect.x0 + 12.0, ay + 32.0, box_rect.x1 - 12.0, box_rect.y1 - 52.0);
-        draw::fill_round(scene, t, input, 6.0, c.surfaces.raised);
-        draw::stroke_round(
-            scene, t, input, 6.0, 1.0,
-            if focused { theme.border_focus } else { c.border_standard },
-        );
-        let placeholder = "Summary of changes…";
-        let (txt, col) = if message.is_empty() {
-            (placeholder, c.neutral[5])
-        } else {
-            (message, c.text_primary)
-        };
-        draw::text(scene, tr, t, txt, 12.5, col, input.x0 + 10.0, input.y0 + 8.0, Some((input.width() - 20.0) as f32));
-        if focused {
-            // Caret after the message text.
-            let tw = tr.measure(message, 12.5, None).0 as f64;
-            let caret_x = (input.x0 + 10.0 + tw).min(input.x1 - 8.0);
-            draw::vline(scene, t, caret_x, input.y0 + 6.0, input.y0 + 22.0, theme.accent_primary);
-        }
         regions.push(HitRegion { rect: input, hit: ChangesHit::FocusMessage });
 
         // Commit button.
@@ -306,5 +300,7 @@ impl ChangesColumn {
             &format!("on {}", model.head), 11.5, c.text_dim,
             box_rect.x0 + 12.0, box_rect.y1 - 34.0, None,
         );
+
+        input
     }
 }
