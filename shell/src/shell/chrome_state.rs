@@ -44,19 +44,34 @@ pub struct OverlayFlags {
 }
 
 /// Global-search scope. Mirrors the concept's "context banner" scope
-/// radios; defaults to `Workspace` so ⌘K results stay scoped to the
-/// active workspace unless the user explicitly widens to everything.
+/// radios; defaults to `Workspace` so a bare open (e.g. clicking the
+/// scope pill without a chord) stays scoped to the active workspace
+/// unless the user explicitly widens or narrows.
+///
+/// The scope is seeded by which chord opened the palette:
+/// - `Ctrl+K` → [`SearchScope::ActiveApp`] (scoped to the focused tab)
+/// - `Super+K` / `Super+Space` / `Alt+Space` → [`SearchScope::All`]
+///
+/// The `Alt+Space` binding is a nested-friendly Super substitute: when
+/// the compositor runs as a Wayland CLIENT the host DE (GNOME etc.)
+/// swallows Super, so a chord that doesn't touch Super is needed to
+/// preserve global-search reachability inside a dev window.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum SearchScope {
+    /// Scoped to the currently focused tab's content. Chord: `Ctrl+K`.
+    ActiveApp,
     #[default]
     Workspace,
     All,
 }
 
 impl SearchScope {
-    /// Short label shown inside the scope pill.
+    /// Short label shown inside the scope pill. `ActiveApp`'s label
+    /// depends on which tab is focused, so callers render that variant
+    /// with the tab's title instead of this static string.
     pub fn label(self) -> &'static str {
         match self {
+            SearchScope::ActiveApp => "This app",
             SearchScope::Workspace => "Workspace",
             SearchScope::All => "All",
         }
@@ -100,49 +115,12 @@ impl Default for QuickSettingsState {
             wifi: true,
             bluetooth: false,
             nav_stack: vec![QsLevel::Root],
-            wifi_networks: vec![
-                WifiNetwork {
-                    ssid: "Home_Network".to_string(),
-                    signal: 4,
-                    secure: true,
-                    connected: true,
-                },
-                WifiNetwork {
-                    ssid: "Cafe_Guest".to_string(),
-                    signal: 3,
-                    secure: false,
-                    connected: false,
-                },
-                WifiNetwork {
-                    ssid: "Neighbour_5G".to_string(),
-                    signal: 2,
-                    secure: true,
-                    connected: false,
-                },
-                WifiNetwork {
-                    ssid: "FreeWiFi".to_string(),
-                    signal: 1,
-                    secure: false,
-                    connected: false,
-                },
-            ],
-            bt_devices: vec![
-                BtDevice {
-                    name: "AirPods Pro".to_string(),
-                    battery: 80,
-                    connected: true,
-                },
-                BtDevice {
-                    name: "Magic Mouse".to_string(),
-                    battery: 65,
-                    connected: false,
-                },
-                BtDevice {
-                    name: "Keychron K2".to_string(),
-                    battery: 40,
-                    connected: false,
-                },
-            ],
+            // Empty until `refresh_quick_settings_from_os` runs — nmcli /
+            // bluetoothctl populate live lists on the popover's rising
+            // edge. Starting empty keeps the "no fake content" contract:
+            // a fresh boot never shows a network it isn't actually seeing.
+            wifi_networks: Vec::new(),
+            bt_devices: Vec::new(),
             power_profile: PowerProfile::Balanced,
         }
     }
@@ -407,6 +385,58 @@ impl ChromeState {
         };
         self.bump();
         id
+    }
+
+    /// Title of the currently focused tab, or `None` when nothing is
+    /// focused (no workspace / no strip / no group / no tabs). Read by
+    /// the search-scope pill so the "This app" pill can display the
+    /// tab's title (e.g. `Notes`, `Files`) instead of the static
+    /// [`SearchScope::label`].
+    pub fn active_app_title(&self) -> Option<String> {
+        let tab = self.active_tab_ref()?;
+        let title = tab.title.trim();
+        if title.is_empty() {
+            None
+        } else {
+            Some(title.to_string())
+        }
+    }
+
+    /// Id of the currently focused tab, if any. Read by the search
+    /// registry to pick the "this app" scope provider via
+    /// [`crate::shell::search::SearchProvider::owns_tab`].
+    pub fn active_tab_id(&self) -> Option<crate::shell::state::TabId> {
+        self.active_tab_ref().map(|t| t.id)
+    }
+
+    /// Look up the currently focused tab. `None` when no workspace is
+    /// active, or when `active_strip` / `active_group` haven't been
+    /// tracked yet — matches the honest "no focused app" state instead
+    /// of falling back to `strips.first()` / `window_groups.first()`,
+    /// which was the "Ctrl+K opens the wrong tab" bug (2026-07-09
+    /// user report). A live focus-writeback reconciler (see
+    /// `overlay_host::harvest_active_tab_writeback`) keeps
+    /// `group.active_tab` in sync with the tab the user actually
+    /// clicked, so this method can rely on the tree pointer being
+    /// current.
+    fn active_tab_ref(&self) -> Option<crate::shell::state::TabRef> {
+        let tree = self.tree();
+        let ws_id = tree.active;
+        let strip_id = tree.active_strip.get(&ws_id).copied()?;
+        let group_id = tree.active_group.get(&strip_id).copied()?;
+        // Guard: if any of these dangle (a workspace/strip/group that no
+        // longer exists) we don't want to walk them silently.
+        let ws = tree.workspaces.iter().find(|w| w.id == ws_id)?;
+        let strip = ws.strips.iter().find(|s| s.id == strip_id)?;
+        let group = strip.window_groups.iter().find(|g| g.id == group_id)?;
+        let tab = group.tabs.iter().find(|t| t.id == group.active_tab)?;
+        // The `Option<TabRef>` is opaque so callers can't stash a bare
+        // borrow into `tree` past the guard's lifetime — we clone the
+        // small fields the callers actually need.
+        Some(crate::shell::state::TabRef {
+            id: tab.id,
+            title: tab.title.clone(),
+        })
     }
 
     /// Cycle the active tab within the active group of the active strip
@@ -712,3 +742,113 @@ impl ChromeState {
 }
 
 pub type Chrome = Rc<RefCell<ChromeState>>;
+
+#[cfg(test)]
+mod active_tab_tests {
+    //! Pin the "which tab is Ctrl+K scoped to" contract. Regression for
+    //! the 2026-07-09 report where the palette scoped to the first tab
+    //! of the active group rather than the tab the user actually clicked.
+    //!
+    //! `active_app_title` / `active_tab_id` are the source of truth the
+    //! search registry reads to seed `SearchScope::ActiveApp`. Both now
+    //! return `None` when the tree hasn't tracked a real focus target
+    //! (rather than falling back to `strips.first()`), and the shell's
+    //! `harvest_active_tab_writeback` reconciler keeps
+    //! `group.active_tab` in sync with the widget-side `bar.active_id`.
+    use super::*;
+    use crate::shell::state::{
+        AppKind, GroupId, Strip, StripId, Tab, TileContent, WindowGroup as StateGroup,
+        WindowWidth as StateWidth, Workspace, WorkspaceId, WorkspaceTree,
+    };
+    use parking_lot::RwLock;
+    use std::collections::HashMap as StdMap;
+    use std::sync::Arc;
+
+    fn tree_with(active_tab_id: u64) -> WorkspaceTree {
+        let ws_id = WorkspaceId::new();
+        let strip_id = StripId::new();
+        let group_id: GroupId = 8;
+        let strip = Strip {
+            id: strip_id,
+            name: "Solo".into(),
+            window_groups: vec![StateGroup {
+                id: group_id,
+                tabs: vec![
+                    Tab {
+                        id: 100,
+                        title: "First".into(),
+                        tile: TileContent::Stub {
+                            kind: AppKind::Other("Notes".into()),
+                            label: "first".into(),
+                        },
+                    },
+                    Tab {
+                        id: 200,
+                        title: "Second".into(),
+                        tile: TileContent::Stub {
+                            kind: AppKind::Other("Notes".into()),
+                            label: "second".into(),
+                        },
+                    },
+                ],
+                active_tab: active_tab_id,
+                width: StateWidth::Normal,
+                maximized: false,
+            }],
+        };
+        let mut ws = Workspace::new(ws_id, "Home");
+        ws.strips = vec![strip];
+        let mut active_strip = StdMap::new();
+        active_strip.insert(ws_id, strip_id);
+        let mut active_group = StdMap::new();
+        active_group.insert(strip_id, group_id);
+        WorkspaceTree {
+            workspaces: vec![ws],
+            active: ws_id,
+            active_strip,
+            active_group,
+            ..WorkspaceTree::default()
+        }
+    }
+
+    #[test]
+    fn active_app_title_follows_group_active_tab() {
+        let handle = Arc::new(RwLock::new(tree_with(200)));
+        let chrome = ChromeState::new_with_handle(handle);
+        let st = chrome.borrow();
+        assert_eq!(st.active_app_title().as_deref(), Some("Second"));
+    }
+
+    #[test]
+    fn active_tab_id_matches_the_active_tab_pointer() {
+        let handle = Arc::new(RwLock::new(tree_with(100)));
+        let chrome = ChromeState::new_with_handle(handle);
+        let st = chrome.borrow();
+        assert_eq!(st.active_tab_id(), Some(100));
+    }
+
+    #[test]
+    fn no_active_returns_none_instead_of_first_group() {
+        // Blank tree — no strips, no groups. Must not fall back to a
+        // ghost first-of-nothing.
+        let handle = Arc::new(RwLock::new(WorkspaceTree::default()));
+        let chrome = ChromeState::new_with_handle(handle);
+        let st = chrome.borrow();
+        assert_eq!(st.active_tab_id(), None);
+        assert!(st.active_app_title().is_none());
+    }
+
+    #[test]
+    fn without_active_strip_returns_none_not_first_strip() {
+        // Regression for the 2026-07-09 report: an active `WorkspaceId`
+        // exists but the tree hasn't stamped `active_strip` yet. The
+        // old fallback picked `strips.first()` and reported the wrong
+        // tab; the new implementation reports None.
+        let mut tree = tree_with(100);
+        tree.active_strip.clear();
+        let handle = Arc::new(RwLock::new(tree));
+        let chrome = ChromeState::new_with_handle(handle);
+        let st = chrome.borrow();
+        assert_eq!(st.active_tab_id(), None);
+    }
+}
