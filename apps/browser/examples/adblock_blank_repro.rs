@@ -132,23 +132,55 @@ fn main() {
             println!("  t+{i}s uniformity {u:.1}%");
         }
     }
-    println!("== after ==");
+    println!("== after install ==");
     save(&*engine, "adblock-2-after.png");
+
+    // The user's actual repro: RELOAD with the filter already active (a
+    // page *loading* with the filter, vs the filter applied post-load).
+    println!("== RELOAD with filter active ==");
+    engine.send(WebViewCommand::Reload);
+    for i in 1..=10 {
+        std::thread::sleep(Duration::from_secs(1));
+        if i % 2 == 0 {
+            let u = latest(&*engine).map(|(r, _, _)| uniformity(&r) * 100.0).unwrap_or(0.0);
+            println!("  reload t+{i}s uniformity {u:.1}%");
+        }
+    }
+    save(&*engine, "adblock-3-reload.png");
+
+    // Also test a fresh Navigate to the same URL with the filter active.
+    println!("== NAVIGATE with filter active ==");
+    engine.send(WebViewCommand::Navigate("https://duckduckgo.com".into()));
+    for i in 1..=10 {
+        std::thread::sleep(Duration::from_secs(1));
+        if i % 2 == 0 {
+            let u = latest(&*engine).map(|(r, _, _)| uniformity(&r) * 100.0).unwrap_or(0.0);
+            println!("  navigate t+{i}s uniformity {u:.1}%");
+        }
+    }
+    save(&*engine, "adblock-4-navigate.png");
     println!("done");
 }
 
-/// Compile the cached filter lists and print any rule that could blank an
-/// entire page: a `css-display-none` on a page-wide selector, or a block
-/// rule matching everything with no domain restriction.
+/// Compile the cached filter lists (honouring REPRO_LISTS to select a
+/// subset) and print any rule that could blank an entire page on load: a
+/// broad `css-display-none`, or a `block` whose `url-filter` is short
+/// enough to match unrelated first-party resources (documents/scripts/
+/// stylesheets), which is how a generic list can kill a page's own assets.
 fn analyze() {
+    let want = std::env::var("REPRO_LISTS").unwrap_or_default();
     let dir = dirs::cache_dir().unwrap().join("qos-browser").join("filters");
     let mut texts = Vec::new();
     let mut names = Vec::new();
     for e in std::fs::read_dir(&dir).unwrap().flatten() {
         let p = e.path();
         if p.extension().and_then(|s| s.to_str()) == Some("txt") {
+            let n = p.file_name().unwrap().to_string_lossy().to_string();
+            if !want.is_empty() && !want.split(',').any(|w| n.starts_with(w.trim())) {
+                continue;
+            }
             if let Ok(t) = std::fs::read_to_string(&p) {
-                names.push(p.file_name().unwrap().to_string_lossy().to_string());
+                names.push(n);
                 texts.push(t);
             }
         }
@@ -161,20 +193,25 @@ fn analyze() {
     .expect("compile");
     println!("rules={} chunks={}", chunked.rule_count, chunked.chunks.len());
 
-    let broad = |sel: &str| {
+    let broad_css = |sel: &str| {
         let s = sel.trim();
         matches!(s, "html" | "body" | ":root" | "*" | "html *" | "body *")
             || s.is_empty()
             || s == "html, body"
     };
-    let (mut blank_css, mut block_all) = (0u32, 0u32);
+    // A block rule that can hit first-party page assets: matches the main
+    // document / scripts / stylesheets, over a short (=> broad) url-filter,
+    // and is NOT scoped away from the loading site via unless-domain.
+    let doc_types = ["document", "script", "style-sheet"];
+    let (mut blank_css, mut block_all, mut broad_doc) = (0u32, 0u32, 0u32);
     for chunk in &chunked.chunks {
         let arr: serde_json::Value = serde_json::from_str(chunk).unwrap();
         for r in arr.as_array().unwrap() {
             let action = r["action"]["type"].as_str().unwrap_or("");
+            let uf = r["trigger"]["url-filter"].as_str().unwrap_or("");
             if action == "css-display-none" {
                 if let Some(sel) = r["action"]["selector"].as_str() {
-                    if broad(sel) {
+                    if broad_css(sel) {
                         blank_css += 1;
                         if blank_css <= 10 {
                             println!("  BLANK-CSS selector={sel:?} trigger={}", r["trigger"]);
@@ -182,18 +219,34 @@ fn analyze() {
                     }
                 }
             } else if action == "block" {
-                let uf = r["trigger"]["url-filter"].as_str().unwrap_or("");
-                let restricted = r["trigger"].get("if-domain").is_some()
-                    || r["trigger"].get("unless-domain").is_some()
-                    || r["trigger"].get("resource-type").is_some();
-                if (uf == ".*" || uf == "^https?://" || uf.is_empty()) && !restricted {
+                let unless = r["trigger"].get("unless-domain").is_some();
+                let if_dom = r["trigger"].get("if-domain").is_some();
+                let rtypes: Vec<&str> = r["trigger"]["resource-type"]
+                    .as_array()
+                    .map(|a| a.iter().filter_map(|v| v.as_str()).collect())
+                    .unwrap_or_default();
+                let hits_doc = rtypes.is_empty() || rtypes.iter().any(|t| doc_types.contains(t));
+                // Strip the scheme anchor to gauge how much path the filter
+                // actually constrains.
+                let core = uf
+                    .trim_start_matches("^https?://")
+                    .trim_start_matches(".*")
+                    .trim_start_matches('^');
+                if (uf == ".*" || uf == "^https?://" || uf.is_empty()) && !if_dom && !unless {
                     block_all += 1;
-                    if block_all <= 10 {
-                        println!("  BLOCK-ALL trigger={}", r["trigger"]);
+                    if block_all <= 8 {
+                        println!("  BLOCK-ALL rtypes={rtypes:?} trigger={}", r["trigger"]);
+                    }
+                } else if hits_doc && !if_dom && core.len() < 6 {
+                    broad_doc += 1;
+                    if broad_doc <= 20 {
+                        println!("  BROAD-DOC uf={uf:?} rtypes={rtypes:?} unless={unless}");
                     }
                 }
             }
         }
     }
-    println!("page-blanking css rules: {blank_css}, block-all rules: {block_all}");
+    println!(
+        "page-blanking css: {blank_css}, block-all: {block_all}, broad first-party-asset blocks: {broad_doc}"
+    );
 }
