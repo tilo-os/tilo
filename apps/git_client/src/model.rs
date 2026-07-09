@@ -136,6 +136,37 @@ pub struct FileDiff {
     pub binary: bool,
 }
 
+/// Key into the per-file diff map. A file can carry two *distinct* diffs at
+/// once: the staged side (HEAD → index) and the worktree side (index →
+/// working tree). Keying only by path collapses them, so selecting the
+/// staged entry of a partially-staged file would show its worktree diff.
+/// The `staged` flag keeps the two sides separate.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct DiffKey {
+    pub staged: bool,
+    pub path: String,
+}
+
+impl DiffKey {
+    /// The staged (HEAD → index) diff for `path`.
+    pub fn staged(path: impl Into<String>) -> Self {
+        Self { staged: true, path: path.into() }
+    }
+    /// The worktree (index → working tree) diff for `path`; also used for
+    /// untracked files (which have no index side).
+    pub fn worktree(path: impl Into<String>) -> Self {
+        Self { staged: false, path: path.into() }
+    }
+    /// The key for a file selected in `area`.
+    pub fn for_area(area: ChangeArea, path: impl Into<String>) -> Self {
+        Self { staged: area == ChangeArea::Staged, path: path.into() }
+    }
+}
+
+/// The per-file diff map: distinct staged / worktree diffs keyed by
+/// [`DiffKey`].
+pub type DiffMap = std::collections::HashMap<DiffKey, FileDiff>;
+
 impl FileDiff {
     pub fn additions(&self) -> u32 {
         self.lines
