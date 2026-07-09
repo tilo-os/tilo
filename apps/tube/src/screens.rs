@@ -10,7 +10,9 @@ use vello::peniko::Color;
 
 use crate::action::{Action, ActionBus, SettingFlag};
 use crate::images::Imgs;
-use crate::model::{Category, Route, SkipMode, TubeModel, Video};
+use crate::model::{
+    Category, Channel, Playlist, Route, SearchType, SkipMode, TubeModel, Video,
+};
 use crate::util::{clock, human_count, human_views};
 use crate::widgets::{
     card_surface, chip_surface, dim, divider, gap, hover_fill, hover_pill_surface, spring,
@@ -33,8 +35,11 @@ const WATCH_COL_GAP: f64 = 24.0;
 /// Content-column width at/above which the player + "Up next" sit side by
 /// side; below it the rail stacks under the player so neither is squeezed.
 const WATCH_TWO_COL_MIN: f64 = 900.0;
-/// Cap on the 16:9 player height so it never dominates a tall, wide window.
-const PLAYER_MAX_H: f64 = 480.0;
+/// Fraction of the content viewport HEIGHT the 16:9 player is allowed to fill.
+/// The player is sized by height (bigger video, less wasted vertical space) and
+/// capped here so metadata still peeks below; its width follows at 16:9 and it
+/// centers when the height cap makes it narrower than the content lane.
+const PLAYER_VH_FRAC: f64 = 0.65;
 
 /// Width of the navigation rail (logical px). Shared with the responsive
 /// split so the docked rail and the overlay flap are exactly this wide.
@@ -263,6 +268,7 @@ fn video_card(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Imgs, v: 
     // No fixed width: as a responsive-grid item the card stretches to fill its
     // column (which the grid sizes between CARD_W and its natural max).
     Flex::col()
+        .id(&format!("video_card_{}", v.id))
         .fill_w()
         .gap(9.0)
         .pad(6.0)
@@ -320,11 +326,15 @@ fn compact_card(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Imgs, v
 }
 
 fn grid(cards: Vec<Flex>) -> Flex {
+    grid_with_id(cards, "video_grid")
+}
+
+fn grid_with_id(cards: Vec<Flex>, id: &str) -> Flex {
     // Responsive grid: columns are ≥ `CARD_W` and flex to fill the row, so the
     // cards scale with the window width up to their natural max and only then
     // wrap to add a column — the row is always filled edge to edge (no right
     // gutter). `align(Start)` top-aligns cards of differing heights per row.
-    let mut row = Flex::row().id("video_grid").fill_w().grid(CARD_W).gap(18.0).align(Align::Start);
+    let mut row = Flex::row().id(id).fill_w().grid(CARD_W).gap(18.0).align(Align::Start);
     for c in cards {
         row = row.push(c);
     }
@@ -461,7 +471,22 @@ pub fn nav_rail(model: &TubeModel, theme: &Theme, bus: &ActionBus) -> Flex {
         .push(nav_item(theme, bus, IconKind::Settings, "Settings", Route::Settings, sec == "settings"))
 }
 
-pub fn top_bar(model: &TubeModel, theme: &Theme, bus: &ActionBus) -> Flex {
+/// The navigation Back affordance in the top bar. Shown only when there is
+/// history to pop; pushes [`Action::Back`], the same intent Escape / Alt-Left /
+/// the edge-swipe resolve to.
+fn back_button(theme: &Theme, bus: &ActionBus) -> Flex {
+    Flex::row()
+        .id("back_btn")
+        .fixed(40.0, 40.0)
+        .justify(Justify::Center)
+        .align(Align::Center)
+        .push(icon(IconKind::Back, 20.0, theme.text_primary))
+        .surface(Surface { fill: None, radius: theme.tokens.radii.full as f64, border: None })
+        .hover_surface(hover_pill_surface(theme))
+        .on_click(bus, Action::Back)
+}
+
+pub fn top_bar(model: &TubeModel, theme: &Theme, bus: &ActionBus, can_back: bool) -> Flex {
     // The search field is a CRDT-bound TextInput so its text lives in the
     // document (survives navigation rebuilds) and would sync to peers. It is
     // ALWAYS present — its own placeholder draws the "Search" hint while empty —
@@ -513,6 +538,7 @@ pub fn top_bar(model: &TubeModel, theme: &Theme, bus: &ActionBus) -> Flex {
             border: Some((1.0, theme.border_standard)),
         })
         .push(menu_button(theme, bus))
+        .push_if(can_back, back_button(theme, bus))
         .push(
             Flex::row()
                 .gap(8.0)
@@ -713,56 +739,243 @@ pub fn history(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Imgs) ->
     )
 }
 
-/// The results-page header label. Deliberately does **not** echo the search
-/// query — the query is shown exactly once, in the top-bar search field — so the
-/// results page never duplicates it. It reports the loading state or the result
-/// count instead. (The old header printed the raw query as a 21px title *and*
-/// the top bar showed it too, so the same words appeared twice.)
-fn search_status_label(query: &str, loading: bool, count: usize) -> String {
-    if loading {
-        "Searching…".to_string()
-    } else if query.trim().is_empty() {
-        "Search Tube".to_string()
-    } else if count == 1 {
-        "1 result".to_string()
-    } else {
-        format!("{count} results")
+/// One multi-select type-filter chip (Video · Playlist · Creator). Reuses the
+/// selected-chip contrast seam; highlighted when its type is currently shown.
+fn type_chip(theme: &Theme, bus: &ActionBus, t: SearchType, active: bool) -> Flex {
+    chip(theme, bus, t.label(), Action::ToggleSearchType(t), active)
+        .id(&format!("type_chip_{}", t.label().to_lowercase()))
+}
+
+/// The search results' type filter: Video · Playlist · Creator. All three are
+/// selected by default; the first click narrows to one type, later clicks toggle
+/// individual chips (see [`crate::model::SearchTypeFilter`]).
+fn search_type_chips(model: &TubeModel, theme: &Theme, bus: &ActionBus) -> Flex {
+    let f = &model.search_type_filter;
+    let mut row = Flex::row().id("search_type_chips").fill_w().wrap().gap(8.0);
+    for t in SearchType::ALL {
+        row = row.push(type_chip(theme, bus, t, f.shows(t)));
     }
+    row
+}
+
+/// A playlist search-result card: the cover thumbnail with a "N videos"
+/// stacked-list badge, then the title + creator. Opens the playlist page.
+fn playlist_card(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Imgs, p: &Playlist) -> Flex {
+    let badge = Flex::col()
+        .float()
+        .fill_w()
+        .fill_h()
+        .align(Align::End)
+        .justify(Justify::End)
+        .pad(8.0)
+        .push(
+            Flex::row()
+                .gap(5.0)
+                .pad_xy(8.0, 4.0)
+                .align(Align::Center)
+                .surface(Surface {
+                    fill: Some(Color::from_rgba8(0, 0, 0, 200)),
+                    radius: 6.0,
+                    border: None,
+                })
+                .push(icon(IconKind::Playlist, 12.0, Color::WHITE))
+                .push(text_c(&format!("{} videos", human_count(p.video_count)), 11.0, Color::WHITE)),
+        );
+    let stack = Flex::col()
+        .fill_w()
+        .h(Len::Px(THUMB_H))
+        .push(
+            Thumbnail::new(&p.seed, 0)
+                .height(THUMB_H)
+                .image_source(imgs.store_handle(), &p.thumbnail_url),
+        )
+        .push(badge);
+
+    let meta = Flex::col()
+        .grow(1.0)
+        .gap(3.0)
+        .push(text(&p.title, 14.5))
+        .push(dim(theme, &format!("{} • Playlist", p.channel_name), 12.5))
+        .push(dim(theme, &format!("{} videos", human_count(p.video_count)), 12.5));
+
+    Flex::col()
+        .fill_w()
+        .gap(9.0)
+        .pad(6.0)
+        .id(&format!("playlist_card_{}", p.id))
+        .hover_surface(Surface {
+            fill: Some(hover_fill(theme)),
+            radius: theme.tokens.radii.lg as f64,
+            border: None,
+        })
+        .on_click(bus, Action::OpenPlaylist(p.id.clone()))
+        .push(stack)
+        .push(
+            Flex::row()
+                .gap(10.0)
+                .fill_w()
+                .align(Align::Start)
+                .push(icon(IconKind::Playlist, 22.0, theme.accent_primary))
+                .push(meta),
+        )
+}
+
+/// A creator search-result row: the real avatar, name (+ verified), handle and
+/// subscriber count, and a View affordance. Opens the channel page.
+fn creator_card(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Imgs, c: &Channel) -> Flex {
+    let handle_subs = if c.handle.is_empty() || c.handle == c.id {
+        format!("{} subscribers", human_count(c.subscribers))
+    } else {
+        format!("{} • {} subscribers", c.handle, human_count(c.subscribers))
+    };
+    Flex::row()
+        .fill_w()
+        .gap(14.0)
+        .pad(8.0)
+        .align(Align::Center)
+        .id(&format!("creator_card_{}", c.id))
+        .hover_surface(Surface {
+            fill: Some(hover_fill(theme)),
+            radius: theme.tokens.radii.md as f64,
+            border: None,
+        })
+        .on_click(bus, Action::OpenChannel(c.id.clone()))
+        .push(channel_avatar(imgs, model, &c.id, &c.name, 56.0))
+        .push(
+            Flex::col()
+                .grow(1.0)
+                .gap(3.0)
+                .push(
+                    Flex::row()
+                        .gap(6.0)
+                        .align(Align::Center)
+                        .push(text(&c.name, 16.0))
+                        .push_if(c.verified, icon(IconKind::Check, 14.0, theme.text_dim)),
+                )
+                .push(dim(theme, &handle_subs, 12.5)),
+        )
+        .push(pill(theme, bus, "View", None, Action::OpenChannel(c.id.clone()), false))
 }
 
 pub fn search(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Imgs, query: &str) -> Scrollable {
-    let results = model.search_display(query);
-    let cards: Vec<Flex> = results.iter().map(|v| video_card(model, theme, bus, imgs, v)).collect();
-    // The header states the search's *status* (loading / count) — never the
-    // query itself, which lives in the top-bar field. Showing it in both places
-    // was the reported duplication.
-    let status = search_status_label(query, model.search_loading, cards.len());
+    let filter = &model.search_type_filter;
+    // Each type's rows, gated by the multi-select filter.
+    let videos: Vec<&Video> = if filter.shows(SearchType::Video) {
+        model.search_display(query)
+    } else {
+        Vec::new()
+    };
+    let playlists: Vec<&Playlist> = if filter.shows(SearchType::Playlist) {
+        model.search_playlists_display(query)
+    } else {
+        Vec::new()
+    };
+    let creators: Vec<&Channel> = if filter.shows(SearchType::Creator) {
+        model.search_creators_display(query)
+    } else {
+        Vec::new()
+    };
+
     let body = if model.search_loading {
         // While a fetch is in flight, show a skeleton — NEVER a premature "No
         // results" (the bug that shipped).
         skeleton_grid(theme, 8)
     } else if query.trim().is_empty() {
-        empty_state(theme, "Search Tube", "Type a query above to find videos and channels.")
-    } else if cards.is_empty() {
-        empty_state(theme, "No results", "Nothing matched that search — try different words.")
+        empty_state(theme, "Search Tube", "Type a query above to find videos, playlists and creators.")
+    } else if videos.is_empty() && playlists.is_empty() && creators.is_empty() {
+        empty_state(theme, "No results", "Nothing matched that search — try different words or filters.")
     } else {
-        grid(cards)
+        // Creators (compact rows) → playlists → videos, each section only when
+        // it has rows and its filter chip is selected.
+        let mut col = Flex::col().fill_w().gap(18.0);
+        if !creators.is_empty() {
+            let mut rows = Flex::col().id("creator_results").fill_w().gap(8.0);
+            for c in &creators {
+                rows = rows.push(creator_card(model, theme, bus, imgs, c));
+            }
+            col = col.push(rows);
+        }
+        if !playlists.is_empty() {
+            let cards: Vec<Flex> =
+                playlists.iter().map(|p| playlist_card(model, theme, bus, imgs, p)).collect();
+            col = col.push(grid_with_id(cards, "playlist_grid"));
+        }
+        if !videos.is_empty() {
+            let cards: Vec<Flex> =
+                videos.iter().map(|v| video_card(model, theme, bus, imgs, v)).collect();
+            col = col.push(grid(cards));
+        }
+        col
     };
+    // No result-count header (the query already lives once in the top-bar
+    // field): the type filter sits at the top, results below it.
     let col = Flex::col()
         .fill_w()
         .pad(24.0)
         .gap(18.0)
-        .push(
-            Flex::row()
-                .fill_w()
-                .gap(10.0)
-                .align(Align::Center)
-                .push(icon(IconKind::Search, 20.0, theme.accent_primary))
-                .push(text(&status, 21.0)),
-        )
-        .push(chip_bar(model, theme, bus))
+        .push(search_type_chips(model, theme, bus))
         .push(body);
     scroll(col)
+}
+
+/// A playlist page: its cover, title, creator and video count, a "Play all"
+/// affordance, and the ordered video list.
+pub fn playlist(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Imgs, id: &str) -> Scrollable {
+    let Some(pl) = model.playlist(id) else {
+        return scroll(Flex::col().pad(24.0).push(empty_state(theme, "Playlist unavailable", "")));
+    };
+    let videos: Vec<&Video> = pl.video_ids.iter().filter_map(|vid| model.video(vid)).collect();
+    let first_id = videos.first().map(|v| v.id.clone());
+
+    let mut info = Flex::col()
+        .grow(1.0)
+        .gap(8.0)
+        .align(Align::Start)
+        .push(text(&pl.title, 26.0))
+        .push(dim(
+            theme,
+            &format!("{}  •  {} videos", pl.channel_name, human_count(pl.video_count)),
+            13.5,
+        ));
+    if let Some(fid) = first_id {
+        info = info.push(
+            pill(theme, bus, "Play all", Some(IconKind::Play), Action::OpenVideo(fid), true)
+                .id("playlist_play"),
+        );
+    }
+
+    let header = Flex::row()
+        .fill_w()
+        .gap(18.0)
+        .align(Align::Start)
+        .push(
+            Flex::col().w(Len::Px(240.0)).push(
+                Thumbnail::new(&pl.seed, 0)
+                    .height(135.0)
+                    .image_source(imgs.store_handle(), &pl.thumbnail_url),
+            ),
+        )
+        .push(info);
+
+    let mut list = Flex::col().fill_w().gap(8.0);
+    if videos.is_empty() {
+        list = list.push(empty_state(theme, "Loading playlist…", "Fetching the playlist's videos."));
+    }
+    for v in &videos {
+        list = list.push(compact_card(model, theme, bus, imgs, v));
+    }
+
+    scroll(
+        Flex::col()
+            .id("playlist_page")
+            .fill_w()
+            .pad(24.0)
+            .gap(18.0)
+            .push(header)
+            .push(divider(theme))
+            .push(text("Videos", 16.0))
+            .push(list),
+    )
 }
 
 pub fn channel(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Imgs, id: &str) -> Scrollable {
@@ -842,6 +1055,7 @@ pub fn watch(
     imgs: Imgs,
     id: &str,
     content_w: f64,
+    content_h: f64,
     player: SharedPlayer,
 ) -> Scrollable {
     let Some(v) = model.video(id) else {
@@ -849,17 +1063,20 @@ pub fn watch(
     };
     let dearrow = model.settings.dearrow_titles_on();
 
-    // Responsive watch geometry. The player is **full-bleed**: it spans the
-    // whole content width, flush to the top/left/right edges (no page padding),
-    // so there is no gap to the window edge or the nav rail. Its height is a
-    // 16:9 surface derived from the full content width, capped so it never
-    // dominates a tall window (when capped, the player letterboxes internally).
+    // Responsive watch geometry. The player is sized by available HEIGHT so more
+    // actual video fills the screen (rather than a wide-but-short strip): a 16:9
+    // surface whose height is capped at `PLAYER_VH_FRAC` of the content viewport
+    // height, with its width following at 16:9. When that height cap makes the
+    // player narrower than the content lane it is centered horizontally; when the
+    // lane is the tighter constraint the player fills the lane's width.
     //
     // Everything *below* the player (details + "Up next") lives in a padded
     // region that splits into two columns on a wide window; below
     // `WATCH_TWO_COL_MIN` the rail stacks under the details so neither column is
     // squeezed on a narrow one.
-    let player_h = ((content_w * 9.0 / 16.0).min(PLAYER_MAX_H)).max(1.0) as f32;
+    let width_from_height = content_h * PLAYER_VH_FRAC * 16.0 / 9.0;
+    let player_w = width_from_height.min(content_w).max(1.0);
+    let player_h = (player_w * 9.0 / 16.0).max(1.0) as f32;
     let lower_inner = (content_w - WATCH_PAD * 2.0).max(0.0);
     let two_col = lower_inner >= WATCH_TWO_COL_MIN;
 
@@ -920,7 +1137,7 @@ pub fn watch(
     // volume, fullscreen) is the transport; clicking the surface toggles
     // play/pause. Height tracks the column width at a 16:9 ratio.
     let mut stage = Flex::col()
-        .fill_w()
+        .w(Len::Px(player_w as f32))
         .h(Len::Px(player_h))
         .push(PlayerHost::new(player, player_h));
     if let Some(s) = manual {
@@ -959,8 +1176,11 @@ pub fn watch(
     // that segment-carrying timeline region as an addressable, laid-out node so
     // it stays a real, testable part of the watch tree — there is ONE timeline,
     // and this is it.
+    // Center the height-capped player within the content lane (it is narrower
+    // than the lane whenever the height cap, not the width, is the constraint).
+    let stage_row = Flex::row().fill_w().justify(Justify::Center).push(stage);
     let player_view = {
-        let col = Flex::col().fill_w().push(stage);
+        let col = Flex::col().fill_w().push(stage_row);
         if has_sb_timeline { col.id("sb_timeline") } else { col }
     };
 
@@ -1654,27 +1874,48 @@ mod search_screen_tests {
         out
     }
 
-    /// Issue 1 — the query is shown once. The results-page header reports the
-    /// search *status* (loading / count), and must NEVER echo the query itself
-    /// (which lives in the top-bar field), so the same words don't appear twice.
+    /// The search screen no longer renders a result-count header (the query
+    /// already appears once in the top-bar field), and its type-filter chips are
+    /// present so results can be narrowed by kind.
     #[test]
-    fn search_header_never_echoes_the_query() {
-        for q in ["rust programming", "cats", "lofi hip hop", "42"] {
-            for loading in [true, false] {
-                for count in [0usize, 1, 8, 30] {
-                    let label = search_status_label(q, loading, count);
-                    assert!(
-                        !label.contains(q),
-                        "results header {label:?} must not echo the query {q:?}"
-                    );
-                }
+    fn search_screen_has_type_chips_and_no_count_header() {
+        use crate::model::Route;
+        let mut model = crate::sample::model();
+        let mut v = model.videos[0].clone();
+        v.id = "only".into();
+        model.videos = vec![v];
+        model.search_hits_query = "q".into();
+        model.search_hits = vec!["only".into()];
+        model.route = Route::Search("q".into());
+
+        let theme = Theme::dark();
+        let bus = crate::action::new_bus();
+        let mut screen = search(&model, &theme, &bus, Imgs::none(), "q");
+
+        let (w, h) = (1280.0f32, 800.0f32);
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let child = screen.build_layout(&mut taffy, &theme, &mut node_map);
+        taffy
+            .new_with_children(
+                Style { size: Size { width: length(w), height: length(h) }, ..Default::default() },
+                &[child],
+            )
+            .unwrap();
+
+        fn has_id(w: &dyn Widget, id: &str) -> bool {
+            if w.test_id() == Some(id) {
+                return true;
             }
+            w.children().iter().any(|c| has_id(*c, id))
         }
-        // It still communicates the real state.
-        assert_eq!(search_status_label("x", true, 5), "Searching…");
-        assert_eq!(search_status_label("x", false, 1), "1 result");
-        assert_eq!(search_status_label("x", false, 8), "8 results");
-        assert_eq!(search_status_label("", false, 0), "Search Tube");
+        assert!(has_id(&screen, "search_type_chips"), "the Video·Playlist·Creator chips are present");
+        for label in ["video", "playlist", "creator"] {
+            assert!(
+                has_id(&screen, &format!("type_chip_{label}")),
+                "the {label} type chip is present",
+            );
+        }
     }
 
     /// Issue 2 — a search-result row paints the fetched thumbnail. Rendered

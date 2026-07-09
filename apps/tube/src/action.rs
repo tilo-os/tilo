@@ -11,7 +11,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use crate::model::{Category, ChannelId, Route, VideoId};
+use crate::model::{Category, ChannelId, PlaylistId, Route, SearchType, VideoId};
 
 /// Everything a click can request.
 #[derive(Clone, Debug, PartialEq)]
@@ -19,6 +19,14 @@ pub enum Action {
     Navigate(Route),
     OpenVideo(VideoId),
     OpenChannel(ChannelId),
+    /// Open a playlist page (its title, creator and video list).
+    OpenPlaylist(PlaylistId),
+    /// Toggle a type in the search results' multi-select filter (first click
+    /// narrows to just that type; see [`crate::model::SearchTypeFilter`]).
+    ToggleSearchType(SearchType),
+    /// Pop the navigation stack — return to the previous view. Backed by the
+    /// toolkit's `ui::NavStack`; also reached via Escape / Alt-Left / edge-swipe.
+    Back,
     ToggleSubscribe(ChannelId),
     /// Seek to a fraction [0,1] of the current video's duration.
     Seek(f64),
