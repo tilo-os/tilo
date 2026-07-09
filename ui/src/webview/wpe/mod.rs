@@ -182,6 +182,17 @@ struct EngineState {
     ua_reload_pending: bool,
     /// Timestamp of the last Resize, to debounce that reload.
     last_resize: Option<std::time::Instant>,
+    /// Whether we've received the first Resize yet. Until we have, the
+    /// real viewport (and thus the correct mobile/desktop UA) is unknown,
+    /// so the initial navigation is held in `pending_nav` to avoid loading
+    /// at the wrong size and then reloading — the startup flicker.
+    first_resize_seen: bool,
+    /// A Navigate that arrived before the first Resize, deferred until the
+    /// viewport is known. Also fired by `nav_deadline` as a fallback so a
+    /// window that never resizes still loads.
+    pending_nav: Option<String>,
+    /// Fallback deadline: load `pending_nav` even without a Resize.
+    nav_deadline: Option<std::time::Instant>,
     /// EGL/dmabuf export state — `Some` only on the zero-copy path
     /// (`QOS_WEBVIEW_DMABUF=1`); `None` uses the SHM copy path.
     egl: Option<egl::EglExport>,
@@ -240,6 +251,9 @@ fn engine_thread(
             mobile_mode: false,
             ua_reload_pending: false,
             last_resize: None,
+            first_resize_seen: false,
+            pending_nav: None,
+            nav_deadline: None,
             egl,
         }));
         let state_ptr = state as *mut EngineState as *mut c_void;
@@ -361,6 +375,16 @@ unsafe fn state_from(data: *mut c_void) -> &'static mut EngineState {
 /// Whether a view of this logical CSS width should present the mobile UA.
 fn wants_mobile(logical_width: u32) -> bool {
     logical_width < MOBILE_BREAKPOINT_PX
+}
+
+/// Start loading a URI. A fresh load always applies the current UA, so any
+/// pending mobile/desktop reload is now redundant — clear it to avoid a
+/// spurious extra reload (and the blank flash that comes with it).
+fn load_uri(state: &mut EngineState, uri: &str) {
+    state.ua_reload_pending = false;
+    if let Ok(c) = CString::new(uri) {
+        unsafe { ffi::webkit_web_view_load_uri(state.view, c.as_ptr()) };
+    }
 }
 
 /// Set the view's User-Agent on its settings object. Takes effect on the
@@ -599,6 +623,20 @@ extern "C" fn on_drain_commands(data: *mut c_void) -> ffi::gboolean {
     while let Ok(cmd) = state.rx.try_recv() {
         dispatch(state, cmd);
     }
+    // Fallback: if the initial navigation was deferred waiting for a
+    // viewport that never came, load it once the grace period elapses so
+    // the page isn't stuck blank.
+    if state.pending_nav.is_some() {
+        if let Some(deadline) = state.nav_deadline {
+            if std::time::Instant::now() >= deadline {
+                state.first_resize_seen = true;
+                if let Some(uri) = state.pending_nav.take() {
+                    state.nav_deadline = None;
+                    load_uri(state, &uri);
+                }
+            }
+        }
+    }
     // Debounced UA reload: once resizing has been quiet for a moment,
     // reload so the current page re-serves at the new (mobile/desktop)
     // width. Deferred to here so a drag across the breakpoint doesn't
@@ -618,8 +656,17 @@ fn dispatch(state: &mut EngineState, cmd: WebViewCommand) {
     unsafe {
         match cmd {
             WebViewCommand::Navigate(uri) => {
-                if let Ok(c) = CString::new(uri) {
-                    ffi::webkit_web_view_load_uri(state.view, c.as_ptr());
+                // Hold the very first navigation until the app reports the
+                // real viewport, so the page loads once at the correct
+                // size + UA instead of loading at the default and then
+                // reloading (the startup flicker). A short fallback in the
+                // drain loop still loads it if no Resize ever arrives.
+                if !state.first_resize_seen {
+                    state.pending_nav = Some(uri);
+                    state.nav_deadline =
+                        Some(std::time::Instant::now() + std::time::Duration::from_millis(250));
+                } else {
+                    load_uri(state, &uri);
                 }
             }
             WebViewCommand::GoBack => ffi::webkit_web_view_go_back(state.view),
@@ -652,9 +699,24 @@ fn dispatch(state: &mut EngineState, cmd: WebViewCommand) {
                         state.view,
                         if want_mobile { USER_AGENT_MOBILE } else { USER_AGENT_DESKTOP },
                     );
-                    state.ua_reload_pending = true;
+                    // Only an already-loaded page needs a reload to pick up
+                    // the new UA; a deferred first navigation will simply
+                    // load with it (handled below).
+                    if state.pending_nav.is_none() {
+                        state.ua_reload_pending = true;
+                    }
                 }
                 state.last_resize = Some(std::time::Instant::now());
+
+                // First viewport known: fire the held initial navigation
+                // now that the size and UA are correct — one clean load.
+                if !state.first_resize_seen {
+                    state.first_resize_seen = true;
+                    if let Some(uri) = state.pending_nav.take() {
+                        state.nav_deadline = None;
+                        load_uri(state, &uri);
+                    }
+                }
             }
             WebViewCommand::MouseMove { x, y } => {
                 let mut event = ffi::wpe_input_pointer_event {
