@@ -14,7 +14,7 @@ use ui::icons::{draw_icon, Icon};
 use automerge::{AutoCommit, ObjId, Value, transaction::Transactable, ObjType, ReadDoc};
 use base64::Engine as _;
 use vello::Scene;
-use vello::kurbo::{Affine, Rect, Point, RoundedRect, RoundedRectRadii};
+use vello::kurbo::{Affine, Rect, Point, RoundedRect};
 use vello::peniko::{Color, Fill};
 use winit::event::{WindowEvent, ElementState, KeyEvent, MouseButton, MouseScrollDelta};
 use winit::event_loop::EventLoopProxy;
@@ -368,20 +368,30 @@ pub struct TerminalWidget {
     /// the spacing. Seeded to the default `spacing.s1` (4px).
     last_padding_x: f64,
 
-    /// Inner content rect the cell grid actually paints into: the full widget
-    /// [`rect`](Self::rect) minus the header/tab bar, the comfortable body
-    /// padding, and the scrollbar gutter. Every grid geometry read (cell
-    /// layout, cursor, selection, pointer hit-testing) is relative to this,
-    /// not the outer widget rect, so the chrome never overlaps the grid.
+    /// The single source of truth for grid geometry: the widget
+    /// [`rect`](Self::rect) inset by a uniform body padding on every side, with
+    /// a scrollbar gutter reserved on the right. Every grid read — cell layout,
+    /// cursor, selection, pointer hit-testing — is relative to this exact rect,
+    /// computed once by [`grid_content_rect`](Self::grid_content_rect) and used
+    /// identically by `set_geometry` and `draw`, so a glyph, its cursor, and a
+    /// click all resolve to the same cell. The compositor draws the window
+    /// decoration (the tab/title chrome); the app draws only the grid.
     grid_rect: Rect,
-    /// Cached chrome geometry, refreshed from the theme on every `draw` (the
-    /// same pattern as `last_padding_x`) so `set_geometry` and pointer
-    /// hit-testing — neither of which receives a `Theme` — inset the grid by
-    /// the exact amounts the chrome was painted with. Seeded to the dark
-    /// theme's values so the very first (pre-draw) layout is already correct.
-    chrome_header_h: f64,
+    /// Cached body geometry (padding, scrollbar gutter), refreshed from the
+    /// theme on every `draw` (the same pattern as `last_padding_x`) so
+    /// `set_geometry` and pointer hit-testing — neither of which receives a
+    /// `Theme` — inset the grid by the exact amounts `draw` painted with.
+    /// Seeded to the default token values so the first (pre-draw) layout is
+    /// already correct.
     chrome_body_pad: f64,
     chrome_scrollbar_w: f64,
+    /// Resolved monospace `FontChoice`, cached against the theme's mono family
+    /// name. Recomputed only when that name changes: the theme's named mono
+    /// face is used when installed, otherwise the generic monospace family —
+    /// never the proportional default cosmic-text would silently substitute,
+    /// which would give the cell grid a space advance narrower than its glyphs
+    /// and smear every run.
+    mono_choice: Option<(String, FontChoice)>,
     /// Latches true the first time the mirrored grid holds any non-blank
     /// content. Gates the honest empty-state watermark so it only shows before
     /// the session has ever produced output — never over a legitimately
@@ -506,13 +516,13 @@ impl TerminalWidget {
             viewport_start_y: 0,
             last_padding_x: 4.0,
             grid_rect: Rect::ZERO,
-            // Seeded to the dark theme's chrome metrics (header 40, body pad
-            // 12, scrollbar gutter 8) so the first layout — which runs before
-            // the first `draw` refreshes these from the live theme — already
-            // insets the grid correctly.
-            chrome_header_h: 40.0,
+            // Seeded to the default token metrics (body pad 12, scrollbar
+            // gutter 8) so the first layout — which runs before the first
+            // `draw` refreshes these from the live theme — already insets the
+            // grid correctly.
             chrome_body_pad: 12.0,
             chrome_scrollbar_w: 8.0,
+            mono_choice: None,
             ever_nonblank: false,
             trimmed_front: 0,
             mirror_valid: false,
@@ -692,30 +702,26 @@ impl TerminalWidget {
         (self.grid_rect.height() / self.char_h.max(1.0)).floor().max(1.0) as usize
     }
 
-    /// Refresh the cached chrome metrics (header height, body padding,
-    /// scrollbar gutter) from the theme. Called each `draw`; the cached values
-    /// then feed `set_geometry` and pointer hit-testing, which never see a
-    /// `Theme`. All three derive from the shared spacing scale + base font size
-    /// so the OS can retune the chrome centrally.
+    /// Refresh the cached body metrics (padding, scrollbar gutter) from the
+    /// theme. Called each `draw`; the cached values then feed `set_geometry`
+    /// and pointer hit-testing, which never see a `Theme`. Both derive from the
+    /// shared spacing scale so the OS can retune the spacing centrally.
     fn refresh_chrome_metrics(&mut self, theme: &Theme) {
         let sp = &theme.tokens.spacing;
-        // Tab pill height tracks the base font; the header is that plus a
-        // symmetric vertical inset.
-        let tab_h = (theme.tokens.font_size_base as f64 * 1.7).round().max(1.0);
-        let pad_y = sp.s2 as f64;
-        self.chrome_header_h = tab_h + pad_y * 2.0;
         self.chrome_body_pad = sp.s3 as f64;
         self.chrome_scrollbar_w = sp.s2 as f64;
     }
 
-    /// The inner grid content rect for a given widget rect: below the header,
-    /// inset by the body padding on every side, with a scrollbar gutter
-    /// reserved on the right. Uses the cached chrome metrics so it is available
-    /// without a `Theme`.
+    /// The inner grid content rect for a given widget rect: the widget rect
+    /// inset by a uniform body padding on every side, with a scrollbar gutter
+    /// reserved on the right. No header — the compositor owns window
+    /// decoration, so the grid starts at the top padding. Uses the cached body
+    /// metrics so it is available without a `Theme`. This is the *single*
+    /// definition of the grid geometry, shared by `set_geometry` and `draw`.
     fn grid_content_rect(&self, rect: Rect) -> Rect {
         let pad = self.chrome_body_pad;
         let x0 = rect.x0 + pad;
-        let y0 = rect.y0 + self.chrome_header_h + pad;
+        let y0 = rect.y0 + pad;
         let x1 = (rect.x1 - pad - self.chrome_scrollbar_w).max(x0);
         let y1 = (rect.y1 - pad).max(y0);
         Rect::new(x0, y0, x1, y1)
@@ -1232,27 +1238,27 @@ impl Widget for TerminalWidget {
         // from the same value.
         self.font_size = font_size;
 
-        // Refresh the chrome geometry from the theme and re-derive the inner
-        // grid rect (below the header, inside the padding, minus the scrollbar
-        // gutter). `set_geometry` and pointer hit-testing read these cached
-        // metrics — neither sees a `Theme` — mirroring the `last_padding_x`
-        // pattern.
+        // Refresh the body geometry from the theme and re-derive the inner grid
+        // rect (inside the padding, minus the scrollbar gutter) — the same
+        // `grid_content_rect` `set_geometry` and pointer hit-testing use, so the
+        // grid origin is single-sourced. `set_geometry` and hit-testing read the
+        // cached metrics — neither sees a `Theme` — mirroring `last_padding_x`.
         self.refresh_chrome_metrics(theme);
         self.grid_rect = self.grid_content_rect(self.rect);
         let grid_rect = self.grid_rect;
 
         // The terminal body fills the whole widget in the theme's terminal
-        // background (a deliberate deep surface, not an accidental void); the
-        // header/tab bar is painted over the top strip next.
+        // background (a deliberate deep surface, not an accidental void). No
+        // header/tab bar — the compositor owns the window-group decoration.
         scene.fill(Fill::NonZero, transform, palette.bg_default, None, &self.rect);
-        self.draw_chrome(scene, transform, text_renderer, theme);
 
-        // Resolve the terminal font from the theme's canonical monospace token
-        // (`theme.tokens.font_mono`) rather than the generic monospace class, so
-        // the OS's chosen mono face is what gets shaped. Measure the space glyph
-        // in that exact family — that's the cell advance the glyph runs use, so
-        // pointer hit-testing and rendering stay on the same grid.
-        let mono = mono_font_choice(theme);
+        // Resolve the terminal font: the theme's named monospace face when it is
+        // installed, else the generic monospace family — never the proportional
+        // default cosmic-text would silently substitute. Measure that exact
+        // family's advance so `char_w` equals the width every glyph is drawn at;
+        // if the two disagreed, each colour run would be positioned on a grid
+        // finer than its glyphs and the row would smear over itself.
+        let mono = self.resolve_mono(theme, text_renderer);
         let (w, _h) = text_renderer.measure_font(" ", font_size, None, TextWeight::Regular, false, &mono);
         self.char_w = (w as f64).max(1.0);
         self.char_h = ((font_size as f64) * 1.25f64).ceil().max(1.0);
@@ -1671,119 +1677,35 @@ impl TerminalWidget {
         }
     }
 
-    /// Paint the header / tab bar: a themed strip carrying the app's prompt
-    /// mark, the (OSC-mirrored) session title in an active tab pill that visually
-    /// connects to the terminal body, and a subtle "new tab" affordance that
-    /// leaves room for multiple sessions. Every colour, radius, and spacing is
-    /// pulled from the theme so the chrome matches every other qOS app.
-    fn draw_chrome(&self, scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, theme: &Theme) {
-        let rect = self.rect;
-        let header_h = self.chrome_header_h;
-        if header_h <= 0.0 || rect.width() <= 0.0 {
-            return;
+    /// Resolve the terminal's monospace [`FontChoice`] from the theme, caching
+    /// the result against the theme's mono family name. The theme's named mono
+    /// face is used when it is actually installed; otherwise the generic
+    /// monospace family, which the platform resolves to a real fixed-width font.
+    /// The fallback is the whole point: a `Named` face that is *not* installed
+    /// makes cosmic-text silently substitute a proportional default whose space
+    /// glyph is far narrower than its letters, so the cell advance
+    /// (`measure_font(" ")`) no longer matches the width glyphs are drawn at and
+    /// every multi-colour run smears over itself.
+    fn resolve_mono(&mut self, theme: &Theme, tr: &TextRenderer) -> FontChoice {
+        let fam = theme.tokens.font_mono.family.trim();
+        if let Some((cached, choice)) = &self.mono_choice {
+            if cached == fam {
+                return choice.clone();
+            }
         }
-        let font_size = theme.tokens.font_size_base;
-        let colors = &theme.tokens.colors;
-        let sp = &theme.tokens.spacing;
-        let radii = &theme.tokens.radii;
-        let palette = &theme.tokens.terminal_palette;
-
-        let header = Rect::new(rect.x0, rect.y0, rect.x1, rect.y0 + header_h);
-        // Chrome surface + a hairline base border that separates it from the
-        // terminal body.
-        scene.fill(Fill::NonZero, transform, colors.surfaces.raised, None, &header);
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            colors.border_standard,
-            None,
-            &Rect::new(rect.x0, header.y1 - 1.0, rect.x1, header.y1),
-        );
-
-        let pad = self.chrome_body_pad;
-        let inner = sp.s2 as f64; // pill inner padding
-        let gap = sp.s1 as f64 * 1.5; // icon → title gap
-        let icon_side = font_size as f64;
-
-        // Active tab pill: filled in the terminal body colour with rounded top
-        // corners and flush to the header's base border, so it reads as the
-        // active tab merging into the content below. A short accent bar along
-        // its top edge marks it active.
-        let pill_x0 = rect.x0 + pad;
-        let pill_top = rect.y0 + sp.s2 as f64;
-        let pill_bottom = header.y1; // flush with the base border → merges into body
-        let title = self.title();
-
-        // Width the pill would like, clamped so the "+" affordance always fits.
-        let plus_zone = icon_side + inner * 2.0;
-        let title_w_full = tr.measure(title, font_size, None).0 as f64;
-        let max_pill_w = (header.x1 - pill_x0 - plus_zone - pad).max(icon_side + inner * 2.0);
-        let desired_w = inner + icon_side + gap + title_w_full + inner;
-        let pill_w = desired_w.min(max_pill_w);
-        let pill = Rect::new(pill_x0, pill_top, pill_x0 + pill_w, pill_bottom);
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            palette.bg_default,
-            None,
-            &RoundedRect::from_rect(
-                pill,
-                RoundedRectRadii::new(radii.md as f64, radii.md as f64, 0.0, 0.0),
-            ),
-        );
-        // Accent bar hugging the pill's top edge — the "active tab" cue.
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            theme.accent_primary,
-            None,
-            &RoundedRect::from_rect(
-                Rect::new(pill.x0, pill.y0, pill.x1, pill.y0 + 2.0),
-                RoundedRectRadii::new(radii.md as f64, radii.md as f64, 0.0, 0.0),
-            ),
-        );
-
-        // Prompt-mark icon (a chevron reads instantly as a shell prompt),
-        // tinted with the OS accent.
-        let icon_cy = (pill.y0 + pill.y1) / 2.0;
-        let icon_rect = Rect::new(
-            pill_x0 + inner,
-            icon_cy - icon_side / 2.0,
-            pill_x0 + inner + icon_side,
-            icon_cy + icon_side / 2.0,
-        );
-        draw_icon(scene, transform, icon_rect, Icon::ChevronRight, theme.accent_primary, 2.0);
-
-        // Session title, vertically centred, elided to fit the pill.
-        let title_x = icon_rect.x1 + gap;
-        let title_avail = (pill.x1 - inner - title_x).max(0.0);
-        if title_avail > 4.0 {
-            let shown = tr.elide_to_width(title, font_size, title_avail as f32);
-            let text_h = font_size as f64 * 1.25;
-            let title_y = icon_cy - text_h / 2.0;
-            tr.draw_text_weighted(
-                scene,
-                &shown,
-                font_size,
-                theme.text_primary,
-                transform * Affine::translate((title_x, title_y)),
-                None,
-                TextWeight::Semibold,
-            );
-        }
-
-        // "New tab" affordance — a muted "+" to the right of the pill. Leaves
-        // room for multiple sessions without implying a live control.
-        let plus_x0 = pill.x1 + sp.s1 as f64;
-        if plus_x0 + icon_side <= header.x1 - pad {
-            let plus_rect = Rect::new(
-                plus_x0,
-                icon_cy - icon_side / 2.0,
-                plus_x0 + icon_side,
-                icon_cy + icon_side / 2.0,
-            );
-            draw_icon(scene, transform, plus_rect, Icon::Plus, theme.text_dim, 2.0);
-        }
+        let choice = if fam.is_empty() || fam.eq_ignore_ascii_case("monospace") {
+            FontChoice::Monospace
+        } else if tr
+            .system_families()
+            .iter()
+            .any(|f| f.eq_ignore_ascii_case(fam))
+        {
+            FontChoice::Named(fam.to_string())
+        } else {
+            FontChoice::Monospace
+        };
+        self.mono_choice = Some((fam.to_string(), choice.clone()));
+        choice
     }
 
     /// A themed scrollbar in the reserved right gutter, drawn only when the
@@ -3061,20 +2983,6 @@ pub(crate) fn resolve_pair(attr: Attr, palette: &ui::tokens::TerminalPalette) ->
         (text, Some(fg))
     } else {
         (fg, bg)
-    }
-}
-
-/// Resolve the terminal's `FontChoice` from the theme's canonical monospace
-/// token. A named family (the default is "JetBrains Mono") targets that
-/// installed face; the generic `"monospace"`/empty string falls back to the
-/// portable generic monospace class so shaping still works when no specific
-/// mono face is installed.
-pub(crate) fn mono_font_choice(theme: &Theme) -> FontChoice {
-    let fam = theme.tokens.font_mono.family.trim();
-    if fam.is_empty() || fam.eq_ignore_ascii_case("monospace") {
-        FontChoice::Monospace
-    } else {
-        FontChoice::Named(fam.to_string())
     }
 }
 
