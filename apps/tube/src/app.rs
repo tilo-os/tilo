@@ -1218,6 +1218,29 @@ impl TubeApp {
                     if matches!(&self.model.route, Route::Search(_)) {
                         self.model.route = Route::Search(query);
                     }
+                    // Progressive avatar coverage: for a bounded set of result
+                    // uploaders that still lack a real avatar, pull their channel
+                    // page (avatar + subs) so cards fill in real creator photos over
+                    // the next frames. Guarded (`request_channel_if_stub`) so it
+                    // never re-requests, and capped so a search can't fan out into
+                    // dozens of channel fetches.
+                    let mut seen = HashSet::new();
+                    let stub_cids: Vec<String> = self
+                        .model
+                        .search_hits
+                        .iter()
+                        .filter_map(|id| self.model.video(id))
+                        .map(|v| v.channel_id.clone())
+                        .filter(|cid| {
+                            !cid.is_empty()
+                                && seen.insert(cid.clone())
+                                && self.model.channel(cid).map(|c| c.avatar_url.is_empty()).unwrap_or(true)
+                        })
+                        .take(6)
+                        .collect();
+                    for cid in stub_cids {
+                        fetch_channels.push(cid);
+                    }
                     changed = true;
                 }
                 Update::PlaylistPage { playlist, videos } => {

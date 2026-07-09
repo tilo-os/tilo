@@ -565,6 +565,42 @@ impl YtBackend for YtDlpBackend {
         Ok(BackendResult::Videos(Vec::new()))
     }
 
+    fn playlist(&self, id: &str) -> Result<(crate::model::Playlist, Vec<crate::model::Video>), BackendError> {
+        // yt-dlp extracts playlists reliably (unlike the current rustypipe
+        // playlist parser). Flat-list the entries so it stays fast.
+        let url = if id.starts_with("http") {
+            id.to_string()
+        } else {
+            format!("https://www.youtube.com/playlist?list={id}")
+        };
+        let end = format!("{LIST_LIMIT}");
+        let v = self.run_json(
+            &["-J", "--flat-playlist", "--no-warnings", "--playlist-end", &end, &url],
+            Duration::from_secs(60),
+        )?;
+        let videos = videos_from_entries(&v, "Playlist");
+        let pl_id = {
+            let got = str_field_any(&v, &["id"]);
+            if got.is_empty() { id.to_string() } else { got }
+        };
+        let thumbnail_url = videos.first().map(|x| x.thumbnail_url.clone()).unwrap_or_default();
+        let video_count = v
+            .get("playlist_count")
+            .and_then(|c| c.as_u64())
+            .unwrap_or(videos.len() as u64);
+        let playlist = crate::model::Playlist {
+            id: pl_id.clone(),
+            title: str_field_any(&v, &["title", "playlist_title"]),
+            channel_id: str_field_any(&v, &["channel_id", "uploader_id"]),
+            channel_name: str_field_any(&v, &["channel", "uploader"]),
+            thumbnail_url,
+            seed: pl_id,
+            video_count,
+            video_ids: videos.iter().map(|x| x.id.clone()).collect(),
+        };
+        Ok((playlist, videos))
+    }
+
     fn trending(&self) -> BackendOutcome {
         let v = self.run_json(
             &[
