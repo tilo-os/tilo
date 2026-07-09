@@ -616,17 +616,6 @@ fn chip(theme: &Theme, bus: &ActionBus, label: &str, action: Action, active: boo
         .push(text_c(label, 13.0, fg))
 }
 
-fn chip_bar(model: &TubeModel, theme: &Theme, bus: &ActionBus) -> Flex {
-    let mut row = Flex::row().fill_w().wrap().gap(8.0);
-    let on_home = matches!(model.route, Route::Home);
-    row = row.push(chip(theme, bus, "All", Action::Navigate(Route::Home), on_home));
-    for cat in model.categories() {
-        let active = matches!(&model.route, Route::Search(q) if *q == cat);
-        row = row.push(chip(theme, bus, &cat, Action::Navigate(Route::Search(cat.clone())), active));
-    }
-    row
-}
-
 // ---------------------------------------------------------------------------
 // screens
 // ---------------------------------------------------------------------------
@@ -656,7 +645,6 @@ pub fn home(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Imgs) -> Sc
             .fill_w()
             .pad(24.0)
             .gap(18.0)
-            .push(chip_bar(model, theme, bus))
             .push(section_header(theme, IconKind::Fire, "Trending", ""))
             .push(body),
     )
