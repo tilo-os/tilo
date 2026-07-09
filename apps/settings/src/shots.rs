@@ -133,6 +133,15 @@ pub fn render_for_path(out: &Path) -> Result<(), Box<dyn std::error::Error>> {
         return render_to_path(Box::new(app), DEFAULT_SHOTS_VIEWPORT, out);
     }
 
+    // `…search.png` proves the sidebar search filters the category list to the
+    // matching panes. Seeded with a query that spans two categories.
+    if fname.contains("search") {
+        let app = SettingsApp::with_selected(Category::Displays)
+            .with_width_hint(DEFAULT_SHOTS_VIEWPORT.0 as f32)
+            .with_search_shot("light");
+        return render_to_path(Box::new(app), DEFAULT_SHOTS_VIEWPORT, out);
+    }
+
     // `…netdemo.png` renders the Network pane with a populated scan list and
     // an open inline password prompt, proving the connect flow's surface.
     if fname.contains("netdemo") {
@@ -147,7 +156,16 @@ pub fn render_for_path(out: &Path) -> Result<(), Box<dyn std::error::Error>> {
             .map(|(_, rest)| rest.trim_end_matches(".png").to_string())
     });
     if let Some(slug) = panel_slug {
-        if let Some(cat) = category_from_slug(slug.trim()) {
+        // A `narrow` token in the filename captures the panel in the
+        // responsive single-pane layout (the content, sidebar collapsed off
+        // to its flap); otherwise the wide two-pane layout.
+        let slug = slug.trim().trim_end_matches("-narrow");
+        if let Some(cat) = category_from_slug(slug) {
+            if fname.contains("narrow") {
+                let app = SettingsApp::with_selected(cat)
+                    .with_width_hint(NARROW_SHOTS_VIEWPORT.0 as f32);
+                return render_to_path(Box::new(app), NARROW_SHOTS_VIEWPORT, out);
+            }
             let app = SettingsApp::with_selected(cat)
                 .with_width_hint(DEFAULT_SHOTS_VIEWPORT.0 as f32);
             return render_to_path(Box::new(app), DEFAULT_SHOTS_VIEWPORT, out);

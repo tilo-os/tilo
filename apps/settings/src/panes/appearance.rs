@@ -31,7 +31,7 @@ use vello::Scene;
 use winit::event::{Modifiers, WindowEvent};
 
 use crate::prefs::{AppearancePrefs, SystemPrefs};
-use crate::widgets::{card, caption, rows, setting_row, setting_row_described, value_row};
+use crate::widgets::{card, caption, choice_row, rows, setting_row_described, value_row};
 
 pub const THEME_KEY: &str = "appearance.theme";
 pub const HIGH_CONTRAST_KEY: &str = "appearance.high_contrast";
@@ -116,8 +116,8 @@ impl AppearancePane {
         let theme_card = card(
             "Theme",
             rows(vec![
-                setting_row("Theme", Box::new(theme)),
-                setting_row("Text size", Box::new(size)),
+                choice_row("Theme", Box::new(theme)),
+                choice_row("Text size", Box::new(size)),
             ]),
         );
 

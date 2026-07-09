@@ -35,7 +35,7 @@ use vello::Scene;
 use winit::event::{Modifiers, WindowEvent};
 
 use crate::prefs::{SystemPrefs, UpdatePrefs};
-use crate::widgets::{card, caption, rows, setting_row, value_row, El};
+use crate::widgets::{card, caption, choice_row, rows, setting_row, value_row, El};
 
 pub const CHECK_KEY: &str = "updates.check";
 pub const RESTART_KEY: &str = "updates.restart";
@@ -257,7 +257,7 @@ impl UpdatesPane {
             rows(vec![
                 value_row("Current version", &self.status.current_version),
                 value_row("Last checked", &self.prefs.last_checked),
-                setting_row(
+                choice_row(
                     "Release channel",
                     Box::new(
                         Dropdown::new(
