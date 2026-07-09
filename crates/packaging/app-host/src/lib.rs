@@ -11,7 +11,9 @@
 //!   eagerly-extracted payload tree. Wraps [`pkg::BlobStore`].
 //! - [`registry`] — `Pinned` / `Tried` index, persisted as TOML.
 //! - [`gc`] — LRU + size-pressure eviction.
-//! - [`fetch`] — stub remote-fetch (returns "not implemented" for v0).
+//! - [`fetch`] — remote fetch: resolve an app-id through the registry
+//!   protocol (`app-registry`), download the qpkg over iroh-blobs,
+//!   verify it fail-closed, and install it.
 //! - [`install`] — parse a .qpkg-shaped byte blob and ingest into the
 //!   Store + Registry.
 //! - [`service`] — Cap'n Proto `AppHost` server implementation.
