@@ -118,6 +118,11 @@ pub fn app_root_for_shot(scenario: &str) -> Box<dyn Widget> {
         "nowplaying" => app.snap_nowplaying(),
         "lyrics" => app.snap_lyrics(),
         "downloading" => app.snap_downloading(),
+        "search-tabs" => app.snap_search_results(app::SearchTab::All),
+        "search-songs" => app.snap_search_results(app::SearchTab::Songs),
+        "search-artists" => app.snap_search_results(app::SearchTab::Artists),
+        "artist-page" => app.snap_artist_page(),
+        "album-page" => app.snap_album_page(),
         _ => {}
     }
     Box::new(app)
