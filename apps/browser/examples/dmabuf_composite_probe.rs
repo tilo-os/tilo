@@ -53,7 +53,12 @@ fn main() {
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
         format: wgpu::TextureFormat::Rgba8Unorm,
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        // RENDER_ATTACHMENT for the grey clear, STORAGE_BINDING for the
+        // compositor's compute write, COPY_SRC for readback — mirroring
+        // vello's intermediate (STORAGE_BINDING) that the live path uses.
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+            | wgpu::TextureUsages::STORAGE_BINDING
+            | wgpu::TextureUsages::COPY_SRC,
         view_formats: &[],
     });
     let view = target.create_view(&wgpu::TextureViewDescriptor::default());
