@@ -53,6 +53,19 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         render_suggestions_shot(std::path::Path::new(&out))?;
         return Ok(());
     }
+    if let Some(out) = parse_arg_value(&args, "--shots-overlay") {
+        // Full chrome + the address suggestion overlay pinned into view,
+        // to inspect its live position (under the bar) + frosted look.
+        use browser::history::HistoryEntry;
+        let mut widget = BrowserWidget::new_headless();
+        widget.debug_force_suggestions(vec![
+            HistoryEntry { url: "https://github.com/qos/qos".into(), title: "qOS on code.sandbox.example".into(), last_visit: 3, visit_count: 12 },
+            HistoryEntry { url: "https://en.wikipedia.org/wiki/Git".into(), title: "Git - Wikipedia".into(), last_visit: 2, visit_count: 4 },
+            HistoryEntry { url: "https://gitlab.com".into(), title: "GitLab".into(), last_visit: 1, visit_count: 2 },
+        ]);
+        render_shot_to_png(Box::new(widget), (1000, 650), std::path::Path::new(&out))?;
+        return Ok(());
+    }
     if let Some(out) = parse_arg_value(&args, "--shots-settings") {
         // Render the settings pane standalone, to inspect its layout.
         render_shot_to_png(
@@ -341,6 +354,8 @@ fn render_shot_to_png(
         &presence,
         &permission,
     );
+    // Overlay pass (dropdowns, floating panels), as the live App runs it.
+    widget.draw_overlay(&mut scene, Affine::IDENTITY, &mut text_renderer, &theme, &presence);
 
     if let Some(parent) = out.parent() {
         std::fs::create_dir_all(parent).ok();
