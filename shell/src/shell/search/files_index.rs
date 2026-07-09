@@ -36,7 +36,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
 use std::thread;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use tantivy::collector::TopDocs;
 use tantivy::query::QueryParser;
@@ -84,6 +84,13 @@ const MAX_ENTRIES: usize = 50_000;
 const COMMIT_BATCH: usize = 512;
 const COMMIT_INTERVAL_SECS: u64 = 3;
 const QUERY_CACHE_CAPACITY: usize = 32;
+/// Minimum gap between reader-reload calls. Reader-reload does disk I/O
+/// (unmap old segment, map new), so per-keystroke reloads produced a
+/// visible palette jitter as the user typed fast. Anything under a
+/// second is imperceptible for content-freshness — the walker commits
+/// in batches anyway — and this keeps the query hot-path allocation-
+/// and-syscall-free on cache misses.
+const READER_RELOAD_INTERVAL_MS: u64 = 500;
 /// Tantivy writer heap. 50 MB is plenty for the batch sizes we push and
 /// comfortably fits on any qOS-eligible machine.
 const WRITER_HEAP_BYTES: usize = 50_000_000;
@@ -142,6 +149,12 @@ pub struct FilesIndex {
     reader: IndexReader,
     query_parser: QueryParser,
     cache: Arc<Mutex<QueryCache>>,
+    /// Timestamp of the last `reader.reload()` call. Reader-reload does
+    /// disk I/O per invocation, and a naive per-keystroke reload gave
+    /// the palette a jitter spike whenever the user typed fast.
+    /// Rate-limited to at most one reload per
+    /// [`READER_RELOAD_INTERVAL_MS`].
+    last_reload: Arc<Mutex<Option<Instant>>>,
     /// Kept alive so the writer thread doesn't drop while we're using
     /// the reader.
     _writer_handle: Arc<RwLock<Option<thread::JoinHandle<()>>>>,
@@ -208,14 +221,21 @@ impl FilesIndex {
                 *slot = handle;
             }
         }
-        Ok(Self { fields, reader, query_parser, cache, _writer_handle: writer_handle })
+        Ok(Self {
+            fields,
+            reader,
+            query_parser,
+            cache,
+            last_reload: Arc::new(Mutex::new(None)),
+            _writer_handle: writer_handle,
+        })
     }
 
     /// Run a query against the current index snapshot. Blocks; returns
-    /// up to `limit` hits sorted by BM25 score descending. Reloads the
-    /// reader first so writes committed by the background walker since
-    /// the last `query` are visible immediately (a plain `OnCommit`
-    /// reload waits for a few frames of tantivy's own scheduler).
+    /// up to `limit` hits sorted by BM25 score descending. Rate-limits
+    /// reader-reload to at most one per
+    /// [`READER_RELOAD_INTERVAL_MS`] so a fast-typing user doesn't
+    /// stall on repeat disk I/O.
     pub fn query(&self, needle: &str, limit: usize) -> Vec<ContentHit> {
         if needle.trim().is_empty() {
             return Vec::new();
@@ -225,10 +245,30 @@ impl FilesIndex {
                 return hit;
             }
         }
-        // Explicit reload keeps the reader in step with the walker's
-        // latest commit. Ignore reload errors — the searcher below
-        // still works against the previous snapshot.
-        let _ = self.reader.reload();
+        // Throttled reader-reload. The walker commits in batches of up
+        // to `COMMIT_BATCH` docs (or every `COMMIT_INTERVAL_SECS`), so
+        // one reload per `READER_RELOAD_INTERVAL_MS` is more than
+        // enough to see fresh content while keeping the keystroke
+        // hot-path allocation-free.
+        {
+            let now = Instant::now();
+            let mut should_reload = true;
+            if let Ok(mut slot) = self.last_reload.lock() {
+                if let Some(prev) = *slot {
+                    if now.duration_since(prev)
+                        < Duration::from_millis(READER_RELOAD_INTERVAL_MS)
+                    {
+                        should_reload = false;
+                    }
+                }
+                if should_reload {
+                    *slot = Some(now);
+                }
+            }
+            if should_reload {
+                let _ = self.reader.reload();
+            }
+        }
         let Ok(query) = self.query_parser.parse_query(needle) else {
             return Vec::new();
         };
@@ -252,8 +292,16 @@ impl FilesIndex {
                 snippet: None,
             });
         }
-        if let Ok(mut cache) = self.cache.lock() {
-            cache.put(needle.to_string(), limit, out.clone());
+        // Only cache non-empty results. An empty response often means
+        // "the walker hasn't reached these files yet" — caching it
+        // pins a stale miss until the next explicit invalidate. This
+        // was the "the palette shows nothing right after boot even
+        // though the file is obviously there" bug the perf test
+        // surfaced.
+        if !out.is_empty() {
+            if let Ok(mut cache) = self.cache.lock() {
+                cache.put(needle.to_string(), limit, out.clone());
+            }
         }
         out
     }
@@ -591,6 +639,66 @@ mod content_index_integration {
             !hits.iter().any(|h| h.path.ends_with("binary.png")),
             "binary.png should be excluded, got {:?}",
             hits
+        );
+    }
+
+    /// Rough latency budget for a keystroke through the tantivy path.
+    /// Two goals:
+    /// - a cache-miss query must land well below the perceived-instant
+    ///   threshold (100 ms is the informal one-frame-of-latency budget
+    ///   for search UIs; we set the assertion at 200 ms to leave room
+    ///   for CI jitter and cold-JIT effects).
+    /// - a cache-hit query must be sub-millisecond so a user pressing
+    ///   backspace to restore a prior needle doesn't pay again for
+    ///   the reader-reload / segment-search chain.
+    #[test]
+    #[serial]
+    fn query_latency_stays_inside_keystroke_budget() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        let cache_dir = tmp.path().join(".cache/qos/files-index");
+        fs::create_dir_all(&cache_dir).ok();
+        unsafe {
+            std::env::set_var("QOS_FILES_INDEX_DIR", &cache_dir);
+        }
+
+        // Sprinkle enough files that BM25 has something to score.
+        for i in 0..40 {
+            fs::write(
+                home.join(format!("f{i}.md")),
+                format!("alpha bravo charlie {i} keyword"),
+            )
+            .unwrap();
+        }
+
+        let idx = FilesIndex::open_or_create(home).unwrap();
+        // The walker's initial commit + reader-refresh dance can take a
+        // second or two on cold disk, especially in CI. Widen the wait
+        // — the perf assertion below only kicks in AFTER the index is
+        // hot, so a slow walker doesn't skew the measurement.
+        let ready = wait_for(
+            || !idx.query("keyword", 10).is_empty(),
+            Duration::from_secs(30),
+        );
+        assert!(ready, "walker didn't populate within 30s");
+
+        // Force a cache miss.
+        let miss_start = Instant::now();
+        let hits = idx.query("bravo", 10);
+        let miss_elapsed = miss_start.elapsed();
+        assert!(!hits.is_empty(), "expected results for 'bravo'");
+        assert!(
+            miss_elapsed < Duration::from_millis(200),
+            "cache-miss query took {miss_elapsed:?}, over the 200 ms budget"
+        );
+
+        // Repeat — this one hits the LRU cache.
+        let hit_start = Instant::now();
+        let _ = idx.query("bravo", 10);
+        let hit_elapsed = hit_start.elapsed();
+        assert!(
+            hit_elapsed < Duration::from_millis(5),
+            "cache-hit query took {hit_elapsed:?}, over the 5 ms budget"
         );
     }
 
