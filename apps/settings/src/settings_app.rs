@@ -37,7 +37,7 @@
 use crate::categories::Category;
 use crate::panes;
 use crate::sidebar;
-use ui::widget::{Button, Column, Container, NavSplit, Row, Spacer, SplitLayout, SplitMode, Text, Widget};
+use ui::widget::{Button, Column, Container, NavSplit, Row, Scrollable, Spacer, SplitLayout, SplitMode, Text, Widget};
 use ui::{AppKind, AppWidget, IconDescriptor};
 
 /// CRDT key the header's collapse/expand button writes `true` to. Read in
@@ -69,6 +69,11 @@ pub struct SettingsApp {
     /// Toggled by the header's collapse button; mirrored into the document
     /// via [`TOGGLE_SIDEBAR_KEY`] so it survives structure rebuilds.
     sidebar_collapsed: bool,
+    /// The live search query typed into the sidebar's search field (mirrored
+    /// from [`crate::sidebar::SEARCH_KEY`]). When non-empty the sidebar shows
+    /// a filtered results list instead of the sectioned category list; a
+    /// change flags `structure_dirty` so the filtered list is rebuilt.
+    search_query: String,
     rect: vello::kurbo::Rect,
     /// The composed split (sidebar | content), rebuilt each `build_layout` so
     /// a category switch shows up once the host re-runs the layout pass.
@@ -89,6 +94,7 @@ impl SettingsApp {
             force_sidebar_open: false,
             width_hint: None,
             sidebar_collapsed: false,
+            search_query: String::new(),
             rect: vello::kurbo::Rect::ZERO,
             split: None,
         }
@@ -154,6 +160,19 @@ impl SettingsApp {
         self.sidebar_collapsed
     }
 
+    /// The current search query (empty when not searching). Read by `--shots`
+    /// / tests to confirm the filter reached the sidebar.
+    pub fn search_query(&self) -> &str {
+        &self.search_query
+    }
+
+    /// Pre-seed a search query so the deterministic `--shots` render shows the
+    /// filtered sidebar (there is no live event loop to type into the field).
+    pub fn with_search_shot(mut self, query: &str) -> Self {
+        self.search_query = query.to_string();
+        self
+    }
+
     /// Start with the sidebar collapsed — used by the `--shots` capture that
     /// proves the docked sidebar can be hidden to reclaim content width.
     pub fn with_sidebar_collapsed_shot(mut self) -> Self {
@@ -161,66 +180,73 @@ impl SettingsApp {
         self
     }
 
-    /// The glyph the collapse button shows. When the sidebar is open it
-    /// offers to collapse (panel-left-close); when collapsed it offers to
-    /// reveal it (panel-left-open / menu).
+    /// The glyph the sidebar-toggle button shows. A hamburger reads as
+    /// "toggle the navigation" in both states, so the button stays legible
+    /// whether the sidebar is docked or collapsed.
     fn collapse_glyph(&self) -> &'static str {
-        if self.sidebar_collapsed {
-            "\u{f035c}" // menu — "show sidebar"
-        } else {
-            "\u{f0b81}" // dock-left / "hide sidebar"
-        }
+        "\u{f035c}" // menu / hamburger
     }
 
-    /// The header shown above the content pane: a collapse/expand toggle, the
-    /// category title, and a one-line subtitle, on a card surface.
+    /// The header shown above the content pane: a sidebar-toggle button, the
+    /// category's own glyph, the category title, and a one-line subtitle,
+    /// closed off by a hairline rule. Rendered as a plain (borderless) block
+    /// so it reads as a page title rather than another card — the cards below
+    /// it are the raised surfaces, the header sits on the page background.
     fn build_pane_header(&self) -> Box<dyn Widget> {
-        // The collapse button hides/shows the docked sidebar, reclaiming its
+        let theme = ui::Theme::dark();
+
+        // The toggle button hides/shows the docked sidebar, reclaiming its
         // width for content. It writes a one-shot CRDT key that `sync` reads.
-        let collapse_btn = Button::new(
+        let toggle_btn = Button::new(
             "settings.toggle_sidebar",
             self.collapse_glyph(),
             Some(TOGGLE_SIDEBAR_KEY),
-        );
+        )
+        .with_size(38.0, 38.0);
 
-        // Title + subtitle stacked; a small gap between them keeps the two
-        // lines from crowding (the column is block-display and ignores the
-        // toolkit gap).
-        let titles = Column::new()
-            .with_no_padding()
-            .with_intrinsic_height()
-            .push(Box::new(
-                Text::new(self.selected.label()).with_size(24.0),
-            ))
-            .push(crate::widgets::vgap(4.0))
+        // Title line: the title first (so it measures and draws — the same
+        // `Row[Text, Spacer, action]` shape the card headers use), then the
+        // trailing sidebar-toggle button. A leading `Text` in a Row draws
+        // reliably; a trailing one can collapse to zero width, so title order
+        // matters here.
+        let title_row = Row::new()
+            .push(Box::new(Text::new(self.selected.label()).with_size(24.0)))
+            .push(Box::new(Spacer::new()))
+            .push(Box::new(toggle_btn));
+
+        // Subtitle on its own line, dimmed, leading `Text` so it draws.
+        let subtitle_row = Row::new()
             .push(Box::new(
                 Text::new(self.selected.subtitle())
-                    .with_size(12.0)
-                    .with_color(ui::Theme::dark().text_dim),
-            ));
-
-        // Button on the left, titles to its right, vertically grouped.
-        let row = Row::new()
-            .push(Box::new(collapse_btn))
-            .push(Box::new(titles))
+                    .with_size(13.0)
+                    .with_color(theme.text_dim),
+            ))
             .push(Box::new(Spacer::new()));
 
-        // Keeping the content inside a background `Container` is what makes it
-        // draw reliably — bare text at the head of a plain column can be
-        // skipped by the cached draw path.
-        Box::new(Container::new().with_background().with_child(Box::new(row)))
+        // The title band. Wrapping the content in a background `Container` is
+        // what makes the large title `Text` measure and draw reliably — a
+        // borderless wrapper collapses the leading title to zero width (the
+        // same cached-draw-path quirk `card()` documents). The band reads as
+        // the pane's headerbar, above the raised content cards.
+        let stack = Column::new()
+            .with_no_padding()
+            .with_intrinsic_height()
+            .push(Box::new(title_row))
+            .push(crate::widgets::vgap(5.0))
+            .push(Box::new(subtitle_row));
+        Box::new(Container::new().with_background().with_child(Box::new(stack)))
     }
 
-    /// Build the content pane: header + the selected category's body.
+    /// Build the content pane: header + the selected category's body, wrapped
+    /// in a vertical [`Scrollable`] so tall panes (many section cards on a
+    /// short window) scroll with a real overlay scrollbar — thumb drag, track
+    /// paging, PageUp/Down + Home/End, wheel — instead of being clipped.
     ///
-    /// The body is a vertical stack of cards. We deliberately use a plain
-    /// `Column` (filling its pane) rather than a `Scrollable` wrapper: in
-    /// the retained-mode layout a `Scrollable` whose child sizes itself
-    /// intrinsically collapses to a zero-height viewport unless the host
-    /// drives its measure pass, which the standalone settings window does
-    /// not. The panels fit the window at the sizes they ship; making them
-    /// scroll is a follow-up that belongs in `ui` (a measured
-    /// `Scrollable` viewport), noted in the growth ledger.
+    /// The intrinsic-height inner `Column` provides the content extent; the
+    /// `Scrollable`'s `percent(1.0)` height resolves against the filling
+    /// `Container` (a definite height under the live `ui::App`, which drives
+    /// the measure pass), so the viewport doesn't collapse. When the content
+    /// fits, the bar hides itself and nothing changes visually.
     fn build_content(&self) -> Box<dyn Widget> {
         let header = self.build_pane_header();
         let body = self.build_pane_body();
@@ -232,7 +258,8 @@ impl SettingsApp {
             .push(header)
             .push(crate::widgets::vgap(20.0))
             .push(body);
-        Box::new(Container::new().filling().with_child(Box::new(inner)))
+        let scroll = Scrollable::new_vertical().with_child(Box::new(inner));
+        Box::new(Container::new().filling().with_child(Box::new(scroll)))
     }
 
     /// Dispatch to the per-category pane body.
@@ -243,9 +270,11 @@ impl SettingsApp {
             Category::Sound => panes::sound::build(),
             Category::Displays => panes::display::build(),
             Category::MouseKeyboard => panes::mouse_keyboard::build(),
+            Category::KeyboardShortcuts => panes::keyboard_shortcuts::build(),
             Category::TimeDate => panes::time_date::build(),
             Category::Users => panes::users::build(),
             Category::Printers => panes::printers::build(),
+            Category::Power => panes::power::build(),
             Category::Appearance => panes::appearance::build(),
             Category::ExternalAccounts => panes::accounts::build(),
             Category::RegionFormats => panes::region::build(),
@@ -267,7 +296,7 @@ impl SettingsApp {
     /// eased — to its resolved open state right after construction (the same
     /// approach `tube` uses for its rebuilt nav rail).
     fn build_split(&self) -> NavSplit {
-        let sidebar = sidebar::build(self.selected);
+        let sidebar = sidebar::build(self.selected, &self.search_query);
         let content = self.build_content();
         let mut split = NavSplit::new(sidebar, content)
             .with_mode(SplitMode::Adaptive)
@@ -324,6 +353,28 @@ impl Widget for SettingsApp {
             let _ = state.put(path, TOGGLE_SIDEBAR_KEY, automerge::ScalarValue::Boolean(false));
             self.sidebar_collapsed = !self.sidebar_collapsed;
             self.structure_dirty = true;
+        }
+
+        // In `--shots` there is no event loop to type into the search field,
+        // so a pre-seeded query (via `with_search_shot`) is mirrored into the
+        // field's key once, so the field visibly shows the query it filtered
+        // by. Harmless live: `search_query` starts empty there.
+        if !self.search_query.is_empty()
+            && read_search(state, path).is_none()
+        {
+            let _ = state.put(path, sidebar::SEARCH_KEY, self.search_query.as_str());
+        }
+
+        // Search query: the sidebar's search field writes `settings.search`.
+        // Reading a changed value here updates the filter and flags a rebuild
+        // so the sidebar's filtered results list is recomposed. The field
+        // re-reads the same key on its own `sync`, so the query text survives
+        // that rebuild; keeping the field the first focusable keeps the caret.
+        if let Some(q) = read_search(state, path) {
+            if q != self.search_query {
+                self.search_query = q;
+                self.structure_dirty = true;
+            }
         }
 
         if let Some(split) = &mut self.split {
@@ -492,6 +543,20 @@ impl Widget for SettingsApp {
     }
 }
 
+/// Read the sidebar search query from the document. The field writes either a
+/// plain string scalar or an Automerge `Text` object, so handle both.
+fn read_search(state: &automerge::AutoCommit, path: &automerge::ObjId) -> Option<String> {
+    use automerge::{ReadDoc, Value};
+    match state.get(path, sidebar::SEARCH_KEY) {
+        Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
+            automerge::ScalarValue::Str(text) => Some(text.to_string()),
+            _ => None,
+        },
+        Ok(Some((Value::Object(automerge::ObjType::Text), obj))) => state.text(&obj).ok(),
+        _ => None,
+    }
+}
+
 impl AppWidget for SettingsApp {
     fn app_kind(&self) -> AppKind {
         AppKind::Settings
@@ -636,6 +701,47 @@ mod tests {
         assert!(!app.sidebar_collapsed(), "second toggle re-expands");
         layout_at(&mut app, 1200.0, 760.0);
         assert!(app.sidebar_open(), "re-expanded sidebar is open again");
+    }
+
+    #[test]
+    fn search_query_updates_from_document_and_flags_rebuild() {
+        use automerge::transaction::Transactable;
+        let mut app = SettingsApp::new();
+        layout_at(&mut app, 1200.0, 760.0);
+        assert_eq!(app.search_query(), "", "starts with no query");
+
+        let mut doc = automerge::AutoCommit::new();
+        let root = automerge::ROOT;
+        // The sidebar search field writes SEARCH_KEY; sync adopts it.
+        let _ = doc.put(&root, sidebar::SEARCH_KEY, "night light");
+        app.sync(&mut doc, &root);
+        assert_eq!(app.search_query(), "night light");
+        assert!(
+            app.take_structure_dirty(),
+            "a new query must flag a rebuild so the filtered sidebar recomposes"
+        );
+        // Re-syncing the same query is a no-op (no spurious rebuild).
+        app.sync(&mut doc, &root);
+        assert!(!app.take_structure_dirty());
+    }
+
+    #[test]
+    fn seeded_search_shot_query_reaches_the_sidebar_and_field() {
+        use automerge::{transaction::Transactable, ReadDoc};
+        // The `--shots` seed path mirrors a pre-set query into the field key so
+        // the rendered field shows it, and drives the filter.
+        let mut app = SettingsApp::with_selected(Category::Displays).with_search_shot("light");
+        assert_eq!(app.search_query(), "light");
+        let mut doc = automerge::AutoCommit::new();
+        let root = automerge::ROOT;
+        app.sync(&mut doc, &root);
+        // The field key was seeded so the TextInput renders the query.
+        assert!(
+            doc.get(&root, sidebar::SEARCH_KEY).unwrap().is_some(),
+            "the seeded query is written to the field key"
+        );
+        // And it still lays out (the filtered sidebar path).
+        let _ = { layout_at(&mut app, 1200.0, 760.0); };
     }
 
     #[test]

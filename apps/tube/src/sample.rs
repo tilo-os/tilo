@@ -48,6 +48,8 @@ fn video(
         channel_id: channel.id.clone(),
         channel_name: channel.name.clone(),
         channel_seed: channel.seed.clone(),
+        // Offline sample carries no real uploader avatar URL.
+        channel_avatar_url: String::new(),
         views,
         published: published.into(),
         duration,

@@ -212,6 +212,12 @@ pub struct Video {
     pub channel_id: ChannelId,
     pub channel_name: String,
     pub channel_seed: String,
+    /// Real uploader avatar URL carried on a feed/search list item (YouTube
+    /// returns it on the channel tag). Used to populate the channel record's
+    /// [`Channel::avatar_url`] so Home/Search cards show the real creator icon
+    /// without a separate channel-page fetch. Empty on the offline sample.
+    #[serde(default)]
+    pub channel_avatar_url: String,
     pub views: u64,
     pub published: String,
     pub duration: u32,
@@ -651,11 +657,27 @@ impl TubeModel {
         });
     }
 
+    /// Record a channel's real avatar URL (carried on a feed/search list item)
+    /// when we don't already hold one, so Home/Search cards paint the real
+    /// creator icon without waiting on a separate channel-page fetch. A
+    /// no-op for empty ids/urls or when a real avatar is already known.
+    pub fn note_channel_avatar(&mut self, id: &str, url: &str) {
+        if id.is_empty() || url.is_empty() {
+            return;
+        }
+        if let Some(ch) = self.channels.iter_mut().find(|c| c.id == id) {
+            if ch.avatar_url.is_empty() {
+                ch.avatar_url = url.to_string();
+            }
+        }
+    }
+
     /// Replace the whole catalogue with a freshly-fetched live set, marking the
     /// data source live and synthesising channel stubs for its uploaders.
     pub fn adopt_live_catalogue(&mut self, videos: Vec<Video>, label: impl Into<String>) {
         for v in &videos {
             self.ensure_channel_stub(&v.channel_id, &v.channel_name);
+            self.note_channel_avatar(&v.channel_id, &v.channel_avatar_url);
         }
         self.videos = videos;
         // Stale local ordering hints no longer apply to the new catalogue.
@@ -867,6 +889,7 @@ mod tests {
             channel_id: "c".into(),
             channel_name: "Chan".into(),
             channel_seed: "c".into(),
+            channel_avatar_url: String::new(),
             views: 1,
             published: "now".into(),
             duration: 60,

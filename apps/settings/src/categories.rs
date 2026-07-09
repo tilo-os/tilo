@@ -52,9 +52,11 @@ pub enum Category {
     Sound,
     Displays,
     MouseKeyboard,
+    KeyboardShortcuts,
     TimeDate,
     Users,
     Printers,
+    Power,
     Appearance,
     ExternalAccounts,
     RegionFormats,
@@ -73,9 +75,11 @@ impl Category {
         Category::Sound,
         Category::Displays,
         Category::MouseKeyboard,
+        Category::KeyboardShortcuts,
         Category::Printers,
         // System
         Category::Appearance,
+        Category::Power,
         Category::TimeDate,
         Category::Users,
         Category::RegionFormats,
@@ -97,8 +101,10 @@ impl Category {
             Category::Sound
             | Category::Displays
             | Category::MouseKeyboard
+            | Category::KeyboardShortcuts
             | Category::Printers => Section::Devices,
             Category::Appearance
+            | Category::Power
             | Category::TimeDate
             | Category::Users
             | Category::RegionFormats => Section::System,
@@ -124,9 +130,11 @@ impl Category {
             Category::Sound => "Sound",
             Category::Displays => "Displays",
             Category::MouseKeyboard => "Mouse & Keyboard",
+            Category::KeyboardShortcuts => "Keyboard Shortcuts",
             Category::TimeDate => "Time & Date",
             Category::Users => "Users",
             Category::Printers => "Printers",
+            Category::Power => "Power",
             Category::Appearance => "Appearance",
             Category::ExternalAccounts => "External Accounts",
             Category::RegionFormats => "Region & Formats",
@@ -144,9 +152,11 @@ impl Category {
             Category::Sound => "Output, input, volume, and system sounds",
             Category::Displays => "Resolution, scale, arrangement, and brightness",
             Category::MouseKeyboard => "Pointer speed, scrolling, and keyboard layout",
+            Category::KeyboardShortcuts => "System and workspace keyboard shortcuts",
             Category::TimeDate => "Clock, time zone, and how dates display",
             Category::Users => "Accounts on this device and their roles",
             Category::Printers => "Printers, queues, and recent jobs",
+            Category::Power => "Battery, power profile, and automatic suspend",
             Category::Appearance => "Theme, contrast, motion, and text size",
             Category::ExternalAccounts => "Email, calendars, file sync, and Nextcloud",
             Category::RegionFormats => "Currency, date, time, and measurement units",
@@ -164,9 +174,11 @@ impl Category {
             Category::Sound => "\u{f057e}",            // volume-high
             Category::Displays => "\u{f0379}",         // monitor
             Category::MouseKeyboard => "\u{f037d}",    // mouse
+            Category::KeyboardShortcuts => "\u{f030c}", // keyboard
             Category::TimeDate => "\u{f0954}",         // clock
             Category::Users => "\u{f0849}",            // account-group
             Category::Printers => "\u{f042a}",         // printer
+            Category::Power => "\u{f0079}",            // battery
             Category::Appearance => "\u{f0779}",       // palette
             Category::ExternalAccounts => "\u{f16e1}", // cloud
             Category::RegionFormats => "\u{f0ac0}",    // earth
@@ -174,6 +186,49 @@ impl Category {
             Category::Updates => "\u{f06b0}",          // download
             Category::About => "\u{f02fd}",            // information
         }
+    }
+
+    /// Search keywords for this category, beyond its label — the names of the
+    /// controls and concepts it houses, plus common synonyms. Search matches a
+    /// query against the label, subtitle, and these, so typing "night light",
+    /// "vpn", "battery", or "wallpaper" lands on the right pane even though
+    /// none of those words is the category's own name.
+    pub fn keywords(self) -> &'static [&'static str] {
+        match self {
+            Category::Network => &["wifi", "wi-fi", "wired", "ethernet", "vpn", "wireguard", "proxy", "internet", "connection"],
+            Category::Bluetooth => &["pair", "pairing", "device", "headphones", "keyboard", "mouse", "wireless"],
+            Category::Sound => &["audio", "volume", "mute", "microphone", "mic", "speaker", "output", "input", "device", "system sounds"],
+            Category::Displays => &["monitor", "screen", "resolution", "scale", "brightness", "night light", "blue light", "arrangement", "external"],
+            Category::MouseKeyboard => &["pointer", "trackpad", "touchpad", "scroll", "natural scrolling", "tap to click", "key repeat", "layout", "cursor"],
+            Category::TimeDate => &["clock", "timezone", "time zone", "ntp", "24-hour", "automatic time", "calendar"],
+            Category::Users => &["accounts", "people", "administrator", "admin", "login", "roles"],
+            Category::Printers => &["cups", "print", "queue", "job", "paper", "scanner"],
+            Category::Appearance => &["theme", "dark mode", "light mode", "contrast", "high contrast", "reduce motion", "text size", "font", "accessibility", "wallpaper", "color"],
+            Category::ExternalAccounts => &["email", "mail", "imap", "smtp", "calendar", "caldav", "webdav", "nextcloud", "sync", "cloud"],
+            Category::RegionFormats => &["locale", "language", "currency", "date format", "time format", "units", "measurement", "metric", "imperial"],
+            Category::Permissions => &["roles", "access", "sandbox", "grants", "file access", "collaboration", "security"],
+            Category::Updates => &["software", "upgrade", "channel", "stable", "nightly", "version", "bootc", "release"],
+            Category::Power => &["battery", "charge", "energy", "power profile", "performance", "power saver", "suspend", "sleep", "screen blank"],
+            Category::KeyboardShortcuts => &["shortcuts", "hotkeys", "keybindings", "keys", "combinations", "accelerators", "workspace"],
+            Category::About => &["device", "identity", "os", "kernel", "hostname", "system", "version", "fingerprint"],
+        }
+    }
+
+    /// Whether this category matches a search query (case-insensitive). A
+    /// match is a substring hit against the label, the subtitle, or any of the
+    /// [`Category::keywords`]. An all-whitespace query matches everything (the
+    /// caller treats that as "no search").
+    pub fn matches(self, query: &str) -> bool {
+        let q = query.trim().to_ascii_lowercase();
+        if q.is_empty() {
+            return true;
+        }
+        if self.label().to_ascii_lowercase().contains(&q)
+            || self.subtitle().to_ascii_lowercase().contains(&q)
+        {
+            return true;
+        }
+        self.keywords().iter().any(|k| k.contains(&q) || q.contains(*k))
     }
 
     /// Stable identifier suffix used to compose `test_id`s and CRDT keys.
@@ -184,9 +239,11 @@ impl Category {
             Category::Sound => "sound",
             Category::Displays => "displays",
             Category::MouseKeyboard => "mouse_keyboard",
+            Category::KeyboardShortcuts => "keyboard_shortcuts",
             Category::TimeDate => "time_date",
             Category::Users => "users",
             Category::Printers => "printers",
+            Category::Power => "power",
             Category::Appearance => "appearance",
             Category::ExternalAccounts => "external_accounts",
             Category::RegionFormats => "region_formats",
@@ -246,5 +303,44 @@ mod tests {
             count += Category::in_section(*s).count();
         }
         assert_eq!(count, Category::ALL.len());
+    }
+
+    #[test]
+    fn empty_or_whitespace_query_matches_everything() {
+        for c in Category::ALL {
+            assert!(c.matches(""), "{c:?} should match an empty query");
+            assert!(c.matches("   "), "{c:?} should match a whitespace query");
+        }
+    }
+
+    #[test]
+    fn matches_by_label_subtitle_and_keyword() {
+        // Label substring.
+        assert!(Category::Network.matches("net"));
+        // Case-insensitive.
+        assert!(Category::Bluetooth.matches("BLUE"));
+        // Subtitle substring ("Pair and manage Bluetooth devices").
+        assert!(Category::Bluetooth.matches("pair"));
+        // Keyword-only terms land on the owning pane.
+        assert!(Category::Displays.matches("night light"), "night light → Displays");
+        assert!(Category::Network.matches("vpn"), "vpn → Network");
+        assert!(Category::Power.matches("battery"), "battery → Power");
+        assert!(Category::Appearance.matches("dark mode"), "dark mode → Appearance");
+        assert!(Category::ExternalAccounts.matches("imap"), "imap → External Accounts");
+        assert!(Category::KeyboardShortcuts.matches("hotkeys"), "hotkeys → Keyboard Shortcuts");
+    }
+
+    #[test]
+    fn non_matching_query_is_rejected() {
+        assert!(!Category::Network.matches("battery"));
+        assert!(!Category::About.matches("wifi"));
+        assert!(!Category::Sound.matches("zzzznope"));
+    }
+
+    #[test]
+    fn every_category_has_nonempty_keywords() {
+        for c in Category::ALL {
+            assert!(!c.keywords().is_empty(), "{c:?} must carry search keywords");
+        }
     }
 }
