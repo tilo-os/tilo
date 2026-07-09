@@ -980,6 +980,27 @@ impl ShellOverlayHost {
                             .find(|g| g.id == w.group_id)
                         {
                             if group.active_tab != w.tab_id {
+                                // Guard: only mirror the widget-side
+                                // active tab if it actually exists in
+                                // this group's persisted tab list.
+                                // Without this, a stale `bar.active_id`
+                                // from a mid-detach frame (bar still
+                                // points at a tab that got moved to
+                                // another group) would land here as
+                                // `group.active_tab = <phantom-id>`,
+                                // and the next draw would silently
+                                // drop the whole group because the
+                                // active-tab lookup finds nothing —
+                                // the 2026-07-09 "files window
+                                // completely disappears after Ctrl+K"
+                                // repro.
+                                let tab_exists = group
+                                    .tabs
+                                    .iter()
+                                    .any(|t| t.id == w.tab_id);
+                                if !tab_exists {
+                                    continue;
+                                }
                                 group.active_tab = w.tab_id;
                                 focus_writes.push((ws.id, w.strip_id, w.group_id));
                             }
