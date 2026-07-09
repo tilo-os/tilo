@@ -333,10 +333,12 @@ impl ChatApp {
     /// are derived from the fixed label lengths rather than measured, which
     /// keeps the whole call layout resolvable on a single headless frame.
     pub(crate) fn overlay_controls_layout(&self) -> (Rect, Vec<(&'static str, bool, bool, Hit, Rect)>) {
-        let specs: [(&'static str, bool, bool, Hit); 5] = [
+        let sharing = self.sharing_screen();
+        let specs: [(&'static str, bool, bool, Hit); 6] = [
             (if self.call.muted { "Unmute" } else { "Mute" }, self.call.muted, false, Hit::CallMute),
             (if self.call.deafened { "Undeafen" } else { "Deafen" }, self.call.deafened, false, Hit::CallDeafen),
             ("Audio only", self.call.audio_only, false, Hit::CallAudioOnly),
+            (if sharing { "Stop share" } else { "Share screen" }, sharing, false, Hit::CallShareScreen),
             ("Collapse", false, false, Hit::CallExpand),
             ("Leave", false, true, Hit::CallLeave),
         ];
@@ -411,6 +413,20 @@ impl ChatApp {
         let c = &theme.tokens.colors;
         let u = self.user(&p.user);
         fill_round(scene, tf, rect, 14.0, c.neutral[2]);
+        // A real decoded camera/screen frame from this peer takes over the tile.
+        // This is only ever populated by the live media pump with a genuinely
+        // decoded frame — never a fabricated picture — so when present it is an
+        // honest live feed; otherwise we fall through to the avatar placeholder.
+        if let Some(img) = self.remote_frames.get(&p.user) {
+            ui::image_store::paint_image_cover(scene, tf, rect, img, 14.0);
+            if p.talking {
+                stroke_round(scene, tf, rect, 14.0, c.semantic.success, 2.5);
+            }
+            let name = u.map(|u| u.name.clone()).unwrap_or_default();
+            self.name_plate(scene, tf, tr, theme, rect, &name, p.muted);
+            stroke_round(scene, tf, rect, 14.0, c.border_white_10, 1.0);
+            return;
+        }
         if let Some(u) = u {
             let r = (rect.height() * 0.22).clamp(16.0, 46.0);
             let cx = rect.center().x;
