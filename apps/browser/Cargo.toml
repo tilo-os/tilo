@@ -50,3 +50,8 @@ taffy = "0.10.1"
 tempfile = "3"
 # block_on for the headless dmabuf probe examples
 pollster = "0.4"
+
+# Zero-copy composite probe — needs the WPE engine's dmabuf import.
+[[example]]
+name = "dmabuf_composite_probe"
+required-features = ["wpe"]
