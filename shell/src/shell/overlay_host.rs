@@ -1597,6 +1597,77 @@ impl ShellOverlayHost {
     ///
     /// No-op when no group contains the point (click landed on empty
     /// wallpaper, the topbar, the wheel disc, etc.).
+    /// Walk every widget-side [`GroupRow`] and mirror any group that
+    /// exists in the widget but NOT in the persisted tree into the
+    /// tree. Used to close the writeback gap for
+    /// [`ui::widget::GroupRow::split_tab_into_new_group`] — the drag
+    /// handler creates a fresh widget-side group but has no access to
+    /// the automerge doc to persist it. Without this, the next
+    /// [`Self::resync_strips_from_tree`] would see "widget has X, tree
+    /// doesn't" and evict X, dropping the dragged-out group. Also
+    /// synthesises the corresponding [`state::WindowGroup`] from the
+    /// widget's tab descriptors so tab ids / titles carry over.
+    fn harvest_widget_only_groups_into_tree(&mut self) {
+        if self.group_row_ptrs.is_empty() {
+            return;
+        }
+        let Some(chrome) = self.chrome.clone() else {
+            return;
+        };
+        // Skip when the chrome revision advanced since our last snapshot —
+        // that means the tree just changed (e.g. a persist-side remove
+        // via bump()) and the widget-side view will catch up through
+        // `resync_strips_from_tree`. Running the harvest in that
+        // window would re-add a legitimately-removed group. Widget-side
+        // splits (`GroupRow::split_tab_into_new_group`) don't bump, so
+        // this guard leaves those visible to the harvest.
+        {
+            let cur_rev = chrome.borrow().revision;
+            if cur_rev != self.last_chrome_revision {
+                return;
+            }
+        }
+        // Collect (strip_id, idx, group) tuples for every widget-only
+        // group under an immutable borrow, then apply them under the
+        // mutable borrow. Same shape as the other harvesters.
+        let mut writes: Vec<(StripId, usize, crate::shell::state::WindowGroup)> = Vec::new();
+        {
+            let st = chrome.borrow();
+            let tree = st.tree();
+            let Some(ws) = tree.workspaces.iter().find(|w| w.id == tree.active) else {
+                return;
+            };
+            for strip in &ws.strips {
+                let Some(&ptr) = self.group_row_ptrs.get(&strip.id) else {
+                    continue;
+                };
+                let tree_ids: std::collections::HashSet<u64> =
+                    strip.window_groups.iter().map(|g| g.id).collect();
+                // SAFETY: same contract as every other `group_row_ptrs`
+                // accessor.
+                let row: &GroupRow = unsafe { &*ptr };
+                for (idx, wg) in row.groups.iter().enumerate() {
+                    if !tree_ids.contains(&wg.id) {
+                        writes.push((strip.id, idx, build_state_group_from_widget(wg)));
+                    }
+                }
+            }
+        }
+        if writes.is_empty() {
+            return;
+        }
+        let st = chrome.borrow_mut();
+        let mut tree = st.tree_mut();
+        for (strip_id, idx, group) in writes {
+            for ws in tree.workspaces.iter_mut() {
+                if let Some(strip) = ws.strips.iter_mut().find(|s| s.id == strip_id) {
+                    let insert_at = idx.min(strip.window_groups.len());
+                    strip.window_groups.insert(insert_at, group.clone());
+                }
+            }
+        }
+    }
+
     fn stamp_active_group_from_click(&mut self, p: Point) {
         if self.group_row_ptrs.is_empty() {
             return;
@@ -1623,11 +1694,15 @@ impl ShellOverlayHost {
         let Some((strip_id, group_id)) = pick_group_at(&candidates, p) else {
             return;
         };
+        // Ensure any widget-only group under this strip is mirrored
+        // into the tree before we stamp — the harvest reconciler
+        // normally runs during `take_structure_dirty` at frame
+        // boundaries, but a click's event dispatch happens BEFORE
+        // that, and a stale `active_group` pointing at a group the
+        // tree doesn't know about would leave `active_tab_id` as None.
+        self.harvest_widget_only_groups_into_tree();
         let st = chrome.borrow_mut();
         let mut tree = st.tree_mut();
-        // Only stamp when the click resolved a real workspace we can
-        // walk back to — otherwise a stale strip pointer from a torn-
-        // down workspace could shadow the real active one.
         let ws_id = tree.active;
         let workspace_exists = tree
             .workspaces
@@ -4093,6 +4168,13 @@ impl Widget for ShellOverlayHost {
     /// would leave a stale flag pending in whichever subtree we
     /// skipped.
     fn take_structure_dirty(&mut self) -> bool {
+        // Mirror any widget-only groups (produced by
+        // `GroupRow::split_tab_into_new_group` on drag-detach) back
+        // into the persisted tree before `resync_strips_from_tree`
+        // runs — otherwise resync sees "widget has X, tree doesn't"
+        // and evicts X, which was the 2026-07-09 "window group
+        // disappears after Ctrl+K" repro.
+        self.harvest_widget_only_groups_into_tree();
         // Pump the chrome-revision diff here too — the shots driver's
         // `relayout()` path skips `update()` entirely (it only takes
         // structure_dirty + reruns the layout pass), so the resync
@@ -4329,6 +4411,70 @@ fn draw_modal_scrim(scene: &mut Scene, transform: Affine, rect: Rect) {
 /// Slate-900 tint at the given alpha. Centralised helper so every overlay
 /// surface paints the same hue (concept's glass tint is rooted at
 /// `slate-900` / `#0f172a`) and the numeric alpha is the only knob.
+/// Synthesise a persisted [`crate::shell::state::WindowGroup`] from a
+/// widget-side `WindowGroup`. Used by
+/// [`ShellOverlayHost::stamp_active_group_from_click`] when the click
+/// resolves a group that only exists widget-side (a fresh drag-detach
+/// whose writeback to the tree hasn't landed yet).
+///
+/// Each tab is reconstructed as a `TileContent::AppPlaceholder` — good
+/// enough for the persisted tree's structural view (id, title,
+/// per-tab `active_tab` pointer). If the underlying kind was
+/// already `AppKind::Other(name)`, we keep the name; anything else
+/// becomes `AppKind::Other(String::new())`, matching the format the
+/// tree's automerge codec already writes for foreign / stub tabs.
+fn build_state_group_from_widget(
+    widget: &ui::widget::WindowGroup,
+) -> crate::shell::state::WindowGroup {
+    use crate::shell::state::{
+        AppKind, Tab, TileContent, WindowGroup as StateGroup, WindowWidth as StateWidth,
+    };
+    let tabs: Vec<Tab> = widget
+        .tabs()
+        .iter()
+        .map(|desc| {
+            // Carry the widget-side AppKind hint into the tree so
+            // `owns_tab` predicates (Notes / Files / …) can still
+            // classify the tab. Fallback to an empty `AppKind::Other`
+            // for descriptors that never learnt a kind — the tab still
+            // exists structurally, just without a provider-side match.
+            let kind = match &desc.app_kind {
+                Some(ui::widget::AppKind::Terminal) => AppKind::Terminal,
+                Some(ui::widget::AppKind::Files) => AppKind::FileExplorer,
+                Some(ui::widget::AppKind::Browser) => AppKind::Browser,
+                Some(ui::widget::AppKind::Settings) => AppKind::Settings,
+                // Editor / anything else / None → carry the tab's own
+                // title as an Other name so Notes-style tabs still
+                // classify (Notes tabs come through with title "Notes"
+                // and get filed under Other("Notes")).
+                _ => AppKind::Other(desc.title.clone()),
+            };
+            Tab {
+                id: desc.id,
+                title: desc.title.clone(),
+                tile: TileContent::AppPlaceholder {
+                    kind,
+                    label: desc.title.clone(),
+                },
+            }
+        })
+        .collect();
+    let active_tab = widget.active_tab_id();
+    let width = match widget.width() {
+        ui::widget::WindowWidth::Narrow => StateWidth::Narrow,
+        ui::widget::WindowWidth::Normal => StateWidth::Normal,
+        ui::widget::WindowWidth::Wide => StateWidth::Wide,
+        ui::widget::WindowWidth::Custom(px) => StateWidth::Custom(px),
+    };
+    StateGroup {
+        id: widget.id,
+        tabs,
+        active_tab,
+        width,
+        maximized: false,
+    }
+}
+
 /// Pick the topmost group whose rect contains `p`. Extracted from
 /// [`ShellOverlayHost::stamp_active_group_from_click`] so it's
 /// testable without a live widget tree.

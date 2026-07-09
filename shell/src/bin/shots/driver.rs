@@ -858,4 +858,148 @@ mod tests {
             "resolved command_palette_input rect must be non-zero; got {r:?}"
         );
     }
+
+    /// Regression test for the 2026-07-09 report: drag a tab into its
+    /// own group, click that group's window body, then press Ctrl+K.
+    /// The palette must:
+    ///
+    /// 1. Not make the sibling group disappear (both groups still laid
+    ///    out with non-zero rects).
+    /// 2. Scope to the CLICKED group's tab, not the group that happened
+    ///    to be active before the detach.
+    ///
+    /// Reproduces the setup used by
+    /// [`driver_drag_tab_out_creates_sibling_group`] then extends it
+    /// with a body-click + Ctrl+K.
+    #[test]
+    fn detach_click_body_ctrl_k_scopes_to_clicked_tab() {
+        let mut d = ShellDriver::new((1600, 900));
+        let _ = d.paint();
+        d.relayout();
+
+        let strip_id = {
+            let st = d.chrome();
+            let tree = st.tree();
+            let ws_id = tree.active;
+            *tree.active_strip.get(&ws_id).expect("active strip")
+        };
+        // Drag Files (pill 1) out past the source group's right edge.
+        let (from, to) = {
+            let group = d
+                .host_mut()
+                .group_at_for_tests(strip_id, 0)
+                .expect("group at idx 0");
+            let group_rect = group.get_rect();
+            let rects = group.tab_rects().to_vec();
+            assert_eq!(rects.len(), 4, "bar must have 4 pills after layout");
+            let files_pill = rects[1];
+            let from = files_pill.center();
+            let to = Point::new(group_rect.x1 + 100.0, from.y);
+            (from, to)
+        };
+        d.drag(from, to, 16);
+        d.relayout();
+        let _ = d.paint();
+        d.relayout();
+
+        // Two groups must exist now.
+        let post = d.host().groups_per_strip();
+        let strip = post
+            .iter()
+            .find(|(s, _)| *s == strip_id)
+            .expect("strip present");
+        assert_eq!(strip.1.len(), 2, "detach must produce two groups");
+
+        // Find the group that contains the Files tab. Titles come from
+        // the bootstrap default seed; the detached one is the singleton.
+        let files_group_idx = strip
+            .1
+            .iter()
+            .position(|(_, tabs)| tabs.len() == 1)
+            .expect("singleton (detached) group");
+        let notes_group_idx = 1 - files_group_idx;
+        let files_tab_id = strip.1[files_group_idx].1[0];
+        let files_rect = d
+            .host_mut()
+            .group_at_for_tests(strip_id, files_group_idx)
+            .expect("files-group widget")
+            .get_rect();
+        let notes_rect = d
+            .host_mut()
+            .group_at_for_tests(strip_id, notes_group_idx)
+            .expect("notes-group widget")
+            .get_rect();
+        assert!(
+            files_rect.area() > 0.0 && notes_rect.area() > 0.0,
+            "both groups laid out before body click"
+        );
+
+        // Click the middle of the Files group's WINDOW BODY (well
+        // below the tab bar so we don't hit a pill).
+        let body_click = Point::new(
+            (files_rect.x0 + files_rect.x1) / 2.0,
+            files_rect.y0 + files_rect.height() * 0.6,
+        );
+        d.click_at(body_click);
+        d.relayout();
+        let _ = d.paint();
+        d.relayout();
+
+        // Sanity: click alone must not drop the group.
+        let mid = d.host().groups_per_strip();
+        let strip_mid = mid
+            .iter()
+            .find(|(s, _)| *s == strip_id)
+            .expect("strip present after body click");
+        assert_eq!(
+            strip_mid.1.len(),
+            2,
+            "body click alone should not drop a group; got {:?}",
+            strip_mid.1
+        );
+
+        // Fire Ctrl+K.
+        d.set_modifiers(ModifiersState::CONTROL);
+        d.press_key(Key::Character(winit::keyboard::SmolStr::new("k")));
+        d.set_modifiers(ModifiersState::empty());
+        let _ = d.paint();
+        d.relayout();
+
+        // Postcondition 1: the sibling group must still exist AND still
+        // have a non-zero rect. The "window disappears" repro was the
+        // group getting silently dropped or rendered at zero.
+        let post2 = d.host().groups_per_strip();
+        let strip2 = post2
+            .iter()
+            .find(|(s, _)| *s == strip_id)
+            .expect("strip present after ctrl+k");
+        assert_eq!(
+            strip2.1.len(),
+            2,
+            "sibling group must survive Ctrl+K (got groups={:?})",
+            strip2.1
+        );
+        for i in 0..2 {
+            let r = d
+                .host_mut()
+                .group_at_for_tests(strip_id, i)
+                .expect("group laid out post ctrl+k")
+                .get_rect();
+            assert!(
+                r.area() > 0.0,
+                "group[{i}] must still render (rect={:?})",
+                r
+            );
+        }
+
+        // Postcondition 2: the tree's active_tab must point at Files,
+        // not the group that was active before the drag.
+        let active_tab = d.chrome().active_tab_id();
+        assert_eq!(
+            active_tab,
+            Some(files_tab_id),
+            "Ctrl+K must scope to the tab in the CLICKED group; \
+             expected files_tab_id={files_tab_id}, got {active_tab:?}"
+        );
+    }
 }
