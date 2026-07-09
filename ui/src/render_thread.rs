@@ -70,6 +70,32 @@ use vello::peniko::Color;
 use vello::util::{RenderContext, RenderSurface};
 use vello::{RenderParams, Renderer, Scene};
 
+/// A hook run on the render thread *after* vello encodes the frame into its
+/// intermediate texture and *before* that texture is blit to the surface.
+/// It may composite extra GPU content into `target` — used by the browser
+/// to draw its zero-copy WebView texture (which vello cannot sample) over
+/// the transparent region the chrome leaves for it.
+pub trait FramePostProcess: Send {
+    fn post_render(
+        &mut self,
+        device: &vello::wgpu::Device,
+        queue: &vello::wgpu::Queue,
+        target: &vello::wgpu::TextureView,
+        width: u32,
+        height: u32,
+    );
+}
+
+static POST_PROCESSOR: std::sync::Mutex<Option<Box<dyn FramePostProcess>>> =
+    std::sync::Mutex::new(None);
+
+/// Install a [`FramePostProcess`] hook (replacing any previous). Called by
+/// an app before its window comes up. A no-op for apps that don't set one,
+/// so the shared render path is unchanged for everyone else.
+pub fn set_frame_post_processor(p: Box<dyn FramePostProcess>) {
+    *POST_PROCESSOR.lock().unwrap() = Some(p);
+}
+
 /// Compile-time `Send` check. If a future `vello` / `wgpu` version
 /// regresses the `Send` impl on either `Renderer` or `Scene`, the
 /// crate stops compiling here rather than failing at thread spawn.
@@ -292,6 +318,20 @@ fn render_one_frame(
         // the whole app without main getting a chance to clean up.
         tracing::error!(?err, "vello render_to_texture failed");
         return FrameOutcome::Skipped;
+    }
+
+    // Composite any post-processor content (the browser's zero-copy WebView
+    // texture) into the intermediate texture before it goes to the surface.
+    if let Ok(mut guard) = POST_PROCESSOR.lock() {
+        if let Some(p) = guard.as_mut() {
+            p.post_render(
+                &device_handle.device,
+                &device_handle.queue,
+                &surface.target_view,
+                width,
+                height,
+            );
+        }
     }
 
     let encode_us = t_encode.map(|t| t.elapsed().as_secs_f64() * 1e6);
