@@ -804,9 +804,21 @@ fn run_live_shots(dir: &str, query: &str) -> Result<(), Box<dyn std::error::Erro
             wmodel.ensure_channel_stub(&video.channel_id, &video.channel_name);
             wmodel.upsert_video(video.clone());
             wmodel.data_source = DataSource { live: true, label: "live".into() };
+            // Fetch the uploader's real avatar so the watch-page channel row shows
+            // a real photo (issue 1, watch surface), and prewarm it into a store.
+            let wstore = tube::images::image_store();
+            if let Ok(BackendResult::Channel { channel, .. }) = backend.channel(&video.channel_id) {
+                wmodel.note_channel_avatar(&channel.id, &channel.avatar_url);
+                if !channel.avatar_url.is_empty() {
+                    println!("  creator avatar: {}", short_url(&channel.avatar_url));
+                    wstore.get(&channel.avatar_url);
+                    wstore.block_until_idle(Duration::from_secs(20));
+                }
+            }
             let watch_app = tube::TubeApp::new()
                 .with_viewport(1280.0, 860.0)
                 .with_model_for_test(wmodel)
+                .with_image_store(wstore)
                 .with_live_frame_for_shot(watch_id, url);
             let watch_png = out_dir.join("watch.png");
             render_shot_to_png(Box::new(watch_app) as Box<dyn Widget>, (1280, 860), &watch_png)?;
@@ -820,44 +832,132 @@ fn run_live_shots(dir: &str, query: &str) -> Result<(), Box<dyn std::error::Erro
         }
     }
 
-    // ---- Real search page with real thumbnails ----
-    println!("live-shots[search]: searching YouTube for {query:?}…");
-    let videos = match backend.search(query)? {
-        BackendResult::Videos(v) => v,
-        _ => Vec::new(),
+    // ---- Real search / home / playlist pages with real thumbnails + avatars ----
+    //
+    // Use rustypipe's search: it returns videos (with real creator avatars),
+    // playlists AND creator rows in one call — exactly the enrichment the live
+    // app folds into the yt-dlp results, so these stills prove real avatars
+    // (issue 1), the Video·Playlist·Creator filter (issue 3) and playlists
+    // (issue 4) end to end.
+    let rp = tube::backend::live::RustyPipeBackend::new()
+        .map_err(|e| format!("rustypipe backend: {e}"))?;
+
+    // Prewarm every thumbnail + avatar into one shared store so both the search
+    // and home stills paint real images.
+    let prewarm = |store: &ui::ImageStore, urls: &[String]| {
+        for u in urls {
+            if !u.is_empty() {
+                store.get(u);
+            }
+        }
     };
-    if videos.is_empty() {
-        eprintln!("live-shots[search]: no results (network/extractor issue) — skipping search still.");
-    } else {
-        println!("  {} real results; top: {:?}", videos.len(), videos[0].title);
-        let mut smodel = TubeModel::default();
-        let ids: Vec<String> = videos.iter().map(|v| v.id.clone()).collect();
-        for v in &videos {
-            smodel.ensure_channel_stub(&v.channel_id, &v.channel_name);
-            smodel.upsert_video(v.clone());
-        }
-        smodel.search_query = query.to_string();
-        smodel.search_hits_query = query.to_string();
-        smodel.search_hits = ids;
-        smodel.route = Route::Search(query.to_string());
-        smodel.data_source = DataSource { live: true, label: "live (yt-dlp)".into() };
 
-        // Fetch + decode the real thumbnails through the toolkit's ImageStore.
-        let store = tube::images::image_store();
-        for v in &videos {
-            store.get(&v.thumbnail_url);
-        }
-        println!("  prewarming {} thumbnails…", videos.len());
-        store.block_until_idle(Duration::from_secs(45));
-        println!("  images settled: {} still pending", store.pending());
+    println!("live-shots[search]: rustypipe search for {query:?}…");
+    match rp.search_items(query) {
+        Ok(items) if !(items.videos.is_empty() && items.playlists.is_empty() && items.channels.is_empty()) => {
+            println!(
+                "  {} videos, {} playlists, {} creators",
+                items.videos.len(),
+                items.playlists.len(),
+                items.channels.len()
+            );
+            let mut smodel = TubeModel::default();
+            let vids: Vec<String> = items.videos.iter().map(|v| v.id.clone()).collect();
+            for v in &items.videos {
+                smodel.ensure_channel_stub(&v.channel_id, &v.channel_name);
+                smodel.note_channel_avatar(&v.channel_id, &v.channel_avatar_url);
+                smodel.upsert_video(v.clone());
+            }
+            let pids: Vec<String> = items.playlists.iter().map(|p| p.id.clone()).collect();
+            for p in &items.playlists {
+                smodel.ensure_channel_stub(&p.channel_id, &p.channel_name);
+                smodel.upsert_playlist(p.clone());
+            }
+            let cids: Vec<String> = items.channels.iter().map(|c| c.id.clone()).collect();
+            for c in &items.channels {
+                smodel.upsert_channel(c.clone());
+            }
+            smodel.search_query = query.to_string();
+            smodel.search_hits_query = query.to_string();
+            smodel.search_hits = vids;
+            smodel.search_playlist_hits = pids;
+            smodel.search_channel_hits = cids;
+            smodel.route = Route::Search(query.to_string());
+            smodel.data_source = DataSource { live: true, label: "live".into() };
 
-        let search_app = tube::TubeApp::new()
-            .with_viewport(1280.0, 860.0)
-            .with_model_for_test(smodel)
-            .with_image_store(store);
-        let search_png = out_dir.join("search.png");
-        render_shot_to_png(Box::new(search_app) as Box<dyn Widget>, (1280, 860), &search_png)?;
-        println!("  wrote {}", search_png.display());
+            // Collect every image URL the search page will paint.
+            let mut urls: Vec<String> = Vec::new();
+            for v in &items.videos {
+                urls.push(v.thumbnail_url.clone());
+                urls.push(v.channel_avatar_url.clone());
+            }
+            for p in &items.playlists {
+                urls.push(p.thumbnail_url.clone());
+            }
+            for c in &items.channels {
+                urls.push(c.avatar_url.clone());
+            }
+            let store = tube::images::image_store();
+            prewarm(&store, &urls);
+            println!("  prewarming {} thumbnails + avatars…", urls.iter().filter(|u| !u.is_empty()).count());
+            store.block_until_idle(Duration::from_secs(45));
+            println!("  images settled: {} still pending", store.pending());
+
+            let search_app = tube::TubeApp::new()
+                .with_viewport(1280.0, 860.0)
+                .with_model_for_test(smodel.clone())
+                .with_image_store(store.clone());
+            let search_png = out_dir.join("search.png");
+            render_shot_to_png(Box::new(search_app) as Box<dyn Widget>, (1280, 860), &search_png)?;
+            println!("  wrote {}", search_png.display());
+
+            // ---- Home page (same catalogue on the Home route) — avatar proof #1 ----
+            let mut hmodel = smodel.clone();
+            hmodel.route = Route::Home;
+            let home_app = tube::TubeApp::new()
+                .with_viewport(1280.0, 860.0)
+                .with_model_for_test(hmodel)
+                .with_image_store(store.clone());
+            let home_png = out_dir.join("home.png");
+            render_shot_to_png(Box::new(home_app) as Box<dyn Widget>, (1280, 860), &home_png)?;
+            println!("  wrote {}", home_png.display());
+
+            // ---- Playlist page (issue 4) — try each search-result playlist
+            // until one resolves (some listed playlists are stale/empty). ----
+            let resolved_pl = items.playlists.iter().find_map(|p| {
+                println!("live-shots[playlist]: fetching {}…", p.id);
+                rp.playlist_page(&p.id).ok()
+            });
+            if let Some((pl, pvids)) = resolved_pl {
+                let pid = pl.id.clone();
+                let mut pmodel = TubeModel::default();
+                for v in &pvids {
+                    pmodel.ensure_channel_stub(&v.channel_id, &v.channel_name);
+                    pmodel.note_channel_avatar(&v.channel_id, &v.channel_avatar_url);
+                    pmodel.upsert_video(v.clone());
+                }
+                pmodel.ensure_channel_stub(&pl.channel_id, &pl.channel_name);
+                let purls: Vec<String> = std::iter::once(pl.thumbnail_url.clone())
+                    .chain(pvids.iter().map(|v| v.thumbnail_url.clone()))
+                    .collect();
+                pmodel.upsert_playlist(pl.clone());
+                pmodel.route = Route::Playlist(pid.clone());
+                let pstore = tube::images::image_store();
+                prewarm(&pstore, &purls);
+                pstore.block_until_idle(Duration::from_secs(30));
+                let pl_app = tube::TubeApp::new()
+                    .with_viewport(1280.0, 860.0)
+                    .with_model_for_test(pmodel)
+                    .with_image_store(pstore);
+                let pl_png = out_dir.join("playlist.png");
+                render_shot_to_png(Box::new(pl_app) as Box<dyn Widget>, (1280, 860), &pl_png)?;
+                println!("  wrote {} ({} videos)", pl_png.display(), pvids.len());
+            } else {
+                eprintln!("live-shots[playlist]: no listed playlist resolved — skipping playlist still.");
+            }
+        }
+        Ok(_) => eprintln!("live-shots[search]: empty result set — skipping search/home/playlist stills."),
+        Err(e) => eprintln!("live-shots[search]: rustypipe search failed: {e}"),
     }
 
     println!("live-shots: done ({})", out_dir.display());
@@ -1619,6 +1719,15 @@ fn render_shot_to_png(
         )?;
     }
     widget.apply_layout(&taffy, child, Point::ORIGIN);
+
+    // Lazy image widgets (thumbnails, avatars, banners) resolve their decoded
+    // image in `sync`, but the FIRST sync above ran before `build_layout`, when
+    // those widgets didn't exist yet. In the live app the persistent tree
+    // re-syncs every frame while images are pending, so a prewarmed image folds
+    // in on a later frame; a single-frame shot must sync the now-built tree once
+    // more so a prewarmed thumbnail/avatar actually paints instead of the
+    // gradient/initials fallback.
+    widget.sync(&mut state.doc, &state.root);
 
     let mut scene = Scene::new();
     widget.draw_with_presence(
