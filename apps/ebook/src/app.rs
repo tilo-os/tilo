@@ -398,6 +398,15 @@ enum Ico {
     ChevDown,
 }
 
+impl BooksApp {
+    /// Crate-internal: the book currently open in the reader (the one whose
+    /// annotations Ctrl+K exports), if the library is non-empty. Used by
+    /// [`crate::actions`] to publish the open-resource tree.
+    pub(crate) fn open_book(&self) -> Option<&Book> {
+        self.library.get(self.book_idx)
+    }
+}
+
 pub struct BooksApp {
     // --- parsed content (render cache, regenerable; not in the CRDT) -------
     library: Vec<Book>,
@@ -607,7 +616,7 @@ impl BooksApp {
         Self::with_library(load_library())
     }
 
-    fn with_library(library: Vec<Book>) -> Self {
+    pub(crate) fn with_library(library: Vec<Book>) -> Self {
         // Open straight into the reader when there is a book to read (the first
         // one on the shelf); otherwise land on the library so an empty shelf
         // shows its guidance rather than a blank page.
@@ -2407,6 +2416,14 @@ fn wrap_row_count(widths: &[f64], max_w: f64, gap: f64) -> usize {
 // ==========================================================================
 
 impl Widget for BooksApp {
+    /// Publish the open book + its annotations so the host's Ctrl+K action
+    /// palette scopes to them. Delegates to the
+    /// [`ResourceProvider`](qos_actions::ResourceProvider) impl in
+    /// [`crate::actions`].
+    fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
+        <Self as qos_actions::ResourceProvider>::resources(self, doc)
+    }
+
     fn sync(&mut self, doc: &mut AutoCommit, _path: &ObjId) {
         if let Some(s) = self.shot_settings.take() {
             BooksDoc::write_settings(doc, &s);

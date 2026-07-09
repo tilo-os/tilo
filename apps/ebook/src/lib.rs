@@ -18,6 +18,7 @@
 //! [`app_root`] is the one integration point used by both the live event loop
 //! and the `--shots` offscreen renderer.
 
+pub mod actions;
 pub mod app;
 pub mod content;
 pub mod doc;

@@ -162,6 +162,11 @@ collab-types = { path = "../crates/collab/collab-types" }
 # uses `qdoc`'s structural snapshot diff to write each row's summary. Pure
 # model code — no renderer, no I/O — so this stays a cheap dep.
 qdoc = { path = "../crates/doc/qdoc" }
+# The qOS ACTION model: serializable, replayable CRDT-mutation actions + the
+# nested Resource tree apps publish. `command_palette` + `action_palette` +
+# the `App` resource-collection hook build on it to make Ctrl+K scope to the
+# focused app instance's open resources and dispatch their exported actions.
+qos-actions = { path = "../crates/collab/actions" }
 # Direct dep on the Ed25519 implementation `qos-collab-types` uses so
 # the toolkit can name `SigningKey` in `collaboration::SigningIdentity`
 # without reaching into the qos-collab-types private module path. Pinned

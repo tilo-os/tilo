@@ -447,6 +447,12 @@ impl TubeApp {
         &self.model
     }
 
+    /// Crate-internal read-only model view, so [`crate::actions`] can publish the
+    /// open-resource tree (the playing video + its comments) for Ctrl+K.
+    pub(crate) fn model_ref(&self) -> &TubeModel {
+        &self.model
+    }
+
     /// Test accessor: whether the navigation rail is currently shown (resolves
     /// the session preference against the layout default).
     pub fn sidebar_open_for_test(&self) -> bool {
@@ -1413,6 +1419,14 @@ impl TubeApp {
 }
 
 impl Widget for TubeApp {
+    /// Publish the open-resource tree (the playing video + its comments) so the
+    /// host's Ctrl+K action palette scopes to it. Delegates to the
+    /// [`ResourceProvider`](qos_actions::ResourceProvider) impl in
+    /// [`crate::actions`].
+    fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
+        <Self as qos_actions::ResourceProvider>::resources(self, doc)
+    }
+
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
         self.ensure_search_obj(state, path);
         self.adopt_or_seed(state, path);
