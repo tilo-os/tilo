@@ -50,6 +50,8 @@ taffy = "0.10.1"
 tempfile = "3"
 # block_on for the headless dmabuf probe examples
 pollster = "0.4"
+# dump raw engine frames to PNG in the startup-flicker capture example
+png = "0.17"
 
 # Zero-copy composite probe — needs the WPE engine's dmabuf import.
 [[example]]
@@ -62,4 +64,8 @@ required-features = ["wpe"]
 
 [[example]]
 name = "key_modifier_repro"
+required-features = ["wpe"]
+
+[[example]]
+name = "startup_flicker_capture"
 required-features = ["wpe"]
