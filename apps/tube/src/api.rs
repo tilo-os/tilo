@@ -507,29 +507,29 @@ impl Worker {
                             }
                         }
                         Request::PlaylistPage(id) => {
-                            // Playlist pages come from rustypipe (the primary yt-dlp
-                            // path is per-video). Live-only; the offline build has no
-                            // playlist data, so this is a no-op there.
+                            // yt-dlp resolves playlists reliably; the rustypipe
+                            // enricher is a fallback. Live-only — the offline build
+                            // has no playlist data.
+                            let mut resolved = live.as_ref().and_then(|b| b.playlist(&id).ok());
                             #[cfg(feature = "live")]
-                            {
+                            if resolved.is_none() {
                                 let rp_ref = rp.get_or_insert_with(|| try_enricher(&up_tx));
                                 if let Some(b) = rp_ref.as_ref() {
-                                    match b.playlist_page(&id) {
-                                        Ok((pl, vids)) => {
-                                            let _ = up_tx.send(Update::PlaylistPage {
-                                                playlist: Box::new(pl),
-                                                videos: vids,
-                                            });
-                                        }
-                                        Err(e) => {
-                                            let _ = up_tx
-                                                .send(Update::Note(format!("playlist {id}: {e}")));
-                                        }
-                                    }
+                                    resolved = b.playlist_page(&id).ok();
                                 }
                             }
-                            #[cfg(not(feature = "live"))]
-                            let _ = id;
+                            match resolved {
+                                Some((pl, vids)) => {
+                                    let _ = up_tx.send(Update::PlaylistPage {
+                                        playlist: Box::new(pl),
+                                        videos: vids,
+                                    });
+                                }
+                                None => {
+                                    let _ = up_tx
+                                        .send(Update::Note(format!("playlist {id}: unavailable")));
+                                }
+                            }
                         }
                         Request::VideoMeta(id) => {
                             // Real "up next" comes off the detail response; fetch
