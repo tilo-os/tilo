@@ -53,7 +53,7 @@ pub mod ytdlp;
 #[cfg(feature = "media")]
 pub mod gst_playback;
 
-use crate::model::{Channel, Comment, Video};
+use crate::model::{Channel, Comment, Playlist, Video};
 
 /// Canonical i.ytimg.com thumbnail URL for a video id. `hqdefault.jpg` is the
 /// stable 480×360 still every public video serves, so a real card image is
@@ -199,6 +199,13 @@ pub trait YtBackend: Send + Sync {
 
     /// Region trending.
     fn trending(&self) -> BackendOutcome;
+
+    /// A playlist page: its metadata + ordered video list. The default errors —
+    /// only a backend that can reach a real extractor produces one. The UI shows
+    /// an "unavailable" state when this fails.
+    fn playlist(&self, _id: &str) -> Result<(Playlist, Vec<Video>), BackendError> {
+        Err(BackendError("this backend cannot resolve playlists".into()))
+    }
 
     /// Top comments for a video. The default returns none — only a backend that
     /// can reach YouTube's `next`/comments continuation (the live rustypipe one)

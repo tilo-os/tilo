@@ -924,9 +924,11 @@ fn run_live_shots(dir: &str, query: &str) -> Result<(), Box<dyn std::error::Erro
 
             // ---- Playlist page (issue 4) — try each search-result playlist
             // until one resolves (some listed playlists are stale/empty). ----
+            // yt-dlp resolves playlists reliably (rustypipe's current parser does
+            // not); try each search-result playlist until one resolves.
             let resolved_pl = items.playlists.iter().find_map(|p| {
-                println!("live-shots[playlist]: fetching {}…", p.id);
-                rp.playlist_page(&p.id).ok()
+                println!("live-shots[playlist]: fetching {} via yt-dlp…", p.id);
+                backend.playlist(&p.id).ok()
             });
             if let Some((pl, pvids)) = resolved_pl {
                 let pid = pl.id.clone();
