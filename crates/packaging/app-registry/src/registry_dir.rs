@@ -1,0 +1,62 @@
+//! A self-hosted registry backed by a directory on disk — the
+//! reference implementation of "self-hostable" from the design.
+//!
+//! Layout:
+//!
+//! ```text
+//! <dir>/
+//!   index.json     # the signed RegistryIndex (served as-is over file://)
+//!   blobs/         # iroh-blobs FsStore of the published qpkg blobs
+//! ```
+//!
+//! A long-lived provider node ([`crate::transport::BlobNode::persistent`]
+//! rooted at `<dir>/blobs`) serves the blobs; its address is baked into
+//! each entry's `BlobTicket` when the entry is published. The
+//! `index.json` is plain static content — copy it behind any HTTPS
+//! server to turn a `file://` registry into an `https://` one.
+
+use std::path::{Path, PathBuf};
+
+use anyhow::{Context, Result};
+
+use crate::index::RegistryIndex;
+
+/// Path to the served index document.
+pub fn index_path(dir: &Path) -> PathBuf {
+    dir.join("index.json")
+}
+
+/// Path to the iroh-blobs store directory the provider node serves.
+pub fn blobs_dir(dir: &Path) -> PathBuf {
+    dir.join("blobs")
+}
+
+/// Read the index; error if the directory has none.
+pub fn read_index(dir: &Path) -> Result<RegistryIndex> {
+    let p = index_path(dir);
+    let bytes = std::fs::read(&p).with_context(|| format!("read {p:?}"))?;
+    RegistryIndex::from_json(&bytes).with_context(|| format!("decode {p:?}"))
+}
+
+/// Load the index, or start a fresh one titled `registry_id` if the
+/// directory has none yet.
+pub fn load_or_new_index(dir: &Path, registry_id: &str) -> Result<RegistryIndex> {
+    match std::fs::read(index_path(dir)) {
+        Ok(bytes) => RegistryIndex::from_json(&bytes).context("decode existing index.json"),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            Ok(RegistryIndex::new(registry_id))
+        }
+        Err(e) => Err(e).context("read index.json"),
+    }
+}
+
+/// Write the index atomically (tmp + rename).
+pub fn write_index(dir: &Path, index: &RegistryIndex) -> Result<()> {
+    std::fs::create_dir_all(dir).with_context(|| format!("create {dir:?}"))?;
+    let bytes = index.to_json().context("encode index.json")?;
+    let target = index_path(dir);
+    let tmp = target.with_extension("json.tmp");
+    std::fs::write(&tmp, &bytes).with_context(|| format!("write {tmp:?}"))?;
+    std::fs::rename(&tmp, &target).with_context(|| format!("rename into {target:?}"))?;
+    Ok(())
+}
