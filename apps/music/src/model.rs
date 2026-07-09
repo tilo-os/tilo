@@ -189,6 +189,8 @@ pub struct Library {
     /// Album ids the user has saved to their library ("Add to library" on an
     /// album card/header).
     pub saved_albums: BTreeSet<AlbumId>,
+    /// Artist ids (channel ids) the user follows ("Follow" on an artist page).
+    pub followed_artists: BTreeSet<ArtistId>,
 }
 
 impl Library {
@@ -336,6 +338,11 @@ impl Library {
     /// Whether an album is saved to the library.
     pub fn is_album_saved(&self, id: &str) -> bool {
         self.saved_albums.contains(id)
+    }
+
+    /// Whether the user follows an artist.
+    pub fn is_artist_followed(&self, id: &str) -> bool {
+        self.followed_artists.contains(id)
     }
 
     /// Liked tracks ordered by artist / album / track number (a virtual
