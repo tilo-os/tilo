@@ -10,11 +10,12 @@ use ui::{
 use ui::presence::{PresenceCtx, PresenceKey};
 use ui::permissions::{AppKind as PermAppKind, PermissionContext};
 use ui::collaboration::PresencePayload;
+use ui::icons::{draw_icon, Icon};
 use automerge::{AutoCommit, ObjId, Value, transaction::Transactable, ObjType, ReadDoc};
 use base64::Engine as _;
 use vello::Scene;
-use vello::kurbo::{Affine, Rect, Point};
-use vello::peniko::Color;
+use vello::kurbo::{Affine, Rect, Point, RoundedRect, RoundedRectRadii};
+use vello::peniko::{Color, Fill};
 use winit::event::{WindowEvent, ElementState, KeyEvent, MouseButton, MouseScrollDelta};
 use winit::event_loop::EventLoopProxy;
 use winit::keyboard::{Key, NamedKey};
@@ -367,6 +368,26 @@ pub struct TerminalWidget {
     /// the spacing. Seeded to the default `spacing.s1` (4px).
     last_padding_x: f64,
 
+    /// Inner content rect the cell grid actually paints into: the full widget
+    /// [`rect`](Self::rect) minus the header/tab bar, the comfortable body
+    /// padding, and the scrollbar gutter. Every grid geometry read (cell
+    /// layout, cursor, selection, pointer hit-testing) is relative to this,
+    /// not the outer widget rect, so the chrome never overlaps the grid.
+    grid_rect: Rect,
+    /// Cached chrome geometry, refreshed from the theme on every `draw` (the
+    /// same pattern as `last_padding_x`) so `set_geometry` and pointer
+    /// hit-testing — neither of which receives a `Theme` — inset the grid by
+    /// the exact amounts the chrome was painted with. Seeded to the dark
+    /// theme's values so the very first (pre-draw) layout is already correct.
+    chrome_header_h: f64,
+    chrome_body_pad: f64,
+    chrome_scrollbar_w: f64,
+    /// Latches true the first time the mirrored grid holds any non-blank
+    /// content. Gates the honest empty-state watermark so it only shows before
+    /// the session has ever produced output — never over a legitimately
+    /// cleared screen (`clear`, `CSI 2J`) once the shell has run.
+    ever_nonblank: bool,
+
     /// Number of oldest scrollback lines dropped from the front of the main
     /// buffer since the last `sync` mirrored the grid. `sync` uses it to keep
     /// the render mirror (`grid`/`grid_attrs`) index-aligned with the CRDT
@@ -484,6 +505,15 @@ impl TerminalWidget {
             last_cursor_pos: Point::ZERO,
             viewport_start_y: 0,
             last_padding_x: 4.0,
+            grid_rect: Rect::ZERO,
+            // Seeded to the dark theme's chrome metrics (header 40, body pad
+            // 12, scrollbar gutter 8) so the first layout — which runs before
+            // the first `draw` refreshes these from the live theme — already
+            // insets the grid correctly.
+            chrome_header_h: 40.0,
+            chrome_body_pad: 12.0,
+            chrome_scrollbar_w: 8.0,
+            ever_nonblank: false,
             trimmed_front: 0,
             mirror_valid: false,
             pending_local_edit: false,
@@ -558,14 +588,27 @@ impl TerminalWidget {
     pub fn modes(&self) -> TermModes { self.modes }
     /// Rows currently scrolled back from the live bottom. Test/host accessor.
     pub fn scroll_offset(&self) -> usize { self.scroll_offset }
-    /// Force the widget into a known geometry for tests. Replicates the
-    /// effect of `apply_layout` without needing a Taffy tree.
+    /// Force the widget into a known *grid* geometry for tests. Sets both the
+    /// outer widget rect and the inner grid content rect to `rect` (i.e. the
+    /// passed rect IS the cell area, with no chrome inset), so grid-level
+    /// hit-testing / selection tests can target known cells directly. The
+    /// production `set_geometry` path insets the grid below the chrome; that
+    /// inset is exercised separately via `place_at`.
     #[cfg(test)]
     pub fn force_geometry(&mut self, rect: Rect, char_w: f64, char_h: f64) {
         self.rect = rect;
+        self.grid_rect = rect;
         self.char_w = char_w;
         self.char_h = char_h;
     }
+
+    /// The inner grid content rect (below the header, inside the padding).
+    /// Test accessor for the chrome-inset geometry.
+    #[cfg(test)]
+    pub fn grid_rect(&self) -> Rect { self.grid_rect }
+    /// The current cell height used for grid layout. Test accessor.
+    #[cfg(test)]
+    pub fn grid_char_h(&self) -> f64 { self.char_h }
     /// Force a viewport scrollback offset for tests that exercise
     /// `selected_text` over a `grid` larger than the visible viewport.
     #[cfg(test)]
@@ -646,7 +689,42 @@ impl TerminalWidget {
 
     /// Number of grid rows currently visible, from the paint geometry.
     fn current_visible_rows(&self) -> usize {
-        (self.rect.height() / self.char_h.max(1.0)).floor().max(1.0) as usize
+        (self.grid_rect.height() / self.char_h.max(1.0)).floor().max(1.0) as usize
+    }
+
+    /// Refresh the cached chrome metrics (header height, body padding,
+    /// scrollbar gutter) from the theme. Called each `draw`; the cached values
+    /// then feed `set_geometry` and pointer hit-testing, which never see a
+    /// `Theme`. All three derive from the shared spacing scale + base font size
+    /// so the OS can retune the chrome centrally.
+    fn refresh_chrome_metrics(&mut self, theme: &Theme) {
+        let sp = &theme.tokens.spacing;
+        // Tab pill height tracks the base font; the header is that plus a
+        // symmetric vertical inset.
+        let tab_h = (theme.tokens.font_size_base as f64 * 1.7).round().max(1.0);
+        let pad_y = sp.s2 as f64;
+        self.chrome_header_h = tab_h + pad_y * 2.0;
+        self.chrome_body_pad = sp.s3 as f64;
+        self.chrome_scrollbar_w = sp.s2 as f64;
+    }
+
+    /// The inner grid content rect for a given widget rect: below the header,
+    /// inset by the body padding on every side, with a scrollbar gutter
+    /// reserved on the right. Uses the cached chrome metrics so it is available
+    /// without a `Theme`.
+    fn grid_content_rect(&self, rect: Rect) -> Rect {
+        let pad = self.chrome_body_pad;
+        let x0 = rect.x0 + pad;
+        let y0 = rect.y0 + self.chrome_header_h + pad;
+        let x1 = (rect.x1 - pad - self.chrome_scrollbar_w).max(x0);
+        let y1 = (rect.y1 - pad).max(y0);
+        Rect::new(x0, y0, x1, y1)
+    }
+
+    /// True when every mirrored grid row is blank — used to gate the
+    /// first-run empty-state watermark.
+    fn grid_is_blank(&self) -> bool {
+        self.grid.iter().all(|l| l.chars().all(|c| c.is_whitespace()))
     }
 
     /// Furthest the viewport can scroll up: the number of rows above the
@@ -812,9 +890,14 @@ impl TerminalWidget {
     /// CRDT-backed grid and resize the PTY so the shell sees the new size.
     fn set_geometry(&mut self, rect: Rect) {
         self.rect = rect;
+        // The grid lives in the content rect (below the header, inside the
+        // padding), so it — not the outer widget rect — drives the cell count
+        // and the PTY size.
+        self.grid_rect = self.grid_content_rect(rect);
+        let grid_rect = self.grid_rect;
 
-        let new_width = (rect.width() / self.char_w.max(1.0)).floor() as usize;
-        let new_height = (rect.height() / self.char_h.max(1.0)).floor() as usize;
+        let new_width = (grid_rect.width() / self.char_w.max(1.0)).floor() as usize;
+        let new_height = (grid_rect.height() / self.char_h.max(1.0)).floor() as usize;
 
         // Cap the CRDT-backed grid at a sensible terminal size. The init pass
         // splices `self.height * self.width` characters into a fresh automerge
@@ -844,8 +927,8 @@ impl TerminalWidget {
             let _ = self.pty_master.lock().unwrap().resize(PtySize {
                 rows: self.height as u16,
                 cols: self.width as u16,
-                pixel_width: rect.width() as u16,
-                pixel_height: rect.height() as u16,
+                pixel_width: grid_rect.width() as u16,
+                pixel_height: grid_rect.height() as u16,
             });
         }
     }
@@ -1149,7 +1232,20 @@ impl Widget for TerminalWidget {
         // from the same value.
         self.font_size = font_size;
 
-        scene.fill(vello::peniko::Fill::NonZero, transform, palette.bg_default, None, &self.rect);
+        // Refresh the chrome geometry from the theme and re-derive the inner
+        // grid rect (below the header, inside the padding, minus the scrollbar
+        // gutter). `set_geometry` and pointer hit-testing read these cached
+        // metrics — neither sees a `Theme` — mirroring the `last_padding_x`
+        // pattern.
+        self.refresh_chrome_metrics(theme);
+        self.grid_rect = self.grid_content_rect(self.rect);
+        let grid_rect = self.grid_rect;
+
+        // The terminal body fills the whole widget in the theme's terminal
+        // background (a deliberate deep surface, not an accidental void); the
+        // header/tab bar is painted over the top strip next.
+        scene.fill(Fill::NonZero, transform, palette.bg_default, None, &self.rect);
+        self.draw_chrome(scene, transform, text_renderer, theme);
 
         // Resolve the terminal font from the theme's canonical monospace token
         // (`theme.tokens.font_mono`) rather than the generic monospace class, so
@@ -1161,7 +1257,7 @@ impl Widget for TerminalWidget {
         self.char_w = (w as f64).max(1.0);
         self.char_h = ((font_size as f64) * 1.25f64).ceil().max(1.0);
 
-        let visible_rows = (self.rect.height() / self.char_h).floor() as usize;
+        let visible_rows = (grid_rect.height() / self.char_h).floor() as usize;
         let max_top = self.grid.len().saturating_sub(visible_rows);
         // Alt screen has no scrollback; clamp the offset for the main buffer.
         let scroll = if self.alt_active { 0 } else { self.scroll_offset.min(max_top) };
@@ -1169,30 +1265,51 @@ impl Widget for TerminalWidget {
         let start_y = max_top.saturating_sub(scroll);
 
         // Cache for `handle_event`: pointer hit-tests translate logical y
-        // into viewport-local rows by subtracting `self.rect.y0` and dividing
+        // into viewport-local rows by subtracting `grid_rect.y0` and dividing
         // by `char_h`. The selection-rendering pass below uses the offset
         // directly to find the row in `self.grid`.
         self.viewport_start_y = start_y;
+
+        // Cursor/palette colour caches update every frame regardless of what
+        // is painted (empty state, hidden cursor, cursor scrolled off screen).
+        let cursor_color = cursor_from_palette(palette);
+        self.last_cursor_color = cursor_color;
+        self.last_fg_default = palette.fg_default;
+        self.last_bg_default = palette.bg_default;
+
+        // Honest first-run empty state: before the session has ever produced
+        // output, paint a centred watermark instead of a blank void. Latched
+        // via `ever_nonblank` so it never covers a legitimately cleared screen
+        // (`clear`, `CSI 2J`) once the shell has printed anything.
+        if !self.grid_is_blank() {
+            self.ever_nonblank = true;
+        }
+        if !self.alt_active && !self.ever_nonblank {
+            self.draw_empty_state(scene, transform, text_renderer, theme);
+            return;
+        }
 
         // Paint the selection BEFORE the cell text so glyphs read on top of
         // the highlight. Selection rows are buffer-absolute, so a row only
         // paints when it falls inside the current viewport window
         // `[start_y, start_y + visible_rows)`, translated to an on-screen row.
         if let Some(sel) = self.selection {
-            let sel_color = theme.accent_primary.with_alpha_factor(0.30);
+            // A slightly stronger tint than a hover veneer so a live selection
+            // reads clearly over black, still translucent so glyphs show.
+            let sel_color = theme.accent_primary.with_alpha_factor(0.35);
             for (row, start_col, end_col) in selection_row_spans(&sel, self.width) {
                 if row < start_y || row >= start_y + visible_rows { continue; }
                 let vrow = row - start_y;
-                let py = (self.rect.y0 + vrow as f64 * self.char_h).floor();
-                let x0 = self.rect.x0 + padding_x + start_col as f64 * self.char_w;
-                let x1 = self.rect.x0 + padding_x + end_col as f64 * self.char_w;
+                let py = (grid_rect.y0 + vrow as f64 * self.char_h).floor();
+                let x0 = grid_rect.x0 + padding_x + start_col as f64 * self.char_w;
+                let x1 = grid_rect.x0 + padding_x + end_col as f64 * self.char_w;
                 let band = Rect::new(x0, py, x1, py + self.char_h);
-                scene.fill(vello::peniko::Fill::NonZero, transform, sel_color, None, &band);
+                scene.fill(Fill::NonZero, transform, sel_color, None, &band);
             }
         }
 
         for (y, line_text) in self.grid.iter().skip(start_y).take(visible_rows).enumerate() {
-            let py = (self.rect.y0 + y as f64 * self.char_h).floor();
+            let py = (grid_rect.y0 + y as f64 * self.char_h).floor();
             let attrs_idx = y + start_y;
             if attrs_idx >= self.grid_attrs.len() { continue; }
             let attrs = &self.grid_attrs[attrs_idx];
@@ -1223,15 +1340,6 @@ impl Widget for TerminalWidget {
             }
         }
 
-        // Cursor color is derived from the palette's default foreground so it
-        // tracks theme swaps automatically. These caches update every frame
-        // regardless of whether the cursor is actually painted (hidden by
-        // `?25l` or scrolled off screen).
-        let cursor_color = cursor_from_palette(palette);
-        self.last_cursor_color = cursor_color;
-        self.last_fg_default = palette.fg_default;
-        self.last_bg_default = palette.bg_default;
-
         // Absolute grid row of the cursor → visible row (may be scrolled off).
         // The block cursor only makes sense pinned to the live output; while
         // the user has scrolled back into history we hide it (matching xterm/
@@ -1244,10 +1352,16 @@ impl Widget for TerminalWidget {
             && cursor_abs < start_y + visible_rows.max(1)
         {
             let cy_local = cursor_abs - start_y;
-            let cx = self.rect.x0 + padding_x + self.cursor_x as f64 * self.char_w;
-            let cy = (self.rect.y0 + cy_local as f64 * self.char_h).floor();
-            let cursor_rect = Rect::new(cx, cy, cx + self.char_w, cy + self.char_h);
-            scene.fill(vello::peniko::Fill::NonZero, transform, cursor_color, None, &cursor_rect);
+            let cx = grid_rect.x0 + padding_x + self.cursor_x as f64 * self.char_w;
+            let cy = (grid_rect.y0 + cy_local as f64 * self.char_h).floor();
+            // A rounded, slightly inset caret reads softer than a hard-edged
+            // full-cell block while staying an unmistakable, theme-coloured
+            // "inverted cell" cursor.
+            let cursor_rect = RoundedRect::from_rect(
+                Rect::new(cx, cy + 0.5, cx + self.char_w, cy + self.char_h - 0.5),
+                2.0,
+            );
+            scene.fill(Fill::NonZero, transform, cursor_color, None, &cursor_rect);
 
             // Re-punch the glyph beneath the block in the background color so
             // the character under the caret stays legible (a solid block that
@@ -1273,6 +1387,10 @@ impl Widget for TerminalWidget {
                 }
             }
         }
+
+        // A themed scrollbar indicator in the reserved right gutter, shown only
+        // when the buffer overflows the viewport.
+        self.draw_scrollbar(scene, transform, theme, start_y, visible_rows);
     }
 
     fn handle_event(&mut self, event: &WindowEvent, scale_factor: f64, modifiers: &winit::event::Modifiers, state: &mut AutoCommit, root: &ObjId, handled: &mut bool, _focus_target: &mut Option<NodeId>, _node_id: NodeId, _taffy: &TaffyTree<()>) {
@@ -1323,7 +1441,7 @@ impl Widget for TerminalWidget {
                 // but click forwarding is intentionally a stub — the left
                 // button always drives text selection.
                 match element_state {
-                    ElementState::Pressed if self.rect.contains(self.last_cursor_pos) => {
+                    ElementState::Pressed if self.grid_rect.contains(self.last_cursor_pos) => {
                         let shift = modifiers.state().shift_key();
                         let intent = self.drag_select.press(self.last_cursor_pos, shift);
                         let pos = self.pos_from_logical(self.last_cursor_pos);
@@ -1343,7 +1461,7 @@ impl Widget for TerminalWidget {
                 // X11/Wayland primary-selection paste: middle-click inserts the
                 // currently-selected text (from any app), matching every
                 // terminal. Snaps the viewport back to the live bottom.
-                if self.rect.contains(self.last_cursor_pos) {
+                if self.grid_rect.contains(self.last_cursor_pos) {
                     if let Some(text) = clipboard_paste_primary() {
                         self.paste(&text);
                     }
@@ -1515,7 +1633,7 @@ impl TerminalWidget {
         if is_link && attr.fg == CellColor::Default && !attr.reverse {
             fg = palette.ansi[12];
         }
-        let tx = self.rect.x0 + rx;
+        let tx = self.grid_rect.x0 + rx;
 
         let mut visual_width = 0.0;
         for c in text.chars() {
@@ -1553,6 +1671,205 @@ impl TerminalWidget {
         }
     }
 
+    /// Paint the header / tab bar: a themed strip carrying the app's prompt
+    /// mark, the (OSC-mirrored) session title in an active tab pill that visually
+    /// connects to the terminal body, and a subtle "new tab" affordance that
+    /// leaves room for multiple sessions. Every colour, radius, and spacing is
+    /// pulled from the theme so the chrome matches every other qOS app.
+    fn draw_chrome(&self, scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, theme: &Theme) {
+        let rect = self.rect;
+        let header_h = self.chrome_header_h;
+        if header_h <= 0.0 || rect.width() <= 0.0 {
+            return;
+        }
+        let font_size = theme.tokens.font_size_base;
+        let colors = &theme.tokens.colors;
+        let sp = &theme.tokens.spacing;
+        let radii = &theme.tokens.radii;
+        let palette = &theme.tokens.terminal_palette;
+
+        let header = Rect::new(rect.x0, rect.y0, rect.x1, rect.y0 + header_h);
+        // Chrome surface + a hairline base border that separates it from the
+        // terminal body.
+        scene.fill(Fill::NonZero, transform, colors.surfaces.raised, None, &header);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            colors.border_standard,
+            None,
+            &Rect::new(rect.x0, header.y1 - 1.0, rect.x1, header.y1),
+        );
+
+        let pad = self.chrome_body_pad;
+        let inner = sp.s2 as f64; // pill inner padding
+        let gap = sp.s1 as f64 * 1.5; // icon → title gap
+        let icon_side = font_size as f64;
+
+        // Active tab pill: filled in the terminal body colour with rounded top
+        // corners and flush to the header's base border, so it reads as the
+        // active tab merging into the content below. A short accent bar along
+        // its top edge marks it active.
+        let pill_x0 = rect.x0 + pad;
+        let pill_top = rect.y0 + sp.s2 as f64;
+        let pill_bottom = header.y1; // flush with the base border → merges into body
+        let title = self.title();
+
+        // Width the pill would like, clamped so the "+" affordance always fits.
+        let plus_zone = icon_side + inner * 2.0;
+        let title_w_full = tr.measure(title, font_size, None).0 as f64;
+        let max_pill_w = (header.x1 - pill_x0 - plus_zone - pad).max(icon_side + inner * 2.0);
+        let desired_w = inner + icon_side + gap + title_w_full + inner;
+        let pill_w = desired_w.min(max_pill_w);
+        let pill = Rect::new(pill_x0, pill_top, pill_x0 + pill_w, pill_bottom);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            palette.bg_default,
+            None,
+            &RoundedRect::from_rect(
+                pill,
+                RoundedRectRadii::new(radii.md as f64, radii.md as f64, 0.0, 0.0),
+            ),
+        );
+        // Accent bar hugging the pill's top edge — the "active tab" cue.
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.accent_primary,
+            None,
+            &RoundedRect::from_rect(
+                Rect::new(pill.x0, pill.y0, pill.x1, pill.y0 + 2.0),
+                RoundedRectRadii::new(radii.md as f64, radii.md as f64, 0.0, 0.0),
+            ),
+        );
+
+        // Prompt-mark icon (a chevron reads instantly as a shell prompt),
+        // tinted with the OS accent.
+        let icon_cy = (pill.y0 + pill.y1) / 2.0;
+        let icon_rect = Rect::new(
+            pill_x0 + inner,
+            icon_cy - icon_side / 2.0,
+            pill_x0 + inner + icon_side,
+            icon_cy + icon_side / 2.0,
+        );
+        draw_icon(scene, transform, icon_rect, Icon::ChevronRight, theme.accent_primary, 2.0);
+
+        // Session title, vertically centred, elided to fit the pill.
+        let title_x = icon_rect.x1 + gap;
+        let title_avail = (pill.x1 - inner - title_x).max(0.0);
+        if title_avail > 4.0 {
+            let shown = tr.elide_to_width(title, font_size, title_avail as f32);
+            let text_h = font_size as f64 * 1.25;
+            let title_y = icon_cy - text_h / 2.0;
+            tr.draw_text_weighted(
+                scene,
+                &shown,
+                font_size,
+                theme.text_primary,
+                transform * Affine::translate((title_x, title_y)),
+                None,
+                TextWeight::Semibold,
+            );
+        }
+
+        // "New tab" affordance — a muted "+" to the right of the pill. Leaves
+        // room for multiple sessions without implying a live control.
+        let plus_x0 = pill.x1 + sp.s1 as f64;
+        if plus_x0 + icon_side <= header.x1 - pad {
+            let plus_rect = Rect::new(
+                plus_x0,
+                icon_cy - icon_side / 2.0,
+                plus_x0 + icon_side,
+                icon_cy + icon_side / 2.0,
+            );
+            draw_icon(scene, transform, plus_rect, Icon::Plus, theme.text_dim, 2.0);
+        }
+    }
+
+    /// A themed scrollbar in the reserved right gutter, drawn only when the
+    /// buffer overflows the viewport. Brighter while the user is scrolled back
+    /// into history, faint when pinned to the live bottom.
+    fn draw_scrollbar(&self, scene: &mut Scene, transform: Affine, theme: &Theme, start_y: usize, visible_rows: usize) {
+        if self.alt_active || visible_rows == 0 {
+            return;
+        }
+        let total = self.grid.len();
+        if total <= visible_rows {
+            return;
+        }
+        let gr = self.grid_rect;
+        let track_x1 = self.rect.x1 - self.chrome_body_pad;
+        let track_w = (self.chrome_scrollbar_w - 2.0).max(3.0);
+        let track_x0 = track_x1 - track_w;
+        let track_h = (gr.y1 - gr.y0).max(1.0);
+
+        let thumb_frac = (visible_rows as f64 / total as f64).clamp(0.06, 1.0);
+        let thumb_h = (track_h * thumb_frac).max(24.0).min(track_h);
+        let max_top = total.saturating_sub(visible_rows).max(1);
+        let pos_frac = (start_y as f64 / max_top as f64).clamp(0.0, 1.0);
+        let thumb_y0 = gr.y0 + pos_frac * (track_h - thumb_h);
+
+        // Faint track groove so the bar has a visible extent even when pinned.
+        let track = RoundedRect::from_rect(
+            Rect::new(track_x0, gr.y0, track_x1, gr.y1),
+            track_w / 2.0,
+        );
+        scene.fill(Fill::NonZero, transform, theme.tokens.colors.surface_white_5, None, &track);
+
+        let thumb_alpha = if self.scroll_offset > 0 { 0.85 } else { 0.4 };
+        let thumb = RoundedRect::from_rect(
+            Rect::new(track_x0, thumb_y0, track_x1, thumb_y0 + thumb_h),
+            track_w / 2.0,
+        );
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.text_dim.with_alpha_factor(thumb_alpha),
+            None,
+            &thumb,
+        );
+    }
+
+    /// Honest first-run empty state: a centred, muted watermark shown before
+    /// the session has ever produced output — a themed placeholder, not a void.
+    fn draw_empty_state(&self, scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, theme: &Theme) {
+        let gr = self.grid_rect;
+        if gr.width() <= 0.0 || gr.height() <= 0.0 {
+            return;
+        }
+        let cx = gr.x0 + gr.width() / 2.0;
+        let cy = gr.y0 + gr.height() / 2.0;
+
+        let icon_side = 44.0_f64.min(gr.width() * 0.4).min(gr.height() * 0.4);
+        let icon_rect = Rect::new(
+            cx - icon_side / 2.0,
+            cy - icon_side - 4.0,
+            cx + icon_side / 2.0,
+            cy - 4.0,
+        );
+        draw_icon(
+            scene,
+            transform,
+            icon_rect,
+            Icon::ChevronRight,
+            theme.text_dim.with_alpha_factor(0.4),
+            2.0,
+        );
+
+        let label = "qOS Terminal";
+        let size = theme.tokens.typography.scale.lg;
+        let (lw, _) = tr.measure(label, size, None);
+        tr.draw_text_weighted(
+            scene,
+            label,
+            size,
+            theme.text_dim.with_alpha_factor(0.7),
+            transform * Affine::translate((cx - lw as f64 / 2.0, cy + 4.0)),
+            None,
+            TextWeight::Medium,
+        );
+    }
+
     /// Convert a logical pointer position into a **buffer-absolute**
     /// `GridPos`. The on-screen row is offset by the current scrollback
     /// position (`viewport_start_y`) so the returned row indexes `self.grid`
@@ -1564,14 +1881,14 @@ impl TerminalWidget {
         // Match the padding used in `draw` so a click on column 0 lands
         // on column 0 and not -1 due to the leading gutter.
         let padding_x = self.last_padding_x();
-        let local_x = (p.x - self.rect.x0 - padding_x).max(0.0);
-        let local_y = (p.y - self.rect.y0).max(0.0);
+        let local_x = (p.x - self.grid_rect.x0 - padding_x).max(0.0);
+        let local_y = (p.y - self.grid_rect.y0).max(0.0);
         let col = (local_x / self.char_w.max(1.0)).floor() as usize;
         let vrow = (local_y / self.char_h.max(1.0)).floor() as usize;
         // `width` is logical grid width; `viewport` height is computed
-        // from `rect.height() / char_h` rather than `self.height` because
+        // from `grid_rect.height() / char_h` rather than `self.height` because
         // resize-clamp may have a stale `self.height` between frames.
-        let visible_rows = (self.rect.height() / self.char_h.max(1.0)).floor() as usize;
+        let visible_rows = (self.grid_rect.height() / self.char_h.max(1.0)).floor() as usize;
         let vrow = vrow.min(visible_rows.saturating_sub(1));
         let abs_row = (self.viewport_start_y + vrow).min(self.grid.len().saturating_sub(1));
         GridPos {
@@ -1722,7 +2039,7 @@ impl TerminalWidget {
     /// Number of on-screen rows and the absolute row of the top visible row —
     /// the viewport window used to map buffer-absolute rows to screen rows.
     fn viewport_window(&self) -> (usize, usize) {
-        let visible_rows = (self.rect.height() / self.char_h.max(1.0)).floor().max(1.0) as usize;
+        let visible_rows = (self.grid_rect.height() / self.char_h.max(1.0)).floor().max(1.0) as usize;
         (self.viewport_start_y, visible_rows)
     }
 
@@ -1737,8 +2054,8 @@ impl TerminalWidget {
             return None;
         }
         let vrow = cell.row - start_y;
-        let x = self.rect.x0 + self.last_padding_x + cell.col as f64 * self.char_w;
-        let y = (self.rect.y0 + vrow as f64 * self.char_h).floor();
+        let x = self.grid_rect.x0 + self.last_padding_x + cell.col as f64 * self.char_w;
+        let y = (self.grid_rect.y0 + vrow as f64 * self.char_h).floor();
         Some(Rect::new(x, y, x + 2.0, y + self.char_h))
     }
 
@@ -1754,9 +2071,9 @@ impl TerminalWidget {
                 continue;
             }
             let vrow = row - start_y;
-            let py = (self.rect.y0 + vrow as f64 * self.char_h).floor();
-            let x0 = self.rect.x0 + self.last_padding_x + start_col as f64 * self.char_w;
-            let x1 = self.rect.x0 + self.last_padding_x + end_col as f64 * self.char_w;
+            let py = (self.grid_rect.y0 + vrow as f64 * self.char_h).floor();
+            let x0 = self.grid_rect.x0 + self.last_padding_x + start_col as f64 * self.char_w;
+            let x1 = self.grid_rect.x0 + self.last_padding_x + end_col as f64 * self.char_w;
             rects.push(Rect::new(x0, py, x1, py + self.char_h));
         }
         rects
