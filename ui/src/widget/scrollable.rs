@@ -1,14 +1,17 @@
 use std::cell::Cell;
 use std::rc::Rc;
+use std::time::{Duration, Instant};
 
 use automerge::{AutoCommit, ObjId};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
 use vello::peniko::BlendMode;
 use winit::event::{WindowEvent, MouseScrollDelta, MouseButton, ElementState};
+use winit::keyboard::{Key, NamedKey};
 use taffy::{TaffyTree, NodeId, Style, Size, Dimension};
 use crate::widget::{Widget, Element};
 use crate::widget::scrollbar::{Scrollbar, ScrollMetrics, PressOutcome};
+use crate::color_compat::ColorCompat;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::presence::PresenceCtx;
@@ -28,6 +31,40 @@ const MIN_THUMB_LEN: f64 = crate::widget::scrollbar::MIN_THUMB_LEN;
 /// axis before its scrollbar is shown — otherwise the content "fits" and
 /// the bar is hidden entirely.
 const FIT_EPS: f32 = 0.5;
+/// How far (logical px) the bar's grab/reveal zone extends past its track
+/// toward the content, so approaching the edge reveals a faded-out overlay
+/// bar and the thin thumb stays comfortably grabbable.
+const HOVER_EXPAND: f64 = 6.0;
+/// Distance (logical px) scrolled per arrow-key press or per wheel line.
+const LINE_STEP: f32 = 48.0;
+/// Fraction of a viewport a track-page (click / PageUp-Down) moves. Mirrors
+/// the shared [`scrollbar::PAGE_FRACTION`].
+const PAGE_FRACTION: f32 = crate::widget::scrollbar::PAGE_FRACTION as f32;
+/// Overlay auto-hide: how long the bar stays fully opaque after the last
+/// scroll/hover before it starts fading.
+const VISIBLE_HOLD_MS: u128 = 900;
+/// Overlay auto-hide: fade-out ramp duration once the hold expires.
+const FADE_MS: u128 = 320;
+/// Click-and-hold track paging: delay before the first auto-repeat.
+const HOLD_INITIAL_MS: u64 = 300;
+/// Click-and-hold track paging: interval between repeats.
+const HOLD_REPEAT_MS: u64 = 55;
+
+/// A track click-and-hold in progress: the bar keeps paging toward the
+/// press point on a timer until the pointer is released or the thumb
+/// reaches the click.
+#[derive(Clone, Copy, Debug)]
+struct TrackHold {
+    /// Which bar is held (`true` = vertical).
+    vertical: bool,
+    /// Page direction: `+1` toward the end, `-1` toward the start.
+    dir: f64,
+    /// The press point, in logical coordinates. Paging stops once the thumb
+    /// reaches it so the view doesn't overshoot past the click.
+    anchor: Point,
+    /// When the next auto-repeat page is due.
+    next_at: Instant,
+}
 
 pub struct Scrollable {
     axis: ScrollAxis,
@@ -83,6 +120,32 @@ pub struct Scrollable {
     vbar: Scrollbar,
     /// Shared horizontal-bar interaction model.
     hbar: Scrollbar,
+    /// Overlay auto-hide behaviour. When `true` (the default) the bar fades
+    /// in on scroll/hover/focus and fades back out when idle, like a modern
+    /// overlay scrollbar. When `false` the bar is always drawn at full
+    /// opacity ([`Scrollable::always_visible`]).
+    overlay: bool,
+    /// Monotonic timestamp of the last bar "activity" (scroll, hover-enter,
+    /// hover-leave, focus). Drives the overlay fade. `None` until the bar has
+    /// ever been woken — a freshly-shown overlay list has no visible bar
+    /// until the content overflows (a one-shot flash) or the user interacts.
+    last_activity: Option<Instant>,
+    /// Whether the pointer is currently within a bar's reveal zone. Pins the
+    /// overlay bar visible while the pointer lingers near the edge, and
+    /// expands the track chrome.
+    pointer_near_bar: bool,
+    /// Rising-edge latch so the bar flashes into view the first frame its
+    /// content overflows (discoverability), then obeys the fade.
+    was_scrollable: bool,
+    /// Set when this scroll container holds keyboard focus, so PageUp/Down,
+    /// Home/End and arrow keys scroll it. Also pins the overlay bar visible.
+    focused: bool,
+    /// An in-progress click-and-hold on a track (auto-repeat paging).
+    hold: Option<TrackHold>,
+    /// Purely-visual dirty flag (bar fade/hover) that must trigger a redraw
+    /// but — unlike [`Self::scroll_dirty`] — needs no `apply_layout`, since
+    /// nothing moved. Cleared by `mark_drawn`.
+    bar_dirty: bool,
     /// Optional externally-owned scroll position that survives this widget
     /// being dropped and rebuilt. Apps that recreate their whole widget
     /// subtree every frame (the file explorer's rebuild-on-command model)
@@ -118,6 +181,13 @@ impl Scrollable {
             last_cursor: Point::ZERO,
             vbar: Scrollbar::vertical(),
             hbar: Scrollbar::horizontal(),
+            overlay: true,
+            last_activity: None,
+            pointer_near_bar: false,
+            was_scrollable: false,
+            focused: false,
+            hold: None,
+            bar_dirty: false,
             persisted_offset: None,
         }
     }
@@ -130,6 +200,22 @@ impl Scrollable {
     /// content fits the viewport regardless of this flag; setting it
     /// `false` suppresses the bar unconditionally.
     pub fn with_scrollbar(mut self, show: bool) -> Self { self.show_scrollbar = show; self }
+
+    /// Keep the scrollbar permanently visible instead of the default
+    /// overlay auto-hide (fade-in-on-activity / fade-out-when-idle). Use for
+    /// panes where a persistent bar is wanted as a constant affordance. The
+    /// bar still only appears on an axis whose content actually overflows.
+    pub fn always_visible(mut self) -> Self {
+        self.overlay = false;
+        self
+    }
+
+    /// Choose overlay auto-hide (`true`, the default) or a permanently
+    /// visible bar (`false`). See [`Scrollable::always_visible`].
+    pub fn with_overlay(mut self, overlay: bool) -> Self {
+        self.overlay = overlay;
+        self
+    }
 
     /// Pin the scroll viewport to an exact logical-pixel height. Use this
     /// when the Scrollable is hosted somewhere that doesn't supply a
@@ -184,7 +270,16 @@ impl Scrollable {
         // actually change, and we'd waste a redraw otherwise.
         if self.offset_x != ox || self.offset_y != oy {
             self.scroll_dirty = true;
+            self.wake();
         }
+    }
+
+    /// Refresh the overlay auto-hide timer: fade the bar to full opacity now
+    /// and restart the fade-out countdown. Called on any scroll, on hover
+    /// enter/leave, and when the container gains focus.
+    fn wake(&mut self) {
+        self.last_activity = Some(Instant::now());
+        self.bar_dirty = true;
     }
     pub fn fling(&mut self, vx: f32, vy: f32) { self.vx = vx; self.vy = vy; }
     pub fn tick(&mut self, dt: f32) {
@@ -316,17 +411,146 @@ impl Scrollable {
         }
     }
 
+    /// The pointer-reveal zone for the vertical bar: its track widened toward
+    /// the content by [`HOVER_EXPAND`] so a faded-out overlay bar reveals as
+    /// the pointer approaches the edge and the thin thumb stays grabbable.
+    fn vertical_hover_zone(&self) -> Option<Rect> {
+        let t = self.vertical_track()?;
+        Some(Rect::new(t.x0 - HOVER_EXPAND, t.y0, t.x1, t.y1))
+    }
+    fn horizontal_hover_zone(&self) -> Option<Rect> {
+        let t = self.horizontal_track()?;
+        Some(Rect::new(t.x0, t.y0 - HOVER_EXPAND, t.x1, t.y1))
+    }
+
+    /// Whether the pointer is inside either bar's reveal zone.
+    fn cursor_near_bar(&self, cur: Point) -> bool {
+        self.vertical_hover_zone().is_some_and(|z| z.contains(cur))
+            || self.horizontal_hover_zone().is_some_and(|z| z.contains(cur))
+    }
+
+    /// Whether the bar is pinned fully visible by an active interaction —
+    /// dragging, held-paging, hovered, near the edge, or focused — as opposed
+    /// to riding the idle fade.
+    fn bar_pinned(&self) -> bool {
+        self.focused
+            || self.hold.is_some()
+            || self.pointer_near_bar
+            || self.vbar.is_active()
+            || self.hbar.is_active()
+    }
+
+    /// Current overlay opacity in `[0, 1]`. `1.0` for a persistent bar, under
+    /// reduced motion, or while pinned; otherwise it rides the
+    /// hold-then-fade curve since the last activity. `now`/`reduce_motion`
+    /// are injected so the curve is unit-testable; `bar_opacity` wires in the
+    /// wall clock and the live theme.
+    fn bar_opacity_at(&self, now: Instant, reduce_motion: bool) -> f32 {
+        if !self.overlay || reduce_motion || self.bar_pinned() {
+            return 1.0;
+        }
+        match self.last_activity {
+            None => 0.0,
+            Some(t) => {
+                let e = now.saturating_duration_since(t).as_millis();
+                if e < VISIBLE_HOLD_MS {
+                    1.0
+                } else if e < VISIBLE_HOLD_MS + FADE_MS {
+                    1.0 - (e - VISIBLE_HOLD_MS) as f32 / FADE_MS as f32
+                } else {
+                    0.0
+                }
+            }
+        }
+    }
+
+    fn bar_opacity(&self, theme: &Theme) -> f32 {
+        self.bar_opacity_at(Instant::now(), theme.reduce_motion)
+    }
+
+    /// Whether the overlay fade is still animating (opacity changing) and the
+    /// host should keep pumping frames. False for a persistent bar, while
+    /// pinned (opacity constant), or once fully faded.
+    fn fade_in_progress(&self) -> bool {
+        if !self.overlay || self.bar_pinned() {
+            return false;
+        }
+        match self.last_activity {
+            None => false,
+            Some(t) => t.elapsed().as_millis() < VISIBLE_HOLD_MS + FADE_MS,
+        }
+    }
+
+    /// Advance a click-and-hold track page. Called every frame from `sync`
+    /// with the wall clock (and directly, with an injected clock, by tests).
+    /// Pages once toward the held direction when the repeat timer is due and
+    /// the thumb hasn't yet reached the press point, then reschedules.
+    fn advance_hold(&mut self, now: Instant) {
+        let Some(hold) = self.hold else { return };
+        if now < hold.next_at {
+            return;
+        }
+        // Reschedule first so a hold that pauses at the click point still
+        // ticks (and resumes if the geometry later allows another step).
+        if let Some(h) = &mut self.hold {
+            h.next_at = now + Duration::from_millis(HOLD_REPEAT_MS);
+        }
+        let page = if hold.vertical {
+            self.viewport_h * PAGE_FRACTION
+        } else {
+            self.viewport_w * PAGE_FRACTION
+        };
+        // Stop paging once the thumb has reached / passed the press point so
+        // the view settles exactly where the user clicked rather than racing
+        // past it.
+        let reached = if hold.vertical {
+            match self.vertical_thumb() {
+                Some(thumb) => {
+                    thumb.contains(hold.anchor)
+                        || (hold.dir > 0.0 && thumb.y1 >= hold.anchor.y)
+                        || (hold.dir < 0.0 && thumb.y0 <= hold.anchor.y)
+                }
+                None => true,
+            }
+        } else {
+            match self.horizontal_thumb() {
+                Some(thumb) => {
+                    thumb.contains(hold.anchor)
+                        || (hold.dir > 0.0 && thumb.x1 >= hold.anchor.x)
+                        || (hold.dir < 0.0 && thumb.x0 <= hold.anchor.x)
+                }
+                None => true,
+            }
+        };
+        if reached {
+            return;
+        }
+        if hold.vertical {
+            self.scroll_by(0.0, (hold.dir as f32) * page);
+        } else {
+            self.scroll_by((hold.dir as f32) * page, 0.0);
+        }
+    }
+
     fn draw_scrollbars(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
         if !self.show_scrollbar {
             return;
         }
+        let opacity = self.bar_opacity(theme);
+        if opacity <= 0.003 {
+            return;
+        }
         let radius = BAR_THICKNESS / 2.0;
-        let track_color = theme.tokens.colors.surface_white_5;
+        // The track chrome only shows in the "expanded" state (persistent,
+        // focused, hovered near the edge, dragging, or held); an idle overlay
+        // bar is just the thumb, like macOS / GNOME overlay scrollbars.
+        let expanded = !self.overlay || self.bar_pinned();
+        let track_color = theme.tokens.colors.surface_white_5.with_alpha_factor(opacity);
         for (track, thumb, active) in [
             (self.vertical_track(), self.vertical_thumb(), self.vbar.is_active()),
             (self.horizontal_track(), self.horizontal_thumb(), self.hbar.is_active()),
         ] {
-            if let Some(track) = track {
+            if let (Some(track), true) = (track, expanded) {
                 scene.fill(
                     vello::peniko::Fill::NonZero,
                     transform,
@@ -336,9 +560,10 @@ impl Scrollable {
                 );
             }
             if let Some(thumb) = thumb {
-                // Idle thumb uses the neutral border token; hover/drag
+                // Idle thumb uses the neutral border token; hover/drag/focus
                 // brightens it to the dim-text token for affordance.
-                let color = if active { theme.text_dim } else { theme.border_standard };
+                let base = if active || self.focused { theme.text_dim } else { theme.border_standard };
+                let color = base.with_alpha_factor(opacity);
                 scene.fill(
                     vello::peniko::Fill::NonZero,
                     transform,
@@ -366,6 +591,12 @@ fn max_bottom_edge(w: &dyn Widget) -> f64 {
 
 impl Widget for Scrollable {
     fn sync(&mut self, s: &mut AutoCommit, p: &ObjId) {
+        // Drive click-and-hold track paging: while the host pumps animation
+        // frames (see `needs_animation_frame`) it re-syncs each tick, giving
+        // the held bar its auto-repeat cadence.
+        if self.hold.is_some() {
+            self.advance_hold(Instant::now());
+        }
         if let Some(c) = &mut self.child { c.sync(s, p); }
     }
 
@@ -442,6 +673,14 @@ impl Widget for Scrollable {
             }
             self.clamp();
         }
+        // Flash the overlay bar into view the first frame its content
+        // overflows, so a scrollable region is discoverable without a
+        // scroll gesture, then let the idle fade take over.
+        let scrollable_now = self.vbar_active() || self.hbar_active();
+        if scrollable_now && !self.was_scrollable && self.last_activity.is_none() {
+            self.wake();
+        }
+        self.was_scrollable = scrollable_now;
     }
 
     fn draw(&mut self, scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, theme: &Theme, presence: &PresenceCtx) {
@@ -505,8 +744,9 @@ impl Widget for Scrollable {
                     return;
                 }
                 // Otherwise track which thumb (if any) is hovered so the
-                // next draw can brighten it. Hover changes need a redraw
-                // but still fall through so the child updates its own hover.
+                // next draw can brighten it. Hover changes are visual-only
+                // (no relayout) and still fall through so the child updates
+                // its own hover.
                 let mut changed = false;
                 if let Some(track) = self.vertical_track() {
                     changed |= self.vbar.update_hover(track, self.v_metrics(), cur);
@@ -518,22 +758,50 @@ impl Widget for Scrollable {
                 } else {
                     changed |= self.hbar.set_hover(false);
                 }
+                // Overlay reveal: the pointer entering or leaving a bar's edge
+                // zone pins it visible / restarts its fade. Only edge
+                // transitions touch the timer, so ordinary content-area moves
+                // never keep the bar awake.
+                let near = self.cursor_near_bar(cur);
+                if near != self.pointer_near_bar {
+                    self.pointer_near_bar = near;
+                    self.wake();
+                    changed = true;
+                }
                 if changed {
-                    self.scroll_dirty = true;
+                    self.bar_dirty = true;
                 }
             }
             WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. } => {
                 let cur = self.last_cursor;
-                // Vertical bar: thumb press → drag; track press → page.
+                // A press anywhere inside the scroll region claims keyboard
+                // focus so PageUp/Down, Home/End and arrows scroll it. A child
+                // that consumes the press (a button, a row) overwrites this via
+                // its own `focus_target` after we forward below, so focus still
+                // lands on the deepest interactive target.
+                if self.rect.contains(cur) {
+                    *focus_target = Some(node_id);
+                }
+                // Vertical bar: thumb press → drag; track press → page + hold.
                 if let Some(track) = self.vertical_track() {
                     match self.vbar.press(track, self.v_metrics(), cur) {
                         PressOutcome::Thumb => {
                             self.scroll_dirty = true;
+                            self.wake();
                             *handled = true;
                             return;
                         }
                         PressOutcome::Page(target) => {
+                            let dir = (target - self.offset_y as f64).signum();
                             self.scroll_by(0.0, target as f32 - self.offset_y);
+                            if dir != 0.0 {
+                                self.hold = Some(TrackHold {
+                                    vertical: true,
+                                    dir,
+                                    anchor: cur,
+                                    next_at: Instant::now() + Duration::from_millis(HOLD_INITIAL_MS),
+                                });
+                            }
                             *handled = true;
                             return;
                         }
@@ -545,11 +813,21 @@ impl Widget for Scrollable {
                     match self.hbar.press(track, self.h_metrics(), cur) {
                         PressOutcome::Thumb => {
                             self.scroll_dirty = true;
+                            self.wake();
                             *handled = true;
                             return;
                         }
                         PressOutcome::Page(target) => {
+                            let dir = (target - self.offset_x as f64).signum();
                             self.scroll_by(target as f32 - self.offset_x, 0.0);
+                            if dir != 0.0 {
+                                self.hold = Some(TrackHold {
+                                    vertical: false,
+                                    dir,
+                                    anchor: cur,
+                                    next_at: Instant::now() + Duration::from_millis(HOLD_INITIAL_MS),
+                                });
+                            }
                             *handled = true;
                             return;
                         }
@@ -558,11 +836,43 @@ impl Widget for Scrollable {
                 }
             }
             WindowEvent::MouseInput { state: ElementState::Released, button: MouseButton::Left, .. } => {
-                if self.vbar.release() || self.hbar.release() {
+                // End any track-hold auto-repeat and any thumb drag.
+                let had_hold = self.hold.take().is_some();
+                if self.vbar.release() || self.hbar.release() || had_hold {
                     self.scroll_dirty = true;
                     *handled = true;
                     return;
                 }
+            }
+            WindowEvent::KeyboardInput { event: ke, .. }
+                if self.focused && ke.state == ElementState::Pressed =>
+            {
+                let page_v = self.viewport_h * PAGE_FRACTION;
+                let page_h = self.viewport_w * PAGE_FRACTION;
+                // A huge single step that `clamp` caps at the content edge —
+                // used for Home/End on whichever axis is primary.
+                let full = self.content_h.max(self.content_w);
+                let has_v = self.axis_has_vertical();
+                let moved = match &ke.logical_key {
+                    Key::Named(NamedKey::PageDown) if has_v => { self.scroll_by(0.0, page_v); true }
+                    Key::Named(NamedKey::PageUp) if has_v => { self.scroll_by(0.0, -page_v); true }
+                    Key::Named(NamedKey::PageDown) => { self.scroll_by(page_h, 0.0); true }
+                    Key::Named(NamedKey::PageUp) => { self.scroll_by(-page_h, 0.0); true }
+                    Key::Named(NamedKey::Home) if has_v => { self.scroll_by(0.0, -full); true }
+                    Key::Named(NamedKey::End) if has_v => { self.scroll_by(0.0, full); true }
+                    Key::Named(NamedKey::Home) => { self.scroll_by(-full, 0.0); true }
+                    Key::Named(NamedKey::End) => { self.scroll_by(full, 0.0); true }
+                    Key::Named(NamedKey::ArrowDown) if has_v => { self.scroll_by(0.0, LINE_STEP); true }
+                    Key::Named(NamedKey::ArrowUp) if has_v => { self.scroll_by(0.0, -LINE_STEP); true }
+                    Key::Named(NamedKey::ArrowRight) if self.axis_has_horizontal() => { self.scroll_by(LINE_STEP, 0.0); true }
+                    Key::Named(NamedKey::ArrowLeft) if self.axis_has_horizontal() => { self.scroll_by(-LINE_STEP, 0.0); true }
+                    _ => false,
+                };
+                if moved {
+                    *handled = true;
+                    return;
+                }
+                // A non-nav key falls through to the child below.
             }
             _ => {}
         }
@@ -579,12 +889,28 @@ impl Widget for Scrollable {
             // scrolls content UP (reveals what's below). To match
             // user intent, wheel-up must reduce offset_y → negate.
             const LINE_PX: f32 = 60.0;
-            let (dx, dy) = match delta {
+            let (mut dx, mut dy) = match delta {
                 MouseScrollDelta::LineDelta(x, y) => (*x * -LINE_PX, *y * -LINE_PX),
                 MouseScrollDelta::PixelDelta(pp) => (-pp.x as f32, -pp.y as f32),
             };
+            // Shift+wheel scrolls horizontally: remap the dominant vertical
+            // delta onto X when the axis can scroll horizontally and the
+            // wheel is (as on a plain mouse) vertical-only. Tilt wheels that
+            // already report an X delta pass through unchanged.
+            if m.state().shift_key() && self.axis_has_horizontal() && dx == 0.0 {
+                dx = dy;
+                dy = 0.0;
+            }
+            let before = (self.offset_x, self.offset_y);
             self.scroll_by(dx, dy);
-            *handled = true;
+            // Only consume the wheel when it actually moved the view. Leaving an
+            // at-the-edge / can't-scroll wheel unhandled lets it bubble to an
+            // outer or sibling scroll region (e.g. the sidebar behind a content
+            // pane that fits, or the parent once an inner list is maxed) —
+            // standard nested-scroll chaining.
+            if (self.offset_x, self.offset_y) != before {
+                *handled = true;
+            }
             return;
         }
         if let Some(c) = &mut self.child {
@@ -606,22 +932,54 @@ impl Widget for Scrollable {
 
     fn name(&self) -> &str { "Scrollable" }
 
+    /// A scroll container is keyboard-focusable exactly when it can actually
+    /// scroll on an enabled axis (so non-overflowing wrappers stay out of the
+    /// tab order). While focused it consumes PageUp/Down, Home/End and arrow
+    /// keys to scroll; see `handle_event`.
+    fn is_focusable(&self) -> bool {
+        self.show_scrollbar && (self.vbar_active() || self.hbar_active())
+    }
+    fn set_focus(&mut self, focused: bool) {
+        if self.focused != focused {
+            self.focused = focused;
+            // Surfacing/hiding focus flips the bar's pinned-visible state.
+            self.wake();
+        }
+    }
+    fn is_focused(&self) -> bool { self.focused }
+
     /// Propagate pointer-capture intent from the contained child so an
     /// outer container's event-routing short-circuit honours an active
-    /// drag deeper in the tree.
+    /// drag deeper in the tree. A live thumb drag or track-hold also holds
+    /// capture so the whole gesture routes here even if the pointer strays
+    /// off the bar.
     fn wants_pointer_capture(&self) -> bool {
         self.vbar.is_dragging()
             || self.hbar.is_dragging()
+            || self.hold.is_some()
             || self.child.as_ref().is_some_and(|c| c.wants_pointer_capture())
     }
 
+    /// Keep the host pumping frames while the overlay bar is fading or a
+    /// track-hold is auto-repeating. Settles back to idle (returns false)
+    /// once the fade completes and no hold is active, so an idle list never
+    /// spins.
+    fn needs_animation_frame(&self) -> bool {
+        self.hold.is_some()
+            || self.fade_in_progress()
+            || self.child.as_ref().is_some_and(|c| c.needs_animation_frame())
+    }
+
     /// Returns true after a `scroll_by` actually moved the
-    /// offset, OR while any descendant signals dirty — without
-    /// the first clause, a wheel-only event (no child mutation)
-    /// would silently fail to schedule the next frame and the
-    /// scroll would visually freeze.
+    /// offset, while the overlay bar's fade/hover is mid-change, OR while any
+    /// descendant signals dirty — without the first clauses a wheel-only
+    /// event (no child mutation) or a fade tick would silently fail to
+    /// schedule the next frame and the scroll/bar would visually freeze.
     fn needs_redraw(&self) -> bool {
-        self.scroll_dirty || self.child.as_ref().is_some_and(|c| c.needs_redraw())
+        self.scroll_dirty
+            || self.bar_dirty
+            || self.fade_in_progress()
+            || self.child.as_ref().is_some_and(|c| c.needs_redraw())
     }
 
     /// Forwarded version of the above for the layout gate. The
@@ -644,6 +1002,7 @@ impl Widget for Scrollable {
 
     fn mark_drawn(&mut self) {
         self.scroll_dirty = false;
+        self.bar_dirty = false;
         if let Some(c) = &mut self.child {
             c.mark_drawn();
         }
@@ -1067,6 +1426,251 @@ mod tests {
         s.set_content_size(200.0, 400.0);
         assert_eq!(s.offset_y(), 100.0, "offset clamped to the new max");
         assert_eq!(cell.get().1, 100.0, "cell rewritten with the clamped value");
+    }
+
+    // === New navigation: keyboard, hold-paging, both-axis, auto-hide ======
+
+    /// A both-axis scrollable with a known viewport and overflowing content
+    /// on both axes.
+    fn both(content_w: f32, content_h: f32) -> Scrollable {
+        let mut s = Scrollable::new(ScrollAxis::Both);
+        s.rect = Rect::new(0.0, 0.0, 300.0, 300.0);
+        s.set_viewport_size(300.0, 300.0);
+        s.set_content_size(content_w, content_h);
+        s
+    }
+
+    fn key(named: NamedKey) -> WindowEvent {
+        // winit keeps `KeyEvent`'s tail fields non-public; the suite-wide
+        // workaround (see data_table) is to zero-init and set what we read.
+        let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
+        ev.logical_key = Key::Named(named);
+        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
+            winit::keyboard::NativeKeyCode::Unidentified,
+        );
+        ev.location = winit::keyboard::KeyLocation::Standard;
+        ev.state = ElementState::Pressed;
+        ev.repeat = false;
+        WindowEvent::KeyboardInput {
+            device_id: unsafe { std::mem::zeroed() },
+            event: ev,
+            is_synthetic: false,
+        }
+    }
+
+    fn dispatch_mods(s: &mut Scrollable, event: &WindowEvent, mods: &winit::event::Modifiers) -> bool {
+        let mut tree = TaffyTree::<()>::new();
+        let node = tree.new_leaf(Style::default()).unwrap();
+        let mut handled = false;
+        let mut focus_target = None;
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        s.handle_event(event, 1.0, mods, &mut doc, &root, &mut handled, &mut focus_target, node, &tree);
+        handled
+    }
+
+    #[test]
+    fn focusable_only_when_it_can_scroll() {
+        // Overflowing content → focusable; fitting content → not, so a
+        // non-scrolling wrapper never clutters the tab order.
+        assert!(Widget::is_focusable(&vertical(1200.0)), "overflowing is focusable");
+        assert!(!Widget::is_focusable(&vertical(150.0)), "fitting is not focusable");
+        // Disabling the scrollbar removes it from the tab order too.
+        let mut hidden = vertical(1200.0);
+        hidden.show_scrollbar = false;
+        assert!(!Widget::is_focusable(&hidden));
+    }
+
+    #[test]
+    fn keyboard_pages_home_end_and_lines_when_focused() {
+        let mut s = vertical(1200.0); // viewport 300, max_scroll 900
+        s.set_focus(true);
+        assert!(s.is_focused());
+
+        // PageDown moves ~0.9 of a viewport.
+        assert!(dispatch(&mut s, &key(NamedKey::PageDown)), "PageDown handled");
+        let page = 300.0 * PAGE_FRACTION;
+        assert!((s.offset_y() - page).abs() < 0.5, "PageDown ≈ 0.9 viewport, got {}", s.offset_y());
+
+        // End jumps to the bottom (clamped to max_scroll).
+        assert!(dispatch(&mut s, &key(NamedKey::End)), "End handled");
+        assert!((s.offset_y() - 900.0).abs() < 1e-3, "End → bottom, got {}", s.offset_y());
+
+        // PageUp from the bottom moves back up by a viewport-ful.
+        assert!(dispatch(&mut s, &key(NamedKey::PageUp)), "PageUp handled");
+        assert!((s.offset_y() - (900.0 - page)).abs() < 0.5, "PageUp from bottom, got {}", s.offset_y());
+
+        // Home returns to the very top.
+        assert!(dispatch(&mut s, &key(NamedKey::Home)), "Home handled");
+        assert_eq!(s.offset_y(), 0.0, "Home → top");
+
+        // ArrowDown nudges one line.
+        assert!(dispatch(&mut s, &key(NamedKey::ArrowDown)), "ArrowDown handled");
+        assert!((s.offset_y() - LINE_STEP).abs() < 1e-3, "ArrowDown = one line, got {}", s.offset_y());
+    }
+
+    #[test]
+    fn keyboard_ignored_when_unfocused() {
+        // The same keys must NOT scroll an unfocused container — otherwise
+        // every scrollable in the tree would fight over the key.
+        let mut s = vertical(1200.0);
+        assert!(!s.is_focused());
+        assert!(!dispatch(&mut s, &key(NamedKey::PageDown)), "unfocused key not handled");
+        assert_eq!(s.offset_y(), 0.0, "unfocused container does not scroll");
+    }
+
+    #[test]
+    fn shift_wheel_scrolls_horizontally() {
+        use winit::keyboard::ModifiersState;
+        let mut s = both(1200.0, 1200.0);
+        let shift = winit::event::Modifiers::from(ModifiersState::SHIFT);
+        let wheel = WindowEvent::MouseWheel {
+            device_id: unsafe { std::mem::zeroed() },
+            delta: MouseScrollDelta::LineDelta(0.0, -1.0), // a plain vertical wheel
+            phase: winit::event::TouchPhase::Moved,
+        };
+        assert!(dispatch_mods(&mut s, &wheel, &shift), "shift+wheel handled");
+        assert!(s.offset_x() > 0.0, "shift+wheel scrolls X, got x={}", s.offset_x());
+        assert_eq!(s.offset_y(), 0.0, "shift+wheel leaves Y untouched");
+    }
+
+    #[test]
+    fn tilt_wheel_scrolls_horizontally_without_shift() {
+        let mut s = both(1200.0, 1200.0);
+        let tilt = WindowEvent::MouseWheel {
+            device_id: unsafe { std::mem::zeroed() },
+            delta: MouseScrollDelta::LineDelta(-1.0, 0.0), // horizontal tilt
+            phase: winit::event::TouchPhase::Moved,
+        };
+        assert!(dispatch(&mut s, &tilt), "tilt wheel handled");
+        assert!(s.offset_x() > 0.0, "tilt wheel scrolls X, got x={}", s.offset_x());
+    }
+
+    #[test]
+    fn horizontal_thumb_drag_updates_offset_x() {
+        let mut s = both(1200.0, 1200.0);
+        let track = s.horizontal_track().expect("h-bar shown");
+        let thumb = s.thumb_rect(ScrollAxis::Horizontal).expect("h-thumb");
+        let mid_x = (thumb.x0 + thumb.x1) / 2.0;
+        let bar_y = track.y0 + track.height() / 2.0;
+        dispatch(&mut s, &cursor_moved(mid_x, bar_y));
+        assert!(dispatch(&mut s, &mouse(ElementState::Pressed)), "press on h-thumb handled");
+        assert!(s.hbar.is_dragging(), "h-thumb press begins a drag");
+        dispatch(&mut s, &cursor_moved(mid_x + 80.0, bar_y));
+        assert!(s.offset_x() > 0.0, "drag right increases offset_x: {}", s.offset_x());
+        dispatch(&mut s, &mouse(ElementState::Released));
+        assert!(!s.hbar.is_dragging(), "release ends the h-drag");
+    }
+
+    #[test]
+    fn holding_track_pages_repeatedly_then_settles_at_click() {
+        // Press the track below the thumb: it pages once immediately, arms a
+        // hold, and each `advance_hold` tick pages again until the thumb
+        // reaches the press point — then it stops rather than overshooting.
+        let mut s = vertical(3000.0); // viewport 300, max_scroll 2700
+        let bar_x = s.rect.x1 - BAR_MARGIN - BAR_THICKNESS / 2.0;
+        let thumb = s.vertical_thumb().unwrap();
+        // Click deep down the track, well below the thumb.
+        let click_y = thumb.y1 + (s.rect.y1 - thumb.y1) * 0.8;
+        dispatch(&mut s, &cursor_moved(bar_x, click_y));
+        assert!(dispatch(&mut s, &mouse(ElementState::Pressed)), "track press handled");
+        assert!(s.hold.is_some(), "a track press below the thumb arms a hold");
+        let after_first = s.offset_y();
+        assert!(after_first > 0.0, "first page moved down: {after_first}");
+        assert!(s.wants_pointer_capture(), "a live hold captures the pointer");
+
+        // Auto-repeat: force several ticks by advancing the injected clock
+        // past the repeat interval each time. Offset keeps climbing…
+        let mut prev = after_first;
+        let mut steps = 0;
+        for _ in 0..40 {
+            let due = s.hold.map(|h| h.next_at).unwrap();
+            s.advance_hold(due + Duration::from_millis(1));
+            if s.offset_y() > prev {
+                steps += 1;
+                prev = s.offset_y();
+            } else {
+                break; // thumb reached the click point → paging stopped
+            }
+        }
+        assert!(steps >= 2, "the hold auto-repeats past the first page ({steps} extra steps)");
+
+        // …and settles with the thumb straddling the click point, not past it.
+        let thumb_now = s.vertical_thumb().unwrap();
+        assert!(
+            thumb_now.y1 >= click_y - BAR_THICKNESS && thumb_now.y0 <= click_y + 1.0,
+            "paging stopped at the click, thumb=({},{}) click_y={click_y}",
+            thumb_now.y0, thumb_now.y1,
+        );
+
+        // Release clears the hold.
+        assert!(dispatch(&mut s, &mouse(ElementState::Released)), "release handled");
+        assert!(s.hold.is_none(), "release ends the hold");
+    }
+
+    #[test]
+    fn overlay_bar_fades_in_on_activity_and_out_when_idle() {
+        // Default overlay bar: hidden at rest, full opacity right after a
+        // scroll, then it holds, ramps down, and fully hides once idle.
+        let mut s = vertical(1200.0);
+        s.last_activity = None; // as freshly constructed
+        s.pointer_near_bar = false;
+        assert_eq!(s.bar_opacity_at(Instant::now(), false), 0.0, "idle overlay is hidden");
+
+        s.wake();
+        let t0 = s.last_activity.unwrap();
+        assert_eq!(s.bar_opacity_at(t0, false), 1.0, "full opacity right after activity");
+        assert_eq!(
+            s.bar_opacity_at(t0 + Duration::from_millis(VISIBLE_HOLD_MS as u64 - 10), false),
+            1.0,
+            "still fully visible during the hold",
+        );
+        let mid = s.bar_opacity_at(
+            t0 + Duration::from_millis((VISIBLE_HOLD_MS + FADE_MS / 2) as u64),
+            false,
+        );
+        assert!(mid > 0.0 && mid < 1.0, "mid-fade opacity is partial: {mid}");
+        assert_eq!(
+            s.bar_opacity_at(
+                t0 + Duration::from_millis((VISIBLE_HOLD_MS + FADE_MS + 100) as u64),
+                false,
+            ),
+            0.0,
+            "fully faded out once idle",
+        );
+    }
+
+    #[test]
+    fn overlay_fade_pins_visible_when_pinned_or_reduced_motion_or_persistent() {
+        let mut s = vertical(1200.0);
+        s.wake();
+        let long_after = s.last_activity.unwrap() + Duration::from_secs(30);
+        // Would be faded out by now…
+        assert_eq!(s.bar_opacity_at(long_after, false), 0.0);
+        // …but focus pins it visible.
+        s.focused = true;
+        assert_eq!(s.bar_opacity_at(long_after, false), 1.0, "focus pins the bar visible");
+        s.focused = false;
+        // Reduced motion keeps it fully visible (no fade animation to freeze).
+        assert_eq!(s.bar_opacity_at(long_after, true), 1.0, "reduced motion pins visible");
+        // A persistent (non-overlay) bar is always fully opaque.
+        let mut persistent = vertical(1200.0).always_visible();
+        persistent.last_activity = None;
+        assert_eq!(persistent.bar_opacity_at(Instant::now(), false), 1.0, "persistent bar always visible");
+    }
+
+    #[test]
+    fn needs_animation_frame_only_while_fading_or_holding() {
+        // An idle (never-woken) overlay list must NOT pump frames.
+        let s = vertical(1200.0);
+        assert!(!Widget::needs_animation_frame(&s), "idle list does not animate");
+        // A persistent bar is static too.
+        let p = vertical(1200.0).always_visible();
+        assert!(!Widget::needs_animation_frame(&p), "persistent bar is static");
+        // Mid-fade → pumps.
+        let mut fading = vertical(1200.0);
+        fading.wake();
+        assert!(Widget::needs_animation_frame(&fading), "a fading bar pumps frames");
     }
 
     #[test]
