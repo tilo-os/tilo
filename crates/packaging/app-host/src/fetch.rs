@@ -1,24 +1,71 @@
-//! Remote fetch — stub.
+//! Remote fetch — resolve an app-id through the registry protocol,
+//! download the qpkg over iroh-blobs, verify it fail-closed, and hand
+//! the bytes to [`crate::install::install_qpkg`].
 //!
-//! The v0 daemon is offline-only: callers hand it .qpkg bytes and it
-//! parks them in the store. A future revision will resolve a remote
-//! "qpkg://<hex>" URI to iroh-blobs, download the bundle, and hand the
-//! bytes to [`crate::install::install_qpkg`]. Until that lands the
-//! entry point below is a placeholder so the module layout is stable
-//! for callers that already reference it.
+//! The heavy lifting (signed index, target selection, iroh transport,
+//! signature/hash verification) lives in the `app-registry` crate; this
+//! module is the daemon-side glue that turns a verified fetch into an
+//! installed, registry-tracked package.
+
+use std::path::Path;
 
 use thiserror::Error;
 
+use app_registry::HostProfile;
+use app_registry::resolve::{self, FetchOutcome};
+
+use crate::install::{self, InstallError};
+use crate::registry::Pinning;
+use crate::store::Store;
 use pkg::id::PackageId;
 
 #[derive(Debug, Error)]
 pub enum FetchError {
-    #[error("remote fetch is not implemented in this build; use `install` with local .qpkg bytes")]
-    NotImplemented,
+    #[error("resolve/fetch {app_id}: {source}")]
+    Resolve {
+        app_id: String,
+        #[source]
+        source: anyhow::Error,
+    },
+    #[error("install: {0}")]
+    Install(#[from] InstallError),
 }
 
-/// Placeholder — returns `NotImplemented`. Real remote fetch is
-/// tracked as a follow-up (iroh-blobs resolver + trust-set integration).
-pub async fn fetch_remote(_id: PackageId) -> Result<Vec<u8>, FetchError> {
-    Err(FetchError::NotImplemented)
+/// Resolve + download + verify the qpkg for `app_id` (optionally
+/// constrained by a semver `version` requirement), then install it
+/// into `store` with the requested pinning. Returns the installed
+/// [`PackageId`].
+///
+/// `workspace_root`, when given, layers that workspace's
+/// `registries.toml` over the global config so a workspace can add or
+/// override registries.
+pub async fn fetch_and_install(
+    store: &Store,
+    workspace_root: Option<&Path>,
+    app_id: &str,
+    version: Option<&str>,
+    pinning: Pinning,
+) -> Result<PackageId, FetchError> {
+    let outcome = fetch_remote(workspace_root, app_id, version).await?;
+    // `install_qpkg` re-verifies and does blocking IO; the caller
+    // (service task) already runs this off the capnp event loop.
+    let id = install::install_qpkg(store, &outcome.bytes, pinning)?;
+    Ok(id)
+}
+
+/// Resolve + download + verify the qpkg for `app_id` WITHOUT
+/// installing. Bytes are returned only after the blake3 hash and the
+/// publisher signature have been checked (fail-closed).
+pub async fn fetch_remote(
+    workspace_root: Option<&Path>,
+    app_id: &str,
+    version: Option<&str>,
+) -> Result<FetchOutcome, FetchError> {
+    let host = HostProfile::detect();
+    resolve::resolve_and_fetch(workspace_root, &host, app_id, version)
+        .await
+        .map_err(|source| FetchError::Resolve {
+            app_id: app_id.to_string(),
+            source,
+        })
 }

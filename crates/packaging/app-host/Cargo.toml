@@ -14,6 +14,7 @@ path = "src/lib.rs"
 
 [dependencies]
 pkg = { path = "../pkg" }
+app-registry = { path = "../app-registry" }
 
 # Cap'n Proto RPC for the control socket, matching format-host.
 capnp = "0.26"
