@@ -3408,6 +3408,7 @@ dependencies = [
  "anyhow",
  "automerge",
  "image",
+ "qos-actions",
  "roxmltree",
  "serde",
  "serde_json",
@@ -11072,6 +11073,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "qos-actions"
+version = "0.1.0"
+dependencies = [
+ "automerge",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "uuid",
+]
+
+[[package]]
 name = "qos-callstream"
 version = "0.1.0"
 dependencies = [
@@ -14885,6 +14897,7 @@ dependencies = [
  "media",
  "openh264",
  "png 0.18.1",
+ "qos-actions",
  "reqwest 0.12.28",
  "rustypipe",
  "serde",
@@ -15352,6 +15365,7 @@ dependencies = [
  "pollster",
  "postcard",
  "qdoc",
+ "qos-actions",
  "qos-relay",
  "qos-startup-metrics",
  "qos-user-identity",

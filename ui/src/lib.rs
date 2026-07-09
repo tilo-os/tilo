@@ -31,6 +31,7 @@
 pub mod a11y;
 pub mod accesskit_bridge;
 pub mod screen_reader;
+pub mod action_palette;
 pub mod app;
 pub mod color_compat;
 pub mod doc;
@@ -110,8 +111,12 @@ pub use widget::{Card, CardGrid, card_column_width, card_columns};
 pub use widget::{EditableLabel, EditOutcome};
 pub use widget::{AppCommand, AppKind, AppWidget, IconDescriptor};
 pub use widget::command_palette::{
-    ArgumentSpec, CommandEntry, CommandOutcome, CommandPalette, PaletteMode,
+    ArgumentSpec, CommandEntry, CommandOutcome, CommandPalette, PaletteMode, SearchScope,
 };
+// The qOS ACTION model (re-exported so apps get the whole vocabulary through
+// `ui::` without a second `use qos_actions` line) + the Ctrl+K bridge.
+pub use action_palette::{ActionPalette, GeneralAction};
+pub use qos_actions;
 // Phase 1 (Audit timeline) widgets + their shared types. The
 // `collab_types::OpClass` / `ArtifactKind` re-exports flow through
 // these widgets, so callers can build a `HistoryEntry` without taking
