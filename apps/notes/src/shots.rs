@@ -12,13 +12,15 @@ use std::path::{Path, PathBuf};
 
 use taffy::prelude::*;
 use ui::offscreen::OffscreenRenderer;
-use ui::permissions::PermissionContext;
-use ui::presence::PresenceCtx;
+use ui::permissions::{PermissionContext, UserId};
+use ui::presence::{
+    PathSegment, PresenceCtx, PresenceKey, SelectionRange, draw_remote_presence,
+};
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::Widget;
 use vello::Scene;
-use vello::kurbo::{Affine, Point};
+use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::Color;
 use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
 use winit::keyboard::{Key, SmolStr};
@@ -236,7 +238,15 @@ pub fn render_to_path(
 
     let (w, h) = viewport;
     let theme = Theme::dark();
-    let presence = PresenceCtx::empty();
+    // The `presence` scenario seeds two simulated peers so the shot shows
+    // the live presence layer — labeled carets, a fading typing swipe,
+    // a peer name pill, sidebar presence-in-nav mist, and an off-screen
+    // edge mist. Every other scenario draws with no peers.
+    let presence = if scenario == Some("presence") {
+        seed_two_peers(&app)
+    } else {
+        PresenceCtx::empty()
+    };
     let permission = PermissionContext::permissive();
     let mut text_renderer = TextRenderer::new();
 
@@ -265,10 +275,76 @@ pub fn render_to_path(
         &presence,
         &permission,
     );
+    // Mirror what `ui::App`'s frame loop paints on top of the widget tree:
+    // the cross-process peer overlay — name pills for on-screen peers and
+    // edge mist for off-screen ones. The widget tree already drew the
+    // labeled carets, typing swipe, and sidebar mist from `presence`.
+    if scenario == Some("presence") {
+        let window_rect = Rect::new(0.0, 0.0, w as f64, h as f64);
+        draw_remote_presence(
+            &mut scene,
+            Affine::IDENTITY,
+            window_rect,
+            &mut text_renderer,
+            &theme,
+            &presence,
+        );
+    }
     let mut renderer = OffscreenRenderer::new(w, h);
     renderer.render_png(&scene, Color::from_rgba8(15, 17, 21, 255), out);
     let _ = std::fs::remove_dir_all(&root);
     Ok(())
+}
+
+/// Build a `PresenceCtx` with two simulated collaborators for the
+/// `presence` shot:
+///
+/// - **Alice** is editing *this* page: a labeled caret sits in one of the
+///   checklist blocks, a fresh typing highlighter swipes the run she just
+///   inserted, and her mouse pointer shows a name pill on the canvas.
+/// - **Bob** is elsewhere: he's on a different page (so his colour glows on
+///   that page's sidebar row — presence-in-navigation), and his mouse
+///   pointer has drifted off the right edge (so an edge mist points to
+///   where he went).
+///
+/// This is hand-seeded sample presence, exactly like the sample workspace
+/// — it never ships; the live app derives presence from real peers.
+fn seed_two_peers(app: &NotesApp) -> PresenceCtx {
+    let mut p = PresenceCtx::empty();
+    let alice = UserId("alice".to_string());
+    let bob = UserId("bob".to_string());
+    p.set_display_name(alice.clone(), "Alice");
+    p.set_display_name(bob.clone(), "Bob");
+
+    // Alice's caret + typing swipe on a mid-document block. The key matches
+    // `block_editor::block_presence_key(4)` — a checklist row on the
+    // seeded "Launch checklist" page.
+    let block = |i: u32| PresenceKey::Widget {
+        path: vec![PathSegment::Field("notes_block".to_string()), PathSegment::Index(i)],
+    };
+    p.set_caret(&block(4), alice.clone(), 18);
+    p.record_peer_typing(
+        alice.clone(),
+        block(4),
+        SelectionRange { start: 0, end: 18 },
+        std::time::Instant::now(),
+    );
+    // Alice's on-canvas pointer, with a name pill.
+    p.upsert_remote_cursor("alice".to_string(), [560.0, 300.0], Some("Alice"));
+
+    // Bob is reading a different page → glow that sidebar row in his colour.
+    let selected = app.selected_for_test();
+    if let Some(other) = app
+        .workspace_pages_for_test()
+        .into_iter()
+        .find(|pg| Some(pg.id) != selected)
+    {
+        p.register_peer_at("bob".to_string(), PresenceKey::Tab { id: other.id.to_string() });
+    }
+    // Bob's mouse pointer has drifted off the right edge → edge mist.
+    p.upsert_remote_cursor("bob".to_string(), [1500.0, 380.0], Some("Bob"));
+
+    p
 }
 
 /// Dispatch the events that drive `app` into the requested interaction

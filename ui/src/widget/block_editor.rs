@@ -2118,15 +2118,38 @@ impl Widget for BlockEditor {
                     &[Rect::new(p0.x, p0.y, p1.x, p1.y)],
                 );
             }
+            // Fading "just typed" highlighter: a peer's recently-inserted
+            // run glows in their color and decays over TYPING_FADE. Drawn
+            // over authorship, under caret/selection. Mapped through the
+            // line's own glyph metrics so the tint hugs the exact text.
+            let now = std::time::Instant::now();
+            for (user, range, alpha) in presence.typing_marks_for_key(&key, now) {
+                if self.local_author.as_deref() == Some(user.0.as_str()) {
+                    continue;
+                }
+                let rect = line.selection_rect(theme, range.start, range.end);
+                let p0 = transform * Point::new(rect.x0, rect.y0);
+                let p1 = transform * Point::new(rect.x1, rect.y1);
+                presence.draw_peer_typing(
+                    scene,
+                    theme,
+                    &user,
+                    &[(Rect::new(p0.x, p0.y, p1.x, p1.y), alpha)],
+                );
+            }
             if let Some(list) = presence.carets.get(&key) {
                 for (user, byte_pos) in list {
                     // The line owns the caret geometry, so the peer caret
-                    // is pixel-identical to a local caret (just recoloured).
-                    presence.draw_peer_caret(
+                    // is pixel-identical to a local caret (just recoloured);
+                    // the labeled variant floats the peer's name above it.
+                    let name = presence.display_name(user);
+                    presence.draw_peer_caret_labeled(
                         scene,
                         theme,
+                        text_renderer,
                         transform,
                         user,
+                        &name,
                         line.caret_rect(theme, *byte_pos),
                     );
                 }

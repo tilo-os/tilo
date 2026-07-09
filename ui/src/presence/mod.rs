@@ -1,13 +1,22 @@
 use std::collections::HashMap;
+use std::time::Instant;
 use crate::permissions::UserId;
 
 mod key;
 mod render;
+mod geom;
 pub use key::{PresenceKey, PathSegment, SelectionRange};
+pub use geom::{EdgeMist, MistEdge, edge_mist_for};
 // `render::draw_remote_cursors` is a free function — re-export so
 // downstream apps (terminal, settings, file-explorer) can call it from
 // their per-frame draw without depending on the shell.
-pub use render::draw_remote_cursors;
+pub use render::{draw_remote_cursors, draw_remote_presence};
+
+/// How long a peer's "just typed" highlight lingers before it has fully
+/// faded away. A textmarker swipe that decays over this window so a busy
+/// document doesn't accumulate permanent smears of colour — you see where
+/// a peer is *currently* working, then it quietly clears.
+pub const TYPING_FADE: std::time::Duration = std::time::Duration::from_millis(2500);
 
 /// Stable RGB color for a collaborator, used by every widget that paints a
 /// per-peer affordance (tab presence dots, remote cursor, per-folder
@@ -93,6 +102,63 @@ mod color_tests {
     }
 }
 
+/// A collaborator's identity for presence rendering: who they are and the
+/// stable colour every affordance paints them in. This is the single
+/// value a widget needs to draw a peer — id for attribution, name for the
+/// chip label, colour for the caret / pointer / mist / typing tint.
+///
+/// The colour is derived deterministically from `id` via [`user_color`],
+/// so the same peer is the same hue on every screen without any shared
+/// state — two peers who never exchange a palette still agree on who is
+/// pink and who is orange. A friendlier `name` (from the roster) can
+/// differ from `id` without perturbing the colour.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PresenceUser {
+    pub id: String,
+    pub name: String,
+    pub color: (u8, u8, u8),
+}
+
+impl PresenceUser {
+    /// Build a user whose colour is the deterministic [`user_color`] of
+    /// `id`, with a display name (falls back to `id` when the roster has
+    /// no friendlier name yet).
+    pub fn new(id: impl Into<String>, name: impl Into<String>) -> Self {
+        let id = id.into();
+        let color = user_color(&id);
+        Self { id, name: name.into(), color }
+    }
+
+    /// Build a user from just an id, using the id itself as the display
+    /// name until a roster entry supplies a nicer one.
+    pub fn from_id(id: impl Into<String>) -> Self {
+        let id = id.into();
+        let name = id.clone();
+        Self::new(id, name)
+    }
+
+    /// This user's colour as premultiplied-friendly RGBA floats at
+    /// `alpha` — the shape every renderer wants.
+    pub fn color_rgba(&self, alpha: f32) -> [f32; 4] {
+        [
+            self.color.0 as f32 / 255.0,
+            self.color.1 as f32 / 255.0,
+            self.color.2 as f32 / 255.0,
+            alpha,
+        ]
+    }
+}
+
+/// One "just typed" highlight span: the run of text a peer inserted and
+/// when. Rendered as a fading textmarker swipe in the peer's colour;
+/// [`PresenceCtx::active_typing`] turns its age into an alpha and prunes
+/// it once past [`TYPING_FADE`].
+#[derive(Debug, Clone)]
+struct TypingMark {
+    range: SelectionRange,
+    born: Instant,
+}
+
 #[derive(Debug, Clone)]
 pub struct RemoteCursor {
     pub user_id: String,
@@ -114,6 +180,17 @@ pub struct PresenceCtx {
     /// [`PresenceCtx::color_for`] which falls through to [`user_color`]
     /// when a user has no override.
     pub color_overrides: HashMap<UserId, (u8, u8, u8)>,
+    /// Friendly display names per user, seeded from the collab roster
+    /// (`CollabEvent::Context`). Read through [`PresenceCtx::display_name`]
+    /// / [`PresenceCtx::user`]; a peer with no roster entry falls back to
+    /// their raw id, so a caret chip is never blank.
+    pub names: HashMap<UserId, String>,
+    /// Per-user "just typed" highlight spans, keyed by presence scope.
+    /// A peer types → their inserted run is recorded here with a birth
+    /// instant; [`PresenceCtx::active_typing`] fades it out over
+    /// [`TYPING_FADE`]. Not serialised — purely a local render effect
+    /// driven by the inbound presence stream.
+    typing: HashMap<(UserId, PresenceKey), Vec<TypingMark>>,
     /// Current draw-time visibility window in scene-space pixels.
     /// Threaded through the draw recursion so widgets can early-out
     /// when their `get_rect()` doesn't intersect the active viewport
@@ -270,6 +347,172 @@ impl PresenceCtx {
         user_color(&user.0)
     }
 
+    /// Record (or update) a peer's friendly display name — seeded from the
+    /// collab roster. Overwrites any prior name.
+    pub fn set_display_name(&mut self, user: UserId, name: impl Into<String>) {
+        self.names.insert(user, name.into());
+    }
+
+    /// The friendly name to show for `user`, falling back to the raw id
+    /// when the roster hasn't announced one. Never blank.
+    pub fn display_name(&self, user: &UserId) -> String {
+        self.names
+            .get(user)
+            .cloned()
+            .unwrap_or_else(|| user.0.clone())
+    }
+
+    /// Resolve a peer into a [`PresenceUser`] — id, friendly name, and the
+    /// override-aware stable colour — ready to hand to any renderer.
+    pub fn user(&self, user: &UserId) -> PresenceUser {
+        PresenceUser {
+            id: user.0.clone(),
+            name: self.display_name(user),
+            color: self.color_for(user),
+        }
+    }
+
+    /// Record a peer's freshly-typed run under `key`, born `now`. Adjacent
+    /// / overlapping marks from the same peer under the same key coalesce
+    /// into one growing span with a refreshed birth instant, so a burst of
+    /// keystrokes reads as a single moving highlighter rather than a stack
+    /// of overlapping tints. Pass `Instant::now()` in production; tests
+    /// pass an explicit base instant so the fade is deterministic.
+    pub fn record_peer_typing(
+        &mut self,
+        user: UserId,
+        key: PresenceKey,
+        range: SelectionRange,
+        now: Instant,
+    ) {
+        let marks = self.typing.entry((user, key)).or_default();
+        // Coalesce with any mark this touches or abuts (ranges within one
+        // char count as contiguous typing).
+        if let Some(m) = marks.iter_mut().find(|m| {
+            range.start <= m.range.end.saturating_add(1)
+                && m.range.start <= range.end.saturating_add(1)
+        }) {
+            m.range.start = m.range.start.min(range.start);
+            m.range.end = m.range.end.max(range.end);
+            m.born = now;
+        } else {
+            marks.push(TypingMark { range, born: now });
+        }
+    }
+
+    /// The peer's still-visible typing spans under `key` at time `now`,
+    /// each paired with a fade alpha in `0.0..=1.0` (1.0 = just typed,
+    /// tapering linearly to 0 at [`TYPING_FADE`]). Fully-faded marks are
+    /// filtered out. This is a read: call [`Self::prune_typing`] once a
+    /// frame to actually reclaim expired entries.
+    pub fn active_typing(
+        &self,
+        user: &UserId,
+        key: &PresenceKey,
+        now: Instant,
+    ) -> Vec<(SelectionRange, f32)> {
+        let fade = TYPING_FADE.as_secs_f32();
+        let Some(marks) = self.typing.get(&(user.clone(), key.clone())) else {
+            return Vec::new();
+        };
+        marks
+            .iter()
+            .filter_map(|m| {
+                let age = now.saturating_duration_since(m.born).as_secs_f32();
+                if age >= fade {
+                    return None;
+                }
+                let alpha = (1.0 - age / fade).clamp(0.0, 1.0);
+                Some((m.range, alpha))
+            })
+            .collect()
+    }
+
+    /// Every peer's still-visible typing spans under `key` at `now`, as
+    /// `(user, range, alpha)`. The shape a text widget wants: it walks the
+    /// list, maps each `range` to glyph rects, and paints
+    /// [`Self::draw_peer_typing`]. Skips the local user is the caller's
+    /// job — the store only ever holds *peers'* marks.
+    pub fn typing_marks_for_key(
+        &self,
+        key: &PresenceKey,
+        now: Instant,
+    ) -> Vec<(UserId, SelectionRange, f32)> {
+        let fade = TYPING_FADE.as_secs_f32();
+        let mut out = Vec::new();
+        for ((user, k), marks) in &self.typing {
+            if k != key {
+                continue;
+            }
+            for m in marks {
+                let age = now.saturating_duration_since(m.born).as_secs_f32();
+                if age >= fade {
+                    continue;
+                }
+                let alpha = (1.0 - age / fade).clamp(0.0, 1.0);
+                out.push((user.clone(), m.range, alpha));
+            }
+        }
+        out
+    }
+
+    /// Whether any peer still has an un-faded typing mark at `now`. The
+    /// App polls this to keep requesting animation frames while a
+    /// highlighter is still decaying.
+    pub fn has_active_typing(&self, now: Instant) -> bool {
+        let fade = TYPING_FADE;
+        self.typing.values().flatten().any(|m| {
+            now.saturating_duration_since(m.born) < fade
+        })
+    }
+
+    /// Drop every typing mark that has fully faded by `now`, and any
+    /// scope whose mark list became empty. Call once a frame.
+    pub fn prune_typing(&mut self, now: Instant) {
+        let fade = TYPING_FADE;
+        self.typing.retain(|_, marks| {
+            marks.retain(|m| now.saturating_duration_since(m.born) < fade);
+            !marks.is_empty()
+        });
+    }
+
+    /// A peer's last-known pointer position in scene space, if we have one
+    /// — the target a "follow" action scrolls toward. Reads the same
+    /// `remote_cursors` overlay the pointer is drawn from, so following a
+    /// peer lands exactly where their cursor shows.
+    pub fn peer_pointer(&self, user_id: &str) -> Option<[f32; 2]> {
+        self.remote_cursors
+            .iter()
+            .find(|c| c.user_id == user_id)
+            .map(|c| c.position)
+    }
+
+    /// Hit-test a click against the off-screen mist bands for the current
+    /// `viewport`: returns the id of the peer whose edge band contains
+    /// `point`, so clicking a peer's mist selects them to follow. Bands
+    /// are the fixed-thickness strips [`draw_remote_presence`] paints, so
+    /// this stays in sync with what the user sees.
+    pub fn hit_test_offscreen_mist(
+        &self,
+        viewport: vello::kurbo::Rect,
+        point: vello::kurbo::Point,
+    ) -> Option<String> {
+        for cursor in &self.remote_cursors {
+            let target = vello::kurbo::Point::new(
+                cursor.position[0] as f64,
+                cursor.position[1] as f64,
+            );
+            let Some(mist) = edge_mist_for(viewport, target) else {
+                continue;
+            };
+            let band = render::mist_band_rect(viewport, &mist);
+            if band.contains(point) {
+                return Some(cursor.user_id.clone());
+            }
+        }
+        None
+    }
+
     /// Upsert a remote peer's cursor into `remote_cursors`. The color is
     /// resolved via `color_for(&UserId)` so pinned palette ids (alice/bob/
     /// charlie/me) keep their reference colors and unknown ids fall through
@@ -405,6 +648,10 @@ impl PresenceCtx {
         for list in self.selections.values_mut() {
             list.retain(|(u, _)| u != &uid);
         }
+        // typing highlighter marks scoped to this peer
+        self.typing.retain(|(u, _), _| u != &uid);
+        // roster name
+        self.names.remove(&uid);
         // remote cursor stamp
         self.remove_remote_cursor(&user_id);
     }
@@ -681,6 +928,116 @@ mod string_id_wrapper_tests {
         assert!(ctx.selection_for(&key_a, &UserId("alice".into())).is_none());
         assert!(ctx.pointer_for(&key_a, &UserId("alice".into())).is_none());
         assert!(ctx.remote_cursors.is_empty());
+    }
+
+    #[test]
+    fn presence_user_color_is_stable_and_distinct() {
+        // Same id → same colour every time (deterministic, no shared state).
+        let a1 = PresenceUser::from_id("alice");
+        let a2 = PresenceUser::new("alice", "Alice Smith");
+        assert_eq!(a1.color, a2.color, "colour depends only on id");
+        assert_eq!(a1.color, user_color("alice"));
+        // Distinct ids → distinct colours (the whole point of the palette).
+        let bob = PresenceUser::from_id("bob");
+        assert_ne!(a1.color, bob.color);
+        // A friendlier name doesn't perturb the colour.
+        assert_eq!(a2.name, "Alice Smith");
+        assert_eq!(a1.name, "alice", "from_id uses the id as the fallback name");
+    }
+
+    #[test]
+    fn presence_user_rgba_is_normalised() {
+        let u = PresenceUser { id: "x".into(), name: "x".into(), color: (255, 128, 0) };
+        let c = u.color_rgba(0.5);
+        assert!((c[0] - 1.0).abs() < 1e-6);
+        assert!((c[1] - 128.0 / 255.0).abs() < 1e-6);
+        assert!((c[2] - 0.0).abs() < 1e-6);
+        assert!((c[3] - 0.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn roster_name_resolves_with_id_fallback() {
+        let mut ctx = PresenceCtx::empty();
+        let alice = UserId("alice".into());
+        // No roster entry yet → falls back to the id.
+        assert_eq!(ctx.display_name(&alice), "alice");
+        ctx.set_display_name(alice.clone(), "Alice Smith");
+        assert_eq!(ctx.display_name(&alice), "Alice Smith");
+        // `user()` bundles id + name + colour.
+        let pu = ctx.user(&alice);
+        assert_eq!(pu.name, "Alice Smith");
+        assert_eq!(pu.color, user_color("alice"));
+    }
+
+    #[test]
+    fn typing_mark_fades_linearly_and_prunes() {
+        use std::time::Duration;
+        let mut ctx = PresenceCtx::empty();
+        let bob = UserId("bob".into());
+        let key = PresenceKey::Widget { path: vec![PathSegment::Index(0)] };
+        let t0 = Instant::now();
+        ctx.record_peer_typing(bob.clone(), key.clone(), SelectionRange { start: 3, end: 8 }, t0);
+
+        // Fresh: alpha ~1.0, the full range present.
+        let fresh = ctx.active_typing(&bob, &key, t0);
+        assert_eq!(fresh.len(), 1);
+        assert_eq!((fresh[0].0.start, fresh[0].0.end), (3, 8));
+        assert!((fresh[0].1 - 1.0).abs() < 1e-3, "just-typed alpha is ~1.0");
+
+        // Half-way through the fade window: alpha ~0.5.
+        let mid = t0 + TYPING_FADE / 2;
+        let half = ctx.active_typing(&bob, &key, mid);
+        assert_eq!(half.len(), 1);
+        assert!((half[0].1 - 0.5).abs() < 0.05, "alpha halves at mid-life, got {}", half[0].1);
+        assert!(ctx.has_active_typing(mid));
+
+        // Past the window: gone from the read, and prune reclaims it.
+        let after = t0 + TYPING_FADE + Duration::from_millis(1);
+        assert!(ctx.active_typing(&bob, &key, after).is_empty());
+        assert!(!ctx.has_active_typing(after));
+        assert!(!ctx.typing.is_empty(), "not yet pruned");
+        ctx.prune_typing(after);
+        assert!(ctx.typing.is_empty(), "prune reclaims fully-faded marks");
+    }
+
+    #[test]
+    fn typing_marks_coalesce_when_contiguous() {
+        let mut ctx = PresenceCtx::empty();
+        let bob = UserId("bob".into());
+        let key = PresenceKey::Widget { path: vec![PathSegment::Index(1)] };
+        let t0 = Instant::now();
+        ctx.record_peer_typing(bob.clone(), key.clone(), SelectionRange { start: 0, end: 3 }, t0);
+        // A contiguous continuation (abuts the previous end) extends the span.
+        ctx.record_peer_typing(bob.clone(), key.clone(), SelectionRange { start: 3, end: 6 }, t0);
+        let marks = ctx.active_typing(&bob, &key, t0);
+        assert_eq!(marks.len(), 1, "contiguous typing coalesces into one span");
+        assert_eq!((marks[0].0.start, marks[0].0.end), (0, 6));
+
+        // A disjoint edit elsewhere in the same block stays separate.
+        ctx.record_peer_typing(bob.clone(), key.clone(), SelectionRange { start: 40, end: 44 }, t0);
+        let marks = ctx.active_typing(&bob, &key, t0);
+        assert_eq!(marks.len(), 2, "a far-away edit is its own span");
+    }
+
+    #[test]
+    fn unregister_peer_clears_typing_and_name() {
+        let mut ctx = PresenceCtx::empty();
+        let alice = UserId("alice".into());
+        let key = PresenceKey::Tab { id: "t".into() };
+        ctx.set_display_name(alice.clone(), "Alice");
+        ctx.record_peer_typing(alice.clone(), key.clone(), SelectionRange { start: 0, end: 2 }, Instant::now());
+        assert!(!ctx.active_typing(&alice, &key, Instant::now()).is_empty());
+        ctx.unregister_peer("alice".into());
+        assert!(ctx.active_typing(&alice, &key, Instant::now()).is_empty());
+        assert_eq!(ctx.display_name(&alice), "alice", "name reverts to id fallback");
+    }
+
+    #[test]
+    fn peer_pointer_reads_follow_target() {
+        let mut ctx = PresenceCtx::empty();
+        ctx.upsert_remote_cursor("alice".into(), [120.0, 44.0], None);
+        assert_eq!(ctx.peer_pointer("alice"), Some([120.0, 44.0]));
+        assert_eq!(ctx.peer_pointer("nobody"), None);
     }
 
     #[test]

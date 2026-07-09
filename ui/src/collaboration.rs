@@ -194,6 +194,14 @@ pub enum PresencePayload {
     Pointer { x: f32, y: f32 },
     Caret { pos: usize },
     Selection { start: usize, end: usize },
+    /// The local user just inserted the run `start..end` under the scope
+    /// `key`. Peers render this as a fading textmarker "just typed" swipe
+    /// in the author's colour (see [`crate::presence::PresenceCtx::record_peer_typing`]).
+    /// Unlike `Caret`/`Selection` this is an *event*, not steady-state:
+    /// it's published once when the caret advances on an insert and then
+    /// decays on the receiver. It rides the same fan-out as every other
+    /// presence payload; the legacy broker relays it verbatim.
+    Typing { start: usize, end: usize },
     Arrived,
     Left,
 }
@@ -1144,6 +1152,19 @@ async fn drive_shovel(
                         let _ = ph.publish_caret(&key_bytes, pos as u64).await;
                     }
                     PresencePayload::Selection { start, end } => {
+                        let key_bytes = postcard::to_stdvec(&key).unwrap_or_default();
+                        let _ = ph
+                            .publish_selection(&key_bytes, start as u64, end as u64)
+                            .await;
+                    }
+                    PresencePayload::Typing { start, end } => {
+                        // The SDK presence surface has no dedicated typing
+                        // channel yet; carry the just-typed run as a
+                        // transient selection so SDK-connected peers still
+                        // see *where* a peer is editing. The legacy broker
+                        // path relays the real `Typing` variant verbatim,
+                        // so the fading textmarker is exact there. When the
+                        // SDK grows a `publishTyping`, swap this arm.
                         let key_bytes = postcard::to_stdvec(&key).unwrap_or_default();
                         let _ = ph
                             .publish_selection(&key_bytes, start as u64, end as u64)

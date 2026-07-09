@@ -1035,6 +1035,18 @@ impl presence_stream::Server for PresenceStreamServer {
                     s.set_start(start as u64);
                     s.set_end(end as u64);
                 }
+                // The capnp presence union has no dedicated "typing" case
+                // yet; carry a peer's just-typed run as a transient
+                // selection so it still fans out over this path (the
+                // toolkit's legacy-broker path relays the exact `Typing`
+                // variant). Minimal seam for the presence-protocol
+                // extension — swap for a `set_typing` union case when the
+                // schema grows one.
+                PresencePayload::Typing { start, end } => {
+                    let mut s = payload.init_selection();
+                    s.set_start(start as u64);
+                    s.set_end(end as u64);
+                }
                 PresencePayload::Arrived => payload.set_arrived(()),
                 PresencePayload::Left => payload.set_left(()),
             }

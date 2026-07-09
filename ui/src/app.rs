@@ -298,6 +298,11 @@ pub struct App {
     /// disables outbound pointer broadcast — useful for headless tests
     /// and the `quick-ui` examples, which have no meaningful scope.
     presence_broadcast_scope: Option<PresenceKey>,
+    /// The peer we're currently "following", if any — set by clicking a
+    /// peer's presence indicator (their off-screen mist, in particular).
+    /// [`App::followed_peer_target`] resolves this to their live pointer so
+    /// a host can scroll/recentre toward them. `None` = not following.
+    followed_peer: Option<String>,
     /// Timestamp of the last outbound pointer broadcast, used by
     /// [`pointer_broadcast_allowed`] to throttle the wire rate to
     /// ~30 Hz regardless of how fast winit delivers `CursorMoved`.
@@ -437,6 +442,7 @@ impl App {
             presence_ctx: PresenceCtx::empty(),
             permission_ctx: PermissionContext::permissive(),
             presence_broadcast_scope: None,
+            followed_peer: None,
             last_pointer_broadcast: None,
             last_focus_presence: None,
             last_location_presence: None,
@@ -997,6 +1003,46 @@ impl App {
 
     pub fn presence_ctx(&self) -> &PresenceCtx { &self.presence_ctx }
     pub fn presence_ctx_mut(&mut self) -> &mut PresenceCtx { &mut self.presence_ctx }
+
+    /// Start (or stop, with `None`) following a peer. While set,
+    /// [`Self::followed_peer_target`] resolves to their live pointer so a
+    /// host can keep them in view.
+    pub fn set_followed_peer(&mut self, user_id: Option<String>) {
+        self.followed_peer = user_id;
+    }
+
+    /// The peer currently being followed, if any.
+    pub fn followed_peer(&self) -> Option<&str> {
+        self.followed_peer.as_deref()
+    }
+
+    /// The followed peer's live pointer position in scene space, if we're
+    /// following someone and have a position for them. `None` when not
+    /// following, or the peer has no known pointer (e.g. just left).
+    pub fn followed_peer_target(&self) -> Option<[f32; 2]> {
+        let id = self.followed_peer.as_deref()?;
+        self.presence_ctx.peer_pointer(id)
+    }
+
+    /// Try to follow whatever peer's presence indicator sits under `point`
+    /// (their off-screen mist band) for the given `viewport`. Returns
+    /// `true` and latches [`Self::followed_peer`] when a peer is hit; a
+    /// miss leaves the current follow target untouched and returns `false`.
+    /// This is the seam a host click handler calls to make a peer's mist
+    /// clickable — "jump to where Alice went".
+    pub fn try_follow_click(
+        &mut self,
+        viewport: vello::kurbo::Rect,
+        point: vello::kurbo::Point,
+    ) -> bool {
+        if let Some(uid) = self.presence_ctx.hit_test_offscreen_mist(viewport, point) {
+            self.followed_peer = Some(uid);
+            true
+        } else {
+            false
+        }
+    }
+
     pub fn permission_ctx(&self) -> &PermissionContext { &self.permission_ctx }
     pub fn set_permission_ctx(&mut self, ctx: PermissionContext) {
         self.permission_ctx = ctx;
@@ -1053,11 +1099,30 @@ impl App {
     /// supplies both the key (which sub-element the caret is in) and the
     /// payload via [`Widget::presence_payload`].
     fn broadcast_focus_presence(&mut self) {
+        use crate::collaboration::PresencePayload;
         let current = self
             .focused_node
             .and_then(|id| self.node_map.get(&id).copied())
             .and_then(|w| unsafe { (*w).presence_payload() });
         if current != self.last_focus_presence {
+            // Typing detection: when the local caret advances forward under
+            // the same scope, the user inserted text — publish a `Typing`
+            // event for the just-inserted run so peers light up a fading
+            // highlighter over what we wrote. Backspace / left-arrow (caret
+            // moves back) and scope changes don't qualify. This rides the
+            // real caret presence stream, so it needs no per-widget hook.
+            if let (
+                Some((new_key, PresencePayload::Caret { pos: new_pos })),
+                Some((old_key, PresencePayload::Caret { pos: old_pos })),
+            ) = (&current, &self.last_focus_presence)
+            {
+                if new_key == old_key && new_pos > old_pos {
+                    self.broadcast_presence(
+                        new_key.clone(),
+                        PresencePayload::Typing { start: *old_pos, end: *new_pos },
+                    );
+                }
+            }
             if let Some((key, payload)) = current.clone() {
                 self.broadcast_presence(key, payload);
             }
@@ -1134,6 +1199,12 @@ impl App {
                         // pass display_name=None.
                         self.presence_ctx
                             .upsert_remote_cursor(c.id.clone(), [0.0, 0.0], Some(&c.name));
+                        // Seed the roster so caret chips and mist tags for
+                        // this peer show the friendly name, not the raw id.
+                        self.presence_ctx.set_display_name(
+                            crate::permissions::UserId(c.id.clone()),
+                            c.name.clone(),
+                        );
                     }
                 }
                 CollabEvent::RemoteCursorMoved { user_id, x, y } => {
@@ -1395,6 +1466,18 @@ impl App {
                 );
                 self.presence_ctx
                     .set_remote_selection(user_id, key, start, end);
+            }
+            Typing { start, end } => {
+                // A peer inserted `start..end` under `key`: record a fading
+                // textmarker swipe in their colour. `Instant::now()` births
+                // the mark; the render fades it over `TYPING_FADE`, and the
+                // per-frame `prune_typing` reclaims it.
+                self.presence_ctx.record_peer_typing(
+                    crate::permissions::UserId(user_id),
+                    key,
+                    crate::presence::SelectionRange { start, end },
+                    Instant::now(),
+                );
             }
             Arrived => {
                 let uid = UserId(user_id.clone());
@@ -2585,14 +2668,17 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     );
                 }
 
-                // Remote peer cursors (both collab-socket and libp2p
+                // Remote peer presence (both collab-socket and libp2p
                 // sources land in `remote_cursors`): one shared helper
-                // paints each as a round, color-coded dot + name pill.
+                // paints each on-screen peer as a round, color-coded dot +
+                // name pill, and each OFF-screen peer as a colored edge
+                // mist pointing the way they drifted, so nobody vanishes.
                 // `pointers` is kept populated for the shell overlay but
                 // not painted here, so no peer is drawn twice.
-                crate::presence::draw_remote_cursors(
+                crate::presence::draw_remote_presence(
                     &mut scene,
                     transform,
+                    window_rect,
                     &mut app.text_renderer,
                     &app.theme,
                     &app.presence_ctx,
@@ -3317,6 +3403,16 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             window.request_redraw();
         }
 
+        // Fade out peer "just typed" highlighter marks: reclaim any that
+        // have fully decayed, and keep pumping frames while any are still
+        // fading so the taper animates instead of freezing between events.
+        let typing_now = Instant::now();
+        app.presence_ctx.prune_typing(typing_now);
+        let typing_active = app.presence_ctx.has_active_typing(typing_now);
+        if typing_active {
+            window.request_redraw();
+        }
+
         if app.root_widget.needs_commit() {
             app.commit_action();
             app.root_widget.on_commit();
@@ -3421,7 +3517,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         // still needs another frame (animation or async worker). Dropping
         // straight back to `Wait` the instant both clear is what keeps an
         // idle app from spinning.
-        if app.collab_manager.is_connected() || needs_frame {
+        if app.collab_manager.is_connected() || needs_frame || typing_active {
             event_loop.set_control_flow(ControlFlow::WaitUntil(
                 Instant::now() + Duration::from_millis(16),
             ));
