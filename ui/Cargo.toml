@@ -213,3 +213,7 @@ tokio-util = { version = "0.7", features = ["compat"] }
 [[example]]
 name = "wpe_dmabuf_probe"
 required-features = ["webview-wpe"]
+
+[[example]]
+name = "wpe_scroll_repro"
+required-features = ["webview-wpe"]
