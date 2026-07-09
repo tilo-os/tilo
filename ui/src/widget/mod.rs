@@ -570,6 +570,18 @@ pub mod image_viewer;     pub use image_viewer::ImageViewer;
 pub mod tree_view;        pub use tree_view::TreeView;
 pub mod toggle_group;     pub use toggle_group::ToggleGroup;
 
+// === Shared app patterns promoted from the app fleet + new primitives ======
+// Widgets that many apps hand-rolled (empty states, search boxes, stat tiles)
+// or asked for (semantic inline banners, filter chips). The visual, non-focus
+// ones (EmptyState / Banner / StatTile) each also expose an immediate-mode
+// `paint(...)` entry point so the ~20 apps that render straight to a `Scene`
+// (rather than building a widget tree) can adopt them too.
+pub mod empty_state;      pub use empty_state::EmptyState;
+pub mod search_field;     pub use search_field::SearchField;
+pub mod stat_tile;        pub use stat_tile::{StatTile, Trend};
+pub mod banner;           pub use banner::{Banner, BannerKind};
+pub mod chip;             pub use chip::Chip;
+
 // === Phase 1: Audit timeline + history scrubber =====================
 // Pure widget + types work in `ui/` — no shell wiring yet. See
 // `docs/superpowers/specs/2026-06-29-spaces-channels-and-cryptographic-roles.md`
