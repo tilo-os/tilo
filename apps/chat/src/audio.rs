@@ -101,12 +101,9 @@ fn drain_appsink(sink: &gst_app::AppSink, per_pull: gst::ClockTime) -> Vec<Vec<u
                 }
             }
             None => {
-                // Timeout with no sample: done once the stream has ended.
-                if sink.is_eos() {
-                    break;
-                } else {
-                    break;
-                }
+                // No sample within the timeout: either the stream has ended and
+                // fully drained, or nothing more is coming — either way, done.
+                break;
             }
         }
     }
