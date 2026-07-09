@@ -19,28 +19,26 @@ use vello::wgpu;
 /// compositor. Fractions are resolution/scale independent.
 pub type ContentRect = Arc<Mutex<Option<[f32; 4]>>>;
 
+// A compute pass, not a render pass: vello's intermediate texture is a
+// STORAGE_BINDING target (no RENDER_ATTACHMENT), so we `textureStore` the
+// sampled WebView into the content-rect region.
 const SHADER: &str = r#"
-struct R { x0: f32, y0: f32, x1: f32, y1: f32 };
-@group(0) @binding(0) var<uniform> r: R;
-@group(0) @binding(1) var t: texture_2d<f32>;
-@group(0) @binding(2) var s: sampler;
-struct VO { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
-@vertex fn vs(@builtin(vertex_index) i: u32) -> VO {
-    let c = vec2<f32>(f32(i & 1u), f32((i >> 1u) & 1u));
-    let x = mix(r.x0, r.x1, c.x);
-    let y = mix(r.y0, r.y1, c.y);
-    var o: VO;
-    o.pos = vec4<f32>(x * 2.0 - 1.0, 1.0 - y * 2.0, 0.0, 1.0);
-    o.uv = c;
-    return o;
-}
-@fragment fn fs(in: VO) -> @location(0) vec4<f32> {
-    return textureSample(t, s, in.uv);
+struct P { ox: u32, oy: u32, w: u32, h: u32 };
+@group(0) @binding(0) var<uniform> p: P;
+@group(0) @binding(1) var src: texture_2d<f32>;
+@group(0) @binding(2) var samp: sampler;
+@group(0) @binding(3) var dst: texture_storage_2d<rgba8unorm, write>;
+@compute @workgroup_size(8, 8)
+fn cs(@builtin(global_invocation_id) gid: vec3<u32>) {
+    if (gid.x >= p.w || gid.y >= p.h) { return; }
+    let uv = (vec2<f32>(f32(gid.x), f32(gid.y)) + 0.5) / vec2<f32>(f32(p.w), f32(p.h));
+    let c = textureSampleLevel(src, samp, uv, 0.0);
+    textureStore(dst, vec2<i32>(i32(p.ox + gid.x), i32(p.oy + gid.y)), c);
 }
 "#;
 
 struct Gpu {
-    pipeline: wgpu::RenderPipeline,
+    pipeline: wgpu::ComputePipeline,
     bgl: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
     uniform: wgpu::Buffer,
@@ -50,8 +48,8 @@ pub struct WebViewCompositor {
     engine: SharedEngine,
     rect: ContentRect,
     gpu: Option<Gpu>,
-    /// Current imported frame (kept alive) + its bind group.
-    current: Option<(wgpu::Texture, wgpu::BindGroup)>,
+    /// Current imported frame (kept alive) + its view.
+    current: Option<(wgpu::Texture, wgpu::TextureView)>,
 }
 
 impl WebViewCompositor {
@@ -75,7 +73,7 @@ impl WebViewCompositor {
                 entries: &[
                     wgpu::BindGroupLayoutEntry {
                         binding: 0,
-                        visibility: wgpu::ShaderStages::VERTEX,
+                        visibility: wgpu::ShaderStages::COMPUTE,
                         ty: wgpu::BindingType::Buffer {
                             ty: wgpu::BufferBindingType::Uniform,
                             has_dynamic_offset: false,
@@ -85,7 +83,7 @@ impl WebViewCompositor {
                     },
                     wgpu::BindGroupLayoutEntry {
                         binding: 1,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        visibility: wgpu::ShaderStages::COMPUTE,
                         ty: wgpu::BindingType::Texture {
                             sample_type: wgpu::TextureSampleType::Float { filterable: true },
                             view_dimension: wgpu::TextureViewDimension::D2,
@@ -95,8 +93,18 @@ impl WebViewCompositor {
                     },
                     wgpu::BindGroupLayoutEntry {
                         binding: 2,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        visibility: wgpu::ShaderStages::COMPUTE,
                         ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 3,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::StorageTexture {
+                            access: wgpu::StorageTextureAccess::WriteOnly,
+                            format: wgpu::TextureFormat::Rgba8Unorm,
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                        },
                         count: None,
                     },
                 ],
@@ -106,33 +114,12 @@ impl WebViewCompositor {
                 bind_group_layouts: &[Some(&bgl)],
                 immediate_size: 0,
             });
-            let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
                 label: Some("webview-composite"),
                 layout: Some(&layout),
-                vertex: wgpu::VertexState {
-                    module: &shader,
-                    entry_point: Some("vs"),
-                    buffers: &[],
-                    compilation_options: Default::default(),
-                },
-                fragment: Some(wgpu::FragmentState {
-                    module: &shader,
-                    entry_point: Some("fs"),
-                    targets: &[Some(wgpu::ColorTargetState {
-                        // vello's intermediate texture (render_thread).
-                        format: wgpu::TextureFormat::Rgba8Unorm,
-                        blend: None, // opaque: the page owns its content rect
-                        write_mask: wgpu::ColorWrites::ALL,
-                    })],
-                    compilation_options: Default::default(),
-                }),
-                primitive: wgpu::PrimitiveState {
-                    topology: wgpu::PrimitiveTopology::TriangleStrip,
-                    ..Default::default()
-                },
-                depth_stencil: None,
-                multisample: wgpu::MultisampleState::default(),
-                multiview_mask: None,
+                module: &shader,
+                entry_point: Some("cs"),
+                compilation_options: Default::default(),
                 cache: None,
             });
             let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
@@ -163,77 +150,75 @@ impl FramePostProcess for WebViewCompositor {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         target: &wgpu::TextureView,
-        _width: u32,
-        _height: u32,
+        width: u32,
+        height: u32,
     ) {
         self.ensure_gpu(device);
 
-        // Import a freshly exported frame (if any) and (re)build its bind
-        // group. Keeps the last texture when no new frame arrived.
+        // Import a freshly exported frame (if any); keep the last one when
+        // no new frame arrived this paint.
         if let Some(frame) = self.engine.take_dmabuf() {
             if let Some(tex) = import_dmabuf(device, &frame) {
-                let gpu = self.gpu.as_ref().unwrap();
                 let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
-                let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                    label: Some("webview-composite"),
-                    layout: &gpu.bgl,
-                    entries: &[
-                        wgpu::BindGroupEntry {
-                            binding: 0,
-                            resource: gpu.uniform.as_entire_binding(),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 1,
-                            resource: wgpu::BindingResource::TextureView(&view),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 2,
-                            resource: wgpu::BindingResource::Sampler(&gpu.sampler),
-                        },
-                    ],
-                });
-                self.current = Some((tex, bg));
+                self.current = Some((tex, view));
             }
         }
 
-        let (Some((_, bind_group)), Some(rect)) =
-            (&self.current, *self.rect.lock().unwrap())
-        else {
+        let (Some((_, src_view)), Some(rect)) = (&self.current, *self.rect.lock().unwrap()) else {
             return;
         };
         let gpu = self.gpu.as_ref().unwrap();
-        let mut rect_bytes = [0u8; 16];
-        for (i, f) in rect.iter().enumerate() {
-            rect_bytes[i * 4..i * 4 + 4].copy_from_slice(&f.to_ne_bytes());
-        }
-        queue.write_buffer(&gpu.uniform, 0, &rect_bytes);
 
-        let mut enc =
-            device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("webview-composite"),
-            });
+        // Fractions → pixel region on the target, clamped in bounds.
+        let ox = (rect[0] * width as f32).round().clamp(0.0, width as f32) as u32;
+        let oy = (rect[1] * height as f32).round().clamp(0.0, height as f32) as u32;
+        let x1 = (rect[2] * width as f32).round().clamp(0.0, width as f32) as u32;
+        let y1 = (rect[3] * height as f32).round().clamp(0.0, height as f32) as u32;
+        let (w, h) = (x1.saturating_sub(ox), y1.saturating_sub(oy));
+        if w == 0 || h == 0 {
+            return;
+        }
+        let dims = [ox, oy, w, h];
+        let mut bytes = [0u8; 16];
+        for (i, v) in dims.iter().enumerate() {
+            bytes[i * 4..i * 4 + 4].copy_from_slice(&v.to_ne_bytes());
+        }
+        queue.write_buffer(&gpu.uniform, 0, &bytes);
+
+        let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("webview-composite"),
+            layout: &gpu.bgl,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: gpu.uniform.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(src_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Sampler(&gpu.sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::TextureView(target),
+                },
+            ],
+        });
+
+        let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("webview-composite"),
+        });
         {
-            let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+            let mut pass = enc.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("webview-composite"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: target,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        // Keep the chrome vello already drew; draw over the
-                        // content rect only.
-                        load: wgpu::LoadOp::Load,
-                        store: wgpu::StoreOp::Store,
-                    },
-                    depth_slice: None,
-                })],
-                depth_stencil_attachment: None,
                 timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
             });
             pass.set_pipeline(&gpu.pipeline);
-            pass.set_bind_group(0, bind_group, &[]);
-            pass.draw(0..4, 0..1);
+            pass.set_bind_group(0, &bg, &[]);
+            pass.dispatch_workgroups(w.div_ceil(8), h.div_ceil(8), 1);
         }
         queue.submit([enc.finish()]);
     }
