@@ -29,6 +29,16 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let args: Vec<String> = std::env::args().collect();
     if let Some(out) = parse_shots_arg(&args) {
+        // `--live` probes the real system (lsblk + smartctl) for the capture,
+        // so the shot shows this machine's actual drives — degrading to the
+        // honest empty state if nothing is found. Without it the shot uses the
+        // curated offline sample (fully-populated, deterministic).
+        if args.iter().any(|a| a == "--live") {
+            // SAFETY: set once at startup before any threads read the env.
+            unsafe {
+                std::env::set_var("DISKS_LIVE", "1");
+            }
+        }
         // `--narrow` (or a sub-breakpoint `--viewport WxH`) renders the
         // collapsed layout with the drive-list flap revealed over its scrim.
         let narrow = args.iter().any(|a| a == "--narrow")

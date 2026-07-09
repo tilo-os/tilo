@@ -257,6 +257,8 @@ struct Layout {
     part_segments: Vec<(Rect, usize)>,
     /// Clickable partition rows in the Partitions table (index into partitions).
     part_rows: Vec<(Rect, usize)>,
+    /// Rescan button in the empty state (only present when no drives exist).
+    empty_rescan: Option<Rect>,
     modal: Option<ModalLayout>,
 }
 
@@ -534,6 +536,13 @@ impl DisksApp {
             ModalLayout { card, input, cancel, confirm }
         });
 
+        // Empty-state Rescan button, only when there is nothing to show.
+        let empty_rescan = if self.topo.drives.is_empty() {
+            Some(empty_state_rects(v, header).1)
+        } else {
+            None
+        };
+
         Layout {
             split,
             sidebar,
@@ -551,6 +560,7 @@ impl DisksApp {
             whole_disk_pill,
             part_segments,
             part_rows,
+            empty_rescan,
             modal,
         }
     }
@@ -975,20 +985,26 @@ impl DisksApp {
     fn draw_legend(&self, scene: &mut Scene, tr: &mut TextRenderer, theme: &Theme, t: Affine, x0: f64, y: f64, x1: f64, drive: &Drive) {
         let c = &theme.tokens.colors;
         let mut x = x0;
-        let row2_y = y + 22.0;
-        let mut row = 0;
+        let mut yy = y;
+        // Flow the swatches left-to-right, wrapping to a second row (the layout
+        // budgets two rows under the map) with x reset to the left margin — so
+        // a drive with many partitions never runs its legend off the edge.
         let mut place = |label: String, color: Color, sub: String, this: &Self, scene: &mut Scene, tr: &mut TextRenderer| {
-            let yy = if row < 4 { y } else { row2_y };
-            if x > x1 - 150.0 {
-                // wrap
+            let advance = ((label.len().max(sub.len()) as f64) * 6.5 + 34.0).max(120.0);
+            if x + advance > x1 && x > x0 && yy < y + 22.0 {
+                x = x0;
+                yy = y + 22.0;
+            }
+            // Past the two-row budget the remaining entries would overlap the
+            // capacity/SMART columns below — stop rather than draw garbage.
+            if yy >= y + 22.0 && x + advance > x1 && x > x0 {
+                return;
             }
             let sw = Rect::new(x, yy + 1.0, x + 12.0, yy + 13.0);
             Self::fill_rr(scene, t, sw, 3.0, color);
             this.txt(scene, tr, &label, 11.5, c.text_primary, x + 18.0, yy, None, TextWeight::Medium);
             this.txt(scene, tr, &sub, 11.0, c.text_dim, x + 18.0, yy + 14.0, None, TextWeight::Regular);
-            let advance = (label.len().max(sub.len()) as f64) * 6.5 + 34.0;
-            x += advance.max(120.0);
-            row += 1;
+            x += advance;
         };
         for p in &drive.partitions {
             place(p.display_label(), role_color(theme, p.role()), format!("{}  {}", p.role().legend(), fmt_size(p.size)), self, scene, tr);
@@ -1067,6 +1083,14 @@ impl DisksApp {
             }
         };
 
+        // No usable telemetry: explain *why* (privilege / bridge / absent)
+        // instead of leaving a blank card.
+        if smart.temp_c.is_none() && smart.power_on_hours.is_none() && smart.attrs.is_empty() {
+            let note = smart.detail.as_deref().unwrap_or("No SMART data available.");
+            self.txt(scene, tr, note, 12.0, c.text_dim, x, pill.y1 + 14.0, Some((area.width() - 2.0 * pad) as f32), TextWeight::Regular);
+            return;
+        }
+
         // Temperature gauge.
         let mut yy = pill.y1 + 18.0;
         if let Some(temp) = smart.temp_c {
@@ -1114,13 +1138,20 @@ impl DisksApp {
         Self::fill_rr(scene, t, banner, 12.0, with_alpha(sc, 38));
         Self::stroke_rr(scene, t, banner, 12.0, with_alpha(sc, 120), 1.0);
         self.txt(scene, tr, &format!("● Overall self-assessment: {}", status.label()), 17.0, sc, banner.x0 + 18.0, banner.y0 + 12.0, None, TextWeight::Bold);
-        let sub = match status {
+        let generic = match status {
             SmartStatus::Passed => "All monitored attributes are within nominal thresholds.",
             SmartStatus::Warning => "One or more attributes need attention — back up important data.",
             SmartStatus::Failing => "Drive reports imminent failure. Replace it as soon as possible.",
             SmartStatus::Unknown => "This device does not expose SMART telemetry.",
         };
-        self.txt(scene, tr, sub, 12.5, c.text_dim, banner.x0 + 18.0, banner.y0 + 38.0, None, TextWeight::Regular);
+        // For an Unknown verdict, prefer the probe's specific reason (needs
+        // privilege / USB bridge / virtual device) over the generic line.
+        let sub = if status == SmartStatus::Unknown {
+            drive.smart.as_ref().and_then(|s| s.detail.as_deref()).unwrap_or(generic)
+        } else {
+            generic
+        };
+        self.txt(scene, tr, sub, 12.5, c.text_dim, banner.x0 + 18.0, banner.y0 + 38.0, Some((banner.width() - 36.0) as f32), TextWeight::Regular);
 
         let smart = match &drive.smart {
             Some(s) => s,
@@ -1292,6 +1323,46 @@ impl DisksApp {
         self.txt_center(scene, tr, label, 14.0, label_c, (ml.confirm.x0 + ml.confirm.x1) / 2.0, ml.confirm.y0 + 9.0, TextWeight::Semibold);
     }
 
+    // ---- empty state ---------------------------------------------------
+    /// Shown when the live probe reports no block devices (or the tools are
+    /// missing). It is deliberately honest: no fabricated drives, just an
+    /// explanation and the Rescan affordance.
+    fn draw_empty_state(&self, scene: &mut Scene, tr: &mut TextRenderer, theme: &Theme, t: Affine, lay: &Layout) {
+        let c = &theme.tokens.colors;
+        // A centred card in the detail region (geometry shared with layout so
+        // the Rescan button hit-tests exactly where it is painted).
+        let (card, btn) = empty_state_rects(self.rect, lay.header);
+        let cx = (card.x0 + card.x1) / 2.0;
+        Self::fill_rr(scene, t, card, 16.0, c.surfaces.raised);
+        Self::stroke_rr(scene, t, card, 16.0, c.border_standard, 1.0);
+
+        // A simple disk glyph (stacked platters) drawn from primitives so the
+        // empty state doesn't depend on a font's emoji coverage.
+        let gx = cx;
+        let gy = card.y0 + 44.0;
+        for i in 0..3 {
+            let yy = gy + i as f64 * 11.0;
+            let ell = Rect::new(gx - 26.0, yy, gx + 26.0, yy + 16.0);
+            Self::fill_rr(scene, t, ell, 8.0, with_alpha(c.text_dim, 40));
+            Self::stroke_rr(scene, t, ell, 8.0, with_alpha(c.text_dim, 110), 1.2);
+        }
+
+        self.txt_center(scene, tr, "No storage devices found", 17.0, c.text_primary, cx, card.y0 + 96.0, TextWeight::Bold);
+        let line = if std::env::var("DISKS_LIVE").is_ok() {
+            "The system reported no block devices. Attach a drive, then Rescan."
+        } else {
+            "No devices to display."
+        };
+        self.txt_center(scene, tr, line, 12.5, c.text_dim, cx, card.y0 + 124.0, TextWeight::Regular);
+        self.txt_center(scene, tr, "Reflecting the live system — nothing is invented here.", 11.5, with_alpha(c.text_dim, 180), cx, card.y0 + 144.0, TextWeight::Regular);
+
+        // Rescan — re-runs the live probe (same path as the top-bar button).
+        let hov = btn.contains(self.last_mouse);
+        Self::fill_rr(scene, t, btn, 9.0, if hov { c.accent[4] } else { c.neutral[2] });
+        Self::stroke_rr(scene, t, btn, 9.0, c.border_standard, 1.0);
+        self.txt_center(scene, tr, "↻ Rescan", 13.0, c.text_primary, cx, btn.y0 + 8.0, TextWeight::Medium);
+    }
+
     // ---- status line ---------------------------------------------------
     fn draw_statusline(&self, scene: &mut Scene, tr: &mut TextRenderer, theme: &Theme, _t: Affine) {
         if self.status.is_empty() {
@@ -1456,6 +1527,21 @@ impl DisksApp {
     }
 }
 
+/// Centred empty-state card + its Rescan button, given the viewport and the
+/// (drive-less) header rect. Shared by `draw_empty_state` and `compute_layout`
+/// so the painted button and its hit target never drift.
+fn empty_state_rects(viewport: Rect, header: Rect) -> (Rect, Rect) {
+    let region = Rect::new(header.x0, header.y0, header.x1, viewport.y1 - PAD);
+    let cw = 460.0_f64.min(region.width().max(1.0));
+    let ch = 210.0;
+    let cx = (region.x0 + region.x1) / 2.0;
+    let cy = (region.y0 + region.y1) / 2.0;
+    let card = Rect::new(cx - cw / 2.0, cy - ch / 2.0, cx + cw / 2.0, cy + ch / 2.0);
+    let bw = 130.0;
+    let btn = Rect::new(cx - bw / 2.0, card.y1 - 46.0, cx + bw / 2.0, card.y1 - 14.0);
+    (card, btn)
+}
+
 /// Height of the Overview's capacity / SMART column block, sized to whichever
 /// column is taller so the two-up layout never clips a mounted filesystem row.
 fn overview_cols_h(drive: &Drive) -> f64 {
@@ -1501,6 +1587,8 @@ fn kind_color(theme: &Theme, kind: DriveKind) -> Color {
         DriveKind::Ssd => c.semantic.info,
         DriveKind::Hdd => c.neutral[5],
         DriveKind::Usb => c.semantic.success,
+        DriveKind::Zram => c.accent[7],
+        DriveKind::Virtual => c.neutral[4],
         DriveKind::Other => c.neutral[4],
     }
 }
@@ -1554,8 +1642,13 @@ impl Widget for DisksApp {
     fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
         if !self.seeded {
             if DisksDoc::is_empty(state) {
+                // Live: reflect the real system only. If the probe finds
+                // nothing (or the tools are missing) we seed an *empty*
+                // topology and show an honest empty state — never the curated
+                // sample, which would fabricate devices that don't exist.
+                // The sample is reserved for `--shots`/demo (non-live) builds.
                 let topo = if std::env::var("DISKS_LIVE").is_ok() {
-                    crate::probe::probe().unwrap_or_else(Topology::sample)
+                    crate::probe::probe().unwrap_or_default()
                 } else {
                     Topology::sample()
                 };
@@ -1737,7 +1830,7 @@ impl Widget for DisksApp {
             }
             scene.pop_layer();
         } else {
-            self.txt(scene, tr, "No drives detected.", 16.0, c.text_dim, lay.content.x0, lay.content.y0, None, TextWeight::Regular);
+            self.draw_empty_state(scene, tr, theme, transform, &lay);
         }
 
         self.draw_statusline(scene, tr, theme, transform);
@@ -1902,6 +1995,13 @@ impl Widget for DisksApp {
                     return;
                 }
                 if lay.refresh.contains(p) {
+                    self.do_refresh(state);
+                    *handled = true;
+                    self.dirty = true;
+                    return;
+                }
+                // Empty-state Rescan (only present when no drives are listed).
+                if lay.empty_rescan.is_some_and(|b| b.contains(p)) {
                     self.do_refresh(state);
                     *handled = true;
                     self.dirty = true;
@@ -2497,6 +2597,81 @@ mod tests {
         h.click(center(mount.0));
         assert!(DisksDoc::status(&h.doc).is_empty(), "a disabled button reports nothing");
         assert!(h.app.pending.is_none());
+    }
+
+    /// Seed a harness with whatever the *real* probe returns (falling back to
+    /// the sample where there is no hardware/lsblk) and drive the production
+    /// event path over it — the "drive it, don't fake it" verification.
+    fn real_or_sample_harness() -> (Harness, bool) {
+        let mut h = Harness::new(1280.0, 800.0);
+        let live = if let Some(topo) = crate::probe::probe() {
+            DisksDoc::write_topology(&mut h.doc, &topo);
+            h.app.sync(&mut h.doc, &automerge::ROOT);
+            h.relayout();
+            true
+        } else {
+            false
+        };
+        (h, live)
+    }
+
+    #[test]
+    fn drives_real_probed_topology_end_to_end() {
+        let (mut h, live) = real_or_sample_harness();
+        let names: Vec<String> = h.app.topo.drives.iter().map(|d| d.name.clone()).collect();
+        assert!(!names.is_empty(), "there is always at least one device to drive");
+
+        // One card per device; clicking each repoints the detail at that exact
+        // device with no fabricated fields.
+        for (i, name) in names.iter().enumerate() {
+            let card = h.lay().cards[i];
+            assert!(h.click(center(card)), "drive row {i} is clickable");
+            assert_eq!(h.app.selected, i);
+            let d = h.app.drive().unwrap();
+            assert_eq!(&d.name, name, "detail points at the clicked device");
+            assert!(!d.name.is_empty(), "no nameless devices");
+            assert!(d.size > 0, "no zero-size phantom devices");
+        }
+
+        // Inspect each tab on the first device — real render passes must not panic.
+        h.app.select(&mut h.doc, 0);
+        for tab in [Tab::Overview, Tab::Smart, Tab::Partitions] {
+            h.app.set_tab(&mut h.doc, tab);
+            h.relayout(); // includes a full draw pass
+            assert_eq!(h.app.tab, tab);
+        }
+
+        // Mount/Unmount enablement must mirror the real mount state, and Eject
+        // only where the device is genuinely removable.
+        for i in 0..h.app.topo.drives.len() {
+            h.app.select(&mut h.doc, i);
+            let d = h.app.drive().unwrap().clone();
+            if d.partitions.len() == 1 {
+                let mounted = d.partitions[0].mountpoint.is_some();
+                let dr = h.app.drive().unwrap();
+                assert_eq!(h.app.action_enabled(dr, ActionKind::Unmount), mounted);
+                assert_eq!(h.app.action_enabled(dr, ActionKind::Mount), !mounted);
+            }
+            let dr = h.app.drive().unwrap();
+            assert_eq!(h.app.action_enabled(dr, ActionKind::Eject), d.removable);
+        }
+        let _ = live;
+    }
+
+    #[test]
+    fn empty_probe_shows_honest_empty_state_not_a_sample() {
+        // Simulate the live path finding nothing: an empty topology must NOT
+        // fall back to fabricated devices, and the empty-state Rescan hit
+        // target must exist.
+        let (mut app, mut doc) = seeded_app();
+        DisksDoc::write_topology(&mut doc, &Topology::default());
+        app.sync(&mut doc, &automerge::ROOT);
+        assert!(app.topo.drives.is_empty(), "empty topology stays empty — no sample");
+        assert!(app.drive().is_none());
+        app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        let lay = app.compute_layout();
+        assert!(lay.empty_rescan.is_some(), "empty state offers a Rescan button");
+        assert!(lay.cards.is_empty(), "no drive cards when there are no drives");
     }
 
     #[test]
