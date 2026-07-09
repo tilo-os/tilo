@@ -13,12 +13,10 @@
 use ui::widget::command_palette::{CommandEntry, CommandPalette};
 
 /// Alpha the shell overlay host tints the GlobalSearch palette surface
-/// with. Concept §5.1 specifies `bg-slate-900/70 backdrop-blur-md`; until
-/// the pinned Vello grows a blur primitive we honour just the /70 alpha
-/// split (visual-gap #3 in `docs/nirios/visual-gaps.md`). This constant is
-/// the source of truth the `shell_chrome_test` suite pins the palette tint
-/// against, and it is kept in sync with `overlay_host::MODAL_SURFACE_ALPHA`.
-pub const PALETTE_SURFACE_ALPHA: f32 = 0.70;
+/// with. Bumped from the original 0.70 after the 2026-07-09 legibility
+/// complaint — see [`crate::shell::overlay_host::MODAL_SURFACE_ALPHA`]
+/// for the full rationale. Kept in sync with that constant.
+pub const PALETTE_SURFACE_ALPHA: f32 = 1.0;
 
 /// Which slice of the command catalog the palette is focusing on.
 ///
