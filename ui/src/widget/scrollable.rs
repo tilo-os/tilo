@@ -156,6 +156,14 @@ pub struct Scrollable {
     /// itself from where the last one left off; every offset mutation writes
     /// back through `clamp`, so the cell always mirrors the live position.
     persisted_offset: Option<Rc<Cell<(f32, f32)>>>,
+    /// Reserved right-edge lane (logical px) for the vertical overlay
+    /// scrollbar, so the bar never draws over the content. When set, the child
+    /// content is laid out `content_gutter` px narrower and the bar sits in the
+    /// vacated lane — the content is flush to the lane's edge, the bar owns its
+    /// own track to the right. `0` (the default) keeps the classic overlay bar
+    /// floating above the content's right edge. See
+    /// [`Scrollable::with_content_gutter`].
+    content_gutter: f32,
 }
 
 impl Scrollable {
@@ -189,6 +197,7 @@ impl Scrollable {
             hold: None,
             bar_dirty: false,
             persisted_offset: None,
+            content_gutter: 0.0,
         }
     }
     pub fn new_vertical() -> Self { Self::new(ScrollAxis::Vertical) }
@@ -248,6 +257,16 @@ impl Scrollable {
         self.offset_x = x;
         self.offset_y = y;
         self.persisted_offset = Some(cell);
+        self
+    }
+
+    /// Reserve a `px`-wide lane on the right edge for the vertical scrollbar so
+    /// the bar never overlaps the content. The child lays out `px` narrower and
+    /// the overlay bar draws in the reserved lane; content is flush to the lane's
+    /// left edge. Pass the bar's footprint (thickness + margins, ~12–14px) to get
+    /// a clean gutter. `0` keeps the default floating-overlay behaviour.
+    pub fn with_content_gutter(mut self, px: f32) -> Self {
+        self.content_gutter = px.max(0.0);
         self
     }
 
@@ -618,10 +637,20 @@ impl Widget for Scrollable {
             None if self.fill_parent_height => Dimension::length(0.0),
             None => Dimension::percent(1.0),
         };
+        // Reserve the right-edge scrollbar lane as padding: the child's
+        // content box shrinks by `content_gutter`, so nothing lays out under
+        // the overlay bar (drawn at the viewport's right edge, inside the gap).
+        let pad_right = taffy::LengthPercentage::length(self.content_gutter);
         let style = Style {
             size: Size { width: Dimension::percent(1.0), height },
             flex_grow: if self.fill_parent_height { 1.0 } else { 0.0 },
             overflow: taffy::Point { x: taffy::Overflow::Hidden, y: taffy::Overflow::Hidden },
+            padding: taffy::Rect {
+                left: taffy::LengthPercentage::length(0.0),
+                right: pad_right,
+                top: taffy::LengthPercentage::length(0.0),
+                bottom: taffy::LengthPercentage::length(0.0),
+            },
             ..Default::default()
         };
         let node = match child_node {
@@ -1331,6 +1360,64 @@ mod tests {
         );
         assert!((vh - 300.0).abs() < 0.5, "viewport pinned to 300, got {vh}");
         assert!(scrolled, "a pinned-viewport pane with tall content must scroll");
+    }
+
+    #[test]
+    fn content_gutter_insets_the_child_so_the_bar_never_overlaps_it() {
+        // With a reserved gutter, the child content lays out narrower than the
+        // viewport by exactly the gutter, and the vertical scrollbar track sits
+        // entirely to the right of the child — no overlap.
+        use std::collections::HashMap;
+        let theme = Theme::dark();
+        let mut taffy = TaffyTree::<()>::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let mut tr = TextRenderer::new();
+        const GUTTER: f32 = 14.0;
+        let mut scroll = Scrollable::new_vertical()
+            .with_child(tall_child())
+            .with_height(300.0)
+            .with_content_gutter(GUTTER);
+        let node = scroll.build_layout(&mut taffy, &theme, &mut node_map);
+        let parent = taffy
+            .new_with_children(
+                Style {
+                    size: Size { width: Dimension::length(400.0), height: Dimension::length(300.0) },
+                    ..Default::default()
+                },
+                &[node],
+            )
+            .unwrap();
+        taffy
+            .compute_layout_with_measure(
+                parent,
+                Size {
+                    width: taffy::AvailableSpace::Definite(400.0),
+                    height: taffy::AvailableSpace::Definite(300.0),
+                },
+                |known, available, node_id, _, _| {
+                    if let Some(&ptr) = node_map.get(&node_id) {
+                        unsafe { (*ptr).measure(known, available, &mut tr) }
+                    } else {
+                        Size::ZERO
+                    }
+                },
+            )
+            .unwrap();
+        scroll.apply_layout(&taffy, node, Point::ZERO);
+
+        let child = &scroll.children()[0];
+        let child_right = child.get_rect().x1;
+        let track = scroll.vertical_track().expect("tall content shows the bar");
+        assert!(
+            child_right <= track.x0 + 0.5,
+            "content right edge {child_right} must not reach the bar track {} (gutter reserved)",
+            track.x0,
+        );
+        assert!(
+            (scroll.rect.x1 - child_right - GUTTER as f64).abs() < 1.0,
+            "child is inset by exactly the gutter: viewport right {}, child right {child_right}",
+            scroll.rect.x1,
+        );
     }
 
     #[test]
