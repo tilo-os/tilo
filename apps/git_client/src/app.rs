@@ -23,16 +23,29 @@ use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
-use ui::widget::{FlapState, SplitLayout, Widget};
+use ui::widget::{FlapState, SplitLayout, TextInput, Widget};
 
-use crate::changes::{ChangesColumn, ChangesHit};
+use crate::changes::{ChangesColumn, ChangesDraw, ChangesHit};
 use crate::diffview::{self, DiffView};
 use crate::draw;
 use crate::graph::{self, GraphLayout};
 use crate::history::HistoryView;
-use crate::model::{ChangeArea, FileChange, FileDiff, RepoModel};
+use crate::model::{ChangeArea, DiffKey, DiffMap, FileChange, RepoModel};
 use crate::panels::{BranchAction, PanelHit, PanelsView, RemoteAction};
 use crate::settings::{DiffLayout, Settings};
+
+/// Which embedded text field currently holds keyboard focus. Text editing is
+/// delegated to the toolkit's [`TextInput`] (cursor, selection, word-nav,
+/// clipboard); this tracks which one keys route to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Field {
+    /// The commit-message summary field.
+    Commit,
+    /// The new-branch name field on the Branches screen.
+    Branch,
+    /// The repository-path field on the empty "open a repository" screen.
+    Open,
+}
 
 /// Which top-level screen is showing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -74,8 +87,24 @@ const FLAP_W: f64 = CHANGES_COL_W;
 
 pub struct GitClientApp {
     model: RepoModel,
-    diffs: HashMap<String, FileDiff>,
+    diffs: DiffMap,
     graph_layout: GraphLayout,
+
+    /// No repository is bound and none was reachable at launch — the app shows
+    /// the honest "open a repository" empty state rather than any placeholder
+    /// data. Cleared once a repo is opened (via the path field or at startup).
+    awaiting_repo: bool,
+    /// Which embedded text field holds focus, if any.
+    focus: Option<Field>,
+    /// Commit-message summary field (toolkit `TextInput`, local mode).
+    commit_input: TextInput,
+    /// New-branch name field (toolkit `TextInput`, local mode).
+    branch_input: TextInput,
+    /// Repository-path field on the empty-state screen (toolkit `TextInput`).
+    open_input: TextInput,
+    /// Hit rects for the empty-state open field + button.
+    open_input_rect: Rect,
+    open_button_rect: Rect,
 
     /// Path the repository was opened from, when backed by a real on-disk
     /// repo. `None` for the bundled sample (the `--shots` path), in which
@@ -102,9 +131,11 @@ pub struct GitClientApp {
     selected_change: Option<(ChangeArea, usize)>,
     changes_scroll: f64,
     diff_scroll: f64,
-    commit_message: String,
-    msg_focused: bool,
     hover_hunk: Option<usize>,
+    /// A file row armed for discard: the next click on its (now red) discard
+    /// affordance confirms. Cleared by any other interaction. Guards the
+    /// destructive worktree revert behind a deliberate second click.
+    armed_discard: Option<(ChangeArea, usize)>,
 
     // --- History screen state ---
     selected_commit: usize,
@@ -113,10 +144,6 @@ pub struct GitClientApp {
 
     // --- Panels screen state ---
     hover_action: Option<RemoteAction>,
-    /// New-branch name being typed in the Panels toolbar, and whether that
-    /// input is focused. Enter creates + checks out the branch via `git2`.
-    new_branch_name: String,
-    new_branch_focused: bool,
     /// Hit rects for the Panels "new branch" input + create button.
     new_branch_input: Rect,
     new_branch_button: Rect,
@@ -168,11 +195,14 @@ impl GitClientApp {
                 app
             }
             None => {
-                // No reachable repository — render the bundled sample so the
-                // app is never blank, and remember why for the status line.
-                let (model, diffs) = crate::sample::model();
-                let mut app = Self::from_model(model, diffs);
-                app.last_error = Some("Not a git repository — showing sample".to_string());
+                // No reachable repository — show the honest "open a repository"
+                // empty state rather than any placeholder data. The path field
+                // is pre-filled with the current directory as a convenience.
+                let mut app = Self::from_model(RepoModel::default(), DiffMap::new());
+                app.awaiting_repo = true;
+                if let Ok(cwd) = std::env::current_dir() {
+                    app.open_input.set_text(&cwd.to_string_lossy());
+                }
                 app
             }
         }
@@ -192,7 +222,7 @@ impl GitClientApp {
     }
 
     /// Construct from an explicit model — used by the sample path and tests.
-    pub fn from_model(mut model: RepoModel, diffs: HashMap<String, FileDiff>) -> Self {
+    pub fn from_model(mut model: RepoModel, diffs: DiffMap) -> Self {
         let graph_layout = graph::layout(&mut model.commits);
         // Pre-select the first changed file so the diff pane is populated.
         let selected_change = first_change(&model);
@@ -216,6 +246,16 @@ impl GitClientApp {
         if std::env::var("GIT_CLIENT_FLAP_OPEN").map(|v| v != "0" && !v.is_empty()).unwrap_or(false) {
             flap.snap(true);
         }
+        let commit_input = TextInput::local()
+            .with_placeholder("Summary of changes…")
+            .with_font_size(13.0);
+        let branch_input = TextInput::local()
+            .with_placeholder("new branch name…")
+            .with_font_size(12.5);
+        let open_input = TextInput::local()
+            .with_placeholder("/path/to/repository")
+            .with_font_size(14.0)
+            .with_mono();
         Self {
             flap,
             last_flap_tick: Instant::now(),
@@ -223,6 +263,13 @@ impl GitClientApp {
             model,
             diffs,
             graph_layout,
+            awaiting_repo: false,
+            focus: None,
+            commit_input,
+            branch_input,
+            open_input,
+            open_input_rect: Rect::ZERO,
+            open_button_rect: Rect::ZERO,
             repo_path: None,
             last_error: None,
             settings,
@@ -235,15 +282,12 @@ impl GitClientApp {
             selected_change,
             changes_scroll: 0.0,
             diff_scroll: 0.0,
-            commit_message: String::new(),
-            msg_focused: false,
             hover_hunk: None,
+            armed_discard: None,
             selected_commit: 0,
             history_scroll: 0.0,
             detail_scroll: 0.0,
             hover_action: None,
-            new_branch_name: String::new(),
-            new_branch_focused: false,
             new_branch_input: Rect::ZERO,
             new_branch_button: Rect::ZERO,
             last_mouse: Point::ZERO,
@@ -278,7 +322,7 @@ impl GitClientApp {
     /// Set the commit message and drive the production commit action.
     #[doc(hidden)]
     pub fn test_commit(&mut self, message: &str) {
-        self.commit_message = message.to_string();
+        self.commit_input.set_text(message);
         self.do_commit();
     }
     /// Drive the production per-hunk stage/unstage action for the selected file.
@@ -294,8 +338,29 @@ impl GitClientApp {
     /// Drive the production "create branch" action from a name.
     #[doc(hidden)]
     pub fn test_create_branch(&mut self, name: &str) {
-        self.new_branch_name = name.to_string();
+        self.branch_input.set_text(name);
         self.create_new_branch();
+    }
+    /// Drive the production "discard file" action by area + index.
+    #[doc(hidden)]
+    pub fn test_discard_file(&mut self, area: ChangeArea, idx: usize) {
+        self.discard_file(area, idx);
+    }
+    /// Drive the production "discard hunk" action for the selected file.
+    #[doc(hidden)]
+    pub fn test_discard_hunk(&mut self, hunk: usize) {
+        self.discard_hunk(hunk);
+    }
+    /// Whether the app is showing the empty "open a repository" state.
+    #[doc(hidden)]
+    pub fn test_awaiting_repo(&self) -> bool {
+        self.awaiting_repo
+    }
+    /// Drive the empty-state "open this path" action.
+    #[doc(hidden)]
+    pub fn test_open_path(&mut self, path: &str) {
+        self.open_input.set_text(path);
+        self.open_repo_from_input();
     }
     /// Select a file in a given area + index (mirrors a list click).
     #[doc(hidden)]
@@ -332,7 +397,7 @@ impl GitClientApp {
         self.last_error.as_deref()
     }
 
-    fn load_repo() -> Option<(std::path::PathBuf, RepoModel, HashMap<String, FileDiff>)> {
+    fn load_repo() -> Option<(std::path::PathBuf, RepoModel, DiffMap)> {
         let path = std::env::var("GIT_CLIENT_REPO")
             .map(std::path::PathBuf::from)
             .unwrap_or_else(|_| std::env::current_dir().unwrap_or_else(|_| ".".into()));
