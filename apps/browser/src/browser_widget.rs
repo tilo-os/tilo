@@ -37,7 +37,6 @@ use ui::widget::{
     WebView, Widget,
 };
 
-use crate::address_overlay::AddressSuggestions;
 use crate::history::History;
 use crate::settings::{Settings, SettingsPane};
 
@@ -49,8 +48,6 @@ const FORWARD_FLAG: &str = "browser.forward_clicked";
 const RELOAD_FLAG: &str = "browser.reload_clicked";
 /// Gear button → toggle the settings pane.
 const SETTINGS_FLAG: &str = "browser.settings_clicked";
-/// How many address-bar suggestions to show.
-const SUGGESTION_LIMIT: usize = 8;
 
 /// e2e id of the address input (also used internally to detect whether
 /// the user is editing it).
@@ -85,16 +82,10 @@ pub struct BrowserWidget {
     // User-facing browser state.
     settings: Settings,
     history: History,
-    /// Fuzzy suggestion dropdown under the address bar (a field, not a
-    /// tree child: driven here and painted in `draw_overlay`).
-    suggestions: AddressSuggestions,
     /// Whether the settings pane replaces the page surface.
     show_settings: bool,
     /// Set when `show_settings` flips, so the host rebuilds the tree.
     structure_dirty: bool,
-    /// Last address-bar text a suggestion query ran for, to avoid
-    /// re-querying every frame.
-    last_query: Option<String>,
     /// The WebView content rect as window fractions `[x0,y0,x1,y1]`,
     /// published each layout for the zero-copy compositor to blit into.
     content_rect: std::sync::Arc<std::sync::Mutex<Option<[f32; 4]>>>,
@@ -143,10 +134,8 @@ impl BrowserWidget {
             current_uri: String::new(),
             settings,
             history,
-            suggestions: AddressSuggestions::new(),
             show_settings: false,
             structure_dirty: false,
-            last_query: None,
             content_rect: std::sync::Arc::new(std::sync::Mutex::new(None)),
         }
     }
@@ -355,8 +344,6 @@ impl BrowserWidget {
         if intents.clear_history {
             self.history.clear();
             let _ = self.history.save();
-            self.suggestions.clear();
-            self.last_query = None;
         }
         let mut changed = false;
         if let Some(v) = intents.adblock_enabled {
@@ -375,31 +362,6 @@ impl BrowserWidget {
         if changed && !self.headless {
             self.settings.save();
         }
-    }
-
-    /// Refresh the address-bar suggestion list from history while the
-    /// address input is focused; hide it otherwise.
-    fn update_suggestions(&mut self, state: &AutoCommit, root: &ObjId) {
-        if self.show_settings || !self.url_input_focused() {
-            if self.last_query.is_some() {
-                self.suggestions.clear();
-                self.last_query = None;
-            }
-            return;
-        }
-        let text = Self::read_url(state, root).unwrap_or_default();
-        if self.last_query.as_deref() == Some(text.as_str()) {
-            return;
-        }
-        self.last_query = Some(text.clone());
-        self.suggestions
-            .set_suggestions(self.history.suggest(&text, SUGGESTION_LIMIT));
-    }
-
-    /// Rect of the address `TextInput` in the composed tree, for anchoring
-    /// the suggestion overlay under it.
-    fn address_input_rect(&self) -> Option<Rect> {
-        self.find_rect(URL_INPUT_ID)
     }
 
     /// Rect of the composed-tree widget with `test_id == id`, if present.
@@ -494,11 +456,9 @@ impl Widget for BrowserWidget {
         if Self::take_flag(state, path, SETTINGS_FLAG) {
             self.show_settings = !self.show_settings;
             self.structure_dirty = true;
-            self.suggestions.clear();
         }
 
         self.apply_settings_intents(state, path);
-        self.update_suggestions(state, path);
 
         if let Some(c) = &mut self.composed {
             c.sync(state, path);
@@ -544,11 +504,6 @@ impl Widget for BrowserWidget {
                 }
             }
         }
-        // Anchor the suggestion dropdown flush under the address input.
-        if let Some(r) = self.address_input_rect() {
-            self.suggestions
-                .set_anchor(Point::new(r.x0, r.y1 + 2.0), r.width() as f32);
-        }
         self.publish_content_rect();
     }
 
@@ -565,9 +520,6 @@ impl Widget for BrowserWidget {
         }
     }
 
-    /// The suggestion dropdown is a field, not a tree child, so paint it
-    /// in the overlay pass here (above the page) after the composed tree's
-    /// own overlays.
     fn draw_overlay(
         &mut self,
         scene: &mut Scene,
@@ -579,8 +531,6 @@ impl Widget for BrowserWidget {
         if let Some(c) = &mut self.composed {
             c.draw_overlay(scene, transform, text_renderer, theme, presence);
         }
-        self.suggestions
-            .draw_overlay(scene, transform, text_renderer, theme, presence);
     }
 
     fn take_structure_dirty(&mut self) -> bool {
@@ -601,37 +551,6 @@ impl Widget for BrowserWidget {
         node_id: NodeId,
         taffy: &TaffyTree<()>,
     ) {
-        // The suggestion dropdown gets first crack at input while it's up
-        // (address bar focused): arrow keys move the selection, Enter/click
-        // pick a suggestion, Escape dismisses — ahead of the text field.
-        if self.suggestions.is_visible() && !self.show_settings {
-            let mut ov_handled = false;
-            self.suggestions.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                &mut ov_handled,
-                focus_target,
-                node_id,
-                taffy,
-            );
-            if let Some(entry) = self.suggestions.take_chosen() {
-                self.suggestions.clear();
-                self.last_query = None;
-                ui::put_text_diffed(state, path, URL_PATH, &entry.url);
-                self.engine
-                    .send(WebViewCommand::Navigate(normalise_url(&entry.url)));
-                *handled = true;
-                return;
-            }
-            if ov_handled {
-                *handled = true;
-                return;
-            }
-        }
-
         if let Some(c) = &mut self.composed {
             if let Ok(children) = taffy.children(node_id) {
                 if let Some(&child_node) = children.first() {
@@ -657,8 +576,6 @@ impl Widget for BrowserWidget {
                 && self.url_input_focused()
             {
                 self.navigate_to_input(state, path);
-                self.suggestions.clear();
-                self.last_query = None;
                 *handled = true;
             }
         }
