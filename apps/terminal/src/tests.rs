@@ -1458,4 +1458,71 @@ mod tests {
             "a collaborator resolves the same OSC 8 hyperlink"
         );
     }
+
+    // ---------------------------------------------------------------
+    // Chrome geometry — the header/tab bar insets the grid, and pointer
+    // hit-testing accounts for it (production `place_at`/`set_geometry` path).
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn place_at_insets_grid_below_header_and_gutters() {
+        // The production reflow path must seat the cell grid below the header
+        // and inside the body padding + scrollbar gutter — not fill the whole
+        // widget rect the way the old void did.
+        let (mut w, _) = build_test_widget();
+        w.place_at(Rect::new(0.0, 0.0, 1000.0, 640.0));
+        let gr = w.grid_rect();
+        assert!(gr.y0 > 0.0, "grid top must clear the header strip: {gr:?}");
+        assert!(gr.x0 > 0.0, "grid left inset by body padding: {gr:?}");
+        assert!(gr.x1 < 1000.0, "grid right inset by padding + scrollbar gutter: {gr:?}");
+        assert!(gr.y1 < 640.0, "grid bottom inset by body padding: {gr:?}");
+        // Header + padding genuinely reduce the usable rows vs. a full-rect fit.
+        let (cols, rows) = w.grid_size();
+        assert!(cols > 0 && rows > 0, "reflow produced a usable grid");
+        assert!(
+            (rows as f64) < 640.0 / w.grid_char_h(),
+            "chrome must reduce the row count below the naive full-height fit"
+        );
+    }
+
+    #[test]
+    fn header_click_does_not_start_selection() {
+        // Clicking in the header/tab bar (above the grid content) must NOT begin
+        // a text selection — that region is chrome, not the terminal grid.
+        let (mut w, _) = build_test_widget();
+        let mut doc = AutoCommit::new();
+        w.place_at(Rect::new(0.0, 0.0, 800.0, 600.0));
+        let gr = w.grid_rect();
+        let header_y = gr.y0 / 2.0; // safely inside the header, above the grid
+        send_cursor_move(&mut w, &mut doc, 120.0, header_y);
+        send_left_press(&mut w, &mut doc);
+        assert!(
+            w.selection().is_none(),
+            "a header click must not start a selection"
+        );
+        send_left_release(&mut w, &mut doc);
+        assert!(w.selection().is_none());
+    }
+
+    #[test]
+    fn grid_click_inside_content_starts_selection_and_maps_in_bounds() {
+        // A press inside the inset grid content still begins a selection and
+        // maps to an in-bounds cell — proving hit-testing follows the grid rect,
+        // not the outer widget rect.
+        let (mut w, _) = build_test_widget();
+        let mut doc = AutoCommit::new();
+        w.place_at(Rect::new(0.0, 0.0, 800.0, 600.0));
+        let gr = w.grid_rect();
+        send_cursor_move(&mut w, &mut doc, gr.x0 + 30.0, gr.y0 + 20.0);
+        send_left_press(&mut w, &mut doc);
+        let sel = w.selection().expect("press inside the grid begins a selection");
+        let (cols, _rows) = w.grid_size();
+        assert!(sel.anchor.col < cols, "mapped column within grid width");
+        assert!(
+            sel.anchor.row < w.grid_text().lines().count(),
+            "mapped row within the buffer"
+        );
+        send_left_release(&mut w, &mut doc);
+        assert!(w.selection().is_none(), "a lone click clears on release");
+    }
 }

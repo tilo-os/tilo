@@ -39,15 +39,20 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
     if let Some(out) = parse_shots_arg(&args) {
         let scenario = parse_scenario_arg(&args);
+        // Optional `--size WxH` overrides the default viewport so a scenario can
+        // be captured at, e.g., a narrow phone-ish width to check the chrome
+        // reflows.
+        let viewport = parse_size_arg(&args).unwrap_or(DEFAULT_SHOTS_VIEWPORT);
         // The `shell` scenario (and the plain cold-start shot) run a real login
         // shell so the frame captures a live session. The canned scenarios
         // (`colors`/`tui`/`scrollback`) drive the grid entirely through `feed`
-        // on a null backend to keep the frame deterministic.
+        // on a null backend to keep the frame deterministic. `empty` captures
+        // the first-run watermark (a headless widget that never gets output).
         let mut widget = match scenario.as_deref() {
             Some("shell") | Some("shell-select") | None => TerminalWidget::spawn_default()?,
             Some(_) => TerminalWidget::spawn_headless()?,
         };
-        render_shot_to_png(&mut widget, DEFAULT_SHOTS_VIEWPORT, &out, scenario.as_deref())?;
+        render_shot_to_png(&mut widget, viewport, &out, scenario.as_deref())?;
         return Ok(());
     }
 
@@ -79,6 +84,23 @@ fn parse_scenario_arg(args: &[String]) -> Option<String> {
         }
     }
     None
+}
+
+/// Returns `Some((w, h))` if `--size <W>x<H>` (or `--size=<W>x<H>`) appears in
+/// `args` and parses, otherwise `None`.
+fn parse_size_arg(args: &[String]) -> Option<(u32, u32)> {
+    let mut iter = args.iter().skip(1);
+    let raw = loop {
+        let arg = iter.next()?;
+        if arg == "--size" {
+            break iter.next()?.clone();
+        }
+        if let Some(rest) = arg.strip_prefix("--size=") {
+            break rest.to_string();
+        }
+    };
+    let (w, h) = raw.split_once(['x', 'X'])?;
+    Some((w.trim().parse().ok()?, h.trim().parse().ok()?))
 }
 
 /// Returns `Some(path)` if `--shots <path>` (or `--shots=<path>`) appears
