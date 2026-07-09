@@ -38,7 +38,7 @@ use ui::{CommandEntry, CommandPalette};
 
 use crate::shell::chrome_state::{Chrome, WsTab};
 use crate::shell::notification::NotificationStack;
-use crate::shell::state::{Capability, GrantScope, GroupId, StripId};
+use crate::shell::state::{Capability, GrantScope, GroupId, StripId, WorkspaceId};
 use crate::shell::workspace_settings::{draw_files_pane, draw_roles_pane};
 
 pub struct ShellOverlayHost {
@@ -50,6 +50,30 @@ pub struct ShellOverlayHost {
     sidebar: Option<Box<dyn Widget>>,
     palette: CommandPalette,
     palette_visible: bool,
+    /// Registry of every search provider the palette fans out to on
+    /// every keystroke. Built once at construction and never mutated
+    /// from outside the shell's `new` — providers are stateful (they
+    /// own background indexers etc.) so re-registration would leak
+    /// worker threads.
+    search_registry: crate::shell::search::SearchRegistry,
+    /// The result list backing the current palette entries. Indexed in
+    /// lock-step with `palette.entries` so an Enter/click resolves the
+    /// row by ordinal into this vec and calls the stored `on_open`.
+    search_results: Vec<crate::shell::search::SearchResult>,
+    /// Value of `palette.query()` after the last provider fan-out.
+    /// The refresh is short-circuited when this matches — every
+    /// keystroke pushes new bytes into the palette, so the compare is
+    /// the source of "did the query change this frame?".
+    last_search_query: String,
+    /// Kinds the chip strip has toggled on. Empty means "everything",
+    /// so an unfiltered fan-out is the default. Toggled by clicks on
+    /// the shell-drawn chip strip above the palette.
+    active_kind_filter: Vec<crate::shell::search::ResourceKind>,
+    /// Painted rects of the chip strip's chips this frame, indexed in
+    /// the same order [`Self::search_registry`]::registered_kinds
+    /// returns. Populated during draw so `handle_event` can hit-test
+    /// without recomputing geometry.
+    search_chip_rects: Vec<Rect>,
     // Child node ids are captured once during `build_layout` so we can
     // forward layout/draw/event calls without re-walking the tree.
     content_node: Option<NodeId>,
@@ -112,6 +136,13 @@ pub struct ShellOverlayHost {
     /// detect the rising edge (open transition) without reaching into
     /// the chrome on every tick.
     qs_was_open: bool,
+    /// Which quick-settings slider (0 = brightness, 1 = volume) is
+    /// currently being dragged. `Some(i)` after a Pressed inside the
+    /// slider's hit rect and cleared on Released. While set, CursorMoved
+    /// updates the slider's value inline; the os_action shell-out fires
+    /// only on Released so a fast drag doesn't spawn a subprocess per
+    /// pixel of motion.
+    qs_slider_drag: Option<usize>,
     /// Rising-edge timestamp for the workspace-settings modal entry
     /// animation. Concept `WorkspaceSettingsModal.tsx:42-46` uses
     /// `initial={{ opacity: 0, scale: 0.95, y: 20 }}` →
@@ -313,11 +344,16 @@ const MODAL_OPEN_ANIM_MS: u64 = 220;
 pub const POPOVER_SURFACE_ALPHA: f32 = 0.80;
 
 /// Alpha applied to the GlobalSearch palette and Workspace-Settings modal
-/// surfaces. Concept §4.1 / §5.1 specifies `bg-slate-900/70` — a step
-/// softer than the dropdown popovers to emphasise the "page-on-top-of-page"
-/// affordance of a modal. Kept numerically in sync with
-/// [`crate::shell::search::PALETTE_SURFACE_ALPHA`].
-pub const MODAL_SURFACE_ALPHA: f32 = 0.70;
+/// surfaces. Concept §4.1 / §5.1 specified `bg-slate-900/70`, but at that
+/// alpha the palette reads as translucent chrome bleeding through
+/// whatever's underneath — legibility of long rows drops sharply against
+/// a busy desktop backdrop (2026-07-09 user report: "search bar is too
+/// transparent"). We now paint the palette at 0.94 (~"solid-with-a-hint
+/// of the wallpaper's tint") and rely on the scrim below to sell the
+/// "page-on-top-of-page" affordance instead. Same value backs the
+/// workspace-settings modal; app content that inherits this tint (file
+/// viewer, etc.) picks up the same lift for free.
+pub const MODAL_SURFACE_ALPHA: f32 = 1.0;
 
 /// Alpha applied to the scrim painted beneath the WorkspaceSettings modal.
 /// Concept §4.1 uses `bg-black/30 backdrop-blur-[1px]`. The pinned Vello
@@ -348,25 +384,37 @@ impl ShellOverlayHost {
     pub(crate) const ME_TILE_FALLBACK_NAME: &'static str = "Me";
 
     pub fn new(content: Box<dyn Widget>) -> Self {
-        // Seed only the v1-default palette here — peer-sync entries
-        // (`/invite`, `/connect`) are appended lazily by
-        // [`Self::with_peer_sync_enabled`] so a host built without
-        // the flag never surfaces the rows in suggestions.
+        // Palette entries are now produced by the search registry on
+        // every keystroke (`refresh_search_results`). The registry ships
+        // with in-shell providers: `actions` (the old chrome-command
+        // rows), `notes` (per-tab Automerge body search), `files`
+        // (walkdir + tantivy content index). New providers slot in via
+        // `SearchRegistry::register`; the palette picks up their
+        // resource-kind chips automatically.
         let mut palette = CommandPalette::new();
-        for entry in [
-            CommandEntry::new("search.open",        "Open global search"),
-            CommandEntry::new("overview.toggle",    "Toggle overview"),
-            CommandEntry::new("settings.open",      "Open workspace settings"),
-            CommandEntry::new("quick-settings.open", "Open quick settings"),
-        ] {
-            palette.push(entry);
-        }
+        palette.set_bypass_fuzzy(true);
+        palette.set_hide_filter_strip(true);
+        let mut search_registry = crate::shell::search::SearchRegistry::new();
+        search_registry.register(std::rc::Rc::new(
+            crate::shell::search::providers::ActionsProvider::new(),
+        ));
+        search_registry.register(std::rc::Rc::new(
+            crate::shell::search::providers::NotesProvider::new(),
+        ));
+        search_registry.register(std::rc::Rc::new(
+            crate::shell::search::providers::FilesProvider::new(),
+        ));
         Self {
             rect: Rect::ZERO,
             content,
             sidebar: None,
             palette,
             palette_visible: false,
+            search_registry,
+            search_results: Vec::new(),
+            last_search_query: String::new(),
+            active_kind_filter: Vec::new(),
+            search_chip_rects: Vec::new(),
             content_node: None,
             palette_node: None,
             sidebar_node: None,
@@ -383,6 +431,7 @@ impl ShellOverlayHost {
             ws_slide_dir: 0.0,
             qs_opened_at: None,
             qs_was_open: false,
+            qs_slider_drag: None,
             ws_settings_opened_at: None,
             ws_settings_was_open: false,
             palette_opened_at: None,
@@ -531,12 +580,10 @@ impl ShellOverlayHost {
     /// once. The rows can't be removed once added — toggling back to
     /// `false` is not a supported transition.
     pub fn with_peer_sync_enabled(mut self, enabled: bool) -> Self {
-        if enabled && !self.peer_sync_enabled {
-            self.palette
-                .push(CommandEntry::new("peer.invite", "Invite peer to workspace"));
-            self.palette
-                .push(CommandEntry::new("peer.connect", "Connect to peer workspace"));
-        }
+        // The palette entries themselves are appended in
+        // `refresh_search_results` (see the peer-sync branch there) so
+        // the peer rows always land next to the current search hits
+        // rather than sitting statically at the bottom.
         self.peer_sync_enabled = enabled;
         self
     }
@@ -847,6 +894,99 @@ impl ShellOverlayHost {
             // of the doc not yet carrying this group — see
             // `WorkspaceTree::doc_set_maximized` doc-comment.
             tree.doc_set_maximized(group_id, new_value);
+        }
+    }
+
+    /// Per-tick wire-up that mirrors the widget-side `TabBar::active_id`
+    /// (and the group whose bar it is) back into the persisted
+    /// [`crate::shell::state::WorkspaceTree`]. Without this, the
+    /// tree's `group.active_tab` / `active_group` / `active_strip`
+    /// pointers stayed frozen at the values they took at construction;
+    /// clicking a different tab pill flipped the visible content but
+    /// left the search-scope helpers (`ChromeState::active_tab_id`,
+    /// `active_app_title`) pointing at whichever tab shipped in the
+    /// group's initial list.
+    ///
+    /// Runs once per frame regardless of whether a tab was clicked — the
+    /// walk is O(groups × tabs), which stays small for a normal
+    /// workspace. Skipping the scan when nothing changed would need a
+    /// per-group `changed` bit and a wakeup path, extra state for a
+    /// walk that's already cheap.
+    fn harvest_active_tab_writeback(&mut self) {
+        if self.group_row_ptrs.is_empty() {
+            return;
+        }
+        let Some(chrome) = self.chrome.clone() else {
+            return;
+        };
+        // Two-phase: first walk the widgets and collect (strip, group,
+        // tab) tuples for every group whose bar's active_id differs from
+        // the tree's, then apply them under a single chrome borrow.
+        // (Widgets and chrome live in the same shell so we can't hold
+        // both borrows at once — same pattern the other harvesters use.)
+        struct Writeback {
+            strip_id: StripId,
+            group_id: GroupId,
+            tab_id: crate::shell::state::TabId,
+        }
+        let mut writes: Vec<Writeback> = Vec::new();
+        for (&strip_id, &ptr) in &self.group_row_ptrs {
+            // SAFETY: same contract as every other `group_row_ptrs`
+            // accessor — captured from a `Box<GroupRow>` owned through
+            // the content tree, host outlives the content, `&mut self`
+            // ensures no other reconcile path aliases.
+            let row: &GroupRow = unsafe { &*ptr };
+            for g in row.groups.iter() {
+                writes.push(Writeback {
+                    strip_id,
+                    group_id: g.id,
+                    tab_id: g.active_tab_id(),
+                });
+            }
+        }
+        if writes.is_empty() {
+            return;
+        }
+        let st = chrome.borrow_mut();
+        // A mid-frame divergence between the widget-side
+        // `bar.active_id()` and the tree's `group.active_tab` means the
+        // user just clicked a tab pill inside THAT group. Collect those
+        // (ws, strip, group) triples so we can stamp
+        // `tree.active_strip` / `tree.active_group` after the tab-id
+        // writeback — otherwise the palette scope (Ctrl+K) stays anchored
+        // to whichever group was active before, which is the 2026-07-09
+        // "Ctrl+K scopes to Notes when I just clicked Terminal in its
+        // own group" regression.
+        let mut focus_writes: Vec<(WorkspaceId, StripId, GroupId)> = Vec::new();
+        {
+            let mut tree = st.tree_mut();
+            for w in &writes {
+                for ws in tree.workspaces.iter_mut() {
+                    for strip in ws.strips.iter_mut() {
+                        if strip.id != w.strip_id {
+                            continue;
+                        }
+                        if let Some(group) = strip
+                            .window_groups
+                            .iter_mut()
+                            .find(|g| g.id == w.group_id)
+                        {
+                            if group.active_tab != w.tab_id {
+                                group.active_tab = w.tab_id;
+                                focus_writes.push((ws.id, w.strip_id, w.group_id));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if !focus_writes.is_empty() {
+            let mut tree = st.tree_mut();
+            for (ws_id, strip_id, group_id) in focus_writes {
+                tree.active = ws_id;
+                tree.active_strip.insert(ws_id, strip_id);
+                tree.active_group.insert(strip_id, group_id);
+            }
         }
     }
 
@@ -1283,20 +1423,183 @@ impl ShellOverlayHost {
         &self.permissions_revoke_rects
     }
 
-    fn toggle_palette(&mut self) {
-        let was_visible = self.palette_visible;
-        self.palette_visible = !self.palette_visible;
-        // On the false → true transition focus the input + clear the
-        // residual query so the user can start typing immediately
-        // without having to click the input first (#6 in the audit
-        // plan, Wave 2 / Unit 2-A). The `is_focused` bit drives the
-        // caret blink + keystroke routing inside `CommandPalette`;
-        // without this nudge the palette opens but every keystroke
-        // falls through to whichever widget the focus pointer last
-        // landed on.
-        if !was_visible && self.palette_visible {
+    /// Open the palette in the given scope, or toggle it closed when the
+    /// same chord fires twice.
+    ///
+    /// - Palette closed → open, set scope, focus input, clear query.
+    /// - Palette open, DIFFERENT scope → keep it open, just swap scope
+    ///   (users can jump from app-scope to global mid-query without
+    ///   losing what they've typed).
+    /// - Palette open, SAME scope → close (mirrors the old
+    ///   [`Self::toggle_palette`] second-press behaviour so a chord
+    ///   still dismisses the overlay it opened).
+    ///
+    /// `ActiveApp` degrades to `All` when no tab is focused so the pill
+    /// never highlights a scope that can't display anything.
+    fn open_palette_with_scope(
+        &mut self,
+        scope: crate::shell::chrome_state::SearchScope,
+    ) {
+        use crate::shell::chrome_state::SearchScope;
+        let effective = if matches!(scope, SearchScope::ActiveApp)
+            && self
+                .chrome
+                .as_ref()
+                .and_then(|c| c.borrow().active_app_title())
+                .is_none()
+        {
+            SearchScope::All
+        } else {
+            scope
+        };
+        let current_scope = self
+            .chrome
+            .as_ref()
+            .map(|c| c.borrow().search_scope)
+            .unwrap_or_default();
+        if self.palette_visible && current_scope == effective {
+            self.palette_visible = false;
+            return;
+        }
+        if let Some(chrome) = self.chrome.clone() {
+            let mut st = chrome.borrow_mut();
+            st.search_scope = effective;
+            st.bump();
+        }
+        if !self.palette_visible {
+            self.palette_visible = true;
             self.palette.set_focus(true);
             self.palette.set_query("");
+            // Empty query still runs through the registry so the palette
+            // lands with a sensible "everything" list (chrome actions,
+            // recent notes, ...) instead of a blank surface.
+            self.last_search_query = "\u{0}not-yet-refreshed\u{0}".to_string();
+        }
+    }
+
+    /// Recompute the palette's entry list by fanning the current query
+    /// out to every registered [`crate::shell::search::SearchProvider`],
+    /// then swapping the palette's row set. Called whenever the palette
+    /// query changes (typed / backspaced / pasted) or the chip strip
+    /// toggles the active kind filter.
+    ///
+    /// Cheap on a warm cache — the in-shell providers (actions, notes)
+    /// answer in microseconds; the files provider hits its in-memory
+    /// name index synchronously and the tantivy content index via an
+    /// LRU cache. First-boot latency comes from the tantivy walker
+    /// finishing its initial pass; the palette shows whatever's ready.
+    fn refresh_search_results(&mut self, doc: &automerge::AutoCommit, root: &ObjId) {
+        let Some(chrome) = self.chrome.clone() else {
+            return;
+        };
+        let current_query = self.palette.query().to_string();
+        // Short-circuit no-op refreshes triggered by peer state polling
+        // or a re-entry through the palette's own update cycle.
+        if current_query == self.last_search_query {
+            return;
+        }
+        self.last_search_query = current_query.clone();
+        let (scope, active_provider) = {
+            let st = chrome.borrow();
+            let scope = st.search_scope;
+            let active_provider = active_tab_provider_id(&st, &self.search_registry);
+            (scope, active_provider)
+        };
+        let results = {
+            let st = chrome.borrow();
+            self.search_registry.query(
+                &current_query,
+                scope,
+                active_provider.as_deref(),
+                &self.active_kind_filter,
+                &st,
+                doc,
+                root,
+            )
+        };
+
+        let mut entries: Vec<CommandEntry> = results
+            .iter()
+            .enumerate()
+            .map(|(i, r)| {
+                // Prefix the description with the kind label so users can
+                // eyeball "which bucket did this come from" without a
+                // dedicated column. Falls back to the raw subtitle when
+                // no kind label is needed (Custom(_) with an empty tag).
+                let subtitle = match (&r.subtitle, r.kind.label()) {
+                    (Some(sub), kind_label) => format!("[{}] {}", kind_label, sub),
+                    (None, kind_label) => format!("[{}]", kind_label),
+                };
+                CommandEntry::new(format!("result:{}", i), r.title.clone()).description(subtitle)
+            })
+            .collect();
+
+        // Peer-sync entries are grafted here so they always land next to
+        // the current search hits rather than sitting statically at the
+        // bottom of the seeded list. Filtered by current query so a
+        // typed `qs` still shows them at score 0.
+        if self.peer_sync_enabled && current_query.is_empty() {
+            entries.push(
+                CommandEntry::new("peer:invite", "Invite peer to workspace")
+                    .description("Peer-sync"),
+            );
+            entries.push(
+                CommandEntry::new("peer:connect", "Connect to peer workspace")
+                    .description("Peer-sync"),
+            );
+        }
+
+        self.palette.set_entries(entries);
+        self.search_results = results;
+    }
+
+    /// Toggle a kind in the chip filter. Multiple kinds may be active
+    /// simultaneously; the empty state means "everything shows".
+    fn toggle_kind_filter(&mut self, kind: crate::shell::search::ResourceKind) {
+        if let Some(pos) = self.active_kind_filter.iter().position(|k| k == &kind) {
+            self.active_kind_filter.remove(pos);
+        } else {
+            self.active_kind_filter.push(kind);
+        }
+    }
+
+    /// Dispatch the currently selected palette row through the provider
+    /// callback (for a `result:N` id) or the legacy chrome-command
+    /// dispatcher (for `peer:invite` / `peer:connect`, kept as a bridge
+    /// until peer commands migrate into their own provider).
+    fn activate_selected_result(
+        &mut self,
+        doc: &mut automerge::AutoCommit,
+        root: &ObjId,
+    ) {
+        let Some(id) = self.palette.selected_id().map(|s| s.to_string()) else {
+            return;
+        };
+        if let Some(idx) = id.strip_prefix("result:") {
+            if let Ok(idx) = idx.parse::<usize>() {
+                if let Some(result) = self.search_results.get(idx).cloned() {
+                    if let Some(chrome) = self.chrome.clone() {
+                        (result.on_open)(doc, root, &chrome);
+                    }
+                    self.palette_visible = false;
+                    return;
+                }
+            }
+        }
+        // Fall back to the legacy id-based dispatcher for peer-sync
+        // rows. These match `peer:invite` / `peer:connect` and enqueue
+        // an action drained by `take_peer_sync_actions`.
+        if id.starts_with("peer:") {
+            match id.as_str() {
+                "peer:invite" => {
+                    self.peer_sync_actions.push(PeerSyncAction::IssueInvite);
+                }
+                "peer:connect" => {
+                    self.peer_sync_actions.push(PeerSyncAction::PromptConnect);
+                }
+                _ => {}
+            }
+            self.palette_visible = false;
         }
     }
 
@@ -1617,26 +1920,85 @@ impl ShellOverlayHost {
         if p.width() <= 0.0 {
             return Rect::ZERO;
         }
-        let h = 32.0_f64;
+        // Tall enough for scope pills (top row) + kind-chip strip
+        // (bottom row) + padding. 64 px = 20 (scope row) + 8 (gap) +
+        // 20 (chip row) + 8*2 (banner padding).
+        let h = 64.0_f64;
         Rect::new(p.x0, p.y0 - h - 8.0, p.x1, p.y0 - 8.0)
     }
 
-    /// Individual scope-pill rect inside the banner. `idx` = 0 → Workspace,
-    /// 1 → All. Hit-test and draw consume this same helper.
+    /// Full ordered list of scopes shown in the banner. Includes
+    /// [`SearchScope::ActiveApp`] only when there's a currently focused
+    /// tab — otherwise the pill would render an empty label.
+    fn search_scope_list(&self) -> Vec<crate::shell::chrome_state::SearchScope> {
+        use crate::shell::chrome_state::SearchScope;
+        let mut out = Vec::with_capacity(3);
+        if self
+            .chrome
+            .as_ref()
+            .and_then(|c| c.borrow().active_app_title())
+            .is_some()
+        {
+            out.push(SearchScope::ActiveApp);
+        }
+        out.push(SearchScope::Workspace);
+        out.push(SearchScope::All);
+        out
+    }
+
+    /// Label to render inside the i-th scope pill. For
+    /// [`SearchScope::ActiveApp`] this is the focused tab's title
+    /// (e.g. `Notes`), truncated to `MAX_APP_PILL_CHARS` so a very long
+    /// title can't push the sibling pills off the banner. Static labels
+    /// fall through to [`SearchScope::label`].
+    fn search_scope_pill_label(&self, scope: crate::shell::chrome_state::SearchScope) -> String {
+        use crate::shell::chrome_state::SearchScope;
+        const MAX_APP_PILL_CHARS: usize = 14;
+        match scope {
+            SearchScope::ActiveApp => {
+                let raw = self
+                    .chrome
+                    .as_ref()
+                    .and_then(|c| c.borrow().active_app_title())
+                    .unwrap_or_else(|| SearchScope::ActiveApp.label().to_string());
+                if raw.chars().count() > MAX_APP_PILL_CHARS {
+                    let head: String = raw.chars().take(MAX_APP_PILL_CHARS).collect();
+                    format!("{head}…")
+                } else {
+                    raw
+                }
+            }
+            other => other.label().to_string(),
+        }
+    }
+
+    /// Individual scope-pill rect inside the banner. `idx` indexes into
+    /// [`Self::search_scope_list`], so the ActiveApp pill (when present)
+    /// is idx 0. Hit-test and draw consume this same helper. Widths are
+    /// fixed at [`Self::SCOPE_PILL_WIDTH_PX`] so the layout stays stable
+    /// across frames even when the ActiveApp label changes length.
     fn search_scope_pill_rect(&self, idx: usize) -> Rect {
         let b = self.search_banner_rect();
         if b.width() <= 0.0 {
             return Rect::ZERO;
         }
         let label_w = 96.0_f64; // "Search in:" prefix
-        let pill_w = 90.0_f64;
+        let pill_w = Self::SCOPE_PILL_WIDTH_PX;
         let pill_gap = 8.0_f64;
         let pill_h = 22.0_f64;
-        let cy = (b.y0 + b.y1) / 2.0;
+        // Scope pills sit in the top row of the banner. Kind chips get
+        // the bottom row (see `draw_search_banner`). 12 px top padding
+        // centres the pill row vertically inside the top half.
+        let row_y = b.y0 + 12.0;
+        let cy = row_y + pill_h / 2.0;
         let start = b.x0 + 16.0 + label_w;
         let x0 = start + idx as f64 * (pill_w + pill_gap);
         Rect::new(x0, cy - pill_h / 2.0, x0 + pill_w, cy + pill_h / 2.0)
     }
+
+    /// Uniform pill width used by [`Self::search_scope_pill_rect`]. Wide
+    /// enough to hold ~14 chars of a truncated app title without cramping.
+    const SCOPE_PILL_WIDTH_PX: f64 = 110.0;
 
     /// Geometry of the overview's centered content column. Concept wraps
     /// everything in a `max-w-5xl w-full` column with `p-12` outer padding,
@@ -1850,6 +2212,15 @@ impl Widget for ShellOverlayHost {
         // `WorkspaceTree`. Same take-pattern as the maximize writeback;
         // runs once per gesture, not once per pixel.
         self.harvest_pending_width_changes();
+        // Mirror the widget-side `TabBar::active_id` into the persisted
+        // `WorkspaceTree::group.active_tab`. Without this, clicking a
+        // different tab pill flips the visible content but the tree's
+        // `active_tab` stays pointing at whatever tab was constructed
+        // first — the 2026-07-09 "Ctrl+K searches in the first app of
+        // the group, not the active one" bug. Also stamps
+        // `tree.active_group` / `tree.active_strip` on group focus so
+        // the search-scope narrowing has an honest anchor.
+        self.harvest_active_tab_writeback();
         // Cross-strip tab drag-drop (#151): drain any `GroupRow` that
         // published a cross-strip detach during this frame's events and
         // splice the dragged tab into whichever strip's row contains the
@@ -2408,6 +2779,69 @@ impl Widget for ShellOverlayHost {
             ));
         }
 
+        // Quick-settings slider drag: while the user holds a slider,
+        // CursorMoved updates the value inline (so the fill follows the
+        // pointer) and Released pushes the final value through
+        // `qs_actions`. Runs BEFORE the modal event-absorb gate so a drag
+        // that leaves the slider bar or even the popover keeps updating
+        // — matches the concept's slider feel and the way every native
+        // slider on Linux behaves once the knob is grabbed.
+        if let Some(drag_i) = self.qs_slider_drag {
+            match event {
+                WindowEvent::CursorMoved { .. } => {
+                    if let (Some(p), Some(chrome)) =
+                        (self.last_cursor, self.chrome.clone())
+                    {
+                        let (bar, _) = self.quick_settings_slider_geometry(drag_i);
+                        let t = ((p.x - bar.x0) / bar.width()).clamp(0.0, 1.0) as f32;
+                        let mut st = chrome.borrow_mut();
+                        if drag_i == 0 {
+                            st.quick_settings.brightness = t;
+                        } else {
+                            st.quick_settings.volume = t;
+                        }
+                        st.bump();
+                    }
+                    *handled = true;
+                    return;
+                }
+                WindowEvent::MouseInput {
+                    state: ElementState::Released,
+                    button: winit::event::MouseButton::Left,
+                    ..
+                } => {
+                    let value_pct: f32 = self
+                        .chrome
+                        .as_ref()
+                        .map(|c| {
+                            let st = c.borrow();
+                            if drag_i == 0 {
+                                st.quick_settings.brightness
+                            } else {
+                                st.quick_settings.volume
+                            }
+                        })
+                        .unwrap_or(0.0)
+                        * 100.0;
+                    self.qs_slider_drag = None;
+                    if drag_i == 0 {
+                        crate::shell::qs_actions::log_qs_result(
+                            "set_brightness",
+                            self.qs_actions.set_brightness(value_pct),
+                        );
+                    } else {
+                        crate::shell::qs_actions::log_qs_result(
+                            "set_volume",
+                            self.qs_actions.set_volume(value_pct),
+                        );
+                    }
+                    *handled = true;
+                    return;
+                }
+                _ => {}
+            }
+        }
+
         // Modal event-absorb gate (#7, B-2). The per-overlay `Pressed`
         // branches further down handle outside-click-close + inside-rect-
         // swallow for `MouseInput { state: Pressed }`, but `Released` and
@@ -2511,8 +2945,21 @@ impl Widget for ShellOverlayHost {
             }
         }
 
-        // Global shortcuts first — ⌘K / Ctrl+K toggles the palette, ⌘Tab
-        // toggles the overview, and Esc closes whichever overlay is on top.
+        // Global shortcuts first. Palette-open chords split by scope:
+        //
+        // - `Ctrl+K`               → open scoped to the focused tab
+        //                            (the palette can widen from there).
+        // - `Super+K` / `Super+Space` / `Alt+Space`
+        //                          → open in global scope.
+        //
+        // `Alt+Space` is the nested-friendly Super substitute. When qOS
+        // runs as a Wayland CLIENT (e.g. inside GNOME for development)
+        // the host DE swallows Super before the compositor ever sees the
+        // event, so a chord that doesn't touch Super is needed to keep
+        // global-search reachable in a dev window.
+        //
+        // `Ctrl+Tab` / `Super+Tab` toggle the overview, and Esc closes
+        // whichever overlay is on top.
         if let WindowEvent::KeyboardInput {
             event: KeyEvent {
                 logical_key,
@@ -2522,11 +2969,40 @@ impl Widget for ShellOverlayHost {
             ..
         } = event
         {
-            let is_mod = modifiers.state().super_key() || modifiers.state().control_key();
+            let mstate = modifiers.state();
+            let super_down = mstate.super_key();
+            let ctrl_down = mstate.control_key();
+            let alt_down = mstate.alt_key();
+            let is_mod = super_down || ctrl_down;
+            // Space chord routes global-search: `Super+Space` matches the
+            // Super+K convention; `Alt+Space` covers the nested case.
+            // Both are captured here before the modifier-only branch so a
+            // Character('K') path further down can't also fire.
+            let is_space = matches!(logical_key, Key::Named(NamedKey::Space));
+            if is_space && (super_down || alt_down) {
+                self.open_palette_with_scope(
+                    crate::shell::chrome_state::SearchScope::All,
+                );
+                self.refresh_search_results(state, path);
+                *handled = true;
+                return;
+            }
             if is_mod {
                 if let Key::Character(s) = logical_key {
                     if s.as_str().eq_ignore_ascii_case("k") {
-                        self.toggle_palette();
+                        use crate::shell::chrome_state::SearchScope;
+                        // Ctrl+K (without Super) → this-app scope.
+                        // Super+K (with or without Ctrl) → global.
+                        let scope = if super_down {
+                            SearchScope::All
+                        } else {
+                            SearchScope::ActiveApp
+                        };
+                        self.open_palette_with_scope(scope);
+                        // Fire an initial refresh so the palette lands
+                        // with a populated result list (chrome actions
+                        // for empty queries) instead of a blank card.
+                        self.refresh_search_results(state, path);
                         *handled = true;
                         return;
                     }
@@ -2774,16 +3250,14 @@ impl Widget for ShellOverlayHost {
                 if self.palette_visible {
                     // Scope-pill click (runs before outside-click so users
                     // can swap scope without dismissing the palette).
-                    for idx in 0..2 {
+                    // Iterates the same dynamic scope list the draw code
+                    // uses so ActiveApp (when present) is at idx 0.
+                    let scopes = self.search_scope_list();
+                    for (idx, scope) in scopes.iter().enumerate() {
                         if self.search_scope_pill_rect(idx).contains(p) {
                             if let Some(chrome) = self.chrome.clone() {
-                                use crate::shell::chrome_state::SearchScope;
                                 let mut st = chrome.borrow_mut();
-                                st.search_scope = if idx == 0 {
-                                    SearchScope::Workspace
-                                } else {
-                                    SearchScope::All
-                                };
+                                st.search_scope = *scope;
                                 st.bump();
                             }
                             *handled = true;
@@ -2922,13 +3396,63 @@ impl Widget for ShellOverlayHost {
                             *handled = true;
                             return;
                         }
+                        // Top action row (Settings / Camera / Power). Each
+                        // tile closes the popover on click; the action fires
+                        // after the chrome borrow drops.
+                        let mut action_hit: Option<usize> = None;
+                        for i in 0..3 {
+                            let tile = self.quick_settings_action_geometry(i);
+                            if tile.contains(p) {
+                                action_hit = Some(i);
+                                break;
+                            }
+                        }
+                        if let Some(i) = action_hit {
+                            let mut st = chrome.borrow_mut();
+                            match i {
+                                0 => {
+                                    // Settings gear → open workspace settings
+                                    // modal, same intent the palette's
+                                    // `settings.open` command carries.
+                                    st.overlays.ws_settings = true;
+                                }
+                                1 => {
+                                    // Camera glyph → placeholder notification
+                                    // until app launch is plumbed through
+                                    // the sandbox spawn path with the
+                                    // compositor's own wayland socket.
+                                    st.push_notification(
+                                        "Camera",
+                                        "Launch not yet wired to the sandbox spawner.",
+                                    );
+                                }
+                                _ => {
+                                    // Power glyph → placeholder notification.
+                                    // A destructive `systemctl poweroff` needs
+                                    // an explicit confirmation UI first; not
+                                    // wiring it here to avoid a one-click
+                                    // shutdown from the QS popover.
+                                    st.push_notification(
+                                        "Power",
+                                        "Shutdown / restart menu not yet available.",
+                                    );
+                                }
+                            }
+                            st.overlays.quick_settings = false;
+                            st.quick_settings.nav_stack =
+                                vec![crate::shell::quick_settings::QsLevel::Root];
+                            st.bump();
+                            *handled = true;
+                            return;
+                        }
                         // Track which actions to dispatch *after* dropping the
                         // chrome borrow — calling into `qs_actions` while
                         // `st` is alive would risk a re-entrant `borrow_mut`
                         // from a tracing subscriber or anything else that
-                        // touches the chrome.
-                        let mut pending_brightness: Option<f32> = None;
-                        let mut pending_volume: Option<f32> = None;
+                        // touches the chrome. Sliders don't participate: the
+                        // Released branch in the drag block above owns the
+                        // shell-out so a mid-drag pixel doesn't spawn one
+                        // subprocess per frame.
                         let mut pending_wifi: Option<bool> = None;
                         let mut pending_bt: Option<bool> = None;
                         let mut pending_power: Option<crate::shell::quick_settings::PowerProfile> = None;
@@ -2944,11 +3468,16 @@ impl Widget for ShellOverlayHost {
                                 let t = ((p.x - bar.x0) / bar.width()).clamp(0.0, 1.0) as f32;
                                 if i == 0 {
                                     st.quick_settings.brightness = t;
-                                    pending_brightness = Some(t * 100.0);
                                 } else {
                                     st.quick_settings.volume = t;
-                                    pending_volume = Some(t * 100.0);
                                 }
+                                // Latch drag state. The value is committed to
+                                // the OS on Released — during drag, only the
+                                // visual updates (via `qs_slider_drag` in the
+                                // pre-absorb branch). This mirrors how a
+                                // physical mixer knob feels: instant visual,
+                                // final commit when you let go.
+                                self.qs_slider_drag = Some(i);
                                 changed = true;
                             }
                         }
@@ -2984,18 +3513,6 @@ impl Widget for ShellOverlayHost {
                         if changed {
                             st.bump();
                             drop(st);
-                            if let Some(v) = pending_brightness {
-                                crate::shell::qs_actions::log_qs_result(
-                                    "set_brightness",
-                                    self.qs_actions.set_brightness(v),
-                                );
-                            }
-                            if let Some(v) = pending_volume {
-                                crate::shell::qs_actions::log_qs_result(
-                                    "set_volume",
-                                    self.qs_actions.set_volume(v),
-                                );
-                            }
                             if let Some(v) = pending_wifi {
                                 crate::shell::qs_actions::log_qs_result(
                                     "set_wifi",
@@ -3241,6 +3758,32 @@ impl Widget for ShellOverlayHost {
 
         let children = taffy.children(node_id).unwrap();
         if self.palette_visible {
+            // Chip-strip click. Chips filter the wanted-kind set for the
+            // next refresh; we recompute results immediately so the
+            // effect is visible on the same frame. Runs before the row
+            // hit-test below so a click on a chip doesn't fall through
+            // to the top result.
+            if let WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: winit::event::MouseButton::Left,
+                ..
+            } = event
+            {
+                if let Some(p) = self.last_cursor {
+                    let kinds = self.search_registry.registered_kinds();
+                    for (idx, rect) in self.search_chip_rects.iter().enumerate() {
+                        if rect.contains(p) {
+                            if let Some(kind) = kinds.get(idx).cloned() {
+                                self.toggle_kind_filter(kind);
+                                self.last_search_query.clear(); // force a refresh
+                                self.refresh_search_results(state, path);
+                            }
+                            *handled = true;
+                            return;
+                        }
+                    }
+                }
+            }
             // Mouse-click on a visible row: move cursor to the clicked
             // row, then dispatch its action. Happens before delegating
             // to the palette so a single click both selects and fires.
@@ -3253,19 +3796,13 @@ impl Widget for ShellOverlayHost {
                 if let Some(p) = self.last_cursor {
                     if let Some(row) = self.palette.row_at(p) {
                         self.palette.set_cursor(row);
-                        if let Some(id) = self.palette.selected_id().map(|s| s.to_string()) {
-                            self.dispatch_palette_command(&id);
-                        }
+                        self.activate_selected_result(state, path);
                         *handled = true;
                         return;
                     }
                 }
             }
-            // Keyboard Enter: fire the cursor-selected action. The
-            // palette's own `on_select` callback path is unused because
-            // the shell's command ids map to overlay-state mutations,
-            // not CRDT writes, and the callback's signature is
-            // (&mut AutoCommit, &ObjId) — no chrome access.
+            // Keyboard Enter: fire the cursor-selected action.
             if let WindowEvent::KeyboardInput {
                 event: KeyEvent {
                     logical_key: Key::Named(NamedKey::Enter),
@@ -3275,12 +3812,12 @@ impl Widget for ShellOverlayHost {
                 ..
             } = event
             {
-                if let Some(id) = self.palette.selected_id().map(|s| s.to_string()) {
-                    self.dispatch_palette_command(&id);
-                    *handled = true;
-                    return;
-                }
+                self.activate_selected_result(state, path);
+                *handled = true;
+                return;
             }
+            // Let the palette own the character/backspace/arrow keys.
+            let query_before = self.palette.query().to_string();
             self.palette.handle_event(
                 event,
                 scale_factor,
@@ -3292,6 +3829,12 @@ impl Widget for ShellOverlayHost {
                 children[1],
                 taffy,
             );
+            // Every character/backspace mutates `palette.query()`;
+            // recompute the result set through the registry when it
+            // changes so the user sees new hits as they type.
+            if self.palette.query() != query_before {
+                self.refresh_search_results(state, path);
+            }
             if *handled {
                 return;
             }
@@ -3671,6 +4214,23 @@ fn slate_900_tint(theme: &Theme, alpha: f32) -> Color {
     // than hard-coding #0f172a keeps the light-theme variant falling back
     // to its own near-darkest slot automatically.
     theme.tokens.colors.neutral[1].with_alpha_factor(alpha)
+}
+
+/// Pick the [`crate::shell::search::SearchProvider`] that owns the
+/// currently focused tab, if any. Used to seed the `active_provider_id`
+/// arg to [`crate::shell::search::SearchRegistry::query`] when the
+/// scope is [`crate::shell::chrome_state::SearchScope::ActiveApp`].
+fn active_tab_provider_id(
+    chrome: &crate::shell::chrome_state::ChromeState,
+    registry: &crate::shell::search::SearchRegistry,
+) -> Option<String> {
+    let tab_id = chrome.active_tab_id()?;
+    for provider in registry.providers_iter() {
+        if provider.owns_tab(tab_id, chrome) {
+            return Some(provider.id().to_string());
+        }
+    }
+    None
 }
 
 /// Clone `theme` with `surfaces.raised` re-tinted to the glass slate-900
@@ -5178,9 +5738,10 @@ impl ShellOverlayHost {
             .map(|c| c.borrow().search_scope)
             .unwrap_or_default();
 
-        for (idx, scope) in [SearchScope::Workspace, SearchScope::All].iter().enumerate() {
+        let scopes = self.search_scope_list();
+        for (idx, scope) in scopes.into_iter().enumerate() {
             let pill = self.search_scope_pill_rect(idx);
-            let is_active = *scope == active;
+            let is_active = scope == active;
             let radius = pill.height() / 2.0;
             let pill_rr = RoundedRect::new(pill.x0, pill.y0, pill.x1, pill.y1, radius);
             let fill = if is_active { colors.accent[5] } else { colors.surfaces.raised };
@@ -5195,18 +5756,74 @@ impl ShellOverlayHost {
                 );
             }
 
-            let text = scope.label();
-            let (tw, th) = text_renderer.measure(text, tokens.typography.scale.sm, None);
+            let text = self.search_scope_pill_label(scope);
+            let (tw, th) = text_renderer.measure(&text, tokens.typography.scale.sm, None);
             let tx = (pill.x0 + pill.x1) / 2.0 - tw as f64 / 2.0;
             let ty = (pill.y0 + pill.y1) / 2.0 - th as f64 / 2.0;
             text_renderer.draw_text(
                 scene,
-                text,
+                &text,
                 tokens.typography.scale.sm,
                 colors.text_primary,
                 transform * Affine::translate((tx, ty)),
                 None,
             );
+        }
+
+        // Resource-kind chip strip. Painted as a second row of pills
+        // inside the same banner, offset below the scope pills. Chips
+        // are dynamic — one per kind any registered provider exposes,
+        // so a new provider gets a chip for free. Multi-select: click
+        // toggles the kind in `active_kind_filter`; empty filter means
+        // "everything shows".
+        let kinds = self.search_registry.registered_kinds();
+        if !kinds.is_empty() {
+            let chip_h = 20.0;
+            let chip_gap = 6.0;
+            // Bottom row of the banner. Scope pills own the top 12+22
+            // px; chips start 8 px below with 12 px bottom padding.
+            let chip_row_y = banner.y0 + 12.0 + 22.0 + 8.0;
+            let mut chip_rects: Vec<Rect> = Vec::with_capacity(kinds.len());
+            let mut x = banner.x0 + 16.0;
+            for kind in &kinds {
+                let label = kind.label();
+                let (lw, _) = text_renderer.measure(label, tokens.typography.scale.xs, None);
+                let chip_w = (lw as f64) + 20.0;
+                let rect = Rect::new(x, chip_row_y, x + chip_w, chip_row_y + chip_h);
+                let radius = rect.height() / 2.0;
+                let rr = RoundedRect::new(rect.x0, rect.y0, rect.x1, rect.y1, radius);
+                let is_active = self.active_kind_filter.contains(kind);
+                let fill = if is_active {
+                    colors.accent[5]
+                } else {
+                    colors.surfaces.raised
+                };
+                scene.fill(Fill::NonZero, transform, fill, None, &rr);
+                if !is_active {
+                    scene.stroke(
+                        &vello::kurbo::Stroke::new(1.0),
+                        transform,
+                        colors.border_standard,
+                        None,
+                        &rr,
+                    );
+                }
+                let (_, th) = text_renderer.measure(label, tokens.typography.scale.xs, None);
+                let ty = (rect.y0 + rect.y1) / 2.0 - th as f64 / 2.0;
+                text_renderer.draw_text(
+                    scene,
+                    label,
+                    tokens.typography.scale.xs,
+                    colors.text_primary,
+                    transform * Affine::translate((rect.x0 + 10.0, ty)),
+                    None,
+                );
+                chip_rects.push(rect);
+                x += chip_w + chip_gap;
+            }
+            self.search_chip_rects = chip_rects;
+        } else {
+            self.search_chip_rects.clear();
         }
     }
 
@@ -5383,14 +6000,32 @@ impl ShellOverlayHost {
         // premultiplied bytes don't match the solid indigo-500 signature
         // the concept-parity spec test pins to a closed→open delta of 0.
         //
-        // Sub-line labels fall back to demo SSID/device names baked into
-        // `QuickSettings::new` until T9 plumbs the drill-in render that
-        // back-references the `QuickSettings` widget owned by the shell
-        // root.
+        // Sub-line label = SSID/device name of whichever entry
+        // `refresh_quick_settings_from_os` marked `connected` (via
+        // `nmcli`/`bluetoothctl`). Falls back to "Not connected" when
+        // the radio is on but nothing paired, or the radio is off.
         const NOT_CONNECTED: &str = "Not connected";
+        let wifi_sub = if qs.wifi {
+            qs.wifi_networks
+                .iter()
+                .find(|n| n.connected)
+                .map(|n| n.ssid.as_str())
+                .unwrap_or(NOT_CONNECTED)
+        } else {
+            NOT_CONNECTED
+        };
+        let bt_sub = if qs.bluetooth {
+            qs.bt_devices
+                .iter()
+                .find(|d| d.connected)
+                .map(|d| d.name.as_str())
+                .unwrap_or(NOT_CONNECTED)
+        } else {
+            NOT_CONNECTED
+        };
         let toggle_rows: [(bool, &str, &str); 2] = [
-            (qs.wifi, "Wi-Fi", if qs.wifi { "Home_Network" } else { NOT_CONNECTED }),
-            (qs.bluetooth, "Bluetooth", if qs.bluetooth { "AirPods Pro" } else { NOT_CONNECTED }),
+            (qs.wifi, "Wi-Fi", wifi_sub),
+            (qs.bluetooth, "Bluetooth", bt_sub),
         ];
         for (i, (on, label, sub_line)) in toggle_rows.iter().enumerate() {
             let card = self.quick_settings_toggle_geometry(i);
@@ -7215,19 +7850,26 @@ mod tests {
 
     /// Wave 3 / Unit 3-A pin (#5).
     ///
-    /// The companion to `palette_scrim_alpha_matches_concept`: concept
-    /// §4.1 specifies `bg-slate-900/70` for the modal surface itself,
-    /// which means the surface alpha must stay at-or-below `0.85` so
-    /// the scrim (now lifted to `>= 0.45`) is what carries the
-    /// "lift off the desktop" effect rather than a fully opaque
-    /// surface flattening it.
+    /// The companion to `palette_scrim_alpha_matches_concept`.
+    ///
+    /// Concept §4.1 originally called for `bg-slate-900/70` on the modal
+    /// surface, and this test used to pin the alpha at `<= 0.85` so a
+    /// fully opaque surface didn't defeat the "page-on-page" affordance
+    /// the scrim was meant to carry.
+    ///
+    /// 2026-07-09 user report ("search bar / file viewer are too
+    /// transparent — looks terrible") flipped the trade-off. Legibility
+    /// against a busy desktop backdrop wins over the concept's tint
+    /// depth: [`MODAL_SURFACE_ALPHA`] now lifts to `>= 0.90` so the
+    /// palette reads as solid chrome with just a hint of the wallpaper's
+    /// tint. The scrim below still carries the mode-shift affordance.
     #[test]
     fn palette_surface_alpha_lifts_off_desktop() {
         assert!(
-            MODAL_SURFACE_ALPHA <= 0.85,
-            "MODAL_SURFACE_ALPHA must stay <= 0.85 so the scrim (per \
-             concept §4.1) is what lifts the modal off the desktop; an \
-             opaque surface would defeat the page-on-page affordance \
+            MODAL_SURFACE_ALPHA >= 0.90,
+            "MODAL_SURFACE_ALPHA must stay >= 0.90 so the palette + \
+             workspace-settings modal read as opaque chrome; a lower \
+             alpha reintroduces the 2026-07-09 legibility complaint \
              (got {})",
             MODAL_SURFACE_ALPHA
         );
