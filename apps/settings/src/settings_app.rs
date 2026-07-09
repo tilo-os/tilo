@@ -37,7 +37,7 @@
 use crate::categories::Category;
 use crate::panes;
 use crate::sidebar;
-use ui::widget::{Button, Column, Container, NavSplit, Row, Spacer, SplitLayout, SplitMode, Text, Widget};
+use ui::widget::{Button, Column, Container, NavSplit, Row, Scrollable, Spacer, SplitLayout, SplitMode, Text, Widget};
 use ui::{AppKind, AppWidget, IconDescriptor};
 
 /// CRDT key the header's collapse/expand button writes `true` to. Read in
@@ -237,16 +237,16 @@ impl SettingsApp {
         Box::new(Container::new().with_background().with_child(Box::new(stack)))
     }
 
-    /// Build the content pane: header + the selected category's body.
+    /// Build the content pane: header + the selected category's body, wrapped
+    /// in a vertical [`Scrollable`] so tall panes (many section cards on a
+    /// short window) scroll with a real overlay scrollbar — thumb drag, track
+    /// paging, PageUp/Down + Home/End, wheel — instead of being clipped.
     ///
-    /// The body is a vertical stack of cards. We deliberately use a plain
-    /// `Column` (filling its pane) rather than a `Scrollable` wrapper: in
-    /// the retained-mode layout a `Scrollable` whose child sizes itself
-    /// intrinsically collapses to a zero-height viewport unless the host
-    /// drives its measure pass, which the standalone settings window does
-    /// not. The panels fit the window at the sizes they ship; making them
-    /// scroll is a follow-up that belongs in `ui` (a measured
-    /// `Scrollable` viewport), noted in the growth ledger.
+    /// The intrinsic-height inner `Column` provides the content extent; the
+    /// `Scrollable`'s `percent(1.0)` height resolves against the filling
+    /// `Container` (a definite height under the live `ui::App`, which drives
+    /// the measure pass), so the viewport doesn't collapse. When the content
+    /// fits, the bar hides itself and nothing changes visually.
     fn build_content(&self) -> Box<dyn Widget> {
         let header = self.build_pane_header();
         let body = self.build_pane_body();
@@ -258,7 +258,8 @@ impl SettingsApp {
             .push(header)
             .push(crate::widgets::vgap(20.0))
             .push(body);
-        Box::new(Container::new().filling().with_child(Box::new(inner)))
+        let scroll = Scrollable::new_vertical().with_child(Box::new(inner));
+        Box::new(Container::new().filling().with_child(Box::new(scroll)))
     }
 
     /// Dispatch to the per-category pane body.
