@@ -46,6 +46,14 @@ fn mouse_press_right() -> WindowEvent {
     }
 }
 
+fn mouse_release() -> WindowEvent {
+    WindowEvent::MouseInput {
+        device_id: unsafe { std::mem::zeroed() },
+        state: ElementState::Released,
+        button: MouseButton::Left,
+    }
+}
+
 /// A printable-character keyboard event (mirrors `text_input`'s test
 /// helper — `KeyEvent` has a `pub(crate)` field so it can't be built by
 /// struct literal).
@@ -678,6 +686,138 @@ fn inline_rename_is_plain_and_commits_on_click_outside() {
         renamed.title, "Welcome!",
         "clicking outside must COMMIT the edit, not discard it"
     );
+}
+
+#[test]
+fn double_click_in_editor_selects_a_word() {
+    // Regression guard for "double-click gives a weird selection": a
+    // double-click inside a note block must select exactly the word under
+    // the cursor (via the ui TextInput's multi-click ladder), never a
+    // stray partial or cross-block range.
+    let tmp = TempDir::new().unwrap();
+    let mut app = NotesApp::spawn_with_starter_page(tmp.path().into()).unwrap();
+    let id = app.workspace_pages_for_test()[0].id;
+    app.main_panel_mut()
+        .load_page(id, "T".into(), "the quick brown fox\n".into());
+
+    let mut state = ui::State::new();
+    let (taffy, child) = settle_layout(&mut app, &mut state, 1200, 800);
+
+    // Click a point a few characters into the first block.
+    let rect = app.main_panel_mut().editor().blocks()[0].line.get_rect();
+    let x = rect.x0 + 60.0;
+    let y = rect.y0 + rect.height() / 2.0;
+    let no_mods = Modifiers::default();
+
+    // Single click: caret only, no selection.
+    dispatch(&mut app, &mut state, &taffy, child, &no_mods, &cursor_moved(x, y));
+    dispatch(&mut app, &mut state, &taffy, child, &no_mods, &mouse_press());
+    dispatch(&mut app, &mut state, &taffy, child, &no_mods, &mouse_release());
+    assert!(
+        app.main_panel_mut().editor().blocks()[0]
+            .line
+            .selection_range()
+            .is_none(),
+        "a single click places the caret without selecting a word"
+    );
+
+    // Double click at the same spot: exactly the word under the cursor.
+    dispatch(&mut app, &mut state, &taffy, child, &no_mods, &cursor_moved(x, y));
+    dispatch(&mut app, &mut state, &taffy, child, &no_mods, &mouse_press());
+    dispatch(&mut app, &mut state, &taffy, child, &no_mods, &mouse_release());
+
+    let block = &app.main_panel_mut().editor().blocks()[0];
+    let text = block.text().to_string();
+    let (s, e) = block
+        .line
+        .selection_range()
+        .expect("double-click selects a word");
+    assert!(e > s, "the selection is non-empty");
+    let word = &text[s..e];
+    assert!(
+        !word.trim().is_empty() && !word.contains(' '),
+        "the selection is exactly one word (no spaces), got {word:?}"
+    );
+    assert!(
+        text.split_whitespace().any(|w| w == word),
+        "the selected span is a whole word from the line, got {word:?}"
+    );
+}
+
+#[test]
+fn slash_menu_creates_numbered_list_that_continues_on_enter() {
+    // Drive the real path: `/number` + Enter converts the focused block to
+    // a numbered list; pressing Enter continues the list; the rendered
+    // ordinals increment and the saved markdown numbers sequentially.
+    let tmp = TempDir::new().unwrap();
+    let mut app = NotesApp::spawn_with_starter_page(tmp.path().into()).unwrap();
+    // A fresh, empty page so the slash command has a clean paragraph.
+    app.apply_event_for_test(OutEvent::CreateChild { parent: None });
+    app.sync_sidebar_for_test();
+
+    let mut state = ui::State::new();
+    let (taffy, child) = settle_layout(&mut app, &mut state, 1200, 800);
+    assert!(app.main_panel_mut().editor_mut().is_focused());
+
+    let no_mods = Modifiers::default();
+    // Open the slash menu and filter to "Numbered list".
+    dispatch(&mut app, &mut state, &taffy, child, &no_mods, &char_key("/"));
+    assert!(
+        app.editor_slash_menu_visible_for_test(),
+        "typing `/` opens the block menu"
+    );
+    for c in ["n", "u", "m", "b", "e", "r"] {
+        dispatch(&mut app, &mut state, &taffy, child, &no_mods, &char_key(c));
+    }
+    // Enter commits the highlighted row (the sole match) → Numbered.
+    dispatch(&mut app, &mut state, &taffy, child, &no_mods, &named_key(NamedKey::Enter));
+    assert!(
+        !app.editor_slash_menu_visible_for_test(),
+        "committing the menu closes it"
+    );
+    {
+        let blocks = app.main_panel_mut().editor().blocks();
+        assert_eq!(blocks.len(), 1);
+        assert!(
+            matches!(blocks[0].kind, ui::widget::BlockKind::Numbered { indent: 0 }),
+            "the `/number` command converts the block to a numbered list"
+        );
+        assert_eq!(blocks[0].text(), "", "the `/number` filter text is stripped");
+    }
+
+    // Type the first item, then Enter to continue the list twice more.
+    for c in ["o", "n", "e"] {
+        dispatch(&mut app, &mut state, &taffy, child, &no_mods, &char_key(c));
+    }
+    let _ = settle_layout(&mut app, &mut state, 1200, 800);
+    dispatch(&mut app, &mut state, &taffy, child, &no_mods, &named_key(NamedKey::Enter));
+    for c in ["t", "w", "o"] {
+        dispatch(&mut app, &mut state, &taffy, child, &no_mods, &char_key(c));
+    }
+    let _ = settle_layout(&mut app, &mut state, 1200, 800);
+    dispatch(&mut app, &mut state, &taffy, child, &no_mods, &named_key(NamedKey::Enter));
+    for c in ["s", "i", "x"] {
+        dispatch(&mut app, &mut state, &taffy, child, &no_mods, &char_key(c));
+    }
+
+    let editor = app.main_panel_mut().editor();
+    let blocks = editor.blocks();
+    assert_eq!(blocks.len(), 3, "each Enter continues the numbered list");
+    for b in blocks {
+        assert!(
+            matches!(b.kind, ui::widget::BlockKind::Numbered { indent: 0 }),
+            "Enter on a numbered item yields another numbered item"
+        );
+    }
+    assert_eq!(
+        ui::widget::block_editor::numbered_ordinals(blocks),
+        vec![1, 2, 3],
+        "the rendered ordinals increment down the list"
+    );
+
+    // The saved markdown numbers the list sequentially.
+    let md = app.main_panel_mut().take_body_snapshot();
+    assert_eq!(md, "1. one\n\n2. two\n\n3. six\n");
 }
 
 #[test]

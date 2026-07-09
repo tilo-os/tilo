@@ -15,7 +15,7 @@
 //! vertically.
 
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, Stroke};
+use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{BlendMode, Color, Fill};
 use winit::event::MouseScrollDelta;
 use winit::keyboard::ModifiersState;
@@ -91,6 +91,10 @@ pub struct PreviewPane {
     current: usize,
     /// Set by the app when there are no pages to show.
     placeholder: Option<String>,
+    /// The pages on screen are from an earlier successful compile — the latest
+    /// compile failed, so we keep the last good render and flag it as stale
+    /// rather than blanking the pane and losing the reader's place.
+    stale: bool,
 }
 
 impl Default for PreviewPane {
@@ -115,6 +119,7 @@ impl Default for PreviewPane {
             fit_width: true,
             current: 0,
             placeholder: Some("Compiling…".into()),
+            stale: false,
         }
     }
 }
@@ -172,6 +177,9 @@ impl PreviewPane {
         self.content_h = content_h;
         self.viewport.set_content_size(content_w, content_h);
 
+        // Fresh pages supersede any stale render.
+        self.stale = false;
+
         // Flatten the per-page runs into content-space cells in reading order.
         self.rebuild_cells(page_text);
         self.clear_selection();
@@ -209,6 +217,18 @@ impl PreviewPane {
         if self.images.is_empty() {
             self.placeholder = text;
         }
+    }
+
+    /// Mark the on-screen pages as stale (the latest compile failed) or fresh.
+    /// A stale render keeps showing but wears a banner so the user knows the
+    /// preview no longer matches the source.
+    pub fn set_stale(&mut self, stale: bool) {
+        self.stale = stale;
+    }
+
+    /// Whether the on-screen pages are from an earlier, superseded compile.
+    pub fn is_stale(&self) -> bool {
+        self.stale
     }
 
     pub fn page_count(&self) -> usize {
@@ -583,6 +603,37 @@ impl PreviewPane {
         if self.has_thumbs() {
             self.draw_thumbs(scene, transform, tr, theme);
         }
+        if self.stale {
+            self.draw_stale_banner(scene, transform, tr, theme);
+        }
+    }
+
+    /// A floating banner across the top of the preview telling the user the
+    /// pages below are from the last good compile, not the current source.
+    fn draw_stale_banner(&self, scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, theme: &Theme) {
+        let c = &theme.tokens.colors;
+        let main = self.main_rect();
+        let text = "Compile failed — showing last successful render";
+        let font = 12.0;
+        let (tw, _) = tr.measure(text, font, None);
+        let pad_x = 12.0;
+        let h = 26.0;
+        let w = (tw as f64 + pad_x * 2.0).min(main.width() - 20.0);
+        let x0 = main.x0 + (main.width() - w) * 0.5;
+        let y0 = main.y0 + 10.0;
+        let banner = Rect::new(x0, y0, x0 + w, y0 + h);
+        // Soft shadow, then a warning-toned pill.
+        scene.fill(Fill::NonZero, transform, c.surfaces.overlay, None, &RoundedRect::from_rect(banner.inflate(2.0, 2.0), 9.0));
+        scene.fill(Fill::NonZero, transform, c.semantic.warning, None, &RoundedRect::from_rect(banner, 8.0));
+        let ty = y0 + (h - font as f64 * 1.25) / 2.0;
+        tr.draw_text(
+            scene,
+            text,
+            font,
+            Color::from_rgba8(20, 18, 10, 255),
+            transform * Affine::translate((x0 + pad_x, ty)),
+            Some((w - pad_x * 2.0) as f32),
+        );
     }
 
     fn draw_main(&mut self, scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, theme: &Theme) {

@@ -114,10 +114,19 @@ template-report = Bericht
 template-resume = Lebenslauf
 template-meeting-notes = Besprechungsnotizen
 
+## Built-in style display names (localized)
+style-body = Fließtext
+style-heading1 = Überschrift 1
+style-heading2 = Überschrift 2
+style-heading3 = Überschrift 3
+style-list = Listenelement
+style-quote = Zitat
+
 ## Paragraph panel
 panel-this-paragraph = DIESER ABSATZ
 panel-line-spacing = Zeilenabstand
 panel-style = ABSATZSTIL
+panel-style-hint = Ändert jeden Absatz vom Typ "{ $name }"
 panel-caret-hint = Cursor in einen Absatz setzen
 panel-paragraph-styles = ABSATZSTILE
 panel-style-properties = STILEIGENSCHAFTEN
@@ -129,12 +138,23 @@ panel-weight = Stärke
 panel-bold = Fett
 panel-italic = Kursiv
 panel-colour = Farbe
+panel-colour-custom = Benutzerdefiniert…
 panel-align = Ausrichtung
 panel-new-style = + Neuer Stil hieraus
 panel-num-size = Größe
 panel-num-space-before = Abstand davor
 panel-num-space-after = Abstand danach
 panel-num-indent = Einzug
+
+## Paragraph-style context menu (right-click a style chip)
+style-menu-delete = Stil löschen
+style-menu-duplicate = Stil duplizieren
+
+## Transient toasts (confirmation cues)
+toast-toc-updated = Inhaltsverzeichnis aktualisiert ({ $n } Einträge)
+toast-toc-empty = Erst Überschriften hinzufügen — ein Inhaltsverzeichnis listet sie auf
+toast-style-deleted = Stil gelöscht
+toast-style-duplicated = Stil dupliziert
 
 ## Outline / navigation pane
 outline-header = GLIEDERUNG
@@ -145,6 +165,10 @@ outline-untitled = (unbenannt)
 layout-margins = Ränder
 layout-spacing = Abstände
 layout-none-hint = Seitenlayout — Ränder oder Abstände wählen, dann auf der Seite ziehen
+layout-margins-readout = Ränder  L { $l }  O { $t }  R { $r }  U { $b }   ·   Ziehen = gegenüberliegendes Paar · Umschalt = eine Seite · Strg = alle proportional
+layout-spacing-readout = Abstand für { $name }  { $px } px   ·   Griff ziehen — jeder Block vom Typ "{ $name }" folgt
 
 ## Canvas
 page-indicator = Seite { $n }
+canvas-image-missing = Bild
+canvas-embedded-content = ⟦ eingebetteter Inhalt ⟧

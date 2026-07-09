@@ -282,19 +282,6 @@ impl PdfApp {
         true
     }
 
-    fn apply_rail(&mut self, p: Point) -> bool {
-        if !self.rail_rect.contains(p) {
-            return false;
-        }
-        for (num, r) in self.thumbnail_rects() {
-            if r.contains(p) {
-                self.go_to_page(num);
-                break;
-            }
-        }
-        true
-    }
-
     fn apply_status(&mut self, p: Point) -> bool {
         if !self.status_rect.contains(p) {
             return false;
@@ -327,7 +314,12 @@ impl PdfApp {
                 // (a press that doesn't move is a selection of markup under it; a
                 // press that drags pans the canvas).
                 Tool::Select => {
-                    if self.raster.is_some() && self.begin_selection(page, pt) {
+                    if self.shift_down && self.raster.is_some() {
+                        // Shift + Select drags a rubber-band image-region marquee
+                        // to copy; it never pans or selects text.
+                        self.clear_selection();
+                        self.region = Some(RegionSelect { page, start: pt, cur: pt });
+                    } else if self.raster.is_some() && self.begin_selection(page, pt) {
                         // Text selection armed; motion extends it, release ends it.
                     } else {
                         self.clear_selection();
@@ -399,6 +391,7 @@ impl PdfApp {
         state: &mut AutoCommit,
         handled: &mut bool,
     ) {
+        self.shift_down = modifiers.state().shift_key();
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 let p = Point::new(position.x / scale_factor, position.y / scale_factor);
@@ -410,6 +403,27 @@ impl PdfApp {
                     let new_w = (p.x - self.rect.x0).clamp(RAIL_W_MIN, RAIL_W_MAX);
                     self.rail_w = new_w;
                     self.reflow();
+                    self.dirty = true;
+                    return;
+                }
+
+                // A live page-rail reorder drag (or an open rail menu) owns the
+                // pointer while it lasts.
+                if self.show_rail
+                    && (self.page_sidebar.is_pending_drag() || self.page_sidebar.menu_open())
+                {
+                    if self.page_sidebar.on_motion(p) {
+                        self.dirty = true;
+                    }
+                    return;
+                }
+
+                // Image-region marquee drag (Shift + Select).
+                if let Some(region) = self.region {
+                    let pt = self.page_point(region.page, p);
+                    if let Some(r) = self.region.as_mut() {
+                        r.cur = pt;
+                    }
                     self.dirty = true;
                     return;
                 }
@@ -505,7 +519,10 @@ impl PdfApp {
                     *handled = true;
                     return;
                 }
-                // Rail resize grip: a thin strip on the rail's right edge.
+                // The page rail: its resize grip (a thin strip on the right
+                // edge) first, then the shared rail widget (select, begin a
+                // reorder drag, the "Import…" button, or a click that dismisses
+                // an open menu).
                 if self.show_rail {
                     let rail = self.rail_rect;
                     if (p.x - rail.x1).abs() <= RAIL_GRIP && p.y >= rail.y0 && p.y <= rail.y1 {
@@ -514,10 +531,13 @@ impl PdfApp {
                         *handled = true;
                         return;
                     }
-                }
-                if self.apply_rail(p) {
-                    *handled = true;
-                    return;
+                    if rail.contains(p) || self.page_sidebar.menu_open() {
+                        self.page_sidebar.on_press(p);
+                        self.apply_sidebar_events(state);
+                        self.dirty = true;
+                        *handled = true;
+                        return;
+                    }
                 }
                 // On a narrow window a click on the scrim (canvas area not
                 // covered by an open overlay panel) dismisses the panels.
@@ -538,6 +558,22 @@ impl PdfApp {
                 button: MouseButton::Left,
                 ..
             } => {
+                // End an image-region marquee: crop + copy the region.
+                if self.region.is_some() {
+                    self.copy_region();
+                    self.region = None;
+                    *handled = true;
+                    return;
+                }
+                // Commit a page-rail reorder drag (or clear its pending press).
+                if self.page_sidebar.is_pending_drag() {
+                    if self.page_sidebar.on_release() {
+                        self.dirty = true;
+                    }
+                    self.apply_sidebar_events(state);
+                    *handled = true;
+                    return;
+                }
                 if self.selection.map(|s| s.dragging).unwrap_or(false) {
                     // End a text-selection drag. A bare click (no drag) selects
                     // nothing textual, so also let it pick markup underneath.
@@ -576,6 +612,15 @@ impl PdfApp {
                 ..
             } => {
                 let p = self.last_mouse;
+                // Right-click a page thumbnail → the shared rail's duplicate /
+                // move / delete menu.
+                if self.show_rail && self.rail_rect.contains(p) {
+                    self.page_sidebar.on_right_press(p);
+                    self.apply_sidebar_events(state);
+                    self.dirty = true;
+                    *handled = true;
+                    return;
+                }
                 if self.canvas_rect.contains(p) {
                     self.open_context_menu(p);
                     *handled = true;
@@ -590,6 +635,15 @@ impl PdfApp {
                 };
                 let mods = modifiers.state();
                 let ctrl = mods.control_key() || mods.super_key();
+
+                // Wheel over the page rail scrolls its thumbnail list.
+                if self.show_rail && self.rail_rect.contains(p) {
+                    if self.page_sidebar.on_wheel(-raw_y) {
+                        self.dirty = true;
+                    }
+                    *handled = true;
+                    return;
+                }
 
                 // Wheel over the sidebar scrolls its list.
                 if self.show_sidebar && self.sidebar_rect.contains(p) {
@@ -831,6 +885,7 @@ impl PdfApp {
                 self.selected_anno = None;
                 self.selected_sig = None;
                 self.context_menu = None;
+                self.page_sidebar.on_escape();
                 self.clear_selection();
                 self.status_note = None;
                 self.dirty = true;
