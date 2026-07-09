@@ -22,8 +22,9 @@ use vello::peniko::{BlendMode, Color, Fill};
 use vello::Scene;
 use winit::event::{ElementState, Modifiers, MouseButton, MouseScrollDelta, WindowEvent};
 
+use ui::collaboration::PresencePayload;
 use ui::permissions::PermissionContext;
-use ui::presence::PresenceCtx;
+use ui::presence::{PresenceCtx, PresenceKey};
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::command_palette::{CommandEntry, CommandPalette};
@@ -2050,6 +2051,33 @@ impl SheetsApp {
         );
     }
 
+    /// Paint per-peer "presence-in-navigation" glow on the sheet tabs: for
+    /// each sheet tab a remote peer is currently on, wash the tab in that
+    /// peer's colour. Reads the same `PresenceKey::Tab { id: sheet_name }`
+    /// scope the tabs are keyed by, so a peer who switches to another sheet
+    /// lights up the tab that leads there.
+    fn draw_sheet_tab_presence(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        for (rect, idx) in &self.tab_rects {
+            let Some(name) = self.sheet_names.get(*idx) else { continue };
+            let peers = presence.peers_on(&PresenceKey::Tab { id: name.clone() });
+            if peers.is_empty() {
+                continue;
+            }
+            let p0 = transform * vello::kurbo::Point::new(rect.x0, rect.y0);
+            let p1 = transform * vello::kurbo::Point::new(rect.x1, rect.y1);
+            let mist_rect = Rect::new(p0.x, p0.y, p1.x, p1.y);
+            for user in peers {
+                presence.draw_peer_mist(scene, theme, user, mist_rect);
+            }
+        }
+    }
+
     fn draw_tab_menu(
         &self,
         scene: &mut Scene,
@@ -2601,6 +2629,22 @@ impl Widget for SheetsApp {
         _permissions: &PermissionContext,
     ) {
         self.draw(scene, transform, text_renderer, theme, presence);
+        // Presence-in-navigation: when a peer is on a DIFFERENT sheet,
+        // glow that sheet's tab in their colour so you can see where they
+        // went ("Alice is on Q2"). Painted after the chrome so it reads on
+        // top of the tab surface.
+        self.draw_sheet_tab_presence(scene, transform, theme, presence);
+    }
+
+    /// Announce which sheet the local user is viewing, so peers can flag
+    /// that tab. Keyed by sheet name (the same key
+    /// [`Self::draw_sheet_tab_presence`] reads on the receiving side).
+    fn presence_payload(&self) -> Option<(PresenceKey, PresencePayload)> {
+        let name = self.sheet_names.get(self.active_sheet)?;
+        Some((
+            PresenceKey::Tab { id: name.clone() },
+            PresencePayload::Arrived,
+        ))
     }
 
     fn handle_event(
@@ -3646,6 +3690,36 @@ mod tests {
 
     fn value_at(app: &SheetsApp, addr: Addr) -> Option<CellValue> {
         app.cache.as_ref().and_then(|c| c.values.get(&addr).cloned())
+    }
+
+    /// Presence-in-navigation, producer side: the app announces which
+    /// sheet the local user is on as a `Tab { id: sheet_name }` scope, so
+    /// peers can flag that tab. Switching sheets moves the announced scope.
+    #[test]
+    fn presence_payload_announces_active_sheet() {
+        let (mut app, _doc) = seeded_app();
+        assert!(!app.sheet_names.is_empty(), "seeded app has sheets");
+
+        let (key, payload) =
+            ui::widget::Widget::presence_payload(&app).expect("a sheet is active");
+        assert_eq!(
+            key,
+            PresenceKey::Tab { id: app.sheet_names[app.active_sheet].clone() },
+            "the announced scope must be the active sheet's tab"
+        );
+        assert_eq!(payload, PresencePayload::Arrived);
+
+        // Switching sheets re-targets the announcement at the new tab.
+        if app.sheet_names.len() > 1 {
+            let other = (app.active_sheet + 1) % app.sheet_names.len();
+            app.active_sheet = other;
+            let (key2, _) =
+                ui::widget::Widget::presence_payload(&app).expect("still active");
+            assert_eq!(
+                key2,
+                PresenceKey::Tab { id: app.sheet_names[other].clone() }
+            );
+        }
     }
 
     #[test]
