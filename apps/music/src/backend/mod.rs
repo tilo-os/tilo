@@ -60,6 +60,110 @@ pub struct TrackHit {
     pub cover_url: String,
 }
 
+/// What kind of release an album is, so an artist's discography can be
+/// sectioned the way listeners expect (Albums vs. Singles & EPs).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum AlbumKind {
+    #[default]
+    Album,
+    Single,
+    Ep,
+    /// Audiobook / show / anything else — grouped under a generic label.
+    Other,
+}
+
+impl AlbumKind {
+    pub fn label(self) -> &'static str {
+        match self {
+            AlbumKind::Album => "Album",
+            AlbumKind::Single => "Single",
+            AlbumKind::Ep => "EP",
+            AlbumKind::Other => "Release",
+        }
+    }
+}
+
+/// An album returned by a search. Toolkit-free so it crosses the worker boundary.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AlbumHit {
+    /// YouTube-Music album browse id (e.g. `MPREb_…`).
+    pub id: String,
+    pub title: String,
+    /// Primary artist display name.
+    pub artist: String,
+    pub artist_id: Option<String>,
+    /// Release year (0 when omitted).
+    pub year: u32,
+    pub kind: AlbumKind,
+    pub cover_url: String,
+}
+
+/// An artist returned by a search.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ArtistHit {
+    /// YouTube channel id (e.g. `UC…`) — the key [`MusicBackend::artist`] fetches.
+    pub id: String,
+    pub name: String,
+    /// Approximate subscriber count (0 when hidden/omitted).
+    pub subscriber_count: u64,
+    /// Round avatar thumbnail URL.
+    pub avatar_url: String,
+}
+
+/// A playlist returned by a search.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PlaylistHit {
+    /// YouTube-Music playlist browse id (e.g. `PL…` / `RDCLAK…`).
+    pub id: String,
+    pub title: String,
+    /// Channel / owner display name ("YouTube Music" for curated).
+    pub subtitle: String,
+    /// Track count (0 when omitted).
+    pub track_count: u64,
+    pub cover_url: String,
+}
+
+/// The single best "top result" a main search surfaces (the hero card). Carries
+/// enough to render + route a click to the right destination.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SearchTop {
+    Track(TrackHit),
+    Album(AlbumHit),
+    Artist(ArtistHit),
+    Playlist(PlaylistHit),
+}
+
+/// A full multi-type search response: the mixed "top result" plus per-type
+/// buckets, in YouTube-Music ranking order. The offline backend returns an
+/// empty bundle; the live backend fills every bucket from one `music_search`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SearchBundle {
+    pub top: Option<SearchTop>,
+    pub tracks: Vec<TrackHit>,
+    pub albums: Vec<AlbumHit>,
+    pub artists: Vec<ArtistHit>,
+    pub playlists: Vec<PlaylistHit>,
+}
+
+impl SearchBundle {
+    pub fn is_empty(&self) -> bool {
+        self.top.is_none()
+            && self.tracks.is_empty()
+            && self.albums.is_empty()
+            && self.artists.is_empty()
+            && self.playlists.is_empty()
+    }
+}
+
+/// Which result type a deep per-type "see all" search targets.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum SearchKind {
+    Songs,
+    Albums,
+    Artists,
+    Playlists,
+}
+
 /// What a [`HomeItem`] represents, so the UI can route a click and pick the
 /// right tile shape (artists render as circles).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -115,19 +219,37 @@ pub struct ArtistAlbum {
     pub id: String,
     pub title: String,
     pub year: u32,
+    pub kind: AlbumKind,
     pub cover_url: String,
 }
 
-/// A real YouTube-Music artist page: top songs, albums, subscriber count.
+/// A real YouTube-Music artist page: top songs, discography, related artists,
+/// bio + subscriber count — everything a full artist page renders.
 #[derive(Clone, Debug, Default)]
 pub struct ArtistPage {
     pub id: String,
     pub name: String,
     pub subscriber_count: u64,
     pub description: String,
+    /// Link to the artist's Wikipedia page, when YouTube exposes one.
+    pub wikipedia_url: String,
     pub header_url: String,
     pub tracks: Vec<TrackHit>,
     pub albums: Vec<ArtistAlbum>,
+    /// Related / similar artists surfaced on the page.
+    pub similar: Vec<ArtistHit>,
+}
+
+/// A real YouTube-Music playlist: its ordered tracks + cover + owner. Backs the
+/// live playlist detail page a search-result playlist click opens.
+#[derive(Clone, Debug, Default)]
+pub struct PlaylistPage {
+    pub id: String,
+    pub title: String,
+    pub subtitle: String,
+    pub description: String,
+    pub cover_url: String,
+    pub tracks: Vec<TrackHit>,
 }
 
 /// A real YouTube-Music album (or single/EP): its ordered tracks + cover.
@@ -206,6 +328,20 @@ pub trait MusicBackend: Send + Sync {
     /// shows the bundled library instead); live hits YouTube Music.
     fn search_tracks(&self, query: &str) -> SearchOutcome;
 
+    /// A real multi-type search: the mixed "top result" plus songs, albums,
+    /// artists and playlists in one call (YouTube Music's main results page).
+    /// Offline returns an empty bundle; live fills every bucket.
+    fn search_all(&self, _query: &str) -> Result<SearchBundle, BackendError> {
+        Ok(SearchBundle::default())
+    }
+
+    /// Deep per-type search ("see all Albums / Artists / Playlists"). Offline
+    /// returns an empty bundle; live fills just the requested bucket with a
+    /// fuller list than the mixed [`Self::search_all`] surfaces.
+    fn search_more(&self, _query: &str, _kind: SearchKind) -> Result<SearchBundle, BackendError> {
+        Ok(SearchBundle::default())
+    }
+
     /// Resolve a video id to a directly-playable audio stream. Offline errors;
     /// live returns a real googlevideo media URL.
     fn resolve_audio(&self, video_id: &str) -> ResolveOutcome;
@@ -226,6 +362,11 @@ pub trait MusicBackend: Send + Sync {
     /// Fetch a real album's ordered track list + cover. Offline errors.
     fn album(&self, _album_id: &str) -> Result<AlbumPage, BackendError> {
         Err(BackendError("album pages need the live backend".into()))
+    }
+
+    /// Fetch a real playlist's ordered track list + cover. Offline errors.
+    fn playlist(&self, _playlist_id: &str) -> Result<PlaylistPage, BackendError> {
+        Err(BackendError("playlist pages need the live backend".into()))
     }
 }
 
@@ -274,6 +415,28 @@ mod tests {
         assert!(b.search_tracks("aurora").unwrap().is_empty());
         // Resolution reports it cannot stream, rather than faking a URL.
         assert!(b.resolve_audio("dQw4w9WgXcQ").is_err());
+    }
+
+    #[test]
+    fn default_backend_multi_type_search_is_empty_bundle() {
+        let b = default_backend();
+        // The multi-type search shape exists on the real trait; offline it just
+        // yields an empty bundle across every bucket (never an error).
+        let bundle = b.search_all("aurora").unwrap();
+        assert!(bundle.is_empty());
+        assert!(bundle.tracks.is_empty());
+        assert!(bundle.albums.is_empty());
+        assert!(bundle.artists.is_empty());
+        assert!(bundle.playlists.is_empty());
+        assert!(bundle.top.is_none());
+        for kind in [
+            SearchKind::Songs,
+            SearchKind::Albums,
+            SearchKind::Artists,
+            SearchKind::Playlists,
+        ] {
+            assert!(b.search_more("aurora", kind).unwrap().is_empty());
+        }
     }
 
     #[test]

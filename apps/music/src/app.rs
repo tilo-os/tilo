@@ -30,7 +30,8 @@ use ui::ImageStore;
 use crate::art;
 use crate::audio::AudioEngine;
 use crate::backend::{
-    AlbumPage, ArtistPage, HomeContent, HomeItem, HomeItemKind, HomeSection, TrackHit,
+    AlbumPage, ArtistHit, ArtistPage, HomeContent, HomeItem, HomeItemKind, HomeSection,
+    PlaylistHit, PlaylistPage, SearchBundle, SearchKind, SearchTop, TrackHit,
 };
 use crate::doc::{self, LiveTrack};
 use crate::icon::{self, Icon};
@@ -69,6 +70,49 @@ pub enum View {
     Album(String),
     Artist(String),
     Playlist(String),
+}
+
+/// The Spotify-style filter tabs across the top of the search results. `All`
+/// shows a curated mix (top-result hero + a few of each type); the others show
+/// just that type in a fuller layout.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SearchTab {
+    All,
+    Songs,
+    Albums,
+    Artists,
+    Playlists,
+}
+
+impl SearchTab {
+    pub const ALL: [SearchTab; 5] = [
+        SearchTab::All,
+        SearchTab::Songs,
+        SearchTab::Albums,
+        SearchTab::Artists,
+        SearchTab::Playlists,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            SearchTab::All => "All",
+            SearchTab::Songs => "Songs",
+            SearchTab::Albums => "Albums",
+            SearchTab::Artists => "Artists",
+            SearchTab::Playlists => "Playlists",
+        }
+    }
+
+    /// The deep per-type fetch a tab drives (none for the mixed `All` tab).
+    pub fn kind(self) -> Option<SearchKind> {
+        match self {
+            SearchTab::All => None,
+            SearchTab::Songs => Some(SearchKind::Songs),
+            SearchTab::Albums => Some(SearchKind::Albums),
+            SearchTab::Artists => Some(SearchKind::Artists),
+            SearchTab::Playlists => Some(SearchKind::Playlists),
+        }
+    }
 }
 
 /// A click action captured during draw and dispatched on the next mouse
@@ -112,6 +156,10 @@ enum Action {
     ToggleLike(String),
     /// Toggle an album's saved-to-library state.
     ToggleSaveAlbum(String),
+    /// Toggle whether the user follows an artist.
+    ToggleFollow(String),
+    /// Switch the active search filter tab (All / Songs / Albums / …).
+    SelectSearchTab(SearchTab),
     /// Append a track to a named playlist (from the context menu).
     AddToPlaylist { playlist: String, track: String },
     /// Remove a track from a playlist (playlist detail row affordance).
@@ -201,6 +249,15 @@ pub struct MusicApp {
     /// Search view can render real YouTube-Music hits in ranking order even
     /// when a multi-word query wouldn't substring-match the local index.
     live_results: Option<(String, Vec<String>)>,
+    /// The full multi-type search response for the current query: songs, albums,
+    /// artists, playlists + a top-result hero. Powers the Spotify-style filter
+    /// tabs; per-type "see all" deep fetches merge into the matching bucket.
+    live_bundle: Option<(String, SearchBundle)>,
+    /// The active search filter tab (All / Songs / Albums / Artists / Playlists).
+    search_tab: SearchTab,
+    /// Deep per-type "see all" fetches already dispatched, keyed `"query|kind"`,
+    /// so switching to a tab enriches it exactly once.
+    search_more_sent: HashSet<String>,
     /// Count of in-flight stream resolutions (keeps redraws flowing until the
     /// resolved URL lands and can be handed to the audio engine).
     resolve_in_flight: usize,
@@ -351,6 +408,10 @@ pub struct MusicApp {
     /// Real album pages keyed by album id, and the set already requested.
     album_pages: HashMap<String, AlbumPage>,
     album_requested: HashSet<String>,
+    /// Real (live YouTube-Music) playlist pages keyed by playlist id, and the
+    /// set already requested.
+    playlist_pages: HashMap<String, PlaylistPage>,
+    playlist_requested: HashSet<String>,
     /// Whether this instance may touch the network (spawn the worker, fetch
     /// covers). False for the hermetic `--shots`/test path so a headless render
     /// never opens a socket; the live-shots pre-warm flips it on.
@@ -450,6 +511,9 @@ impl MusicApp {
             live_hits: Vec::new(),
             live_search_pending: None,
             live_results: None,
+            live_bundle: None,
+            search_tab: SearchTab::All,
+            search_more_sent: HashSet::new(),
             resolve_in_flight: 0,
             mpris: MprisHandle::disabled(),
             mpris_last: None,
@@ -508,6 +572,8 @@ impl MusicApp {
             artist_requested: HashSet::new(),
             album_pages: HashMap::new(),
             album_requested: HashSet::new(),
+            playlist_pages: HashMap::new(),
+            playlist_requested: HashSet::new(),
             allow_network: true,
             force_metered: None,
             lyrics_worker: None,
@@ -561,7 +627,8 @@ impl MusicApp {
             View::Home => self.home.is_some(),
             View::Artist(id) => self.artist_pages.contains_key(id) || !is_live_id(id),
             View::Album(id) => self.album_pages.contains_key(id) || !is_live_album_id(id),
-            View::Search => self.live_results.is_some(),
+            View::Playlist(id) => self.playlist_pages.contains_key(id) || !is_live_playlist_id(id),
+            View::Search => self.live_bundle.is_some(),
             _ => true,
         }
     }
@@ -1404,6 +1471,32 @@ impl MusicApp {
                     Instant::now(),
                 ));
             }
+            Action::ToggleFollow(id) => {
+                let now = doc::toggle_followed_artist(state, &id);
+                self.reload_library(state);
+                // Prefer a live artist-page name; fall back to the library.
+                let label = self
+                    .artist_pages
+                    .get(&id)
+                    .map(|p| p.name.clone())
+                    .filter(|n| !n.is_empty())
+                    .unwrap_or_else(|| self.lib.artist_name(&id).to_string());
+                self.toast = Some((
+                    if now {
+                        format!("Following {label}")
+                    } else {
+                        format!("Unfollowed {label}")
+                    },
+                    Instant::now(),
+                ));
+            }
+            Action::SelectSearchTab(tab) => {
+                self.search_tab = tab;
+                self.scroll = 0.0;
+                // Switching to a specific type deep-fetches a fuller list for it
+                // (once per query) so the tab is genuinely richer than the mix.
+                self.request_search_more(tab);
+            }
             Action::AddToPlaylist { playlist, track } => {
                 doc::add_track_to_playlist(state, &playlist, &track);
                 self.reload_library(state);
@@ -1627,27 +1720,11 @@ impl MusicApp {
                     self.backend_live = live;
                     self.backend_name = name;
                 }
-                StreamUpdate::SearchResults { query, hits } => {
-                    if self.live_search_pending.as_deref() == Some(query.as_str()) {
-                        self.live_search_pending = None;
-                    }
-                    let n = hits.len();
-                    let mut ordered = Vec::with_capacity(n);
-                    for hit in &hits {
-                        let lt = hit_to_live(hit);
-                        self.record_cover(&lt.album_id, &hit.cover_url);
-                        self.record_cover(&lt.track_id, &hit.cover_url);
-                        ordered.push(lt.track_id.clone());
-                        if !self.live_hits.iter().any(|h| h.track_id == lt.track_id) {
-                            self.live_hits.push(lt);
-                        }
-                    }
-                    self.live_results = Some((query.clone(), ordered));
-                    self.inject_live_hits();
-                    self.toast = Some((
-                        format!("Found {n} song{} for \u{201c}{query}\u{201d}", if n == 1 { "" } else { "s" }),
-                        Instant::now(),
-                    ));
+                StreamUpdate::SearchResults { query, bundle } => {
+                    self.ingest_search_results(query, *bundle);
+                }
+                StreamUpdate::SearchMore { query, kind, bundle } => {
+                    self.merge_search_more(&query, kind, *bundle);
                 }
                 StreamUpdate::Home { content } => {
                     self.absorb_home(&content);
@@ -1660,6 +1737,10 @@ impl MusicApp {
                 StreamUpdate::Album { page } => {
                     self.absorb_album(&page);
                     self.album_pages.insert(page.id.clone(), *page);
+                }
+                StreamUpdate::Playlist { page } => {
+                    self.absorb_playlist(&page);
+                    self.playlist_pages.insert(page.id.clone(), *page);
                 }
                 StreamUpdate::Resolved { track_id, stream } => {
                     self.resolve_in_flight = self.resolve_in_flight.saturating_sub(1);
@@ -1787,6 +1868,146 @@ impl MusicApp {
         self.record_cover(&page.id, &page.cover_url);
     }
 
+    /// Fold a real (live) playlist page: its tracks become playable + covered.
+    fn absorb_playlist(&mut self, page: &PlaylistPage) {
+        self.absorb_tracks(&page.tracks);
+        self.record_cover(&page.id, &page.cover_url);
+    }
+
+    /// Record the covers of every album/artist/playlist in a search bundle so
+    /// the async image cache can fetch their real artwork; the tracks are folded
+    /// into the playable library as live tracks.
+    fn absorb_bundle(&mut self, bundle: &SearchBundle) {
+        self.absorb_tracks(&bundle.tracks);
+        for a in &bundle.albums {
+            self.record_cover(&a.id, &a.cover_url);
+        }
+        for a in &bundle.artists {
+            self.record_cover(&a.id, &a.avatar_url);
+        }
+        for p in &bundle.playlists {
+            self.record_cover(&p.id, &p.cover_url);
+        }
+        if let Some(top) = &bundle.top {
+            match top {
+                SearchTop::Album(a) => self.record_cover(&a.id, &a.cover_url),
+                SearchTop::Artist(a) => self.record_cover(&a.id, &a.avatar_url),
+                SearchTop::Playlist(p) => self.record_cover(&p.id, &p.cover_url),
+                SearchTop::Track(_) => {}
+            }
+        }
+    }
+
+    /// Ingest a fresh multi-type search response for `query`: record covers,
+    /// make tracks playable, and stash the bundle so the filter tabs render.
+    /// Resets the active tab to `All` so a new query lands on the mix.
+    fn ingest_search_results(&mut self, query: String, bundle: SearchBundle) {
+        if self.live_search_pending.as_deref() == Some(query.as_str()) {
+            self.live_search_pending = None;
+        }
+        self.absorb_bundle(&bundle);
+        let ordered: Vec<String> = bundle
+            .tracks
+            .iter()
+            .map(|h| format!("{LIVE_TRACK_PREFIX}{}", h.video_id))
+            .collect();
+        let n_types = [
+            !bundle.tracks.is_empty(),
+            !bundle.albums.is_empty(),
+            !bundle.artists.is_empty(),
+            !bundle.playlists.is_empty(),
+        ]
+        .iter()
+        .filter(|b| **b)
+        .count();
+        self.live_results = Some((query.clone(), ordered));
+        // A brand-new query resets the tab to the curated mix; re-running the
+        // same query (debounce/Enter) keeps the user's chosen tab.
+        let same_query = self.live_bundle.as_ref().map(|(q, _)| q == &query).unwrap_or(false);
+        if !same_query {
+            self.search_tab = SearchTab::All;
+        }
+        self.live_bundle = Some((query.clone(), bundle));
+        self.toast = Some((
+            format!(
+                "Results for \u{201c}{query}\u{201d}{}",
+                if n_types > 1 { " across songs, albums, artists & playlists" } else { "" }
+            ),
+            Instant::now(),
+        ));
+    }
+
+    /// Merge a deep per-type "see all" result into the current bundle's matching
+    /// bucket (only if it's still the same query).
+    fn merge_search_more(&mut self, query: &str, kind: SearchKind, more: SearchBundle) {
+        self.absorb_bundle(&more);
+        let Some((q, bundle)) = self.live_bundle.as_mut() else { return };
+        if q != query {
+            return;
+        }
+        match kind {
+            SearchKind::Songs => {
+                // Extend the ordered live-results list with any new track ids too.
+                let mut ids = self
+                    .live_results
+                    .as_ref()
+                    .filter(|(rq, _)| rq == query)
+                    .map(|(_, v)| v.clone())
+                    .unwrap_or_default();
+                for h in &more.tracks {
+                    let id = format!("{LIVE_TRACK_PREFIX}{}", h.video_id);
+                    if !bundle.tracks.iter().any(|t| t.video_id == h.video_id) {
+                        bundle.tracks.push(h.clone());
+                    }
+                    if !ids.contains(&id) {
+                        ids.push(id);
+                    }
+                }
+                self.live_results = Some((query.to_string(), ids));
+            }
+            SearchKind::Albums => {
+                for a in more.albums {
+                    if !bundle.albums.iter().any(|x| x.id == a.id) {
+                        bundle.albums.push(a);
+                    }
+                }
+            }
+            SearchKind::Artists => {
+                for a in more.artists {
+                    if !bundle.artists.iter().any(|x| x.id == a.id) {
+                        bundle.artists.push(a);
+                    }
+                }
+            }
+            SearchKind::Playlists => {
+                for p in more.playlists {
+                    if !bundle.playlists.iter().any(|x| x.id == p.id) {
+                        bundle.playlists.push(p);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Fire a deep per-type search for the given filter tab, once per
+    /// `(query, kind)`. No-op for the `All` tab and offline / no-query states.
+    fn request_search_more(&mut self, tab: SearchTab) {
+        let Some(kind) = tab.kind() else { return };
+        if !self.allow_network {
+            return;
+        }
+        let Some((query, _)) = self.live_bundle.clone() else { return };
+        let key = format!("{query}|{kind:?}");
+        if self.search_more_sent.contains(&key) {
+            return;
+        }
+        self.ensure_worker();
+        if let Some(w) = &self.worker {
+            w.request(StreamRequest::SearchMore { query, kind });
+            self.search_more_sent.insert(key);
+        }
+    }
+
     /// The decoded cover image for an entity id, if one has loaded. Requests an
     /// async fetch+decode on first sight; returns `None` (placeholder) until it
     /// lands.
@@ -1835,6 +2056,18 @@ impl MusicApp {
         if let Some(w) = &self.worker {
             w.request(StreamRequest::Album(id.to_string()));
             self.album_requested.insert(id.to_string());
+        }
+    }
+
+    /// Request a real (live YouTube-Music) playlist page for an id (once each).
+    fn ensure_playlist(&mut self, id: &str) {
+        if !self.allow_network || !is_live_playlist_id(id) || self.playlist_requested.contains(id) {
+            return;
+        }
+        self.ensure_worker();
+        if let Some(w) = &self.worker {
+            w.request(StreamRequest::Playlist(id.to_string()));
+            self.playlist_requested.insert(id.to_string());
         }
     }
 
@@ -1967,6 +2200,107 @@ impl MusicApp {
                 self.lib.cache.insert(id.clone(), CacheState::Downloading(*frac as f32));
             }
         }
+    }
+
+    /// Stage the Search screen showing a multi-type result set + the Spotify
+    /// filter tabs, for a hermetic `--shots` frame. Builds a bundle from
+    /// sample-library entities so the render exercises the real search path
+    /// (identical to a live query) without any network.
+    pub fn snap_search_results(&mut self, tab: SearchTab) {
+        let bundle = SearchBundle {
+            top: Some(SearchTop::Artist(ArtistHit {
+                id: "ar_aurora".into(),
+                name: "Aurora Skies".into(),
+                subscriber_count: 2_140_553,
+                avatar_url: String::new(),
+            })),
+            tracks: vec![
+                sample_hit("aur_g1", "Glasslight", "Aurora Skies", "ar_aurora", "al_glasslight", "Glasslight", 215),
+                sample_hit("aur_p1", "Paper Boats", "Aurora Skies", "ar_aurora", "al_paperboats", "Paper Boats", 221),
+                sample_hit("aur_g5", "Halcyon", "Aurora Skies", "ar_aurora", "al_glasslight", "Glasslight", 263),
+                sample_hit("aur_g3", "Slow Tide", "Aurora Skies", "ar_aurora", "al_glasslight", "Glasslight", 242),
+            ],
+            albums: vec![
+                sample_album_hit("al_glasslight", "Glasslight", "Aurora Skies", "ar_aurora", 2023),
+                sample_album_hit("al_paperboats", "Paper Boats", "Aurora Skies", "ar_aurora", 2021),
+                sample_album_hit("al_afterhours", "After Hours Drive", "Midnight Transit", "ar_midnight", 2022),
+            ],
+            artists: vec![
+                ArtistHit { id: "ar_aurora".into(), name: "Aurora Skies".into(), subscriber_count: 2_140_553, avatar_url: String::new() },
+                ArtistHit { id: "ar_lumen".into(), name: "Lumen Theory".into(), subscriber_count: 3_771_440, avatar_url: String::new() },
+                ArtistHit { id: "ar_neon".into(), name: "Neon Harbor".into(), subscriber_count: 1_009_330, avatar_url: String::new() },
+            ],
+            playlists: vec![
+                PlaylistHit { id: "PLaurora_essentials".into(), title: "Aurora Skies Essentials".into(), subtitle: "YouTube Music".into(), track_count: 40, cover_url: String::new() },
+                PlaylistHit { id: "PLdreampop".into(), title: "Dream Pop Dreaming".into(), subtitle: "YouTube Music".into(), track_count: 80, cover_url: String::new() },
+            ],
+        };
+        self.ingest_search_results("aurora".into(), bundle);
+        self.search_tab = tab;
+        self.search_input.set_text("aurora");
+        self.view = View::Search;
+    }
+
+    /// Stage a full (live-style) artist page for a hermetic `--shots` frame:
+    /// header + popular tracks + sectioned discography + related artists + bio.
+    pub fn snap_artist_page(&mut self) {
+        let page = ArtistPage {
+            id: "ar_aurora".into(),
+            name: "Aurora Skies".into(),
+            subscriber_count: 2_140_553,
+            description: "Aurora Skies is a dream-pop project known for washes of \
+                reverbed guitar, glassy synth pads and hushed vocals. Across two \
+                records the band has built a nocturnal, cinematic sound that pairs \
+                slow-building crescendos with intimate, close-mic'd songwriting."
+                .into(),
+            wikipedia_url: "https://en.wikipedia.org/wiki/Aurora_Skies".into(),
+            header_url: String::new(),
+            tracks: vec![
+                sample_hit("aur_g1", "Glasslight", "Aurora Skies", "ar_aurora", "al_glasslight", "Glasslight", 215),
+                sample_hit("aur_p1", "Paper Boats", "Aurora Skies", "ar_aurora", "al_paperboats", "Paper Boats", 221),
+                sample_hit("aur_g5", "Halcyon", "Aurora Skies", "ar_aurora", "al_glasslight", "Glasslight", 263),
+                sample_hit("aur_g3", "Slow Tide", "Aurora Skies", "ar_aurora", "al_glasslight", "Glasslight", 242),
+                sample_hit("aur_p3", "Lighthouse", "Aurora Skies", "ar_aurora", "al_paperboats", "Paper Boats", 234),
+            ],
+            albums: vec![
+                crate::backend::ArtistAlbum { id: "al_glasslight".into(), title: "Glasslight".into(), year: 2023, kind: crate::backend::AlbumKind::Album, cover_url: String::new() },
+                crate::backend::ArtistAlbum { id: "al_paperboats".into(), title: "Paper Boats".into(), year: 2021, kind: crate::backend::AlbumKind::Album, cover_url: String::new() },
+                crate::backend::ArtistAlbum { id: "al_halcyon_single".into(), title: "Halcyon".into(), year: 2024, kind: crate::backend::AlbumKind::Single, cover_url: String::new() },
+                crate::backend::ArtistAlbum { id: "al_tides_ep".into(), title: "Tides EP".into(), year: 2022, kind: crate::backend::AlbumKind::Ep, cover_url: String::new() },
+            ],
+            similar: vec![
+                ArtistHit { id: "ar_midnight".into(), name: "Midnight Transit".into(), subscriber_count: 884_201, avatar_url: String::new() },
+                ArtistHit { id: "ar_lumen".into(), name: "Lumen Theory".into(), subscriber_count: 3_771_440, avatar_url: String::new() },
+                ArtistHit { id: "ar_neon".into(), name: "Neon Harbor".into(), subscriber_count: 1_009_330, avatar_url: String::new() },
+                ArtistHit { id: "ar_kavi".into(), name: "Kavi & The Tide".into(), subscriber_count: 1_502_998, avatar_url: String::new() },
+            ],
+        };
+        self.absorb_artist(&page);
+        self.artist_pages.insert(page.id.clone(), page);
+        self.view = View::Artist("ar_aurora".into());
+    }
+
+    /// Stage a full (live-style) album page for a hermetic `--shots` frame:
+    /// cover + header (play/shuffle/save) + the ordered track list.
+    pub fn snap_album_page(&mut self) {
+        let page = AlbumPage {
+            id: "al_glasslight".into(),
+            title: "Glasslight".into(),
+            artist_id: "ar_aurora".into(),
+            artist_name: "Aurora Skies".into(),
+            year: 2023,
+            cover_url: String::new(),
+            tracks: vec![
+                sample_hit("aur_g1", "Glasslight", "Aurora Skies", "ar_aurora", "al_glasslight", "Glasslight", 215),
+                sample_hit("aur_g2", "Paper Lanterns", "Aurora Skies", "ar_aurora", "al_glasslight", "Glasslight", 198),
+                sample_hit("aur_g3", "Slow Tide", "Aurora Skies", "ar_aurora", "al_glasslight", "Glasslight", 242),
+                sample_hit("aur_g4", "Ghost in the Frame", "Aurora Skies", "ar_aurora", "al_glasslight", "Glasslight", 187),
+                sample_hit("aur_g5", "Halcyon", "Aurora Skies", "ar_aurora", "al_glasslight", "Glasslight", 263),
+            ],
+        };
+        self.absorb_album(&page);
+        self.album_pages.insert(page.id.clone(), page);
+        self.view = View::Album("al_glasslight".into());
     }
 
     /// Start a bundled track playing at `pos_ms` for a deterministic shot.
@@ -2397,6 +2731,42 @@ fn is_live_id(id: &str) -> bool {
 /// Whether an id looks like a real YouTube-Music album/playlist browse id.
 fn is_live_album_id(id: &str) -> bool {
     id.starts_with("MPRE") || id.starts_with("OLAK")
+}
+
+/// Whether a playlist id refers to a real (live YouTube-Music) playlist rather
+/// than one of the app's own playlists. Local playlists are minted with a `pl_`
+/// prefix (incl. the virtual `pl_liked`); everything else is a live YTM id
+/// (`PL…`, `RDCLAK…`, `VL…`).
+fn is_live_playlist_id(id: &str) -> bool {
+    !id.is_empty() && !id.starts_with("pl_")
+}
+
+/// Build a [`TrackHit`] for a hermetic shot from sample-library-shaped fields.
+#[allow(clippy::too_many_arguments)]
+fn sample_hit(video_id: &str, title: &str, artist: &str, artist_id: &str, album_id: &str, album: &str, dur: u32) -> TrackHit {
+    TrackHit {
+        video_id: video_id.into(),
+        title: title.into(),
+        artist: artist.into(),
+        artist_id: Some(artist_id.into()),
+        album: Some(album.into()),
+        album_id: Some(album_id.into()),
+        duration_s: dur,
+        cover_url: String::new(),
+    }
+}
+
+/// Build an [`AlbumHit`] for a hermetic shot from sample-library-shaped fields.
+fn sample_album_hit(id: &str, title: &str, artist: &str, artist_id: &str, year: u32) -> crate::backend::AlbumHit {
+    crate::backend::AlbumHit {
+        id: id.into(),
+        title: title.into(),
+        artist: artist.into(),
+        artist_id: Some(artist_id.into()),
+        year,
+        kind: crate::backend::AlbumKind::Album,
+        cover_url: String::new(),
+    }
 }
 
 /// Convert a Home track tile into a [`TrackHit`] so it flows through the same
@@ -4237,5 +4607,224 @@ mod tests {
         );
         // Idempotent within the same current track.
         assert!(!app.maybe_prefetch(), "prefetch fires once per track change");
+    }
+
+    // ---- 24. multi-type search, filter tabs, artist + album pages ---------
+
+    use crate::backend::{AlbumHit, AlbumKind, ArtistAlbum};
+
+    fn th(video: &str, title: &str) -> TrackHit {
+        TrackHit {
+            video_id: video.into(),
+            title: title.into(),
+            artist: "Daft Punk".into(),
+            artist_id: Some("UCdaftpunk".into()),
+            album: Some("Discovery".into()),
+            album_id: Some("MPREdiscovery".into()),
+            duration_s: 300,
+            cover_url: String::new(),
+        }
+    }
+
+    /// A realistic multi-type search response: a top-result artist plus songs,
+    /// an album, an artist and a playlist — exactly what one live search yields.
+    fn sample_bundle() -> SearchBundle {
+        SearchBundle {
+            top: Some(SearchTop::Artist(ArtistHit {
+                id: "UCdaftpunk".into(),
+                name: "Daft Punk".into(),
+                subscriber_count: 5_000_000,
+                avatar_url: String::new(),
+            })),
+            tracks: vec![th("vid_one", "One More Time"), th("vid_two", "Digital Love")],
+            albums: vec![AlbumHit {
+                id: "MPREdiscovery".into(),
+                title: "Discovery".into(),
+                artist: "Daft Punk".into(),
+                artist_id: Some("UCdaftpunk".into()),
+                year: 2001,
+                kind: AlbumKind::Album,
+                cover_url: String::new(),
+            }],
+            artists: vec![ArtistHit {
+                id: "UCdaftpunk".into(),
+                name: "Daft Punk".into(),
+                subscriber_count: 5_000_000,
+                avatar_url: String::new(),
+            }],
+            playlists: vec![PlaylistHit {
+                id: "PLdaftmix".into(),
+                title: "This Is Daft Punk".into(),
+                subtitle: "YouTube Music".into(),
+                track_count: 50,
+                cover_url: String::new(),
+            }],
+        }
+    }
+
+    /// Put the app on the Search screen showing a fed multi-type bundle, offline
+    /// (no worker, no network) so the render path is exercised hermetically.
+    fn search_showing_bundle() -> (MusicApp, AutoCommit) {
+        let (mut app, doc) = app_with_doc();
+        app.set_offline_for_shot();
+        app.playback_loaded = true;
+        app.ingest_search_results("daft punk".into(), sample_bundle());
+        app.view = View::Search;
+        app.search_input.set_text("daft punk");
+        (app, doc)
+    }
+
+    fn has_play_of(app: &MusicApp, id: &str) -> bool {
+        app.hits.iter().any(|h| matches!(&h.action, Action::Play { queue, .. } if queue.iter().any(|q| q == id)))
+    }
+    fn has_nav(app: &MusicApp, view: View) -> bool {
+        let want = Action::Nav(view);
+        app.hits.iter().any(|h| h.action == want)
+    }
+
+    #[test]
+    fn search_returns_songs_albums_artists_and_playlists() {
+        let (mut app, mut doc) = search_showing_bundle();
+        // One search populates every result type.
+        let (_, b) = app.live_bundle.as_ref().expect("bundle stored for the query");
+        assert!(
+            !b.tracks.is_empty() && !b.albums.is_empty() && !b.artists.is_empty() && !b.playlists.is_empty(),
+            "a single search returns songs, albums, artists AND playlists",
+        );
+        // On the All tab the real render surfaces each type as a click target.
+        app.search_tab = SearchTab::All;
+        draw_once(&mut app, &mut doc);
+        assert!(has_play_of(&app, "yt:vid_one"), "a song is a playable row");
+        assert!(has_nav(&app, View::Album("MPREdiscovery".into())), "an album is navigable");
+        assert!(has_nav(&app, View::Artist("UCdaftpunk".into())), "an artist is navigable");
+        assert!(has_nav(&app, View::Playlist("PLdaftmix".into())), "a playlist is navigable");
+    }
+
+    #[test]
+    fn filter_tabs_are_clickable_and_switch_instantly() {
+        let (mut app, mut doc) = search_showing_bundle();
+        app.search_tab = SearchTab::All;
+        draw_once(&mut app, &mut doc);
+        // All five Spotify-style filter tabs are real, registered click targets.
+        for tab in SearchTab::ALL {
+            assert!(
+                app.hits.iter().any(|h| h.action == Action::SelectSearchTab(tab)),
+                "the {:?} filter tab is a clickable target",
+                tab,
+            );
+        }
+        // Clicking Albums switches instantly (synchronously): the view now shows
+        // albums and drops the song rows — no async wait on the network.
+        app.dispatch(Action::SelectSearchTab(SearchTab::Albums), &mut doc);
+        assert_eq!(app.search_tab, SearchTab::Albums, "the tab switches immediately");
+        draw_once(&mut app, &mut doc);
+        assert!(has_nav(&app, View::Album("MPREdiscovery".into())), "Albums tab shows the albums");
+        assert!(!has_play_of(&app, "yt:vid_one"), "Albums tab does not render the song list");
+        // Songs tab is a clean, flat track list (the album-less listening flow).
+        app.dispatch(Action::SelectSearchTab(SearchTab::Songs), &mut doc);
+        assert_eq!(app.search_tab, SearchTab::Songs);
+        draw_once(&mut app, &mut doc);
+        assert!(
+            has_play_of(&app, "yt:vid_one") && has_play_of(&app, "yt:vid_two"),
+            "Songs tab lists every matching song as a playable row",
+        );
+    }
+
+    #[test]
+    fn artist_page_from_search_result_navigates_and_plays_a_top_track() {
+        let (mut app, mut doc) = search_showing_bundle();
+        app.search_tab = SearchTab::All;
+        draw_once(&mut app, &mut doc);
+        // Click the artist result (real hit-test path) → the artist page opens.
+        let nav = Action::Nav(View::Artist("UCdaftpunk".into()));
+        let p = hit_center(&app, &nav).expect("artist result is a click target");
+        assert_eq!(app.hit_test(p), Some(nav.clone()));
+        app.dispatch(nav, &mut doc);
+        assert_eq!(app.view, View::Artist("UCdaftpunk".into()));
+        // Supply the real artist page (as the worker would) and render it.
+        let page = ArtistPage {
+            id: "UCdaftpunk".into(),
+            name: "Daft Punk".into(),
+            subscriber_count: 5_000_000,
+            description: "French electronic music duo formed in Paris in 1993.".into(),
+            wikipedia_url: "https://en.wikipedia.org/wiki/Daft_Punk".into(),
+            header_url: String::new(),
+            tracks: vec![th("top_track", "Harder Better Faster Stronger")],
+            albums: vec![
+                ArtistAlbum { id: "MPREdiscovery".into(), title: "Discovery".into(), year: 2001, kind: AlbumKind::Album, cover_url: String::new() },
+                ArtistAlbum { id: "MPREsingle".into(), title: "Da Funk".into(), year: 1995, kind: AlbumKind::Single, cover_url: String::new() },
+            ],
+            similar: vec![ArtistHit { id: "UCjustice".into(), name: "Justice".into(), subscriber_count: 1_000_000, avatar_url: String::new() }],
+        };
+        app.absorb_artist(&page);
+        app.artist_pages.insert("UCdaftpunk".into(), page);
+        draw_once(&mut app, &mut doc);
+        // The full artist page surfaces a Follow control, related artists, and the
+        // album + single as separate discography entries.
+        assert!(
+            app.hits.iter().any(|h| h.action == Action::ToggleFollow("UCdaftpunk".into())),
+            "the artist page has a Follow control",
+        );
+        assert!(has_nav(&app, View::Artist("UCjustice".into())), "related artists are navigable");
+        assert!(has_nav(&app, View::Album("MPREsingle".into())), "the single appears in the discography");
+        // Click a top track → it plays.
+        let top_id = "yt:top_track".to_string();
+        let play = app
+            .hits
+            .iter()
+            .find_map(|h| match &h.action {
+                Action::Play { queue, .. } if queue.iter().any(|q| q == &top_id) => Some(h.action.clone()),
+                _ => None,
+            })
+            .expect("a top track is a playable row on the artist page");
+        app.dispatch(play, &mut doc);
+        assert_eq!(app.pb.current.as_deref(), Some("yt:top_track"), "clicking a top track plays it");
+        assert!(app.pb.queue.contains(&top_id));
+    }
+
+    #[test]
+    fn album_page_lists_ordered_tracks_and_plays_the_album() {
+        let (mut app, mut doc) = app_with_doc();
+        app.set_offline_for_shot();
+        app.playback_loaded = true;
+        let page = AlbumPage {
+            id: "MPREdiscovery".into(),
+            title: "Discovery".into(),
+            artist_id: "UCdaftpunk".into(),
+            artist_name: "Daft Punk".into(),
+            year: 2001,
+            cover_url: String::new(),
+            tracks: vec![th("al_one", "One More Time"), th("al_two", "Aerodynamic"), th("al_three", "Digital Love")],
+        };
+        app.absorb_album(&page);
+        app.album_pages.insert("MPREdiscovery".into(), page);
+        app.view = View::Album("MPREdiscovery".into());
+        draw_once(&mut app, &mut doc);
+        // The album's full ordered track list renders — every track is playable.
+        for vid in ["al_one", "al_two", "al_three"] {
+            assert!(has_play_of(&app, &format!("yt:{vid}")), "album track {vid} is a playable row");
+        }
+        // The album header plays the whole album in track order.
+        let header = app.hits.iter().any(|h| matches!(
+            &h.action,
+            Action::Play { queue, index: 0 }
+                if queue.len() == 3 && queue[0] == "yt:al_one" && queue[2] == "yt:al_three"
+        ));
+        assert!(header, "the album header plays the whole album in order");
+    }
+
+    #[test]
+    fn following_an_artist_toggles_and_persists() {
+        let (mut app, mut doc) = app_with_doc();
+        assert!(!app.lib.is_artist_followed("UCdaftpunk"));
+        app.dispatch(Action::ToggleFollow("UCdaftpunk".into()), &mut doc);
+        assert!(app.lib.is_artist_followed("UCdaftpunk"), "Follow adds the artist");
+        // Persisted to the CRDT — a fresh load from the document sees it.
+        assert!(
+            doc::load_library(&doc).followed_artists.contains("UCdaftpunk"),
+            "follow round-trips through the document",
+        );
+        app.dispatch(Action::ToggleFollow("UCdaftpunk".into()), &mut doc);
+        assert!(!app.lib.is_artist_followed("UCdaftpunk"), "toggling again unfollows");
     }
 }
