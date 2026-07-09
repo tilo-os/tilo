@@ -30,6 +30,7 @@ pub mod warmup;
 pub mod webview;
 pub mod fullscreen;
 pub mod mpris;
+pub mod nav_stack;
 
 pub use app::App;
 pub use color_compat::ColorCompat;
@@ -37,6 +38,7 @@ pub use doc::{TextEdit, put_if_changed, put_text_diffed, splice_text_diffed};
 pub use state::{State, UndoEntry};
 pub use theme::Theme;
 pub use image_store::{Fetcher, ImageStore};
+pub use nav_stack::{EdgeSwipeBack, NavAction, NavStack};
 pub use caps_lock::CapsLockEstimate;
 pub use selection::SelectionModel;
 
