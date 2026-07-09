@@ -28,7 +28,7 @@ use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::gesture::NavDirection;
-use crate::webview::{KeyInput, MouseButton, NamedKey, SharedEngine, WebViewCommand};
+use crate::webview::{KeyInput, KeyModifiers, MouseButton, NamedKey, SharedEngine, WebViewCommand};
 use crate::widget::Widget;
 
 /// Pixels scrolled per mouse-wheel line tick, in logical units (scaled
@@ -241,7 +241,7 @@ impl Widget for WebView {
         &mut self,
         event: &WindowEvent,
         scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
+        modifiers: &winit::event::Modifiers,
         _state: &mut AutoCommit,
         _root: &ObjId,
         handled: &mut bool,
@@ -337,9 +337,16 @@ impl Widget for WebView {
                 }
                 if let Some(key) = Self::map_key(&key_event.logical_key) {
                     crate::webview::profile::record_input("key");
+                    let m = modifiers.state();
                     self.engine.send(WebViewCommand::Key {
                         key,
                         down: key_event.state == ElementState::Pressed,
+                        modifiers: KeyModifiers {
+                            ctrl: m.control_key(),
+                            shift: m.shift_key(),
+                            alt: m.alt_key(),
+                            meta: m.super_key(),
+                        },
                     });
                     *handled = true;
                 }
