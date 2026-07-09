@@ -1,0 +1,517 @@
+//! `EmptyState` — the centered "there's nothing here yet" placeholder that
+//! almost every list-shaped app hand-rolls (Inbox with no mail, a feed with
+//! no articles, a contacts book with no contacts, …). Before this widget the
+//! pattern was copy-pasted as a `Column` of a big icon + a heading `Text` +
+//! a dim subtitle + an optional call-to-action `Button` across the fleet.
+//!
+//! `EmptyState` folds that into one theme-driven widget:
+//!
+//! - an optional hero [`Icon`] inside a soft tinted disc,
+//! - a **title** line (the "No messages" headline),
+//! - an optional **message** line (the dim one-liner underneath),
+//! - an optional **action** pill (e.g. "Compose", "Add contact").
+//!
+//! The content is centered on both axes inside whatever space the parent
+//! gives the widget, so dropping it as the sole child of a content pane
+//! "just works". The action is surfaced through the toolkit's drain channel
+//! ([`EmptyState::take_action`]) rather than a callback, matching the
+//! CRDT-native input model used by [`super::ContextMenu`] /
+//! [`super::TriStateControl`].
+
+use std::collections::HashMap;
+
+use automerge::{AutoCommit, ObjId};
+use taffy::style_helpers::percent;
+use taffy::{NodeId, Style, TaffyTree};
+use vello::Scene;
+use vello::kurbo::{Affine, Circle, Point, Rect, RoundedRect};
+use vello::peniko::{Color, Fill};
+use winit::event::{ElementState, MouseButton, WindowEvent};
+
+use crate::color_compat::ColorCompat;
+use crate::icons::Icon;
+use crate::presence::PresenceCtx;
+use crate::text_render::TextRenderer;
+use crate::theme::Theme;
+use crate::widget::Widget;
+
+/// Diameter of the hero-icon disc.
+const DISC_D: f64 = 72.0;
+/// Icon glyph size drawn inside the disc.
+const ICON_D: f64 = 34.0;
+
+/// Shared layout + paint for the empty state, centered inside `rect`. Used by
+/// both [`EmptyState`]'s [`Widget::draw`] and the public immediate-mode
+/// [`EmptyState::paint`] entry point. Returns the action pill's rect (for
+/// hit-testing) when `action_label` is `Some`, else `None`. `hover` is the
+/// pointer position for the pill hover state (pass an off-screen point to
+/// suppress hover).
+#[allow(clippy::too_many_arguments)]
+fn paint_empty_state(
+    scene: &mut Scene,
+    transform: Affine,
+    text_renderer: &mut TextRenderer,
+    theme: &Theme,
+    rect: Rect,
+    icon: Option<Icon>,
+    title: &str,
+    message: Option<&str>,
+    action_label: Option<&str>,
+    hover: Point,
+) -> Option<Rect> {
+    if rect.width() <= 0.0 || rect.height() <= 0.0 {
+        return None;
+    }
+    let gap = theme.tokens.spacing.s4 as f64;
+    let title_size = theme.tokens.typography.scale.xl;
+    let msg_size = theme.tokens.typography.scale.sm;
+    let btn_size = theme.tokens.typography.scale.sm;
+    let btn_h = 34.0_f64;
+
+    let (title_w, title_h) = text_renderer.measure(title, title_size, None);
+    let (msg_w, msg_h) = message
+        .map(|m| text_renderer.measure(m, msg_size, None))
+        .unwrap_or((0.0, 0.0));
+    let (act_w, _) = action_label
+        .map(|a| text_renderer.measure(a, btn_size, None))
+        .unwrap_or((0.0, 0.0));
+
+    let mut total = title_h as f64;
+    if icon.is_some() {
+        total += DISC_D + gap;
+    }
+    if message.is_some() {
+        total += gap * 0.5 + msg_h as f64;
+    }
+    if action_label.is_some() {
+        total += gap + btn_h;
+    }
+
+    let cx = rect.center().x;
+    let mut y = rect.center().y - total / 2.0;
+
+    if let Some(icon) = icon {
+        let disc_center = Point::new(cx, y + DISC_D / 2.0);
+        let disc = Circle::new(disc_center, DISC_D / 2.0);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.accent_primary.with_alpha_factor(0.14),
+            None,
+            &disc,
+        );
+        let icon_rect = Rect::from_center_size(disc_center, (ICON_D, ICON_D));
+        icon.draw_with_stroke(scene, transform, icon_rect, theme.accent_primary, 1.75);
+        y += DISC_D + gap;
+    }
+
+    text_renderer.draw_text(
+        scene,
+        title,
+        title_size,
+        theme.text_primary,
+        transform * Affine::translate((cx - title_w as f64 / 2.0, y)),
+        None,
+    );
+    y += title_h as f64;
+
+    if let Some(msg) = message {
+        y += gap * 0.5;
+        text_renderer.draw_text(
+            scene,
+            msg,
+            msg_size,
+            theme.text_dim,
+            transform * Affine::translate((cx - msg_w as f64 / 2.0, y)),
+            None,
+        );
+        y += msg_h as f64;
+    }
+
+    if let Some(label) = action_label {
+        y += gap;
+        let pad_x = theme.tokens.spacing.s4 as f64;
+        let bw = act_w as f64 + pad_x * 2.0;
+        let x0 = cx - bw / 2.0;
+        let action_rect = Rect::new(x0, y, x0 + bw, y + btn_h);
+        let hovered = action_rect.contains(hover);
+        let bg = if hovered { theme.accent_hover } else { theme.accent_primary };
+        let pill = RoundedRect::from_rect(action_rect, theme.tokens.radii.md as f64);
+        scene.fill(Fill::NonZero, transform, bg, None, &pill);
+        let ty = action_rect.y0 + (btn_h - btn_size as f64) / 2.0;
+        text_renderer.draw_text(
+            scene,
+            label,
+            btn_size,
+            Color::WHITE,
+            transform * Affine::translate((cx - act_w as f64 / 2.0, ty)),
+            None,
+        );
+        Some(action_rect)
+    } else {
+        None
+    }
+}
+
+/// A centered empty-state placeholder: hero icon + title + message + action.
+pub struct EmptyState {
+    icon: Option<Icon>,
+    title: String,
+    message: Option<String>,
+    action_label: Option<String>,
+    /// Drained flag set when the action pill is clicked.
+    action_fired: bool,
+    rect: Rect,
+    action_rect: Rect,
+    last_cursor: Point,
+}
+
+impl EmptyState {
+    /// Construct with just a title (the minimal case). Chain
+    /// [`with_icon`](Self::with_icon) / [`with_message`](Self::with_message) /
+    /// [`with_action`](Self::with_action) for the fuller treatment.
+    pub fn new(title: impl Into<String>) -> Self {
+        Self {
+            icon: None,
+            title: title.into(),
+            message: None,
+            action_label: None,
+            action_fired: false,
+            rect: Rect::ZERO,
+            action_rect: Rect::ZERO,
+            last_cursor: Point::ZERO,
+        }
+    }
+
+    /// Add a hero icon rendered inside a soft tinted disc above the title.
+    pub fn with_icon(mut self, icon: Icon) -> Self {
+        self.icon = Some(icon);
+        self
+    }
+
+    /// Add the dim one-line message under the title.
+    pub fn with_message(mut self, message: impl Into<String>) -> Self {
+        self.message = Some(message.into());
+        self
+    }
+
+    /// Add an accent call-to-action pill under the message. The label is a
+    /// pre-resolved display string (callers do the `i18n!` lookup).
+    pub fn with_action(mut self, label: impl Into<String>) -> Self {
+        self.action_label = Some(label.into());
+        self
+    }
+
+    /// Drain the "action pill was clicked" signal (fires once per click). The
+    /// host reacts by mutating its own model — e.g. opening a compose sheet.
+    pub fn take_action(&mut self) -> bool {
+        std::mem::take(&mut self.action_fired)
+    }
+
+    /// The resolved bounds of the action pill (empty until laid out + drawn).
+    /// Exposed so tests can assert the hit target without rendering to pixels.
+    pub fn action_rect(&self) -> Rect {
+        self.action_rect
+    }
+
+    /// Immediate-mode paint of an empty state centered inside `rect`, for the
+    /// many apps that render straight to a `Scene` instead of building a
+    /// widget tree. Returns the action pill's rect when `action_label` is
+    /// `Some` so the caller can hit-test it against its own pointer state
+    /// (pass `hover` for the hover tint, or an off-screen point to suppress).
+    #[allow(clippy::too_many_arguments)]
+    pub fn paint(
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        rect: Rect,
+        icon: Option<Icon>,
+        title: &str,
+        message: Option<&str>,
+        action_label: Option<&str>,
+        hover: Point,
+    ) -> Option<Rect> {
+        paint_empty_state(
+            scene, transform, text_renderer, theme, rect, icon, title, message, action_label, hover,
+        )
+    }
+}
+
+impl Widget for EmptyState {
+    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
+
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        _theme: &Theme,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        // Fill the space the parent offers so the content can center inside it.
+        let node = taffy
+            .new_leaf(Style {
+                flex_grow: 1.0,
+                size: taffy::Size { width: percent(1.0), height: percent(1.0) },
+                min_size: taffy::Size { width: percent(0.0), height: percent(0.0) },
+                ..Default::default()
+            })
+            .unwrap();
+        node_map.insert(node, self as *mut dyn Widget);
+        node
+    }
+
+    fn measure(
+        &mut self,
+        _k: taffy::Size<Option<f32>>,
+        _a: taffy::Size<taffy::AvailableSpace>,
+        _tr: &mut TextRenderer,
+    ) -> taffy::Size<f32> {
+        // A sensible intrinsic block so the widget is visible even in an
+        // auto-sized slot.
+        taffy::Size { width: 240.0, height: 220.0 }
+    }
+
+    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        let l = taffy.layout(node).unwrap();
+        self.rect = Rect::new(
+            origin.x + l.location.x as f64,
+            origin.y + l.location.y as f64,
+            origin.x + l.location.x as f64 + l.size.width as f64,
+            origin.y + l.location.y as f64 + l.size.height as f64,
+        );
+    }
+
+    fn draw(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        _presence: &PresenceCtx,
+    ) {
+        self.action_rect = paint_empty_state(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            self.rect,
+            self.icon,
+            &self.title,
+            self.message.as_deref(),
+            self.action_label.as_deref(),
+            self.last_cursor,
+        )
+        .unwrap_or(Rect::ZERO);
+    }
+
+    fn handle_event(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        _modifiers: &winit::event::Modifiers,
+        _state: &mut AutoCommit,
+        _path: &ObjId,
+        handled: &mut bool,
+        _focus_target: &mut Option<NodeId>,
+        _node_id: NodeId,
+        _taffy: &TaffyTree<()>,
+    ) {
+        match event {
+            WindowEvent::CursorMoved { position, .. } => {
+                self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } => {
+                if self.action_label.is_some() && self.action_rect.contains(self.last_cursor) {
+                    self.action_fired = true;
+                    *handled = true;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
+        if self.action_label.is_some() && self.action_rect.contains(point) {
+            Some(winit::window::CursorIcon::Pointer)
+        } else {
+            None
+        }
+    }
+
+    fn name(&self) -> &str { "EmptyState" }
+
+    fn get_rect(&self) -> Rect { self.rect }
+
+    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        use crate::a11y::{AccessNode, Role};
+        // The empty state is a labelled group; the title is its accessible
+        // name and the message its description so a screen reader announces
+        // both without the caller wiring anything.
+        let mut node = AccessNode::new(Role::Group).with_name(self.title.clone());
+        if let Some(msg) = &self.message {
+            node = node.with_description(msg.clone());
+        }
+        Some(node)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use vello_encoding::DrawTag;
+
+    fn lay_out(w: &mut dyn Widget, vw: f32, vh: f32) {
+        let theme = Theme::dark();
+        let mut taffy = TaffyTree::<()>::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let mut tr = TextRenderer::new();
+        let node = w.build_layout(&mut taffy, &theme, &mut node_map);
+        taffy
+            .compute_layout_with_measure(
+                node,
+                taffy::Size {
+                    width: taffy::AvailableSpace::Definite(vw),
+                    height: taffy::AvailableSpace::Definite(vh),
+                },
+                |k, a, id, _, _| {
+                    node_map
+                        .get(&id)
+                        .map(|&p| unsafe { (*p).measure(k, a, &mut tr) })
+                        .unwrap_or(taffy::Size::ZERO)
+                },
+            )
+            .unwrap();
+        w.apply_layout(&taffy, node, Point::ZERO);
+    }
+
+    fn draw(w: &mut dyn Widget) -> Scene {
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let presence = PresenceCtx::default();
+        let mut scene = Scene::new();
+        w.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+        scene
+    }
+
+    fn synth() -> winit::event::DeviceId { unsafe { std::mem::zeroed() } }
+    fn cursor(p: Point) -> WindowEvent {
+        WindowEvent::CursorMoved { device_id: synth(), position: winit::dpi::PhysicalPosition::new(p.x, p.y) }
+    }
+    fn press() -> WindowEvent {
+        WindowEvent::MouseInput { device_id: synth(), state: ElementState::Pressed, button: MouseButton::Left }
+    }
+    fn dispatch(w: &mut dyn Widget, e: &WindowEvent) -> bool {
+        let mut taffy = TaffyTree::<()>::new();
+        let node = taffy.new_leaf(Style::default()).unwrap();
+        let mut handled = false;
+        let mut ft = None;
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        w.handle_event(e, 1.0, &winit::event::Modifiers::default(), &mut doc, &root, &mut handled, &mut ft, node, &taffy);
+        handled
+    }
+
+    #[test]
+    fn action_pill_click_fires_once() {
+        let mut es = EmptyState::new("No messages")
+            .with_icon(Icon::Inbox)
+            .with_message("Your inbox is empty")
+            .with_action("Compose");
+        lay_out(&mut es, 600.0, 400.0);
+        // draw resolves the action rect.
+        let _ = draw(&mut es);
+        let target = es.action_rect().center();
+        assert!(target.x > 0.0, "action rect must resolve after draw");
+        dispatch(&mut es, &cursor(target));
+        assert!(dispatch(&mut es, &press()), "click on the action pill is consumed");
+        assert!(es.take_action(), "the action signal fires");
+        assert!(!es.take_action(), "the action signal drains after one read");
+    }
+
+    #[test]
+    fn click_outside_action_does_not_fire() {
+        let mut es = EmptyState::new("Nothing here").with_action("Add");
+        lay_out(&mut es, 600.0, 400.0);
+        let _ = draw(&mut es);
+        // Top-left corner is well outside the centered pill.
+        dispatch(&mut es, &cursor(Point::new(2.0, 2.0)));
+        assert!(!dispatch(&mut es, &press()), "click away from the pill is not consumed");
+        assert!(!es.take_action());
+    }
+
+    #[test]
+    fn without_action_paints_no_pill_and_has_no_hit_target() {
+        let mut es = EmptyState::new("Empty").with_icon(Icon::Folder);
+        lay_out(&mut es, 600.0, 400.0);
+        let _ = draw(&mut es);
+        assert_eq!(es.action_rect(), Rect::ZERO, "no action ⇒ no pill rect");
+        // A press anywhere is ignored when there's no action.
+        let center = es.get_rect().center();
+        dispatch(&mut es, &cursor(center));
+        assert!(!dispatch(&mut es, &press()));
+        assert!(!es.take_action());
+    }
+
+    #[test]
+    fn draws_something_visible() {
+        let mut es = EmptyState::new("No contacts yet")
+            .with_icon(Icon::Inbox)
+            .with_message("Add your first contact to get started")
+            .with_action("Add contact");
+        lay_out(&mut es, 600.0, 400.0);
+        let scene = draw(&mut es);
+        let fills = scene
+            .encoding()
+            .draw_tags
+            .iter()
+            .filter(|t| **t == DrawTag::COLOR)
+            .count();
+        // disc + icon strokes + title glyphs + message glyphs + pill + label
+        // glyphs ⇒ comfortably many COLOR tags.
+        assert!(fills > 5, "a fully-populated empty state paints multiple fills, got {fills}");
+    }
+
+    #[test]
+    fn immediate_mode_paint_returns_action_rect() {
+        // The canvas-app entry point paints into an arbitrary rect and hands
+        // back the pill hit target, matching what Widget::draw resolves.
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let mut scene = Scene::new();
+        let rect = Rect::new(0.0, 0.0, 500.0, 300.0);
+        let action = EmptyState::paint(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut tr,
+            &theme,
+            rect,
+            Some(Icon::Inbox),
+            "No mail",
+            Some("You're all caught up"),
+            Some("Compose"),
+            Point::new(-1.0, -1.0),
+        );
+        let r = action.expect("action label ⇒ a returned pill rect");
+        assert!(rect.contains(r.center()), "pill sits inside the paint rect");
+        // No action label ⇒ no returned rect.
+        let none = EmptyState::paint(
+            &mut scene, Affine::IDENTITY, &mut tr, &theme, rect,
+            None, "Empty", None, None, Point::new(-1.0, -1.0),
+        );
+        assert!(none.is_none());
+    }
+
+    #[test]
+    fn accessibility_is_a_named_group() {
+        use crate::a11y::Role;
+        let es = EmptyState::new("No results").with_message("Try another search");
+        let node = Widget::accessibility(&es).expect("empty state exposes a11y");
+        assert_eq!(node.role, Role::Group);
+        assert_eq!(node.name.as_deref(), Some("No results"));
+        assert_eq!(node.description.as_deref(), Some("Try another search"));
+    }
+}

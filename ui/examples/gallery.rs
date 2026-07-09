@@ -1,75 +1,26 @@
+//! Interactive component gallery — the reference showcase of the `ui`
+//! toolkit. Opens a live window with a card per component family (buttons,
+//! controls, text/selection, badges/chips/avatars, feedback/loading, metrics,
+//! charts/gauges, navigation, banners, empty state, and an editable table).
+//!
+//! Run:  cargo run -p ui --example gallery
+//! For the offscreen light+dark renders, see `gallery_shots`.
+
+use ui::theme::Theme;
 use ui::{App, State};
-use ui::widget::{Button, Column, Toggle, Checkbox, Slider, TextInput, Text, Table};
-use ui::widget::table;
-use ui::state::RemoteCursor;
-use ui::i18n::I18nManager;
-use vello::peniko::Color;
+
+#[path = "common/gallery_scene.rs"]
+mod gallery_scene;
 
 fn main() {
-    // 1. Initialize i18n
-    I18nManager::init("en-US");
-    I18nManager::add_resource("en-US", "btn_1 = Click Me\ncounter = Count is { $count }".to_string());
-    I18nManager::add_resource("de-DE", "btn_1 = Klick Mich\ncounter = Zähler ist { $count }".to_string());
+    ui::i18n::I18nManager::init("en-US");
 
     let mut state = State::new();
-    
-    // 2. Initialize CRDT Document State
-    {
-        use automerge::transaction::Transactable;
-        let _ = state.doc.put(&state.root, "toggle_1", true);
-        let _ = state.doc.put(&state.root, "check_1", false);
-        let _ = state.doc.put(&state.root, "slider_1", 0.75);
-        let text_id = state.doc.put_object(&state.root, "text_1", automerge::ObjType::Text).unwrap();
-        let _ = state.doc.splice_text(&text_id, 0, 0, "Hello Gallery!");
-        let _ = state.doc.put(&state.root, "request_theme_cycle", false);
+    // The live window opens in dark; dimmed-label colours are baked from this
+    // theme (the offscreen `gallery_shots` example rebuilds per theme for a
+    // correct light render).
+    let root_widget = gallery_scene::build_showcase(&mut state, &Theme::dark());
 
-        // Editable table demo. The gallery Column hands every child the same
-        // `root` path, so the table's model lives directly under `root`; the
-        // keys it owns (`rows`/`cols`/`cells`/…) don't collide with the
-        // widgets above.
-        let grid = &state.root.clone();
-        for _ in 0..3 {
-            table::insert_column(&mut state.doc, grid, usize::MAX);
-        }
-        for _ in 0..4 {
-            table::insert_row(&mut state.doc, grid, usize::MAX);
-        }
-        table::set_header(&mut state.doc, grid, true);
-        let rows = [
-            ["Task", "Owner", "Done"],
-            ["Design", "Ada", "yes"],
-            ["Build", "Grace", "no"],
-            ["Ship", "Linus", "no"],
-        ];
-        for (r, row) in rows.iter().enumerate() {
-            for (c, cell) in row.iter().enumerate() {
-                table::set_cell_text(&mut state.doc, grid, r, c, cell);
-            }
-        }
-    }
-    
-    // Add a fake remote user cursor
-    state.collab.cursors.insert("user_2".into(), RemoteCursor {
-        x: 100.0,
-        y: 100.0,
-        color: Color::from_rgb8(255, 100, 100),
-        name: "Alice".into()
-    });
-
-    // 3. Build the Widget Tree
-    let root_widget = Box::new(
-        Column::new()
-            .push(Box::new(Button::new("btn_1", "btn_1", Some("counter")))) // Uses i18n key "btn_1"
-            .push(Box::new(Text::new("counter")))
-            .push(Box::new(Button::new("btn_cycle", "Cycle Theme", Some("request_theme_cycle"))))
-            .push(Box::new(Toggle::new("tog_1", "toggle_1")))
-            .push(Box::new(Checkbox::new("chk_1", "check_1")))
-            .push(Box::new(Slider::new("sld_1", "slider_1")))
-            .push(Box::new(TextInput::new(vec![]).with_id("txt_1").with_on_change_path("text_1")))
-            .push(Box::new(Table::new("gallery_table")))
-    );
-    
-    // 4. Run the Application
     let app = App::new(state, root_widget);
     app.run();
 }

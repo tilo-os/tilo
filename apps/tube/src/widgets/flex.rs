@@ -19,7 +19,7 @@
 use std::collections::HashMap;
 
 use automerge::{AutoCommit, ObjId};
-use taffy::style_helpers::{length, percent};
+use taffy::style_helpers::{fr, length, minmax, percent, repeat};
 use taffy::{Dimension, NodeId, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
@@ -109,6 +109,12 @@ pub struct Flex {
     align: Align,
     justify: Justify,
     wrap: bool,
+    /// When set, lay children out as a responsive CSS grid: as many equal
+    /// columns as fit at ≥ this many logical px, each column flexing to fill the
+    /// row (`minmax(min, 1fr)` under `auto-fill`). Cards scale with the width
+    /// and only wrap to a new column when they'd exceed the natural max — so a
+    /// row never leaves a gutter on the right. Takes precedence over `wrap`.
+    grid_min_col: Option<f32>,
     grow: f32,
     shrink: f32,
     block: bool,
@@ -153,6 +159,7 @@ impl Flex {
             align: if axis == Axis::Row { Align::Center } else { Align::Start },
             justify: Justify::Start,
             wrap: false,
+            grid_min_col: None,
             grow: 0.0,
             shrink: 0.0,
             block: false,
@@ -247,6 +254,17 @@ impl Flex {
     }
     pub fn wrap(mut self) -> Self {
         self.wrap = true;
+        self
+    }
+
+    /// Lay children out as a responsive grid whose columns are each at least
+    /// `min_col_px` wide and flex to fill the row. As the box widens the columns
+    /// grow (up to ~the point another `min_col_px` column fits, then a column is
+    /// added and they snap back) — so cards scale with the window and the row is
+    /// always exactly filled, never leaving blank space on the right. The grid's
+    /// `gap` is the existing [`Flex::gap`].
+    pub fn grid(mut self, min_col_px: f32) -> Self {
+        self.grid_min_col = Some(min_col_px.max(1.0));
         self
     }
     pub fn grow(mut self, g: f32) -> Self {
@@ -355,7 +373,9 @@ impl Widget for Flex {
         });
 
         let style = Style {
-            display: if self.block {
+            display: if self.grid_min_col.is_some() {
+                taffy::Display::Grid
+            } else if self.block {
                 taffy::Display::Block
             } else {
                 taffy::Display::Flex
@@ -388,6 +408,15 @@ impl Widget for Flex {
             },
             align_items,
             justify_content,
+            // Responsive grid track template: `repeat(auto-fill, minmax(min,
+            // 1fr))` — as many ≥min-wide columns as fit, each flexing (`1fr`) to
+            // fill the row. Grid items default to `justify_self: stretch`, so a
+            // card fills its column exactly — the property that removes the
+            // right-edge gutter. Empty (no-op) in flex/block mode.
+            grid_template_columns: self
+                .grid_min_col
+                .map(|min| vec![repeat("auto-fill", vec![minmax(length(min), fr(1.0))])])
+                .unwrap_or_default(),
             gap: taffy::Size {
                 width: length(self.gap),
                 height: length(self.gap),

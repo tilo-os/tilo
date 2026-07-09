@@ -31,7 +31,7 @@ use vello::Scene;
 use winit::event::{Modifiers, WindowEvent};
 
 use crate::prefs::{InputPrefs, SystemPrefs};
-use crate::widgets::{card, caption, rows, setting_row, setting_row_described};
+use crate::widgets::{card, caption, choice_row, rows, setting_row, setting_row_described};
 
 pub const POINTER_SPEED_KEY: &str = "input.pointer_speed";
 pub const NATURAL_SCROLL_KEY: &str = "input.natural_scroll";
@@ -165,7 +165,7 @@ impl MouseKeyboardPane {
         let keyboard = card(
             "Keyboard",
             rows(vec![
-                setting_row(
+                choice_row(
                     "Layout",
                     Box::new(
                         Dropdown::new(layouts, LAYOUT_KEY)

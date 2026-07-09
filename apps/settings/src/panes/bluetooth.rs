@@ -150,10 +150,20 @@ impl BluetoothPane {
                 } else {
                     String::new()
                 };
-                let block = Column::new()
+                let key = connect_key(&dev.name);
+                let cta_id = format!("settings.bluetooth.connect.{}", dev.name);
+                let cta_label = if dev.connected { "Disconnect" } else { "Connect" };
+                // Name + action inline on the top line (a single leading Text
+                // keeps the button on the same line); the connection status on
+                // its own line beneath.
+                let top = Row::new()
+                    .push(Box::new(Text::new(&dev.name).with_size(13.0)))
+                    .push(Box::new(Spacer::new()))
+                    .push(Box::new(Button::new(&cta_id, cta_label, Some(&key))));
+                let status = Column::new()
                     .with_no_padding()
                     .with_intrinsic_height()
-                    .push(Box::new(Text::new(&dev.name).with_size(13.0)))
+                    .push(Box::new(top))
                     .push(Box::new(
                         Text::new(&format!(
                             "{}{battery_str}",
@@ -166,14 +176,7 @@ impl BluetoothPane {
                             ui::Theme::dark().text_dim
                         }),
                     ));
-                let key = connect_key(&dev.name);
-                let cta_id = format!("settings.bluetooth.connect.{}", dev.name);
-                let cta_label = if dev.connected { "Disconnect" } else { "Connect" };
-                let row = Row::new()
-                    .push(Box::new(block))
-                    .push(Box::new(Spacer::new()))
-                    .push(Box::new(Button::new(&cta_id, cta_label, Some(&key))));
-                device_rows.push(Box::new(row));
+                device_rows.push(Box::new(status));
             }
         }
         device_rows.push(caption(

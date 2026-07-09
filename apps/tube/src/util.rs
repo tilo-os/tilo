@@ -7,6 +7,21 @@
 
 use vello::peniko::Color;
 
+/// First one/two initials of a display name (uppercased), for an avatar chip.
+/// Falls back to `?` for an empty/whitespace name so a chip always paints.
+pub fn initials(name: &str) -> String {
+    let mut out = String::new();
+    for word in name.split_whitespace().take(2) {
+        if let Some(c) = word.chars().next() {
+            out.push(c.to_ascii_uppercase());
+        }
+    }
+    if out.is_empty() {
+        out.push('?');
+    }
+    out
+}
+
 /// FNV-1a 32-bit hash of a string. Stable across runs (no `RandomState`),
 /// so a video's thumbnail gradient is the same every frame and every
 /// launch — important for a calm, non-flickering grid.

@@ -768,6 +768,7 @@ fn run_live_shots(dir: &str, query: &str) -> Result<(), Box<dyn std::error::Erro
             channel_id: String::new(),
             channel_name: "Blender".into(),
             channel_seed: watch_id.to_string(),
+            channel_avatar_url: String::new(),
             views: 0,
             published: String::new(),
             duration: 0,
@@ -1430,11 +1431,14 @@ fn run_bench_scroll(frames: usize, watch: bool) -> Result<(), Box<dyn std::error
             max_us(&total) as f64 / 1000.0,
         );
         println!(
-            "  {:<20}   compute median {:>5.2}ms | apply median {:>5.2}ms | draw median {:>5.2}ms",
+            "  {:<20}   compute med/max {:>5.2}/{:>6.2} | apply med/max {:>5.2}/{:>6.2} | draw med/max {:>5.2}/{:>6.2} ms",
             "",
             median_us(c) as f64 / 1000.0,
+            max_us(c) as f64 / 1000.0,
             median_us(a) as f64 / 1000.0,
+            max_us(a) as f64 / 1000.0,
             median_us(d) as f64 / 1000.0,
+            max_us(d) as f64 / 1000.0,
         );
     };
 
