@@ -73,18 +73,30 @@ impl SigningIdentity {
     /// the Ed25519 / 1-of-1 paths are infallible.
     pub fn sign_signed_root(&self, root: &SignedRoot) -> Result<[u8; 64], PackError> {
         let preimage = root.signing_bytes();
+        self.sign_message(&preimage)
+    }
+
+    /// Sign an arbitrary message with the identity's Ed25519 key.
+    ///
+    /// Used for out-of-band attestations that bind to the same
+    /// publisher identity as the package — e.g. a registry index
+    /// entry that vouches "this publisher's build of app X at version
+    /// V has qpkg content-hash H". The verifier is a plain Ed25519
+    /// verify against [`Self::public_key_bytes`], so consumers need
+    /// only the verifying key, not the threshold machinery.
+    ///
+    /// Errors only in the (currently unsupported) true-threshold
+    /// mode; the Ed25519 / 1-of-1 paths are infallible.
+    pub fn sign_message(&self, msg: &[u8]) -> Result<[u8; 64], PackError> {
         match self {
-            Self::Ed25519(sk) => {
-                let sig = sk.sign(&preimage);
-                Ok(sig.to_bytes())
-            }
+            Self::Ed25519(sk) => Ok(sk.sign(msg).to_bytes()),
             Self::ThresholdSingleDevice(ti) => {
                 if !ti.is_single_device() {
                     return Err(PackError::ThresholdSigningUnsupported);
                 }
                 let mut rng = OsRng;
                 let sig = ti
-                    .sign_raw(&preimage, &mut rng)
+                    .sign_raw(msg, &mut rng)
                     .map_err(|e| PackError::ThresholdInternal(e.to_string()))?;
                 Ok(*sig.as_bytes())
             }
