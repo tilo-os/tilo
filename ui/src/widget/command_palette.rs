@@ -889,7 +889,10 @@ impl CommandPalette {
     /// + input + trailing `⌘K` kbd pill.
     pub fn compute_input_layout(&self, row: Rect) -> InputRowLayout {
         const ICON_W: f64 = 24.0;
-        const CHIP_W: f64 = 48.0;
+        // Widened from 48 px so the Ctrl+K label doesn't clip. The
+        // concept's ⌘K glyph fit in 48; the qOS binding is Ctrl+K
+        // (Alt+Space as the nested-friendly alt) which is 6 characters.
+        const CHIP_W: f64 = 68.0;
         const EDGE: f64 = 12.0;
         const GAP: f64 = 12.0;
         let cy = (row.y0 + row.y1) / 2.0;
@@ -1488,7 +1491,11 @@ impl Widget for CommandPalette {
             None,
             &chip_shape,
         );
-        let chip_text = "\u{2318}K"; // ⌘K
+        // qOS binds Ctrl+K (and Alt+Space as the nested-friendly
+        // Super substitute — see shell::overlay_host::open_palette_
+        // with_scope). Show the Ctrl form since the palette lives
+        // atop a Linux compositor, not macOS.
+        let chip_text = "Ctrl+K";
         let chip_text_size = (theme.tokens.typography.scale.sm - 1.0).max(10.0);
         let (cw, ch) = text_renderer.measure(chip_text, chip_text_size, None);
         let chip_text_x = (layout.kbd_chip_rect.x0 + layout.kbd_chip_rect.x1) / 2.0
