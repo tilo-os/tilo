@@ -42,6 +42,7 @@ pub mod qs_actions;
 pub mod quick_settings;
 pub mod remote_cursors;
 pub mod roster_panel;
+pub mod global_search;
 pub mod search;
 pub mod sidebar_wheel;
 pub mod sidebar_wheel_chrome;
@@ -73,7 +74,7 @@ use crate::shell::notes_app::NotesApp;
 use crate::shell::overview::OverviewView;
 use crate::shell::quick_settings::QuickSettings;
 use crate::shell::remote_cursors::{RemoteCursorOverlay, SimulatedFeed};
-use crate::shell::search::GlobalSearch;
+use crate::shell::global_search::GlobalSearch;
 use crate::shell::sidebar_wheel::SidebarWheel;
 use crate::shell::system_monitor::SystemMonitor;
 use crate::shell::tile::{

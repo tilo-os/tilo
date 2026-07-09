@@ -70,6 +70,15 @@ pub type GroupId = u64;
 pub type TabId = u64;
 pub type FileId = u64;
 
+/// Lightweight snapshot of the currently focused tab. Cloned out of the
+/// [`WorkspaceTree`] read guard so callers can drop the guard before
+/// looking at the values — see [`crate::shell::chrome_state::ChromeState::active_tab_id`].
+#[derive(Clone, Debug)]
+pub struct TabRef {
+    pub id: TabId,
+    pub title: String,
+}
+
 use std::sync::atomic::{AtomicU16, AtomicU64, Ordering as AtomicOrdering};
 
 /// Process-wide monotonic counter shared by [`WorkspaceId::new`],
