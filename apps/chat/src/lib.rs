@@ -26,6 +26,12 @@
 //! loop; [`app_root_for_shot`] stages a scenario for the offscreen renderer.
 
 pub mod app;
+// Live call media (real microphone/Opus audio + camera/screen H.264) — compiled
+// only under `live-media`; the default build carries no GStreamer/openh264/iroh.
+#[cfg(feature = "live-media")]
+pub mod audio;
+#[cfg(feature = "live-media")]
+pub mod video;
 pub mod call;
 pub mod doc;
 pub mod emoji;

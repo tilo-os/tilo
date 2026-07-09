@@ -31,13 +31,14 @@ fn welcome_body_contains_every_block_kind() {
             BlockSpec::Paragraph(_) => "paragraph",
             BlockSpec::Heading { .. } => "heading",
             BlockSpec::Bullet { .. } => "bullet",
+            BlockSpec::Numbered { .. } => "numbered",
             BlockSpec::Checklist { .. } => "checklist",
             BlockSpec::CodeBlock { .. } => "code",
             BlockSpec::Divider => "divider",
         };
         seen.insert(tag);
     }
-    for kind in ["paragraph", "heading", "bullet", "checklist", "code", "divider"] {
+    for kind in ["paragraph", "heading", "bullet", "numbered", "checklist", "code", "divider"] {
         assert!(
             seen.contains(kind),
             "welcome page seed must include a {} block (got kinds: {:?})",

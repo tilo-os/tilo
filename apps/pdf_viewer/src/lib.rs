@@ -54,3 +54,25 @@ pub fn app_root_sample() -> Box<dyn Widget> {
 pub fn app_root_sample_editing() -> Box<dyn Widget> {
     Box::new(PdfApp::sample_editing())
 }
+
+/// Screenshot-only: open `path` (a real PDF) with a live page-rail reorder drag
+/// staged, so a still frame shows the left sidebar mid-reorder.
+pub fn app_root_reorder_demo(path: Option<&std::path::Path>) -> Box<dyn Widget> {
+    let mut app = match path {
+        Some(p) => PdfApp::open(p),
+        None => PdfApp::sample(),
+    };
+    app.arm_shots_rail_drag();
+    Box::new(app)
+}
+
+/// Screenshot-only: open `path` (a real PDF) and import a generated image as a
+/// new page, so a still frame shows the imported image page in the rail + canvas.
+pub fn app_root_import_demo(path: Option<&std::path::Path>) -> Box<dyn Widget> {
+    let mut app = match path {
+        Some(p) => PdfApp::open(p),
+        None => PdfApp::sample(),
+    };
+    app.demo_import_image();
+    Box::new(app)
+}
