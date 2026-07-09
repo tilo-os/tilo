@@ -758,11 +758,27 @@ impl VideoPlayer {
     /// out of `sync` so the borrow of `self.engine` is fully released before
     /// the fields it mirrors into are written.
     fn pump_engine(&mut self) {
+        // Read the caches the clone-guard needs *before* borrowing the engine,
+        // so the decision can be made inside the closure without a second
+        // borrow of `self`.
+        let last_pts = self.last_frame_pts;
+        let have_frame = self.latest_frame.is_some();
         let snapshot = self.engine.as_mut().map(|engine| {
             engine.poll();
-            let frame = engine
-                .latest_frame()
-                .map(|f| (f.width, f.height, f.rgba.clone(), f.pts_ms));
+            // Only clone the (multi-megabyte) frame buffer when it is actually a
+            // NEW frame. A paused-but-loaded video keeps handing back the same
+            // frame every poll; cloning its RGBA on every sync (the scroll path
+            // re-syncs each frame) was a per-frame memcpy of the whole picture —
+            // pure waste, since the pts-guard below would then discard it. Peek
+            // the pts first (cheap) and clone only on a real change.
+            let cur_pts = engine.latest_frame().map(|f| f.pts_ms);
+            let frame = if cur_pts.is_some() && (last_pts != cur_pts || !have_frame) {
+                engine
+                    .latest_frame()
+                    .map(|f| (f.width, f.height, f.rgba.clone(), f.pts_ms))
+            } else {
+                None
+            };
             (
                 engine.position_ms(),
                 engine.duration_ms(),
