@@ -27,15 +27,23 @@ use ui::webview::{SharedEngine, WebViewCommand};
 
 /// Filter lists to fetch, as `(cache file name, URL)`.
 ///
-/// A "proper" blocker set, mirroring what uBlock Origin enables by
-/// default plus AdGuard's base list, all in EasyList syntax that
-/// adblock-rust's content-blocking converter understands:
+/// The canonical uBlock-Origin-default blocking set, restricted to lists
+/// whose rules survive adblock-rust's conversion to WebKit's *declarative*
+/// content-blocker format cleanly:
 ///
 /// - **EasyList** / **EasyPrivacy** — the network + tracker backbone.
 /// - **EasyList Cookie List** — cookie/consent banner annoyances.
-/// - **uBlock Origin** `filters`, `privacy`, `badware`, `resource-abuse`,
-///   `quick-fixes` — uBO's own maintained supplements.
-/// - **AdGuard Base** — AdGuard's flagship list in uBlock-optimised form.
+/// - **uBlock Origin** `filters`, `privacy`, `badware`, `resource-abuse` —
+///   uBO's own maintained supplements.
+///
+/// Deliberately excluded: uBO **quick-fixes** and **AdGuard Base**. Both
+/// lean on rule types WebKit content blocking cannot express — `$replace`
+/// (response-body rewriting), `$redirect`, and raw-regex `$frame` filters
+/// spanning a huge URL range. adblock-rust's lossy conversion turns some
+/// of those into over-broad `block` rules that catch a page's *own*
+/// first-party document/scripts during load, blanking it. They also churn
+/// daily, so a fresh compile can regress unpredictably. EasyList + uBO
+/// already cover the same targets through WebKit-safe rules.
 const LISTS: &[(&str, &str)] = &[
     ("easylist.txt", "https://easylist.to/easylist/easylist.txt"),
     (
@@ -61,14 +69,6 @@ const LISTS: &[(&str, &str)] = &[
     (
         "ublock-resource-abuse.txt",
         "https://raw.githubusercontent.com/uBlockOrigin/uAssets/master/filters/resource-abuse.txt",
-    ),
-    (
-        "ublock-quick-fixes.txt",
-        "https://raw.githubusercontent.com/uBlockOrigin/uAssets/master/filters/quick-fixes.txt",
-    ),
-    (
-        "adguard-base.txt",
-        "https://filters.adtidy.org/extension/ublock/filters/2.txt",
     ),
 ];
 
