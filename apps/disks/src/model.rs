@@ -16,6 +16,10 @@ pub enum DriveKind {
     Ssd,
     Hdd,
     Usb,
+    /// Compressed RAM-backed swap device (`zram*`).
+    Zram,
+    /// Loopback / device-mapper / MD / other virtual block device.
+    Virtual,
     Other,
 }
 
@@ -27,6 +31,8 @@ impl DriveKind {
             DriveKind::Ssd => "SSD",
             DriveKind::Hdd => "HDD",
             DriveKind::Usb => "USB",
+            DriveKind::Zram => "ZRAM",
+            DriveKind::Virtual => "VIRT",
             DriveKind::Other => "DISK",
         }
     }
@@ -38,12 +44,37 @@ impl DriveKind {
             DriveKind::Ssd => "Solid State Drive",
             DriveKind::Hdd => "Hard Disk Drive",
             DriveKind::Usb => "Removable USB Drive",
+            DriveKind::Zram => "Compressed RAM Disk",
+            DriveKind::Virtual => "Virtual Block Device",
             DriveKind::Other => "Block Device",
         }
     }
 
-    /// Derive the kind from `lsblk`'s `rota` + `tran` fields.
-    pub fn from_lsblk(rota: bool, tran: Option<&str>) -> Self {
+    /// Whether this is a memory- or software-backed device (zram, loop, dm,
+    /// md…) rather than physical storage media. Such devices legitimately
+    /// expose no SMART data and no serial, so the UI degrades accordingly
+    /// instead of implying they are disks that could be ejected or benchmarked.
+    pub fn is_virtual(&self) -> bool {
+        matches!(self, DriveKind::Zram | DriveKind::Virtual)
+    }
+
+    /// Derive the kind from a device's kernel name plus `lsblk`'s `rota` +
+    /// `tran` fields. Virtual devices are recognised by their kernel-name
+    /// prefix (they carry no transport), so a `zram` swap device never
+    /// masquerades as an "SSD" just because it is non-rotational.
+    pub fn from_lsblk(name: &str, rota: bool, tran: Option<&str>) -> Self {
+        if name.starts_with("zram") {
+            return DriveKind::Zram;
+        }
+        if name.starts_with("loop")
+            || name.starts_with("dm-")
+            || name.starts_with("md")
+            || name.starts_with("ram")
+            || name.starts_with("nbd")
+            || name.starts_with("sr")
+        {
+            return DriveKind::Virtual;
+        }
         match tran {
             Some("nvme") => DriveKind::Nvme,
             Some("usb") => DriveKind::Usb,
@@ -109,6 +140,11 @@ pub struct SmartInfo {
     /// Total host writes in GB (NVMe "Data Units Written" derived).
     pub written_gb: Option<i64>,
     pub attrs: Vec<SmartAttr>,
+    /// Human explanation shown when there is no usable telemetry — e.g. the
+    /// device genuinely reports no SMART, or reading it needs elevated
+    /// privileges. Keeps the "Unknown" state honest about *why*.
+    #[serde(default)]
+    pub detail: Option<String>,
 }
 
 /// Newtype wrapper so `SmartInfo` can derive `Default` (SmartStatus has
@@ -175,10 +211,11 @@ impl Partition {
         if mp == "/boot" || label == "boot" {
             return PartRole::Boot;
         }
-        if mp == "/" {
+        if mp == "/" || mp == "/sysroot" {
             return PartRole::Root;
         }
-        if mp == "/home" {
+        // On atomic Fedora / qOS (bootc) the home volume lives at /var/home.
+        if mp == "/home" || mp == "/var/home" {
             return PartRole::Home;
         }
         PartRole::Data
@@ -325,6 +362,7 @@ impl Topology {
                     attr(1, "Media & Data Errors", "0", AttrSeverity::Ok),
                     attr(2, "Critical Warning", "0x00", AttrSeverity::Ok),
                 ],
+                detail: None,
             }),
         };
 
@@ -360,6 +398,7 @@ impl Topology {
                     attr(194, "Temperature", "35 °C", AttrSeverity::Ok),
                     attr(199, "UDMA CRC Errors", "0", AttrSeverity::Ok),
                 ],
+                detail: None,
             }),
         };
 
@@ -396,6 +435,7 @@ impl Topology {
                     attr(194, "Temperature", "39 °C", AttrSeverity::Ok),
                     attr(7, "Seek Error Rate", "0", AttrSeverity::Ok),
                 ],
+                detail: None,
             }),
         };
 
@@ -425,6 +465,7 @@ impl Topology {
                 pct_used: None,
                 written_gb: None,
                 attrs: vec![],
+                detail: Some("USB mass-storage bridges rarely pass through SMART telemetry.".into()),
             }),
         };
 
@@ -544,5 +585,41 @@ mod tests {
         let back: Topology = serde_json::from_str(&json).unwrap();
         assert_eq!(back.drives.len(), t.drives.len());
         assert_eq!(back.drives[0].name, "nvme0n1");
+    }
+
+    #[test]
+    fn role_recognises_atomic_fedora_mountpoints() {
+        let part = |mp: &str, fs: &str| Partition {
+            name: "p".into(),
+            size: 100,
+            fstype: Some(fs.into()),
+            label: None,
+            mountpoint: Some(mp.into()),
+            used: None,
+            uuid: None,
+        };
+        // bootc systems: home at /var/home, root sometimes surfaced as /sysroot.
+        assert_eq!(part("/var/home", "btrfs").role(), PartRole::Home);
+        assert_eq!(part("/home", "ext4").role(), PartRole::Home);
+        assert_eq!(part("/sysroot", "btrfs").role(), PartRole::Root);
+        assert_eq!(part("/boot/efi", "vfat").role(), PartRole::Efi);
+        assert_eq!(part("[SWAP]", "swap").role(), PartRole::Swap);
+        assert_eq!(part("/mnt/data", "xfs").role(), PartRole::Data);
+    }
+
+    #[test]
+    fn kind_from_lsblk_covers_media_and_virtual_devices() {
+        // Physical media by transport / rotation.
+        assert_eq!(DriveKind::from_lsblk("nvme0n1", false, Some("nvme")), DriveKind::Nvme);
+        assert_eq!(DriveKind::from_lsblk("sda", false, Some("sata")), DriveKind::Ssd);
+        assert_eq!(DriveKind::from_lsblk("sdb", true, Some("sata")), DriveKind::Hdd);
+        assert_eq!(DriveKind::from_lsblk("sdc", false, Some("usb")), DriveKind::Usb);
+        // A zram swap device is non-rotational but must NOT read as an SSD.
+        assert_eq!(DriveKind::from_lsblk("zram0", false, None), DriveKind::Zram);
+        assert!(DriveKind::from_lsblk("zram0", false, None).is_virtual());
+        // Loop / device-mapper / MD are virtual.
+        assert_eq!(DriveKind::from_lsblk("loop0", false, None), DriveKind::Virtual);
+        assert_eq!(DriveKind::from_lsblk("dm-0", false, None), DriveKind::Virtual);
+        assert!(!DriveKind::from_lsblk("nvme0n1", false, Some("nvme")).is_virtual());
     }
 }

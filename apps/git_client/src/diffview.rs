@@ -23,11 +23,21 @@ pub const ROW_H: f64 = 18.0;
 const FONT: f32 = 12.5;
 const GUTTER_W: f64 = 96.0;
 
-/// A clickable hunk-stage button rect emitted during draw, so the owning
-/// view can map clicks back to a hunk index.
+/// What a hunk-action button does when clicked.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HunkAction {
+    /// Stage this hunk (unstaged side) or unstage it (staged side).
+    Toggle,
+    /// Discard this hunk's worktree change (unstaged side only).
+    Discard,
+}
+
+/// A clickable hunk-action button rect emitted during draw, so the owning
+/// view can map clicks back to a hunk index + action.
 #[derive(Clone, Copy, Debug)]
 pub struct HunkButton {
     pub hunk: usize,
+    pub action: HunkAction,
     pub rect: Rect,
 }
 
@@ -57,6 +67,7 @@ impl DiffView {
         settings: &Settings,
         hover_hunk: Option<usize>,
         staged_side: bool,
+        armed_hunk: Option<usize>,
     ) -> Vec<HunkButton> {
         let c = &theme.tokens.colors;
         // Pane background.
@@ -105,6 +116,7 @@ impl DiffView {
         } else {
             Self::draw_unified(
                 scene, tr, t, theme, viewport, diff, scroll, settings, hover_hunk, staged_side,
+                armed_hunk,
             )
         };
 
@@ -124,6 +136,7 @@ impl DiffView {
         settings: &Settings,
         hover_hunk: Option<usize>,
         staged_side: bool,
+        armed_hunk: Option<usize>,
     ) -> Vec<HunkButton> {
         let c = &theme.tokens.colors;
         let mut buttons: Vec<HunkButton> = Vec::new();
@@ -143,12 +156,28 @@ impl DiffView {
                 DiffLineKind::Deletion => draw::fill_rect(scene, t, row, draw::del_tint(theme)),
                 DiffLineKind::Hunk => {
                     draw::fill_rect(scene, t, row, c.surfaces.raised);
-                    // Emit a stage button for this hunk on the first row.
+                    // Emit the hunk action button(s) on the first row of the
+                    // hunk: always a stage/unstage toggle, plus a discard button
+                    // on the worktree (unstaged) side.
                     if Some(line.hunk) != last_hunk {
-                        let btn = Self::draw_hunk_button(
-                            scene, tr, t, theme, &row, line.hunk, hover_hunk, staged_side,
+                        let hovered = hover_hunk == Some(line.hunk);
+                        let toggle_label = if staged_side { "Unstage hunk" } else { "Stage hunk" };
+                        let mut right = row.x1 - 8.0;
+                        let toggle = Self::draw_hunk_button(
+                            scene, tr, t, theme, &row, right, line.hunk,
+                            HunkAction::Toggle, toggle_label, hovered,
                         );
-                        buttons.push(btn);
+                        right = toggle.rect.x0 - 8.0;
+                        buttons.push(toggle);
+                        if !staged_side {
+                            let armed = armed_hunk == Some(line.hunk);
+                            let dlabel = if armed { "Discard?" } else { "Discard" };
+                            let discard = Self::draw_hunk_button(
+                                scene, tr, t, theme, &row, right, line.hunk,
+                                HunkAction::Discard, dlabel, hovered || armed,
+                            );
+                            buttons.push(discard);
+                        }
                         last_hunk = Some(line.hunk);
                     }
                 }
@@ -318,6 +347,9 @@ impl DiffView {
         }
     }
 
+    /// Draw one hunk-action button whose right edge sits at `right_x`, and
+    /// return its hit rect. Discard buttons read in the danger hue when hovered
+    /// so the destructive action is visually distinct from stage/unstage.
     #[allow(clippy::too_many_arguments)]
     fn draw_hunk_button(
         scene: &mut Scene,
@@ -325,22 +357,26 @@ impl DiffView {
         t: Affine,
         theme: &Theme,
         row: &Rect,
+        right_x: f64,
         hunk: usize,
-        hover_hunk: Option<usize>,
-        staged_side: bool,
+        action: HunkAction,
+        label: &str,
+        hovered: bool,
     ) -> HunkButton {
         let c = &theme.tokens.colors;
-        let label = if staged_side { "Unstage hunk" } else { "Stage hunk" };
-        let bw = 96.0;
-        let bx = row.x1 - bw - 8.0;
-        let by = row.y0 + 2.0;
-        let brect = Rect::new(bx, by, bx + bw, row.y1 - 2.0);
-        let hovered = hover_hunk == Some(hunk);
-        let bg = if hovered { theme.accent_primary } else { c.surface_white_10 };
-        let fg = if hovered { Color::WHITE } else { c.text_dim };
-        draw::fill_round(scene, t, brect, 5.0, bg);
         let size = 11.0f32;
         let tw = tr.measure_weighted(label, size, None, TextWeight::Medium).0 as f64;
+        let bw = tw + 20.0;
+        let bx = right_x - bw;
+        let by = row.y0 + 2.0;
+        let brect = Rect::new(bx, by, bx + bw, row.y1 - 2.0);
+        let accent = match action {
+            HunkAction::Toggle => theme.accent_primary,
+            HunkAction::Discard => c.semantic.danger,
+        };
+        let bg = if hovered { accent } else { c.surface_white_10 };
+        let fg = if hovered { Color::WHITE } else { c.text_dim };
+        draw::fill_round(scene, t, brect, 5.0, bg);
         draw::text_weighted(
             scene,
             tr,
@@ -353,7 +389,7 @@ impl DiffView {
             None,
             TextWeight::Medium,
         );
-        HunkButton { hunk, rect: brect }
+        HunkButton { hunk, action, rect: brect }
     }
 }
 
@@ -421,12 +457,22 @@ fn pair_rows(lines: &[DiffLine]) -> Vec<PairRow> {
     rows
 }
 
-/// Hit-test a click at logical `pos` against the emitted hunk buttons.
+/// Hit-test `pos` against the emitted hunk buttons, returning the hunk index
+/// (for hover highlighting — any button of a hunk highlights the hunk).
 pub fn hunk_button_at(buttons: &[HunkButton], pos: Point) -> Option<usize> {
     buttons
         .iter()
         .find(|b| b.rect.contains(pos))
         .map(|b| b.hunk)
+}
+
+/// Hit-test `pos` against the emitted hunk buttons, returning the hunk index
+/// and which action its button performs.
+pub fn hunk_action_at(buttons: &[HunkButton], pos: Point) -> Option<(usize, HunkAction)> {
+    buttons
+        .iter()
+        .find(|b| b.rect.contains(pos))
+        .map(|b| (b.hunk, b.action))
 }
 
 #[cfg(test)]

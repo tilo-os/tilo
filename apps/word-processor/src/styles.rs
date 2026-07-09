@@ -214,6 +214,43 @@ impl StyleSheet {
     }
 }
 
+/// The localized, user-facing display name for a style.
+///
+/// Built-in styles (`body`, `heading1`…) carry an English name in the document
+/// so exports stay interoperable, but the panel and pickers must show them in
+/// the active locale — under German, "Body" reads as "Fließtext". This resolves
+/// a Fluent key per built-in id; **custom** styles keep their stored,
+/// user-editable name verbatim.
+pub fn style_display_name(id: &str, props: &StyleProps) -> String {
+    let key = match id {
+        "body" => "style-body",
+        "heading1" => "style-heading1",
+        "heading2" => "style-heading2",
+        "heading3" => "style-heading3",
+        "list" => "style-list",
+        "quote" => "style-quote",
+        // Custom styles are named by the user; show their name as authored.
+        _ => return props.name.clone(),
+    };
+    crate::i18n::t(key)
+}
+
+/// The block `kind` (+ heading `level`) a built-in style implies, so applying a
+/// paragraph style from the panel also makes the block *structurally* correct —
+/// picking "Heading 1" yields a real heading (present in the outline / TOC), not
+/// merely heading-looking body text. Custom styles imply no structural kind
+/// (they are visual presets), so this returns `None` for them.
+pub fn structural_kind_for(style_id: &str) -> Option<(&'static str, Option<i64>, Option<bool>)> {
+    match style_id {
+        "body" | "quote" => Some(("paragraph", None, None)),
+        "heading1" => Some(("heading", Some(1), None)),
+        "heading2" => Some(("heading", Some(2), None)),
+        "heading3" => Some(("heading", Some(3), None)),
+        "list" => Some(("list_item", None, Some(false))),
+        _ => None,
+    }
+}
+
 /// The style id a block resolves to: an explicit `style` attr if set, otherwise
 /// derived from the block kind (+ heading level). This keeps existing documents
 /// working while letting blocks opt into custom styles.
@@ -251,5 +288,38 @@ mod tests {
         let back = StyleSheet::from_json(&sheet.to_json()).unwrap();
         assert_eq!(back.get("body"), sheet.get("body"));
         assert_eq!(back.get("quote").italic, sheet.get("quote").italic);
+    }
+
+    /// Built-in styles resolve a localized display name through Fluent (non-empty
+    /// in the ambient locale); a custom style shows its stored, user-authored name
+    /// verbatim (never a Fluent key). Locale-independent: only asserts the mapping
+    /// and the custom passthrough, not a specific translation.
+    #[test]
+    fn display_name_localizes_builtins_and_passes_custom_through() {
+        let sheet = StyleSheet::default();
+        for id in BUILTIN_STYLES {
+            let shown = style_display_name(id, &sheet.get(id));
+            assert!(!shown.is_empty(), "{id} resolves to a non-empty display name");
+        }
+        let custom = StyleProps { name: "My Callout".into(), ..StyleProps::default() };
+        assert_eq!(
+            style_display_name("custom1", &custom),
+            "My Callout",
+            "custom styles show their authored name, not a Fluent key"
+        );
+    }
+
+    /// The built-in style → structural kind map: applying a built-in from the
+    /// panel picker also switches the block kind (so "Heading 1" is a real
+    /// heading). Custom styles imply no kind.
+    #[test]
+    fn structural_kind_maps_builtins_only() {
+        assert_eq!(structural_kind_for("body"), Some(("paragraph", None, None)));
+        assert_eq!(structural_kind_for("quote"), Some(("paragraph", None, None)));
+        assert_eq!(structural_kind_for("heading1"), Some(("heading", Some(1), None)));
+        assert_eq!(structural_kind_for("heading2"), Some(("heading", Some(2), None)));
+        assert_eq!(structural_kind_for("heading3"), Some(("heading", Some(3), None)));
+        assert_eq!(structural_kind_for("list"), Some(("list_item", None, Some(false))));
+        assert_eq!(structural_kind_for("custom1"), None, "custom styles imply no structural kind");
     }
 }
