@@ -2250,13 +2250,31 @@ impl Widget for TextInput {
             // own caret (`caret_rect`/`selection_rect`), so a remote caret
             // is pixel-identical to the local one — never a re-derived
             // approximation. `transform` maps the local rect to the scene.
+
+            // Fading "just typed" highlighter under the caret/selection.
+            let now = std::time::Instant::now();
+            for (user, range, alpha) in presence.typing_marks_for_key(&key, now) {
+                let rect = self.selection_rect(theme, range.start, range.end);
+                let p0 = transform * vello::kurbo::Point::new(rect.x0, rect.y0);
+                let p1 = transform * vello::kurbo::Point::new(rect.x1, rect.y1);
+                presence.draw_peer_typing(
+                    scene,
+                    theme,
+                    &user,
+                    &[(vello::kurbo::Rect::new(p0.x, p0.y, p1.x, p1.y), alpha)],
+                );
+            }
             if let Some(list) = presence.carets.get(&key) {
                 for (user, caret) in list.iter() {
-                    presence.draw_peer_caret(
+                    // Labeled peer caret: bar + a small name chip above it.
+                    let name = presence.display_name(user);
+                    presence.draw_peer_caret_labeled(
                         scene,
                         theme,
+                        text_renderer,
                         transform,
                         user,
+                        &name,
                         self.caret_rect(theme, *caret),
                     );
                 }
