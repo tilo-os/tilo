@@ -57,6 +57,17 @@ pub enum KeyInput {
     Named(NamedKey),
 }
 
+/// Modifier keys held while a key event fires. Forwarded into the page so
+/// editing shortcuts (Ctrl+Backspace to delete a word, Ctrl+A to select
+/// all, Shift+Arrow to extend a selection, …) reach the web content.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct KeyModifiers {
+    pub ctrl: bool,
+    pub shift: bool,
+    pub alt: bool,
+    pub meta: bool,
+}
+
 /// Non-printable keys the page can react to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NamedKey {
@@ -110,6 +121,7 @@ pub enum WebViewCommand {
     Key {
         key: KeyInput,
         down: bool,
+        modifiers: KeyModifiers,
     },
     /// Keyboard focus entered / left the page surface.
     SetFocused(bool),

@@ -707,14 +707,31 @@ fn dispatch(state: &mut EngineState, cmd: WebViewCommand) {
                 };
                 ffi::wpe_view_backend_dispatch_axis_event(state.backend, &mut event.base);
             }
-            WebViewCommand::Key { key, down } => {
+            WebViewCommand::Key { key, down, modifiers } => {
+                // Translate held modifiers into WPE's bitmask so editing
+                // shortcuts (Ctrl+Backspace, Ctrl+A, Shift+Arrow, …) reach
+                // the page. OR in any held mouse-button modifiers so a
+                // key pressed mid-drag carries the same state.
+                let mut mods = state.button_modifiers;
+                if modifiers.ctrl {
+                    mods |= ffi::WPE_INPUT_KEYBOARD_MODIFIER_CONTROL;
+                }
+                if modifiers.shift {
+                    mods |= ffi::WPE_INPUT_KEYBOARD_MODIFIER_SHIFT;
+                }
+                if modifiers.alt {
+                    mods |= ffi::WPE_INPUT_KEYBOARD_MODIFIER_ALT;
+                }
+                if modifiers.meta {
+                    mods |= ffi::WPE_INPUT_KEYBOARD_MODIFIER_META;
+                }
                 for key_code in keysyms(&key) {
                     let mut event = ffi::wpe_input_keyboard_event {
                         time: 0,
                         key_code,
                         hardware_key_code: 0,
                         pressed: down,
-                        modifiers: 0,
+                        modifiers: mods,
                     };
                     ffi::wpe_view_backend_dispatch_keyboard_event(state.backend, &mut event);
                 }
