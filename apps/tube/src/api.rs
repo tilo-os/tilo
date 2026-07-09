@@ -28,7 +28,7 @@ use std::sync::mpsc::{Receiver, Sender};
 use std::time::Duration;
 
 use crate::backend::{BackendResult, Query, YtBackend};
-use crate::model::{Category, Channel, Comment, Segment, Video};
+use crate::model::{Category, Channel, Comment, Playlist, Segment, Video};
 
 /// A unit of work for the background thread.
 #[derive(Clone, Debug)]
@@ -46,6 +46,8 @@ pub enum Request {
     VideoMeta(String),
     /// Fetch a channel page + its uploads.
     Channel(String),
+    /// Fetch a playlist page (metadata + ordered video list).
+    PlaylistPage(String),
     /// Resolve a real, directly-playable stream URL for a watch id — off the UI
     /// thread, since it probes public Invidious instances over the network. The
     /// resolved URL comes back as [`Update::StreamResolved`]; the actual decode +
@@ -71,7 +73,19 @@ pub enum Update {
         video: String,
         count: u64,
     },
-    SearchResults(String, Vec<Video>),
+    /// Live search results: the query, the ordered videos, and the playlists +
+    /// creator rows that share the query (so the type filter has all three).
+    SearchResults {
+        query: String,
+        videos: Vec<Video>,
+        playlists: Vec<Playlist>,
+        channels: Vec<Channel>,
+    },
+    /// A resolved playlist page + its ordered videos.
+    PlaylistPage {
+        playlist: Box<Playlist>,
+        videos: Vec<Video>,
+    },
     /// Live home/trending catalogue — replaces the on-screen set.
     Feed(Vec<Video>),
     /// Live video detail + its real recommendations.
@@ -352,10 +366,16 @@ impl Worker {
                 // orthogonal to the InnerTube source).
                 let offline = crate::backend::default_backend();
                 let live = try_live_backend(&up_tx);
-                // Comments come from rustypipe specifically (see `try_comments_backend`);
-                // constructed lazily on the first watch-open so a session that only
-                // browses never pays for it. Outer `Option` = "attempted yet?".
-                let mut comments_src: Option<Option<Box<dyn YtBackend>>> = None;
+                // One lazily-constructed rustypipe backend serves everything the
+                // primary (yt-dlp) source can't: top comments, the creator avatars
+                // + playlists + creator rows that enrich a search (yt-dlp list
+                // items carry none of these), avatar-bearing popular feed videos,
+                // and playlist pages. Constructed on first need so a session that
+                // never searches/opens a video pays nothing. Outer `Option` =
+                // "attempted yet?"; `#[cfg(live)]` only — the offline build has no
+                // rustypipe and simply skips every enrichment below.
+                #[cfg(feature = "live")]
+                let mut rp: Option<Option<crate::backend::live::RustyPipeBackend>> = None;
                 // Announce the starting posture honestly: even with a live
                 // backend constructed we don't claim "live" until a real fetch
                 // returns, because construction doesn't touch the network.
@@ -406,7 +426,7 @@ impl Worker {
                             // Always emit a (possibly empty) result so the UI can
                             // drop its loading skeleton and show either real hits
                             // or an honest "no results".
-                            let vs = match fetch(
+                            let mut videos = match fetch(
                                 &live,
                                 offline.as_ref(),
                                 Query::Search(query.clone()),
@@ -419,7 +439,41 @@ impl Worker {
                                 }
                                 _ => Vec::new(),
                             };
-                            let _ = up_tx.send(Update::SearchResults(query, vs));
+                            let mut playlists: Vec<Playlist> = Vec::new();
+                            let mut channels: Vec<Channel> = Vec::new();
+                            // Enrich with rustypipe: real creator avatars for the
+                            // yt-dlp videos (which have none), plus the playlists
+                            // and creator rows for the same query — all from one
+                            // real InnerTube search call.
+                            #[cfg(feature = "live")]
+                            {
+                                let rp_ref = rp.get_or_insert_with(|| try_enricher(&up_tx));
+                                if let Some(b) = rp_ref.as_ref() {
+                                    match b.search_items(&query) {
+                                        Ok(items) => {
+                                            enrich_video_avatars(&mut videos, &items);
+                                            // If the primary returned nothing, fall
+                                            // back to rustypipe's own videos (already
+                                            // avatar-bearing) rather than an empty page.
+                                            if videos.is_empty() {
+                                                videos = items.videos;
+                                            }
+                                            playlists = items.playlists;
+                                            channels = items.channels;
+                                        }
+                                        Err(e) => {
+                                            let _ = up_tx
+                                                .send(Update::Note(format!("search enrich: {e}")));
+                                        }
+                                    }
+                                }
+                            }
+                            let _ = up_tx.send(Update::SearchResults {
+                                query,
+                                videos,
+                                playlists,
+                                channels,
+                            });
                         }
                         Request::Feed => {
                             // Live only: an offline feed is the sample already on
@@ -434,13 +488,48 @@ impl Worker {
                             // "popular right now" feed from view-count-sorted,
                             // last-week search across broad topics — genuine YouTube
                             // data, never the offline sample.
-                            match feed_trending(&live, offline.as_ref(), &up_tx) {
+                            // Prefer rustypipe for the composed popular feed: its
+                            // items carry creator avatars inline, so Home cards show
+                            // real creator photos without a per-channel fetch.
+                            #[cfg(feature = "live")]
+                            let enrich_ref: Option<&dyn YtBackend> = {
+                                let r = rp.get_or_insert_with(|| try_enricher(&up_tx));
+                                r.as_ref().map(|b| b as &dyn YtBackend)
+                            };
+                            #[cfg(not(feature = "live"))]
+                            let enrich_ref: Option<&dyn YtBackend> = None;
+                            match feed_trending(&live, enrich_ref, offline.as_ref(), &up_tx) {
                                 Some((vs, label)) if !vs.is_empty() => {
                                     let _ = up_tx.send(Update::Feed(vs));
                                     let _ = up_tx.send(Update::Status { live: true, label });
                                 }
                                 _ => send_status(&up_tx, false),
                             }
+                        }
+                        Request::PlaylistPage(id) => {
+                            // Playlist pages come from rustypipe (the primary yt-dlp
+                            // path is per-video). Live-only; the offline build has no
+                            // playlist data, so this is a no-op there.
+                            #[cfg(feature = "live")]
+                            {
+                                let rp_ref = rp.get_or_insert_with(|| try_enricher(&up_tx));
+                                if let Some(b) = rp_ref.as_ref() {
+                                    match b.playlist_page(&id) {
+                                        Ok((pl, vids)) => {
+                                            let _ = up_tx.send(Update::PlaylistPage {
+                                                playlist: Box::new(pl),
+                                                videos: vids,
+                                            });
+                                        }
+                                        Err(e) => {
+                                            let _ = up_tx
+                                                .send(Update::Note(format!("playlist {id}: {e}")));
+                                        }
+                                    }
+                                }
+                            }
+                            #[cfg(not(feature = "live"))]
+                            let _ = id;
                         }
                         Request::VideoMeta(id) => {
                             // Real "up next" comes off the detail response; fetch
@@ -459,18 +548,21 @@ impl Worker {
                             }
                             // Real top comments — always via rustypipe, regardless of
                             // which backend answered the metadata above.
-                            let cb = comments_src.get_or_insert_with(|| try_comments_backend(&up_tx));
-                            if let Some(b) = cb.as_ref() {
-                                match b.comments(&id) {
-                                    Ok(cs) if !cs.is_empty() => {
-                                        let _ = up_tx.send(Update::Comments {
-                                            video: id.clone(),
-                                            comments: cs,
-                                        });
-                                    }
-                                    Ok(_) => {}
-                                    Err(e) => {
-                                        let _ = up_tx.send(Update::Note(format!("comments: {e}")));
+                            #[cfg(feature = "live")]
+                            {
+                                let rp_ref = rp.get_or_insert_with(|| try_enricher(&up_tx));
+                                if let Some(b) = rp_ref.as_ref() {
+                                    match b.comments(&id) {
+                                        Ok(cs) if !cs.is_empty() => {
+                                            let _ = up_tx.send(Update::Comments {
+                                                video: id.clone(),
+                                                comments: cs,
+                                            });
+                                        }
+                                        Ok(_) => {}
+                                        Err(e) => {
+                                            let _ = up_tx.send(Update::Note(format!("comments: {e}")));
+                                        }
                                     }
                                 }
                             }
@@ -607,24 +699,46 @@ fn try_live_backend(_up_tx: &Sender<Update>) -> Option<Box<dyn YtBackend>> {
     None
 }
 
-/// Construct the dedicated **rustypipe** comments source. Comments specifically
-/// come from rustypipe's InnerTube `next`/comments continuation — the primary
-/// yt-dlp path does not extract them cheaply — so this is a separate backend
-/// from [`try_live_backend`], regardless of which one answers metadata.
+/// Construct the shared **rustypipe** enrichment backend. rustypipe's InnerTube
+/// search returns creator avatars, playlists and creator rows the primary yt-dlp
+/// path lacks, its `next`/comments continuation yields real top comments, and
+/// `playlist()` resolves playlist pages — so one backend serves comments, search
+/// enrichment, the avatar-bearing popular feed, and playlist pages.
 #[cfg(feature = "live")]
-fn try_comments_backend(up_tx: &Sender<Update>) -> Option<Box<dyn YtBackend>> {
+fn try_enricher(up_tx: &Sender<Update>) -> Option<crate::backend::live::RustyPipeBackend> {
     match crate::backend::live::RustyPipeBackend::new() {
-        Ok(b) => Some(Box::new(b)),
+        Ok(b) => Some(b),
         Err(e) => {
-            let _ = up_tx.send(Update::Note(format!("comments source unavailable ({e})")));
+            let _ = up_tx.send(Update::Note(format!("rustypipe enrichment unavailable ({e})")));
             None
         }
     }
 }
 
-#[cfg(not(feature = "live"))]
-fn try_comments_backend(_up_tx: &Sender<Update>) -> Option<Box<dyn YtBackend>> {
-    None
+/// Fill in each video's creator avatar (yt-dlp list items carry none) from the
+/// avatars rustypipe returned on the same query — matched by channel id, from
+/// both the video items' channel tags and the standalone creator rows.
+#[cfg(feature = "live")]
+fn enrich_video_avatars(videos: &mut [Video], items: &crate::backend::live::SearchItems) {
+    use std::collections::HashMap;
+    let mut avatars: HashMap<&str, &str> = HashMap::new();
+    for v in &items.videos {
+        if !v.channel_id.is_empty() && !v.channel_avatar_url.is_empty() {
+            avatars.entry(v.channel_id.as_str()).or_insert(v.channel_avatar_url.as_str());
+        }
+    }
+    for c in &items.channels {
+        if !c.id.is_empty() && !c.avatar_url.is_empty() {
+            avatars.entry(c.id.as_str()).or_insert(c.avatar_url.as_str());
+        }
+    }
+    for v in videos.iter_mut() {
+        if v.channel_avatar_url.is_empty() {
+            if let Some(a) = avatars.get(v.channel_id.as_str()) {
+                v.channel_avatar_url = a.to_string();
+            }
+        }
+    }
 }
 
 /// Run `query` against the live backend first (when present); on a live error,
@@ -661,6 +775,7 @@ fn fetch(
 /// (offline / default build) so the caller keeps the bundled sample.
 fn feed_trending(
     live: &Option<Box<dyn YtBackend>>,
+    enrich: Option<&dyn YtBackend>,
     offline: &dyn YtBackend,
     up_tx: &Sender<Update>,
 ) -> Option<(Vec<Video>, String)> {
@@ -674,7 +789,11 @@ fn feed_trending(
             return Some((vs, "live · trending".into()));
         }
     }
-    live_popular_feed(live, up_tx).map(|vs| (vs, "live · popular".into()))
+    // Compose the popular feed from whichever backend carries creator avatars —
+    // rustypipe when present (its items include the avatar), else the primary.
+    let search_backend: Option<&dyn YtBackend> =
+        enrich.or_else(|| live.as_ref().map(|b| b.as_ref()));
+    live_popular_feed(search_backend, up_tx).map(|vs| (vs, "live · popular".into()))
 }
 
 /// Compose a real "popular right now" home feed: for each broad topic, ask the
@@ -683,10 +802,10 @@ fn feed_trending(
 /// YouTube data (view-count-sorted search), not the offline sample. Returns
 /// `None` when there is no live backend so the caller keeps the sample.
 fn live_popular_feed(
-    live: &Option<Box<dyn YtBackend>>,
+    backend: Option<&dyn YtBackend>,
     up_tx: &Sender<Update>,
 ) -> Option<Vec<Video>> {
-    let backend = live.as_ref()?;
+    let backend = backend?;
     // Broad, evergreen topics so the union approximates a general popular feed
     // rather than one niche.
     const SEEDS: [&str; 6] = ["news", "music", "gaming", "technology", "sports", "science"];

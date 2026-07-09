@@ -177,6 +177,104 @@ pub struct Comment {
     pub replies: u32,
 }
 
+pub type PlaylistId = String;
+
+/// A playlist result / page: an ordered collection of videos with its own
+/// title, creator and thumbnail. Populated from the live backend; empty on the
+/// hermetic sample.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Playlist {
+    pub id: PlaylistId,
+    pub title: String,
+    pub channel_id: ChannelId,
+    pub channel_name: String,
+    /// Real thumbnail URL (the playlist's cover, usually its first video's
+    /// still), fetched through the [`ui::ImageStore`]. Empty ⇒ seed gradient.
+    #[serde(default)]
+    pub thumbnail_url: String,
+    /// Deterministic gradient seed for the thumbnail fallback.
+    pub seed: String,
+    /// Total number of videos in the playlist (may exceed the ids we hold).
+    pub video_count: u64,
+    /// Ordered ids of the playlist's videos (as many as the backend returned).
+    #[serde(default)]
+    pub video_ids: Vec<VideoId>,
+}
+
+/// The three result kinds Tube's search can surface, used both as the type
+/// filter and to tag a search result row.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SearchType {
+    Video,
+    Playlist,
+    Creator,
+}
+
+impl SearchType {
+    pub const ALL: [SearchType; 3] = [SearchType::Video, SearchType::Playlist, SearchType::Creator];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            SearchType::Video => "Video",
+            SearchType::Playlist => "Playlist",
+            SearchType::Creator => "Creator",
+        }
+    }
+}
+
+/// Multi-select type filter for the search results. All three types are shown
+/// by default; the *first* click on any chip narrows to just that type
+/// (deselecting the others), and subsequent clicks toggle individual chips.
+/// Toggling everything off is treated as "show all" so the results never dead-end.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SearchTypeFilter {
+    pub video: bool,
+    pub playlist: bool,
+    pub creator: bool,
+    /// True until the user has interacted; the first interaction is the
+    /// "narrow to just this type" click.
+    pub pristine: bool,
+}
+
+impl Default for SearchTypeFilter {
+    fn default() -> Self {
+        Self { video: true, playlist: true, creator: true, pristine: true }
+    }
+}
+
+impl SearchTypeFilter {
+    /// Whether type `t` is currently selected (and thus its results shown + its
+    /// chip highlighted).
+    pub fn shows(&self, t: SearchType) -> bool {
+        match t {
+            SearchType::Video => self.video,
+            SearchType::Playlist => self.playlist,
+            SearchType::Creator => self.creator,
+        }
+    }
+
+    /// Apply a click on the chip for type `t`. The first click narrows to just
+    /// `t`; later clicks toggle `t`. If a toggle would leave nothing selected,
+    /// revert to the all-selected (pristine) default.
+    pub fn click(&mut self, t: SearchType) {
+        if self.pristine {
+            self.video = t == SearchType::Video;
+            self.playlist = t == SearchType::Playlist;
+            self.creator = t == SearchType::Creator;
+            self.pristine = false;
+        } else {
+            match t {
+                SearchType::Video => self.video = !self.video,
+                SearchType::Playlist => self.playlist = !self.playlist,
+                SearchType::Creator => self.creator = !self.creator,
+            }
+            if !self.video && !self.playlist && !self.creator {
+                *self = SearchTypeFilter::default();
+            }
+        }
+    }
+}
+
 /// A channel / uploader.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Channel {
@@ -388,6 +486,7 @@ pub enum Route {
     Subscriptions,
     Watch(VideoId),
     Channel(ChannelId),
+    Playlist(PlaylistId),
     Search(String),
     History,
     Settings,
@@ -412,6 +511,9 @@ impl Route {
 pub struct TubeModel {
     pub videos: Vec<Video>,
     pub channels: Vec<Channel>,
+    /// Playlists we've seen (from search results / opened playlist pages).
+    #[serde(default)]
+    pub playlists: Vec<Playlist>,
     pub subscriptions: Vec<ChannelId>,
     pub history: Vec<VideoId>,
     pub settings: Settings,
@@ -450,6 +552,16 @@ pub struct TubeModel {
     /// Ordered video ids returned by the live backend for [`search_hits_query`].
     #[serde(default)]
     pub search_hits: Vec<VideoId>,
+    /// Ordered playlist ids returned by the live backend for [`search_hits_query`].
+    #[serde(default)]
+    pub search_playlist_hits: Vec<PlaylistId>,
+    /// Ordered creator/channel ids returned by the live backend for
+    /// [`search_hits_query`].
+    #[serde(default)]
+    pub search_channel_hits: Vec<ChannelId>,
+    /// The active multi-select type filter on the search results.
+    #[serde(default)]
+    pub search_type_filter: SearchTypeFilter,
     /// The video whose live "up next" list is held in [`related_hits`].
     #[serde(default)]
     pub related_of: VideoId,
@@ -482,6 +594,7 @@ impl Default for TubeModel {
         Self {
             videos: Vec::new(),
             channels: Vec::new(),
+            playlists: Vec::new(),
             subscriptions: Vec::new(),
             history: Vec::new(),
             settings: Settings::default(),
@@ -496,6 +609,9 @@ impl Default for TubeModel {
             data_source: DataSource::default(),
             search_hits_query: String::new(),
             search_hits: Vec::new(),
+            search_playlist_hits: Vec::new(),
+            search_channel_hits: Vec::new(),
+            search_type_filter: SearchTypeFilter::default(),
             related_of: String::new(),
             related_hits: Vec::new(),
             dislikes: BTreeMap::new(),
@@ -513,6 +629,47 @@ impl TubeModel {
 
     pub fn channel(&self, id: &str) -> Option<&Channel> {
         self.channels.iter().find(|c| c.id == id)
+    }
+
+    pub fn playlist(&self, id: &str) -> Option<&Playlist> {
+        self.playlists.iter().find(|p| p.id == id)
+    }
+
+    /// Insert or update a playlist by id, preserving an already-fetched video
+    /// list when the incoming record (e.g. a search-result stub) carries none.
+    pub fn upsert_playlist(&mut self, p: Playlist) {
+        if let Some(slot) = self.playlists.iter_mut().find(|x| x.id == p.id) {
+            let keep_ids = std::mem::take(&mut slot.video_ids);
+            *slot = p;
+            if slot.video_ids.is_empty() {
+                slot.video_ids = keep_ids;
+            }
+        } else {
+            self.playlists.push(p);
+        }
+    }
+
+    /// Playlists to render for `query`: the backend's ordered playlist hits.
+    pub fn search_playlists_display(&self, query: &str) -> Vec<&Playlist> {
+        if self.search_hits_query != query {
+            return Vec::new();
+        }
+        self.search_playlist_hits
+            .iter()
+            .filter_map(|id| self.playlist(id))
+            .collect()
+    }
+
+    /// Creators (channels) to render for `query`: the backend's ordered channel
+    /// hits.
+    pub fn search_creators_display(&self, query: &str) -> Vec<&Channel> {
+        if self.search_hits_query != query {
+            return Vec::new();
+        }
+        self.search_channel_hits
+            .iter()
+            .filter_map(|id| self.channel(id))
+            .collect()
     }
 
     pub fn is_subscribed(&self, id: &str) -> bool {
@@ -819,6 +976,77 @@ mod tests {
         assert_eq!(v.display_title(false), "ORIGINAL");
         v.dearrow_title = None;
         assert_eq!(v.display_title(true), "ORIGINAL");
+    }
+
+    #[test]
+    fn search_type_filter_defaults_all_selected() {
+        let f = SearchTypeFilter::default();
+        assert!(f.shows(SearchType::Video));
+        assert!(f.shows(SearchType::Playlist));
+        assert!(f.shows(SearchType::Creator));
+        assert!(f.pristine);
+    }
+
+    #[test]
+    fn search_type_filter_first_click_narrows_to_that_type() {
+        let mut f = SearchTypeFilter::default();
+        f.click(SearchType::Playlist);
+        assert!(!f.shows(SearchType::Video), "first click deselects the others");
+        assert!(f.shows(SearchType::Playlist), "first click selects the clicked type");
+        assert!(!f.shows(SearchType::Creator));
+        assert!(!f.pristine);
+    }
+
+    #[test]
+    fn search_type_filter_further_clicks_toggle_individually() {
+        let mut f = SearchTypeFilter::default();
+        f.click(SearchType::Video); // narrow to Video only
+        f.click(SearchType::Creator); // now Video + Creator
+        assert!(f.shows(SearchType::Video));
+        assert!(f.shows(SearchType::Creator));
+        assert!(!f.shows(SearchType::Playlist));
+        f.click(SearchType::Video); // toggle Video off → Creator only
+        assert!(!f.shows(SearchType::Video));
+        assert!(f.shows(SearchType::Creator));
+    }
+
+    #[test]
+    fn search_type_filter_toggling_all_off_reverts_to_all() {
+        let mut f = SearchTypeFilter::default();
+        f.click(SearchType::Video); // Video only
+        f.click(SearchType::Video); // would be empty → revert to all
+        assert!(f.shows(SearchType::Video));
+        assert!(f.shows(SearchType::Playlist));
+        assert!(f.shows(SearchType::Creator));
+    }
+
+    #[test]
+    fn upsert_playlist_preserves_video_ids() {
+        let mut m = TubeModel::default();
+        m.upsert_playlist(Playlist {
+            id: "PL1".into(),
+            title: "Mix".into(),
+            channel_id: "c".into(),
+            channel_name: "C".into(),
+            thumbnail_url: String::new(),
+            seed: "PL1".into(),
+            video_count: 3,
+            video_ids: vec!["a".into(), "b".into(), "c".into()],
+        });
+        // A later stub (from a fresh search) carries no ids — the fetched list stays.
+        m.upsert_playlist(Playlist {
+            id: "PL1".into(),
+            title: "Mix".into(),
+            channel_id: "c".into(),
+            channel_name: "C".into(),
+            thumbnail_url: "https://x/t.jpg".into(),
+            seed: "PL1".into(),
+            video_count: 3,
+            video_ids: vec![],
+        });
+        let p = m.playlist("PL1").unwrap();
+        assert_eq!(p.video_ids.len(), 3, "stub upsert keeps the fetched video list");
+        assert_eq!(p.thumbnail_url, "https://x/t.jpg", "but refreshes other fields");
     }
 
     #[test]

@@ -40,6 +40,10 @@ pub enum IconKind {
     Check,
     Plus,
     Chevron,
+    /// Left-pointing back arrow for the navigation Back affordance.
+    Back,
+    /// A stack of items — the playlist result badge / playlist page marker.
+    Playlist,
     Shield,
     Sparkle,
     Eye,
@@ -235,6 +239,23 @@ impl Icon {
             }
             IconKind::Chevron => {
                 line(scene, &[(0.4, 0.25), (0.65, 0.5), (0.4, 0.75)], false);
+            }
+            IconKind::Back => {
+                // Left-pointing arrow: a chevron head + a shaft.
+                line(scene, &[(0.45, 0.25), (0.2, 0.5), (0.45, 0.75)], false);
+                line(scene, &[(0.2, 0.5), (0.82, 0.5)], false);
+            }
+            IconKind::Playlist => {
+                // Three stacked lines with a small play triangle on the last row.
+                line(scene, &[(0.15, 0.28), (0.75, 0.28)], false);
+                line(scene, &[(0.15, 0.5), (0.75, 0.5)], false);
+                line(scene, &[(0.15, 0.72), (0.5, 0.72)], false);
+                let mut tri = BezPath::new();
+                tri.move_to(u(0.66, 0.62));
+                tri.line_to(u(0.66, 0.82));
+                tri.line_to(u(0.85, 0.72));
+                tri.close_path();
+                scene.fill(vello::peniko::Fill::NonZero, transform, self.color, None, &tri);
             }
             IconKind::Shield => {
                 let mut p = BezPath::new();
