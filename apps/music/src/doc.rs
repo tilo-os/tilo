@@ -158,6 +158,10 @@ pub fn seed(doc: &mut AutoCommit, lib: &Library, playback: &Playback) {
     for (i, id) in lib.saved_albums.iter().enumerate() {
         let _ = doc.insert(&saved, i, id.as_str());
     }
+    let followed = doc.put_object(&ROOT, "followed_artists", ObjType::List).expect("followed_artists");
+    for (i, id) in lib.followed_artists.iter().enumerate() {
+        let _ = doc.insert(&followed, i, id.as_str());
+    }
 
     write_playback(doc, playback);
 }
@@ -413,6 +417,20 @@ pub fn toggle_saved_album(doc: &mut AutoCommit, album_id: &str) -> bool {
     }
 }
 
+/// Toggle whether the user follows an artist. Returns the new followed state.
+pub fn toggle_followed_artist(doc: &mut AutoCommit, artist_id: &str) -> bool {
+    let list = ensure_str_list(doc, "followed_artists");
+    let ids = list_strings(doc, &list);
+    if let Some(pos) = ids.iter().position(|t| t == artist_id) {
+        let _ = doc.delete(&list, pos);
+        false
+    } else {
+        let len = doc.length(&list);
+        let _ = doc.insert(&list, len, artist_id);
+        true
+    }
+}
+
 /// Create a new empty playlist, returning its generated id.
 pub fn create_playlist(doc: &mut AutoCommit, name: &str) -> String {
     let playlists = match get_list(doc, &ROOT, "playlists") {
@@ -529,6 +547,11 @@ pub fn load_library(doc: &AutoCommit) -> Library {
     if let Some(saved) = get_list(doc, &ROOT, "saved_albums") {
         for id in list_strings(doc, &saved) {
             lib.saved_albums.insert(id);
+        }
+    }
+    if let Some(followed) = get_list(doc, &ROOT, "followed_artists") {
+        for id in list_strings(doc, &followed) {
+            lib.followed_artists.insert(id);
         }
     }
 
