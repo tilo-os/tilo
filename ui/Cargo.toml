@@ -23,7 +23,9 @@ webview-adblock = ["dep:adblock"]
 # Links the WPE stack (not packaged by Fedora — build it with
 # os/dev/build-wpe.sh and export PKG_CONFIG_PATH/LD_LIBRARY_PATH to its
 # prefix). Off by default so the workspace builds without the libraries.
-webview-wpe = []
+# Pulls `ash` for the DMA-BUF zero-copy import (raw-Vulkan interop with
+# wgpu-hal); its 0.38 matches the version wgpu-hal 29 resolves.
+webview-wpe = ["dep:ash"]
 # Desktop media integration (MPRIS `org.mpris.MediaPlayer2`) for the
 # `VideoPlayer` widget: media keys + the system top-bar now-playing widget can
 # drive playback and show the current title/artist/art. Off by default so the
@@ -62,6 +64,10 @@ tracing = "0.1"
 cosmic-text = { version = "0.19.0", default-features = false, features = ["swash", "std"] }
 pollster = "0.4.0"
 rand = "0.10.1"
+# Raw-Vulkan interop for the WebView DMA-BUF zero-copy import (feature
+# `webview-wpe`). Version tracks what wgpu-hal 29 resolves so the `vk::*`
+# handles passed through `create_texture_from_hal` are ABI-identical.
+ash = { version = "0.38", optional = true }
 taffy = { version = "0.10.1", features = ["content_size"] }
 tokio = { version = "1.52.3", features = ["full"] }
 vello = "0.9"

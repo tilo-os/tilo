@@ -23,6 +23,7 @@
 
 mod ffi;
 pub mod egl;
+pub mod import;
 
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_uint, c_void};
@@ -61,6 +62,9 @@ const WL_SHM_FORMAT_XRGB8888: u32 = 1;
 /// Shared between the engine thread and the widget/app side.
 struct Shared {
     frames: FrameSlot,
+    /// Latest exported dmabuf frame (zero-copy path). Consumed by the
+    /// render side via [`WpeEngine::take_dmabuf`].
+    dmabuf: Mutex<Option<egl::DmabufFrame>>,
     events: Mutex<Vec<WebViewEvent>>,
     /// Host wake callback — pokes the winit loop so an idle app paints
     /// engine activity promptly.
@@ -101,6 +105,7 @@ impl WpeEngine {
         let (tx, rx) = channel::<WebViewCommand>();
         let shared = Arc::new(Shared {
             frames: Arc::new(Mutex::new(None)),
+            dmabuf: Mutex::new(None),
             events: Mutex::new(Vec::new()),
             waker: Mutex::new(None),
             ctx: AtomicUsize::new(0),
@@ -146,6 +151,15 @@ impl WebViewEngine for WpeEngine {
 
     fn set_waker(&self, waker: Box<dyn Fn() + Send + Sync>) {
         *self.shared.waker.lock().unwrap() = Some(waker);
+    }
+}
+
+impl WpeEngine {
+    /// Take the latest exported dmabuf frame (zero-copy path), if one is
+    /// pending. The caller imports it into a wgpu texture; on the next
+    /// paint the engine publishes a fresh one.
+    pub fn take_dmabuf(&self) -> Option<egl::DmabufFrame> {
+        self.shared.dmabuf.lock().unwrap().take()
     }
 }
 
@@ -386,16 +400,16 @@ extern "C" fn on_export_fdo_egl_image(
             let w = ffi::wpe_fdo_egl_exported_image_get_width(image);
             let h = ffi::wpe_fdo_egl_exported_image_get_height(image);
             if let Some(dmabuf) = egl.export(egl_image, w, h) {
-                tracing::info!(
+                tracing::debug!(
                     fourcc = %egl::fourcc_str(dmabuf.fourcc),
                     modifier = format_args!("0x{:x}", dmabuf.modifier),
                     planes = dmabuf.planes.len(),
-                    stride = dmabuf.planes[0].stride,
                     "dmabuf frame exported {}x{}",
                     dmabuf.width,
                     dmabuf.height,
                 );
-                // Phase 2 will publish `dmabuf` to the render thread here.
+                *state.shared.dmabuf.lock().unwrap() = Some(dmabuf);
+                state.shared.wake();
             }
         }
         ffi::wpe_view_backend_exportable_fdo_egl_dispatch_release_exported_image(
