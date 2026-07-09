@@ -129,6 +129,36 @@ fn time_date_clock_format_persists_to_shared_locale() {
     );
 }
 
+/// The Power pane's idle preferences (suspend-when-idle, screen-blank timeout)
+/// write through to the shared store the compositor's power layer reads.
+#[test]
+fn power_idle_prefs_persist_to_disk() {
+    let _g = ENV_LOCK.lock().unwrap();
+    let _home = temp_home("power");
+
+    // Fresh install defaults: auto-suspend on, blank at 10 minutes.
+    let base = SystemPrefs::load();
+    assert!(base.power.auto_suspend);
+    assert_eq!(base.power.blank_minutes, 10);
+
+    let mut pane = settings::panes::power::build();
+    let mut doc = AutoCommit::new();
+    let root = automerge::ROOT;
+    pane.sync(&mut doc, &root); // seeds from defaults
+    // Turn suspend off and pick a 30-minute blank the way the controls would.
+    let _ = doc.put(
+        &root,
+        settings::panes::power::AUTO_SUSPEND_KEY,
+        automerge::ScalarValue::Boolean(false),
+    );
+    let _ = doc.put(&root, settings::panes::power::BLANK_KEY, "30 minutes");
+    pane.sync(&mut doc, &root);
+
+    let reloaded = SystemPrefs::load();
+    assert!(!reloaded.power.auto_suspend, "auto-suspend persisted off");
+    assert_eq!(reloaded.power.blank_minutes, 30, "blank timeout persisted");
+}
+
 #[test]
 fn updates_channel_persists_to_disk() {
     let _g = ENV_LOCK.lock().unwrap();

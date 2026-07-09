@@ -12,7 +12,7 @@
 //! - There is no standalone divider widget; section spacing is done with
 //!   headers + cards rather than rules.
 
-use ui::widget::{Column, Container, Row, Spacer, Text, Widget};
+use ui::widget::{Badge, Button, Column, Container, Row, Spacer, Text, Widget};
 
 /// Type alias for the boxed-widget currency the `ui` tree speaks.
 pub type El = Box<dyn Widget>;
@@ -33,6 +33,13 @@ pub const CARD_GAP: f32 = 16.0;
 /// not expose.
 pub fn vgap(px: f32) -> El {
     Box::new(Container::new().with_no_padding().with_height(px))
+}
+
+/// A fixed-width empty box for deliberate *horizontal* space inside a `Row`
+/// (e.g. a gutter between an icon and its label). Pinned width, so it never
+/// flex-grows like a bare spacer would.
+pub fn hgap(px: f32) -> El {
+    Box::new(Container::new().with_no_padding().with_size(px, 1.0))
 }
 
 /// Stack a list of cards with a deliberate [`CARD_GAP`] of air between each
@@ -112,27 +119,103 @@ pub fn value_row(label: &str, value: &str) -> El {
 
 /// A label with a short helper line beneath it, paired with a trailing
 /// control. Used where a setting needs a one-line explanation.
+///
+/// The label and control sit inline on the top line, with the description on
+/// its own line beneath. A single leading `Text` keeps the control on the
+/// label's line at the right edge — a multi-line block on the left would seize
+/// the row and wrap the control below it, dropping it out of alignment.
 pub fn setting_row_described(label: &str, description: &str, control: El) -> El {
-    let text_block = Column::new()
-        .with_no_padding()
-        .with_intrinsic_height()
+    let top = Row::new()
         .push(Box::new(Text::new(label).with_size(13.0)))
-        .push(Box::new(
-            Text::new(description)
-                .with_size(11.0)
-                .with_color(dim()),
-        ));
+        .push(Box::new(Spacer::new()))
+        .push(control);
     Box::new(
-        Row::new()
-            .push(Box::new(text_block))
-            .push(Box::new(Spacer::new()))
-            .push(control),
+        Column::new()
+            .with_no_padding()
+            .with_intrinsic_height()
+            .push(Box::new(top))
+            .push(Box::new(
+                Text::new(description).with_size(11.0).with_color(dim()),
+            )),
     )
 }
 
 /// A dim helper-text line, for captions and "best-effort" notes.
 pub fn caption(text: &str) -> El {
     Box::new(Text::new(text).with_size(11.0).with_color(dim()))
+}
+
+/// Default width (logical px) a compact right-aligned control (dropdown,
+/// segmented picker) is pinned to, so a short-option control reads as a
+/// trailing chooser rather than a full-width form field. Wide enough for the
+/// longest option label the settings dropdowns offer.
+pub const COMPACT_CONTROL_W: f32 = 220.0;
+
+/// Pin a trailing control to a fixed width so it aligns to the row's right
+/// edge instead of stretching across the whole card. `ui`'s `Dropdown` fills
+/// its parent (`percent(1.0)` width); wrapping it here gives every settings
+/// chooser the same compact, right-aligned footprint — the GNOME/Adwaita
+/// look — rather than a form field that spans the card.
+pub fn compact_control(control: El) -> El {
+    compact_control_w(COMPACT_CONTROL_W, control)
+}
+
+/// [`compact_control`] with an explicit width, for controls that need more
+/// (long device names) or less room.
+pub fn compact_control_w(width: f32, control: El) -> El {
+    Box::new(
+        Container::new()
+            .with_no_padding()
+            .with_width(width)
+            .with_child(control),
+    )
+}
+
+/// A settings row whose trailing control is a compact, right-aligned chooser
+/// (see [`compact_control`]). Use for dropdown/segmented settings so the
+/// label stays left and the control sits at the row's right edge on one line,
+/// rather than the control stretching full-width and pushing the label above
+/// it.
+pub fn choice_row(label: &str, control: El) -> El {
+    setting_row(label, compact_control(control))
+}
+
+/// [`choice_row`] with a helper line under the label.
+pub fn choice_row_described(label: &str, description: &str, control: El) -> El {
+    setting_row_described(label, description, compact_control(control))
+}
+
+/// A compact, square icon button — a [`ui::widget::Button`] sized down from
+/// its default 120×40 pill to a 34×34 icon target. Use for row-level actions
+/// (remove, edit) where a full pill would dominate the row.
+pub fn icon_button(id: &str, glyph: &str, key: &str) -> El {
+    Box::new(Button::new(id, glyph, Some(key)).with_size(34.0, 34.0))
+}
+
+/// A small rounded status chip (e.g. "Connected", "Paired", "Offline").
+/// Backed by the toolkit's [`Badge::pill`] so the tint carries the meaning
+/// and the shape is consistent with the rest of the system.
+pub fn status_pill(label: &str, tint: vello::peniko::Color) -> El {
+    Box::new(Badge::pill(label, tint))
+}
+
+/// A prominent identity block for a pane's first card: a large accent glyph,
+/// a bold title, and a dim one-line subtitle stacked beside it. Used where a
+/// pane benefits from a hero (About's device identity, Power's battery).
+pub fn hero(glyph: &str, title: &str, subtitle: &str) -> El {
+    let accent = ui::Theme::dark().accent_primary;
+    let text_block = Column::new()
+        .with_no_padding()
+        .with_intrinsic_height()
+        .push(Box::new(Text::new(title).with_size(20.0)))
+        .push(vgap(3.0))
+        .push(Box::new(Text::new(subtitle).with_size(12.0).with_color(dim())));
+    let row = Row::new()
+        .push(Box::new(Text::new(glyph).with_size(34.0).with_color(accent)))
+        .push(hgap(14.0))
+        .push(Box::new(text_block))
+        .push(Box::new(Spacer::new()));
+    Box::new(Container::new().with_background().with_child(Box::new(row)))
 }
 
 /// The dim foreground colour. Pulled from the theme at draw time normally,

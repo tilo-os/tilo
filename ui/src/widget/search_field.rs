@@ -1,0 +1,423 @@
+//! `SearchField` — a search-styled text box: a rounded pill with a leading
+//! magnifier, a real editable [`TextInput`] in the middle, and a trailing "×"
+//! that clears the query. A dozen apps (`music`, `mail`, `tube`, `containers`,
+//! `software_store`, `monitor`, `file-explorer`, `permissions`, `browser`,
+//! `snippets`, `contacts`, …) hand-roll exactly this — a pill `Container` +
+//! `Icon::Search` gutter wrapping a `TextInput`, plus a bespoke clear button.
+//!
+//! `SearchField` composes the toolkit's own [`TextInput`] (so caret, selection,
+//! IME, and CRDT binding all come for free) and only adds the search chrome.
+//! It works both **local** (the query lives outside the CRDT — the common case
+//! for a filter box) and **bound** to a doc path. The query is read back with
+//! [`SearchField::value`] or the one-shot [`SearchField::take_dirty`], which
+//! also reports a clear as an empty-string edit.
+
+use std::collections::HashMap;
+
+use automerge::{AutoCommit, ObjId};
+use taffy::style_helpers::{length, percent};
+use taffy::{NodeId, Style, TaffyTree};
+use vello::Scene;
+use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
+use winit::event::{ElementState, MouseButton, WindowEvent};
+
+use crate::icons::Icon;
+use crate::presence::PresenceCtx;
+use crate::text_render::TextRenderer;
+use crate::theme::Theme;
+use crate::widget::{TextInput, Widget};
+
+const HEIGHT: f64 = 38.0;
+const ICON_GUTTER: f64 = 34.0;
+const CLEAR_GUTTER: f64 = 30.0;
+const ICON_D: f64 = 16.0;
+const CLEAR_D: f64 = 16.0;
+
+/// A search-styled input: magnifier + editable text + clear button.
+pub struct SearchField {
+    input: TextInput,
+    leading: Icon,
+    clearable: bool,
+    cleared: bool,
+    rect: Rect,
+    clear_rect: Rect,
+    last_cursor: Point,
+}
+
+impl SearchField {
+    /// A local-mode search field (query kept outside the CRDT). Chain
+    /// [`with_placeholder`](Self::with_placeholder) / [`with_id`](Self::with_id)
+    /// / [`bound`](Self::bound) to configure it.
+    pub fn new() -> Self {
+        Self {
+            input: TextInput::local().with_plain_chrome().with_placeholder("Search"),
+            leading: Icon::Search,
+            clearable: true,
+            cleared: false,
+            rect: Rect::ZERO,
+            clear_rect: Rect::ZERO,
+            last_cursor: Point::ZERO,
+        }
+    }
+
+    /// Set the placeholder shown when the query is empty.
+    pub fn with_placeholder(mut self, hint: &str) -> Self {
+        self.input.set_placeholder(hint);
+        self
+    }
+
+    /// Give the embedded input a stable test/focus id.
+    pub fn with_id(mut self, id: &str) -> Self {
+        self.input = std::mem::replace(&mut self.input, TextInput::local()).with_id(id);
+        self
+    }
+
+    /// Bind the query to a CRDT string path so edits sync through the doc,
+    /// instead of the default local-only buffer.
+    pub fn bound(mut self, path: &str) -> Self {
+        self.input = std::mem::replace(&mut self.input, TextInput::local())
+            .with_plain_chrome()
+            .with_on_change_path(path);
+        self
+    }
+
+    /// Override the leading icon (default [`Icon::Search`]).
+    pub fn with_icon(mut self, icon: Icon) -> Self {
+        self.leading = icon;
+        self
+    }
+
+    /// Hide the trailing clear button (it otherwise appears while the query
+    /// is non-empty).
+    pub fn without_clear(mut self) -> Self {
+        self.clearable = false;
+        self
+    }
+
+    /// The current query text.
+    pub fn value(&self) -> &str {
+        self.input.value()
+    }
+
+    /// Whether the query is empty.
+    pub fn is_empty(&self) -> bool {
+        self.input.value().is_empty()
+    }
+
+    /// One-shot read of query changes since the last call — typing **and**
+    /// clears (a clear reports `Some("")`). Returns `None` when nothing
+    /// changed. This is the primary channel a host polls to re-run its filter.
+    pub fn take_dirty(&mut self) -> Option<String> {
+        if let Some(t) = self.input.take_dirty() {
+            return Some(t);
+        }
+        if self.cleared {
+            self.cleared = false;
+            return Some(String::new());
+        }
+        None
+    }
+
+    /// The clear-button hit rect (empty until laid out + drawn). Exposed for
+    /// tests.
+    pub fn clear_rect(&self) -> Rect {
+        self.clear_rect
+    }
+
+    /// Whether the clear button is currently showing (clearable + non-empty).
+    fn clear_visible(&self) -> bool {
+        self.clearable && !self.input.value().is_empty()
+    }
+}
+
+impl Default for SearchField {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Widget for SearchField {
+    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+        self.input.sync(state, path);
+    }
+
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        theme: &Theme,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        let child = self.input.build_layout(taffy, theme, node_map);
+        let node = taffy
+            .new_with_children(
+                Style {
+                    display: taffy::Display::Flex,
+                    align_items: Some(taffy::AlignItems::Center),
+                    flex_shrink: 0.0,
+                    padding: taffy::Rect {
+                        left: length(ICON_GUTTER as f32),
+                        right: length(CLEAR_GUTTER as f32),
+                        top: length(0.0),
+                        bottom: length(0.0),
+                    },
+                    size: taffy::Size { width: percent(1.0), height: length(HEIGHT as f32) },
+                    ..Default::default()
+                },
+                &[child],
+            )
+            .unwrap();
+        node_map.insert(node, self as *mut dyn Widget);
+        node
+    }
+
+    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        let l = taffy.layout(node).unwrap();
+        self.rect = Rect::new(
+            origin.x + l.location.x as f64,
+            origin.y + l.location.y as f64,
+            origin.x + l.location.x as f64 + l.size.width as f64,
+            origin.y + l.location.y as f64 + l.size.height as f64,
+        );
+        let child_node = taffy.children(node).unwrap()[0];
+        self.input.apply_layout(taffy, child_node, Point::new(self.rect.x0, self.rect.y0));
+    }
+
+    fn draw(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        if self.rect.width() <= 0.0 {
+            return;
+        }
+        // Pill chrome, focus-aware.
+        let focused = self.input.is_focused();
+        let pill = RoundedRect::from_rect(self.rect, theme.tokens.radii.full as f64);
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            transform,
+            theme.tokens.colors.surfaces.raised,
+            None,
+            &pill,
+        );
+        let border = if focused { theme.border_focus } else { theme.border_standard };
+        scene.stroke(&Stroke::new(if focused { 1.5 } else { 1.0 }), transform, border, None, &pill);
+
+        // Leading magnifier.
+        let icon_rect = Rect::from_center_size(
+            Point::new(self.rect.x0 + ICON_GUTTER / 2.0, self.rect.center().y),
+            (ICON_D, ICON_D),
+        );
+        self.leading.draw_with_stroke(scene, transform, icon_rect, theme.text_dim, 1.6);
+
+        // Editable text.
+        self.input.draw(scene, transform, text_renderer, theme, presence);
+
+        // Trailing clear.
+        if self.clear_visible() {
+            let cr = Rect::from_center_size(
+                Point::new(self.rect.x1 - CLEAR_GUTTER / 2.0, self.rect.center().y),
+                (CLEAR_D, CLEAR_D),
+            );
+            self.clear_rect = cr;
+            let hovered = cr.contains(self.last_cursor);
+            let col = if hovered { theme.text_primary } else { theme.text_dim };
+            Icon::X.draw_with_stroke(scene, transform, cr, col, 1.6);
+        } else {
+            self.clear_rect = Rect::ZERO;
+        }
+    }
+
+    fn handle_event(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: &winit::event::Modifiers,
+        state: &mut AutoCommit,
+        path: &ObjId,
+        handled: &mut bool,
+        focus_target: &mut Option<NodeId>,
+        node_id: NodeId,
+        taffy: &TaffyTree<()>,
+    ) {
+        if let WindowEvent::CursorMoved { position, .. } = event {
+            self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
+        }
+        // Intercept a click on the clear button before the input sees it.
+        if let WindowEvent::MouseInput {
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+            ..
+        } = event
+        {
+            if self.clear_visible() && self.clear_rect.contains(self.last_cursor) {
+                self.input.set_text("");
+                self.cleared = true;
+                *handled = true;
+                return;
+            }
+        }
+        let child_node = taffy.children(node_id).unwrap()[0];
+        self.input
+            .handle_event(event, scale_factor, modifiers, state, path, handled, focus_target, child_node, taffy);
+    }
+
+    fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
+        if self.clear_visible() && self.clear_rect.contains(point) {
+            return Some(winit::window::CursorIcon::Pointer);
+        }
+        self.input.cursor_shape(point)
+    }
+
+    fn children(&self) -> Vec<&dyn Widget> {
+        vec![&self.input as &dyn Widget]
+    }
+
+    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        vec![&mut self.input as &mut (dyn Widget + '_)]
+    }
+
+    fn needs_commit(&self) -> bool {
+        self.input.needs_commit()
+    }
+
+    fn on_commit(&mut self) {
+        self.input.on_commit();
+    }
+
+    fn name(&self) -> &str { "SearchField" }
+
+    fn get_rect(&self) -> Rect { self.rect }
+
+    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        use crate::a11y::{AccessNode, AccessState, Role};
+        // A search box is a labelled text input; its current query is the value.
+        Some(
+            AccessNode::new(Role::TextInput)
+                .with_name("Search")
+                .with_value(self.input.value().to_string())
+                .with_state(AccessState::new().focusable(true).focused(self.input.is_focused())),
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn lay_out(w: &mut dyn Widget, vw: f32) -> TaffyTree<()> {
+        let theme = Theme::dark();
+        let mut taffy = TaffyTree::<()>::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let mut tr = TextRenderer::new();
+        let node = w.build_layout(&mut taffy, &theme, &mut node_map);
+        taffy
+            .compute_layout_with_measure(
+                node,
+                taffy::Size {
+                    width: taffy::AvailableSpace::Definite(vw),
+                    height: taffy::AvailableSpace::Definite(HEIGHT as f32),
+                },
+                |k, a, id, _, _| {
+                    node_map.get(&id).map(|&p| unsafe { (*p).measure(k, a, &mut tr) }).unwrap_or(taffy::Size::ZERO)
+                },
+            )
+            .unwrap();
+        w.apply_layout(&taffy, node, Point::ZERO);
+        taffy
+    }
+
+    fn draw(w: &mut dyn Widget) {
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let presence = PresenceCtx::default();
+        let mut scene = Scene::new();
+        w.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+    }
+
+    #[test]
+    fn embedded_input_sits_inside_the_icon_gutter() {
+        let mut sf = SearchField::new();
+        let _ = lay_out(&mut sf, 320.0);
+        // The pill fills the width; the input is inset past the leading gutter.
+        assert!((sf.get_rect().width() - 320.0).abs() < 1.0, "pill fills width");
+        let input_rect = sf.input.get_rect();
+        assert!(
+            input_rect.x0 >= sf.get_rect().x0 + ICON_GUTTER - 0.5,
+            "the editable text starts past the magnifier gutter ({} vs {})",
+            input_rect.x0,
+            sf.get_rect().x0 + ICON_GUTTER
+        );
+    }
+
+    #[test]
+    fn clear_button_hidden_when_empty_shown_when_typed() {
+        let mut sf = SearchField::new();
+        let _ = lay_out(&mut sf, 320.0);
+        draw(&mut sf);
+        assert_eq!(sf.clear_rect(), Rect::ZERO, "empty query ⇒ no clear button");
+        sf.input.set_text("hello");
+        draw(&mut sf);
+        assert_ne!(sf.clear_rect(), Rect::ZERO, "non-empty query ⇒ a clear button appears");
+    }
+
+    #[test]
+    fn clicking_clear_empties_query_and_reports_dirty() {
+        // Build a tree whose root node IS the SearchField, so handle_event can
+        // resolve the child via `taffy.children(node)` exactly as the App does.
+        let theme = Theme::dark();
+        let mut sf = SearchField::new();
+        let mut taffy = TaffyTree::<()>::new();
+        let mut nm: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let mut tr = TextRenderer::new();
+        let node = sf.build_layout(&mut taffy, &theme, &mut nm);
+        taffy
+            .compute_layout_with_measure(
+                node,
+                taffy::Size {
+                    width: taffy::AvailableSpace::Definite(320.0),
+                    height: taffy::AvailableSpace::Definite(HEIGHT as f32),
+                },
+                |k, a, id, _, _| nm.get(&id).map(|&p| unsafe { (*p).measure(k, a, &mut tr) }).unwrap_or(taffy::Size::ZERO),
+            )
+            .unwrap();
+        sf.apply_layout(&taffy, node, Point::ZERO);
+        sf.input.set_text("query text");
+        draw(&mut sf);
+        assert!(!sf.is_empty());
+        let target = sf.clear_rect().center();
+        assert!(target.x > 0.0, "clear button resolves after draw");
+
+        let mut handled = false;
+        let mut ft = None;
+        let mut doc = AutoCommit::new();
+        let rootid = automerge::ROOT;
+        let mods = winit::event::Modifiers::default();
+        sf.handle_event(
+            &WindowEvent::CursorMoved { device_id: unsafe { std::mem::zeroed() }, position: winit::dpi::PhysicalPosition::new(target.x, target.y) },
+            1.0, &mods, &mut doc, &rootid, &mut handled, &mut ft, node, &taffy,
+        );
+        sf.handle_event(
+            &WindowEvent::MouseInput { device_id: unsafe { std::mem::zeroed() }, state: ElementState::Pressed, button: MouseButton::Left },
+            1.0, &mods, &mut doc, &rootid, &mut handled, &mut ft, node, &taffy,
+        );
+        assert!(handled, "clear click consumed");
+        assert!(sf.is_empty(), "clear empties the query");
+        assert_eq!(sf.take_dirty().as_deref(), Some(""), "clear reports an empty-string edit");
+        assert_eq!(sf.take_dirty(), None, "dirty drains after one read");
+    }
+
+    #[test]
+    fn accessibility_is_a_text_input_with_the_query_as_value() {
+        use crate::a11y::Role;
+        let mut sf = SearchField::new();
+        sf.input.set_text("abc");
+        let node = Widget::accessibility(&sf).expect("search field exposes a11y");
+        assert_eq!(node.role, Role::TextInput);
+        assert_eq!(node.value.as_deref(), Some("abc"));
+        assert!(node.state.focusable);
+    }
+}
