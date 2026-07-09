@@ -27,17 +27,15 @@ use ui::webview::{SharedEngine, WebViewCommand};
 
 /// Filter lists to fetch, as `(cache file name, URL)`.
 ///
-/// The EasyList family — exactly the set WebKit's content-blocker format
-/// is designed for (it's what Safari/WKContentRuleList ships). Adding
-/// uBlock Origin + AdGuard on top pushed the compiled set past ~250k
-/// rules, and their extended cosmetic/procedural syntax doesn't round-trip
-/// cleanly through adblock-rust's WebKit converter — the resulting filter
-/// blanked whole pages (SPAs like DuckDuckGo/YouTube) a few seconds after
-/// load. This conservative set blocks the large majority of ads + trackers
-/// reliably; YouTube video ads are handled separately by [`user_scripts`].
+/// A "proper" blocker set, mirroring what uBlock Origin enables by
+/// default plus AdGuard's base list, all in EasyList syntax that
+/// adblock-rust's content-blocking converter understands:
 ///
 /// - **EasyList** / **EasyPrivacy** — the network + tracker backbone.
 /// - **EasyList Cookie List** — cookie/consent banner annoyances.
+/// - **uBlock Origin** `filters`, `privacy`, `badware`, `resource-abuse`,
+///   `quick-fixes` — uBO's own maintained supplements.
+/// - **AdGuard Base** — AdGuard's flagship list in uBlock-optimised form.
 const LISTS: &[(&str, &str)] = &[
     ("easylist.txt", "https://easylist.to/easylist/easylist.txt"),
     (
@@ -47,6 +45,30 @@ const LISTS: &[(&str, &str)] = &[
     (
         "easylist-cookie.txt",
         "https://secure.fanboy.co.nz/fanboy-cookiemonster.txt",
+    ),
+    (
+        "ublock-filters.txt",
+        "https://raw.githubusercontent.com/uBlockOrigin/uAssets/master/filters/filters.txt",
+    ),
+    (
+        "ublock-privacy.txt",
+        "https://raw.githubusercontent.com/uBlockOrigin/uAssets/master/filters/privacy.txt",
+    ),
+    (
+        "ublock-badware.txt",
+        "https://raw.githubusercontent.com/uBlockOrigin/uAssets/master/filters/badware.txt",
+    ),
+    (
+        "ublock-resource-abuse.txt",
+        "https://raw.githubusercontent.com/uBlockOrigin/uAssets/master/filters/resource-abuse.txt",
+    ),
+    (
+        "ublock-quick-fixes.txt",
+        "https://raw.githubusercontent.com/uBlockOrigin/uAssets/master/filters/quick-fixes.txt",
+    ),
+    (
+        "adguard-base.txt",
+        "https://filters.adtidy.org/extension/ublock/filters/2.txt",
     ),
 ];
 
@@ -355,9 +377,17 @@ mod tests {
     #[test]
     fn filter_list_set_covers_the_expected_sources() {
         let names: Vec<&str> = LISTS.iter().map(|(n, _)| *n).collect();
-        // The WebKit-native EasyList family (heavier uBlock/AdGuard lists
-        // were dropped — their volume + extended syntax blanked pages).
-        for expected in ["easylist.txt", "easyprivacy.txt", "easylist-cookie.txt"] {
+        for expected in [
+            "easylist.txt",
+            "easyprivacy.txt",
+            "easylist-cookie.txt",
+            "ublock-filters.txt",
+            "ublock-privacy.txt",
+            "ublock-badware.txt",
+            "ublock-resource-abuse.txt",
+            "ublock-quick-fixes.txt",
+            "adguard-base.txt",
+        ] {
             assert!(names.contains(&expected), "missing filter list {expected}");
         }
         // Every entry points at an https raw source.
