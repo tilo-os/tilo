@@ -35,14 +35,24 @@
 use rustypipe::client::RustyPipe;
 use rustypipe::model::richtext::ToPlaintext;
 use rustypipe::model::{
-    Comment as RpComment, Verification, VideoCodec, VideoFormat, VideoItem,
-    VideoPlayer as RpVideoPlayer, VideoStream, YouTubeItem,
+    ChannelItem, Comment as RpComment, PlaylistItem, Verification, VideoCodec, VideoFormat,
+    VideoItem, VideoPlayer as RpVideoPlayer, VideoStream, YouTubeItem,
 };
 use rustypipe::param::search_filter::{ItemType, Order, SearchFilter, UploadDate};
 
 use crate::backend::potoken::{NullPoToken, PoTokenProvider};
 use crate::backend::{BackendError, BackendOutcome, BackendResult, StreamHandle, YtBackend};
-use crate::model::{Channel, Comment, Video};
+use crate::model::{Channel, Comment, Playlist, Video};
+
+/// A rustypipe search split into Tube's three result kinds. Used to enrich the
+/// primary (yt-dlp) search — which returns videos only, without creator avatars
+/// — with playlists, creator rows, and the channel avatars carried on every
+/// rustypipe item.
+pub struct SearchItems {
+    pub videos: Vec<Video>,
+    pub playlists: Vec<Playlist>,
+    pub channels: Vec<Channel>,
+}
 
 /// rustypipe marks channels with a `Verification` enum; map "has a badge" onto
 /// Tube's boolean `verified`.
@@ -118,6 +128,55 @@ impl RustyPipeBackend {
     {
         self.rt.block_on(fut)
     }
+
+    /// Run one search and split the results into videos, playlists and creator
+    /// rows — the enrichment source for the primary backend, which returns only
+    /// videos (and no avatars). Real InnerTube data in a single call.
+    pub fn search_items(&self, query: &str) -> Result<SearchItems, BackendError> {
+        let q = self.rp.query();
+        let res = self
+            .block(async { q.search::<YouTubeItem, _>(query).await })
+            .map_err(|e| BackendError(format!("search_items: {e}")))?;
+        let mut out = SearchItems { videos: Vec::new(), playlists: Vec::new(), channels: Vec::new() };
+        for it in res.items.items {
+            match it {
+                YouTubeItem::Video(v) => out.videos.push(map_video_item(v)),
+                YouTubeItem::Playlist(p) => out.playlists.push(map_playlist_item(p)),
+                YouTubeItem::Channel(c) => out.channels.push(map_channel_item(c)),
+            }
+        }
+        Ok(out)
+    }
+
+    /// Fetch a playlist page: its metadata + ordered video list.
+    pub fn playlist_page(&self, id: &str) -> Result<(Playlist, Vec<Video>), BackendError> {
+        let q = self.rp.query();
+        let pl = self
+            .block(async { q.playlist(id).await })
+            .map_err(|e| BackendError(format!("playlist {id}: {e}")))?;
+        let videos: Vec<Video> = pl.videos.items.into_iter().map(map_video_item).collect();
+        let (channel_id, channel_name) = pl
+            .channel
+            .map(|c| (c.id, c.name))
+            .unwrap_or_else(|| (String::new(), "Unknown".into()));
+        let thumb = best_thumb(&pl.thumbnail);
+        let thumbnail_url = if thumb.is_empty() {
+            videos.first().map(|v| v.thumbnail_url.clone()).unwrap_or_default()
+        } else {
+            thumb
+        };
+        let playlist = Playlist {
+            id: pl.id.clone(),
+            title: pl.name,
+            channel_id,
+            channel_name,
+            thumbnail_url,
+            seed: pl.id,
+            video_count: pl.video_count,
+            video_ids: videos.iter().map(|v| v.id.clone()).collect(),
+        };
+        Ok((playlist, videos))
+    }
 }
 
 /// Map a rustypipe [`VideoItem`] onto Tube's [`Video`]. Fields rustypipe doesn't
@@ -174,6 +233,41 @@ fn initials(name: &str) -> String {
         out.push('?');
     }
     out
+}
+
+/// Map a rustypipe [`PlaylistItem`] (a search-result stub) onto Tube's
+/// [`Playlist`]. The video list is empty until the playlist page is opened.
+fn map_playlist_item(p: PlaylistItem) -> Playlist {
+    let (channel_id, channel_name) = p
+        .channel
+        .map(|c| (c.id, c.name))
+        .unwrap_or_else(|| (String::new(), "Unknown".into()));
+    Playlist {
+        id: p.id.clone(),
+        title: p.name,
+        channel_id,
+        channel_name,
+        thumbnail_url: best_thumb(&p.thumbnail),
+        seed: p.id,
+        video_count: p.video_count.unwrap_or(0),
+        video_ids: Vec::new(),
+    }
+}
+
+/// Map a rustypipe [`ChannelItem`] (a search-result creator) onto Tube's
+/// [`Channel`], carrying the real avatar so the creator row shows a photo.
+fn map_channel_item(c: ChannelItem) -> Channel {
+    Channel {
+        id: c.id.clone(),
+        name: c.name,
+        handle: c.handle.unwrap_or_else(|| c.id.clone()),
+        subscribers: c.subscriber_count.unwrap_or(0),
+        verified: is_verified(c.verification),
+        description: c.short_description,
+        seed: c.id,
+        avatar_url: best_thumb(&c.avatar),
+        banner_url: String::new(),
+    }
 }
 
 /// Map a rustypipe [`RpComment`] onto Tube's plain [`Comment`].

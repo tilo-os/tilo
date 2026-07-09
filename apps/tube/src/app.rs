@@ -11,8 +11,8 @@
 //! [`Action`]; `handle_event` drains the queue, mutates the model, persists
 //! and flags a structural rebuild.
 
-use std::cell::RefCell;
-use std::collections::HashMap;
+use std::cell::{Cell, RefCell};
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use automerge::transaction::Transactable;
@@ -20,7 +20,7 @@ use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, ScalarValue, Value};
 use taffy::{NodeId, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
-use winit::event::{ElementState, KeyEvent, WindowEvent};
+use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use ui::permissions::PermissionContext;
@@ -53,6 +53,12 @@ const INSTANCES: [&str; 4] = [
 /// hamburger. Chosen so a readable column of 300px video cards plus the rail
 /// stop fitting comfortably side by side.
 const NAV_BREAKPOINT: f64 = 760.0;
+
+/// Right-edge lane (logical px) reserved for the vertical scrollbar on every
+/// scroll view, so the bar never draws over the content (the video player in
+/// particular). Sized to the bar's footprint (8px thumb + 2px margins) plus a
+/// little breathing room.
+pub const SCROLL_GUTTER: f32 = 14.0;
 
 pub struct TubeApp {
     model: TubeModel,
@@ -139,6 +145,28 @@ pub struct TubeApp {
     /// up. Spawned once, on the first real stream load in the online app, so the
     /// system top-bar widget + media keys drive playback. Never in `--shots`/tests.
     mpris_started: bool,
+
+    /// Toolkit navigation stack: the history of views. Every navigation pushes;
+    /// [`Action::Back`] (a Back button, Escape, Alt-Left or an edge-swipe) pops.
+    /// The stack is the source of truth for "can I go back" and "where to"; the
+    /// live `model.route` mirrors its current entry.
+    nav: ui::NavStack<Route>,
+    /// The left-edge back-gesture recognizer (toolkit primitive). Pointer events
+    /// feed it; a recognized swipe pushes [`Action::Back`], so swipe-nav works at
+    /// the toolkit layer without app-specific gesture code.
+    back_gesture: ui::EdgeSwipeBack,
+    /// Per-view scroll positions, keyed by a route's view key, so returning to a
+    /// view (via Back or re-navigation) restores exactly where it was scrolled —
+    /// and a structural rebuild never snaps the scroll back to the top. Shared
+    /// `Cell`s handed to each screen's `Scrollable` via `with_persisted_offset`.
+    /// `RefCell` because it is populated from the `&self` shell builder.
+    scroll_cells: RefCell<HashMap<String, Rc<Cell<(f32, f32)>>>>,
+    /// Channels whose avatar/subscriber fetch is already in flight, so opening a
+    /// watch page (or re-rendering) never re-requests the same channel.
+    requested_channels: HashSet<String>,
+    /// Last pointer position (logical px), tracked so a mouse-button press can
+    /// seed the edge-swipe back gesture with the press point.
+    last_pointer: Point,
 }
 
 impl Default for TubeApp {
@@ -174,6 +202,11 @@ impl TubeApp {
             images: None,
             show_skip_end: None,
             mpris_started: false,
+            nav: ui::NavStack::new(Route::Home),
+            back_gesture: ui::EdgeSwipeBack::default_back(),
+            scroll_cells: RefCell::new(HashMap::new()),
+            requested_channels: HashSet::new(),
+            last_pointer: Point::ZERO,
         }
     }
 
@@ -362,9 +395,52 @@ impl TubeApp {
         self
     }
 
+    /// Bench hook: put the app on a watch page with a **synthesized, paused-but-
+    /// loaded** player — a real decoded frame sitting in the surface, playback
+    /// paused. This reproduces the scroll-perf scenario (`--bench-scroll --watch
+    /// --loaded`): the scroll loop re-syncs each frame, pumping the engine, so the
+    /// bench measures the true per-frame cost of a loaded-but-paused watch page.
+    pub fn with_bench_loaded_watch(mut self, video_id: &str) -> Self {
+        self.model.route = Route::Watch(video_id.to_string());
+        self.player = Rc::new(RefCell::new(
+            VideoPlayer::new().with_engine(media::MediaEngine::new_synthesized()),
+        ));
+        {
+            let mut p = self.player.borrow_mut();
+            p.open(media::Source::Remote { url: "https://demo.local/clip.mp4".into() });
+            p.seek_to_ms(30_000);
+            let mut doc = automerge::AutoCommit::new();
+            let root = automerge::ROOT;
+            // Pull the first frame into the surface, then pause so it is
+            // "loaded-but-paused" (the reported jank condition).
+            p.sync(&mut doc, &root);
+            p.pause();
+        }
+        self.player_video = Some(video_id.to_string());
+        self
+    }
+
+    /// Test hook: arrive on a search-results view exactly as a real search would
+    /// leave the app — the route, the query, the ordered video hits, and the nav
+    /// stack pushed to `[Home, Search]` so opening a result and pressing Back
+    /// returns here. Used to drive the search → video → Back round trip.
+    pub fn with_search_for_test(mut self, query: &str, video_ids: Vec<String>) -> Self {
+        self.model.search_query = query.to_string();
+        self.model.search_hits_query = query.to_string();
+        self.model.search_hits = video_ids;
+        self.model.route = Route::Search(query.to_string());
+        self.nav.push(Route::Search(query.to_string()));
+        self
+    }
+
     /// Test accessor: the current route (read-only).
     pub fn route_for_test(&self) -> &Route {
         &self.model.route
+    }
+
+    /// Test accessor: whether the navigation stack has somewhere to go back to.
+    pub fn can_go_back_for_test(&self) -> bool {
+        self.nav.can_go_back()
     }
 
     /// Test accessor: whether the command palette is open.
@@ -402,11 +478,21 @@ impl TubeApp {
                 imgs,
                 id,
                 self.content_width(),
+                self.content_height(),
                 self.player.clone(),
             ),
             Route::Channel(id) => screens::channel(m, theme, bus, imgs, id),
+            Route::Playlist(id) => screens::playlist(m, theme, bus, imgs, id),
             Route::Search(q) => screens::search(m, theme, bus, imgs, q),
         };
+
+        // Preserve each view's scroll position across the whole-tree rebuilds
+        // Tube does on every change (and restore it when the view is returned to
+        // via Back), and reserve the right-edge scrollbar lane so the bar never
+        // draws over the content (the video player in particular).
+        let content = content
+            .with_persisted_offset(self.scroll_cell_for(&m.route))
+            .with_content_gutter(SCROLL_GUTTER);
 
         // `fill_w` pins the content pane to a *definite* width (the split lays
         // each pane out in its own tree, so without this the column would size
@@ -447,7 +533,7 @@ impl TubeApp {
         let mut root = Flex::col()
             .fill_w()
             .fill_h()
-            .push(screens::top_bar(m, theme, bus))
+            .push(screens::top_bar(m, theme, bus, self.nav.can_go_back()))
             .push(split);
 
         // The Ctrl+K command palette overlays the whole shell when open.
@@ -486,6 +572,69 @@ impl TubeApp {
             (w - screens::NAV_RAIL_W).max(0.0)
         } else {
             w
+        }
+    }
+
+    /// Logical viewport height that sizes the height-driven watch-page player
+    /// (capped at a fraction of this in `screens::watch`). The full window
+    /// height — the player is deliberately allowed to occupy a large share of the
+    /// viewport so the actual video is big, with metadata scrolling below it.
+    fn content_height(&self) -> f64 {
+        self.rect.height().max(1.0)
+    }
+
+    /// A stable key naming a route's *view*, for the per-view scroll-position
+    /// map. Distinct dynamic views (this video, that search) get distinct keys.
+    fn view_key(route: &Route) -> String {
+        match route {
+            Route::Home => "home".to_string(),
+            Route::Trending => "trending".to_string(),
+            Route::Subscriptions => "subs".to_string(),
+            Route::History => "history".to_string(),
+            Route::Settings => "settings".to_string(),
+            Route::Watch(id) => format!("watch:{id}"),
+            Route::Channel(id) => format!("channel:{id}"),
+            Route::Playlist(id) => format!("playlist:{id}"),
+            Route::Search(q) => format!("search:{q}"),
+        }
+    }
+
+    /// The shared scroll-offset cell for a route's view (created on first use).
+    /// Handing it to the view's `Scrollable` preserves the scroll across
+    /// rebuilds and restores it when the view is returned to via Back.
+    fn scroll_cell_for(&self, route: &Route) -> Rc<Cell<(f32, f32)>> {
+        let key = Self::view_key(route);
+        self.scroll_cells
+            .borrow_mut()
+            .entry(key)
+            .or_insert_with(|| Rc::new(Cell::new((0.0, 0.0))))
+            .clone()
+    }
+
+    /// Navigate to `route`: record it on the toolkit nav stack (so Back can
+    /// return) and mirror it onto the live route. A search refining into another
+    /// search replaces the current entry rather than stacking each keystroke.
+    fn navigate_to(&mut self, route: Route) {
+        let refine = matches!(
+            (self.nav.current(), &route),
+            (Route::Search(_), Route::Search(_))
+        );
+        if refine {
+            self.nav.replace_current(route.clone());
+        } else {
+            self.nav.push(route.clone());
+        }
+        self.model.route = route;
+    }
+
+    /// Pop the nav stack (Back). Returns true when it navigated somewhere.
+    fn go_back(&mut self) -> bool {
+        if let Some(route) = self.nav.back().cloned() {
+            self.model.route = route;
+            self.dismiss_overlay_rail();
+            true
+        } else {
+            false
         }
     }
 
@@ -735,7 +884,7 @@ impl TubeApp {
     /// in lockstep.
     fn open_video(&mut self, id: String) {
         self.model.record_watch(&id);
-        self.model.route = Route::Watch(id.clone());
+        self.navigate_to(Route::Watch(id.clone()));
         self.model.playhead = 0.0;
         self.model.playing = true;
         self.request(Request::Branding(id.clone()));
@@ -752,7 +901,7 @@ impl TubeApp {
     /// Ask the worker for a channel page (avatar + subscriber count + uploads)
     /// when the store only holds a bare name stub for it. Online-only.
     fn request_channel_if_stub(&mut self, channel_id: &str) {
-        if channel_id.is_empty() {
+        if channel_id.is_empty() || self.requested_channels.contains(channel_id) {
             return;
         }
         let stub = self
@@ -761,6 +910,7 @@ impl TubeApp {
             .map(|c| c.avatar_url.is_empty() || c.subscribers == 0)
             .unwrap_or(true);
         if stub {
+            self.requested_channels.insert(channel_id.to_string());
             self.request_live(Request::Channel(channel_id.to_string()));
         }
     }
@@ -813,7 +963,7 @@ impl TubeApp {
                 if let Route::Search(q) = &route {
                     self.model.search_query = q.clone();
                 }
-                self.model.route = route;
+                self.navigate_to(route);
                 self.dismiss_overlay_rail();
             }
             Action::OpenVideo(id) => {
@@ -821,9 +971,20 @@ impl TubeApp {
                 self.dismiss_overlay_rail();
             }
             Action::OpenChannel(id) => {
-                self.model.route = Route::Channel(id.clone());
+                self.navigate_to(Route::Channel(id.clone()));
                 self.dismiss_overlay_rail();
                 self.request_live(Request::Channel(id));
+            }
+            Action::OpenPlaylist(id) => {
+                self.navigate_to(Route::Playlist(id.clone()));
+                self.dismiss_overlay_rail();
+                self.request_live(Request::PlaylistPage(id));
+            }
+            Action::ToggleSearchType(t) => {
+                self.model.search_type_filter.click(t);
+            }
+            Action::Back => {
+                self.go_back();
             }
             Action::ToggleSubscribe(id) => {
                 self.model.toggle_subscribe(&id);
@@ -886,7 +1047,7 @@ impl TubeApp {
             Action::SubmitSearch => {
                 let q = self.read_search(state, root);
                 self.model.search_query = q.clone();
-                self.model.route = Route::Search(q.clone());
+                self.navigate_to(Route::Search(q.clone()));
                 if !q.is_empty() {
                     let instance = self.model.settings.invidious_instance.clone();
                     // Show the results skeleton while the live fetch is in flight
@@ -922,7 +1083,7 @@ impl TubeApp {
                 if let Some(id) = SearchHit::parse_watch_link(&link) {
                     self.open_video(id);
                 } else if let Some(id) = SearchHit::parse_channel_link(&link) {
-                    self.model.route = Route::Channel(id.clone());
+                    self.navigate_to(Route::Channel(id.clone()));
                     self.request_live(Request::Channel(id));
                 }
                 self.model.palette_open = false;
@@ -1013,23 +1174,60 @@ impl TubeApp {
                         changed = true;
                     }
                 }
-                Update::SearchResults(query, vids) => {
+                Update::SearchResults { query, videos, playlists, channels } => {
                     // A response landed (possibly empty) — drop the skeleton.
                     self.model.search_loading = false;
                     // Record the backend's exact ordered result set for this
                     // query (so the search screen renders it verbatim), and
                     // fold the videos + uploader stubs into the catalogue.
-                    let ids: Vec<String> = vids.iter().map(|v| v.id.clone()).collect();
-                    for nv in vids {
+                    let ids: Vec<String> = videos.iter().map(|v| v.id.clone()).collect();
+                    for nv in videos {
                         self.model.ensure_channel_stub(&nv.channel_id, &nv.channel_name);
                         self.model.note_channel_avatar(&nv.channel_id, &nv.channel_avatar_url);
                         self.model.upsert_video(nv);
                     }
+                    let playlist_ids: Vec<String> = playlists.iter().map(|p| p.id.clone()).collect();
+                    for p in playlists {
+                        self.model.ensure_channel_stub(&p.channel_id, &p.channel_name);
+                        self.model.upsert_playlist(p);
+                    }
+                    // Creator rows: fold in without clobbering a richer channel
+                    // record (a full channel page carries a banner a search row
+                    // doesn't), taking the avatar / subs / handle when missing.
+                    let channel_ids: Vec<String> = channels.iter().map(|c| c.id.clone()).collect();
+                    for c in channels {
+                        if let Some(ex) = self.model.channels.iter_mut().find(|x| x.id == c.id) {
+                            if ex.avatar_url.is_empty() {
+                                ex.avatar_url = c.avatar_url;
+                            }
+                            if ex.subscribers == 0 {
+                                ex.subscribers = c.subscribers;
+                            }
+                            if ex.handle == ex.id && !c.handle.is_empty() {
+                                ex.handle = c.handle;
+                            }
+                            ex.verified = ex.verified || c.verified;
+                        } else {
+                            self.model.channels.push(c);
+                        }
+                    }
                     self.model.search_hits_query = query.clone();
                     self.model.search_hits = ids;
+                    self.model.search_playlist_hits = playlist_ids;
+                    self.model.search_channel_hits = channel_ids;
                     if matches!(&self.model.route, Route::Search(_)) {
                         self.model.route = Route::Search(query);
                     }
+                    changed = true;
+                }
+                Update::PlaylistPage { playlist, videos } => {
+                    for v in videos {
+                        self.model.ensure_channel_stub(&v.channel_id, &v.channel_name);
+                        self.model.note_channel_avatar(&v.channel_id, &v.channel_avatar_url);
+                        self.model.upsert_video(v);
+                    }
+                    self.model.ensure_channel_stub(&playlist.channel_id, &playlist.channel_name);
+                    self.model.upsert_playlist(*playlist);
                     changed = true;
                 }
                 Update::Feed(vids) => {
@@ -1160,6 +1358,12 @@ impl TubeApp {
             if let ScalarValue::Str(json) = s.as_ref() {
                 if let Ok(m) = serde_json::from_str::<TubeModel>(json) {
                     self.model = m;
+                    // Seed the nav stack so Back from a persisted deep route
+                    // (e.g. a restored watch page) returns to Home rather than
+                    // dead-ending.
+                    if self.model.route != Route::Home {
+                        self.nav.push(self.model.route.clone());
+                    }
                     return;
                 }
             }
@@ -1368,6 +1572,47 @@ impl Widget for TubeApp {
             }
         }
 
+        // Back-navigation via the keyboard: Alt+Left / the BrowserBack key pop the
+        // nav stack (the Back button, Escape below and the edge-swipe do too).
+        // Only when there is history and no overlay owns the key.
+        if !self.model.palette_open {
+            if let WindowEvent::KeyboardInput {
+                event: KeyEvent { logical_key, state: ElementState::Pressed, .. },
+                ..
+            } = event
+            {
+                let is_back = matches!(logical_key, Key::Named(NamedKey::BrowserBack))
+                    || (modifiers.state().alt_key()
+                        && matches!(logical_key, Key::Named(NamedKey::ArrowLeft)));
+                if is_back && self.nav.can_go_back() {
+                    action::push(&self.bus, Action::Back);
+                    *handled = true;
+                }
+            }
+        }
+
+        // Feed raw pointer events to the toolkit's edge-swipe back gesture. It
+        // only observes (never consumes), so children still get the events; a
+        // recognized left-edge rightward swipe pushes Back — swipe-nav lives at
+        // the toolkit layer with no app-specific gesture code.
+        match event {
+            WindowEvent::CursorMoved { position, .. } => {
+                self.last_pointer = Point::new(position.x / scale_factor, position.y / scale_factor);
+                if let Some(ui::NavAction::Back) = self.back_gesture.pointer_move(self.last_pointer) {
+                    if self.nav.can_go_back() {
+                        action::push(&self.bus, Action::Back);
+                    }
+                }
+            }
+            WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. } => {
+                self.back_gesture.pointer_down(self.last_pointer);
+            }
+            WindowEvent::MouseInput { state: ElementState::Released, button: MouseButton::Left, .. } => {
+                self.back_gesture.pointer_up();
+            }
+            _ => {}
+        }
+
         if let Some(c) = &mut self.root_child {
             c.handle_event(event, scale_factor, modifiers, state, path, handled, focus_target, node_id, taffy);
         }
@@ -1386,12 +1631,16 @@ impl Widget for TubeApp {
             ..
         } = event
         {
-            // Esc closes the command palette first (it's the topmost overlay).
+            // Esc closes the command palette first (it's the topmost overlay),
+            // then an open overlay flap, then finally acts as Back.
             if self.model.palette_open {
                 action::push(&self.bus, Action::ClosePalette);
                 *handled = true;
             } else if self.nav_is_overlay() && self.sidebar_currently_open() {
                 self.sidebar_open = Some(false);
+            } else if self.nav.can_go_back() {
+                action::push(&self.bus, Action::Back);
+                *handled = true;
             }
         }
 

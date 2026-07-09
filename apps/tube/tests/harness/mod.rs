@@ -18,7 +18,9 @@ use ui::widget::Widget;
 use vello::kurbo::{Affine, Point, Rect};
 use vello::Scene;
 use winit::dpi::PhysicalPosition;
-use winit::event::{DeviceId, ElementState, Modifiers, MouseButton, WindowEvent};
+use winit::event::{
+    DeviceId, ElementState, Modifiers, MouseButton, MouseScrollDelta, TouchPhase, WindowEvent,
+};
 
 pub struct Harness<W: Widget> {
     pub app: W,
@@ -177,6 +179,23 @@ impl<W: Widget> Harness<W> {
             button: MouseButton::Left,
         });
         target.is_some() && self.last_focus == target
+    }
+
+    /// Scroll with a wheel notch over the point `at` (a negative `lines` scrolls
+    /// content up, revealing what's below), then relayout — the real wheel path
+    /// through `handle_event`. Moving the cursor first mirrors a real gesture.
+    pub fn wheel_at(&mut self, at: Point, lines: f32) {
+        let dev = DeviceId::dummy();
+        self.dispatch(WindowEvent::CursorMoved {
+            device_id: dev,
+            position: PhysicalPosition::new(at.x, at.y),
+        });
+        self.dispatch(WindowEvent::MouseWheel {
+            device_id: dev,
+            delta: MouseScrollDelta::LineDelta(0.0, lines),
+            phase: TouchPhase::Moved,
+        });
+        self.frame();
     }
 
     /// Inject a full left click (move → press → release) at a point, then relayout.
