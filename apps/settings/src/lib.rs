@@ -38,3 +38,58 @@ pub mod widgets;
 
 pub use settings_app::SettingsApp;
 pub use shots::render_to_path;
+
+/// Ensure an Automerge `Text` object exists at `key` under `root`, returning it.
+///
+/// A `TextInput` bound via `with_on_change_path` persists typed characters by
+/// splicing into an **existing** `Text` object — it never creates one. So any
+/// field the user is meant to type into (the settings search, the add-account
+/// form, a Wi-Fi password) must have its backing object seeded first. Without
+/// this, edits update only the widget's local buffer and are silently lost on
+/// the next structure rebuild — which is exactly why those fields read as dead.
+///
+/// Idempotent: returns the existing object when one is already present, and
+/// preserves a scalar string previously parked at the key (e.g. a seeded value)
+/// by splicing it into the new object.
+pub(crate) fn ensure_text_object(
+    state: &mut automerge::AutoCommit,
+    root: &automerge::ObjId,
+    key: &str,
+) -> automerge::ObjId {
+    use automerge::{transaction::Transactable, ObjType, ReadDoc, Value};
+    if let Ok(Some((Value::Object(ObjType::Text), obj))) = state.get(root, key) {
+        return obj;
+    }
+    let existing = match state.get(root, key) {
+        Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
+            automerge::ScalarValue::Str(t) => t.to_string(),
+            _ => String::new(),
+        },
+        _ => String::new(),
+    };
+    let obj = state
+        .put_object(root, key, ObjType::Text)
+        .expect("seed a Text object for an editable field");
+    if !existing.is_empty() {
+        let _ = state.splice_text(&obj, 0, 0, &existing);
+    }
+    obj
+}
+
+/// Clear the contents of the `Text` object at `key` (seeding one if absent) so
+/// an editable field is reset to empty **without** replacing the object with a
+/// scalar — which would break the next round of typing.
+pub(crate) fn clear_text_object(
+    state: &mut automerge::AutoCommit,
+    root: &automerge::ObjId,
+    key: &str,
+) {
+    use automerge::{transaction::Transactable, ReadDoc};
+    let obj = ensure_text_object(state, root, key);
+    if let Ok(text) = state.text(&obj) {
+        let n = text.chars().count();
+        if n > 0 {
+            let _ = state.splice_text(&obj, 0, n as isize, "");
+        }
+    }
+}
