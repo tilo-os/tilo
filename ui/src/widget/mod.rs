@@ -272,6 +272,19 @@ pub trait Widget {
     }
     /// Which permission scope, if any, gates this widget. Default: no gating.
     fn permission_scope(&self) -> Option<PermissionScope> { None }
+
+    /// The tree of [`qos_actions::Resource`]s this widget currently has *open /
+    /// presented*, each with the actions it exports to Ctrl+K. An app's root
+    /// widget implements this to publish e.g. the playing video + its comments,
+    /// or the open book + its annotations; the CRDT `doc` is passed so a
+    /// provider can enumerate resources that live in the document (annotations).
+    ///
+    /// The [`App`](crate::app::App) collects the focused instance's tree each
+    /// frame ([`App::collect_resources`](crate::app::App::collect_resources)) to
+    /// scope its action palette. Default: nothing published.
+    fn resources(&self, _doc: &AutoCommit) -> Vec<qos_actions::Resource> {
+        Vec::new()
+    }
     fn accepts_drop(&self, _payload: &DragPayload) -> bool { false }
     fn on_drop(&mut self, _payload: DragPayload, _state: &mut AutoCommit, _path: &ObjId) {}
     fn wants_pointer_capture(&self) -> bool { false }

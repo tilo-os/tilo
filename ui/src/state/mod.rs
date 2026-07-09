@@ -96,6 +96,33 @@ impl State {
         self.undo_stack.last()
     }
 
+    /// Record an action that has *already* been committed into `doc` out-of-band
+    /// (e.g. a `qos_actions` action the `App`'s Ctrl+K palette dispatched, which
+    /// owns its own actor + timestamp commit boundary). Brackets the undo entry
+    /// with the caller-supplied `before` heads and the doc's current heads,
+    /// clears the redo stack, and realigns the undo baseline — so the action is
+    /// undoable and a *later* local edit doesn't accidentally revert it too.
+    pub fn record_committed_action(
+        &mut self,
+        before: Vec<ChangeHash>,
+        focused_node_idx: Option<usize>,
+        metadata: Option<String>,
+    ) {
+        let after = self.doc.get_heads();
+        if after == before {
+            return; // nothing actually changed
+        }
+        self.undo_stack.push(UndoEntry {
+            before,
+            after: after.clone(),
+            focused_node_idx,
+            widget_metadata: metadata,
+            author: None,
+        });
+        self.redo_stack.clear();
+        self.last_heads = after;
+    }
+
     /// Apply the inverse of the change spanning `[entry.before, entry.after]`
     /// as a NEW forward change merged into the live document, and return the
     /// `[before, after]` heads of that newly-written inverse change so the
