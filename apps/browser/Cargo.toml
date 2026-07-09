@@ -59,3 +59,7 @@ required-features = ["wpe"]
 [[example]]
 name = "adblock_blank_repro"
 required-features = ["wpe"]
+
+[[example]]
+name = "key_modifier_repro"
+required-features = ["wpe"]

@@ -90,6 +90,13 @@ pub struct wpe_input_keyboard_event {
     pub modifiers: u32,
 }
 
+// `enum wpe_input_modifier` — keyboard bits (pointer button bits live in
+// the 1<<20+ range and are computed in mod.rs).
+pub const WPE_INPUT_KEYBOARD_MODIFIER_CONTROL: u32 = 1 << 0;
+pub const WPE_INPUT_KEYBOARD_MODIFIER_SHIFT: u32 = 1 << 1;
+pub const WPE_INPUT_KEYBOARD_MODIFIER_ALT: u32 = 1 << 2;
+pub const WPE_INPUT_KEYBOARD_MODIFIER_META: u32 = 1 << 3;
+
 pub const WPE_INPUT_POINTER_EVENT_TYPE_MOTION: c_uint = 1;
 pub const WPE_INPUT_POINTER_EVENT_TYPE_BUTTON: c_uint = 2;
 
