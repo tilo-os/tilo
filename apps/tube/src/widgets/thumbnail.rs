@@ -21,6 +21,7 @@ use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::Widget;
+use ui::ImageStore;
 
 use crate::util::{duration_hms, seed_gradient};
 
@@ -36,7 +37,13 @@ pub struct Thumbnail {
     /// it's painted cover-fit in place of the seed gradient; the chrome (pills,
     /// progress, badges) still overlays it.
     image: Option<PenikoImage>,
+    /// Lazy source: the store + URL the image is resolved from in [`sync`], so a
+    /// freshly-decoded thumbnail folds in on a redraw rather than forcing a
+    /// whole-tree structural rebuild on every image completion.
+    store: Option<ImageStore>,
+    url: String,
     rect: Rect,
+    dirty: bool,
 }
 
 impl Thumbnail {
@@ -50,13 +57,27 @@ impl Thumbnail {
             progress: None,
             hero: false,
             image: None,
+            store: None,
+            url: String::new(),
             rect: Rect::ZERO,
+            dirty: true,
         }
     }
 
-    /// Supply a real decoded thumbnail image (or `None` to keep the gradient).
+    /// Supply a real decoded thumbnail image directly (or `None` to keep the
+    /// gradient). Used by tests/`--shots` that inject a pre-decoded image.
     pub fn image(mut self, image: Option<PenikoImage>) -> Self {
         self.image = image;
+        self
+    }
+
+    /// Resolve the thumbnail image **lazily** from `store` at `url` (looked up in
+    /// [`sync`]). Empty `url` / `None` store keeps the seed gradient. This is the
+    /// live path — it avoids the build-time `imgs.get()` that made every decode
+    /// completion rebuild the whole widget tree.
+    pub fn image_source(mut self, store: Option<ImageStore>, url: &str) -> Self {
+        self.store = store;
+        self.url = url.to_string();
         self
     }
 
@@ -248,7 +269,19 @@ impl Thumbnail {
 }
 
 impl Widget for Thumbnail {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
+    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {
+        // Lazily resolve the real thumbnail. Once we have it, stop touching the
+        // store; a freshly-decoded image flips `dirty` so the next frame repaints
+        // it — no structural rebuild.
+        if self.image.is_none() && !self.url.is_empty() {
+            if let Some(store) = &self.store {
+                if let Some(img) = store.get(&self.url) {
+                    self.image = Some(img);
+                    self.dirty = true;
+                }
+            }
+        }
+    }
 
     fn build_layout(
         &mut self,
@@ -272,12 +305,16 @@ impl Widget for Thumbnail {
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let l = taffy.layout(node).unwrap();
-        self.rect = Rect::new(
+        let new = Rect::new(
             origin.x + l.location.x as f64,
             origin.y + l.location.y as f64,
             origin.x + l.location.x as f64 + l.size.width as f64,
             origin.y + l.location.y as f64 + l.size.height as f64,
         );
+        if new != self.rect {
+            self.dirty = true;
+        }
+        self.rect = new;
     }
 
     fn draw(
@@ -313,6 +350,12 @@ impl Widget for Thumbnail {
     /// unrelated sibling (e.g. the enclosing scroll list) repositions.
     fn is_layout_dirty(&self) -> bool {
         self.rect == Rect::ZERO
+    }
+    fn needs_redraw(&self) -> bool {
+        self.dirty
+    }
+    fn mark_drawn(&mut self) {
+        self.dirty = false;
     }
     fn get_rect(&self) -> Rect {
         self.rect

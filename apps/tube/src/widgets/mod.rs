@@ -6,6 +6,7 @@
 //! [`ActionBus`] dialect (`Flex`, `Switch`). The free helpers at the bottom
 //! cut the boilerplate of wrapping `ui::Text` and building spacers.
 
+pub mod channel_avatar;
 pub mod controls;
 pub mod flex;
 pub mod image_box;
@@ -14,6 +15,7 @@ pub mod seek_bar;
 pub mod thumbnail;
 pub mod video_surface;
 
+pub use channel_avatar::ChannelAvatar;
 pub use controls::{Icon, IconKind, Switch};
 pub use flex::{Align, Axis, Flex, IntoElement, Justify, Len, Surface};
 pub use image_box::ImageBox;

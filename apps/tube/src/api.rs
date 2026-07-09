@@ -293,6 +293,14 @@ pub fn search(
                 channel_id: author_id.to_string(),
                 channel_name: author.to_string(),
                 channel_seed: author_id.to_string(),
+                channel_avatar_url: item
+                    .get("authorThumbnails")
+                    .and_then(|t| t.as_array())
+                    .and_then(|a| a.last())
+                    .and_then(|t| t.get("url"))
+                    .and_then(|u| u.as_str())
+                    .map(|s| s.to_string())
+                    .unwrap_or_default(),
                 views,
                 published,
                 duration,

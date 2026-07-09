@@ -5,7 +5,7 @@
 //! so these functions are pure views.
 
 use ui::theme::Theme;
-use ui::widget::{Avatar, ScrollAxis, Scrollable, TextInput};
+use ui::widget::{ScrollAxis, Scrollable, TextInput};
 use vello::peniko::Color;
 
 use crate::action::{Action, ActionBus, SettingFlag};
@@ -14,8 +14,8 @@ use crate::model::{Category, Route, SkipMode, TubeModel, Video};
 use crate::util::{clock, human_count, human_views};
 use crate::widgets::{
     card_surface, chip_surface, dim, divider, gap, hover_fill, hover_pill_surface, spring,
-    subtle_fill, subtle_surface, text, text_c, Align, Flex, Icon, IconKind, ImageBox, IntoElement,
-    Justify, Len, PlayerHost, SharedPlayer, Surface, Switch, Thumbnail,
+    subtle_fill, subtle_surface, text, text_c, Align, ChannelAvatar, Flex, Icon, IconKind, ImageBox,
+    IntoElement, Justify, Len, PlayerHost, SharedPlayer, Surface, Switch, Thumbnail,
 };
 
 use crate::contrast::SelectedStyle;
@@ -86,32 +86,26 @@ pub fn status_pill_on(theme: &Theme) -> SelectedStyle {
 // shared helpers
 // ---------------------------------------------------------------------------
 
-fn initials(name: &str) -> String {
-    let mut out = String::new();
-    for word in name.split_whitespace().take(2) {
-        if let Some(c) = word.chars().next() {
-            out.push(c.to_ascii_uppercase());
-        }
-    }
-    if out.is_empty() {
-        out.push('?');
-    }
-    out
-}
-
-fn avatar(name: &str, size: f32) -> Avatar {
-    Avatar::from_initials(&initials(name), size)
+/// An initials-only avatar chip (no photo). Uses the Tube [`ChannelAvatar`] so
+/// its `is_layout_dirty` is keyed off the laid-out rect, not a draw-time cache —
+/// otherwise a comment avatar scrolled off-screen (culled, never drawn) would
+/// report "needs measure" forever and force the split to re-solve the whole
+/// content pane every scroll frame (the watch-page scroll jank).
+fn avatar(name: &str, size: f32) -> ChannelAvatar {
+    ChannelAvatar::new(None, "", name, size)
 }
 
 /// A channel avatar that paints the real decoded avatar image when the store
 /// has it, else the deterministic initials chip. Looks the URL up on the
 /// channel record so any screen can render a real uploader photo.
-fn channel_avatar(imgs: Imgs, model: &TubeModel, channel_id: &str, name: &str, size: f32) -> Avatar {
-    let url = model.channel(channel_id).map(|c| c.avatar_url.as_str()).unwrap_or("");
-    match imgs.get(url) {
-        Some(img) => Avatar::new(img, size),
-        None => Avatar::from_initials(&initials(name), size),
-    }
+fn channel_avatar(imgs: Imgs, model: &TubeModel, channel_id: &str, name: &str, size: f32) -> ChannelAvatar {
+    let url = model
+        .channel(channel_id)
+        .map(|c| c.avatar_url.clone())
+        .unwrap_or_default();
+    // Resolve the photo lazily from the store (folds in on a redraw, no
+    // structural rebuild); shows the initials chip until it decodes.
+    ChannelAvatar::new(imgs.store_handle(), &url, name, size)
 }
 
 fn icon(kind: IconKind, size: f32, color: Color) -> Icon {
@@ -226,7 +220,7 @@ fn video_card(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Imgs, v: 
     let progress = model.history.first().filter(|h| **h == v.id).map(|_| 0.35);
     let mut thumb = Thumbnail::new(&v.seed, v.duration)
         .height(THUMB_H)
-        .image(imgs.get(model.display_thumbnail_url(v)))
+        .image_source(imgs.store_handle(), model.display_thumbnail_url(v))
         .dearrow(v.dearrow_thumb && model.settings.dearrow_thumbs_on())
         .live(v.live);
     if let Some(p) = progress {
@@ -266,8 +260,10 @@ fn video_card(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Imgs, v: 
         );
     }
 
+    // No fixed width: as a responsive-grid item the card stretches to fill its
+    // column (which the grid sizes between CARD_W and its natural max).
     Flex::col()
-        .w(Len::Px(CARD_W))
+        .fill_w()
         .gap(9.0)
         .pad(6.0)
         .hover_surface(Surface {
@@ -305,7 +301,7 @@ fn compact_card(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Imgs, v
             Flex::col().w(Len::Px(160.0)).push(
                 Thumbnail::new(&v.seed, v.duration)
                     .height(90.0)
-                    .image(imgs.get(model.display_thumbnail_url(v)))
+                    .image_source(imgs.store_handle(), model.display_thumbnail_url(v))
                     .live(v.live),
             ),
         )
@@ -324,7 +320,11 @@ fn compact_card(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Imgs, v
 }
 
 fn grid(cards: Vec<Flex>) -> Flex {
-    let mut row = Flex::row().fill_w().wrap().gap(18.0).align(Align::Start);
+    // Responsive grid: columns are ≥ `CARD_W` and flex to fill the row, so the
+    // cards scale with the window width up to their natural max and only then
+    // wrap to add a column — the row is always filled edge to edge (no right
+    // gutter). `align(Start)` top-aligns cards of differing heights per row.
+    let mut row = Flex::row().id("video_grid").fill_w().grid(CARD_W).gap(18.0).align(Align::Start);
     for c in cards {
         row = row.push(c);
     }
@@ -349,7 +349,7 @@ fn skeleton_block(theme: &Theme, width: Len, height: f32, radius: f64) -> Flex {
 /// land. Shown while a fetch is in flight instead of a premature empty state.
 fn skeleton_card(theme: &Theme) -> Flex {
     Flex::col()
-        .w(Len::Px(CARD_W))
+        .fill_w()
         .gap(9.0)
         .pad(6.0)
         .push(skeleton_block(theme, Len::Fill, THUMB_H, theme.tokens.radii.lg as f64))
@@ -772,12 +772,8 @@ pub fn channel(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Imgs, id
     let subscribed = model.is_subscribed(id);
 
     // Real banner image when the store has it, else the seed gradient.
-    let banner = ImageBox::new(
-        &ch.seed,
-        160.0,
-        theme.tokens.radii.lg as f64,
-        imgs.get(&ch.banner_url),
-    );
+    let banner = ImageBox::new(&ch.seed, 160.0, theme.tokens.radii.lg as f64, None)
+        .source(imgs.store_handle(), &ch.banner_url);
 
     let header = Flex::row()
         .fill_w()
@@ -1743,6 +1739,12 @@ mod search_screen_tests {
                 .unwrap();
         }
         screen.apply_layout(&taffy, child, Point::ORIGIN);
+
+        // The thumbnail resolves its decoded image lazily in `sync` (from the
+        // pre-warmed store), so run it — the real per-frame path — before drawing.
+        let mut doc = automerge::AutoCommit::new();
+        let root_obj = automerge::ROOT;
+        screen.sync(&mut doc, &root_obj);
 
         let mut scene = Scene::new();
         screen.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &PresenceCtx::empty());
