@@ -150,6 +150,10 @@ impl AddressSuggestions {
         if width > 0.0 {
             self.width = width;
         }
+        // Recompute the panel rect now: as a floating field (not in the
+        // widget tree) this overlay's `apply_layout` never runs, so this is
+        // the only place `self.rect` gets set from the anchor.
+        self.relayout(top_left);
     }
 
     /// Take the entry the user committed via Enter or a row click, if any.
@@ -205,12 +209,13 @@ impl AddressSuggestions {
             return;
         }
 
-        // Panel surface.
+        // Panel surface — translucent so the page shows through faintly
+        // (a frosted dropdown, per the requested look).
         let panel = RoundedRect::from_rect(self.rect, theme.radius_standard);
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
-            theme.tokens.colors.surfaces.raised,
+            theme.tokens.colors.surfaces.raised.with_alpha(0.85),
             None,
             &panel,
         );
