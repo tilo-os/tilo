@@ -1583,9 +1583,12 @@ impl ShellOverlayHost {
         let Some(chrome) = self.chrome.clone() else {
             return;
         };
-        // Collect first, apply under a single chrome borrow. Same shape
-        // as the harvest reconcilers.
-        let mut hit: Option<(StripId, GroupId)> = None;
+        // Snapshot the (strip_id, group_id, rect) triples from the
+        // widget-side pointers first, then hit-test in pure code so the
+        // production path shares its logic with the unit test at the
+        // bottom of the file (which drives synthetic rects without a
+        // real widget tree).
+        let mut candidates: Vec<(StripId, GroupId, Rect)> = Vec::new();
         for (&strip_id, &ptr) in &self.group_row_ptrs {
             // SAFETY: same contract as every other `group_row_ptrs`
             // accessor — captured from a `Box<GroupRow>` owned through
@@ -1593,16 +1596,10 @@ impl ShellOverlayHost {
             // ensures no other reconcile path aliases.
             let row: &GroupRow = unsafe { &*ptr };
             for g in row.groups.iter() {
-                if g.get_rect().contains(p) {
-                    hit = Some((strip_id, g.id));
-                    break;
-                }
-            }
-            if hit.is_some() {
-                break;
+                candidates.push((strip_id, g.id, g.get_rect()));
             }
         }
-        let Some((strip_id, group_id)) = hit else {
+        let Some((strip_id, group_id)) = pick_group_at(&candidates, p) else {
             return;
         };
         let st = chrome.borrow_mut();
@@ -4311,6 +4308,24 @@ fn draw_modal_scrim(scene: &mut Scene, transform: Affine, rect: Rect) {
 /// Slate-900 tint at the given alpha. Centralised helper so every overlay
 /// surface paints the same hue (concept's glass tint is rooted at
 /// `slate-900` / `#0f172a`) and the numeric alpha is the only knob.
+/// Pick the topmost group whose rect contains `p`. Extracted from
+/// [`ShellOverlayHost::stamp_active_group_from_click`] so it's
+/// testable without a live widget tree.
+///
+/// `candidates` is `(strip_id, group_id, rect)` in traversal order —
+/// the FIRST match wins so a group whose rect entirely contains a
+/// smaller one wouldn't shadow the smaller (which is the concrete
+/// behaviour when GroupRow's own rect wraps every child group's).
+/// Zero-area rects are skipped so a group that hasn't laid out yet
+/// (fresh detach that we haven't had a paint frame for) can't
+/// silently match any point.
+fn pick_group_at(candidates: &[(StripId, GroupId, Rect)], p: Point) -> Option<(StripId, GroupId)> {
+    candidates
+        .iter()
+        .find(|(_, _, r)| r.area() > 0.0 && r.contains(p))
+        .map(|(s, g, _)| (*s, *g))
+}
+
 fn slate_900_tint(theme: &Theme, alpha: f32) -> Color {
     // `neutral[1]` is slate-900 in the dark ramp (see
     // `ui::tokens::colors::ColorRamp`). Using the theme token rather
@@ -7953,6 +7968,61 @@ mod tests {
 
     /// Wave 3 / Unit 3-A pin (#5).
     ///
+    /// Extracted-helper coverage for the click-focuses-group logic.
+    /// Regression pins for the 2026-07-09 "Ctrl+K scoped to Notes when
+    /// I clicked Files in its own group" report.
+    #[test]
+    fn pick_group_at_returns_containing_group() {
+        let strip = StripId::from(7);
+        let candidates = vec![
+            (
+                strip,
+                1u64,
+                Rect::new(0.0, 100.0, 400.0, 500.0),
+            ),
+            (
+                strip,
+                2u64,
+                Rect::new(400.0, 100.0, 800.0, 500.0),
+            ),
+        ];
+        assert_eq!(
+            pick_group_at(&candidates, Point::new(200.0, 300.0)),
+            Some((strip, 1))
+        );
+        assert_eq!(
+            pick_group_at(&candidates, Point::new(600.0, 300.0)),
+            Some((strip, 2))
+        );
+    }
+
+    #[test]
+    fn pick_group_at_none_outside_all_rects() {
+        let strip = StripId::from(7);
+        let candidates = vec![(strip, 1u64, Rect::new(0.0, 100.0, 400.0, 500.0))];
+        assert!(pick_group_at(&candidates, Point::new(600.0, 50.0)).is_none());
+    }
+
+    #[test]
+    fn pick_group_at_skips_zero_area_rects() {
+        // Freshly detached group whose apply_layout hasn't run yet —
+        // rect is zero. Must not swallow every click at (0,0).
+        let strip = StripId::from(7);
+        let candidates = vec![
+            (strip, 1u64, Rect::new(0.0, 0.0, 0.0, 0.0)),
+            (strip, 2u64, Rect::new(0.0, 100.0, 400.0, 500.0)),
+        ];
+        assert_eq!(
+            pick_group_at(&candidates, Point::new(0.0, 0.0)),
+            None,
+            "zero-area group must NOT match (0,0)"
+        );
+        assert_eq!(
+            pick_group_at(&candidates, Point::new(200.0, 300.0)),
+            Some((strip, 2))
+        );
+    }
+
     /// The companion to `palette_scrim_alpha_matches_concept`.
     ///
     /// Concept §4.1 originally called for `bg-slate-900/70` on the modal
