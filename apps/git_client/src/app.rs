@@ -15,7 +15,7 @@ use taffy::{NodeId, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::{Color, Fill};
-use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
+use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use ui::ColorCompat;
@@ -25,7 +25,7 @@ use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::{FlapState, SplitLayout, TextInput, Widget};
 
-use crate::changes::{ChangesColumn, ChangesDraw, ChangesHit};
+use crate::changes::{ChangesColumn, ChangesHit};
 use crate::diffview::{self, DiffView};
 use crate::draw;
 use crate::graph::{self, GraphLayout};
@@ -53,6 +53,16 @@ pub enum Screen {
     Changes,
     History,
     Panels,
+}
+
+/// A destructive discard action armed for confirmation, scoped to the file
+/// currently shown in the diff pane.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DiscardTarget {
+    /// Revert the whole file's worktree changes (or delete an untracked file).
+    File,
+    /// Revert a single hunk of the file's worktree changes.
+    Hunk(usize),
 }
 
 impl Screen {
@@ -132,10 +142,11 @@ pub struct GitClientApp {
     changes_scroll: f64,
     diff_scroll: f64,
     hover_hunk: Option<usize>,
-    /// A file row armed for discard: the next click on its (now red) discard
-    /// affordance confirms. Cleared by any other interaction. Guards the
-    /// destructive worktree revert behind a deliberate second click.
-    armed_discard: Option<(ChangeArea, usize)>,
+    /// A discard action armed for confirmation on the selected file: the next
+    /// click on the same (now red) affordance performs it; any other
+    /// interaction disarms. Guards the destructive worktree revert behind a
+    /// deliberate second click.
+    armed_discard: Option<DiscardTarget>,
 
     // --- History screen state ---
     selected_commit: usize,
@@ -165,6 +176,8 @@ pub struct GitClientApp {
     // next click. Boxed closures keep geometry out of the event handler.
     change_hits: Vec<Box<dyn Fn(Point) -> Option<ChangesHit>>>,
     diff_hunk_buttons: Vec<diffview::HunkButton>,
+    /// Hit rect for the diff-header "Discard file" button (worktree side only).
+    discard_file_rect: Rect,
     history_rows: Vec<Rect>,
     panel_hits: Vec<Box<dyn Fn(Point) -> Option<PanelHit>>>,
     tab_rects: Vec<(Screen, Rect)>,
@@ -219,6 +232,16 @@ impl GitClientApp {
         let mut app = Self::from_model(model, diffs);
         app.repo_path = Some(anchor);
         Some(app)
+    }
+
+    /// Build the honest empty "open a repository" state with no repo bound —
+    /// the same state the live app shows when no repository is reachable.
+    /// Exposed so integration tests can drive the open flow.
+    #[doc(hidden)]
+    pub fn open_empty() -> Self {
+        let mut app = Self::from_model(RepoModel::default(), DiffMap::new());
+        app.awaiting_repo = true;
+        app
     }
 
     /// Construct from an explicit model — used by the sample path and tests.
@@ -293,6 +316,7 @@ impl GitClientApp {
             last_mouse: Point::ZERO,
             change_hits: Vec::new(),
             diff_hunk_buttons: Vec::new(),
+            discard_file_rect: Rect::ZERO,
             history_rows: Vec::new(),
             panel_hits: Vec::new(),
             tab_rects: Vec::new(),
@@ -476,16 +500,22 @@ impl GitClientApp {
         self.flap.tick(self.layout_mode(), dt.min(0.1));
     }
 
-    /// Resolve the [`FileDiff`] for the currently selected change, if any.
-    fn current_diff(&self) -> Option<&FileDiff> {
+    /// The diff-map key for the currently selected change, if any. Resolves
+    /// the staged vs. worktree side from the selected area so a partially
+    /// staged file shows the correct diff on each side.
+    fn current_diff_key(&self) -> Option<DiffKey> {
         let (area, idx) = self.selected_change?;
         let list = match area {
             ChangeArea::Staged => &self.model.staged,
             ChangeArea::Unstaged => &self.model.unstaged,
             ChangeArea::Untracked => &self.model.untracked,
         };
-        let path = &list.get(idx)?.path;
-        self.diffs.get(path)
+        Some(DiffKey::for_area(area, list.get(idx)?.path.clone()))
+    }
+
+    /// Resolve the [`FileDiff`] for the currently selected change, if any.
+    fn current_diff(&self) -> Option<&crate::model::FileDiff> {
+        self.diffs.get(&self.current_diff_key()?)
     }
 
     fn selected_is_staged(&self) -> bool {
@@ -583,17 +613,17 @@ impl GitClientApp {
     }
 
     fn do_commit(&mut self) {
-        if self.model.staged.is_empty() || self.commit_message.trim().is_empty() {
+        if self.model.staged.is_empty() || self.commit_input.value().trim().is_empty() {
             return;
         }
         if let Some(path) = self.repo() {
-            let msg = self.commit_message.clone();
+            let msg = self.commit_input.value().to_string();
             let res = crate::repo::commit(&path, &msg).map(|_| ());
             let ok = res.is_ok();
             self.run_action(res);
             if ok {
-                self.commit_message.clear();
-                self.msg_focused = false;
+                self.commit_input.set_text("");
+                self.set_focus(None);
                 // Land on the History screen so the new commit is visible.
                 self.switch_screen(Screen::History);
                 self.selected_commit = 0;
@@ -610,9 +640,9 @@ impl GitClientApp {
         let staged = std::mem::take(&mut self.model.staged);
         let parent = self.model.commits.first().map(|c| c.id.clone());
         let id = format!("{:07x}", self.model.commits.len() * 0x1f7 + 0xa10);
-        let summary = self.commit_message.lines().next().unwrap_or("").to_string();
-        let body = self
-            .commit_message
+        let message = self.commit_input.value().to_string();
+        let summary = message.lines().next().unwrap_or("").to_string();
+        let body = message
             .splitn(2, '\n')
             .nth(1)
             .map(|s| s.trim().to_string())
@@ -641,9 +671,76 @@ impl GitClientApp {
         self.model.commits.insert(0, new);
         self.graph_layout = graph::layout(&mut self.model.commits);
         self.model.graph_width = self.graph_layout.lanes;
-        self.commit_message.clear();
-        self.msg_focused = false;
+        self.commit_input.set_text("");
+        self.set_focus(None);
         self.selected_change = first_change(&self.model);
+    }
+
+    /// Discard a file's worktree changes (revert unstaged edits, or delete an
+    /// untracked file). Two-click armed: the first click on a discard
+    /// affordance arms the row; only a second confirming click reaches here.
+    fn discard_file(&mut self, area: ChangeArea, idx: usize) {
+        self.armed_discard = None;
+        let Some(path) = self.repo() else { return };
+        let list = match area {
+            ChangeArea::Staged => &self.model.staged,
+            ChangeArea::Unstaged => &self.model.unstaged,
+            ChangeArea::Untracked => &self.model.untracked,
+        };
+        let Some(file) = list.get(idx).map(|f| f.path.clone()) else { return };
+        let res = crate::repo::discard_file(&path, &file);
+        self.run_action(res);
+    }
+
+    /// Discard a single hunk of the selected (unstaged) file's worktree change.
+    fn discard_hunk(&mut self, hunk: usize) {
+        let Some((area, _)) = self.selected_change else { return };
+        // Only worktree (unstaged/untracked) hunks are discardable — a staged
+        // file's diff is the index side, which "discard" doesn't act on.
+        if area == ChangeArea::Staged {
+            return;
+        }
+        if let (Some(path), Some(file)) = (self.repo(), self.current_path()) {
+            let res = crate::repo::discard_hunk(&path, &file, hunk);
+            self.run_action(res);
+        }
+    }
+
+    /// Open the repository at the empty-state path field, binding it if valid.
+    fn open_repo_from_input(&mut self) {
+        let raw = self.open_input.value().trim().to_string();
+        if raw.is_empty() {
+            return;
+        }
+        let path = std::path::PathBuf::from(&raw);
+        match crate::repo::load(&path) {
+            Some((model, diffs)) => {
+                let anchor = crate::repo::workdir(&path).unwrap_or(path);
+                self.model = model;
+                self.diffs = diffs;
+                self.graph_layout = graph::layout(&mut self.model.commits);
+                self.model.graph_width = self.graph_layout.lanes;
+                self.repo_path = Some(anchor);
+                self.selected_change = first_change(&self.model);
+                self.awaiting_repo = false;
+                self.last_error = None;
+                self.set_focus(None);
+                self.screen = Screen::Changes;
+                self.flap.reconcile(self.layout_mode());
+            }
+            None => {
+                self.last_error = Some(format!("No git repository at {raw}"));
+            }
+        }
+    }
+
+    /// Give keyboard focus to one embedded text field (or none), keeping the
+    /// toolkit inputs' focus flags mutually exclusive.
+    fn set_focus(&mut self, field: Option<Field>) {
+        self.focus = field;
+        self.commit_input.set_focus(field == Some(Field::Commit));
+        self.branch_input.set_focus(field == Some(Field::Branch));
+        self.open_input.set_focus(field == Some(Field::Open));
     }
 
     // --- Drawing -------------------------------------------------------
@@ -852,19 +949,27 @@ impl GitClientApp {
         scene.fill(Fill::NonZero, t, scrim, None, &body);
     }
 
-    fn draw_changes(&mut self, scene: &mut Scene, tr: &mut TextRenderer, t: Affine, theme: &Theme, body: Rect) {
+    fn draw_changes(&mut self, scene: &mut Scene, tr: &mut TextRenderer, t: Affine, theme: &Theme, presence: &PresenceCtx, body: Rect) {
         let (col, pane, list_visible) = self.master_detail_rects(body, CHANGES_COL_W);
         // Detail (diff) first — it sits behind the overlay flap.
         self.draw_diff_pane(scene, tr, t, theme, pane);
         // Scrim between detail and list (overlay mode only).
         self.draw_overlay_scrim(scene, t, body);
         if list_visible {
-            self.change_hits = ChangesColumn::draw(
+            let msg = self.commit_input.value().to_string();
+            let out = ChangesColumn::draw(
                 scene, tr, t, theme, col, &self.model, self.selected_change, self.changes_scroll,
-                &self.commit_message, self.msg_focused,
+                &msg,
             );
+            self.change_hits = out.hits;
+            // Position and draw the commit-message TextInput in the reserved
+            // rect — the toolkit input owns its frame, text, caret and
+            // selection so editing is a first-class ui component.
+            self.commit_input.apply_layout_external(out.commit_input);
+            self.commit_input.draw(scene, t, tr, theme, presence);
         } else {
             self.change_hits.clear();
+            self.commit_input.apply_layout_external(Rect::ZERO);
         }
     }
 
@@ -874,29 +979,62 @@ impl GitClientApp {
         let c = &theme.tokens.colors;
         draw::fill_rect(scene, t, header, c.surfaces.raised);
         draw::hline(scene, t, header.y1, header.x0, header.x1, c.border_standard);
-        if let Some(diff) = self.current_diff() {
-            let title = if let Some(old) = &diff.old_path {
-                format!("{}  →  {}", old, diff.path)
-            } else {
-                diff.path.clone()
+
+        let key = self.current_diff_key();
+        // Pull the header facts out as owned values so the `self.diffs` borrow
+        // ends before we mutate `self` (discard rect) or re-borrow for the body.
+        let info = key
+            .as_ref()
+            .and_then(|k| self.diffs.get(k))
+            .map(|d| (d.old_path.clone(), d.path.clone(), d.additions(), d.deletions()));
+        self.discard_file_rect = Rect::ZERO;
+        let staged = self.selected_is_staged();
+
+        if let Some((old_path, path, adds, dels)) = info {
+            let title = match &old_path {
+                Some(old) => format!("{old}  →  {path}"),
+                None => path.clone(),
             };
-            draw::text_weighted(
-                scene, tr, t, &title, 13.0, c.text_primary, header.x0 + 16.0, header.y0 + 9.0,
-                Some((header.width() - 160.0) as f32), TextWeight::Medium,
-            );
-            let summary = format!("+{}  −{}", diff.additions(), diff.deletions());
+            let summary = format!("+{adds}  −{dels}");
             let aw = draw::mono_width(tr, &summary, 12.0) as f64;
             draw::mono(scene, tr, t, &summary, 12.0, c.text_dim, header.x1 - aw - 16.0, header.y0 + 10.0);
+
+            // Discard-file affordance on the worktree (unstaged / untracked)
+            // side of a real repo. Two-click armed: shows "Discard file?" when
+            // armed, filled danger.
+            let mut title_max = (header.width() - 160.0) as f32;
+            let can_discard = self.repo_path.is_some() && !staged && self.selected_change.is_some();
+            if can_discard {
+                let armed = self.armed_discard == Some(DiscardTarget::File);
+                let label = if armed { "Discard file?" } else { "Discard file" };
+                let lw = tr.measure_weighted(label, 11.5, None, TextWeight::Medium).0 as f64;
+                let bw = lw + 20.0;
+                let bx = header.x1 - aw - 16.0 - 12.0 - bw;
+                let brect = Rect::new(bx, header.y0 + 6.0, bx + bw, header.y1 - 6.0);
+                let bg = if armed { c.semantic.danger } else { c.surface_white_10 };
+                let fg = if armed { Color::WHITE } else { c.semantic.danger };
+                draw::fill_round(scene, t, brect, 6.0, bg);
+                draw::text_weighted(scene, tr, t, label, 11.5, fg, bx + 10.0, header.y0 + 10.0, None, TextWeight::Medium);
+                self.discard_file_rect = brect;
+                title_max = (bx - header.x0 - 24.0).max(40.0) as f32;
+            }
+            draw::text_weighted(
+                scene, tr, t, &title, 13.0, c.text_primary, header.x0 + 16.0, header.y0 + 9.0,
+                Some(title_max), TextWeight::Medium,
+            );
         } else {
             draw::text(scene, tr, t, "Select a file to view its diff", 13.0, c.text_dim, header.x0 + 16.0, header.y0 + 9.0, None);
         }
 
         let viewport = Rect::new(pane.x0, header.y1, pane.x1, pane.y1);
-        let staged = self.selected_is_staged();
-        if let Some(diff) = self.diffs.get(self.current_path().as_deref().unwrap_or("")) {
+        let armed_hunk = match self.armed_discard {
+            Some(DiscardTarget::Hunk(h)) => Some(h),
+            _ => None,
+        };
+        if let Some(diff) = key.as_ref().and_then(|k| self.diffs.get(k)) {
             self.diff_hunk_buttons = DiffView::draw(
                 scene, tr, t, theme, viewport, diff, self.diff_scroll, &self.settings,
-                self.hover_hunk, staged,
+                self.hover_hunk, staged, armed_hunk,
             );
         } else {
             draw::fill_rect(scene, t, viewport, c.surfaces.base);
@@ -958,22 +1096,23 @@ impl GitClientApp {
         }
     }
 
-    fn draw_panels(&mut self, scene: &mut Scene, tr: &mut TextRenderer, t: Affine, theme: &Theme, body: Rect) {
+    fn draw_panels(&mut self, scene: &mut Scene, tr: &mut TextRenderer, t: Affine, theme: &Theme, presence: &PresenceCtx, body: Rect) {
         self.panel_hits = PanelsView::draw(scene, tr, t, theme, body, &self.model, self.hover_action);
         // New-branch creator: a compact labelled input + button drawn in the
         // toolbar's centre band, between the branch status (left) and the
         // fetch/pull/push cluster (right). Only meaningful for a real repo.
         if self.repo_path.is_some() {
-            self.draw_new_branch(scene, tr, t, theme, body);
+            self.draw_new_branch(scene, tr, t, theme, presence, body);
         } else {
             self.new_branch_input = Rect::ZERO;
             self.new_branch_button = Rect::ZERO;
+            self.branch_input.apply_layout_external(Rect::ZERO);
         }
     }
 
     /// Draw the new-branch input + "Create" button in the panels toolbar and
     /// record their hit rects. The toolbar is the top 56px band of `body`.
-    fn draw_new_branch(&mut self, scene: &mut Scene, tr: &mut TextRenderer, t: Affine, theme: &Theme, body: Rect) {
+    fn draw_new_branch(&mut self, scene: &mut Scene, tr: &mut TextRenderer, t: Affine, theme: &Theme, presence: &PresenceCtx, body: Rect) {
         let c = &theme.tokens.colors;
         let tb = Rect::new(body.x0, body.y0, body.x1, body.y0 + 56.0);
         // Reserve room for the 3 action buttons (84*3 + gaps + margins ≈ 300).
@@ -989,27 +1128,16 @@ impl GitClientApp {
             // Too tight to render meaningfully — skip.
             self.new_branch_input = Rect::ZERO;
             self.new_branch_button = Rect::ZERO;
+            self.branch_input.apply_layout_external(Rect::ZERO);
             return;
         }
-        // Input field.
-        draw::fill_round(scene, t, input, 6.0, c.surfaces.base);
-        draw::stroke_round(scene, t, input, 6.0, 1.0,
-            if self.new_branch_focused { theme.border_focus } else { c.border_standard });
-        let (txt, col) = if self.new_branch_name.is_empty() {
-            ("new branch name…", c.neutral[5])
-        } else {
-            (self.new_branch_name.as_str(), c.text_primary)
-        };
-        draw::text(scene, tr, t, txt, 12.0, col, input.x0 + 8.0, input.y0 + 6.0, Some((input.width() - 16.0) as f32));
-        if self.new_branch_focused {
-            let tw = tr.measure(&self.new_branch_name, 12.0, None).0 as f64;
-            let cx = (input.x0 + 8.0 + tw).min(input.x1 - 6.0);
-            draw::vline(scene, t, cx, input.y0 + 5.0, input.y1 - 5.0, theme.accent_primary);
-        }
+        // Input field — the toolkit TextInput draws its own frame + caret.
+        self.branch_input.apply_layout_external(input);
+        self.branch_input.draw(scene, t, tr, theme, presence);
         self.new_branch_input = input;
         // Create button.
         let brect = Rect::new(bx, y, bx + btn_w, y + h);
-        let enabled = !self.new_branch_name.trim().is_empty();
+        let enabled = !self.branch_input.value().trim().is_empty();
         draw::fill_round(scene, t, brect, 6.0, if enabled { theme.accent_primary } else { c.surface_white_10 });
         let fg = if enabled { Color::WHITE } else { c.neutral[5] };
         let lw = tr.measure_weighted("Branch", 12.0, None, TextWeight::Medium).0 as f64;
@@ -1018,7 +1146,7 @@ impl GitClientApp {
     }
 
     fn create_new_branch(&mut self) {
-        let name = self.new_branch_name.trim().to_string();
+        let name = self.branch_input.value().trim().to_string();
         if name.is_empty() {
             return;
         }
@@ -1027,9 +1155,60 @@ impl GitClientApp {
             let ok = res.is_ok();
             self.run_action(res);
             if ok {
-                self.new_branch_name.clear();
-                self.new_branch_focused = false;
+                self.branch_input.set_text("");
+                self.set_focus(None);
             }
+        }
+    }
+
+    /// Draw the empty "open a repository" state: a centered card with a path
+    /// field (toolkit TextInput) and an Open button. This is the honest
+    /// default when no repository is reachable — no placeholder repo data.
+    fn draw_open(&mut self, scene: &mut Scene, tr: &mut TextRenderer, t: Affine, theme: &Theme, presence: &PresenceCtx) {
+        let c = &theme.tokens.colors;
+        draw::fill_rect(scene, t, self.rect, c.surfaces.base);
+
+        let cw = 520.0_f64.min(self.rect.width() - 48.0);
+        let cx = self.rect.x0 + (self.rect.width() - cw) / 2.0;
+        let cy = self.rect.y0 + (self.rect.height() * 0.30).max(80.0);
+
+        // Branch glyph mark.
+        let mark = Rect::new(cx + cw / 2.0 - 22.0, cy, cx + cw / 2.0 + 22.0, cy + 44.0);
+        draw::fill_round(scene, t, mark, 12.0, c.accent[2]);
+        let gw = tr.measure_weighted("⑂", 24.0, None, TextWeight::Bold).0 as f64;
+        draw::text_weighted(scene, tr, t, "⑂", 24.0, theme.accent_primary, mark.x0 + (mark.width() - gw) / 2.0, mark.y0 + 8.0, None, TextWeight::Bold);
+
+        let mut y = cy + 64.0;
+        let title = "No repository open";
+        let tw = tr.measure_weighted(title, 20.0, None, TextWeight::Bold).0 as f64;
+        draw::text_weighted(scene, tr, t, title, 20.0, c.text_primary, cx + (cw - tw) / 2.0, y, None, TextWeight::Bold);
+        y += 30.0;
+        let sub = "Open a git repository to view its changes, history and branches.";
+        let sw = tr.measure(sub, 13.0, None).0 as f64;
+        draw::text(scene, tr, t, sub, 13.0, c.text_dim, cx + (cw - sw).max(0.0) / 2.0, y, Some(cw as f32));
+        y += 40.0;
+
+        // Path field + Open button.
+        let btn_w = 92.0;
+        let gap = 10.0;
+        let field_h = 40.0;
+        let field = Rect::new(cx, y, cx + cw - btn_w - gap, y + field_h);
+        self.open_input.apply_layout_external(field);
+        self.open_input.draw(scene, t, tr, theme, presence);
+        self.open_input_rect = field;
+        let brect = Rect::new(field.x1 + gap, y, cx + cw, y + field_h);
+        let enabled = !self.open_input.value().trim().is_empty();
+        draw::fill_round(scene, t, brect, 8.0, if enabled { theme.accent_primary } else { c.surface_white_10 });
+        let fg = if enabled { Color::WHITE } else { c.neutral[5] };
+        let ow = tr.measure_weighted("Open", 14.0, None, TextWeight::Semibold).0 as f64;
+        draw::text_weighted(scene, tr, t, "Open", 14.0, fg, brect.x0 + (brect.width() - ow) / 2.0, brect.y0 + 11.0, None, TextWeight::Semibold);
+        self.open_button_rect = brect;
+
+        // Any open error (e.g. "No git repository at …").
+        if let Some(err) = &self.last_error {
+            y += field_h + 16.0;
+            let ew = tr.measure(err, 12.5, None).0 as f64;
+            draw::text(scene, tr, t, err, 12.5, c.semantic.danger, cx + (cw - ew).max(0.0) / 2.0, y, Some(cw as f32));
         }
     }
 
@@ -1041,7 +1220,8 @@ impl GitClientApp {
     /// reconcile re-applies the right default for the destination.
     fn switch_screen(&mut self, screen: Screen) {
         self.screen = screen;
-        self.msg_focused = false;
+        self.set_focus(None);
+        self.armed_discard = None;
         self.flap.reconcile(self.layout_mode());
     }
 
@@ -1093,9 +1273,32 @@ impl GitClientApp {
     }
 
     fn handle_changes_click(&mut self, pos: Point) {
-        // Hunk-stage buttons take priority (they overlap the diff body).
-        if let Some(hunk) = diffview::hunk_button_at(&self.diff_hunk_buttons, pos) {
-            self.stage_hunk(hunk);
+        // Discard-file button (diff header) — armed two-click confirm.
+        if self.discard_file_rect.width() > 0.0 && self.discard_file_rect.contains(pos) {
+            if self.armed_discard == Some(DiscardTarget::File) {
+                if let Some((area, idx)) = self.selected_change {
+                    self.discard_file(area, idx);
+                }
+            } else {
+                self.armed_discard = Some(DiscardTarget::File);
+            }
+            return;
+        }
+        // Hunk action buttons take priority (they overlap the diff body).
+        if let Some((hunk, action)) = diffview::hunk_action_at(&self.diff_hunk_buttons, pos) {
+            match action {
+                diffview::HunkAction::Toggle => {
+                    self.armed_discard = None;
+                    self.stage_hunk(hunk);
+                }
+                diffview::HunkAction::Discard => {
+                    if self.armed_discard == Some(DiscardTarget::Hunk(hunk)) {
+                        self.discard_hunk(hunk);
+                    } else {
+                        self.armed_discard = Some(DiscardTarget::Hunk(hunk));
+                    }
+                }
+            }
             return;
         }
         // Resolve against the changes column regions.
@@ -1106,21 +1309,21 @@ impl GitClientApp {
                 break;
             }
         }
+        // Any other interaction disarms a pending discard.
+        self.armed_discard = None;
         let Some(hit) = hit else {
-            self.msg_focused = false;
             return;
         };
         match hit {
             ChangesHit::SelectFile(area, idx) => {
                 self.selected_change = Some((area, idx));
                 self.diff_scroll = 0.0;
-                self.msg_focused = false;
             }
             ChangesHit::ToggleStage(area, idx) => self.toggle_stage(area, idx),
             ChangesHit::StageAll => self.stage_all(),
             ChangesHit::UnstageAll => self.unstage_all(),
             ChangesHit::Commit => self.do_commit(),
-            ChangesHit::FocusMessage => self.msg_focused = true,
+            ChangesHit::FocusMessage => self.set_focus(Some(Field::Commit)),
         }
     }
 
@@ -1173,16 +1376,11 @@ impl GitClientApp {
     }
 
     fn handle_panels_click(&mut self, pos: Point) {
-        // New-branch input + create button take priority.
+        // Create button (the input's own focus is handled before this router).
         if self.new_branch_button.width() > 0.0 && self.new_branch_button.contains(pos) {
             self.create_new_branch();
             return;
         }
-        if self.new_branch_input.width() > 0.0 && self.new_branch_input.contains(pos) {
-            self.new_branch_focused = true;
-            return;
-        }
-        self.new_branch_focused = false;
         let mut hit: Option<PanelHit> = None;
         for f in &self.panel_hits {
             if let Some(action) = f(pos) {
@@ -1274,6 +1472,11 @@ impl GitClientApp {
     }
 }
 
+/// Whether `p` falls inside a non-empty `rect` (a zero-size rect never hits).
+fn rect_hit(rect: Rect, p: Point) -> bool {
+    rect.width() > 0.0 && rect.contains(p)
+}
+
 fn first_change(model: &RepoModel) -> Option<(ChangeArea, usize)> {
     if !model.staged.is_empty() {
         Some((ChangeArea::Staged, 0))
@@ -1349,24 +1552,32 @@ impl Widget for GitClientApp {
         transform: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
-        _presence: &PresenceCtx,
+        presence: &PresenceCtx,
     ) {
+        let c = &theme.tokens.colors;
+
+        // Honest empty state: no repository bound. Show the open-a-repository
+        // screen instead of the workspace chrome.
+        if self.awaiting_repo {
+            self.draw_open(scene, tr, transform, theme, presence);
+            return;
+        }
+
         // Advance the flap reveal toward its target so the slide + scrim fade
         // are smooth. The live loop keeps redrawing while
         // `needs_animation_frame` is true.
         self.flap.reconcile(self.layout_mode());
         self.tick_flap();
 
-        let c = &theme.tokens.colors;
         draw::fill_rect(scene, transform, self.rect, c.surfaces.base);
 
         self.draw_appbar(scene, tr, transform, theme);
 
         let body = Rect::new(self.rect.x0, self.rect.y0 + APPBAR_H, self.rect.x1, self.rect.y1);
         match self.screen {
-            Screen::Changes => self.draw_changes(scene, tr, transform, theme, body),
+            Screen::Changes => self.draw_changes(scene, tr, transform, theme, presence, body),
             Screen::History => self.draw_history(scene, tr, transform, theme, body),
-            Screen::Panels => self.draw_panels(scene, tr, transform, theme, body),
+            Screen::Panels => self.draw_panels(scene, tr, transform, theme, presence, body),
         }
     }
 
@@ -1374,13 +1585,13 @@ impl Widget for GitClientApp {
         &mut self,
         event: &WindowEvent,
         scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
+        modifiers: &winit::event::Modifiers,
+        state: &mut AutoCommit,
+        path: &ObjId,
         handled: &mut bool,
         _focus_target: &mut Option<NodeId>,
         _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
+        taffy: &TaffyTree<()>,
     ) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
@@ -1394,10 +1605,15 @@ impl Widget for GitClientApp {
                         break;
                     }
                 }
+                // Keep an in-flight text-selection drag updating.
+                self.forward_to_inputs(event, scale_factor, modifiers, state, path, taffy);
             }
             WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. } => {
-                self.handle_click(self.last_mouse);
+                self.handle_press(event, scale_factor, modifiers, state, path, taffy);
                 *handled = true;
+            }
+            WindowEvent::MouseInput { state: ElementState::Released, .. } => {
+                self.forward_to_inputs(event, scale_factor, modifiers, state, path, taffy);
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 let dy = match delta {
@@ -1407,8 +1623,8 @@ impl Widget for GitClientApp {
                 self.scroll_active(dy, self.last_mouse);
                 *handled = true;
             }
-            WindowEvent::KeyboardInput { event: key_event, .. } => {
-                self.handle_key(key_event, handled);
+            WindowEvent::KeyboardInput { .. } => {
+                self.handle_key(event, modifiers, state, path, taffy, handled);
             }
             _ => {}
         }
@@ -1423,9 +1639,12 @@ impl Widget for GitClientApp {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        // Keep the loop redrawing while the flap reveal hasn't settled so the
-        // slide + scrim fade animate smoothly.
+        // Redraw while the flap animates, and while any embedded text field is
+        // focused so its caret keeps blinking.
         self.flap.is_animating(self.layout_mode())
+            || self.commit_input.needs_animation_frame()
+            || self.branch_input.needs_animation_frame()
+            || self.open_input.needs_animation_frame()
     }
 
     fn draw_with_presence(
@@ -1442,63 +1661,140 @@ impl Widget for GitClientApp {
 }
 
 impl GitClientApp {
-    fn handle_key(&mut self, ev: &KeyEvent, handled: &mut bool) {
+    /// Forward one event to a single embedded [`TextInput`], returning whether
+    /// it consumed the event.
+    fn fwd(
+        input: &mut TextInput,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: &winit::event::Modifiers,
+        state: &mut AutoCommit,
+        path: &ObjId,
+        taffy: &TaffyTree<()>,
+    ) -> bool {
+        let mut handled = false;
+        let mut ft: Option<NodeId> = None;
+        input.handle_event(
+            event, scale_factor, modifiers, state, path, &mut handled, &mut ft,
+            NodeId::new(0), taffy,
+        );
+        handled
+    }
+
+    /// Forward a pointer event to every text field (so an in-flight drag-select
+    /// keeps updating regardless of which field started it).
+    fn forward_to_inputs(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: &winit::event::Modifiers,
+        state: &mut AutoCommit,
+        path: &ObjId,
+        taffy: &TaffyTree<()>,
+    ) {
+        Self::fwd(&mut self.commit_input, event, scale_factor, modifiers, state, path, taffy);
+        Self::fwd(&mut self.branch_input, event, scale_factor, modifiers, state, path, taffy);
+        Self::fwd(&mut self.open_input, event, scale_factor, modifiers, state, path, taffy);
+    }
+
+    /// Route a left-press: text fields first (focus + caret placement), then
+    /// the geometry click router. Blurs any focused field on a click outside.
+    #[allow(clippy::too_many_arguments)]
+    fn handle_press(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: &winit::event::Modifiers,
+        state: &mut AutoCommit,
+        path: &ObjId,
+        taffy: &TaffyTree<()>,
+    ) {
+        let pos = self.last_mouse;
+        // Empty "open a repository" state routes entirely to its own controls.
+        if self.awaiting_repo {
+            if self.open_button_rect.width() > 0.0 && self.open_button_rect.contains(pos) {
+                self.open_repo_from_input();
+                return;
+            }
+            if self.open_input_rect.width() > 0.0 && self.open_input_rect.contains(pos) {
+                self.set_focus(Some(Field::Open));
+                Self::fwd(&mut self.open_input, event, scale_factor, modifiers, state, path, taffy);
+                return;
+            }
+            self.set_focus(None);
+            return;
+        }
+        // A press on a visible text field focuses it and places the caret.
+        if self.screen == Screen::Changes && rect_hit(self.commit_input.get_rect(), pos) {
+            self.set_focus(Some(Field::Commit));
+            Self::fwd(&mut self.commit_input, event, scale_factor, modifiers, state, path, taffy);
+            return;
+        }
+        if self.screen == Screen::Panels && rect_hit(self.new_branch_input, pos) {
+            self.set_focus(Some(Field::Branch));
+            Self::fwd(&mut self.branch_input, event, scale_factor, modifiers, state, path, taffy);
+            return;
+        }
+        // Anywhere else: blur the fields and run the normal click router.
+        self.set_focus(None);
+        self.handle_click(pos);
+    }
+
+    /// Submit the focused field's action (Enter).
+    fn submit_focused(&mut self, field: Field) {
+        match field {
+            Field::Commit => self.do_commit(),
+            Field::Branch => self.create_new_branch(),
+            Field::Open => self.open_repo_from_input(),
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn handle_key(
+        &mut self,
+        event: &WindowEvent,
+        modifiers: &winit::event::Modifiers,
+        state: &mut AutoCommit,
+        path: &ObjId,
+        taffy: &TaffyTree<()>,
+        handled: &mut bool,
+    ) {
+        let WindowEvent::KeyboardInput { event: ev, .. } = event else {
+            return;
+        };
         if ev.state != ElementState::Pressed {
             return;
         }
-        // New-branch name editing takes keys when focused.
-        if self.new_branch_focused {
+
+        // A focused text field takes the keys, except Enter (submit) and Escape
+        // (blur) which the app intercepts. Text editing — cursor, selection,
+        // word-nav, clipboard — is all handled by the toolkit TextInput.
+        if let Some(field) = self.focus {
             match &ev.logical_key {
-                Key::Named(NamedKey::Backspace) => {
-                    self.new_branch_name.pop();
-                    *handled = true;
-                }
                 Key::Named(NamedKey::Enter) => {
-                    self.create_new_branch();
+                    self.submit_focused(field);
                     *handled = true;
                 }
                 Key::Named(NamedKey::Escape) => {
-                    self.new_branch_focused = false;
+                    self.set_focus(None);
                     *handled = true;
                 }
-                Key::Character(s) => {
-                    // Branch names: accept the character verbatim; git will
-                    // reject illegal names and the error surfaces in the bar.
-                    self.new_branch_name.push_str(s);
-                    *handled = true;
+                _ => {
+                    let input: &mut TextInput = match field {
+                        Field::Commit => &mut self.commit_input,
+                        Field::Branch => &mut self.branch_input,
+                        Field::Open => &mut self.open_input,
+                    };
+                    if Self::fwd(input, event, 1.0, modifiers, state, path, taffy) {
+                        *handled = true;
+                    }
                 }
-                _ => {}
             }
             return;
         }
 
-        // Commit-message editing takes keys when focused.
-        if self.msg_focused {
-            match &ev.logical_key {
-                Key::Named(NamedKey::Backspace) => {
-                    self.commit_message.pop();
-                    *handled = true;
-                }
-                Key::Named(NamedKey::Enter) => {
-                    // Enter commits; Shift+Enter would add a newline, but
-                    // we keep it simple and commit on Enter.
-                    self.do_commit();
-                    *handled = true;
-                }
-                Key::Named(NamedKey::Escape) => {
-                    self.msg_focused = false;
-                    *handled = true;
-                }
-                Key::Named(NamedKey::Space) => {
-                    self.commit_message.push(' ');
-                    *handled = true;
-                }
-                Key::Character(s) => {
-                    self.commit_message.push_str(s);
-                    *handled = true;
-                }
-                _ => {}
-            }
+        // The empty-state screen has no other keys.
+        if self.awaiting_repo {
             return;
         }
 
