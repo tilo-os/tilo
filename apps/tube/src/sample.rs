@@ -360,6 +360,7 @@ pub fn model() -> TubeModel {
     TubeModel {
         videos,
         channels: chans,
+        playlists: Vec::new(),
         // Start subscribed to a few so the Subscriptions tab is populated.
         subscriptions: vec![
             "ch_lowlevel".into(),
@@ -391,6 +392,9 @@ pub fn model() -> TubeModel {
         },
         search_hits_query: String::new(),
         search_hits: Vec::new(),
+        search_playlist_hits: Vec::new(),
+        search_channel_hits: Vec::new(),
+        search_type_filter: crate::model::SearchTypeFilter::default(),
         related_of: String::new(),
         related_hits: Vec::new(),
         // A few crowdsourced dislike counts (Return YouTube Dislike) so the
