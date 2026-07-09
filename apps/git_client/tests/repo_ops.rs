@@ -517,6 +517,145 @@ fn not_a_repo_is_handled_gracefully() {
     assert!(repo::load(dir.path()).is_none(), "load returns None");
 }
 
+#[test]
+fn stage_hunk_of_untracked_file_stages_whole_file() {
+    // An untracked file has no index base for a per-hunk apply, so staging any
+    // of its hunks must stage the whole file rather than erroring.
+    let (_d, path) = init_repo();
+    fs::write(path.join("new.rs"), "fn a() {}\nfn b() {}\n").unwrap();
+    assert!(!is_staged(&path, "new.rs"));
+
+    repo::apply_hunk(&path, "new.rs", 0, false).expect("stage untracked hunk");
+    assert!(is_staged(&path, "new.rs"), "untracked hunk-stage stages the file");
+}
+
+#[test]
+fn discard_file_reverts_tracked_worktree_edit() {
+    let (_d, path) = init_repo();
+    let original = fs::read_to_string(path.join("file.txt")).unwrap();
+    fs::write(path.join("file.txt"), "line 1\nDISCARD ME\nline 3\n").unwrap();
+
+    repo::discard_file(&path, "file.txt").expect("discard tracked edit");
+
+    let after = fs::read_to_string(path.join("file.txt")).unwrap();
+    assert_eq!(after, original, "discard must restore the committed content");
+}
+
+#[test]
+fn discard_file_deletes_untracked_file() {
+    let (_d, path) = init_repo();
+    fs::write(path.join("scratch.tmp"), "junk\n").unwrap();
+    assert!(path.join("scratch.tmp").exists());
+
+    repo::discard_file(&path, "scratch.tmp").expect("discard untracked");
+
+    assert!(!path.join("scratch.tmp").exists(), "untracked discard deletes the file");
+}
+
+#[test]
+fn discard_hunk_reverts_only_the_selected_worktree_hunk() {
+    let (_d, path) = init_repo();
+    fs::write(
+        path.join("multi.txt"),
+        (1..=40).map(|n| format!("line {n}\n")).collect::<String>(),
+    )
+    .unwrap();
+    repo::stage_file(&path, "multi.txt").unwrap();
+    repo::commit(&path, "add multi").unwrap();
+    // Two well-separated edits → two worktree hunks.
+    let mut lines: Vec<String> = (1..=40).map(|n| format!("line {n}")).collect();
+    lines[1] = "line 2 EDIT".into();
+    lines[37] = "line 38 EDIT".into();
+    fs::write(path.join("multi.txt"), lines.join("\n") + "\n").unwrap();
+
+    // Discard only the first hunk from the working tree.
+    repo::discard_hunk(&path, "multi.txt", 0).expect("discard hunk 0");
+
+    let after = fs::read_to_string(path.join("multi.txt")).unwrap();
+    assert!(after.contains("line 2\n"), "hunk 0 reverted to committed content");
+    assert!(!after.contains("line 2 EDIT"), "hunk 0's edit is gone");
+    assert!(after.contains("line 38 EDIT"), "hunk 1's edit must remain");
+}
+
+#[test]
+fn partially_staged_file_keeps_distinct_staged_and_worktree_diffs() {
+    use git_client::model::DiffKey;
+    let (_d, path) = init_repo();
+    fs::write(
+        path.join("multi.txt"),
+        (1..=40).map(|n| format!("line {n}\n")).collect::<String>(),
+    )
+    .unwrap();
+    repo::stage_file(&path, "multi.txt").unwrap();
+    repo::commit(&path, "add multi").unwrap();
+    // Edit + stage line 2, then edit line 38 without staging: the file is now
+    // in BOTH the staged and unstaged lists with different content on each side.
+    let mut lines: Vec<String> = (1..=40).map(|n| format!("line {n}")).collect();
+    lines[1] = "line 2 STAGED".into();
+    fs::write(path.join("multi.txt"), lines.join("\n") + "\n").unwrap();
+    repo::stage_file(&path, "multi.txt").unwrap();
+    lines[37] = "line 38 UNSTAGED".into();
+    fs::write(path.join("multi.txt"), lines.join("\n") + "\n").unwrap();
+
+    let (_model, diffs) = repo::load(&path).expect("load repo");
+    let staged = diffs
+        .get(&DiffKey::staged("multi.txt"))
+        .expect("a staged-side diff exists");
+    let worktree = diffs
+        .get(&DiffKey::worktree("multi.txt"))
+        .expect("a worktree-side diff exists");
+
+    let has = |d: &git_client::model::FileDiff, needle: &str| {
+        d.lines.iter().any(|l| l.content.contains(needle))
+    };
+    assert!(has(staged, "line 2 STAGED"), "staged diff shows the staged edit");
+    assert!(!has(staged, "line 38 UNSTAGED"), "staged diff excludes the unstaged edit");
+    assert!(has(worktree, "line 38 UNSTAGED"), "worktree diff shows the unstaged edit");
+    assert!(!has(worktree, "line 2 STAGED"), "worktree diff excludes the staged edit");
+}
+
+#[test]
+fn app_discard_file_through_production_action() {
+    let (_d, path) = init_repo();
+    let original = fs::read_to_string(path.join("file.txt")).unwrap();
+    fs::write(path.join("file.txt"), "line 1\nWILL DISCARD\nline 3\n").unwrap();
+    let mut app = GitClientApp::open_at(&path).unwrap();
+
+    // The tracked edit shows as unstaged; discard it via the app action.
+    app.test_discard_file(ChangeArea::Unstaged, 0);
+    assert_eq!(app.test_last_error(), None, "discard must not error");
+    assert_eq!(
+        fs::read_to_string(path.join("file.txt")).unwrap(),
+        original,
+        "app discard reverts the working tree",
+    );
+    // Model reloaded to a clean tree.
+    assert_eq!(app.test_change_counts(), (0, 0, 0));
+}
+
+#[test]
+fn app_empty_state_opens_a_real_repository() {
+    let (_d, path) = init_repo();
+    let mut app = GitClientApp::open_empty();
+    assert!(app.test_awaiting_repo(), "no repo bound → empty state");
+
+    app.test_open_path(&path.to_string_lossy());
+    assert!(!app.test_awaiting_repo(), "opening a valid path binds the repo");
+    assert_eq!(app.test_last_error(), None);
+    // HEAD came from the real repo we opened.
+    let head = open(&path).head().unwrap().shorthand().unwrap().to_string();
+    assert_eq!(app.test_head(), head);
+}
+
+#[test]
+fn app_empty_state_rejects_a_non_repository_path() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut app = GitClientApp::open_empty();
+    app.test_open_path(&dir.path().to_string_lossy());
+    assert!(app.test_awaiting_repo(), "a non-repo path leaves the empty state up");
+    assert!(app.test_last_error().is_some(), "and surfaces an error");
+}
+
 // --- helpers ---------------------------------------------------------
 
 /// Render a git2 diff to its full patch text for substring assertions.

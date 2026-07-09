@@ -23,7 +23,7 @@ use git2::{
 
 use crate::diff::{language_for, parse_unified};
 use crate::model::{
-    Branch, ChangeArea, ChangeKind, Commit, DiffKey, DiffMap, FileChange, FileDiff, RefKind,
+    Branch, ChangeArea, ChangeKind, Commit, DiffKey, DiffMap, FileChange, RefKind,
     RefLabel, Remote, RepoModel, Stash, Tag,
 };
 
