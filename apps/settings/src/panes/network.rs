@@ -451,6 +451,12 @@ impl NetworkPane {
             return;
         }
         let _ = state.put(root, EXPANDED_KEY, ssid.clone().unwrap_or_default());
+        // Seed the password field's Text object so it is typeable as soon as
+        // the prompt appears (a `TextInput` persists edits only through an
+        // existing Text object).
+        if let Some(s) = &ssid {
+            let _ = crate::ensure_text_object(state, root, &password_key(s));
+        }
         self.expanded_ssid = ssid;
         self.structure_dirty = true;
     }
@@ -505,6 +511,11 @@ impl Widget for NetworkPane {
                     EXPANDED_KEY,
                     self.expanded_ssid.clone().unwrap_or_default(),
                 );
+            }
+            // A pre-expanded pane (tests / `--shots`) needs its password field's
+            // Text object seeded so the field is typeable / renders its value.
+            if let Some(ssid) = self.expanded_ssid.clone() {
+                let _ = crate::ensure_text_object(state, root, &password_key(&ssid));
             }
             self.needs_seed = false;
         }

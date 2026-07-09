@@ -401,6 +401,9 @@ impl Widget for AccountsPane {
             let _ = state.put(root, ADD_MAIL_KEY, automerge::ScalarValue::Boolean(false));
             if !self.form_open {
                 self.form_open = true;
+                // Seed the fields' Text objects so they are typeable the moment
+                // the form appears.
+                seed_form_fields(state, root);
                 self.structure_dirty = true;
             }
         }
@@ -602,10 +605,24 @@ fn read_str(state: &AutoCommit, root: &ObjId, key: &str) -> Option<String> {
     }
 }
 
-/// Blank the form's bound text keys so a reopened form starts empty.
+/// The form's four editable text keys, in field order.
+const FORM_FIELD_KEYS: [&str; 4] =
+    [FORM_NAME_KEY, FORM_EMAIL_KEY, FORM_USER_KEY, FORM_PASSWORD_KEY];
+
+/// Seed the form's bound `Text` objects so the fields can actually be typed
+/// into (a `TextInput` persists edits only through an existing Text object).
+fn seed_form_fields(state: &mut AutoCommit, root: &ObjId) {
+    for key in FORM_FIELD_KEYS {
+        let _ = crate::ensure_text_object(state, root, key);
+    }
+}
+
+/// Blank the form's bound text keys so a reopened form starts empty — clearing
+/// the `Text` objects' contents (not replacing them with scalars, which would
+/// break the next round of typing).
 fn clear_form(state: &mut AutoCommit, root: &ObjId) {
-    for key in [FORM_NAME_KEY, FORM_EMAIL_KEY, FORM_USER_KEY, FORM_PASSWORD_KEY] {
-        let _ = state.put(root, key, "");
+    for key in FORM_FIELD_KEYS {
+        crate::clear_text_object(state, root, key);
     }
 }
 

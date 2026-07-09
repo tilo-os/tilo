@@ -37,7 +37,7 @@
 use crate::categories::Category;
 use crate::panes;
 use crate::sidebar;
-use ui::widget::{Button, Column, Container, NavSplit, Row, Scrollable, Spacer, SplitLayout, SplitMode, Text, Widget};
+use ui::widget::{Button, Column, Container, NavSplit, Row, Scrollable, Spacer, SplitLayout, SplitMode, TextInput, Widget};
 use ui::{AppKind, AppWidget, IconDescriptor};
 
 /// CRDT key the header's collapse/expand button writes `true` to. Read in
@@ -49,6 +49,18 @@ pub const TOGGLE_SIDEBAR_KEY: &str = "settings.toggle_sidebar";
 /// settings window is docked while a narrow / split-screen placement gets the
 /// overlay.
 pub const NAV_BREAKPOINT: f64 = 720.0;
+
+/// Height (logical px) of the top control strip that holds the sidebar toggle
+/// and the search field.
+const TOP_BAR_HEIGHT: f32 = 54.0;
+
+/// Width (logical px) the search field is pinned to in the top strip — sized
+/// so, with the toggle button and the row gap, it sits over the sidebar
+/// column rather than stretching across the content pane.
+const SEARCH_FIELD_WIDTH: f32 = 200.0;
+
+/// Left inset (logical px) of the top strip's content from the window edge.
+const TOP_BAR_INSET_X: f32 = 14.0;
 
 pub struct SettingsApp {
     /// Currently-selected sidebar category.
@@ -75,6 +87,15 @@ pub struct SettingsApp {
     /// change flags `structure_dirty` so the filtered list is rebuilt.
     search_query: String,
     rect: vello::kurbo::Rect,
+    /// The top control strip (sidebar toggle + search field), rebuilt each
+    /// `build_layout`. It lives at the app's **top level** — in the host's
+    /// main taffy tree, NOT inside the `NavSplit` — so the search field is
+    /// reachable by the App's focus machinery. (`NavSplit` lays its children
+    /// out in an isolated inner tree the focus walk can't see, which is why
+    /// a search field nested in the sidebar could never take or keep keyboard
+    /// focus; hoisting it here is what makes clicking the field focus it and
+    /// keeps that focus across the filter rebuild.)
+    top_bar: Option<Box<dyn Widget>>,
     /// The composed split (sidebar | content), rebuilt each `build_layout` so
     /// a category switch shows up once the host re-runs the layout pass.
     split: Option<NavSplit>,
@@ -96,6 +117,7 @@ impl SettingsApp {
             sidebar_collapsed: false,
             search_query: String::new(),
             rect: vello::kurbo::Rect::ZERO,
+            top_bar: None,
             split: None,
         }
     }
@@ -187,16 +209,27 @@ impl SettingsApp {
         "\u{f035c}" // menu / hamburger
     }
 
-    /// The header shown above the content pane: a sidebar-toggle button, the
-    /// category's own glyph, the category title, and a one-line subtitle,
-    /// closed off by a hairline rule. Rendered as a plain (borderless) block
-    /// so it reads as a page title rather than another card — the cards below
-    /// it are the raised surfaces, the header sits on the page background.
-    fn build_pane_header(&self) -> Box<dyn Widget> {
+    /// Build the top control strip: a single, obvious sidebar toggle on the
+    /// left and the settings search field beside it. This is the app's only
+    /// top chrome and it holds **controls only** — no app-name / page-title
+    /// header (the OS draws the window-group pill from [`AppWidget::app_title`],
+    /// so an app-drawn title would duplicate it).
+    ///
+    /// The strip is built here, at the app's top level, so it lands in the
+    /// host's **main** taffy tree. That is essential for the search field:
+    /// widgets inside the `NavSplit` are laid out in an isolated inner tree
+    /// the App's focus walk never visits, so a field nested there can neither
+    /// take a click's focus reliably nor keep it across the per-keystroke
+    /// filter rebuild. Hoisted here, the field is in `focusable_order`, so a
+    /// click focuses it and `autofocus_on_structure_change` restores that
+    /// focus (and the caret) after the sidebar rebuilds to show the filtered
+    /// results.
+    fn build_top_bar(&self) -> Box<dyn Widget> {
         let theme = ui::Theme::dark();
 
-        // The toggle button hides/shows the docked sidebar, reclaiming its
-        // width for content. It writes a one-shot CRDT key that `sync` reads.
+        // Single, obvious sidebar toggle (hamburger), on the LEFT — the
+        // conventional place. Writes a one-shot CRDT key `sync` reads to flip
+        // the docked sidebar's collapsed state.
         let toggle_btn = Button::new(
             "settings.toggle_sidebar",
             self.collapse_glyph(),
@@ -204,43 +237,55 @@ impl SettingsApp {
         )
         .with_size(38.0, 38.0);
 
-        // Title line: the title first (so it measures and draws — the same
-        // `Row[Text, Spacer, action]` shape the card headers use), then the
-        // trailing sidebar-toggle button. A leading `Text` in a Row draws
-        // reliably; a trailing one can collapse to zero width, so title order
-        // matters here.
-        let title_row = Row::new()
-            .push(Box::new(Text::new(self.selected.label()).with_size(24.0)))
-            .push(Box::new(Spacer::new()))
-            .push(Box::new(toggle_btn));
+        // The search field. Bound to `SEARCH_KEY`; its value is re-read from
+        // the document on every `sync`, so the text survives the sidebar's
+        // filter rebuild. `SettingsApp::sync` reads the same key to filter the
+        // category list below.
+        let search = TextInput::new(Vec::new())
+            .with_id("settings.search")
+            .with_on_change_path(sidebar::SEARCH_KEY)
+            .with_placeholder("\u{f0349}  Search settings")
+            .with_font_size(13.0);
+        // Pin the field to a comfortable width so it sits over the sidebar
+        // column rather than stretching across the content, and give it a
+        // field-height box so it reads as an input, not a bare line.
+        let search_box = Container::new()
+            .with_no_padding()
+            .with_size(SEARCH_FIELD_WIDTH, 36.0)
+            .with_child(Box::new(search));
 
-        // Subtitle on its own line, dimmed, leading `Text` so it draws.
-        let subtitle_row = Row::new()
-            .push(Box::new(
-                Text::new(self.selected.subtitle())
-                    .with_size(13.0)
-                    .with_color(theme.text_dim),
-            ))
+        // A leading inset keeps the toggle off the window edge; the row's own
+        // inter-child gap spaces the toggle from the field. `Spacer` soaks up
+        // the trailing width so the field stays left, over the sidebar.
+        let row = Row::new()
+            .push(crate::widgets::hgap(TOP_BAR_INSET_X))
+            .push(Box::new(toggle_btn))
+            .push(Box::new(search_box))
             .push(Box::new(Spacer::new()));
 
-        // The title band. Wrapping the content in a background `Container` is
-        // what makes the large title `Text` measure and draw reliably — a
-        // borderless wrapper collapses the leading title to zero width (the
-        // same cached-draw-path quirk `card()` documents). The band reads as
-        // the pane's headerbar, above the raised content cards.
-        let stack = Column::new()
-            .with_no_padding()
-            .with_intrinsic_height()
-            .push(Box::new(title_row))
-            .push(crate::widgets::vgap(5.0))
-            .push(Box::new(subtitle_row));
-        Box::new(Container::new().with_background().with_child(Box::new(stack)))
+        // A fixed-height strip tinted a step below the content so it reads as a
+        // header band — without ever naming the app. No inner padding: the row
+        // owns its own inset and the toggle/field are taller than a padded box
+        // would allow.
+        let surface = theme.tokens.colors.surfaces.base;
+        Box::new(
+            Container::new()
+                .with_no_padding()
+                .with_height(TOP_BAR_HEIGHT)
+                .with_fill(surface)
+                .with_child(Box::new(row)),
+        )
     }
 
-    /// Build the content pane: header + the selected category's body, wrapped
-    /// in a vertical [`Scrollable`] so tall panes (many section cards on a
-    /// short window) scroll with a real overlay scrollbar — thumb drag, track
+    /// Build the content pane: the selected category's body, wrapped in a
+    /// vertical [`Scrollable`] so tall panes (many section cards on a short
+    /// window) scroll with a real overlay scrollbar — thumb drag, track
     /// paging, PageUp/Down + Home/End, wheel — instead of being clipped.
+    ///
+    /// There is **no app-drawn title header** here: the category's identity is
+    /// carried by its active sidebar row and the OS window-group pill, not by a
+    /// duplicated in-pane title. The pane starts directly with its first
+    /// section card, inset from the top so it has breathing room.
     ///
     /// The intrinsic-height inner `Column` provides the content extent; the
     /// `Scrollable`'s `percent(1.0)` height resolves against the filling
@@ -248,15 +293,10 @@ impl SettingsApp {
     /// the measure pass), so the viewport doesn't collapse. When the content
     /// fits, the bar hides itself and nothing changes visually.
     fn build_content(&self) -> Box<dyn Widget> {
-        let header = self.build_pane_header();
         let body = self.build_pane_body();
-        // A deliberate gap between the title band and the first section card
-        // so the title has breathing room (the column is block-display and
-        // ignores the toolkit's inter-child gap).
         let inner = Column::new()
             .with_intrinsic_height()
-            .push(header)
-            .push(crate::widgets::vgap(20.0))
+            .push(crate::widgets::vgap(6.0))
             .push(body);
         let scroll = Scrollable::new_vertical().with_child(Box::new(inner));
         Box::new(Container::new().filling().with_child(Box::new(scroll)))
@@ -355,26 +395,41 @@ impl Widget for SettingsApp {
             self.structure_dirty = true;
         }
 
-        // In `--shots` there is no event loop to type into the search field,
-        // so a pre-seeded query (via `with_search_shot`) is mirrored into the
-        // field's key once, so the field visibly shows the query it filtered
-        // by. Harmless live: `search_query` starts empty there.
-        if !self.search_query.is_empty()
-            && read_search(state, path).is_none()
-        {
-            let _ = state.put(path, sidebar::SEARCH_KEY, self.search_query.as_str());
+        // The search field edits an Automerge `Text` object; ensure it exists
+        // so typed characters actually persist to the document (a `TextInput`
+        // only writes through an existing Text object — without this the field
+        // would update just its local buffer and the filter would never see the
+        // query, and the text would vanish on the next rebuild).
+        let search_obj = crate::ensure_text_object(state, path, sidebar::SEARCH_KEY);
+        // In `--shots` there is no event loop to type into the field, so a
+        // pre-seeded query (via `with_search_shot`) is spliced into the object
+        // once so the field visibly shows the query it filtered by. Harmless
+        // live: `search_query` starts empty there.
+        if !self.search_query.is_empty() {
+            if let Ok(existing) = state.text(&search_obj) {
+                if existing.is_empty() {
+                    let _ = state.splice_text(&search_obj, 0, 0, &self.search_query);
+                }
+            }
         }
 
-        // Search query: the sidebar's search field writes `settings.search`.
+        // Search query: the top strip's search field writes `settings.search`.
         // Reading a changed value here updates the filter and flags a rebuild
         // so the sidebar's filtered results list is recomposed. The field
         // re-reads the same key on its own `sync`, so the query text survives
-        // that rebuild; keeping the field the first focusable keeps the caret.
+        // that rebuild; because the field is a top-level focusable (not buried
+        // in the `NavSplit`), `autofocus_on_structure_change` restores focus +
+        // caret to it by ordinal after the rebuild, so typing keeps flowing.
         if let Some(q) = read_search(state, path) {
             if q != self.search_query {
                 self.search_query = q;
                 self.structure_dirty = true;
             }
+        }
+
+        // Sync the top strip so the search field reads its bound value back.
+        if let Some(top) = &mut self.top_bar {
+            top.sync(state, path);
         }
 
         if let Some(split) = &mut self.split {
@@ -396,6 +451,15 @@ impl Widget for SettingsApp {
         theme: &ui::Theme,
         node_map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn Widget>,
     ) -> taffy::NodeId {
+        // The app is a vertical stack: a fixed-height top control strip
+        // (toggle + search) over the responsive split. The strip is built into
+        // the *main* taffy tree here (not inside the `NavSplit`) so its search
+        // field is reachable by the host's focus machinery — see
+        // [`Self::build_top_bar`].
+        let mut top_bar = self.build_top_bar();
+        let top_node = top_bar.build_layout(taffy, theme, node_map);
+        self.top_bar = Some(top_bar);
+
         // Rebuild the split for the current selection. The host re-runs this
         // pass whenever `take_structure_dirty` reports true (i.e. after a
         // category change), so the freshly-built content pane is what reaches
@@ -403,15 +467,36 @@ impl Widget for SettingsApp {
         let mut split = self.build_split();
         let split_node = split.build_layout(taffy, theme, node_map);
         self.split = Some(split);
+        // The split fills the height left under the fixed strip. `NavSplit`
+        // builds a `percent(1.0)`-height leaf; override it to grow into the
+        // remaining space instead of over-running past the strip.
+        let _ = taffy.set_style(
+            split_node,
+            taffy::Style {
+                flex_grow: 1.0,
+                flex_basis: taffy::Dimension::length(0.0),
+                size: taffy::Size {
+                    width: taffy::Dimension::percent(1.0),
+                    height: taffy::Dimension::auto(),
+                },
+                min_size: taffy::Size {
+                    width: taffy::Dimension::auto(),
+                    height: taffy::Dimension::length(0.0),
+                },
+                ..Default::default()
+            },
+        );
 
         let style = taffy::Style {
+            display: taffy::Display::Flex,
+            flex_direction: taffy::FlexDirection::Column,
             size: taffy::Size {
                 width: taffy::Dimension::percent(1.0),
                 height: taffy::Dimension::percent(1.0),
             },
             ..Default::default()
         };
-        let node = taffy.new_with_children(style, &[split_node]).unwrap();
+        let node = taffy.new_with_children(style, &[top_node, split_node]).unwrap();
         node_map.insert(node, self as *mut dyn Widget);
         node
     }
@@ -429,13 +514,14 @@ impl Widget for SettingsApp {
             origin.x + l.location.x as f64 + l.size.width as f64,
             origin.y + l.location.y as f64 + l.size.height as f64,
         );
-        if let (Some(split), Ok(children)) = (&mut self.split, taffy.children(node)) {
-            if let Some(&child_node) = children.first() {
-                split.apply_layout(
-                    taffy,
-                    child_node,
-                    vello::kurbo::Point::new(self.rect.x0, self.rect.y0),
-                );
+        let origin = vello::kurbo::Point::new(self.rect.x0, self.rect.y0);
+        if let Ok(children) = taffy.children(node) {
+            // children[0] = top strip, children[1] = split.
+            if let (Some(&top_node), Some(top)) = (children.first(), &mut self.top_bar) {
+                top.apply_layout(taffy, top_node, origin);
+            }
+            if let (Some(&split_node), Some(split)) = (children.get(1), &mut self.split) {
+                split.apply_layout(taffy, split_node, origin);
             }
         }
     }
@@ -451,6 +537,11 @@ impl Widget for SettingsApp {
         if let Some(split) = &mut self.split {
             split.draw(scene, transform, text_renderer, theme, presence);
         }
+        // Draw the strip after the split so it is never occluded by the
+        // content pane's background.
+        if let Some(top) = &mut self.top_bar {
+            top.draw(scene, transform, text_renderer, theme, presence);
+        }
     }
 
     fn draw_with_presence(
@@ -464,6 +555,9 @@ impl Widget for SettingsApp {
     ) {
         if let Some(split) = &mut self.split {
             split.draw_with_presence(scene, transform, text_renderer, theme, presence, permissions);
+        }
+        if let Some(top) = &mut self.top_bar {
+            top.draw_with_presence(scene, transform, text_renderer, theme, presence, permissions);
         }
     }
 
@@ -479,17 +573,17 @@ impl Widget for SettingsApp {
         node_id: taffy::NodeId,
         taffy: &taffy::TaffyTree<()>,
     ) {
-        if let (Some(split), Ok(children)) = (&mut self.split, taffy.children(node_id)) {
-            if let Some(&child_node) = children.first() {
+        if let Ok(children) = taffy.children(node_id) {
+            // Route to the top strip first (search + toggle), then the split.
+            if let (Some(&top_node), Some(top)) = (children.first(), &mut self.top_bar) {
+                top.handle_event(
+                    event, scale_factor, modifiers, state, path, handled, focus_target, top_node,
+                    taffy,
+                );
+            }
+            if let (Some(&split_node), Some(split)) = (children.get(1), &mut self.split) {
                 split.handle_event(
-                    event,
-                    scale_factor,
-                    modifiers,
-                    state,
-                    path,
-                    handled,
-                    focus_target,
-                    child_node,
+                    event, scale_factor, modifiers, state, path, handled, focus_target, split_node,
                     taffy,
                 );
             }
@@ -497,19 +591,28 @@ impl Widget for SettingsApp {
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
-        self.split
-            .as_ref()
-            .map(|s| s as &dyn Widget)
-            .into_iter()
-            .collect()
+        // Order MUST match the taffy children order [top_bar, split] so the
+        // host's focus walk (which zips `children()` with `taffy.children`)
+        // reaches the search field in the top strip.
+        let mut out: Vec<&dyn Widget> = Vec::new();
+        if let Some(top) = self.top_bar.as_ref() {
+            out.push(top.as_ref());
+        }
+        if let Some(split) = self.split.as_ref() {
+            out.push(split as &dyn Widget);
+        }
+        out
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        self.split
-            .as_mut()
-            .map(|s| s as &mut (dyn Widget + '_))
-            .into_iter()
-            .collect()
+        let mut out: Vec<&mut (dyn Widget + '_)> = Vec::new();
+        if let Some(top) = self.top_bar.as_mut() {
+            out.push(top.as_mut());
+        }
+        if let Some(split) = self.split.as_mut() {
+            out.push(split as &mut (dyn Widget + '_));
+        }
+        out
     }
 
     fn name(&self) -> &str {
@@ -526,20 +629,27 @@ impl Widget for SettingsApp {
     /// child's own structure-dirty signal.
     fn take_structure_dirty(&mut self) -> bool {
         let own = std::mem::take(&mut self.structure_dirty);
-        let child = self
+        let split_child = self
             .split
             .as_mut()
             .map(|s| s.take_structure_dirty())
             .unwrap_or(false);
-        own || child
+        let top_child = self
+            .top_bar
+            .as_mut()
+            .map(|t| t.take_structure_dirty())
+            .unwrap_or(false);
+        own || split_child || top_child
     }
 
     fn needs_animation_frame(&self) -> bool {
         self.split.as_ref().is_some_and(|s| s.needs_animation_frame())
+            || self.top_bar.as_ref().is_some_and(|t| t.needs_animation_frame())
     }
 
     fn needs_idle_sync(&self) -> bool {
         self.split.as_ref().is_some_and(|s| s.needs_idle_sync())
+            || self.top_bar.as_ref().is_some_and(|t| t.needs_idle_sync())
     }
 }
 
@@ -727,7 +837,7 @@ mod tests {
 
     #[test]
     fn seeded_search_shot_query_reaches_the_sidebar_and_field() {
-        use automerge::{transaction::Transactable, ReadDoc};
+        use automerge::ReadDoc;
         // The `--shots` seed path mirrors a pre-set query into the field key so
         // the rendered field shows it, and drives the filter.
         let mut app = SettingsApp::with_selected(Category::Displays).with_search_shot("light");
