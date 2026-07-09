@@ -119,7 +119,12 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         // list) instead of the Home grid, so the reported numbers cover the
         // screen the scroll-perf complaint was about.
         let watch = args.iter().any(|a| a == "--watch");
-        return run_bench_scroll(frames, watch);
+        // `--loaded` (with `--watch`) loads a real decoded frame into the player
+        // and pauses it, reproducing the "paused-but-loaded watch page" the
+        // scroll-perf complaint is about — and drives `sync` each frame, so the
+        // per-frame engine cost is measured, not just layout + draw.
+        let loaded = args.iter().any(|a| a == "--loaded");
+        return run_bench_scroll(frames, watch, loaded);
     }
 
     if let Some(out) = parse_shots_arg(&args) {
@@ -1266,7 +1271,7 @@ fn avg_us(samples: &[u128]) -> u128 {
 /// `--bench-scroll [frames] [--watch]`: measure the per-frame main-thread cost
 /// of scrolling either a large Home grid or the watch page (full-bleed player +
 /// a long comment list), in two modes, and report the numbers.
-fn run_bench_scroll(frames: usize, watch: bool) -> Result<(), Box<dyn std::error::Error>> {
+fn run_bench_scroll(frames: usize, watch: bool, loaded: bool) -> Result<(), Box<dyn std::error::Error>> {
     use std::time::Instant;
     use tube::model::{Route, TubeModel};
     use winit::event::{MouseScrollDelta, TouchPhase, WindowEvent};
@@ -1321,18 +1326,27 @@ fn run_bench_scroll(frames: usize, watch: bool) -> Result<(), Box<dyn std::error
     // One measured pass. `force_compute` = the pre-fix baseline (always re-solve
     // taffy every frame). `false` = the scroll fast path (apply_layout only when
     // nothing needs re-measuring). Returns (compute[], apply[], draw[]) in µs.
-    let run_pass = |force_compute: bool| -> (Vec<u128>, Vec<u128>, Vec<u128>, bool) {
+    let run_pass = |force_compute: bool| -> (Vec<u128>, Vec<u128>, Vec<u128>, Vec<u128>, bool) {
         let theme = Theme::dark();
         let presence = PresenceCtx::empty();
         let permission = PermissionContext::permissive();
         let mut tr = TextRenderer::new();
         let mut taffy: TaffyTree<()> = TaffyTree::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let mut widget: Box<dyn Widget> = Box::new(
-            tube::TubeApp::new()
-                .with_viewport(w as f64, h as f64)
-                .with_model_for_test(big_model()),
-        );
+        let model = big_model();
+        let watch_id = match &model.route {
+            Route::Watch(id) => id.clone(),
+            _ => String::new(),
+        };
+        let mut app = tube::TubeApp::new()
+            .with_viewport(w as f64, h as f64)
+            .with_model_for_test(model);
+        // Load + pause a real (synthesized) frame so the bench measures the true
+        // per-frame cost of a paused-but-loaded watch page.
+        if watch && loaded && !watch_id.is_empty() {
+            app = app.with_bench_loaded_watch(&watch_id);
+        }
+        let mut widget: Box<dyn Widget> = Box::new(app);
         let mut state = ui::State::new();
         widget.sync(&mut state.doc, &state.root);
         let child = widget.build_layout(&mut taffy, &theme, &mut node_map);
@@ -1378,12 +1392,20 @@ fn run_bench_scroll(frames: usize, watch: bool) -> Result<(), Box<dyn std::error
         }
 
         let mods = winit::event::Modifiers::default();
+        let mut sync = Vec::with_capacity(frames);
         let mut compute = Vec::with_capacity(frames);
         let mut apply = Vec::with_capacity(frames);
         let mut draw = Vec::with_capacity(frames);
         let mut ever_reposition_only = false;
 
         for _ in 0..frames {
+            // Sync first, exactly as the live event loop does: this pumps the
+            // media engine (pulling the freshest frame + playhead), so a loaded
+            // watch page's per-frame engine cost is measured, not just layout.
+            let t = Instant::now();
+            widget.sync(&mut state.doc, &state.root);
+            sync.push(t.elapsed().as_micros());
+
             // Real scroll: a wheel notch routed through the widget tree, exactly
             // as the live event loop delivers it.
             let wheel = WindowEvent::MouseWheel {
@@ -1419,11 +1441,11 @@ fn run_bench_scroll(frames: usize, watch: bool) -> Result<(), Box<dyn std::error
             widget.mark_drawn();
             draw.push(t.elapsed().as_micros());
         }
-        (compute, apply, draw, ever_reposition_only)
+        (sync, compute, apply, draw, ever_reposition_only)
     };
 
-    let report = |label: &str, c: &[u128], a: &[u128], d: &[u128]| {
-        let total: Vec<u128> = (0..c.len()).map(|i| c[i] + a[i] + d[i]).collect();
+    let report = |label: &str, s: &[u128], c: &[u128], a: &[u128], d: &[u128]| {
+        let total: Vec<u128> = (0..c.len()).map(|i| s[i] + c[i] + a[i] + d[i]).collect();
         println!(
             "  {label:<20} frame(total)  median {:>5.2}ms  avg {:>5.2}ms  max {:>5.2}ms",
             median_us(&total) as f64 / 1000.0,
@@ -1431,8 +1453,10 @@ fn run_bench_scroll(frames: usize, watch: bool) -> Result<(), Box<dyn std::error
             max_us(&total) as f64 / 1000.0,
         );
         println!(
-            "  {:<20}   compute med/max {:>5.2}/{:>6.2} | apply med/max {:>5.2}/{:>6.2} | draw med/max {:>5.2}/{:>6.2} ms",
+            "  {:<20}   sync med/max {:>5.2}/{:>6.2} | compute med/max {:>5.2}/{:>6.2} | apply med/max {:>5.2}/{:>6.2} | draw med/max {:>5.2}/{:>6.2} ms",
             "",
+            median_us(s) as f64 / 1000.0,
+            max_us(s) as f64 / 1000.0,
             median_us(c) as f64 / 1000.0,
             max_us(c) as f64 / 1000.0,
             median_us(a) as f64 / 1000.0,
@@ -1442,26 +1466,27 @@ fn run_bench_scroll(frames: usize, watch: bool) -> Result<(), Box<dyn std::error
         );
     };
 
-    let scene_label = if watch { "watch page (player + 60 comments)".to_string() } else { format!("{CARDS} Home cards") };
+    let loaded_note = if watch && loaded { " [loaded+paused player]" } else { "" };
+    let scene_label = if watch {
+        format!("watch page (player + 60 comments){loaded_note}")
+    } else {
+        format!("{CARDS} Home cards")
+    };
     println!("tube scroll bench: {scene_label}, {w}x{h}, {frames} scroll frames\n");
-    let (bc, ba, bd, _) = run_pass(true);
-    report("BASELINE (re-solve)", &bc, &ba, &bd);
-    let (fc, fa, fd, repos) = run_pass(false);
-    report("FAST (reposition)", &fc, &fa, &fd);
+    let (bs, bc, ba, bd, _) = run_pass(true);
+    report("BASELINE (re-solve)", &bs, &bc, &ba, &bd);
+    let (fs, fc, fa, fd, repos) = run_pass(false);
+    report("FAST (reposition)", &fs, &fc, &fa, &fd);
     println!(
         "\n  scroll frames took the reposition-only fast path: {}",
         if repos { "yes (compute_layout skipped)" } else { "NO — investigate" }
     );
-    let base_med = median_us(&(0..bc.len()).map(|i| bc[i] + ba[i] + bd[i]).collect::<Vec<_>>());
-    let fast_med = median_us(&(0..fc.len()).map(|i| fc[i] + fa[i] + fd[i]).collect::<Vec<_>>());
-    if fast_med > 0 {
-        println!(
-            "  median frame: {:.2}ms → {:.2}ms  ({:.1}x faster)",
-            base_med as f64 / 1000.0,
-            fast_med as f64 / 1000.0,
-            base_med as f64 / fast_med as f64,
-        );
-    }
+    let fast_total: Vec<u128> = (0..fc.len()).map(|i| fs[i] + fc[i] + fa[i] + fd[i]).collect();
+    println!(
+        "  FAST-path median frame (incl. sync): {:.2}ms  (sync med {:.2}ms)",
+        median_us(&fast_total) as f64 / 1000.0,
+        median_us(&fs) as f64 / 1000.0,
+    );
     Ok(())
 }
 

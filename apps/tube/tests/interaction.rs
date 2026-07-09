@@ -233,40 +233,108 @@ fn transport_settings_gear_navigates_to_settings() {
 }
 
 #[test]
-fn watch_player_is_flush_to_the_content_edges() {
-    // Issue 4: the embedded player must sit flush to the top/left/right of the
-    // content area — no page-padding gap to the window edge or the nav rail. At
-    // 1280px the rail is docked (86px), so the content area is x∈[86,1280],
-    // y starting just below the 66px top bar; the player must fill that exactly.
+fn watch_player_is_height_driven_16x9_centered_and_clear_of_the_scrollbar() {
+    // The player is sized by available HEIGHT (a true 16:9 box capped near ~65%
+    // of the viewport height), centered horizontally in the content lane, and
+    // clear of the reserved scrollbar gutter on the right — never a wide, short
+    // strip that overlaps the bar.
     let h = Harness::new(watch_app(), VIEWPORT);
     let player = h
         .rect_by_id("watch_video_surface")
         .expect("the watch page lays out the shared video-player surface");
 
-    let content_left = tube::screens::NAV_RAIL_W; // docked rail width
-    let top_bar_h = 66.0; // top_bar fixed height
-    let content_w = VIEWPORT.0 as f64 - content_left;
+    let content_left = tube::screens::NAV_RAIL_W; // docked rail width (86)
+    let viewport_h = VIEWPORT.1 as f64;
+    // The content lane: the split's content pane minus the reserved scrollbar
+    // gutter on the right.
+    let lane_left = content_left;
+    let lane_right = VIEWPORT.0 as f64 - tube::app::SCROLL_GUTTER as f64;
 
+    // 16:9 aspect.
+    let aspect = player.width() / player.height();
     assert!(
-        (player.x0 - content_left).abs() < 1.5,
-        "player flush-left to the content area (x0={}, expected {content_left})",
+        (aspect - 16.0 / 9.0).abs() < 0.03,
+        "player must be 16:9 (got {aspect:.3}: {}x{})",
+        player.width(),
+        player.height()
+    );
+    // Height-driven: ~65% of the viewport height, not the old ~480px cap.
+    assert!(
+        player.height() > 0.55 * viewport_h && player.height() <= 0.66 * viewport_h + 2.0,
+        "player height {} should be ~65% of the {viewport_h}px viewport (bigger video)",
+        player.height()
+    );
+    // Centered in the content lane.
+    let lane_center = (lane_left + lane_right) / 2.0;
+    assert!(
+        (player.center().x - lane_center).abs() < 3.0,
+        "player centered in the content lane (center.x={}, lane center {lane_center})",
+        player.center().x
+    );
+    // Clear of the scrollbar gutter: the player's right edge never reaches the
+    // reserved bar lane.
+    assert!(
+        player.x1 <= lane_right + 0.5,
+        "player right edge {} must stay left of the scrollbar lane ({lane_right})",
+        player.x1
+    );
+    // And it stays inset from the rail on the left.
+    assert!(
+        player.x0 >= lane_left - 0.5,
+        "player left edge {} stays right of the nav rail ({lane_left})",
         player.x0
     );
+}
+
+#[test]
+fn search_open_video_then_back_returns_to_the_same_results_with_scroll_preserved() {
+    // The headline of the nav-stack adoption: from a results list, opening a
+    // video and pressing Back must land on the EXACT same search results, with
+    // the scroll position preserved — all through real clicks on real widgets.
+    let query = "rust";
+    // Use several sample video ids so the results list is long enough to scroll.
+    let sample = tube::sample::model();
+    let ids: Vec<String> = sample.videos.iter().map(|v| v.id.clone()).collect();
+    assert!(ids.len() >= 3, "need a few sample videos to build a results list");
+    let first = ids[0].clone();
+
+    let app = tube::TubeApp::new()
+        .with_viewport(VIEWPORT.0 as f64, VIEWPORT.1 as f64)
+        .with_model_for_test(sample)
+        .with_search_for_test(query, ids);
+    let mut h = Harness::new(app, VIEWPORT);
+    assert_eq!(h.app.route_for_test(), &Route::Search(query.into()));
+    assert!(h.app.can_go_back_for_test(), "arriving via search leaves Home to go back to");
+
+    // Scroll the results down, then record where the grid sits.
+    h.wheel_at(vello::kurbo::Point::new(640.0, 500.0), -6.0);
+    let grid_after_scroll = h
+        .rect_by_id("video_grid")
+        .expect("results grid laid out")
+        .y0;
+
+    // Open the first result via a real click on its card.
+    h.click_id(&format!("video_card_{first}"));
     assert!(
-        (player.x1 - VIEWPORT.0 as f64).abs() < 1.5,
-        "player flush-right to the window edge (x1={}, expected {})",
-        player.x1,
-        VIEWPORT.0
+        matches!(h.app.route_for_test(), Route::Watch(id) if *id == first),
+        "clicking a result opens its watch page"
     );
-    assert!(
-        player.y0 < top_bar_h + 6.0,
-        "player flush to the top — no padding gap (y0={}, top bar {top_bar_h})",
-        player.y0
+
+    // Press Back (a real click on the top-bar Back button).
+    assert!(h.has_id("back_btn"), "the Back affordance is present on the watch page");
+    h.click_id("back_btn");
+    assert_eq!(
+        h.app.route_for_test(),
+        &Route::Search(query.into()),
+        "Back returns to the exact same search results",
     );
+    assert!(h.has_id("video_grid"), "the results list is rendered again");
+
+    // Scroll position preserved: the grid resumes where it was, not reset to top.
+    let grid_after_back = h.rect_by_id("video_grid").expect("results grid re-laid out").y0;
     assert!(
-        (player.width() - content_w).abs() < 1.5,
-        "player spans the full content width, not inset by page padding (w={}, expected {content_w})",
-        player.width()
+        (grid_after_back - grid_after_scroll).abs() < 2.0,
+        "scroll preserved on Back: grid y0 {grid_after_back} vs pre-nav {grid_after_scroll}",
     );
 }
 
