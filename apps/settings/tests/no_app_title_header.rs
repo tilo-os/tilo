@@ -1,0 +1,118 @@
+//! The OS draws the window chrome; the app must NOT draw its own title / app-
+//! name header (that would duplicate the compositor's window-group pill). This
+//! guards the removal of the old in-pane "title + subtitle + toggle" header and
+//! the sidebar's "Settings" title.
+//!
+//! It asserts on the real composed tree: it walks every widget's accessibility
+//! node (a `Text`'s accessible name *is* its rendered string) and proves the
+//! app name and the category subtitle are not painted anywhere, while the title
+//! is still exposed the sanctioned way — through `AppWidget::app_title`, which
+//! the OS reads for the pill.
+
+use std::collections::HashMap;
+
+use settings::categories::Category;
+use settings::SettingsApp;
+use taffy::{NodeId, TaffyTree};
+use ui::text_render::TextRenderer;
+use ui::widget::Widget;
+use ui::{AppWidget, IconDescriptor};
+use vello::kurbo::Point;
+
+const W: f32 = 1200.0;
+const H: f32 = 760.0;
+
+fn lay_out(app: &mut SettingsApp) {
+    let theme = ui::Theme::dark();
+    let mut doc = automerge::AutoCommit::new();
+    let root = automerge::ROOT;
+    app.sync(&mut doc, &root);
+    let mut taffy: TaffyTree<()> = TaffyTree::new();
+    let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+    let node = app.build_layout(&mut taffy, &theme, &mut node_map);
+    let outer = taffy
+        .new_with_children(
+            taffy::Style {
+                size: taffy::Size {
+                    width: taffy::Dimension::length(W),
+                    height: taffy::Dimension::length(H),
+                },
+                ..Default::default()
+            },
+            &[node],
+        )
+        .unwrap();
+    app.sync(&mut doc, &root);
+    let measure_map = node_map.clone();
+    let mut tr = TextRenderer::new();
+    taffy
+        .compute_layout_with_measure(
+            outer,
+            taffy::Size {
+                width: taffy::AvailableSpace::Definite(W),
+                height: taffy::AvailableSpace::Definite(H),
+            },
+            |known, available, node_id, _, _| {
+                if let Some(&ptr) = measure_map.get(&node_id) {
+                    unsafe { (*ptr).measure(known, available, &mut tr) }
+                } else {
+                    taffy::Size::ZERO
+                }
+            },
+        )
+        .unwrap();
+    app.apply_layout(&taffy, node, Point::ORIGIN);
+    app.sync(&mut doc, &root);
+}
+
+/// Every accessible name rendered anywhere in the composed tree.
+fn rendered_names(app: &SettingsApp) -> Vec<String> {
+    fn walk(w: &dyn Widget, out: &mut Vec<String>) {
+        if let Some(node) = w.accessibility() {
+            if let Some(name) = node.name {
+                out.push(name);
+            }
+        }
+        for c in w.children() {
+            walk(c, out);
+        }
+    }
+    let mut out = Vec::new();
+    walk(app, &mut out);
+    out
+}
+
+#[test]
+fn app_title_is_exposed_only_through_app_widget() {
+    // The sanctioned channel: the OS pill reads this. Present and correct.
+    let app = SettingsApp::new();
+    assert_eq!(app.app_title(), "Settings");
+    assert!(matches!(app.app_icon(), IconDescriptor::Glyph(_)));
+}
+
+#[test]
+fn no_pane_draws_the_app_name_or_a_subtitle_header() {
+    // Across a representative set of categories, the app must never paint its
+    // own name or the per-category subtitle as a header.
+    for &cat in &[
+        Category::Network,
+        Category::ExternalAccounts,
+        Category::RegionFormats,
+        Category::About,
+    ] {
+        let mut app = SettingsApp::with_selected(cat);
+        lay_out(&mut app);
+        let names = rendered_names(&app);
+
+        assert!(
+            !names.iter().any(|n| n == "Settings"),
+            "{cat:?}: the app must not draw its own \"Settings\" app-name header \
+             (the OS pill carries it); rendered names were {names:?}"
+        );
+        assert!(
+            !names.iter().any(|n| n == cat.subtitle()),
+            "{cat:?}: the app must not draw the category subtitle as a page \
+             header (that was the removed in-pane title band)"
+        );
+    }
+}
