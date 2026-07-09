@@ -22,6 +22,7 @@
 //! races for a per-window process).
 
 mod ffi;
+pub mod egl;
 
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_uint, c_void};
@@ -169,6 +170,9 @@ struct EngineState {
     ua_reload_pending: bool,
     /// Timestamp of the last Resize, to debounce that reload.
     last_resize: Option<std::time::Instant>,
+    /// EGL/dmabuf export state — `Some` only on the zero-copy path
+    /// (`QOS_WEBVIEW_DMABUF=1`); `None` uses the SHM copy path.
+    egl: Option<egl::EglExport>,
 }
 
 fn engine_thread(
@@ -193,8 +197,22 @@ fn engine_thread(
             let _ = init_tx.send(Err("wpe_loader_init(libWPEBackend-fdo) failed".into()));
             return;
         }
-        if !ffi::wpe_fdo_initialize_shm() {
-            let _ = init_tx.send(Err("wpe_fdo_initialize_shm failed".into()));
+        // Zero-copy dmabuf export is opt-in; if EGL setup fails we fall
+        // back to the SHM copy path so the browser still runs.
+        let egl = if std::env::var_os("QOS_WEBVIEW_DMABUF").is_some() {
+            egl::EglExport::setup()
+        } else {
+            None
+        };
+        let init_ok = match &egl {
+            Some(e) => {
+                ffi::wpe_fdo_initialize_for_egl_display(e.display);
+                true
+            }
+            None => ffi::wpe_fdo_initialize_shm(),
+        };
+        if !init_ok {
+            let _ = init_tx.send(Err("wpe_fdo initialize failed".into()));
             return;
         }
 
@@ -210,10 +228,11 @@ fn engine_thread(
             mobile_mode: false,
             ua_reload_pending: false,
             last_resize: None,
+            egl,
         }));
         let state_ptr = state as *mut EngineState as *mut c_void;
 
-        static CLIENT: ffi::wpe_view_backend_exportable_fdo_client =
+        static SHM_CLIENT: ffi::wpe_view_backend_exportable_fdo_client =
             ffi::wpe_view_backend_exportable_fdo_client {
                 export_buffer_resource: None,
                 export_dmabuf_resource: None,
@@ -221,9 +240,20 @@ fn engine_thread(
                 _wpe_reserved0: None,
                 _wpe_reserved1: None,
             };
+        static EGL_CLIENT: ffi::wpe_view_backend_exportable_fdo_egl_client =
+            ffi::wpe_view_backend_exportable_fdo_egl_client {
+                export_egl_image: None,
+                export_fdo_egl_image: Some(on_export_fdo_egl_image),
+                export_shm_buffer: None,
+                _wpe_reserved0: None,
+                _wpe_reserved1: None,
+            };
 
-        state.exportable =
-            ffi::wpe_view_backend_exportable_fdo_create(&CLIENT, state_ptr, 1024, 768);
+        state.exportable = if state.egl.is_some() {
+            ffi::wpe_view_backend_exportable_fdo_egl_create(&EGL_CLIENT, state_ptr, 1024, 768)
+        } else {
+            ffi::wpe_view_backend_exportable_fdo_create(&SHM_CLIENT, state_ptr, 1024, 768)
+        };
         state.backend =
             ffi::wpe_view_backend_exportable_fdo_get_view_backend(state.exportable);
 
@@ -340,6 +370,41 @@ fn cstr_to_string(ptr: *const c_char) -> Option<String> {
 }
 
 // ─────────────────────────── frame export ─────────────────────────────────
+
+/// DMA-BUF export callback (zero-copy path). WebKit hands us a
+/// GPU-rendered `EGLImageKHR`; we export it to a dmabuf fd. Phase 1 logs
+/// the handle to prove the GPU export works; Phase 2 forwards it to the
+/// render thread for zero-copy import.
+extern "C" fn on_export_fdo_egl_image(
+    data: *mut c_void,
+    image: *mut ffi::wpe_fdo_egl_exported_image,
+) {
+    unsafe {
+        let state = state_from(data);
+        if let Some(egl) = &state.egl {
+            let egl_image = ffi::wpe_fdo_egl_exported_image_get_egl_image(image);
+            let w = ffi::wpe_fdo_egl_exported_image_get_width(image);
+            let h = ffi::wpe_fdo_egl_exported_image_get_height(image);
+            if let Some(dmabuf) = egl.export(egl_image, w, h) {
+                tracing::info!(
+                    fourcc = %egl::fourcc_str(dmabuf.fourcc),
+                    modifier = format_args!("0x{:x}", dmabuf.modifier),
+                    planes = dmabuf.planes.len(),
+                    stride = dmabuf.planes[0].stride,
+                    "dmabuf frame exported {}x{}",
+                    dmabuf.width,
+                    dmabuf.height,
+                );
+                // Phase 2 will publish `dmabuf` to the render thread here.
+            }
+        }
+        ffi::wpe_view_backend_exportable_fdo_egl_dispatch_release_exported_image(
+            state.exportable,
+            image,
+        );
+        ffi::wpe_view_backend_exportable_fdo_dispatch_frame_complete(state.exportable);
+    }
+}
 
 extern "C" fn on_export_shm_buffer(
     data: *mut c_void,

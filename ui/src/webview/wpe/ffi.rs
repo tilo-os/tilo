@@ -176,8 +176,23 @@ unsafe extern "C" {
 
 pub enum wpe_view_backend_exportable_fdo {}
 pub enum wpe_fdo_shm_exported_buffer {}
+pub enum wpe_fdo_egl_exported_image {}
 pub enum wl_resource {}
 pub enum wl_shm_buffer {}
+
+/// EGL-export variant of the fdo client — used by the DMA-BUF zero-copy
+/// path. `export_fdo_egl_image` fires per frame with a WebKit-rendered
+/// `EGLImageKHR`.
+#[repr(C)]
+pub struct wpe_view_backend_exportable_fdo_egl_client {
+    pub export_egl_image: Option<extern "C" fn(data: *mut c_void, image: EGLImageKHR)>,
+    pub export_fdo_egl_image:
+        Option<extern "C" fn(data: *mut c_void, image: *mut wpe_fdo_egl_exported_image)>,
+    pub export_shm_buffer:
+        Option<extern "C" fn(data: *mut c_void, buffer: *mut wpe_fdo_shm_exported_buffer)>,
+    pub _wpe_reserved0: Option<extern "C" fn()>,
+    pub _wpe_reserved1: Option<extern "C" fn()>,
+}
 
 #[repr(C)]
 pub struct wpe_view_backend_exportable_fdo_client {
@@ -212,7 +227,113 @@ unsafe extern "C" {
     pub fn wpe_fdo_shm_exported_buffer_get_shm_buffer(
         buffer: *mut wpe_fdo_shm_exported_buffer,
     ) -> *mut wl_shm_buffer;
+
+    // ── EGL / DMA-BUF export path ──
+    pub fn wpe_fdo_initialize_for_egl_display(egl_display: EGLDisplay);
+    pub fn wpe_view_backend_exportable_fdo_egl_create(
+        client: *const wpe_view_backend_exportable_fdo_egl_client,
+        data: *mut c_void,
+        width: u32,
+        height: u32,
+    ) -> *mut wpe_view_backend_exportable_fdo;
+    pub fn wpe_fdo_egl_exported_image_get_egl_image(
+        image: *mut wpe_fdo_egl_exported_image,
+    ) -> EGLImageKHR;
+    pub fn wpe_fdo_egl_exported_image_get_width(
+        image: *mut wpe_fdo_egl_exported_image,
+    ) -> u32;
+    pub fn wpe_fdo_egl_exported_image_get_height(
+        image: *mut wpe_fdo_egl_exported_image,
+    ) -> u32;
+    pub fn wpe_view_backend_exportable_fdo_egl_dispatch_release_exported_image(
+        exportable: *mut wpe_view_backend_exportable_fdo,
+        image: *mut wpe_fdo_egl_exported_image,
+    );
 }
+
+// ─────────────────────────────── EGL + GBM ────────────────────────────────
+// For the DMA-BUF zero-copy path: open a render node via gbm, get an EGL
+// display on it, and export WebKit's per-frame EGLImage to a dmabuf fd.
+
+pub type EGLDisplay = *mut c_void;
+pub type EGLContext = *mut c_void;
+pub type EGLConfig = *mut c_void;
+pub type EGLSurface = *mut c_void;
+pub type EGLImageKHR = *mut c_void;
+pub type EGLBoolean = c_uint;
+pub type EGLenum = c_uint;
+pub type EGLint = i32;
+pub enum gbm_device {}
+
+pub const EGL_TRUE: EGLBoolean = 1;
+pub const EGL_NONE: EGLint = 0x3038;
+pub const EGL_PLATFORM_GBM_KHR: EGLenum = 0x31D7;
+pub const EGL_OPENGL_ES_API: EGLenum = 0x30A0;
+pub const EGL_CONTEXT_CLIENT_VERSION: EGLint = 0x3098;
+pub const EGL_SURFACE_TYPE: EGLint = 0x3033;
+pub const EGL_WINDOW_BIT: EGLint = 0x0004;
+pub const EGL_RENDERABLE_TYPE: EGLint = 0x3040;
+pub const EGL_OPENGL_ES2_BIT: EGLint = 0x0004;
+pub const EGL_RED_SIZE: EGLint = 0x3024;
+pub const EGL_GREEN_SIZE: EGLint = 0x3023;
+pub const EGL_BLUE_SIZE: EGLint = 0x3022;
+pub const EGL_ALPHA_SIZE: EGLint = 0x3021;
+
+#[link(name = "gbm")]
+unsafe extern "C" {
+    pub fn gbm_create_device(fd: c_int) -> *mut gbm_device;
+}
+
+#[link(name = "EGL")]
+unsafe extern "C" {
+    /// Core EGL 1.5 — a platform display on the gbm device.
+    pub fn eglGetPlatformDisplay(
+        platform: EGLenum,
+        native_display: *mut c_void,
+        attrib_list: *const isize,
+    ) -> EGLDisplay;
+    pub fn eglInitialize(dpy: EGLDisplay, major: *mut EGLint, minor: *mut EGLint) -> EGLBoolean;
+    pub fn eglBindAPI(api: EGLenum) -> EGLBoolean;
+    pub fn eglChooseConfig(
+        dpy: EGLDisplay,
+        attrib_list: *const EGLint,
+        configs: *mut EGLConfig,
+        config_size: EGLint,
+        num_config: *mut EGLint,
+    ) -> EGLBoolean;
+    pub fn eglCreateContext(
+        dpy: EGLDisplay,
+        config: EGLConfig,
+        share_context: EGLContext,
+        attrib_list: *const EGLint,
+    ) -> EGLContext;
+    pub fn eglMakeCurrent(
+        dpy: EGLDisplay,
+        draw: EGLSurface,
+        read: EGLSurface,
+        ctx: EGLContext,
+    ) -> EGLBoolean;
+    pub fn eglGetError() -> EGLint;
+    pub fn eglGetProcAddress(procname: *const c_char) -> *mut c_void;
+}
+
+/// `eglExportDMABUFImageQueryMESA` — loaded via `eglGetProcAddress` (it is
+/// an extension, not part of the core library ABI).
+pub type PFNEglExportDmabufImageQueryMesa = unsafe extern "C" fn(
+    dpy: EGLDisplay,
+    image: EGLImageKHR,
+    fourcc: *mut c_int,
+    num_planes: *mut c_int,
+    modifiers: *mut u64,
+) -> EGLBoolean;
+/// `eglExportDMABUFImageMESA` — one fd/stride/offset per plane.
+pub type PFNEglExportDmabufImageMesa = unsafe extern "C" fn(
+    dpy: EGLDisplay,
+    image: EGLImageKHR,
+    fds: *mut c_int,
+    strides: *mut EGLint,
+    offsets: *mut EGLint,
+) -> EGLBoolean;
 
 // ─────────────────────────── libwayland-server ────────────────────────────
 
