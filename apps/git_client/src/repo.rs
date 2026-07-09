@@ -23,8 +23,8 @@ use git2::{
 
 use crate::diff::{language_for, parse_unified};
 use crate::model::{
-    Branch, ChangeArea, ChangeKind, Commit, FileChange, FileDiff, RefKind, RefLabel, Remote,
-    RepoModel, Stash, Tag,
+    Branch, ChangeArea, ChangeKind, Commit, DiffKey, DiffMap, FileChange, FileDiff, RefKind,
+    RefLabel, Remote, RepoModel, Stash, Tag,
 };
 
 /// How many commits to walk for the history view. Bounded so a huge repo
@@ -34,10 +34,10 @@ const HISTORY_LIMIT: usize = 400;
 /// Open the repository discovered from `path` (walks up to find `.git`)
 /// and read it into a full model plus a map of per-file diffs keyed by
 /// path. Returns `None` if no repository can be opened.
-pub fn load(path: &Path) -> Option<(RepoModel, HashMap<String, FileDiff>)> {
+pub fn load(path: &Path) -> Option<(RepoModel, DiffMap)> {
     let repo = Repository::discover(path).ok()?;
     let mut model = RepoModel::default();
-    let mut diffs: HashMap<String, FileDiff> = HashMap::new();
+    let mut diffs: DiffMap = DiffMap::new();
 
     if let Some(wd) = repo.workdir() {
         model.workdir = wd.to_string_lossy().to_string();
@@ -126,7 +126,7 @@ fn classify_worktree(status: Status) -> Option<(ChangeArea, ChangeKind)> {
 fn read_status(
     repo: &Repository,
     model: &mut RepoModel,
-    diffs: &mut HashMap<String, FileDiff>,
+    diffs: &mut DiffMap,
 ) {
     let mut opts = StatusOptions::new();
     opts.include_untracked(true)
@@ -180,7 +180,7 @@ fn read_status(
 fn collect_worktree_diffs(
     repo: &Repository,
     model: &mut RepoModel,
-    diffs: &mut HashMap<String, FileDiff>,
+    diffs: &mut DiffMap,
 ) {
     let mut opts = DiffOptions::new();
     opts.include_untracked(true)
@@ -195,7 +195,7 @@ fn collect_worktree_diffs(
 fn collect_index_diffs(
     repo: &Repository,
     model: &mut RepoModel,
-    diffs: &mut HashMap<String, FileDiff>,
+    diffs: &mut DiffMap,
 ) {
     let head_tree = repo
         .head()
@@ -214,7 +214,7 @@ fn collect_index_diffs(
 fn fold_diff(
     diff: &git2::Diff,
     model: &mut RepoModel,
-    diffs: &mut HashMap<String, FileDiff>,
+    diffs: &mut DiffMap,
     staged: bool,
 ) {
     // Accumulate raw unified text per new-path.
@@ -249,21 +249,27 @@ fn fold_diff(
             }
         }
         let (adds, dels) = (fd.additions(), fd.deletions());
-        // Fold counts into the matching list entry.
-        let lists: [&mut Vec<FileChange>; 3] = if staged {
-            [&mut model.staged, &mut model.unstaged, &mut model.untracked]
-        } else {
-            [&mut model.unstaged, &mut model.untracked, &mut model.staged]
-        };
-        for list in lists {
+        // Fold counts onto the list entry for the *matching* side only: the
+        // staged diff feeds the staged list, the worktree diff feeds the
+        // unstaged / untracked lists. A file present on both sides then keeps
+        // each side's own +/- counts rather than one clobbering the other.
+        let fold_into = |list: &mut Vec<FileChange>| -> bool {
             if let Some(fc) = list.iter_mut().find(|f| f.path == path) {
-                if fc.additions == 0 && fc.deletions == 0 {
-                    fc.additions = adds;
-                    fc.deletions = dels;
-                }
+                fc.additions = adds;
+                fc.deletions = dels;
+                true
+            } else {
+                false
             }
+        };
+        if staged {
+            fold_into(&mut model.staged);
+        } else if !fold_into(&mut model.unstaged) {
+            fold_into(&mut model.untracked);
         }
-        diffs.entry(path).or_insert(fd);
+        // Store the diff under its side-specific key so the staged and
+        // worktree diffs of the same path never collide.
+        diffs.insert(DiffKey { staged, path: path.clone() }, fd);
     }
 }
 
@@ -285,7 +291,7 @@ fn find_delta(diff: &git2::Diff, path: &str) -> Option<Delta> {
 fn read_history(
     repo: &Repository,
     model: &mut RepoModel,
-    _diffs: &mut HashMap<String, FileDiff>,
+    _diffs: &mut DiffMap,
 ) {
     // Map oid -> ref labels so each commit row can show its decorations.
     let ref_map = ref_decorations(repo);
@@ -631,6 +637,21 @@ pub fn apply_hunk(
     let repo = open(path)?;
     let rel = Path::new(file);
 
+    // An untracked file has no index base for libgit2's `apply` to patch
+    // against, so a per-hunk stage would fail. A brand-new file is a single
+    // whole-file addition anyway, so staging any of its hunks stages the file.
+    if !unstage {
+        let st = repo.status_file(rel).unwrap_or_else(|_| Status::empty());
+        if st.contains(Status::WT_NEW) && !st.contains(Status::INDEX_NEW) {
+            let mut index = repo.index()?;
+            index
+                .add_path(rel)
+                .with_context(|| format!("git add {file}"))?;
+            index.write()?;
+            return Ok(());
+        }
+    }
+
     let mut opts = DiffOptions::new();
     opts.pathspec(file).context_lines(3);
 
@@ -687,6 +708,81 @@ pub fn apply_hunk(
             )
         })?;
 
+    if !applied.get() {
+        bail!("hunk {hunk_index} not found for {file}");
+    }
+    Ok(())
+}
+
+/// Discard a file's *worktree* changes. For a tracked file this restores the
+/// working-tree copy from the index (`git restore <file>`), dropping unstaged
+/// edits while leaving anything already staged in the index intact; when
+/// nothing is staged the index equals HEAD, so the file returns to its
+/// committed state. For an untracked file it deletes the file from disk.
+/// Mirrors a GUI "Discard changes" on a changed row. Destructive — the caller
+/// is expected to confirm intent.
+pub fn discard_file(path: &Path, file: &str) -> anyhow::Result<()> {
+    let repo = open(path)?;
+    let rel = Path::new(file);
+    let st = repo.status_file(rel).unwrap_or_else(|_| Status::empty());
+    if st.contains(Status::WT_NEW) && !st.contains(Status::INDEX_NEW) {
+        // Untracked: remove it from the working tree.
+        if let Some(wd) = repo.workdir() {
+            let full = wd.join(rel);
+            if full.exists() {
+                std::fs::remove_file(&full)
+                    .with_context(|| format!("remove untracked {file}"))?;
+            }
+        }
+        return Ok(());
+    }
+    // Tracked: overwrite the working-tree copy from the index, discarding the
+    // unstaged edits (and recreating the file if it was deleted in the tree).
+    let mut co = git2::build::CheckoutBuilder::new();
+    co.path(rel).force();
+    repo.checkout_index(None, Some(&mut co))
+        .with_context(|| format!("git restore {file}"))?;
+    Ok(())
+}
+
+/// Discard a single hunk of a file's *worktree* changes, reverting just that
+/// hunk in the working tree (the discard direction of `git checkout -p`).
+/// `hunk_index` is the 0-based hunk position within the file's worktree diff,
+/// the same ordering the UI assigns to its hunk buttons. Destructive.
+pub fn discard_hunk(path: &Path, file: &str, hunk_index: usize) -> anyhow::Result<()> {
+    let repo = open(path)?;
+    let rel = Path::new(file);
+
+    // Reverse the index→workdir diff so applying a hunk to the working tree
+    // undoes that hunk's edit there. Hunks stay in top-to-bottom file order,
+    // matching the forward diff the UI displays.
+    let mut opts = DiffOptions::new();
+    opts.pathspec(file).context_lines(3).reverse(true);
+    let diff = repo
+        .diff_index_to_workdir(None, Some(&mut opts))
+        .context("diff index..workdir for discard")?;
+
+    use std::cell::Cell;
+    let seen = Cell::new(0usize);
+    let applied = Cell::new(false);
+    let mut apply_opts = ApplyOptions::new();
+    apply_opts.hunk_callback(|_hunk| {
+        let n = seen.get();
+        let is_target = n == hunk_index;
+        if is_target {
+            applied.set(true);
+        }
+        seen.set(n + 1);
+        is_target
+    });
+    apply_opts.delta_callback(move |delta| {
+        delta
+            .map(|d| d.new_file().path() == Some(rel) || d.old_file().path() == Some(rel))
+            .unwrap_or(false)
+    });
+
+    repo.apply(&diff, ApplyLocation::WorkDir, Some(&mut apply_opts))
+        .with_context(|| format!("git discard hunk {hunk_index} of {file}"))?;
     if !applied.get() {
         bail!("hunk {hunk_index} not found for {file}");
     }
