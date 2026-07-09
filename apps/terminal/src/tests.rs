@@ -1460,45 +1460,49 @@ mod tests {
     }
 
     // ---------------------------------------------------------------
-    // Chrome geometry — the header/tab bar insets the grid, and pointer
-    // hit-testing accounts for it (production `place_at`/`set_geometry` path).
+    // Grid geometry — a uniform body padding + scrollbar gutter inset the grid
+    // (there is NO app-drawn header/tab bar; the compositor owns window
+    // decoration), and pointer hit-testing follows the same inset grid rect
+    // (production `place_at`/`set_geometry` path).
     // ---------------------------------------------------------------
 
     #[test]
-    fn place_at_insets_grid_below_header_and_gutters() {
-        // The production reflow path must seat the cell grid below the header
-        // and inside the body padding + scrollbar gutter — not fill the whole
-        // widget rect the way the old void did.
+    fn place_at_insets_grid_by_padding_and_gutters() {
+        // The production reflow path must seat the cell grid inside the body
+        // padding on every side + the scrollbar gutter on the right — not fill
+        // the whole widget rect the way the old void did. No header strip: the
+        // top inset is the body padding, not an app-drawn tab bar.
         let (mut w, _) = build_test_widget();
         w.place_at(Rect::new(0.0, 0.0, 1000.0, 640.0));
         let gr = w.grid_rect();
-        assert!(gr.y0 > 0.0, "grid top must clear the header strip: {gr:?}");
+        assert!(gr.y0 > 0.0, "grid top inset by body padding: {gr:?}");
         assert!(gr.x0 > 0.0, "grid left inset by body padding: {gr:?}");
         assert!(gr.x1 < 1000.0, "grid right inset by padding + scrollbar gutter: {gr:?}");
         assert!(gr.y1 < 640.0, "grid bottom inset by body padding: {gr:?}");
-        // Header + padding genuinely reduce the usable rows vs. a full-rect fit.
+        // The top+bottom padding genuinely reduces the usable rows vs. a
+        // full-rect fit.
         let (cols, rows) = w.grid_size();
         assert!(cols > 0 && rows > 0, "reflow produced a usable grid");
         assert!(
             (rows as f64) < 640.0 / w.grid_char_h(),
-            "chrome must reduce the row count below the naive full-height fit"
+            "body padding must reduce the row count below the naive full-height fit"
         );
     }
 
     #[test]
-    fn header_click_does_not_start_selection() {
-        // Clicking in the header/tab bar (above the grid content) must NOT begin
-        // a text selection — that region is chrome, not the terminal grid.
+    fn padding_click_does_not_start_selection() {
+        // Clicking in the body padding above the grid content must NOT begin a
+        // text selection — that region is outside the cell grid.
         let (mut w, _) = build_test_widget();
         let mut doc = AutoCommit::new();
         w.place_at(Rect::new(0.0, 0.0, 800.0, 600.0));
         let gr = w.grid_rect();
-        let header_y = gr.y0 / 2.0; // safely inside the header, above the grid
-        send_cursor_move(&mut w, &mut doc, 120.0, header_y);
+        let pad_y = gr.y0 / 2.0; // inside the top padding, above the grid
+        send_cursor_move(&mut w, &mut doc, 120.0, pad_y);
         send_left_press(&mut w, &mut doc);
         assert!(
             w.selection().is_none(),
-            "a header click must not start a selection"
+            "a click in the body padding must not start a selection"
         );
         send_left_release(&mut w, &mut doc);
         assert!(w.selection().is_none());
