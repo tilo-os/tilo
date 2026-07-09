@@ -472,10 +472,26 @@ impl CommandPalette {
         }
     }
 
-    /// Per-result-row height. Commands rows are taller to fit a description.
+    /// Per-result-row height. Commands rows are taller to fit a
+    /// description; Search rows grow the same way when
+    /// `set_bypass_fuzzy(true)` is enabled AND at least one visible
+    /// entry carries a description — the provider-driven path pushes
+    /// subtitles like `[Files] ~/foo/bar` through `description`, so we
+    /// need the extra vertical room to render them.
     fn row_height(&self) -> f64 {
+        let search_row = if self.bypass_fuzzy
+            && self.visible.iter().any(|&i| {
+                self.entries
+                    .get(i)
+                    .map(|e| e.description.is_some())
+                    .unwrap_or(false)
+            }) {
+            CMD_ROW_HEIGHT
+        } else {
+            ROW_HEIGHT
+        };
         match self.mode {
-            PaletteMode::Search => ROW_HEIGHT,
+            PaletteMode::Search => search_row,
             PaletteMode::Commands => CMD_ROW_HEIGHT,
         }
     }
@@ -1554,9 +1570,10 @@ impl Widget for CommandPalette {
                 self.draw_command_rows(scene, transform, text_renderer, theme, list_top, footer_top);
             }
             PaletteMode::Search => {
+                let row_h = self.row_height();
                 for (i, &entry_idx) in self.visible.iter().enumerate() {
-                    let y0 = list_top + (i as f64) * ROW_HEIGHT;
-                    let y1 = y0 + ROW_HEIGHT;
+                    let y0 = list_top + (i as f64) * row_h;
+                    let y1 = y0 + row_h;
                     if y1 > footer_top - PADDING {
                         break;
                     }
@@ -1573,16 +1590,42 @@ impl Widget for CommandPalette {
                             &highlight,
                         );
                     }
-                    let label = &self.entries[entry_idx].label;
-                    let label_y = entry_rect.y0 + (entry_rect.height() - text_size as f64) / 2.0;
-                    text_renderer.draw_text(
-                        scene,
-                        label,
-                        text_size,
-                        theme.tokens.colors.text_primary,
-                        transform * Affine::translate((entry_rect.x0 + 8.0, label_y)),
-                        None,
-                    );
+                    let entry = &self.entries[entry_idx];
+                    let label = &entry.label;
+                    let desc = entry.description.as_deref();
+                    // Two-line layout when a description is present so
+                    // provider hosts can surface a subtitle (kind label
+                    // + path snippet + ...) without switching modes.
+                    if let Some(desc) = desc {
+                        let label_y = entry_rect.y0 + 6.0;
+                        let desc_y = label_y + text_size as f64 + 4.0;
+                        text_renderer.draw_text(
+                            scene,
+                            label,
+                            text_size,
+                            theme.tokens.colors.text_primary,
+                            transform * Affine::translate((entry_rect.x0 + 8.0, label_y)),
+                            None,
+                        );
+                        text_renderer.draw_text(
+                            scene,
+                            desc,
+                            text_size - 2.0,
+                            theme.tokens.colors.text_dim,
+                            transform * Affine::translate((entry_rect.x0 + 8.0, desc_y)),
+                            None,
+                        );
+                    } else {
+                        let label_y = entry_rect.y0 + (entry_rect.height() - text_size as f64) / 2.0;
+                        text_renderer.draw_text(
+                            scene,
+                            label,
+                            text_size,
+                            theme.tokens.colors.text_primary,
+                            transform * Affine::translate((entry_rect.x0 + 8.0, label_y)),
+                            None,
+                        );
+                    }
                 }
             }
         }
