@@ -15,26 +15,7 @@ use std::os::fd::AsRawFd;
 
 use super::ffi;
 
-/// One plane of an exported dmabuf: its own fd + layout. A GPU-tiled RGBA
-/// buffer typically has 2 planes (pixels + compression metadata, e.g. AMD
-/// DCC); a LINEAR buffer has 1.
-#[derive(Debug)]
-pub struct DmabufPlane {
-    pub fd: std::os::fd::OwnedFd,
-    pub stride: u32,
-    pub offset: u32,
-}
-
-/// A single exported frame as a dmabuf handle plus the layout the importer
-/// needs (fourcc + modifier describe the pixel format and tiling).
-#[derive(Debug)]
-pub struct DmabufFrame {
-    pub planes: Vec<DmabufPlane>,
-    pub fourcc: u32,
-    pub modifier: u64,
-    pub width: u32,
-    pub height: u32,
-}
+pub use crate::webview::{DmabufFrame, DmabufPlane};
 
 /// Engine-thread EGL state for the export path. Holds the render-node file
 /// (keeps the fd alive), the gbm device, and the EGL display/context, plus

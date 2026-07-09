@@ -70,6 +70,20 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let widget = BrowserWidget::new();
     let engine = widget.engine_handle();
+
+    // Zero-copy GPU compositing: when the WebView engine exports dmabuf
+    // frames (QOS_WEBVIEW_DMABUF=1), install a render-thread hook that
+    // blits the imported texture over the content rect. A no-op otherwise.
+    #[cfg(feature = "wpe")]
+    if std::env::var_os("QOS_WEBVIEW_DMABUF").is_some() {
+        ui::render_thread::set_frame_post_processor(Box::new(
+            browser::compositor::WebViewCompositor::new(
+                engine.clone(),
+                widget.content_rect_handle(),
+            ),
+        ));
+    }
+
     let state = ui::State::new();
     let app = ui::App::new(state, Box::new(widget));
     // Wake the (otherwise event-driven) winit loop whenever the engine
