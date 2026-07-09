@@ -326,6 +326,16 @@ pub struct CommandPalette {
     arg_state: Option<ArgState>,
     /// The chosen action, set on Enter and drained by [`take_outcome`].
     outcome: Option<CommandOutcome>,
+    /// Skip the built-in fuzzy filter when `true`. Provider hosts set
+    /// this so their pre-matched result set shows verbatim.
+    bypass_fuzzy: bool,
+    /// Suppress the palette's built-in filter strip (scope chips,
+    /// filetype chips, full-text toggle). Provider hosts that render
+    /// their own kind-chip strip outside the palette set this so the
+    /// built-in strip isn't duplicated. Also collapses the strip's
+    /// reserved height so the palette rows draw immediately below the
+    /// input row.
+    hide_filter_strip: bool,
 }
 
 impl Default for CommandPalette {
@@ -348,6 +358,8 @@ impl CommandPalette {
             modal: false,
             arg_state: None,
             outcome: None,
+            bypass_fuzzy: false,
+            hide_filter_strip: false,
         }
     }
 
@@ -451,6 +463,9 @@ impl CommandPalette {
 
     /// Height reserved for the filter strip + its trailing gap (Search only).
     fn filter_block(&self) -> f64 {
+        if self.hide_filter_strip {
+            return 0.0;
+        }
         match self.mode {
             PaletteMode::Search => FILTER_STRIP_HEIGHT + PADDING,
             PaletteMode::Commands => 0.0,
@@ -690,6 +705,34 @@ impl CommandPalette {
     pub fn push(&mut self, e: CommandEntry) {
         self.entries.push(e);
         self.rebuild();
+    }
+
+    /// Replace the whole entry list. Used by search-provider hosts
+    /// (`shell::overlay_host`) that generate a fresh result set on
+    /// every keystroke. Resets the cursor to 0.
+    pub fn set_entries(&mut self, entries: Vec<CommandEntry>) {
+        self.entries = entries;
+        self.cursor = 0;
+        self.rebuild();
+    }
+
+    /// When set to `true`, `rebuild` skips the palette's built-in
+    /// fuzzy filter — every entry passes through visibility unless the
+    /// custom [`Self::search_filter`] rejects it. Turn on when a
+    /// provider host is doing its own matching outside the palette
+    /// (so a low-signal fuzzy prefix doesn't hide provider hits whose
+    /// labels don't literally spell the query).
+    pub fn set_bypass_fuzzy(&mut self, on: bool) {
+        self.bypass_fuzzy = on;
+        self.rebuild();
+    }
+
+    /// Hide (and collapse) the palette's built-in scope/filetype/full-
+    /// text filter strip. The `shell::overlay_host` chip strip renders
+    /// a dynamic version above the palette; without this, both strips
+    /// paint and the palette looks doubled up.
+    pub fn set_hide_filter_strip(&mut self, on: bool) {
+        self.hide_filter_strip = on;
     }
 
     pub fn set_query(&mut self, q: &str) {
@@ -1278,7 +1321,7 @@ impl CommandPalette {
             if let Some(f) = &self.filter {
                 if !f(e) { continue; }
             }
-            if !e.matches(&self.query) { continue; }
+            if !self.bypass_fuzzy && !e.matches(&self.query) { continue; }
             self.visible.push(i);
         }
         if self.cursor >= self.visible.len() {
@@ -1497,8 +1540,9 @@ impl Widget for CommandPalette {
         }
 
         // Filter strip (Search only) — scope chips, filetype chips, full-text
-        // toggle. Concept `nirios-concept/src/components/GlobalSearch.tsx:184-244`.
-        if self.mode == PaletteMode::Search {
+        // toggle. Suppressed when a provider host is rendering its own chip
+        // strip above the palette (see `set_hide_filter_strip`).
+        if self.mode == PaletteMode::Search && !self.hide_filter_strip {
             self.draw_filter_strip(scene, transform, text_renderer, theme);
         }
 
