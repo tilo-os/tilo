@@ -313,6 +313,23 @@ impl ShellDriver {
                 // paint shows the fully-opened modal instead of frame 0
                 // (`alpha == 0` → indistinguishable from bare desktop).
                 self.fb.host_mut().force_palette_settled();
+                // Populate the palette via the search registry so the
+                // scene shows a real result list. The live compositor
+                // does this on every keystroke via `handle_event`;
+                // scenes seed it explicitly.
+                let root = self.root_obj.clone();
+                self.fb
+                    .host_mut()
+                    .refresh_search_results_for_shots(&mut self.state, &root);
+            }
+            "palette_typed" => {
+                self.fb.host_mut().set_palette_visible(true);
+                self.fb.host_mut().force_palette_settled();
+                self.fb.host_mut().set_palette_query("open");
+                let root = self.root_obj.clone();
+                self.fb
+                    .host_mut()
+                    .refresh_search_results_for_shots(&mut self.state, &root);
             }
             "quick-settings" => {
                 self.with_chrome(|st| st.overlays.quick_settings = true);
@@ -461,6 +478,7 @@ impl ShellDriver {
         "multi-group",
         "overview",
         "palette",
+        "palette_typed",
         "quick-settings",
         "qs-wifi-drillin",
         "qs-bt-drillin",
