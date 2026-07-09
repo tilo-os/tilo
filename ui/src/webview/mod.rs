@@ -161,6 +161,28 @@ pub enum WebViewEvent {
     },
 }
 
+/// One plane of a [`DmabufFrame`]: its own fd + layout. A GPU-tiled RGBA
+/// buffer has 2 planes (pixels + compression metadata); a linear one, 1.
+#[derive(Debug)]
+pub struct DmabufPlane {
+    pub fd: std::os::fd::OwnedFd,
+    pub stride: u32,
+    pub offset: u32,
+}
+
+/// A GPU frame exported as a DMA-BUF handle (the `webview-wpe` EGL export
+/// path). Feature-neutral so it can cross the engine trait — only the WPE
+/// engine produces one and only the wgpu import consumes it. `fourcc` +
+/// `modifier` describe the pixel format and tiling.
+#[derive(Debug)]
+pub struct DmabufFrame {
+    pub planes: Vec<DmabufPlane>,
+    pub fourcc: u32,
+    pub modifier: u64,
+    pub width: u32,
+    pub height: u32,
+}
+
 /// A running web engine instance. Implementations are `Send + Sync` so
 /// the widget, the host app, and the engine's own thread can share one
 /// handle.
@@ -179,6 +201,13 @@ pub trait WebViewEngine: Send + Sync {
     /// loop proxy so idle apps repaint on engine activity. Synchronous
     /// engines (the test engine) don't need one; the default drops it.
     fn set_waker(&self, _waker: Box<dyn Fn() + Send + Sync>) {}
+
+    /// Take the latest GPU frame exported as a DMA-BUF (the zero-copy
+    /// path), if one is pending. Default: none — SHM and test engines
+    /// deliver pixels through [`frames`](Self::frames) instead.
+    fn take_dmabuf(&self) -> Option<DmabufFrame> {
+        None
+    }
 }
 
 /// Shared engine handle, as stored by the widget and the host app.

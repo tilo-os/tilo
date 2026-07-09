@@ -95,6 +95,9 @@ pub struct BrowserWidget {
     /// Last address-bar text a suggestion query ran for, to avoid
     /// re-querying every frame.
     last_query: Option<String>,
+    /// The WebView content rect as window fractions `[x0,y0,x1,y1]`,
+    /// published each layout for the zero-copy compositor to blit into.
+    content_rect: std::sync::Arc<std::sync::Mutex<Option<[f32; 4]>>>,
 }
 
 impl BrowserWidget {
@@ -144,7 +147,14 @@ impl BrowserWidget {
             show_settings: false,
             structure_dirty: false,
             last_query: None,
+            content_rect: std::sync::Arc::new(std::sync::Mutex::new(None)),
         }
+    }
+
+    /// Handle to the live WebView content rect (window fractions), for the
+    /// zero-copy compositor. Updated every layout.
+    pub fn content_rect_handle(&self) -> std::sync::Arc<std::sync::Mutex<Option<[f32; 4]>>> {
+        self.content_rect.clone()
     }
 
     fn build_composition(&self) -> Box<dyn Widget> {
@@ -389,13 +399,36 @@ impl BrowserWidget {
     /// Rect of the address `TextInput` in the composed tree, for anchoring
     /// the suggestion overlay under it.
     fn address_input_rect(&self) -> Option<Rect> {
-        fn walk(w: &dyn Widget) -> Option<Rect> {
-            if w.test_id() == Some(URL_INPUT_ID) {
+        self.find_rect(URL_INPUT_ID)
+    }
+
+    /// Rect of the composed-tree widget with `test_id == id`, if present.
+    fn find_rect(&self, id: &str) -> Option<Rect> {
+        fn walk(w: &dyn Widget, id: &str) -> Option<Rect> {
+            if w.test_id() == Some(id) {
                 return Some(w.get_rect());
             }
-            w.children().iter().find_map(|c| walk(*c))
+            w.children().iter().find_map(|c| walk(*c, id))
         }
-        self.composed.as_ref().and_then(|c| walk(c.as_ref()))
+        self.composed.as_ref().and_then(|c| walk(c.as_ref(), id))
+    }
+
+    /// Publish the WebView surface rect as window fractions for the
+    /// zero-copy compositor.
+    fn publish_content_rect(&self) {
+        let full = self.rect;
+        if full.width() <= 0.0 || full.height() <= 0.0 {
+            return;
+        }
+        let frac = self.find_rect("browser.surface").map(|r| {
+            [
+                ((r.x0 - full.x0) / full.width()) as f32,
+                ((r.y0 - full.y0) / full.height()) as f32,
+                ((r.x1 - full.x0) / full.width()) as f32,
+                ((r.y1 - full.y0) / full.height()) as f32,
+            ]
+        });
+        *self.content_rect.lock().unwrap() = frac;
     }
 }
 
@@ -516,6 +549,7 @@ impl Widget for BrowserWidget {
             self.suggestions
                 .set_anchor(Point::new(r.x0, r.y1 + 2.0), r.width() as f32);
         }
+        self.publish_content_rect();
     }
 
     fn draw(

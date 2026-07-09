@@ -48,3 +48,5 @@ taffy = "0.10.1"
 [dev-dependencies]
 # extension install tests unpack into throwaway directories
 tempfile = "3"
+# block_on for the headless dmabuf probe examples
+pollster = "0.4"

@@ -152,13 +152,11 @@ impl WebViewEngine for WpeEngine {
     fn set_waker(&self, waker: Box<dyn Fn() + Send + Sync>) {
         *self.shared.waker.lock().unwrap() = Some(waker);
     }
-}
 
-impl WpeEngine {
     /// Take the latest exported dmabuf frame (zero-copy path), if one is
     /// pending. The caller imports it into a wgpu texture; on the next
     /// paint the engine publishes a fresh one.
-    pub fn take_dmabuf(&self) -> Option<egl::DmabufFrame> {
+    fn take_dmabuf(&self) -> Option<crate::webview::DmabufFrame> {
         self.shared.dmabuf.lock().unwrap().take()
     }
 }
