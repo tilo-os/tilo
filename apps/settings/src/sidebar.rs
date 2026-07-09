@@ -33,10 +33,14 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::{Column, Container, Scrollable, Text, Widget};
+use ui::widget::{Column, Container, Scrollable, Text, TextInput, Widget};
 
 use crate::categories::{Category, Section};
-use crate::widgets::vgap;
+use crate::widgets::{caption, vgap};
+
+/// CRDT key the sidebar search field writes its query into. Read by
+/// [`crate::SettingsApp::sync`] to filter the category list.
+pub const SEARCH_KEY: &str = "settings.search";
 
 /// Gap (logical px) injected under the "Settings" title so the first
 /// section header has clear breathing room beneath the title.
@@ -283,41 +287,62 @@ impl Widget for SidebarRow {
     }
 }
 
-/// Build the full sidebar surface: app title, then one labelled section per
-/// [`Section`], each listing its categories as [`SidebarRow`]s. `selected`
-/// drives which row shows the active highlight.
+/// Build the full sidebar surface: the app title, a search field, then either
+/// the sectioned category list (when `query` is empty) or a flat filtered
+/// results list (when the user is searching). `selected` drives which row
+/// shows the active highlight.
 ///
 /// The whole thing is one [`Container`] tinted a step below the content
 /// background so it reads as a single cohesive sidebar pane, with the rows
 /// inside a [`Scrollable`] so every category stays reachable on short windows.
-pub fn build(selected: Category) -> Box<dyn Widget> {
+pub fn build(selected: Category, query: &str) -> Box<dyn Widget> {
     // An intrinsic-height column lays out as a block stack and ignores the
     // toolkit's inter-child gap, so we place explicit fixed-height spacers
-    // to control the vertical rhythm:
-    //   * a generous gap under the "Settings" title so it isn't crowded by
-    //     the first section header;
-    //   * a clearly LARGER gap ABOVE each section header than the small gap
-    //     below it, so the header visibly groups the rows beneath it rather
-    //     than reading as a trailer to the previous section.
+    // to control the vertical rhythm.
     let mut col = Column::new()
         .with_intrinsic_height()
         .push(Box::new(Text::new("Settings").with_size(22.0)));
+    col = col.push(vgap(10.0));
+
+    // Search field — the first focusable in the tree, so keyboard focus after
+    // a filter rebuild lands back on it. Its query is mirrored into the
+    // document via `SEARCH_KEY`; `SettingsApp::sync` reads it and re-runs the
+    // layout, which is what filters the list below.
+    let search = TextInput::new(Vec::new())
+        .with_id("settings.search")
+        .with_on_change_path(SEARCH_KEY)
+        .with_placeholder("\u{f0349}  Search settings")
+        .with_font_size(13.0);
+    col = col.push(Box::new(search));
     col = col.push(vgap(TITLE_GAP));
 
-    for (i, section) in Section::ALL.iter().enumerate() {
-        // Extra air above every header except the first (which already has
-        // the title gap above it).
-        if i != 0 {
-            col = col.push(vgap(SECTION_GAP_ABOVE));
+    let trimmed = query.trim();
+    if trimmed.is_empty() {
+        // Normal sectioned list. A clearly LARGER gap ABOVE each section
+        // header than below it groups the rows beneath the header.
+        for (i, section) in Section::ALL.iter().enumerate() {
+            if i != 0 {
+                col = col.push(vgap(SECTION_GAP_ABOVE));
+            }
+            col = col.push(section_header(section.label()));
+            col = col.push(vgap(SECTION_GAP_BELOW));
+            for category in Category::in_section(*section) {
+                col = col.push(Box::new(SidebarRow::new(category, category == selected)));
+            }
         }
-        col = col.push(Box::new(
-            Text::new(&section.label().to_uppercase())
-                .with_size(11.0)
-                .with_color(Theme::dark().text_dim),
-        ));
+    } else {
+        // Filtered results — a flat list of matching categories under a
+        // "RESULTS" header, or an honest empty state.
+        col = col.push(section_header("Results"));
         col = col.push(vgap(SECTION_GAP_BELOW));
-        for category in Category::in_section(*section) {
-            col = col.push(Box::new(SidebarRow::new(category, category == selected)));
+        let matches: Vec<Category> =
+            Category::ALL.iter().copied().filter(|c| c.matches(trimmed)).collect();
+        if matches.is_empty() {
+            col = col.push(caption(&format!("No settings match \u{201c}{trimmed}\u{201d}")));
+        } else {
+            for category in matches {
+                col = col.push(Box::new(SidebarRow::new(category, category == selected)));
+            }
         }
     }
 
@@ -333,9 +358,51 @@ pub fn build(selected: Category) -> Box<dyn Widget> {
     )
 }
 
+/// An uppercase, dimmed section header line.
+fn section_header(label: &str) -> Box<dyn Widget> {
+    Box::new(
+        Text::new(&label.to_uppercase())
+            .with_size(11.0)
+            .with_color(Theme::dark().text_dim),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn count_rows(w: &dyn Widget) -> usize {
+        let mut n = if w.name() == "SidebarRow" { 1 } else { 0 };
+        for c in w.children() {
+            n += count_rows(c);
+        }
+        n
+    }
+
+    #[test]
+    fn empty_query_lists_every_category() {
+        let sb = build(Category::Network, "");
+        assert_eq!(
+            count_rows(sb.as_ref()),
+            Category::ALL.len(),
+            "the unfiltered sidebar lists all categories"
+        );
+    }
+
+    #[test]
+    fn query_filters_the_sidebar_to_matching_categories() {
+        // "night" is a Displays-only keyword, so exactly one row survives.
+        let sb = build(Category::Displays, "night");
+        let expected = Category::ALL.iter().filter(|c| c.matches("night")).count();
+        assert_eq!(count_rows(sb.as_ref()), expected);
+        assert!(expected >= 1 && expected < Category::ALL.len(), "genuinely filtered");
+    }
+
+    #[test]
+    fn no_match_query_shows_no_rows() {
+        let sb = build(Category::Network, "zzzznope");
+        assert_eq!(count_rows(sb.as_ref()), 0, "an empty result set lists no rows");
+    }
 
     #[test]
     fn row_is_addressable_by_category_label() {

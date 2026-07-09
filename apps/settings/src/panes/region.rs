@@ -25,7 +25,7 @@ use vello::Scene;
 use winit::event::{Modifiers, WindowEvent};
 
 use crate::region::{Currency, DateStyle, Measurement, RegionSettings, TimeStyle};
-use crate::widgets::{card, caption, rows, setting_row};
+use crate::widgets::{card, caption, choice_row, rows};
 
 pub const CURRENCY_KEY: &str = "region.currency";
 pub const DATE_KEY: &str = "region.date_format";
@@ -94,10 +94,10 @@ impl RegionPane {
         let formats = card(
             "Formats",
             rows(vec![
-                setting_row("Currency", Box::new(currency)),
-                setting_row("Date format", Box::new(date)),
-                setting_row("Time format", Box::new(time)),
-                setting_row("Measurement", Box::new(units)),
+                choice_row("Currency", Box::new(currency)),
+                choice_row("Date format", Box::new(date)),
+                choice_row("Time format", Box::new(time)),
+                choice_row("Measurement", Box::new(units)),
             ]),
         );
 
