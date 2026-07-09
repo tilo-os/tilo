@@ -199,6 +199,9 @@ fn video_from_json(v: &Value, category: &str) -> Video {
         } else {
             channel_id
         },
+        // yt-dlp list items don't reliably carry the uploader avatar; leave it
+        // to the channel-page fetch and show the initials chip meanwhile.
+        channel_avatar_url: String::new(),
         views: u64_field(v, "view_count"),
         published: humanize_date(&str_field(v, "upload_date")),
         duration: f64_field(v, "duration") as u32,

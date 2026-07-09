@@ -3287,6 +3287,13 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         let needs_frame = app.root_widget.needs_animation_frame();
         if needs_frame && !app.theme.reduce_motion {
             app.needs_sync = true;
+            // An animation tick may reposition content without any input event
+            // (a Scrollable auto-repeating a held track-page, a momentum
+            // fling), so force `apply_layout` this frame — the sync/draw pass
+            // alone would leave the moved offset unreflected in the children's
+            // resolved rects. The scroll fast path keeps this to a cheap
+            // reposition (no `compute_layout`) unless something needs measuring.
+            app.layout_dirty = true;
             window.request_redraw();
         }
 
