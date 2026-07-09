@@ -410,22 +410,17 @@ mod live {
                     .ok()?,
             );
             let (inbound_tx, inbound_rx) = mpsc::unbounded_channel();
-            let handle = rt.handle().clone();
-            let (endpoint, router, ticket) = rt
-                .block_on(async move {
-                    let endpoint = iroh::Endpoint::builder().bind().await.ok()?;
-                    let router = iroh::protocol::Router::builder(endpoint.clone())
-                        .accept(MEDIA_ALPN, MediaProtocol { inbound: inbound_tx })
-                        .spawn();
-                    // Local (direct) addresses are available right after bind;
-                    // relay contact is not required for LAN / loopback peers.
-                    let addr = endpoint.addr();
-                    let ticket = serde_json::to_string(&addr).ok()?;
-                    Some((endpoint, router, ticket))
-                })
-                .map(Some)
-                .unwrap_or(None)?;
-            let _ = handle; // runtime handle captured inside `rt`
+            let (endpoint, router, ticket) = rt.block_on(async move {
+                let endpoint = iroh::Endpoint::builder().bind().await.ok()?;
+                let router = iroh::protocol::Router::builder(endpoint.clone())
+                    .accept(MEDIA_ALPN, MediaProtocol { inbound: inbound_tx })
+                    .spawn();
+                // Local (direct) addresses are available right after bind;
+                // relay contact is not required for LAN / loopback peers.
+                let addr = endpoint.addr();
+                let ticket = serde_json::to_string(&addr).ok()?;
+                Some((endpoint, router, ticket))
+            })?;
             Some(Self {
                 rt,
                 endpoint,
@@ -522,28 +517,36 @@ mod live {
             .build()
             .ok()?;
         rt.block_on(async {
-            let proxy = Screencast::new().await.ok()?;
-            let session = proxy.create_session().await.ok()?;
-            proxy
-                .select_sources(
-                    &session,
-                    CursorMode::Embedded,
-                    SourceType::Monitor | SourceType::Window,
-                    false,
-                    None,
-                    PersistMode::DoNot,
-                )
+            // Bound the whole handshake so an unresponsive portal (or a user who
+            // never answers the picker) can't wedge the caller forever.
+            let flow = async {
+                let proxy = Screencast::new().await.ok()?;
+                let session = proxy.create_session().await.ok()?;
+                proxy
+                    .select_sources(
+                        &session,
+                        CursorMode::Embedded,
+                        SourceType::Monitor | SourceType::Window,
+                        false,
+                        None,
+                        PersistMode::DoNot,
+                    )
+                    .await
+                    .ok()?;
+                // No parent window handle from this surface: pass the default
+                // (empty) identifier, letting the portal parent the chooser.
+                let response = proxy
+                    .start(&session, &WindowIdentifier::default())
+                    .await
+                    .ok()?
+                    .response()
+                    .ok()?;
+                response.streams().first().map(|s| s.pipe_wire_node_id())
+            };
+            tokio::time::timeout(std::time::Duration::from_secs(120), flow)
                 .await
-                .ok()?;
-            // No parent window handle from this surface: pass the default
-            // (empty) identifier, letting the portal parent the chooser itself.
-            let response = proxy
-                .start(&session, &WindowIdentifier::default())
-                .await
-                .ok()?
-                .response()
-                .ok()?;
-            response.streams().first().map(|s| s.pipe_wire_node_id())
+                .ok()
+                .flatten()
         })
     }
 }
@@ -612,8 +615,17 @@ mod tests {
 
     #[test]
     fn screencast_is_none_without_portal() {
-        // Headless: no portal, so no node id — and it must not panic.
-        assert!(request_screencast().is_none() || cfg!(feature = "live-media"));
+        // Without the `live-media` build there is no portal support compiled
+        // in, so a share request always yields no node id and never panics.
+        #[cfg(not(feature = "live-media"))]
+        {
+            assert!(request_screencast().is_none());
+        }
+        // Under `live-media` the request performs a *real* xdg-desktop-portal
+        // ScreenCast handshake: it pops the system source picker and blocks on
+        // the user's choice. That must never run in a test / CI (it would open a
+        // dialog on the developer's desktop and hang), so the live path is
+        // exercised only by an actual share on a live session — not here.
     }
 
     #[test]
@@ -672,7 +684,13 @@ mod tests {
             let mut b = IrohTransport::try_new().expect("second endpoint binds once the first did");
 
             let ticket_b = b.local_ticket().expect("B publishes a real ticket");
-            assert!(ticket_b.contains("EndpointId") || ticket_b.contains("id"), "ticket carries a real endpoint address, got: {ticket_b}");
+            // A real serialized iroh EndpointAddr (id + dialable addresses),
+            // never the simulator's placeholder.
+            assert!(ticket_b != "sim://local", "the live engine must not hand out the simulator ticket");
+            assert!(
+                ticket_b.starts_with('{') && ticket_b.contains("\"id\"") && ticket_b.contains("\"addrs\""),
+                "ticket is a serialized EndpointAddr, got: {ticket_b}"
+            );
 
             // A dials B so A→B media can flow, and publishes its audio track.
             assert!(a.connect(&ticket_b), "A dials B's real ticket");

@@ -211,6 +211,8 @@ pub(crate) enum Hit {
     CallMute,
     CallDeafen,
     CallAudioOnly,
+    /// Start/stop sharing this peer's screen (portal ScreenCast).
+    CallShareScreen,
     CallExpand,
     CallLeave,
     /// Toggle the left flap (rail + channel sidebar).
@@ -312,6 +314,32 @@ pub struct ChatApp {
     /// ephemeral `--shots`/test instances (`new_ephemeral`) leave this `false`
     /// and may stage the rich demo.
     pub(crate) is_live: bool,
+
+    /// Latest decoded RGBA frame per remote peer id, shown in that peer's call
+    /// tile (camera or screen-share). Populated only by the live media pump; in
+    /// the default build it stays empty, so a tile shows the honest placeholder
+    /// until a real decoded frame arrives — it never fabricates a picture.
+    pub(crate) remote_frames: HashMap<String, vello::peniko::ImageData>,
+
+    // Live capture/encode/playback pipelines — present only under `live-media`
+    // and only while in a call. All `None`/empty until the call opens a device;
+    // torn down when the call ends or a device is unavailable (honest silence).
+    #[cfg(feature = "live-media")]
+    mic: Option<crate::audio::MicCapture>,
+    #[cfg(feature = "live-media")]
+    speaker: Option<crate::audio::SpeakerPlayback>,
+    #[cfg(feature = "live-media")]
+    camera: Option<crate::video::CameraCapture>,
+    #[cfg(feature = "live-media")]
+    cam_encoder: Option<crate::video::H264Encoder>,
+    #[cfg(feature = "live-media")]
+    screen: Option<crate::video::ScreenCapture>,
+    #[cfg(feature = "live-media")]
+    screen_encoder: Option<crate::video::H264Encoder>,
+    #[cfg(feature = "live-media")]
+    remote_decoders: HashMap<String, crate::video::H264FrameDecoder>,
+    #[cfg(feature = "live-media")]
+    media_seq: u64,
 }
 
 impl Default for ChatApp {
@@ -329,6 +357,10 @@ impl ChatApp {
         let mut app = Self::bare();
         app.is_live = true;
         app.me = LocalIdentity::resolve();
+        // The live binary uses the real transport (a bound iroh endpoint on a
+        // real session; the simulator otherwise). Tests/`--shots` keep the
+        // deterministic local bus from `bare`.
+        app.media = MediaEngine::new();
         // Author the local view state under the real identity from the start so
         // nothing is attributed to the demo `u_me`.
         app.active_ws.clear();
@@ -385,7 +417,10 @@ impl ChatApp {
             right_mode: FlapMode::Docked,
             me: LocalIdentity::demo(),
             sound: SoundEngine::new(),
-            media: MediaEngine::new(),
+            // Default to the deterministic local bus; the live binary
+            // (`ChatApp::new`) upgrades to the real transport. This keeps
+            // `--shots`/tests from binding a real iroh endpoint per instance.
+            media: MediaEngine::simulated(),
             perms: ChatPermissions::permissive(),
             saver: None,
             images: ui::ImageStore::new(crate::images::fetcher()),
@@ -399,6 +434,23 @@ impl ChatApp {
             flap_animating: false,
             shot_starter: false,
             is_live: false,
+            remote_frames: HashMap::new(),
+            #[cfg(feature = "live-media")]
+            mic: None,
+            #[cfg(feature = "live-media")]
+            speaker: None,
+            #[cfg(feature = "live-media")]
+            camera: None,
+            #[cfg(feature = "live-media")]
+            cam_encoder: None,
+            #[cfg(feature = "live-media")]
+            screen: None,
+            #[cfg(feature = "live-media")]
+            screen_encoder: None,
+            #[cfg(feature = "live-media")]
+            remote_decoders: HashMap::new(),
+            #[cfg(feature = "live-media")]
+            media_seq: 0,
         }
     }
 
@@ -533,6 +585,196 @@ impl ChatApp {
                 self.right_flap.open();
                 self.call.join("c_huddle");
             }
+        }
+    }
+
+    /// The live media pump: run once per frame while the engine is live. Pulls
+    /// captured microphone/camera/screen media, encodes it and publishes it over
+    /// the transport, then decodes and plays whatever arrived from peers. Every
+    /// device/track honours the call permission gate; when a device is absent
+    /// the corresponding pipeline is simply `None` and that medium stays silent.
+    #[cfg(feature = "live-media")]
+    fn pump_media(&mut self) {
+        use crate::call::CallAction;
+        use crate::media::{MediaObject, TrackKind};
+        use std::time::Duration;
+
+        if !self.call.active {
+            // Release all devices + remote state between calls.
+            self.mic = None;
+            self.speaker = None;
+            self.camera = None;
+            self.cam_encoder = None;
+            self.screen = None;
+            self.screen_encoder = None;
+            self.remote_decoders.clear();
+            self.remote_frames.clear();
+            return;
+        }
+        let me = self.me.id.clone();
+
+        // --- Microphone → Opus → publish (only while transmitting) ---
+        let transmit = !self.call.muted
+            && !self.call.deafened
+            && self.call_allows(CallAction::Speak);
+        if transmit {
+            if self.mic.is_none() {
+                self.mic = crate::audio::MicCapture::new();
+            }
+            let packets = self.mic.as_mut().map(|m| m.poll()).unwrap_or_default();
+            for pkt in packets {
+                let seq = self.next_media_seq();
+                self.media.transport_mut().send(MediaObject {
+                    sender: me.clone(),
+                    kind: TrackKind::Audio,
+                    seq,
+                    pts: Duration::from_millis(seq * 20),
+                    payload: pkt,
+                });
+            }
+        } else {
+            self.mic = None;
+        }
+
+        // --- Camera → H.264 → local preview + publish (only with camera on) ---
+        let camera_on = !self.call.audio_only && self.call_allows(CallAction::Camera);
+        if camera_on {
+            if self.camera.is_none() {
+                self.camera =
+                    crate::video::CameraCapture::new(crate::video::DEFAULT_W, crate::video::DEFAULT_H);
+                self.cam_encoder = crate::video::H264Encoder::new(
+                    crate::video::DEFAULT_W,
+                    crate::video::DEFAULT_H,
+                    crate::video::DEFAULT_FPS,
+                );
+            }
+            let nalus = match (self.camera.as_mut(), self.cam_encoder.as_mut()) {
+                (Some(cam), Some(enc)) => cam.poll().map(|rgba| enc.encode(&rgba)),
+                _ => None,
+            };
+            if let Some(nalus) = nalus {
+                if !nalus.is_empty() {
+                    // Feed the host tile's VideoPlayer so this peer sees its own
+                    // camera (the surface yields its placeholder to a real frame).
+                    self.video.feed_frame(&nalus);
+                    let seq = self.next_media_seq();
+                    self.media.transport_mut().send(MediaObject {
+                        sender: me.clone(),
+                        kind: TrackKind::Video,
+                        seq,
+                        pts: Duration::from_millis(seq * 33),
+                        payload: nalus,
+                    });
+                }
+            }
+        } else {
+            self.camera = None;
+            self.cam_encoder = None;
+        }
+
+        // --- Screen capture → H.264 → publish (started via share_screen) ---
+        let screen_nalus = match (self.screen.as_mut(), self.screen_encoder.as_mut()) {
+            (Some(scr), Some(enc)) => scr.poll().map(|rgba| enc.encode(&rgba)),
+            _ => None,
+        };
+        if let Some(nalus) = screen_nalus {
+            if !nalus.is_empty() {
+                let seq = self.next_media_seq();
+                self.media.transport_mut().send(MediaObject {
+                    sender: me.clone(),
+                    kind: TrackKind::Screen,
+                    seq,
+                    pts: Duration::from_millis(seq * 33),
+                    payload: nalus,
+                });
+            }
+        }
+
+        // --- Receive: decode + play what arrived from peers ---
+        let objs = self.media.transport_mut().poll();
+        for o in objs {
+            if o.sender == me {
+                continue;
+            }
+            match o.kind {
+                TrackKind::Audio => {
+                    if !self.call.deafened {
+                        if self.speaker.is_none() {
+                            self.speaker = crate::audio::SpeakerPlayback::new();
+                        }
+                        if let Some(sp) = self.speaker.as_mut() {
+                            sp.play(&o.payload);
+                        }
+                    }
+                }
+                TrackKind::Video | TrackKind::Screen => {
+                    let frame = {
+                        let dec = self.remote_decoders.entry(o.sender.clone()).or_default();
+                        dec.decode(&o.payload)
+                    };
+                    if let Some(frame) = frame {
+                        self.remote_frames.insert(o.sender.clone(), rgba_to_image(&frame));
+                    }
+                }
+            }
+        }
+    }
+
+    #[cfg(feature = "live-media")]
+    fn next_media_seq(&mut self) -> u64 {
+        let s = self.media_seq;
+        self.media_seq = self.media_seq.wrapping_add(1);
+        s
+    }
+
+    /// Begin sharing the screen: ask the xdg-desktop-portal for a ScreenCast
+    /// source (real ashpd flow) and, if the user grants one, open a PipeWire
+    /// capture + H.264 encoder for it. Gated by the `ShareScreen` permission and
+    /// the `live-media` build; a no-op (returns `false`) when the portal is
+    /// unavailable or the user cancels — it never fabricates a share.
+    pub(crate) fn share_screen(&mut self) -> bool {
+        if !self.call_allows(crate::call::CallAction::ShareScreen) {
+            return false;
+        }
+        #[cfg(feature = "live-media")]
+        {
+            if let Some(node) = crate::media::request_screencast() {
+                let (w, h) = (crate::video::DEFAULT_W * 2, crate::video::DEFAULT_H * 2);
+                if let Some(scr) = crate::video::ScreenCapture::new(node, w, h) {
+                    self.screen = Some(scr);
+                    self.screen_encoder = crate::video::H264Encoder::new(w, h, crate::video::DEFAULT_FPS);
+                    self.media.transport_mut().publish(crate::media::TrackKind::Screen);
+                    return true;
+                }
+            }
+            false
+        }
+        #[cfg(not(feature = "live-media"))]
+        {
+            false
+        }
+    }
+
+    /// Whether this peer is currently sharing its screen. Always `false` in the
+    /// default build (no capture pipeline is compiled in).
+    pub(crate) fn sharing_screen(&self) -> bool {
+        #[cfg(feature = "live-media")]
+        {
+            self.screen.is_some()
+        }
+        #[cfg(not(feature = "live-media"))]
+        {
+            false
+        }
+    }
+
+    /// Stop sharing the screen and stop publishing the screen track.
+    pub(crate) fn stop_screen_share(&mut self) {
+        #[cfg(feature = "live-media")]
+        {
+            self.screen = None;
+            self.screen_encoder = None;
+            self.media.transport_mut().unpublish(crate::media::TrackKind::Screen);
         }
     }
 
@@ -960,6 +1202,10 @@ impl Widget for ChatApp {
         if self.call.active {
             self.connect_call_peers(doc);
         }
+        // Move real media: capture mic/camera/screen → encode → publish, and
+        // decode/play whatever arrived from peers. No-op without `live-media`.
+        #[cfg(feature = "live-media")]
+        self.pump_media();
     }
 
     fn build_layout(
@@ -1211,5 +1457,18 @@ impl ChatApp {
     /// still requests a clean relayout).
     pub(crate) fn request_relayout(&mut self) {
         self.relayout = true;
+    }
+}
+
+/// Wrap a decoded RGBA frame as a `peniko` image for painting into a call tile.
+#[cfg(feature = "live-media")]
+fn rgba_to_image(frame: &crate::video::DecodedFrame) -> vello::peniko::ImageData {
+    use vello::peniko::{Blob, ImageAlphaType, ImageData, ImageFormat};
+    ImageData {
+        data: Blob::new(std::sync::Arc::new(frame.rgba.clone())),
+        format: ImageFormat::Rgba8,
+        alpha_type: ImageAlphaType::Alpha,
+        width: frame.width,
+        height: frame.height,
     }
 }
