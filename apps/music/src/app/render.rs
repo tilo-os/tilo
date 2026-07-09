@@ -24,6 +24,7 @@ struct TrackDisp {
     no: u32,
 }
 
+#[derive(Clone)]
 struct AlbumDisp {
     id: String,
     title: String,
@@ -32,6 +33,7 @@ struct AlbumDisp {
     queue: Vec<String>,
 }
 
+#[derive(Clone)]
 struct ArtistDisp {
     id: String,
     name: String,
@@ -43,6 +45,51 @@ struct PlaylistDisp {
     id: String,
     name: String,
     count: usize,
+}
+
+/// A playlist row in the search results (cover + owner subtitle, navigable).
+#[derive(Clone)]
+struct ResultPlaylist {
+    id: String,
+    title: String,
+    subtitle: String,
+}
+
+/// The "top result" hero shown at the head of the search `All` tab.
+struct SearchHero {
+    id: String,
+    title: String,
+    subtitle: String,
+    /// "Song" / "Album" / "Artist" / "Playlist".
+    kind_label: &'static str,
+    /// Artists render as a circular avatar; everything else as a square cover.
+    circular: bool,
+    /// Whether the primary affordance is Play (a track) vs. Open (a page).
+    playable: bool,
+    /// What a click on the hero does (play the track, or open its page).
+    action: Action,
+}
+
+/// The unified search-result model the `All`/per-type tabs render, built from
+/// the live multi-type bundle when present, else the local sample library.
+#[derive(Default)]
+struct SearchResultsView {
+    songs: Vec<String>,
+    albums: Vec<AlbumDisp>,
+    artists: Vec<ArtistDisp>,
+    playlists: Vec<ResultPlaylist>,
+    top: Option<SearchHero>,
+    /// True when these came from the live YouTube-Music backend.
+    live: bool,
+}
+
+impl SearchResultsView {
+    fn is_empty(&self) -> bool {
+        self.songs.is_empty()
+            && self.albums.is_empty()
+            && self.artists.is_empty()
+            && self.playlists.is_empty()
+    }
 }
 
 /// Minimum horizontal travel (logical px) for a now-playing-bar drag to count
@@ -585,6 +632,7 @@ impl MusicApp {
         match &self.view {
             View::Artist(id) => is_live_id(id) && !self.artist_pages.contains_key(id) && !self.lib.artists.contains_key(id),
             View::Album(id) => is_live_album_id(id) && !self.album_pages.contains_key(id) && !self.lib.albums.contains_key(id),
+            View::Playlist(id) => is_live_playlist_id(id) && !self.playlist_pages.contains_key(id) && self.lib.playlist(id).is_none(),
             _ => false,
         }
     }
@@ -1588,6 +1636,7 @@ impl MusicApp {
         queue: Vec<String>,
         circular: bool,
         lib_button: Option<(String, bool)>,
+        follow: Option<(String, bool)>,
     ) -> f64 {
         let pad = 28.0;
         let art_d = 168.0;
@@ -1619,11 +1668,14 @@ impl MusicApp {
         scene.stroke(&Stroke::new(1.0), t, c.border, None, &rrect(shuf, 20.0));
         icon::draw(scene, t, Icon::Shuffle, shuf.center(), 18.0, if self.pb.shuffle { c.accent } else if sh { c.text } else { c.dim });
 
+        // Running x for the trailing pills, right of the shuffle button.
+        let mut px = shuf.x1 + 12.0;
+
         // Optional trailing "Add to library" pill (album header). `saved`
         // flips it to an "In Library" confirmed state.
         if let Some((id, saved)) = lib_button {
             let pw = 150.0;
-            let lib = Rect::new(shuf.x1 + 12.0, by, shuf.x1 + 12.0 + pw, by + 40.0);
+            let lib = Rect::new(px, by, px + pw, by + 40.0);
             let lh = self.push_hit(lib, Action::ToggleSaveAlbum(id));
             if saved {
                 fill_rrect(scene, t, lib, 20.0, c.success.multiply_alpha(0.18));
@@ -1633,6 +1685,23 @@ impl MusicApp {
                 scene.stroke(&Stroke::new(1.0), t, if lh { c.text } else { c.border }, None, &rrect(lib, 20.0));
                 icon::draw(scene, t, Icon::Plus, Point::new(lib.x0 + 22.0, lib.center().y), 16.0, if lh { c.text } else { c.dim });
                 draw_text(tr, scene, t, "Add to Library", lib.x0 + 42.0, vy(by, 40.0, 14.0), 14.0, if lh { c.text } else { c.dim }, TextWeight::Semibold, None);
+            }
+            px = lib.x1 + 12.0;
+        }
+
+        // Optional "Follow" / "Following" toggle pill (artist header).
+        if let Some((id, following)) = follow {
+            let pw = 118.0;
+            let fol = Rect::new(px, by, px + pw, by + 40.0);
+            let fh = self.push_hit(fol, Action::ToggleFollow(id));
+            if following {
+                fill_rrect(scene, t, fol, 20.0, c.accent.multiply_alpha(0.16));
+                icon::draw(scene, t, Icon::Downloaded, Point::new(fol.x0 + 22.0, fol.center().y), 15.0, c.accent);
+                draw_text(tr, scene, t, "Following", fol.x0 + 42.0, vy(by, 40.0, 14.0), 14.0, c.accent, TextWeight::Semibold, None);
+            } else {
+                scene.stroke(&Stroke::new(1.0), t, if fh { c.text } else { c.border }, None, &rrect(fol, 20.0));
+                icon::draw(scene, t, Icon::Plus, Point::new(fol.x0 + 22.0, fol.center().y), 16.0, if fh { c.text } else { c.dim });
+                draw_text(tr, scene, t, "Follow", fol.x0 + 42.0, vy(by, 40.0, 14.0), 14.0, if fh { c.text } else { c.dim }, TextWeight::Semibold, None);
             }
         }
 
@@ -1660,7 +1729,7 @@ impl MusicApp {
         };
         let subtitle = format!("{artist} · {year} · {} songs", ids.len());
         let saved = self.lib.is_album_saved(id);
-        let y = self.draw_detail_header(scene, t, tr, c, body, y, id, "ALBUM", &title, &subtitle, ids.clone(), false, Some((id.to_string(), saved)));
+        let y = self.draw_detail_header(scene, t, tr, c, body, y, id, "ALBUM", &title, &subtitle, ids.clone(), false, Some((id.to_string(), saved)), None);
         let rows = self.gather_tracks(&ids);
         self.draw_track_table(scene, t, tr, c, body, y, &rows, &ids, false, true, None)
     }
@@ -1671,7 +1740,7 @@ impl MusicApp {
         let year = if page.year > 0 { format!(" \u{00b7} {}", page.year) } else { String::new() };
         let subtitle = format!("{}{year} \u{00b7} {} songs", page.artist_name, ids.len());
         let saved = self.lib.is_album_saved(&page.id);
-        let y = self.draw_detail_header(scene, t, tr, c, body, y, &page.id, "ALBUM", &page.title, &subtitle, ids.clone(), false, Some((page.id.clone(), saved)));
+        let y = self.draw_detail_header(scene, t, tr, c, body, y, &page.id, "ALBUM", &page.title, &subtitle, ids.clone(), false, Some((page.id.clone(), saved)), None);
         let rows = self.gather_tracks(&ids);
         self.draw_track_table(scene, t, tr, c, body, y, &rows, &ids, false, true, None)
     }
@@ -1751,7 +1820,8 @@ impl MusicApp {
             (name, genre, listeners, top_ids, albums)
         };
         let subtitle = format!("{genre} · {} monthly listeners", human_count(listeners));
-        let y = self.draw_detail_header(scene, t, tr, c, body, y, id, "ARTIST", &name, &subtitle, top_ids.clone(), true, None);
+        let followed = self.lib.is_artist_followed(id);
+        let y = self.draw_detail_header(scene, t, tr, c, body, y, id, "ARTIST", &name, &subtitle, top_ids.clone(), true, None, Some((id.to_string(), followed)));
 
         let mut y = self.section_label(scene, t, tr, c, body, y + 8.0, "Popular");
         let rows = self.gather_tracks(&top_ids);
@@ -1761,8 +1831,11 @@ impl MusicApp {
         self.draw_album_grid(scene, t, tr, c, body, y, &albums)
     }
 
-    /// Artist detail rendered straight from a real [`ArtistPage`].
+    /// A full artist page rendered from a real [`ArtistPage`]: header (play +
+    /// shuffle + follow), popular tracks, a sectioned discography (Albums vs.
+    /// Singles & EPs), related artists, and an About/bio panel.
     fn draw_artist_detail_live(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, c: &Palette, body: Rect, y: f64, page: &ArtistPage) -> f64 {
+        use crate::backend::AlbumKind;
         let pad = 28.0;
         let subtitle = if page.subscriber_count > 0 {
             format!("{} subscribers", human_count(page.subscriber_count))
@@ -1770,37 +1843,120 @@ impl MusicApp {
             "Artist".to_string()
         };
         let top_ids: Vec<String> = page.tracks.iter().map(|h| format!("yt:{}", h.video_id)).collect();
-        let mut y = self.draw_detail_header(scene, t, tr, c, body, y, &page.id, "ARTIST", &page.name, &subtitle, top_ids.clone(), true, None);
+        let followed = self.lib.is_artist_followed(&page.id);
+        let mut y = self.draw_detail_header(scene, t, tr, c, body, y, &page.id, "ARTIST", &page.name, &subtitle, top_ids.clone(), true, None, Some((page.id.clone(), followed)));
 
-        if !page.description.is_empty() {
-            let line = elide(tr, &page.description, 13.0, TextWeight::Regular, body.width() - 2.0 * pad);
-            draw_text(tr, scene, t, &line, body.x0 + pad, y, 13.0, c.dim, TextWeight::Regular, Some((body.width() - 2.0 * pad) as f32));
-            y += 28.0;
+        // Popular / top tracks.
+        if !top_ids.is_empty() {
+            y = self.section_label(scene, t, tr, c, body, y + 8.0, "Popular");
+            let rows = self.gather_tracks(&top_ids);
+            y = self.draw_track_table(scene, t, tr, c, body, y, &rows, &top_ids, false, true, None);
+            y += 12.0;
         }
 
-        y = self.section_label(scene, t, tr, c, body, y + 8.0, "Popular");
-        let rows = self.gather_tracks(&top_ids);
-        y = self.draw_track_table(scene, t, tr, c, body, y, &rows, &top_ids, false, true, None);
-        y += 12.0;
-        if !page.albums.is_empty() {
+        // Discography, sectioned by release type. Full albums first, then the
+        // shorter Singles & EPs — the way listeners expect a discography to read.
+        let to_disp = |al: &crate::backend::ArtistAlbum, name: &str| AlbumDisp {
+            id: al.id.clone(),
+            title: al.title.clone(),
+            artist: name.to_string(),
+            year: al.year,
+            queue: Vec::new(),
+        };
+        let albums: Vec<AlbumDisp> = page
+            .albums
+            .iter()
+            .filter(|al| al.kind == AlbumKind::Album)
+            .map(|al| to_disp(al, &page.name))
+            .collect();
+        let singles: Vec<AlbumDisp> = page
+            .albums
+            .iter()
+            .filter(|al| matches!(al.kind, AlbumKind::Single | AlbumKind::Ep | AlbumKind::Other))
+            .map(|al| to_disp(al, &page.name))
+            .collect();
+        if !albums.is_empty() {
             y = self.section_label(scene, t, tr, c, body, y, "Albums");
-            let albums: Vec<AlbumDisp> = page
-                .albums
+            y = self.draw_album_grid(scene, t, tr, c, body, y, &albums);
+            y += 12.0;
+        }
+        if !singles.is_empty() {
+            y = self.section_label(scene, t, tr, c, body, y, "Singles & EPs");
+            y = self.draw_album_grid(scene, t, tr, c, body, y, &singles);
+            y += 12.0;
+        }
+
+        // Related / similar artists.
+        if !page.similar.is_empty() {
+            y = self.section_label(scene, t, tr, c, body, y, "Fans also like");
+            let related: Vec<ArtistDisp> = page
+                .similar
                 .iter()
-                .map(|al| AlbumDisp {
-                    id: al.id.clone(),
-                    title: al.title.clone(),
-                    artist: page.name.clone(),
-                    year: al.year,
-                    queue: Vec::new(),
+                .map(|a| ArtistDisp {
+                    id: a.id.clone(),
+                    name: a.name.clone(),
+                    genre: if a.subscriber_count > 0 {
+                        format!("{} subscribers", human_count(a.subscriber_count))
+                    } else {
+                        "Artist".into()
+                    },
+                    listeners: a.subscriber_count,
                 })
                 .collect();
-            y = self.draw_album_grid(scene, t, tr, c, body, y, &albums);
+            y = self.draw_artist_grid(scene, t, tr, c, body, y, &related);
+            y += 12.0;
+        }
+
+        // About / bio.
+        if !page.description.is_empty() {
+            y = self.section_label(scene, t, tr, c, body, y, "About");
+            let maxw = (body.width() - 2.0 * pad).min(640.0);
+            // Word-wrap the bio into lines (the text renderer clips at max_w, so
+            // wrap manually to show the whole bio across several lines), capped at
+            // a readable number of lines.
+            let mut line = String::new();
+            let mut lines_drawn = 0;
+            for word in page.description.split_whitespace() {
+                if lines_drawn >= 8 {
+                    break;
+                }
+                let cand = if line.is_empty() { word.to_string() } else { format!("{line} {word}") };
+                if tr.measure_weighted(&cand, 13.0, None, TextWeight::Regular).0 as f64 > maxw && !line.is_empty() {
+                    draw_text(tr, scene, t, &line, body.x0 + pad, y, 13.0, c.dim, TextWeight::Regular, None);
+                    y += 20.0;
+                    lines_drawn += 1;
+                    line = word.to_string();
+                } else {
+                    line = cand;
+                }
+            }
+            if !line.is_empty() && lines_drawn < 8 {
+                draw_text(tr, scene, t, &line, body.x0 + pad, y, 13.0, c.dim, TextWeight::Regular, None);
+                y += 20.0;
+            }
+            if !page.wikipedia_url.is_empty() {
+                y += 4.0;
+                draw_text(tr, scene, t, "Read more on Wikipedia", body.x0 + pad, y, 12.0, c.accent, TextWeight::Semibold, None);
+                y += 22.0;
+            }
         }
         y
     }
 
     fn draw_playlist_detail(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, c: &Palette, body: Rect, y: f64, id: &str) -> f64 {
+        // A live (YouTube-Music) playlist opened from a search result: fetch +
+        // render its real track list. Falls back to a loading skeleton until it
+        // lands, then to the local path if it's actually one of the user's own.
+        if is_live_playlist_id(id) && self.lib.playlist(id).is_none() {
+            self.ensure_playlist(id);
+            if let Some(page) = self.playlist_pages.remove(id) {
+                let r = self.draw_playlist_detail_live(scene, t, tr, c, body, y, &page);
+                self.playlist_pages.insert(id.to_string(), page);
+                return r;
+            }
+            return self.draw_loading_detail(scene, t, tr, c, body, y, "PLAYLIST", id);
+        }
+
         let (name, desc, ids) = {
             let p = self.lib.playlist(id);
             let name = p.map(|p| p.name.clone()).unwrap_or_default();
@@ -1810,7 +1966,7 @@ impl MusicApp {
         };
         let total: u32 = self.gather_tracks(&ids).iter().map(|r| r.dur).sum();
         let subtitle = format!("{} · {} songs · {}", desc, ids.len(), fmt_duration(total as u64));
-        let mut y = self.draw_detail_header(scene, t, tr, c, body, y, id, "PLAYLIST", &name, &subtitle, ids.clone(), false, None);
+        let mut y = self.draw_detail_header(scene, t, tr, c, body, y, id, "PLAYLIST", &name, &subtitle, ids.clone(), false, None, None);
 
         // Playlist management row: an outlined pill per action.
         let pad = 28.0;
@@ -1848,6 +2004,26 @@ impl MusicApp {
         // Unified row look (equalizer + like + download + duration); the playlist
         // context adds reorder/remove affordances and binds the row menu.
         self.draw_track_table(scene, t, tr, c, body, y, &rows, &ids, false, true, Some(id))
+    }
+
+    /// A live (YouTube-Music) playlist rendered from a real [`PlaylistPage`]:
+    /// cover + owner header with Play / Shuffle, then the ordered track list.
+    fn draw_playlist_detail_live(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, c: &Palette, body: Rect, y: f64, page: &PlaylistPage) -> f64 {
+        let pad = 28.0;
+        let ids: Vec<String> = page.tracks.iter().map(|h| format!("yt:{}", h.video_id)).collect();
+        let y = self.draw_detail_header(scene, t, tr, c, body, y, &page.id, "PLAYLIST", &page.title, &page.subtitle, ids.clone(), false, None, None);
+        let mut y = y;
+        if !page.description.is_empty() {
+            let line = elide(tr, &page.description, 13.0, TextWeight::Regular, (body.width() - 2.0 * pad).min(640.0));
+            draw_text(tr, scene, t, &line, body.x0 + pad, y, 13.0, c.dim, TextWeight::Regular, None);
+            y += 24.0;
+        }
+        if ids.is_empty() {
+            draw_text(tr, scene, t, "This playlist has no playable tracks.", body.x0 + pad, y + 6.0, 13.0, c.dim, TextWeight::Regular, None);
+            return y + 40.0;
+        }
+        let rows = self.gather_tracks(&ids);
+        self.draw_track_table(scene, t, tr, c, body, y, &rows, &ids, true, true, None)
     }
 
     // ---- queue ------------------------------------------------------------
@@ -2206,23 +2382,15 @@ impl MusicApp {
             return y + rows as f64 * (tile_h + gap);
         }
 
-        // Real YouTube-Music hits for this exact query (ranked order), if the
-        // live worker has returned any. Rendered first, above the local index.
-        let live_ids: Vec<String> = self
-            .live_results
-            .as_ref()
-            .filter(|(lq, _)| lq.trim() == q.trim())
-            .map(|(_, ids)| ids.clone())
-            .unwrap_or_default();
         let searching = self.live_search_pending.as_deref() == Some(q.trim());
+        let results = self.gather_search_results(q.trim());
 
-        let res = self.local_search_cached(q.trim());
-        if res.is_empty() && live_ids.is_empty() {
+        if results.is_empty() {
             y += 24.0;
             let msg = if searching {
-                format!("Searching YouTube Music for \u{201c}{}\u{201d}\u{2026}", q)
+                format!("Searching YouTube Music for \u{201c}{}\u{201d}\u{2026}", q.trim())
             } else {
-                format!("No results for \u{201c}{}\u{201d}", q)
+                format!("No results for \u{201c}{}\u{201d}", q.trim())
             };
             draw_text(tr, scene, t, &msg, body.x0 + pad, y, 15.0, c.dim, TextWeight::Regular, None);
             let hint = if self.backend_live {
@@ -2238,46 +2406,390 @@ impl MusicApp {
             return y + 56.0;
         }
 
-        if !live_ids.is_empty() {
-            let label = if self.backend_live { "Songs \u{00b7} YouTube Music" } else { "Songs \u{00b7} streaming" };
-            y = self.section_label(scene, t, tr, c, body, y + 8.0, label);
-            let rows = self.gather_tracks(&live_ids);
-            y = self.draw_track_table(scene, t, tr, c, body, y, &rows, &live_ids, true, true, None);
-            y += 8.0;
-        } else if searching {
-            y += 8.0;
-            draw_text(tr, scene, t, "Searching YouTube Music\u{2026}", body.x0 + pad, y + 8.0, 13.0, c.dim, TextWeight::Regular, None);
-            y += 28.0;
+        // Spotify-style filter tabs.
+        y = self.draw_search_tabs(scene, t, tr, c, body, y + 6.0, &results);
+        y += 6.0;
+
+        match self.search_tab {
+            SearchTab::All => self.draw_search_all(scene, t, tr, c, body, y, &results, searching),
+            SearchTab::Songs => {
+                if results.songs.is_empty() {
+                    return self.draw_tab_empty(scene, t, tr, c, body, y, searching, "songs");
+                }
+                let rows = self.gather_tracks(&results.songs);
+                self.draw_track_table(scene, t, tr, c, body, y + 4.0, &rows, &results.songs, true, true, None)
+            }
+            SearchTab::Albums => {
+                if results.albums.is_empty() {
+                    return self.draw_tab_empty(scene, t, tr, c, body, y, searching, "albums");
+                }
+                self.draw_album_grid(scene, t, tr, c, body, y + 4.0, &results.albums)
+            }
+            SearchTab::Artists => {
+                if results.artists.is_empty() {
+                    return self.draw_tab_empty(scene, t, tr, c, body, y, searching, "artists");
+                }
+                self.draw_artist_grid(scene, t, tr, c, body, y + 4.0, &results.artists)
+            }
+            SearchTab::Playlists => {
+                if results.playlists.is_empty() {
+                    return self.draw_tab_empty(scene, t, tr, c, body, y, searching, "playlists");
+                }
+                self.draw_result_playlist_grid(scene, t, tr, c, body, y + 4.0, &results.playlists)
+            }
+        }
+    }
+
+    /// Build the unified search-result model for `q` from the live multi-type
+    /// bundle when it matches the query, else from the local sample library
+    /// (so offline / `--shots` still surface songs, albums, artists & playlists).
+    fn gather_search_results(&mut self, q: &str) -> SearchResultsView {
+        // Live bundle takes precedence when it's for this exact query.
+        if let Some((bq, bundle)) = &self.live_bundle {
+            if bq.trim() == q {
+                let songs: Vec<String> = bundle
+                    .tracks
+                    .iter()
+                    .map(|h| format!("yt:{}", h.video_id))
+                    .collect();
+                let albums: Vec<AlbumDisp> = bundle
+                    .albums
+                    .iter()
+                    .map(|a| AlbumDisp {
+                        id: a.id.clone(),
+                        title: a.title.clone(),
+                        artist: a.artist.clone(),
+                        year: a.year,
+                        queue: Vec::new(),
+                    })
+                    .collect();
+                let artists: Vec<ArtistDisp> = bundle
+                    .artists
+                    .iter()
+                    .map(|a| ArtistDisp {
+                        id: a.id.clone(),
+                        name: a.name.clone(),
+                        genre: if a.subscriber_count > 0 {
+                            format!("{} subscribers", human_count(a.subscriber_count))
+                        } else {
+                            "Artist".into()
+                        },
+                        listeners: a.subscriber_count,
+                    })
+                    .collect();
+                let playlists: Vec<ResultPlaylist> = bundle
+                    .playlists
+                    .iter()
+                    .map(|p| ResultPlaylist {
+                        id: p.id.clone(),
+                        title: p.title.clone(),
+                        subtitle: p.subtitle.clone(),
+                    })
+                    .collect();
+                let top = bundle.top.as_ref().map(|t| self.hero_of(t));
+                return SearchResultsView { songs, albums, artists, playlists, top, live: true };
+            }
         }
 
-        // Artists row.
-        if !res.artists.is_empty() {
-            y = self.section_label(scene, t, tr, c, body, y + 8.0, "Artists");
-            let artists: Vec<ArtistDisp> = res.artists.iter().filter_map(|id| self.lib.artist(id)).map(|a| ArtistDisp { id: a.id.clone(), name: a.name.clone(), genre: a.genre.clone(), listeners: a.monthly_listeners }).collect();
-            y = self.draw_artist_grid(scene, t, tr, c, body, y, &artists);
-            y += 8.0;
-        }
-        // Albums row.
-        if !res.albums.is_empty() {
-            y = self.section_label(scene, t, tr, c, body, y, "Albums");
-            let albums: Vec<AlbumDisp> = res.albums.iter().filter_map(|id| self.lib.album(id)).map(|a| AlbumDisp {
+        // Local fallback: the sample library search (tracks/albums/artists) plus
+        // any local playlists whose name matches.
+        let res = self.local_search_cached(q);
+        let songs = res.tracks.clone();
+        let albums: Vec<AlbumDisp> = res
+            .albums
+            .iter()
+            .filter_map(|id| self.lib.album(id))
+            .map(|a| AlbumDisp {
                 id: a.id.clone(),
                 title: a.title.clone(),
                 artist: self.lib.artist_name(&a.artist_id).to_string(),
                 year: a.year,
                 queue: self.lib.album_tracks(&a.id).iter().map(|tk| tk.id.clone()).collect(),
-            }).collect();
-            y = self.draw_album_grid(scene, t, tr, c, body, y, &albums);
+            })
+            .collect();
+        let artists: Vec<ArtistDisp> = res
+            .artists
+            .iter()
+            .filter_map(|id| self.lib.artist(id))
+            .map(|a| ArtistDisp {
+                id: a.id.clone(),
+                name: a.name.clone(),
+                genre: a.genre.clone(),
+                listeners: a.monthly_listeners,
+            })
+            .collect();
+        let needle = q.to_lowercase();
+        let playlists: Vec<ResultPlaylist> = self
+            .lib
+            .playlists
+            .iter()
+            .filter(|p| p.name.to_lowercase().contains(&needle))
+            .map(|p| ResultPlaylist {
+                id: p.id.clone(),
+                title: p.name.clone(),
+                subtitle: format!("{} songs", p.track_ids.len()),
+            })
+            .collect();
+        // Top result: the first artist, else first album, else first song.
+        let top = artists
+            .first()
+            .map(|a| SearchHero {
+                id: a.id.clone(),
+                title: a.name.clone(),
+                subtitle: a.genre.clone(),
+                kind_label: "Artist",
+                circular: true,
+                playable: false,
+                action: Action::Nav(View::Artist(a.id.clone())),
+            })
+            .or_else(|| {
+                albums.first().map(|a| SearchHero {
+                    id: a.id.clone(),
+                    title: a.title.clone(),
+                    subtitle: format!("Album \u{00b7} {}", a.artist),
+                    kind_label: "Album",
+                    circular: false,
+                    playable: false,
+                    action: Action::Nav(View::Album(a.id.clone())),
+                })
+            });
+        SearchResultsView { songs, albums, artists, playlists, top, live: false }
+    }
+
+    /// Turn a live [`SearchTop`] into a renderable hero.
+    fn hero_of(&self, top: &crate::backend::SearchTop) -> SearchHero {
+        use crate::backend::SearchTop;
+        match top {
+            SearchTop::Track(h) => {
+                let id = format!("yt:{}", h.video_id);
+                SearchHero {
+                    title: h.title.clone(),
+                    subtitle: format!("Song \u{00b7} {}", h.artist),
+                    kind_label: "Song",
+                    circular: false,
+                    playable: true,
+                    action: Action::Play { queue: vec![id.clone()], index: 0 },
+                    id,
+                }
+            }
+            SearchTop::Album(a) => SearchHero {
+                id: a.id.clone(),
+                title: a.title.clone(),
+                subtitle: format!("Album \u{00b7} {}", a.artist),
+                kind_label: "Album",
+                circular: false,
+                playable: false,
+                action: Action::Nav(View::Album(a.id.clone())),
+            },
+            SearchTop::Artist(a) => SearchHero {
+                id: a.id.clone(),
+                title: a.name.clone(),
+                subtitle: if a.subscriber_count > 0 {
+                    format!("Artist \u{00b7} {} subscribers", human_count(a.subscriber_count))
+                } else {
+                    "Artist".into()
+                },
+                kind_label: "Artist",
+                circular: true,
+                playable: false,
+                action: Action::Nav(View::Artist(a.id.clone())),
+            },
+            SearchTop::Playlist(p) => SearchHero {
+                id: p.id.clone(),
+                title: p.title.clone(),
+                subtitle: format!("Playlist \u{00b7} {}", p.subtitle),
+                kind_label: "Playlist",
+                circular: false,
+                playable: false,
+                action: Action::Nav(View::Playlist(p.id.clone())),
+            },
+        }
+    }
+
+    /// The row of filter tabs (All · Songs · Albums · Artists · Playlists). Only
+    /// tabs that have (or can fetch) results are shown; the active tab is filled.
+    fn draw_search_tabs(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, c: &Palette, body: Rect, y: f64, res: &SearchResultsView) -> f64 {
+        let pad = 28.0;
+        let mut x = body.x0 + pad;
+        let h = 32.0;
+        for tab in SearchTab::ALL {
+            // The type tabs only appear when the live backend can fetch that
+            // type on demand, or the mix already surfaced some of it.
+            let has = match tab {
+                SearchTab::All => true,
+                SearchTab::Songs => !res.songs.is_empty() || res.live,
+                SearchTab::Albums => !res.albums.is_empty() || res.live,
+                SearchTab::Artists => !res.artists.is_empty() || res.live,
+                SearchTab::Playlists => !res.playlists.is_empty() || res.live,
+            };
+            if !has {
+                continue;
+            }
+            let label = tab.label();
+            let (tw, _) = tr.measure_weighted(label, 13.0, None, TextWeight::Semibold);
+            let w = tw as f64 + 30.0;
+            let pill = Rect::new(x, y, x + w, y + h);
+            let active = self.search_tab == tab;
+            let hov = self.push_hit(pill, Action::SelectSearchTab(tab));
+            if active {
+                fill_rrect(scene, t, pill, h / 2.0, c.text);
+            } else if hov {
+                fill_rrect(scene, t, pill, h / 2.0, c.white10);
+            } else {
+                scene.stroke(&Stroke::new(1.0), t, c.border, None, &rrect(pill, h / 2.0));
+            }
+            let ink = if active { c.bg } else { c.text };
+            draw_text(tr, scene, t, label, x + 15.0, vy(y, h, 13.0), 13.0, ink, TextWeight::Semibold, None);
+            x += w + 10.0;
+        }
+        y + h + 12.0
+    }
+
+    /// The curated `All` mix: a top-result hero beside the top songs, then a
+    /// horizontal-ish grid each of albums, artists and playlists.
+    fn draw_search_all(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, c: &Palette, body: Rect, mut y: f64, res: &SearchResultsView, searching: bool) -> f64 {
+        let pad = 28.0;
+
+        // Top result hero + top songs, side by side on wide bodies.
+        let wide = body.width() >= 720.0;
+        let top_songs: Vec<String> = res.songs.iter().take(4).cloned().collect();
+        if let Some(hero) = &res.top {
+            y = self.section_label(scene, t, tr, c, body, y, "Top result");
+            let hero_w = if wide { (body.width() - 2.0 * pad) * 0.42 } else { body.width() - 2.0 * pad };
+            let hero_h = 172.0;
+            let hx = body.x0 + pad;
+            let hero_rect = Rect::new(hx, y, hx + hero_w, y + hero_h);
+            self.draw_search_hero(scene, t, tr, c, hero_rect, hero);
+
+            if wide && !top_songs.is_empty() {
+                // Songs list to the right of the hero.
+                let sx = hero_rect.x1 + 24.0;
+                let song_body = Rect::new(sx - pad, body.y0, body.x1, body.y1);
+                let mut sy = y - 2.0;
+                draw_text(tr, scene, t, "Songs", sx, sy, 15.0, c.text, TextWeight::Bold, None);
+                sy += 28.0;
+                let rows = self.gather_tracks(&top_songs);
+                let songs_bottom = self.draw_track_rows_with_offset(scene, t, tr, c, song_body, sy, &rows, &top_songs, 0);
+                // Clear the taller of the two columns so neither overlaps the
+                // sections below.
+                y = songs_bottom.max(y + hero_h) + 20.0;
+            } else {
+                y += hero_h + 20.0;
+                if !top_songs.is_empty() {
+                    y = self.section_label(scene, t, tr, c, body, y, "Songs");
+                    let rows = self.gather_tracks(&top_songs);
+                    y = self.draw_track_table(scene, t, tr, c, body, y, &rows, &top_songs, true, true, None);
+                    y += 8.0;
+                }
+            }
+        } else if !top_songs.is_empty() {
+            y = self.section_label(scene, t, tr, c, body, y, "Songs");
+            let rows = self.gather_tracks(&top_songs);
+            y = self.draw_track_table(scene, t, tr, c, body, y, &rows, &top_songs, true, true, None);
+            y += 8.0;
+        } else if searching {
+            draw_text(tr, scene, t, "Searching YouTube Music\u{2026}", body.x0 + pad, y + 4.0, 13.0, c.dim, TextWeight::Regular, None);
+            y += 28.0;
+        }
+
+        // Albums.
+        if !res.albums.is_empty() {
+            y = self.section_label(scene, t, tr, c, body, y + 4.0, "Albums");
+            let take: Vec<AlbumDisp> = res.albums.iter().take(6).cloned().collect();
+            y = self.draw_album_grid(scene, t, tr, c, body, y, &take);
             y += 8.0;
         }
-        // Songs.
-        if !res.tracks.is_empty() {
-            y = self.section_label(scene, t, tr, c, body, y, "Songs");
-            let ids = res.tracks.clone();
-            let rows = self.gather_tracks(&ids);
-            y = self.draw_track_table(scene, t, tr, c, body, y, &rows, &ids, true, true, None);
+        // Artists.
+        if !res.artists.is_empty() {
+            y = self.section_label(scene, t, tr, c, body, y + 4.0, "Artists");
+            let take: Vec<ArtistDisp> = res.artists.iter().take(6).cloned().collect();
+            y = self.draw_artist_grid(scene, t, tr, c, body, y, &take);
+            y += 8.0;
+        }
+        // Playlists.
+        if !res.playlists.is_empty() {
+            y = self.section_label(scene, t, tr, c, body, y + 4.0, "Playlists");
+            let take: Vec<ResultPlaylist> = res.playlists.iter().take(6).cloned().collect();
+            y = self.draw_result_playlist_grid(scene, t, tr, c, body, y, &take);
         }
         y
+    }
+
+    /// A placeholder line for a per-type tab whose results haven't landed yet.
+    fn draw_tab_empty(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, c: &Palette, body: Rect, y: f64, searching: bool, kind: &str) -> f64 {
+        let pad = 28.0;
+        let msg = if searching || self.backend_live {
+            format!("Finding {kind}\u{2026}")
+        } else {
+            format!("No {kind} for this search")
+        };
+        draw_text(tr, scene, t, &msg, body.x0 + pad, y + 12.0, 14.0, c.dim, TextWeight::Regular, None);
+        y + 44.0
+    }
+
+    /// The large "top result" card. Clicking it plays (a song) or opens the
+    /// entity's page (album / artist / playlist).
+    fn draw_search_hero(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, c: &Palette, rect: Rect, hero: &SearchHero) {
+        let hov = self.push_hit(rect, hero.action.clone());
+        fill_rrect(scene, t, rect, 14.0, if hov { c.card_hover } else { c.card });
+        let art_d = rect.height() - 56.0;
+        let ax = rect.x0 + 20.0;
+        let ay = rect.y0 + 20.0;
+        if hero.circular {
+            let ctr = Point::new(ax + art_d / 2.0, ay + art_d / 2.0);
+            self.draw_avatar(scene, t, ctr, art_d / 2.0, &hero.id, &hero.title, tr, c);
+        } else {
+            self.draw_cover(scene, t, Rect::new(ax, ay, ax + art_d, ay + art_d), &hero.id, &hero.title, tr, 10.0);
+        }
+        let tx = ax + art_d + 18.0;
+        let maxw = (rect.x1 - tx - 20.0).max(40.0);
+        let title = elide(tr, &hero.title, 26.0, TextWeight::Bold, maxw);
+        draw_text(tr, scene, t, &title, tx, ay + 6.0, 26.0, c.text, TextWeight::Bold, None);
+        let sub = elide(tr, &hero.subtitle, 13.0, TextWeight::Regular, maxw);
+        draw_text(tr, scene, t, &sub, tx, ay + 44.0, 13.0, c.dim, TextWeight::Regular, None);
+
+        // Kind pill bottom-left; a Play FAB bottom-right for a song hero.
+        let pill_y = rect.y1 - 30.0;
+        let (pw, _) = tr.measure_weighted(hero.kind_label, 12.0, None, TextWeight::Semibold);
+        let pill = Rect::new(rect.x0 + 20.0, pill_y - 4.0, rect.x0 + 20.0 + pw as f64 + 24.0, pill_y + 20.0);
+        fill_rrect(scene, t, pill, 12.0, c.white10);
+        draw_text(tr, scene, t, hero.kind_label, pill.x0 + 12.0, vy(pill.y0, 24.0, 12.0), 12.0, c.text, TextWeight::Semibold, None);
+        if hero.playable {
+            let fab = Circle::new(Point::new(rect.x1 - 30.0, rect.y1 - 30.0), 20.0);
+            scene.fill(Fill::NonZero, t, c.accent, None, &fab);
+            icon::draw(scene, t, Icon::Play, Point::new(fab.center.x + 1.0, fab.center.y), 16.0, c.bg);
+        }
+    }
+
+    /// Grid of search-result playlists (cover + title + owner subtitle), each
+    /// navigating to its (live) playlist page. No create affordance.
+    fn draw_result_playlist_grid(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, c: &Palette, body: Rect, y: f64, pls: &[ResultPlaylist]) -> f64 {
+        let pad = 28.0;
+        let gap = 22.0;
+        let target = 176.0;
+        let avail = body.width() - 2.0 * pad;
+        let cols = ((avail + gap) / (target + gap)).floor().max(1.0) as usize;
+        let card_w = (avail - gap * (cols as f64 - 1.0)) / cols as f64;
+        let card_h = card_w + 56.0;
+
+        for (i, p) in pls.iter().enumerate() {
+            let cx = body.x0 + pad + (i % cols) as f64 * (card_w + gap);
+            let cy = y + (i / cols) as f64 * (card_h + gap);
+            let card = Rect::new(cx, cy, cx + card_w, cy + card_h);
+            let hover = self.push_hit(card, Action::Nav(View::Playlist(p.id.clone())));
+            if hover {
+                fill_rrect(scene, t, card.inflate(8.0, 8.0), 14.0, c.card_hover);
+            }
+            let art_rect = Rect::new(cx, cy, cx + card_w, cy + card_w);
+            self.draw_cover(scene, t, art_rect, &p.id, &p.title, tr, 12.0);
+            icon::draw(scene, t, Icon::Playlist, Point::new(art_rect.x0 + 26.0, art_rect.y0 + 26.0), 22.0, c.text.multiply_alpha(0.85));
+            let title = elide(tr, &p.title, 14.0, TextWeight::Semibold, card_w);
+            draw_text(tr, scene, t, &title, cx, cy + card_w + 8.0, 14.0, c.text, TextWeight::Semibold, None);
+            let sub = elide(tr, &p.subtitle, 12.0, TextWeight::Regular, card_w);
+            draw_text(tr, scene, t, &sub, cx, cy + card_w + 28.0, 12.0, c.dim, TextWeight::Regular, None);
+        }
+        let rows = pls.len().div_ceil(cols).max(1);
+        y + rows as f64 * (card_h + gap)
     }
 
     // ---- now playing bar --------------------------------------------------
