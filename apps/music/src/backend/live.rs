@@ -22,14 +22,17 @@
 #![cfg(feature = "live")]
 
 use rustypipe::client::RustyPipe;
+use rustypipe::model::richtext::ToPlaintext;
 use rustypipe::model::{
-    AlbumItem, ArtistId, ArtistItem, AudioCodec, AudioFormat, AudioStream, Thumbnail, TrackItem,
+    AlbumItem, AlbumType, ArtistId, ArtistItem, AudioCodec, AudioFormat, AudioStream, MusicItem,
+    MusicPlaylistItem, Thumbnail, TrackItem,
 };
 
 use crate::backend::potoken::{NullPoToken, PoTokenProvider};
 use crate::backend::{
-    AlbumPage, ArtistAlbum, ArtistPage, BackendError, HomeContent, HomeItem, HomeItemKind,
-    HomeSection, MusicBackend, ResolveOutcome, ResolvedStream, SearchOutcome, TrackHit,
+    AlbumHit, AlbumKind, AlbumPage, ArtistAlbum, ArtistHit, ArtistPage, BackendError, HomeContent,
+    HomeItem, HomeItemKind, HomeSection, MusicBackend, PlaylistHit, PlaylistPage, ResolveOutcome,
+    ResolvedStream, SearchBundle, SearchKind, SearchOutcome, SearchTop, TrackHit,
 };
 
 /// The live rustypipe-backed data source.
@@ -116,6 +119,57 @@ fn map_track_item(it: TrackItem) -> TrackHit {
         album_id,
         duration_s: it.duration.unwrap_or(0),
         cover_url,
+    }
+}
+
+/// Map a rustypipe [`AlbumType`] onto the UI's coarse [`AlbumKind`] so a
+/// discography can be sectioned (Albums vs. Singles & EPs).
+fn map_album_kind(t: AlbumType) -> AlbumKind {
+    match t {
+        AlbumType::Album => AlbumKind::Album,
+        AlbumType::Single => AlbumKind::Single,
+        AlbumType::Ep => AlbumKind::Ep,
+        _ => AlbumKind::Other,
+    }
+}
+
+/// Map a rustypipe [`AlbumItem`] (a search / discography row) onto [`AlbumHit`].
+fn map_album_hit(a: AlbumItem) -> AlbumHit {
+    let artist = artists_name(&a.artists, a.by_va);
+    AlbumHit {
+        id: a.id,
+        title: a.name,
+        artist,
+        artist_id: a.artist_id,
+        year: a.year.unwrap_or(0) as u32,
+        kind: map_album_kind(a.album_type),
+        cover_url: cover_url(&a.cover, 300),
+    }
+}
+
+/// Map a rustypipe [`ArtistItem`] onto [`ArtistHit`].
+fn map_artist_hit(a: ArtistItem) -> ArtistHit {
+    ArtistHit {
+        id: a.id,
+        name: a.name,
+        subscriber_count: a.subscriber_count.unwrap_or(0),
+        avatar_url: cover_url(&a.avatar, 240),
+    }
+}
+
+/// Map a rustypipe [`MusicPlaylistItem`] onto [`PlaylistHit`].
+fn map_playlist_hit(p: MusicPlaylistItem) -> PlaylistHit {
+    let subtitle = match (&p.channel, p.from_ytm) {
+        (Some(ch), _) => ch.name.clone(),
+        (None, true) => "YouTube Music".to_string(),
+        (None, false) => "Playlist".to_string(),
+    };
+    PlaylistHit {
+        id: p.id,
+        title: p.name,
+        subtitle,
+        track_count: p.track_count.unwrap_or(0),
+        cover_url: cover_url(&p.thumbnail, 300),
     }
 }
 
@@ -292,6 +346,85 @@ impl MusicBackend for RustyPipeBackend {
         Ok(res.items.items.into_iter().map(map_track_item).collect())
     }
 
+    fn search_all(&self, query: &str) -> Result<SearchBundle, BackendError> {
+        let q = self.rp.query();
+        let res = self
+            .block(async { q.music_search_main(query).await })
+            .map_err(|e| BackendError(format!("music search: {e}")))?;
+
+        let mut bundle = SearchBundle::default();
+        // YouTube Music returns the top-result card first, so the first item is
+        // the hero. Bucket the rest by type, preserving ranking order.
+        for (i, item) in res.items.items.into_iter().enumerate() {
+            match item {
+                MusicItem::Track(t) => {
+                    let hit = map_track_item(t);
+                    if i == 0 && bundle.top.is_none() {
+                        bundle.top = Some(SearchTop::Track(hit.clone()));
+                    }
+                    bundle.tracks.push(hit);
+                }
+                MusicItem::Album(a) => {
+                    let hit = map_album_hit(a);
+                    if i == 0 && bundle.top.is_none() {
+                        bundle.top = Some(SearchTop::Album(hit.clone()));
+                    }
+                    bundle.albums.push(hit);
+                }
+                MusicItem::Artist(a) => {
+                    let hit = map_artist_hit(a);
+                    if i == 0 && bundle.top.is_none() {
+                        bundle.top = Some(SearchTop::Artist(hit.clone()));
+                    }
+                    bundle.artists.push(hit);
+                }
+                MusicItem::Playlist(p) => {
+                    let hit = map_playlist_hit(p);
+                    if i == 0 && bundle.top.is_none() {
+                        bundle.top = Some(SearchTop::Playlist(hit.clone()));
+                    }
+                    bundle.playlists.push(hit);
+                }
+                MusicItem::User(_) => {}
+            }
+        }
+        Ok(bundle)
+    }
+
+    fn search_more(&self, query: &str, kind: SearchKind) -> Result<SearchBundle, BackendError> {
+        let q = self.rp.query();
+        let mut bundle = SearchBundle::default();
+        match kind {
+            SearchKind::Songs => {
+                let res = self
+                    .block(async { q.music_search_tracks(query).await })
+                    .map_err(|e| BackendError(format!("song search: {e}")))?;
+                bundle.tracks = res.items.items.into_iter().map(map_track_item).collect();
+            }
+            SearchKind::Albums => {
+                let res = self
+                    .block(async { q.music_search_albums(query).await })
+                    .map_err(|e| BackendError(format!("album search: {e}")))?;
+                bundle.albums = res.items.items.into_iter().map(map_album_hit).collect();
+            }
+            SearchKind::Artists => {
+                let res = self
+                    .block(async { q.music_search_artists(query).await })
+                    .map_err(|e| BackendError(format!("artist search: {e}")))?;
+                bundle.artists = res.items.items.into_iter().map(map_artist_hit).collect();
+            }
+            SearchKind::Playlists => {
+                // Community playlists give the richest, most Spotify-like set of
+                // human-made playlists for a query.
+                let res = self
+                    .block(async { q.music_search_playlists(query, true).await })
+                    .map_err(|e| BackendError(format!("playlist search: {e}")))?;
+                bundle.playlists = res.items.items.into_iter().map(map_playlist_hit).collect();
+            }
+        }
+        Ok(bundle)
+    }
+
     fn resolve_audio(&self, video_id: &str) -> ResolveOutcome {
         // Reliable base: rustypipe's direct iOS/TV googlevideo URL. It always
         // renders, but is PoToken/SABR-gated — it only serves the first ~1-minute
@@ -397,18 +530,22 @@ impl MusicBackend for RustyPipeBackend {
             .map(|al| ArtistAlbum {
                 title: al.name,
                 year: al.year.unwrap_or(0) as u32,
+                kind: map_album_kind(al.album_type),
                 cover_url: cover_url(&al.cover, 300),
                 id: al.id,
             })
             .collect();
+        let similar = a.similar_artists.into_iter().map(map_artist_hit).collect();
         Ok(ArtistPage {
             id: a.id,
             name: a.name,
             subscriber_count: a.subscriber_count.unwrap_or(0),
             description: a.description.unwrap_or_default(),
+            wikipedia_url: a.wikipedia_url.unwrap_or_default(),
             header_url: cover_url(&a.header_image, 600),
             tracks,
             albums,
+            similar,
         })
     }
 
@@ -426,6 +563,31 @@ impl MusicBackend for RustyPipeBackend {
             artist_id: al.artist_id.unwrap_or_default(),
             artist_name,
             year: al.year.unwrap_or(0) as u32,
+            cover_url: cover,
+            tracks,
+        })
+    }
+
+    fn playlist(&self, playlist_id: &str) -> Result<PlaylistPage, BackendError> {
+        let q = self.rp.query();
+        let pl = self
+            .block(async { q.music_playlist(playlist_id).await })
+            .map_err(|e| BackendError(format!("music playlist: {e}")))?;
+        let owner = pl
+            .channel
+            .as_ref()
+            .map(|c| c.name.clone())
+            .unwrap_or_else(|| if pl.from_ytm { "YouTube Music".into() } else { "Playlist".into() });
+        let count = pl.track_count.unwrap_or(pl.tracks.items.len() as u64);
+        let subtitle = format!("{owner} \u{00b7} {count} songs");
+        let description = pl.description.as_ref().map(|d| d.to_plaintext()).unwrap_or_default();
+        let cover = cover_url(&pl.thumbnail, 400);
+        let tracks = pl.tracks.items.into_iter().map(map_track_item).collect();
+        Ok(PlaylistPage {
+            id: pl.id,
+            title: pl.name,
+            subtitle,
+            description,
             cover_url: cover,
             tracks,
         })

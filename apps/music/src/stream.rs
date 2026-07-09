@@ -16,14 +16,18 @@
 use std::sync::mpsc::{Receiver, Sender};
 
 use crate::backend::{
-    preferred_backend, AlbumPage, ArtistPage, HomeContent, ResolvedStream, TrackHit,
+    preferred_backend, AlbumPage, ArtistPage, HomeContent, PlaylistPage, ResolvedStream,
+    SearchBundle, SearchKind,
 };
 
 /// A unit of work for the background thread.
 #[derive(Clone, Debug)]
 pub enum StreamRequest {
-    /// Run a real YouTube-Music track search.
+    /// Run a real multi-type YouTube-Music search (songs, albums, artists,
+    /// playlists + a top result) in one call.
     Search(String),
+    /// A deep per-type "see all" search for the given filter tab.
+    SearchMore { query: String, kind: SearchKind },
     /// Resolve a directly-playable audio URL for `video_id`. `track_id` is the
     /// app's library id, echoed back so the result can be correlated with the
     /// track that is (still) current when it lands.
@@ -34,6 +38,8 @@ pub enum StreamRequest {
     Artist(String),
     /// Fetch a real album's track list by YouTube album id.
     Album(String),
+    /// Fetch a real playlist's track list by YouTube playlist id.
+    Playlist(String),
 }
 
 /// A result folded back into the app on the UI thread.
@@ -41,8 +47,10 @@ pub enum StreamRequest {
 pub enum StreamUpdate {
     /// One-time announcement of which backend the worker bound to.
     Backend { name: String, live: bool },
-    /// Real search hits for a query.
-    SearchResults { query: String, hits: Vec<TrackHit> },
+    /// Real multi-type search results for a query (the mixed "All" bundle).
+    SearchResults { query: String, bundle: Box<SearchBundle> },
+    /// A deep per-type "see all" result for a filter tab.
+    SearchMore { query: String, kind: SearchKind, bundle: Box<SearchBundle> },
     /// A track's audio stream resolved to a playable URL.
     Resolved { track_id: String, stream: Box<ResolvedStream> },
     /// A resolve attempt failed (offline, geo-blocked, PoToken-gated, …).
@@ -53,6 +61,8 @@ pub enum StreamUpdate {
     Artist { page: Box<ArtistPage> },
     /// A real album page landed.
     Album { page: Box<AlbumPage> },
+    /// A real playlist page landed.
+    Playlist { page: Box<PlaylistPage> },
     /// A non-fatal note for the status log / a toast.
     Note(String),
 }
@@ -86,15 +96,31 @@ impl StreamWorker {
 
                 while let Ok(req) = req_rx.recv() {
                     match req {
-                        StreamRequest::Search(query) => match backend.search_tracks(&query) {
-                            Ok(hits) => {
-                                let _ = up_tx
-                                    .send(StreamUpdate::SearchResults { query, hits });
+                        StreamRequest::Search(query) => match backend.search_all(&query) {
+                            Ok(bundle) => {
+                                let _ = up_tx.send(StreamUpdate::SearchResults {
+                                    query,
+                                    bundle: Box::new(bundle),
+                                });
                             }
                             Err(e) => {
                                 let _ = up_tx.send(StreamUpdate::Note(format!("search: {e}")));
                             }
                         },
+                        StreamRequest::SearchMore { query, kind } => {
+                            match backend.search_more(&query, kind) {
+                                Ok(bundle) => {
+                                    let _ = up_tx.send(StreamUpdate::SearchMore {
+                                        query,
+                                        kind,
+                                        bundle: Box::new(bundle),
+                                    });
+                                }
+                                Err(e) => {
+                                    let _ = up_tx.send(StreamUpdate::Note(format!("search: {e}")));
+                                }
+                            }
+                        }
                         StreamRequest::Resolve { track_id, video_id } => {
                             match backend.resolve_audio(&video_id) {
                                 Ok(stream) => {
@@ -134,6 +160,14 @@ impl StreamWorker {
                             }
                             Err(e) => {
                                 let _ = up_tx.send(StreamUpdate::Note(format!("album: {e}")));
+                            }
+                        },
+                        StreamRequest::Playlist(id) => match backend.playlist(&id) {
+                            Ok(page) => {
+                                let _ = up_tx.send(StreamUpdate::Playlist { page: Box::new(page) });
+                            }
+                            Err(e) => {
+                                let _ = up_tx.send(StreamUpdate::Note(format!("playlist: {e}")));
                             }
                         },
                     }
