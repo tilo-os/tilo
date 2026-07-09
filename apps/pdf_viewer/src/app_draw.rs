@@ -11,6 +11,23 @@ struct CommentMetrics {
     compose_h: f64,
 }
 
+/// Non-overlapping layout of a comment/note card's header row. The author name
+/// gets a bounded width so a long name (or an email address) truncates instead
+/// of running under the Resolve chip and the × button. Pure geometry so both
+/// the draw pass and a test can assert the pieces never collide.
+struct CommentHeader {
+    avatar_c: Point,
+    name_x: f64,
+    /// Baseline (top) y for the author name.
+    name_y: f64,
+    /// Max text width for the author name before the resolve chip.
+    name_max: f32,
+    chip: Rect,
+    del: Rect,
+    /// Top y where the card body should begin, clear of the header row.
+    body_top: f64,
+}
+
 struct ToolbarLayout {
     open: Rect,
     save: Rect,
@@ -75,8 +92,6 @@ impl PdfApp {
         };
         let toggle_sidebar = place(bw, &mut rx);
         rx -= gap;
-        let toggle_rail = place(bw, &mut rx);
-        rx -= gap;
         let search = place(bw, &mut rx);
         rx -= 14.0;
         let fitw = if compact { bw } else { 40.0 };
@@ -87,9 +102,11 @@ impl PdfApp {
         let zoom_out = place(28.0, &mut rx);
         let right_start = zoom_out.x0;
 
-        // ---- left cluster: wordmark reserve + Open + Save buttons ----
-        let left_w = if self.tb_show_wordmark() { 150.0 } else { 26.0 };
-        let open = row(tb.x0 + 16.0 + left_w + 8.0, bw);
+        // ---- left cluster: page-rail toggle (LEFT-MOST) + wordmark + Open + Save ----
+        let toggle_rail = row(tb.x0 + 12.0, bw);
+        let wordmark_x = toggle_rail.x1 + 10.0;
+        let left_w = if self.tb_show_wordmark() { 150.0 } else { 20.0 };
+        let open = row(wordmark_x + left_w + 8.0, bw);
         let save = row(open.x1 + gap, bw);
         let left_end = save.x1;
 
@@ -235,30 +252,6 @@ impl PdfApp {
         ]
     }
 
-    fn thumbnail_rects(&self) -> Vec<(usize, Rect)> {
-        let rail = self.rail_rect;
-        let n = self.doc.page_count();
-        if n == 0 {
-            return vec![];
-        }
-        let pad = 12.0;
-        let label_h = 14.0;
-        let gap = 10.0;
-        let avail = rail.height() - 2.0 * pad;
-        let slot = (avail - (n as f64 - 1.0) * gap) / n as f64;
-        let thumb_h = (slot - label_h).clamp(44.0, 124.0);
-        let thumb_w = thumb_h * self.pw() / self.ph();
-        let cx = (rail.x0 + rail.x1) / 2.0;
-        let mut y = rail.y0 + pad;
-        let mut out = Vec::new();
-        for i in 0..n {
-            let r = Rect::new(cx - thumb_w / 2.0, y, cx + thumb_w / 2.0, y + thumb_h);
-            out.push((i + 1, r));
-            y += thumb_h + label_h + gap;
-        }
-        out
-    }
-
     fn pages_with_markup(&self) -> HashSet<usize> {
         let mut set = HashSet::new();
         for a in &self.annotations {
@@ -297,6 +290,26 @@ impl PdfApp {
 
         // Resolve sidebar scroll + any reveal request before painting it.
         self.prepare_sidebar_scroll(tr);
+
+        // Resolve the page rail's geometry for this frame before rasterising, so
+        // the thumbnail slots (which pages, at what width) are known.
+        if self.show_rail {
+            self.page_sidebar.set_aspect(self.ph() / self.pw());
+            let cur = self.current_page.saturating_sub(1);
+            self.page_sidebar.begin_frame(self.rail_rect, self.doc.page_count(), cur);
+            // Screenshot hook: stage a live reorder drag so a still frame shows
+            // the floating ghost + the reflow gap. Never armed at runtime.
+            if self.shots_rail_drag {
+                let rects = self.page_sidebar.thumb_rects();
+                if rects.len() >= 3 {
+                    let from = rects[0].1.center();
+                    let to = rects[2].1.center();
+                    self.page_sidebar.on_press(from);
+                    self.page_sidebar.on_motion(to);
+                    let _ = self.page_sidebar.take_events();
+                }
+            }
+        }
 
         // Rasterise the pages + thumbnails on screen once, up front.
         let (page_imgs, thumb_imgs) = self.rasterize_visible();
@@ -367,12 +380,13 @@ impl PdfApp {
         let mut want_thumbs: Vec<(usize, u32)> = Vec::new();
         if self.show_rail {
             let rail = self.rail_rect;
-            for (num, r) in self.thumbnail_rects() {
+            // 0-based display indices + widths, from the shared rail's geometry.
+            for (i, r) in self.page_sidebar.thumb_rects() {
                 if r.y0 > rail.y1 || r.y1 < rail.y0 {
                     continue;
                 }
                 let tw = ((r.width() * 2.0).round() as u32).clamp(96, 600);
-                want_thumbs.push((num - 1, tw));
+                want_thumbs.push((i, tw));
             }
         }
 
@@ -688,7 +702,6 @@ impl PdfApp {
     /// an accent band. All rectangles come from the real pdfium glyph boxes, so
     /// they sit exactly over the printed characters.
     fn draw_text_overlays(&self, scene: &mut Scene, base: Affine, theme: &Theme, page_num: usize, origin: Point) {
-        let Some(layer) = self.raster_text.get(&page_num) else { return };
         let z = self.zoom();
         let to_screen = |r: &PtRect| {
             Rect::new(
@@ -698,6 +711,24 @@ impl PdfApp {
                 origin.y + (r.y + r.h) * z,
             )
         };
+
+        // Image-region marquee (Shift + Select): a translucent accent rectangle
+        // with a dashed border, drawn even when the page has no text layer.
+        if let Some(region) = self.region {
+            if region.page == page_num {
+                let sr = to_screen(&region.rect());
+                scene.fill(Fill::NonZero, base, render::alpha(theme.accent_primary, 40), None, &sr);
+                scene.stroke(
+                    &Stroke::new(1.5).with_dashes(0.0, [5.0, 4.0]),
+                    base,
+                    theme.accent_primary,
+                    None,
+                    &sr,
+                );
+            }
+        }
+
+        let Some(layer) = self.raster_text.get(&page_num) else { return };
 
         // Search hits.
         let hit_col = theme.tokens.colors.semantic.warning;
@@ -763,7 +794,7 @@ impl PdfApp {
     // ---- thumbnail rail --------------------------------------------
 
     fn draw_rail(
-        &self,
+        &mut self,
         scene: &mut Scene,
         base: Affine,
         tr: &mut TextRenderer,
@@ -774,51 +805,45 @@ impl PdfApp {
             return;
         }
         let rail = self.rail_rect;
-        let c = &theme.tokens.colors;
-        scene.fill(Fill::NonZero, base, c.surfaces.raised, None, &rail);
-        // Right divider doubles as the resize grip; brighten it while the
+        let markup = self.pages_with_markup();
+        let pw = self.pw();
+
+        // The shared page rail draws the panel, thumbnails, selection ring,
+        // index numbers, drag reflow + ghost, scrollbar, context menu and the
+        // "Import…" affordance. It renders the host's page content through this
+        // closure — a real pdfium bitmap when the raster backend has one,
+        // otherwise the abstract block sketch. Move the rail out of `self` so
+        // the closure can borrow the (immutable) document alongside it.
+        let mut sb = std::mem::replace(&mut self.page_sidebar, PageSidebar::new(1.0));
+        let doc = &self.doc;
+        sb.render(scene, base, tr, theme, |scene, _tr, base, i, rect| {
+            let num = i + 1;
+            if let Some(page) = doc.page(num) {
+                render::draw_thumbnail(
+                    scene,
+                    theme,
+                    base,
+                    page,
+                    rect,
+                    pw,
+                    thumb_imgs.get(&num),
+                    false,
+                    markup.contains(&num),
+                );
+            }
+        });
+        self.page_sidebar = sb;
+
+        // The right divider doubles as a resize grip; brighten it while the
         // pointer is over the grip strip or actively dragging it.
         let grip_hot = self.rail_drag.is_some()
             || (self.last_mouse.x >= rail.x1 - RAIL_GRIP
                 && self.last_mouse.x <= rail.x1 + RAIL_GRIP
                 && self.last_mouse.y >= rail.y0
                 && self.last_mouse.y <= rail.y1);
-        let div_col = if grip_hot { theme.accent_primary } else { c.border_standard };
-        let div_w = if grip_hot { 2.0 } else { 1.0 };
-        let div = Rect::new(rail.x1 - div_w, rail.y0, rail.x1, rail.y1);
-        scene.fill(Fill::NonZero, base, div_col, None, &div);
-
-        let markup = self.pages_with_markup();
-        for (num, r) in self.thumbnail_rects() {
-            if r.y0 > rail.y1 || r.y1 < rail.y0 {
-                continue;
-            }
-            if let Some(page) = self.doc.page(num) {
-                render::draw_thumbnail(
-                    scene,
-                    theme,
-                    base,
-                    page,
-                    r,
-                    self.pw(),
-                    thumb_imgs.get(&num),
-                    num == self.current_page,
-                    markup.contains(&num),
-                );
-            }
-            let label = format!("{}", num);
-            let (lw, _) = tr.measure(&label, 10.0, None);
-            let lx = (r.x0 + r.x1) / 2.0 - lw as f64 / 2.0;
-            let col = if num == self.current_page { theme.text_primary } else { theme.text_dim };
-            tr.draw_text_weighted(
-                scene,
-                &label,
-                10.0,
-                col,
-                base * Affine::translate((lx, r.y1 + 2.0)),
-                None,
-                if num == self.current_page { TextWeight::Semibold } else { TextWeight::Regular },
-            );
+        if grip_hot {
+            let div = Rect::new(rail.x1 - 2.0, rail.y0, rail.x1, rail.y1);
+            scene.fill(Fill::NonZero, base, theme.accent_primary, None, &div);
         }
     }
 
@@ -832,8 +857,9 @@ impl PdfApp {
         scene.fill(Fill::NonZero, base, c.border_standard, None, &hair);
 
         // Wordmark: the document name + page count. (No decorative glyph — it
-        // read as a redundant, meaningless icon next to the filename.)
-        let gx = tb.x0 + 16.0;
+        // read as a redundant, meaningless icon next to the filename.) It starts
+        // just right of the left-most page-rail toggle button.
+        let gx = tb.x0 + 12.0 + 34.0 + 10.0;
         if self.tb_show_wordmark() {
             let max = 148.0;
             let name = if self.doc_name.is_empty() { "PDF".to_string() } else { self.doc_name.clone() };
@@ -876,6 +902,13 @@ impl PdfApp {
         self.icon_button_bg(scene, base, theme, lay.save, false, can_save && lay.save.contains(self.last_mouse));
         let save_col = if can_save { theme.text_primary } else { theme.text_dim };
         draw_save_glyph(scene, base, icon_inset(lay.save), save_col);
+        // Unsaved page edits (reorder / delete / duplicate / import) surface as
+        // an accent dot on the Save button.
+        if self.pages_dirty && can_save {
+            let d = 3.5;
+            let dot = Circle::new((lay.save.x1 - 6.0, lay.save.y0 + 6.0), d);
+            scene.fill(Fill::NonZero, base, theme.accent_primary, None, &dot);
+        }
 
         for (t, r) in &lay.tools {
             let active = *t == self.tool;
@@ -1106,13 +1139,38 @@ impl PdfApp {
     /// Measured heights for one comment card. Computed once and shared by the
     /// scroll layout and the draw pass so the two never disagree about how tall
     /// a card is (which would misplace every card below it).
+    /// Lay out a comment/note card header so the avatar, author name, resolve
+    /// chip and delete button never overlap regardless of name length. The name
+    /// is clamped to the space left of the chip (with an 8px gap), and the body
+    /// starts below the header band.
+    fn comment_header_layout(&self, card: Rect) -> CommentHeader {
+        let del = Rect::new(card.x1 - 10.0 - 18.0, card.y0 + 6.0, card.x1 - 10.0, card.y0 + 24.0);
+        let chip_w = 54.0;
+        let chip = Rect::new(del.x0 - 8.0 - chip_w, card.y0 + 6.0, del.x0 - 8.0, card.y0 + 22.0);
+        let avatar_c = Point::new(card.x0 + 12.0 + 9.0, card.y0 + 15.0);
+        let name_x = avatar_c.x + 14.0;
+        // Stop 8px short of the chip so a long name truncates cleanly.
+        let name_max = ((chip.x0 - 8.0) - name_x).max(24.0) as f32;
+        CommentHeader {
+            avatar_c,
+            name_x,
+            name_y: card.y0 + 9.0,
+            name_max,
+            chip,
+            del,
+            body_top: card.y0 + 30.0,
+        }
+    }
+
     fn comment_metrics(&self, tr: &mut TextRenderer, cm: &Comment, inner_w: f64) -> CommentMetrics {
         // The body shows the live edit buffer while this comment is focused.
         let editing_body = self.editing.as_ref().filter(|e| e.target == EditTarget::CommentBody(cm.id.clone()));
         let body_text = editing_body.map(|e| e.buffer.as_str()).unwrap_or(cm.body.as_str());
         let body_probe = if body_text.is_empty() { "M" } else { body_text };
         let (_, bh) = tr.measure(body_probe, 12.0, Some(inner_w as f32 - 16.0));
-        let mut card_h = 18.0 + 6.0 + bh as f64 + 12.0;
+        // Header band (avatar + name + chips) is 24px, then a 6px gap, the body,
+        // and a 12px bottom pad. Mirrors `comment_header_layout`'s `body_top`.
+        let mut card_h = 24.0 + 6.0 + bh as f64 + 12.0;
         let mut reply_heights = Vec::with_capacity(cm.replies.len());
         for r in &cm.replies {
             let (_, rh) = tr.measure(&r.body, 11.0, Some(inner_w as f32 - 36.0));
@@ -1248,20 +1306,23 @@ impl PdfApp {
             let border = if selected { theme.accent_primary } else { c.border_standard };
             scene.stroke(&Stroke::new(if selected { 1.5 } else { 1.0 }), base, border, None, &RoundedRect::from_rect(card, theme.tokens.radii.md as f64));
 
-            // author avatar + name + page pin
-            let av_c = Point::new(card.x0 + 12.0 + 9.0, card.y0 + 14.0);
-            draw_avatar(scene, base, tr, theme, &cm.author, av_c, 9.0);
+            // Header row: avatar + author name (bounded so it never runs under
+            // the chips) + resolve chip + delete button, laid out so nothing
+            // overlaps regardless of the name's length.
+            let hdr = self.comment_header_layout(card);
+            draw_avatar(scene, base, tr, theme, &cm.author, hdr.avatar_c, 9.0);
+            let name = truncate_to_width(tr, &cm.author, 11.5, hdr.name_max);
             tr.draw_text_weighted(
                 scene,
-                &cm.author,
+                &name,
                 11.5,
                 theme.text_primary,
-                base * Affine::translate((av_c.x + 14.0, card.y0 + 8.0)),
-                None,
+                base * Affine::translate((hdr.name_x, hdr.name_y)),
+                Some(hdr.name_max),
                 TextWeight::Semibold,
             );
             // Right-edge chips: a delete (×) button, then the resolve chip.
-            let del = Rect::new(card.x1 - 10.0 - 18.0, card.y0 + 6.0, card.x1 - 10.0, card.y0 + 24.0);
+            let del = hdr.del;
             let del_hot = del.contains(self.last_mouse);
             if del_hot {
                 scene.fill(Fill::NonZero, base, render::alpha(c.semantic.danger, 40), None, &RoundedRect::from_rect(del, theme.tokens.radii.sm as f64));
@@ -1272,8 +1333,7 @@ impl PdfApp {
             scene.stroke(&Stroke::new(1.5), base, dcol, None, &Line::new((dc.x - 4.0, dc.y + 4.0), (dc.x + 4.0, dc.y - 4.0)));
             hits.push((SidebarHit::DeleteComment(cm.id.clone()), del));
 
-            let chip_w = 54.0;
-            let chip = Rect::new(del.x0 - 8.0 - chip_w, card.y0 + 6.0, del.x0 - 8.0, card.y0 + 22.0);
+            let chip = hdr.chip;
             let (chip_label, chip_fill, chip_text) = if cm.resolved {
                 ("Resolved", c.semantic.success, Color::WHITE)
             } else {
@@ -1293,7 +1353,7 @@ impl PdfApp {
 
             // ---- body (click to edit; caret while focused) ----
             let body_x = card.x0 + 12.0;
-            let body_top = card.y0 + 24.0;
+            let body_top = hdr.body_top;
             let body_wrap = inner_w as f32 - 16.0;
             let editing_body = self.is_editing(&EditTarget::CommentBody(cm.id.clone()));
             let shown: &str = self

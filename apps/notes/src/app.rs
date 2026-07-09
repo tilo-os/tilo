@@ -1024,6 +1024,14 @@ Triple backticks make a code block:
 fn hello() {}
 ```
 
+Or number them when order matters:
+
+1. First, add a page.
+
+2. Then write something.
+
+3. Finally, link it with `[[`.
+
 Three dashes make a divider:
 
 ---

@@ -64,6 +64,12 @@ pub enum BlockKind {
     /// Unordered list item. `indent` is the nesting depth in
     /// [0, MAX_LIST_INDENT].
     Bullet { indent: u8 },
+    /// Ordered (numbered) list item. `indent` is the nesting depth in
+    /// [0, MAX_LIST_INDENT]. The displayed number is NOT stored on the
+    /// block — it's computed from the item's position within its
+    /// contiguous run at the same indent (see `numbered_ordinals`), so
+    /// inserting / deleting / reordering items renumbers automatically.
+    Numbered { indent: u8 },
     /// Checklist item. `indent` is the nesting depth; `done` flips
     /// when the user clicks the checkbox glyph.
     Checklist { indent: u8, done: bool },
@@ -87,6 +93,7 @@ impl BlockKind {
             // Future-proof: unknown heading level falls back to H3.
             BlockKind::Heading(_) => 18.0,
             BlockKind::Bullet { .. } => 16.0,
+            BlockKind::Numbered { .. } => 16.0,
             BlockKind::Checklist { .. } => 16.0,
             BlockKind::CodeBlock { .. } => 14.0,
             // Dividers don't render text — height comes from the
@@ -98,7 +105,12 @@ impl BlockKind {
     /// True iff this block kind supports indent / outdent via
     /// Tab / Shift-Tab.
     pub fn supports_indent(&self) -> bool {
-        matches!(self, BlockKind::Bullet { .. } | BlockKind::Checklist { .. })
+        matches!(
+            self,
+            BlockKind::Bullet { .. }
+                | BlockKind::Numbered { .. }
+                | BlockKind::Checklist { .. }
+        )
     }
 
     /// True iff this block has an editable text body. Dividers and
@@ -112,6 +124,7 @@ impl BlockKind {
     pub fn indent(&self) -> u8 {
         match self {
             BlockKind::Bullet { indent } => *indent,
+            BlockKind::Numbered { indent } => *indent,
             BlockKind::Checklist { indent, .. } => *indent,
             _ => 0,
         }
@@ -153,6 +166,18 @@ impl Block {
     /// to [0, MAX_LIST_INDENT].
     pub fn bullet(indent: u8, text: &str) -> Self {
         let kind = BlockKind::Bullet { indent: indent.min(MAX_LIST_INDENT) };
+        Self {
+            kind: kind.clone(),
+            line: RichTextLine::new().with_text(text).with_size(kind.font_size()),
+            soft_break: false,
+        }
+    }
+
+    /// Ordered (numbered) list item with the given indent + text.
+    /// Indent clamped to [0, MAX_LIST_INDENT]. The visible number is
+    /// derived at render time, not stored here.
+    pub fn numbered(indent: u8, text: &str) -> Self {
+        let kind = BlockKind::Numbered { indent: indent.min(MAX_LIST_INDENT) };
         Self {
             kind: kind.clone(),
             line: RichTextLine::new().with_text(text).with_size(kind.font_size()),
@@ -443,6 +468,10 @@ impl BlockEditor {
                 editor.blocks.push(Block::bullet(indent, bullet_body));
                 continue;
             }
+            if let Some(num_body) = strip_ordered_prefix(body) {
+                editor.blocks.push(Block::numbered(indent, num_body));
+                continue;
+            }
             // Headings are NOT indented in our grammar — they live at
             // column 0 always. So we use the raw `line`, not `body`.
             if let Some(rest) = line.strip_prefix("### ") {
@@ -473,6 +502,7 @@ impl BlockEditor {
     /// round-trips identically.
     pub fn to_markdown(&self) -> String {
         let mut out = String::new();
+        let ordinals = numbered_ordinals(&self.blocks);
         for (i, b) in self.blocks.iter().enumerate() {
             if i > 0 {
                 out.push_str("\n\n");
@@ -498,6 +528,11 @@ impl BlockEditor {
                 BlockKind::Bullet { indent } => {
                     push_indent(&mut out, *indent);
                     out.push_str("- ");
+                    out.push_str(b.text());
+                }
+                BlockKind::Numbered { indent } => {
+                    push_indent(&mut out, *indent);
+                    out.push_str(&format!("{}. ", ordinals[i].max(1)));
                     out.push_str(b.text());
                 }
                 BlockKind::Checklist { indent, done } => {
@@ -805,6 +840,7 @@ impl BlockEditor {
         // - Anything else: a fresh paragraph.
         let suffix_block = match cur_kind {
             BlockKind::Bullet { indent } => Block::bullet(indent, suffix),
+            BlockKind::Numbered { indent } => Block::numbered(indent, suffix),
             BlockKind::Checklist { indent, .. } => {
                 // The new item is unchecked even if the source was
                 // checked — matches the user's mental model of "add a
@@ -1008,6 +1044,12 @@ impl BlockEditor {
                     .clamp(0, MAX_LIST_INDENT as i16) as u8;
                 let changed = next != *indent;
                 (BlockKind::Bullet { indent: next }, changed)
+            }
+            BlockKind::Numbered { indent } => {
+                let next = (*indent as i16 + delta as i16)
+                    .clamp(0, MAX_LIST_INDENT as i16) as u8;
+                let changed = next != *indent;
+                (BlockKind::Numbered { indent: next }, changed)
             }
             BlockKind::Checklist { indent, done } => {
                 let next = (*indent as i16 + delta as i16)
@@ -1282,6 +1324,25 @@ fn parse_list_indent(line: &str) -> (u8, &str) {
     (level, &line[bytes..])
 }
 
+/// Detect an ordered-list marker (`123. ` or `123) `) at the start of
+/// `body`, returning the text after it. The number is discarded —
+/// ordinals are recomputed from list position on render + serialise.
+fn strip_ordered_prefix(body: &str) -> Option<&str> {
+    let bytes = body.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() && bytes[i].is_ascii_digit() {
+        i += 1;
+    }
+    if i == 0 || i + 1 >= bytes.len() {
+        return None;
+    }
+    if (bytes[i] == b'.' || bytes[i] == b')') && bytes[i + 1] == b' ' {
+        Some(&body[i + 2..])
+    } else {
+        None
+    }
+}
+
 /// Append `indent` levels of 2-space indent to `out`. Inverse of
 /// [`parse_list_indent`] when the input contained spaces (tabs are
 /// re-emitted as spaces on the round-trip, which is fine — the parser
@@ -1302,6 +1363,9 @@ fn push_indent(out: &mut String, indent: u8) {
 pub(crate) fn prefix_gutter_for(kind: &BlockKind) -> f64 {
     match kind {
         BlockKind::Bullet { .. } => 20.0,
+        // Wide enough to right-align a two-digit ordinal ("12.") without
+        // colliding with the text column.
+        BlockKind::Numbered { .. } => 28.0,
         BlockKind::Checklist { .. } => 24.0,
         BlockKind::CodeBlock { .. } => 12.0,
         _ => 0.0,
@@ -1311,6 +1375,36 @@ pub(crate) fn prefix_gutter_for(kind: &BlockKind) -> f64 {
 /// Width of the clickable checkbox square in a checklist row. Slightly
 /// smaller than the gutter so there's visual breathing room either side.
 pub(crate) const CHECKBOX_SIZE_PX: f64 = 16.0;
+
+/// Compute the displayed ordinal (1-based) for every `Numbered` block,
+/// 0 for non-numbered rows. Numbering is per contiguous run at each
+/// indent level: a deeper level restarts under its parent, and ANY
+/// non-numbered block resets every counter — so two numbered lists
+/// separated by a paragraph each start at 1, and a nested list numbers
+/// independently of its parent.
+pub fn numbered_ordinals(blocks: &[Block]) -> Vec<u32> {
+    let mut out = vec![0u32; blocks.len()];
+    // One running counter per indent level (0..=MAX_LIST_INDENT).
+    let mut counters = [0u32; MAX_LIST_INDENT as usize + 1];
+    for (i, b) in blocks.iter().enumerate() {
+        match b.kind {
+            BlockKind::Numbered { indent } => {
+                let lvl = (indent as usize).min(MAX_LIST_INDENT as usize);
+                counters[lvl] += 1;
+                out[i] = counters[lvl];
+                // Deeper levels restart the next time they appear.
+                for c in counters.iter_mut().skip(lvl + 1) {
+                    *c = 0;
+                }
+            }
+            // Any interruption breaks every open ordered run.
+            _ => {
+                counters = [0u32; MAX_LIST_INDENT as usize + 1];
+            }
+        }
+    }
+    out
+}
 
 // ---------------------------------------------------------------------
 // CRDT block-list helpers (used by sync / reconcile / rebuild).
@@ -1338,6 +1432,7 @@ fn kind_to_str(kind: &BlockKind) -> String {
         BlockKind::Paragraph => "paragraph".to_string(),
         BlockKind::Heading(n) => format!("heading{n}"),
         BlockKind::Bullet { indent } => format!("bullet:{indent}"),
+        BlockKind::Numbered { indent } => format!("numbered:{indent}"),
         BlockKind::Checklist { indent, done } => {
             format!("checklist:{indent}:{}", if *done { 1 } else { 0 })
         }
@@ -1363,6 +1458,10 @@ fn kind_from_str(s: &str) -> BlockKind {
         let indent = rest.parse::<u8>().unwrap_or(0).min(MAX_LIST_INDENT);
         return BlockKind::Bullet { indent };
     }
+    if let Some(rest) = s.strip_prefix("numbered:") {
+        let indent = rest.parse::<u8>().unwrap_or(0).min(MAX_LIST_INDENT);
+        return BlockKind::Numbered { indent };
+    }
     if let Some(rest) = s.strip_prefix("checklist:") {
         let mut parts = rest.split(':');
         let indent = parts
@@ -1387,6 +1486,7 @@ fn block_for_kind(kind: &BlockKind) -> Block {
         BlockKind::Paragraph => Block::paragraph(""),
         BlockKind::Heading(n) => Block::heading(*n, ""),
         BlockKind::Bullet { indent } => Block::bullet(*indent, ""),
+        BlockKind::Numbered { indent } => Block::numbered(*indent, ""),
         BlockKind::Checklist { indent, done } => Block::checklist(*indent, *done, ""),
         BlockKind::CodeBlock { lang } => Block::code_block(lang.clone(), ""),
         BlockKind::Divider => Block::divider(),
@@ -1796,6 +1896,8 @@ impl Widget for BlockEditor {
             .map(|b| matches!(b.kind, BlockKind::CodeBlock { .. }))
             .collect();
         let line_rects: Vec<Rect> = self.blocks.iter().map(|b| b.line.get_rect()).collect();
+        // Ordinals for numbered rows, precomputed before the mut loop.
+        let ordinals = numbered_ordinals(&self.blocks);
 
         for (idx, b) in self.blocks.iter_mut().enumerate() {
             let line_rect = b.line.get_rect();
@@ -1837,6 +1939,33 @@ impl Widget for BlockEditor {
                         tokens.colors.text_primary,
                         None,
                         &circle,
+                    );
+                    b.line.draw(scene, transform, text_renderer, theme, presence);
+                    let _ = indent_px;
+                }
+                BlockKind::Numbered { .. } => {
+                    // Right-align the ordinal ("N.") in the gutter to the
+                    // left of the text column so single- and double-digit
+                    // numbers line their periods up under each other.
+                    let num = ordinals.get(idx).copied().unwrap_or(1).max(1);
+                    let label = format!("{num}.");
+                    let size = b.kind.font_size();
+                    let (label_w, _) = text_renderer.measure(&label, size, None);
+                    // Match RichTextLine's own vertical text placement
+                    // (line height = size * 1.25) so the ordinal sits on
+                    // the same baseline as the item text.
+                    let line_height = size as f64 * 1.25;
+                    let text_y = line_rect.y0
+                        + (line_rect.height() - line_height) / 2.0;
+                    // 6 px trailing gap between the period and the text.
+                    let x = (line_rect.x0 - 6.0 - label_w as f64).max(prefix_x0);
+                    text_renderer.draw_text(
+                        scene,
+                        &label,
+                        size,
+                        tokens.colors.text_primary,
+                        transform * Affine::translate((x, text_y)),
+                        None,
                     );
                     b.line.draw(scene, transform, text_renderer, theme, presence);
                     let _ = indent_px;
@@ -2974,6 +3103,73 @@ mod tests {
             k => panic!("expected Bullet, got {:?}", k),
         }
         assert_eq!(e.blocks()[0].text(), "task");
+    }
+
+    #[test]
+    fn numbered_ordinals_count_within_run() {
+        let blocks = vec![
+            Block::numbered(0, "a"),
+            Block::numbered(0, "b"),
+            Block::numbered(0, "c"),
+        ];
+        assert_eq!(numbered_ordinals(&blocks), vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn numbered_ordinals_reset_after_interruption() {
+        let blocks = vec![
+            Block::numbered(0, "a"),
+            Block::numbered(0, "b"),
+            Block::paragraph("break"),
+            Block::numbered(0, "c"),
+        ];
+        // The paragraph breaks the run; the third item restarts at 1.
+        assert_eq!(numbered_ordinals(&blocks), vec![1, 2, 0, 1]);
+    }
+
+    #[test]
+    fn numbered_ordinals_nested_restart_and_resume() {
+        let blocks = vec![
+            Block::numbered(0, "one"),
+            Block::numbered(1, "inner a"),
+            Block::numbered(1, "inner b"),
+            Block::numbered(0, "two"),
+        ];
+        // Outer: 1 … 2; inner level restarts at 1,2; outer resumes at 2.
+        assert_eq!(numbered_ordinals(&blocks), vec![1, 1, 2, 2]);
+    }
+
+    #[test]
+    fn enter_continues_a_numbered_list() {
+        // Pressing Enter mid-numbered-item continues the list: the suffix
+        // becomes a NEW numbered item at the same indent (the renderer
+        // then numbers it 2).
+        let mut e = BlockEditor::new();
+        e.blocks[0] = Block::numbered(0, "first");
+        e.focused = Some(0);
+        e.split_at_cursor(0, 5); // caret at end of "first"
+        assert_eq!(e.blocks().len(), 2);
+        assert!(matches!(e.blocks()[1].kind, BlockKind::Numbered { indent: 0 }));
+        assert_eq!(numbered_ordinals(e.blocks()), vec![1, 2]);
+    }
+
+    #[test]
+    fn try_convert_paragraph_to_numbered() {
+        let mut e = BlockEditor::new();
+        e.blocks[0].line.set_text("step");
+        assert!(e.try_convert_to(0, BlockKind::Numbered { indent: 0 }));
+        assert!(matches!(e.blocks()[0].kind, BlockKind::Numbered { indent: 0 }));
+        assert_eq!(e.blocks()[0].text(), "step");
+    }
+
+    #[test]
+    fn try_indent_numbered_steps_up_and_down() {
+        let mut e = BlockEditor::new();
+        e.blocks[0] = Block::numbered(0, "a");
+        assert!(e.try_indent(0, 1));
+        assert_eq!(e.blocks()[0].kind.indent(), 1);
+        assert!(e.try_indent(0, -1));
+        assert_eq!(e.blocks()[0].kind.indent(), 0);
     }
 
     #[test]

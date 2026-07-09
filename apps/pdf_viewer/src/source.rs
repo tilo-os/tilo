@@ -82,15 +82,34 @@ pub fn open(path: &Path) -> anyhow::Result<LoadedDoc> {
 /// lives for the process, which is the intended lifetime. The original bytes
 /// are retained so a save can re-open a pristine copy and flatten onto it
 /// without disturbing the on-screen render.
+/// One loaded pdfium document backing some of the displayed pages. Source 0 is
+/// always the originally-opened file; imports (other PDFs, or images promoted to
+/// a one-page PDF) are appended as further sources.
+struct Source {
+    doc: PdfDocument<'static>,
+    page_sizes: Vec<(f64, f64)>,
+}
+
+/// A displayed page: which loaded [`Source`] it comes from and the page index
+/// within that source. The ordered list of these — the *page plan* — is the
+/// editable model: reordering, deleting, duplicating and importing pages all
+/// permute this vector, and a save copies the source pages in plan order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct PageSlot {
+    source: usize,
+    page: usize,
+}
+
 pub struct Rasterizer {
     pdfium: &'static Pdfium,
-    doc: PdfDocument<'static>,
-    original_bytes: Arc<Vec<u8>>,
-    page_sizes: Vec<(f64, f64)>,
-    /// Rendered bitmaps keyed by (page index, target-width bucket in px).
-    cache: HashMap<(usize, u32), PenikoImage>,
-    /// Per-page extracted text layer, filled lazily on first request.
-    text_cache: HashMap<usize, Arc<PageText>>,
+    /// Loaded pdfium documents; index 0 is the original file.
+    sources: Vec<Source>,
+    /// The ordered, editable list of displayed pages.
+    plan: Vec<PageSlot>,
+    /// Rendered bitmaps keyed by (source, source-page, target-width bucket).
+    cache: HashMap<(usize, usize, u32), PenikoImage>,
+    /// Per-source-page extracted text layer, filled lazily on first request.
+    text_cache: HashMap<(usize, usize), Arc<PageText>>,
 }
 
 /// The process-wide pdfium handle, bound exactly once.
@@ -127,9 +146,7 @@ fn shared_pdfium() -> Option<&'static Pdfium> {
 }
 
 impl Rasterizer {
-    fn open(bytes: Vec<u8>) -> Option<Self> {
-        let pdfium = shared_pdfium()?;
-        let original = Arc::new(bytes.clone());
+    fn load_source(pdfium: &'static Pdfium, bytes: Vec<u8>) -> Option<Source> {
         let doc = pdfium.load_pdf_from_byte_vec(bytes, None).ok()?;
         let mut page_sizes = Vec::new();
         let pages = doc.pages();
@@ -143,32 +160,139 @@ impl Rasterizer {
         if page_sizes.is_empty() {
             return None;
         }
+        drop(pages);
+        Some(Source { doc, page_sizes })
+    }
+
+    fn open(bytes: Vec<u8>) -> Option<Self> {
+        let pdfium = shared_pdfium()?;
+        let source = Self::load_source(pdfium, bytes)?;
+        let plan = (0..source.page_sizes.len()).map(|page| PageSlot { source: 0, page }).collect();
         Some(Rasterizer {
             pdfium,
-            doc,
-            original_bytes: original,
-            page_sizes,
+            sources: vec![source],
+            plan,
             cache: HashMap::new(),
             text_cache: HashMap::new(),
         })
     }
 
+    /// Number of displayed pages (the length of the editable page plan).
     pub fn page_count(&self) -> usize {
-        self.page_sizes.len()
+        self.plan.len()
+    }
+
+    /// The source [`Source`] and source-page index backing displayed page
+    /// `display_idx`.
+    fn slot(&self, display_idx: usize) -> Option<PageSlot> {
+        self.plan.get(display_idx).copied()
     }
 
     pub fn first_page_size(&self) -> (f64, f64) {
-        self.page_sizes.first().copied().unwrap_or((612.0, 792.0))
+        self.plan
+            .first()
+            .and_then(|s| self.sources[s.source].page_sizes.get(s.page).copied())
+            .unwrap_or((612.0, 792.0))
     }
 
-    /// The page's height in PDF points (needed to flip pdfium's bottom-left,
-    /// y-up coordinates into the reader's top-left, y-down space).
-    fn page_height(&self, page_idx: usize) -> f64 {
-        self.page_sizes.get(page_idx).map(|s| s.1).unwrap_or(792.0)
+    /// Size of displayed page `display_idx`, in PDF points.
+    pub fn page_size(&self, display_idx: usize) -> (f64, f64) {
+        self.slot(display_idx)
+            .and_then(|s| self.sources[s.source].page_sizes.get(s.page).copied())
+            .unwrap_or_else(|| self.first_page_size())
+    }
+
+    /// The displayed page's height in PDF points (needed to flip pdfium's
+    /// bottom-left, y-up coordinates into the reader's top-left, y-down space).
+    fn page_height(&self, display_idx: usize) -> f64 {
+        self.page_size(display_idx).1
+    }
+
+    // ---- page editing -----------------------------------------------
+
+    /// Move displayed page `from` to final index `to` (matching a
+    /// [`ui::widget::page_sidebar::move_item`]-style move). Content, text and
+    /// bitmap caches are keyed by source page, so no re-render is needed.
+    pub fn reorder_page(&mut self, from: usize, to: usize) {
+        if from == to || from >= self.plan.len() || to >= self.plan.len() {
+            return;
+        }
+        let slot = self.plan.remove(from);
+        self.plan.insert(to, slot);
+    }
+
+    /// Remove displayed page `idx`. Keeps at least one page.
+    pub fn delete_page(&mut self, idx: usize) {
+        if self.plan.len() > 1 && idx < self.plan.len() {
+            self.plan.remove(idx);
+        }
+    }
+
+    /// Duplicate displayed page `idx`, inserting the copy right after it. The
+    /// duplicate points at the same source page (cheap; shares the render cache).
+    pub fn duplicate_page(&mut self, idx: usize) {
+        if let Some(slot) = self.slot(idx) {
+            self.plan.insert(idx + 1, slot);
+        }
+    }
+
+    /// Import every page of the PDF in `bytes`, inserting them starting at
+    /// displayed index `at`. Returns the number of pages added.
+    pub fn import_pdf(&mut self, bytes: Vec<u8>, at: usize) -> anyhow::Result<usize> {
+        let source = Self::load_source(self.pdfium, bytes)
+            .ok_or_else(|| anyhow!("the file is not a readable PDF"))?;
+        let n = source.page_sizes.len();
+        let src_idx = self.sources.len();
+        self.sources.push(source);
+        let at = at.min(self.plan.len());
+        for page in 0..n {
+            self.plan.insert(at + page, PageSlot { source: src_idx, page });
+        }
+        Ok(n)
+    }
+
+    /// Import an image (`bytes` = PNG/JPEG/… file contents) as a new page,
+    /// inserted at displayed index `at`. The image is placed to fill a page
+    /// sized to its own aspect ratio.
+    pub fn import_image(&mut self, bytes: &[u8], at: usize) -> anyhow::Result<()> {
+        let img = image::load_from_memory(bytes)
+            .map_err(|e| anyhow!("decoding the image: {e}"))?;
+        let (iw, ih) = (img.width().max(1) as f64, img.height().max(1) as f64);
+        // A page 612pt wide (US-Letter width) with the image's aspect ratio.
+        let pw = 612.0f64;
+        let ph = (pw * ih / iw).clamp(72.0, 3000.0);
+        let mut doc = self
+            .pdfium
+            .create_new_pdf()
+            .map_err(|e| anyhow!("creating the image page document: {e:?}"))?;
+        {
+            let mut page = doc
+                .pages_mut()
+                .create_page_at_start(PdfPagePaperSize::Custom(
+                    PdfPoints::new(pw as f32),
+                    PdfPoints::new(ph as f32),
+                ))
+                .map_err(|e| anyhow!("creating the image page: {e:?}"))?;
+            page.objects_mut()
+                .create_image_object(
+                    PdfPoints::new(0.0),
+                    PdfPoints::new(0.0),
+                    &img,
+                    Some(PdfPoints::new(pw as f32)),
+                    Some(PdfPoints::new(ph as f32)),
+                )
+                .map_err(|e| anyhow!("placing the image on the page: {e:?}"))?;
+            let _ = page.regenerate_content();
+        }
+        let src_idx = self.sources.len();
+        self.sources.push(Source { doc, page_sizes: vec![(pw, ph)] });
+        let at = at.min(self.plan.len());
+        self.plan.insert(at, PageSlot { source: src_idx, page: 0 });
+        Ok(())
     }
 
     fn metadata(&self) -> (String, String, String) {
-        let meta = self.doc.metadata();
+        let meta = self.sources[0].doc.metadata();
         let get = |tag| meta.get(tag).map(|t| t.value().to_string()).unwrap_or_default();
         (
             get(PdfDocumentMetadataTagType::Title),
@@ -181,7 +305,7 @@ impl Rasterizer {
     /// list in document order — every entry still navigates to its page.
     fn outline(&self) -> Vec<OutlineItem> {
         let mut out = Vec::new();
-        for bm in self.doc.bookmarks().iter() {
+        for bm in self.sources[0].doc.bookmarks().iter() {
             let Some(title) = bm.title() else { continue };
             let page = bm
                 .destination()
@@ -198,25 +322,27 @@ impl Rasterizer {
         out
     }
 
-    /// The extracted text layer for page `page_idx` (0-based), cached. Empty
+    /// The extracted text layer for displayed page `display_idx`, cached. Empty
     /// when the page has no extractable text (e.g. a scanned image).
-    pub fn page_text(&mut self, page_idx: usize) -> Arc<PageText> {
-        if let Some(pt) = self.text_cache.get(&page_idx) {
+    pub fn page_text(&mut self, display_idx: usize) -> Arc<PageText> {
+        let Some(slot) = self.slot(display_idx) else {
+            return Arc::new(PageText::default());
+        };
+        let key = (slot.source, slot.page);
+        if let Some(pt) = self.text_cache.get(&key) {
             return pt.clone();
         }
-        let pt = Arc::new(self.extract_page_text(page_idx).unwrap_or_default());
-        self.text_cache.insert(page_idx, pt.clone());
+        let pt = Arc::new(self.extract_page_text(slot).unwrap_or_default());
+        self.text_cache.insert(key, pt.clone());
         pt
     }
 
-    /// Pull every glyph on `page_idx` out of pdfium as a (character,
+    /// Pull every glyph on the given source page out of pdfium as a (character,
     /// page-point box) pair, flipping into the reader's top-left space.
-    fn extract_page_text(&self, page_idx: usize) -> Option<PageText> {
-        if page_idx >= self.page_sizes.len() {
-            return None;
-        }
-        let page_h = self.page_height(page_idx);
-        let page = self.doc.pages().get(page_idx as u16).ok()?;
+    fn extract_page_text(&self, slot: PageSlot) -> Option<PageText> {
+        let src = self.sources.get(slot.source)?;
+        let page_h = src.page_sizes.get(slot.page).map(|s| s.1).unwrap_or(792.0);
+        let page = src.doc.pages().get(slot.page as u16).ok()?;
         let text = page.text().ok()?;
         // Bind `chars` to a local: `PdfPageTextChars::iter` borrows it, so it
         // must outlive the loop (iterating `text.chars().iter()` directly would
@@ -252,19 +378,19 @@ impl Rasterizer {
         Some(PageText::from_glyphs(glyphs))
     }
 
-    /// Rasterise `page_idx` (0-based) at roughly `target_w` device pixels wide,
-    /// returning a cached bitmap. Widths are snapped to a bucket so a small
-    /// zoom nudge reuses the existing render instead of re-rasterising.
-    pub fn render(&mut self, page_idx: usize, target_w: u32) -> Option<PenikoImage> {
-        if page_idx >= self.page_sizes.len() {
-            return None;
-        }
+    /// Rasterise displayed page `display_idx` at roughly `target_w` device
+    /// pixels wide, returning a cached bitmap. Widths are snapped to a bucket so
+    /// a small zoom nudge reuses the existing render instead of re-rasterising.
+    /// The cache is keyed by source page, so a duplicated or reordered page
+    /// never re-rasterises.
+    pub fn render(&mut self, display_idx: usize, target_w: u32) -> Option<PenikoImage> {
+        let slot = self.slot(display_idx)?;
         let bucket = ((target_w / 24).max(1) * 24).clamp(96, 4096);
-        let key = (page_idx, bucket);
+        let key = (slot.source, slot.page, bucket);
         if let Some(img) = self.cache.get(&key) {
             return Some(img.clone());
         }
-        let page = self.doc.pages().get(page_idx as u16).ok()?;
+        let page = self.sources.get(slot.source)?.doc.pages().get(slot.page as u16).ok()?;
         let config = PdfRenderConfig::new().set_target_width(bucket as Pixels);
         let bitmap = page.render_with_config(&config).ok()?;
         let w = bitmap.width().max(0) as u32;
@@ -294,26 +420,29 @@ impl Rasterizer {
     pub fn prune(&mut self, keep_bucket: u32) {
         const THUMB_MAX: u32 = 600;
         self.cache
-            .retain(|(_, b), _| *b == keep_bucket || *b <= THUMB_MAX);
+            .retain(|(_, _, b), _| *b == keep_bucket || *b <= THUMB_MAX);
     }
 
-    /// The number of content objects on `page_idx` in the *saved-on-disk*
-    /// pdfium document. Used by the save-back round-trip test to prove
+    /// The number of content objects on displayed page `display_idx` in the
+    /// backing pdfium document. Used by the save-back round-trip test to prove
     /// flattened markup lands as real page content.
-    pub fn page_object_count(&self, page_idx: usize) -> Option<usize> {
-        let page = self.doc.pages().get(page_idx as u16).ok()?;
+    pub fn page_object_count(&self, display_idx: usize) -> Option<usize> {
+        let slot = self.slot(display_idx)?;
+        let page = self.sources.get(slot.source)?.doc.pages().get(slot.page as u16).ok()?;
         Some(page.objects().len())
     }
 
-    /// Flatten the reader's markup onto a **fresh** copy of the document and
-    /// write it to `out` as a valid PDF. Highlights become translucent filled
-    /// rectangles, ink becomes stroked paths, sticky notes become a coloured
-    /// marker plus their comment text, and signatures become a handwriting
-    /// stroke with the signer's name + date — all as ordinary page content, so
-    /// the saved file reopens with the markup baked in for any viewer.
+    /// Build the edited document — the pages in the current plan order,
+    /// including imported PDF/image pages — flatten the reader's markup onto it,
+    /// and write it to `out` as a valid PDF. Highlights become translucent
+    /// filled rectangles, ink becomes stroked paths, sticky notes become a
+    /// coloured marker plus their comment text, and signatures become a
+    /// handwriting stroke with the signer's name + date — all as ordinary page
+    /// content, so the saved file reopens with the edits + markup baked in for
+    /// any viewer.
     ///
-    /// Operates on a re-opened copy of the original bytes, leaving the
-    /// on-screen render untouched.
+    /// Operates on a freshly-created document, leaving the on-screen render and
+    /// the loaded sources untouched.
     pub fn save_annotated(
         &self,
         annotations: &[Annotation],
@@ -323,13 +452,25 @@ impl Rasterizer {
     ) -> anyhow::Result<()> {
         let mut doc = self
             .pdfium
-            .load_pdf_from_byte_vec((*self.original_bytes).clone(), None)
-            .map_err(|e| anyhow!("re-opening the document to flatten markup: {e:?}"))?;
+            .create_new_pdf()
+            .map_err(|e| anyhow!("creating the output document: {e:?}"))?;
+
+        // Copy every planned page, in order, from its source document. This is
+        // what makes reorder / delete / duplicate / import persist on save.
+        for (dest, slot) in self.plan.iter().enumerate() {
+            let src = self
+                .sources
+                .get(slot.source)
+                .ok_or_else(|| anyhow!("page plan references a missing source"))?;
+            doc.pages_mut()
+                .copy_page_from_document(&src.doc, slot.page as PdfPageIndex, dest as PdfPageIndex)
+                .map_err(|e| anyhow!("copying page {} into the output: {e:?}", dest + 1))?;
+        }
 
         let font = doc.fonts_mut().helvetica();
         let font_italic = doc.fonts_mut().helvetica_oblique();
 
-        let n = self.page_sizes.len();
+        let n = self.plan.len();
         for idx in 0..n {
             let page_no = idx + 1;
             let page_h = self.page_height(idx);

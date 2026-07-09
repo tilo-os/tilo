@@ -51,6 +51,21 @@ pub fn request_open() -> PortalChannel {
     rx
 }
 
+/// Spawn a portal file-open for *importing* pages — a PDF or an image — and
+/// return the receiver the caller drains each frame. Same non-blocking contract
+/// as [`request_open`]; the chosen path arrives as [`PortalOutcome::Opened`].
+pub fn request_import() -> PortalChannel {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::Builder::new()
+        .name("pdf-portal-import".into())
+        .spawn(move || {
+            let outcome = run_import_blocking();
+            let _ = tx.send(outcome);
+        })
+        .expect("spawn portal import worker thread");
+    rx
+}
+
 /// Spawn the portal file-*save* on a worker thread and return the receiver the
 /// caller drains each frame. `suggested_name` seeds the dialog's filename. The
 /// chosen path comes back as [`PortalOutcome::Opened`] (the save target), so the
@@ -90,6 +105,17 @@ fn run_save_blocking(suggested_name: String) -> PortalOutcome {
     rt.block_on(save_future(suggested_name))
 }
 
+/// Run the portal import `OpenFile` round-trip (PDF or image) to completion on
+/// a private Tokio runtime. Blocking — only ever called on the worker thread
+/// from [`request_import`].
+fn run_import_blocking() -> PortalOutcome {
+    let rt = match tokio::runtime::Runtime::new() {
+        Ok(rt) => rt,
+        Err(e) => return PortalOutcome::Failed(format!("portal runtime: {e}")),
+    };
+    rt.block_on(import_future())
+}
+
 /// The async portal interaction. Kept separate so the wiring reads cleanly.
 async fn open_future() -> PortalOutcome {
     use ashpd::desktop::file_chooser::{FileFilter, SelectedFiles};
@@ -107,6 +133,30 @@ async fn open_future() -> PortalOutcome {
     match request.send().await.and_then(|r| r.response()) {
         Ok(files) => map_uris(files.uris()),
         // A user dismissal surfaces as a "cancelled" response error, not a bug.
+        Err(ashpd::Error::Response(_)) => PortalOutcome::Cancelled,
+        Err(e) => PortalOutcome::Failed(e.to_string()),
+    }
+}
+
+/// The async portal *import* interaction — a PDF or an image to add as pages.
+async fn import_future() -> PortalOutcome {
+    use ashpd::desktop::file_chooser::{FileFilter, SelectedFiles};
+
+    let request = SelectedFiles::open_file()
+        .title("Import pages from a PDF or image")
+        .accept_label("Import")
+        .modal(true)
+        .multiple(false)
+        .filter(
+            FileFilter::new("PDF or image")
+                .mimetype("application/pdf")
+                .mimetype("image/png")
+                .mimetype("image/jpeg"),
+        )
+        .filter(FileFilter::new("All files").glob("*"));
+
+    match request.send().await.and_then(|r| r.response()) {
+        Ok(files) => map_uris(files.uris()),
         Err(ashpd::Error::Response(_)) => PortalOutcome::Cancelled,
         Err(e) => PortalOutcome::Failed(e.to_string()),
     }

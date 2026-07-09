@@ -338,6 +338,17 @@ impl ChatApp {
                     self.sync_local_voice(doc);
                 }
             }
+            Hit::CallShareScreen => {
+                // Toggle the real portal ScreenCast share (permission-gated
+                // inside `share_screen`). Starting it prompts the user via
+                // xdg-desktop-portal; there is nothing to fabricate when the
+                // portal is unavailable.
+                if self.sharing_screen() {
+                    self.stop_screen_share();
+                } else {
+                    self.share_screen();
+                }
+            }
             Hit::CallExpand => {
                 self.call.expanded = !self.call.expanded;
                 self.request_relayout();

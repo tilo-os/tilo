@@ -27,6 +27,9 @@ anyhow = "1.0"
 # pure-Rust text extraction when the native library is not present.
 pdfium-render = "0.8.37"
 pdf-extract = "0.7.12"
+# Decode imported images (PNG/JPEG/…) to place them as new PDF pages. Pinned to
+# the same 0.25 line pdfium-render uses so `DynamicImage` unifies to one type.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 # Host-native file open/save through the XDG Desktop Portal
 # (org.freedesktop.portal.FileChooser). On GNOME the user sees GNOME's file
 # chooser; on qOS the compositor's portal backend renders qOS's picker. The

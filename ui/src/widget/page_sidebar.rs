@@ -1,0 +1,904 @@
+//! `PageSidebar` — a shared, reorderable page/slide preview rail.
+//!
+//! A single implementation of the vertical thumbnail sidebar used by every
+//! document app that has an ordered stack of pages: the PDF reader's page
+//! rail and the presentation editor's slide rail both drive this one widget.
+//! It owns the list geometry, the scroll offset, drag-to-reorder (via the
+//! shared [`DragController`]), a right-click context menu (duplicate / move /
+//! delete) and an optional bottom "add" affordance, and it emits
+//! [`PageSidebarEvent`]s the host applies to its own document model — a
+//! reorder or delete flags the host that a save is needed.
+//!
+//! The widget does **not** know how to paint a page or a slide: the host
+//! passes a thumbnail-draw closure, so the same rail renders PDF page bitmaps
+//! for one app and vector slides for another. Everything else — the framed
+//! slot, the selection ring, the index number, the live reflow gap, the
+//! floating drag ghost, the scrollbar and the menu — is drawn here, once.
+//!
+//! Like [`crate::widget::page_palette::PageJumpPalette`] the app chrome that
+//! hosts this is imperative (a single full-window widget drawing into a
+//! `Scene`), so the primary API is the imperative [`PageSidebar::begin_frame`]
+//! / [`PageSidebar::render`] / pointer-event methods the host calls from its
+//! own draw + event handlers. The [`Widget`] impl is a thin shim so the rail
+//! is still addressable by the e2e harness.
+
+use std::collections::HashMap;
+
+use automerge::{AutoCommit, ObjId};
+use taffy::{NodeId, Style, TaffyTree};
+use vello::Scene;
+use vello::kurbo::{Affine, Line, Point, Rect, RoundedRect, Stroke, Vec2};
+use vello::peniko::{BlendMode, Color, Fill};
+
+use crate::color_compat::ColorCompat;
+use crate::presence::PresenceCtx;
+use crate::text_render::{TextRenderer, TextWeight};
+use crate::theme::Theme;
+use crate::widget::drag::{DragController, ListMetrics};
+use crate::widget::Widget;
+
+/// Something the host should do to its page/slide model in response to a
+/// sidebar interaction. The host applies it to its own document (usually a
+/// CRDT) and flags that a save is needed for the ordering-changing variants.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PageSidebarEvent {
+    /// Make page `index` the current one (a plain click).
+    Select(usize),
+    /// Move the page at `from` to final index `to` (a committed drag or a
+    /// "move up/down" menu action). Semantics match `Vec::remove(from)` then
+    /// `Vec::insert(to, _)`.
+    Reorder { from: usize, to: usize },
+    /// Duplicate the page at `index`, inserting the copy right after it.
+    Duplicate(usize),
+    /// Remove the page at `index`.
+    Delete(usize),
+    /// The bottom "add" affordance was activated (import / new slide).
+    Add,
+}
+
+/// Move the item at `from` to final index `to` in `v`, matching the
+/// `(from, to)` a [`DragController`] commit yields. A no-op when either index
+/// is out of range or they are equal. Shared by every adopter so the reorder
+/// applied to the model is identical to the reflow the rail previewed.
+pub fn move_item<T>(v: &mut Vec<T>, from: usize, to: usize) {
+    if from == to || from >= v.len() || to >= v.len() {
+        return;
+    }
+    let item = v.remove(from);
+    v.insert(to, item);
+}
+
+/// Insert a clone of the item at `index` immediately after it. A no-op when
+/// `index` is out of range.
+pub fn duplicate_after<T: Clone>(v: &mut Vec<T>, index: usize) {
+    if index >= v.len() {
+        return;
+    }
+    let copy = v[index].clone();
+    v.insert(index + 1, copy);
+}
+
+/// One row of the context menu.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum MenuAction {
+    Duplicate,
+    MoveUp,
+    MoveDown,
+    Delete,
+}
+
+struct Menu {
+    /// The page the menu targets.
+    index: usize,
+    rect: Rect,
+    /// `(action, row-rect)` — separators are absent (drawn between groups).
+    items: Vec<(MenuAction, Rect)>,
+    hover: Option<usize>,
+}
+
+const PAD: f64 = 10.0;
+const GAP: f64 = 12.0;
+const NUM_GUTTER: f64 = 22.0;
+const SCROLLBAR_W: f64 = 6.0;
+const HEADER_H: f64 = 30.0;
+const ADD_H: f64 = 38.0;
+const MENU_W: f64 = 184.0;
+const MENU_ROW_H: f64 = 30.0;
+const MENU_SEP_H: f64 = 8.0;
+
+/// A reorderable vertical page/slide preview rail.
+pub struct PageSidebar {
+    // ---- configuration ----
+    /// Thumbnail height as a multiple of its width (`page_h / page_w`).
+    aspect: f64,
+    header: String,
+    add_label: String,
+    show_add: bool,
+    /// When true the widget paints its own panel background + header + divider
+    /// (the PDF reader owns a full left column); when false it paints only the
+    /// thumbnail list inside `rect` (the slides rail supplies its own panel).
+    draw_panel: bool,
+
+    // ---- per-frame inputs ----
+    count: usize,
+    current: usize,
+    rect: Rect,
+
+    // ---- derived geometry (recomputed in begin_frame) ----
+    list_vp: Rect,
+    thumb_w: f64,
+    thumb_h: f64,
+    list_top: f64,
+    max_scroll: f64,
+    add_rect: Rect,
+
+    // ---- interaction state ----
+    scroll: f64,
+    drag: DragController<usize>,
+    /// Index pressed this gesture (used to distinguish a click from a drag).
+    press_idx: Option<usize>,
+    last_pointer: Point,
+    menu: Option<Menu>,
+    pending: Vec<PageSidebarEvent>,
+}
+
+impl PageSidebar {
+    /// A rail whose thumbnails have aspect ratio `page_h / page_w`
+    /// (e.g. `792.0/612.0` for US-Letter PDF pages, `720.0/1280.0` for slides).
+    pub fn new(aspect: f64) -> Self {
+        Self {
+            aspect: aspect.max(0.05),
+            header: "PAGES".to_string(),
+            add_label: String::new(),
+            show_add: false,
+            draw_panel: true,
+            count: 0,
+            current: 0,
+            rect: Rect::ZERO,
+            list_vp: Rect::ZERO,
+            thumb_w: 1.0,
+            thumb_h: 1.0,
+            list_top: 0.0,
+            max_scroll: 0.0,
+            add_rect: Rect::ZERO,
+            scroll: 0.0,
+            drag: DragController::vertical(),
+            press_idx: None,
+            last_pointer: Point::ZERO,
+            menu: None,
+            pending: Vec::new(),
+        }
+    }
+
+    pub fn with_header(mut self, header: impl Into<String>) -> Self {
+        self.header = header.into();
+        self
+    }
+
+    /// Show a bottom "add" button carrying `label` (e.g. "Import…", "New slide").
+    pub fn with_add(mut self, label: impl Into<String>) -> Self {
+        self.add_label = label.into();
+        self.show_add = true;
+        self
+    }
+
+    /// Whether the widget paints its own panel + header (default true). Set
+    /// false when the host already draws the panel chrome around the list.
+    pub fn with_panel(mut self, draw_panel: bool) -> Self {
+        self.draw_panel = draw_panel;
+        self
+    }
+
+    pub fn set_aspect(&mut self, aspect: f64) {
+        self.aspect = aspect.max(0.05);
+    }
+
+    pub fn scroll(&self) -> f64 {
+        self.scroll
+    }
+
+    pub fn set_scroll(&mut self, s: f64) {
+        self.scroll = s.clamp(0.0, self.max_scroll);
+    }
+
+    /// Whether a reorder drag is live (ghost + gap showing) — the host wires
+    /// this to its redraw/pointer-capture logic.
+    pub fn is_dragging(&self) -> bool {
+        self.drag.is_active()
+    }
+
+    pub fn is_pending_drag(&self) -> bool {
+        self.drag.is_pending()
+    }
+
+    pub fn menu_open(&self) -> bool {
+        self.menu.is_some()
+    }
+
+    /// Maximum scroll offset for the current frame's geometry (0 when the whole
+    /// list fits). Hosts that keep their own scroll figure mirror this.
+    pub fn max_scroll(&self) -> f64 {
+        self.max_scroll
+    }
+
+    /// The live target index a held reorder drag would land at (`0..=count-1`),
+    /// or `None` when no drag is active. Passthrough of the shared
+    /// [`DragController`] so a host can preview / assert the drop row.
+    pub fn drag_insertion(&self) -> Option<usize> {
+        self.drag.insertion()
+    }
+
+    /// The original index of the slide being dragged, once the drag is active.
+    pub fn drag_from(&self) -> Option<usize> {
+        self.drag.from_index()
+    }
+
+    /// Drain the events produced since the last call.
+    pub fn take_events(&mut self) -> Vec<PageSidebarEvent> {
+        std::mem::take(&mut self.pending)
+    }
+
+    // ---- geometry ----------------------------------------------------
+
+    /// Recompute list geometry for this frame and clamp the scroll. Call once
+    /// per frame before [`render`](Self::render) and before hit-testing.
+    pub fn begin_frame(&mut self, rect: Rect, count: usize, current: usize) {
+        self.rect = rect;
+        self.count = count;
+        self.current = current.min(count.saturating_sub(1));
+
+        let header_h = if self.draw_panel { HEADER_H } else { 0.0 };
+        let add_h = if self.show_add { ADD_H + 6.0 } else { 0.0 };
+        let top = rect.y0 + header_h;
+        let bottom = (rect.y1 - add_h).max(top);
+        self.list_vp = Rect::new(rect.x0, top, rect.x1, bottom);
+
+        let usable_w = self.list_vp.width() - 2.0 * PAD - NUM_GUTTER - SCROLLBAR_W;
+        self.thumb_w = usable_w.max(1.0);
+        self.thumb_h = self.thumb_w * self.aspect;
+        self.list_top = self.list_vp.y0 + PAD;
+
+        let content_h = if count == 0 {
+            0.0
+        } else {
+            count as f64 * self.thumb_h + (count as f64 - 1.0) * GAP
+        };
+        let view_h = (self.list_vp.height() - 2.0 * PAD).max(0.0);
+        self.max_scroll = (content_h - view_h).max(0.0);
+        self.scroll = self.scroll.clamp(0.0, self.max_scroll);
+
+        self.add_rect = if self.show_add {
+            Rect::new(rect.x0 + PAD, rect.y1 - ADD_H, rect.x1 - PAD, rect.y1 - 6.0)
+        } else {
+            Rect::ZERO
+        };
+
+        // Keep the drag gap pinned to the ghost even as the list scrolls under
+        // a held drag.
+        self.drag.sync_insertion(&self.list_metrics());
+    }
+
+    fn list_metrics(&self) -> ListMetrics {
+        ListMetrics::uniform(self.list_top - self.scroll, self.thumb_h, GAP, self.count)
+    }
+
+    /// The un-shifted screen rect of thumbnail `i` this frame.
+    fn thumb_rect(&self, i: usize) -> Rect {
+        let x0 = self.list_vp.x0 + PAD + NUM_GUTTER;
+        let top = self.list_top - self.scroll + i as f64 * (self.thumb_h + GAP);
+        Rect::new(x0, top, x0 + self.thumb_w, top + self.thumb_h)
+    }
+
+    /// Every thumbnail slot as `(index, rect)` — exposed for the host (and
+    /// tests) so it can, e.g., pre-rasterise only visible pages.
+    pub fn thumb_rects(&self) -> Vec<(usize, Rect)> {
+        (0..self.count).map(|i| (i, self.thumb_rect(i))).collect()
+    }
+
+    /// Scroll so thumbnail `i` is fully within the viewport.
+    pub fn scroll_to(&mut self, i: usize) {
+        if self.count == 0 {
+            return;
+        }
+        let top = i as f64 * (self.thumb_h + GAP);
+        let bottom = top + self.thumb_h;
+        let view_h = (self.list_vp.height() - 2.0 * PAD).max(0.0);
+        if top < self.scroll {
+            self.scroll = top;
+        } else if bottom > self.scroll + view_h {
+            self.scroll = (bottom - view_h).max(0.0);
+        }
+        self.scroll = self.scroll.clamp(0.0, self.max_scroll);
+    }
+
+    fn thumb_at(&self, p: Point) -> Option<usize> {
+        if !self.list_vp.contains(p) {
+            return None;
+        }
+        (0..self.count).find(|&i| self.thumb_rect(i).contains(p))
+    }
+
+    // ---- pointer input ----------------------------------------------
+
+    /// A left-button press at logical point `p`. Returns true when the rail
+    /// consumed it (so the host stops routing). Opens/uses the context menu,
+    /// the add button, or begins a select + potential reorder drag.
+    pub fn on_press(&mut self, p: Point) -> bool {
+        self.last_pointer = p;
+
+        // A menu is modal while open: a click either picks a row or dismisses.
+        if let Some(menu) = self.menu.take() {
+            for (act, row) in &menu.items {
+                if row.contains(p) {
+                    self.apply_menu(*act, menu.index);
+                    return true;
+                }
+            }
+            // click off the menu — swallow the dismiss.
+            return true;
+        }
+
+        if self.show_add && self.add_rect.contains(p) {
+            self.pending.push(PageSidebarEvent::Add);
+            return true;
+        }
+
+        if let Some(i) = self.thumb_at(p) {
+            self.press_idx = Some(i);
+            self.pending.push(PageSidebarEvent::Select(i));
+            let grab = p.y - self.list_metrics().slot_lead(i);
+            self.drag.begin(i, i, grab, p);
+            return true;
+        }
+
+        // A click elsewhere in the rail column is still consumed by the panel.
+        self.list_vp.contains(p) || (self.draw_panel && self.rect.contains(p))
+    }
+
+    /// A right-button press: select the page under the cursor and open the
+    /// duplicate / move / delete menu on it. Returns true when consumed.
+    pub fn on_right_press(&mut self, p: Point) -> bool {
+        self.last_pointer = p;
+        self.menu = None;
+        let Some(i) = self.thumb_at(p) else {
+            return self.list_vp.contains(p);
+        };
+        self.pending.push(PageSidebarEvent::Select(i));
+        self.open_menu(i, p);
+        true
+    }
+
+    /// Pointer motion (logical). Feeds the reorder drag and menu hover.
+    /// Returns true when the visible state changed.
+    pub fn on_motion(&mut self, p: Point) -> bool {
+        self.last_pointer = p;
+        let mut changed = false;
+        if let Some(menu) = self.menu.as_mut() {
+            let hover = menu.items.iter().position(|(_, r)| r.contains(p));
+            if hover != menu.hover {
+                menu.hover = hover;
+                changed = true;
+            }
+        }
+        if self.drag.is_pending() {
+            changed |= self.drag.pointer_moved(p, &self.list_metrics());
+        }
+        changed
+    }
+
+    /// Button release. Commits a reorder drag if one moved. Returns true when
+    /// the visible state changed (so the host redraws).
+    pub fn on_release(&mut self) -> bool {
+        self.press_idx = None;
+        let was_active = self.drag.is_active();
+        if let Some((from, to)) = self.drag.commit() {
+            self.pending.push(PageSidebarEvent::Reorder { from, to });
+            return true;
+        }
+        was_active
+    }
+
+    /// A wheel notch of `dy` logical px (positive scrolls the list down).
+    pub fn on_wheel(&mut self, dy: f64) -> bool {
+        if self.max_scroll <= 0.0 {
+            return false;
+        }
+        let before = self.scroll;
+        self.scroll = (self.scroll + dy).clamp(0.0, self.max_scroll);
+        (self.scroll - before).abs() > f64::EPSILON
+    }
+
+    /// Escape: cancel a live drag or close the menu. Returns true if either
+    /// was in progress.
+    pub fn on_escape(&mut self) -> bool {
+        let mut changed = self.drag.cancel();
+        if self.menu.take().is_some() {
+            changed = true;
+        }
+        changed
+    }
+
+    fn open_menu(&mut self, index: usize, at: Point) {
+        let mut actions = vec![MenuAction::Duplicate];
+        if index > 0 {
+            actions.push(MenuAction::MoveUp);
+        }
+        if index + 1 < self.count {
+            actions.push(MenuAction::MoveDown);
+        }
+        actions.push(MenuAction::Delete);
+
+        // Height: one separator sits before Delete.
+        let h = actions.len() as f64 * MENU_ROW_H + MENU_SEP_H + 12.0;
+        let x0 = at.x.min(self.rect.x1 - MENU_W - 4.0).max(self.rect.x0 + 4.0);
+        let y0 = at.y.min(self.rect.y1 - h - 4.0).max(self.rect.y0 + 4.0);
+        let rect = Rect::new(x0, y0, x0 + MENU_W, y0 + h);
+
+        let mut items = Vec::new();
+        let mut y = y0 + 6.0;
+        for act in actions {
+            if act == MenuAction::Delete {
+                y += MENU_SEP_H;
+            }
+            let row = Rect::new(x0 + 4.0, y, x0 + MENU_W - 4.0, y + MENU_ROW_H);
+            items.push((act, row));
+            y += MENU_ROW_H;
+        }
+        self.menu = Some(Menu { index, rect, items, hover: None });
+    }
+
+    fn apply_menu(&mut self, act: MenuAction, index: usize) {
+        match act {
+            MenuAction::Duplicate => self.pending.push(PageSidebarEvent::Duplicate(index)),
+            MenuAction::MoveUp if index > 0 => self
+                .pending
+                .push(PageSidebarEvent::Reorder { from: index, to: index - 1 }),
+            MenuAction::MoveDown if index + 1 < self.count => self
+                .pending
+                .push(PageSidebarEvent::Reorder { from: index, to: index + 1 }),
+            MenuAction::Delete => self.pending.push(PageSidebarEvent::Delete(index)),
+            _ => {}
+        }
+    }
+
+    // ---- drawing -----------------------------------------------------
+
+    /// Paint the rail. `thumb` draws the host's page/slide content into the
+    /// given slot rect (the widget frames it, rings it, numbers it, and
+    /// handles the reflow gap + drag ghost around it).
+    pub fn render<F>(
+        &mut self,
+        scene: &mut Scene,
+        base: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        mut thumb: F,
+    ) where
+        F: FnMut(&mut Scene, &mut TextRenderer, Affine, usize, Rect),
+    {
+        let c = &theme.tokens.colors;
+
+        if self.draw_panel {
+            scene.fill(Fill::NonZero, base, c.surfaces.raised, None, &self.rect);
+            let divider = Line::new((self.rect.x1, self.rect.y0), (self.rect.x1, self.rect.y1));
+            scene.stroke(&Stroke::new(1.0), base, c.border_standard, None, &divider);
+            // Header label.
+            tr.draw_text_weighted(
+                scene,
+                &self.header,
+                12.0,
+                c.text_dim,
+                base * Affine::translate((self.rect.x0 + PAD + 2.0, self.rect.y0 + 9.0)),
+                None,
+                TextWeight::Semibold,
+            );
+        }
+
+        let metrics = self.list_metrics();
+        let drag_from = self.drag.from_index();
+
+        // Thumbnail list, clipped to the viewport so it never bleeds over the
+        // header or the add button.
+        scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, base, &self.list_vp);
+        for i in 0..self.count {
+            if Some(i) == drag_from {
+                continue; // lifted out — the floating ghost is drawn below.
+            }
+            let shift = self.drag.item_shift(i, &metrics);
+            let rect = self.thumb_rect(i) + Vec2::new(0.0, shift);
+            // Skip rows fully outside the viewport (cheap virtualisation).
+            if rect.y1 < self.list_vp.y0 - 4.0 || rect.y0 > self.list_vp.y1 + 4.0 {
+                continue;
+            }
+            self.draw_slot(scene, base, tr, theme, i, rect, &mut thumb);
+        }
+        scene.pop_layer();
+
+        // Floating ghost of the grabbed thumbnail, tracking the cursor.
+        if let (Some(from), Some(ghost)) = (
+            drag_from,
+            self.drag.ghost_rect_sized(
+                self.list_vp.x0 + PAD + NUM_GUTTER,
+                vello::kurbo::Size::new(self.thumb_w, self.thumb_h),
+            ),
+        ) {
+            scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, base, &self.list_vp);
+            let shadow = RoundedRect::from_rect(ghost.inflate(2.0, 2.0) + Vec2::new(0.0, 4.0), 8.0);
+            scene.fill(Fill::NonZero, base, Color::BLACK.with_alpha_factor(0.35), None, &shadow);
+            thumb(scene, tr, base, from, ghost);
+            scene.stroke(
+                &Stroke::new(2.5),
+                base,
+                theme.accent_primary,
+                None,
+                &RoundedRect::from_rect(ghost, 6.0),
+            );
+            scene.pop_layer();
+        }
+
+        // Scrollbar.
+        if self.max_scroll > 0.0 {
+            let view_h = (self.list_vp.height() - 2.0 * PAD).max(1.0);
+            let content_h = view_h + self.max_scroll;
+            let track = Rect::new(
+                self.list_vp.x1 - SCROLLBAR_W - 2.0,
+                self.list_top,
+                self.list_vp.x1 - 2.0,
+                self.list_top + view_h,
+            );
+            let frac = (view_h / content_h).clamp(0.08, 1.0);
+            let thumb_h = (view_h * frac).max(24.0);
+            let travel = view_h - thumb_h;
+            let t = (self.scroll / self.max_scroll).clamp(0.0, 1.0);
+            let ty = track.y0 + travel * t;
+            scene.fill(
+                Fill::NonZero,
+                base,
+                c.text_primary.with_alpha_factor(0.07),
+                None,
+                &RoundedRect::from_rect(track, 3.0),
+            );
+            scene.fill(
+                Fill::NonZero,
+                base,
+                c.text_primary.with_alpha_factor(0.35),
+                None,
+                &RoundedRect::from_rect(Rect::new(track.x0, ty, track.x1, ty + thumb_h), 3.0),
+            );
+        }
+
+        if self.show_add {
+            self.draw_add_button(scene, base, tr, theme);
+        }
+
+        if self.menu.is_some() {
+            self.draw_menu(scene, base, tr, theme);
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn draw_slot<F>(
+        &self,
+        scene: &mut Scene,
+        base: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        i: usize,
+        rect: Rect,
+        thumb: &mut F,
+    ) where
+        F: FnMut(&mut Scene, &mut TextRenderer, Affine, usize, Rect),
+    {
+        let c = &theme.tokens.colors;
+        let is_current = i == self.current;
+
+        // Host paints the page/slide content.
+        thumb(scene, tr, base, i, rect);
+
+        // Selection / idle ring.
+        let (ring, w) = if is_current {
+            (theme.accent_primary, 2.5)
+        } else {
+            (c.text_primary.with_alpha_factor(0.12), 1.0)
+        };
+        scene.stroke(&Stroke::new(w), base, ring, None, &RoundedRect::from_rect(rect, 6.0));
+
+        // Index number, right-aligned in the left gutter, vertically centred.
+        let label = format!("{}", i + 1);
+        let size = 11.0f32;
+        let (lw, lh) = tr.measure(&label, size, None);
+        let lx = self.list_vp.x0 + PAD + NUM_GUTTER - 6.0 - lw as f64;
+        let ly = rect.y0 + (rect.height() - lh as f64) / 2.0;
+        let col = if is_current { theme.accent_primary } else { c.text_dim };
+        tr.draw_text_weighted(
+            scene,
+            &label,
+            size,
+            col,
+            base * Affine::translate((lx.max(self.list_vp.x0 + 2.0), ly)),
+            None,
+            if is_current { TextWeight::Semibold } else { TextWeight::Regular },
+        );
+    }
+
+    fn draw_add_button(&self, scene: &mut Scene, base: Affine, tr: &mut TextRenderer, theme: &Theme) {
+        let c = &theme.tokens.colors;
+        let r = self.add_rect;
+        let hovered = r.contains(self.last_pointer);
+        let bg = if hovered {
+            theme.accent_primary.with_alpha_factor(0.16)
+        } else {
+            c.surfaces.base
+        };
+        let rr = RoundedRect::from_rect(r, 7.0);
+        scene.fill(Fill::NonZero, base, bg, None, &rr);
+        scene.stroke(&Stroke::new(1.0), base, c.border_standard, None, &rr);
+        // "+  label", centred.
+        let label = format!("+  {}", self.add_label);
+        let size = 12.0f32;
+        let (tw, th) = tr.measure(&label, size, None);
+        let tx = r.x0 + (r.width() - tw as f64) / 2.0;
+        let ty = r.y0 + (r.height() - th as f64) / 2.0;
+        tr.draw_text_weighted(
+            scene,
+            &label,
+            size,
+            if hovered { theme.accent_primary } else { c.text_primary },
+            base * Affine::translate((tx.max(r.x0 + 8.0), ty)),
+            None,
+            TextWeight::Semibold,
+        );
+    }
+
+    fn draw_menu(&self, scene: &mut Scene, base: Affine, tr: &mut TextRenderer, theme: &Theme) {
+        let Some(menu) = self.menu.as_ref() else { return };
+        let c = &theme.tokens.colors;
+        let rr = RoundedRect::from_rect(menu.rect, 8.0);
+        // Drop shadow.
+        scene.fill(
+            Fill::NonZero,
+            base,
+            Color::BLACK.with_alpha_factor(0.30),
+            None,
+            &RoundedRect::from_rect(menu.rect.inflate(1.5, 1.5) + Vec2::new(0.0, 3.0), 9.0),
+        );
+        scene.fill(Fill::NonZero, base, c.surfaces.raised, None, &rr);
+        scene.stroke(&Stroke::new(1.0), base, c.border_standard, None, &rr);
+        for (idx, (act, row)) in menu.items.iter().enumerate() {
+            if menu.hover == Some(idx) {
+                scene.fill(
+                    Fill::NonZero,
+                    base,
+                    theme.accent_primary.with_alpha_factor(0.16),
+                    None,
+                    &RoundedRect::from_rect(*row, 5.0),
+                );
+            }
+            let (label, col) = match act {
+                MenuAction::Duplicate => ("Duplicate", c.text_primary),
+                MenuAction::MoveUp => ("Move up", c.text_primary),
+                MenuAction::MoveDown => ("Move down", c.text_primary),
+                MenuAction::Delete => ("Delete", c.semantic.danger),
+            };
+            let size = 12.5f32;
+            let (_, th) = tr.measure(label, size, None);
+            let ty = row.y0 + (row.height() - th as f64) / 2.0;
+            tr.draw_text(scene, label, size, col, base * Affine::translate((row.x0 + 12.0, ty)), None);
+        }
+    }
+}
+
+impl Widget for PageSidebar {
+    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        _theme: &Theme,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        let node = taffy.new_leaf(Style::default()).unwrap();
+        node_map.insert(node, self as *mut dyn Widget);
+        node
+    }
+    fn apply_layout(&mut self, _taffy: &TaffyTree<()>, _node: NodeId, _origin: Point) {}
+    fn draw(
+        &mut self,
+        _scene: &mut Scene,
+        _transform: Affine,
+        _text_renderer: &mut TextRenderer,
+        _theme: &Theme,
+        _presence: &PresenceCtx,
+    ) {
+    }
+    fn handle_event(
+        &mut self,
+        _event: &winit::event::WindowEvent,
+        _scale_factor: f64,
+        _modifiers: &winit::event::Modifiers,
+        _state: &mut AutoCommit,
+        _path: &ObjId,
+        _handled: &mut bool,
+        _focus_target: &mut Option<NodeId>,
+        _node_id: NodeId,
+        _taffy: &TaffyTree<()>,
+    ) {
+    }
+    fn name(&self) -> &str {
+        "PageSidebar"
+    }
+    fn test_id(&self) -> Option<&str> {
+        Some("page_sidebar")
+    }
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rail(count: usize) -> PageSidebar {
+        let mut s = PageSidebar::new(792.0 / 612.0).with_add("Import…");
+        s.begin_frame(Rect::new(0.0, 0.0, 200.0, 800.0), count, 0);
+        s
+    }
+
+    #[test]
+    fn move_item_matches_remove_insert() {
+        let mut v = vec![0, 1, 2, 3];
+        move_item(&mut v, 0, 3);
+        assert_eq!(v, vec![1, 2, 3, 0]);
+        let mut v = vec![0, 1, 2, 3];
+        move_item(&mut v, 3, 0);
+        assert_eq!(v, vec![3, 0, 1, 2]);
+        // out of range / equal are no-ops.
+        let mut v = vec![0, 1];
+        move_item(&mut v, 0, 0);
+        assert_eq!(v, vec![0, 1]);
+        move_item(&mut v, 5, 0);
+        assert_eq!(v, vec![0, 1]);
+    }
+
+    #[test]
+    fn duplicate_after_inserts_clone() {
+        let mut v = vec!['a', 'b', 'c'];
+        duplicate_after(&mut v, 1);
+        assert_eq!(v, vec!['a', 'b', 'b', 'c']);
+        duplicate_after(&mut v, 99);
+        assert_eq!(v, vec!['a', 'b', 'b', 'c']);
+    }
+
+    #[test]
+    fn thumb_rects_are_ordered_and_sized() {
+        let s = rail(4);
+        let rects = s.thumb_rects();
+        assert_eq!(rects.len(), 4);
+        // Portrait: each thumbnail is taller than it is wide.
+        for (_, r) in &rects {
+            assert!(r.height() > r.width(), "portrait pages are taller than wide");
+        }
+        // Stacked top-to-bottom with a positive gap.
+        assert!(rects[1].1.y0 > rects[0].1.y1, "slot 1 sits below slot 0");
+    }
+
+    #[test]
+    fn press_on_thumbnail_selects_it() {
+        let mut s = rail(4);
+        let (_, r2) = s.thumb_rects()[2];
+        assert!(s.on_press(r2.center()));
+        assert_eq!(s.take_events(), vec![PageSidebarEvent::Select(2)]);
+    }
+
+    #[test]
+    fn drag_reorder_emits_reorder_on_release() {
+        let mut s = rail(4);
+        let rects = s.thumb_rects();
+        // Grab slot 0 at its centre, drag down past slot 3, release.
+        s.on_press(rects[0].1.center());
+        assert_eq!(s.take_events(), vec![PageSidebarEvent::Select(0)]);
+        let far_down = Point::new(rects[3].1.center().x, rects[3].1.center().y + 400.0);
+        s.on_motion(far_down);
+        assert!(s.is_dragging(), "cleared the drag threshold");
+        assert!(s.on_release());
+        assert_eq!(s.take_events(), vec![PageSidebarEvent::Reorder { from: 0, to: 3 }]);
+    }
+
+    #[test]
+    fn tiny_move_stays_a_click_not_a_reorder() {
+        let mut s = rail(4);
+        let rects = s.thumb_rects();
+        s.on_press(rects[1].1.center());
+        s.take_events(); // clear the Select
+        s.on_motion(rects[1].1.center() + Vec2::new(1.0, 1.0));
+        assert!(!s.is_dragging());
+        assert!(!s.on_release());
+        assert!(s.take_events().is_empty(), "a click produces no reorder");
+    }
+
+    #[test]
+    fn right_click_menu_duplicate_and_delete() {
+        let mut s = rail(4);
+        let rects = s.thumb_rects();
+        // Right-click slot 1 → selects it and opens the menu.
+        assert!(s.on_right_press(rects[1].1.center()));
+        assert_eq!(s.take_events(), vec![PageSidebarEvent::Select(1)]);
+        assert!(s.menu_open());
+        // Click "Duplicate" (first row).
+        let dup_row = s.menu.as_ref().unwrap().items[0].1.center();
+        assert!(s.on_press(dup_row));
+        assert_eq!(s.take_events(), vec![PageSidebarEvent::Duplicate(1)]);
+        assert!(!s.menu_open(), "picking a row closes the menu");
+
+        // Now the delete row on a fresh menu.
+        s.on_right_press(rects[2].1.center());
+        s.take_events();
+        let menu = s.menu.as_ref().unwrap();
+        let del = menu.items.iter().find(|(a, _)| *a == MenuAction::Delete).unwrap().1.center();
+        assert!(s.on_press(del));
+        assert_eq!(s.take_events(), vec![PageSidebarEvent::Delete(2)]);
+    }
+
+    #[test]
+    fn menu_move_up_down_map_to_reorder() {
+        let mut s = rail(4);
+        let rects = s.thumb_rects();
+        s.on_right_press(rects[2].1.center());
+        s.take_events();
+        let up = s
+            .menu
+            .as_ref()
+            .unwrap()
+            .items
+            .iter()
+            .find(|(a, _)| *a == MenuAction::MoveUp)
+            .unwrap()
+            .1
+            .center();
+        s.on_press(up);
+        assert_eq!(s.take_events(), vec![PageSidebarEvent::Reorder { from: 2, to: 1 }]);
+    }
+
+    #[test]
+    fn first_page_menu_has_no_move_up() {
+        let mut s = rail(4);
+        let rects = s.thumb_rects();
+        s.on_right_press(rects[0].1.center());
+        let has_up = s.menu.as_ref().unwrap().items.iter().any(|(a, _)| *a == MenuAction::MoveUp);
+        assert!(!has_up, "the first page cannot move up");
+    }
+
+    #[test]
+    fn add_button_emits_add() {
+        let mut s = rail(4);
+        assert!(s.on_press(s.add_rect.center()));
+        assert_eq!(s.take_events(), vec![PageSidebarEvent::Add]);
+    }
+
+    #[test]
+    fn wheel_scrolls_and_clamps() {
+        // Many pages so the content overflows the viewport.
+        let mut s = rail(40);
+        assert!(s.max_scroll > 0.0);
+        assert!(s.on_wheel(120.0));
+        assert!(s.scroll() > 0.0);
+        // Clamp at the top.
+        s.set_scroll(0.0);
+        assert!(!s.on_wheel(-50.0), "already at the top");
+        assert_eq!(s.scroll(), 0.0);
+    }
+
+    #[test]
+    fn escape_cancels_a_live_drag() {
+        let mut s = rail(4);
+        let rects = s.thumb_rects();
+        s.on_press(rects[0].1.center());
+        s.on_motion(rects[3].1.center());
+        assert!(s.is_dragging());
+        assert!(s.on_escape());
+        assert!(!s.is_dragging());
+        assert!(!s.on_release());
+        // No reorder survives a cancel.
+        assert!(!s.take_events().iter().any(|e| matches!(e, PageSidebarEvent::Reorder { .. })));
+    }
+}
