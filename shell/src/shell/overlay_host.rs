@@ -74,6 +74,13 @@ pub struct ShellOverlayHost {
     /// returns. Populated during draw so `handle_event` can hit-test
     /// without recomputing geometry.
     search_chip_rects: Vec<Rect>,
+    /// Set to `true` whenever [`Self::refresh_search_results`] rewrites
+    /// the palette's entry list. The next `take_structure_dirty` folds
+    /// it in so the taffy layout pass rebuilds the palette node with
+    /// the new row count — without this the palette's height stays
+    /// pinned at whatever the empty-entries first paint computed, and
+    /// only the first ~1 result is visible.
+    palette_layout_dirty: bool,
     // Child node ids are captured once during `build_layout` so we can
     // forward layout/draw/event calls without re-walking the tree.
     content_node: Option<NodeId>,
@@ -415,6 +422,7 @@ impl ShellOverlayHost {
             last_search_query: String::new(),
             active_kind_filter: Vec::new(),
             search_chip_rects: Vec::new(),
+            palette_layout_dirty: false,
             content_node: None,
             palette_node: None,
             sidebar_node: None,
@@ -1551,6 +1559,67 @@ impl ShellOverlayHost {
 
         self.palette.set_entries(entries);
         self.search_results = results;
+        // New entry count → new desired_size → new palette node height.
+        // Flag the layout dirty so the next `take_structure_dirty` /
+        // `relayout` rebuilds the taffy tree. Without this the palette
+        // stays pinned at whatever height the first (usually empty)
+        // paint sized it to, and follow-up refreshes only reveal the
+        // first ~1 row.
+        self.palette_layout_dirty = true;
+    }
+
+    /// Hit-test a click position against every strip's group rects and
+    /// stamp `tree.active_strip` / `tree.active_group` to the group the
+    /// cursor is over. Runs on every left-press inside the desktop
+    /// content area — matches every other DE where clicking a window
+    /// (any part of it, not just its titlebar) focuses that window.
+    ///
+    /// No-op when no group contains the point (click landed on empty
+    /// wallpaper, the topbar, the wheel disc, etc.).
+    fn stamp_active_group_from_click(&mut self, p: Point) {
+        if self.group_row_ptrs.is_empty() {
+            return;
+        }
+        let Some(chrome) = self.chrome.clone() else {
+            return;
+        };
+        // Collect first, apply under a single chrome borrow. Same shape
+        // as the harvest reconcilers.
+        let mut hit: Option<(StripId, GroupId)> = None;
+        for (&strip_id, &ptr) in &self.group_row_ptrs {
+            // SAFETY: same contract as every other `group_row_ptrs`
+            // accessor — captured from a `Box<GroupRow>` owned through
+            // the content tree, host outlives the content, `&mut self`
+            // ensures no other reconcile path aliases.
+            let row: &GroupRow = unsafe { &*ptr };
+            for g in row.groups.iter() {
+                if g.get_rect().contains(p) {
+                    hit = Some((strip_id, g.id));
+                    break;
+                }
+            }
+            if hit.is_some() {
+                break;
+            }
+        }
+        let Some((strip_id, group_id)) = hit else {
+            return;
+        };
+        let st = chrome.borrow_mut();
+        let mut tree = st.tree_mut();
+        // Only stamp when the click resolved a real workspace we can
+        // walk back to — otherwise a stale strip pointer from a torn-
+        // down workspace could shadow the real active one.
+        let ws_id = tree.active;
+        let workspace_exists = tree
+            .workspaces
+            .iter()
+            .any(|w| w.id == ws_id && w.strips.iter().any(|s| s.id == strip_id));
+        if !workspace_exists {
+            return;
+        }
+        tree.active_strip.insert(ws_id, strip_id);
+        tree.active_group.insert(strip_id, group_id);
     }
 
     /// Toggle a kind in the chip filter. Multiple kinds may be active
@@ -1616,6 +1685,19 @@ impl ShellOverlayHost {
     /// staging a synthetic Ctrl+K key event through `handle_event`.
     pub fn set_palette_visible(&mut self, v: bool) {
         self.palette_visible = v;
+    }
+
+    /// Run the search fan-out directly. `bin/shots` calls this after
+    /// forcing the palette open so the offscreen scene shows a
+    /// populated result list instead of an empty card (the production
+    /// entry point is `handle_event`'s per-keystroke refresh, which
+    /// scenes bypass by mutating `palette_visible` directly).
+    pub fn refresh_search_results_for_shots(
+        &mut self,
+        doc: &mut automerge::AutoCommit,
+        root: &ObjId,
+    ) {
+        self.refresh_search_results(doc, root);
     }
 
     /// Read-only accessor for the command-palette query buffer. Used by
@@ -3879,6 +3961,26 @@ impl Widget for ShellOverlayHost {
                 }
             }
         }
+        // "Click-anywhere-in-a-group focuses that group" — before we
+        // forward the event, hit-test the click against every strip's
+        // group rects and stamp `tree.active_strip` / `tree.active_group`
+        // to whichever group the cursor is over. Without this, clicking
+        // the WINDOW BODY (as opposed to a tab pill) never updates the
+        // tree's active-group pointer, so the palette scope
+        // (`ChromeState::active_tab_id`) stays anchored to whatever
+        // group was active before the detach — the 2026-07-09
+        // "Ctrl+K scoped to Notes even though I clicked Files in its
+        // own group" regression.
+        if let WindowEvent::MouseInput {
+            state: ElementState::Pressed,
+            button: winit::event::MouseButton::Left,
+            ..
+        } = event
+        {
+            if let Some(p) = self.last_cursor {
+                self.stamp_active_group_from_click(p);
+            }
+        }
         self.content.handle_event(
             event,
             scale_factor,
@@ -3989,7 +4091,8 @@ impl Widget for ShellOverlayHost {
             .as_mut()
             .map(|s| s.take_structure_dirty())
             .unwrap_or(false);
-        content | sidebar
+        let palette = std::mem::take(&mut self.palette_layout_dirty);
+        content | sidebar | palette
     }
 
     fn needs_animation_frame(&self) -> bool {
