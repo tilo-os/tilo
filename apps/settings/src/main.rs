@@ -22,7 +22,12 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let widget = SettingsApp::new();
     let state = ui::State::new();
-    let app = ui::App::new(state, Box::new(widget));
+    let mut app = ui::App::new(state, Box::new(widget));
+    // Filtering the sidebar as the user types rebuilds the widget tree each
+    // keystroke. Preserve keyboard focus across that rebuild so the search
+    // field keeps the caret (it is the first focusable, so focus returns to
+    // it by index); without this, typing would drop focus after one letter.
+    app.autofocus_on_structure_change = true;
     app.run();
     Ok(())
 }

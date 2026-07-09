@@ -18,7 +18,7 @@ use std::time::Duration;
 
 use ui::widget::Widget;
 
-use crate::widgets::{card, caption, rows, value_row};
+use crate::widgets::{card, caption, hero, rows, value_row};
 
 /// Snapshot of the data the About pane reads at construction time.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -27,6 +27,9 @@ pub struct AboutInfo {
     pub kernel: String,
     pub uptime: String,
     pub hostname: String,
+    pub arch: String,
+    pub cpu: String,
+    pub memory: String,
 }
 
 impl AboutInfo {
@@ -36,6 +39,8 @@ impl AboutInfo {
             Path::new("/proc/sys/kernel/osrelease"),
             Path::new("/proc/uptime"),
             Path::new("/proc/sys/kernel/hostname"),
+            Path::new("/proc/cpuinfo"),
+            Path::new("/proc/meminfo"),
         )
     }
 
@@ -44,6 +49,8 @@ impl AboutInfo {
         kernel_path: &Path,
         uptime_path: &Path,
         hostname_path: &Path,
+        cpuinfo_path: &Path,
+        meminfo_path: &Path,
     ) -> Self {
         let pretty_name = fs::read_to_string(os_release)
             .ok()
@@ -64,7 +71,19 @@ impl AboutInfo {
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| "this-device".to_string());
-        Self { pretty_name, kernel, uptime, hostname }
+        let cpu = fs::read_to_string(cpuinfo_path)
+            .ok()
+            .and_then(|s| parse_cpu_model(&s))
+            .unwrap_or_else(|| "unknown".to_string());
+        let memory = fs::read_to_string(meminfo_path)
+            .ok()
+            .and_then(|s| parse_mem_total_kb(&s))
+            .map(format_memory)
+            .unwrap_or_else(|| "unknown".to_string());
+        // Compile-time target arch equals the running machine's arch — an
+        // honest fact that needs no syscall.
+        let arch = std::env::consts::ARCH.to_string();
+        Self { pretty_name, kernel, uptime, hostname, arch, cpu, memory }
     }
 
     /// A short, stable identity fingerprint derived from the hostname.
@@ -86,6 +105,9 @@ pub fn build() -> Box<dyn Widget> {
 }
 
 pub fn build_with(info: &AboutInfo) -> Box<dyn Widget> {
+    // A device-identity hero: the machine's name in the accent, the OS beneath.
+    let hero_block = hero("\u{f0322}", &info.hostname, &info.pretty_name); // laptop glyph
+
     let identity = card(
         "Device identity",
         rows(vec![
@@ -103,11 +125,20 @@ pub fn build_with(info: &AboutInfo) -> Box<dyn Widget> {
         rows(vec![
             value_row("OS", &info.pretty_name),
             value_row("Kernel", &info.kernel),
+            value_row("Architecture", &info.arch),
             value_row("Uptime", &info.uptime),
         ]),
     );
 
-    crate::widgets::cards(vec![identity, system])
+    let hardware = card(
+        "Hardware",
+        rows(vec![
+            value_row("Processor", &info.cpu),
+            value_row("Memory", &info.memory),
+        ]),
+    );
+
+    crate::widgets::cards(vec![hero_block, identity, system, hardware])
 }
 
 pub(crate) fn parse_os_release_pretty_name(contents: &str) -> Option<String> {
@@ -121,6 +152,42 @@ pub(crate) fn parse_os_release_pretty_name(contents: &str) -> Option<String> {
         }
     }
     None
+}
+
+/// Pull the CPU model from `/proc/cpuinfo` — the first `model name` line.
+pub(crate) fn parse_cpu_model(contents: &str) -> Option<String> {
+    for line in contents.lines() {
+        if let Some((key, val)) = line.split_once(':') {
+            if key.trim() == "model name" {
+                let v = val.trim();
+                if !v.is_empty() {
+                    return Some(v.to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Pull total memory (in kB) from `/proc/meminfo`'s `MemTotal` line.
+pub(crate) fn parse_mem_total_kb(contents: &str) -> Option<u64> {
+    for line in contents.lines() {
+        if let Some(rest) = line.strip_prefix("MemTotal:") {
+            return rest.split_whitespace().next().and_then(|n| n.parse::<u64>().ok());
+        }
+    }
+    None
+}
+
+/// Format a memory size in kB as a friendly `"n.n GB"` (or `"n MB"` when
+/// under a gigabyte).
+pub(crate) fn format_memory(kb: u64) -> String {
+    let mb = kb as f64 / 1024.0;
+    if mb >= 1024.0 {
+        format!("{:.1} GB", mb / 1024.0)
+    } else {
+        format!("{:.0} MB", mb)
+    }
 }
 
 pub(crate) fn parse_uptime_seconds(contents: &str) -> Option<f64> {
@@ -194,11 +261,31 @@ mod tests {
     #[test]
     fn from_paths_uses_fallbacks_for_missing_files() {
         let missing = Path::new("/nonexistent/qos/settings/test/path");
-        let info = AboutInfo::from_paths(missing, missing, missing, missing);
+        let info = AboutInfo::from_paths(missing, missing, missing, missing, missing, missing);
         assert_eq!(info.pretty_name, "unknown");
         assert_eq!(info.kernel, "unknown");
         assert_eq!(info.uptime, "unknown");
         assert_eq!(info.hostname, "this-device");
+        assert_eq!(info.cpu, "unknown");
+        assert_eq!(info.memory, "unknown");
+        // Architecture is a compile-time fact, always present.
+        assert!(!info.arch.is_empty());
+    }
+
+    #[test]
+    fn parses_cpu_model_first_match() {
+        let s = "processor\t: 0\nvendor_id\t: AuthenticAMD\nmodel name\t: AMD Ryzen 7 7840U\nprocessor\t: 1\nmodel name\t: AMD Ryzen 7 7840U\n";
+        assert_eq!(parse_cpu_model(s).as_deref(), Some("AMD Ryzen 7 7840U"));
+        assert!(parse_cpu_model("no model here\n").is_none());
+    }
+
+    #[test]
+    fn parses_and_formats_memory() {
+        // 16 GiB in kB.
+        assert_eq!(parse_mem_total_kb("MemTotal:       16330124 kB\n"), Some(16_330_124));
+        assert_eq!(format_memory(16_330_124), "15.6 GB");
+        assert_eq!(format_memory(512 * 1024), "512 MB");
+        assert!(parse_mem_total_kb("SwapTotal: 0 kB\n").is_none());
     }
 
     #[test]
@@ -208,6 +295,9 @@ mod tests {
             kernel: "x".into(),
             uptime: "x".into(),
             hostname: "ada-laptop".into(),
+            arch: "x86_64".into(),
+            cpu: "x".into(),
+            memory: "x".into(),
         };
         let fp = info.fingerprint();
         // 4 groups of 4 hex chars separated by middots.
