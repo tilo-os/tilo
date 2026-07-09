@@ -10,10 +10,9 @@
 use crate::diff::{language_for, parse_unified};
 use crate::graph;
 use crate::model::{
-    Branch, ChangeArea, ChangeKind, Commit, FileChange, FileDiff, RefKind, RefLabel, Remote,
-    RepoModel, Stash, Tag,
+    Branch, ChangeArea, ChangeKind, Commit, DiffKey, DiffMap, FileChange, FileDiff, RefKind,
+    RefLabel, Remote, RepoModel, Stash, Tag,
 };
-use std::collections::HashMap;
 
 fn fc(
     path: &str,
@@ -34,7 +33,7 @@ fn fc(
 
 /// Build the full sample model, with the graph lanes already assigned and a
 /// map of per-file diffs for the changed files.
-pub fn model() -> (RepoModel, HashMap<String, FileDiff>) {
+pub fn model() -> (RepoModel, DiffMap) {
     let staged = vec![
         fc("src/render/scene.rs", ChangeArea::Staged, ChangeKind::Modified, 24, 6),
         fc("src/render/pipeline.rs", ChangeArea::Staged, ChangeKind::Added, 58, 0),
@@ -54,15 +53,17 @@ pub fn model() -> (RepoModel, HashMap<String, FileDiff>) {
         fc("src/render/shaders/blur.wgsl", ChangeArea::Untracked, ChangeKind::Untracked, 37, 0),
     ];
 
-    let mut diffs: HashMap<String, FileDiff> = HashMap::new();
-    diffs.insert("src/render/scene.rs".into(), diff_scene());
-    diffs.insert("src/render/pipeline.rs".into(), diff_pipeline());
-    diffs.insert("src/gpu/device.rs".into(), diff_rename());
-    diffs.insert("src/app.rs".into(), diff_app());
-    diffs.insert("Cargo.toml".into(), diff_cargo());
-    diffs.insert("src/legacy/blit.rs".into(), diff_deleted());
-    diffs.insert("docs/rendering.md".into(), diff_untracked_md());
-    diffs.insert("src/render/shaders/blur.wgsl".into(), diff_untracked_wgsl());
+    // Staged files carry a HEAD→index diff; unstaged / untracked files carry a
+    // worktree diff — key each on its side so selection resolves the right one.
+    let mut diffs: DiffMap = DiffMap::new();
+    diffs.insert(DiffKey::staged("src/render/scene.rs"), diff_scene());
+    diffs.insert(DiffKey::staged("src/render/pipeline.rs"), diff_pipeline());
+    diffs.insert(DiffKey::staged("src/gpu/device.rs"), diff_rename());
+    diffs.insert(DiffKey::worktree("src/app.rs"), diff_app());
+    diffs.insert(DiffKey::worktree("Cargo.toml"), diff_cargo());
+    diffs.insert(DiffKey::worktree("src/legacy/blit.rs"), diff_deleted());
+    diffs.insert(DiffKey::worktree("docs/rendering.md"), diff_untracked_md());
+    diffs.insert(DiffKey::worktree("src/render/shaders/blur.wgsl"), diff_untracked_wgsl());
 
     let mut commits = commit_history();
     let layout = graph::layout(&mut commits);

@@ -306,10 +306,6 @@ enum ToolAction {
     Italic,
     Underline,
     Strike,
-    H1,
-    H2,
-    Body,
-    Bullet,
     FontCycle,
     /// Nudge the selection's font size down one step (a per-run `size` character
     /// mark). Direct formatting on the selection — the style's *default* size
@@ -734,6 +730,22 @@ fn is_word_match(chars: &[char], s: usize, e: usize) -> bool {
     let left_ok = s == 0 || !is_word(chars[s - 1]);
     let right_ok = e >= chars.len() || !is_word(chars[e]);
     left_ok && right_ok
+}
+
+/// Combined width the right-aligned colour + highlight swatch strips occupy on
+/// the toolbar's last row. The strips are painted directly (not as chrome
+/// `ToolbarItem`s), so the packer can't see them — it reserves this width as a
+/// trailing phantom item instead, keeping button rows from extending under the
+/// swatches. Mirrors the geometry in `draw_color_swatches` / `draw_highlight_swatches`.
+fn swatch_reserve_width() -> f64 {
+    let sw = 20.0;
+    let gap = 5.0;
+    let n_color = (STYLE_PALETTE.len() + 1) as f64; // +1 neutral/default swatch
+    let n_hl = (HIGHLIGHT_PALETTE.len() + 1) as f64; // +1 "no highlight" swatch
+    let color = n_color * sw + (n_color - 1.0) * gap;
+    let hl = n_hl * sw + (n_hl - 1.0) * gap;
+    // right edge margin + colour strip + inter-strip gap + highlight strip
+    14.0 + color + 10.0 + hl
 }
 
 /// Left padding `chrome::toolbar::draw` applies before the first item.
@@ -3301,13 +3313,24 @@ impl WordProcessorWidget {
         }
 
         let readout = match self.layout_mode {
-            LayoutMode::Margins => format!(
-                "margins  L {}  T {}  R {}  B {}   ·   drag = opposite pair · Shift = one side · Ctrl = all proportional",
-                self.margins.left.round(), self.margins.top.round(), self.margins.right.round(), self.margins.bottom.round()
+            LayoutMode::Margins => t_args(
+                "layout-margins-readout",
+                &[
+                    arg("l", self.margins.left.round() as i64),
+                    arg("t", self.margins.top.round() as i64),
+                    arg("r", self.margins.right.round() as i64),
+                    arg("b", self.margins.bottom.round() as i64),
+                ],
             ),
             LayoutMode::Spacing => {
-                let name = self.focused_style_key().map(|k| self.sheet.get(&k).name).unwrap_or_else(|| "Body".into());
-                format!("{} spacing  {} px   ·   drag the handle — every “{}” block follows", name, self.focused_space_after().round(), name)
+                let name = self
+                    .focused_style_key()
+                    .map(|k| crate::styles::style_display_name(&k, &self.sheet.get(&k)))
+                    .unwrap_or_else(|| t("style-body"));
+                t_args(
+                    "layout-spacing-readout",
+                    &[arg("name", name), arg("px", self.focused_space_after().round() as i64)],
+                )
             }
             LayoutMode::None => t("layout-none-hint"),
         };
@@ -3361,11 +3384,15 @@ impl WordProcessorWidget {
         // `align` attr (not the style default).
         {
             let cur = self.current_align();
-            tr.draw_text(scene, &t("panel-align"), 12.5, cc.text, transform * Affine::translate((x0, y + 5.0)), None);
-            let bw = 34.0;
+            // Compact single-glyph buttons: a long localized label ("Ausrichtung"
+            // in German) must not collide with the L button, so the four glyphs are
+            // narrow — moving the strip right to open a gap after the label.
+            let bw = 28.0;
             let gap = 6.0;
+            let strip_left = right - 4.0 * bw - 3.0 * gap;
+            tr.draw_text(scene, &t("panel-align"), 12.5, cc.text, transform * Affine::translate((x0, y + 5.0)), None);
             for (i, (label, val)) in [("L", "left"), ("C", "center"), ("R", "right"), ("J", "justify")].iter().enumerate() {
-                let rx = right - (4.0 - i as f64) * bw - (3.0 - i as f64) * gap;
+                let rx = strip_left + i as f64 * (bw + gap);
                 let r = Rect::new(rx, y, rx + bw, y + 24.0);
                 draw_btn(scene, transform, tr, &cc, r, label, cur == *val, true);
                 self.panel_hits.push((r, PanelHit::ParaAlign(val)));
@@ -3390,10 +3417,23 @@ impl WordProcessorWidget {
         // ================= Paragraph style (the named preset) =============
         // Snapshot the focused style for drawing (read-only copy).
         let st = self.sheet.get(&key);
+        let display_name = crate::styles::style_display_name(&key, &st);
         tr.draw_text(scene, &t("panel-style"), 10.5, cc.text_dim, transform * Affine::translate((x0, y)), None);
         y += 16.0;
-        tr.draw_text(scene, &st.name, 18.0, cc.text, transform * Affine::translate((x0, y)), Some(inner_w as f32));
-        y += 28.0;
+        tr.draw_text(scene, &display_name, 18.0, cc.text, transform * Affine::translate((x0, y)), Some(inner_w as f32));
+        y += 24.0;
+        // Caption: name the preset semantics explicitly so this section reads as
+        // "edit the shared style" — distinct from the toolbar, which formats only
+        // the current selection. This is what keeps the two homes unambiguous.
+        tr.draw_text(
+            scene,
+            &t_args("panel-style-hint", &[arg("name", display_name.clone())]),
+            11.0,
+            cc.text_dim,
+            transform * Affine::translate((x0, y)),
+            Some(inner_w as f32),
+        );
+        y += 22.0;
 
         // ---- Style picker -------------------------------------------------
         let order = self.sheet.order();
@@ -3406,7 +3446,7 @@ impl WordProcessorWidget {
             let cx = x0 + col * (col_w + gap);
             let cy = y + row * (chip_h + gap);
             let r = Rect::new(cx, cy, cx + col_w, cy + chip_h);
-            let name = self.sheet.get(id).name;
+            let name = crate::styles::style_display_name(id, &self.sheet.get(id));
             draw_btn(scene, transform, tr, &cc, r, &name, id == &key, false);
             self.panel_hits.push((r, PanelHit::Pick(id.clone())));
         }
@@ -3790,10 +3830,6 @@ fn tool_action_a11y_label(a: ToolAction) -> String {
         ToolAction::Strike => "a11y-strikethrough",
         ToolAction::Super => "a11y-superscript",
         ToolAction::Sub => "a11y-subscript",
-        ToolAction::H1 => "a11y-heading1",
-        ToolAction::H2 => "a11y-heading2",
-        ToolAction::Body => "a11y-body-text",
-        ToolAction::Bullet => "a11y-bulleted-list",
         ToolAction::FontCycle => "a11y-font",
         ToolAction::FontSizeDec => "a11y-size-down",
         ToolAction::FontSizeInc => "a11y-size-up",
@@ -4754,7 +4790,7 @@ impl Widget for WordProcessorWidget {
                     // Missing or undecodable (e.g. non-PNG) image — placeholder.
                     scene.fill(Fill::NonZero, ctf, Color::from_rgb8(0xee, 0xee, 0xf2), None, &vello::kurbo::RoundedRect::from_rect(rect, 6.0));
                     scene.stroke(&vello::kurbo::Stroke::new(1.0), ctf, Color::from_rgb8(0xcc, 0xce, 0xd6), None, &vello::kurbo::RoundedRect::from_rect(rect, 6.0));
-                    text_renderer.draw_text(scene, "image", 14.0, PAPER_MUTED, ctf * Affine::translate((rect.x0 + 12.0, rect.y0 + rect.height() / 2.0 - 8.0)), None);
+                    text_renderer.draw_text(scene, &t("canvas-image-missing"), 14.0, PAPER_MUTED, ctf * Affine::translate((rect.x0 + 12.0, rect.y0 + rect.height() / 2.0 - 8.0)), None);
                 }
                 // Selection chrome: when this image is the caret's block, ring it
                 // with an accent border + corner resize handles so it reads as
@@ -4789,7 +4825,7 @@ impl Widget for WordProcessorWidget {
             if l.kind == "fidelity" {
                 let box_rect = Rect::new(l.text_x, l.y_top + 2.0, (page_x + page_w - m.right).min(l.text_x + 360.0), l.y_top + l.height - 2.0);
                 scene.fill(Fill::NonZero, ctf, Color::from_rgb8(0xee, 0xee, 0xf2), None, &vello::kurbo::RoundedRect::from_rect(box_rect, 4.0));
-                text_renderer.draw_text(scene, "⟦ embedded content ⟧", 14.0, PAPER_MUTED, ctf * Affine::translate((l.text_x + 10.0, l.y_top + 6.0)), None);
+                text_renderer.draw_text(scene, &t("canvas-embedded-content"), 14.0, PAPER_MUTED, ctf * Affine::translate((l.text_x + 10.0, l.y_top + 6.0)), None);
                 continue;
             }
 
@@ -6241,10 +6277,6 @@ impl WordProcessorWidget {
             ToolAction::Italic => self.inner.toggle_mark(state, "em"),
             ToolAction::Underline => self.inner.toggle_mark(state, "underline"),
             ToolAction::Strike => self.inner.toggle_mark(state, "strike"),
-            ToolAction::H1 => self.inner.set_paragraph_style(state, "heading", Some(1), None),
-            ToolAction::H2 => self.inner.set_paragraph_style(state, "heading", Some(2), None),
-            ToolAction::Body => self.inner.set_paragraph_style(state, "paragraph", None, None),
-            ToolAction::Bullet => self.inner.set_paragraph_style(state, "list_item", None, Some(false)),
             ToolAction::TextColor(Some(c)) => self.inner.set_text_color(state, &crate::styles::color_to_hex(c)),
             // The neutral swatch clears any per-run colour, reverting to the
             // block's style ink.
@@ -6335,9 +6367,18 @@ impl WordProcessorWidget {
     fn apply_panel_hit(&mut self, state: &mut AutoCommit, hit: PanelHit) {
         match hit {
             PanelHit::Pick(id) => {
+                // A built-in style implies a structural kind — apply it too so the
+                // panel is the authoritative paragraph-style control: picking
+                // "Heading 1" yields a *real* heading (present in the outline / TOC),
+                // picking "List Item" a real list item, not merely styled body text.
+                // Custom styles are pure visual presets and leave the kind alone.
+                if let Some((kind, level, ordered)) = crate::styles::structural_kind_for(&id) {
+                    self.inner.set_paragraph_style(state, kind, level, ordered);
+                }
                 self.inner.set_block_style(state, &id);
                 self.refresh_blocks(state);
                 self.needs_commit = true;
+                self.modified = true;
                 self.dirty = true;
             }
             PanelHit::CycleFont => {
@@ -7241,7 +7282,10 @@ impl WordProcessorWidget {
         let strike_a = self.mark_active_in_selection("strike");
         let super_a = self.mark_active_in_selection("super");
         let sub_a = self.mark_active_in_selection("sub");
-        let (kind, level) = self.current_block_style();
+        // Only the caret block *kind* is needed now (to switch in the contextual
+        // table controls). Paragraph-style choices (Body / Heading / List) live in
+        // the side panel's style picker, not the toolbar — see `draw_styles_panel`.
+        let (kind, _level) = self.current_block_style();
         let font_label = self.current_font().label();
 
         // Build the toolbar spec; the ui::chrome toolbar component owns the look
@@ -7253,7 +7297,7 @@ impl WordProcessorWidget {
             _ => LabelCue::None,
         };
         let group_start = |a: ToolAction| {
-            matches!(a, ToolAction::NewMenu | ToolAction::Bold | ToolAction::H1 | ToolAction::FontCycle | ToolAction::InsertTable | ToolAction::InsertImage | ToolAction::TableRowAdd | ToolAction::ToggleStyles | ToolAction::ToggleOutline)
+            matches!(a, ToolAction::NewMenu | ToolAction::Bold | ToolAction::FontCycle | ToolAction::InsertTable | ToolAction::InsertImage | ToolAction::TableRowAdd | ToolAction::ToggleStyles | ToolAction::ToggleOutline)
         };
         let panel_open = self.styles_panel_open;
         let mut specs: Vec<(ToolAction, ToolbarItem)> = Vec::new();
@@ -7271,10 +7315,10 @@ impl WordProcessorWidget {
         add(ToolAction::Strike, "S", 30.0, strike_a);
         add(ToolAction::Super, "x²", 34.0, super_a);
         add(ToolAction::Sub, "x₂", 34.0, sub_a);
-        add(ToolAction::H1, "H1", 42.0, kind == "heading" && level == Some(1));
-        add(ToolAction::H2, "H2", 42.0, kind == "heading" && level == Some(2));
-        add(ToolAction::Body, &t("toolbar-body"), 58.0, kind == "paragraph");
-        add(ToolAction::Bullet, &t("toolbar-list"), 66.0, kind == "list_item");
+        // NB: paragraph-style presets (H1 / H2 / Body / List) are NOT toolbar
+        // actions — choosing a paragraph style is the side panel's job (its style
+        // picker), keeping the toolbar to direct character formatting only. Quick
+        // headings remain on Ctrl+1/2/3.
         // Font family (cycles) + direct font-size nudges — all character
         // formatting on the selection. Paragraph controls (alignment, line
         // spacing) intentionally live in the side panel's "This paragraph"
@@ -7311,8 +7355,15 @@ impl WordProcessorWidget {
         // width model mirrors `chrome::toolbar::draw`, so each row-slice it admits
         // is drawn by `draw` without overflow. `tb` is the FULL multi-row toolbar
         // rect (its height already reserves every row — see `toolbar_height`).
-        let widths: Vec<f64> = items.iter().map(|it| it.width).collect();
-        let starts: Vec<bool> = items.iter().map(|it| it.group_start).collect();
+        let mut widths: Vec<f64> = items.iter().map(|it| it.width).collect();
+        let mut starts: Vec<bool> = items.iter().map(|it| it.group_start).collect();
+        // Reserve the right-aligned colour + highlight swatch strips as a trailing
+        // phantom item (they're drawn directly, not as chrome buttons). This keeps
+        // a full button row from extending under the swatches: on a wide window the
+        // reservation shares the last row's right edge; on a narrow one it wraps the
+        // swatches onto their own row. `toolbar_item_widths` mirrors this exactly.
+        widths.push(swatch_reserve_width());
+        starts.push(true);
         let rows = pack_toolbar_rows(&widths, &starts, tb.width());
         self.toolbar_rows = rows.len();
 
@@ -7325,8 +7376,13 @@ impl WordProcessorWidget {
         for (ri, (s, e)) in rows.iter().enumerate() {
             let ry0 = tb.y0 + ri as f64 * row_h;
             let row_rect = Rect::new(tb.x0, ry0, tb.x1, ry0 + row_h);
-            let rects = chrome::toolbar::draw(scene, transform, tr, theme, row_rect, &items[*s..*e]);
-            all_rects.extend(rects);
+            // The trailing swatch reservation is a phantom (index == items.len()),
+            // drawn separately below — clamp it out of the real button slice.
+            let e_btn = (*e).min(items.len());
+            if *s < e_btn {
+                let rects = chrome::toolbar::draw(scene, transform, tr, theme, row_rect, &items[*s..e_btn]);
+                all_rects.extend(rects);
+            }
         }
         self.toolbar = specs.into_iter().map(|(a, _)| a).zip(all_rects).collect();
 
@@ -7383,7 +7439,6 @@ impl WordProcessorWidget {
             64.0, // New ▾
             34.0, 30.0, 32.0, 30.0, // B I U S
             34.0, 34.0, // x² x₂
-            42.0, 42.0, 58.0, 66.0, // H1 H2 Body • List
             58.0, // font family
             34.0, 34.0, // A− A+ (font size)
         ];
@@ -7397,6 +7452,7 @@ impl WordProcessorWidget {
         w.push(60.0); // Ruler
         w.push(72.0); // Outline
         w.push(48.0); // TOC
+        w.push(swatch_reserve_width()); // right-aligned colour + highlight swatches
         w
     }
 
@@ -7408,7 +7464,6 @@ impl WordProcessorWidget {
             true, // New ▾ (group)
             true, false, false, false, // B(group) I U S
             false, false, // x² x₂
-            true, false, false, false, // H1(group) H2 Body • List
             true, // font family(group)
             false, false, // A− A+ (same group as font)
         ];
@@ -7422,6 +7477,7 @@ impl WordProcessorWidget {
         g.push(false); // Ruler (same group as Styles)
         g.push(true); // Outline starts a group (navigation)
         g.push(false); // TOC
+        g.push(true); // swatch reservation starts a group (see `swatch_reserve_width`)
         g
     }
 
@@ -7890,12 +7946,13 @@ mod tests {
     // ---- toolbar ⇄ panel reorganization: paragraph controls belong to the
     // side panel; the toolbar is direct character formatting only (no dupes) ----
 
-    /// The toolbar carries character/inline + structural controls only — the
-    /// paragraph-level alignment + line-spacing buttons were moved off it, and a
-    /// direct font-size control (A− / A+) was added. Asserted on `ToolAction`
-    /// variants (locale-independent; the alignment/line-spacing variants were
-    /// deleted, so a regression that re-adds them would fail to compile against
-    /// the allowed-set check below).
+    /// The toolbar carries direct character formatting + insert/view controls
+    /// only. Paragraph-*style* presets (H1 / H2 / Body / List) moved to the side
+    /// panel's style picker, so the toolbar↔panel split is unambiguous: the
+    /// toolbar formats the selection, the panel chooses the paragraph style.
+    /// Asserted on `ToolAction` variants (locale-independent) — the paragraph-
+    /// style variants were deleted, so a regression re-adding them would fail to
+    /// compile against the exhaustive allowed-set below.
     #[test]
     fn toolbar_drops_paragraph_controls_and_keeps_character_formatting() {
         let mut state = ui::State::new();
@@ -7905,7 +7962,7 @@ mod tests {
         pipeline_draw(&mut wp, &mut state, 1200, 760);
 
         let actions: Vec<ToolAction> = wp.toolbar.iter().map(|(a, _)| *a).collect();
-        // Character formatting + the new direct font-size nudges are present.
+        // Character formatting + the direct font-size nudges are present.
         for kept in [
             ToolAction::Bold,
             ToolAction::Italic,
@@ -7919,13 +7976,15 @@ mod tests {
         ] {
             assert!(actions.contains(&kept), "{kept:?} stays on the toolbar; toolbar={actions:?}");
         }
-        // Structural actions stay.
+        // Insert / view structural actions stay.
         assert!(actions.contains(&ToolAction::InsertTable), "table insert stays on the toolbar");
         assert!(actions.contains(&ToolAction::ToggleStyles), "styles-panel toggle stays on the toolbar");
 
-        // Every toolbar action is direct character formatting or a structural
-        // action — none is paragraph-level. (Alignment + line spacing live in the
-        // side panel now; see `panel_owns_paragraph_alignment_and_the_style_editor`.)
+        // Every toolbar action is direct character formatting or an insert/view
+        // action — NONE switches the paragraph style/kind. (Alignment + line
+        // spacing AND the Body/Heading/List style picker live in the side panel;
+        // see `panel_owns_paragraph_alignment_and_the_style_editor` and
+        // `panel_style_picker_switches_paragraph_kind`.)
         let is_char_or_structural = |a: &ToolAction| {
             matches!(
                 a,
@@ -7940,10 +7999,6 @@ mod tests {
                     | ToolAction::FontSizeDec
                     | ToolAction::TextColor(_)
                     | ToolAction::Highlight(_)
-                    | ToolAction::H1
-                    | ToolAction::H2
-                    | ToolAction::Body
-                    | ToolAction::Bullet
                     | ToolAction::InsertImage
                     | ToolAction::InsertTable
                     | ToolAction::TableRowAdd
@@ -8024,6 +8079,51 @@ mod tests {
             wp.panel_hits.iter().any(|(_, h)| matches!(h, PanelHit::Num(NumField::Size))),
             "the style Size field stays"
         );
+    }
+
+    /// The panel's style picker is now the authoritative paragraph-style control
+    /// (the toolbar no longer carries H1/H2/Body/List). Picking a built-in style
+    /// switches the block *kind* too — so "Heading 1" yields a real heading that
+    /// shows up in the outline, and "Body" turns it back into a paragraph. Runs on
+    /// the production `apply_panel_hit` → `Pick` dispatch, asserting the block kind
+    /// on the materialized model (not a helper).
+    #[test]
+    fn panel_style_picker_switches_paragraph_kind() {
+        let mut state = ui::State::new();
+        let mut wp = WordProcessorWidget::new();
+        wp.sync(&mut state.doc, &state.root);
+        wp.model_mut().insert_str(&mut state.doc, "make me a heading");
+        pipeline_draw(&mut wp, &mut state, 1000, 700);
+
+        let block_kind = |wp: &WordProcessorWidget, st: &ui::State| -> (String, Option<i64>) {
+            let c = wp.model().containers.clone().unwrap();
+            let b = qdoc::model::materialize(&st.doc, &c).blocks.into_iter().next().unwrap();
+            let level = match b.attrs.get("level") {
+                Some(AttrVal::Int(n)) => Some(*n),
+                _ => None,
+            };
+            (b.kind, level)
+        };
+
+        // A fresh paragraph starts as `paragraph` and is absent from the outline.
+        assert_eq!(block_kind(&wp, &state).0, "paragraph");
+        assert!(wp.outline_entries().is_empty(), "no headings yet");
+
+        // Pick "Heading 1" from the panel → a REAL heading (kind + level), and it
+        // now appears in the document outline / TOC source.
+        wp.apply_panel_hit(&mut state.doc, PanelHit::Pick("heading1".into()));
+        pipeline_draw(&mut wp, &mut state, 1000, 700);
+        assert_eq!(block_kind(&wp, &state), ("heading".into(), Some(1)), "picker made it a level-1 heading");
+        assert_eq!(wp.outline_entries().len(), 1, "the heading is now in the outline");
+
+        // Pick "List Item" → a real list item (not a heading anymore).
+        wp.apply_panel_hit(&mut state.doc, PanelHit::Pick("list".into()));
+        assert_eq!(block_kind(&wp, &state).0, "list_item", "picker made it a list item");
+        assert!(wp.outline_entries().is_empty(), "a list item is not a heading");
+
+        // Pick "Body" → back to a plain paragraph.
+        wp.apply_panel_hit(&mut state.doc, PanelHit::Pick("body".into()));
+        assert_eq!(block_kind(&wp, &state).0, "paragraph", "picker restored the paragraph kind");
     }
 
     /// Direct font size is character formatting on the selection — the toolbar's
@@ -8925,6 +9025,42 @@ mod tests {
         assert!((wide - TOOLBAR_H).abs() < 1e-9, "a wide window keeps a single-row toolbar");
         assert_eq!(narrow % TOOLBAR_H, 0.0, "the toolbar height is a whole number of rows");
         assert!(narrow >= 2.0 * TOOLBAR_H, "760px wraps to at least two rows");
+    }
+
+    /// The colour + highlight swatch strips are right-aligned on the last toolbar
+    /// row and painted outside the chrome button packer, so the packer reserves
+    /// their width as a phantom item. Prove the reservation works on the real draw
+    /// path: at a width where the buttons *would* fill a single row, the last
+    /// button (TOC) must never overlap the colour swatches — they either sit on
+    /// different rows or the button ends left of the swatch strip. Without the
+    /// reservation the swatches paint straight over the Outline/TOC buttons.
+    #[test]
+    fn toolbar_swatches_never_overlap_the_buttons() {
+        let mut state = ui::State::new();
+        let mut wp = WordProcessorWidget::new();
+        wp.sync(&mut state.doc, &state.root);
+        wp.model_mut().insert_str(&mut state.doc, "hi");
+        // 1200px: buttons alone fit one row, so the naive layout would right-align
+        // the swatches straight over the trailing buttons.
+        pipeline_draw(&mut wp, &mut state, 1200, 760);
+
+        let rect_of = |a: fn(&ToolAction) -> bool| wp.toolbar.iter().find(|(x, _)| a(x)).map(|(_, r)| *r);
+        let toc = rect_of(|a| matches!(a, ToolAction::InsertToc)).expect("TOC button laid out");
+        // The neutral text-colour swatch is the left-most colour swatch.
+        let swatch = wp
+            .toolbar
+            .iter()
+            .filter(|(a, _)| matches!(a, ToolAction::TextColor(_)))
+            .map(|(_, r)| *r)
+            .min_by(|a, b| a.x0.partial_cmp(&b.x0).unwrap())
+            .expect("colour swatches laid out");
+
+        let disjoint_x = toc.x1 <= swatch.x0 + 0.5;
+        let different_rows = toc.y1 <= swatch.y0 + 0.5 || swatch.y1 <= toc.y0 + 0.5;
+        assert!(
+            disjoint_x || different_rows,
+            "TOC button {toc:?} must not overlap the colour swatches {swatch:?}"
+        );
     }
 
     // ---- spell-check squiggles --------------------------------------------

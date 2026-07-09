@@ -25,6 +25,7 @@ use ui::permissions::PermissionContext;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::tooltip::Tooltip;
+use ui::widget::page_sidebar::{PageSidebar, PageSidebarEvent};
 use ui::widget::{SmallContentAlign, ViewportState};
 use ui::Widget;
 
@@ -186,6 +187,22 @@ impl TextSelection {
     }
 }
 
+/// A rubber-band region selection over a page (Shift + drag with the Select
+/// tool). On release its pixels are cropped from the page bitmap and copied to
+/// the clipboard as an image. Both corners are in page-point space.
+#[derive(Clone, Copy)]
+struct RegionSelect {
+    page: usize,
+    start: (f64, f64),
+    cur: (f64, f64),
+}
+
+impl RegionSelect {
+    fn rect(&self) -> PtRect {
+        PtRect::from_corners(self.start.0, self.start.1, self.cur.0, self.cur.1)
+    }
+}
+
 /// The target of a right-click "Delete" context menu.
 #[derive(Clone)]
 enum DeleteTarget {
@@ -275,6 +292,9 @@ pub struct PdfApp {
     /// Screenshot-only: drop the caret into the first comment on the first
     /// sync so a still frame can show the inline editor. Never set at runtime.
     shots_edit_first_comment: bool,
+    /// Screenshot-only: arm a live page-rail reorder drag each frame so a still
+    /// frame captures the drag ghost + reflow gap. Never set at runtime.
+    shots_rail_drag: bool,
 
     // CRDT-backed caches (refreshed from the shared document each frame).
     annotations: Vec<Annotation>,
@@ -305,6 +325,14 @@ pub struct PdfApp {
     /// view state so it survives across the session.
     show_rail: bool,
     rail_w: f64,
+    /// The shared page-preview rail (thumbnails, drag-reorder, context menu,
+    /// import). Lives on the left; toggled by the left-most toolbar button.
+    page_sidebar: PageSidebar,
+    /// Set when the page order / page set has been edited (reorder, delete,
+    /// duplicate, import) since the last save — the reader shows a save hint.
+    pages_dirty: bool,
+    /// An in-flight XDG-portal *import* request (add a PDF/image as pages).
+    portal_import_rx: Option<crate::portal::PortalChannel>,
     selected_anno: Option<String>,
     /// Active inline text edit (comment body, thread reply, or signer name).
     editing: Option<Editing>,
@@ -338,6 +366,10 @@ pub struct PdfApp {
     raster_text: std::collections::HashMap<usize, Arc<PageText>>,
     /// A live text selection over the raster text layer, if any.
     selection: Option<TextSelection>,
+    /// A live image-region marquee (Shift + Select drag), if any.
+    region: Option<RegionSelect>,
+    /// Whether Shift is currently held (drives the region-copy marquee).
+    shift_down: bool,
 
     // Save-back.
     /// The on-disk path the current document was opened from, used to suggest a
@@ -459,6 +491,39 @@ impl PdfApp {
         Self::empty()
     }
 
+    /// Screenshot-only: arm a live page-rail reorder drag so a still frame shows
+    /// the drag ghost + reflow gap. The rail is forced open.
+    pub fn arm_shots_rail_drag(&mut self) {
+        self.shots_rail_drag = true;
+        self.show_rail = true;
+    }
+
+    /// Screenshot / demo helper: import a distinctive generated image as a new
+    /// page after the current one, so a still frame shows an imported image page
+    /// in the rail + canvas. No-op on the text backend.
+    pub fn demo_import_image(&mut self) {
+        self.show_rail = true;
+        if self.raster.is_none() {
+            return;
+        }
+        // A recognisable swatch (diagonal split, bright colours) written to a
+        // temp PNG and imported through the real code path.
+        let (w, h) = (480u32, 360u32);
+        let mut img = image::RgbaImage::new(w, h);
+        for (x, y, px) in img.enumerate_pixels_mut() {
+            let above = (x as f32 / w as f32) > (y as f32 / h as f32);
+            *px = if above {
+                image::Rgba([64, 132, 246, 255])
+            } else {
+                image::Rgba([246, 132, 64, 255])
+            };
+        }
+        let png = std::env::temp_dir().join("qos_pdf_demo_import.png");
+        if image::DynamicImage::ImageRgba8(img).save(&png).is_ok() {
+            self.import_file(&png);
+        }
+    }
+
     fn build(doc: Document, seed_sample: bool) -> Self {
         let author = std::env::var("QUICK_APP_ID")
             .ok()
@@ -472,6 +537,7 @@ impl PdfApp {
             load_error: None,
             seed_sample,
             shots_edit_first_comment: false,
+            shots_rail_drag: false,
             annotations: Vec::new(),
             comments: Vec::new(),
             signatures: Vec::new(),
@@ -489,6 +555,11 @@ impl PdfApp {
             show_sidebar: true,
             show_rail: true,
             rail_w: RAIL_W,
+            page_sidebar: PageSidebar::new(PAGE_H / PAGE_W)
+                .with_header("PAGES")
+                .with_add("Import…"),
+            pages_dirty: false,
+            portal_import_rx: None,
             selected_anno: None,
             editing: None,
             selected_sig: None,
@@ -505,6 +576,8 @@ impl PdfApp {
             raster_matches: Vec::new(),
             raster_text: std::collections::HashMap::new(),
             selection: None,
+            region: None,
+            shift_down: false,
             source_path: None,
             status_note: None,
             portal_save_rx: None,
@@ -856,6 +929,172 @@ impl PdfApp {
         self.dirty = true;
     }
 
+    // ---- page editing (driven by the shared page rail) --------------
+
+    /// Apply the events the shared page rail produced this gesture: selection
+    /// jumps, drag-reorder, context-menu duplicate/move/delete, and the import
+    /// affordance.
+    fn apply_sidebar_events(&mut self, _state: &mut AutoCommit) {
+        for ev in self.page_sidebar.take_events() {
+            match ev {
+                PageSidebarEvent::Select(i) => self.go_to_page(i + 1),
+                PageSidebarEvent::Reorder { from, to } => self.reorder_pages(from, to),
+                PageSidebarEvent::Duplicate(i) => self.duplicate_page_at(i),
+                PageSidebarEvent::Delete(i) => self.delete_page_at(i),
+                PageSidebarEvent::Add => self.request_import_via_portal(),
+            }
+        }
+    }
+
+    /// Rebuild the page list to match the (possibly edited) backend page set and
+    /// flag that a save is needed. In raster mode the real page identities live
+    /// in the rasteriser's plan and `doc.pages` are size placeholders; in text
+    /// mode `doc.pages` already carries the reordered content and only needs
+    /// renumbering.
+    fn after_page_edit(&mut self) {
+        if let Some(rz) = self.raster.as_ref() {
+            let n = rz.page_count().max(1);
+            self.doc.pages = (1..=n)
+                .map(|num| model::Page { number: num, blocks: Vec::new() })
+                .collect();
+        } else {
+            for (i, p) in self.doc.pages.iter_mut().enumerate() {
+                p.number = i + 1;
+            }
+        }
+        self.pages_dirty = true;
+        self.dirty = true;
+    }
+
+    /// Whether the document's pages have been edited (reorder / delete /
+    /// duplicate / import) since it was last saved.
+    pub fn pages_dirty(&self) -> bool {
+        self.pages_dirty
+    }
+
+    /// Move displayed page `from` to final index `to`.
+    pub fn reorder_pages(&mut self, from: usize, to: usize) {
+        if from == to {
+            return;
+        }
+        if let Some(rz) = self.raster.as_mut() {
+            rz.reorder_page(from, to);
+        } else {
+            ui::widget::page_sidebar::move_item(&mut self.doc.pages, from, to);
+        }
+        self.after_page_edit();
+        self.go_to_page(to + 1);
+        self.status_note = Some("Page moved — Save to keep the new order".to_string());
+    }
+
+    /// Duplicate displayed page `i`, inserting the copy right after it.
+    pub fn duplicate_page_at(&mut self, i: usize) {
+        if let Some(rz) = self.raster.as_mut() {
+            rz.duplicate_page(i);
+        } else if i < self.doc.pages.len() {
+            ui::widget::page_sidebar::duplicate_after(&mut self.doc.pages, i);
+        }
+        self.after_page_edit();
+        self.go_to_page(i + 2);
+        self.status_note = Some("Page duplicated — Save to keep it".to_string());
+    }
+
+    /// Remove displayed page `i` (never the last remaining page).
+    pub fn delete_page_at(&mut self, i: usize) {
+        if self.doc.page_count() <= 1 {
+            return;
+        }
+        if let Some(rz) = self.raster.as_mut() {
+            rz.delete_page(i);
+        } else if i < self.doc.pages.len() {
+            self.doc.pages.remove(i);
+        }
+        self.after_page_edit();
+        self.go_to_page((i + 1).min(self.doc.page_count()));
+        self.status_note = Some("Page removed — Save to keep the change".to_string());
+    }
+
+    /// Import a PDF or image file as new page(s) after the current page (raster
+    /// backend only). Returns true on success.
+    pub fn import_file(&mut self, path: &std::path::Path) -> bool {
+        if self.raster.is_none() {
+            self.status_note = Some("Importing pages needs the pdfium backend".to_string());
+            self.dirty = true;
+            return false;
+        }
+        let at = self.current_page; // 0-based index of the slot after the current page
+        let bytes = match std::fs::read(path) {
+            Ok(b) => b,
+            Err(e) => {
+                self.status_note = Some(format!("Couldn't read {}: {e}", path.display()));
+                self.dirty = true;
+                return false;
+            }
+        };
+        let is_pdf = path
+            .extension()
+            .and_then(|s| s.to_str())
+            .map(|e| e.eq_ignore_ascii_case("pdf"))
+            .unwrap_or(false)
+            || bytes.starts_with(b"%PDF");
+        let rz = self.raster.as_mut().unwrap();
+        let result = if is_pdf {
+            rz.import_pdf(bytes, at).map(|n| format!("Imported {n} page(s) — Save to keep them"))
+        } else {
+            rz.import_image(&bytes, at)
+                .map(|_| "Imported image as a page — Save to keep it".to_string())
+        };
+        match result {
+            Ok(note) => {
+                self.after_page_edit();
+                self.go_to_page(at + 1);
+                self.status_note = Some(note);
+                true
+            }
+            Err(e) => {
+                self.status_note = Some(format!("Import failed: {e}"));
+                self.dirty = true;
+                false
+            }
+        }
+    }
+
+    fn request_import_via_portal(&mut self) {
+        if self.raster.is_none() {
+            self.status_note = Some("Importing pages needs the pdfium backend".to_string());
+            self.dirty = true;
+            return;
+        }
+        if self.portal_import_rx.is_some() {
+            return;
+        }
+        self.portal_import_rx = Some(crate::portal::request_import());
+        self.dirty = true;
+    }
+
+    fn drain_portal_import(&mut self) {
+        let Some(rx) = self.portal_import_rx.as_ref() else { return };
+        match rx.try_recv() {
+            Ok(outcome) => {
+                self.portal_import_rx = None;
+                match outcome {
+                    crate::portal::PortalOutcome::Opened(path) => {
+                        self.import_file(&path);
+                    }
+                    crate::portal::PortalOutcome::Cancelled => {}
+                    crate::portal::PortalOutcome::Failed(reason) => {
+                        self.status_note = Some(format!("Couldn't open the import dialog: {reason}"));
+                        self.dirty = true;
+                    }
+                }
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.portal_import_rx = None;
+            }
+        }
+    }
+
     // ---- search -----------------------------------------------------
 
     fn search_options(&self) -> SearchOptions {
@@ -1010,6 +1249,40 @@ impl PdfApp {
         }
     }
 
+    /// Crop the active image-region marquee out of its page bitmap and copy it
+    /// to the clipboard as an image. Raster backend only. Returns true when a
+    /// region of usable size was cropped (the clipboard push itself is
+    /// best-effort — it silently no-ops in a headless session).
+    fn copy_region(&mut self) -> bool {
+        let Some(region) = self.region else { return false };
+        let rect = region.rect();
+        if rect.w < 3.0 || rect.h < 3.0 {
+            return false;
+        }
+        let page_idx = region.page.saturating_sub(1);
+        let (pgw, pgh) = self
+            .raster
+            .as_ref()
+            .map(|r| r.page_size(page_idx))
+            .unwrap_or((self.pw(), self.ph()));
+        // Render (or reuse) the page at ~2x so the crop is crisp.
+        let bucket = ((pgw * 2.0).round() as u32).clamp(96, 4096);
+        let Some(img) = self.raster.as_mut().and_then(|r| r.render(page_idx, bucket)) else {
+            return false;
+        };
+        let Some((w, h, rgba)) = render::crop_page_region(&img, pgw, pgh, rect) else {
+            return false;
+        };
+        let copied = ui::clipboard_copy_image(w, h, &rgba);
+        self.status_note = Some(if copied {
+            format!("Copied a {w}×{h} image region")
+        } else {
+            "Selected a region (clipboard unavailable)".to_string()
+        });
+        self.dirty = true;
+        true
+    }
+
     // ---- save-back (flatten markup onto a real .pdf) ----------------
 
     /// A suggested filename for the saved copy: `<stem>-annotated.pdf`.
@@ -1090,6 +1363,7 @@ impl PdfApp {
                     .unwrap_or("the file")
                     .to_string();
                 self.status_note = Some(format!("Saved annotated PDF to {name}"));
+                self.pages_dirty = false;
                 self.dirty = true;
                 true
             }
@@ -1686,6 +1960,8 @@ impl Widget for PdfApp {
         self.drain_portal(state);
         // And any completed save-location choice, flattening markup to it.
         self.drain_portal_save();
+        // And any completed import (a PDF/image chosen to add as pages).
+        self.drain_portal_import();
 
         if !self.seeded {
             // Demonstration markup is seeded only on the screenshot / test
@@ -2688,6 +2964,184 @@ mod tests {
             text.contains("Check this claim"),
             "the note body is baked into the saved page text"
         );
+    }
+
+    /// Prepare an opened raster sample for page-editing tests: sync + lay out so
+    /// `current_page` and region rects are valid.
+    fn open_laid_out_sample() -> (PdfApp, ui::State) {
+        let mut app = open_raster_sample();
+        let mut st = ui::State::new();
+        app.sync(&mut st.doc, &st.root);
+        app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        app.recompute_regions();
+        app.sync_viewport_frame();
+        (app, st)
+    }
+
+    fn saved_reopen(app: &mut PdfApp, name: &str) -> crate::source::Rasterizer {
+        let out = std::env::temp_dir().join("qos_pdf_edit").join(name);
+        std::fs::create_dir_all(out.parent().unwrap()).unwrap();
+        let _ = std::fs::remove_file(&out);
+        assert!(app.save_annotated_to(&out), "save: {:?}", app.status_note);
+        assert!(!app.pages_dirty(), "a successful save clears the page-dirty flag");
+        crate::source::open(&out)
+            .expect("the edited PDF reopens")
+            .raster
+            .expect("the edited PDF reopens via pdfium")
+    }
+
+    #[test]
+    #[serial(pdfium)]
+    fn reorder_persists_across_save_and_reopen() {
+        let (mut app, _st) = open_laid_out_sample();
+        let n = app.doc.page_count();
+        assert!(n >= 2, "the fixture must have at least two pages to test reordering");
+        let first = app.raster.as_mut().unwrap().page_text(0).text.trim().to_string();
+        let last = app.raster.as_mut().unwrap().page_text(n - 1).text.trim().to_string();
+        assert_ne!(first, last, "the two pages carry distinct text so a swap is observable");
+
+        // Move the first page to the end — the shared rail's Reorder event maps
+        // straight onto this production method.
+        app.reorder_pages(0, n - 1);
+        assert!(app.pages_dirty(), "a reorder flags that a save is needed");
+        assert_eq!(app.doc.page_count(), n, "reorder keeps the page count");
+
+        let mut rz = saved_reopen(&mut app, "reordered.pdf");
+        assert_eq!(rz.page_count(), n, "the page count persisted");
+        assert_eq!(
+            rz.page_text(n - 1).text.trim(),
+            first,
+            "the old first page is now last in the saved-and-reopened file"
+        );
+    }
+
+    #[test]
+    #[serial(pdfium)]
+    fn delete_page_persists_across_save_and_reopen() {
+        let (mut app, _st) = open_laid_out_sample();
+        let n = app.doc.page_count();
+        assert!(n >= 2);
+        let second = app.raster.as_mut().unwrap().page_text(1).text.trim().to_string();
+
+        app.delete_page_at(0);
+        assert_eq!(app.doc.page_count(), n - 1, "delete drops one page");
+        assert!(app.pages_dirty());
+
+        let mut rz = saved_reopen(&mut app, "deleted.pdf");
+        assert_eq!(rz.page_count(), n - 1, "the deletion persisted");
+        assert_eq!(
+            rz.page_text(0).text.trim(),
+            second,
+            "the former second page is now first"
+        );
+    }
+
+    #[test]
+    #[serial(pdfium)]
+    fn duplicate_page_persists_across_save_and_reopen() {
+        let (mut app, _st) = open_laid_out_sample();
+        let n = app.doc.page_count();
+        let first = app.raster.as_mut().unwrap().page_text(0).text.trim().to_string();
+
+        app.duplicate_page_at(0);
+        assert_eq!(app.doc.page_count(), n + 1, "duplicate adds one page");
+
+        let mut rz = saved_reopen(&mut app, "duplicated.pdf");
+        assert_eq!(rz.page_count(), n + 1, "the duplicate persisted");
+        assert_eq!(rz.page_text(0).text.trim(), first);
+        assert_eq!(rz.page_text(1).text.trim(), first, "page 2 is a copy of page 1");
+    }
+
+    #[test]
+    #[serial(pdfium)]
+    fn import_image_adds_a_page_that_survives_save() {
+        let (mut app, _st) = open_laid_out_sample();
+        let n = app.doc.page_count();
+
+        // A genuine PNG on disk, imported through the real code path.
+        let img = image::RgbaImage::from_pixel(96, 64, image::Rgba([210, 60, 60, 255]));
+        let png = std::env::temp_dir().join("qos_pdf_edit").join("swatch.png");
+        std::fs::create_dir_all(png.parent().unwrap()).unwrap();
+        image::DynamicImage::ImageRgba8(img).save(&png).expect("write the test PNG");
+
+        assert!(app.import_file(&png), "import: {:?}", app.status_note);
+        assert_eq!(app.doc.page_count(), n + 1, "the image import added a page");
+        assert!(app.pages_dirty());
+
+        let rz = saved_reopen(&mut app, "with_image.pdf");
+        assert_eq!(rz.page_count(), n + 1, "the imported image page persisted");
+    }
+
+    #[test]
+    #[serial(pdfium)]
+    fn import_pdf_appends_all_its_pages() {
+        let (mut app, _st) = open_laid_out_sample();
+        let n = app.doc.page_count();
+        // Import the sample into itself: page count should exactly double.
+        assert!(app.import_file(std::path::Path::new(SAMPLE_PDF)), "import: {:?}", app.status_note);
+        assert_eq!(app.doc.page_count(), n * 2, "every page of the imported PDF was added");
+
+        let rz = saved_reopen(&mut app, "merged.pdf");
+        assert_eq!(rz.page_count(), n * 2, "the merged page set persisted");
+    }
+
+    #[test]
+    #[serial(pdfium)]
+    fn copy_image_region_crops_the_page_bitmap() {
+        let (mut app, _st) = open_laid_out_sample();
+        let (pw, ph) = app.raster.as_ref().unwrap().page_size(0);
+
+        // Marquee the upper-left portion of page 1 and copy it.
+        app.region = Some(RegionSelect { page: 1, start: (40.0, 40.0), cur: (pw * 0.6, ph * 0.5) });
+        assert!(app.copy_region(), "a usable region is cropped: {:?}", app.status_note);
+
+        // The pure crop path yields a correctly-sized sub-image of the page.
+        let bucket = ((pw * 2.0).round() as u32).clamp(96, 4096);
+        let img = app.raster.as_mut().unwrap().render(0, bucket).expect("page 1 renders");
+        let rect = PtRect::from_corners(40.0, 40.0, pw * 0.6, ph * 0.5);
+        let (w, h, rgba) = render::crop_page_region(&img, pw, ph, rect).expect("crop succeeds");
+        assert!(w > 0 && h > 0);
+        assert_eq!(rgba.len(), w * h * 4, "RGBA buffer matches the cropped dimensions");
+        assert!(
+            w < img.width as usize && h < img.height as usize,
+            "the crop is a proper sub-region of the full page bitmap"
+        );
+    }
+
+    /// The note/comment card header must never overlap — the author name is
+    /// bounded and truncated so it can't run under the Resolve chip or the ×
+    /// button, whatever its length. Asserts on the production layout helper.
+    #[test]
+    fn comment_header_never_overlaps_even_with_a_long_name() {
+        let app = PdfApp::sample();
+        // A representative inner card rect for the 324px sidebar.
+        let card = Rect::new(0.0, 0.0, SIDEBAR_W - 24.0, 120.0);
+        let hdr = app.comment_header_layout(card);
+
+        assert!(
+            hdr.name_x + hdr.name_max as f64 <= hdr.chip.x0,
+            "the author name stops before the resolve chip (name ends {}, chip at {})",
+            hdr.name_x + hdr.name_max as f64,
+            hdr.chip.x0
+        );
+        assert!(hdr.chip.x1 <= hdr.del.x0, "the resolve chip stops before the delete button");
+        assert!(hdr.del.x1 <= card.x1, "the delete button stays inside the card");
+        assert!(
+            hdr.body_top >= hdr.avatar_c.y + 9.0,
+            "the body starts below the avatar, not overlapping it"
+        );
+
+        // A very long name/email truncates to fit the bounded width.
+        let mut tr = ui::text_render::TextRenderer::new();
+        let long = "ada.van.der.berg.reviewer@really-long-domain.example.com";
+        let shown = truncate_to_width(&mut tr, long, 11.5, hdr.name_max);
+        let (w, _) = tr.measure(&shown, 11.5, None);
+        assert!(
+            w as f32 <= hdr.name_max + 0.5,
+            "the truncated name ({shown:?}, {w}px) fits within the bounded width {}px",
+            hdr.name_max
+        );
+        assert!(shown.chars().count() < long.chars().count(), "the long name was actually truncated");
     }
 
     /// Drive the real fixture PDF through the live frame path to produce the
