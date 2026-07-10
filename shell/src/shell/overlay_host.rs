@@ -6027,19 +6027,8 @@ impl ShellOverlayHost {
         for (idx, scope) in scopes.into_iter().enumerate() {
             let pill = self.search_scope_pill_rect(idx);
             let is_active = scope == active;
-            let radius = pill.height() / 2.0;
-            let pill_rr = RoundedRect::new(pill.x0, pill.y0, pill.x1, pill.y1, radius);
-            let fill = if is_active { colors.accent[5] } else { colors.surfaces.raised };
-            scene.fill(Fill::NonZero, transform, fill, None, &pill_rr);
-            if !is_active {
-                scene.stroke(
-                    &vello::kurbo::Stroke::new(1.0),
-                    transform,
-                    colors.border_standard,
-                    None,
-                    &pill_rr,
-                );
-            }
+            let (fill, border) = ui::surface::chip_colors(theme, is_active);
+            ui::surface::pill(scene, transform, pill, fill, border, None);
 
             let text = self.search_scope_pill_label(scope);
             let (tw, th) = text_renderer.measure(&text, tokens.typography.scale.sm, None);
@@ -6075,24 +6064,9 @@ impl ShellOverlayHost {
                 let (lw, _) = text_renderer.measure(label, tokens.typography.scale.xs, None);
                 let chip_w = (lw as f64) + 20.0;
                 let rect = Rect::new(x, chip_row_y, x + chip_w, chip_row_y + chip_h);
-                let radius = rect.height() / 2.0;
-                let rr = RoundedRect::new(rect.x0, rect.y0, rect.x1, rect.y1, radius);
                 let is_active = self.active_kind_filter.contains(kind);
-                let fill = if is_active {
-                    colors.accent[5]
-                } else {
-                    colors.surfaces.raised
-                };
-                scene.fill(Fill::NonZero, transform, fill, None, &rr);
-                if !is_active {
-                    scene.stroke(
-                        &vello::kurbo::Stroke::new(1.0),
-                        transform,
-                        colors.border_standard,
-                        None,
-                        &rr,
-                    );
-                }
+                let (fill, border) = ui::surface::chip_colors(theme, is_active);
+                ui::surface::pill(scene, transform, rect, fill, border, None);
                 let (_, th) = text_renderer.measure(label, tokens.typography.scale.xs, None);
                 let ty = (rect.y0 + rect.y1) / 2.0 - th as f64 / 2.0;
                 text_renderer.draw_text(
