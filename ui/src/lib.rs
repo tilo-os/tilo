@@ -53,7 +53,7 @@ pub use a11y::{A11ySettings, AccessNode, AccessState};
 pub use screen_reader::{ScreenReader, describe, flatten_reading_order};
 
 pub use widget::{Widget, Element};
-pub use widget::{AppShell, ShellLayout};
+pub use widget::{AppShell, NarrowScreen, ShellLayout};
 pub use widget::{EditableLabel, EditOutcome};
 pub use widget::{AppCommand, AppKind, AppWidget, IconDescriptor};
 pub use widget::command_palette::{
