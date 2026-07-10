@@ -17,12 +17,13 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use vello::Scene;
-use vello::kurbo::{Affine, Rect};
+use vello::kurbo::{Affine, Rect, RoundedRect, Stroke};
 use vello::peniko::{
     Blob, Color, Fill, ImageAlphaType, ImageBrush, ImageData as Image,
     ImageFormat as Format,
 };
 
+use crate::theme::Theme;
 use crate::tokens::Shadow;
 
 /// Baked sprite resolution. 256² is plenty — the sprite is always
@@ -167,9 +168,61 @@ pub fn elevation(scene: &mut Scene, transform: Affine, rect: Rect, shadow: &Shad
     );
 }
 
+/// The one contract for "is this small selectable chrome element
+/// active" — scope pills, filter chips, tab pills, toggle cards.
+///
+/// Returns `(fill, border)` for a pill/chip given the theme and whether
+/// it's the selected one. This replaces the four incompatible encodings
+/// the chrome grew independently (white/10 overlay, solid indigo,
+/// indigo/20 wash, red/20 wash): selected is a solid accent with no
+/// border; idle is the raised surface with a standard 1px border.
+pub fn chip_colors(theme: &Theme, selected: bool) -> (Color, Option<Color>) {
+    let c = &theme.tokens.colors;
+    if selected {
+        (c.accent[5], None)
+    } else {
+        (c.surfaces.raised, Some(c.border_standard))
+    }
+}
+
+/// Draw a pill / chip: a fully-rounded (or `radius`-rounded) filled
+/// rect with an optional 1px border. Centralises the shape so every
+/// pill in the UI shares one corner treatment instead of the chrome's
+/// ad-hoc mix of 4/6/10/12/16/full radii. Pass `radius = None` for a
+/// fully-rounded capsule (`height/2`).
+pub fn pill(
+    scene: &mut Scene,
+    transform: Affine,
+    rect: Rect,
+    fill: Color,
+    border: Option<Color>,
+    radius: Option<f64>,
+) {
+    if rect.width() <= 0.0 || rect.height() <= 0.0 {
+        return;
+    }
+    let r = radius.unwrap_or(rect.height() / 2.0);
+    let shape = RoundedRect::new(rect.x0, rect.y0, rect.x1, rect.y1, r);
+    scene.fill(Fill::NonZero, transform, fill, None, &shape);
+    if let Some(bc) = border {
+        scene.stroke(&Stroke::new(1.0), transform, bc, None, &shape);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn chip_colors_selected_is_solid_accent_no_border() {
+        let theme = Theme::dark();
+        let (fill, border) = chip_colors(&theme, true);
+        assert_eq!(fill, theme.tokens.colors.accent[5]);
+        assert!(border.is_none(), "selected chip has no border");
+        let (fill_idle, border_idle) = chip_colors(&theme, false);
+        assert_eq!(fill_idle, theme.tokens.colors.surfaces.raised);
+        assert!(border_idle.is_some(), "idle chip has a border");
+    }
 
     #[test]
     fn sprite_is_cached_per_tint() {
