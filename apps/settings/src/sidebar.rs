@@ -390,13 +390,15 @@ pub fn build(selected: Category, query: &str) -> Box<dyn Widget> {
     }
 
     let scroll = Scrollable::new_vertical().with_child(Box::new(col));
-    // Tint the sidebar surface with the app's base colour — one step below the
-    // raised content cards — so the split reads as sidebar | content.
-    let surface = Theme::dark().tokens.colors.surfaces.base;
+    // No surface tint or border here: the enclosing `AppShell` draws the one
+    // cohesive sidebar panel (header + this list) as a single flat surface, so
+    // the nav is just the transparent, scrollable list of rows that sits on it.
+    // Drawing our own tinted/bordered box would reintroduce the "card scatter"
+    // the shell exists to kill.
     Box::new(
         Container::new()
             .filling()
-            .with_fill(surface)
+            .with_no_padding()
             .with_child(Box::new(scroll)),
     )
 }
