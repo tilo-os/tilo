@@ -20,6 +20,7 @@ pub mod presence;
 pub mod permissions;
 pub mod dnd;
 pub mod animation;
+pub mod surface;
 pub mod overlay;
 pub mod icons;
 pub mod selection;
