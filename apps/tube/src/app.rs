@@ -1183,7 +1183,11 @@ impl TubeApp {
                     let ids: Vec<String> = videos.iter().map(|v| v.id.clone()).collect();
                     for nv in videos {
                         self.model.ensure_channel_stub(&nv.channel_id, &nv.channel_name);
-                        self.model.note_channel_avatar(&nv.channel_id, &nv.channel_avatar_url);
+                        self.model.adopt_channel_avatar(
+                            &nv.channel_id,
+                            &nv.channel_name,
+                            &nv.channel_avatar_url,
+                        );
                         self.model.upsert_video(nv);
                     }
                     let playlist_ids: Vec<String> = playlists.iter().map(|p| p.id.clone()).collect();
@@ -1196,6 +1200,11 @@ impl TubeApp {
                     // doesn't), taking the avatar / subs / handle when missing.
                     let channel_ids: Vec<String> = channels.iter().map(|c| c.id.clone()).collect();
                     for c in channels {
+                        // A creator row's avatar also belongs to every video card by
+                        // that creator (matched by id OR normalized name) — stamp it
+                        // there so the dominant channel's cards get the photo even
+                        // when the video items didn't carry it.
+                        self.model.adopt_channel_avatar(&c.id, &c.name, &c.avatar_url);
                         if let Some(ex) = self.model.channels.iter_mut().find(|x| x.id == c.id) {
                             if ex.avatar_url.is_empty() {
                                 ex.avatar_url = c.avatar_url;
@@ -1211,6 +1220,9 @@ impl TubeApp {
                             self.model.channels.push(c);
                         }
                     }
+                    // Bridge any two records describing the same creator so every
+                    // card resolves an avatar one of them carries.
+                    self.model.reconcile_channel_avatars();
                     self.model.search_hits_query = query.clone();
                     self.model.search_hits = ids;
                     self.model.search_playlist_hits = playlist_ids;
@@ -1263,7 +1275,11 @@ impl TubeApp {
                     let id = video.id.clone();
                     let channel_id = video.channel_id.clone();
                     self.model.ensure_channel_stub(&video.channel_id, &video.channel_name);
-                    self.model.note_channel_avatar(&video.channel_id, &video.channel_avatar_url);
+                    self.model.adopt_channel_avatar(
+                        &video.channel_id,
+                        &video.channel_name,
+                        &video.channel_avatar_url,
+                    );
                     self.model.upsert_video(*video);
                     // Now that we know the uploader, pull its avatar + subs if we
                     // only have a name stub (drives the watch-page channel row).
@@ -1279,9 +1295,14 @@ impl TubeApp {
                     let ids: Vec<String> = related.iter().map(|v| v.id.clone()).collect();
                     for rv in related {
                         self.model.ensure_channel_stub(&rv.channel_id, &rv.channel_name);
-                        self.model.note_channel_avatar(&rv.channel_id, &rv.channel_avatar_url);
+                        self.model.adopt_channel_avatar(
+                            &rv.channel_id,
+                            &rv.channel_name,
+                            &rv.channel_avatar_url,
+                        );
                         self.model.upsert_video(rv);
                     }
+                    self.model.reconcile_channel_avatars();
                     if !ids.is_empty() {
                         self.model.related_of = id;
                         self.model.related_hits = ids;
@@ -1289,12 +1310,23 @@ impl TubeApp {
                     changed = true;
                 }
                 Update::ChannelPage { channel, uploads } => {
+                    // Stamp the fetched avatar onto every record for this creator
+                    // (matched by id OR normalized name) BEFORE upsert, so the
+                    // video cards resolve it even when the channel page's returned
+                    // id differs from the search item's channel_id — the exact
+                    // reason the dominant channel kept showing initials.
+                    self.model.adopt_channel_avatar(&channel.id, &channel.name, &channel.avatar_url);
                     self.model.upsert_channel(*channel);
                     for uv in uploads {
                         self.model.ensure_channel_stub(&uv.channel_id, &uv.channel_name);
-                        self.model.note_channel_avatar(&uv.channel_id, &uv.channel_avatar_url);
+                        self.model.adopt_channel_avatar(
+                            &uv.channel_id,
+                            &uv.channel_name,
+                            &uv.channel_avatar_url,
+                        );
                         self.model.upsert_video(uv);
                     }
+                    self.model.reconcile_channel_avatars();
                     changed = true;
                 }
                 Update::Status { live, label } => {

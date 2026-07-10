@@ -13,6 +13,13 @@ use std::collections::BTreeMap;
 pub type VideoId = String;
 pub type ChannelId = String;
 
+/// Normalize a channel display name for cross-source matching. yt-dlp and
+/// rustypipe can key the same creator by slightly different ids/names, so cards
+/// reconcile avatars by this normalized name as well as by id.
+pub fn norm_channel_name(name: &str) -> String {
+    name.trim().to_lowercase()
+}
+
 /// SponsorBlock segment categories. These map 1:1 onto the official
 /// SponsorBlock API category strings (`api_key`), so the same enum is
 /// used both for the on-screen seek-bar markers and for the live query.
@@ -785,10 +792,21 @@ impl TubeModel {
         }
     }
 
-    /// Insert or replace a channel by id.
+    /// Insert or replace a channel by id, preserving a real avatar/banner the
+    /// record already holds when the incoming one carries none — a later
+    /// avatar-less list item (or a creator row whose avatar URL didn't resolve)
+    /// must never blank a photo an earlier item already resolved.
     pub fn upsert_channel(&mut self, c: Channel) {
         if let Some(slot) = self.channels.iter_mut().find(|x| x.id == c.id) {
+            let keep_avatar = std::mem::take(&mut slot.avatar_url);
+            let keep_banner = std::mem::take(&mut slot.banner_url);
             *slot = c;
+            if slot.avatar_url.is_empty() {
+                slot.avatar_url = keep_avatar;
+            }
+            if slot.banner_url.is_empty() {
+                slot.banner_url = keep_banner;
+            }
         } else {
             self.channels.push(c);
         }
@@ -829,14 +847,62 @@ impl TubeModel {
         }
     }
 
+    /// Stamp `url` as the avatar for every avatar-less channel record that
+    /// matches `id` OR the normalized display `name`. This reconciles an avatar
+    /// discovered under one data source's channel identity (e.g. rustypipe, or a
+    /// channel-page fetch whose returned id differs from the search item's) onto
+    /// the exact record the video cards read. Returns true if anything changed.
+    pub fn adopt_channel_avatar(&mut self, id: &str, name: &str, url: &str) -> bool {
+        if url.is_empty() {
+            return false;
+        }
+        let nname = norm_channel_name(name);
+        let mut changed = false;
+        for ch in self.channels.iter_mut() {
+            let matches = (!id.is_empty() && ch.id == id)
+                || (!nname.is_empty() && norm_channel_name(&ch.name) == nname);
+            if matches && ch.avatar_url.is_empty() {
+                ch.avatar_url = url.to_string();
+                changed = true;
+            }
+        }
+        changed
+    }
+
+    /// Fill any avatar-less channel record from another record describing the
+    /// same creator (same normalized name) that already carries an avatar. Two
+    /// sources (yt-dlp / rustypipe) can produce two records for one creator, only
+    /// one of which has the photo; this bridges them so every card resolves.
+    pub fn reconcile_channel_avatars(&mut self) {
+        let mut by_name: BTreeMap<String, String> = BTreeMap::new();
+        for ch in &self.channels {
+            if !ch.avatar_url.is_empty() {
+                by_name
+                    .entry(norm_channel_name(&ch.name))
+                    .or_insert_with(|| ch.avatar_url.clone());
+            }
+        }
+        if by_name.is_empty() {
+            return;
+        }
+        for ch in self.channels.iter_mut() {
+            if ch.avatar_url.is_empty() {
+                if let Some(url) = by_name.get(&norm_channel_name(&ch.name)) {
+                    ch.avatar_url = url.clone();
+                }
+            }
+        }
+    }
+
     /// Replace the whole catalogue with a freshly-fetched live set, marking the
     /// data source live and synthesising channel stubs for its uploaders.
     pub fn adopt_live_catalogue(&mut self, videos: Vec<Video>, label: impl Into<String>) {
         for v in &videos {
             self.ensure_channel_stub(&v.channel_id, &v.channel_name);
-            self.note_channel_avatar(&v.channel_id, &v.channel_avatar_url);
+            self.adopt_channel_avatar(&v.channel_id, &v.channel_name, &v.channel_avatar_url);
         }
         self.videos = videos;
+        self.reconcile_channel_avatars();
         // Stale local ordering hints no longer apply to the new catalogue.
         self.search_hits.clear();
         self.search_hits_query.clear();
@@ -1018,6 +1084,71 @@ mod tests {
         assert!(f.shows(SearchType::Video));
         assert!(f.shows(SearchType::Playlist));
         assert!(f.shows(SearchType::Creator));
+    }
+
+    fn chan(id: &str, name: &str, avatar: &str) -> Channel {
+        Channel {
+            id: id.into(),
+            name: name.into(),
+            handle: id.into(),
+            subscribers: 0,
+            verified: false,
+            description: String::new(),
+            seed: id.into(),
+            avatar_url: avatar.into(),
+            banner_url: String::new(),
+        }
+    }
+
+    #[test]
+    fn adopt_channel_avatar_matches_by_id_and_by_normalized_name() {
+        let mut m = TubeModel::default();
+        // Two records for the same creator: the card reads the id-A stub (empty).
+        m.channels.push(chan("UC_A", "Blender Studio", ""));
+        // An avatar arrives keyed by a DIFFERENT id but the same name — must land
+        // on the id-A record so its cards resolve.
+        let changed = m.adopt_channel_avatar("UC_B", "Blender Studio", "https://yt3/av");
+        assert!(changed, "adopt reported a change");
+        assert_eq!(m.channel("UC_A").unwrap().avatar_url, "https://yt3/av", "matched by name");
+
+        // A fresh stub matched by exact id.
+        m.channels.push(chan("UC_C", "Other Creator", ""));
+        m.adopt_channel_avatar("UC_C", "irrelevant name", "https://yt3/c");
+        assert_eq!(m.channel("UC_C").unwrap().avatar_url, "https://yt3/c", "matched by id");
+    }
+
+    #[test]
+    fn adopt_channel_avatar_never_overwrites_an_existing_avatar() {
+        let mut m = TubeModel::default();
+        m.channels.push(chan("UC_A", "Chan", "https://yt3/original"));
+        let changed = m.adopt_channel_avatar("UC_A", "Chan", "https://yt3/other");
+        assert!(!changed);
+        assert_eq!(m.channel("UC_A").unwrap().avatar_url, "https://yt3/original");
+    }
+
+    #[test]
+    fn upsert_channel_keeps_a_real_avatar_when_the_new_record_has_none() {
+        let mut m = TubeModel::default();
+        m.upsert_channel(chan("UC_A", "Creator", "https://yt3/good"));
+        // A later avatar-less record for the same channel (e.g. a creator row
+        // whose URL didn't resolve) must not blank the working photo.
+        m.upsert_channel(chan("UC_A", "Creator", ""));
+        assert_eq!(m.channel("UC_A").unwrap().avatar_url, "https://yt3/good");
+    }
+
+    #[test]
+    fn reconcile_bridges_two_records_of_the_same_creator() {
+        let mut m = TubeModel::default();
+        // The video card's uploader record (id A) has no avatar; a creator-row
+        // record (id B) for the same creator has one. Reconcile must fill A.
+        m.channels.push(chan("UC_A", "Blender Studio", ""));
+        m.channels.push(chan("UC_B", "Blender Studio", "https://yt3/bs"));
+        m.reconcile_channel_avatars();
+        assert_eq!(
+            m.channel("UC_A").unwrap().avatar_url,
+            "https://yt3/bs",
+            "avatar-less record filled from the same-name record that had one",
+        );
     }
 
     #[test]
