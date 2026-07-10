@@ -994,6 +994,82 @@ mod event_tests {
         assert_eq!(app.current_page, app.doc.page_count());
     }
 
+    /// Ctrl + scroll wheel (the Wayland touchpad pinch surfaces as this) zooms
+    /// through the real `handle_event` dispatch, not the `zoom_at` helper: a
+    /// wheel-up with Ctrl held enlarges the page, a wheel-down shrinks it, and a
+    /// bare wheel (no Ctrl) scrolls instead of zooming.
+    #[test]
+    fn ctrl_wheel_zooms_through_the_event_path() {
+        use winit::event::{MouseScrollDelta, TouchPhase};
+
+        let (mut app, mut st) = app();
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let node = taffy.new_leaf(Style::default()).unwrap();
+        // Pointer parked in the canvas so the wheel isn't captured by a panel.
+        app.last_mouse = app.canvas_rect.center();
+
+        let wheel = |app: &mut PdfApp, st: &mut ui::State, dy: f32, mods: &winit::event::Modifiers| {
+            let ev = WindowEvent::MouseWheel {
+                device_id: dummy_device_id(),
+                delta: MouseScrollDelta::LineDelta(0.0, dy),
+                phase: TouchPhase::Moved,
+            };
+            let mut handled = false;
+            let mut focus = None;
+            app.handle_event(&ev, 1.0, mods, &mut st.doc, &st.root, &mut handled, &mut focus, node, &taffy);
+        };
+
+        let z0 = app.zoom();
+        wheel(&mut app, &mut st, 1.0, &ctrl_mods());
+        let z_in = app.zoom();
+        assert!(z_in > z0 + 1e-3, "Ctrl+wheel-up zooms in through the event path ({z0} -> {z_in})");
+
+        wheel(&mut app, &mut st, -1.0, &ctrl_mods());
+        let z_out = app.zoom();
+        assert!(z_out < z_in - 1e-3, "Ctrl+wheel-down zooms back out ({z_in} -> {z_out})");
+
+        // Without Ctrl the same wheel scrolls the document, leaving zoom alone.
+        let z_before_scroll = app.zoom();
+        let sy0 = app.scroll_y();
+        wheel(&mut app, &mut st, -1.0, &winit::event::Modifiers::default());
+        assert!((app.zoom() - z_before_scroll).abs() < 1e-6, "a bare wheel must not change zoom");
+        assert!(app.scroll_y() > sy0, "a bare wheel scrolls the document instead");
+    }
+
+    /// A touchpad pinch (`WindowEvent::PinchGesture`) zooms through the real
+    /// event path — positive delta enlarges, negative delta shrinks — centred on
+    /// the cursor, so the specifically-requested pinch zoom is exercised end to
+    /// end and not just the reducer.
+    #[test]
+    fn pinch_gesture_zooms_through_the_event_path() {
+        use winit::event::TouchPhase;
+
+        let (mut app, mut st) = app();
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let node = taffy.new_leaf(Style::default()).unwrap();
+        app.last_mouse = app.canvas_rect.center();
+        let mods = winit::event::Modifiers::default();
+
+        let pinch = |app: &mut PdfApp, st: &mut ui::State, delta: f64| {
+            let ev = WindowEvent::PinchGesture {
+                device_id: dummy_device_id(),
+                delta,
+                phase: TouchPhase::Moved,
+            };
+            let mut handled = false;
+            let mut focus = None;
+            app.handle_event(&ev, 1.0, &mods, &mut st.doc, &st.root, &mut handled, &mut focus, node, &taffy);
+        };
+
+        let z0 = app.zoom();
+        pinch(&mut app, &mut st, 0.25);
+        let z_in = app.zoom();
+        assert!(z_in > z0 + 1e-3, "pinch-open zooms in ({z0} -> {z_in})");
+
+        pinch(&mut app, &mut st, -0.25);
+        assert!(app.zoom() < z_in - 1e-3, "pinch-close zooms out ({z_in} -> {})", app.zoom());
+    }
+
     #[test]
     fn resolve_chip_beats_card_smallest_rect_wins() {
         let (mut app, mut st) = app();
