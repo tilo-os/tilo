@@ -25,13 +25,13 @@ use std::collections::HashMap;
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Line, Point, Rect, RoundedRect, Stroke};
+use vello::kurbo::{Affine, Circle, Line, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{Color, Fill};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
 use crate::command::{push, CommandSink, FileCommand};
-use crate::model::{format_modified, human_size, Entry, SortBy, SortOrder, ViewMode};
-use ui::icons::{draw_icon, icon_for_path, LUCIDE_DEFAULT_STROKE_PX};
+use crate::model::{format_modified, human_size, Entry, SortBy, SortOrder, SyncState, ViewMode};
+use ui::icons::{draw_icon, icon_for_path, Icon, LUCIDE_DEFAULT_STROKE_PX};
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
@@ -404,14 +404,19 @@ impl FileView {
             } else {
                 tokens.colors.text_dim
             };
+            let file_icon_rect = Rect::new(icon_x, icon_y, icon_x + icon_px, icon_y + icon_px);
             draw_icon(
                 scene,
                 transform,
-                Rect::new(icon_x, icon_y, icon_x + icon_px, icon_y + icon_px),
+                file_icon_rect,
                 icon_for_path(&entry.path, entry.is_dir),
                 icon_color,
                 LUCIDE_DEFAULT_STROKE_PX * self.scale.max(1.0),
             );
+            // Sync-state emblem for workspace files (cloud / downloading / local).
+            if let Some(state) = entry.sync_state {
+                draw_sync_badge(scene, transform, file_icon_rect, state, self.scale, theme);
+            }
             let text_y = row.y0 + (row.height() - size as f64) / 2.0;
             let name_x = icon_x + icon_px + 10.0;
             let label = if entry.is_conflict() {
@@ -488,14 +493,19 @@ impl FileView {
             } else {
                 tokens.colors.text_primary
             };
+            let file_icon_rect = Rect::new(icon_x, icon_y, icon_x + icon_px, icon_y + icon_px);
             draw_icon(
                 scene,
                 transform,
-                Rect::new(icon_x, icon_y, icon_x + icon_px, icon_y + icon_px),
+                file_icon_rect,
                 icon_for_path(&entry.path, entry.is_dir),
                 icon_color,
                 LUCIDE_DEFAULT_STROKE_PX * self.scale.max(1.0),
             );
+            // Sync-state emblem for workspace files (cloud / downloading / local).
+            if let Some(state) = entry.sync_state {
+                draw_sync_badge(scene, transform, file_icon_rect, state, self.scale, theme);
+            }
             // Label centred under the icon, truncated to the cell width.
             let label = truncate(tr, &entry.name, size, self.cell_w() - 10.0);
             let (lw, _) = tr.measure(&label, size, None);
@@ -703,6 +713,50 @@ impl Widget for FileView {
     }
 }
 
+/// The badge glyph + colour for a workspace file's sync state. Follows the
+/// familiar cloud-storage emblem language: a filled arrow/tick for on-disk, a
+/// cloud for remote-only, a download arrow while hydrating.
+fn sync_badge(state: SyncState, theme: &Theme) -> (Icon, Color) {
+    let accent = theme.tokens.colors.accent.stops[ui::tokens::colors::ACCENT_PRIMARY_IDX];
+    match state {
+        // On disk: a quiet tick — nothing the user needs to act on.
+        SyncState::Local => (Icon::Check, theme.tokens.colors.text_dim),
+        // Remote-only: a cloud, tinted so it reads as "not here yet".
+        SyncState::Projected => (Icon::CloudDownload, theme.tokens.colors.text_dim),
+        // Actively hydrating: a download arrow in the accent to draw the eye.
+        SyncState::Downloading => (Icon::Download, accent),
+    }
+}
+
+/// Paint the sync-state emblem over the bottom-right corner of a file's icon,
+/// on an opaque disc so it stays legible over a selected row's accent fill.
+/// `icon_rect` is the file icon's box; `scale` sizes the badge with the icon.
+fn draw_sync_badge(
+    scene: &mut Scene,
+    transform: Affine,
+    icon_rect: Rect,
+    state: SyncState,
+    scale: f64,
+    theme: &Theme,
+) {
+    let (icon, color) = sync_badge(state, theme);
+    // The badge overlaps the icon's lower-right corner (the standard emblem
+    // position); size it relative to the icon so it scales with zoom.
+    let bsz = (icon_rect.width() * 0.62).max(9.0);
+    let cx = icon_rect.x1;
+    let cy = icon_rect.y1;
+    // Opaque backing disc so the emblem reads over any row highlight.
+    scene.fill(
+        Fill::NonZero,
+        transform,
+        theme.tokens.colors.surfaces.base,
+        None,
+        &Circle::new((cx, cy), bsz * 0.62),
+    );
+    let br = Rect::new(cx - bsz / 2.0, cy - bsz / 2.0, cx + bsz / 2.0, cy + bsz / 2.0);
+    draw_icon(scene, transform, br, icon, color, LUCIDE_DEFAULT_STROKE_PX * scale.max(1.0));
+}
+
 /// Cull a row/cell whose vertical extent falls entirely outside the scroll
 /// viewport `vp` (the enclosing `Scrollable`'s clip rect, published via the
 /// presence context). A small margin keeps the row just off each edge alive so
@@ -767,6 +821,7 @@ mod tests {
             size: 10,
             modified: None,
             mime: String::new(),
+            sync_state: None,
         }
     }
 
@@ -944,6 +999,22 @@ mod tests {
         assert!(
             cmds.iter().any(|c| matches!(c, FileCommand::ContextSelect(None))),
             "right-press on empty space clears the selection: {cmds:?}",
+        );
+    }
+
+    #[test]
+    fn sync_badge_maps_each_state_to_a_distinct_emblem() {
+        let theme = Theme::dark();
+        // Each hydration state gets its own recognisable glyph, and the
+        // downloading state is tinted with the accent to catch the eye.
+        assert_eq!(sync_badge(SyncState::Local, &theme).0, Icon::Check);
+        assert_eq!(sync_badge(SyncState::Projected, &theme).0, Icon::CloudDownload);
+        let (dl_icon, dl_color) = sync_badge(SyncState::Downloading, &theme);
+        assert_eq!(dl_icon, Icon::Download);
+        assert_eq!(
+            dl_color,
+            theme.tokens.colors.accent.stops[ui::tokens::colors::ACCENT_PRIMARY_IDX],
+            "downloading badge uses the accent colour",
         );
     }
 
