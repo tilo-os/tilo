@@ -4,8 +4,8 @@
 //! renders. This file goes one step further for the panes whose controls
 //! MUST drive real hardware actions: it navigates via a real pointer click,
 //! then drives the panel's primary control (also via the production event
-//! path or its CRDT key) and asserts the effect actually lands — the
-//! sidebar-collapse reclaiming content width, and a per-panel primary
+//! path or its CRDT key) and asserts the effect actually lands — the narrow
+//! content screen's back arrow returning to the list, and a per-panel primary
 //! control mutating the document the way its dispatcher hook reads.
 
 use std::collections::HashMap;
@@ -23,9 +23,14 @@ const W: f32 = 1200.0;
 const H: f32 = 760.0;
 
 /// Run the host's per-frame `build_layout → compute_layout(measure) →
-/// apply_layout` cycle, returning the live tree + root node for event
-/// routing.
+/// apply_layout` cycle at the default wide viewport, returning the live tree
+/// + root node for event routing.
 fn lay_out(app: &mut SettingsApp) -> (TaffyTree<()>, NodeId) {
+    lay_out_at(app, W, H)
+}
+
+/// Same, at an explicit viewport (used for the narrow screens).
+fn lay_out_at(app: &mut SettingsApp, w: f32, h: f32) -> (TaffyTree<()>, NodeId) {
     let theme = ui::Theme::dark();
     let mut taffy: TaffyTree<()> = TaffyTree::new();
     let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
@@ -34,8 +39,8 @@ fn lay_out(app: &mut SettingsApp) -> (TaffyTree<()>, NodeId) {
         .new_with_children(
             taffy::Style {
                 size: taffy::Size {
-                    width: taffy::Dimension::length(W),
-                    height: taffy::Dimension::length(H),
+                    width: taffy::Dimension::length(w),
+                    height: taffy::Dimension::length(h),
                 },
                 ..Default::default()
             },
@@ -48,8 +53,8 @@ fn lay_out(app: &mut SettingsApp) -> (TaffyTree<()>, NodeId) {
         .compute_layout_with_measure(
             root,
             taffy::Size {
-                width: taffy::AvailableSpace::Definite(W),
-                height: taffy::AvailableSpace::Definite(H),
+                width: taffy::AvailableSpace::Definite(w),
+                height: taffy::AvailableSpace::Definite(h),
             },
             |known, available, node_id, _, _| {
                 if let Some(&ptr) = measure_map.get(&node_id) {
@@ -133,27 +138,36 @@ fn read_bool(doc: &AutoCommit, key: &str) -> Option<bool> {
     }
 }
 
-/// The sidebar-collapse toggle in the integrated header, clicked through the
-/// production event path, hides the docked sidebar and reclaims its width for
-/// content.
+/// The narrow content screen's back-arrow button, clicked through the
+/// production event path, navigates back to the standalone list screen (the
+/// only way back — there is no overlay or floating sidebar).
 #[test]
-fn clicking_collapse_button_hides_sidebar() {
-    let mut app = SettingsApp::new();
+fn clicking_back_button_returns_to_list() {
+    const NW: f32 = 440.0;
+    const NH: f32 = 820.0;
+    // Start drilled into a category's content screen (narrow layout).
+    let mut app = SettingsApp::with_selected(Category::Network)
+        .with_width_hint(NW)
+        .with_narrow_content_shot();
     let mut doc = AutoCommit::new();
-    let (taffy, node) = lay_out(&mut app);
+    let (taffy, node) = lay_out_at(&mut app, NW, NH);
     app.sync(&mut doc, &automerge::ROOT);
-    assert!(app.sidebar_open(), "docked sidebar starts open");
+    assert!(app.is_narrow(), "440px resolves to the narrow layout");
+    assert!(!app.sidebar_open(), "starts on the content screen (list hidden)");
 
-    // The collapse toggle is drawn by the app-shell (not a child widget), so
+    // The back arrow is drawn by the app-shell (not a child widget), so
     // hit-test it by its resolved rect and click it through the real path.
-    let toggle = app.collapse_toggle_rect();
-    assert!(toggle.width() > 0.0, "the collapse toggle has a resolved rect");
-    click_at(&mut app, &taffy, node, &mut doc, toggle.center());
+    let back = app.back_button_rect();
+    assert!(back.width() > 0.0, "the back arrow has a resolved rect");
+    click_at(&mut app, &taffy, node, &mut doc, back.center());
     app.sync(&mut doc, &automerge::ROOT);
-    assert!(app.sidebar_collapsed(), "clicking the toggle hides the sidebar");
     let _ = app.take_structure_dirty();
-    let _ = lay_out(&mut app);
-    assert!(!app.sidebar_open(), "collapsed sidebar reads as closed; content reclaimed the width");
+    let _ = lay_out_at(&mut app, NW, NH);
+    assert!(app.sidebar_open(), "back navigates to the standalone list screen");
+    assert!(
+        app.back_button_rect().width() <= 0.0,
+        "the list screen has no back button"
+    );
 }
 
 /// Navigate to Network and flip the Wi-Fi toggle via its CRDT key (the same
