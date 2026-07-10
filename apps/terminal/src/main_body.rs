@@ -7,6 +7,7 @@ use ui::{
     clipboard_copy, clipboard_copy_primary, clipboard_paste, clipboard_paste_primary,
     extend_span_drag, line_boundaries, word_boundaries, DragSelect, Granularity,
 };
+use ui::widget::context_menu::{ContextMenu, MenuItem};
 use ui::presence::{PresenceCtx, PresenceKey};
 use ui::permissions::{AppKind as PermAppKind, PermissionContext};
 use ui::collaboration::PresencePayload;
@@ -352,6 +353,11 @@ pub struct TerminalWidget {
     /// system clipboard, not just the primary selection. Off by default;
     /// the primary selection is always set so middle-click paste works.
     select_to_copy: bool,
+    /// Right-click context menu (Copy / Paste), reusing the shared toolkit
+    /// `ContextMenu` primitive so the terminal never draws its own menu chrome.
+    /// The menu's `Arc<dyn Fn>` callbacks can't reach the PTY, so we dispatch on
+    /// the chosen row's label ourselves (mirrors `TextInput`).
+    context_menu: ContextMenu,
     /// Cursor position cached on every `CursorMoved` so the press arm
     /// can hit-test without receiving a fresh position. Logical coords
     /// (post scale-factor divide), matching `text_input`'s convention.
@@ -512,6 +518,7 @@ impl TerminalWidget {
             drag_granularity: Granularity::Char,
             drag_anchor_span: None,
             select_to_copy: false,
+            context_menu: ContextMenu::new(),
             last_cursor_pos: Point::ZERO,
             viewport_start_y: 0,
             last_padding_x: 4.0,
@@ -1219,7 +1226,7 @@ impl Widget for TerminalWidget {
         self.set_geometry(rect);
     }
 
-    fn draw(&mut self, scene: &mut Scene, transform: Affine, text_renderer: &mut TextRenderer, theme: &Theme, _presence: &ui::presence::PresenceCtx) {
+    fn draw(&mut self, scene: &mut Scene, transform: Affine, text_renderer: &mut TextRenderer, theme: &Theme, presence: &ui::presence::PresenceCtx) {
         // Pull every visual parameter from design tokens. Nothing in this
         // method may hard-code a color, font size, or padding — the OS owns
         // the theme and swapping it must reflect in the rendered output.
@@ -1397,6 +1404,11 @@ impl Widget for TerminalWidget {
         // A themed scrollbar indicator in the reserved right gutter, shown only
         // when the buffer overflows the viewport.
         self.draw_scrollbar(scene, transform, theme, start_y, visible_rows);
+
+        // The right-click Copy/Paste menu draws on top of everything when open.
+        if self.context_menu.is_open() {
+            Widget::draw(&mut self.context_menu, scene, transform, text_renderer, theme, presence);
+        }
     }
 
     fn handle_event(&mut self, event: &WindowEvent, scale_factor: f64, modifiers: &winit::event::Modifiers, state: &mut AutoCommit, root: &ObjId, handled: &mut bool, _focus_target: &mut Option<NodeId>, _node_id: NodeId, _taffy: &TaffyTree<()>) {
@@ -1443,6 +1455,14 @@ impl Widget for TerminalWidget {
                 }
             }
             WindowEvent::MouseInput { state: element_state, button: MouseButton::Left, .. } => {
+                // A left click while the context menu is open routes to the menu
+                // (pick a row, or dismiss on click-outside) instead of starting a
+                // new selection.
+                if matches!(element_state, ElementState::Pressed) && self.context_menu.is_open() {
+                    self.click_context_menu_at_cursor();
+                    *handled = true;
+                    return;
+                }
                 // Mouse reporting (ESC[?1000h family) is parsed into `modes`
                 // but click forwarding is intentionally a stub — the left
                 // button always drives text selection.
@@ -1474,8 +1494,25 @@ impl Widget for TerminalWidget {
                     *handled = true;
                 }
             }
+            WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Right, .. } => {
+                // Right-click opens the Copy/Paste context menu (Copy only when
+                // there's a selection). The window-group decoration is the OS's;
+                // this menu is app content, so it uses the shared toolkit primitive.
+                if self.grid_rect.contains(self.last_cursor_pos) {
+                    self.open_context_menu_at_cursor();
+                    *handled = true;
+                }
+            }
             WindowEvent::KeyboardInput { event: KeyEvent { logical_key, text, state: element_state, .. }, .. } => {
                 if *element_state == ElementState::Pressed {
+                    // Escape dismisses an open context menu before the app sees it.
+                    if self.context_menu.is_open() {
+                        if let Key::Named(NamedKey::Escape) = logical_key {
+                            self.context_menu.close();
+                            *handled = true;
+                            return;
+                        }
+                    }
                     let mods = modifiers.state();
                     // Ctrl+Shift+C → clipboard copy; Ctrl+Shift+V → paste.
                     // Both must be matched BEFORE the regular Ctrl+C → SIGINT
@@ -2007,6 +2044,62 @@ impl TerminalWidget {
     /// retunes `spacing.s1`.
     fn last_padding_x(&self) -> f64 {
         self.last_padding_x
+    }
+
+    /// Build + open the right-click Copy/Paste menu at the cached cursor.
+    /// Copy appears only when there is a non-empty selection; Paste always
+    /// (matches every terminal). The `MenuItem` callbacks are inert — dispatch
+    /// happens by label in [`Self::click_context_menu_at_cursor`].
+    fn open_context_menu_at_cursor(&mut self) {
+        let has_selection = self.selected_text().map(|t| !t.is_empty()).unwrap_or(false);
+        let mut menu = ContextMenu::new();
+        if has_selection {
+            menu.push(MenuItem::action("Copy", || {}));
+        }
+        menu.push(MenuItem::action("Paste", || {}));
+        let p = self.last_cursor_pos;
+        menu.open_at([p.x as f32, p.y as f32]);
+        self.context_menu = menu;
+    }
+
+    /// Route a click at the cached cursor to the open menu: run the chosen row
+    /// (dispatched by label, since the `Arc<dyn Fn>` callbacks can't reach the
+    /// PTY) or dismiss on click-outside. No-op when the menu is closed.
+    fn click_context_menu_at_cursor(&mut self) {
+        if !self.context_menu.is_open() {
+            return;
+        }
+        let p = self.last_cursor_pos;
+        let point = [p.x, p.y];
+        if let Some(idx) = self.context_menu.item_at(point) {
+            let label = self.context_menu.items().get(idx).and_then(|i| i.label()).map(str::to_owned);
+            self.context_menu.close();
+            match label.as_deref() {
+                Some("Copy") => {
+                    if let Some(text) = self.selected_text() {
+                        if !text.is_empty() {
+                            clipboard_copy(&text);
+                        }
+                    }
+                }
+                Some("Paste") => {
+                    if let Some(text) = clipboard_paste() {
+                        self.paste(&text);
+                    }
+                }
+                _ => {}
+            }
+        } else if !self.context_menu.contains(point) {
+            // Clicked outside the menu — dismiss. (A click on menu padding is
+            // inside the rect but on no row, so it keeps the menu open.)
+            self.context_menu.close();
+        }
+    }
+
+    /// The open menu's action-row labels in order (empty when closed).
+    #[cfg(test)]
+    fn context_menu_labels(&self) -> Vec<String> {
+        self.context_menu.items().iter().filter_map(|i| i.label().map(str::to_owned)).collect()
     }
 
     /// Walk the selected cells across grid rows and return the joined
