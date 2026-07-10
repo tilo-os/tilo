@@ -2,103 +2,73 @@
 //!
 //! ## Layout
 //!
-//! On a wide window the app is a two-pane split: a categorized sidebar of
-//! [`Category`] entries on the left, and the selected category's content
-//! pane on the right. On a narrow window (below [`NARROW_BREAKPOINT_PX`])
-//! it collapses to a single pane — the sidebar shows alone until the user
-//! taps a category, which "pushes" the panel in over the full width with a
-//! back affordance to return to the list. This mirrors the Adwaita
-//! leaflet/overlay-flap behaviour.
+//! The whole app is one [`AppShell`] (from the shared toolkit): a cohesive
+//! sidebar panel whose integrated header carries the search field and the
+//! sidebar-collapse toggle, beside the selected category's content pane. The
+//! shell owns the responsive behaviour end to end:
 //!
-//! ## How responsiveness works
+//! * **wide, expanded** — the sidebar is docked and its header holds the
+//!   search + collapse button, aligned to each other;
+//! * **wide, collapsed** — the sidebar is hidden to reclaim its width and the
+//!   collapse button + search float over the content so the user can still
+//!   search or re-open it;
+//! * **narrow (phone)** — the list and the content are separate screens: the
+//!   content fills the screen and the sidebar is summoned as a floating
+//!   overlay (dismissed by the scrim, Esc, the toggle, or picking an item).
 //!
-//! The two panes are wrapped in a single [`NavSplit`] from the shared
-//! toolkit. `NavSplit` owns the responsive behaviour entirely: when its
-//! allocated width is at or above [`NAV_BREAKPOINT`] the sidebar is docked
-//! beside the content; below it the sidebar becomes an overlay flap that
-//! slides in over a dimming scrim (dismissed by the scrim, Esc, or a
-//! toggle). Settings supplies the two child widgets and reacts to category
-//! selection; it does not re-implement the flap, the breakpoint, or the
-//! scrim.
+//! Settings supplies the shell with three things and reacts to selection: the
+//! nav list ([`crate::sidebar::build`]), the selected category's content pane,
+//! and the search field. It does not re-implement the breakpoint, the collapse
+//! behaviour, the scrim, the floating pill, or the sidebar surface — the shell
+//! owns all of that so every system app reads the same.
 //!
 //! ## State and the rebuild that drives navigation
 //!
-//! The selected category lives on the widget (and is mirrored into the
-//! document via the per-row select key). When [`SettingsApp::sync`] sees a
-//! category's select key set, it updates `selected` **and flags
-//! `structure_dirty`**. The host's frame loop polls `take_structure_dirty`
-//! and, when set, re-runs `build_layout` — which is where the `NavSplit`
-//! (and therefore the content pane for the new category) is rebuilt. That
-//! rebuild-on-selection is exactly what makes clicking a category switch the
-//! visible pane: without the dirty flag, `build_layout` would never re-run
-//! after the initial frame and the content would stay frozen on the first
-//! category.
+//! The selected category lives on the widget (mirrored into the document via
+//! the per-row select key). When [`SettingsApp::sync`] sees a category's
+//! select key set, it updates `selected`, swaps the shell's nav + content, and
+//! flags `structure_dirty`. The host's frame loop polls `take_structure_dirty`
+//! and re-runs `build_layout`, which is what moves the visible pane to the new
+//! category. The shell keeps its own collapse/overlay state across that
+//! rebuild, so a category switch never re-opens a collapsed sidebar.
 
 use crate::categories::Category;
 use crate::panes;
 use crate::sidebar;
-use ui::widget::{Button, Column, Container, NavSplit, Row, Scrollable, Spacer, SplitLayout, SplitMode, TextInput, Widget};
+use ui::widget::{AppShell, Column, Container, Scrollable, TextInput, Widget};
 use ui::{AppKind, AppWidget, IconDescriptor};
 
-/// CRDT key the header's collapse/expand button writes `true` to. Read in
-/// [`SettingsApp::sync`], it flips [`SettingsApp::sidebar_collapsed`].
-pub const TOGGLE_SIDEBAR_KEY: &str = "settings.toggle_sidebar";
-
 /// At or above this allocated width (logical px) the sidebar docks beside the
-/// content; below it the sidebar becomes an overlay flap. Sized so a typical
-/// settings window is docked while a narrow / split-screen placement gets the
-/// overlay.
+/// content; below it the shell switches to the narrow list-vs-content screens.
+/// Sized so a typical settings window is docked while a narrow / split-screen
+/// placement gets the phone layout.
 pub const NAV_BREAKPOINT: f64 = 720.0;
-
-/// Height (logical px) of the top control strip that holds the sidebar toggle
-/// and the search field.
-const TOP_BAR_HEIGHT: f32 = 54.0;
-
-/// Width (logical px) the search field is pinned to in the top strip — sized
-/// so, with the toggle button and the row gap, it sits over the sidebar
-/// column rather than stretching across the content pane.
-const SEARCH_FIELD_WIDTH: f32 = 200.0;
-
-/// Left inset (logical px) of the top strip's content from the window edge.
-const TOP_BAR_INSET_X: f32 = 14.0;
 
 pub struct SettingsApp {
     /// Currently-selected sidebar category.
     selected: Category,
     /// `true` once a selection (or other composition-affecting change) has
-    /// happened and the host must re-run `build_layout` to rebuild the
-    /// `NavSplit` with the new content pane. Drained by `take_structure_dirty`.
+    /// happened and the host must re-run `build_layout`. Drained by
+    /// `take_structure_dirty`.
     structure_dirty: bool,
     /// In `--shots` / headless rendering the live `ui::App` event loop that
-    /// would normally drive the flap open is absent, so we force the sidebar
-    /// open after building. Set via [`SettingsApp::with_sidebar_open_shot`].
+    /// would normally drive the overlay open is absent, so the narrow shot
+    /// starts the sidebar overlay open. Applied when the shell is created.
     force_sidebar_open: bool,
     /// Seed width hint so the very first offscreen frame resolves the correct
-    /// docked/overlay layout. `None` lets `NavSplit` decide from its own rect.
+    /// wide/narrow layout. `None` lets the shell decide from its own rect.
     width_hint: Option<f32>,
-    /// Whether the sidebar is explicitly collapsed (hidden even when the
-    /// window is wide enough to dock it), reclaiming the space for content.
-    /// Toggled by the header's collapse button; mirrored into the document
-    /// via [`TOGGLE_SIDEBAR_KEY`] so it survives structure rebuilds.
-    sidebar_collapsed: bool,
+    /// Whether the docked sidebar starts collapsed (a `--shots` state).
+    start_collapsed: bool,
     /// The live search query typed into the sidebar's search field (mirrored
     /// from [`crate::sidebar::SEARCH_KEY`]). When non-empty the sidebar shows
-    /// a filtered results list instead of the sectioned category list; a
-    /// change flags `structure_dirty` so the filtered list is rebuilt.
+    /// a filtered results list instead of the sectioned category list.
     search_query: String,
     rect: vello::kurbo::Rect,
-    /// The top control strip (sidebar toggle + search field), rebuilt each
-    /// `build_layout`. It lives at the app's **top level** — in the host's
-    /// main taffy tree, NOT inside the `NavSplit` — so the search field is
-    /// reachable by the App's focus machinery. (`NavSplit` lays its children
-    /// out in an isolated inner tree the focus walk can't see, which is why
-    /// a search field nested in the sidebar could never take or keep keyboard
-    /// focus; hoisting it here is what makes clicking the field focus it and
-    /// keeps that focus across the filter rebuild.)
-    top_bar: Option<Box<dyn Widget>>,
-    /// The composed split (sidebar | content), rebuilt each `build_layout` so
-    /// a category switch shows up once the host re-runs the layout pass.
-    split: Option<NavSplit>,
+    /// The reusable app-shell, created lazily on the first `build_layout` and
+    /// persisted across rebuilds so its collapse/overlay state survives a
+    /// category switch. Its nav + content are swapped on selection.
+    shell: Option<AppShell>,
 }
 
 impl Default for SettingsApp {
@@ -114,11 +84,10 @@ impl SettingsApp {
             structure_dirty: false,
             force_sidebar_open: false,
             width_hint: None,
-            sidebar_collapsed: false,
+            start_collapsed: false,
             search_query: String::new(),
             rect: vello::kurbo::Rect::ZERO,
-            top_bar: None,
-            split: None,
+            shell: None,
         }
     }
 
@@ -132,15 +101,15 @@ impl SettingsApp {
 
     /// Seed the responsive layout with a known width before the first frame —
     /// the offscreen `--shots` renderer calls this so the cold screenshot
-    /// resolves the correct docked/overlay layout immediately.
+    /// resolves the correct wide/narrow layout immediately.
     pub fn with_width_hint(mut self, width: f32) -> Self {
         self.width_hint = Some(width);
         self
     }
 
     /// Force the overlay sidebar open for a `--shots` still. Without the live
-    /// event loop nothing toggles the flap, so the narrow screenshot would
-    /// otherwise show a closed sidebar. Has no visible effect when docked.
+    /// event loop nothing opens the overlay, so the narrow screenshot would
+    /// otherwise show the content screen. Has no visible effect when wide.
     pub fn with_sidebar_open_shot(mut self) -> Self {
         self.force_sidebar_open = true;
         self
@@ -150,20 +119,24 @@ impl SettingsApp {
         self.selected
     }
 
-    /// Switch the active category. Flags `structure_dirty` so the host's next
-    /// frame re-runs `build_layout` and rebuilds the content pane.
+    /// Switch the active category. Flags `structure_dirty`, swaps the shell's
+    /// nav + content, and (on a narrow layout) closes the overlay so the
+    /// content screen shows.
     pub fn select(&mut self, category: Category) {
         if self.selected != category {
             self.selected = category;
             self.structure_dirty = true;
+            self.refresh_shell_children();
+            if let Some(shell) = &mut self.shell {
+                shell.notify_selection();
+            }
         }
     }
 
-    /// Whether the current frame resolves to the narrow (overlay) layout.
-    /// Reads the live `NavSplit` once it exists, else the seeded width hint.
+    /// Whether the current frame resolves to the narrow (phone) layout.
     pub fn is_narrow(&self) -> bool {
-        match &self.split {
-            Some(s) => s.layout_mode() == SplitLayout::Overlay,
+        match &self.shell {
+            Some(s) => s.is_narrow(),
             None => self
                 .width_hint
                 .map(|w| (w as f64) < NAV_BREAKPOINT)
@@ -171,21 +144,32 @@ impl SettingsApp {
         }
     }
 
-    /// Whether the overlay sidebar is currently open (or docked, which always
-    /// reads as "open"). Used by `--shots` assertions.
+    /// Whether the sidebar / list is currently shown (docked-expanded when
+    /// wide, or the open overlay when narrow). Used by `--shots` assertions.
     pub fn sidebar_open(&self) -> bool {
-        self.split.as_ref().is_some_and(|s| s.is_sidebar_open())
+        self.shell.as_ref().is_some_and(|s| s.sidebar_open())
     }
 
-    /// Whether the sidebar is explicitly collapsed (hidden even when docked).
+    /// Whether the docked sidebar is explicitly collapsed.
     pub fn sidebar_collapsed(&self) -> bool {
-        self.sidebar_collapsed
+        match &self.shell {
+            Some(s) => s.collapsed(),
+            None => self.start_collapsed,
+        }
     }
 
-    /// The current search query (empty when not searching). Read by `--shots`
-    /// / tests to confirm the filter reached the sidebar.
+    /// The current search query (empty when not searching).
     pub fn search_query(&self) -> &str {
         &self.search_query
+    }
+
+    /// The on-screen rect of the sidebar-collapse toggle (after a layout
+    /// pass), so interaction tests can click the real control the shell draws.
+    pub fn collapse_toggle_rect(&self) -> vello::kurbo::Rect {
+        self.shell
+            .as_ref()
+            .map(|s| s.toggle_rect())
+            .unwrap_or(vello::kurbo::Rect::ZERO)
     }
 
     /// Pre-seed a search query so the deterministic `--shots` render shows the
@@ -198,100 +182,32 @@ impl SettingsApp {
     /// Start with the sidebar collapsed — used by the `--shots` capture that
     /// proves the docked sidebar can be hidden to reclaim content width.
     pub fn with_sidebar_collapsed_shot(mut self) -> Self {
-        self.sidebar_collapsed = true;
+        self.start_collapsed = true;
         self
     }
 
-    /// The glyph the sidebar-toggle button shows. A hamburger reads as
-    /// "toggle the navigation" in both states, so the button stays legible
-    /// whether the sidebar is docked or collapsed.
-    fn collapse_glyph(&self) -> &'static str {
-        "\u{f035c}" // menu / hamburger
-    }
-
-    /// Build the top control strip: a single, obvious sidebar toggle on the
-    /// left and the settings search field beside it. This is the app's only
-    /// top chrome and it holds **controls only** — no app-name / page-title
-    /// header (the OS draws the window-group pill from [`AppWidget::app_title`],
-    /// so an app-drawn title would duplicate it).
-    ///
-    /// The strip is built here, at the app's top level, so it lands in the
-    /// host's **main** taffy tree. That is essential for the search field:
-    /// widgets inside the `NavSplit` are laid out in an isolated inner tree
-    /// the App's focus walk never visits, so a field nested there can neither
-    /// take a click's focus reliably nor keep it across the per-keystroke
-    /// filter rebuild. Hoisted here, the field is in `focusable_order`, so a
-    /// click focuses it and `autofocus_on_structure_change` restores that
-    /// focus (and the caret) after the sidebar rebuilds to show the filtered
-    /// results.
-    fn build_top_bar(&self) -> Box<dyn Widget> {
-        let theme = ui::Theme::dark();
-
-        // Single, obvious sidebar toggle (hamburger), on the LEFT — the
-        // conventional place. Writes a one-shot CRDT key `sync` reads to flip
-        // the docked sidebar's collapsed state.
-        let toggle_btn = Button::new(
-            "settings.toggle_sidebar",
-            self.collapse_glyph(),
-            Some(TOGGLE_SIDEBAR_KEY),
-        )
-        .with_size(38.0, 38.0);
-
-        // The search field. Bound to `SEARCH_KEY`; its value is re-read from
-        // the document on every `sync`, so the text survives the sidebar's
-        // filter rebuild. `SettingsApp::sync` reads the same key to filter the
-        // category list below.
-        let search = TextInput::new(Vec::new())
-            .with_id("settings.search")
-            .with_on_change_path(sidebar::SEARCH_KEY)
-            .with_placeholder("\u{f0349}  Search settings")
-            .with_font_size(13.0);
-        // Pin the field to a comfortable width so it sits over the sidebar
-        // column rather than stretching across the content, and give it a
-        // field-height box so it reads as an input, not a bare line.
-        let search_box = Container::new()
-            .with_no_padding()
-            .with_size(SEARCH_FIELD_WIDTH, 36.0)
-            .with_child(Box::new(search));
-
-        // A leading inset keeps the toggle off the window edge; the row's own
-        // inter-child gap spaces the toggle from the field. `Spacer` soaks up
-        // the trailing width so the field stays left, over the sidebar.
-        let row = Row::new()
-            .push(crate::widgets::hgap(TOP_BAR_INSET_X))
-            .push(Box::new(toggle_btn))
-            .push(Box::new(search_box))
-            .push(Box::new(Spacer::new()));
-
-        // A fixed-height strip tinted a step below the content so it reads as a
-        // header band — without ever naming the app. No inner padding: the row
-        // owns its own inset and the toggle/field are taller than a padded box
-        // would allow.
-        let surface = theme.tokens.colors.surfaces.base;
+    /// Build the search field placed in the shell's header. Bound to
+    /// [`sidebar::SEARCH_KEY`]; its value is re-read from the document on every
+    /// `sync`, so the text survives the sidebar's filter rebuild. Because the
+    /// shell hosts it as a direct child in the App's tree, a click focuses it
+    /// and `autofocus_on_structure_change` restores focus + caret after the
+    /// filtered sidebar rebuilds.
+    fn build_search_field(&self) -> Box<dyn Widget> {
         Box::new(
-            Container::new()
-                .with_no_padding()
-                .with_height(TOP_BAR_HEIGHT)
-                .with_fill(surface)
-                .with_child(Box::new(row)),
+            TextInput::new(Vec::new())
+                .with_id("settings.search")
+                .with_on_change_path(sidebar::SEARCH_KEY)
+                .with_placeholder("\u{f0349}  Search settings")
+                .with_font_size(13.0),
         )
     }
 
     /// Build the content pane: the selected category's body, wrapped in a
-    /// vertical [`Scrollable`] so tall panes (many section cards on a short
-    /// window) scroll with a real overlay scrollbar — thumb drag, track
-    /// paging, PageUp/Down + Home/End, wheel — instead of being clipped.
-    ///
-    /// There is **no app-drawn title header** here: the category's identity is
-    /// carried by its active sidebar row and the OS window-group pill, not by a
-    /// duplicated in-pane title. The pane starts directly with its first
-    /// section card, inset from the top so it has breathing room.
-    ///
-    /// The intrinsic-height inner `Column` provides the content extent; the
-    /// `Scrollable`'s `percent(1.0)` height resolves against the filling
-    /// `Container` (a definite height under the live `ui::App`, which drives
-    /// the measure pass), so the viewport doesn't collapse. When the content
-    /// fits, the bar hides itself and nothing changes visually.
+    /// vertical [`Scrollable`] so tall panes scroll with a real overlay
+    /// scrollbar instead of being clipped. There is **no app-drawn title
+    /// header** here — the category's identity is carried by its active sidebar
+    /// row and the OS window-group pill, not by a duplicated in-pane title. The
+    /// pane starts directly with its first section card, inset from the top.
     fn build_content(&self) -> Box<dyn Widget> {
         let body = self.build_pane_body();
         let inner = Column::new()
@@ -324,36 +240,33 @@ impl SettingsApp {
         }
     }
 
-    /// Build the responsive split: the cohesive category sidebar on the left
-    /// (see [`crate::sidebar::build`]) and the selected category's content
-    /// pane on the right, wrapped in a [`NavSplit`] that docks the sidebar
-    /// when wide and turns it into an overlay flap when narrow.
-    ///
-    /// The split is rebuilt fresh here (rather than mutated in place) because
-    /// the content child depends on `self.selected`; rebuilding is how a
-    /// category switch reaches the screen. The live `ui::App` loop never
-    /// drives `NavSplit::update` for this app, so the flap is snapped — not
-    /// eased — to its resolved open state right after construction (the same
-    /// approach `tube` uses for its rebuilt nav rail).
-    fn build_split(&self) -> NavSplit {
-        let sidebar = sidebar::build(self.selected, &self.search_query);
+    /// Create the persistent [`AppShell`] with the current nav + content +
+    /// search and the seeded shot state.
+    fn build_shell(&self) -> AppShell {
+        let nav = sidebar::build(self.selected, &self.search_query);
         let content = self.build_content();
-        let mut split = NavSplit::new(sidebar, content)
-            .with_mode(SplitMode::Adaptive)
+        let mut shell = AppShell::new(nav, content)
+            .with_search(self.build_search_field())
             .with_breakpoint(NAV_BREAKPOINT)
-            .with_sidebar_width(sidebar::SIDEBAR_WIDTH);
-        // An explicit collapse hides the docked sidebar and reclaims its
-        // width for content. Snap (not ease) so the rebuilt split lands in
-        // the right state immediately. This takes precedence over the shots
-        // force-open below.
-        if self.sidebar_collapsed {
-            split.snap_open(false);
-        } else if self.force_sidebar_open {
-            // Open the overlay flap for shots; docked layouts open by
-            // default so this is a no-op there.
-            split.snap_open(true);
+            .with_sidebar_width(sidebar::SIDEBAR_WIDTH)
+            .with_collapsed(self.start_collapsed)
+            .with_overlay_open(self.force_sidebar_open);
+        if let Some(w) = self.width_hint {
+            shell = shell.with_width_hint(w as f64);
         }
-        split
+        shell
+    }
+
+    /// Swap the shell's nav + content to reflect the current selection /
+    /// query. No-op before the shell exists (the first `build_layout` will
+    /// build them fresh).
+    fn refresh_shell_children(&mut self) {
+        let nav = sidebar::build(self.selected, &self.search_query);
+        let content = self.build_content();
+        if let Some(shell) = &mut self.shell {
+            shell.set_nav(nav);
+            shell.set_content(content);
+        }
     }
 }
 
@@ -363,10 +276,9 @@ impl Widget for SettingsApp {
 
         // Category selection: each sidebar row writes `settings.select.<slug>`
         // = true on click. Reading it true here switches the active category
-        // and (via `select`) flags `structure_dirty` so the host rebuilds the
-        // layout — that rebuild is what moves the content pane to the new
-        // category. The first key seen wins; we clear it so the selection is
-        // a one-shot edge, not a sticky state.
+        // (via `select`, which swaps the shell's nav + content and flags a
+        // rebuild). The first key seen wins; we clear it so the selection is a
+        // one-shot edge, not a sticky state.
         for category in Category::ALL {
             let key = format!("settings.select.{}", category.slug());
             let pressed = matches!(
@@ -380,31 +292,13 @@ impl Widget for SettingsApp {
             }
         }
 
-        // Sidebar collapse toggle: the header button writes
-        // `settings.toggle_sidebar = true` on click. Reading it true flips
-        // the collapse state, persists it, flags a rebuild, and clears the
-        // bit so it's a one-shot edge.
-        let toggle_pressed = matches!(
-            state.get(path, TOGGLE_SIDEBAR_KEY),
-            Ok(Some((Value::Scalar(s), _)))
-                if matches!(s.as_ref(), automerge::ScalarValue::Boolean(true))
-        );
-        if toggle_pressed {
-            let _ = state.put(path, TOGGLE_SIDEBAR_KEY, automerge::ScalarValue::Boolean(false));
-            self.sidebar_collapsed = !self.sidebar_collapsed;
-            self.structure_dirty = true;
-        }
-
         // The search field edits an Automerge `Text` object; ensure it exists
-        // so typed characters actually persist to the document (a `TextInput`
-        // only writes through an existing Text object — without this the field
-        // would update just its local buffer and the filter would never see the
-        // query, and the text would vanish on the next rebuild).
+        // so typed characters actually persist (a `TextInput` only writes
+        // through an existing Text object).
         let search_obj = crate::ensure_text_object(state, path, sidebar::SEARCH_KEY);
         // In `--shots` there is no event loop to type into the field, so a
         // pre-seeded query (via `with_search_shot`) is spliced into the object
-        // once so the field visibly shows the query it filtered by. Harmless
-        // live: `search_query` starts empty there.
+        // once so the field visibly shows the query it filtered by.
         if !self.search_query.is_empty() {
             if let Ok(existing) = state.text(&search_obj) {
                 if existing.is_empty() {
@@ -413,35 +307,20 @@ impl Widget for SettingsApp {
             }
         }
 
-        // Search query: the top strip's search field writes `settings.search`.
-        // Reading a changed value here updates the filter and flags a rebuild
-        // so the sidebar's filtered results list is recomposed. The field
-        // re-reads the same key on its own `sync`, so the query text survives
-        // that rebuild; because the field is a top-level focusable (not buried
-        // in the `NavSplit`), `autofocus_on_structure_change` restores focus +
-        // caret to it by ordinal after the rebuild, so typing keeps flowing.
+        // Search query: the header's search field writes `settings.search`.
+        // A changed value updates the filter and swaps the shell's (filtered)
+        // nav list, then flags a rebuild. The field re-reads the same key on
+        // its own `sync`, so the query text survives the rebuild.
         if let Some(q) = read_search(state, path) {
             if q != self.search_query {
                 self.search_query = q;
                 self.structure_dirty = true;
+                self.refresh_shell_children();
             }
         }
 
-        // Sync the top strip so the search field reads its bound value back.
-        if let Some(top) = &mut self.top_bar {
-            top.sync(state, path);
-        }
-
-        if let Some(split) = &mut self.split {
-            // Re-assert a collapse every frame so a window resize (which can
-            // reset `NavSplit`'s flap preference in adaptive mode) never
-            // silently re-reveals a collapsed sidebar. When NOT collapsed we
-            // leave the flap alone so the narrow overlay's open/close (and
-            // the shots force-open) keep working.
-            if self.sidebar_collapsed && split.is_sidebar_open() {
-                split.snap_open(false);
-            }
-            split.sync(state, path);
+        if let Some(shell) = &mut self.shell {
+            shell.sync(state, path);
         }
     }
 
@@ -451,52 +330,23 @@ impl Widget for SettingsApp {
         theme: &ui::Theme,
         node_map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn Widget>,
     ) -> taffy::NodeId {
-        // The app is a vertical stack: a fixed-height top control strip
-        // (toggle + search) over the responsive split. The strip is built into
-        // the *main* taffy tree here (not inside the `NavSplit`) so its search
-        // field is reachable by the host's focus machinery — see
-        // [`Self::build_top_bar`].
-        let mut top_bar = self.build_top_bar();
-        let top_node = top_bar.build_layout(taffy, theme, node_map);
-        self.top_bar = Some(top_bar);
-
-        // Rebuild the split for the current selection. The host re-runs this
-        // pass whenever `take_structure_dirty` reports true (i.e. after a
-        // category change), so the freshly-built content pane is what reaches
-        // the screen.
-        let mut split = self.build_split();
-        let split_node = split.build_layout(taffy, theme, node_map);
-        self.split = Some(split);
-        // The split fills the height left under the fixed strip. `NavSplit`
-        // builds a `percent(1.0)`-height leaf; override it to grow into the
-        // remaining space instead of over-running past the strip.
-        let _ = taffy.set_style(
-            split_node,
-            taffy::Style {
-                flex_grow: 1.0,
-                flex_basis: taffy::Dimension::length(0.0),
-                size: taffy::Size {
-                    width: taffy::Dimension::percent(1.0),
-                    height: taffy::Dimension::auto(),
-                },
-                min_size: taffy::Size {
-                    width: taffy::Dimension::auto(),
-                    height: taffy::Dimension::length(0.0),
-                },
-                ..Default::default()
-            },
-        );
+        // Create the shell once and reuse it so its collapse/overlay state
+        // survives category switches (which rebuild the tree).
+        if self.shell.is_none() {
+            self.shell = Some(self.build_shell());
+        }
+        let shell = self.shell.as_mut().unwrap();
+        let shell_node = shell.build_layout(taffy, theme, node_map);
 
         let style = taffy::Style {
             display: taffy::Display::Flex,
-            flex_direction: taffy::FlexDirection::Column,
             size: taffy::Size {
                 width: taffy::Dimension::percent(1.0),
                 height: taffy::Dimension::percent(1.0),
             },
             ..Default::default()
         };
-        let node = taffy.new_with_children(style, &[top_node, split_node]).unwrap();
+        let node = taffy.new_with_children(style, &[shell_node]).unwrap();
         node_map.insert(node, self as *mut dyn Widget);
         node
     }
@@ -515,13 +365,9 @@ impl Widget for SettingsApp {
             origin.y + l.location.y as f64 + l.size.height as f64,
         );
         let origin = vello::kurbo::Point::new(self.rect.x0, self.rect.y0);
-        if let Ok(children) = taffy.children(node) {
-            // children[0] = top strip, children[1] = split.
-            if let (Some(&top_node), Some(top)) = (children.first(), &mut self.top_bar) {
-                top.apply_layout(taffy, top_node, origin);
-            }
-            if let (Some(&split_node), Some(split)) = (children.get(1), &mut self.split) {
-                split.apply_layout(taffy, split_node, origin);
+        if let (Ok(children), Some(shell)) = (taffy.children(node), &mut self.shell) {
+            if let Some(&shell_node) = children.first() {
+                shell.apply_layout(taffy, shell_node, origin);
             }
         }
     }
@@ -534,13 +380,8 @@ impl Widget for SettingsApp {
         theme: &ui::Theme,
         presence: &ui::presence::PresenceCtx,
     ) {
-        if let Some(split) = &mut self.split {
-            split.draw(scene, transform, text_renderer, theme, presence);
-        }
-        // Draw the strip after the split so it is never occluded by the
-        // content pane's background.
-        if let Some(top) = &mut self.top_bar {
-            top.draw(scene, transform, text_renderer, theme, presence);
+        if let Some(shell) = &mut self.shell {
+            shell.draw(scene, transform, text_renderer, theme, presence);
         }
     }
 
@@ -553,11 +394,8 @@ impl Widget for SettingsApp {
         presence: &ui::presence::PresenceCtx,
         permissions: &ui::permissions::PermissionContext,
     ) {
-        if let Some(split) = &mut self.split {
-            split.draw_with_presence(scene, transform, text_renderer, theme, presence, permissions);
-        }
-        if let Some(top) = &mut self.top_bar {
-            top.draw_with_presence(scene, transform, text_renderer, theme, presence, permissions);
+        if let Some(shell) = &mut self.shell {
+            shell.draw_with_presence(scene, transform, text_renderer, theme, presence, permissions);
         }
     }
 
@@ -573,17 +411,10 @@ impl Widget for SettingsApp {
         node_id: taffy::NodeId,
         taffy: &taffy::TaffyTree<()>,
     ) {
-        if let Ok(children) = taffy.children(node_id) {
-            // Route to the top strip first (search + toggle), then the split.
-            if let (Some(&top_node), Some(top)) = (children.first(), &mut self.top_bar) {
-                top.handle_event(
-                    event, scale_factor, modifiers, state, path, handled, focus_target, top_node,
-                    taffy,
-                );
-            }
-            if let (Some(&split_node), Some(split)) = (children.get(1), &mut self.split) {
-                split.handle_event(
-                    event, scale_factor, modifiers, state, path, handled, focus_target, split_node,
+        if let (Ok(children), Some(shell)) = (taffy.children(node_id), &mut self.shell) {
+            if let Some(&shell_node) = children.first() {
+                shell.handle_event(
+                    event, scale_factor, modifiers, state, path, handled, focus_target, shell_node,
                     taffy,
                 );
             }
@@ -591,28 +422,17 @@ impl Widget for SettingsApp {
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
-        // Order MUST match the taffy children order [top_bar, split] so the
-        // host's focus walk (which zips `children()` with `taffy.children`)
-        // reaches the search field in the top strip.
-        let mut out: Vec<&dyn Widget> = Vec::new();
-        if let Some(top) = self.top_bar.as_ref() {
-            out.push(top.as_ref());
-        }
-        if let Some(split) = self.split.as_ref() {
-            out.push(split as &dyn Widget);
-        }
-        out
+        self.shell
+            .as_ref()
+            .map(|s| vec![s as &dyn Widget])
+            .unwrap_or_default()
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        let mut out: Vec<&mut (dyn Widget + '_)> = Vec::new();
-        if let Some(top) = self.top_bar.as_mut() {
-            out.push(top.as_mut());
-        }
-        if let Some(split) = self.split.as_mut() {
-            out.push(split as &mut (dyn Widget + '_));
-        }
-        out
+        self.shell
+            .as_mut()
+            .map(|s| vec![s as &mut (dyn Widget + '_)])
+            .unwrap_or_default()
     }
 
     fn name(&self) -> &str {
@@ -623,33 +443,28 @@ impl Widget for SettingsApp {
         self.rect
     }
 
-    /// Drains the selection-rebuild flag. Returning true tells the host's
-    /// frame loop to rebuild the taffy tree (re-running `build_layout`), which
-    /// is how a category switch reaches the content pane. Also bubbles any
-    /// child's own structure-dirty signal.
+    /// Drains the selection-rebuild flag, bubbling the shell's own rebuild
+    /// signal (a collapse toggle or a breakpoint cross).
     fn take_structure_dirty(&mut self) -> bool {
         let own = std::mem::take(&mut self.structure_dirty);
-        let split_child = self
-            .split
+        let child = self
+            .shell
             .as_mut()
             .map(|s| s.take_structure_dirty())
             .unwrap_or(false);
-        let top_child = self
-            .top_bar
-            .as_mut()
-            .map(|t| t.take_structure_dirty())
-            .unwrap_or(false);
-        own || split_child || top_child
+        own || child
     }
 
     fn needs_animation_frame(&self) -> bool {
-        self.split.as_ref().is_some_and(|s| s.needs_animation_frame())
-            || self.top_bar.as_ref().is_some_and(|t| t.needs_animation_frame())
+        self.shell.as_ref().is_some_and(|s| s.needs_animation_frame())
     }
 
     fn needs_idle_sync(&self) -> bool {
-        self.split.as_ref().is_some_and(|s| s.needs_idle_sync())
-            || self.top_bar.as_ref().is_some_and(|t| t.needs_idle_sync())
+        self.shell.as_ref().is_some_and(|s| s.needs_idle_sync())
+    }
+
+    fn layout_needs_measure(&self) -> bool {
+        self.shell.as_ref().is_some_and(|s| s.layout_needs_measure())
     }
 }
 
@@ -745,6 +560,7 @@ mod tests {
     #[test]
     fn select_changes_category_and_flags_structure_dirty() {
         let mut app = SettingsApp::new();
+        layout_at(&mut app, 1200.0, 760.0);
         app.select(Category::Users);
         assert_eq!(app.selected(), Category::Users);
         assert!(
@@ -765,10 +581,14 @@ mod tests {
     }
 
     #[test]
-    fn narrow_layout_uses_the_overlay() {
-        let mut app = SettingsApp::new();
+    fn narrow_layout_uses_the_list_content_split() {
+        let mut app = SettingsApp::new().with_width_hint(440.0);
         layout_at(&mut app, 440.0, 820.0);
-        assert!(app.is_narrow(), "440px should resolve to the overlay layout");
+        assert!(app.is_narrow(), "440px should resolve to the narrow layout");
+        assert!(
+            !app.sidebar_open(),
+            "narrow starts on the content screen (the list is a separate, summonable screen)"
+        );
     }
 
     #[test]
@@ -778,39 +598,18 @@ mod tests {
             .with_sidebar_open_shot();
         layout_at(&mut app, 440.0, 820.0);
         assert!(app.is_narrow());
-        assert!(app.sidebar_open(), "the shot flag forces the overlay flap open");
+        assert!(app.sidebar_open(), "the shot flag opens the overlay list over the content");
     }
 
     #[test]
-    fn toggle_key_collapses_then_expands_sidebar() {
-        use automerge::transaction::Transactable;
-        let mut app = SettingsApp::new();
+    fn collapsed_shot_hides_the_docked_sidebar() {
+        let mut app = SettingsApp::with_selected(Category::Network)
+            .with_width_hint(1200.0)
+            .with_sidebar_collapsed_shot();
         layout_at(&mut app, 1200.0, 760.0);
-        assert!(!app.sidebar_collapsed(), "starts expanded");
-        assert!(app.sidebar_open(), "docked sidebar is open by default");
-
-        let mut doc = automerge::AutoCommit::new();
-        let root = automerge::ROOT;
-
-        // Simulate the header collapse button writing its key, then sync.
-        let _ = doc.put(&root, TOGGLE_SIDEBAR_KEY, true);
-        app.sync(&mut doc, &root);
-        assert!(app.sidebar_collapsed(), "first toggle collapses the sidebar");
-        assert!(
-            app.take_structure_dirty(),
-            "collapsing requests a rebuild so the content reclaims the space"
-        );
-        // Rebuild + re-layout as the host would; the collapsed split hides
-        // the sidebar.
-        layout_at(&mut app, 1200.0, 760.0);
-        assert!(!app.sidebar_open(), "collapsed docked sidebar reads as closed");
-
-        // Toggle again → expands.
-        let _ = doc.put(&root, TOGGLE_SIDEBAR_KEY, true);
-        app.sync(&mut doc, &root);
-        assert!(!app.sidebar_collapsed(), "second toggle re-expands");
-        layout_at(&mut app, 1200.0, 760.0);
-        assert!(app.sidebar_open(), "re-expanded sidebar is open again");
+        assert!(!app.is_narrow());
+        assert!(app.sidebar_collapsed(), "the shot starts collapsed");
+        assert!(!app.sidebar_open(), "a collapsed docked sidebar is hidden");
     }
 
     #[test]
@@ -836,22 +635,18 @@ mod tests {
     }
 
     #[test]
-    fn seeded_search_shot_query_reaches_the_sidebar_and_field() {
+    fn seeded_search_shot_query_reaches_the_field() {
         use automerge::ReadDoc;
-        // The `--shots` seed path mirrors a pre-set query into the field key so
-        // the rendered field shows it, and drives the filter.
         let mut app = SettingsApp::with_selected(Category::Displays).with_search_shot("light");
         assert_eq!(app.search_query(), "light");
         let mut doc = automerge::AutoCommit::new();
         let root = automerge::ROOT;
         app.sync(&mut doc, &root);
-        // The field key was seeded so the TextInput renders the query.
         assert!(
             doc.get(&root, sidebar::SEARCH_KEY).unwrap().is_some(),
             "the seeded query is written to the field key"
         );
-        // And it still lays out (the filtered sidebar path).
-        let _ = { layout_at(&mut app, 1200.0, 760.0); };
+        layout_at(&mut app, 1200.0, 760.0);
     }
 
     #[test]
@@ -865,5 +660,24 @@ mod tests {
             .with_sidebar_open_shot();
         layout_at(&mut narrow, 440.0, 820.0);
         assert!(narrow.get_rect().width() > 0.0);
+    }
+
+    /// The app must NOT draw its own title / app-name header — the OS window
+    /// pill carries the name. The shell's chrome is exactly the search field,
+    /// the nav list, and the content pane (no title element). We assert on the
+    /// real composed tree: the shell's children are those three, in order.
+    #[test]
+    fn draws_no_app_name_header() {
+        let mut app = SettingsApp::new();
+        layout_at(&mut app, 1200.0, 760.0);
+        let shell = app.shell.as_ref().expect("shell built");
+        let names: Vec<&str> = shell.children().iter().map(|c| c.name()).collect();
+        assert_eq!(
+            names,
+            vec!["TextInput", "Container", "Container"],
+            "shell chrome is search + nav + content — no title/app-name header widget"
+        );
+        // And the resolved layout is the wide split.
+        assert_eq!(shell.layout(), ui::widget::ShellLayout::Wide);
     }
 }
