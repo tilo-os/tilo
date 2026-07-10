@@ -10,5 +10,5 @@
 pub mod animated;
 pub mod spring;
 
-pub use animated::{Animated, Curve, Lerp, Transition};
+pub use animated::{ease_out, Animated, Curve, Lerp, Transition};
 pub use spring::Spring;
