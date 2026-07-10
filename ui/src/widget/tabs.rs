@@ -1305,7 +1305,7 @@ impl Widget for TabBar {
             } else {
                 let raw = elapsed.as_secs_f64() / (LAYOUT_ANIM_MS as f64 / 1000.0);
                 // Ease-out-cubic, matching the drop-zone curve above.
-                Some(1.0 - (1.0 - raw).powi(3))
+                Some(crate::ease_out(raw))
             }
         });
 
@@ -1358,7 +1358,7 @@ impl Widget for TabBar {
                         let raw = (elapsed.as_secs_f64()
                             / (INSERT_FADE_MS as f64 / 1000.0))
                             .clamp(0.0, 1.0);
-                        let eased = 1.0 - (1.0 - raw).powi(3);
+                        let eased = crate::ease_out(raw);
                         (eased as f32, -INSERT_FADE_Y_OFFSET * (1.0 - eased))
                     }
                 }
@@ -1442,7 +1442,7 @@ impl Widget for TabBar {
                 let raw = (elapsed.as_secs_f64()
                     / (CLOSE_FADE_MS as f64 / 1000.0))
                     .clamp(0.0, 1.0);
-                let eased = 1.0 - (1.0 - raw).powi(3);
+                let eased = crate::ease_out(raw);
                 let alpha = (1.0 - eased) as f32;
                 let scale = 1.0 + (CLOSE_SCALE_END - 1.0) * eased;
                 let y_offset = CLOSE_Y_OFFSET_END * eased;
@@ -1512,7 +1512,7 @@ impl Widget for TabBar {
                 .map(|t| now.duration_since(t).as_millis() as f64)
                 .unwrap_or(HOVER_DROP_FADE_MS as f64);
             let raw_t = (elapsed_ms / HOVER_DROP_FADE_MS as f64).clamp(0.0, 1.0);
-            let eased_t = 1.0 - (1.0 - raw_t).powi(3);
+            let eased_t = crate::ease_out(raw_t);
             // Compute the gap's centre x and the vertical extent of the
             // line, mirroring the accent-bar geometry above so the two
             // indicators (when both visible on the source bar) sit at

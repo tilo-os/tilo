@@ -503,7 +503,7 @@ impl GroupRow {
                 // Cubic-out ease — same shape the spawn animation in
                 // `window_group.rs` uses for its slide-in. Punchy at the
                 // start, gentle settle at the end.
-                let eased = 1.0 - (1.0 - raw).powi(3);
+                let eased = crate::ease_out(raw);
                 self.scroll_x = anim.from + (anim.to - anim.from) * eased;
             }
         }

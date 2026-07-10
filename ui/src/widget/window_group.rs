@@ -217,7 +217,7 @@ impl WindowGroup {
         }
         let raw = (elapsed.as_secs_f64() / (SPAWN_ANIM_MS as f64 / 1000.0))
             .clamp(0.0, 1.0);
-        (1.0 - (1.0 - raw).powi(3)) as f32
+        (crate::ease_out(raw)) as f32
     }
 
     /// Latch the group-level close fade. Called from `handle_event`
@@ -737,7 +737,7 @@ impl Widget for WindowGroup {
             let raw = (started.elapsed().as_millis() as f32
                 / GROUP_CLOSE_FADE_MS as f32)
                 .clamp(0.0, 1.0);
-            let eased = 1.0 - (1.0 - raw).powi(3);
+            let eased = crate::Curve::EaseOut.apply(raw);
             let alpha = (1.0 - eased).max(0.0);
             let scale = (1.0 - 0.05 * eased) as f64;
             (alpha, 0.0, 0.0, scale)
@@ -749,7 +749,7 @@ impl Widget for WindowGroup {
                 let raw = (elapsed.as_secs_f64()
                     / (SPAWN_ANIM_MS as f64 / 1000.0))
                     .clamp(0.0, 1.0);
-                let eased = 1.0 - (1.0 - raw).powi(3);
+                let eased = crate::ease_out(raw);
                 let scale = SPAWN_ANIM_INITIAL_SCALE
                     + (1.0 - SPAWN_ANIM_INITIAL_SCALE) * eased;
                 let x_off = SPAWN_ANIM_X_OFFSET * (1.0 - eased);
@@ -820,7 +820,7 @@ impl Widget for WindowGroup {
         for (id, started) in closing_ids {
             let elapsed = started.elapsed().as_secs_f64();
             let raw = (elapsed / (CLOSE_FADE_MS as f64 / 1000.0)).clamp(0.0, 1.0);
-            let eased = 1.0 - (1.0 - raw).powi(3);
+            let eased = crate::ease_out(raw);
             let alpha = (1.0 - eased) as f32;
             let scale = 1.0 + (-0.05) * eased; // 1.0 → 0.95
             let y_offset = -20.0 * eased;

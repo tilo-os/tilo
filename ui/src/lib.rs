@@ -95,7 +95,7 @@ pub use text_selection::{
 
 // Shared motion system — one curve set, one wall-clock driver, one
 // interruptible open/close transition, one interactive spring.
-pub use animation::{Animated, Curve, Lerp, Spring, Transition};
+pub use animation::{ease_out, Animated, Curve, Lerp, Spring, Transition};
 
 // Collaboration contract types (Phase C).
 pub use presence::{PresenceCtx, PresenceKey, PathSegment, SelectionRange};

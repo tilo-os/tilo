@@ -134,6 +134,14 @@ fn spring_unit_step(stiffness: f32, damping: f32, mass: f32, t: f32) -> f32 {
     }
 }
 
+/// The shared ease-out-cubic (`1 - (1-t)^3`) as a plain `f64` function,
+/// for the many widget call sites whose surrounding math is `f64`.
+/// Delegates to [`Curve::EaseOut`] so there is exactly one home for the
+/// formula — retune it there and every fade/slide/spawn/snap follows.
+pub fn ease_out(t: f64) -> f64 {
+    Curve::EaseOut.apply(t as f32) as f64
+}
+
 /// A driver that interpolates `from -> to` over `duration` using `curve`,
 /// driven entirely off a wall-clock `Instant`. No per-frame state — just
 /// query `current(now)` whenever you need the value.
