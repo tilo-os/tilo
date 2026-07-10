@@ -611,6 +611,131 @@ fn home_channel_avatars_render_the_fetched_photo() {
     );
 }
 
+/// Issue #1 (majority): the yt-dlp/rustypipe channel-record mismatch. Most cards
+/// are uploaded by one creator whose *primary* channel record carries NO avatar,
+/// while a second record (a creator row, different id, same name) does. After
+/// `reconcile_channel_avatars` every card for that creator must resolve the real
+/// avatar — proving the reconciliation fixes the MAJORITY, not just one row.
+#[test]
+fn reconciled_avatars_render_on_the_majority_of_home_cards() {
+    use std::sync::Arc;
+    use std::time::Duration;
+    use tube::model::{Channel, TubeModel, Video};
+
+    fn png_bytes() -> Vec<u8> {
+        let (w, h) = (8u32, 8u32);
+        let mut rgba = Vec::new();
+        for _ in 0..(w * h) {
+            rgba.extend_from_slice(&[200, 60, 20, 255]);
+        }
+        let mut out = Vec::new();
+        {
+            let mut enc = png::Encoder::new(&mut out, w, h);
+            enc.set_color(png::ColorType::Rgba);
+            enc.set_depth(png::BitDepth::Eight);
+            enc.write_header().unwrap().write_image_data(&rgba).unwrap();
+        }
+        out
+    }
+
+    let avatar_url = "http://test.local/creator.png";
+    let bytes = png_bytes();
+    let fetch: ui::Fetcher = Arc::new(move |_u: &str| Some(bytes.clone()));
+    let store = ui::ImageStore::new(fetch);
+    let _ = store.get(avatar_url);
+    store.block_until_idle(Duration::from_secs(5));
+
+    // 12 videos all uploaded by "Creator X" via its PRIMARY record (id UC_A),
+    // which has NO avatar (the yt-dlp record). No thumbnails, so the only image a
+    // card can paint is the avatar.
+    let mut model = TubeModel::default();
+    model.route = Route::Home;
+    for i in 0..12 {
+        model.videos.push(Video {
+            id: format!("v{i}"),
+            title: format!("Video {i}"),
+            dearrow_title: None,
+            channel_id: "UC_A".into(),
+            channel_name: "Creator X".into(),
+            channel_seed: "UC_A".into(),
+            channel_avatar_url: String::new(),
+            views: 1000,
+            published: "1 day ago".into(),
+            duration: 60,
+            description: String::new(),
+            likes: 0,
+            seed: format!("v{i}"),
+            thumbnail_url: String::new(),
+            category: "Search".into(),
+            dearrow_thumb: false,
+            sponsor: vec![],
+            comments: vec![],
+            live: false,
+        });
+    }
+    // The primary uploader record (id UC_A) — NO avatar.
+    model.channels.push(Channel {
+        id: "UC_A".into(),
+        name: "Creator X".into(),
+        handle: "UC_A".into(),
+        subscribers: 0,
+        verified: false,
+        description: String::new(),
+        seed: "UC_A".into(),
+        avatar_url: String::new(),
+        banner_url: String::new(),
+    });
+    // A SECOND record for the same creator (different id, same name) that DOES
+    // carry the avatar — the rustypipe creator row.
+    model.channels.push(Channel {
+        id: "UC_B".into(),
+        name: "Creator X".into(),
+        handle: "@creatorx".into(),
+        subscribers: 500,
+        verified: true,
+        description: String::new(),
+        seed: "UC_B".into(),
+        avatar_url: avatar_url.to_string(),
+        banner_url: String::new(),
+    });
+
+    // Before reconciliation: the cards read UC_A (empty) → initials only.
+    let app_before = TubeApp::new()
+        .with_viewport(1280.0, 900.0)
+        .with_model_for_test(model.clone())
+        .with_image_store(store.clone());
+    let mut hb = Harness::new(app_before, (1280.0, 900.0));
+    let avatars_before = hb.image_draw_count();
+
+    // The production reconciliation pass bridges UC_B's avatar onto UC_A.
+    model.reconcile_channel_avatars();
+    assert_eq!(
+        model.channel("UC_A").unwrap().avatar_url,
+        avatar_url,
+        "reconcile stamps the same-name record's avatar onto the primary record",
+    );
+
+    let app = TubeApp::new()
+        .with_viewport(1280.0, 900.0)
+        .with_model_for_test(model)
+        .with_image_store(store);
+    let mut h = Harness::new(app, (1280.0, 900.0));
+    let avatars_after = h.image_draw_count();
+
+    // A 1280×900 Home shows several rows of cards; after reconciliation the
+    // MAJORITY of the visible cards must paint a real avatar (many IMAGE draws),
+    // not the single row that happened to carry one.
+    assert!(
+        avatars_after >= 4,
+        "the majority of visible cards must show a real avatar after reconcile \
+         (before={avatars_before}, after={avatars_after})",
+    );
+    assert!(
+        avatars_after > avatars_before,
+        "reconciliation must increase real-avatar coverage (before={avatars_before}, after={avatars_after})",
+    );
+}
+
 /// Scroll-perf guard: after a fully laid-out + drawn frame, NO widget in the
 /// Home tree may still demand a layout re-measure. A widget that reports "dirty"
 /// forever — e.g. an avatar keyed off a draw-time cache while it's culled

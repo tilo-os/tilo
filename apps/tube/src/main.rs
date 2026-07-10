@@ -83,6 +83,14 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         return run_probe_ytdlp(&query);
     }
 
+    // `--probe-avatars [query]` — diagnose the creator-avatar pipeline: what
+    // channel id/name/avatar yt-dlp vs rustypipe report for the same search, the
+    // by-id fold match rate, and whether a per-channel fetch actually returns +
+    // decodes an avatar. Requires `--features live`.
+    if let Some(query) = parse_opt_query(&args, "--probe-avatars", "blender open movie") {
+        return run_probe_avatars(&query);
+    }
+
     // `--probe-gst [id] [seconds]` — prove the GStreamer decode path: resolve a
     // real stream URL via yt-dlp and decode a sequence of real frames (checksums
     // prove motion). Requires `--features "live media"`.
@@ -865,7 +873,7 @@ fn run_live_shots(dir: &str, query: &str) -> Result<(), Box<dyn std::error::Erro
             let vids: Vec<String> = items.videos.iter().map(|v| v.id.clone()).collect();
             for v in &items.videos {
                 smodel.ensure_channel_stub(&v.channel_id, &v.channel_name);
-                smodel.note_channel_avatar(&v.channel_id, &v.channel_avatar_url);
+                smodel.adopt_channel_avatar(&v.channel_id, &v.channel_name, &v.channel_avatar_url);
                 smodel.upsert_video(v.clone());
             }
             let pids: Vec<String> = items.playlists.iter().map(|p| p.id.clone()).collect();
@@ -875,7 +883,31 @@ fn run_live_shots(dir: &str, query: &str) -> Result<(), Box<dyn std::error::Erro
             }
             let cids: Vec<String> = items.channels.iter().map(|c| c.id.clone()).collect();
             for c in &items.channels {
+                smodel.adopt_channel_avatar(&c.id, &c.name, &c.avatar_url);
                 smodel.upsert_channel(c.clone());
+            }
+            smodel.reconcile_channel_avatars();
+            // The live app fills the remaining (dominant-channel) avatars via a
+            // per-channel fetch; do the same here so the still reflects what the
+            // running app converges to — fetch the channel page for the most
+            // common uploaders that still lack an avatar (bounded), and adopt it.
+            {
+                use std::collections::HashMap;
+                let mut freq: HashMap<String, usize> = HashMap::new();
+                for v in &items.videos {
+                    if smodel.channel(&v.channel_id).map(|c| c.avatar_url.is_empty()).unwrap_or(true) {
+                        *freq.entry(v.channel_id.clone()).or_insert(0) += 1;
+                    }
+                }
+                let mut ranked: Vec<(String, usize)> = freq.into_iter().collect();
+                ranked.sort_by(|a, b| b.1.cmp(&a.1));
+                for (cid, _) in ranked.into_iter().take(5) {
+                    if let Ok(BackendResult::Channel { channel, .. }) = backend.channel(&cid) {
+                        smodel.adopt_channel_avatar(&channel.id, &channel.name, &channel.avatar_url);
+                        println!("  fetched avatar for {:?}: {}", channel.name, short_url(&channel.avatar_url));
+                    }
+                }
+                smodel.reconcile_channel_avatars();
             }
             smodel.search_query = query.to_string();
             smodel.search_hits_query = query.to_string();
@@ -885,23 +917,37 @@ fn run_live_shots(dir: &str, query: &str) -> Result<(), Box<dyn std::error::Erro
             smodel.route = Route::Search(query.to_string());
             smodel.data_source = DataSource { live: true, label: "live".into() };
 
-            // Collect every image URL the search page will paint.
+            // Collect every image URL the search page will paint — including the
+            // avatars now stamped onto the channel records by the fetch above.
             let mut urls: Vec<String> = Vec::new();
             for v in &items.videos {
                 urls.push(v.thumbnail_url.clone());
-                urls.push(v.channel_avatar_url.clone());
+            }
+            for ch in &smodel.channels {
+                urls.push(ch.avatar_url.clone());
             }
             for p in &items.playlists {
                 urls.push(p.thumbnail_url.clone());
-            }
-            for c in &items.channels {
-                urls.push(c.avatar_url.clone());
             }
             let store = tube::images::image_store();
             prewarm(&store, &urls);
             println!("  prewarming {} thumbnails + avatars…", urls.iter().filter(|u| !u.is_empty()).count());
             store.block_until_idle(Duration::from_secs(45));
             println!("  images settled: {} still pending", store.pending());
+
+            // DIAGNOSTIC: for every channel a card will read, print the record's
+            // avatar url + whether the store has it decoded at render time.
+            println!("  -- render-time channel-record state --");
+            for ch in &smodel.channels {
+                let decoded = store.get(&ch.avatar_url).is_some();
+                println!(
+                    "     id={:?} name={:?} avatar={} store={}",
+                    ch.id,
+                    ch.name,
+                    if ch.avatar_url.is_empty() { "<EMPTY>" } else { "set" },
+                    if decoded { "DECODED" } else { "miss" },
+                );
+            }
 
             let search_app = tube::TubeApp::new()
                 .with_viewport(1280.0, 860.0)
@@ -1061,6 +1107,215 @@ fn run_probe_ytdlp(query: &str) -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(not(feature = "live"))]
 fn run_probe_ytdlp(_query: &str) -> Result<(), Box<dyn std::error::Error>> {
     println!("probe-ytdlp: built WITHOUT `live` — rebuild with `--features live`.");
+    Ok(())
+}
+
+/// `--probe-avatars [query]`: diagnose the creator-avatar pipeline end to end.
+#[cfg(feature = "live")]
+fn run_probe_avatars(query: &str) -> Result<(), Box<dyn std::error::Error>> {
+    use std::collections::HashMap;
+    use tube::backend::{ytdlp::YtDlpBackend, BackendResult, YtBackend};
+
+    eprintln!("probe-avatars: constructing yt-dlp + rustypipe backends…");
+    let yt = YtDlpBackend::new().map_err(|e| format!("yt-dlp: {e}"))?;
+    let rp = tube::backend::live::RustyPipeBackend::new().map_err(|e| format!("rustypipe: {e}"))?;
+
+    // 1) yt-dlp search: what channel id/name/avatar does each result carry?
+    println!("\n== yt-dlp search {query:?} ==");
+    let yt_videos = match yt.search(query)? {
+        BackendResult::Videos(v) => v,
+        _ => Vec::new(),
+    };
+    let mut yt_channel_freq: HashMap<String, (String, usize)> = HashMap::new();
+    for v in yt_videos.iter().take(12) {
+        println!(
+            "  [{}] chan_id={:?} name={:?} avatar={}",
+            v.id,
+            v.channel_id,
+            v.channel_name,
+            if v.channel_avatar_url.is_empty() { "<EMPTY>" } else { "present" }
+        );
+    }
+    for v in &yt_videos {
+        let e = yt_channel_freq.entry(v.channel_id.clone()).or_insert((v.channel_name.clone(), 0));
+        e.1 += 1;
+    }
+
+    // 2) rustypipe search: videos (with channel avatar?) + creator rows.
+    println!("\n== rustypipe search_items {query:?} ==");
+    let items = rp.search_items(query)?;
+    println!(
+        "  {} videos, {} playlists, {} creators",
+        items.videos.len(),
+        items.playlists.len(),
+        items.channels.len()
+    );
+    let mut rp_avatars: HashMap<String, String> = HashMap::new();
+    for v in items.videos.iter().take(12) {
+        println!(
+            "  vid [{}] chan_id={:?} name={:?} avatar={}",
+            v.id,
+            v.channel_id,
+            v.channel_name,
+            if v.channel_avatar_url.is_empty() { "<none>".into() } else { short_url(&v.channel_avatar_url) }
+        );
+        if !v.channel_id.is_empty() && !v.channel_avatar_url.is_empty() {
+            rp_avatars.entry(v.channel_id.clone()).or_insert(v.channel_avatar_url.clone());
+        }
+    }
+    for c in &items.channels {
+        println!(
+            "  creator id={:?} name={:?} avatar={}",
+            c.id,
+            c.name,
+            if c.avatar_url.is_empty() { "<none>".into() } else { short_url(&c.avatar_url) }
+        );
+        if !c.id.is_empty() && !c.avatar_url.is_empty() {
+            rp_avatars.entry(c.id.clone()).or_insert(c.avatar_url.clone());
+        }
+    }
+
+    // 2b) Fetch-test every distinct rustypipe avatar URL through the REAL image
+    // store (same reqwest fetch + `image` decode the render path uses), so a URL
+    // that is "present" but unrenderable is caught here rather than silently
+    // degrading to initials on the card.
+    println!("\n== fetch-test rustypipe avatar URLs through the real ImageStore ==");
+    let store = tube::images::image_store();
+    for url in rp_avatars.values() {
+        store.get(url);
+    }
+    store.block_until_idle(std::time::Duration::from_secs(30));
+    for (cid, url) in &rp_avatars {
+        let ok = store.get(url).is_some();
+        println!(
+            "  {} id={cid:?}\n     {}",
+            if ok { "DECODED" } else { "FAILED " },
+            url
+        );
+    }
+
+    // 3) By-id fold match rate: how many yt-dlp videos get an avatar?
+    let matched = yt_videos
+        .iter()
+        .filter(|v| rp_avatars.contains_key(&v.channel_id))
+        .count();
+    println!(
+        "\n== by-CHANNEL-ID fold match: {}/{} yt-dlp videos would get an avatar ==",
+        matched,
+        yt_videos.len()
+    );
+    // Name-based match (normalized), to see if names line up when ids don't.
+    let norm = |s: &str| s.trim().to_lowercase();
+    let rp_names: HashMap<String, String> = items
+        .videos
+        .iter()
+        .filter(|v| !v.channel_avatar_url.is_empty())
+        .map(|v| (norm(&v.channel_name), v.channel_avatar_url.clone()))
+        .chain(
+            items
+                .channels
+                .iter()
+                .filter(|c| !c.avatar_url.is_empty())
+                .map(|c| (norm(&c.name), c.avatar_url.clone())),
+        )
+        .collect();
+    let matched_name = yt_videos.iter().filter(|v| rp_names.contains_key(&norm(&v.channel_name))).count();
+    println!(
+        "== by-NORMALIZED-NAME fold match: {}/{} yt-dlp videos would get an avatar ==",
+        matched_name,
+        yt_videos.len()
+    );
+
+    // 4) Dominant yt-dlp channel: can a per-channel fetch resolve its avatar?
+    if let Some((cid, (cname, freq))) = yt_channel_freq.iter().max_by_key(|(_, (_, n))| *n) {
+        println!("\n== dominant yt-dlp channel: {cname:?} id={cid:?} ({freq} videos) ==");
+        match yt.channel(cid) {
+            Ok(BackendResult::Channel { channel, .. }) => println!(
+                "  yt-dlp channel({cid}) → id={:?} name={:?} subs={} avatar={}",
+                channel.id,
+                channel.name,
+                channel.subscribers,
+                if channel.avatar_url.is_empty() { "<EMPTY>".into() } else { short_url(&channel.avatar_url) }
+            ),
+            Ok(_) => println!("  yt-dlp channel: unexpected variant"),
+            Err(e) => println!("  yt-dlp channel FAILED: {e}"),
+        }
+        match rp.channel(cid) {
+            Ok(BackendResult::Channel { channel, .. }) => println!(
+                "  rustypipe channel({cid}) → id={:?} name={:?} subs={} avatar={}",
+                channel.id,
+                channel.name,
+                channel.subscribers,
+                if channel.avatar_url.is_empty() { "<EMPTY>".into() } else { short_url(&channel.avatar_url) }
+            ),
+            Ok(_) => println!("  rustypipe channel: unexpected variant"),
+            Err(e) => println!("  rustypipe channel FAILED: {e}"),
+        }
+    }
+
+    // 5) Fetch + decode the ACTUAL avatar URLs the cards would load — this is
+    //    where "URL present in model" and "photo paints on the card" diverge.
+    //    We hit the very same reqwest fetcher the shots/live app use, then decode
+    //    with the `image` crate exactly like the ImageStore, and report the
+    //    content-type + decode result per URL.
+    println!("\n== fetch + decode avatar URLs (real transport + ImageStore decoder) ==");
+    let fetch = tube::images::image_fetcher();
+    let store = tube::images::image_store();
+    let magic = |b: &[u8]| -> &'static str {
+        if b.len() >= 3 && &b[0..3] == b"\xFF\xD8\xFF" {
+            "JPEG"
+        } else if b.len() >= 4 && &b[0..4] == b"\x89PNG" {
+            "PNG"
+        } else if b.len() >= 12 && &b[0..4] == b"RIFF" && &b[8..12] == b"WEBP" {
+            "WEBP"
+        } else if b.len() >= 4 && &b[0..4] == b"GIF8" {
+            "GIF"
+        } else {
+            "OTHER"
+        }
+    };
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut probe_one = |label: &str, url: &str| {
+        if url.is_empty() || !seen.insert(url.to_string()) {
+            return;
+        }
+        // Production decode path: kick the store, wait, ask if it produced an image.
+        let _ = store.get(url);
+        store.block_until_idle(std::time::Duration::from_secs(15));
+        let store_ok = store.get(url).is_some();
+        match fetch(url) {
+            Some(bytes) => println!(
+                "  {label}: {} bytes, format={}, ImageStore.decode={} — {}",
+                bytes.len(),
+                magic(&bytes),
+                if store_ok { "OK" } else { "FAILED" },
+                short_url(url),
+            ),
+            None => println!("  {label}: FETCH FAILED (store.decode={store_ok}) — {}", short_url(url)),
+        }
+    };
+    // The dominant channel's avatar from each source the app might use.
+    if let Some(v) = items.videos.iter().find(|v| !v.channel_avatar_url.is_empty()) {
+        probe_one("rustypipe video-item avatar", &v.channel_avatar_url);
+    }
+    if let Some(c) = items.channels.iter().find(|c| !c.avatar_url.is_empty()) {
+        probe_one("rustypipe creator-row avatar", &c.avatar_url);
+    }
+    if let Some((cid, _)) = yt_channel_freq.iter().max_by_key(|(_, (_, n))| *n) {
+        if let Ok(BackendResult::Channel { channel, .. }) = yt.channel(cid) {
+            probe_one("yt-dlp channel-page avatar", &channel.avatar_url);
+        }
+    }
+    // A known-good thumbnail for comparison (these always paint on the cards).
+    if let Some(v) = items.videos.iter().find(|v| !v.thumbnail_url.is_empty()) {
+        probe_one("video thumbnail (control)", &v.thumbnail_url);
+    }
+    Ok(())
+}
+
+#[cfg(not(feature = "live"))]
+fn run_probe_avatars(_query: &str) -> Result<(), Box<dyn std::error::Error>> {
+    println!("probe-avatars: built WITHOUT `live` — rebuild with `--features live`.");
     Ok(())
 }
 

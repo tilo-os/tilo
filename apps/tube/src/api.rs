@@ -716,25 +716,39 @@ fn try_enricher(up_tx: &Sender<Update>) -> Option<crate::backend::live::RustyPip
 }
 
 /// Fill in each video's creator avatar (yt-dlp list items carry none) from the
-/// avatars rustypipe returned on the same query — matched by channel id, from
-/// both the video items' channel tags and the standalone creator rows.
+/// avatars rustypipe returned on the same query. Match by channel id first, then
+/// by normalized creator name — the two sources sometimes key the same creator
+/// with different ids (e.g. yt-dlp "Blender Studio" vs rustypipe's channel tag),
+/// so name reconciliation is what fills the dominant channel's cards.
 #[cfg(feature = "live")]
 fn enrich_video_avatars(videos: &mut [Video], items: &crate::backend::live::SearchItems) {
+    use crate::model::norm_channel_name;
     use std::collections::HashMap;
-    let mut avatars: HashMap<&str, &str> = HashMap::new();
+    let mut by_id: HashMap<&str, &str> = HashMap::new();
+    let mut by_name: HashMap<String, &str> = HashMap::new();
     for v in &items.videos {
-        if !v.channel_id.is_empty() && !v.channel_avatar_url.is_empty() {
-            avatars.entry(v.channel_id.as_str()).or_insert(v.channel_avatar_url.as_str());
+        if !v.channel_avatar_url.is_empty() {
+            if !v.channel_id.is_empty() {
+                by_id.entry(v.channel_id.as_str()).or_insert(v.channel_avatar_url.as_str());
+            }
+            by_name
+                .entry(norm_channel_name(&v.channel_name))
+                .or_insert(v.channel_avatar_url.as_str());
         }
     }
     for c in &items.channels {
-        if !c.id.is_empty() && !c.avatar_url.is_empty() {
-            avatars.entry(c.id.as_str()).or_insert(c.avatar_url.as_str());
+        if !c.avatar_url.is_empty() {
+            if !c.id.is_empty() {
+                by_id.entry(c.id.as_str()).or_insert(c.avatar_url.as_str());
+            }
+            by_name.entry(norm_channel_name(&c.name)).or_insert(c.avatar_url.as_str());
         }
     }
     for v in videos.iter_mut() {
         if v.channel_avatar_url.is_empty() {
-            if let Some(a) = avatars.get(v.channel_id.as_str()) {
+            if let Some(a) = by_id.get(v.channel_id.as_str()) {
+                v.channel_avatar_url = a.to_string();
+            } else if let Some(a) = by_name.get(&norm_channel_name(&v.channel_name)) {
                 v.channel_avatar_url = a.to_string();
             }
         }

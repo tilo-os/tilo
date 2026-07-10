@@ -213,12 +213,28 @@ fn map_video_item(it: VideoItem) -> Video {
 /// Pick the highest-resolution thumbnail URL from a rustypipe thumbnail set
 /// (largest width×height), or the empty string when none are present. Used for
 /// channel avatars carried on feed/search items so the real creator icon loads.
+///
+/// The URL is normalized to an absolute `https:` one: rustypipe hands back
+/// **protocol-relative** URLs (`//yt3.ggpht.com/…`) for some items — notably
+/// creator rows — which the reqwest image transport cannot fetch (no scheme),
+/// so the card silently fell back to initials. Normalizing here fixes every
+/// consumer (`best_thumb` is the single extraction chokepoint).
 fn best_thumb(thumbs: &[rustypipe::model::Thumbnail]) -> String {
     thumbs
         .iter()
         .max_by_key(|t| t.width as u64 * t.height as u64)
-        .map(|t| t.url.clone())
+        .map(|t| absolute_url(&t.url))
         .unwrap_or_default()
+}
+
+/// Promote a protocol-relative URL (`//host/path`) to `https://host/path`.
+/// Absolute and empty URLs pass through unchanged.
+fn absolute_url(url: &str) -> String {
+    if let Some(rest) = url.strip_prefix("//") {
+        format!("https://{rest}")
+    } else {
+        url.to_string()
+    }
 }
 
 /// First one/two initials of an author name, for the comment avatar chip.
@@ -483,6 +499,20 @@ impl YtBackend for RustyPipeBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn absolute_url_promotes_protocol_relative_avatars() {
+        // rustypipe hands back protocol-relative creator-row avatar URLs; reqwest
+        // can't fetch those, so they must be promoted to https.
+        assert_eq!(
+            absolute_url("//yt3.ggpht.com/abc=s176"),
+            "https://yt3.ggpht.com/abc=s176",
+        );
+        // Already-absolute and empty URLs pass through untouched.
+        assert_eq!(absolute_url("https://yt3.ggpht.com/x"), "https://yt3.ggpht.com/x");
+        assert_eq!(absolute_url("http://example.com/y"), "http://example.com/y");
+        assert_eq!(absolute_url(""), "");
+    }
 
     /// Real-path check: actually pull top comments through rustypipe and assert
     /// the mapping onto Tube's `Comment`. Honestly gated on `TUBE_NET_TESTS=1`

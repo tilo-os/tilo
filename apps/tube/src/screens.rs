@@ -317,12 +317,33 @@ fn compact_card(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Imgs, v
                 .gap(4.0)
                 .push(text(v.display_title(dearrow), 13.0))
                 .push(dim(theme, &v.channel_name, 12.0))
-                .push(dim(
-                    theme,
-                    format!("{} • {}", human_count(v.views), v.published),
-                    11.5,
-                )),
+                // Join only the parts we actually have, so a playlist entry with no
+                // view count / date never shows a dangling "0 • " or a trailing "•".
+                .push_if(
+                    !views_date_line(v.views, &v.published).is_empty(),
+                    dim(theme, &views_date_line(v.views, &v.published), 11.5),
+                ),
         )
+}
+
+/// A "N views • date" line that drops any missing part (and its separator), so a
+/// row never shows "0", a dangling "•", or an empty count. Empty when neither is
+/// known.
+fn views_date_line(views: u64, published: &str) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if views > 0 {
+        parts.push(human_views(views));
+    }
+    if !published.trim().is_empty() {
+        parts.push(published.to_string());
+    }
+    parts.join(" • ")
+}
+
+/// A "N subscribers" label, or `None` when the count is unknown (0) — so cards
+/// never render a fake "0 subscribers".
+fn subs_label(subscribers: u64) -> Option<String> {
+    (subscribers > 0).then(|| format!("{} subscribers", human_count(subscribers)))
 }
 
 fn grid(cards: Vec<Flex>) -> Flex {
@@ -811,10 +832,13 @@ fn playlist_card(theme: &Theme, bus: &ActionBus, imgs: Imgs, p: &Playlist) -> Fl
 /// A creator search-result row: the real avatar, name (+ verified), handle and
 /// subscriber count, and a View affordance. Opens the channel page.
 fn creator_card(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Imgs, c: &Channel) -> Flex {
-    let handle_subs = if c.handle.is_empty() || c.handle == c.id {
-        format!("{} subscribers", human_count(c.subscribers))
-    } else {
-        format!("{} • {} subscribers", c.handle, human_count(c.subscribers))
+    // Handle + subscriber count, each dropped when unknown (no "0 subscribers").
+    let show_handle = !c.handle.is_empty() && c.handle != c.id;
+    let handle_subs = match (show_handle, subs_label(c.subscribers)) {
+        (true, Some(subs)) => format!("{} • {}", c.handle, subs),
+        (true, None) => c.handle.clone(),
+        (false, Some(subs)) => subs,
+        (false, None) => String::new(),
     };
     Flex::row()
         .fill_w()
@@ -840,7 +864,7 @@ fn creator_card(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Imgs, c
                         .push(text(&c.name, 16.0))
                         .push_if(c.verified, icon(IconKind::Check, 14.0, theme.text_dim)),
                 )
-                .push(dim(theme, &handle_subs, 12.5)),
+                .push_if(!handle_subs.is_empty(), dim(theme, &handle_subs, 12.5)),
         )
         .push(pill(theme, bus, "View", None, Action::OpenChannel(c.id.clone()), false))
 }
@@ -992,7 +1016,14 @@ pub fn channel(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Imgs, id
                         .push(text(&ch.name, 26.0))
                         .push_if(ch.verified, icon(IconKind::Check, 18.0, theme.text_dim)),
                 )
-                .push(dim(theme, &format!("{}  •  {} subscribers", ch.handle, human_count(ch.subscribers)), 13.5))
+                .push(dim(
+                    theme,
+                    &match subs_label(ch.subscribers) {
+                        Some(subs) => format!("{}  •  {}", ch.handle, subs),
+                        None => ch.handle.clone(),
+                    },
+                    13.5,
+                ))
                 .push(dim(theme, &ch.description, 13.0)),
         )
         .push(if subscribed {
@@ -1231,14 +1262,17 @@ pub fn watch(
                 .gap(2.0)
                 .on_click(bus, Action::OpenChannel(v.channel_id.clone()))
                 .push(text(&v.channel_name, 15.0))
-                .push(dim(
-                    theme,
-                    &model
-                        .channel(&v.channel_id)
-                        .map(|c| format!("{} subscribers", human_count(c.subscribers)))
-                        .unwrap_or_default(),
-                    12.0,
-                )),
+                .push_if(
+                    model.channel(&v.channel_id).and_then(|c| subs_label(c.subscribers)).is_some(),
+                    dim(
+                        theme,
+                        &model
+                            .channel(&v.channel_id)
+                            .and_then(|c| subs_label(c.subscribers))
+                            .unwrap_or_default(),
+                        12.0,
+                    ),
+                ),
         )
         .push(
             if ch_sub {
