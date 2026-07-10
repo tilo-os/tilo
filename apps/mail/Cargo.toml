@@ -21,6 +21,10 @@ automerge = "0.8.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 uuid = { version = "1.23.1", features = ["v4", "serde"] }
+# A throwaway config directory for the sample / `--shots` / test constructors,
+# so account add/edit/remove in those modes can exercise the real persist path
+# without ever touching the user's real account store under `~/.config/qos`.
+tempfile = "3"
 tracing = "0.1"
 tracing-subscriber = "0.3"
 vello = "0.9"
