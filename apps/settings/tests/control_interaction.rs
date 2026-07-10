@@ -133,8 +133,9 @@ fn read_bool(doc: &AutoCommit, key: &str) -> Option<bool> {
     }
 }
 
-/// The header collapse button, clicked through the production path, hides
-/// the docked sidebar and reclaims its width for content.
+/// The sidebar-collapse toggle in the integrated header, clicked through the
+/// production event path, hides the docked sidebar and reclaims its width for
+/// content.
 #[test]
 fn clicking_collapse_button_hides_sidebar() {
     let mut app = SettingsApp::new();
@@ -143,12 +144,13 @@ fn clicking_collapse_button_hides_sidebar() {
     app.sync(&mut doc, &automerge::ROOT);
     assert!(app.sidebar_open(), "docked sidebar starts open");
 
-    // The collapse button is the only Button in the header band; address it
-    // by its test_id (the glyph label).
-    let btn = find_rect(&app, "Button", None).expect("a button exists in the content header");
-    click_at(&mut app, &taffy, node, &mut doc, btn.center());
+    // The collapse toggle is drawn by the app-shell (not a child widget), so
+    // hit-test it by its resolved rect and click it through the real path.
+    let toggle = app.collapse_toggle_rect();
+    assert!(toggle.width() > 0.0, "the collapse toggle has a resolved rect");
+    click_at(&mut app, &taffy, node, &mut doc, toggle.center());
     app.sync(&mut doc, &automerge::ROOT);
-    assert!(app.sidebar_collapsed(), "clicking collapse hides the sidebar");
+    assert!(app.sidebar_collapsed(), "clicking the toggle hides the sidebar");
     let _ = app.take_structure_dirty();
     let _ = lay_out(&mut app);
     assert!(!app.sidebar_open(), "collapsed sidebar reads as closed; content reclaimed the width");
