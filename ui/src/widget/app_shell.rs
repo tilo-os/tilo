@@ -1,34 +1,29 @@
 //! `AppShell` — a reusable responsive app-shell with an integrated sidebar.
 //!
-//! This is the promotion of the "sidebar + content + search + collapse"
-//! chrome that a settings-style app needs, into one cohesive toolkit
-//! component so every system app reads the same and no app re-implements the
-//! breakpoint, the collapse behaviour, or the visual grammar.
+//! This is the promotion of the "sidebar + content + search" chrome that a
+//! settings-style app needs into one cohesive toolkit component, so every
+//! system app reads the same and no app re-implements the breakpoint or the
+//! visual grammar.
 //!
 //! ## What it is
 //!
-//! A single continuous surface, **not** a scatter of outlined cards:
+//! A single continuous surface, **not** a scatter of outlined cards. The shell
+//! resolves into exactly one of two states, decided purely by whether the
+//! sidebar fits beside the content at the current width:
 //!
-//! * a **sidebar panel** flush to the window's left edge (no rounded card, no
-//!   floating outline) whose top is an **integrated header** carrying the
-//!   search field and the sidebar-collapse toggle, aligned to one another;
-//! * a **content area** filling the rest, separated from the sidebar by a
-//!   single hairline divider — one panel + one area, not two cards.
-//!
-//! ## The three states
-//!
-//! Resolved each frame from the allocated width (`>= breakpoint` ⇒ *wide*)
-//! and two booleans the shell owns (`collapsed`, `overlay_open`):
-//!
-//! * **Wide, expanded** — the sidebar is docked beside the content and its
-//!   header holds the search + collapse button.
-//! * **Wide, collapsed** — the sidebar is hidden to reclaim its width; the
-//!   collapse button **and** the search field float over the content in a
-//!   small pill so the user can still search or re-open the sidebar.
-//! * **Narrow (phone)** — the list and the content are separate screens: the
-//!   content fills the screen with the floating controls over it, and the
-//!   sidebar (the list) is summoned as a floating overlay over a dimming
-//!   scrim (dismissed by the scrim, Esc, the toggle, or picking an item).
+//! * **Wide** — the sidebar fits. It is **always** docked flush to the
+//!   window's left edge: the search field pinned at the top of the sidebar,
+//!   the nav list beneath it, and the content filling the area to its right,
+//!   separated by a single hairline divider. There is no collapse control —
+//!   when the sidebar fits it simply stays.
+//! * **Narrow (phone)** — the sidebar does not fit, so the list and the content
+//!   become **two separate full-screen screens**, never an overlay and never a
+//!   scrim over the content:
+//!   * the *list screen* fills the window with the search field + the nav list;
+//!   * the *content screen* fills the window with the selected category's
+//!     content and a back-arrow icon in the top-left. Tapping back returns to
+//!     the list. Picking a category on the list navigates to its content
+//!     screen. The selected category is preserved across back/forward.
 //!
 //! ## Why the children live in the host taffy tree
 //!
@@ -43,9 +38,9 @@
 //! ## Theming
 //!
 //! Every colour is read from the passed-in [`Theme`] — the sidebar panel, the
-//! divider, the floating pill, and the scrim all track the OS palette. The
-//! host supplies the nav list, the content widget, and (optionally) a search
-//! field; the shell owns the collapse/overlay state and the chrome.
+//! divider, and the back arrow all track the OS palette. The host supplies the
+//! nav list, the content widget, and (optionally) a search field; the shell
+//! owns the responsive behaviour and the chrome.
 
 use std::collections::HashMap;
 
@@ -54,7 +49,7 @@ use taffy::style_helpers::{auto, length, percent};
 use taffy::{NodeId, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Line, Point, Rect, RoundedRect, Stroke};
-use vello::peniko::{Color, Fill};
+use vello::peniko::Fill;
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
@@ -66,41 +61,39 @@ use crate::widget::Widget;
 /// A boxed child widget, matching the toolkit's `Element` currency.
 type Element = Box<dyn Widget>;
 
-/// Default docked / overlay sidebar width (logical px).
+/// Default docked sidebar width (logical px).
 pub const DEFAULT_SHELL_SIDEBAR_WIDTH: f64 = 264.0;
-/// Default width breakpoint (logical px): at or above it the sidebar docks,
-/// below it the shell switches to the narrow list-vs-content screens.
+/// Default width breakpoint (logical px): at or above it the sidebar fits and
+/// docks; below it the shell switches to the narrow list-vs-content screens.
+/// Sized as roughly `sidebar_width + a minimum content column`.
 pub const DEFAULT_SHELL_BREAKPOINT: f64 = 720.0;
 
-/// Height (logical px) of the integrated sidebar header band.
-const HEADER_H: f64 = 56.0;
-/// Horizontal inset (logical px) of the header content — `spacing.s3`.
+/// Horizontal / vertical inset (logical px) of the search band content —
+/// `spacing.s3`.
 const PAD: f64 = 12.0;
-/// Gap (logical px) between the collapse toggle and the search field —
-/// `spacing.s2`.
-const GAP: f64 = 8.0;
-/// Shared height (logical px) of the search field **and** the collapse
-/// toggle. Both controls are pinned to this so they line up on one baseline
-/// (the review called out that they were different heights).
+/// Height (logical px) of the search field.
 const CTRL_H: f64 = 34.0;
-/// Margin (logical px) of the floating control pill from the window edge.
-const FLOAT_M: f64 = 12.0;
-/// Inner padding (logical px) of the floating control pill.
-const FLOAT_PAD: f64 = 6.0;
-/// Width (logical px) of the search field inside the floating pill.
-const FLOAT_SEARCH_W: f64 = 220.0;
-/// Hamburger glyph used for the collapse/menu toggle. Reads as "toggle the
-/// navigation" in every state.
-const TOGGLE_GLYPH: &str = "\u{f035c}";
-/// Toggle glyph size (logical px).
-const TOGGLE_GLYPH_SIZE: f32 = 18.0;
+/// Height (logical px) of the search band at the top of the sidebar / list:
+/// the search field with padding above and below.
+const SEARCH_BAND_H: f64 = PAD + CTRL_H + PAD;
+/// Side (logical px) of the narrow content screen's back-arrow button.
+const BACK_BTN: f64 = 34.0;
+/// Height (logical px) of the narrow content screen's top band that holds the
+/// back arrow; the content starts below it.
+const BACK_BAND_H: f64 = PAD + BACK_BTN + PAD;
+/// Arrow-left glyph for the narrow content screen's back affordance.
+const BACK_GLYPH: &str = "\u{f004d}";
+/// Back-arrow glyph size (logical px).
+const BACK_GLYPH_SIZE: f32 = 20.0;
 
-/// How the shell resolves at the current width.
+/// How the shell resolves at the current width — decided purely by whether the
+/// sidebar fits beside the content.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ShellLayout {
-    /// Wide: the sidebar docks beside the content.
+    /// Wide: the sidebar fits and docks beside the content.
     Wide,
-    /// Narrow: the list and the content are separate screens.
+    /// Narrow: the sidebar does not fit; the list and content are separate
+    /// full-screen screens.
     Narrow,
 }
 
@@ -112,14 +105,14 @@ impl ShellLayout {
     }
 }
 
-/// Where the search + toggle controls sit this frame.
+/// Which of the two full-screen narrow screens is showing. Meaningful only in
+/// the [`ShellLayout::Narrow`] state; ignored when wide (both are shown).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Placement {
-    /// Inside the sidebar header (wide-expanded, or the open narrow overlay).
-    Header,
-    /// In a small pill floating over the content (wide-collapsed, or the
-    /// closed narrow content screen).
-    Floating,
+pub enum NarrowScreen {
+    /// The category list (search + nav) fills the window.
+    List,
+    /// The selected category's content fills the window, with a back arrow.
+    Content,
 }
 
 /// Which owned child a taffy slot maps to, so `apply_layout` / `handle_event`
@@ -140,17 +133,17 @@ pub struct AppShell {
     sidebar_width: f64,
     breakpoint: f64,
 
-    /// The user hid the docked sidebar to reclaim its width (wide only).
-    collapsed: bool,
-    /// The narrow floating overlay (the list screen) is showing.
-    overlay_open: bool,
+    /// Which narrow screen is showing (narrow only). Preserved across a
+    /// wide↔narrow resize so the user returns to where they were.
+    narrow_screen: NarrowScreen,
     /// A width to resolve the layout from before the first real frame — the
     /// offscreen `--shots` renderer seeds this so a cold screenshot picks the
     /// right wide/narrow layout immediately.
     width_hint: Option<f64>,
 
-    /// A state change (toggle, breakpoint cross, nav/content swap) needs the
-    /// host to re-run `build_layout`. Drained by `take_structure_dirty`.
+    /// A state change (screen navigation, breakpoint cross, nav/content swap)
+    /// needs the host to re-run `build_layout`. Drained by
+    /// `take_structure_dirty`.
     pending_rebuild: bool,
 
     // ---- resolved geometry (from the last layout pass) ----
@@ -161,16 +154,15 @@ pub struct AppShell {
     built_layout: ShellLayout,
     sidebar_panel_rect: Rect,
     content_area_rect: Rect,
-    toggle_rect: Rect,
-    pill_rect: Rect,
-    scrim_rect: Rect,
+    /// The narrow content screen's back-arrow button (zero-sized otherwise).
+    back_rect: Rect,
 
     /// The order the child nodes were built in, mirrored by `children()`.
     slots: Vec<Slot>,
 
-    // ---- chrome interaction state ----
-    toggle_hover: bool,
-    toggle_press: bool,
+    // ---- back-button interaction state ----
+    back_hover: bool,
+    back_press: bool,
     last_cursor: Point,
 }
 
@@ -184,8 +176,7 @@ impl AppShell {
             search: None,
             sidebar_width: DEFAULT_SHELL_SIDEBAR_WIDTH,
             breakpoint: DEFAULT_SHELL_BREAKPOINT,
-            collapsed: false,
-            overlay_open: false,
+            narrow_screen: NarrowScreen::List,
             width_hint: None,
             pending_rebuild: false,
             rect: Rect::ZERO,
@@ -193,25 +184,23 @@ impl AppShell {
             built_layout: ShellLayout::Wide,
             sidebar_panel_rect: Rect::ZERO,
             content_area_rect: Rect::ZERO,
-            toggle_rect: Rect::ZERO,
-            pill_rect: Rect::ZERO,
-            scrim_rect: Rect::ZERO,
+            back_rect: Rect::ZERO,
             slots: Vec::new(),
-            toggle_hover: false,
-            toggle_press: false,
+            back_hover: false,
+            back_press: false,
             last_cursor: Point::ZERO,
         }
     }
 
-    /// Attach the host's search field. It is placed in the sidebar header (or
-    /// the floating pill) and, because it is a direct child in the host tree,
-    /// stays keyboard-focusable across the filter rebuild.
+    /// Attach the host's search field. It is pinned at the top of the sidebar
+    /// (or the narrow list screen) and, because it is a direct child in the
+    /// host tree, stays keyboard-focusable across the filter rebuild.
     pub fn with_search(mut self, search: Element) -> Self {
         self.search = Some(search);
         self
     }
 
-    /// Override the docked / overlay sidebar width (logical px).
+    /// Override the docked sidebar width (logical px).
     pub fn with_sidebar_width(mut self, px: f64) -> Self {
         self.sidebar_width = px;
         self
@@ -232,15 +221,10 @@ impl AppShell {
         self
     }
 
-    /// Start with the docked sidebar collapsed (reclaiming its width).
-    pub fn with_collapsed(mut self, collapsed: bool) -> Self {
-        self.collapsed = collapsed;
-        self
-    }
-
-    /// Start with the narrow overlay (the list screen) open.
-    pub fn with_overlay_open(mut self, open: bool) -> Self {
-        self.overlay_open = open;
+    /// Seed which narrow screen the shell starts on (a `--shots` state). No
+    /// visible effect when the layout resolves to wide.
+    pub fn with_narrow_screen(mut self, screen: NarrowScreen) -> Self {
+        self.narrow_screen = screen;
         self
     }
 
@@ -259,12 +243,26 @@ impl AppShell {
     }
 
     /// The host calls this after a nav item is chosen. On a narrow layout it
-    /// dismisses the overlay so the content screen shows — the master→detail
-    /// step. A no-op when wide.
+    /// navigates from the list screen to the content screen (the master→detail
+    /// step). A no-op when wide (both are already visible).
     pub fn notify_selection(&mut self) {
-        if self.layout == ShellLayout::Narrow && self.overlay_open {
-            self.overlay_open = false;
+        if self.layout == ShellLayout::Narrow && self.narrow_screen == NarrowScreen::List {
+            self.narrow_screen = NarrowScreen::Content;
             self.pending_rebuild = true;
+        }
+    }
+
+    /// Navigate back from the narrow content screen to the list screen. The
+    /// selected category is preserved. Returns whether anything moved (false
+    /// when wide, or already on the list). The shell wires the back-arrow
+    /// button and Esc to this; hosts may also call it directly.
+    pub fn back(&mut self) -> bool {
+        if self.layout == ShellLayout::Narrow && self.narrow_screen == NarrowScreen::Content {
+            self.narrow_screen = NarrowScreen::List;
+            self.pending_rebuild = true;
+            true
+        } else {
+            false
         }
     }
 
@@ -273,13 +271,15 @@ impl AppShell {
         self.layout == ShellLayout::Narrow
     }
 
-    /// Whether the docked sidebar is explicitly collapsed.
-    pub fn collapsed(&self) -> bool {
-        self.collapsed
+    /// Which narrow screen is showing (meaningful only when [`is_narrow`]).
+    ///
+    /// [`is_narrow`]: AppShell::is_narrow
+    pub fn narrow_screen(&self) -> NarrowScreen {
+        self.narrow_screen
     }
 
-    /// Whether the sidebar / list is currently on screen — docked-and-expanded
-    /// when wide, or the open overlay when narrow.
+    /// Whether the sidebar / list surface is on screen — always when wide, or
+    /// the list screen when narrow.
     pub fn sidebar_open(&self) -> bool {
         self.sidebar_shown()
     }
@@ -289,20 +289,21 @@ impl AppShell {
         self.layout
     }
 
-    /// The on-screen rect of the collapse / menu toggle (after a layout pass).
-    /// Exposed so hosts and interaction tests can hit-test the control the
-    /// shell draws itself.
-    pub fn toggle_rect(&self) -> Rect {
-        self.toggle_rect
+    /// The narrow content screen's back-arrow button rect (after a layout
+    /// pass). Zero-sized when not on the narrow content screen. Exposed so
+    /// hosts and interaction tests can hit-test the control the shell draws.
+    pub fn back_rect(&self) -> Rect {
+        self.back_rect
     }
 
     /// The resolved sidebar-panel rect (after a layout pass). Zero-width when
-    /// the sidebar is hidden.
+    /// the sidebar is not shown (the narrow content screen).
     pub fn sidebar_panel_rect(&self) -> Rect {
         self.sidebar_panel_rect
     }
 
-    /// The resolved content-area rect (after a layout pass).
+    /// The resolved content-area rect (after a layout pass). Zero-width on the
+    /// narrow list screen (no content behind it).
     pub fn content_area_rect(&self) -> Rect {
         self.content_area_rect
     }
@@ -317,95 +318,62 @@ impl AppShell {
         ShellLayout::from_width(w, self.breakpoint)
     }
 
-    /// Whether the sidebar/list surface is shown this frame.
+    /// Whether the sidebar / list surface (search + nav) is shown this frame:
+    /// always when wide, only the list screen when narrow.
     fn sidebar_shown(&self) -> bool {
         match self.layout {
-            ShellLayout::Wide => !self.collapsed,
-            ShellLayout::Narrow => self.overlay_open,
+            ShellLayout::Wide => true,
+            ShellLayout::Narrow => self.narrow_screen == NarrowScreen::List,
         }
     }
 
-    /// Where the search + toggle controls sit this frame.
-    fn placement(&self) -> Placement {
-        if self.sidebar_shown() { Placement::Header } else { Placement::Floating }
-    }
-
-    /// Toggle the sidebar: collapse/expand when wide, open/close the overlay
-    /// when narrow. Requests a structural rebuild.
-    fn on_toggle(&mut self) {
+    /// Whether the content widget is shown this frame: always when wide, only
+    /// the content screen when narrow.
+    fn content_shown(&self) -> bool {
         match self.layout {
-            ShellLayout::Wide => self.collapsed = !self.collapsed,
-            ShellLayout::Narrow => self.overlay_open = !self.overlay_open,
-        }
-        self.pending_rebuild = true;
-    }
-
-    /// Close the narrow overlay (scrim / Esc). Returns whether anything moved.
-    fn close_overlay(&mut self) -> bool {
-        if self.layout == ShellLayout::Narrow && self.overlay_open {
-            self.overlay_open = false;
-            self.pending_rebuild = true;
-            true
-        } else {
-            false
+            ShellLayout::Wide => true,
+            ShellLayout::Narrow => self.narrow_screen == NarrowScreen::Content,
         }
     }
 
-    /// Recompute the sidebar / content / toggle / pill / scrim rects from the
-    /// outer rect and the resolved state. Kept geometry-only (no theme) so it
-    /// runs in `apply_layout`.
+    /// Recompute the sidebar / content / back-button rects from the outer rect
+    /// and the resolved state. Kept geometry-only (no theme) so it runs in
+    /// `apply_layout`.
     fn recompute_rects(&mut self) {
         let r = self.rect;
         let sw = self.sidebar_width.min(r.width());
-        let shown = self.sidebar_shown();
 
-        // The sidebar panel (header + nav) and the content area.
-        if self.layout == ShellLayout::Wide && shown {
-            self.sidebar_panel_rect = Rect::new(r.x0, r.y0, r.x0 + sw, r.y1);
-            self.content_area_rect = Rect::new(r.x0 + sw, r.y0, r.x1, r.y1);
-        } else {
-            self.content_area_rect = r;
-            // Narrow overlay panel (drawn over the scrim); zero-width when not
-            // shown so hit-testing / draw skip it.
-            self.sidebar_panel_rect = if shown {
-                Rect::new(r.x0, r.y0, r.x0 + sw, r.y1)
-            } else {
-                Rect::ZERO
-            };
-        }
-
-        // Scrim only under the open narrow overlay.
-        self.scrim_rect = if self.layout == ShellLayout::Narrow && shown { r } else { Rect::ZERO };
-
-        // The search + toggle placement.
-        match self.placement() {
-            Placement::Header => {
-                // Toggle at the header's left, search filling to its right.
-                let cy = r.y0 + (HEADER_H - CTRL_H) / 2.0;
-                self.toggle_rect = Rect::new(r.x0 + PAD, cy, r.x0 + PAD + CTRL_H, cy + CTRL_H);
-                self.pill_rect = Rect::ZERO;
+        match self.layout {
+            ShellLayout::Wide => {
+                self.sidebar_panel_rect = Rect::new(r.x0, r.y0, r.x0 + sw, r.y1);
+                self.content_area_rect = Rect::new(r.x0 + sw, r.y0, r.x1, r.y1);
+                self.back_rect = Rect::ZERO;
             }
-            Placement::Floating => {
-                let pill_w = FLOAT_PAD + CTRL_H + GAP + FLOAT_SEARCH_W + FLOAT_PAD;
-                let pill_h = FLOAT_PAD * 2.0 + CTRL_H;
-                self.pill_rect = Rect::new(
-                    r.x0 + FLOAT_M,
-                    r.y0 + FLOAT_M,
-                    r.x0 + FLOAT_M + pill_w,
-                    r.y0 + FLOAT_M + pill_h,
-                );
-                self.toggle_rect = Rect::new(
-                    self.pill_rect.x0 + FLOAT_PAD,
-                    self.pill_rect.y0 + FLOAT_PAD,
-                    self.pill_rect.x0 + FLOAT_PAD + CTRL_H,
-                    self.pill_rect.y0 + FLOAT_PAD + CTRL_H,
-                );
-            }
+            ShellLayout::Narrow => match self.narrow_screen {
+                NarrowScreen::List => {
+                    // The list fills the whole screen; no content behind it.
+                    self.sidebar_panel_rect = r;
+                    self.content_area_rect = Rect::ZERO;
+                    self.back_rect = Rect::ZERO;
+                }
+                NarrowScreen::Content => {
+                    // The content fills the whole screen; the back arrow sits
+                    // in the top-left band above it.
+                    self.sidebar_panel_rect = Rect::ZERO;
+                    self.content_area_rect = r;
+                    self.back_rect = Rect::new(
+                        r.x0 + PAD,
+                        r.y0 + PAD,
+                        r.x0 + PAD + BACK_BTN,
+                        r.y0 + PAD + BACK_BTN,
+                    );
+                }
+            },
         }
     }
 
-    /// The absolute inset + size a child slot occupies. Width-independent
-    /// (fixed sidebar width; the content uses left+right insets), so it is
+    /// The absolute inset + size a child slot occupies. Width-independent where
+    /// it can be (fixed sidebar width; content uses left+right insets), so it is
     /// resolvable at `build_layout` time before the real width is known.
     fn slot_style(&self, slot: Slot, base: &Style) -> Style {
         let sw = self.sidebar_width;
@@ -413,71 +381,77 @@ impl AppShell {
         s.position = taffy::Position::Absolute;
         match slot {
             Slot::Content => {
-                let left = if self.layout == ShellLayout::Wide && self.sidebar_shown() {
-                    length(sw as f32)
+                // Wide: right of the fixed sidebar column. Narrow content
+                // screen: full width, below the back band.
+                let (left, top) = if self.layout == ShellLayout::Wide {
+                    (length(sw as f32), length(0.0))
                 } else {
-                    length(0.0)
+                    (length(0.0), length(BACK_BAND_H as f32))
                 };
-                s.inset = taffy::Rect { left, right: length(0.0), top: length(0.0), bottom: length(0.0) };
+                s.inset = taffy::Rect { left, right: length(0.0), top, bottom: length(0.0) };
                 s.size = taffy::Size { width: auto(), height: auto() };
             }
             Slot::Nav => {
+                // Below the search band. Wide: fixed sidebar width. Narrow list
+                // screen: fill the full width.
+                let right = if self.layout == ShellLayout::Wide { auto() } else { length(0.0) };
+                let width = if self.layout == ShellLayout::Wide { length(sw as f32) } else { auto() };
                 s.inset = taffy::Rect {
                     left: length(0.0),
-                    right: auto(),
-                    top: length(HEADER_H as f32),
+                    right,
+                    top: length(SEARCH_BAND_H as f32),
                     bottom: length(0.0),
                 };
-                s.size = taffy::Size { width: length(sw as f32), height: auto() };
+                s.size = taffy::Size { width, height: auto() };
             }
             Slot::Search => {
-                let (left, top, w) = match self.placement() {
-                    Placement::Header => (
-                        (PAD + CTRL_H + GAP) as f32,
-                        ((HEADER_H - CTRL_H) / 2.0) as f32,
-                        (sw - (PAD + CTRL_H + GAP) - PAD) as f32,
-                    ),
-                    Placement::Floating => (
-                        (FLOAT_M + FLOAT_PAD + CTRL_H + GAP) as f32,
-                        (FLOAT_M + FLOAT_PAD) as f32,
-                        FLOAT_SEARCH_W as f32,
-                    ),
+                // Pinned at the top. Wide: fixed sidebar-width column. Narrow
+                // list screen: stretch across the full width.
+                s.inset = taffy::Rect {
+                    left: length(PAD as f32),
+                    right: if self.layout == ShellLayout::Wide { auto() } else { length(PAD as f32) },
+                    top: length(PAD as f32),
+                    bottom: auto(),
                 };
-                s.inset = taffy::Rect { left: length(left), right: auto(), top: length(top), bottom: auto() };
-                s.size = taffy::Size { width: length(w), height: length(CTRL_H as f32) };
+                let width = if self.layout == ShellLayout::Wide {
+                    length((sw - 2.0 * PAD) as f32)
+                } else {
+                    auto()
+                };
+                s.size = taffy::Size { width, height: length(CTRL_H as f32) };
             }
         }
         s
     }
 
-    /// Draw the collapse/menu toggle: a subtle hover pill under a centred
-    /// hamburger glyph.
-    fn draw_toggle(&mut self, scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, theme: &Theme) {
+    /// Draw the narrow content screen's back-arrow button: a subtle hover pill
+    /// under a centred arrow-left glyph.
+    fn draw_back(&mut self, scene: &mut Scene, transform: Affine, tr: &mut TextRenderer, theme: &Theme) {
         let radius = theme.tokens.radii.md as f64;
-        if self.toggle_press {
-            let pill = RoundedRect::from_rect(self.toggle_rect, radius);
+        if self.back_press {
+            let pill = RoundedRect::from_rect(self.back_rect, radius);
             scene.fill(Fill::NonZero, transform, theme.bg_active, None, &pill);
-        } else if self.toggle_hover {
-            let pill = RoundedRect::from_rect(self.toggle_rect, radius);
+        } else if self.back_hover {
+            let pill = RoundedRect::from_rect(self.back_rect, radius);
             scene.fill(Fill::NonZero, transform, theme.bg_hover, None, &pill);
         }
-        let (gw, _gh) = tr.measure(TOGGLE_GLYPH, TOGGLE_GLYPH_SIZE, None);
-        let gx = self.toggle_rect.x0 + (self.toggle_rect.width() - gw as f64) / 2.0;
-        let line_box = TOGGLE_GLYPH_SIZE as f64 * 1.25;
-        let gy = self.toggle_rect.y0 + (self.toggle_rect.height() - line_box) / 2.0;
+        let (gw, _gh) = tr.measure(BACK_GLYPH, BACK_GLYPH_SIZE, None);
+        let gx = self.back_rect.x0 + (self.back_rect.width() - gw as f64) / 2.0;
+        let line_box = BACK_GLYPH_SIZE as f64 * 1.25;
+        let gy = self.back_rect.y0 + (self.back_rect.height() - line_box) / 2.0;
         tr.draw_text(
             scene,
-            TOGGLE_GLYPH,
-            TOGGLE_GLYPH_SIZE,
+            BACK_GLYPH,
+            BACK_GLYPH_SIZE,
             theme.text_primary,
             transform * Affine::translate((gx, gy)),
             None,
         );
     }
 
-    /// Paint the shell chrome (surfaces, divider, scrim, pill, toggle) and its
-    /// children in z-order. Shared by `draw` and `draw_with_presence`; the
-    /// `permissions` flag selects the presence-aware child draw path.
+    /// Paint the shell chrome (surfaces, divider, back arrow) and its children
+    /// in z-order. Shared by `draw` and `draw_with_presence`; the `permissions`
+    /// flag selects the presence-aware child draw path.
     fn paint(
         &mut self,
         scene: &mut Scene,
@@ -491,16 +465,20 @@ impl AppShell {
         let content_fill = theme.tokens.colors.surfaces.base;
         let divider = theme.tokens.colors.border_standard;
 
-        // 1. Content-area background (kills the transparent "dead space" look).
-        scene.fill(Fill::NonZero, transform, content_fill, None, &self.rect);
+        let narrow_list = self.layout == ShellLayout::Narrow && self.narrow_screen == NarrowScreen::List;
 
-        // 2. Content widget.
-        paint_child(self.content.as_mut(), scene, transform, tr, theme, presence, permissions);
+        // 1. Base background. The narrow list screen is one flat sidebar
+        //    surface; otherwise the content surface fills behind everything.
+        let base = if narrow_list { sidebar_fill } else { content_fill };
+        scene.fill(Fill::NonZero, transform, base, None, &self.rect);
 
-        let shown = self.sidebar_shown();
+        // 2. Content widget (wide, or the narrow content screen).
+        if self.content_shown() {
+            paint_child(self.content.as_mut(), scene, transform, tr, theme, presence, permissions);
+        }
 
-        // 3. Docked sidebar panel (wide-expanded): one flat surface, no card.
-        if self.layout == ShellLayout::Wide && shown {
+        // 3. Wide docked sidebar panel: one flat surface + a hairline divider.
+        if self.layout == ShellLayout::Wide {
             scene.fill(Fill::NonZero, transform, sidebar_fill, None, &self.sidebar_panel_rect);
             let x = self.sidebar_panel_rect.x1;
             scene.stroke(
@@ -510,36 +488,29 @@ impl AppShell {
                 None,
                 &Line::new(Point::new(x, self.rect.y0), Point::new(x, self.rect.y1)),
             );
-            paint_child(self.nav.as_mut(), scene, transform, tr, theme, presence, permissions);
         }
 
-        // 4. Narrow overlay: scrim, then the list panel over it.
-        if self.layout == ShellLayout::Narrow && shown {
-            let scrim = Color::from_rgba8(0, 0, 0, 128);
-            scene.fill(Fill::NonZero, transform, scrim, None, &self.scrim_rect);
-            scene.fill(Fill::NonZero, transform, sidebar_fill, None, &self.sidebar_panel_rect);
-            let x = self.sidebar_panel_rect.x1;
+        // 4. Nav list + search on top of their surface (any screen that shows
+        //    the sidebar: wide, or the narrow list screen).
+        if self.sidebar_shown() {
+            paint_child(self.nav.as_mut(), scene, transform, tr, theme, presence, permissions);
+            if let Some(search) = &mut self.search {
+                paint_child(search.as_mut(), scene, transform, tr, theme, presence, permissions);
+            }
+        }
+
+        // 5. Narrow content screen: a hairline under the top band + the back
+        //    arrow that returns to the list.
+        if self.layout == ShellLayout::Narrow && self.narrow_screen == NarrowScreen::Content {
+            let y = self.rect.y0 + BACK_BAND_H;
             scene.stroke(
                 &Stroke::new(1.0),
                 transform,
                 divider,
                 None,
-                &Line::new(Point::new(x, self.rect.y0), Point::new(x, self.rect.y1)),
+                &Line::new(Point::new(self.rect.x0, y), Point::new(self.rect.x1, y)),
             );
-            paint_child(self.nav.as_mut(), scene, transform, tr, theme, presence, permissions);
-        }
-
-        // 5. Floating pill (collapsed / narrow content screen).
-        if !shown {
-            let pill = RoundedRect::from_rect(self.pill_rect, theme.tokens.radii.lg as f64);
-            scene.fill(Fill::NonZero, transform, theme.tokens.colors.surfaces.raised, None, &pill);
-            scene.stroke(&Stroke::new(1.0), transform, divider, None, &pill);
-        }
-
-        // 6. Toggle + search on top of their surface.
-        self.draw_toggle(scene, transform, tr, theme);
-        if let Some(search) = &mut self.search {
-            paint_child(search.as_mut(), scene, transform, tr, theme, presence, permissions);
+            self.draw_back(scene, transform, tr, theme);
         }
     }
 }
@@ -588,21 +559,21 @@ impl Widget for AppShell {
         self.slots.clear();
         let mut child_nodes: Vec<NodeId> = Vec::new();
 
-        if let Some(search) = &mut self.search {
-            let node = search.build_layout(taffy, theme, node_map);
-            let base = taffy.style(node).unwrap().clone();
-            let _ = taffy.set_style(node, self.slot_style(Slot::Search, &base));
-            self.slots.push(Slot::Search);
-            child_nodes.push(node);
-        }
         if self.sidebar_shown() {
+            if let Some(search) = &mut self.search {
+                let node = search.build_layout(taffy, theme, node_map);
+                let base = taffy.style(node).unwrap().clone();
+                let _ = taffy.set_style(node, self.slot_style(Slot::Search, &base));
+                self.slots.push(Slot::Search);
+                child_nodes.push(node);
+            }
             let node = self.nav.build_layout(taffy, theme, node_map);
             let base = taffy.style(node).unwrap().clone();
             let _ = taffy.set_style(node, self.slot_style(Slot::Nav, &base));
             self.slots.push(Slot::Nav);
             child_nodes.push(node);
         }
-        {
+        if self.content_shown() {
             let node = self.content.build_layout(taffy, theme, node_map);
             let base = taffy.style(node).unwrap().clone();
             let _ = taffy.set_style(node, self.slot_style(Slot::Content, &base));
@@ -698,42 +669,34 @@ impl Widget for AppShell {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
-                let hover = self.toggle_rect.contains(self.last_cursor);
-                if hover != self.toggle_hover {
-                    self.toggle_hover = hover;
+                let hover = self.back_rect.width() > 0.0 && self.back_rect.contains(self.last_cursor);
+                if hover != self.back_hover {
+                    self.back_hover = hover;
                 }
             }
             WindowEvent::KeyboardInput {
                 event: KeyEvent { logical_key: Key::Named(NamedKey::Escape), state: ElementState::Pressed, .. },
                 ..
             } => {
-                if self.close_overlay() {
+                // Esc on the narrow content screen goes back to the list.
+                if self.back() {
                     *handled = true;
                     return;
                 }
             }
             WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. } => {
-                if self.toggle_rect.contains(self.last_cursor) {
-                    self.toggle_press = true;
-                    *handled = true;
-                    return;
-                }
-                // A press on the scrim (outside the overlay panel) dismisses it.
-                if self.scrim_rect.width() > 0.0
-                    && self.scrim_rect.contains(self.last_cursor)
-                    && !self.sidebar_panel_rect.contains(self.last_cursor)
-                    && self.close_overlay()
-                {
+                if self.back_rect.width() > 0.0 && self.back_rect.contains(self.last_cursor) {
+                    self.back_press = true;
                     *handled = true;
                     return;
                 }
             }
             WindowEvent::MouseInput { state: ElementState::Released, button: MouseButton::Left, .. } => {
-                if self.toggle_press {
-                    let on_toggle = self.toggle_rect.contains(self.last_cursor);
-                    self.toggle_press = false;
-                    if on_toggle {
-                        self.on_toggle();
+                if self.back_press {
+                    let on_back = self.back_rect.contains(self.last_cursor);
+                    self.back_press = false;
+                    if on_back {
+                        self.back();
                         *handled = true;
                         return;
                     }
@@ -745,25 +708,18 @@ impl Widget for AppShell {
             return;
         }
 
-        // Route to children, topmost first. In the narrow overlay the list
-        // sits *over* the content, so the sidebar must win. Otherwise the
-        // sidebar and content are side by side and a position-carrying event
-        // (a click) self-selects by rect — but a position-less wheel does not,
-        // so we route the content pane first there, matching the old split's
-        // "docked ⇒ content scrolls" behaviour (sidebar row clicks still land,
-        // since the content pane ignores a click outside its rect).
+        // Route to children. In every state the surfaces are side by side (or
+        // only one is present), so a position-carrying event self-selects by
+        // rect. We route the content pane before the sidebar so a position-less
+        // wheel scrolls the content (matching a split's "content scrolls"
+        // behaviour); a sidebar row click still lands because the content pane
+        // ignores a click outside its rect.
         let child_nodes = taffy.children(node_id).unwrap_or_default();
         let mut pairs: Vec<(Slot, NodeId)> = Vec::new();
         for (slot, &n) in self.slots.iter().zip(child_nodes.iter()) {
             pairs.push((*slot, n));
         }
-        let overlay_on_top = self.layout == ShellLayout::Narrow && self.sidebar_shown();
-        let order = if overlay_on_top {
-            [Slot::Search, Slot::Nav, Slot::Content]
-        } else {
-            [Slot::Search, Slot::Content, Slot::Nav]
-        };
-        for want in order {
+        for want in [Slot::Search, Slot::Content, Slot::Nav] {
             if *handled {
                 break;
             }
@@ -909,141 +865,111 @@ mod tests {
         assert_eq!(ShellLayout::from_width(719.0, 720.0), ShellLayout::Narrow);
     }
 
+    /// Wide: the sidebar fits, so it is ALWAYS docked — no collapse/expand
+    /// toggle exists anywhere, the search is pinned to the top of the sidebar,
+    /// and the content fills the area to its right.
     #[test]
-    fn wide_docks_an_integrated_cohesive_sidebar() {
+    fn sidebar_always_visible_and_no_toggle_when_it_fits() {
         let mut s = shell();
         lay(&mut s, 1000.0, 700.0);
-        assert!(!s.is_narrow(), "1000px is wide");
-        assert!(s.sidebar_open(), "wide sidebar is docked/open by default");
-        // One panel flush to the window's left edge, full height — not a card
-        // inset from the edge.
+        assert!(!s.is_narrow(), "1000px is wide (the sidebar fits)");
+        assert!(s.sidebar_open(), "the fitting sidebar is always shown");
+        // No toggle button: the shell draws no collapse affordance in the wide
+        // state (the back rect — the only shell-drawn button — is empty).
+        assert_eq!(s.back_rect(), Rect::ZERO, "there is no toggle/back button when the sidebar fits");
+        // Sidebar flush to the left edge, full height, exactly its width.
         assert_eq!(s.sidebar_panel_rect.x0, 0.0, "sidebar panel is flush left");
         assert!((s.sidebar_panel_rect.height() - 700.0).abs() < 0.5, "panel spans full height");
         assert!(
             (s.sidebar_panel_rect.width() - s.sidebar_width).abs() < 0.5,
             "panel is exactly the sidebar width"
         );
+        // Search pinned at the TOP of the sidebar column.
+        let sr = search_rect(&s);
+        assert!(sr.x0 >= s.sidebar_panel_rect.x0 && sr.x1 <= s.sidebar_panel_rect.x1 + 0.5, "search over the sidebar column");
+        assert!(sr.y0 <= s.rect.y0 + PAD + 0.5, "search is pinned to the top of the sidebar");
         // Content begins exactly where the sidebar ends — no gap, no overlap.
         assert!(
             (s.content_area_rect.x0 - s.sidebar_panel_rect.x1).abs() < 0.5,
-            "content starts flush against the sidebar (no dead gutter)"
+            "content starts flush against the sidebar"
         );
+        assert!(s.content_area_rect.x1 > s.sidebar_panel_rect.x1, "content fills the area to the right");
     }
 
+    /// Narrow: the list is its OWN full-screen screen — not an overlay, not a
+    /// scrim over the content. The content is not even built behind it.
     #[test]
-    fn header_holds_search_and_toggle_aligned_and_inside_the_sidebar() {
-        let mut s = shell();
-        lay(&mut s, 1000.0, 700.0);
-        let sr = search_rect(&s);
-        let tr = s.toggle_rect;
-        // Both controls live inside the sidebar header band, not spilling into
-        // the content pane.
-        assert!(tr.x0 >= s.sidebar_panel_rect.x0 && tr.x1 <= s.sidebar_panel_rect.x1, "toggle in sidebar");
-        assert!(sr.x1 <= s.sidebar_panel_rect.x1 + 0.5, "search stays over the sidebar column");
-        assert!(tr.y1 <= s.rect.y0 + HEADER_H + 0.5, "toggle sits in the header band");
-        // Aligned: identical height and vertical centre (the review bug).
-        assert!((sr.height() - tr.height()).abs() < 0.5, "search + toggle share a height");
-        let sr_mid = (sr.y0 + sr.y1) / 2.0;
-        let tr_mid = (tr.y0 + tr.y1) / 2.0;
-        assert!((sr_mid - tr_mid).abs() < 0.5, "search + toggle share a baseline");
-        // The toggle sits left of the search (it opens/closes; search fills).
-        assert!(tr.x1 <= sr.x0, "toggle precedes the search field in the header");
-    }
-
-    #[test]
-    fn collapse_hides_sidebar_and_floats_controls_over_content() {
-        let mut s = shell();
-        lay(&mut s, 1000.0, 700.0);
-        assert!(s.sidebar_open());
-        // Collapse.
-        s.on_toggle();
-        assert!(s.collapsed(), "toggle collapses the docked sidebar");
-        lay(&mut s, 1000.0, 700.0);
-        assert!(!s.sidebar_open(), "collapsed sidebar is hidden");
-        // Content reclaims the full width.
-        assert!(
-            (s.content_area_rect.width() - 1000.0).abs() < 0.5,
-            "collapsed content spans the full width"
-        );
-        // The toggle + search now float in a small pill over the content, near
-        // the top-left corner — still reachable.
-        assert!(s.pill_rect.width() > 0.0, "a floating control pill is shown");
-        assert!(s.toggle_rect.y0 < 100.0 && s.toggle_rect.x0 < 100.0, "controls float top-left");
-        let sr = search_rect(&s);
-        assert!((sr.height() - s.toggle_rect.height()).abs() < 0.5, "search + toggle still aligned when floating");
-    }
-
-    #[test]
-    fn narrow_defaults_to_the_content_screen_with_floating_controls() {
-        let mut s = shell();
+    fn narrow_shows_a_standalone_list_screen_not_an_overlay() {
+        // Seed the width so the cold frame resolves narrow immediately (as a
+        // real narrow window boot does).
+        let mut s = shell().with_width_hint(460.0);
         lay(&mut s, 460.0, 820.0);
         assert!(s.is_narrow(), "460px resolves to the narrow layout");
-        assert!(!s.sidebar_open(), "narrow starts on the content screen (list hidden)");
-        assert!((s.content_area_rect.width() - 460.0).abs() < 0.5, "content fills the narrow screen");
-        assert!(s.pill_rect.width() > 0.0, "the floating menu/search pill is available");
-        assert_eq!(s.scrim_rect, Rect::ZERO, "no scrim while on the content screen");
+        assert_eq!(s.narrow_screen(), NarrowScreen::List, "narrow starts on the list screen");
+        assert!(s.sidebar_open(), "the list screen shows the sidebar");
+        // The list fills the whole window.
+        assert!((s.sidebar_panel_rect.width() - 460.0).abs() < 0.5, "the list fills the screen width");
+        assert!((s.sidebar_panel_rect.height() - 820.0).abs() < 0.5, "the list fills the screen height");
+        // No content behind it, no back button.
+        assert_eq!(s.content_area_rect, Rect::ZERO, "no content is shown behind the list (no scrim)");
+        assert_eq!(s.back_rect(), Rect::ZERO, "the list screen has no back button");
+        // Only the search + nav are composed — the content widget is not built.
+        let names: Vec<&str> = s.children().iter().map(|c| c.name()).collect();
+        assert_eq!(names, vec!["TextInput", "Text"], "list screen composes only search + nav");
     }
 
+    /// Narrow: picking a category navigates the list screen → the content
+    /// screen, which shows the content full-screen with a back arrow.
     #[test]
-    fn narrow_open_overlay_is_the_list_screen_over_a_scrim() {
-        let mut s = shell().with_overlay_open(true);
+    fn narrow_pick_navigates_to_content_with_back() {
+        let mut s = shell();
         lay(&mut s, 460.0, 820.0);
-        assert!(s.is_narrow());
-        assert!(s.sidebar_open(), "the overlay shows the list");
-        assert!(s.scrim_rect.width() > 0.0, "the open overlay dims the content behind a scrim");
-        assert_eq!(s.sidebar_panel_rect.x0, 0.0, "the list slides in from the left edge");
-        assert!(s.sidebar_panel_rect.width() > 0.0);
-    }
-
-    #[test]
-    fn picking_an_item_returns_the_narrow_overlay_to_content() {
-        let mut s = shell().with_overlay_open(true);
-        lay(&mut s, 460.0, 820.0);
-        assert!(s.sidebar_open());
+        assert_eq!(s.narrow_screen(), NarrowScreen::List);
+        // The host calls this when a row is picked.
         s.notify_selection();
         assert!(s.take_structure_dirty(), "a narrow selection requests a rebuild");
         lay(&mut s, 460.0, 820.0);
-        assert!(!s.sidebar_open(), "after picking an item the overlay closes to the content screen");
+        assert_eq!(s.narrow_screen(), NarrowScreen::Content, "the pick navigates to the content screen");
+        assert!(!s.sidebar_open(), "the list is no longer shown");
+        assert!((s.content_area_rect.width() - 460.0).abs() < 0.5, "content fills the screen");
+        // A back arrow appears in the top-left.
+        assert!(s.back_rect().width() > 0.0, "the content screen has a back arrow");
+        assert!(s.back_rect().x0 < 60.0 && s.back_rect().y0 < 60.0, "the back arrow is in the top-left");
+        // Only the content is composed now.
+        let names: Vec<&str> = s.children().iter().map(|c| c.name()).collect();
+        assert_eq!(names, vec!["Text"], "content screen composes only the content");
     }
 
+    /// Narrow: the back arrow is the way from the content screen back to the
+    /// list, preserving the selection.
     #[test]
-    fn clicking_the_toggle_collapses_then_expands() {
-        let mut s = shell();
-        lay(&mut s, 1000.0, 700.0);
-        // Click the toggle: cursor onto it, press, release.
-        let mid = Point::new((s.toggle_rect.x0 + s.toggle_rect.x1) / 2.0, (s.toggle_rect.y0 + s.toggle_rect.y1) / 2.0);
-        click(&mut s, mid);
-        assert!(s.collapsed(), "a real click on the toggle collapses");
-        assert!(s.take_structure_dirty(), "the collapse requests a rebuild");
-        lay(&mut s, 1000.0, 700.0);
-        // Click the (now floating) toggle again → expands.
-        let mid = Point::new((s.toggle_rect.x0 + s.toggle_rect.x1) / 2.0, (s.toggle_rect.y0 + s.toggle_rect.y1) / 2.0);
-        click(&mut s, mid);
-        assert!(!s.collapsed(), "clicking the floating toggle re-expands");
-    }
-
-    #[test]
-    fn esc_closes_the_narrow_overlay() {
-        let mut s = shell().with_overlay_open(true);
+    fn back_from_content_returns_to_the_list() {
+        let mut s = shell().with_narrow_screen(NarrowScreen::Content);
         lay(&mut s, 460.0, 820.0);
-        assert!(s.sidebar_open());
+        assert_eq!(s.narrow_screen(), NarrowScreen::Content, "starts on the content screen");
+        assert!(s.back_rect().width() > 0.0, "the back arrow is present");
+        // A real click on the back arrow.
+        let mid = Point::new(
+            (s.back_rect().x0 + s.back_rect().x1) / 2.0,
+            (s.back_rect().y0 + s.back_rect().y1) / 2.0,
+        );
+        click(&mut s, mid);
+        assert_eq!(s.narrow_screen(), NarrowScreen::List, "back returns to the list screen");
+        assert!(s.take_structure_dirty(), "the back navigation requests a rebuild");
+        lay(&mut s, 460.0, 820.0);
+        assert!(s.sidebar_open(), "the list screen is shown again");
+        assert_eq!(s.content_area_rect, Rect::ZERO, "no content behind the list");
+    }
+
+    #[test]
+    fn esc_from_content_returns_to_the_list() {
+        let mut s = shell().with_narrow_screen(NarrowScreen::Content);
+        lay(&mut s, 460.0, 820.0);
+        assert_eq!(s.narrow_screen(), NarrowScreen::Content);
         let mut handled = false;
         dispatch(&mut s, &esc_event(), &mut handled);
-        assert!(handled, "Esc on an open overlay is consumed");
-        assert!(!s.sidebar_open(), "Esc closes the overlay");
-    }
-
-    #[test]
-    fn scrim_click_closes_the_narrow_overlay() {
-        let mut s = shell().with_overlay_open(true);
-        lay(&mut s, 460.0, 820.0);
-        // Click well to the right of the overlay panel, on the scrim.
-        let pt = Point::new(s.rect.x1 - 10.0, 400.0);
-        let mut handled = false;
-        dispatch(&mut s, &cursor_at(pt), &mut handled);
-        dispatch(&mut s, &left_press(), &mut handled);
-        assert!(handled, "scrim click is consumed");
-        assert!(!s.sidebar_open(), "scrim click closes the overlay");
+        assert!(handled, "Esc on the content screen is consumed");
+        assert_eq!(s.narrow_screen(), NarrowScreen::List, "Esc navigates back to the list");
     }
 
     #[test]
@@ -1055,8 +981,6 @@ mod tests {
         // Shrink below the breakpoint: apply_layout should notice the cross.
         lay(&mut s, 500.0, 700.0);
         assert!(s.is_narrow(), "resize resolves to narrow");
-        // The very-first narrow apply flags a rebuild so the child set updates.
-        // (One frame later `take_structure_dirty` is true.)
         assert!(s.take_structure_dirty() || s.built_layout == ShellLayout::Narrow);
     }
 
@@ -1064,11 +988,18 @@ mod tests {
     fn children_track_the_slot_set() {
         let mut s = shell();
         lay(&mut s, 1000.0, 700.0);
-        // Wide-expanded: search + nav + content.
+        // Wide: search + nav + content.
         assert_eq!(s.children().len(), 3);
-        s.on_toggle(); // collapse → nav drops out
-        lay(&mut s, 1000.0, 700.0);
-        assert_eq!(s.children().len(), 2, "collapsed sidebar removes the nav child (search + content)");
+        // Cross to narrow. The first frame after a breakpoint cross rebuilds
+        // (the cross is only known once `apply_layout` sees the new width), so
+        // settle with a second layout — exactly what the host's frame loop does.
+        lay(&mut s, 460.0, 820.0);
+        lay(&mut s, 460.0, 820.0);
+        assert_eq!(s.children().len(), 2, "narrow list composes search + nav (no content behind)");
+        // Navigate to the content screen: content only.
+        s.notify_selection();
+        lay(&mut s, 460.0, 820.0);
+        assert_eq!(s.children().len(), 1, "narrow content composes only the content");
     }
 
     #[test]
