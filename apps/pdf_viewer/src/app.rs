@@ -1182,11 +1182,25 @@ impl PdfApp {
     /// `true` when the point lands on a glyph (selection armed); `false` when
     /// there is no text there, so the caller can fall back to panning.
     fn begin_selection(&mut self, page: usize, pt: (f64, f64)) -> bool {
-        let Some(layer) = self.raster_text.get(&page) else { return false };
+        let Some(layer) = self.ensure_raster_text(page) else { return false };
         let Some(idx) = layer.char_at(pt.0, pt.1) else { return false };
         self.selection = Some(TextSelection { page, anchor: idx, caret: idx, dragging: true });
         self.dirty = true;
         true
+    }
+
+    /// The pdfium text layer for 1-based `page`, extracting it on demand and
+    /// caching it into `raster_text` if the (deferred) per-frame refresh hasn't
+    /// built it yet. This lets a text selection start on a freshly-opened or
+    /// just-scrolled-to page without the reader having eagerly paid the
+    /// extraction cost on every prior frame. `None` when no raster backend.
+    fn ensure_raster_text(&mut self, page: usize) -> Option<Arc<PageText>> {
+        if let Some(layer) = self.raster_text.get(&page) {
+            return Some(layer.clone());
+        }
+        let layer = self.raster.as_mut()?.page_text(page - 1);
+        self.raster_text.insert(page, layer.clone());
+        Some(layer)
     }
 
     /// Extend the live selection to the pointer at page-point `pt`. Only tracks
@@ -2833,6 +2847,135 @@ mod tests {
         );
         assert!(open_ms < 5000.0, "open should not take seconds (was {open_ms:.0}ms)");
         assert!(render_cached_ms < render_cold_ms.max(1.0), "cached render is faster than cold");
+    }
+
+    /// Opening a document and painting its first frame must not pay the pdfium
+    /// text-extraction cost (hundreds of ms per page): the selectable text layer
+    /// only feeds selection + search overlays, so it stays unbuilt until one of
+    /// those is actually live. This guards the deferral — a regression that
+    /// re-adds eager per-frame extraction reintroduces the multi-hundred-ms
+    /// open/scroll hitch this reader used to have. Prints the real frame times.
+    #[test]
+    #[serial(pdfium)]
+    fn first_frame_defers_text_extraction() {
+        use std::collections::HashMap;
+        use std::time::Instant;
+        use ui::permissions::PermissionContext;
+        use ui::presence::PresenceCtx;
+        use ui::text_render::TextRenderer;
+        use ui::theme::Theme;
+
+        let mut app = open_raster_sample();
+        let mut st = ui::State::new();
+        let theme = Theme::dark();
+        let (w, h) = (1280.0f64, 800.0f64);
+
+        // Reuse ONE TextRenderer across frames, exactly as the live app does, so
+        // the timing reflects real per-frame cost and not the one-time font-atlas
+        // init the shot harness pays on every `full_frame` call.
+        let mut tr = TextRenderer::new();
+        // Drive one full 5-pass frame against the shared renderer.
+        let mut frame = |app: &mut PdfApp, st: &mut ui::State, tr: &mut TextRenderer| {
+            let mut taffy: TaffyTree<()> = TaffyTree::new();
+            let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+            app.sync(&mut st.doc, &st.root);
+            let child = app.build_layout(&mut taffy, &theme, &mut node_map);
+            let root = taffy
+                .new_with_children(
+                    Style { size: Size { width: Dimension::length(w as f32), height: Dimension::length(h as f32) }, ..Default::default() },
+                    &[child],
+                )
+                .unwrap();
+            let measure_map = node_map.clone();
+            let trm = &mut *tr;
+            taffy
+                .compute_layout_with_measure(
+                    root,
+                    taffy::Size { width: taffy::AvailableSpace::Definite(w as f32), height: taffy::AvailableSpace::Definite(h as f32) },
+                    |known, avail, node_id, _, _| {
+                        if let Some(&ptr) = measure_map.get(&node_id) {
+                            unsafe { (*ptr).measure(known, avail, trm) }
+                        } else {
+                            taffy::Size::ZERO
+                        }
+                    },
+                )
+                .unwrap();
+            app.apply_layout(&taffy, child, Point::ORIGIN);
+            let mut scene = Scene::new();
+            app.draw_with_presence(&mut scene, Affine::IDENTITY, tr, &theme, &PresenceCtx::empty(), &PermissionContext::permissive());
+        };
+
+        // Warm the shared renderer's font atlas so it is not charged to frame 1.
+        frame(&mut app, &mut st, &mut tr);
+        app.raster_text.clear();
+
+        // An idle document frame: no selection, no search — no text extraction.
+        let t = Instant::now();
+        frame(&mut app, &mut st, &mut tr);
+        let idle_open_ms = t.elapsed().as_secs_f64() * 1000.0;
+        let idle_text_pages = app.raster_text.len();
+
+        let t = Instant::now();
+        frame(&mut app, &mut st, &mut tr);
+        let idle_scroll_ms = t.elapsed().as_secs_f64() * 1000.0;
+
+        eprintln!(
+            "PERF-FRAME idle_open={idle_open_ms:.2}ms idle_scroll={idle_scroll_ms:.2}ms \
+             idle_text_pages={idle_text_pages}"
+        );
+        assert_eq!(
+            idle_text_pages, 0,
+            "an idle frame must defer pdfium text extraction (only selection/search needs it)"
+        );
+    }
+
+    /// End-to-end text selection over the real pdfium glyph layer: press on a
+    /// glyph, drag across a run, copy. Drives the same `begin_selection` /
+    /// `update_selection` / `copy_selection` path the pointer handlers use, so a
+    /// regression in on-demand text-layer extraction or in the selection→clipboard
+    /// wiring fails here. Serialised on the clipboard so it never races the other
+    /// arboard tests.
+    #[test]
+    #[serial(clipboard)]
+    #[serial(pdfium)]
+    fn text_selection_drag_copies_the_real_run() {
+        let mut app = open_raster_sample();
+
+        // Two glyphs with real boxes on page 1, ordered left-to-right on a line,
+        // give a non-empty run to sweep between.
+        let layer = app.raster.as_mut().unwrap().page_text(0);
+        let mut printable: Vec<_> = layer
+            .chars
+            .iter()
+            .filter(|c| c.rect.w > 1.0 && c.rect.h > 1.0)
+            .cloned()
+            .collect();
+        assert!(printable.len() >= 4, "page 1 has a run of printable glyphs");
+        printable.sort_by(|a, b| (a.rect.y, a.rect.x).partial_cmp(&(b.rect.y, b.rect.x)).unwrap());
+        let start = printable[0].rect.center();
+        let end = printable[printable.len().min(6) - 1].rect.center();
+
+        // Begin the selection from a cold state — no prior frame populated the
+        // text layer, so this exercises on-demand extraction inside the press.
+        assert!(app.raster_text.is_empty(), "no eager text layer before a selection");
+        assert!(
+            app.begin_selection(1, start),
+            "pressing on a glyph starts a selection (extracting the layer on demand)"
+        );
+        app.update_selection(1, end);
+        let sel = app.selection.expect("a selection is armed");
+        assert!(sel.is_active(), "the drag grew the selection past its anchor");
+
+        let text = app.selection_text().expect("the selected run yields text");
+        assert!(!text.trim().is_empty(), "the selected run is real page text: {text:?}");
+        // The copy path reports success and stamps the toast.
+        assert!(app.copy_selection(), "copy_selection succeeds on a live selection");
+        assert!(
+            app.status_note.as_deref().unwrap_or("").contains("Copied"),
+            "a copy toast is shown ({:?})",
+            app.status_note
+        );
     }
 
     /// The first run of `min_len`+ alphabetic characters in `text`.
