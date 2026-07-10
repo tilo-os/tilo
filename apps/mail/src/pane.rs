@@ -40,6 +40,15 @@ use crate::util::{format_absolute, format_relative};
 const SWIPE_THRESHOLD: f64 = 72.0;
 /// Reader width (px) below which the action bar switches to icon-only buttons.
 const READER_COMPACT_W: f64 = 480.0;
+/// Height (px) of the "Add account" row at the foot of the sidebar account list.
+const ADD_ACCOUNT_ROW_H: f64 = 38.0;
+
+/// The per-account settings gear rect on the right edge of an account row.
+fn account_gear_rect(header: Rect) -> Rect {
+    let s = 30.0;
+    let cy = header.y0 + ACCOUNT_HEADER_H / 2.0;
+    Rect::new(header.x1 - s - 6.0, cy - s / 2.0, header.x1 - 6.0, cy + s / 2.0)
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Role {
@@ -52,9 +61,13 @@ pub enum Role {
 enum Hit {
     // sidebar
     Compose,
-    Settings,
     Account(usize),
     AccountToggle(usize),
+    /// The per-account settings affordance (gear on the account row). Scoped to
+    /// that account, not the active one.
+    AccountSettings(usize),
+    /// The "Add account" action at the foot of the account list.
+    AddAccount,
     Folder(usize, Folder),
     // list
     Row(MessageId),
@@ -173,9 +186,6 @@ impl Pane {
             match role {
                 Role::Sidebar => {
                     let sb = r;
-                    // settings gear (header, right)
-                    let gear = Rect::new(sb.x1 - 44.0, sb.y0 + 12.0, sb.x1 - 12.0, sb.y0 + 44.0);
-                    hits.push((gear, Hit::Settings));
                     // compose button under the header
                     let pad = 12.0;
                     let mut y = sb.y0 + HEADER_H + 6.0;
@@ -189,6 +199,11 @@ impl Pane {
                         hits.push((header, Hit::Account(ai)));
                         let chev = Rect::new(header.x0, header.y0, header.x0 + 28.0, header.y1);
                         hits.push((chev, Hit::AccountToggle(ai)));
+                        // Per-account settings gear on the right of the row. Pushed
+                        // after the row so it wins the hit test in its sub-rect;
+                        // it edits THIS account, not the active one.
+                        let gear = account_gear_rect(header);
+                        hits.push((gear, Hit::AccountSettings(ai)));
                         y += ACCOUNT_HEADER_H;
                         if !account.collapsed {
                             // A gap after the account card so its highlight
@@ -202,6 +217,13 @@ impl Pane {
                         }
                         y += 16.0;
                     }
+                    // A clear, separate "Add account" action at the foot of the
+                    // list — adding is its own thing, distinct from per-account
+                    // settings.
+                    hits.push((
+                        Rect::new(sb.x0 + 8.0, y, sb.x1 - 8.0, y + ADD_ACCOUNT_ROW_H),
+                        Hit::AddAccount,
+                    ));
                 }
                 Role::List => {
                     hits.push((self.refresh_box_rect(), Hit::Refresh));
@@ -275,7 +297,9 @@ impl Pane {
         let sb = self.rect;
         fill_rect(scene, t, sb, c.neutral[0]);
 
-        // Header: app label (past the collapse chip) + settings gear.
+        // Header: section label (past the collapse chip). Account settings are
+        // reached per-account (the gear on each account row), not from a single
+        // global-looking header control — so there is no header gear here.
         tr.draw_text_weighted(
             scene,
             "Mail",
@@ -285,15 +309,6 @@ impl Pane {
             None,
             TextWeight::Bold,
         );
-        for (rect, hit) in &self.hits {
-            if matches!(hit, Hit::Settings) {
-                let hov = rect.contains(st.last_mouse);
-                if hov {
-                    fill_round(scene, t, *rect, 8.0, c.surface_white_5);
-                }
-                Icon::Settings.draw(scene, t, rect.inset(-8.0), c.neutral[7]);
-            }
-        }
 
         // Compose button.
         if let Some((rect, _)) = self.hits.iter().find(|(_, h)| matches!(h, Hit::Compose)) {
@@ -342,10 +357,38 @@ impl Pane {
                         &Addr::new(account.config.display_name.clone(), account.config.email.clone()),
                         account.tint,
                     );
-                    let label = elide(tr, account.label(), 13.0, TextWeight::Semibold, sb.width() - 80.0);
-                    let email = elide(tr, &account.config.email, 10.5, TextWeight::Regular, sb.width() - 80.0);
+                    // Reserve room on the right for the per-account gear.
+                    let label = elide(tr, account.label(), 13.0, TextWeight::Semibold, sb.width() - 108.0);
+                    let email = elide(tr, &account.config.email, 10.5, TextWeight::Regular, sb.width() - 108.0);
                     tr.draw_text_weighted(scene, &label, 13.0, c.text_primary, t * Affine::translate((rect.x0 + 54.0, rect.y0 + 6.0)), None, TextWeight::Semibold);
                     tr.draw_text(scene, &email, 10.5, c.text_dim, t * Affine::translate((rect.x0 + 54.0, rect.y0 + 24.0)), None);
+                    // Per-account settings gear (right edge). Hover-lit; always
+                    // drawn so it is visible headless / in shots.
+                    let gear = account_gear_rect(*rect);
+                    let ghov = gear.contains(st.last_mouse);
+                    if ghov {
+                        fill_round(scene, t, gear, 8.0, c.surface_white_10);
+                    }
+                    Icon::Settings.draw(scene, t, gear.inset(-7.0), if ghov { c.text_primary } else { c.text_dim });
+                }
+                Hit::AddAccount => {
+                    let hov = rect.contains(st.last_mouse);
+                    if hov {
+                        fill_round(scene, t, *rect, 9.0, c.surface_white_5);
+                    }
+                    let cy = rect.y0 + ADD_ACCOUNT_ROW_H / 2.0;
+                    let icon = Rect::new(rect.x0 + 12.0, cy - 8.0, rect.x0 + 28.0, cy + 8.0);
+                    let col = if hov { c.accent[4] } else { c.accent[5] };
+                    Icon::Plus.draw(scene, t, icon, col);
+                    tr.draw_text_weighted(
+                        scene,
+                        "Add account",
+                        13.0,
+                        col,
+                        t * Affine::translate((rect.x0 + 38.0, cy - 8.0)),
+                        None,
+                        TextWeight::Semibold,
+                    );
                 }
                 Hit::Folder(ai, f) => {
                     let f = *f;
@@ -441,7 +484,7 @@ impl Pane {
             let hint = if !st.mailbox.messages.is_empty() {
                 if st.search.is_empty() { "No messages in this folder" } else { "No results" }
             } else if st.accounts.is_empty() {
-                "No account yet — open the gear to add one"
+                "No account yet — use Add account to set one up"
             } else {
                 "No messages"
             };
@@ -683,10 +726,14 @@ impl Pane {
                 if let Some(hit) = self.hit_at(pt) {
                     match hit {
                         Hit::Compose => self.shared.borrow_mut().push_intent(Intent::Compose),
-                        Hit::Settings => {
-                            let active = self.shared.borrow().accounts.active;
-                            let has = !self.shared.borrow().accounts.is_empty();
-                            self.shared.borrow_mut().push_intent(Intent::Settings(has.then_some(active)));
+                        Hit::AccountSettings(ai) => {
+                            // Per-account settings, scoped to the clicked account
+                            // (not the active one).
+                            self.shared.borrow_mut().push_intent(Intent::Settings(Some(ai)));
+                        }
+                        Hit::AddAccount => {
+                            // Adding an account is its own action (a blank sheet).
+                            self.shared.borrow_mut().push_intent(Intent::Settings(None));
                         }
                         Hit::AccountToggle(ai) => self.shared.borrow_mut().toggle_account_collapsed(ai),
                         Hit::Account(ai) => {
@@ -1203,5 +1250,69 @@ mod tests {
         let intents = sh.borrow_mut().take_intents();
         assert!(intents.iter().any(|i| matches!(i, Intent::EditDraft(mid) if *mid == id)), "a Drafts row raises EditDraft");
         assert!(!intents.iter().any(|i| matches!(i, Intent::ShowDetail)), "it does not open the reader");
+    }
+
+    fn sidebar() -> (Pane, Shared) {
+        let sh = shared(); // sample store: 2 accounts, active = 0
+        let mut p = Pane::new(Role::Sidebar, sh.clone());
+        p.rect = Rect::new(0.0, 0.0, 260.0, 800.0);
+        p.rebuild_hits();
+        (p, sh)
+    }
+
+    fn click_sidebar(p: &mut Pane, sh: &Shared, pt: Point) -> Vec<Intent> {
+        sh.borrow_mut().last_mouse = pt;
+        let mut doc = AutoCommit::new();
+        let mut handled = false;
+        p.on_left_press(&mut doc, pt, &mut handled);
+        assert!(handled, "sidebar click at {pt:?} consumed");
+        sh.borrow_mut().take_intents()
+    }
+
+    #[test]
+    fn account_row_gear_opens_that_accounts_settings_not_the_active() {
+        let (mut p, sh) = sidebar();
+        assert_eq!(sh.borrow().accounts.active, 0, "account #1 is not the active one");
+        // The gear on account #1 (you@hooli.example) must scope settings to #1.
+        let gear = p
+            .hits
+            .iter()
+            .find_map(|(r, h)| matches!(h, Hit::AccountSettings(1)).then_some(*r))
+            .expect("account #1 has a per-account settings gear");
+        let intents = click_sidebar(&mut p, &sh, gear.center());
+        assert!(
+            intents.iter().any(|i| matches!(i, Intent::Settings(Some(1)))),
+            "the gear opens settings scoped to account #1, got {intents:?}"
+        );
+        assert!(
+            !intents.iter().any(|i| matches!(i, Intent::Settings(Some(0)) | Intent::Settings(None))),
+            "it must not fall back to the active account or the add-account flow"
+        );
+    }
+
+    #[test]
+    fn sidebar_offers_a_separate_add_account_action() {
+        let (mut p, sh) = sidebar();
+        let add = p
+            .hits
+            .iter()
+            .find_map(|(r, h)| matches!(h, Hit::AddAccount).then_some(*r))
+            .expect("a distinct Add-account action");
+        let intents = click_sidebar(&mut p, &sh, add.center());
+        assert!(
+            intents.iter().any(|i| matches!(i, Intent::Settings(None))),
+            "Add account opens the blank add-account sheet, got {intents:?}"
+        );
+    }
+
+    #[test]
+    fn sidebar_header_has_no_global_settings_gear() {
+        let (p, _sh) = sidebar();
+        // The old global-looking gear sat at the top-right of the header. Account
+        // settings are per-account now, so there must be no hit there.
+        assert!(
+            p.hit_at(Point::new(p.rect.x1 - 24.0, p.rect.y0 + 28.0)).is_none(),
+            "no global settings control in the sidebar header"
+        );
     }
 }
