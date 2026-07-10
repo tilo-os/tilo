@@ -16,6 +16,87 @@ pub fn is_conflict_name(name: &str) -> bool {
     name.contains(CONFLICT_MARKER)
 }
 
+/// The extended-attribute the qOS FUSE driver answers with an entry's sync
+/// state. Kept in lock-step with `fs::SYNC_XATTR`.
+pub const SYNC_XATTR: &str = "user.qos.sync";
+
+/// The qOS FUSE **sync / hydration state** of an entry, read live from the
+/// driver via the [`SYNC_XATTR`] extended attribute. The collaborative FS
+/// projects a peer's file metadata immediately but only hydrates the bytes on
+/// first read, so a workspace file is one of:
+///
+/// * [`Local`](SyncState::Local) — content is on disk; opening it is instant.
+/// * [`Projected`](SyncState::Projected) — metadata only; opening it hydrates
+///   from a peer.
+/// * [`Downloading`](SyncState::Downloading) — a hydration fetch is in flight.
+///
+/// `Entry::sync_state` is `None` for anything that isn't on a workspace mount
+/// (an ordinary local file carries no such attribute).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SyncState {
+    Local,
+    Projected,
+    Downloading,
+}
+
+impl SyncState {
+    /// Parse the xattr value the driver returns.
+    pub fn from_xattr(bytes: &[u8]) -> Option<Self> {
+        match std::str::from_utf8(bytes).ok()?.trim() {
+            "local" => Some(SyncState::Local),
+            "projected" => Some(SyncState::Projected),
+            "downloading" => Some(SyncState::Downloading),
+            _ => None,
+        }
+    }
+}
+
+/// Read the qOS sync state of `path` from its [`SYNC_XATTR`] extended attribute.
+/// `None` when the attribute is absent (an ordinary file, off any workspace
+/// mount) or unreadable. This is a single `getxattr` — the same call
+/// `getfattr -n user.qos.sync <path>` makes.
+pub fn read_sync_state(path: &Path) -> Option<SyncState> {
+    match xattr::get(path, SYNC_XATTR) {
+        Ok(Some(bytes)) => SyncState::from_xattr(&bytes),
+        _ => None,
+    }
+}
+
+/// The qOS workspace roots the FUSE driver mounts (first-class sidebar
+/// locations, and the dirs whose entries carry sync state). Normally just
+/// [`WORKSPACE_ROOT`]; `QOS_WORKSPACE_ROOTS` (colon-separated) overrides it for
+/// tests and alternate mounts. Only roots that currently exist are returned.
+pub fn workspace_roots() -> Vec<PathBuf> {
+    if let Ok(v) = std::env::var("QOS_WORKSPACE_ROOTS") {
+        return parse_workspace_roots(&v);
+    }
+    let p = PathBuf::from(WORKSPACE_ROOT);
+    if p.exists() { vec![p] } else { Vec::new() }
+}
+
+/// Parse a `QOS_WORKSPACE_ROOTS` value (colon-separated) into the roots that
+/// currently exist. Split out so the parsing is unit-testable without touching
+/// the process environment.
+fn parse_workspace_roots(val: &str) -> Vec<PathBuf> {
+    val.split(':')
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from)
+        .filter(|p| p.exists())
+        .collect()
+}
+
+/// Whether `path` sits inside a qOS workspace root (so its entries carry sync
+/// state and should be queried for the [`SYNC_XATTR`]).
+pub fn is_workspace_path(path: &Path) -> bool {
+    path_under_any(path, &workspace_roots())
+}
+
+/// Whether `path` is one of `roots` or nested under one. Pure over an explicit
+/// root list so the containment logic is testable without the environment.
+fn path_under_any(path: &Path, roots: &[PathBuf]) -> bool {
+    roots.iter().any(|r| path == r || path.starts_with(r))
+}
+
 #[derive(Clone, Debug)]
 pub struct Entry {
     pub name: String,
@@ -24,6 +105,8 @@ pub struct Entry {
     pub size: u64,
     pub modified: Option<DateTime<Local>>,
     pub mime: String,
+    /// The qOS FUSE sync state, when this entry is on a workspace mount.
+    pub sync_state: Option<SyncState>,
 }
 
 impl Entry {
@@ -76,19 +159,35 @@ pub fn sort_entries(sort_by: SortBy, sort_order: SortOrder, entries: &mut Vec<En
 }
 
 pub fn read_dir_sync(path: &Path) -> Result<Vec<Entry>, String> {
+    // Only query the sync xattr when listing a workspace mount — an ordinary
+    // directory has no such attribute, so skipping the per-entry `getxattr`
+    // there keeps a plain home-folder listing at one syscall per file.
+    read_dir_inner(path, is_workspace_path(path))
+}
+
+/// The listing body, with the workspace-gating decision passed in (so tests can
+/// exercise the sync-state population path without mutating the global
+/// `QOS_WORKSPACE_ROOTS` env). Production always routes through
+/// [`read_dir_sync`], which derives `in_workspace` from the real environment.
+fn read_dir_inner(path: &Path, in_workspace: bool) -> Result<Vec<Entry>, String> {
     let rd = std::fs::read_dir(path).map_err(|e| e.to_string())?;
     let mut out = Vec::new();
     for entry in rd.flatten() {
         let meta = entry.metadata().ok();
         let path = entry.path();
+        let is_dir = meta.as_ref().map(|m| m.is_dir()).unwrap_or(false);
         let mime = mime_guess::from_path(&path).first_or_octet_stream().to_string();
+        // Content hydration state only applies to files — a directory's structure
+        // is always fully projected — so we don't query (or badge) folders.
+        let sync_state = if in_workspace && !is_dir { read_sync_state(&path) } else { None };
         out.push(Entry {
             name: entry.file_name().to_string_lossy().into_owned(),
             path,
-            is_dir: meta.as_ref().map(|m| m.is_dir()).unwrap_or(false),
+            is_dir,
             size: meta.as_ref().map(|m| m.len()).unwrap_or(0),
             modified: meta.as_ref().and_then(|m| m.modified().ok()).map(DateTime::from),
             mime,
+            sync_state,
         });
     }
     Ok(out)
@@ -115,4 +214,87 @@ pub fn initial_path() -> PathBuf {
     }
     if let Some(home) = dirs::home_dir() { return home; }
     std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"))
+}
+
+#[cfg(test)]
+mod sync_state_tests {
+    use super::*;
+
+    #[test]
+    fn from_xattr_parses_the_three_states_and_rejects_junk() {
+        assert_eq!(SyncState::from_xattr(b"local"), Some(SyncState::Local));
+        assert_eq!(SyncState::from_xattr(b"projected"), Some(SyncState::Projected));
+        assert_eq!(SyncState::from_xattr(b"downloading"), Some(SyncState::Downloading));
+        // Trailing whitespace/newline (some xattr tools append one) is tolerated.
+        assert_eq!(SyncState::from_xattr(b"local\n"), Some(SyncState::Local));
+        assert_eq!(SyncState::from_xattr(b"bogus"), None);
+        assert_eq!(SyncState::from_xattr(&[0xff, 0xfe]), None);
+    }
+
+    #[test]
+    fn read_sync_state_round_trips_a_real_xattr() {
+        // A real getxattr against a real `user.qos.sync` attribute — the exact
+        // syscall the app makes against the FUSE mount, exercised here on a
+        // tmpfile so it doesn't need a live driver.
+        let d = tempfile::tempdir().unwrap();
+        let f = d.path().join("projected.txt");
+        std::fs::write(&f, b"x").unwrap();
+        // No attribute yet → None.
+        assert_eq!(read_sync_state(&f), None, "absent attribute reads as None");
+        // Set it the way the driver would and read it back.
+        xattr::set(&f, SYNC_XATTR, b"projected").unwrap();
+        assert_eq!(read_sync_state(&f), Some(SyncState::Projected));
+        xattr::set(&f, SYNC_XATTR, b"local").unwrap();
+        assert_eq!(read_sync_state(&f), Some(SyncState::Local));
+    }
+
+    #[test]
+    fn read_dir_populates_sync_state_only_inside_a_workspace_root() {
+        // Tag two files with real sync xattrs, then confirm the real listing
+        // path surfaces them on `Entry` when (and only when) the directory is a
+        // workspace mount — driven through `read_dir_inner`, the exact function
+        // `read_dir_sync` delegates to.
+        let ws = tempfile::tempdir().unwrap();
+        let downloading = ws.path().join("a-downloading.bin");
+        let projected = ws.path().join("b-projected.bin");
+        let untagged = ws.path().join("c-plain.bin");
+        std::fs::write(&downloading, b"x").unwrap();
+        std::fs::write(&projected, b"x").unwrap();
+        std::fs::write(&untagged, b"x").unwrap();
+        xattr::set(&downloading, SYNC_XATTR, b"downloading").unwrap();
+        xattr::set(&projected, SYNC_XATTR, b"projected").unwrap();
+
+        // Not a workspace: sync_state is never queried → all None.
+        let outside = read_dir_inner(ws.path(), false).unwrap();
+        assert!(
+            outside.iter().all(|e| e.sync_state.is_none()),
+            "outside a workspace root, no entry carries sync state",
+        );
+
+        // Declared a workspace: real xattrs are surfaced on the entries.
+        let entries = read_dir_inner(ws.path(), true).unwrap();
+        let by = |name: &str| entries.iter().find(|e| e.name == name).unwrap().sync_state;
+        assert_eq!(by("a-downloading.bin"), Some(SyncState::Downloading));
+        assert_eq!(by("b-projected.bin"), Some(SyncState::Projected));
+        assert_eq!(by("c-plain.bin"), None, "an untagged workspace file has no state");
+    }
+
+    #[test]
+    fn workspace_root_parsing_and_containment() {
+        // Colon-separated roots parse, non-existent entries drop out, and
+        // containment matches the root itself and any nested path — the exact
+        // logic `read_dir_sync` uses to gate the sync-xattr query. Exercised
+        // through the pure helpers so no global env is touched.
+        let a = tempfile::tempdir().unwrap();
+        let b = tempfile::tempdir().unwrap();
+        let spec = format!("{}:/does/not/exist:{}", a.path().display(), b.path().display());
+        let roots = parse_workspace_roots(&spec);
+        assert!(roots.contains(&a.path().to_path_buf()), "existing root A kept: {roots:?}");
+        assert!(roots.contains(&b.path().to_path_buf()), "existing root B kept");
+        assert_eq!(roots.len(), 2, "the non-existent root is filtered out");
+
+        assert!(path_under_any(a.path(), &roots), "the root itself is a workspace path");
+        assert!(path_under_any(&a.path().join("deep/file.txt"), &roots), "nested path matches");
+        assert!(!path_under_any(Path::new("/etc/passwd"), &roots), "unrelated path does not match");
+    }
 }

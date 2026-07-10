@@ -31,11 +31,16 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(out) = parse_shots_arg(&args) {
         let viewport = parse_size_arg(&args).unwrap_or(DEFAULT_SHOTS_VIEWPORT);
         let scenario = parse_scenario_arg(&args);
+        // The `sync` scenario needs a workspace mount to exist BEFORE the widget
+        // is built (so the sidebar picks up the workspace root), so seed it here.
+        let sync_dir = (scenario.as_deref() == Some("sync")).then(seed_sync_demo);
         let mut widget = FileExplorerWidget::new();
         // Optional `--path <dir>` starts the shot in a specific directory
         // (e.g. to capture a deep breadcrumb trail), else the default
         // cold-start location is used.
-        if let Some(p) = parse_path_arg(&args) {
+        if let Some(d) = sync_dir {
+            widget.navigate(d);
+        } else if let Some(p) = parse_path_arg(&args) {
             widget.navigate(p);
         }
         // Pre-layout scenario setup (view mode + selection must be set before
@@ -54,6 +59,35 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app = ui::App::new(state, Box::new(widget));
     app.run();
     Ok(())
+}
+
+/// Seed a demo workspace directory whose files carry real `user.qos.sync`
+/// extended attributes, and point `QOS_WORKSPACE_ROOTS` at it, so a `--shots
+/// --scenario sync` frame exercises the genuine badge path (`read_dir_sync` →
+/// `getxattr` → `Entry.sync_state`) rather than any mock. Returns the dir.
+fn seed_sync_demo() -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join("qos-files-sync-demo");
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::create_dir_all(&dir);
+    // A believable spread across the three hydration states + a subfolder.
+    let files: [(&str, &str); 6] = [
+        ("Design brief.md", "local"),
+        ("meeting-notes.txt", "local"),
+        ("Q3 budget.ods", "projected"),
+        ("architecture.pdf", "projected"),
+        ("launch-video.mp4", "downloading"),
+        ("dataset.parquet", "downloading"),
+    ];
+    for (name, state) in files {
+        let p = dir.join(name);
+        let _ = std::fs::write(&p, b"");
+        let _ = xattr::set(&p, "user.qos.sync", state.as_bytes());
+    }
+    let _ = std::fs::create_dir_all(dir.join("shared-assets"));
+    // SAFETY: called once at process startup on the main thread, before any
+    // other thread exists, so there is no concurrent environment access.
+    unsafe { std::env::set_var("QOS_WORKSPACE_ROOTS", &dir) };
+    dir
 }
 
 /// Returns `Some(path)` if `--shots <path>` (or `--shots=<path>`) appears
