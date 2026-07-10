@@ -121,7 +121,7 @@ impl TileHost {
                 None
             } else {
                 let raw = (elapsed / SPAWN_FADE_MS).clamp(0.0, 1.0);
-                Some(1.0 - (1.0 - raw).powi(3))
+                Some(crate::Curve::EaseOut.apply(raw))
             }
         })
     }
@@ -190,7 +190,7 @@ impl Widget for TileHost {
             let started = self.spawned_at.expect("spawn_in_flight guards Some");
             let elapsed = started.elapsed().as_millis() as f32;
             let t = (elapsed / SPAWN_FADE_MS).clamp(0.0, 1.0);
-            let eased = 1.0 - (1.0 - t).powi(3);
+            let eased = crate::Curve::EaseOut.apply(t);
             let alpha = eased;
             let scale = SPAWN_SCALE_START + (1.0 - SPAWN_SCALE_START) * eased as f64;
             // Wide clip so the shadow sprites (`ambient_pad = 50`,
