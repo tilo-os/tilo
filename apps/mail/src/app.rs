@@ -99,6 +99,49 @@ struct EngineHandle {
     rx: std::sync::mpsc::Receiver<EngineEvent>,
 }
 
+/// Where account add / edit / remove is persisted.
+///
+/// Only the **live** app may write the user's real account store
+/// (`$XDG_CONFIG_HOME/qos/accounts/`). The sample / `--shots` / test
+/// constructors target a throwaway sandbox directory instead, so exercising the
+/// save flow (or a test that adds an account) can never leak fabricated demo
+/// accounts into the real store. The historic leak — `you@qos.example`,
+/// `you@hooli.example`, `new@host.example` appearing pre-configured in the live
+/// app — was exactly this: a test that drove the save path wrote the bundled
+/// sample store to the real config root.
+enum AccountsPersist {
+    /// The real per-user config root — live app only.
+    Real,
+    /// A throwaway directory, removed when the app is dropped. The `TempDir`
+    /// guard owns the directory's lifetime.
+    Sandbox(tempfile::TempDir),
+    /// No writable sandbox could be created — persistence is a silent no-op.
+    /// A safe fallback that still never touches the real store.
+    Disabled,
+}
+
+impl AccountsPersist {
+    /// A fresh throwaway sandbox for the sample / shots / test constructors.
+    /// Falls back to [`AccountsPersist::Disabled`] (never [`AccountsPersist::Real`])
+    /// if a temp dir cannot be created, so sample mode can never reach the real
+    /// store.
+    fn sandbox() -> Self {
+        match tempfile::Builder::new().prefix("qos-mail-sample-").tempdir() {
+            Ok(dir) => AccountsPersist::Sandbox(dir),
+            Err(_) => AccountsPersist::Disabled,
+        }
+    }
+
+    /// Persist `accounts` to the target this variant names.
+    fn persist(&self, accounts: &AccountStore) -> std::io::Result<()> {
+        match self {
+            AccountsPersist::Real => accounts.persist(),
+            AccountsPersist::Sandbox(dir) => accounts.persist_in(dir.path()),
+            AccountsPersist::Disabled => Ok(()),
+        }
+    }
+}
+
 pub struct MailApp {
     shared: Shared,
     nav: NavShell,
@@ -124,6 +167,10 @@ pub struct MailApp {
     setup_error: Option<String>,
 
     engine: Option<EngineHandle>,
+    /// Where account changes persist. The live app targets the real user config
+    /// root; the sample / shots / test constructors target a throwaway sandbox
+    /// so they can never write into the real account store.
+    accounts_persist: AccountsPersist,
     connect_requested: bool,
     /// True between posting a connect/fetch and receiving its result, so the
     /// app only keeps polling the worker while a reply is outstanding (it fully
@@ -147,7 +194,7 @@ impl MailApp {
     /// sample corpus, no engine, deterministic "now".
     pub fn new_sample() -> Self {
         let shared = MailState::shared(MailState::new_sample(avatar_store()));
-        Self::assemble(shared, None)
+        Self::assemble(shared, None, AccountsPersist::sandbox())
     }
 
     /// The live constructor: a real account list loaded from disk and the
@@ -156,17 +203,20 @@ impl MailApp {
         let accounts = load_account_store();
         let shared = MailState::shared(MailState::new_live(accounts, avatar_store()));
         let (tx, rx) = crate::engine::spawn();
-        Self::assemble(shared, Some(EngineHandle { tx, rx }))
+        // Only the live app writes the user's real account store.
+        Self::assemble(shared, Some(EngineHandle { tx, rx }), AccountsPersist::Real)
     }
 
     /// A first-run constructor with no configured account and no engine —
     /// renders the onboarding / welcome screen. Used by the `firstrun` shot.
+    /// Persists to a throwaway sandbox (never the real store) so a driven
+    /// add-account in this mode stays hermetic.
     pub fn new_first_run() -> Self {
         let shared = MailState::shared(MailState::new_live(AccountStore::new(), avatar_store()));
-        Self::assemble(shared, None)
+        Self::assemble(shared, None, AccountsPersist::sandbox())
     }
 
-    fn assemble(shared: Shared, engine: Option<EngineHandle>) -> Self {
+    fn assemble(shared: Shared, engine: Option<EngineHandle>, accounts_persist: AccountsPersist) -> Self {
         let sidebar = Pane::boxed(Role::Sidebar, shared.clone());
         let overview = Pane::boxed(Role::List, shared.clone());
         let detail = Pane::boxed(Role::Reader, shared.clone());
@@ -193,6 +243,7 @@ impl MailApp {
             setup_provider: None,
             setup_error: None,
             engine,
+            accounts_persist,
             connect_requested: false,
             awaiting_engine: false,
             last_auto_refresh_min: 0,
@@ -740,8 +791,9 @@ impl MailApp {
             MailDoc::store_account(doc, &cfg);
             MailDoc::set_active_account(doc, st.accounts.active);
             // Persist to the shared on-disk store + vault so the account (and
-            // its password) survive a restart.
-            match st.accounts.persist() {
+            // its password) survive a restart. Routed through `accounts_persist`
+            // so sample / shots / test builds never touch the real store.
+            match self.accounts_persist.persist(&st.accounts) {
                 Ok(()) => st.status = Some("Account saved".into()),
                 Err(e) => st.status = Some(format!("Saved, but could not write to disk: {e}")),
             }
@@ -765,7 +817,7 @@ impl MailApp {
             let Some(id) = st.accounts.accounts.get(idx).map(|a| a.id.clone()) else { return };
             st.accounts.remove(&id);
             MailDoc::set_active_account(doc, st.accounts.active);
-            match st.accounts.persist() {
+            match self.accounts_persist.persist(&st.accounts) {
                 Ok(()) => st.status = Some("Account removed".into()),
                 Err(e) => st.status = Some(format!("Removed, but could not write to disk: {e}")),
             }
@@ -1144,9 +1196,20 @@ impl MailApp {
         stroke_round(scene, t, p, 16.0, 1.0, c.border_white_10);
         let pad = 26.0;
         let lx = p.x0 + pad;
-        let heading = if self.setup_editing.is_some() { "Edit account" } else { "Add account" };
+        // Editing reads as scoped to a specific account (its address as the
+        // subtitle); adding is its own clearly-separate flow.
+        let editing_email = self.setup_editing.and_then(|i| {
+            let st = self.shared.borrow();
+            st.accounts.accounts.get(i).map(|a| {
+                if a.config.email.is_empty() { a.label().to_string() } else { a.config.email.clone() }
+            })
+        });
+        let (heading, subtitle) = match &editing_email {
+            Some(email) => ("Account settings", email.clone()),
+            None => ("Add account", "Enter your email — server details fill in automatically.".to_string()),
+        };
         tr.draw_text_weighted(scene, heading, 17.0, c.text_primary, t * Affine::translate((lx, p.y0 + 20.0)), None, TextWeight::Bold);
-        tr.draw_text(scene, "Enter your email — server details fill in automatically.", 11.5, c.text_dim, t * Affine::translate((lx, p.y0 + 44.0)), None);
+        tr.draw_text(scene, &subtitle, 11.5, c.text_dim, t * Affine::translate((lx, p.y0 + 44.0)), None);
 
         let labels = ["Display name", "Email", "Username", "Password", "IMAP host", "", "SMTP host", ""];
         let cfg_errs: std::collections::HashSet<&str> = self.read_setup_config().validate().into_iter().map(|(k, _)| k).collect();
@@ -1346,6 +1409,19 @@ impl MailApp {
     fn layout_for_test(&mut self, w: f64, h: f64) {
         self.rect = Rect::new(0.0, 0.0, w, h);
         self.layout_nav();
+    }
+
+    /// The directory account changes persist into: the real per-user config
+    /// root for the live app, or a throwaway sandbox for the sample / shots /
+    /// test constructors. `None` when persistence is disabled. Tests use this to
+    /// prove sample mode never resolves the real store path.
+    #[cfg(test)]
+    fn accounts_persist_root(&self) -> Option<std::path::PathBuf> {
+        match &self.accounts_persist {
+            AccountsPersist::Real => accounts::config_root(),
+            AccountsPersist::Sandbox(dir) => Some(dir.path().to_path_buf()),
+            AccountsPersist::Disabled => None,
+        }
     }
 }
 
@@ -2077,6 +2153,91 @@ mod tests {
         assert!(!app.setup_open);
         assert_eq!(app.shared.borrow().accounts.len(), before + 1);
         assert_eq!(app.shared.borrow().accounts.active_config().email, "new@host.example");
+    }
+
+    #[test]
+    fn sample_mode_persists_to_a_sandbox_not_the_real_store() {
+        // Regression guard for the leak where the bundled demo accounts
+        // (you@qos.example, you@hooli.example, new@host.example) ended up in the
+        // user's real ~/.config/qos/accounts/store.json: the sample / shots /
+        // test app must resolve a throwaway sandbox as its persist target, never
+        // the real per-user config root.
+        let root = MailApp::new_sample()
+            .accounts_persist_root()
+            .expect("sample mode has a persist root");
+        let real = accounts::config_root().expect("a resolvable real config root");
+        assert_ne!(root, real, "sample mode must NOT target the real config root");
+        assert!(
+            root.starts_with(std::env::temp_dir()),
+            "sample mode must persist under a throwaway temp dir, got {}",
+            root.display()
+        );
+    }
+
+    #[test]
+    fn sample_mode_save_never_writes_the_real_account_store() {
+        // Snapshot the real store path's bytes (it may or may not exist on this
+        // machine), drive the full add-account save in sample mode — which does
+        // persist — then prove the account landed in the sandbox and the real
+        // store is byte-for-byte unchanged.
+        let real_path = accounts::store_path();
+        let before = real_path.as_ref().and_then(|p| std::fs::read(p).ok());
+
+        let (mut app, mut doc) = app(); // new_sample: sandboxed
+        app.open_setup_edit(None);
+        app.setup_inputs[1].set_text("guard@example.test");
+        app.setup_inputs[2].set_text("guard@example.test");
+        app.setup_inputs[4].set_text("imap.example.test");
+        app.setup_inputs[6].set_text("smtp.example.test");
+        app.save_setup_with(&mut doc, &crate::validate::OfflineProbe);
+        assert_eq!(
+            app.shared.borrow().accounts.active_config().email,
+            "guard@example.test",
+            "the account was added in memory"
+        );
+
+        // The save landed in the sandbox …
+        let root = app.accounts_persist_root().expect("sandbox root");
+        let sandboxed = crate::account::AccountStore::load_in(&root);
+        assert!(
+            sandboxed.accounts.iter().any(|a| a.config.email == "guard@example.test"),
+            "the save must have persisted into the sandbox store"
+        );
+
+        // … and the real store is untouched (absent stays absent; present stays
+        // identical).
+        let after = real_path.as_ref().and_then(|p| std::fs::read(p).ok());
+        assert_eq!(
+            before, after,
+            "sample / shots mode must not create or modify the real account store"
+        );
+    }
+
+    #[test]
+    fn live_mode_persists_to_the_real_config_root() {
+        // The live app is the ONLY constructor allowed to write the real store.
+        let app = MailApp::new_live();
+        assert_eq!(
+            app.accounts_persist_root(),
+            accounts::config_root(),
+            "the live app must persist to the real per-user config root"
+        );
+    }
+
+    #[test]
+    fn account_settings_sheet_is_scoped_to_the_selected_account() {
+        let (mut app, _doc) = app(); // sample store: 2 accounts, active = 0
+        assert_eq!(app.shared.borrow().accounts.active, 0);
+        // Opening settings for account #1 (you@hooli.example) — reached from that
+        // account's gear — must populate the form from THAT account, not the
+        // active one, so the sheet honestly reads as its settings.
+        app.open_setup_edit(Some(1));
+        assert_eq!(app.setup_editing, Some(1));
+        assert_eq!(
+            app.read_setup_config().email,
+            "you@hooli.example",
+            "the account-settings form is scoped to the clicked account"
+        );
     }
 
     #[test]
