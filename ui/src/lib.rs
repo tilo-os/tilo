@@ -92,8 +92,9 @@ pub use text_selection::{
     prev_word_boundary_chars, word_boundaries, word_boundaries_chars,
 };
 
-// Unified animation primitives (foundation #17).
-pub use animation::{Animated, Curve, Lerp};
+// Shared motion system — one curve set, one wall-clock driver, one
+// interruptible open/close transition, one interactive spring.
+pub use animation::{Animated, Curve, Lerp, Spring, Transition};
 
 // Collaboration contract types (Phase C).
 pub use presence::{PresenceCtx, PresenceKey, PathSegment, SelectionRange};

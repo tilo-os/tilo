@@ -11,7 +11,7 @@ pub use typography::{Typography, TypeScale, WeightScale, FontFamily};
 pub use spacing::Spacing;
 pub use radii::Radii;
 pub use elevation::{Elevation, Shadow};
-pub use motion::{Motion, SpringParams, SpringPresets, Durations, Ease};
+pub use motion::{Motion, SpringParams, SpringPresets, Durations};
 pub use terminal_palette::TerminalPalette;
 
 #[derive(Clone, Debug)]
