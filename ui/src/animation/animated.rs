@@ -227,6 +227,103 @@ impl<T: Lerp + Copy> Animated<T> {
     }
 }
 
+/// An interruptible open/close transition tracking a `0.0..=1.0`
+/// "openness". Everything the shell used to gate on a raw `bool`
+/// (palette visible, quick-settings open, modal shown) becomes a
+/// `Transition` so the surface animates in **and out** — and a
+/// mid-flight reversal retargets from the current value instead of
+/// snapping or restarting from 0.
+///
+/// This is the single primitive that fixes the two biggest motion
+/// smells at once:
+/// - **Exits pop.** Draw code keys on [`Self::is_visible`] (openness
+///   `> 0`) rather than the bool, so the panel keeps painting through
+///   its close curve and fades/scales out.
+/// - **Restart instead of retarget.** [`Self::set_open`] captures the
+///   current eased value and animates from *there*, scaling the
+///   duration by the remaining distance so a reversal near the end is
+///   quick and velocity-continuous.
+#[derive(Clone, Copy, Debug)]
+pub struct Transition {
+    anim: Animated<f32>,
+    open: bool,
+}
+
+impl Transition {
+    /// A transition resting fully closed (openness 0).
+    pub fn closed() -> Self {
+        Self::at(0.0, false)
+    }
+
+    /// A transition resting fully open (openness 1) — for surfaces that
+    /// boot already shown.
+    pub fn open() -> Self {
+        Self::at(1.0, true)
+    }
+
+    fn at(value: f32, open: bool) -> Self {
+        let now = Instant::now();
+        Self {
+            anim: Animated::starting_at(value, value, now, Duration::ZERO, Curve::Linear),
+            open,
+        }
+    }
+
+    /// Openness in `0.0..=1.0` at `now`.
+    pub fn value(&self, now: Instant) -> f32 {
+        self.anim.current(now).clamp(0.0, 1.0)
+    }
+
+    /// Whether the surface should be drawn at all — true while opening,
+    /// open, or closing (openness `> 0`). Draw code gates on this so the
+    /// exit animation is visible instead of the panel vanishing. A
+    /// resting closed transition (openness 0, not opening) is invisible.
+    pub fn is_visible(&self, now: Instant) -> bool {
+        self.open || self.value(now) > f32::EPSILON
+    }
+
+    /// The logical open/closed intent (the last `set_open`), independent
+    /// of whether the animation has settled.
+    pub fn is_open(&self) -> bool {
+        self.open
+    }
+
+    /// True while the value is still moving — feeds `needs_animation_frame`.
+    pub fn is_animating(&self, now: Instant) -> bool {
+        !self.anim.done(now)
+    }
+
+    /// Drive toward open (`true`) or closed (`false`). No-op when the
+    /// intent is unchanged AND the animation has settled, so repeated
+    /// calls each frame don't restart the curve. On a real change (or a
+    /// mid-flight reversal) it retargets from the current value, scaling
+    /// `duration` by the remaining distance for a continuous feel.
+    pub fn set_open(
+        &mut self,
+        open: bool,
+        duration: Duration,
+        curve: Curve,
+    ) {
+        let now = Instant::now();
+        if open == self.open && self.anim.done(now) {
+            return;
+        }
+        let current = self.value(now);
+        let target = if open { 1.0 } else { 0.0 };
+        if (current - target).abs() < f32::EPSILON {
+            self.open = open;
+            return;
+        }
+        // Scale the duration by how far we still have to travel so a
+        // reversal at 80% openness closes in ~80% of the exit time —
+        // velocity stays roughly continuous across the flip.
+        let remaining = (target - current).abs();
+        let scaled = duration.mul_f32(remaining.clamp(0.05, 1.0));
+        self.anim = Animated::starting_at(current, target, now, scaled, curve);
+        self.open = open;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -383,5 +480,70 @@ mod tests {
     fn f64_lerp_works() {
         let mid = (0.0_f64).lerp(10.0, 0.5);
         assert!((mid - 5.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn transition_closed_is_invisible_open_is_visible() {
+        let now = Instant::now();
+        let closed = Transition::closed();
+        assert!(!closed.is_visible(now));
+        assert!((closed.value(now) - 0.0).abs() < 1e-6);
+
+        let open = Transition::open();
+        assert!(open.is_visible(now));
+        assert!((open.value(now) - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn transition_opening_stays_visible_through_the_curve() {
+        let mut t = Transition::closed();
+        t.set_open(true, Duration::from_millis(100), Curve::EaseOut);
+        // The moment it starts opening it is already visible (so the
+        // enter animation is drawn), and remains so once open.
+        assert!(t.is_visible(Instant::now()));
+        assert!(t.is_open());
+    }
+
+    #[test]
+    fn transition_closing_stays_visible_until_settled() {
+        // Simulate: open, then close — while closing it must remain
+        // visible so the exit animation paints, then go invisible.
+        let mut t = Transition::open();
+        t.set_open(false, Duration::from_millis(80), Curve::EaseOut);
+        let now = Instant::now();
+        assert!(
+            t.is_visible(now),
+            "a closing surface must stay visible so its exit animates"
+        );
+        // Far in the future it has settled closed and is no longer drawn.
+        let later = now + Duration::from_millis(500);
+        assert!(!t.is_visible(later));
+        assert!((t.value(later) - 0.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn transition_reversal_retargets_from_current_value() {
+        // Open halfway, then reverse to close: the close must start from
+        // the partial value, not snap to 1 first.
+        let mut t = Transition::closed();
+        t.set_open(true, Duration::from_millis(1000), Curve::Linear);
+        // Can't advance wall-clock precisely in a unit test without
+        // sleeping, so assert the structural contract: after a reversal
+        // the intent flips and it's still visible (mid-flight, not
+        // popped to 0).
+        t.set_open(false, Duration::from_millis(1000), Curve::Linear);
+        assert!(!t.is_open());
+        assert!(t.is_visible(Instant::now()));
+    }
+
+    #[test]
+    fn transition_repeated_same_intent_is_noop_once_settled() {
+        let mut t = Transition::open();
+        let before = t.value(Instant::now());
+        // Already open + settled → set_open(true) must not restart.
+        t.set_open(true, Duration::from_millis(100), Curve::EaseOut);
+        let after = t.value(Instant::now());
+        assert!((before - after).abs() < 1e-6);
+        assert!(t.is_open());
     }
 }
