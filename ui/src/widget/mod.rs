@@ -474,6 +474,11 @@ pub use nav_split::{
     NavSplit, FlapState, SplitMode, SplitLayout, PushPane,
     DEFAULT_BREAKPOINT, DEFAULT_SIDEBAR_WIDTH,
 };
+mod app_shell;
+pub use app_shell::{
+    AppShell, ShellLayout,
+    DEFAULT_SHELL_BREAKPOINT, DEFAULT_SHELL_SIDEBAR_WIDTH,
+};
 mod sidebar;
 pub use sidebar::{
     SidebarDrawer, SidebarSide,
