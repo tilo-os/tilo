@@ -475,6 +475,7 @@ fn escape_json_str(s: &str) -> String {
 pub fn catalogue() -> Vec<Scenario> {
     vec![
         palette_typing(),
+        palette_close_anim(),
         tab_drag(),
         tab_drag_out_to_new_group(),
         tab_drag_hover_line_indicator(),
@@ -543,6 +544,28 @@ pub fn lookup(name: &str) -> Option<Scenario> {
 }
 
 /// Open the palette, type "h", capture; press Esc, capture closed.
+/// Open the palette, then close it and capture the fade+scale EXIT
+/// frame-by-frame. Before the Transition refactor the palette vanished
+/// in a single frame on Escape (the draw block was gated on a bool);
+/// the sequence frames here should now show it shrinking + fading out.
+fn palette_close_anim() -> Scenario {
+    Scenario {
+        name: "palette_close_anim",
+        description: "Open the palette, Escape, and capture the exit animation frames.",
+        actions: vec![
+            Action::OpenPalette,
+            Action::Wait(3),
+            Action::Snapshot("00-open"),
+            Action::Key(Key::Named(NamedKey::Escape)),
+            Action::SnapshotSequence {
+                prefix: "close",
+                frames: 10,
+                gap_frames: 1,
+            },
+        ],
+    }
+}
+
 fn palette_typing() -> Scenario {
     Scenario {
         name: "palette_typing",
