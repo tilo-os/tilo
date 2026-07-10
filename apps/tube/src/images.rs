@@ -24,8 +24,16 @@ pub fn image_fetcher() -> Fetcher {
         .build()
         .expect("reqwest image client");
     Arc::new(move |url: &str| {
+        // Promote protocol-relative CDN URLs (`//yt3.ggpht.com/…`) to https so
+        // the request has a scheme — some sources hand these back and reqwest
+        // rejects them otherwise, silently blanking the image.
+        let url = if let Some(rest) = url.strip_prefix("//") {
+            format!("https://{rest}")
+        } else {
+            url.to_string()
+        };
         client
-            .get(url)
+            .get(&url)
             .send()
             .ok()?
             .error_for_status()
