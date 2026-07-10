@@ -2,13 +2,15 @@
 //! `SettingsApp` to a PNG and exits. Mirrors the sibling native apps so the
 //! snapshot harness stays consistent.
 //!
-//! Two scenarios are derived from the output filename so a single binary
-//! produces both required shots:
+//! Scenarios are derived from the output filename so a single binary produces
+//! every required shot:
 //! - `settings.png` — the wide two-pane layout, opened on a rich panel
 //!   (External Accounts), so the category sidebar and a populated content
 //!   pane are both visible.
-//! - `settings-narrow.png` — the responsive single-pane layout, drilled
-//!   into the Region & Formats panel with the back affordance.
+//! - `settings-narrow.png` — the narrow list screen: the full-screen category
+//!   list with the search field on top.
+//! - `settings-narrow-content.png` — the narrow content screen: the selected
+//!   panel full-screen with the back-arrow affordance.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -74,11 +76,11 @@ impl Scenario {
             // the still proves selection drives the content pane.
             Scenario::Wide => SettingsApp::with_selected(Category::ExternalAccounts)
                 .with_width_hint(DEFAULT_SHOTS_VIEWPORT.0 as f32),
-            // Narrow: the overlay flap, forced open so the responsive sidebar
-            // is visible over the Region & Formats content behind its scrim.
+            // Narrow: the standalone list screen — the full-screen category
+            // list with the search field pinned on top. (Region & Formats is
+            // the pre-selected row, highlighted in the list.)
             Scenario::Narrow => SettingsApp::with_selected(Category::RegionFormats)
-                .with_width_hint(NARROW_SHOTS_VIEWPORT.0 as f32)
-                .with_sidebar_open_shot(),
+                .with_width_hint(NARROW_SHOTS_VIEWPORT.0 as f32),
         }
     }
 }
@@ -124,13 +126,13 @@ pub fn render_for_path(out: &Path) -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or("")
         .to_ascii_lowercase();
 
-    // `…collapsed.png` proves the docked sidebar can be hidden, reclaiming
-    // its width for the content pane.
-    if fname.contains("collapsed") {
-        let app = SettingsApp::with_selected(Category::Network)
-            .with_width_hint(DEFAULT_SHOTS_VIEWPORT.0 as f32)
-            .with_sidebar_collapsed_shot();
-        return render_to_path(Box::new(app), DEFAULT_SHOTS_VIEWPORT, out);
+    // `…narrow-content.png` proves the narrow content screen: the selected
+    // panel full-screen with the back-arrow affordance in the top-left.
+    if fname.contains("narrow") && fname.contains("content") {
+        let app = SettingsApp::with_selected(Category::RegionFormats)
+            .with_width_hint(NARROW_SHOTS_VIEWPORT.0 as f32)
+            .with_narrow_content_shot();
+        return render_to_path(Box::new(app), NARROW_SHOTS_VIEWPORT, out);
     }
 
     // `…search.png` proves the sidebar search filters the category list to the
@@ -156,14 +158,15 @@ pub fn render_for_path(out: &Path) -> Result<(), Box<dyn std::error::Error>> {
             .map(|(_, rest)| rest.trim_end_matches(".png").to_string())
     });
     if let Some(slug) = panel_slug {
-        // A `narrow` token in the filename captures the panel in the
-        // responsive single-pane layout (the content, sidebar collapsed off
-        // to its flap); otherwise the wide two-pane layout.
+        // A `narrow` token in the filename captures the panel in the narrow
+        // content screen (the pane full-screen with the back arrow); otherwise
+        // the wide two-pane layout.
         let slug = slug.trim().trim_end_matches("-narrow");
         if let Some(cat) = category_from_slug(slug) {
             if fname.contains("narrow") {
                 let app = SettingsApp::with_selected(cat)
-                    .with_width_hint(NARROW_SHOTS_VIEWPORT.0 as f32);
+                    .with_width_hint(NARROW_SHOTS_VIEWPORT.0 as f32)
+                    .with_narrow_content_shot();
                 return render_to_path(Box::new(app), NARROW_SHOTS_VIEWPORT, out);
             }
             let app = SettingsApp::with_selected(cat)
