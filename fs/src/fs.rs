@@ -72,6 +72,43 @@ impl QuickFS {
         self.namespace.lock().unwrap().document_codec(ino).is_some()
     }
 
+    /// The hydration state of `ino` (the value served for the `user.qos.sync`
+    /// xattr). `None` when the inode doesn't exist. Directories, CRDT documents,
+    /// and empty files are always [`SyncState::Local`]; a regular file's state
+    /// comes from the hydrator (is its content — every chunk — in the cache?).
+    fn sync_state_for(&self, ino: u64) -> Option<crate::syncstate::SyncState> {
+        use crate::syncstate::SyncState;
+        let (exists, is_dir, is_doc, hash) = {
+            let ns = self.namespace.lock().unwrap();
+            let attr = ns.getattr(ino);
+            let exists = attr.is_some();
+            let is_dir = matches!(attr, Some(a) if a.kind == FileType::Directory);
+            let is_doc = ns.document_codec(ino).is_some();
+            let hash = ns.hash_for(ino);
+            (exists, is_dir, is_doc, hash)
+        };
+        if !exists {
+            return None;
+        }
+        // A file open for writing has its bytes staged locally in the buffer.
+        if self.write_buffers.lock().unwrap().contains_key(&ino) {
+            return Some(SyncState::Local);
+        }
+        if is_dir || is_doc {
+            return Some(SyncState::Local);
+        }
+        let Some(hash) = hash else {
+            // A hashless (empty) file is trivially local.
+            return Some(SyncState::Local);
+        };
+        let hydrator = self.hydrator.clone();
+        let rt = hydrator.runtime_handle.clone();
+        let state = tokio::task::block_in_place(|| {
+            rt.block_on(async move { hydrator.sync_state(hash).await })
+        });
+        Some(state)
+    }
+
     /// Attribute/entry TTL: zero for documents (their size is computed live from
     /// the CRDT and changes as peers edit, so the kernel must not cache a stale
     /// `i_size` and truncate reads), the normal TTL otherwise.
@@ -648,5 +685,55 @@ impl Filesystem for QuickFS {
         };
         self.publish(delta);
         reply.ok();
+    }
+
+    /// Serve the `user.qos.sync` extended attribute: the entry's hydration state
+    /// (`local` / `projected` / `downloading`). Every other attribute name is
+    /// reported absent (`ENODATA`) — the collaborative FS owns only this one.
+    fn getxattr(
+        &self,
+        _req: &Request,
+        ino: INodeNo,
+        name: &OsStr,
+        size: u32,
+        reply: ReplyXattr,
+    ) {
+        if name.to_str() != Some(crate::syncstate::SYNC_XATTR) {
+            reply.error(to_errno(libc::ENODATA));
+            return;
+        }
+        let Some(state) = self.sync_state_for(ino.0) else {
+            reply.error(to_errno(ENOENT));
+            return;
+        };
+        let bytes = state.as_str().as_bytes();
+        // The two-call xattr protocol: size==0 asks for the length; a non-zero
+        // size must be big enough for the value, else ERANGE.
+        if size == 0 {
+            reply.size(bytes.len() as u32);
+        } else if (size as usize) < bytes.len() {
+            reply.error(to_errno(libc::ERANGE));
+        } else {
+            reply.data(bytes);
+        }
+    }
+
+    /// List the extended attributes on `ino`: just `user.qos.sync` (NUL
+    /// terminated), so `getfattr`/`listxattr` discover the sync attribute.
+    fn listxattr(&self, _req: &Request, ino: INodeNo, size: u32, reply: ReplyXattr) {
+        if self.namespace.lock().unwrap().getattr(ino.0).is_none() {
+            reply.error(to_errno(ENOENT));
+            return;
+        }
+        let mut buf = Vec::with_capacity(crate::syncstate::SYNC_XATTR.len() + 1);
+        buf.extend_from_slice(crate::syncstate::SYNC_XATTR.as_bytes());
+        buf.push(0);
+        if size == 0 {
+            reply.size(buf.len() as u32);
+        } else if (size as usize) < buf.len() {
+            reply.error(to_errno(libc::ERANGE));
+        } else {
+            reply.data(&buf);
+        }
     }
 }
