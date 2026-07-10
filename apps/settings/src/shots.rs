@@ -233,15 +233,11 @@ pub fn render_to_path(
     }
     widget.apply_layout(&taffy, child, Point::ORIGIN);
 
-    // Settling sync AFTER layout. `NavSplit` (the responsive sidebar|content
-    // split `SettingsApp` wraps its panes in) builds its children's inner tree
-    // lazily in `apply_layout`, not `build_layout` — so a pane nested inside
-    // `SettingsApp` only has its composition (and thus its Toggle/Slider leaf
-    // controls) after this point. The earlier sync already seeded those panes'
-    // CRDT keys; this sync is what lets the just-built leaf controls read those
-    // seeded values, so a nested pane's switches and sliders render their real
-    // state instead of their constructed default. The live app reaches the same
-    // state after a couple of frames; a single shot needs this explicitly.
+    // Settling sync AFTER layout: the earlier sync seeded the panes' CRDT
+    // keys, and this pass lets the freshly-built leaf controls (a pane's
+    // toggles / sliders) read those seeded values so they render their real
+    // state instead of their constructed default. The live app reaches the
+    // same state after a couple of frames; a single shot needs it explicitly.
     widget.sync(&mut state.doc, &state.root);
 
     let mut scene = Scene::new();
