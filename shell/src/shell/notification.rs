@@ -491,26 +491,17 @@ impl Widget for NotificationStack {
             stack_max_y = stack_max_y.max(card_rect.y1);
             let shape = RoundedRect::from_rect(card_rect, radius);
 
-            // Drop shadow approximation: a slightly larger, slightly
-            // dimmer card behind the main one. Cheap and theme-neutral.
-            let shadow_rect = Rect::new(
-                card_rect.x0 + 2.0,
-                card_rect.y0 + 3.0,
-                card_rect.x1 + 2.0,
-                card_rect.y1 + 3.0,
-            );
-            let shadow_alpha = (alpha * 0.35).clamp(0.0, 1.0);
-            let shadow_color = theme
-                .tokens
-                .colors
-                .neutral[0]
-                .with_alpha(shadow_alpha);
-            scene.fill(
-                Fill::NonZero,
+            // Soft drop shadow via the shared Gaussian primitive (was a
+            // single offset flat rect — a hard-edged fake). Modulated by
+            // the toast's animated alpha so it fades in/out with the card.
+            ui::surface::soft_shadow(
+                scene,
                 transform,
-                shadow_color,
-                None,
-                &RoundedRect::from_rect(shadow_rect, radius),
+                card_rect,
+                theme.tokens.colors.neutral[0],
+                18.0,
+                6.0,
+                (alpha * 0.5).clamp(0.0, 1.0),
             );
 
             // Fill: surfaces.raised at the toast's animated alpha.
