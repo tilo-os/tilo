@@ -3,24 +3,24 @@
 //! ## Layout
 //!
 //! The whole app is one [`AppShell`] (from the shared toolkit): a cohesive
-//! sidebar panel whose integrated header carries the search field and the
-//! sidebar-collapse toggle, beside the selected category's content pane. The
-//! shell owns the responsive behaviour end to end:
+//! sidebar panel — the search field pinned at its top, the nav list beneath —
+//! beside the selected category's content pane. The shell owns the responsive
+//! behaviour end to end, resolving into exactly one of two states by whether
+//! the sidebar fits beside the content:
 //!
-//! * **wide, expanded** — the sidebar is docked and its header holds the
-//!   search + collapse button, aligned to each other;
-//! * **wide, collapsed** — the sidebar is hidden to reclaim its width and the
-//!   collapse button + search float over the content so the user can still
-//!   search or re-open it;
-//! * **narrow (phone)** — the list and the content are separate screens: the
-//!   content fills the screen and the sidebar is summoned as a floating
-//!   overlay (dismissed by the scrim, Esc, the toggle, or picking an item).
+//! * **wide** — the sidebar fits, so it is always docked (search on top, nav
+//!   below) and the content fills the area to its right. There is no collapse
+//!   control;
+//! * **narrow (phone)** — the sidebar does not fit, so the list and the content
+//!   are two separate full-screen screens: the list screen (search + nav) and
+//!   the content screen (the pane, full-screen, with a back arrow that returns
+//!   to the list). Picking a category navigates the list → its content screen.
 //!
 //! Settings supplies the shell with three things and reacts to selection: the
 //! nav list ([`crate::sidebar::build`]), the selected category's content pane,
-//! and the search field. It does not re-implement the breakpoint, the collapse
-//! behaviour, the scrim, the floating pill, or the sidebar surface — the shell
-//! owns all of that so every system app reads the same.
+//! and the search field. It does not re-implement the breakpoint or the
+//! sidebar surface — the shell owns all of that so every system app reads the
+//! same.
 //!
 //! ## State and the rebuild that drives navigation
 //!
@@ -29,13 +29,13 @@
 //! select key set, it updates `selected`, swaps the shell's nav + content, and
 //! flags `structure_dirty`. The host's frame loop polls `take_structure_dirty`
 //! and re-runs `build_layout`, which is what moves the visible pane to the new
-//! category. The shell keeps its own collapse/overlay state across that
-//! rebuild, so a category switch never re-opens a collapsed sidebar.
+//! category. The shell preserves the selected category across a back/forward
+//! narrow navigation.
 
 use crate::categories::Category;
 use crate::panes;
 use crate::sidebar;
-use ui::widget::{AppShell, Column, Container, Scrollable, TextInput, Widget};
+use ui::widget::{AppShell, Column, Container, NarrowScreen, Scrollable, TextInput, Widget};
 use ui::{AppKind, AppWidget, IconDescriptor};
 
 /// At or above this allocated width (logical px) the sidebar docks beside the
@@ -52,14 +52,12 @@ pub struct SettingsApp {
     /// `take_structure_dirty`.
     structure_dirty: bool,
     /// In `--shots` / headless rendering the live `ui::App` event loop that
-    /// would normally drive the overlay open is absent, so the narrow shot
-    /// starts the sidebar overlay open. Applied when the shell is created.
-    force_sidebar_open: bool,
+    /// would normally drive a category pick is absent, so a narrow shot can
+    /// start directly on the content screen. Applied when the shell is created.
+    start_on_content: bool,
     /// Seed width hint so the very first offscreen frame resolves the correct
     /// wide/narrow layout. `None` lets the shell decide from its own rect.
     width_hint: Option<f32>,
-    /// Whether the docked sidebar starts collapsed (a `--shots` state).
-    start_collapsed: bool,
     /// The live search query typed into the sidebar's search field (mirrored
     /// from [`crate::sidebar::SEARCH_KEY`]). When non-empty the sidebar shows
     /// a filtered results list instead of the sectioned category list.
@@ -82,9 +80,8 @@ impl SettingsApp {
         Self {
             selected: Category::DEFAULT,
             structure_dirty: false,
-            force_sidebar_open: false,
+            start_on_content: false,
             width_hint: None,
-            start_collapsed: false,
             search_query: String::new(),
             rect: vello::kurbo::Rect::ZERO,
             shell: None,
@@ -107,11 +104,12 @@ impl SettingsApp {
         self
     }
 
-    /// Force the overlay sidebar open for a `--shots` still. Without the live
-    /// event loop nothing opens the overlay, so the narrow screenshot would
-    /// otherwise show the content screen. Has no visible effect when wide.
-    pub fn with_sidebar_open_shot(mut self) -> Self {
-        self.force_sidebar_open = true;
+    /// Start a narrow `--shots` still on the content screen (with the back
+    /// arrow) instead of the default list screen. Without the live event loop
+    /// nothing drives a category pick, so this seeds the drilled-in state. Has
+    /// no visible effect when the layout resolves to wide.
+    pub fn with_narrow_content_shot(mut self) -> Self {
+        self.start_on_content = true;
         self
     }
 
@@ -120,8 +118,8 @@ impl SettingsApp {
     }
 
     /// Switch the active category. Flags `structure_dirty`, swaps the shell's
-    /// nav + content, and (on a narrow layout) closes the overlay so the
-    /// content screen shows.
+    /// nav + content, and (on a narrow layout) navigates from the list screen
+    /// to the selected category's content screen.
     pub fn select(&mut self, category: Category) {
         if self.selected != category {
             self.selected = category;
@@ -144,18 +142,10 @@ impl SettingsApp {
         }
     }
 
-    /// Whether the sidebar / list is currently shown (docked-expanded when
-    /// wide, or the open overlay when narrow). Used by `--shots` assertions.
+    /// Whether the sidebar / list is currently shown (always when wide, or the
+    /// list screen when narrow). Used by `--shots` assertions.
     pub fn sidebar_open(&self) -> bool {
         self.shell.as_ref().is_some_and(|s| s.sidebar_open())
-    }
-
-    /// Whether the docked sidebar is explicitly collapsed.
-    pub fn sidebar_collapsed(&self) -> bool {
-        match &self.shell {
-            Some(s) => s.collapsed(),
-            None => self.start_collapsed,
-        }
     }
 
     /// The current search query (empty when not searching).
@@ -163,12 +153,13 @@ impl SettingsApp {
         &self.search_query
     }
 
-    /// The on-screen rect of the sidebar-collapse toggle (after a layout
-    /// pass), so interaction tests can click the real control the shell draws.
-    pub fn collapse_toggle_rect(&self) -> vello::kurbo::Rect {
+    /// The on-screen rect of the narrow content screen's back-arrow button
+    /// (after a layout pass), so interaction tests can click the real control
+    /// the shell draws. Zero-sized outside the narrow content screen.
+    pub fn back_button_rect(&self) -> vello::kurbo::Rect {
         self.shell
             .as_ref()
-            .map(|s| s.toggle_rect())
+            .map(|s| s.back_rect())
             .unwrap_or(vello::kurbo::Rect::ZERO)
     }
 
@@ -179,14 +170,7 @@ impl SettingsApp {
         self
     }
 
-    /// Start with the sidebar collapsed — used by the `--shots` capture that
-    /// proves the docked sidebar can be hidden to reclaim content width.
-    pub fn with_sidebar_collapsed_shot(mut self) -> Self {
-        self.start_collapsed = true;
-        self
-    }
-
-    /// Build the search field placed in the shell's header. Bound to
+    /// Build the search field placed at the top of the shell's sidebar. Bound to
     /// [`sidebar::SEARCH_KEY`]; its value is re-read from the document on every
     /// `sync`, so the text survives the sidebar's filter rebuild. Because the
     /// shell hosts it as a direct child in the App's tree, a click focuses it
@@ -245,12 +229,16 @@ impl SettingsApp {
     fn build_shell(&self) -> AppShell {
         let nav = sidebar::build(self.selected, &self.search_query);
         let content = self.build_content();
+        let narrow_screen = if self.start_on_content {
+            NarrowScreen::Content
+        } else {
+            NarrowScreen::List
+        };
         let mut shell = AppShell::new(nav, content)
             .with_search(self.build_search_field())
             .with_breakpoint(NAV_BREAKPOINT)
             .with_sidebar_width(sidebar::SIDEBAR_WIDTH)
-            .with_collapsed(self.start_collapsed)
-            .with_overlay_open(self.force_sidebar_open);
+            .with_narrow_screen(narrow_screen);
         if let Some(w) = self.width_hint {
             shell = shell.with_width_hint(w as f64);
         }
@@ -444,7 +432,7 @@ impl Widget for SettingsApp {
     }
 
     /// Drains the selection-rebuild flag, bubbling the shell's own rebuild
-    /// signal (a collapse toggle or a breakpoint cross).
+    /// signal (a narrow list↔content navigation or a breakpoint cross).
     fn take_structure_dirty(&mut self) -> bool {
         let own = std::mem::take(&mut self.structure_dirty);
         let child = self
@@ -581,35 +569,49 @@ mod tests {
     }
 
     #[test]
-    fn narrow_layout_uses_the_list_content_split() {
+    fn narrow_layout_starts_on_the_standalone_list_screen() {
         let mut app = SettingsApp::new().with_width_hint(440.0);
         layout_at(&mut app, 440.0, 820.0);
         assert!(app.is_narrow(), "440px should resolve to the narrow layout");
         assert!(
-            !app.sidebar_open(),
-            "narrow starts on the content screen (the list is a separate, summonable screen)"
+            app.sidebar_open(),
+            "narrow starts on the list screen (a standalone full-screen category list)"
+        );
+        assert_eq!(
+            app.back_button_rect(),
+            vello::kurbo::Rect::ZERO,
+            "the list screen has no back button"
         );
     }
 
     #[test]
-    fn shot_flag_opens_overlay_when_narrow() {
+    fn narrow_content_shot_drills_into_the_content_screen() {
         let mut app = SettingsApp::with_selected(Category::RegionFormats)
             .with_width_hint(440.0)
-            .with_sidebar_open_shot();
+            .with_narrow_content_shot();
         layout_at(&mut app, 440.0, 820.0);
         assert!(app.is_narrow());
-        assert!(app.sidebar_open(), "the shot flag opens the overlay list over the content");
+        assert!(
+            !app.sidebar_open(),
+            "the content-screen shot shows the content full-screen (not the list)"
+        );
+        assert!(
+            app.back_button_rect().width() > 0.0,
+            "the content screen carries a back-arrow button"
+        );
     }
 
     #[test]
-    fn collapsed_shot_hides_the_docked_sidebar() {
-        let mut app = SettingsApp::with_selected(Category::Network)
-            .with_width_hint(1200.0)
-            .with_sidebar_collapsed_shot();
-        layout_at(&mut app, 1200.0, 760.0);
-        assert!(!app.is_narrow());
-        assert!(app.sidebar_collapsed(), "the shot starts collapsed");
-        assert!(!app.sidebar_open(), "a collapsed docked sidebar is hidden");
+    fn narrow_pick_navigates_list_to_content_and_back() {
+        let mut app = SettingsApp::new().with_width_hint(440.0);
+        layout_at(&mut app, 440.0, 820.0);
+        assert!(app.sidebar_open(), "starts on the list screen");
+        // Picking a category drills into its content screen.
+        app.select(Category::Users);
+        assert!(app.take_structure_dirty(), "the pick requests a rebuild");
+        layout_at(&mut app, 440.0, 820.0);
+        assert!(!app.sidebar_open(), "the pick navigated to the content screen");
+        assert!(app.back_button_rect().width() > 0.0, "a back arrow is present");
     }
 
     #[test]
@@ -657,7 +659,7 @@ mod tests {
 
         let mut narrow = SettingsApp::with_selected(Category::RegionFormats)
             .with_width_hint(440.0)
-            .with_sidebar_open_shot();
+            .with_narrow_content_shot();
         layout_at(&mut narrow, 440.0, 820.0);
         assert!(narrow.get_rect().width() > 0.0);
     }
