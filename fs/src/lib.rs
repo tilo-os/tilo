@@ -7,6 +7,7 @@ pub mod store;
 pub mod hydration;
 pub mod smart;
 pub mod sync;
+pub mod syncstate;
 
 #[cfg(test)]
 mod tests;
@@ -17,3 +18,4 @@ pub use store::ContentStore;
 pub use hydration::Hydrator;
 pub use smart::Heuristics;
 pub use sync::{Ticket, Workspace};
+pub use syncstate::{SyncState, SYNC_XATTR};
