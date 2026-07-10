@@ -413,6 +413,18 @@ impl PdfApp {
         if self.raster.is_none() {
             return;
         }
+        // The pdfium text layer only feeds the selection + search-hit overlays
+        // and is expensive to extract (hundreds of ms per page). On an idle or
+        // scroll frame — no selection, no search hits — skip it entirely so
+        // opening a document and scrolling stay smooth. A selection that starts
+        // on a page whose layer isn't built yet extracts it on demand inside
+        // `begin_selection`; a search extracts every page up front in
+        // `recompute_matches`, so the visible ones are cache hits here.
+        let need = self.selection.is_some() || !self.raster_matches.is_empty();
+        if !need {
+            self.raster_text.clear();
+            return;
+        }
         let pageh = self.ph() * self.zoom();
         let canvas = self.canvas_rect;
         let origins = self.page_origins();
