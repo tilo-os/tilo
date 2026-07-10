@@ -195,7 +195,7 @@ impl FlapState {
     /// the flap decelerates into place.
     pub fn slide(&self) -> f64 {
         let r = self.reveal();
-        1.0 - (1.0 - r).powi(3)
+        crate::ease_out(r)
     }
 
     /// `true` while the animation hasn't settled — drives the host's
