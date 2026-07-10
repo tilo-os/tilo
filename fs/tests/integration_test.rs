@@ -146,6 +146,87 @@ async fn fuse_write_create_overwrite_rename_unlink() {
     .await;
 }
 
+/// Read the `user.qos.sync` extended attribute of `path` through the kernel
+/// (the exact `getxattr` a file manager issues), or `None` if it isn't set.
+fn read_sync_xattr(path: &std::path::Path) -> Option<String> {
+    use std::os::unix::ffi::OsStrExt;
+    let cpath = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
+    let name = std::ffi::CString::new("user.qos.sync").unwrap();
+    let mut buf = [0u8; 64];
+    let n = unsafe {
+        libc::getxattr(
+            cpath.as_ptr(),
+            name.as_ptr(),
+            buf.as_mut_ptr() as *mut libc::c_void,
+            buf.len(),
+        )
+    };
+    if n < 0 {
+        return None;
+    }
+    Some(String::from_utf8_lossy(&buf[..n as usize]).into_owned())
+}
+
+// The sync-state interface end-to-end: a projected file (metadata only) reports
+// `projected` via getxattr, a hydrated file reports `local`, and directories are
+// `local`. This is the exact path the file manager reads to draw sync badges.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn getxattr_reports_projected_vs_local_sync_state() {
+    require_fuse!();
+    let _ = timeout(Duration::from_secs(20), async {
+        let mount_dir = tempdir().expect("mount temp dir");
+        let path = mount_dir.path().to_path_buf();
+
+        let endpoint = Endpoint::bind().await.expect("bind endpoint");
+        let store = Arc::new(ContentStore::memory());
+
+        // A file whose content IS ingested locally → hydrated → `local`.
+        let body = b"content that is already here";
+        let local_hash = store.write_content(body).await.unwrap().unwrap();
+
+        // A file whose namespace entry carries a content hash the store does NOT
+        // have — exactly what a freshly-joined peer projects before hydration.
+        let projected_hash =
+            iroh_blobs::Hash::from([3u8; 32]);
+
+        let namespace = Arc::new(Mutex::new(Namespace::new("xattr-peer")));
+        {
+            let mut ns = namespace.lock().unwrap();
+            ns.create_file(ROOT_INO, "here.txt", Some(&local_hash), body.len() as u64, 1)
+                .unwrap();
+            ns.create_file(ROOT_INO, "remote.txt", Some(&projected_hash), 4096, 1)
+                .unwrap();
+            ns.create_dir(ROOT_INO, "folder", 1).unwrap();
+        }
+
+        let hydrator = Arc::new(Hydrator::new(endpoint, store));
+        let heuristics = Arc::new(Heuristics::new(hydrator.clone(), namespace.clone()));
+        let fs = QuickFS::new(namespace, hydrator, heuristics);
+
+        let mut config = Config::default();
+        config.mount_options = vec![MountOption::FSName("quickfs_xattr".to_string())];
+        let _session = fuser::spawn_mount2(fs, &path, &config).expect("spawn FUSE session");
+        tokio::time::sleep(Duration::from_millis(1000)).await;
+
+        assert_eq!(
+            read_sync_xattr(&path.join("here.txt")).as_deref(),
+            Some("local"),
+            "a file with its content in the cache reads as local",
+        );
+        assert_eq!(
+            read_sync_xattr(&path.join("remote.txt")).as_deref(),
+            Some("projected"),
+            "a file whose content is not local reads as projected",
+        );
+        assert_eq!(
+            read_sync_xattr(&path.join("folder")).as_deref(),
+            Some("local"),
+            "a directory is always local",
+        );
+    })
+    .await;
+}
+
 // A recognized document format is stored as a CRDT and round-trips through the
 // mount, while unknown formats stay opaque bytes.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
