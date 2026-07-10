@@ -10,6 +10,7 @@ fn e(name: &str, is_dir: bool, size: u64, mime: &str, year: i32) -> Entry {
         size,
         modified: Some(Local.with_ymd_and_hms(year, 1, 1, 0, 0, 0).unwrap()),
         mime: mime.into(),
+        sync_state: None,
     }
 }
 
@@ -132,9 +133,9 @@ fn sidebar_shows_fixed_seven_shortcuts_when_home_present() {
 fn search_filters_entries_by_lowercase_contains() {
     use file_explorer::model::Entry;
     let entries: Vec<Entry> = vec![
-        Entry { name: "README.md".into(), path: "r".into(), is_dir: false, size: 0, modified: None, mime: "text/markdown".into() },
-        Entry { name: "Cargo.toml".into(), path: "c".into(), is_dir: false, size: 0, modified: None, mime: "text/plain".into() },
-        Entry { name: "src".into(),        path: "s".into(), is_dir: true,  size: 0, modified: None, mime: "inode/directory".into() },
+        Entry { name: "README.md".into(), path: "r".into(), is_dir: false, size: 0, modified: None, mime: "text/markdown".into(), sync_state: None },
+        Entry { name: "Cargo.toml".into(), path: "c".into(), is_dir: false, size: 0, modified: None, mime: "text/plain".into(), sync_state: None },
+        Entry { name: "src".into(),        path: "s".into(), is_dir: true,  size: 0, modified: None, mime: "inode/directory".into(), sync_state: None },
     ];
     let filtered = file_explorer::files_app::filter_entries(&entries, "ARGO");
     assert_eq!(filtered.len(), 1);
@@ -382,6 +383,7 @@ fn list_build_yields_a_file_view() {
         size: 0,
         modified: None,
         mime: String::new(),
+        sync_state: None,
     }];
     let w = build_list(&entries, &SelectionModel::new(), &new_sink(), 1.0, SortBy::Name, SortOrder::Ascending);
     assert_eq!(ui::widget::Widget::name(&*w), "FileView");
@@ -405,6 +407,7 @@ fn grid_mode_uses_responsive_file_view() {
         size: 0,
         modified: None,
         mime: String::new(),
+        sync_state: None,
     }];
     let sel = SelectionModel::new();
     let sink = new_sink();

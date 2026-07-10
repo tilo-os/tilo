@@ -95,7 +95,7 @@ pub fn new_store(favorites: Vec<Favorite>) -> FavStore {
 pub struct PlacesSidebar {
     favs: FavStore,
     active: PathBuf,
-    system: Vec<(Icon, &'static str, PathBuf)>,
+    system: Vec<(Icon, String, PathBuf)>,
     sink: CommandSink,
     rect: Rect,
     last_cursor: Point,
@@ -108,13 +108,35 @@ impl PlacesSidebar {
         Self {
             favs,
             active,
-            system: vec![(Icon::HardDrive, "Root", PathBuf::from("/"))],
+            system: vec![(Icon::HardDrive, "Root".to_string(), PathBuf::from("/"))],
             sink,
             rect: Rect::ZERO,
             last_cursor: Point::ZERO,
             hover_fav: None,
             hover_sys: None,
         }
+    }
+
+    /// Surface the qOS collaborative-workspace mounts as first-class System
+    /// locations, above Root. Each root the FUSE driver mounts (e.g.
+    /// `/var/workspace`) becomes a clickable place with a cloud emblem, so the
+    /// user reaches their synced workspace without typing a path.
+    pub fn with_workspaces(mut self, roots: Vec<PathBuf>) -> Self {
+        let mut entries: Vec<(Icon, String, PathBuf)> = roots
+            .into_iter()
+            .map(|p| {
+                let label = p
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| "Workspace".to_string());
+                (Icon::CloudDownload, label, p)
+            })
+            .collect();
+        // Workspaces lead the System section; Root (and any future devices)
+        // follow.
+        entries.append(&mut self.system);
+        self.system = entries;
+        self
     }
 
     fn fav_count(&self) -> usize {
@@ -556,6 +578,31 @@ mod tests {
         let cmds = sink.borrow();
         assert_eq!(cmds.len(), 1);
         assert!(matches!(&cmds[0], FileCommand::Navigate(p) if p.ends_with("Downloads")), "click navigates: {:?}", cmds[0]);
+    }
+
+    #[test]
+    fn workspace_roots_are_clickable_system_places() {
+        let sink = new_sink();
+        let store = new_store(favorites::defaults(Path::new("/home/u"), &favorites::UserDirs::default()));
+        let ws = PathBuf::from("/var/workspace");
+        let mut sb = PlacesSidebar::new(store, PathBuf::from("/home/u"), sink.clone())
+            .with_workspaces(vec![ws.clone()]);
+        // The workspace leads the System section with a cloud emblem.
+        assert_eq!(sb.system[0].1, "workspace", "labelled by the mount's folder name");
+        assert_eq!(sb.system[0].2, ws);
+        assert_eq!(sb.system.last().unwrap().1, "Root", "Root still present, after the workspace");
+
+        let (tree, node) = lay_out(&mut sb);
+        // Click the first System row (the workspace) and expect a navigation.
+        let y = sb.sys_first_y() + ROW_H / 2.0;
+        let x = (sb.row_x0() + sb.row_x1()) / 2.0;
+        dispatch(&mut sb, &tree, node, WindowEvent::CursorMoved { device_id: device(), position: (x, y).into() });
+        dispatch(&mut sb, &tree, node, WindowEvent::MouseInput { device_id: device(), state: ElementState::Pressed, button: MouseButton::Left });
+        let cmds = sink.borrow();
+        assert!(
+            matches!(&cmds[0], FileCommand::Navigate(p) if *p == ws),
+            "clicking the workspace navigates into it: {cmds:?}",
+        );
     }
 
     #[test]
