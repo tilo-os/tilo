@@ -476,7 +476,7 @@ pub use nav_split::{
 };
 mod app_shell;
 pub use app_shell::{
-    AppShell, ShellLayout,
+    AppShell, NarrowScreen, ShellLayout,
     DEFAULT_SHELL_BREAKPOINT, DEFAULT_SHELL_SIDEBAR_WIDTH,
 };
 mod sidebar;
