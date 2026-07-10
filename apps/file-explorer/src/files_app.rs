@@ -115,6 +115,9 @@ pub struct FileExplorerWidget {
     /// …). Drives the standard favourites so a German desktop shows
     /// *Dokumente / Bilder / Musik*, not hard-coded English names.
     user_dirs: favorites::UserDirs,
+    /// The qOS collaborative-workspace roots the FUSE driver mounts, surfaced as
+    /// first-class System locations in the sidebar. Resolved once at startup.
+    workspace_roots: Vec<PathBuf>,
     /// The content pane's live scroll position, owned here so it survives the
     /// per-frame rebuild. Each rebuilt list/grid `Scrollable` binds to this
     /// cell (see [`ui::widget::Scrollable::with_persisted_offset`]); without
@@ -204,6 +207,7 @@ impl FileExplorerWidget {
             zoom_level,
             show_hidden,
             user_dirs,
+            workspace_roots: crate::model::workspace_roots(),
             scroll_offset: Rc::new(Cell::new((0.0, 0.0))),
         }
     }
@@ -263,11 +267,10 @@ impl FileExplorerWidget {
         // Sidebar — the modern Favourites / Places list. A single widget that
         // owns drag-to-reorder for the favourites (via the shared, persistent
         // FavStore) so a reorder survives the per-frame rebuild.
-        let sidebar: Box<dyn Widget> = Box::new(PlacesSidebar::new(
-            self.favs.clone(),
-            self.current_path.clone(),
-            self.cmds.clone(),
-        ));
+        let sidebar: Box<dyn Widget> = Box::new(
+            PlacesSidebar::new(self.favs.clone(), self.current_path.clone(), self.cmds.clone())
+                .with_workspaces(self.workspace_roots.clone()),
+        );
 
         // Main view: list or grid, bound to the displayed entries + selection,
         // sized by the current zoom level.
@@ -1741,7 +1744,7 @@ mod open_with_tests {
     }
 
     fn file_entry(name: &str) -> Entry {
-        Entry { name: name.into(), path: PathBuf::from("/docs").join(name), is_dir: false, size: 0, modified: None, mime: String::new() }
+        Entry { name: name.into(), path: PathBuf::from("/docs").join(name), is_dir: false, size: 0, modified: None, mime: String::new(), sync_state: None }
     }
 
     #[test]
@@ -1859,6 +1862,7 @@ mod command_path_tests {
             size: 0,
             modified: None,
             mime: mime.into(),
+            sync_state: None,
         }
     }
 
