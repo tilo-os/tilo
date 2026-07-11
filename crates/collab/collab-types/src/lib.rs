@@ -21,8 +21,15 @@
 //!   maps members to roles.
 //! - [`role`] — `Role`, `OpClass`, `ArtifactKind` plus the
 //!   spec-defined static permission table
-//!   ([`role::role_permits`]). This is the single source of truth for
+//!   ([`role::role_permits`]). This is the coarse base layer for
 //!   "is this op allowed?".
+//! - [`caps`] — the richer `(subject × scope × verb)` capability model
+//!   stacked on the role table: roles are named cap-bundles, and
+//!   per-app / per-resource overrides ([`caps::CapOverride`]) narrow or
+//!   extend the base. Wired into the validator's step 5a.
+//! - [`invite`] — attenuable capability invite tokens
+//!   ([`invite::InviteToken`]): a signed, delegable grant that can only
+//!   narrow down a chain, never widen.
 //! - [`event`] — `ChannelEvent`, the append-only governance log:
 //!   genesis, attestation issue/revoke, ownership transfer, rename,
 //!   settings update.
@@ -67,11 +74,13 @@
 //! wire-breaking change and needs a version bump.
 
 pub mod canonical;
+pub mod caps;
 pub mod channel;
 pub mod compaction;
 pub mod crypto;
 pub mod event;
 pub mod identity;
+pub mod invite;
 pub mod op;
 pub mod redaction;
 pub mod role;
@@ -82,6 +91,13 @@ pub mod validator;
 // `use collab_types::{SignedOp, Role, OpClass, ArtifactKind, ...}`
 // without reaching into individual modules.
 pub use canonical::{CanonicalError, canonical_bytes};
+pub use caps::{
+    CapDecision, CapOverride, Effect, ResourceScope, Scope, Subject, Verb, decide, role_caps,
+    verb_for_opclass,
+};
+pub use invite::{
+    INVITE_DOMAIN_TAG, InviteError, InviteSpec, InviteToken, attenuate, mint_root, verify_chain,
+};
 pub use channel::{
     Artifact, ArtifactId, ArtifactRef, Channel, ChannelId, ChannelRef, ChannelSettingsDelta,
     DocumentHandle, MemberRef,
