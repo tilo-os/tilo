@@ -26,6 +26,7 @@
 //! workspace-local. Providers that don't distinguish (files, notes) return the
 //! same set for both.
 
+pub mod action_api;
 pub mod files_index;
 pub mod providers;
 

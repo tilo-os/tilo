@@ -1793,6 +1793,38 @@ impl ShellOverlayHost {
         self.refresh_search_results(doc, root);
     }
 
+    /// Build a headless [`ActionCatalog`](crate::shell::search::action_api::ActionCatalog)
+    /// over the **same** provider registry that feeds the Ctrl+K palette.
+    ///
+    /// This is the action side of the "action ≠ presentation" boundary:
+    /// the palette renders these providers as rows; a script or an LLM
+    /// navigator drives the identical registry with no scene. The scope
+    /// is resolved from the live chrome (`ActiveApp` narrows to the
+    /// focused tab's provider, exactly as the palette does), and
+    /// `visibility` is the permission seam — a restricted caller only
+    /// enumerates what it may see.
+    pub fn action_catalog(
+        &self,
+        query: &str,
+        chrome: &crate::shell::chrome_state::ChromeState,
+        doc: &automerge::AutoCommit,
+        root: &ObjId,
+        visibility: &dyn crate::shell::search::action_api::ActionVisibility,
+    ) -> crate::shell::search::action_api::ActionCatalog {
+        let scope = chrome.search_scope;
+        let active_provider = active_tab_provider_id(chrome, &self.search_registry);
+        crate::shell::search::action_api::ActionCatalog::build(
+            &self.search_registry,
+            query,
+            scope,
+            active_provider.as_deref(),
+            chrome,
+            doc,
+            root,
+            visibility,
+        )
+    }
+
     /// Read-only accessor for the command-palette query buffer. Used by
     /// the `shots` driver / scenario harness to assert that synthetic
     /// `Type("…")` actions actually landed inside the palette input.
