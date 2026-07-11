@@ -227,6 +227,95 @@ pub fn run_exchange<S: Read + Write, F: FnMut(AuthPrompt)>(
     }
 }
 
+/// Run the greetd conversation to **verify** `username`/`password` WITHOUT
+/// starting a session — the primitive an *active-session* unlock needs
+/// (session-lock), as opposed to *login* ([`run_exchange`], which launches
+/// the session on success).
+///
+/// The CreateSession + auth-message answering is identical to
+/// [`run_exchange`], but on the authoritative [`Response::Success`] this
+/// sends `CancelSession` (tearing down greetd's transient session slot) and
+/// returns `Ok(())` — it never sends `StartSession`, so no session is
+/// spawned and the caller (the compositor lock screen) simply clears the
+/// lock. A rejected credential maps to [`AuthError::BadCredentials`] exactly
+/// as the login path does, so the non-leaky user messaging is shared.
+///
+/// Generic over the transport so it is unit-testable against an in-memory
+/// `UnixStream` pair, mirroring [`run_exchange`]'s tests.
+pub fn verify_exchange<S: Read + Write, F: FnMut(AuthPrompt)>(
+    stream: &mut S,
+    username: &str,
+    password: &str,
+    mut on_prompt: F,
+) -> Result<(), AuthError> {
+    Request::CreateSession {
+        username: username.to_string(),
+    }
+    .write_to(stream)
+    .map_err(|e| AuthError::Transport(format!("CreateSession: {e}")))?;
+
+    loop {
+        let response = Response::read_from(stream)
+            .map_err(|e| AuthError::Transport(format!("read response: {e}")))?;
+        match response {
+            Response::AuthMessage {
+                auth_message_type,
+                auth_message,
+            } => {
+                let reply = match auth_message_type {
+                    AuthMessageType::Secret => Some(password.to_string()),
+                    AuthMessageType::Visible => Some(username.to_string()),
+                    AuthMessageType::Info => {
+                        on_prompt(AuthPrompt {
+                            text: auth_message.clone(),
+                            is_error: false,
+                        });
+                        None
+                    }
+                    AuthMessageType::Error => {
+                        on_prompt(AuthPrompt {
+                            text: auth_message.clone(),
+                            is_error: true,
+                        });
+                        None
+                    }
+                };
+                Request::PostAuthMessageResponse { response: reply }
+                    .write_to(stream)
+                    .map_err(|e| AuthError::Transport(format!("PostAuthMessageResponse: {e}")))?;
+            }
+            Response::Success => {
+                // Credentials verified. Unlike the login path we do NOT
+                // `StartSession`; tear down greetd's slot and report success
+                // so the compositor clears the lock.
+                Request::CancelSession
+                    .write_to(stream)
+                    .map_err(|e| AuthError::Transport(format!("CancelSession: {e}")))?;
+                return Ok(());
+            }
+            Response::Error {
+                error_type,
+                description,
+            } => {
+                let _ = Request::CancelSession.write_to(stream);
+                tracing::warn!(?error_type, %description, "greetd verify error");
+                return Err(map_error(error_type, description));
+            }
+        }
+    }
+}
+
+/// Connect to greetd at `sock_path` and verify `username`/`password`
+/// without starting a session (see [`verify_exchange`]). The convenience
+/// entry point the compositor's session-lock unlock path calls; prompts are
+/// discarded (an unlock box does not surface fingerprint copy).
+pub fn verify_password(sock_path: &str, username: &str, password: &str) -> Result<(), AuthError> {
+    let mut stream = UnixStream::connect(sock_path).map_err(|e| {
+        AuthError::Transport(format!("cannot connect to greetd ({sock_path}): {e}"))
+    })?;
+    verify_exchange(&mut stream, username, password, |_| {})
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -461,6 +550,80 @@ mod tests {
         assert_eq!(
             result,
             Err(AuthError::Greetd("no such session command".to_string()))
+        );
+    }
+
+    /// The verify-only exchange (session-lock unlock) answers the secret,
+    /// and on `Success` sends `CancelSession` and returns `Ok` **without**
+    /// ever sending `StartSession` — no session is launched by an unlock.
+    #[test]
+    fn verify_exchange_succeeds_and_never_starts_a_session() {
+        let (client, mut server) = UnixStream::pair().unwrap();
+
+        let server_thread = thread::spawn(move || {
+            // 1. CreateSession
+            let req = Request::read_from(&mut server).unwrap();
+            assert!(matches!(req, Request::CreateSession { username } if username == "alice"));
+            // 2. Ask for the secret.
+            Response::AuthMessage {
+                auth_message_type: AuthMessageType::Secret,
+                auth_message: "Password:".to_string(),
+            }
+            .write_to(&mut server)
+            .unwrap();
+            // 3. Receive the password.
+            let req = Request::read_from(&mut server).unwrap();
+            assert!(
+                matches!(req, Request::PostAuthMessageResponse { response } if response == Some("s3cr3t".to_string()))
+            );
+            // 4. Auth complete.
+            Response::Success.write_to(&mut server).unwrap();
+            // 5. The verify path MUST cancel, not StartSession.
+            let req = Request::read_from(&mut server).unwrap();
+            assert!(
+                matches!(req, Request::CancelSession),
+                "verify must CancelSession on success, never StartSession"
+            );
+        });
+
+        let mut client = client;
+        let result = verify_exchange(&mut client, "alice", "s3cr3t", ignore_prompts);
+        server_thread.join().unwrap();
+        assert_eq!(result, Ok(()));
+    }
+
+    /// A bad password in the verify path maps to the same non-leaky
+    /// [`AuthError::BadCredentials`] and cancels the slot.
+    #[test]
+    fn verify_exchange_bad_password_maps_to_bad_credentials() {
+        let (client, mut server) = UnixStream::pair().unwrap();
+
+        let server_thread = thread::spawn(move || {
+            let _ = Request::read_from(&mut server).unwrap(); // CreateSession
+            Response::AuthMessage {
+                auth_message_type: AuthMessageType::Secret,
+                auth_message: "Password:".to_string(),
+            }
+            .write_to(&mut server)
+            .unwrap();
+            let _ = Request::read_from(&mut server).unwrap(); // PostAuthMessageResponse
+            Response::Error {
+                error_type: ErrorType::AuthError,
+                description: "Login incorrect (pam_unix)".to_string(),
+            }
+            .write_to(&mut server)
+            .unwrap();
+            let req = Request::read_from(&mut server).unwrap();
+            assert!(matches!(req, Request::CancelSession));
+        });
+
+        let mut client = client;
+        let result = verify_exchange(&mut client, "alice", "wrong", ignore_prompts);
+        server_thread.join().unwrap();
+        assert_eq!(result, Err(AuthError::BadCredentials));
+        assert_eq!(
+            result.unwrap_err().user_message(),
+            "Incorrect username or password"
         );
     }
 
