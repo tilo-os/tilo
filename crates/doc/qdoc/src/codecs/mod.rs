@@ -4,16 +4,40 @@
 pub mod docx;
 pub mod html;
 pub mod markdown;
+pub mod ods;
 pub mod odt;
 pub mod rtf;
+pub mod safety;
+pub mod sheet_common;
+pub mod xlsx;
 
 pub use docx::DocxCodec;
 pub use html::HtmlCodec;
 pub use markdown::MarkdownCodec;
+pub use ods::OdsCodec;
 pub use odt::OdtCodec;
 pub use rtf::RtfCodec;
+pub use sheet_common::SheetProvider;
+pub use xlsx::XlsxCodec;
 
 use crate::format::{ProviderTier, Registry};
+
+/// The spreadsheet codec for a file extension (`xlsx`/`ods`, case-insensitive).
+/// Separate from [`builtin_registry`] because spreadsheets speak the
+/// [`SheetProvider`] contract (workbook model), not the rich-text
+/// [`crate::format::FormatProvider`] one.
+pub fn sheet_provider_for_ext(ext: &str) -> Option<Box<dyn SheetProvider>> {
+    match ext.to_ascii_lowercase().as_str() {
+        "xlsx" => Some(Box::new(XlsxCodec)),
+        "ods" => Some(Box::new(OdsCodec)),
+        _ => None,
+    }
+}
+
+/// Whether `ext` (case-insensitive, no dot) is a built-in spreadsheet format.
+pub fn is_supported_sheet_ext(ext: &str) -> bool {
+    sheet_provider_for_ext(ext).is_some()
+}
 
 /// A registry preloaded with the built-in codecs at `Builtin` tier.
 pub fn builtin_registry() -> Registry {

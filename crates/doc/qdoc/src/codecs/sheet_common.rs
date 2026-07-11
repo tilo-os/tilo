@@ -1,0 +1,140 @@
+//! Shared helpers for the spreadsheet codecs (`.xlsx`/`.ods`): the bounded OPC/ODF
+//! ZIP container (reusing the hardened [`crate::codecs::safety`] reader) and XML
+//! escaping. Every byte of untrusted spreadsheet input enters through
+//! [`SheetPackage::read`], so the same zip-bomb / entry-count / DTD-XXE guards the
+//! document codecs enforce apply verbatim to spreadsheets.
+
+use crate::codecs::safety::{read_zip_parts, ZipLimits};
+use crate::format::{CodecError, Confidence};
+use crate::sheet::Workbook;
+use std::io::{Cursor, Write};
+use zip::write::SimpleFileOptions;
+use zip::{CompressionMethod, ZipWriter};
+
+/// A spreadsheet format provider — the workbook analogue of
+/// [`crate::format::FormatProvider`]. Parses untrusted spreadsheet bytes into the
+/// CRDT [`Workbook`] model and serializes it back. Import is bounded/hardened via
+/// [`SheetPackage::read`]; the contract is identical either side of a sandbox.
+pub trait SheetProvider: Send + Sync {
+    fn schema_id(&self) -> &str;
+    fn detect(&self, head: &[u8]) -> Confidence;
+    fn import(&self, bytes: &[u8], wb: &mut Workbook) -> Result<(), CodecError>;
+    fn export(&self, wb: &Workbook) -> Result<Vec<u8>, CodecError>;
+}
+
+/// A spreadsheet package's parts in original zip order. Read is bounded + XXE-
+/// hardened via [`read_zip_parts`]; the same struct backs both `.xlsx` (OPC) and
+/// `.ods` (ODF) since they are both attacker-controlled ZIPs of XML.
+pub(crate) struct SheetPackage {
+    pub parts: Vec<(String, Vec<u8>)>,
+}
+
+impl SheetPackage {
+    /// Read an untrusted spreadsheet package under the default [`ZipLimits`]
+    /// (bounded entry count + per-part/total decompressed size; DTD-bearing XML
+    /// parts rejected).
+    pub fn read(bytes: &[u8]) -> Result<Self, CodecError> {
+        Ok(Self { parts: read_zip_parts(bytes, &ZipLimits::default())? })
+    }
+
+    pub fn get(&self, name: &str) -> Option<&[u8]> {
+        self.parts.iter().find(|(n, _)| n == name).map(|(_, b)| b.as_slice())
+    }
+
+    /// Names of every part (original order).
+    pub fn names(&self) -> impl Iterator<Item = &str> {
+        self.parts.iter().map(|(n, _)| n.as_str())
+    }
+
+    pub fn set(&mut self, name: &str, bytes: Vec<u8>) {
+        if let Some(p) = self.parts.iter_mut().find(|(n, _)| n == name) {
+            p.1 = bytes;
+        } else {
+            self.parts.push((name.to_string(), bytes));
+        }
+    }
+
+    /// Write an OPC (`.xlsx`) package — every part deflated (no special first entry).
+    pub fn write_opc(&self) -> Result<Vec<u8>, CodecError> {
+        let mut zw = ZipWriter::new(Cursor::new(Vec::new()));
+        let deflated = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+        let werr = |e: zip::result::ZipError| CodecError::Export(format!("zip write: {e}"));
+        let ierr = |e: std::io::Error| CodecError::Export(format!("zip io: {e}"));
+        for (name, bytes) in &self.parts {
+            zw.start_file(name.clone(), deflated).map_err(werr)?;
+            zw.write_all(bytes).map_err(ierr)?;
+        }
+        Ok(zw.finish().map_err(werr)?.into_inner())
+    }
+
+    /// Write an ODF (`.ods`) package — `mimetype` first + stored, the rest deflated.
+    pub fn write_odf(&self) -> Result<Vec<u8>, CodecError> {
+        let mut zw = ZipWriter::new(Cursor::new(Vec::new()));
+        let stored = SimpleFileOptions::default().compression_method(CompressionMethod::Stored);
+        let deflated = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+        let werr = |e: zip::result::ZipError| CodecError::Export(format!("zip write: {e}"));
+        let ierr = |e: std::io::Error| CodecError::Export(format!("zip io: {e}"));
+        if let Some(mt) = self.get("mimetype") {
+            zw.start_file("mimetype", stored).map_err(werr)?;
+            zw.write_all(mt).map_err(ierr)?;
+        }
+        for (name, bytes) in &self.parts {
+            if name == "mimetype" {
+                continue;
+            }
+            zw.start_file(name.clone(), deflated).map_err(werr)?;
+            zw.write_all(bytes).map_err(ierr)?;
+        }
+        Ok(zw.finish().map_err(werr)?.into_inner())
+    }
+}
+
+/// Strip a namespace prefix (`table:table-cell` → `table-cell`).
+fn strip_prefix(raw: &[u8]) -> &[u8] {
+    match raw.iter().position(|b| *b == b':') {
+        Some(i) => &raw[i + 1..],
+        None => raw,
+    }
+}
+
+/// The local (prefix-stripped) name of a start/empty element. Namespace prefixes
+/// vary across producers, so the codecs match on the local part.
+pub(crate) fn local_name<'a>(e: &'a quick_xml::events::BytesStart<'a>) -> &'a [u8] {
+    strip_prefix(e.name().into_inner())
+}
+
+/// The local (prefix-stripped) name of an end element (`</table:table-row>`).
+pub(crate) fn end_local_name<'a>(e: &'a quick_xml::events::BytesEnd<'a>) -> &'a [u8] {
+    strip_prefix(e.name().into_inner())
+}
+
+/// Read an attribute by its local name (prefix-insensitive), unescaping its value.
+pub(crate) fn attr_local(e: &quick_xml::events::BytesStart, local: &[u8]) -> Option<String> {
+    for a in e.attributes().flatten() {
+        let raw = a.key.as_ref();
+        let lname = match raw.iter().position(|b| *b == b':') {
+            Some(i) => &raw[i + 1..],
+            None => raw,
+        };
+        if lname == local {
+            return a.unescape_value().ok().map(|v| v.into_owned());
+        }
+    }
+    None
+}
+
+/// Escape a string for XML text content or a double-quoted attribute value.
+pub(crate) fn xml_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for ch in s.chars() {
+        match ch {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&apos;"),
+            _ => out.push(ch),
+        }
+    }
+    out
+}
