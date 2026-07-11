@@ -6,19 +6,29 @@
 //! `docs/superpowers/specs/2026-06-24-crdt-native-file-formats-design.md`.
 
 pub mod codecs;
+pub mod diff;
 pub mod document;
 pub mod format;
 pub mod history;
 pub mod model;
 pub mod order;
 pub mod schema;
+pub mod sheet;
 pub mod snapshot;
 
-pub use codecs::{builtin_registry, is_supported_ext, supported_extensions, DocxCodec, HtmlCodec, MarkdownCodec, OdtCodec, RtfCodec};
+pub use codecs::safety::ZipLimits;
+pub use codecs::{
+    builtin_registry, is_supported_ext, is_supported_sheet_ext, sheet_provider_for_ext, supported_extensions, DocxCodec, HtmlCodec, MarkdownCodec, OdsCodec, OdtCodec, RtfCodec,
+    SheetProvider, XlsxCodec,
+};
+pub use diff::{
+    diff_snapshots, diff_workbooks, AttrChange, BlockDiff, BlockOp, CellChange, CellOp, DiffSummary, DocDiff, PropChange, RunOp, SheetChange, SheetDiff, SheetDiffSummary, SheetOp, TextRun,
+};
 pub use document::{DocError, Document, MarkSpan};
 pub use format::{CodecError, Confidence, FormatProvider, ProviderTier, Registry};
 pub use history::VersionMeta;
-pub use model::{Containers, DocMut, DocRef, IdGen, NoteKind, Region};
+pub use model::{ordered_keys_scan_count, Containers, DocMut, DocRef, IdGen, NoteKind, Region};
+pub use sheet::{CellInput, CellType, CellView, SheetView, Workbook, WorkbookSnapshot};
 pub use snapshot::{AttrVal, BlockView, BookmarkView, ChangeKind, ChangeView, CommentView, DocSnapshot, NoteView};
 
 #[cfg(test)]
