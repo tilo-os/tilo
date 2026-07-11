@@ -1,6 +1,7 @@
 pub mod conflict;
 pub mod content;
 pub mod control;
+pub mod docstore;
 pub mod fs;
 pub mod namespace;
 pub mod store;
@@ -12,6 +13,7 @@ pub mod syncstate;
 #[cfg(test)]
 mod tests;
 
+pub use docstore::{DocStore, VersionManifest, VersionRef};
 pub use fs::QuickFS;
 pub use namespace::{Namespace, ROOT_INO};
 pub use store::ContentStore;
