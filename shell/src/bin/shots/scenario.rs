@@ -729,21 +729,20 @@ fn strip_horizontal_scroll() -> Scenario {
             // sidebar gutter).
             Action::MoveCursor(Point::new(900.0, 500.0)),
             Action::Snapshot("00-before"),
-            // LineDelta(x=4, y=0) is unambiguously horizontal: dx_axis
-            // > dy_axis, so the strip's no-overflow branch stamps the
-            // tab-cycle pulse. dy is 0 so the wheel doesn't also try
-            // to pan vertically anywhere.
-            // Strong horizontal swipe right. 10 LineDelta units ×
-            // 30 px = 300 px of pan, well inside the viewport*3
-            // upper clamp.
-            Action::MouseWheel { dx: 10.0, dy: 0.0 },
-            Action::Wait(2),
-            Action::Snapshot("01-after-right"),
-            // And the reverse direction — should bring the strip
-            // back to the leftmost position (clamped to 0).
+            // Horizontal swipe that pans the strip forward (reveals
+            // content to the right). With the natural sign convention a
+            // swipe-left (dx<0) increases scroll_x, so a negative dx is
+            // what moves the strip off its leftmost (clamped-to-0)
+            // resting position. 10 LineDelta units × 30 px = 300 px of
+            // pan, well inside the viewport*3 upper clamp.
             Action::MouseWheel { dx: -10.0, dy: 0.0 },
             Action::Wait(2),
-            Action::Snapshot("02-after-left"),
+            Action::Snapshot("01-after-pan"),
+            // And the reverse direction — should bring the strip back to
+            // the leftmost position (clamped to 0).
+            Action::MouseWheel { dx: 10.0, dy: 0.0 },
+            Action::Wait(2),
+            Action::Snapshot("02-back-to-start"),
         ],
     }
 }

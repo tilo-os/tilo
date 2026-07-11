@@ -235,6 +235,22 @@ impl FrameBuilder {
         &self.host
     }
 
+    /// Whether the widget tree has an animation in flight (overlay
+    /// transitions, spring settles, spawn/close fades, the wheel disc,
+    /// …). The native render loop uses this to decide whether the next
+    /// frame needs repainting, so it can idle instead of burning a core
+    /// repainting an unchanged scene.
+    pub fn needs_animation_frame(&self) -> bool {
+        self.host.needs_animation_frame()
+    }
+
+    /// The chrome's monotonic revision counter. Bumps whenever chrome
+    /// state mutates (overlay toggles, notifications, tab switches, …).
+    /// The render loop repaints when this changes.
+    pub fn chrome_revision(&self) -> u64 {
+        self.chrome.borrow().revision
+    }
+
     pub fn host_mut(&mut self) -> &mut ShellOverlayHost {
         &mut self.host
     }
