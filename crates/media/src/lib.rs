@@ -22,13 +22,23 @@
 //!   so a local-only player carries no automerge weight.
 //! * [`Prefetcher`] / [`RingBuffer`] — bounded read-ahead that turns a
 //!   file/workspace read into genuine buffering progress.
+//! * [`audio`] — the audio graph client: enumerate the PipeWire/WirePlumber
+//!   node graph (devices + per-application streams), move one app's stream
+//!   between output devices, adjust per-stream volume/mute, switch the default
+//!   device, and diff enumerations for hotplug. Every media surface plays
+//!   *through* PipeWire; this is where the OS routes it.
 
+pub mod audio;
 pub mod engine;
 pub mod event;
 pub mod ring;
 pub mod source;
 pub mod transport;
 
+pub use audio::{
+    enumerate as enumerate_audio, AudioDevice, AudioEnumerator, AudioGraph, AudioStream,
+    GraphControl, GraphDelta, RealEnumerator, RealGraphControl,
+};
 pub use engine::MediaEngine;
 pub use event::{MediaEvent, VideoFrame};
 pub use ring::{PrefetchProgress, Prefetcher, RingBuffer};
