@@ -64,7 +64,6 @@ fn build_verify_roundtrip_over_fake_host_x86_64() {
             from: Some(host.path()),
             arch: Some("x86_64"),
             identity: None,
-            extra_libs: &[],
         },
     )
     .expect("build");
@@ -112,7 +111,6 @@ fn build_verify_roundtrip_aarch64_debian_fixture() {
             from: Some(host.path()),
             arch: Some("aarch64"),
             identity: None,
-            extra_libs: &[],
         },
     )
     .expect("build aarch64");
@@ -148,7 +146,6 @@ fn build_verify_roundtrip_aarch64_fedora_fixture() {
             from: Some(host.path()),
             arch: Some("aarch64"),
             identity: None,
-            extra_libs: &[],
         },
     )
     .expect("build aarch64 fedora");
@@ -171,7 +168,6 @@ fn verify_rejects_a_flipped_byte() {
             from: Some(host.path()),
             arch: Some("x86_64"),
             identity: None,
-            extra_libs: &[],
         },
     )
     .expect("build");
@@ -196,7 +192,6 @@ fn build_is_deterministic_over_root_hash() {
         from: Some(host.path()),
         arch: Some("x86_64"),
         identity: None,
-        extra_libs: &[],
     };
     let a = build_bundle_with(out1.path(), "v", &opts).expect("build a");
     let b = build_bundle_with(out2.path(), "v", &opts).expect("build b");
@@ -219,7 +214,6 @@ fn signed_bundle_verifies_and_publisher_pin_works() {
             from: Some(host.path()),
             arch: Some("x86_64"),
             identity: Some(&identity_path),
-            extra_libs: &[],
         },
     )
     .expect("build signed");
@@ -272,7 +266,6 @@ fn tampered_root_hash_in_signed_bundle_is_caught() {
             from: Some(host.path()),
             arch: Some("x86_64"),
             identity: Some(&identity_path),
-            extra_libs: &[],
         },
     )
     .unwrap();

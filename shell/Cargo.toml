@@ -79,10 +79,6 @@ file-explorer = { path = "../apps/file-explorer" }
 # Settings app can call the same bindings without depending on the
 # compositor. The module at the old path now re-exports from this crate.
 os-actions = { path = "../crates/system/os-actions" }
-# Power management: suspend-on-idle, lid / power-key policy, suspend
-# inhibitors, and battery thresholds over systemd-logind + UPower. The pure
-# policy core is unit-testable without a bus; the service actuates via zbus.
-qos-power-mgmt = { path = "../crates/system/power" }
 winit = "0.30.13"
 # Compositor Phase 4 follow-up: the native winit backend bypasses smithay's
 # glow renderer in favor of vello-on-wgpu directly (`backend/winit.rs`).
