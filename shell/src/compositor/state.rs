@@ -51,6 +51,7 @@ use smithay::wayland::fractional_scale::{
 };
 use smithay::wayland::output::{OutputHandler, OutputManagerState};
 use smithay::wayland::viewporter::ViewporterState;
+use smithay::wayland::pointer_gestures::PointerGesturesState;
 use smithay::wayland::shell::xdg::{
     PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState,
     XdgToplevelSurfaceData,
@@ -62,8 +63,8 @@ use smithay::wayland::shm::{ShmHandler, ShmState};
 use smithay::wayland::virtual_keyboard::VirtualKeyboardManagerState;
 use smithay::{
     delegate_compositor, delegate_dmabuf, delegate_fractional_scale, delegate_output,
-    delegate_seat, delegate_session_lock, delegate_shm, delegate_viewporter,
-    delegate_virtual_keyboard_manager, delegate_xdg_shell,
+    delegate_pointer_gestures, delegate_seat, delegate_session_lock, delegate_shm,
+    delegate_viewporter, delegate_virtual_keyboard_manager, delegate_xdg_shell,
 };
 
 use crate::collab::flatpak_share::SharedFlatpakSession;
@@ -331,6 +332,14 @@ pub struct State {
     /// Bridge from the protocol handler to the native run loop's authoritative
     /// lock (see [`SessionLockHooks`]).
     pub session_lock: SessionLockHooks,
+    /// `zwp_pointer_gestures_v1` global state — advertises touchpad pinch /
+    /// swipe / hold gestures to clients. On a bare-TTY (DRM) session Mutter
+    /// isn't around to expose gestures, so the compositor advertises this
+    /// itself; winit clients bind it and create a `zwp_pointer_gesture_pinch_v1`
+    /// per pointer. Delivering the gesture events to the focused surface is
+    /// gated on the compositor routing local libinput pointer input through the
+    /// seat (today local input drives the shell chrome, not client surfaces).
+    pub pointer_gestures_state: PointerGesturesState,
 }
 
 impl State {
@@ -425,6 +434,11 @@ impl State {
         // Read the persisted display scale from the shared settings store
         // so the compositor advertises the value the Settings app wrote.
         let scale = load_display_scale();
+        // Advertise touchpad pinch/swipe/hold gestures so clients (winit apps)
+        // can bind them on a bare-TTY session where no host compositor exposes
+        // the protocol. Constructed before the struct literal because
+        // `display_handle` is moved into the struct.
+        let pointer_gestures_state = PointerGesturesState::new::<Self>(&display_handle);
 
         Self {
             loop_handle,
@@ -454,6 +468,7 @@ impl State {
             output_size: (0, 0),
             session_lock_state,
             session_lock: SessionLockHooks::default(),
+            pointer_gestures_state,
         }
     }
 
@@ -1152,6 +1167,7 @@ delegate_shm!(State);
 delegate_dmabuf!(State);
 delegate_seat!(State);
 delegate_virtual_keyboard_manager!(State);
+delegate_pointer_gestures!(State);
 delegate_output!(State);
 delegate_fractional_scale!(State);
 delegate_viewporter!(State);
