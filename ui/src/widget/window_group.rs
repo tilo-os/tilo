@@ -471,6 +471,28 @@ impl WindowGroup {
     /// instead of guessing pill x-coords from theme constants.
     pub fn tab_rects(&self) -> &[Rect] { self.bar.tab_rects() }
 
+    /// Whether `p` lands on this group's "grab" zone — the tab-bar
+    /// background a user presses to drag the *whole group* to a new slot
+    /// (its titlebar, in window-manager terms). True when `p` is inside the
+    /// bar rect but NOT on any tab pill (those start a tab-detach drag or
+    /// select a tab) and NOT in the right-edge resize band (that starts a
+    /// width resize). Empty trailing bar space and the gaps between pills
+    /// both qualify, so grabbing "the bar, not a tab" always works even
+    /// when the bar is densely packed. The parent [`GroupRow`] uses this to
+    /// arbitrate a press into a group-reorder drag vs. a tab / resize
+    /// gesture.
+    pub fn bar_grab_hit(&self, p: Point) -> bool {
+        if !self.bar_rect().contains(p) {
+            return false;
+        }
+        // Right-edge resize band belongs to the width-resize gesture.
+        if p.x >= self.rect.x1 - RESIZE_HANDLE_PX {
+            return false;
+        }
+        // A press on a tab pill belongs to the tab gesture, not the group.
+        !self.tab_rects().iter().any(|r| r.contains(p))
+    }
+
     /// Delegate to the bar's per-pill drop-index resolver. Used by
     /// `GroupRow` on cross-group releases to figure out which index the
     /// dropped tab should be spliced at, based on where in the target
