@@ -2240,6 +2240,22 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                 self.app.layout_dirty = true;
                 window.request_redraw();
             }
+            WindowEvent::ScaleFactorChanged { .. } => {
+                // The display's fractional scale factor changed (moved to
+                // a HiDPI monitor, or the compositor sent a new
+                // `wp_fractional_scale.preferred_scale`). winit delivers a
+                // fractional `f64` here; the render path reads the live
+                // `window.scale_factor()` each frame and composites the
+                // whole scene through `Affine::scale(scale_factor)`
+                // (physical-pixel surface, logical-pixel layout), so a
+                // 1.25/1.5/1.75× factor renders crisp rather than being
+                // rounded to an integer. We only need to invalidate layout
+                // and redraw so the new factor is picked up — winit resizes
+                // the surface to keep the logical size stable, and the
+                // worker reconfigures it on the next frame.
+                self.app.layout_dirty = true;
+                window.request_redraw();
+            }
             WindowEvent::RedrawRequested => {
                 // Deferred one-time GPU init on the first frame (see
                 // `init_render`): the surface + renderer are built here,
