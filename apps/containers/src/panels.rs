@@ -249,65 +249,59 @@ impl ContainersApp {
             right = btn.x0 - 12.0;
         }
 
-        // Search box (fills remaining width up to a cap).
+        // Search launcher — a thin affordance that opens the shared Ctrl+K
+        // palette scoped to this app, instead of an inline filter. The search
+        // UI and ranking live in one shared toolkit widget, not here.
+        let _ = view;
         let search_w = (right - (header.x0 + PAD + 8.0) - 220.0).clamp(180.0, 360.0);
         let sx0 = right - search_w;
-        let search = Rect::new(sx0, header.center().y - 17.0, right, header.center().y + 17.0);
-        let focused = self.search_focus;
-        draw::fill_round(scene, search, theme.tokens.radii.md as f64, c.surfaces.raised);
-        draw::stroke_round(
-            scene,
-            search,
-            theme.tokens.radii.md as f64,
-            if focused { 2.0 } else { 1.0 },
-            if focused { c.border_focus } else { c.border_standard },
-        );
-        draw::icon(
-            scene,
-            Icon::Search,
-            Rect::new(search.x0 + 8.0, search.center().y - 8.0, search.x0 + 24.0, search.center().y + 8.0),
-            c.text_dim,
-            1.5,
-        );
-        let q = &view.search;
-        if q.is_empty() {
-            draw::text(
-                scene,
-                tr,
-                "Search…",
-                theme.tokens.typography.scale.base,
-                c.text_dim,
-                Point::new(search.x0 + 30.0, search.center().y - 8.0),
-                TextWeight::Regular,
-            );
-        } else {
-            draw::text_clip(
-                scene,
-                tr,
-                q,
-                theme.tokens.typography.scale.base,
-                c.text_primary,
-                Point::new(search.x0 + 30.0, search.center().y - 8.0),
-                search_w - 56.0,
-                TextWeight::Regular,
-            );
-            // caret when focused
-            if focused {
-                let (qw, _) = tr.measure(q, theme.tokens.typography.scale.base, None);
-                let cx = (search.x0 + 30.0 + qw as f64).min(search.x1 - 20.0);
-                let caret = Rect::new(cx, search.center().y - 9.0, cx + 1.5, search.center().y + 9.0);
-                scene.fill(Fill::NonZero, Affine::IDENTITY, c.accent[5], None, &caret);
-            }
-            // clear button
-            let clr = Rect::new(search.x1 - 24.0, search.center().y - 10.0, search.x1 - 6.0, search.center().y + 10.0);
-            draw::text(scene, tr, "✕", theme.tokens.typography.scale.sm, c.text_dim, Point::new(clr.x0 + 4.0, clr.center().y - 7.0), TextWeight::Regular);
-            self.push_hit(clr, Hit::ClearSearch);
-        }
-        self.push_hit(search, Hit::SearchFocus);
+        let search = Rect::new(sx0, header.center().y - 19.0, right, header.center().y + 19.0);
+        self.draw_search_launcher(scene, tr, theme, search);
 
         // bottom divider
         draw::divider(scene, header.x0, header.x1, header.y1 - 0.5, c.border_standard);
         header.y1
+    }
+
+    /// Lay out and paint the header search launcher (a `ui::SearchField` in
+    /// palette-opening mode) into `rect`. The widget self-lays-out from a
+    /// throwaway taffy sized to `rect`; its click behaviour is routed in
+    /// [`ContainersApp::route_to_launcher`], and activating it opens the
+    /// shared palette via [`ContainersApp::open_container_palette`].
+    fn draw_search_launcher(
+        &mut self,
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        rect: Rect,
+    ) {
+        use std::collections::HashMap;
+        use ui::widget::Widget;
+        let mut taffy: taffy::TaffyTree<()> = taffy::TaffyTree::new();
+        let mut node_map: HashMap<taffy::NodeId, *mut dyn Widget> = HashMap::new();
+        let node = self.search_field.build_layout(&mut taffy, theme, &mut node_map);
+        let _ = taffy.compute_layout_with_measure(
+            node,
+            taffy::Size {
+                width: taffy::AvailableSpace::Definite(rect.width() as f32),
+                height: taffy::AvailableSpace::Definite(rect.height() as f32),
+            },
+            |known, available, id, _, _| {
+                node_map
+                    .get(&id)
+                    .map(|&p| unsafe { (*p).measure(known, available, tr) })
+                    .unwrap_or(taffy::Size::ZERO)
+            },
+        );
+        self.search_field
+            .apply_layout(&taffy, node, Point::new(rect.x0, rect.y0));
+        self.search_field.draw(
+            scene,
+            draw::base(),
+            tr,
+            theme,
+            &ui::presence::PresenceCtx::default(),
+        );
     }
 
     // =================================================================
@@ -1480,7 +1474,6 @@ impl ContainersApp {
                 }
                 *handled = true;
             } else {
-                self.search_focus = false;
                 *handled = true;
             }
             self.refresh_view(doc);
@@ -1493,7 +1486,6 @@ impl ContainersApp {
                 ViewDoc::set_section(doc, s);
                 ViewDoc::set_selected(doc, None);
                 self.list_scroll = 0.0;
-                self.search_focus = false;
             }
             Hit::ToggleSidebar => {
                 self.toggle_sidebar();
@@ -1507,7 +1499,6 @@ impl ContainersApp {
                 let already = ViewDoc::selected(doc).as_deref() == Some(id.as_str());
                 ViewDoc::set_selected(doc, if already { None } else { Some(&id) });
                 self.detail_scroll = 0.0;
-                self.search_focus = false;
             }
             Hit::SelectImage(idx) => {
                 if let Some(image) = self.engine.images.get(idx) {
@@ -1661,13 +1652,6 @@ impl ContainersApp {
                 self.prompt = None;
                 self.pull = None;
             }
-            Hit::SearchFocus => {
-                self.search_focus = true;
-            }
-            Hit::ClearSearch => {
-                ViewDoc::set_search(doc, "");
-                self.list_scroll = 0.0;
-            }
         }
         self.refresh_view(doc);
     }
@@ -1721,8 +1705,6 @@ impl ContainersApp {
                 self.combo.close();
             } else if self.create_open {
                 self.create_open = false;
-            } else if self.search_focus {
-                self.search_focus = false;
             } else if ViewDoc::selected(doc).is_some() {
                 ViewDoc::set_selected(doc, None);
             }
@@ -1745,13 +1727,6 @@ impl ContainersApp {
             return;
         }
 
-        // Search box editing.
-        if self.search_focus {
-            self.search_key(doc, key, handled);
-            self.refresh_view(doc);
-            return;
-        }
-
         // Global shortcuts.
         match &key.logical_key {
             Key::Character(ch) => {
@@ -1761,7 +1736,7 @@ impl ContainersApp {
                     "2" => { ViewDoc::set_section(doc, Section::Images); *handled = true; }
                     "3" => { ViewDoc::set_section(doc, Section::Volumes); *handled = true; }
                     "4" => { ViewDoc::set_section(doc, Section::Distrobox); *handled = true; }
-                    "/" => { self.search_focus = true; *handled = true; }
+                    "/" => { self.open_container_palette(); *handled = true; }
                     "n" => { self.create_open = true; self.create_focus = CreateField::Image.index(); *handled = true; }
                     "b" => { self.toggle_sidebar(); self.structure_dirty = true; *handled = true; }
                     _ => {}
@@ -1770,33 +1745,6 @@ impl ContainersApp {
             _ => {}
         }
         self.refresh_view(doc);
-    }
-
-    fn search_key(&mut self, doc: &mut AutoCommit, key: &KeyEvent, handled: &mut bool) {
-        let cur = ViewDoc::search(doc);
-        match &key.logical_key {
-            Key::Named(NamedKey::Backspace) => {
-                let mut chars: Vec<char> = cur.chars().collect();
-                chars.pop();
-                ViewDoc::set_search(doc, &chars.into_iter().collect::<String>());
-                self.list_scroll = 0.0;
-                *handled = true;
-            }
-            Key::Named(NamedKey::Enter) => {
-                self.search_focus = false;
-                *handled = true;
-            }
-            Key::Named(NamedKey::Space) => {
-                ViewDoc::set_search(doc, &format!("{cur} "));
-                *handled = true;
-            }
-            Key::Character(ch) => {
-                ViewDoc::set_search(doc, &format!("{cur}{ch}"));
-                self.list_scroll = 0.0;
-                *handled = true;
-            }
-            _ => {}
-        }
     }
 
     fn create_modal_key(&mut self, doc: &mut AutoCommit, key: &KeyEvent, handled: &mut bool) {
