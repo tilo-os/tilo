@@ -55,6 +55,14 @@ runtime-portal = { path = "../crates/runtime/runtime-portal" }
 # (env var unset / file missing) — the manager degrades to the
 # pre-existing empty-identity path in that case.
 runtime-identity = { path = "../crates/runtime/runtime-identity" }
+# The workspace host / relay tier. `CollaborationManager` can route an
+# app's co-edit deltas + presence through a `RelayCoeditSession` (the
+# `Backend::Relay` path) so they inherit the host's fan-out + on-disk
+# store-and-forward, transparently to the app. Only the co-edit shim +
+# its transport types are named here; the iroh endpoint + identity are
+# owned by the caller (the shell's network actor) that hands the
+# already-joined session in.
+qos-relay = { path = "../crates/hosting/qos-relay" }
 automerge = "0.8.0"
 # Diagnostic event/handler tracing. Off by default at WARN; turn up with
 # `RUST_LOG=ui=debug` to see every MouseInput, CursorMoved, KeyboardInput
@@ -208,6 +216,16 @@ tempfile = "3"
 capnp = "0.26"
 capnp-rpc = "0.26"
 tokio-util = { version = "0.7", features = ["compat"] }
+# The `Backend::Relay` integration test stands up a real in-process
+# workspace host (`qos_relay::Relay`) + two iroh clients and drives two
+# `CollaborationManager`s through it — the same host path the relay
+# crate's own `coedit_through_host` test exercises, but end-to-end
+# through the toolkit. Identity material is minted with
+# `qos-user-identity`; the iroh endpoints dial the host over the pinned
+# 0.96 stack the rest of the tree resolves.
+qos-user-identity = { path = "../crates/identity/qos-user-identity" }
+iroh = "0.96.1"
+iroh-base = "0.96.1"
 
 # Runtime probe for the DMA-BUF zero-copy import (needs the WPE engine).
 [[example]]
