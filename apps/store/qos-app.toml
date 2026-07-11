@@ -1,0 +1,97 @@
+# Package manifest for the qOS `store` — the app store, itself shipped as
+# a qOS app so it's discoverable, updatable and sandbox-audited exactly
+# like every other native app.
+#
+# Pack and install with:
+#
+#     cargo build -p store -p pkg-cli -p install --release
+#     mkdir -p target/store-payload/bin
+#     cp target/release/store  target/store-payload/bin/store
+#     target/release/qos-pkg pack \
+#         --manifest apps/store/qos-app.toml \
+#         --payload  target/store-payload \
+#         --output   target/store.qpkg
+#     target/release/qos-install install target/store.qpkg --allow-self-signed
+#     target/release/qos-install run    dev.qos.store
+
+[package]
+id      = "dev.qos.store"
+version = "0.1.0"
+kind    = "app"
+runtime = "qos-runtime/2026.07"
+
+[publisher]
+identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
+signature = ""
+
+[[trust.attested_by]]
+attestor  = "qos-demo/2026.07"
+claim     = "deadbeef"
+signature = ""
+
+[sandbox]
+# `net` IS in the namespace list — the store needs internet to hit
+# registries and Flathub. The other native apps run with `net` intentionally
+# omitted; the store is the deliberate exception.
+namespaces = ["user", "pid", "uts", "ipc", "mount", "net"]
+seccomp    = "qos-default"
+landlock   = "strict"
+
+[sandbox.fs]
+read = [
+    "$XDG_RUNTIME_DIR/wayland-0",
+    "/usr/lib64",
+    "/usr/lib",
+    "/usr/share/fonts",
+    "/usr/share/fontconfig",
+    "/etc/fonts",
+    "/usr/share/vulkan",
+    "/usr/share/glvnd",
+    "/usr/share/drirc.d",
+    "/usr/share/libdrm",
+    "/usr/share/nvidia",
+    "/etc/vulkan",
+    "/etc/machine-id",
+    "/etc/ld.so.cache",
+    "/etc/ld.so.conf",
+    "/etc/ld.so.conf.d",
+    "/etc/resolv.conf",
+    "/etc/pki",
+    "/etc/ssl",
+    "/usr/lib/locale",
+    "/sys",
+]
+write = [
+    "~/.config/qos-store",
+    "~/.local/share/qos-apps",
+    "~/.cache/qos-store",
+    "~/.cache/mesa_shader_cache",
+    "~/.cache/mesa_shader_cache_db",
+    "~/.cache/radv_builtin_shaders",
+    "/dev/dri",
+    "/dev/nvidia0",
+    "/dev/nvidiactl",
+    "/dev/nvidia-modeset",
+    "/dev/nvidia-uvm",
+    "/dev/nvidia-uvm-tools",
+    "/dev/nvidia-caps",
+]
+
+[sandbox.net]
+# Store needs outbound HTTPS to registries and Flathub — hosted mode.
+mode = "host"
+
+[sandbox.portals]
+
+[sandbox.services]
+collab     = "optional@1"
+qos-fs     = "optional@1"
+
+[entrypoint]
+bin             = "bin/store"
+splash-segments = ["bin/store[0x0:0x400000]"]
+splash-budget   = 250
+
+[providers]
+mime = []
+ext  = []
