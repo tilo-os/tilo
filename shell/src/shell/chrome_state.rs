@@ -20,7 +20,7 @@ use parking_lot::{RwLockReadGuard, RwLockWriteGuard};
 
 use crate::notifications::{CloseReason, NotificationBridge};
 use crate::shell::notification::{
-    MAX_NOTIFICATIONS, Notification, NotificationIconKind, NotificationSeverity,
+    MAX_HISTORY, MAX_NOTIFICATIONS, Notification, NotificationIconKind, NotificationSeverity,
 };
 use crate::shell::quick_settings::{BtDevice, PowerProfile, QsLevel, WifiNetwork};
 use crate::shell::state::{AppId, Capability, WorkspaceTree, WorkspaceTreeHandle};
@@ -232,6 +232,23 @@ pub struct ChromeState {
     /// corresponding D-Bus signal back to the originating app via the
     /// bridge's reverse-event queues.
     notification_bridge: Option<NotificationBridge>,
+    /// Notification history — the message-log the notification centre
+    /// reads. Ordered oldest-first. Every notification that leaves the
+    /// active stack (dismissed / expired / closed / cap-evicted) is
+    /// appended here, as is every notification suppressed while
+    /// [`Self::dnd`] is on. Bounded to [`MAX_HISTORY`] entries (oldest
+    /// dropped from the front). Distinct from [`Self::notifications`]:
+    /// active toasts are *currently on screen*; history is what has
+    /// already come and gone (plus anything Do-Not-Disturb held back).
+    notification_history: Vec<Notification>,
+    /// Do-Not-Disturb. While `true`, freshly posted notifications are
+    /// **not** shown as banners — they go straight into
+    /// [`Self::notification_history`] instead — so the display surface
+    /// stays quiet but nothing is lost. The compositor owns this flag
+    /// (OS-owned chrome); the user toggles it via the command palette /
+    /// quick settings. Independent of [`Self::session_locked`], which
+    /// suppresses *content* on the lock screen but still shows a count.
+    dnd: bool,
     /// Whether the session is currently locked (mirrored from the
     /// compositor's `SessionManager` each frame). Drives notification
     /// lock-suppression: while `true`, the notification stack withholds
@@ -277,6 +294,8 @@ impl ChromeState {
             test_only_owner_override: None,
             notifications: Vec::new(),
             notification_bridge: None,
+            notification_history: Vec::new(),
+            dnd: false,
             session_locked: false,
             fullscreen_group: None,
         }))
@@ -564,14 +583,42 @@ impl ChromeState {
     /// with `.with_severity(...)` / `.with_dismiss_after(...)`).
     /// Returns the notification's id. Enforces the
     /// [`MAX_NOTIFICATIONS`] cap by dropping oldest entries first.
+    ///
+    /// **Do-Not-Disturb**: when [`Self::dnd`] is set the notification is
+    /// *not* shown as a banner — it is recorded straight into the
+    /// history log and the id is returned as usual. The caller (and the
+    /// originating D-Bus app) still gets a valid id; the toast is simply
+    /// held back from the display surface, honouring "suppress display
+    /// but keep history".
     pub fn push_notification_full(&mut self, n: Notification) -> u64 {
         let id = n.id;
+        if self.dnd {
+            self.record_history(n);
+            self.bump();
+            return id;
+        }
         self.notifications.push(n);
+        // Entries pushed off the active stack by the cap are still real
+        // notifications the user may want to review — retire them to
+        // history rather than dropping them on the floor.
         while self.notifications.len() > MAX_NOTIFICATIONS {
-            self.notifications.remove(0);
+            let evicted = self.notifications.remove(0);
+            self.record_history(evicted);
         }
         self.bump();
         id
+    }
+
+    /// Append a notification to the bounded history log, evicting the
+    /// oldest entry once [`MAX_HISTORY`] is exceeded. Every path that
+    /// removes a toast from the active stack — and the DND-suppression
+    /// path — funnels through here so history is the single, complete
+    /// record of what has been posted.
+    fn record_history(&mut self, n: Notification) {
+        self.notification_history.push(n);
+        while self.notification_history.len() > MAX_HISTORY {
+            self.notification_history.remove(0);
+        }
     }
 
     /// Convenience: push a warning-severity notification.
@@ -608,6 +655,7 @@ impl ChromeState {
         if let Some(pos) = self.notifications.iter().position(|n| n.id == id) {
             let removed = self.notifications.remove(pos);
             self.emit_closed(&removed, CloseReason::Dismissed);
+            self.record_history(removed);
             self.bump();
         }
     }
@@ -631,6 +679,7 @@ impl ChromeState {
             }
             bridge.note_closed(dbus_id, CloseReason::Dismissed);
         }
+        self.record_history(removed);
         self.bump();
         true
     }
@@ -646,6 +695,7 @@ impl ChromeState {
         {
             let removed = self.notifications.remove(pos);
             self.emit_closed(&removed, reason);
+            self.record_history(removed);
             self.bump();
         }
     }
@@ -656,22 +706,29 @@ impl ChromeState {
     /// each frame so the stack shrinks automatically. Expired toasts that
     /// came from a D-Bus `Notify` emit `NotificationClosed(id, 1)`.
     pub fn update_notification_lifecycle(&mut self, now: std::time::Instant) -> usize {
-        let mut closed_dbus_ids = Vec::new();
-        let before = self.notifications.len();
-        self.notifications.retain(|n| {
-            let keep = !n.is_expired_at(now);
-            if !keep {
+        // Partition into still-live and expired, preserving order.
+        let mut expired: Vec<Notification> = Vec::new();
+        let mut kept: Vec<Notification> = Vec::with_capacity(self.notifications.len());
+        for n in std::mem::take(&mut self.notifications) {
+            if n.is_expired_at(now) {
+                expired.push(n);
+            } else {
+                kept.push(n);
+            }
+        }
+        self.notifications = kept;
+        let dropped = expired.len();
+        if let Some(bridge) = self.notification_bridge.as_ref() {
+            for n in &expired {
                 if let Some(d) = n.dbus_id {
-                    closed_dbus_ids.push(d);
+                    bridge.note_closed(d, CloseReason::Expired);
                 }
             }
-            keep
-        });
-        let dropped = before - self.notifications.len();
-        if let Some(bridge) = self.notification_bridge.as_ref() {
-            for d in closed_dbus_ids {
-                bridge.note_closed(d, CloseReason::Expired);
-            }
+        }
+        // Expired toasts move into the history log — they came and went,
+        // but the notification centre still shows them.
+        for n in expired {
+            self.record_history(n);
         }
         if dropped > 0 {
             self.bump();
@@ -683,6 +740,57 @@ impl ChromeState {
     /// to show "N notifications" without exposing any content).
     pub fn notification_count(&self) -> usize {
         self.notifications.len()
+    }
+
+    // ---------- History ----------
+
+    /// Read-only view of the notification history log, ordered
+    /// oldest-first. Contains every notification that has left the
+    /// active stack (dismissed / expired / closed / cap-evicted) plus
+    /// anything Do-Not-Disturb suppressed. A notification-centre surface
+    /// reads this to let the user review what they missed.
+    pub fn notification_history(&self) -> &[Notification] {
+        &self.notification_history
+    }
+
+    /// Number of entries in the history log.
+    pub fn notification_history_count(&self) -> usize {
+        self.notification_history.len()
+    }
+
+    /// Clear the history log (the "Clear all" affordance in the
+    /// notification centre). Bumps the revision so the surface re-syncs.
+    pub fn clear_notification_history(&mut self) {
+        if !self.notification_history.is_empty() {
+            self.notification_history.clear();
+            self.bump();
+        }
+    }
+
+    // ---------- Do-Not-Disturb ----------
+
+    /// Whether Do-Not-Disturb is active. While `true`, freshly posted
+    /// notifications are suppressed from the banner surface and go
+    /// straight to history.
+    pub fn dnd(&self) -> bool {
+        self.dnd
+    }
+
+    /// Set Do-Not-Disturb on/off. Idempotent — a no-op (no revision
+    /// bump) when the value is unchanged.
+    pub fn set_dnd(&mut self, on: bool) {
+        if self.dnd != on {
+            self.dnd = on;
+            self.bump();
+        }
+    }
+
+    /// Toggle Do-Not-Disturb, returning the new state. Wired to the
+    /// command-palette "Toggle Do Not Disturb" action.
+    pub fn toggle_dnd(&mut self) -> bool {
+        self.dnd = !self.dnd;
+        self.bump();
+        self.dnd
     }
 
     // ---------- Track D1: D-Bus notification wiring ----------
