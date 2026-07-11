@@ -53,6 +53,14 @@ impl Action {
                 st.overlays.collaborators = true;
             },
         },
+        Action {
+            id: "notifications.dnd.toggle",
+            label: "Toggle Do Not Disturb",
+            subtitle: "Silence notification banners; held notifications go to history",
+            apply: |st| {
+                st.toggle_dnd();
+            },
+        },
     ];
 }
 
@@ -211,6 +219,33 @@ mod tests {
             doc_root: &automerge::ROOT,
         });
         assert!(out.is_empty());
+    }
+
+    #[test]
+    fn dnd_action_toggles_flag_on_open() {
+        let p = ActionsProvider::new();
+        let c = chrome_rc();
+        let mut doc = AutoCommit::new();
+        let out = {
+            let cs = c.borrow();
+            p.query(SearchContext {
+                needle: "do not disturb",
+                wanted: &[ResourceKind::Action],
+                chrome: &cs,
+                doc: &doc,
+                doc_root: &automerge::ROOT,
+            })
+        };
+        let dnd = out
+            .iter()
+            .find(|r| r.id == "notifications.dnd.toggle")
+            .expect("DND action must be present");
+        assert!(!c.borrow().dnd(), "DND starts off");
+        // Fire the real on_open closure — the production apply path.
+        (dnd.on_open)(&mut doc, &automerge::ROOT, &c);
+        assert!(c.borrow().dnd(), "opening the action turns DND on");
+        (dnd.on_open)(&mut doc, &automerge::ROOT, &c);
+        assert!(!c.borrow().dnd(), "opening it again turns DND back off");
     }
 
     #[test]
