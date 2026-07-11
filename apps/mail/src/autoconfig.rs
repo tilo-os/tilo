@@ -233,6 +233,45 @@ pub fn known_provider_for_domain(domain: &str) -> Option<KnownProvider> {
     }
 }
 
+/// A curated, **offline** autoconfig for common consumer providers, keyed by
+/// email domain. This is the instant, network-free fill the setup form applies
+/// the moment a recognised address is typed — so `me@gmail.com` pre-fills the
+/// Gmail servers without any lookup, and it doubles as the offline fallback for
+/// the [`discover`] network path. Covers the OAuth providers via
+/// [`known_provider_for_domain`] plus the large European/free webmail hosts the
+/// ISPDB may not resolve offline (GMX, web.de, mail.com, Zoho, AOL, Proton
+/// bridge). Returns `None` for domains that need real discovery.
+pub fn builtin_autoconfig(domain: &str) -> Option<Autoconfig> {
+    // The OAuth / big-provider set first (chosen by domain family, any TLD).
+    if let Some(p) = known_provider_for_domain(domain) {
+        return Some(p.autoconfig());
+    }
+    let d = domain.to_ascii_lowercase();
+    let base = d.split('.').next().unwrap_or(&d);
+    // (imap_host, imap_port, imap_tls, smtp_host, smtp_port, smtp_tls)
+    let (ih, ip, itls, sh, sp, stls) = match base {
+        // GMX and web.de share Germany's 1&1 infrastructure (STARTTLS on 587).
+        "gmx" => ("imap.gmx.net", 993, true, "mail.gmx.net", 587, true),
+        "web" if d == "web.de" => ("imap.web.de", 993, true, "smtp.web.de", 587, true),
+        "mail" if d == "mail.com" => ("imap.mail.com", 993, true, "smtp.mail.com", 587, true),
+        "zoho" => ("imap.zoho.com", 993, true, "smtp.zoho.com", 465, true),
+        "aol" => ("imap.aol.com", 993, true, "smtp.aol.com", 465, true),
+        // Proton needs the local Bridge, which re-serves IMAP/SMTP on loopback.
+        "proton" | "protonmail" | "pm" => ("127.0.0.1", 1143, true, "127.0.0.1", 1025, true),
+        _ => return None,
+    };
+    Some(Autoconfig {
+        display_name: None,
+        imap_host: ih.into(),
+        imap_port: ip,
+        imap_tls: itls,
+        smtp_host: sh.into(),
+        smtp_port: sp,
+        smtp_tls: stls,
+        oauth: false,
+    })
+}
+
 /// Map a resolved MX hostname onto a known provider. This is the authoritative
 /// signal for **hosted** domains: a company on Google Workspace or Microsoft
 /// 365 has its own vanity domain, but its MX points at the provider, so
@@ -325,9 +364,10 @@ pub fn discover(email: &str) -> Option<Autoconfig> {
     }
 
     // 2. Curated consumer-domain table (covers Microsoft/Google/etc. across
-    //    every TLD, so @outlook.de resolves even when the ISPDB misses it).
-    if let Some(p) = known_provider_for_domain(domain) {
-        return Some(p.autoconfig());
+    //    every TLD, so @outlook.de resolves even when the ISPDB misses it, plus
+    //    the large free webmail hosts — GMX, web.de, Zoho, …).
+    if let Some(cfg) = builtin_autoconfig(domain) {
+        return Some(cfg);
     }
 
     // 3. MX-based provider guess for hosted domains (a company on Google
@@ -505,6 +545,35 @@ mod tests {
         cfg.apply_to(&mut acct);
         assert_eq!(acct.auth, AuthMethod::OAuth);
         assert_eq!(acct.imap_host, "outlook.office365.com");
+    }
+
+    #[test]
+    fn builtin_table_fills_common_providers_offline() {
+        // The offline, network-free fill the form applies as the address is
+        // typed. Gmail → OAuth Gmail servers.
+        let g = builtin_autoconfig("gmail.com").expect("gmail is built in");
+        assert_eq!(g.imap_host, "imap.gmail.com");
+        assert_eq!(g.imap_port, 993);
+        assert_eq!(g.smtp_host, "smtp.gmail.com");
+        assert!(g.oauth, "Gmail presets to OAuth");
+        // Outlook across TLDs → office365.
+        let o = builtin_autoconfig("outlook.de").expect("outlook is built in");
+        assert_eq!(o.imap_host, "outlook.office365.com");
+        assert_eq!(o.smtp_host, "smtp.office365.com");
+        // The large free webmail hosts the ISPDB may miss offline.
+        assert_eq!(builtin_autoconfig("gmx.net").unwrap().imap_host, "imap.gmx.net");
+        assert_eq!(builtin_autoconfig("web.de").unwrap().smtp_host, "smtp.web.de");
+        assert_eq!(builtin_autoconfig("fastmail.com").unwrap().imap_host, "imap.fastmail.com");
+        assert_eq!(builtin_autoconfig("yahoo.co.uk").unwrap().imap_host, "imap.mail.yahoo.com");
+        assert_eq!(builtin_autoconfig("icloud.com").unwrap().imap_host, "imap.mail.me.com");
+        assert_eq!(builtin_autoconfig("zoho.com").unwrap().smtp_host, "smtp.zoho.com");
+        // Encryption is on for every built-in provider.
+        for d in ["gmail.com", "outlook.com", "gmx.net", "web.de", "zoho.com", "aol.com"] {
+            let ac = builtin_autoconfig(d).unwrap();
+            assert!(ac.imap_tls && ac.smtp_tls, "{d} must use TLS");
+        }
+        // An unknown vanity domain falls through to real discovery.
+        assert!(builtin_autoconfig("some-company.example").is_none());
     }
 
     #[test]
