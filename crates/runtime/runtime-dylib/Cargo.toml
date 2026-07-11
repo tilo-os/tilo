@@ -1,0 +1,35 @@
+[package]
+name = "runtime-dylib"
+version = "0.1.0"
+edition = "2024"
+description = "Opt-in dynamic-library build of the qOS runtime SDK. Produces libruntime_dylib.so so thin apps can link the SDK (and libstd) dynamically via -C prefer-dynamic instead of baking it into every binary."
+
+# ── Why this crate exists ───────────────────────────────────────────
+# A Rust `dylib` crate-type demands `panic = "unwind"` and is
+# incompatible with fat LTO. The workspace's default `[profile.release]`
+# is `panic = "abort"` + `lto = "fat"` (see the root Cargo.toml), so we
+# CANNOT hang the dylib crate-type off `runtime` / `cli` directly — that
+# would break every normal `cargo build --release`.
+#
+# Instead this is a standalone wrapper crate whose ONLY job is to pull
+# the whole runtime SDK (`runtime` umbrella + `cli` helpers + every
+# sub-crate they reach) into one `dylib` artifact. It is:
+#   * NOT in the workspace's `default-members`, so a bare
+#     `cargo build --release` / `cargo build --release -p <app>` never
+#     touches it (proof: those builds stay `panic = "abort"`-clean).
+#   * built only under `--profile thin-app` (`panic = "unwind"`,
+#     `lto = false`), the profile thin apps compile against.
+#
+# A thin app adds `runtime-dylib` as a dependency and builds with
+# `-C prefer-dynamic --profile thin-app`. rustc then satisfies the app's
+# `runtime` / `cli` crate references out of this dylib (same SVH, same
+# build unit) and links libstd dynamically too — so the app binary holds
+# only its own code. The shared libs ship once in the runtime bundle.
+[lib]
+name = "runtime_dylib"
+path = "src/lib.rs"
+crate-type = ["dylib"]
+
+[dependencies]
+runtime = { path = "../runtime" }
+cli = { path = "../cli" }

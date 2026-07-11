@@ -867,6 +867,7 @@ fn runtime_install(
             from: host_root,
             arch,
             identity,
+            extra_libs: &[],
         },
     )
     .map_err(|e| Error::RuntimeBundle(e.to_string()))?;

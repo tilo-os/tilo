@@ -30,6 +30,16 @@ use std::process::ExitCode;
 use anyhow::{Context, Result};
 use clap::Parser;
 
+// Thin build only: pull the shared runtime SDK dylib
+// (`libruntime_dylib.so`) into the link graph. It statically contains
+// the `cli` SDK (and its runtime + tokio graph) this app links, so with
+// `-C prefer-dynamic` rustc serves `cli` and libstd from the dylib
+// instead of baking them into `notes`. Naming the crate here is what
+// keeps rustc from eliminating it as unused. Compiled out in normal
+// (static) builds.
+#[cfg(feature = "thin")]
+extern crate runtime_dylib;
+
 /// `notes` — CLI notes for qOS.
 #[derive(Debug, Parser)]
 #[command(name = "notes", version, about = "Write a note into the qOS workspace.")]

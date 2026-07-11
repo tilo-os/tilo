@@ -158,6 +158,10 @@ pub enum BundleError {
     IdentityParse(String),
     #[error("bundle signature field {field} is malformed: {reason}")]
     SignatureFieldMalformed { field: &'static str, reason: String },
+    #[error("extra lib to include is missing from the host: {path}")]
+    IncludeMissing { path: PathBuf },
+    #[error("extra lib to include has no file name: {path}")]
+    IncludeUnnamed { path: PathBuf },
 }
 
 /// The set of host source paths for a given target architecture.
@@ -310,6 +314,16 @@ pub struct BuildOptions<'a> {
     /// provided, the finished bundle is signed and the manifest gains
     /// `publisher_hex` + `signature_hex`.
     pub identity: Option<&'a Path>,
+    /// Extra shared objects to place directly under `lib/` in the
+    /// bundle, by file name — the Rust `libstd-<hash>.so` and the qOS
+    /// `libruntime_dylib.so` that a thin app (`-C prefer-dynamic`)
+    /// links dynamically. Unlike the loader/libc set (re-bound at
+    /// their canonical `/lib64` paths so an ELF's `INTERP` resolves),
+    /// these sit at the top of `lib/` so the launcher's
+    /// `LD_LIBRARY_PATH=<mount>/lib` resolves them by soname. Each is
+    /// hashed into the manifest and covered by the signature like any
+    /// other bundle file. Absolute host paths; must exist.
+    pub extra_libs: &'a [PathBuf],
 }
 
 /// The signing identity used by [`build_bundle_with`]. Format: JSON
@@ -451,6 +465,29 @@ pub fn build_bundle_with(
             fs::create_dir_all(parent)?;
         }
         copy_file(&src, &dst)?;
+        written.push((rel_in_bundle, dst));
+    }
+
+    // Extra libs (libstd, libruntime_dylib.so): copied verbatim to the
+    // TOP of `lib/` by file name so `LD_LIBRARY_PATH=<mount>/lib`
+    // resolves them by soname. Unlike the loader/libc set these are NOT
+    // resolved against `host_root` — they're explicit absolute paths
+    // (build outputs), used as given.
+    for extra in opts.extra_libs {
+        if !extra.exists() {
+            return Err(BundleError::IncludeMissing { path: extra.clone() });
+        }
+        let name = extra
+            .file_name()
+            .ok_or_else(|| BundleError::IncludeUnnamed { path: extra.clone() })?
+            .to_string_lossy()
+            .to_string();
+        let rel_in_bundle = format!("lib/{name}");
+        let dst = out.join(&rel_in_bundle);
+        if let Some(parent) = dst.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        copy_file(extra, &dst)?;
         written.push((rel_in_bundle, dst));
     }
 
@@ -819,6 +856,7 @@ mod tests {
                 from: Some(host.path()),
                 arch: Some("x86_64"),
                 identity: None,
+                extra_libs: &[],
             },
         )
         .expect("build");
@@ -845,6 +883,7 @@ mod tests {
                 from: Some(host.path()),
                 arch: Some("aarch64"),
                 identity: None,
+                extra_libs: &[],
             },
         )
         .expect("build");
@@ -868,6 +907,7 @@ mod tests {
                 from: Some(host.path()),
                 arch: Some("aarch64"),
                 identity: None,
+                extra_libs: &[],
             },
         )
         .expect("build");
@@ -889,6 +929,7 @@ mod tests {
                 from: Some(host.path()),
                 arch: Some("mips64"),
                 identity: None,
+                extra_libs: &[],
             },
         )
         .unwrap_err();
@@ -907,6 +948,7 @@ mod tests {
                 from: Some(host.path()),
                 arch: Some("x86_64"),
                 identity: None,
+                extra_libs: &[],
             },
         )
         .unwrap();
@@ -931,6 +973,7 @@ mod tests {
                 from: Some(host.path()),
                 arch: Some("x86_64"),
                 identity: None,
+                extra_libs: &[],
             },
         )
         .unwrap();
@@ -950,6 +993,7 @@ mod tests {
                 from: Some(host.path()),
                 arch: Some("x86_64"),
                 identity: None,
+                extra_libs: &[],
             },
         )
         .unwrap_err();
@@ -966,6 +1010,7 @@ mod tests {
             from: Some(host.path()),
             arch: Some("x86_64"),
             identity: None,
+            extra_libs: &[],
         };
         let a = build_bundle_with(out1.path(), "v", &opts).unwrap();
         let b = build_bundle_with(out2.path(), "v", &opts).unwrap();
@@ -988,6 +1033,7 @@ mod tests {
                 from: Some(host.path()),
                 arch: Some("x86_64"),
                 identity: Some(&identity_path),
+                extra_libs: &[],
             },
         )
         .expect("build signed");
@@ -1026,6 +1072,7 @@ mod tests {
                 from: Some(host.path()),
                 arch: Some("x86_64"),
                 identity: Some(&identity_path),
+                extra_libs: &[],
             },
         )
         .unwrap();
@@ -1059,6 +1106,7 @@ mod tests {
                 from: Some(host.path()),
                 arch: Some("x86_64"),
                 identity: Some(&identity_path),
+                extra_libs: &[],
             },
         )
         .unwrap();
@@ -1092,6 +1140,7 @@ mod tests {
                 from: Some(host.path()),
                 arch: Some("x86_64"),
                 identity: None,
+                extra_libs: &[],
             },
         )
         .unwrap();
@@ -1128,5 +1177,69 @@ mod tests {
         if let Ok(p) = default_bundle_path("v") {
             assert!(p.ends_with("qos-runtime/v"));
         }
+    }
+
+    #[test]
+    fn extra_libs_land_at_lib_root_and_are_hashed_and_verify() {
+        let host = tempfile::tempdir().unwrap();
+        fake_x86_64_host(host.path());
+
+        // Two stand-in shared objects a thin app links dynamically:
+        // the Rust std dylib and the qOS runtime dylib. Content is
+        // arbitrary — the point is that they end up in the bundle,
+        // content-addressed, and pass verification.
+        let extras_dir = tempfile::tempdir().unwrap();
+        let libstd = extras_dir.path().join("libstd-deadbeef.so");
+        let libruntime = extras_dir.path().join("libruntime_dylib.so");
+        fs::write(&libstd, b"fake libstd bytes").unwrap();
+        fs::write(&libruntime, b"fake libruntime bytes").unwrap();
+
+        let out = tempfile::tempdir().unwrap();
+        let manifest = build_bundle_with(
+            out.path(),
+            "thin-1",
+            &BuildOptions {
+                from: Some(host.path()),
+                arch: Some("x86_64"),
+                identity: None,
+                extra_libs: &[libstd.clone(), libruntime.clone()],
+            },
+        )
+        .expect("build with extras");
+
+        // Both extras appear at the TOP of lib/ (by file name), so
+        // LD_LIBRARY_PATH=<mount>/lib resolves them by soname.
+        assert!(out.path().join("lib/libstd-deadbeef.so").exists());
+        assert!(out.path().join("lib/libruntime_dylib.so").exists());
+
+        // Both are recorded in the manifest (hashed + covered by the
+        // root hash → covered by any signature).
+        let paths: Vec<&str> = manifest.files.iter().map(|f| f.path.as_str()).collect();
+        assert!(paths.contains(&"lib/libstd-deadbeef.so"), "{paths:?}");
+        assert!(paths.contains(&"lib/libruntime_dylib.so"), "{paths:?}");
+
+        // Full verify roundtrips — proves the extras are part of the
+        // content-addressed set, not loose files verify would reject.
+        verify_bundle(out.path()).expect("verify with extras");
+    }
+
+    #[test]
+    fn missing_extra_lib_is_an_error() {
+        let host = tempfile::tempdir().unwrap();
+        fake_x86_64_host(host.path());
+        let out = tempfile::tempdir().unwrap();
+        let missing = out.path().join("does-not-exist.so");
+        let err = build_bundle_with(
+            out.path(),
+            "thin-1",
+            &BuildOptions {
+                from: Some(host.path()),
+                arch: Some("x86_64"),
+                identity: None,
+                extra_libs: &[missing],
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(err, BundleError::IncludeMissing { .. }));
     }
 }

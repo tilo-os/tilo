@@ -4,7 +4,15 @@
 # Component Model `.wasm`, not a host-target library. Build it explicitly:
 # `cargo build -p qdoc-codec-markdown-wasm --target wasm32-wasip2 --release`.
 exclude = ["crates/doc/qdoc-codec-markdown-wasm"]
-members = [
+# `runtime-dylib` is a workspace member (so it shares the lockfile,
+# target dir, and crate SVHs with the apps that link it) but is kept
+# OUT of `default-members`: a bare `cargo build` / `cargo test` never
+# compiles it. It carries `crate-type = ["dylib"]`, which requires
+# `panic = "unwind"` — incompatible with the workspace's default
+# `panic = "abort"` release profile. It is built only, and explicitly,
+# under `--profile thin-app` (`cargo build -p runtime-dylib --profile
+# thin-app`). See its Cargo.toml for the full rationale.
+default-members = [
     "crates/system/swipe",
     "crates/system/tts",
     "crates/system/accounts",
@@ -102,6 +110,109 @@ members = [
     "crates/system/qos-startup-metrics",
     "crates/session/installer",
 ]
+members = [
+    "crates/system/swipe",
+    "crates/system/tts",
+    "crates/system/accounts",
+    "crates/doc/qdoc",
+    "crates/text/spellcheck",
+    "crates/doc/qdoc-pdf",
+    "crates/doc/qdoc-html",
+    "crates/doc/qdoc-rtf",
+    "crates/doc/qdoc-epub",
+    "apps/word-processor",
+    "apps/video-player",
+    "crates/media",
+    "fs",
+    "shell",
+    "ui",
+    "crates/system/os-actions",
+    "crates/collab/collab-types",
+    "crates/collab/collab-bridge",
+    "crates/collab/threshold-identity",
+    "crates/collab/channel-crypto",
+    "crates/collab/collab-link",
+    "crates/collab/frame-link",
+    "crates/collab/relay",
+    "crates/packaging/pkg",
+    "crates/packaging/pkg-cli",
+    "crates/packaging/registry-types",
+    "crates/packaging/registry-server",
+    "crates/packaging/app-registry",
+    "crates/packaging/launcher",
+    "crates/packaging/app-fs",
+    "crates/packaging/app-host",
+    "crates/packaging/runtime-bundle",
+    "crates/runtime/runtime",
+    "crates/runtime/runtime-portal",
+    "crates/runtime/runtime-portal-xdg",
+    "crates/runtime/runtime-collab",
+    "crates/runtime/runtime-fs",
+    "crates/runtime/runtime-identity",
+    "crates/runtime/cli",
+    "crates/format/format-provider-wit",
+    "crates/format/format-host",
+    "crates/packaging/hello",
+    "crates/packaging/install",
+    "crates/packaging/cli-shim",
+    "crates/packaging/notes-cli",
+    "crates/identity/qos-user-identity",
+    "crates/hosting/qos-relay",
+    "apps/file-explorer",
+    "apps/terminal",
+    "apps/browser",
+    "apps/notes",
+    "apps/osk",
+    "apps/collab-broker",
+    "apps/settings",
+    "apps/api_tester",
+    "apps/backups",
+    "apps/calculator",
+    "apps/calendar",
+    "apps/camera",
+    "apps/chat",
+    "apps/code_editor",
+    "apps/contacts",
+    "apps/containers",
+    "apps/db_client",
+    "apps/diffmerge",
+    "apps/disks",
+    "apps/ebook",
+    "apps/feeds",
+    "apps/firewall",
+    "apps/git_client",
+    "apps/hex_editor",
+    "apps/imager",
+    "apps/logs",
+    "apps/mail",
+    "apps/maps",
+    "apps/monitor",
+    "apps/music",
+    "apps/pdf_viewer",
+    "apps/permissions",
+    "apps/remote",
+    "apps/sheets",
+    "apps/slides",
+    "apps/snippets",
+    "apps/software_store",
+    "apps/store",
+    "apps/themes",
+    "apps/totp",
+    "apps/tube",
+    "apps/typst_editor",
+    "apps/video_editor",
+    "apps/vpn",
+    "apps/weather",
+    "crates/session/greeter",
+    "crates/session/qos-power",
+    "crates/system/qos-startup-metrics",
+    "crates/session/installer",
+    # Opt-in dynamic build of the runtime SDK. A member (shares lockfile
+    # + target dir + crate SVHs) but excluded from default-members above,
+    # so it is compiled only via `--profile thin-app`, never by a bare
+    # `cargo build`. See crates/runtime/runtime-dylib/Cargo.toml.
+    "crates/runtime/runtime-dylib",
+]
 resolver = "2"
 
 # Aggressive release profile. Fat LTO across the workspace + a single
@@ -126,3 +237,25 @@ strip = "symbols"
 overflow-checks = false
 debug = "line-tables-only"
 incremental = false
+
+# Thin-app profile: the release profile, minus the two settings that are
+# fundamentally incompatible with dynamic linking of the SDK.
+#
+#   * `panic = "unwind"` — a Rust `dylib` (and anything linking one, via
+#     `-C prefer-dynamic`) must unwind; `panic = "abort"` is rejected.
+#   * `lto = false` — fat LTO + `-C prefer-dynamic` is rejected by rustc.
+#
+# Everything else (opt-level 3, strip, one codegen unit) is inherited so
+# thin binaries stay as small + fast as the static ones. This profile is
+# how `runtime-dylib` and the thin apps that link it are compiled:
+#
+#   cargo build --profile thin-app -p runtime-dylib          # the .so
+#   RUSTFLAGS='-C prefer-dynamic' \
+#     cargo build --profile thin-app -p <app> --features thin
+#
+# It is opt-in: nothing builds under it unless `--profile thin-app` is
+# passed, so the default `panic = "abort"` release path is untouched.
+[profile.thin-app]
+inherits = "release"
+panic = "unwind"
+lto = false

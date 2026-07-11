@@ -8,5 +8,15 @@ description = "Minimal qOS-native app for demonstrating the app install pipeline
 name = "qos-hello"
 path = "src/main.rs"
 
+[features]
+# Build as a thin app: bring `runtime-dylib` (libruntime_dylib.so) onto
+# the link path so `-C prefer-dynamic --profile thin-app` links the SDK
+# + libstd dynamically instead of baking them in. Off by default, so a
+# plain `cargo build --release -p hello` is a normal static
+# (panic=abort) build, untouched by any of the thin machinery.
+thin = ["dep:runtime-dylib"]
+
 [dependencies]
 runtime = { path = "../../runtime/runtime" }
+# Only pulled in under `--features thin`; see the `thin` feature above.
+runtime-dylib = { path = "../../runtime/runtime-dylib", optional = true }

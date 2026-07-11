@@ -1,5 +1,16 @@
 use runtime::{collab, fs, identity, is_qos_native, portal, portal_xdg};
 
+// Thin build only: pull the shared runtime SDK dylib
+// (`libruntime_dylib.so`) into the link graph. Without this reference
+// rustc's unused-crate elimination drops the wrapper, and
+// `-C prefer-dynamic` then satisfies `runtime` from its static rlib
+// instead of the dylib. Naming it here forces the dylib to be linked,
+// so `runtime` (and its whole graph) is served dynamically and the
+// `qos-hello` binary keeps only its own code. Compiled out entirely in
+// normal (static) builds.
+#[cfg(feature = "thin")]
+extern crate runtime_dylib;
+
 fn main() {
     println!("qos-hello: a qOS-native app, running.");
     println!();

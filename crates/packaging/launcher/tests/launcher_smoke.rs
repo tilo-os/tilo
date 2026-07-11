@@ -329,6 +329,7 @@ fn install_unsigned_bundle(xdg_data_home: &Path, version: &str) -> PathBuf {
             from: Some(host.path()),
             arch: Some("x86_64"),
             identity: None,
+            extra_libs: &[],
         },
     )
     .expect("build unsigned bundle");
@@ -358,6 +359,7 @@ fn install_signed_bundle(
             from: Some(host.path()),
             arch: Some("x86_64"),
             identity: Some(&id_path),
+            extra_libs: &[],
         },
     )
     .expect("build signed bundle");
@@ -449,6 +451,122 @@ fn runtime_bundle_wins_over_minimal_libs_in_argv() {
     let resolved =
         launcher::run::resolve_runtime_test_helper(&m, &opts).expect("no runtime = ok");
     assert!(resolved.is_none());
+}
+
+/// A {libstd, libruntime} runtime bundle mounts so that a thin
+/// (`-C prefer-dynamic`) app resolves its shared SDK + std libraries
+/// from the bundle. Proves the full contract at the launcher boundary:
+///   * the shared `.so`s the app links live at the TOP of `<bundle>/lib`
+///     (built there via `runtime-bundle --include`), and
+///   * the launcher sets `LD_LIBRARY_PATH=<mount>/lib`, so the loader
+///     finds them by soname inside the sandbox.
+/// Signature integrity is enforced along the way (the bundle is signed).
+#[test]
+fn thin_app_bundle_exposes_shared_libs_on_ld_library_path() {
+    use launcher::manifest::{Entrypoint, Fs, Net, Sandbox};
+    use launcher::sandbox::build_bwrap_argv;
+
+    let _guard = RUNTIME_ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+    let user_home = tempfile::tempdir().unwrap();
+    unsafe {
+        std::env::set_var("XDG_DATA_HOME", user_home.path());
+        std::env::set_var("HOME", user_home.path());
+    }
+
+    // Build a signed bundle that folds in stand-ins for the two shared
+    // objects a thin app links: the Rust std dylib + the qOS runtime
+    // dylib. This exercises the same `extra_libs` path the real bake
+    // uses (`runtime-bundle --include libstd-*.so --include
+    // libruntime_dylib.so`).
+    let version = "thin-smoke-1";
+    let host = tempfile::tempdir().unwrap();
+    for rel in ["lib64/ld-linux-x86-64.so.2", "lib64/libc.so.6"] {
+        let p = host.path().join(rel);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(&p, format!("stub {rel}")).unwrap();
+    }
+    let libstd = host.path().join("libstd-abc123.so");
+    let libruntime = host.path().join("libruntime_dylib.so");
+    std::fs::write(&libstd, b"stub libstd").unwrap();
+    std::fs::write(&libruntime, b"stub libruntime").unwrap();
+    let identity = runtime_bundle::Identity::generate();
+    let id_path = host.path().join("id.json");
+    std::fs::write(&id_path, identity.to_json_bytes()).unwrap();
+
+    let bundle_dir = user_home.path().join("qos-runtime").join(version);
+    runtime_bundle::build_bundle_with(
+        &bundle_dir,
+        version,
+        &runtime_bundle::BuildOptions {
+            from: Some(host.path()),
+            arch: Some("x86_64"),
+            identity: Some(&id_path),
+            extra_libs: &[libstd, libruntime],
+        },
+    )
+    .expect("build thin bundle");
+
+    // The shared libs the thin app links live at the top of the bundle's
+    // lib/ — exactly the dir the launcher turns into LD_LIBRARY_PATH.
+    assert!(bundle_dir.join("lib/libstd-abc123.so").exists());
+    assert!(bundle_dir.join("lib/libruntime_dylib.so").exists());
+
+    let m = MinimalManifest {
+        package_id: "dev.qos.thin".to_string(),
+        version: "0.1.0".to_string(),
+        runtime: Some(format!("qos-runtime/{version}")),
+        entrypoint: Entrypoint {
+            bin: "bin/thin".to_string(),
+            r#type: launcher::manifest::EntrypointType::Cli,
+            gui_bin: None,
+            cli_bin: None,
+        },
+        sandbox: Sandbox {
+            net: Net { mode: "off".to_string() },
+            fs: Fs::default(),
+            services: BTreeMap::new(),
+            portals: BTreeMap::new(),
+        },
+        cli_commands: vec!["thin".to_string()],
+    };
+
+    // The manifest's `runtime` field resolves to the signed bundle
+    // (signature verified inside resolve_runtime).
+    let opts = RunOptions {
+        no_services: true,
+        landlock_enforce: false,
+        ..Default::default()
+    };
+    let (resolved_path, resolved_ver) =
+        launcher::run::resolve_runtime_test_helper(&m, &opts)
+            .expect("resolve ok")
+            .expect("bundle resolves");
+    assert_eq!(resolved_ver, version);
+    assert_eq!(resolved_path, bundle_dir);
+
+    // The argv mounts the bundle and points LD_LIBRARY_PATH at the dir
+    // holding libstd + libruntime — so the thin app finds them by soname.
+    let argv = build_bwrap_argv(
+        &m,
+        Path::new("/host/payload"),
+        Some((resolved_path.as_path(), resolved_ver.as_str())),
+        &[],
+        None,
+        None,
+    );
+    let mount = format!("/usr/lib/qos-runtime/{version}");
+    assert!(
+        argv.windows(3).any(|w| w[0] == "--ro-bind"
+            && w[1] == resolved_path.display().to_string()
+            && w[2] == mount),
+        "runtime bind not in argv: {argv:?}"
+    );
+    assert!(
+        argv.windows(3).any(|w| w[0] == "--setenv"
+            && w[1] == "LD_LIBRARY_PATH"
+            && w[2] == format!("{mount}/lib")),
+        "LD_LIBRARY_PATH not pointed at the shared-lib dir: {argv:?}"
+    );
 }
 
 /// End-to-end: a manifest with `[sandbox.portals] notifications = "via-host"`
