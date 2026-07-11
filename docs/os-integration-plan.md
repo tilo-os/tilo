@@ -1,0 +1,61 @@
+# qOS OS-integration plan — the 6 phases from apps to a coherent OS
+
+The app layer + UI toolkit are far ahead of the OS spine. This plan closes the gap
+described in `coherence-architecture.md`. **Methodology for every phase: assess → test →
+integrate → prove.** Most of this work already exists (on `main` or on unmerged
+concurrent-session branches); the job is to verify it actually works, integrate it, and
+build only genuine gaps. Never trust a claim (including this doc) without running it.
+
+## The decided foundation
+**Sync/host model = one personal workspace; devices are clients/renderers of it.** A
+"host" is an always-on device that pins the workspace CRDT and relays / store-forwards.
+SyncThing-mode = a workspace with no dedicated host (peers sync directly). Home-server /
+enterprise = the same workspace with its host being that machine. Everything downstream
+(permissions, per-app backend placement, admin console) keys off this.
+
+## Phases (in build order; each = assess+test+integrate+prove the mapped work)
+
+1. **Workspace = unit-of-sync runtime (host + clients + durability).**
+   - On `main`: `crates/hosting/qos-relay` `WorkspaceRuntime` (pinned CRDT, membership,
+     author-excluded fan-out, disk store-and-forward), tested.
+   - Branch: `qos-relay-federation` (⊃ `qos-relay-daemon`) — deployable host (Containerfile.host,
+     systemd, firstboot) + shell wiring (`shell/src/network/identity.rs`).
+   - Prove: two member devices + host; delta A→B via fan-out; B offline → store-forward → converge.
+
+2. **Capability permissions + FUSE enforcement.**
+   - On `main`: `collab-types` `Role`/`OpClass`/`role_permits()`.
+   - Branch: `sp1-user-identity` (+4). Identity root = `crates/identity/qos-user-identity` (TPM+FIDO2).
+   - Build gap: `(role|user) × (scope: app|resource-type|instance|fs-path) × verb` enforced at
+     op-application AND in the FUSE driver (per-identity ACL, mode-bits as a synthesized veneer);
+     attenuable invite tokens. Prove: a role that may comment-not-edit is enforced on the real op path.
+
+3. **Action model + search made canonical.**
+   - On `main`: `collab-types` op/validator; a `command_palette` widget.
+   - Branches: `search-providers-protocol` (+6), `shell-global-search-registry` (+8).
+   - Build gap: typed exportable/replayable actions across apps; Ctrl+K canonical (retire per-app
+     search bars); permission-aware ranked providers; a headless action API (LLM-navigable).
+     Prove: enumerate → select-by-id → invoke an app action WITHOUT rendering.
+
+4. **Thin apps (shared runtime) + qpkg wired into the store.**
+   - On `main`: registry spine (`app-registry`), sandbox (`launcher`), `runtime-bundle` crate.
+   - Branches: `shell-app-model-integration` (+6), `registry-infra` (+3), `apps-store` (+5),
+     `apps-qpkg-fleet` (+10), `ci-app-model` (+8).
+   - Build gap: apps link the shared runtime dylib (target <2MB, from 15–26MB); software_store
+     Open/add-not-install path; a deployed registry. Prove: one relinked app <2MB runs.
+
+5. **Peer-app local render (the collaboration keystone).**
+   - `legacy-collab-*` = the OLD surface-stream+input-injection approach (the honest fallback tier;
+     superseded for our apps). Reference `frame-link-demo`, `flatpak-collab-viewer` (merged).
+   - Build gap: our apps (ui + collab lib) render a peer's session locally via CRDT co-edit, not
+     H.264 streaming. Prove: two peers co-edit a doc, both render locally, cursors/presence live.
+
+6. **Desktop-env polish + daily-driver gaps.**
+   - Branches: `hdr-foundation` (+2), `flatpak-peerview-hdr` (+7), `flatpak-color-management-v1` (+5),
+     `flatpak-hevc-main10` (+8), `presence-ui-polish` (+4), `systemd-boot-swap` (+4).
+   - Build gap: horizontal window resize, better reorder, real h-strip scroll, drag-file-to-open;
+     fractional scaling; finish HDR; notifications, session-lock, power-mgmt, audio routing, AT-SPI a11y.
+
+## Stale/divergent branches (reference only — off an old base, not clean merges)
+`docs/sync-host-model`, big `app-model-*`, `legacy-collab-*`, `nirios-shell`, `apps-fleet`,
+`worktree-*`, `feat-qos-tts`, `scrub-planning-refs`. Local unpushed `wt-{actionmodel,presence,
+deskenv,fracscale,hdr}` are likely superseded by the concurrent-session branches above.
