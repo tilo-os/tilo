@@ -71,6 +71,10 @@ export CC=gcc CXX=g++
 
 echo "=== libwpe ==="
 cd "$CACHE/${LIBWPE%.tar.xz}"
+# Drop a stale CMake cache so a reconfigure (e.g. after the base image /
+# toolchain changed) regenerates cleanly instead of failing on paths that
+# moved; compiled objects survive for an incremental ninja.
+rm -f build/CMakeCache.txt; rm -rf build/CMakeFiles
 cmake -B build -GNinja -Wno-dev -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_INSTALL_PREFIX="$PREFIX" -DCMAKE_INSTALL_LIBDIR=lib64 >/dev/null
 DESTDIR="$DESTDIR_ROOT" ninja -C build install | tail -1
@@ -83,6 +87,9 @@ DESTDIR="$DESTDIR_ROOT" ninja -C build install 2>&1 | tail -1
 
 echo "=== wpewebkit (long) ==="
 cd "$CACHE/${WPEWK%.tar.xz}"
+# Heal a stale CMake cache (see libwpe above) — WebKit is where a base /
+# toolchain change surfaced "Build files cannot be regenerated correctly".
+rm -f build/CMakeCache.txt; rm -rf build/CMakeFiles
 # USE_LIBBACKTRACE=OFF: Fedora ships no standalone libbacktrace (its own
 # webkitgtk builds without it).
 cmake -B build -GNinja -Wno-dev -DPORT=WPE \
