@@ -1363,4 +1363,35 @@ mod tick_hook_tests {
             .deposit_for_test(SURFACE, vec![0xFFu8; 32 * 32 * 4], 32, 32);
         assert!(!state.tick_share_session_for_surface(SURFACE));
     }
+
+    /// The `ext_session_lock_v1` bridge reports each lock/unlock request as a
+    /// one-shot edge the run loop consumes: reading it returns `true` once,
+    /// then `false`, so the loop can't re-fire a stale request.
+    #[test]
+    fn session_lock_hooks_report_and_clear_edges() {
+        let mut h = SessionLockHooks::default();
+        assert!(!h.take_lock_requested());
+        assert!(!h.take_unlock_requested());
+        assert!(!h.has_pending_locker());
+
+        h.lock_requested = true;
+        h.unlock_requested = true;
+        assert!(h.take_lock_requested());
+        assert!(!h.take_lock_requested(), "lock edge is consumed exactly once");
+        assert!(h.take_unlock_requested());
+        assert!(!h.take_unlock_requested(), "unlock edge is consumed once");
+    }
+
+    /// A freshly constructed state advertises the session-lock global (its
+    /// constructor ran `SessionLockManagerState::new` without panicking) and
+    /// starts with no client holding a lock.
+    #[test]
+    fn fresh_state_advertises_session_lock_and_starts_unlocked() {
+        let mut state = make_state();
+        // Constructing the state ran `SessionLockManagerState::new` (global
+        // advertised) without panic; no client holds a lock yet.
+        assert!(!state.session_lock.take_lock_requested());
+        assert!(!state.session_lock.take_unlock_requested());
+        assert!(!state.session_lock.has_pending_locker());
+    }
 }
