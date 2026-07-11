@@ -2,7 +2,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use fs::namespace::ROOT_INO;
-use fs::{ContentStore, Heuristics, Hydrator, Namespace, QuickFS};
+use fs::{Access, ContentStore, Heuristics, Hydrator, Namespace, QuickFS, WorkspaceAcl};
 use fuser::{Config, MountOption};
 use iroh::endpoint::Endpoint;
 use tempfile::tempdir;
@@ -23,6 +23,169 @@ macro_rules! require_fuse {
             return;
         }
     };
+}
+
+const ALICE: [u8; 32] = [0xA1; 32];
+const BOB: [u8; 32] = [0xB0; 32];
+
+// The per-identity ACL enforcement decision, exercised on the REAL fs
+// access method (`QuickFS::check_access`, the exact function every
+// open/read/write routes through). No FUSE mount needed — this drives
+// the production path directly (namespace path resolution + ACL
+// evaluation + the mount's bound identity), so it runs everywhere, not
+// only where /dev/fuse exists.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn identity_acl_gates_the_real_fs_access_path() {
+    let store = Arc::new(ContentStore::memory());
+    let body = b"top secret";
+    let hash = store.write_content(body).await.unwrap().unwrap();
+
+    // A shared file, a secret subdir, and a file inside it.
+    let namespace = Arc::new(Mutex::new(Namespace::new("acl-peer")));
+    let (shared_ino, secret_dir_ino, secret_child_ino) = {
+        let mut ns = namespace.lock().unwrap();
+        let shared = ns
+            .create_file(ROOT_INO, "shared.txt", Some(&hash), body.len() as u64, 1)
+            .unwrap();
+        let secret_dir = ns.create_dir(ROOT_INO, "secret", 1).unwrap();
+        let secret_child = ns
+            .create_file(secret_dir, "leak.txt", Some(&hash), body.len() as u64, 1)
+            .unwrap();
+        (shared, secret_dir, secret_child)
+    };
+
+    // The ACL: Alice may read /shared.txt only. Bob may read+write
+    // /secret/**.
+    let mut acl = WorkspaceAcl::new();
+    acl.grant_read(ALICE, "/shared.txt");
+    acl.grant_read_write(BOB, "/secret");
+
+    // Helper: build a fresh QuickFS over the shared namespace bound to an
+    // identity (each needs its own endpoint/hydrator).
+    async fn mount_as(
+        namespace: Arc<Mutex<Namespace>>,
+        acl: Option<(WorkspaceAcl, [u8; 32])>,
+    ) -> QuickFS {
+        let endpoint = Endpoint::bind().await.expect("bind endpoint");
+        let store = Arc::new(ContentStore::memory());
+        let hydrator = Arc::new(Hydrator::new(endpoint, store));
+        let heuristics = Arc::new(Heuristics::new(hydrator.clone(), namespace.clone()));
+        let fs = QuickFS::new(namespace, hydrator, heuristics);
+        match acl {
+            Some((a, id)) => fs.with_acl(a, id),
+            None => fs,
+        }
+    }
+
+    // Mount view A — bound to Alice's identity.
+    let alice_fs = mount_as(namespace.clone(), Some((acl.clone(), ALICE))).await;
+    // Alice: read on the shared file → allowed; read on the secret dir
+    // AND the secret child → denied (EACCES).
+    assert_eq!(
+        alice_fs.check_access(shared_ino, Access::Read),
+        Ok(()),
+        "Alice holds read on /shared.txt"
+    );
+    assert_eq!(
+        alice_fs.check_access(secret_dir_ino, Access::Read),
+        Err(libc::EACCES),
+        "Alice has NO read cap on /secret → denied"
+    );
+    assert_eq!(
+        alice_fs.check_access(secret_child_ino, Access::Read),
+        Err(libc::EACCES),
+        "Alice denied read on /secret/leak.txt too"
+    );
+    // Alice cannot write the file she may only read.
+    assert_eq!(
+        alice_fs.check_access(shared_ino, Access::Write),
+        Err(libc::EACCES),
+        "Alice's grant is read-only"
+    );
+
+    // Mount view B — same namespace + ACL, bound to Bob's identity.
+    let bob_fs = mount_as(namespace.clone(), Some((acl, BOB))).await;
+    assert_eq!(
+        bob_fs.check_access(secret_child_ino, Access::Read),
+        Ok(()),
+        "Bob holds read on /secret/**"
+    );
+    assert_eq!(
+        bob_fs.check_access(secret_child_ino, Access::Write),
+        Ok(()),
+        "Bob holds write on /secret/**"
+    );
+    assert_eq!(
+        bob_fs.check_access(shared_ino, Access::Read),
+        Err(libc::EACCES),
+        "Bob has NO cap on /shared.txt → denied"
+    );
+
+    // A mount with NO ACL attached keeps the compatibility veneer: every
+    // access is allowed (the Unix layer alone governs).
+    let open_fs = mount_as(namespace, None).await;
+    assert_eq!(
+        open_fs.check_access(shared_ino, Access::Write),
+        Ok(()),
+        "a mount without an ACL allows access (compat veneer)"
+    );
+}
+
+// Full kernel path: mount two real FUSE sessions over the same namespace
+// but bound to different identities, and prove the read is served for the
+// identity that holds the cap and denied (EACCES) for the one that does
+// not. Requires /dev/fuse (skips cleanly otherwise, like the tests below).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn fuse_mount_enforces_identity_acl_end_to_end() {
+    require_fuse!();
+    let _ = timeout(Duration::from_secs(20), async {
+        let endpoint = Endpoint::bind().await.expect("bind endpoint");
+        let store = Arc::new(ContentStore::memory());
+        let body = b"members only";
+        let hash = store.write_content(body).await.unwrap().unwrap();
+
+        let namespace = Arc::new(Mutex::new(Namespace::new("acl-mount-peer")));
+        {
+            let mut ns = namespace.lock().unwrap();
+            ns.create_file(ROOT_INO, "secret.txt", Some(&hash), body.len() as u64, 1)
+                .unwrap();
+        }
+        let hydrator = Arc::new(Hydrator::new(endpoint, store));
+        let heuristics = Arc::new(Heuristics::new(hydrator.clone(), namespace.clone()));
+
+        // ACL: only Bob may read /secret.txt. Alice holds nothing.
+        let mut acl = WorkspaceAcl::new();
+        acl.grant_read(BOB, "/secret.txt");
+
+        // Alice's mount: read must be denied through the real kernel path.
+        let alice_dir = tempdir().unwrap();
+        let alice_fs = QuickFS::new(namespace.clone(), hydrator.clone(), heuristics.clone())
+            .with_acl(acl.clone(), ALICE);
+        let mut cfg_a = Config::default();
+        cfg_a.mount_options = vec![MountOption::FSName("quickfs_acl_alice".into())];
+        let _sa = fuser::spawn_mount2(alice_fs, alice_dir.path(), &cfg_a)
+            .expect("spawn alice session");
+        tokio::time::sleep(Duration::from_millis(1000)).await;
+
+        let alice_read = std::fs::read(alice_dir.path().join("secret.txt"));
+        assert!(
+            matches!(&alice_read, Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied),
+            "Alice (no cap) must be denied EACCES through the kernel, got {alice_read:?}"
+        );
+
+        // Bob's mount: read must succeed and return the real bytes.
+        let bob_dir = tempdir().unwrap();
+        let bob_fs = QuickFS::new(namespace.clone(), hydrator, heuristics).with_acl(acl, BOB);
+        let mut cfg_b = Config::default();
+        cfg_b.mount_options = vec![MountOption::FSName("quickfs_acl_bob".into())];
+        let _sb =
+            fuser::spawn_mount2(bob_fs, bob_dir.path(), &cfg_b).expect("spawn bob session");
+        tokio::time::sleep(Duration::from_millis(1000)).await;
+
+        let bob_read = std::fs::read(bob_dir.path().join("secret.txt")).expect("Bob may read");
+        assert_eq!(bob_read, body, "Bob (holds cap) reads the real content");
+    })
+    .await;
 }
 
 // Multi-thread runtime: the FUSE read path uses `block_in_place`, which panics
