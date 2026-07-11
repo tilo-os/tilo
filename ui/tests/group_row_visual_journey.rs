@@ -292,3 +292,128 @@ fn group_row_fresh_render_is_deterministic() {
         "two identical GroupRow renders must produce identical pixels",
     );
 }
+
+/// Run a build → compute → apply layout pass on `row` at `w`×`h` so its
+/// child rects land in screen space (needed before driving hit-tested
+/// gestures like a group grab). Returns the taffy tree + root node so the
+/// caller can reuse them when dispatching events (the child widgets read
+/// `taffy.children` / `taffy.layout` during event handling).
+fn lay_out(row: &mut GroupRow, w: u32, h: u32) -> (TaffyTree<()>, NodeId) {
+    let theme = Theme::dark();
+    let mut taffy = TaffyTree::<()>::new();
+    let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+    let mut tr = TextRenderer::new();
+    let root = row.build_layout(&mut taffy, &theme, &mut node_map);
+    taffy
+        .compute_layout_with_measure(
+            root,
+            Size {
+                width: AvailableSpace::Definite(w as f32),
+                height: AvailableSpace::Definite(h as f32),
+            },
+            |known, available, node_id, _, _| {
+                if let Some(&ptr) = node_map.get(&node_id) {
+                    unsafe { (*ptr).measure(known, available, &mut tr) }
+                } else {
+                    Size::ZERO
+                }
+            },
+        )
+        .expect("compute_layout");
+    row.apply_layout(&taffy, root, Point::ORIGIN);
+    (taffy, root)
+}
+
+/// Mid-reorder drop indicator: grab a group's tab-bar background, drag it
+/// past a sibling, and render the in-flight state. The accent drop-rule at
+/// the target gap must make the frame visibly differ from the idle strip.
+/// Set `QUICK_UI_SCREENSHOT_DIR` to dump `group_row_reorder_{idle,mid}.png`
+/// for by-eye inspection.
+#[test]
+fn group_row_reorder_drop_indicator_is_visible_mid_drag() {
+    use winit::dpi::PhysicalPosition;
+    use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
+
+    // Wide enough that all three 600 px groups + gaps fit on-screen, so
+    // the drop gap after group 200 (where the indicator paints) is visible.
+    let (w, h) = (1900u32, 220u32);
+    let mut renderer = match try_new_renderer(w, h) {
+        Some(r) => r,
+        None => {
+            eprintln!("offscreen: no wgpu adapter available — skipping reorder shot");
+            return;
+        }
+    };
+
+    let mut row = GroupRow::new(vec![
+        make_group(100, &[(1, "Editor", AppKind::Editor)]),
+        make_group(200, &[(2, "Files", AppKind::Files)]),
+        make_group(300, &[(3, "Term", AppKind::Terminal)]),
+    ]);
+
+    // Idle baseline.
+    let idle = render_row(&mut renderer, &mut row);
+    maybe_write_png(&idle, w, h, "group_row_reorder_idle");
+
+    // Lay out so child rects populate, then read geometry for the gesture.
+    let (taffy, root) = lay_out(&mut row, w, h);
+    let grab = tabbar_grab_point(&row, 0);
+    let past_x = center_x_of_group(&row, 1) + 40.0;
+
+    let dispatch = |row: &mut GroupRow, taffy: &TaffyTree<()>, ev: WindowEvent| {
+        let modifiers = Modifiers::default();
+        let mut state = automerge::AutoCommit::new();
+        let path = automerge::ROOT.clone();
+        let mut handled = false;
+        let mut focus: Option<NodeId> = None;
+        row.handle_event(
+            &ev, 1.0, &modifiers, &mut state, &path, &mut handled, &mut focus,
+            root, taffy,
+        );
+    };
+    // Press on group 100's bar background, then move past group 200's
+    // centre so the drop target is the gap after group 200.
+    dispatch(&mut row, &taffy, WindowEvent::CursorMoved {
+        device_id: unsafe { std::mem::zeroed() },
+        position: PhysicalPosition::new(grab.x, grab.y),
+    });
+    dispatch(&mut row, &taffy, WindowEvent::MouseInput {
+        device_id: unsafe { std::mem::zeroed() },
+        state: ElementState::Pressed,
+        button: MouseButton::Left,
+    });
+    dispatch(&mut row, &taffy, WindowEvent::CursorMoved {
+        device_id: unsafe { std::mem::zeroed() },
+        position: PhysicalPosition::new(past_x, grab.y),
+    });
+    assert!(row.group_drag_active(), "grab-and-move must engage the reorder drag");
+    assert!(
+        row.group_reorder_target().is_some(),
+        "the drag must target a drop gap so the indicator has a slot to paint",
+    );
+
+    // Render the in-flight state. render_row re-lays out (group positions
+    // unchanged since no reorder committed yet) and draws — the drop
+    // indicator paints from the retained target.
+    let mid = render_row(&mut renderer, &mut row);
+    maybe_write_png(&mid, w, h, "group_row_reorder_mid");
+
+    assert_ne!(
+        pixel_hash(&idle),
+        pixel_hash(&mid),
+        "the mid-drag frame with the drop indicator must differ from the idle strip",
+    );
+}
+
+/// A point in group `idx`'s tab-bar background (right of the last pill),
+/// where a whole-group reorder grab lands.
+fn tabbar_grab_point(row: &GroupRow, idx: usize) -> Point {
+    let g = row.group_at_for_test(idx).expect("group at idx");
+    let bar = g.bar_rect();
+    let last = g.tab_rects().last().copied().unwrap_or(bar);
+    Point::new((last.x1 + bar.x1) / 2.0, (bar.y0 + bar.y1) / 2.0)
+}
+
+fn center_x_of_group(row: &GroupRow, idx: usize) -> f64 {
+    row.group_at_for_test(idx).expect("group at idx").get_rect().center().x
+}
