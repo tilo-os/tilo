@@ -609,7 +609,7 @@ impl GroupRow {
                 // Cubic-out ease — same shape the spawn animation in
                 // `window_group.rs` uses for its slide-in. Punchy at the
                 // start, gentle settle at the end.
-                let eased = crate::ease_out(raw);
+                let eased = 1.0 - (1.0 - raw).powi(3);
                 self.scroll_x = anim.from + (anim.to - anim.from) * eased;
             }
         }
@@ -1551,16 +1551,16 @@ impl Widget for GroupRow {
         if let WindowEvent::MouseWheel { delta, .. } = event
             && self.rect.contains(self.last_cursor)
         {
-            // Sign convention: a horizontal trackpad swipe pans the strip
-            // in the natural direction — swipe-right (dx>0) reveals content
-            // to the LEFT (decrease scroll_x → contribution `-x`), matching
-            // touch-content-tracks-the-finger. Vertical wheel is promoted to
-            // a horizontal pan the same way (wheel-up reveals content to the
-            // LEFT → `-y`). PixelDelta carries the same axis convention 1:1.
-            // 30 px / LineDelta matches the strip's prior per-line factor.
+            // Sign convention: GTK / browser `overflow-x-auto`
+            // (LineDelta y>0 = wheel-up = reveal content to the
+            // LEFT = decrease scroll_x → contribution `-y`).
+            // Trackpad horizontal: dx>0 = swipe-right = reveal
+            // content to the RIGHT → contribution `+x`. PixelDelta
+            // carries the same axis convention 1:1. 30 px / LineDelta
+            // matches the strip's prior per-line factor.
             let dx = match delta {
-                MouseScrollDelta::LineDelta(x, y) => (-*x - *y) as f64 * 30.0,
-                MouseScrollDelta::PixelDelta(pp) => -pp.x - pp.y,
+                MouseScrollDelta::LineDelta(x, y) => (*x - *y) as f64 * 30.0,
+                MouseScrollDelta::PixelDelta(pp) => pp.x - pp.y,
             };
             if dx != 0.0 {
                 let viewport = self.rect.width().max(1.0);

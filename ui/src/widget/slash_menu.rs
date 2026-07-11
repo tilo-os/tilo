@@ -454,6 +454,46 @@ impl Widget for SlashMenu {
     fn name(&self) -> &str { "SlashMenu" }
     fn test_id(&self) -> Option<&str> { Some("slash_menu") }
     fn get_rect(&self) -> Rect { self.rect() }
+
+    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        use crate::a11y::{AccessNode, AccessState, Role};
+        // The block-type picker is a Menu. Rows are drawn (not child widgets),
+        // so each currently-visible row is a synthetic `MenuItem` named by its
+        // label and marked selected at the highlight cursor. A closed menu is
+        // hidden so it collapses out of the focus/reading order.
+        if !self.visible_flag {
+            return Some(AccessNode::new(Role::Menu).with_state(AccessState {
+                expanded: Some(false),
+                hidden: true,
+                ..Default::default()
+            }));
+        }
+        let count = self.visible.len();
+        let items: Vec<AccessNode> = self
+            .visible
+            .iter()
+            .enumerate()
+            .filter_map(|(pos, &row_idx)| {
+                self.rows.get(row_idx).map(|row| {
+                    AccessNode::new(Role::MenuItem)
+                        .with_name(row.label.to_string())
+                        .with_state(AccessState {
+                            selected: pos == self.cursor,
+                            ..Default::default()
+                        })
+                        .with_position(pos + 1, count)
+                })
+            })
+            .collect();
+        Some(
+            AccessNode::new(Role::Menu)
+                .with_state(AccessState {
+                    expanded: Some(true),
+                    ..Default::default()
+                })
+                .with_children(items),
+        )
+    }
 }
 
 #[cfg(test)]

@@ -37,44 +37,12 @@ use vello::Scene;
 use winit::event::{Modifiers, WindowEvent};
 
 use crate::dispatcher::dispatcher_or_real;
-use crate::prefs::{PowerActionPref, PowerPrefs, SystemPrefs};
+use crate::prefs::{PowerPrefs, SystemPrefs};
 use crate::widgets::{card, caption, choice_row, rows, setting_row, value_row, El};
 
 pub const PROFILE_KEY: &str = "power.profile";
 pub const AUTO_SUSPEND_KEY: &str = "power.auto_suspend";
 pub const BLANK_KEY: &str = "power.blank";
-pub const SUSPEND_KEY: &str = "power.suspend";
-pub const LID_KEY: &str = "power.lid";
-pub const POWER_KEY_KEY: &str = "power.power_key";
-pub const CRITICAL_KEY: &str = "power.critical";
-
-/// Idle-suspend timeout options, `(label, minutes)`. `0` = never.
-const SUSPEND_OPTIONS: &[(&str, u32)] = &[
-    ("5 minutes", 5),
-    ("10 minutes", 10),
-    ("15 minutes", 15),
-    ("30 minutes", 30),
-    ("45 minutes", 45),
-    ("1 hour", 60),
-    ("Never", 0),
-];
-
-fn suspend_label(minutes: u32) -> &'static str {
-    SUSPEND_OPTIONS.iter().find(|(_, m)| *m == minutes).map(|(l, _)| *l).unwrap_or("15 minutes")
-}
-
-fn suspend_from_label(label: &str) -> Option<u32> {
-    SUSPEND_OPTIONS.iter().find(|(l, _)| *l == label).map(|(_, m)| *m)
-}
-
-/// The action options offered for the lid / power-key / critical-battery
-/// dropdowns, in display order.
-const ACTION_OPTIONS: &[PowerActionPref] =
-    &[PowerActionPref::Suspend, PowerActionPref::Lock, PowerActionPref::Ignore];
-
-fn action_options() -> Vec<String> {
-    ACTION_OPTIONS.iter().map(|a| a.display().to_string()).collect()
-}
 
 /// The power-profile options, as `(display label, profile)`. The label is what
 /// the dropdown shows and stores; the profile is what the dispatcher applies.
@@ -314,23 +282,14 @@ impl PowerPane {
 
         // --- Session-idle card (durable preferences).
         let blank_opts: Vec<String> = BLANK_OPTIONS.iter().map(|(l, _)| l.to_string()).collect();
-        let suspend_opts: Vec<String> = SUSPEND_OPTIONS.iter().map(|(l, _)| l.to_string()).collect();
         let idle = card(
             "Automatic power saving",
             rows(vec![
                 setting_row(
-                    "Suspend when idle",
+                    "Suspend when idle on battery",
                     Box::new(
                         Toggle::new("settings.power.auto_suspend", AUTO_SUSPEND_KEY)
                             .with_id("power.auto_suspend"),
-                    ),
-                ),
-                choice_row(
-                    "Suspend after",
-                    Box::new(
-                        Dropdown::new(suspend_opts, SUSPEND_KEY)
-                            .with_id("power.suspend")
-                            .with_placeholder(suspend_label(self.prefs.suspend_minutes)),
                     ),
                 ),
                 choice_row(
@@ -345,42 +304,7 @@ impl PowerPane {
             ]),
         );
 
-        // --- Buttons + battery actions card.
-        let actions = card(
-            "Power behaviour",
-            rows(vec![
-                choice_row(
-                    "When the lid is closed",
-                    Box::new(
-                        Dropdown::new(action_options(), LID_KEY)
-                            .with_id("power.lid")
-                            .with_placeholder(self.prefs.lid_close_action.display()),
-                    ),
-                ),
-                choice_row(
-                    "When the power key is pressed",
-                    Box::new(
-                        Dropdown::new(action_options(), POWER_KEY_KEY)
-                            .with_id("power.power_key")
-                            .with_placeholder(self.prefs.power_key_action.display()),
-                    ),
-                ),
-                choice_row(
-                    "When the battery is critically low",
-                    Box::new(
-                        Dropdown::new(action_options(), CRITICAL_KEY)
-                            .with_id("power.critical")
-                            .with_placeholder(self.prefs.critical_action.display()),
-                    ),
-                ),
-                caption(&format!(
-                    "You'll be warned at {}% and this action runs at {}%.",
-                    self.prefs.low_battery_percent, self.prefs.critical_battery_percent
-                )),
-            ]),
-        );
-
-        crate::widgets::cards(vec![battery_card, profile, idle, actions])
+        crate::widgets::cards(vec![battery_card, profile, idle])
     }
 
     fn persist(&self) {
@@ -405,11 +329,7 @@ impl Widget for PowerPane {
                 AUTO_SUSPEND_KEY,
                 automerge::ScalarValue::Boolean(self.prefs.auto_suspend),
             );
-            let _ = state.put(root, SUSPEND_KEY, suspend_label(self.prefs.suspend_minutes));
             let _ = state.put(root, BLANK_KEY, blank_label(self.prefs.blank_minutes));
-            let _ = state.put(root, LID_KEY, self.prefs.lid_close_action.display());
-            let _ = state.put(root, POWER_KEY_KEY, self.prefs.power_key_action.display());
-            let _ = state.put(root, CRITICAL_KEY, self.prefs.critical_action.display());
             self.last_prefs = self.prefs;
             self.needs_seed = false;
         }
@@ -442,50 +362,6 @@ impl Widget for PowerPane {
                 if m != self.last_prefs.blank_minutes {
                     self.last_prefs.blank_minutes = m;
                     self.prefs.blank_minutes = m;
-                    self.persist();
-                }
-            }
-        }
-
-        // Idle-suspend timeout → persist on change.
-        if let Some(label) = read_str(state, root, SUSPEND_KEY) {
-            if let Some(m) = suspend_from_label(&label) {
-                if m != self.last_prefs.suspend_minutes {
-                    self.last_prefs.suspend_minutes = m;
-                    self.prefs.suspend_minutes = m;
-                    self.persist();
-                }
-            }
-        }
-
-        // Lid-close action → persist on change.
-        if let Some(label) = read_str(state, root, LID_KEY) {
-            if let Some(a) = PowerActionPref::from_display(&label) {
-                if a != self.last_prefs.lid_close_action {
-                    self.last_prefs.lid_close_action = a;
-                    self.prefs.lid_close_action = a;
-                    self.persist();
-                }
-            }
-        }
-
-        // Power-key action → persist on change.
-        if let Some(label) = read_str(state, root, POWER_KEY_KEY) {
-            if let Some(a) = PowerActionPref::from_display(&label) {
-                if a != self.last_prefs.power_key_action {
-                    self.last_prefs.power_key_action = a;
-                    self.prefs.power_key_action = a;
-                    self.persist();
-                }
-            }
-        }
-
-        // Critical-battery action → persist on change.
-        if let Some(label) = read_str(state, root, CRITICAL_KEY) {
-            if let Some(a) = PowerActionPref::from_display(&label) {
-                if a != self.last_prefs.critical_action {
-                    self.last_prefs.critical_action = a;
-                    self.prefs.critical_action = a;
                     self.persist();
                 }
             }
@@ -730,43 +606,6 @@ mod tests {
         pane.sync(&mut doc, &root);
         assert!(!pane.prefs().auto_suspend);
         assert_eq!(pane.prefs().blank_minutes, 30);
-    }
-
-    /// The new power-behaviour controls (suspend timeout, lid, power key,
-    /// critical action) are adopted on change and land on disk in the shared
-    /// settings file — the real persist path the compositor reads.
-    #[test]
-    fn power_behaviour_prefs_persist_to_disk() {
-        let _cfg = crate::prefs::test_env::ConfigGuard::new("power_behaviour");
-        let rec = Arc::new(RecordingDispatcher::default());
-        let mut pane = PowerPane::with_parts(
-            rec as Arc<dyn Dispatcher + Send + Sync>,
-            sample_battery(),
-            PowerProfile::Balanced,
-            PowerPrefs::default(),
-        );
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        pane.sync(&mut doc, &root);
-
-        // Drive each new control through the CRDT the way the dropdowns do.
-        let _ = doc.put(&root, SUSPEND_KEY, "30 minutes");
-        let _ = doc.put(&root, LID_KEY, PowerActionPref::Lock.display());
-        let _ = doc.put(&root, POWER_KEY_KEY, PowerActionPref::Ignore.display());
-        let _ = doc.put(&root, CRITICAL_KEY, PowerActionPref::Suspend.display());
-        pane.sync(&mut doc, &root);
-
-        assert_eq!(pane.prefs().suspend_minutes, 30);
-        assert_eq!(pane.prefs().lid_close_action, PowerActionPref::Lock);
-        assert_eq!(pane.prefs().power_key_action, PowerActionPref::Ignore);
-        assert_eq!(pane.prefs().critical_action, PowerActionPref::Suspend);
-
-        // Reload from the real settings file: the compositor sees exactly this.
-        let reloaded = SystemPrefs::load().power;
-        assert_eq!(reloaded.suspend_minutes, 30);
-        assert_eq!(reloaded.lid_close_action, PowerActionPref::Lock);
-        assert_eq!(reloaded.power_key_action, PowerActionPref::Ignore);
-        assert_eq!(reloaded.critical_action, PowerActionPref::Suspend);
     }
 
     #[test]
