@@ -3,7 +3,7 @@
 # runs: it must be compiled with `--target wasm32-wasip2` and produces a
 # Component Model `.wasm`, not a host-target library. Build it explicitly:
 # `cargo build -p qdoc-codec-markdown-wasm --target wasm32-wasip2 --release`.
-exclude = ["crates/doc/qdoc-codec-markdown-wasm"]
+exclude = ["crates/doc/qdoc-codec-markdown-wasm", "vendor/winit"]
 members = [
     "crates/system/swipe",
     "crates/system/tts",
@@ -123,3 +123,12 @@ strip = "symbols"
 overflow-checks = false
 debug = "line-tables-only"
 incremental = false
+
+# Vendored winit fork. Upstream winit 0.30.13 only emits
+# `WindowEvent::PinchGesture` on macOS/iOS — its Wayland backend never binds
+# `zwp_pointer_gestures_v1`, so touchpad pinch-to-zoom is dead on Linux. The
+# vendored copy adds that binding and translates the protocol's pinch
+# begin/update/end into the same `PinchGesture` event shape the Apple
+# backends emit, giving every `ui` app touchpad pinch-to-zoom for free.
+[patch.crates-io]
+winit = { path = "vendor/winit" }
