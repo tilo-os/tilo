@@ -67,6 +67,17 @@ const OVERLAY_BREAKPOINT: f64 = 900.0;
 /// Rasterise pages at this multiple of their on-screen size so they stay
 /// crisp when the compositor scales the surface (and when zooming in a notch).
 const RASTER_SS: f64 = 2.0;
+/// Max number of *new* (uncached) full-page rasterisations a single frame may
+/// perform. A real page can cost tens-to-hundreds of ms, so capping this keeps
+/// the open→first-paint frame to the single top page and every frame cheap;
+/// skipped pages fill in over the next frames (`pending_raster`). Cached pages
+/// are always drawn (a cache hit is ~free), so steady-state scrolling is
+/// unaffected.
+const MAX_NEW_PAGE_RASTERS_PER_FRAME: usize = 1;
+/// Same budget for rail thumbnails, which are also full pdfium page renders (a
+/// scanned page's thumbnail can cost 15-30ms). A couple per frame keeps the
+/// rail filling in briskly without the open frame paying for a whole rail-full.
+const MAX_NEW_THUMB_RASTERS_PER_FRAME: usize = 2;
 /// How close (page points) a highlight drag must come to a text line before
 /// it snaps to text instead of falling back to a free-form rectangle.
 const SNAP_NEAR: f64 = 18.0;
@@ -391,6 +402,11 @@ pub struct PdfApp {
     created_counter: i64,
     commit_pending: bool,
     dirty: bool,
+    /// Set by `rasterize_visible` when it hit the per-frame new-raster budget
+    /// and still has uncached visible pages to render. Keeps `needs_redraw`
+    /// true so those pages fill in over the next frame(s) instead of stalling
+    /// the current one — the open→first-paint path renders only the top page.
+    pending_raster: bool,
 
     // Per-page text-line geometry (page-point space), cached during draw so
     // the smart highlight tool can snap to text without a TextRenderer.
@@ -589,6 +605,7 @@ impl PdfApp {
             created_counter: 100,
             commit_pending: false,
             dirty: true,
+            pending_raster: false,
             text_lines: std::collections::HashMap::new(),
             tooltip: Tooltip::new("").with_delay(Duration::from_millis(350)),
             tooltip_anchor: Rect::ZERO,
@@ -2078,7 +2095,11 @@ impl Widget for PdfApp {
     }
 
     fn needs_redraw(&self) -> bool {
-        self.dirty || self.drag.is_some() || self.pan.is_some() || self.rail_drag.is_some()
+        self.dirty
+            || self.pending_raster
+            || self.drag.is_some()
+            || self.pan.is_some()
+            || self.rail_drag.is_some()
     }
 
     fn needs_animation_frame(&self) -> bool {
@@ -2088,7 +2109,12 @@ impl Widget for PdfApp {
         // settles to zero frames instead of redrawing forever. The pointer
         // leaving a button arrives as a real event, which repaints and clears
         // the popover on its own.
-        self.tooltip_pending
+        //
+        // Also tick while a page rasterisation was deferred off this frame's
+        // budget (`pending_raster`): the framework's animation pump re-draws at
+        // ~60 Hz so the remaining visible pages fill in over the next frame(s),
+        // then `pending_raster` clears and the window settles back to idle.
+        self.tooltip_pending || self.pending_raster
     }
 
     fn mark_drawn(&mut self) {
@@ -2175,8 +2201,18 @@ mod tests {
                 .unwrap();
         }
         app.apply_layout(&taffy, child, Point::ORIGIN);
+        // Draw until the per-frame raster budget's backlog drains, so a single
+        // still frame is the *settled* image (the live app pumps these
+        // follow-up frames via `needs_animation_frame`; a one-shot capture must
+        // do it itself or the rail/second page would be half-rasterised).
         let mut scene = Scene::new();
-        app.draw_with_presence(&mut scene, Affine::IDENTITY, &mut tr, &theme, &PresenceCtx::empty(), &PermissionContext::permissive());
+        for _ in 0..32 {
+            scene = Scene::new();
+            app.draw_with_presence(&mut scene, Affine::IDENTITY, &mut tr, &theme, &PresenceCtx::empty(), &PermissionContext::permissive());
+            if !app.pending_raster {
+                break;
+            }
+        }
         if let (Some(path), true) = (out, want_png) {
             if let Some(parent) = std::path::Path::new(path).parent() {
                 std::fs::create_dir_all(parent).ok();
@@ -2927,6 +2963,80 @@ mod tests {
         assert_eq!(
             idle_text_pages, 0,
             "an idle frame must defer pdfium text extraction (only selection/search needs it)"
+        );
+    }
+
+    /// Opening a document must not rasterise a screen-full of pages on the very
+    /// first frame: a real page (and, for a scanned PDF, even its rail
+    /// thumbnail) costs tens-to-hundreds of ms, so the open→first-paint frame
+    /// pays for only the single top page and defers the rest to follow-up
+    /// frames. This guards that budget — and that the backlog drains and the
+    /// frame pump settles (no permanent redraw spin).
+    #[test]
+    #[serial(pdfium)]
+    fn open_rasterises_only_the_budgeted_pages_on_the_first_frame() {
+        use std::collections::HashMap;
+        use ui::permissions::PermissionContext;
+        use ui::presence::PresenceCtx;
+        use ui::text_render::TextRenderer;
+        use ui::theme::Theme;
+
+        let mut app = open_raster_sample();
+        let mut st = ui::State::new();
+        let theme = Theme::dark();
+        let (w, h) = (1280.0f64, 800.0f64);
+        let mut tr = TextRenderer::new();
+
+        let mut frame = |app: &mut PdfApp, st: &mut ui::State, tr: &mut TextRenderer| {
+            let mut taffy: TaffyTree<()> = TaffyTree::new();
+            let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+            app.sync(&mut st.doc, &st.root);
+            let child = app.build_layout(&mut taffy, &theme, &mut node_map);
+            let root = taffy
+                .new_with_children(
+                    Style { size: Size { width: Dimension::length(w as f32), height: Dimension::length(h as f32) }, ..Default::default() },
+                    &[child],
+                )
+                .unwrap();
+            let measure_map = node_map.clone();
+            let trm = &mut *tr;
+            taffy
+                .compute_layout_with_measure(
+                    root,
+                    taffy::Size { width: taffy::AvailableSpace::Definite(w as f32), height: taffy::AvailableSpace::Definite(h as f32) },
+                    |known, avail, node_id, _, _| {
+                        if let Some(&ptr) = measure_map.get(&node_id) {
+                            unsafe { (*ptr).measure(known, avail, trm) }
+                        } else {
+                            taffy::Size::ZERO
+                        }
+                    },
+                )
+                .unwrap();
+            app.apply_layout(&taffy, child, Point::ORIGIN);
+            let mut scene = Scene::new();
+            app.draw_with_presence(&mut scene, Affine::IDENTITY, tr, &theme, &PresenceCtx::empty(), &PermissionContext::permissive());
+        };
+
+        // The very first painted frame after open.
+        frame(&mut app, &mut st, &mut tr);
+        let full_pages_first = app.raster.as_ref().unwrap().cached_full_page_count();
+        assert!(
+            full_pages_first <= MAX_NEW_PAGE_RASTERS_PER_FRAME,
+            "first paint rasterises at most {MAX_NEW_PAGE_RASTERS_PER_FRAME} full page(s), not a screen-full — got {full_pages_first}"
+        );
+
+        // The deferred work drains over the next frames and the pump settles:
+        // `pending_raster` (which drives the animation-frame follow-up) clears.
+        for _ in 0..20 {
+            if !app.pending_raster {
+                break;
+            }
+            frame(&mut app, &mut st, &mut tr);
+        }
+        assert!(
+            !app.pending_raster,
+            "the deferred-raster backlog drains and the frame pump settles back to idle"
         );
     }
 

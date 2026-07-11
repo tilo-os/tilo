@@ -169,15 +169,25 @@ fn render_shot_to_png(
     }
     widget.apply_layout(&taffy, child, Point::ORIGIN);
 
+    // Draw until the per-frame raster budget's backlog drains so the captured
+    // still is the settled image. The live app pumps these follow-up frames via
+    // `needs_animation_frame`; a one-shot capture drains them here, otherwise a
+    // deferred page / rail thumbnail would be missing from the PNG.
     let mut scene = Scene::new();
-    widget.draw_with_presence(
-        &mut scene,
-        Affine::IDENTITY,
-        &mut text_renderer,
-        &theme,
-        &presence,
-        &permission,
-    );
+    for _ in 0..32 {
+        scene = Scene::new();
+        widget.draw_with_presence(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut text_renderer,
+            &theme,
+            &presence,
+            &permission,
+        );
+        if !widget.needs_animation_frame() {
+            break;
+        }
+    }
 
     if let Some(parent) = out.parent() {
         std::fs::create_dir_all(parent).ok();
