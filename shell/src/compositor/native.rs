@@ -1182,6 +1182,27 @@ pub fn run() -> ! {
             }
         }
 
+        // `ext_session_lock_v1`: fold a protocol client's lock/unlock into
+        // the one authoritative session lock. A client `lock` request drives
+        // the same locked state (and overlay) as the chord/idle path; a client
+        // `unlock_and_destroy` clears it (the client authenticated on its own
+        // side — the compositor's password path is for chord/idle locks). The
+        // stashed `SessionLocker` is confirmed after the overlay is painted,
+        // below, so the client's `locked` event only fires once content is
+        // hidden.
+        if state.session_lock.take_lock_requested() {
+            session_changed = true;
+            for t in session.request_lock(Instant::now()) {
+                apply_session_transition(t, backend.as_mut());
+            }
+        }
+        if state.session_lock.take_unlock_requested() {
+            session_changed = true;
+            for t in session.request_unlock(Instant::now()) {
+                apply_session_transition(t, backend.as_mut());
+            }
+        }
+
         // Reset the lock screen's input the instant the lock engages, so a
         // fresh lock always starts with an empty field and no stale error
         // carried over from a previous lock episode.
@@ -1299,6 +1320,18 @@ pub fn run() -> ! {
             // value so the next idle tick doesn't see a phantom change.
             last_revision = frame_builder.chrome_revision();
             force_first_paint = false;
+        }
+
+        // Confirm an `ext_session_lock_v1` client's lock only after the lock
+        // overlay has been presented and the session is actually locked, so
+        // the protocol's `locked` event (sent by `SessionLocker::lock`) never
+        // fires while app content could still be on screen. If the lock did
+        // not take (dropping the locker), the protocol notifies the client of
+        // the failure automatically.
+        if session.is_locked() {
+            if let Some(locker) = state.session_lock.take_pending_locker() {
+                locker.lock();
+            }
         }
 
         // Real-input e2e Phase 1b: accept any new test-control

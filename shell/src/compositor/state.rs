@@ -55,12 +55,15 @@ use smithay::wayland::shell::xdg::{
     PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState,
     XdgToplevelSurfaceData,
 };
+use smithay::wayland::session_lock::{
+    LockSurface, SessionLockHandler, SessionLockManagerState, SessionLocker,
+};
 use smithay::wayland::shm::{ShmHandler, ShmState};
 use smithay::wayland::virtual_keyboard::VirtualKeyboardManagerState;
 use smithay::{
     delegate_compositor, delegate_dmabuf, delegate_fractional_scale, delegate_output,
-    delegate_seat, delegate_shm, delegate_viewporter, delegate_virtual_keyboard_manager,
-    delegate_xdg_shell,
+    delegate_seat, delegate_session_lock, delegate_shm, delegate_viewporter,
+    delegate_virtual_keyboard_manager, delegate_xdg_shell,
 };
 
 use crate::collab::flatpak_share::SharedFlatpakSession;
@@ -98,6 +101,53 @@ fn load_display_scale() -> f64 {
         // with a small margin, so an out-of-band value can't wedge the UI.
         Some(scale) if (0.5..=3.0).contains(&scale) => scale,
         _ => 1.0,
+    }
+}
+
+/// Bridges the `ext_session_lock_v1` protocol handler (which runs inside the
+/// smithay dispatch on [`State`]) to the native run loop that owns the
+/// authoritative lock state + the compositor-drawn lock overlay.
+///
+/// The protocol and the compositor share **one** locked state: a client
+/// `lock` request stashes the [`SessionLocker`] here and raises
+/// `lock_requested`; the run loop locks the session, paints the overlay, then
+/// confirms via [`SessionLocker::lock`] so the client's `locked` event only
+/// fires once app content is actually hidden. A client `unlock_and_destroy`
+/// raises `unlock_requested`, which the run loop consumes to clear the lock
+/// (the client authenticated on its side; the compositor's own PAM path
+/// authenticates chord/idle-driven locks). Same-thread, so no `Arc`/lock —
+/// the run loop reads these fields directly each tick.
+#[derive(Default)]
+pub struct SessionLockHooks {
+    lock_requested: bool,
+    unlock_requested: bool,
+    pending_locker: Option<SessionLocker>,
+}
+
+impl SessionLockHooks {
+    /// Take the "a client asked to lock" edge (clears it; true at most once
+    /// per protocol `lock` request).
+    pub fn take_lock_requested(&mut self) -> bool {
+        std::mem::take(&mut self.lock_requested)
+    }
+
+    /// Take the "a client asked to unlock" edge (clears it).
+    pub fn take_unlock_requested(&mut self) -> bool {
+        std::mem::take(&mut self.unlock_requested)
+    }
+
+    /// Take the stashed [`SessionLocker`] so the run loop can confirm the lock
+    /// with `.lock()` after the overlay has been presented. `None` when
+    /// nothing is pending confirmation.
+    pub fn take_pending_locker(&mut self) -> Option<SessionLocker> {
+        self.pending_locker.take()
+    }
+
+    /// Whether a client currently holds (or is mid-acquiring) the lock —
+    /// there is a locker pending confirmation. Used only by tests.
+    #[cfg(test)]
+    pub fn has_pending_locker(&self) -> bool {
+        self.pending_locker.is_some()
     }
 }
 
@@ -274,6 +324,13 @@ pub struct State {
     /// client fills the whole output; `(0, 0)` leaves the size unspecified so
     /// the client keeps its own.
     pub output_size: (i32, i32),
+    /// `ext_session_lock_v1` global state (tracks which outputs a client lock
+    /// has covered). Advertised so `loginctl lock-session` / a conforming lock
+    /// client can drive the session lock through the standard protocol.
+    pub session_lock_state: SessionLockManagerState,
+    /// Bridge from the protocol handler to the native run loop's authoritative
+    /// lock (see [`SessionLockHooks`]).
+    pub session_lock: SessionLockHooks,
 }
 
 impl State {
@@ -359,6 +416,12 @@ impl State {
         // per-surface on commit (see `CompositorHandler::commit`).
         let fractional_scale_manager = FractionalScaleManagerState::new::<Self>(&display_handle);
         let viewporter = ViewporterState::new::<Self>(&display_handle);
+        // Advertise `ext_session_lock_manager_v1` so a conforming lock client
+        // (or `loginctl lock-session` routed through one) can lock the session
+        // through the standard protocol. The filter allows every client; the
+        // compositor still owns the on-screen lock UI + authentication.
+        let session_lock_state =
+            SessionLockManagerState::new::<Self, _>(&display_handle, |_client| true);
         // Read the persisted display scale from the shared settings store
         // so the compositor advertises the value the Settings app wrote.
         let scale = load_display_scale();
@@ -389,6 +452,8 @@ impl State {
             scale,
             fullscreen_group: None,
             output_size: (0, 0),
+            session_lock_state,
+            session_lock: SessionLockHooks::default(),
         }
     }
 
@@ -1090,6 +1155,49 @@ delegate_virtual_keyboard_manager!(State);
 delegate_output!(State);
 delegate_fractional_scale!(State);
 delegate_viewporter!(State);
+
+// `ext_session_lock_v1`: a client can lock the session; while locked the
+// compositor hides all normal client surfaces + routes input only to the lock
+// surface (enforced by the native run loop, which owns the authoritative lock
+// + the compositor-drawn overlay). qOS renders its own lock UI rather than a
+// client lock surface, so the handler bridges a protocol `lock`/`unlock` into
+// that one lock state via [`SessionLockHooks`] instead of compositing a client
+// surface.
+impl SessionLockHandler for State {
+    fn lock_state(&mut self) -> &mut SessionLockManagerState {
+        &mut self.session_lock_state
+    }
+
+    fn lock(&mut self, confirmation: SessionLocker) {
+        // Raise the request for the run loop to enter the locked state and
+        // paint the overlay; stash the confirmation so the loop calls
+        // `.lock()` only after app content is hidden (the client's `locked`
+        // event must not fire before the screen is actually covered).
+        self.session_lock.lock_requested = true;
+        self.session_lock.pending_locker = Some(confirmation);
+    }
+
+    fn unlock(&mut self) {
+        // The client tore down its lock (having authenticated on its side).
+        self.session_lock.unlock_requested = true;
+    }
+
+    fn new_surface(&mut self, surface: LockSurface, _output: WlOutput) {
+        // qOS renders its own lock overlay as compositor chrome, so a client
+        // lock surface is accepted (so a conforming client does not error or
+        // hang) but is not composited — the compositor overlay is the lock UI.
+        // Configure it to the current output size so the client can commit a
+        // correctly-sized buffer per the protocol.
+        let (w, h) = self.output_size;
+        if w > 0 && h > 0 {
+            surface.with_pending_state(|state| {
+                state.size = Some((w as u32, h as u32).into());
+            });
+            surface.send_configure();
+        }
+    }
+}
+delegate_session_lock!(State);
 
 // `AsRef<ColorManagerState>` lets the color-management `GlobalDispatch`
 // impl reach the advertised-capability list without adding a public
