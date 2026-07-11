@@ -635,6 +635,12 @@ impl PdfApp {
                 };
                 let mods = modifiers.state();
                 let ctrl = mods.control_key() || mods.super_key();
+                tracing::debug!(
+                    kind = match delta { MouseScrollDelta::LineDelta(..) => "line", MouseScrollDelta::PixelDelta(..) => "pixel" },
+                    raw_x, raw_y, ctrl,
+                    shift = mods.shift_key(),
+                    "pdf MouseWheel"
+                );
 
                 // Wheel over the page rail scrolls its thumbnail list.
                 if self.show_rail && self.rail_rect.contains(p) {
@@ -676,9 +682,13 @@ impl PdfApp {
                 *handled = true;
             }
 
-            // Touchpad pinch: zoom toward the cursor. winit surfaces this on
-            // macOS/iOS; on Wayland a pinch usually arrives as ctrl+two-finger
-            // scroll (handled by `MouseWheel` above), so both gestures zoom.
+            // Touchpad pinch: zoom toward the cursor. winit only emits
+            // `PinchGesture` on its macOS/iOS backends — the Wayland (and X11)
+            // backend never does, and binds no pointer-gesture protocol, so a
+            // bare two-finger pinch produces NO event there. On Wayland/GNOME
+            // the touchpad zoom is therefore Ctrl + two-finger scroll, which
+            // arrives as the `MouseWheel` PixelDelta handled above; this arm is
+            // the native pinch for the platforms that do deliver it.
             WindowEvent::PinchGesture { delta, .. } => {
                 if delta.is_finite() && *delta != 0.0 {
                     self.zoom_at(1.0 + *delta, self.last_mouse);
@@ -1068,6 +1078,70 @@ mod event_tests {
 
         pinch(&mut app, &mut st, -0.25);
         assert!(app.zoom() < z_in - 1e-3, "pinch-close zooms out ({z_in} -> {})", app.zoom());
+    }
+
+    /// The gesture the user actually gets on Wayland/GNOME: winit's Wayland
+    /// backend never emits `PinchGesture` (that is macOS/iOS only) and delivers
+    /// a touchpad two-finger scroll as `MouseWheel` with a **`PixelDelta`** — so
+    /// Ctrl + two-finger scroll is *the* touchpad zoom. Assert a Ctrl-held
+    /// `PixelDelta` wheel zooms in through the real `handle_event`, cursor-
+    /// centred (the document point under the cursor stays fixed), and that the
+    /// same scroll without Ctrl pans instead of zooming.
+    #[test]
+    fn ctrl_pixel_scroll_zooms_cursor_centred_through_the_event_path() {
+        use winit::dpi::PhysicalPosition;
+        use winit::event::{MouseScrollDelta, TouchPhase};
+
+        let (mut app, mut st) = app();
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let node = taffy.new_leaf(Style::default()).unwrap();
+        let mods_none = winit::event::Modifiers::default();
+
+        let feed = |app: &mut PdfApp, st: &mut ui::State, ev: &WindowEvent, mods: &winit::event::Modifiers| {
+            let mut handled = false;
+            let mut focus = None;
+            app.handle_event(ev, 1.0, mods, &mut st.doc, &st.root, &mut handled, &mut focus, node, &taffy);
+        };
+
+        // Park the cursor over the page canvas via a real CursorMoved, so the
+        // wheel handler's focal point (`self.last_mouse`) is set the live way.
+        // Use the canvas horizontal centre: at fit-page the page is narrower
+        // than the viewport and stays centred, so only the scrollable (vertical)
+        // axis can track the cursor — at the centre both axes hold, giving a
+        // clean full cursor-centred check.
+        let cursor = Point::new(app.canvas_rect.center().x, app.canvas_rect.y0 + 220.0);
+        feed(&mut app, &mut st, &WindowEvent::CursorMoved { device_id: dummy_device_id(), position: PhysicalPosition::new(cursor.x, cursor.y) }, &mods_none);
+
+        let doc_under_cursor_0 = app.viewport.screen_to_content(cursor);
+        let z0 = app.zoom();
+
+        // Ctrl + two-finger scroll UP, exactly as Wayland delivers it: a
+        // PixelDelta wheel with the Control modifier tracked from ModifiersChanged.
+        let pixel_up = WindowEvent::MouseWheel {
+            device_id: dummy_device_id(),
+            delta: MouseScrollDelta::PixelDelta(PhysicalPosition::new(0.0, 30.0)),
+            phase: TouchPhase::Moved,
+        };
+        feed(&mut app, &mut st, &pixel_up, &ctrl_mods());
+        let z_in = app.zoom();
+        assert!(z_in > z0 + 1e-3, "Ctrl + PixelDelta scroll zooms in ({z0} -> {z_in})");
+
+        // Cursor-centred: the document point beneath the cursor did not drift.
+        let doc_under_cursor_1 = app.viewport.screen_to_content(cursor);
+        let drift = (doc_under_cursor_1 - doc_under_cursor_0).hypot();
+        assert!(drift < 0.5, "zoom stays centred on the cursor (doc-point drift {drift:.3}pt)");
+
+        // Same scroll without Ctrl scrolls the document instead of zooming.
+        let z_before = app.zoom();
+        let sy0 = app.scroll_y();
+        let pixel_down = WindowEvent::MouseWheel {
+            device_id: dummy_device_id(),
+            delta: MouseScrollDelta::PixelDelta(PhysicalPosition::new(0.0, -40.0)),
+            phase: TouchPhase::Moved,
+        };
+        feed(&mut app, &mut st, &pixel_down, &mods_none);
+        assert!((app.zoom() - z_before).abs() < 1e-6, "a bare two-finger scroll must not zoom");
+        assert!(app.scroll_y() > sy0, "a bare two-finger scroll pans the document");
     }
 
     #[test]
