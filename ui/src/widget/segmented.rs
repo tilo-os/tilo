@@ -247,6 +247,42 @@ impl Widget for TriStateControl {
     fn name(&self) -> &str { "TriStateControl" }
 
     fn get_rect(&self) -> Rect { self.rect }
+
+    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        use crate::a11y::{AccessNode, AccessState, Role};
+        // A three-way exclusive selector is a radio group. The segments are
+        // drawn, not child widgets, so each is a synthetic `RadioButton` child
+        // carrying the checked (selected) state; the group surfaces the active
+        // segment's label as its value so an AT announces the current choice.
+        // Labels are host-provided runtime strings, not FTL keys → no `i18n!`.
+        let count = self.labels.len();
+        let value = self.labels.get(self.selected).cloned();
+        let segments: Vec<AccessNode> = self
+            .labels
+            .iter()
+            .enumerate()
+            .map(|(i, label)| {
+                AccessNode::new(Role::RadioButton)
+                    .with_name(label.clone())
+                    .with_state(AccessState {
+                        checked: Some(i == self.selected),
+                        ..Default::default()
+                    })
+                    .with_position(i + 1, count)
+            })
+            .collect();
+        Some(
+            AccessNode::new(Role::Group)
+                .with_optional_value(value)
+                .with_state(AccessState {
+                    focusable: self.is_focusable(),
+                    focused: self.is_focused(),
+                    disabled: !self.is_enabled(),
+                    ..Default::default()
+                })
+                .with_children(segments),
+        )
+    }
 }
 
 /// A fixed-palette colour-swatch picker. Lays a grid of swatches and records
@@ -441,6 +477,45 @@ impl Widget for ColorSwatchPicker {
     fn name(&self) -> &str { "ColorSwatchPicker" }
 
     fn get_rect(&self) -> Rect { self.rect }
+
+    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        use crate::a11y::{AccessNode, AccessState, Role};
+        // A palette grid is a single-select list. Each swatch is drawn (not a
+        // child widget), so it becomes a synthetic `ListItem` named by its hex
+        // value — derived from the real colour, not fabricated — and marked
+        // selected when it is the current choice. The list surfaces the chosen
+        // swatch's hex as its value.
+        let hex = |rgb: u32| format!("#{rgb:06X}");
+        let count = self.palette.len();
+        let value = self
+            .selected
+            .and_then(|i| self.palette.get(i))
+            .map(|&rgb| hex(rgb));
+        let items: Vec<AccessNode> = self
+            .palette
+            .iter()
+            .enumerate()
+            .map(|(i, &rgb)| {
+                AccessNode::new(Role::ListItem)
+                    .with_name(hex(rgb))
+                    .with_state(AccessState {
+                        selected: self.selected == Some(i),
+                        ..Default::default()
+                    })
+                    .with_position(i + 1, count)
+            })
+            .collect();
+        Some(
+            AccessNode::new(Role::List)
+                .with_optional_value(value)
+                .with_state(AccessState {
+                    focusable: self.is_focusable(),
+                    focused: self.is_focused(),
+                    ..Default::default()
+                })
+                .with_children(items),
+        )
+    }
 }
 
 #[cfg(test)]

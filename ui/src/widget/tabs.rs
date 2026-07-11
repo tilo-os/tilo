@@ -1305,7 +1305,7 @@ impl Widget for TabBar {
             } else {
                 let raw = elapsed.as_secs_f64() / (LAYOUT_ANIM_MS as f64 / 1000.0);
                 // Ease-out-cubic, matching the drop-zone curve above.
-                Some(crate::ease_out(raw))
+                Some(1.0 - (1.0 - raw).powi(3))
             }
         });
 
@@ -1358,7 +1358,7 @@ impl Widget for TabBar {
                         let raw = (elapsed.as_secs_f64()
                             / (INSERT_FADE_MS as f64 / 1000.0))
                             .clamp(0.0, 1.0);
-                        let eased = crate::ease_out(raw);
+                        let eased = 1.0 - (1.0 - raw).powi(3);
                         (eased as f32, -INSERT_FADE_Y_OFFSET * (1.0 - eased))
                     }
                 }
@@ -1442,7 +1442,7 @@ impl Widget for TabBar {
                 let raw = (elapsed.as_secs_f64()
                     / (CLOSE_FADE_MS as f64 / 1000.0))
                     .clamp(0.0, 1.0);
-                let eased = crate::ease_out(raw);
+                let eased = 1.0 - (1.0 - raw).powi(3);
                 let alpha = (1.0 - eased) as f32;
                 let scale = 1.0 + (CLOSE_SCALE_END - 1.0) * eased;
                 let y_offset = CLOSE_Y_OFFSET_END * eased;
@@ -1512,7 +1512,7 @@ impl Widget for TabBar {
                 .map(|t| now.duration_since(t).as_millis() as f64)
                 .unwrap_or(HOVER_DROP_FADE_MS as f64);
             let raw_t = (elapsed_ms / HOVER_DROP_FADE_MS as f64).clamp(0.0, 1.0);
-            let eased_t = crate::ease_out(raw_t);
+            let eased_t = 1.0 - (1.0 - raw_t).powi(3);
             // Compute the gap's centre x and the vertical extent of the
             // line, mirroring the accent-bar geometry above so the two
             // indicators (when both visible on the source bar) sit at
@@ -1842,11 +1842,12 @@ impl Widget for TabBar {
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
-        // The bar maps to an AT tablist. Individual tabs are `TabDescriptor`
-        // data, not separate Widget children, so the bar is the single
-        // accessible node and we expose the *active* tab's title as `value`
-        // so an AT announces the current tab. Titles are runtime strings, not
-        // FTL keys, so no `i18n!` wrap. No intrinsic label → name None.
+        // The bar maps to an AT tablist. It exposes the *active* tab's title as
+        // `value` so an AT announces the current tab, and each tab is a
+        // synthetic `Tab` child (see below) so the strip is enumerable — tabs
+        // are `TabDescriptor` data, not separate Widget children. Titles are
+        // runtime strings, not FTL keys, so no `i18n!` wrap. No intrinsic
+        // label → name None.
         let active_idx = self.tabs.iter().position(|t| t.id == self.active_id);
         let value = active_idx.map(|i| self.tabs[i].title.clone());
         let mut node = AccessNode::new(Role::TabBar)
@@ -1861,6 +1862,26 @@ impl Widget for TabBar {
         if let Some(i) = active_idx {
             node = node.with_position(i + 1, self.tabs.len());
         }
+        // Expose each tab as a synthetic `Tab` child carrying its title and
+        // selected state, so an AT can enumerate and jump between tabs (not
+        // just hear the active one). Tabs are `TabDescriptor` data, not child
+        // widgets, hence synthetic children on the bar node.
+        let count = self.tabs.len();
+        let tab_children: Vec<AccessNode> = self
+            .tabs
+            .iter()
+            .enumerate()
+            .map(|(i, t)| {
+                AccessNode::new(Role::Tab)
+                    .with_name(t.title.clone())
+                    .with_state(AccessState {
+                        selected: t.id == self.active_id,
+                        ..Default::default()
+                    })
+                    .with_position(i + 1, count)
+            })
+            .collect();
+        node = node.with_children(tab_children);
         Some(node)
     }
 
