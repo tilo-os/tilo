@@ -41,7 +41,9 @@ use crate::compositor::backend::{
 };
 use crate::compositor::frame::FrameBuilder;
 use crate::compositor::idle::{IdleConfig, SessionManager, SessionTransition};
-use crate::compositor::lock_screen;
+use crate::compositor::lock_auth;
+use crate::compositor::lock_controller::{LockController, LockKey, UnlockOutcome};
+use crate::compositor::lock_screen::{self, LockView};
 use crate::compositor::state::{ClientState, State};
 use crate::compositor::test_control::{
     self, ControlState, KeyTag, NamedKeyTag, PlannedAction, parse_command, serialise_response,
@@ -625,7 +627,48 @@ fn apply_session_transition(transition: SessionTransition, backend: &mut dyn Bac
     match transition {
         SessionTransition::Blanked => backend.set_dpms(false),
         SessionTransition::Woke => backend.set_dpms(true),
-        SessionTransition::Locked | SessionTransition::Unlocked => {}
+        // Lock/Unlock are reflected via `SessionManager::is_locked`;
+        // Suspend is gated by the inhibitor registry + issued through the
+        // power service at the call site, never here.
+        SessionTransition::Locked
+        | SessionTransition::Unlocked
+        | SessionTransition::Suspend => {}
+    }
+}
+
+/// Whether an event is the hardware power key being pressed. Detected by
+/// both the logical [`NamedKey::Power`] and the physical key code so it works
+/// regardless of the active keymap.
+fn is_power_key(event: &WindowEvent) -> bool {
+    if let WindowEvent::KeyboardInput { event, .. } = event {
+        if event.state == ElementState::Pressed {
+            if matches!(event.logical_key, Key::Named(NamedKey::Power)) {
+                return true;
+            }
+            if let PhysicalKey::Code(code) = event.physical_key {
+                return code == winit::keyboard::KeyCode::Power;
+            }
+        }
+    }
+    false
+}
+
+/// Build an OS notification toast from a power-service notification.
+fn power_notification_to_incoming(
+    bridge: &crate::notifications::NotificationBridge,
+    n: qos_power_mgmt::PowerNotification,
+) -> crate::notifications::IncomingNotification {
+    crate::notifications::IncomingNotification {
+        dbus_id: bridge.alloc_id(),
+        app_name: "Power".to_string(),
+        summary: n.summary,
+        body: n.body,
+        actions: Vec::new(),
+        // Critical battery lingers until dismissed; the low heads-up uses the
+        // server default expiry.
+        expire_timeout: if n.critical { 0 } else { -1 },
+        urgency: if n.critical { 2 } else { 1 },
+        caller: None,
     }
 }
 
@@ -652,16 +695,35 @@ fn is_lock_chord(event: &WindowEvent, modifiers: &Modifiers) -> bool {
 /// this pass; wiring real PAM authentication behind it is a documented
 /// follow-up. Only key presses count so an auto-repeat release can't
 /// race the transition.
-fn is_unlock_input(event: &WindowEvent) -> bool {
-    if let WindowEvent::KeyboardInput { event, .. } = event {
-        if event.state == ElementState::Pressed {
-            return matches!(
-                event.logical_key,
-                Key::Named(NamedKey::Enter) | Key::Named(NamedKey::Escape)
-            );
+/// Map a live winit key event to the lock screen's normalised [`LockKey`]
+/// while the session is locked. Non-press events and unhandled keys become
+/// [`LockKey::Ignored`] so they are still *swallowed* (never routed to apps
+/// behind the overlay), but have no effect on the password buffer. This is
+/// the winit half of "input goes only to the lock surface"; the test-control
+/// path produces the same [`LockKey`]s so both drive one routing.
+fn winit_event_to_lock_key(event: &WindowEvent) -> LockKey {
+    let WindowEvent::KeyboardInput { event, .. } = event else {
+        return LockKey::Ignored;
+    };
+    if event.state != ElementState::Pressed {
+        return LockKey::Ignored;
+    }
+    match &event.logical_key {
+        Key::Named(NamedKey::Enter) => LockKey::Submit,
+        Key::Named(NamedKey::Escape) => LockKey::Cancel,
+        Key::Named(NamedKey::Backspace) => LockKey::Backspace,
+        Key::Named(NamedKey::Space) => LockKey::Text(" ".to_string()),
+        Key::Character(s) => LockKey::Text(s.to_string()),
+        _ => {
+            // Some layouts deliver typed text on otherwise-Named keys.
+            match &event.text {
+                Some(t) if !t.is_empty() && !t.chars().all(|c| c.is_control()) => {
+                    LockKey::Text(t.to_string())
+                }
+                _ => LockKey::Ignored,
+            }
         }
     }
-    false
 }
 
 /// Entry point for the smithay-on-Wayland compositor.
@@ -829,7 +891,37 @@ pub fn run() -> ! {
     // transitions into `backend.set_dpms` calls and lock-overlay paints.
     // Config comes from `QOS_IDLE_BLANK_SECS` / `QOS_IDLE_LOCK_SECS`
     // (defaults: blank after 5 min, no auto-lock).
-    let mut session = SessionManager::new(IdleConfig::from_env(), Instant::now());
+    // Power policy from the shared Settings store (`settings.json`); drives
+    // the idle-suspend timeout, the lid / power-key actions, and the battery
+    // thresholds. Read once at session start, the same way the display scale
+    // is — the contract is the JSON on disk, not a shared crate.
+    let power_policy = qos_power_mgmt::config::load_policy();
+    let mut session = SessionManager::new(
+        IdleConfig::from_env().with_suspend(power_policy.idle_suspend),
+        Instant::now(),
+    );
+    // Session-lock unlock: the lock screen's input + auth state machine. The
+    // verifier is chosen from the environment — the injected fixed password
+    // for the headless harness (`QOS_LOCK_TEST_PASSWORD`), else the real
+    // greetd/PAM path (`greeter::greetd_client::verify_password`) — so the
+    // lock/unlock flow runs the same code in tests and production, differing
+    // only in how a credential is checked. Fail-closed when neither is set.
+    let mut lock = LockController::new(
+        lock_auth::verifier_from_env(),
+        std::env::var("USER").unwrap_or_else(|_| "user".to_string()),
+    );
+    // Locked edge, so the controller resets exactly when the lock engages
+    // (clearing any half-typed password / stale error from a prior lock).
+    let mut prev_locked = false;
+    // The suspend-inhibitor registry: apps/tasks hold a token via
+    // `inhibit_registry.acquire(reason)` to keep the machine awake. The power
+    // service mirrors it into a real logind `idle:sleep` lock; the idle loop
+    // consults `is_inhibited()` before honouring an idle-suspend.
+    let inhibit_registry = qos_power_mgmt::InhibitRegistry::new();
+    // The mailbox the async power service uses to reach this loop (lock the
+    // session, post a battery toast, reset the idle timer on resume) and this
+    // loop uses to reach it (request a suspend).
+    let power_bridge = qos_power_mgmt::PowerBridge::new();
 
     // Track D1: the `org.freedesktop.Notifications` D-Bus service. The
     // compositor owns the notification daemon so sandboxed apps' toasts
@@ -878,7 +970,6 @@ pub fn run() -> ! {
                         crate::notifications::BUS_NAME
                     );
                     _notif_handle = Some(h);
-                    _notif_runtime = Some(rt);
                 }
                 Err(e) => {
                     tracing::warn!(
@@ -887,10 +978,37 @@ pub fn run() -> ! {
                     );
                 }
             }
+            // Keep the runtime alive regardless of the notification outcome:
+            // the power service lives on the *system* bus (logind/UPower),
+            // independent of the *session*-bus notification daemon, and shares
+            // these background threads.
+            _notif_runtime = Some(rt);
         }
         Err(e) => {
             tracing::warn!("notifications: tokio runtime build failed ({e}); D-Bus service off");
         }
+    }
+
+    // Power service: the async orchestrator that suspends via logind, mirrors
+    // the inhibitor registry into a logind lock, watches the battery, and
+    // reacts to the lid. Spawned on the notify runtime (same background
+    // threads). If the system bus / logind / UPower are unreachable it logs
+    // and the compositor keeps running with the pure idle policy only — a
+    // headless / bus-less session still blanks, locks, and honours env
+    // suspend timeouts, it just cannot actuate real suspend.
+    if let Some(rt) = _notif_runtime.as_ref() {
+        let bridge = power_bridge.clone();
+        let registry = inhibit_registry.clone();
+        let policy = power_policy;
+        rt.spawn(async move {
+            match qos_power_mgmt::PowerService::connect(bridge, registry, policy).await {
+                Ok(service) => service.run().await,
+                Err(e) => tracing::warn!(
+                    target: "qos::power",
+                    "power service unavailable ({e}); suspend/lid/battery inactive"
+                ),
+            }
+        });
     }
 
     let mut close_requested = false;
@@ -899,8 +1017,33 @@ pub fn run() -> ! {
     // *after* `poll_events` returns — the input arm needs `&mut backend`
     // (for `set_dpms`) which can't be borrowed inside the poll closure.
     let mut pending_events: Vec<BackendEvent> = Vec::new();
+    // Redraw gating. The loop used to `paint()` + `submit_frame()` on
+    // every tick regardless of whether anything changed, pinning a CPU
+    // core at 100% (and driving needless GPU work) even on a completely
+    // static desktop. We now repaint only when there's a reason to:
+    //   - a backend event arrived (input / resize / focus / redraw),
+    //   - the widget tree has an animation in flight,
+    //   - the chrome revision bumped (a state mutation: overlay toggle,
+    //     notification, tab switch, …),
+    //   - a session transition fired (blank / lock / unlock),
+    //   - or the keepalive interval elapsed (a safety net so any missed
+    //     dirty source still refreshes within a second).
+    // Layout still runs every tick so input hit-testing stays current;
+    // only the expensive paint + GPU submit are gated.
+    let keepalive = Duration::from_millis(1000);
+    let mut last_paint = Instant::now();
+    let mut last_revision = frame_builder.chrome_revision();
+    let mut force_first_paint = true;
+    // Optional paint-rate diagnostics (`QOS_PAINT_STATS=1`).
+    let paint_stats = std::env::var("QOS_PAINT_STATS").is_ok();
+    let mut stats_since = Instant::now();
+    let (mut frames_total, mut frames_painted) = (0u32, 0u32);
+    let (mut cause_events, mut cause_revision, mut cause_anim) = (0u32, 0u32, 0u32);
+    let (mut cause_session, mut cause_keepalive) = (0u32, 0u32);
     while !close_requested {
         backend.poll_events(&mut |event| pending_events.push(event));
+        let had_backend_events = !pending_events.is_empty();
+        let mut session_changed = false;
         for event in pending_events.drain(..) {
             match event {
                 BackendEvent::CloseRequested => {
@@ -922,16 +1065,38 @@ pub fn run() -> ! {
                     }
 
                     if session.is_locked() {
-                        // Locked: input is captured. Only the explicit
-                        // unlock action (Enter / Escape) is honoured;
-                        // every other event is swallowed so app/chrome
-                        // content stays hidden and inert behind the
-                        // overlay. This is the lock's security boundary
-                        // in lieu of an `ext-session-lock-v1` client.
-                        if is_unlock_input(&wev) {
+                        // Locked: every input is captured by the lock
+                        // surface — routed into the password field, never to
+                        // apps/chrome behind the overlay. The session only
+                        // unlocks when the controller authenticates a correct
+                        // password (`UnlockOutcome::Unlocked`); no key can
+                        // bypass that. This is the input half of the lock's
+                        // security boundary.
+                        let key = winit_event_to_lock_key(&wev);
+                        if lock.handle_key(key) == UnlockOutcome::Unlocked {
                             for t in session.request_unlock(Instant::now()) {
                                 apply_session_transition(t, backend.as_mut());
                             }
+                        }
+                        // Any keystroke changes the masked field / error, so
+                        // force a repaint this tick.
+                        session_changed = true;
+                    } else if is_power_key(&wev) {
+                        // The hardware power key resolves per the power
+                        // policy (logind delegates it to us via the service's
+                        // block inhibitor). A deliberate press bypasses the
+                        // idle inhibitor — the user asked for it.
+                        match power_policy.on_power_key() {
+                            Some(qos_power_mgmt::PowerAction::Suspend) => {
+                                tracing::info!(target: "qos::power", "power key: requesting suspend");
+                                power_bridge.request_suspend();
+                            }
+                            Some(qos_power_mgmt::PowerAction::Lock) => {
+                                for t in session.request_lock(Instant::now()) {
+                                    apply_session_transition(t, backend.as_mut());
+                                }
+                            }
+                            Some(qos_power_mgmt::PowerAction::Ignore) | None => {}
                         }
                     } else if is_lock_chord(&wev, &test_control_ctx.modifiers) {
                         // Super+L locks immediately.
@@ -965,10 +1130,65 @@ pub fn run() -> ! {
         }
 
         // Track D2: advance the idle timers and apply any timeout-driven
-        // transitions (blank, auto-lock) for this tick.
+        // transitions (blank, auto-lock, suspend) for this tick.
         for t in session.tick(Instant::now()) {
-            apply_session_transition(t, backend.as_mut());
+            if t == SessionTransition::Suspend {
+                // Idle-suspend is gated by the inhibitor registry: an app
+                // holding a token (media playing, a task running) keeps the
+                // machine awake. When inhibited we un-latch so it re-fires as
+                // soon as the last inhibitor releases, without waiting for
+                // fresh input.
+                if inhibit_registry.is_inhibited() {
+                    session.cancel_suspend();
+                    tracing::debug!(
+                        target: "qos::power",
+                        reasons = ?inhibit_registry.active_reasons(),
+                        "idle-suspend deferred: inhibitor held"
+                    );
+                } else {
+                    tracing::info!(target: "qos::power", "idle threshold reached: requesting suspend");
+                    power_bridge.request_suspend();
+                }
+            } else {
+                apply_session_transition(t, backend.as_mut());
+            }
+            // Any session transition (blank / lock / suspend) changes what
+            // should be on screen, so force this tick to repaint.
+            session_changed = true;
         }
+
+        // Apply signals the async power service raised (lid/critical lock,
+        // battery toasts, resume). Suspend requests flow the other way, via
+        // `power_bridge.request_suspend()` above.
+        for sig in power_bridge.drain_signals() {
+            session_changed = true;
+            match sig {
+                qos_power_mgmt::PowerSignal::Lock => {
+                    for t in session.request_lock(Instant::now()) {
+                        apply_session_transition(t, backend.as_mut());
+                    }
+                }
+                qos_power_mgmt::PowerSignal::ResumedFromSleep => {
+                    // Reset the idle timer so a stale pre-sleep timestamp does
+                    // not immediately re-blank/re-suspend on resume.
+                    for t in session.note_activity(Instant::now()) {
+                        apply_session_transition(t, backend.as_mut());
+                    }
+                }
+                qos_power_mgmt::PowerSignal::Notify(n) => {
+                    let inc = power_notification_to_incoming(&notif_bridge, n);
+                    notif_bridge.push_incoming(inc);
+                }
+            }
+        }
+
+        // Reset the lock screen's input the instant the lock engages, so a
+        // fresh lock always starts with an empty field and no stale error
+        // carried over from a previous lock episode.
+        if session.is_locked() && !prev_locked {
+            lock.reset();
+        }
+        prev_locked = session.is_locked();
 
         // Track D1: pump the D-Bus notification bridge into the live
         // toast stack and mirror the lock state into the chrome so the
@@ -988,24 +1208,98 @@ pub fn run() -> ! {
         // rather than blanking the shell.
         frame_builder.set_fullscreen(state.fullscreen_group);
 
-        frame_builder.relayout();
-        // When locked, paint the compositor-owned lock overlay instead
-        // of the chrome — app content is never submitted while locked.
-        let scene = if session.is_locked() {
-            let theme = frame_builder.theme().clone();
-            let viewport = frame_builder.viewport();
-            // Count-only summary on the lock screen — no bodies leak.
-            let notif_count = frame_builder.chrome().notification_count();
-            lock_screen::draw_lock_scene(
-                viewport,
-                &theme,
-                frame_builder.text_renderer_mut(),
-                notif_count,
-            )
-        } else {
-            frame_builder.paint()
-        };
-        backend.submit_frame(&scene, OutputId(0));
+        // Decide whether this frame needs repainting *before* doing the
+        // expensive layout pass. Both queries below are cheap and don't
+        // need a fresh layout: `needs_animation_frame` just walks the
+        // widget tree, and the chrome revision is a plain counter bumped
+        // by state mutations (input handlers, the notification pump, the
+        // fullscreen mirror above). Skipping `relayout` + `paint` entirely
+        // on idle frames is what lets the loop fall to near-zero CPU at
+        // rest instead of burning a core re-laying-out an unchanged tree.
+        // Hit-testing stays correct because input is only dispatched on
+        // ticks that carry a backend event, and those force a repaint (and
+        // thus a relayout) below.
+        let revision = frame_builder.chrome_revision();
+        let revision_changed = revision != last_revision;
+        let animating = frame_builder.needs_animation_frame();
+        let keepalive_due = last_paint.elapsed() >= keepalive;
+        let should_paint = force_first_paint
+            || had_backend_events
+            || session_changed
+            || revision_changed
+            || animating
+            || keepalive_due;
+
+        // Diagnostic: `QOS_PAINT_STATS=1` logs, every ~2 s, how many
+        // frames painted vs idled and which condition forced the repaints.
+        // Lets us confirm the render loop actually idles (and pinpoint any
+        // perpetual-animation source) without guessing.
+        if paint_stats {
+            frames_total += 1;
+            if should_paint {
+                frames_painted += 1;
+                if had_backend_events { cause_events += 1; }
+                if session_changed { cause_session += 1; }
+                if revision_changed { cause_revision += 1; }
+                if animating { cause_anim += 1; }
+                if keepalive_due && !(had_backend_events || session_changed || revision_changed || animating) {
+                    cause_keepalive += 1;
+                }
+            }
+            if stats_since.elapsed() >= Duration::from_secs(2) {
+                eprintln!(
+                    "paint-stats: {frames_painted}/{frames_total} painted | \
+                     events={cause_events} revision={cause_revision} anim={cause_anim} \
+                     session={cause_session} keepalive={cause_keepalive}"
+                );
+                frames_total = 0; frames_painted = 0;
+                cause_events = 0; cause_revision = 0; cause_anim = 0;
+                cause_session = 0; cause_keepalive = 0;
+                stats_since = Instant::now();
+            }
+        }
+
+        if should_paint {
+            // Lay out only when we're about to paint. Any structural change
+            // (spliced group, tab switch, resize) is applied here, right
+            // before the scene is built.
+            frame_builder.relayout();
+            // When locked, paint the compositor-owned lock overlay instead
+            // of the chrome — app content is never submitted while locked.
+            let scene = if session.is_locked() {
+                let theme = frame_builder.theme().clone();
+                let viewport = frame_builder.viewport();
+                // Count-only summary on the lock screen — no bodies leak.
+                let notif_count = frame_builder.chrome().notification_count();
+                // Wall clock/date computed here (not in the pure paint) so the
+                // lock surface renders as compositor chrome, themed.
+                let now = chrono::Local::now();
+                let clock = now.format("%H:%M").to_string();
+                let date = now.format("%A, %B %-d").to_string();
+                let view = LockView {
+                    password_len: lock.buffer_len(),
+                    error: lock.error(),
+                    clock: &clock,
+                    date: &date,
+                    notification_count: notif_count,
+                };
+                lock_screen::draw_lock_scene(
+                    viewport,
+                    &theme,
+                    frame_builder.text_renderer_mut(),
+                    &view,
+                )
+            } else {
+                frame_builder.paint()
+            };
+            backend.submit_frame(&scene, OutputId(0));
+            last_paint = Instant::now();
+            // Re-read after `relayout`: its `resync_strips_from_tree` pass
+            // can bump the revision, and we must capture that post-paint
+            // value so the next idle tick doesn't see a phantom change.
+            last_revision = frame_builder.chrome_revision();
+            force_first_paint = false;
+        }
 
         // Real-input e2e Phase 1b: accept any new test-control
         // connections, then drain pending bytes from each open one
@@ -1572,26 +1866,32 @@ mod tests {
 
     /// Enter and Escape on press are the explicit unlock action.
     #[test]
-    fn enter_and_escape_press_are_unlock_actions() {
+    fn enter_and_escape_press_map_to_submit_and_cancel() {
         let enter = keyboard_input_event(Key::Named(NamedKey::Enter), true);
         let escape = keyboard_input_event(Key::Named(NamedKey::Escape), true);
-        assert!(is_unlock_input(&enter));
-        assert!(is_unlock_input(&escape));
+        assert_eq!(winit_event_to_lock_key(&enter), LockKey::Submit);
+        assert_eq!(winit_event_to_lock_key(&escape), LockKey::Cancel);
     }
 
-    /// A plain character keypress does not unlock — only the deliberate
-    /// Enter/Escape gesture does.
+    /// A plain character keypress feeds the password buffer as text — it does
+    /// not itself unlock (only a correct password on Submit does).
     #[test]
-    fn char_key_is_not_unlock_action() {
+    fn char_key_maps_to_text() {
         let ev = keyboard_input_event(Key::Character(SmolStr::new("a")), true);
-        assert!(!is_unlock_input(&ev));
+        assert_eq!(
+            winit_event_to_lock_key(&ev),
+            LockKey::Text("a".to_string())
+        );
     }
 
-    /// Enter on *release* is not an unlock action — press is the gesture.
+    /// Backspace maps to a buffer edit; a key *release* is ignored (only
+    /// presses type).
     #[test]
-    fn enter_release_is_not_unlock_action() {
-        let ev = keyboard_input_event(Key::Named(NamedKey::Enter), false);
-        assert!(!is_unlock_input(&ev));
+    fn backspace_maps_and_release_is_ignored() {
+        let bs = keyboard_input_event(Key::Named(NamedKey::Backspace), true);
+        assert_eq!(winit_event_to_lock_key(&bs), LockKey::Backspace);
+        let release = keyboard_input_event(Key::Named(NamedKey::Enter), false);
+        assert_eq!(winit_event_to_lock_key(&release), LockKey::Ignored);
     }
 
     /// `apply_session_transition` maps Blanked/Woke to the backend's
