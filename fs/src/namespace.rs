@@ -372,6 +372,34 @@ impl Namespace {
         self.ino_to_id.get(&ino).map(|s| s.as_str())
     }
 
+    /// Absolute path of `ino` within the mount — `"/"` for the root,
+    /// `"/a/b/c"` otherwise. Returns `None` if the inode is unknown or
+    /// its parent chain does not reach ROOT (trashed / cyclic).
+    ///
+    /// This is what the FUSE layer's per-identity ACL enforcement keys
+    /// on: the real check is "may this identity read/write *this path*",
+    /// so the enforcement point needs the path an inode resolves to.
+    pub fn path_for(&self, ino: u64) -> Option<String> {
+        if ino == ROOT_INO {
+            return Some("/".to_string());
+        }
+        let mut cur = self.id_for_ino(ino)?.to_string();
+        let mut parts: Vec<String> = Vec::new();
+        let mut seen = HashSet::new();
+        loop {
+            if cur == ROOT_ID {
+                break;
+            }
+            if cur == TRASH_ID || !seen.insert(cur.clone()) {
+                return None; // trashed or cyclic → not a visible path
+            }
+            parts.push(self.name_of(&cur)?);
+            cur = self.parent_of(&cur)?;
+        }
+        parts.reverse();
+        Some(format!("/{}", parts.join("/")))
+    }
+
     fn gen_id(&mut self) -> String {
         let id = format!("{}/{}", self.author, self.next_id);
         self.next_id += 1;
