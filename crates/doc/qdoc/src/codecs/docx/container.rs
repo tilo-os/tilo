@@ -6,10 +6,11 @@
 //! it is the lossless backbone — parts the codec doesn't model are carried
 //! verbatim through the preservation layer.
 
+use crate::codecs::safety::{read_zip_parts, ZipLimits};
 use crate::format::CodecError;
-use std::io::{Cursor, Read, Write};
+use std::io::{Cursor, Write};
 use zip::write::SimpleFileOptions;
-use zip::{CompressionMethod, ZipArchive, ZipWriter};
+use zip::{CompressionMethod, ZipWriter};
 
 pub struct DocxContainer {
     /// Parts in original zip order: `(name, bytes)`.
@@ -17,23 +18,10 @@ pub struct DocxContainer {
 }
 
 impl DocxContainer {
+    /// Read an untrusted `.docx` package. Bounded against zip bombs and rejects
+    /// DTD-bearing XML parts (XXE) via [`read_zip_parts`].
     pub fn read(bytes: &[u8]) -> Result<Self, CodecError> {
-        let mut ar = ZipArchive::new(Cursor::new(bytes))
-            .map_err(|e| CodecError::Parse(format!("zip open: {e}")))?;
-        let mut parts = Vec::with_capacity(ar.len());
-        for i in 0..ar.len() {
-            let mut f = ar
-                .by_index(i)
-                .map_err(|e| CodecError::Parse(format!("zip entry {i}: {e}")))?;
-            let name = f.name().to_string();
-            if name.ends_with('/') {
-                continue; // directory entry
-            }
-            let mut buf = Vec::new();
-            f.read_to_end(&mut buf)
-                .map_err(|e| CodecError::Parse(format!("zip read {name}: {e}")))?;
-            parts.push((name, buf));
-        }
+        let parts = read_zip_parts(bytes, &ZipLimits::default())?;
         Ok(Self { parts })
     }
 
