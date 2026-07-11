@@ -201,6 +201,14 @@ impl Document {
         crate::model::blocks_in_order(&self.doc, &self.c)
     }
 
+    /// The byte length of every body block's fractional order key — a direct probe of
+    /// the truncating order-key scheme (see [`crate::model::block_order_key_lengths`]).
+    /// Used by the perf test to assert keys stay bounded (~constant) instead of growing
+    /// one byte per sequential append (which is O(n²)).
+    pub fn block_order_key_lengths(&self) -> Vec<usize> {
+        crate::model::block_order_key_lengths(&self.doc, &self.c)
+    }
+
     pub fn block_kind(&self, id: &str) -> Option<String> {
         crate::model::block_kind(&self.doc, &self.c, id)
     }
@@ -512,6 +520,23 @@ impl Document {
     /// Reconstruct the document as of `version` (time-travel).
     pub fn materialize_at(&mut self, version: usize) -> Result<crate::snapshot::DocSnapshot, DocError> {
         crate::history::materialize_at(&mut self.doc, version)
+    }
+
+    /// Structural diff between two points on this document's own timeline
+    /// (`from` → `to`, indices into [`Self::versions`]). Because block ids are
+    /// stable across a document's history, the diff aligns by identity — a clean
+    /// added/removed/changed report (see [`crate::diff`]).
+    pub fn diff_versions(&mut self, from: usize, to: usize) -> Result<crate::diff::DocDiff, DocError> {
+        let a = self.materialize_at(from)?;
+        let b = self.materialize_at(to)?;
+        Ok(crate::diff::diff_snapshots(&a, &b))
+    }
+
+    /// Structural diff of this document's current state against another snapshot
+    /// (e.g. a sibling replica, or a stored earlier version). `other` is the
+    /// baseline (old), `self` is the new side.
+    pub fn diff_against(&self, other: &crate::snapshot::DocSnapshot) -> crate::diff::DocDiff {
+        crate::diff::diff_snapshots(other, &self.materialize())
     }
 
     /// Independent replica with a fresh actor id (distinct edit lineage).
