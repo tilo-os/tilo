@@ -25,12 +25,13 @@ use ui::icons::Icon;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
-use ui::widget::TextInput;
+use ui::webview::{SharedEngine, WebViewCommand};
+use ui::widget::{TextInput, WebView};
 
 use crate::account::AccountStore;
 use crate::draw::{
     draw_avatar, elide, fill_rect, fill_round, stroke_round, ACCOUNT_HEADER_H, BACK_CLEARANCE,
-    CHIP_CLEARANCE, FOLDER_ROW_H, HEADER_H, LIST_ROW_H,
+    CHIP_CLEARANCE, CHIP_INSET, CHIP_SIZE, FOLDER_ROW_H, HEADER_H, LIST_ROW_H,
 };
 use crate::model::{Addr, Folder, Message, MessageId};
 use crate::state::{CtxAction, Intent, Shared};
@@ -42,6 +43,27 @@ const SWIPE_THRESHOLD: f64 = 72.0;
 const READER_COMPACT_W: f64 = 480.0;
 /// Height (px) of the "Add account" row at the foot of the sidebar account list.
 const ADD_ACCOUNT_ROW_H: f64 = 38.0;
+
+/// Header title placement for the list pane: the x where the folder title
+/// starts, the y (top of its text box) that vertically centres it on the
+/// NavShell collapse chip beside it, and the shared centre line (== the chip's
+/// vertical centre). `chip_here` is whether the chip overlays this pane's
+/// header. Pure so the "title lines up with, and is spaced from, the collapse
+/// button" invariant is unit-testable.
+fn list_header_layout(rect: Rect, chip_here: bool, gap: f64) -> (f64, f64, f64) {
+    // The chip is a CHIP_SIZE square inset CHIP_INSET from the pane's top-left
+    // (mirrored from `ui`'s NavShell), so its centre line is:
+    let header_cy = rect.y0 + CHIP_INSET + CHIP_SIZE / 2.0;
+    let title_x = if chip_here {
+        rect.x0 + CHIP_INSET + CHIP_SIZE + gap
+    } else {
+        rect.x0 + 20.0
+    };
+    // Text is positioned by the top of its line box (`size * 1.25`), so drop the
+    // title top by half its own box to centre the glyphs on `header_cy`.
+    let title_y = header_cy - 18.0 * 1.25 / 2.0;
+    (title_x, title_y, header_cy)
+}
 
 /// The per-account settings gear rect on the right edge of an account row.
 fn account_gear_rect(header: Rect) -> Rect {
@@ -103,6 +125,24 @@ pub struct Pane {
     /// resolved during draw (the card layout is only known then). Clicking one
     /// saves the real attachment bytes to disk.
     reader_attachment_hits: Vec<(Rect, MessageId, usize)>,
+    /// Reader pane only: the sandboxed WebView that renders an HTML mail body,
+    /// its engine, and the (message, block_remote) key currently loaded into it.
+    /// Created lazily on the first HTML mail so text-only usage stays webview-free.
+    html_engine: Option<SharedEngine>,
+    html_view: Option<WebView>,
+    html_key: Option<(MessageId, bool)>,
+    /// The message the HTML view currently shows — distinct from `html_key`
+    /// (which the remote-images toggle clears to force a reload). Used to detect
+    /// a genuine message change so the remote-content opt-in resets per mail.
+    html_shown_id: Option<MessageId>,
+    /// Whether the user has opted in to remote images for the open message.
+    /// Reset whenever a different message is shown, so remote content is blocked
+    /// again by default for each mail.
+    html_load_remote: bool,
+    /// The rect the HTML body view occupies this frame (for scroll forwarding),
+    /// and the "Load remote images" toggle chip rect (for click handling).
+    html_view_rect: Option<Rect>,
+    html_toggle_rect: Option<Rect>,
     dirty: bool,
 }
 
@@ -124,6 +164,13 @@ impl Pane {
             swipe: None,
             mouse_down_row: None,
             reader_attachment_hits: Vec::new(),
+            html_engine: None,
+            html_view: None,
+            html_key: None,
+            html_shown_id: None,
+            html_load_remote: false,
+            html_view_rect: None,
+            html_toggle_rect: None,
             dirty: true,
         }
     }
@@ -447,19 +494,27 @@ impl Pane {
         let r = self.rect;
         fill_rect(scene, t, r, c.surfaces.base);
 
-        // Header: folder title (+ count), search box.
+        // Header: folder title (+ count), search box. The title is vertically
+        // centred on the NavShell collapse/hamburger chip beside it and spaced a
+        // consistent gap (a theme spacing token) past it — never crowding it.
         let sr = self.search_box_rect();
-        let title_x = r.x0 + self.header_left_inset();
+        // Whether the collapse chip sits over this pane's header (the list is
+        // then the leftmost pane); matches `header_left_inset`'s List branch.
+        let chip_here = st.narrow || !st.sidebar_open;
+        let gap = theme.tokens.spacing.s3 as f64;
+        let (title_x, title_y, header_cy) = list_header_layout(r, chip_here, gap);
         let title_budget = sr.x0 - title_x - 12.0;
         let title_full = st.folder.title();
         let (twd, _) = tr.measure_weighted(title_full, 18.0, None, TextWeight::Bold);
         let title = crate::draw::elide(tr, title_full, 18.0, TextWeight::Bold, title_budget);
-        tr.draw_text_weighted(scene, &title, 18.0, c.text_primary, t * Affine::translate((title_x, r.y0 + 14.0)), None, TextWeight::Bold);
-        // Count sits after the full title only when there's room for both.
+        tr.draw_text_weighted(scene, &title, 18.0, c.text_primary, t * Affine::translate((title_x, title_y)), None, TextWeight::Bold);
+        // Count sits after the full title only when there's room for both,
+        // centred on the same line.
         let count = st.mailbox.count(st.folder);
         let count_x = title_x + twd as f64 + 10.0;
         if (twd as f64) <= title_budget && count_x + 26.0 < sr.x0 {
-            tr.draw_text(scene, &format!("{count}"), 12.0, c.text_dim, t * Affine::translate((count_x, r.y0 + 19.0)), None);
+            let count_y = header_cy - 12.0 * 1.25 / 2.0;
+            tr.draw_text(scene, &format!("{count}"), 12.0, c.text_dim, t * Affine::translate((count_x, count_y)), None);
         }
         fill_round(scene, t, sr, 9.0, c.surfaces.raised);
         stroke_round(scene, t, sr, 9.0, 1.0, if st.search_focused { c.border_focus } else { c.border_standard });
@@ -559,15 +614,21 @@ impl Pane {
             let snippet = elide(tr, &msg.snippet(), 11.5, TextWeight::Regular, right - text_x - icon_reserve);
             tr.draw_text(scene, &snippet, 11.5, c.text_dim, t * Affine::translate((text_x, row.y0 + 52.0)), None);
 
-            let star_col = if msg.starred { c.semantic.warning } else { c.neutral[4] };
-            Icon::Star.draw(scene, t, Rect::new(right - 24.0, row.y0 + 48.0, right - 8.0, row.y0 + 64.0), star_col);
+            // A favourited mail shows a solid, filled star; an unstarred one a
+            // faint outline — the state reads at a glance, not just as a colour.
+            let star_box = Rect::new(right - 24.0, row.y0 + 48.0, right - 8.0, row.y0 + 64.0);
+            if msg.starred {
+                Icon::Star.draw_filled(scene, t, star_box, c.semantic.warning);
+            } else {
+                Icon::Star.draw(scene, t, star_box, c.neutral[4]);
+            }
             if msg.has_attachments() {
                 Icon::Paperclip.draw(scene, t, Rect::new(right - 44.0, row.y0 + 48.0, right - 30.0, row.y0 + 62.0), c.text_dim);
             }
         }
     }
 
-    fn draw_reader(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
+    fn draw_reader(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, presence: &PresenceCtx) {
         let c = &theme.tokens.colors;
         let mut chip_hits: Vec<(Rect, MessageId, usize)> = Vec::new();
         let st = self.shared.borrow();
@@ -602,11 +663,21 @@ impl Pane {
             let bg = if hov { c.surface_white_10 } else { c.surface_white_5 };
             fill_round(scene, t, *rect, 8.0, bg);
             stroke_round(scene, t, *rect, 8.0, 1.0, c.border_white_10);
-            let col = if danger { c.semantic.danger } else if matches!(hit, Hit::Star) && starred { c.semantic.warning } else { c.neutral[8] };
+            // The Star action fills its glyph when the message is starred, so
+            // the favourited state is a solid star, not merely a tinted outline.
+            let is_star_on = matches!(hit, Hit::Star) && starred;
+            let col = if danger { c.semantic.danger } else if is_star_on { c.semantic.warning } else { c.neutral[8] };
+            let paint_icon = |scene: &mut Scene, ibox: Rect| {
+                if is_star_on {
+                    Icon::Star.draw_filled(scene, t, ibox, col);
+                } else {
+                    icon.draw(scene, t, ibox, col);
+                }
+            };
             if compact {
-                icon.draw(scene, t, Rect::new(rect.center().x - 8.0, rect.y0 + 8.0, rect.center().x + 8.0, rect.y0 + 24.0), col);
+                paint_icon(scene, Rect::new(rect.center().x - 8.0, rect.y0 + 8.0, rect.center().x + 8.0, rect.y0 + 24.0));
             } else {
-                icon.draw(scene, t, Rect::new(rect.x0 + 10.0, rect.y0 + 8.0, rect.x0 + 26.0, rect.y0 + 24.0), col);
+                paint_icon(scene, Rect::new(rect.x0 + 10.0, rect.y0 + 8.0, rect.x0 + 26.0, rect.y0 + 24.0));
                 tr.draw_text_weighted(scene, label, 12.0, col, t * Affine::translate((rect.x0 + 30.0, rect.y0 + 9.0)), None, TextWeight::Medium);
             }
         }
@@ -630,18 +701,129 @@ impl Pane {
         fill_rect(scene, t, Rect::new(content_x, y, rr.x1 - 24.0, y + 1.0), c.border_standard);
         y += 16.0;
 
+        // Render the thread. When the head (newest, being-read) message carries
+        // an HTML body, its body renders in the sandboxed WebView; older
+        // messages and plain-text mail render as text cards.
+        let head_id = head.id;
+        let head_html = head.html_body.clone();
+        let mut webview_rect: Option<Rect> = None;
         for (i, m) in msgs.iter().enumerate() {
             if y > rr.y1 - 40.0 {
                 break;
             }
-            y = self.draw_message_card(scene, t, tr, theme, m, content_x, y, content_w, i == msgs.len() - 1, &mut chip_hits);
-            y += 14.0;
+            let is_head = i == msgs.len() - 1;
+            if is_head && head_html.is_some() {
+                // Head card: draw the header, then reserve the rest of the
+                // reader for the sandboxed HTML body (painted once the shared
+                // borrow is released, since the view needs `&mut self`).
+                y = self.draw_card_header(scene, t, tr, theme, m, content_x, y, content_w);
+                y += 8.0;
+                let bottom = rr.y1 - 46.0; // room for the remote-images bar
+                if bottom > y + 48.0 {
+                    webview_rect = Some(Rect::new(content_x, y, content_x + content_w as f64, bottom));
+                }
+            } else {
+                y = self.draw_message_card(scene, t, tr, theme, m, content_x, y, content_w, is_head, &mut chip_hits);
+                y += 14.0;
+            }
         }
         self.reader_attachment_hits = chip_hits;
+        drop(st);
+
+        // The HTML body view + its remote-images toggle, now that the shared
+        // borrow is released (they need `&mut self`).
+        self.html_view_rect = None;
+        self.html_toggle_rect = None;
+        match (webview_rect, head_html) {
+            (Some(rect), Some(html)) => {
+                // Switching to a different message re-blocks remote content
+                // (keyed on the shown id, not `html_key`, which the toggle
+                // clears to force a reload of the *same* message).
+                if self.html_shown_id != Some(head_id) {
+                    self.html_load_remote = false;
+                    self.html_shown_id = Some(head_id);
+                }
+                self.load_html_body(head_id, &html);
+                let view = self.ensure_html_view();
+                view.set_viewport(rect, 1.0);
+                view.draw(scene, t, tr, theme, presence);
+                self.html_view_rect = Some(rect);
+                self.draw_remote_toggle(scene, t, tr, theme, rect);
+            }
+            _ => {
+                // Plain-text mail this frame — drop any stale load so returning
+                // to an HTML mail reloads fresh (and blocked again by default).
+                self.html_key = None;
+                self.html_shown_id = None;
+            }
+        }
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn draw_message_card(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, m: &Message, x: f64, y: f64, w: f32, expanded: bool, chip_hits: &mut Vec<(Rect, MessageId, usize)>) -> f64 {
+    /// Draw the "remote content blocked / loaded" pill under an HTML body and
+    /// record its rect for hit-testing. Off (blocked) by default; clicking it
+    /// opts the current message in to remote images.
+    fn draw_remote_toggle(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, body: Rect) {
+        let c = &theme.tokens.colors;
+        let y = body.y1 + 8.0;
+        let (icon, label, col) = if self.html_load_remote {
+            (Icon::Image, "Remote images loaded", c.text_dim)
+        } else {
+            (Icon::Ban, "Remote content blocked · Load images", c.semantic.warning)
+        };
+        let (lw, _) = tr.measure(label, 11.5, None);
+        let pill = Rect::new(body.x0, y, body.x0 + 30.0 + lw as f64 + 14.0, y + 28.0);
+        let hov = pill.contains(self.shared.borrow().last_mouse);
+        fill_round(scene, t, pill, 8.0, if hov { c.surface_white_10 } else { c.surface_white_5 });
+        stroke_round(scene, t, pill, 8.0, 1.0, c.border_white_10);
+        icon.draw(scene, t, Rect::new(pill.x0 + 8.0, pill.y0 + 6.0, pill.x0 + 24.0, pill.y0 + 22.0), col);
+        tr.draw_text(scene, label, 11.5, c.text_primary, t * Affine::translate((pill.x0 + 30.0, pill.y0 + 7.0)), None);
+        self.html_toggle_rect = Some(pill);
+    }
+
+    /// Lazily create the reader's HTML-body WebView (and its engine) on first
+    /// use. Text-only mail never touches this, so it stays webview-free.
+    fn ensure_html_view(&mut self) -> &mut WebView {
+        if self.html_view.is_none() {
+            let engine = self.html_engine.get_or_insert_with(new_html_engine).clone();
+            self.html_view = Some(WebView::new(engine).with_test_id("mail_html_body"));
+        }
+        self.html_view.as_mut().unwrap()
+    }
+
+    /// Load `html` for message `id` into the sandboxed view — building the
+    /// remote-blocked `data:` document and installing the matching content
+    /// filter — unless that exact (message, block state) is already loaded.
+    fn load_html_body(&mut self, id: MessageId, html: &str) {
+        let block_remote = !self.html_load_remote;
+        let key = (id, block_remote);
+        if self.html_key == Some(key) {
+            return;
+        }
+        let url = crate::html_mail::data_url(html, block_remote);
+        let filter = std::sync::Arc::new(crate::html_mail::content_filter_json(block_remote));
+        let engine = self.ensure_html_view().engine().clone();
+        engine.send(WebViewCommand::SetContentFilter(Some(filter)));
+        engine.send(WebViewCommand::Navigate(url));
+        self.html_key = Some(key);
+    }
+
+    /// Inject the HTML-body engine (tests use this to observe the commands the
+    /// reader sends). Must be called before the first HTML mail is drawn.
+    #[cfg(test)]
+    pub(crate) fn set_html_engine(&mut self, engine: SharedEngine) {
+        self.html_engine = Some(engine);
+    }
+
+    /// The (message, block_remote) currently loaded into the HTML view, if any.
+    #[cfg(test)]
+    pub(crate) fn html_loaded_key(&self) -> Option<(MessageId, bool)> {
+        self.html_key
+    }
+
+    /// Draw the per-message card header (avatar · sender · date · recipients)
+    /// and return the y where the body should start. Shared by the text card
+    /// path and the HTML-body (WebView) path so both read identically.
+    fn draw_card_header(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, m: &Message, x: f64, y: f64, w: f32) -> f64 {
         let c = &theme.tokens.colors;
         let card_x1 = x + w as f64;
         let st = self.shared.borrow();
@@ -655,8 +837,14 @@ impl Pane {
         tr.draw_text(scene, &date, 11.5, c.text_dim, t * Affine::translate((card_x1 - dw as f64, y + 8.0)), None);
         let to_line = elide(tr, &format!("to {}", m.to.iter().map(|a| a.display()).collect::<Vec<_>>().join(", ")), 11.0, TextWeight::Regular, 150.0);
         tr.draw_text(scene, &to_line, 11.0, c.text_dim, t * Affine::translate((card_x1 - 150.0, y + 24.0)), None);
+        y + 48.0
+    }
 
-        let mut yy = y + 48.0;
+    #[allow(clippy::too_many_arguments)]
+    fn draw_message_card(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, m: &Message, x: f64, y: f64, w: f32, expanded: bool, chip_hits: &mut Vec<(Rect, MessageId, usize)>) -> f64 {
+        let c = &theme.tokens.colors;
+        let card_x1 = x + w as f64;
+        let mut yy = self.draw_card_header(scene, t, tr, theme, m, x, y, w);
         if expanded {
             for para in m.body.split('\n') {
                 if para.trim().is_empty() {
@@ -819,6 +1007,17 @@ impl Pane {
                 }
             }
             Role::Reader => {
+                // The remote-images toggle under an HTML body: opt this message
+                // in to (or back out of) loading remote content.
+                if self.html_toggle_rect.map(|r| r.contains(pt)).unwrap_or(false) {
+                    self.html_load_remote = !self.html_load_remote;
+                    // Force a reload with the new policy on the next draw.
+                    self.html_key = None;
+                    self.dirty = true;
+                    self.shared.borrow_mut().dirty = true;
+                    *handled = true;
+                    return;
+                }
                 // An attachment chip saves the real bytes to disk.
                 if let Some((_, mid, ai)) = self
                     .reader_attachment_hits
@@ -882,6 +1081,23 @@ impl Pane {
     }
 }
 
+/// The web engine backing HTML-mail rendering. Under the `html-webview`
+/// feature this is the real WPE WebKit engine (the same one the browser uses),
+/// falling back to the hermetic test engine if it can't start; otherwise it is
+/// the deterministic test engine — which still exercises the full
+/// sandbox/remote-block plumbing in the default build and `--shots`.
+fn new_html_engine() -> SharedEngine {
+    #[cfg(feature = "html-webview")]
+    {
+        match ui::webview::wpe::WpeEngine::new() {
+            Ok(e) => return e,
+            Err(err) => tracing::warn!(%err, "mail: WPE engine unavailable; using test engine"),
+        }
+    }
+    let e: SharedEngine = ui::webview::test_engine::TestEngine::new();
+    e
+}
+
 impl Widget for Pane {
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
         if let Some(i) = self.search_input.as_mut() {
@@ -931,7 +1147,7 @@ impl Widget for Pane {
                     inp.draw(scene, t, tr, theme, presence);
                 }
             }
-            Role::Reader => self.draw_reader(scene, t, tr, theme),
+            Role::Reader => self.draw_reader(scene, t, tr, theme, presence),
         }
     }
 
@@ -951,6 +1167,21 @@ impl Widget for Pane {
             return;
         }
         self.rebuild_hits();
+
+        // Reader: forward pointer-move and wheel into the sandboxed HTML body
+        // view (only while one is actually shown), so an HTML mail scrolls. The
+        // view consumes a wheel that lands over it.
+        if self.role == Role::Reader
+            && self.html_view_rect.is_some()
+            && matches!(event, WindowEvent::MouseWheel { .. } | WindowEvent::CursorMoved { .. })
+        {
+            if let Some(view) = self.html_view.as_mut() {
+                view.handle_event(event, scale_factor, modifiers, state, path, handled, focus_target, node_id, taffy);
+            }
+            if *handled {
+                return;
+            }
+        }
 
         // Keyboard: route to the focused search field (list only).
         if matches!(event, WindowEvent::KeyboardInput { .. }) && self.role == Role::List {
@@ -1035,15 +1266,27 @@ impl Widget for Pane {
     }
 
     fn needs_redraw(&self) -> bool {
+        // NB: a leaf WebView's default `needs_redraw` is always true, so it is
+        // deliberately NOT folded in here (it would spin the compositor). A new
+        // engine frame instead surfaces through `needs_animation_frame`.
         self.dirty
             || self.shared.borrow().dirty
             || self.search_input.as_ref().map(|i| i.needs_redraw()).unwrap_or(false)
+    }
+
+    fn needs_animation_frame(&self) -> bool {
+        // Keep the frame pump alive while the HTML body view has a freshly
+        // rendered engine frame the scene hasn't painted yet.
+        self.html_view.as_ref().map(|v| v.needs_animation_frame()).unwrap_or(false)
     }
 
     fn mark_drawn(&mut self) {
         self.dirty = false;
         if let Some(i) = self.search_input.as_mut() {
             i.mark_drawn();
+        }
+        if let Some(v) = self.html_view.as_mut() {
+            v.mark_drawn();
         }
     }
 }
@@ -1127,6 +1370,171 @@ mod tests {
         p.on_left_press(&mut doc, star.center(), &mut handled);
         assert!(handled, "reader Star click consumed");
         assert_eq!(sh.borrow().mailbox.get(id).unwrap().starred, !before, "Star button toggled the flag");
+    }
+
+    #[test]
+    fn list_title_is_centered_on_and_spaced_from_the_collapse_chip() {
+        // The folder title must line up vertically with the NavShell collapse
+        // chip beside it and sit a consistent gap past it — not a few px off.
+        let rect = Rect::new(0.0, 0.0, 420.0, 900.0);
+        let gap = 12.0;
+        let (title_x, title_y, header_cy) = list_header_layout(rect, true, gap);
+        let chip_cy = rect.y0 + CHIP_INSET + CHIP_SIZE / 2.0;
+        let chip_right = rect.x0 + CHIP_INSET + CHIP_SIZE;
+        // Vertically centred on the chip's centre line (glyph box is size*1.25).
+        let title_center = title_y + 18.0 * 1.25 / 2.0;
+        assert!((title_center - chip_cy).abs() < 0.001, "title centre {title_center} != chip centre {chip_cy}");
+        assert!((header_cy - chip_cy).abs() < 0.001, "header centre line is the chip centre");
+        // Spaced exactly one gap past the chip, and not crowding it.
+        assert!((title_x - (chip_right + gap)).abs() < 0.001, "title starts one gap past the chip");
+        assert!(title_x - chip_right >= 10.0, "title does not crowd the collapse button");
+        // With no chip over the header, the title returns to the plain inset.
+        let (nx, _, _) = list_header_layout(rect, false, gap);
+        assert_eq!(nx, rect.x0 + 20.0);
+    }
+
+    #[test]
+    fn reader_shows_one_card_for_a_refetched_message() {
+        // The confirmed defect: re-fetching a message stacked N header copies in
+        // the reader. With stable ids the thread the reader iterates holds one.
+        let sh = MailState::shared(MailState::new_live(
+            crate::account::AccountStore::new(),
+            crate::app::avatar_store(),
+        ));
+        let raw = b"From: Ada <ada@x.example>\r\nTo: you@qos.example\r\n\
+Subject: Launch\r\nMessage-ID: <dup-1@x.example>\r\n\r\nHello there.\r\n";
+        let id = {
+            let mut st = sh.borrow_mut();
+            let m = crate::transport::parse_eml(raw, 100, Folder::Inbox).unwrap();
+            let id = m.id;
+            st.mailbox.insert(m);
+            // A second and third fetch of the very same server message.
+            st.mailbox.insert(crate::transport::parse_eml(raw, 200, Folder::Inbox).unwrap());
+            st.mailbox.insert(crate::transport::parse_eml(raw, 300, Folder::Inbox).unwrap());
+            st.selected = Some(id);
+            id
+        };
+        assert_eq!(sh.borrow().mailbox.count(Folder::Inbox), 1, "one message, not three");
+        assert_eq!(
+            sh.borrow().selected_thread_messages().len(),
+            1,
+            "the reader draws exactly one card for a re-fetched mail"
+        );
+        let _ = id;
+    }
+
+    #[test]
+    fn html_mail_renders_in_sandboxed_webview_with_remote_blocked() {
+        use ui::webview::WebViewCommand;
+        use ui::webview::test_engine::TestEngine;
+        let sh = shared();
+        let id = {
+            let st = sh.borrow();
+            st.mailbox
+                .messages
+                .values()
+                .find(|m| m.from.email == "news@weekly.qos.example")
+                .expect("the sample HTML newsletter is present")
+                .id
+        };
+        {
+            let mut doc = AutoCommit::new();
+            sh.borrow_mut().select_message(&mut doc, id);
+            sh.borrow_mut().take_intents();
+        }
+        let mut p = Pane::new(Role::Reader, sh.clone());
+        // Inject a concrete engine we can inspect for the commands the reader sends.
+        let te = TestEngine::new();
+        p.set_html_engine(te.clone());
+        p.rect = Rect::new(0.0, 0.0, 960.0, 820.0);
+        p.rebuild_hits();
+        draw(&mut p);
+
+        // The HTML body was loaded, remote content blocked by default.
+        assert_eq!(p.html_loaded_key(), Some((id, true)), "HTML body loaded with remote blocked");
+        let cmds = te.commands();
+        let nav = cmds
+            .iter()
+            .find_map(|c| if let WebViewCommand::Navigate(u) = c { Some(u.clone()) } else { None })
+            .expect("the reader navigates the HTML body");
+        assert!(nav.starts_with("data:text/html"), "renders a sandboxed data: document, not a remote URL: {nav}");
+        assert!(
+            cmds.iter().any(|c| matches!(c, WebViewCommand::SetContentFilter(Some(_)))),
+            "a remote-blocking content filter is installed"
+        );
+        // The remote-images affordance is shown (blocked by default).
+        assert!(p.html_toggle_rect.is_some(), "the remote-images toggle is shown");
+    }
+
+    #[test]
+    fn plain_text_mail_does_not_use_the_webview() {
+        let sh = shared();
+        // The Apollo message is plain text/plain (no HTML part).
+        let id = {
+            let st = sh.borrow();
+            st.mailbox
+                .messages
+                .values()
+                .find(|m| m.from.email == "margaret@apollo.example")
+                .expect("plain-text sample present")
+                .id
+        };
+        let mut p = reader_for(&sh, id, 900.0, 800.0);
+        draw(&mut p);
+        assert!(p.html_loaded_key().is_none(), "a plain-text mail never loads the webview");
+        assert!(p.html_toggle_rect.is_none(), "no remote-images toggle for plain text");
+    }
+
+    #[test]
+    fn loading_remote_images_reloads_the_body_unblocked() {
+        use ui::webview::test_engine::TestEngine;
+        let sh = shared();
+        let id = {
+            let st = sh.borrow();
+            st.mailbox.messages.values().find(|m| m.from.email == "news@weekly.qos.example").unwrap().id
+        };
+        {
+            let mut doc = AutoCommit::new();
+            sh.borrow_mut().select_message(&mut doc, id);
+            sh.borrow_mut().take_intents();
+        }
+        let mut p = Pane::new(Role::Reader, sh.clone());
+        p.set_html_engine(TestEngine::new());
+        p.rect = Rect::new(0.0, 0.0, 960.0, 820.0);
+        p.rebuild_hits();
+        draw(&mut p);
+        assert_eq!(p.html_loaded_key(), Some((id, true)), "blocked by default");
+
+        // Click the remote-images toggle → opt in, reload unblocked.
+        let toggle = p.html_toggle_rect.expect("toggle shown");
+        sh.borrow_mut().last_mouse = toggle.center();
+        let mut doc = AutoCommit::new();
+        let mut handled = false;
+        p.on_left_press(&mut doc, toggle.center(), &mut handled);
+        assert!(handled, "toggle click consumed");
+        draw(&mut p);
+        assert_eq!(
+            p.html_loaded_key(),
+            Some((id, false)),
+            "opting in reloads the body with remote content allowed"
+        );
+    }
+
+    #[test]
+    fn reader_star_action_reflects_the_starred_state() {
+        // Toggling the reader Star flips the flag that selects the filled vs
+        // outline glyph (the draw path picks the fill purely from this state).
+        let sh = shared();
+        let id = { let st = sh.borrow(); st.mailbox.messages_in(Folder::Inbox)[0].id };
+        // Force a known starting state.
+        { sh.borrow_mut().mailbox.get_mut(id).unwrap().starred = false; }
+        let mut p = reader_for(&sh, id, 900.0, 800.0);
+        let star = p.hits.iter().find(|(_, h)| matches!(h, Hit::Star)).map(|(r, _)| *r).unwrap();
+        sh.borrow_mut().last_mouse = star.center();
+        let mut doc = AutoCommit::new();
+        let mut handled = false;
+        p.on_left_press(&mut doc, star.center(), &mut handled);
+        assert!(sh.borrow().mailbox.get(id).unwrap().starred, "starring sets the flag the filled glyph keys on");
     }
 
     #[test]

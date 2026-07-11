@@ -48,6 +48,7 @@ fn message(
         cc: vec![],
         subject: subject.into(),
         body: body.into(),
+        html_body: None,
         attachments,
         timestamp_min: SAMPLE_NOW_MIN - ago_min,
         read,
@@ -264,6 +265,13 @@ is definitely not a scam.",
         m.read = true;
         mb.insert(m);
     }
+    // A rich HTML newsletter (with a remote tracking image) parsed live, so the
+    // reader exercises the sandboxed WebView path and the remote-content block.
+    if let Some(mut m) = parse_eml(RAW_HTML.as_bytes(), SAMPLE_NOW_MIN - 52, Folder::Inbox) {
+        m.read = false;
+        m.starred = true;
+        mb.insert(m);
+    }
 
     mb
 }
@@ -342,6 +350,36 @@ Content-Transfer-Encoding: base64\r\n\
 \r\n\
 JVBERi0xLjQgZmFrZSBwZGYgYm9keSBmb3IgdGhlIHNhbXBsZSBtYWlsYm94Lg==\r\n\
 --=_qos_boundary_=--\r\n";
+
+/// A multipart/alternative message with a plain-text part and a rich HTML part
+/// (including a **remote** image the reader must block by default), parsed live.
+const RAW_HTML: &str = "From: qOS Weekly <news@weekly.qos.example>\r\n\
+To: you@qos.example\r\n\
+Subject: This week in qOS — spatial shells & collab buffers\r\n\
+Message-ID: <weekly-2026-27@weekly.qos.example>\r\n\
+Date: Tue, 30 Jun 2026 13:13:00 +0000\r\n\
+MIME-Version: 1.0\r\n\
+Content-Type: multipart/alternative; boundary=\"=_qos_alt_=\"\r\n\
+\r\n\
+--=_qos_alt_=\r\n\
+Content-Type: text/plain; charset=utf-8\r\n\
+\r\n\
+This week: the scrollable-strip shell landed, and collaboration buffers now \
+stream over gossipsub. Read on.\r\n\
+--=_qos_alt_=\r\n\
+Content-Type: text/html; charset=utf-8\r\n\
+\r\n\
+<html><body style=\"font-family:sans-serif\">\
+<h1 style=\"color:#4f7cff\">This week in qOS</h1>\
+<img src=\"https://track.weekly.qos.example/open.gif?u=you\" width=\"1\" height=\"1\">\
+<p>The <strong>scrollable-strip shell</strong> landed, and collaboration \
+buffers now stream over gossipsub.</p>\
+<ul><li>Spatial window model</li><li>Per-workspace sandboxing</li>\
+<li>Live collab presence</li></ul>\
+<blockquote>\u{201c}It feels like one shared desktop.\u{201d}</blockquote>\
+<p><a href=\"https://qos.example/weekly/27\">Read the full issue \u{2192}</a></p>\
+</body></html>\r\n\
+--=_qos_alt_=--\r\n";
 
 #[cfg(test)]
 mod tests {
