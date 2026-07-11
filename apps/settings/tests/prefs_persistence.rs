@@ -160,6 +160,26 @@ fn power_idle_prefs_persist_to_disk() {
 }
 
 #[test]
+fn display_scale_persists_fractional_factor_to_disk() {
+    let _g = ENV_LOCK.lock().unwrap();
+    let _home = temp_home("display-scale");
+
+    let mut pane = settings::panes::display::build();
+    let mut doc = AutoCommit::new();
+    let root = automerge::ROOT;
+    pane.sync(&mut doc, &root); // seed (writes "100%")
+    // User picks a fractional 150% scale.
+    let _ = doc.put(&root, settings::panes::display::DISPLAY_SCALE_KEY, "150%");
+    pane.sync(&mut doc, &root); // observe + persist
+
+    let scale = SystemPrefs::load().display.scale;
+    assert!(
+        (scale - 1.5).abs() < 1e-9,
+        "the display-scale dropdown persisted a fractional 1.5, got {scale}"
+    );
+}
+
+#[test]
 fn updates_channel_persists_to_disk() {
     let _g = ENV_LOCK.lock().unwrap();
     let _home = temp_home("updates");
