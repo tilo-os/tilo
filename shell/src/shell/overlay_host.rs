@@ -2796,6 +2796,17 @@ impl Widget for ShellOverlayHost {
             } else {
                 transform
             };
+            // Soft elevation so the modal lifts off its scrim. Faded by
+            // openness (== alpha here) so it animates with the panel.
+            ui::surface::soft_shadow(
+                scene,
+                panel_xform,
+                panel_rect,
+                theme.tokens.colors.neutral[0],
+                40.0,
+                16.0,
+                0.55 * alpha,
+            );
             self.draw_ws_settings(scene, panel_xform, text_renderer, theme);
             if in_flight {
                 scene.pop_layer();
@@ -2855,6 +2866,18 @@ impl Widget for ShellOverlayHost {
             } else {
                 transform
             };
+            // Soft elevation behind the popover so it lifts off the
+            // desktop like the toasts do. Faded by openness so it
+            // animates in/out with the panel.
+            ui::surface::soft_shadow(
+                scene,
+                qs_xform,
+                qs_rect,
+                theme.tokens.colors.neutral[0],
+                34.0,
+                12.0,
+                0.5 * openness,
+            );
             self.draw_quick_settings(scene, qs_xform, text_renderer, theme);
             if in_flight {
                 scene.pop_layer();
@@ -2899,6 +2922,19 @@ impl Widget for ShellOverlayHost {
             } else {
                 transform
             };
+            // Soft elevation behind the palette + its banner so the
+            // whole search surface lifts off the scrim. Drawn before the
+            // palette fill; the banner sits just above `palette_rect`, so
+            // a generous upward spread covers both. Faded by openness.
+            ui::surface::soft_shadow(
+                scene,
+                palette_xform,
+                palette_rect,
+                theme.tokens.colors.neutral[0],
+                44.0,
+                14.0,
+                0.55 * alpha,
+            );
             // Re-theme just the palette surface to the concept's
             // `bg-slate-900/70` glass tint (visual-gap #3). The
             // `CommandPalette` widget lives in `quick-ui` and paints its
