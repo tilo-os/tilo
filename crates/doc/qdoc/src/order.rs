@@ -44,14 +44,42 @@ fn midpoint(lo: &[u8], hi: &[u8]) -> Vec<u8> {
 pub fn key_between(lo: Option<&[u8]>, hi: Option<&[u8]>) -> Vec<u8> {
     match (lo, hi) {
         (None, None) => vec![128],
-        (Some(l), None) => {
-            let mut v = l.to_vec();
-            v.push(128);
-            v
-        }
+        (Some(l), None) => key_after(l),
         (None, Some(h)) => midpoint(&[], h),
         (Some(l), Some(h)) => midpoint(l, h),
     }
+}
+
+/// A key strictly greater than `l`, for "append after `l`" (no upper bound).
+///
+/// A naive `l + [128]` grows the key by a whole byte on *every* append, so a run
+/// of `n` sequential appends produces keys up to `n` bytes long — and since every
+/// [`cmp_keys`] is O(key length), that makes building/sorting `n` blocks O(n²).
+/// Instead this increments `l` as a base-256 value and truncates, so the width is
+/// reused: keys grow ~1 byte per 128 appends rather than 1 byte per append (a
+/// 128× shorter key, turning the quadratic back into near-linear). The result is
+/// still a valid fraction strictly greater than `l`; concurrent appends after the
+/// same `l` still converge (equal order keys are broken by block id downstream).
+fn key_after(l: &[u8]) -> Vec<u8> {
+    let mut v = l.to_vec();
+    // Trailing zeros are insignificant as a fraction; drop them so the increment
+    // lands on a significant digit (keeps the result minimal).
+    while v.len() > 1 && *v.last().unwrap() == 0 {
+        v.pop();
+    }
+    // Increment the least-significant byte that isn't already 0xFF, dropping the
+    // bytes after it — the shortest fraction greater than `l` at that position.
+    for i in (0..v.len()).rev() {
+        if v[i] < 255 {
+            v[i] += 1;
+            v.truncate(i + 1);
+            return v;
+        }
+    }
+    // `l` is all 0xFF (≈ 1.0): no shorter key exceeds it, so extend by one mid byte.
+    let mut out = l.to_vec();
+    out.push(128);
+    out
 }
 
 #[cfg(test)]
@@ -106,6 +134,22 @@ mod tests {
     #[test]
     fn trailing_zeros_compare_equal() {
         assert_eq!(cmp_keys(&[5], &[5, 0, 0]), Ordering::Equal);
+    }
+
+    #[test]
+    fn sequential_appends_stay_short_and_ordered() {
+        // A long run of appends (the book-length-document case) must NOT grow keys
+        // one byte per insert — that is the O(n²) trap (every cmp_keys is O(len)).
+        let mut key = key_between(None, None);
+        let mut max_len = key.len();
+        for _ in 0..4_000 {
+            let next = key_between(Some(&key), None);
+            assert_eq!(cmp_keys(&key, &next), Ordering::Less, "each append is strictly greater");
+            key = next;
+            max_len = max_len.max(key.len());
+        }
+        // ~128 appends per byte of width → ~32 bytes for 4000, versus a naive ~4000.
+        assert!(max_len <= 40, "append keys must stay short (got {max_len} bytes) or insertion is O(n²)");
     }
 
     use proptest::prelude::*;
