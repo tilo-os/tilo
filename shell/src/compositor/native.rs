@@ -625,7 +625,48 @@ fn apply_session_transition(transition: SessionTransition, backend: &mut dyn Bac
     match transition {
         SessionTransition::Blanked => backend.set_dpms(false),
         SessionTransition::Woke => backend.set_dpms(true),
-        SessionTransition::Locked | SessionTransition::Unlocked => {}
+        // Lock/Unlock are reflected via `SessionManager::is_locked`;
+        // Suspend is gated by the inhibitor registry + issued through the
+        // power service at the call site, never here.
+        SessionTransition::Locked
+        | SessionTransition::Unlocked
+        | SessionTransition::Suspend => {}
+    }
+}
+
+/// Whether an event is the hardware power key being pressed. Detected by
+/// both the logical [`NamedKey::Power`] and the physical key code so it works
+/// regardless of the active keymap.
+fn is_power_key(event: &WindowEvent) -> bool {
+    if let WindowEvent::KeyboardInput { event, .. } = event {
+        if event.state == ElementState::Pressed {
+            if matches!(event.logical_key, Key::Named(NamedKey::Power)) {
+                return true;
+            }
+            if let PhysicalKey::Code(code) = event.physical_key {
+                return code == winit::keyboard::KeyCode::Power;
+            }
+        }
+    }
+    false
+}
+
+/// Build an OS notification toast from a power-service notification.
+fn power_notification_to_incoming(
+    bridge: &crate::notifications::NotificationBridge,
+    n: qos_power_mgmt::PowerNotification,
+) -> crate::notifications::IncomingNotification {
+    crate::notifications::IncomingNotification {
+        dbus_id: bridge.alloc_id(),
+        app_name: "Power".to_string(),
+        summary: n.summary,
+        body: n.body,
+        actions: Vec::new(),
+        // Critical battery lingers until dismissed; the low heads-up uses the
+        // server default expiry.
+        expire_timeout: if n.critical { 0 } else { -1 },
+        urgency: if n.critical { 2 } else { 1 },
+        caller: None,
     }
 }
 
@@ -829,7 +870,24 @@ pub fn run() -> ! {
     // transitions into `backend.set_dpms` calls and lock-overlay paints.
     // Config comes from `QOS_IDLE_BLANK_SECS` / `QOS_IDLE_LOCK_SECS`
     // (defaults: blank after 5 min, no auto-lock).
-    let mut session = SessionManager::new(IdleConfig::from_env(), Instant::now());
+    // Power policy from the shared Settings store (`settings.json`); drives
+    // the idle-suspend timeout, the lid / power-key actions, and the battery
+    // thresholds. Read once at session start, the same way the display scale
+    // is — the contract is the JSON on disk, not a shared crate.
+    let power_policy = qos_power_mgmt::config::load_policy();
+    let mut session = SessionManager::new(
+        IdleConfig::from_env().with_suspend(power_policy.idle_suspend),
+        Instant::now(),
+    );
+    // The suspend-inhibitor registry: apps/tasks hold a token via
+    // `inhibit_registry.acquire(reason)` to keep the machine awake. The power
+    // service mirrors it into a real logind `idle:sleep` lock; the idle loop
+    // consults `is_inhibited()` before honouring an idle-suspend.
+    let inhibit_registry = qos_power_mgmt::InhibitRegistry::new();
+    // The mailbox the async power service uses to reach this loop (lock the
+    // session, post a battery toast, reset the idle timer on resume) and this
+    // loop uses to reach it (request a suspend).
+    let power_bridge = qos_power_mgmt::PowerBridge::new();
 
     // Track D1: the `org.freedesktop.Notifications` D-Bus service. The
     // compositor owns the notification daemon so sandboxed apps' toasts
@@ -878,7 +936,6 @@ pub fn run() -> ! {
                         crate::notifications::BUS_NAME
                     );
                     _notif_handle = Some(h);
-                    _notif_runtime = Some(rt);
                 }
                 Err(e) => {
                     tracing::warn!(
@@ -887,10 +944,37 @@ pub fn run() -> ! {
                     );
                 }
             }
+            // Keep the runtime alive regardless of the notification outcome:
+            // the power service lives on the *system* bus (logind/UPower),
+            // independent of the *session*-bus notification daemon, and shares
+            // these background threads.
+            _notif_runtime = Some(rt);
         }
         Err(e) => {
             tracing::warn!("notifications: tokio runtime build failed ({e}); D-Bus service off");
         }
+    }
+
+    // Power service: the async orchestrator that suspends via logind, mirrors
+    // the inhibitor registry into a logind lock, watches the battery, and
+    // reacts to the lid. Spawned on the notify runtime (same background
+    // threads). If the system bus / logind / UPower are unreachable it logs
+    // and the compositor keeps running with the pure idle policy only — a
+    // headless / bus-less session still blanks, locks, and honours env
+    // suspend timeouts, it just cannot actuate real suspend.
+    if let Some(rt) = _notif_runtime.as_ref() {
+        let bridge = power_bridge.clone();
+        let registry = inhibit_registry.clone();
+        let policy = power_policy;
+        rt.spawn(async move {
+            match qos_power_mgmt::PowerService::connect(bridge, registry, policy).await {
+                Ok(service) => service.run().await,
+                Err(e) => tracing::warn!(
+                    target: "qos::power",
+                    "power service unavailable ({e}); suspend/lid/battery inactive"
+                ),
+            }
+        });
     }
 
     let mut close_requested = false;
@@ -933,6 +1017,23 @@ pub fn run() -> ! {
                                 apply_session_transition(t, backend.as_mut());
                             }
                         }
+                    } else if is_power_key(&wev) {
+                        // The hardware power key resolves per the power
+                        // policy (logind delegates it to us via the service's
+                        // block inhibitor). A deliberate press bypasses the
+                        // idle inhibitor — the user asked for it.
+                        match power_policy.on_power_key() {
+                            Some(qos_power_mgmt::PowerAction::Suspend) => {
+                                tracing::info!(target: "qos::power", "power key: requesting suspend");
+                                power_bridge.request_suspend();
+                            }
+                            Some(qos_power_mgmt::PowerAction::Lock) => {
+                                for t in session.request_lock(Instant::now()) {
+                                    apply_session_transition(t, backend.as_mut());
+                                }
+                            }
+                            Some(qos_power_mgmt::PowerAction::Ignore) | None => {}
+                        }
                     } else if is_lock_chord(&wev, &test_control_ctx.modifiers) {
                         // Super+L locks immediately.
                         for t in session.request_lock(Instant::now()) {
@@ -965,9 +1066,52 @@ pub fn run() -> ! {
         }
 
         // Track D2: advance the idle timers and apply any timeout-driven
-        // transitions (blank, auto-lock) for this tick.
+        // transitions (blank, auto-lock, suspend) for this tick.
         for t in session.tick(Instant::now()) {
-            apply_session_transition(t, backend.as_mut());
+            if t == SessionTransition::Suspend {
+                // Idle-suspend is gated by the inhibitor registry: an app
+                // holding a token (media playing, a task running) keeps the
+                // machine awake. When inhibited we un-latch so it re-fires as
+                // soon as the last inhibitor releases, without waiting for
+                // fresh input.
+                if inhibit_registry.is_inhibited() {
+                    session.cancel_suspend();
+                    tracing::debug!(
+                        target: "qos::power",
+                        reasons = ?inhibit_registry.active_reasons(),
+                        "idle-suspend deferred: inhibitor held"
+                    );
+                } else {
+                    tracing::info!(target: "qos::power", "idle threshold reached: requesting suspend");
+                    power_bridge.request_suspend();
+                }
+            } else {
+                apply_session_transition(t, backend.as_mut());
+            }
+        }
+
+        // Apply signals the async power service raised (lid/critical lock,
+        // battery toasts, resume). Suspend requests flow the other way, via
+        // `power_bridge.request_suspend()` above.
+        for sig in power_bridge.drain_signals() {
+            match sig {
+                qos_power_mgmt::PowerSignal::Lock => {
+                    for t in session.request_lock(Instant::now()) {
+                        apply_session_transition(t, backend.as_mut());
+                    }
+                }
+                qos_power_mgmt::PowerSignal::ResumedFromSleep => {
+                    // Reset the idle timer so a stale pre-sleep timestamp does
+                    // not immediately re-blank/re-suspend on resume.
+                    for t in session.note_activity(Instant::now()) {
+                        apply_session_transition(t, backend.as_mut());
+                    }
+                }
+                qos_power_mgmt::PowerSignal::Notify(n) => {
+                    let inc = power_notification_to_incoming(&notif_bridge, n);
+                    notif_bridge.push_incoming(inc);
+                }
+            }
         }
 
         // Track D1: pump the D-Bus notification bridge into the live
