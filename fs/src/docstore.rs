@@ -367,4 +367,80 @@ mod tests {
         assert_eq!(b1.op, qdoc::CellOp::Added);
         assert_eq!(b1.new.as_ref().unwrap().formula.as_deref(), Some("A1+A2"), "added formula preserved in the diff");
     }
+
+    /// Two peers co-edit the *same file* exactly the way a shared CRDT
+    /// doc is co-edited: they fork the document, splice the same heading
+    /// concurrently, exchange the incremental Automerge changes, and
+    /// converge. Committing the converged replicas into the shared
+    /// content-addressed `DocStore` reuses the seed change history
+    /// (incremental sync — the common prefix dedups) and lands an
+    /// identical change set on both sides. This is the file-backed
+    /// counterpart to the toolkit's in-memory co-edit convergence.
+    #[tokio::test]
+    async fn two_replicas_of_a_file_coedit_and_converge_incrementally() {
+        let reg = qdoc::builtin_registry();
+        let docx = super::super::tests::sample_docx();
+        let mut base = qdoc::Document::new();
+        reg.provider_for_ext("docx").unwrap().import(&docx, &mut base.as_mut()).unwrap();
+
+        let store = ContentStore::memory();
+        let mut ds = DocStore::new(&store);
+
+        // The shared file is committed once as the seed version.
+        let v0 = ds.commit_document(&mut base, "seed").await.unwrap();
+        let m0 = ds.load_manifest(v0.manifest_hash).await.unwrap();
+
+        let hid = base
+            .blocks_in_order()
+            .into_iter()
+            .find(|id| base.block_kind(id).as_deref() == Some("heading"))
+            .expect("seed document has a heading block");
+
+        // Two peers fork the shared file and edit the SAME heading Text
+        // object concurrently — A appends, B prepends.
+        let mut peer_a = base.fork();
+        let mut peer_b = base.fork();
+        let hlen = peer_a.block_text(&hid).unwrap_or_default().chars().count();
+        peer_a.splice_text(&hid, hlen, 0, " [A]");
+        peer_b.splice_text(&hid, 0, 0, "[B] ");
+
+        // Exchange the incremental changes both ways (Automerge merge).
+        peer_a.merge(&mut peer_b);
+        peer_b.merge(&mut peer_a);
+
+        // Both replicas converge on the shared file, carrying both edits.
+        let text_a = peer_a.block_text(&hid).unwrap_or_default();
+        let text_b = peer_b.block_text(&hid).unwrap_or_default();
+        assert_eq!(text_a, text_b, "both replicas converge on the shared file");
+        assert!(
+            text_a.contains("[A]") && text_a.contains("[B]"),
+            "the converged heading carries both concurrent edits: {text_a:?}"
+        );
+
+        // Committing a converged replica reuses the seed history: only
+        // the new changes are stored, the shared prefix dedups.
+        let va = ds.commit_document(&mut peer_a, "alice").await.unwrap();
+        let ma = ds.load_manifest(va.manifest_hash).await.unwrap();
+        assert!(
+            ma.change_hashes.starts_with(&m0.change_hashes),
+            "the seed history is reused, not re-saved (incremental sync)"
+        );
+        assert!(
+            va.change_count > v0.change_count,
+            "the two concurrent edits added to the change history"
+        );
+
+        // The other converged replica stores the identical change set
+        // (order may differ for concurrent changes; the set does not).
+        let vb = ds.commit_document(&mut peer_b, "bob").await.unwrap();
+        let mb = ds.load_manifest(vb.manifest_hash).await.unwrap();
+        let mut a_set = ma.change_hashes.clone();
+        let mut b_set = mb.change_hashes.clone();
+        a_set.sort();
+        b_set.sort();
+        assert_eq!(
+            a_set, b_set,
+            "converged replicas store an identical set of content-addressed changes"
+        );
+    }
 }
