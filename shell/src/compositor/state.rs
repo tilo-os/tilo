@@ -46,7 +46,11 @@ use smithay::wayland::compositor::{
 use smithay::wayland::dmabuf::{
     DmabufGlobal, DmabufHandler, DmabufState, ImportNotifier,
 };
+use smithay::wayland::fractional_scale::{
+    self, FractionalScaleHandler, FractionalScaleManagerState,
+};
 use smithay::wayland::output::{OutputHandler, OutputManagerState};
+use smithay::wayland::viewporter::ViewporterState;
 use smithay::wayland::shell::xdg::{
     PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState,
     XdgToplevelSurfaceData,
@@ -54,8 +58,9 @@ use smithay::wayland::shell::xdg::{
 use smithay::wayland::shm::{ShmHandler, ShmState};
 use smithay::wayland::virtual_keyboard::VirtualKeyboardManagerState;
 use smithay::{
-    delegate_compositor, delegate_dmabuf, delegate_output, delegate_seat, delegate_shm,
-    delegate_virtual_keyboard_manager, delegate_xdg_shell,
+    delegate_compositor, delegate_dmabuf, delegate_fractional_scale, delegate_output,
+    delegate_seat, delegate_shm, delegate_viewporter, delegate_virtual_keyboard_manager,
+    delegate_xdg_shell,
 };
 
 use crate::collab::flatpak_share::SharedFlatpakSession;
@@ -68,6 +73,33 @@ use crate::network::streaming::{InputEvent, RemoteInputSink, ShareRegistry};
 use crate::shell::state::WorkspaceTree;
 use smithay::backend::input::KeyState;
 use std::collections::HashMap;
+
+/// Read the persisted HiDPI display scale from the shared settings store.
+///
+/// The Settings app writes `~/.config/qos/settings.json` with a
+/// `"display"` object carrying a `"scale"` number (1.0 = 100 %, 1.5 =
+/// 150 %, …). The compositor reads the same file — the contract is the
+/// JSON on disk, not a shared crate, so the compositor never depends on
+/// the Settings app. Any read/parse failure, a missing file, or a value
+/// outside a sane range falls back to `1.0` so a corrupt config can never
+/// leave the session at an unusable zoom.
+fn load_display_scale() -> f64 {
+    let Some(path) = dirs::config_dir().map(|d| d.join("qos").join("settings.json")) else {
+        return 1.0;
+    };
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return 1.0;
+    };
+    let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) else {
+        return 1.0;
+    };
+    match json.get("display").and_then(|d| d.get("scale")).and_then(|s| s.as_f64()) {
+        // Clamp to the range the Settings control offers (100 %–200 %),
+        // with a small margin, so an out-of-band value can't wedge the UI.
+        Some(scale) if (0.5..=3.0).contains(&scale) => scale,
+        _ => 1.0,
+    }
+}
 
 /// The compositor's process-wide state.
 ///
@@ -206,6 +238,26 @@ pub struct State {
     /// encoder reads the current per-surface description through
     /// [`crate::wayland::color_management::surface_current_colorimetry`].
     pub color_manager: ColorManagerState,
+    /// `wp_fractional_scale_manager_v1` state — lets HiDPI clients ask the
+    /// compositor for the preferred fractional scale of their surface (as
+    /// a `1/120`-unit integer on the wire). The preferred value the
+    /// compositor sends is [`Self::scale`]; it is pushed to every surface
+    /// on commit so a client that renders at, say, 1.5× produces crisp
+    /// output instead of a bilinearly-upscaled 1× buffer.
+    pub fractional_scale_manager: FractionalScaleManagerState,
+    /// `wp_viewporter` state — the companion protocol to fractional
+    /// scaling. A client that renders a 1.5×-sized buffer uses
+    /// `wp_viewport.set_destination` to declare the logical size the
+    /// buffer maps to, so the compositor scales it correctly (no need for
+    /// integer `wl_surface.set_buffer_scale`, which cannot express 1.5).
+    pub viewporter: ViewporterState,
+    /// Current display scale factor (HiDPI). Sent to clients as the
+    /// preferred `wp_fractional_scale`. Read once at session start from the
+    /// shared settings store (`~/.config/qos/settings.json`, section
+    /// `display.scale`) so the value the Settings app's "Display scale"
+    /// control writes drives what the compositor advertises. Defaults to
+    /// `1.0` when unset or the file is absent.
+    pub scale: f64,
     /// **Transient fullscreen surface** — the window group id of the toplevel
     /// that currently holds the output fullscreen via
     /// `xdg_toplevel.set_fullscreen`, or `None` in the normal tiled state.
@@ -300,6 +352,16 @@ impl State {
         // before the state literal below because `display_handle` is
         // moved into the struct.
         let color_manager = ColorManagerState::new::<Self>(&display_handle);
+        // Advertise `wp_fractional_scale_manager_v1` + `wp_viewporter`.
+        // Together they let HiDPI clients render at a fractional scale
+        // (e.g. 1.5×) and have the compositor composite the result at the
+        // correct logical size. The preferred scale itself is pushed
+        // per-surface on commit (see `CompositorHandler::commit`).
+        let fractional_scale_manager = FractionalScaleManagerState::new::<Self>(&display_handle);
+        let viewporter = ViewporterState::new::<Self>(&display_handle);
+        // Read the persisted display scale from the shared settings store
+        // so the compositor advertises the value the Settings app wrote.
+        let scale = load_display_scale();
 
         Self {
             loop_handle,
@@ -322,6 +384,9 @@ impl State {
             surface_resolver: None,
             active_sessions: HashMap::new(),
             color_manager,
+            fractional_scale_manager,
+            viewporter,
+            scale,
             fullscreen_group: None,
             output_size: (0, 0),
         }
@@ -641,6 +706,21 @@ impl CompositorHandler for State {
     }
 
     fn commit(&mut self, surface: &WlSurface) {
+        // HiDPI: push the compositor's current display scale to the
+        // surface as its preferred `wp_fractional_scale`. This runs for
+        // every surface (not just shared ones) so any HiDPI-aware client
+        // that created a `wp_fractional_scale_v1` object learns the scale
+        // it should render at. `set_preferred_scale` is idempotent — it
+        // only emits a wire event when the value actually changes, and it
+        // stores the value even before the client has created the object
+        // (smithay replays it on `get_fractional_scale`).
+        let scale = self.scale;
+        wl_compositor::with_states(surface, |states| {
+            fractional_scale::with_fractional_scale(states, |fs| {
+                fs.set_preferred_scale(scale);
+            });
+        });
+
         // Phase 4 v2 — pull the surface's most-recent buffer into the
         // [`SurfaceTracker`] iff the surface is registered as shared on
         // any workspace in [`WorkspaceTree`]. Most surfaces aren't
@@ -981,6 +1061,22 @@ impl SeatHandler for State {
 
 impl OutputHandler for State {}
 
+impl FractionalScaleHandler for State {
+    fn new_fractional_scale(&mut self, surface: WlSurface) {
+        // A client just created a `wp_fractional_scale_v1` for this
+        // surface. Seed it with the current display scale immediately so
+        // the client doesn't have to wait for its first commit to learn
+        // the preferred scale. `set_preferred_scale` is idempotent and
+        // safe to call before any buffer is attached.
+        let scale = self.scale;
+        wl_compositor::with_states(&surface, |states| {
+            fractional_scale::with_fractional_scale(states, |fs| {
+                fs.set_preferred_scale(scale);
+            });
+        });
+    }
+}
+
 // -----------------------------------------------------------------------------
 // Delegate macros — wire each protocol's `Dispatch` impls onto `State`.
 // -----------------------------------------------------------------------------
@@ -992,6 +1088,8 @@ delegate_dmabuf!(State);
 delegate_seat!(State);
 delegate_virtual_keyboard_manager!(State);
 delegate_output!(State);
+delegate_fractional_scale!(State);
+delegate_viewporter!(State);
 
 // `AsRef<ColorManagerState>` lets the color-management `GlobalDispatch`
 // impl reach the advertised-capability list without adding a public
