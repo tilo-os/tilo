@@ -39,7 +39,7 @@
 
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Cap, Circle, Join, Point, Rect, RoundedRect, Shape, Stroke};
-use vello::peniko::Color;
+use vello::peniko::{Color, Fill};
 
 /// Stable identifier for a lucide glyph. New entries map 1:1 to lucide
 /// icon kebab names (e.g. `Icon::LayoutGrid` → `layout-grid`).
@@ -622,6 +622,28 @@ impl Icon {
     /// space — pass `Affine::IDENTITY` when `rect` is already absolute.
     pub fn draw(self, scene: &mut Scene, transform: Affine, rect: Rect, color: Color) {
         draw_icon(scene, transform, rect, self, color, LUCIDE_DEFAULT_STROKE_PX);
+    }
+
+    /// Paint the icon as a **solid fill** rather than a stroked outline,
+    /// centred within `rect`. Use for glyphs that read as a filled shape when
+    /// "on" — a starred/favourited state, a selected pin — where the outline
+    /// form is the "off" state. Only closed sub-paths fill meaningfully; the
+    /// lucide `Star` (and similar single-loop glyphs) are authored closed, so
+    /// they fill cleanly into the same silhouette the outline traces.
+    pub fn draw_filled(self, scene: &mut Scene, transform: Affine, rect: Rect, color: Color) {
+        let size = rect.size();
+        let min = size.width.min(size.height);
+        if min <= 0.0 {
+            return;
+        }
+        let scale = min / LUCIDE_VIEWBOX;
+        let glyph = LUCIDE_VIEWBOX * scale;
+        let tx = rect.x0 + (size.width - glyph) / 2.0;
+        let ty = rect.y0 + (size.height - glyph) / 2.0;
+        let local = transform * Affine::translate((tx, ty)) * Affine::scale(scale);
+        for sub in icon_subpaths(self) {
+            scene.fill(Fill::NonZero, local, color, None, &sub);
+        }
     }
 
     /// Same as [`Icon::draw`] but with an explicit output stroke width in
