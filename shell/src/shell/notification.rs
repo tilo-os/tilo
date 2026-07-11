@@ -270,6 +270,15 @@ const CLOSE_BUTTON_SIZE: f64 = 16.0;
 /// FIFO behaviour as `ui::widget::toast::ToastStack`.
 pub const MAX_NOTIFICATIONS: usize = 6;
 
+/// Maximum number of entries retained in the notification *history*
+/// (the message-log the notification centre reads). Every notification
+/// that leaves the active stack — dismissed, expired, closed, or
+/// evicted by the active cap — is appended here, as is every
+/// notification suppressed while Do-Not-Disturb is on. Bounded so a
+/// long-running session can't grow it without limit; the oldest entry
+/// is dropped from the front once the cap is exceeded.
+pub const MAX_HISTORY: usize = 50;
+
 /// Lock-screen redaction label: shown in place of the entire toast stack
 /// while the session is locked, so only the *count* leaks (never an app
 /// name, summary, or body). Pure helper so the redaction contract is
@@ -416,11 +425,19 @@ impl Widget for NotificationStack {
         }
 
         let now = Instant::now();
-        let (snapshot, locked): (Vec<Notification>, bool) = {
+        let (snapshot, locked, dnd, history_count): (Vec<Notification>, bool, bool, usize) = {
             let ch = self.chrome.borrow();
-            (ch.notifications().iter().cloned().collect(), ch.session_locked())
+            (
+                ch.notifications().iter().cloned().collect(),
+                ch.session_locked(),
+                ch.dnd(),
+                ch.notification_history_count(),
+            )
         };
-        if snapshot.is_empty() {
+        // Nothing to paint when there are no active toasts — unless
+        // Do-Not-Disturb is on and unlocked, in which case we still show
+        // the DND status pill so the user knows banners are being held.
+        if snapshot.is_empty() && !(dnd && !locked) {
             self.rect = Rect::ZERO;
             return;
         }
@@ -478,6 +495,63 @@ impl Widget for NotificationStack {
 
         let mut stack_min_y = f64::INFINITY;
         let mut stack_max_y = f64::NEG_INFINITY;
+
+        // Do-Not-Disturb status pill: OS-owned chrome rendered at the top
+        // of the notification region whenever DND is on, even with no
+        // active toasts. It tells the user *why* banners aren't appearing
+        // and how many notifications were held back into history. Muted
+        // fill so it reads as a status chip, not a dismissible toast; it
+        // registers no hit-rect (toggle DND from the palette / quick
+        // settings, not from here).
+        if dnd {
+            let pill_h = 30.0;
+            let pill_rect = Rect::new(x0_rest, y, x0_rest + TOAST_WIDTH, y + pill_h);
+            let shape = RoundedRect::from_rect(pill_rect, radius);
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                theme.tokens.colors.surfaces.base,
+                None,
+                &shape,
+            );
+            scene.stroke(
+                &Stroke::new(1.0),
+                transform,
+                theme.tokens.colors.border_standard,
+                None,
+                &shape,
+            );
+            let dot_cx = pill_rect.x0 + CARD_PADDING_X + DOT_RADIUS;
+            let dot_cy = pill_rect.y0 + pill_h / 2.0;
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                theme.tokens.colors.text_dim,
+                None,
+                &Circle::new(Point::new(dot_cx, dot_cy), DOT_RADIUS),
+            );
+            let label = if history_count > 0 {
+                format!("Do Not Disturb · {history_count} held")
+            } else {
+                "Do Not Disturb".to_string()
+            };
+            let text_x = pill_rect.x0 + CARD_PADDING_X + DOT_RADIUS * 2.0 + DOT_GAP;
+            text_renderer.draw_text(
+                scene,
+                &label,
+                body_size,
+                theme.tokens.colors.text_dim,
+                transform
+                    * Affine::translate((
+                        text_x,
+                        pill_rect.y0 + (pill_h - body_size as f64) / 2.0,
+                    )),
+                Some((TOAST_WIDTH - (text_x - pill_rect.x0) - CARD_PADDING_X) as f32),
+            );
+            stack_min_y = stack_min_y.min(pill_rect.y0);
+            stack_max_y = stack_max_y.max(pill_rect.y1);
+            y += pill_h + TOAST_GAP;
+        }
 
         for n in snapshot.iter() {
             let (alpha, slide_dx) = Self::animation_state(n, now);
@@ -1036,5 +1110,187 @@ mod tests {
             lock_suppressed_label(chrome.borrow().notification_count()),
             "2 notifications"
         );
+    }
+
+    // ---------- Do-Not-Disturb + history ----------
+
+    #[test]
+    fn dnd_suppresses_active_but_keeps_history() {
+        let chrome = new_chrome();
+        chrome.borrow_mut().set_dnd(true);
+        assert!(chrome.borrow().dnd());
+        let id = chrome.borrow_mut().push_notification("Held", "while DND");
+        let ch = chrome.borrow();
+        // Suppressed from the display surface…
+        assert!(
+            ch.notifications().is_empty(),
+            "DND must keep the active banner stack empty"
+        );
+        // …but retained in history, verbatim.
+        assert_eq!(ch.notification_history().len(), 1);
+        assert_eq!(ch.notification_history()[0].title, "Held");
+        assert_eq!(ch.notification_history()[0].id, id);
+    }
+
+    #[test]
+    fn dnd_suppressed_dbus_notification_preserves_attribution_in_history() {
+        // The real pump path: a D-Bus `Notify` while DND is on must land
+        // in history with its dbus_id / app / workspace intact, and never
+        // hit the active stack.
+        let chrome = new_chrome();
+        let bridge = NotificationBridge::new();
+        chrome.borrow_mut().set_notification_bridge(bridge.clone());
+        chrome.borrow_mut().set_dnd(true);
+        bridge.push_incoming(incoming(77, 1, 5000));
+        chrome.borrow_mut().pump_dbus_notifications();
+        let ch = chrome.borrow();
+        assert!(ch.notifications().is_empty(), "DND suppresses the banner");
+        assert_eq!(ch.notification_history().len(), 1);
+        let h = &ch.notification_history()[0];
+        assert_eq!(h.dbus_id, Some(77));
+        assert_eq!(h.app_name.as_deref(), Some("Mailer"));
+        assert_eq!(h.source_workspace, Some(9));
+    }
+
+    #[test]
+    fn active_notification_moves_to_history_on_dismiss() {
+        let chrome = new_chrome();
+        let id = chrome.borrow_mut().push_notification("Shown", "then dismissed");
+        // While active it is NOT yet in history (history == past toasts).
+        assert_eq!(chrome.borrow().notifications().len(), 1);
+        assert_eq!(chrome.borrow().notification_history().len(), 0);
+        chrome.borrow_mut().dismiss_notification(id);
+        assert!(chrome.borrow().notifications().is_empty());
+        assert_eq!(chrome.borrow().notification_history().len(), 1);
+        assert_eq!(chrome.borrow().notification_history()[0].title, "Shown");
+    }
+
+    #[test]
+    fn expiry_moves_notification_to_history() {
+        let chrome = new_chrome();
+        chrome.borrow_mut().push_notification_full(
+            Notification::new("Quick", "fades")
+                .with_dismiss_after(Duration::from_millis(10)),
+        );
+        assert_eq!(chrome.borrow().notification_history().len(), 0);
+        let future = Instant::now() + Duration::from_millis(200);
+        let dropped = chrome.borrow_mut().update_notification_lifecycle(future);
+        assert_eq!(dropped, 1);
+        assert!(chrome.borrow().notifications().is_empty());
+        assert_eq!(
+            chrome.borrow().notification_history().len(),
+            1,
+            "an expired toast must be retained in history"
+        );
+    }
+
+    #[test]
+    fn close_by_dbus_id_moves_to_history() {
+        let chrome = new_chrome();
+        let bridge = NotificationBridge::new();
+        chrome.borrow_mut().set_notification_bridge(bridge.clone());
+        bridge.push_incoming(incoming(88, 1, 5000));
+        chrome.borrow_mut().pump_dbus_notifications();
+        assert_eq!(chrome.borrow().notifications().len(), 1);
+        assert_eq!(chrome.borrow().notification_history().len(), 0);
+        bridge.request_close(88);
+        chrome.borrow_mut().pump_dbus_notifications();
+        assert!(chrome.borrow().notifications().is_empty());
+        assert_eq!(chrome.borrow().notification_history().len(), 1);
+        assert_eq!(chrome.borrow().notification_history()[0].dbus_id, Some(88));
+    }
+
+    #[test]
+    fn cap_eviction_retires_oldest_to_history() {
+        let chrome = new_chrome();
+        for i in 0..(MAX_NOTIFICATIONS + 3) {
+            chrome.borrow_mut().push_notification(format!("n{i}"), "");
+        }
+        // Active capped…
+        assert_eq!(chrome.borrow().notifications().len(), MAX_NOTIFICATIONS);
+        // …and the 3 evicted from the front are in history, oldest-first.
+        let ch = chrome.borrow();
+        assert_eq!(ch.notification_history().len(), 3);
+        let titles: Vec<_> = ch
+            .notification_history()
+            .iter()
+            .map(|n| n.title.clone())
+            .collect();
+        assert_eq!(titles, vec!["n0", "n1", "n2"]);
+    }
+
+    #[test]
+    fn history_is_bounded_to_max() {
+        let chrome = new_chrome();
+        // Dismiss far more than the cap; history must not grow unbounded.
+        for i in 0..(MAX_HISTORY + 10) {
+            let id = chrome.borrow_mut().push_notification(format!("h{i}"), "");
+            chrome.borrow_mut().dismiss_notification(id);
+        }
+        let ch = chrome.borrow();
+        assert_eq!(ch.notification_history().len(), MAX_HISTORY);
+        // Oldest entries dropped from the front: the newest survivor is
+        // the last pushed.
+        let last = ch.notification_history().last().unwrap().title.clone();
+        assert_eq!(last, format!("h{}", MAX_HISTORY + 10 - 1));
+        // The very first ones are gone.
+        assert!(
+            ch.notification_history().iter().all(|n| n.title != "h0"),
+            "the oldest entry must have been evicted"
+        );
+    }
+
+    #[test]
+    fn clear_history_empties_the_log() {
+        let chrome = new_chrome();
+        let id = chrome.borrow_mut().push_notification("x", "y");
+        chrome.borrow_mut().dismiss_notification(id);
+        assert_eq!(chrome.borrow().notification_history().len(), 1);
+        chrome.borrow_mut().clear_notification_history();
+        assert_eq!(chrome.borrow().notification_history().len(), 0);
+    }
+
+    #[test]
+    fn toggle_dnd_flips_state_and_bumps_revision() {
+        let chrome = new_chrome();
+        let r0 = chrome.borrow().revision;
+        assert!(!chrome.borrow().dnd());
+        assert!(chrome.borrow_mut().toggle_dnd());
+        assert!(chrome.borrow().dnd());
+        assert!(chrome.borrow().revision > r0, "toggle must bump revision");
+        assert!(!chrome.borrow_mut().toggle_dnd());
+        assert!(!chrome.borrow().dnd());
+    }
+
+    #[test]
+    fn set_dnd_is_idempotent() {
+        let chrome = new_chrome();
+        let r0 = chrome.borrow().revision;
+        chrome.borrow_mut().set_dnd(false); // already off
+        assert_eq!(
+            chrome.borrow().revision,
+            r0,
+            "a no-op set must not bump the revision"
+        );
+        chrome.borrow_mut().set_dnd(true);
+        assert!(chrome.borrow().revision > r0);
+    }
+
+    #[test]
+    fn leaving_dnd_does_not_replay_held_notifications() {
+        // Turning DND off must not resurrect suppressed toasts onto the
+        // banner surface — they stay in history only.
+        let chrome = new_chrome();
+        chrome.borrow_mut().set_dnd(true);
+        chrome.borrow_mut().push_notification("held", "");
+        chrome.borrow_mut().set_dnd(false);
+        assert!(
+            chrome.borrow().notifications().is_empty(),
+            "held notifications are not replayed as banners"
+        );
+        assert_eq!(chrome.borrow().notification_history().len(), 1);
+        // A fresh post now shows again.
+        chrome.borrow_mut().push_notification("live", "");
+        assert_eq!(chrome.borrow().notifications().len(), 1);
     }
 }
