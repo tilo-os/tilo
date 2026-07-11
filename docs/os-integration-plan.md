@@ -59,3 +59,24 @@ enterprise = the same workspace with its host being that machine. Everything dow
 `docs/sync-host-model`, big `app-model-*`, `legacy-collab-*`, `nirios-shell`, `apps-fleet`,
 `worktree-*`, `feat-qos-tts`, `scrub-planning-refs`. Local unpushed `wt-{actionmodel,presence,
 deskenv,fracscale,hdr}` are likely superseded by the concurrent-session branches above.
+
+## Phase 6c — daily-driver subsystems (roadmap; each is its own build, not integration)
+Assessment (2026-07-11): unlike phases 1–5, these are **mostly settings-UI-only on `main`** — the
+system integration is genuinely missing. Each is a separate subsystem, so 6c is a roadmap; build
+highest-value first, delineate the rest honestly.
+
+- **Notifications** — settings toggle only; **no notification server**. Build: a compositor-side
+  `org.freedesktop.Notifications` D-Bus service + a layer/overlay surface to display them + a
+  history/DND model the shell owns (apps post via the fdo API). *Highest-value, cleanest scope.*
+- **Session-lock** — `crates/session/greeter` is greetd *login*, not lock-while-active. Build:
+  `ext_session_lock_v1` in the compositor + a lock surface (reuse the greeter's auth). 
+- **Audio routing** — playback engine (`crates/media`) + a `wpctl` settings pane exist; missing is
+  per-app sink/source routing + device hot-switch UI (PipeWire/WirePlumber node graph). Partial → finish.
+- **Power management** — settings pane (powerprofilesctl) exists; missing deeper logind/UPower
+  integration: suspend-on-idle, lid-switch, battery thresholds, inhibitors. Partial → finish.
+- **Accessibility (AT-SPI)** — `ui` has an a11y semantic model + high-contrast + OSK, but **no AT-SPI
+  bridge**. Build: wire `accesskit`'s AT-SPI adapter to the `ui` a11y tree so screen readers see it.
+  *Named daily-driver blocker.*
+
+Do NOT fake completion of these. Build the notification server (and/or AT-SPI bridge) with real tests;
+ship the rest as this tracked roadmap.
