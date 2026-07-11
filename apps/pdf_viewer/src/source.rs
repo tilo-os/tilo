@@ -23,6 +23,19 @@
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, OnceLock};
+use std::time::Instant;
+
+/// Emit a per-stage open timing line to stderr when `QOS_PDF_PROFILE` is set.
+/// Zero cost when the env var is unset (the format args are only built then).
+#[inline]
+fn prof(stage: &str, since: Instant) {
+    if std::env::var_os("QOS_PDF_PROFILE").is_some() {
+        eprintln!("[pdf-profile] {stage}: {:.1}ms", since.elapsed().as_secs_f64() * 1000.0);
+    }
+}
+fn profiling() -> bool {
+    std::env::var_os("QOS_PDF_PROFILE").is_some()
+}
 
 use anyhow::{anyhow, Context};
 use pdfium_render::prelude::*;
@@ -43,7 +56,9 @@ pub struct LoadedDoc {
 /// Load a PDF from `path`, preferring pixel-accurate rasterisation and falling
 /// back to pure-Rust text extraction.
 pub fn open(path: &Path) -> anyhow::Result<LoadedDoc> {
+    let t = Instant::now();
     let bytes = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
+    prof("fs::read", t);
     let name = path
         .file_name()
         .and_then(|s| s.to_str())
@@ -55,19 +70,37 @@ pub fn open(path: &Path) -> anyhow::Result<LoadedDoc> {
         .unwrap_or(&name)
         .to_string();
 
-    if let Some(r) = Rasterizer::open(bytes.clone()) {
+    // Hand the freshly-read bytes straight to pdfium (it takes ownership). The
+    // previous `bytes.clone()` here doubled memory and, on a large file, cost a
+    // full-buffer memcpy on the open→first-paint path (~140ms for a 365MB PDF);
+    // the pure-Rust text fallback below is rare (no pdfium, or an unreadable
+    // file), so it re-reads the file rather than the raster path paying to keep
+    // a spare copy every open.
+    let t = Instant::now();
+    let opened = Rasterizer::open(bytes);
+    prof("Rasterizer::open (pdfium parse + page sizes)", t);
+    if let Some(r) = opened {
+        let t = Instant::now();
         let (mut title, author, subject) = r.metadata();
+        prof("metadata", t);
         if title.trim().is_empty() {
             title = stem.clone();
         }
         let (pw, ph) = r.first_page_size();
+        let t = Instant::now();
         let mut doc = Document::blank_pages(&title, &author, r.page_count(), pw, ph);
+        prof("Document::blank_pages", t);
         doc.subject = subject;
+        let t = Instant::now();
         doc.outline = r.outline();
+        prof("outline (bookmarks)", t);
         return Ok(LoadedDoc { doc, raster: Some(r), name });
     }
 
-    // No native library — extract the text so the words are still real.
+    // No native library (or an unreadable-by-pdfium file) — extract the text so
+    // the words are still real. `bytes` was moved into the raster attempt above,
+    // so re-read the file for this rare path.
+    let bytes = std::fs::read(path).with_context(|| format!("re-reading {}", path.display()))?;
     let pages = pdf_extract::extract_text_from_mem_by_pages(&bytes)
         .map_err(|e| anyhow!("pdf text extraction failed: {e:?}"))?;
     let doc = Document::from_text_pages(&stem, "", &pages);
@@ -147,7 +180,10 @@ fn shared_pdfium() -> Option<&'static Pdfium> {
 
 impl Rasterizer {
     fn load_source(pdfium: &'static Pdfium, bytes: Vec<u8>) -> Option<Source> {
+        let t = Instant::now();
         let doc = pdfium.load_pdf_from_byte_vec(bytes, None).ok()?;
+        prof("  load_pdf_from_byte_vec", t);
+        let t = Instant::now();
         let mut page_sizes = Vec::new();
         let pages = doc.pages();
         for i in 0..pages.len() {
@@ -156,6 +192,9 @@ impl Rasterizer {
             } else {
                 page_sizes.push((612.0, 792.0));
             }
+        }
+        if profiling() {
+            eprintln!("[pdf-profile]   page_size loop ({} pages): {:.1}ms", page_sizes.len(), t.elapsed().as_secs_f64() * 1000.0);
         }
         if page_sizes.is_empty() {
             return None;
@@ -383,16 +422,47 @@ impl Rasterizer {
     /// a small zoom nudge reuses the existing render instead of re-rasterising.
     /// The cache is keyed by source page, so a duplicated or reordered page
     /// never re-rasterises.
+    /// The width bucket `render` snaps `target_w` to. Exposed so the draw loop
+    /// can probe the cache (`is_page_cached`) with the exact key `render` uses.
+    fn bucket_for(target_w: u32) -> u32 {
+        ((target_w / 24).max(1) * 24).clamp(96, 4096)
+    }
+
+    /// Whether displayed page `display_idx` already has a cached bitmap at the
+    /// bucket `render(display_idx, target_w)` would use — i.e. drawing it this
+    /// frame is a free cache hit rather than a fresh (expensive) rasterisation.
+    pub fn is_page_cached(&self, display_idx: usize, target_w: u32) -> bool {
+        match self.slot(display_idx) {
+            Some(slot) => self
+                .cache
+                .contains_key(&(slot.source, slot.page, Self::bucket_for(target_w))),
+            None => false,
+        }
+    }
+
+    /// Test-only: how many *full-page* bitmaps are cached (buckets above the
+    /// thumbnail ceiling). Lets a regression test assert the first paint only
+    /// rasterises the budgeted number of pages instead of a screen-full.
+    #[cfg(test)]
+    pub fn cached_full_page_count(&self) -> usize {
+        const THUMB_MAX: u32 = 600;
+        self.cache.keys().filter(|(_, _, b)| *b > THUMB_MAX).count()
+    }
+
     pub fn render(&mut self, display_idx: usize, target_w: u32) -> Option<PenikoImage> {
         let slot = self.slot(display_idx)?;
-        let bucket = ((target_w / 24).max(1) * 24).clamp(96, 4096);
+        let bucket = Self::bucket_for(target_w);
         let key = (slot.source, slot.page, bucket);
         if let Some(img) = self.cache.get(&key) {
             return Some(img.clone());
         }
+        let t = Instant::now();
         let page = self.sources.get(slot.source)?.doc.pages().get(slot.page as u16).ok()?;
         let config = PdfRenderConfig::new().set_target_width(bucket as Pixels);
         let bitmap = page.render_with_config(&config).ok()?;
+        if profiling() {
+            eprintln!("[pdf-profile]   render page {} @ {}px: {:.1}ms", display_idx + 1, bucket, t.elapsed().as_secs_f64() * 1000.0);
+        }
         let w = bitmap.width().max(0) as u32;
         let h = bitmap.height().max(0) as u32;
         if w == 0 || h == 0 {
@@ -419,8 +489,14 @@ impl Rasterizer {
     /// zoom level's worth of large bitmaps never accumulates.
     pub fn prune(&mut self, keep_bucket: u32) {
         const THUMB_MAX: u32 = 600;
+        // Cache keys store the *snapped* bucket (`bucket_for`), so snap the
+        // keep-width the same way. Comparing against the raw width would match
+        // nothing — silently evicting the current page every frame and forcing
+        // a full re-rasterise on the very next one (the bug that made a page
+        // re-render on every idle/scroll frame instead of staying cached).
+        let keep = Self::bucket_for(keep_bucket);
         self.cache
-            .retain(|(_, _, b), _| *b == keep_bucket || *b <= THUMB_MAX);
+            .retain(|(_, _, b), _| *b == keep || *b <= THUMB_MAX);
     }
 
     /// The number of content objects on displayed page `display_idx` in the
