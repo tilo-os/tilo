@@ -475,7 +475,6 @@ fn escape_json_str(s: &str) -> String {
 pub fn catalogue() -> Vec<Scenario> {
     vec![
         palette_typing(),
-        palette_close_anim(),
         tab_drag(),
         tab_drag_out_to_new_group(),
         tab_drag_hover_line_indicator(),
@@ -544,28 +543,6 @@ pub fn lookup(name: &str) -> Option<Scenario> {
 }
 
 /// Open the palette, type "h", capture; press Esc, capture closed.
-/// Open the palette, then close it and capture the fade+scale EXIT
-/// frame-by-frame. Before the Transition refactor the palette vanished
-/// in a single frame on Escape (the draw block was gated on a bool);
-/// the sequence frames here should now show it shrinking + fading out.
-fn palette_close_anim() -> Scenario {
-    Scenario {
-        name: "palette_close_anim",
-        description: "Open the palette, Escape, and capture the exit animation frames.",
-        actions: vec![
-            Action::OpenPalette,
-            Action::Wait(3),
-            Action::Snapshot("00-open"),
-            Action::Key(Key::Named(NamedKey::Escape)),
-            Action::SnapshotSequence {
-                prefix: "close",
-                frames: 10,
-                gap_frames: 1,
-            },
-        ],
-    }
-}
-
 fn palette_typing() -> Scenario {
     Scenario {
         name: "palette_typing",
@@ -729,20 +706,21 @@ fn strip_horizontal_scroll() -> Scenario {
             // sidebar gutter).
             Action::MoveCursor(Point::new(900.0, 500.0)),
             Action::Snapshot("00-before"),
-            // Horizontal swipe that pans the strip forward (reveals
-            // content to the right). With the natural sign convention a
-            // swipe-left (dx<0) increases scroll_x, so a negative dx is
-            // what moves the strip off its leftmost (clamped-to-0)
-            // resting position. 10 LineDelta units × 30 px = 300 px of
-            // pan, well inside the viewport*3 upper clamp.
-            Action::MouseWheel { dx: -10.0, dy: 0.0 },
-            Action::Wait(2),
-            Action::Snapshot("01-after-pan"),
-            // And the reverse direction — should bring the strip back to
-            // the leftmost position (clamped to 0).
+            // LineDelta(x=4, y=0) is unambiguously horizontal: dx_axis
+            // > dy_axis, so the strip's no-overflow branch stamps the
+            // tab-cycle pulse. dy is 0 so the wheel doesn't also try
+            // to pan vertically anywhere.
+            // Strong horizontal swipe right. 10 LineDelta units ×
+            // 30 px = 300 px of pan, well inside the viewport*3
+            // upper clamp.
             Action::MouseWheel { dx: 10.0, dy: 0.0 },
             Action::Wait(2),
-            Action::Snapshot("02-back-to-start"),
+            Action::Snapshot("01-after-right"),
+            // And the reverse direction — should bring the strip
+            // back to the leftmost position (clamped to 0).
+            Action::MouseWheel { dx: -10.0, dy: 0.0 },
+            Action::Wait(2),
+            Action::Snapshot("02-after-left"),
         ],
     }
 }

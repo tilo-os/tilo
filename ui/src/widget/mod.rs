@@ -644,6 +644,9 @@ pub use conflict_picker::{ConflictPicker, PickerOutcome};
 // =====================================================================
 
 #[cfg(test)]
+mod a11y_tree_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 

@@ -308,6 +308,27 @@ impl Widget for RingGauge {
         self.rect
     }
 
+    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        use crate::a11y::{AccessNode, Role};
+        // A read-only meter: expose the 0..1 fraction as a percentage so an AT
+        // announces "42 percent". The dim caption (`small`) names it; when no
+        // caption is set the prominent (`big`) readout stands in as the name.
+        // Labels are host-provided display strings, not FTL keys → no `i18n!`.
+        let pct = (self.frac.clamp(0.0, 1.0) * 100.0).round() as i64;
+        let name = if !self.small.is_empty() {
+            Some(self.small.clone())
+        } else if !self.big.is_empty() {
+            Some(self.big.clone())
+        } else {
+            None
+        };
+        Some(
+            AccessNode::new(Role::ProgressBar)
+                .with_optional_name(name)
+                .with_value(format!("{pct}%")),
+        )
+    }
+
     fn is_layout_dirty(&self) -> bool {
         self.rect == Rect::ZERO
     }
@@ -516,6 +537,26 @@ impl Widget for BarGauge {
 
     fn get_rect(&self) -> Rect {
         self.rect
+    }
+
+    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        use crate::a11y::{AccessNode, Role};
+        // A read-only meter. `label` names it; the caller's `value` readout is
+        // the human-facing value string when present (e.g. "3.2 GB"), else the
+        // fraction rendered as a percentage. Both are display strings, not FTL
+        // keys → no `i18n!`.
+        let pct = (self.frac.clamp(0.0, 1.0) * 100.0).round() as i64;
+        let value = if self.value.is_empty() {
+            format!("{pct}%")
+        } else {
+            self.value.clone()
+        };
+        let name = (!self.label.is_empty()).then(|| self.label.clone());
+        Some(
+            AccessNode::new(Role::ProgressBar)
+                .with_optional_name(name)
+                .with_value(value),
+        )
     }
 
     fn is_layout_dirty(&self) -> bool {

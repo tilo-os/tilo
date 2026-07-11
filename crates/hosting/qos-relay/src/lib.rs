@@ -55,7 +55,6 @@
 #![deny(rust_2018_idioms)]
 #![warn(missing_docs)]
 
-pub mod antientropy;
 pub mod auth;
 pub mod client;
 pub mod coedit;
@@ -68,7 +67,6 @@ pub mod store;
 pub mod transport;
 pub mod workspace;
 
-pub use antientropy::{SyncError, apply_sync_response, heads_wire, reconcile, send_sync_request};
 pub use auth::PeerRole;
 pub use client::{ClientError, RelayClient};
 pub use coedit::{

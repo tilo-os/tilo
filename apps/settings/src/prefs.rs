@@ -131,102 +131,20 @@ impl Default for InputPrefs {
     }
 }
 
-/// A configurable response to a power event (lid close, power key, critical
-/// battery). Serialises to the lowercase labels the compositor's power policy
-/// parses (`"suspend"` / `"lock"` / `"ignore"`) — the on-disk JSON is the
-/// contract shared with `qos-power-mgmt`, not a code dependency.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum PowerActionPref {
-    Suspend,
-    Lock,
-    Ignore,
-}
-
-impl PowerActionPref {
-    /// The human-readable label shown in the pane's dropdowns.
-    pub fn display(self) -> &'static str {
-        match self {
-            PowerActionPref::Suspend => "Suspend",
-            PowerActionPref::Lock => "Lock screen",
-            PowerActionPref::Ignore => "Do nothing",
-        }
-    }
-
-    /// Inverse of [`Self::display`].
-    pub fn from_display(s: &str) -> Option<Self> {
-        match s {
-            "Suspend" => Some(PowerActionPref::Suspend),
-            "Lock screen" => Some(PowerActionPref::Lock),
-            "Do nothing" => Some(PowerActionPref::Ignore),
-            _ => None,
-        }
-    }
-}
-
-fn default_suspend_minutes() -> u32 {
-    15
-}
-fn default_lid_action() -> PowerActionPref {
-    PowerActionPref::Suspend
-}
-fn default_power_key_action() -> PowerActionPref {
-    PowerActionPref::Suspend
-}
-fn default_low_battery_percent() -> u32 {
-    15
-}
-fn default_critical_battery_percent() -> u32 {
-    5
-}
-fn default_critical_action() -> PowerActionPref {
-    PowerActionPref::Suspend
-}
-
 /// Power / session-idle preferences the compositor's power-management layer
-/// reads. The active power *profile* is live system state
-/// (`powerprofilesctl`), not stored here. Every field added after the initial
-/// two carries `#[serde(default)]` so a config written before it existed still
-/// loads. The keys mirror `qos_power_mgmt::config`'s reader exactly.
+/// reads: whether to suspend when idle on battery, and after how many idle
+/// minutes to blank the screen (`0` = never). The active power *profile* is
+/// live system state (`powerprofilesctl`), not stored here.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct PowerPrefs {
-    /// Master toggle for idle-suspend. `false` disables it regardless of
-    /// [`Self::suspend_minutes`].
     pub auto_suspend: bool,
-    /// Idle minutes before the session suspends; `0` disables idle-suspend.
-    #[serde(default = "default_suspend_minutes")]
-    pub suspend_minutes: u32,
     /// Idle minutes before the screen blanks; `0` disables blanking.
     pub blank_minutes: u32,
-    /// What to do when the lid closes.
-    #[serde(default = "default_lid_action")]
-    pub lid_close_action: PowerActionPref,
-    /// What to do when the power key is pressed.
-    #[serde(default = "default_power_key_action")]
-    pub power_key_action: PowerActionPref,
-    /// Warn (a notification) at or below this battery percentage.
-    #[serde(default = "default_low_battery_percent")]
-    pub low_battery_percent: u32,
-    /// Take [`Self::critical_action`] at or below this battery percentage.
-    #[serde(default = "default_critical_battery_percent")]
-    pub critical_battery_percent: u32,
-    /// What to do when the battery is critically low.
-    #[serde(default = "default_critical_action")]
-    pub critical_action: PowerActionPref,
 }
 
 impl Default for PowerPrefs {
     fn default() -> Self {
-        Self {
-            auto_suspend: true,
-            suspend_minutes: default_suspend_minutes(),
-            blank_minutes: 10,
-            lid_close_action: default_lid_action(),
-            power_key_action: default_power_key_action(),
-            low_battery_percent: default_low_battery_percent(),
-            critical_battery_percent: default_critical_battery_percent(),
-            critical_action: default_critical_action(),
-        }
+        Self { auto_suspend: true, blank_minutes: 10 }
     }
 }
 
@@ -573,58 +491,5 @@ mod tests {
     fn missing_file_is_all_defaults() {
         assert_eq!(SystemPrefs::from_json(""), SystemPrefs::default());
         assert_eq!(SystemPrefs::from_json("garbage {"), SystemPrefs::default());
-    }
-
-    /// The `power` section serialises to exactly the keys and lowercase action
-    /// labels the compositor's `qos_power_mgmt::config` reader parses. This is
-    /// the write side of the cross-crate JSON contract (the read side is
-    /// pinned in that crate's `full_section_parses` test); if either drifts
-    /// this test — or that one — fails.
-    #[test]
-    fn power_section_matches_the_compositor_contract() {
-        let mut p = SystemPrefs::default();
-        p.power.auto_suspend = true;
-        p.power.suspend_minutes = 20;
-        p.power.blank_minutes = 5;
-        p.power.lid_close_action = PowerActionPref::Lock;
-        p.power.power_key_action = PowerActionPref::Ignore;
-        p.power.low_battery_percent = 18;
-        p.power.critical_battery_percent = 6;
-        p.power.critical_action = PowerActionPref::Suspend;
-
-        let json = p.to_json_merged("");
-        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
-        let power = &v["power"];
-        assert_eq!(power["auto_suspend"], serde_json::json!(true));
-        assert_eq!(power["suspend_minutes"], serde_json::json!(20));
-        assert_eq!(power["blank_minutes"], serde_json::json!(5));
-        // Actions must be the lowercase labels the reader expects.
-        assert_eq!(power["lid_close_action"], serde_json::json!("lock"));
-        assert_eq!(power["power_key_action"], serde_json::json!("ignore"));
-        assert_eq!(power["critical_action"], serde_json::json!("suspend"));
-        assert_eq!(power["low_battery_percent"], serde_json::json!(18));
-        assert_eq!(power["critical_battery_percent"], serde_json::json!(6));
-    }
-
-    #[test]
-    fn power_action_pref_labels_round_trip() {
-        for a in [PowerActionPref::Suspend, PowerActionPref::Lock, PowerActionPref::Ignore] {
-            assert_eq!(PowerActionPref::from_display(a.display()), Some(a));
-        }
-        assert_eq!(PowerActionPref::from_display("bogus"), None);
-    }
-
-    #[test]
-    fn old_power_config_without_new_fields_still_loads() {
-        // A config written before the behaviour fields existed: only the
-        // original two keys. It must load with the new fields defaulted.
-        let json = r#"{"power":{"auto_suspend":false,"blank_minutes":15}}"#;
-        let p = SystemPrefs::from_json(json);
-        assert!(!p.power.auto_suspend);
-        assert_eq!(p.power.blank_minutes, 15);
-        // New fields take their defaults.
-        assert_eq!(p.power.suspend_minutes, 15);
-        assert_eq!(p.power.lid_close_action, PowerActionPref::Suspend);
-        assert_eq!(p.power.critical_action, PowerActionPref::Suspend);
     }
 }

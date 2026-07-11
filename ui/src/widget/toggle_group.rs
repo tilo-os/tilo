@@ -394,14 +394,31 @@ impl Widget for ToggleGroup {
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
-        // A segmented control is a Role::Group of toggle buttons. The
-        // segments aren't separate Widget children, so the group is the
-        // single accessible node and we surface the *selected* segment's
-        // label as `value` so an AT announces the current choice. The
-        // group has no intrinsic label here → name None. Segment labels
-        // are runtime strings (host-provided), not FTL keys, so no
-        // `i18n!` wrap.
+        // A segmented control is a Role::Group of toggle buttons. The group
+        // surfaces the *selected* segment's label as `value` so an AT can
+        // announce the current choice at a glance, and each segment is a
+        // synthetic ToggleButton child so the whole set is enumerable. The
+        // group has no intrinsic label here → name None. Segment labels are
+        // runtime strings (host-provided), not FTL keys, so no `i18n!` wrap.
         let value = self.segments.get(self.selected).map(|s| s.label.clone());
+        // Expose each segment as a synthetic `ToggleButton` child carrying the
+        // pressed (checked) state, so an AT enumerates the choices rather than
+        // hearing only the active one. Segments are drawn, not child widgets.
+        let count = self.segments.len();
+        let seg_children: Vec<AccessNode> = self
+            .segments
+            .iter()
+            .enumerate()
+            .map(|(i, s)| {
+                AccessNode::new(Role::ToggleButton)
+                    .with_name(s.label.clone())
+                    .with_state(AccessState {
+                        checked: Some(i == self.selected),
+                        ..Default::default()
+                    })
+                    .with_position(i + 1, count)
+            })
+            .collect();
         Some(
             AccessNode::new(Role::Group)
                 .with_optional_value(value)
@@ -410,7 +427,8 @@ impl Widget for ToggleGroup {
                     focused: self.is_focused(),
                     disabled: !self.is_enabled(),
                     ..Default::default()
-                }),
+                })
+                .with_children(seg_children),
         )
     }
 }
