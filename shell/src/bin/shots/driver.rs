@@ -422,6 +422,50 @@ impl ShellDriver {
                     );
                 });
             }
+            "notifications-one" => {
+                use shell::shell::notification::{Notification, NotificationSeverity};
+                let settled_at = Instant::now() - Duration::from_secs(1);
+                self.with_chrome(|st| {
+                    st.push_notification_full(
+                        Notification::new(
+                            "Build finished",
+                            "All 524 tests passed",
+                        )
+                        .with_severity(NotificationSeverity::Info)
+                        .with_dismiss_after(Duration::from_secs(60))
+                        .with_created_at(settled_at),
+                    );
+                });
+            }
+            "notifications-dnd" => {
+                use shell::shell::notification::{Notification, NotificationSeverity};
+                let settled_at = Instant::now() - Duration::from_secs(1);
+                self.with_chrome(|st| {
+                    // One banner posted *before* DND is engaged stays on
+                    // screen (DND only gates new posts).
+                    st.push_notification_full(
+                        Notification::new(
+                            "Meeting in 10 minutes",
+                            "Standup — Research workspace",
+                        )
+                        .with_severity(NotificationSeverity::Info)
+                        .with_dismiss_after(Duration::from_secs(60))
+                        .with_created_at(settled_at),
+                    );
+                    // Engage Do-Not-Disturb, then post two more — these are
+                    // suppressed from the banner surface and held in
+                    // history, so the DND pill reads "… · 2 held".
+                    st.set_dnd(true);
+                    st.push_notification_full(
+                        Notification::new("Slow network", "Peer sync delayed")
+                            .with_severity(NotificationSeverity::Warning),
+                    );
+                    st.push_notification_full(
+                        Notification::new("New mail", "3 unread in Inbox")
+                            .with_severity(NotificationSeverity::Info),
+                    );
+                });
+            }
             "multi-group" => {
                 // Construct a 3-group strip in the active workspace by
                 // pushing two extra `WindowGroup` rows alongside the
@@ -487,6 +531,8 @@ impl ShellDriver {
         "ws-settings-files",
         "ws-settings-permissions",
         "notifications",
+        "notifications-one",
+        "notifications-dnd",
     ];
 
     /// Resolve a "named" UI target (button, pill, tab) to its on-screen
