@@ -1,5 +1,5 @@
 use fuser::*;
-use libc::{EINVAL, EIO, EISDIR, ENOENT, ENOTDIR, ENOTEMPTY};
+use libc::{EACCES, EINVAL, EIO, EISDIR, ENOENT, ENOTDIR, ENOTEMPTY};
 use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::io;
@@ -8,6 +8,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use iroh_blobs::Hash;
 
+use crate::acl::{Access, WorkspaceAcl};
 use crate::hydration::Hydrator;
 use crate::namespace::Namespace;
 use crate::smart::Heuristics;
@@ -28,6 +29,15 @@ pub struct QuickFS {
     /// Cached serialized form of each document inode, keyed by the doc's heads,
     /// so a multi-chunk read exports once (and getattr's size stays current).
     doc_exports: Mutex<HashMap<u64, (Vec<automerge::ChangeHash>, Vec<u8>)>>,
+    /// Per-identity workspace ACL — the real access-control check. `None`
+    /// leaves the pre-existing Unix-veneer-only behaviour intact (single-user
+    /// unshared mounts). When `Some`, every open/read/write is checked
+    /// against it for [`Self::identity`]. See [`crate::acl`].
+    acl: Option<WorkspaceAcl>,
+    /// The identity this mount serves. Every ACL check is made *as* this
+    /// identity — the app runs as the OS user, the fs enforces the qOS
+    /// per-identity policy on top.
+    identity: crate::acl::IdentityKey,
 }
 
 impl QuickFS {
@@ -58,6 +68,8 @@ impl QuickFS {
             sync: None,
             write_buffers: Mutex::new(HashMap::new()),
             doc_exports: Mutex::new(HashMap::new()),
+            acl: None,
+            identity: [0u8; 32],
         }
     }
 
@@ -171,6 +183,41 @@ impl QuickFS {
     pub fn with_sync(mut self, sync: Arc<SyncHandle>) -> Self {
         self.sync = Some(sync);
         self
+    }
+
+    /// Bind this mount to a workspace ACL, enforcing per-identity access
+    /// for `identity`. Every subsequent open/read/write is checked
+    /// against `acl` as `identity`; without this the mount keeps the
+    /// Unix-veneer-only behaviour. See [`crate::acl`].
+    pub fn with_acl(mut self, acl: WorkspaceAcl, identity: crate::acl::IdentityKey) -> Self {
+        self.acl = Some(acl);
+        self.identity = identity;
+        self
+    }
+
+    /// The identity ACL check every open/read/write routes through.
+    ///
+    /// Returns `Ok(())` when the mount has no ACL attached (the Unix
+    /// veneer alone governs) or when the bound identity holds `access`
+    /// on the inode's path. Returns `Err(EACCES)` when the ACL denies,
+    /// and `Err(ENOENT)` when the inode has no resolvable path. This is
+    /// the single production decision point — `open`/`read`/`write` all
+    /// call it, so a test that drives it exercises the real access path.
+    pub fn check_access(&self, ino: u64, access: Access) -> Result<(), i32> {
+        let Some(acl) = &self.acl else {
+            return Ok(());
+        };
+        let path = self
+            .namespace
+            .lock()
+            .unwrap()
+            .path_for(ino)
+            .ok_or(ENOENT)?;
+        if acl.permits(&self.identity, &path, access) {
+            Ok(())
+        } else {
+            Err(EACCES)
+        }
     }
 
     fn publish(&self, delta: Vec<u8>) {
@@ -288,6 +335,16 @@ fn slice(bytes: &[u8], offset: u64, size: u32) -> Vec<u8> {
     bytes[start..end].to_vec()
 }
 
+/// The ACL accesses an open of the given mode requires: read for
+/// O_RDONLY, write for O_WRONLY, both for O_RDWR.
+fn required_accesses(mode: OpenAccMode) -> &'static [Access] {
+    match mode {
+        OpenAccMode::O_RDONLY => &[Access::Read],
+        OpenAccMode::O_WRONLY => &[Access::Write],
+        OpenAccMode::O_RDWR => &[Access::Read, Access::Write],
+    }
+}
+
 impl Filesystem for QuickFS {
     fn init(&mut self, _req: &Request, config: &mut KernelConfig) -> Result<(), io::Error> {
         let _ = config.set_max_readahead(1024 * 1024);
@@ -363,17 +420,26 @@ impl Filesystem for QuickFS {
         self.heuristics.on_readdir(ino.0);
     }
 
-    fn open(&self, _req: &Request, ino: INodeNo, _flags: OpenFlags, reply: ReplyOpen) {
+    fn open(&self, _req: &Request, ino: INodeNo, flags: OpenFlags, reply: ReplyOpen) {
         let exists = {
             let ns = self.namespace.lock().unwrap();
             ns.getattr(ino.0).is_some()
         };
-        if exists {
-            reply.opened(FileHandle(0), FopenFlags::empty());
-            self.heuristics.on_open(ino.0);
-        } else {
+        if !exists {
             reply.error(to_errno(ENOENT));
+            return;
         }
+        // Per-identity ACL: an open requires the identity to hold the
+        // access implied by the open mode (read for O_RDONLY, write for
+        // O_WRONLY, both for O_RDWR). Denied ⇒ EACCES.
+        for access in required_accesses(flags.acc_mode()) {
+            if let Err(e) = self.check_access(ino.0, *access) {
+                reply.error(to_errno(e));
+                return;
+            }
+        }
+        reply.opened(FileHandle(0), FopenFlags::empty());
+        self.heuristics.on_open(ino.0);
     }
 
     fn read(
@@ -387,6 +453,11 @@ impl Filesystem for QuickFS {
         _lock_owner: Option<LockOwner>,
         reply: ReplyData,
     ) {
+        // Per-identity ACL: reading requires the read cap on this path.
+        if let Err(e) = self.check_access(ino.0, Access::Read) {
+            reply.error(to_errno(e));
+            return;
+        }
         // Read-your-writes: serve from the in-flight buffer if present.
         if let Some(buf) = self.write_buffers.lock().unwrap().get(&ino.0) {
             reply.data(&slice(buf, offset, size));
@@ -487,6 +558,11 @@ impl Filesystem for QuickFS {
         _lock_owner: Option<LockOwner>,
         reply: ReplyWrite,
     ) {
+        // Per-identity ACL: writing requires the write cap on this path.
+        if let Err(e) = self.check_access(ino.0, Access::Write) {
+            reply.error(to_errno(e));
+            return;
+        }
         // Seed the buffer with current content if this is the first write.
         // Done outside the buffer lock (it may do blocking I/O); a hydration
         // failure must fail the write, never seed-from-empty and truncate.
