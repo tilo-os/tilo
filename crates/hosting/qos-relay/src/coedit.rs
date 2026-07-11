@@ -34,6 +34,19 @@
 //! `collab-bridge` crate, which likewise translates the toolkit
 //! protocol without pulling `ui`/wgpu into a transport crate.
 //!
+//! # Presence attribution
+//!
+//! [`Envelope::Delta`] carries an `author_device_public_key`, so a
+//! document delta is attributed to its publisher for free. But
+//! [`Envelope::Presence`] has **no** author slot — the host fans the
+//! opaque bytes out without inspecting or stamping them. So presence
+//! attribution has to ride *inside* the payload: [`RelayCoeditSession::publish_presence`]
+//! wraps the toolkit body in an [`AttributedPresence`] carrying the
+//! session's own device key, and [`RelayCoeditSession::recv`] unwraps it
+//! into [`Inbound::Presence`]`{ author, payload }`. Without this a
+//! remote cursor would arrive unauthored and could not be drawn against
+//! the right collaborator.
+//!
 //! Document-op *authorisation* (a viewer without a write cap must not
 //! mutate the doc) is enforced by the broker/host layer that validates
 //! `SignedOp`s, not by this transport shim — the host stores and
@@ -74,6 +87,37 @@ impl CoeditPayload {
     }
 }
 
+/// Presence body wrapper that carries author attribution.
+///
+/// [`Envelope::Presence`] has no author field — the host forwards the
+/// bytes verbatim. So the publisher stamps its own device public key
+/// around the opaque toolkit presence `body`; the receiver recovers it
+/// in [`Inbound::Presence`]. (Document deltas ride
+/// `Envelope::Delta::author_device_public_key` instead and need no
+/// wrapper.)
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AttributedPresence {
+    /// Publishing device's public key.
+    pub author: [u8; 32],
+    /// Opaque toolkit presence body (the `(PresenceKey, PresencePayload)`
+    /// pair the toolkit encodes).
+    pub body: Vec<u8>,
+}
+
+impl AttributedPresence {
+    /// Encode for carriage inside an `Envelope::Presence`.
+    pub fn encode(&self) -> Vec<u8> {
+        postcard::to_stdvec(self).expect("postcard cannot fail on AttributedPresence")
+    }
+
+    /// Decode a body previously produced by [`Self::encode`]. Returns
+    /// `None` for presence bytes that are not an `AttributedPresence`
+    /// (e.g. a non-co-edit presence frame from another tier).
+    pub fn decode(bytes: &[u8]) -> Option<Self> {
+        postcard::from_bytes(bytes).ok()
+    }
+}
+
 /// An inbound co-edit event surfaced from the host, ready to hand to
 /// the toolkit as the matching `CollabEvent`.
 #[derive(Debug, Clone)]
@@ -99,8 +143,14 @@ pub enum Inbound {
     /// An ephemeral presence payload fanned out by the host. Not
     /// persisted; dropped if no peer is subscribed.
     Presence {
-        /// Opaque presence payload (the toolkit encodes attribution
-        /// inside it, since the host's presence envelope carries none).
+        /// Publishing device's public key, recovered from the
+        /// [`AttributedPresence`] wrapper. The host's presence envelope
+        /// carries no author slot, so this is the only place the
+        /// attribution survives — the toolkit maps it onto the
+        /// `RemotePresenceUpdate` / `RemoteCursorMoved` `user_id`.
+        author: [u8; 32],
+        /// Opaque toolkit presence body (the `(PresenceKey,
+        /// PresencePayload)` pair the toolkit encodes).
         payload: Vec<u8>,
     },
     /// The host's reply to the initial subscribe: how many queued
@@ -198,11 +248,21 @@ impl RelayCoeditSession {
     /// Publish an ephemeral presence payload — the toolkit `Presence`
     /// path. Rides an `Envelope::Presence`, so it is fanned out but
     /// never persisted.
+    ///
+    /// `payload` is the opaque toolkit presence body; this method stamps
+    /// the session's `author` device key around it (via
+    /// [`AttributedPresence`]) so the receiver can attribute the
+    /// presence — the host's presence envelope carries no author of its
+    /// own.
     pub fn publish_presence(&self, payload: Vec<u8>) -> Result<(), CoeditError> {
+        let wrapped = AttributedPresence {
+            author: self.author,
+            body: payload,
+        };
         self.client
             .send(Envelope::Presence {
                 workspace_id: self.workspace_id,
-                payload,
+                payload: wrapped.encode(),
             })
             .map_err(|_| CoeditError::Disconnected)
     }
@@ -240,7 +300,19 @@ impl RelayCoeditSession {
                     }
                 }
                 Envelope::Presence { payload, .. } => {
-                    return Some(Inbound::Presence { payload });
+                    // Presence rides an author-stamped wrapper (the host
+                    // envelope has no author of its own). A non-co-edit
+                    // presence frame won't decode — skip it rather than
+                    // surface it unattributed.
+                    match AttributedPresence::decode(&payload) {
+                        Some(AttributedPresence { author, body }) => {
+                            return Some(Inbound::Presence {
+                                author,
+                                payload: body,
+                            });
+                        }
+                        None => continue,
+                    }
                 }
                 Envelope::Ready { pending_deltas, .. } => {
                     return Some(Inbound::Ready {
@@ -283,6 +355,20 @@ mod tests {
 
         assert_eq!(CoeditPayload::decode(&unsigned.encode()), Some(unsigned));
         assert_eq!(CoeditPayload::decode(&signed.encode()), Some(signed));
+    }
+
+    #[test]
+    fn attributed_presence_round_trips_author_and_body() {
+        // The author key must survive the wrapper so a remote cursor is
+        // drawn against the right collaborator — the host envelope
+        // carries no author of its own.
+        let wrapped = AttributedPresence {
+            author: [7u8; 32],
+            body: vec![10, 20, 30],
+        };
+        let decoded = AttributedPresence::decode(&wrapped.encode()).unwrap();
+        assert_eq!(decoded.author, [7u8; 32]);
+        assert_eq!(decoded.body, vec![10, 20, 30]);
     }
 
     #[test]
