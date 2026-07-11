@@ -113,6 +113,63 @@ fn network_demo_pane() -> Box<dyn Widget> {
     Box::new(pane)
 }
 
+/// An `AudioPane` seeded with a deterministic PipeWire graph: two output
+/// devices (Speakers + Headphones), and per-application streams — the music app
+/// routed to the Headphones while the browser stays on the Speakers, plus a
+/// meeting app on the microphone — so the still proves the per-application
+/// routing surface (a picker, volume, and mute per app). Sample data lives only
+/// behind `--shots`; the live pane enumerates the real graph.
+fn audio_demo_pane() -> Box<dyn Widget> {
+    use crate::panes::audio::{AudioDevice, AudioDevices, AudioPane, RealDevice, RealInput};
+    use media::audio::{AudioDevice as GDevice, AudioGraph, AudioStream, NoopGraphControl};
+    use std::sync::Arc;
+
+    let sink = |id, serial, name: &str, def| GDevice {
+        id,
+        serial,
+        name: name.to_string(),
+        description: name.to_string(),
+        is_default: def,
+        volume: Some(0.7),
+        muted: Some(false),
+    };
+    let stream = |id, serial, app: &str, media: &str, target, playback, vol, mute| AudioStream {
+        id,
+        serial,
+        app: app.to_string(),
+        media_name: Some(media.to_string()),
+        playback,
+        target_id: Some(target),
+        volume: Some(vol),
+        muted: Some(mute),
+    };
+    let graph = AudioGraph {
+        sinks: vec![sink(51, 51, "Speakers", true), sink(91, 269, "Headphones", false)],
+        sources: vec![sink(52, 52, "Built-in Microphone", true)],
+        playback_streams: vec![
+            // Routed away from the default onto the Headphones.
+            stream(84, 300, "Music", "Nightcall", 91, true, 0.85, false),
+            // Following the default (Speakers).
+            stream(90, 320, "Browser", "Conference call", 51, true, 0.60, false),
+        ],
+        record_streams: vec![stream(95, 340, "Meeting", "Microphone", 52, false, 0.75, false)],
+    };
+    // The device pickers read the local device view; give it the same two sinks
+    // so the output-device chooser is shown alongside the per-app rows.
+    let devices = AudioDevices {
+        sinks: vec![
+            AudioDevice { id: 51, name: "Speakers".into(), default: true },
+            AudioDevice { id: 91, name: "Headphones".into(), default: false },
+        ],
+        sources: vec![AudioDevice { id: 52, name: "Built-in Microphone".into(), default: true }],
+    };
+    let disp = crate::dispatcher::dispatcher_or_real(None);
+    let pane = AudioPane::with_controls(disp, Arc::new(RealInput), 0.65, 0.7)
+        .with_devices(devices, Arc::new(RealDevice))
+        .with_graph(graph, Arc::new(NoopGraphControl));
+    Box::new(pane)
+}
+
 /// Render the scenario selected by `out`'s filename into a PNG at `out`.
 ///
 /// When the `QOS_SHOTS_PANEL` env var is set to a category slug, the wide
@@ -148,6 +205,13 @@ pub fn render_for_path(out: &Path) -> Result<(), Box<dyn std::error::Error>> {
     // an open inline password prompt, proving the connect flow's surface.
     if fname.contains("netdemo") {
         return render_to_path(network_demo_pane(), DEFAULT_SHOTS_VIEWPORT, out);
+    }
+
+    // `…audiodemo.png` renders the Sound pane with two output devices and
+    // per-application streams — the music app routed to headphones while the
+    // browser stays on speakers — proving the per-app routing surface.
+    if fname.contains("audiodemo") {
+        return render_to_path(audio_demo_pane(), DEFAULT_SHOTS_VIEWPORT, out);
     }
 
     // Per-panel capture: a `…panel-<slug>.png` filename (or the

@@ -48,18 +48,35 @@ use serde::{Deserialize, Serialize};
 
 use crate::region::RegionSettings;
 
-/// System-event / collaboration sounds. These are read by the compositor's
-/// notification layer when it decides whether to play a sound.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+/// System-event / collaboration sounds, plus the remembered default audio
+/// devices. The sounds are read by the compositor's notification layer when it
+/// decides whether to play a sound; the device preferences record the
+/// output/input the user last chose as the default, so the Sound pane can
+/// surface that a preferred device was selected across sessions.
+/// `#[serde(default)]` keeps configs written before these fields existed
+/// loadable.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct AudioPrefs {
     pub event_sounds: bool,
     pub chat_join: bool,
     pub chat_leave: bool,
+    /// Label of the last chosen default sink (output device), if any.
+    #[serde(default)]
+    pub output_device: Option<String>,
+    /// Label of the last chosen default source (input device), if any.
+    #[serde(default)]
+    pub input_device: Option<String>,
 }
 
 impl Default for AudioPrefs {
     fn default() -> Self {
-        Self { event_sounds: true, chat_join: true, chat_leave: true }
+        Self {
+            event_sounds: true,
+            chat_join: true,
+            chat_leave: true,
+            output_device: None,
+            input_device: None,
+        }
     }
 }
 
@@ -263,7 +280,7 @@ impl SystemPrefs {
         }
         let obj = root.as_object_mut().expect("just ensured object");
         obj.insert("version".into(), serde_json::json!(1));
-        obj.insert("audio".into(), serde_json::to_value(self.audio).unwrap_or_default());
+        obj.insert("audio".into(), serde_json::to_value(&self.audio).unwrap_or_default());
         obj.insert("display".into(), serde_json::to_value(self.display).unwrap_or_default());
         obj.insert("input".into(), serde_json::to_value(&self.input).unwrap_or_default());
         obj.insert("power".into(), serde_json::to_value(self.power).unwrap_or_default());
