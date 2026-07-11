@@ -21,11 +21,13 @@ use automerge::{AutoCommit, ObjId};
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::{FlapState, SplitLayout, Widget};
+use ui::widget::command_palette::{CommandEntry, CommandPalette};
+use ui::widget::{FlapState, SearchField, SplitLayout, Widget};
 use vello::kurbo::{Affine, Point, Rect};
-use vello::peniko::Fill;
+use vello::peniko::{Color, Fill};
 use vello::Scene;
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
+use winit::keyboard::Key;
 
 use taffy::prelude::*;
 
@@ -80,8 +82,6 @@ pub(crate) enum Hit {
     ComboToggle,
     /// Pick option `idx` (into the filtered list) from the combobox.
     ComboPick(usize),
-    SearchFocus,
-    ClearSearch,
     /// Collapse / expand the navigation sidebar.
     ToggleSidebar,
     /// A simple text-prompt dialog OK / Cancel (volume create, image tag).
@@ -176,8 +176,16 @@ pub struct ContainersApp {
     pub(crate) combo: ComboState,
     /// Live pull progress overlay, if a pull is running.
     pub(crate) pull: Option<PullProgress>,
-    /// Whether the search box has keyboard focus.
-    pub(crate) search_focus: bool,
+    /// The header's search affordance. Instead of an inline filter it is a
+    /// launcher that opens the shared Ctrl+K [`CommandPalette`] scoped to
+    /// this app — search does not live in the app.
+    pub(crate) search_field: SearchField,
+    /// The shared command palette, seeded with this app's containers when
+    /// opened. This is the *same* toolkit widget the shell uses for its
+    /// global Ctrl+K overlay, hosted here in app scope.
+    pub(crate) palette: CommandPalette,
+    /// Whether the app-scoped palette overlay is currently open.
+    pub(crate) palette_open: bool,
     /// Collapsible sidebar reveal kernel (the shared `ui` flap animation).
     pub(crate) sidebar_flap: FlapState,
     /// Wall-clock anchor for advancing the sidebar slide from the draw path.
@@ -230,7 +238,11 @@ impl ContainersApp {
             create_focus: 0,
             combo: ComboState::default(),
             pull: None,
-            search_focus: false,
+            search_field: SearchField::new()
+                .opens_palette()
+                .with_placeholder("Search containers…"),
+            palette: CommandPalette::commands(),
+            palette_open: false,
             sidebar_flap: FlapState::open_when_docked(),
             sidebar_tick: None,
             toast: None,
@@ -576,6 +588,50 @@ impl ContainersApp {
         });
         v
     }
+
+    /// Seed the shared palette with this app's containers and open it.
+    ///
+    /// The palette is the OS-shared Ctrl+K widget; the app only supplies
+    /// the rows (its containers) and consumes the outcome. Enter on a row
+    /// selects that container — the same "find and jump to" the old inline
+    /// search bar did, but through the shared search surface.
+    pub(crate) fn open_container_palette(&mut self) {
+        let entries: Vec<CommandEntry> = self
+            .engine
+            .containers
+            .iter()
+            .map(|ct| {
+                CommandEntry::new(ct.id.clone(), ct.name.clone())
+                    .description(format!("{} · {}", ct.status.label(), ct.image))
+            })
+            .collect();
+        self.palette.set_entries(entries);
+        self.palette.open();
+        self.palette_open = true;
+        self.structure_dirty = true;
+    }
+
+    /// Forward a pointer event to the header search launcher. The launcher
+    /// is a non-editable pill (see [`ui::widget::SearchField::opens_palette`])
+    /// that hit-tests off its own rect, so a throwaway taffy node satisfies
+    /// the `Widget` signature without a real layout tree.
+    fn route_to_launcher(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: &winit::event::Modifiers,
+        doc: &mut AutoCommit,
+        path: &ObjId,
+        focus_target: &mut Option<NodeId>,
+    ) {
+        let mut dummy_taffy: TaffyTree<()> = TaffyTree::new();
+        let dummy_node = dummy_taffy.new_leaf(Style::default()).unwrap();
+        let mut ignored = false;
+        self.search_field.handle_event(
+            event, scale_factor, modifiers, doc, path, &mut ignored, focus_target, dummy_node,
+            &dummy_taffy,
+        );
+    }
 }
 
 // =====================================================================
@@ -625,6 +681,9 @@ impl Widget for ContainersApp {
                     });
                 }
                 "collapsed" => self.sidebar_flap.snap(false),
+                // Open the shared Ctrl+K palette (seeded with the sample
+                // containers) so `--shots` can capture the search surface.
+                "palette" => self.open_container_palette(),
                 _ => {}
             }
             let tab = match scene.as_str() {
@@ -709,7 +768,7 @@ impl Widget for ContainersApp {
         transform: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
-        _presence: &PresenceCtx,
+        presence: &PresenceCtx,
     ) {
         // Install the host's DPI transform so every draw helper this frame
         // composes onto it (HiDPI-correct without threading it everywhere).
@@ -762,6 +821,24 @@ impl Widget for ContainersApp {
         if let Some(toast) = &self.toast {
             Self::draw_toast(scene, tr, theme, r, toast);
         }
+
+        // --- Shared command palette (topmost) ---
+        if self.palette_open {
+            // Dim the app behind the palette for legibility.
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                Color::from_rgba8(0, 0, 0, 128),
+                None,
+                &r,
+            );
+            let (pw, ph) = self.palette.desired_size();
+            let cx = r.center().x;
+            let top = r.y0 + 88.0;
+            let card = Rect::new(cx - pw / 2.0, top, cx + pw / 2.0, top + ph);
+            self.palette.set_rect(card);
+            self.palette.draw(scene, transform, tr, theme, presence);
+        }
     }
 
     fn handle_event(
@@ -772,13 +849,51 @@ impl Widget for ContainersApp {
         doc: &mut AutoCommit,
         _path: &ObjId,
         handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
+        focus_target: &mut Option<NodeId>,
         _node_id: NodeId,
         _taffy: &TaffyTree<()>,
     ) {
+        // While open, the shared palette owns all input. It runs against the
+        // live document; an Enter outcome selects the chosen container, and
+        // Escape (or clicking away) closes it.
+        if self.palette_open {
+            let mut dummy_taffy: TaffyTree<()> = TaffyTree::new();
+            let dummy_node = dummy_taffy.new_leaf(Style::default()).unwrap();
+            self.palette.handle_event(
+                event, scale_factor, modifiers, doc, _path, handled, focus_target, dummy_node,
+                &dummy_taffy,
+            );
+            if let Some(outcome) = self.palette.take_outcome() {
+                ViewDoc::set_selected(doc, Some(&outcome.id));
+                self.palette.close();
+            }
+            if !self.palette.is_open() {
+                self.palette_open = false;
+            }
+            *handled = true;
+            self.refresh_view(doc);
+            return;
+        }
+
+        // Ctrl+K opens the app-scoped palette — the same chord as the shell's
+        // global search, here seeded with this app's resources.
+        if let WindowEvent::KeyboardInput { event: key_event, .. } = event {
+            if key_event.state == ElementState::Pressed
+                && modifiers.state().control_key()
+                && matches!(&key_event.logical_key, Key::Character(c) if c.eq_ignore_ascii_case("k"))
+            {
+                self.open_container_palette();
+                *handled = true;
+                self.refresh_view(doc);
+                return;
+            }
+        }
+
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 self.cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
+                // Keep the launcher's pointer position current for its click test.
+                self.route_to_launcher(event, scale_factor, modifiers, doc, _path, focus_target);
                 // Hover changes button shading — request a redraw.
                 *handled = true;
             }
@@ -796,7 +911,15 @@ impl Widget for ContainersApp {
                 *handled = true;
             }
             WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. } => {
-                self.on_click(doc, handled);
+                // A click on the search launcher opens the palette instead of
+                // running a list hit.
+                self.route_to_launcher(event, scale_factor, modifiers, doc, _path, focus_target);
+                if self.search_field.take_palette_request() {
+                    self.open_container_palette();
+                    *handled = true;
+                } else {
+                    self.on_click(doc, handled);
+                }
             }
             WindowEvent::KeyboardInput { event: key_event, .. } => {
                 self.on_key(doc, key_event, modifiers, handled);
@@ -935,5 +1058,96 @@ impl ContainersApp {
             .unwrap_or(0.0);
         self.sidebar_tick = Some(now);
         self.sidebar_flap.tick(SplitLayout::Docked, dt);
+    }
+}
+
+#[cfg(test)]
+mod palette_launcher_tests {
+    use super::*;
+    use winit::event::KeyEvent;
+    use winit::keyboard::{Key, KeyLocation, NamedKey, PhysicalKey};
+
+    /// Build a synthetic key-press. `handle_event` only inspects
+    /// `logical_key` + `state`; the rest tolerate the zero pattern.
+    fn key_press(logical_key: Key) -> WindowEvent {
+        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
+        ev.logical_key = logical_key;
+        ev.physical_key =
+            PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
+        ev.location = KeyLocation::Standard;
+        ev.state = ElementState::Pressed;
+        ev.repeat = false;
+        ev.text = None;
+        WindowEvent::KeyboardInput {
+            device_id: unsafe { std::mem::zeroed() },
+            event: ev,
+            is_synthetic: false,
+        }
+    }
+
+    fn dummy_layout() -> (TaffyTree<()>, NodeId) {
+        let mut t = TaffyTree::<()>::new();
+        let n = t.new_leaf(Style::default()).unwrap();
+        (t, n)
+    }
+
+    /// Opening the app-scoped palette seeds it from the app's *real*
+    /// containers — the search rows are the app's resources, not a
+    /// bespoke in-app search UI. Empty stays empty otherwise.
+    #[test]
+    fn open_palette_seeds_one_row_per_container() {
+        let mut app = ContainersApp::new(false);
+        assert!(!app.palette_open);
+        let count = app.engine.containers.len();
+        assert!(count > 0, "sample engine has containers to search");
+
+        app.open_container_palette();
+        assert!(app.palette_open, "the launcher opens the shared palette");
+
+        let rows: Vec<String> =
+            app.palette.visible_entries().iter().map(|e| e.label.clone()).collect();
+        assert_eq!(rows.len(), count, "one palette row per container");
+        assert!(
+            app.engine
+                .containers
+                .iter()
+                .all(|c| rows.iter().any(|r| r == &c.name)),
+            "every container is reachable through the shared palette"
+        );
+    }
+
+    /// Enter on a palette row routes through the real `handle_event`
+    /// path and selects that container — proving the palette (not the
+    /// app's own search) drives selection.
+    #[test]
+    fn enter_on_a_palette_row_selects_that_container() {
+        let mut app = ContainersApp::new(false);
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+
+        app.open_container_palette();
+        let expected = app.engine.containers[0].id.clone();
+
+        let (taffy, node) = dummy_layout();
+        let mut handled = false;
+        let mut focus = None;
+        app.handle_event(
+            &key_press(Key::Named(NamedKey::Enter)),
+            1.0,
+            &winit::event::Modifiers::default(),
+            &mut doc,
+            &root,
+            &mut handled,
+            &mut focus,
+            node,
+            &taffy,
+        );
+
+        assert!(!app.palette_open, "Enter closes the palette");
+        assert_eq!(
+            ViewDoc::selected(&mut doc).as_deref(),
+            Some(expected.as_str()),
+            "activating a palette row selects that container"
+        );
     }
 }
