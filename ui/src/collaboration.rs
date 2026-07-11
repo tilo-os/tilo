@@ -338,6 +338,14 @@ enum Backend {
     /// the SDK client + subscriptions; winit-side send / poll bridge
     /// through unbounded mpsc pairs.
     Sdk(SdkChannel),
+    /// Routing co-edit deltas + presence through the workspace host via
+    /// a [`qos_relay::RelayCoeditSession`]. A bridge task on the
+    /// caller's tokio runtime pumps the session; winit-side send / poll
+    /// bridge through unbounded mpsc pairs, exactly like [`Backend::Sdk`].
+    /// Document deltas then inherit the host's fan-out + on-disk
+    /// store-and-forward, so two peers that are never simultaneously
+    /// online still converge — transparently to the app.
+    Relay(RelayChannel),
     /// Legacy JSON-over-Unix-socket dialect. Gated behind the
     /// `legacy-broker` feature (default on). Preserved so tests, the
     /// `collab-broker` binary, and the shell's existing broker keep
@@ -367,6 +375,33 @@ struct SdkChannel {
     outbound_tx: tokio_mpsc::UnboundedSender<CollabRequest>,
     inbound_rx: tokio_mpsc::UnboundedReceiver<CollabEvent>,
     _thread: Option<thread::JoinHandle<()>>,
+}
+
+/// Owned mpsc pair + bridge-task handle for Relay mode.
+///
+/// Unlike [`SdkChannel`] there is no dedicated OS thread: the
+/// [`qos_relay::RelayCoeditSession`] and its underlying iroh transport
+/// were already stood up on the caller's tokio runtime (the shell's
+/// network actor in production; the test's multi-thread runtime in
+/// tests), so the bridge task that pumps the session is `spawn`ed
+/// there. Dropping the manager drops `outbound_tx` — the bridge's
+/// `select!` observes the closed channel and returns — and aborts the
+/// task via [`AbortOnDrop`] as a backstop.
+struct RelayChannel {
+    outbound_tx: tokio_mpsc::UnboundedSender<CollabRequest>,
+    inbound_rx: tokio_mpsc::UnboundedReceiver<CollabEvent>,
+    _task: AbortOnDrop,
+}
+
+/// Aborts the wrapped tokio task when dropped, so a dropped manager
+/// never leaves its relay bridge task running against a session whose
+/// far end is gone.
+struct AbortOnDrop(tokio::task::JoinHandle<()>);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
 }
 
 #[cfg(feature = "legacy-broker")]
@@ -523,6 +558,45 @@ impl CollaborationManager {
                 identity: None,
                 runtime_identity,
             },
+        }
+    }
+
+    /// Route this manager's co-edit + presence through the workspace
+    /// host, over an already-joined [`qos_relay::RelayCoeditSession`].
+    ///
+    /// The caller — the shell's network actor in production, the test
+    /// harness in tests — owns the iroh endpoint + device identity,
+    /// dials the host, and joins the workspace's co-edit session; this
+    /// constructor wraps that session behind the same synchronous
+    /// `send` / `poll` surface every app already uses. From the app's
+    /// point of view nothing changes: `SyncIncremental` deltas,
+    /// `SignedSyncIncremental` envelopes and `Presence` frames flow out
+    /// as before, but now travel through the host's fan-out **and** its
+    /// on-disk store-and-forward, so a peer that is offline when the
+    /// edit is made still receives it on reconnect.
+    ///
+    /// `handle` is a handle to the tokio runtime the session's iroh
+    /// transport lives on; the bridge task that pumps the session is
+    /// spawned there so it shares the runtime already driving the
+    /// connection. The manager owns no signing identity in this mode —
+    /// document ops are signed by the app before they reach `send`
+    /// (the `SignedSyncIncremental` path), and the session stamps
+    /// presence attribution itself from its own device key.
+    pub fn from_relay_session(
+        session: qos_relay::RelayCoeditSession,
+        handle: tokio::runtime::Handle,
+    ) -> Self {
+        let (outbound_tx, outbound_rx) = tokio_mpsc::unbounded_channel::<CollabRequest>();
+        let (inbound_tx, inbound_rx) = tokio_mpsc::unbounded_channel::<CollabEvent>();
+        let task = handle.spawn(drive_relay(session, outbound_rx, inbound_tx));
+        Self {
+            backend: Backend::Relay(RelayChannel {
+                outbound_tx,
+                inbound_rx,
+                _task: AbortOnDrop(task),
+            }),
+            identity: None,
+            runtime_identity: None,
         }
     }
 
@@ -697,6 +771,12 @@ impl CollaborationManager {
                 // check `is_connected` if they care.
                 let _ = ch.outbound_tx.send(req);
             }
+            Backend::Relay(ch) => {
+                // Same fire-and-forget contract as SDK mode: push onto
+                // the outbound mpsc; the bridge task maps it onto the
+                // relay session's publish verbs.
+                let _ = ch.outbound_tx.send(req);
+            }
             #[cfg(feature = "legacy-broker")]
             Backend::Legacy(l) => {
                 if let Ok(json) = serde_json::to_vec(&req) {
@@ -733,6 +813,15 @@ impl CollaborationManager {
                 // if it filled forever we would still drain a bounded
                 // slice per frame because the event loop calls us at
                 // most a few thousand times per second.
+                while let Ok(evt) = ch.inbound_rx.try_recv() {
+                    events.push(evt);
+                }
+                events
+            }
+            Backend::Relay(ch) => {
+                // Identical drain to SDK mode; the bridge task is the
+                // producer instead of the shovel thread.
+                let mut events = Vec::new();
                 while let Ok(evt) = ch.inbound_rx.try_recv() {
                     events.push(evt);
                 }
@@ -1033,6 +1122,165 @@ async fn drive_shovel(
                 }
             }
         }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Relay backend: bridge task + translation.
+// -----------------------------------------------------------------------------
+
+/// Bridge task for [`Backend::Relay`]. Owns the joined
+/// [`qos_relay::RelayCoeditSession`] and shuttles between the toolkit's
+/// synchronous `send` / `poll` surface and the session's async publish /
+/// recv verbs:
+///
+/// - outbound [`CollabRequest`]s map onto `publish_delta` /
+///   `publish_signed` / `publish_presence` (or a synthetic
+///   empty-scrollback reply — the relay's store-and-forward is not a
+///   history-query API);
+/// - inbound [`qos_relay::Inbound`] events map back onto the matching
+///   [`CollabEvent`] the App layer already dispatches.
+///
+/// The two directions share a `select!` because both borrow the session
+/// immutably (`recv` / `publish_*` all take `&self`), and the recv
+/// future is dropped whenever an outbound request fires. Returns — ending
+/// the task — when the manager is dropped (outbound channel closed) or the
+/// host closes the session (`recv` yields `None`).
+async fn drive_relay(
+    session: qos_relay::RelayCoeditSession,
+    mut outbound_rx: tokio_mpsc::UnboundedReceiver<CollabRequest>,
+    inbound_tx: tokio_mpsc::UnboundedSender<CollabEvent>,
+) {
+    loop {
+        tokio::select! {
+            biased;
+            outbound = outbound_rx.recv() => {
+                let Some(req) = outbound else {
+                    break; // manager dropped — outbound channel closed.
+                };
+                match req {
+                    // The relay session is joined at construction, so the
+                    // legacy auto-Hello has no work to do here.
+                    CollabRequest::Hello { .. } => {}
+                    // Full snapshot + incremental both ride the unsigned
+                    // co-edit path; the host forwards the opaque delta
+                    // bytes and the receiver applies them with
+                    // `load_incremental`.
+                    CollabRequest::SyncCRDT { data }
+                    | CollabRequest::SyncIncremental { data } => {
+                        let _ = session.publish_delta(data);
+                    }
+                    CollabRequest::SignedSyncIncremental { envelope } => {
+                        if let Ok(bytes) = postcard::to_stdvec(&*envelope) {
+                            let _ = session.publish_signed(bytes);
+                        }
+                    }
+                    CollabRequest::Presence { key, payload } => {
+                        // The session stamps the author; we only carry the
+                        // (key, payload) body it needs to reconstruct the
+                        // toolkit presence event on the far side.
+                        let _ = session.publish_presence(encode_relay_presence(&key, &payload));
+                    }
+                    CollabRequest::FetchScrollback { artifact, .. } => {
+                        // The host queues deltas per-peer for delivery, it
+                        // does not answer seq-range history queries. Reply
+                        // empty + exhausted so a paging caller unsticks
+                        // instead of hanging.
+                        if inbound_tx
+                            .send(CollabEvent::ScrollbackBatch {
+                                artifact,
+                                ops: Vec::new(),
+                                exhausted: true,
+                            })
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
+                }
+            }
+            inbound = session.recv() => {
+                let Some(inbound) = inbound else {
+                    break; // host closed the session.
+                };
+                if let Some(evt) = translate_relay_inbound(inbound) {
+                    if inbound_tx.send(evt).is_err() {
+                        break;
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Encode the toolkit `(PresenceKey, PresencePayload)` pair as the
+/// opaque body carried inside a relay presence frame. The session wraps
+/// it with author attribution before it hits the wire.
+fn encode_relay_presence(key: &PresenceKey, payload: &PresencePayload) -> Vec<u8> {
+    postcard::to_stdvec(&(key, payload)).unwrap_or_default()
+}
+
+/// Inverse of [`encode_relay_presence`]. `None` for a body that is not a
+/// toolkit presence pair (a non-co-edit presence frame from another
+/// tier) — the caller skips it rather than surface a bogus event.
+fn decode_relay_presence(bytes: &[u8]) -> Option<(PresenceKey, PresencePayload)> {
+    postcard::from_bytes(bytes).ok()
+}
+
+/// Derive a stable `user_id` string from a publishing device's public
+/// key. The relay attributes events by 32-byte device key; the toolkit's
+/// presence / remote-cursor layer keys on a `String`, so we render the
+/// key as `peer-<hex>` — the same `peer-` id shape the broker mints for
+/// its fan-out, keeping downstream attribution code on one id format.
+fn user_id_from_author(author: [u8; 32]) -> String {
+    use std::fmt::Write;
+    let mut s = String::with_capacity(5 + 64);
+    s.push_str("peer-");
+    for b in author {
+        let _ = write!(s, "{b:02x}");
+    }
+    s
+}
+
+/// Translate a host-side [`qos_relay::Inbound`] into the toolkit
+/// [`CollabEvent`] the App layer already dispatches. `None` for frames
+/// that carry no app-visible event (the subscribe `Ready` ack) or that
+/// fail to decode.
+fn translate_relay_inbound(inbound: qos_relay::Inbound) -> Option<CollabEvent> {
+    match inbound {
+        // Unsigned document delta — the legacy incremental path apps
+        // already merge. (`CRDTIncremental` carries no author, matching
+        // the unsigned broker path; signed ops carry attribution below.)
+        qos_relay::Inbound::Delta { data, .. } => {
+            Some(CollabEvent::CRDTIncremental { data })
+        }
+        // Signed document op — decode the envelope and attribute it to
+        // the publishing device key.
+        qos_relay::Inbound::SignedDelta { author, op_bytes } => {
+            let envelope = postcard::from_bytes::<SignedOp>(&op_bytes).ok()?;
+            Some(CollabEvent::SignedCRDTIncremental {
+                envelope: Box::new(envelope),
+                from_user_id: user_id_from_author(author),
+            })
+        }
+        // Presence — the author rode inside the co-edit payload (the host
+        // envelope carries none), so it is preserved end-to-end here.
+        qos_relay::Inbound::Presence { author, payload } => {
+            let (key, payload) = decode_relay_presence(&payload)?;
+            let user_id = user_id_from_author(author);
+            Some(match payload {
+                PresencePayload::Pointer { x, y } => {
+                    CollabEvent::RemoteCursorMoved { user_id, x, y }
+                }
+                other => CollabEvent::RemotePresenceUpdate {
+                    user_id,
+                    key,
+                    payload: other,
+                },
+            })
+        }
+        // The subscribe ack has no toolkit-visible equivalent.
+        qos_relay::Inbound::Ready { .. } => None,
     }
 }
 
