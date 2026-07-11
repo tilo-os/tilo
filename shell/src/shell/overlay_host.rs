@@ -2085,9 +2085,24 @@ impl ShellOverlayHost {
         }
         // Tall enough for scope pills (top row) + kind-chip strip
         // (bottom row) + padding. 64 px = 20 (scope row) + 8 (gap) +
-        // 20 (chip row) + 8*2 (banner padding).
+        // 20 (chip row) + 8*2 (banner padding). Sits FLUSH on top of the
+        // palette (no gap) so the two compose into one search surface —
+        // the unified background + soft shadow behind them is painted in
+        // the palette draw block.
         let h = 64.0_f64;
-        Rect::new(p.x0, p.y0 - h - 8.0, p.x1, p.y0 - 8.0)
+        Rect::new(p.x0, p.y0 - h, p.x1, p.y0)
+    }
+
+    /// The banner + palette drawn as one surface — from the banner top
+    /// to the palette bottom. The unified background and drop shadow use
+    /// this so the search chrome reads as a single card, not two.
+    fn search_surface_rect(&self) -> Rect {
+        let p = self.palette.get_rect();
+        let b = self.search_banner_rect();
+        if p.width() <= 0.0 {
+            return p;
+        }
+        Rect::new(p.x0, b.y0, p.x1, p.y1)
     }
 
     /// Full ordered list of scopes shown in the banner. Includes
@@ -2922,14 +2937,19 @@ impl Widget for ShellOverlayHost {
             } else {
                 transform
             };
-            // Soft elevation behind the palette + its banner so the
-            // whole search surface lifts off the scrim. Drawn before the
-            // palette fill; the banner sits just above `palette_rect`, so
-            // a generous upward spread covers both. Faded by openness.
+            // The banner + palette compose into ONE surface. Draw a
+            // single unified background card spanning both, with a soft
+            // shadow behind it, so there's no seam between "Search in:"
+            // and the input. The banner then draws its content directly
+            // on this background (no card of its own) and the palette
+            // widget's own opaque card paints over the lower region in
+            // the same colour.
+            let surface_rect = self.search_surface_rect();
+            let radius = theme.tokens.radii.xl as f64;
             ui::surface::soft_shadow(
                 scene,
                 palette_xform,
-                palette_rect,
+                surface_rect,
                 theme.tokens.colors.neutral[0],
                 44.0,
                 14.0,
@@ -2942,10 +2962,18 @@ impl Widget for ShellOverlayHost {
             // theme whose `surfaces.raised` is pre-tinted rather than
             // reaching inside the shared widget to plumb an override.
             let palette_theme = palette_surface_theme(theme, MODAL_SURFACE_ALPHA);
+            let unified = RoundedRect::from_rect(surface_rect, radius);
+            scene.fill(
+                vello::peniko::Fill::NonZero,
+                palette_xform,
+                palette_theme.tokens.colors.surfaces.raised,
+                None,
+                &unified,
+            );
             self.palette
                 .draw(scene, palette_xform, text_renderer, &palette_theme, presence);
-            // Search-banner rides along with the panel so the two read
-            // as one composed unit during the entry curve.
+            // Banner content (label + scope pills + kind chips) painted
+            // directly on the unified background — no card of its own.
             self.draw_search_banner(scene, palette_xform, text_renderer, theme);
             if in_flight {
                 scene.pop_layer();
@@ -6032,24 +6060,21 @@ impl ShellOverlayHost {
             return;
         }
 
-        let card = RoundedRect::from_rect(banner, tokens.radii.sm as f64);
-        // Search banner rides with the GlobalSearch palette surface. Concept
-        // §5.1: `bg-slate-900/70 backdrop-blur-md`. We tint with the same
-        // [`MODAL_SURFACE_ALPHA`] as the palette so the pair read as one
-        // composed "frosted" unit over the scrim.
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            slate_900_tint(theme, MODAL_SURFACE_ALPHA),
-            None,
-            &card,
-        );
+        // The banner has no card of its own — it sits on the unified
+        // search-surface background painted by the palette draw block,
+        // so "Search in:" and the input read as one panel. A faint 1px
+        // divider under the banner separates the scope/chip controls
+        // from the query input below.
+        let divider_y = banner.y1;
         scene.stroke(
             &vello::kurbo::Stroke::new(1.0),
             transform,
-            colors.border_standard,
+            colors.border_standard.with_alpha_factor(0.5),
             None,
-            &card,
+            &vello::kurbo::Line::new(
+                Point::new(banner.x0 + 12.0, divider_y),
+                Point::new(banner.x1 - 12.0, divider_y),
+            ),
         );
 
         // "Search in:" label
