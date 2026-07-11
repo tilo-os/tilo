@@ -74,6 +74,25 @@ impl WebView {
         self
     }
 
+    /// Place the view at an explicit logical rect (and scale factor) without
+    /// going through a taffy layout pass. Used by hosts that embed the view
+    /// inside their own immediate-mode drawing (e.g. an email reader rendering
+    /// an HTML body inline) rather than as a first-class node in the widget
+    /// tree. Sends a `Resize` to the engine when the physical size changes,
+    /// exactly like [`Widget::apply_layout`].
+    pub fn set_viewport(&mut self, rect: Rect, scale_factor: f32) {
+        self.rect = rect;
+        self.scale_factor = scale_factor;
+        self.send_resize_if_needed();
+    }
+
+    /// The engine handle this view drives — so a host can send it commands
+    /// (Navigate to an email's sandboxed `data:` document, install a content
+    /// filter) directly.
+    pub fn engine(&self) -> &SharedEngine {
+        &self.engine
+    }
+
     /// Engine-space (physical, view-relative) coordinates for a
     /// logical toolkit-space point.
     fn to_engine(&self, p: Point) -> (f32, f32) {
