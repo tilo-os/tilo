@@ -174,7 +174,16 @@ impl Backend for WinitBackend {
         );
         device_handle.queue.submit([encoder.finish()]);
         surface_texture.present();
-        let _ = device_handle.device.poll(wgpu::PollType::Poll);
+        // Block until this frame's GPU work completes so wgpu reclaims the
+        // per-frame transient resources (vello scene-upload staging buffers,
+        // the blit command buffer, the swap-chain texture view). A
+        // non-blocking `Poll` here never observes the submission's fence
+        // signal on the same tick, so those frees are deferred every frame
+        // and the driver's allocations grow without bound — the nested
+        // compositor climbed ~30 MB/s at idle and OOM'd within minutes.
+        // The DRM backend (`drm/paint.rs`) and the offscreen renderer both
+        // already wait here; this aligns the winit backend with them.
+        let _ = device_handle.device.poll(wgpu::PollType::wait_indefinitely());
     }
 
     fn poll_events(&mut self, callback: &mut dyn FnMut(BackendEvent)) {
