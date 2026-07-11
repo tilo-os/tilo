@@ -127,6 +127,40 @@ pub enum Envelope {
         /// Workspace ids this peer relay currently hosts.
         hosted_workspaces: Vec<u64>,
     },
+
+    /// Anti-entropy request. The sender advertises the Automerge heads
+    /// it currently holds for `workspace_id`; the host replies with a
+    /// [`Envelope::SyncResponse`] carrying every change the sender is
+    /// missing, computed against the host's *materialized* pinned doc.
+    ///
+    /// This is the recovery tier that sits underneath the per-peer
+    /// store-and-forward queue: a delta lost in a genuine disconnect
+    /// race (fanned out to a live subscriber whose wire died before the
+    /// write landed, so it was neither delivered nor re-queued) leaves
+    /// that peer permanently behind. Reconciling against the host's
+    /// authoritative doc converges the peer regardless of what the
+    /// queue delivered — run on subscribe, periodically, or on demand.
+    SyncRequest {
+        /// Workspace id.
+        workspace_id: u64,
+        /// Automerge change hashes the requester already has (its
+        /// `get_heads()`), each a 32-byte hash. An empty vec means "I
+        /// hold nothing — send me the whole document."
+        have_heads: Vec<[u8; 32]>,
+    },
+
+    /// The host's reply to a [`Envelope::SyncRequest`]: the changes the
+    /// requester was missing, as a concatenated series of Automerge
+    /// changes loadable with `load_incremental`. Empty when the
+    /// requester is already up to date, or the workspace is not
+    /// materialized on this host (unpinned).
+    SyncResponse {
+        /// Workspace id.
+        workspace_id: u64,
+        /// Concatenated Automerge changes the requester was missing.
+        #[serde(with = "serde_bytes")]
+        delta_since: Vec<u8>,
+    },
 }
 
 /// Encode an envelope for the wire. Returns the length-prefixed

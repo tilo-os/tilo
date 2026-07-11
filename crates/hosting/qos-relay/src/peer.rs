@@ -279,9 +279,48 @@ async fn handle_envelope(
                 hosted_workspaces: hosted_here,
             }))
         }
+        Envelope::SyncRequest {
+            workspace_id,
+            have_heads,
+        } => {
+            // Anti-entropy: reply with exactly the changes the requester
+            // is missing, computed against this host's materialized
+            // pinned doc. Read-only — does not touch subscriptions or the
+            // pending queues, so a peer can reconcile whether or not it is
+            // currently subscribed. Membership gates device requesters the
+            // same way Subscribe does; peer relays are gated by cross-user
+            // auth + host capability.
+            let ws = match workspaces.lock().await.get(&workspace_id).cloned() {
+                Some(w) => w,
+                None => {
+                    return Ok(Some(Envelope::NotAuthorised {
+                        workspace_id,
+                        reason: "workspace not bound on this relay".into(),
+                    }));
+                }
+            };
+            let mut wr = ws.lock().await;
+            if peer.role == crate::auth::PeerRole::Device
+                && !wr.membership.contains(&peer.device_public_key)
+                && !wr.membership.devices.is_empty()
+            {
+                return Ok(Some(Envelope::NotAuthorised {
+                    workspace_id,
+                    reason: "device not in workspace membership".into(),
+                }));
+            }
+            let delta_since = wr.changes_since(&have_heads);
+            Ok(Some(Envelope::SyncResponse {
+                workspace_id,
+                delta_since,
+            }))
+        }
         Envelope::Ping => Ok(Some(Envelope::Pong)),
         // Envelopes the relay only *sends*, never receives; ignore
         // silently so a peer bug doesn't wedge the connection.
-        Envelope::Ready { .. } | Envelope::NotAuthorised { .. } | Envelope::Pong => Ok(None),
+        Envelope::Ready { .. }
+        | Envelope::NotAuthorised { .. }
+        | Envelope::Pong
+        | Envelope::SyncResponse { .. } => Ok(None),
     }
 }

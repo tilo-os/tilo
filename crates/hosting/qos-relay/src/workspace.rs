@@ -11,7 +11,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use automerge::AutoCommit;
+use automerge::{AutoCommit, ChangeHash};
 use tokio::sync::{Mutex as AsyncMutex, mpsc};
 
 use crate::auth::PeerRole;
@@ -62,7 +62,12 @@ pub struct WorkspaceRuntime {
     /// On-disk state.
     pub store: WorkspaceStore,
     /// Pinned CRDT — only `Some` when the config marks this
-    /// workspace `pin = true`. Reloaded from disk on start.
+    /// workspace `pin = true`. Reloaded from disk on start and
+    /// materialized forward as raw Automerge deltas arrive (see
+    /// [`WorkspaceRuntime::materialize`]), so the host holds
+    /// authoritative current state that [`WorkspaceRuntime::changes_since`]
+    /// serves as the anti-entropy source of truth — independent of the
+    /// per-peer pending queues.
     pub doc: Option<AutoCommit>,
     /// Which of the user's devices are workspace members. Used to
     /// gate subscribes AND to decide who gets store-and-forward
@@ -214,7 +219,106 @@ impl WorkspaceRuntime {
             authored_at_ns: seq,
             delta_len: raw_delta_bytes.len() as u64,
         });
+        // 4. Materialize into the pinned doc so the host holds
+        //    authoritative current state (the source for anti-entropy
+        //    resync), not just per-peer queues. Runs AFTER fan-out +
+        //    store-and-forward so it can never alter those semantics;
+        //    best-effort and no-op when the workspace is unpinned or the
+        //    bytes are not a raw Automerge delta (a co-edit payload
+        //    wrapper, a non-CRDT test blob, …).
+        self.materialize(raw_delta_bytes);
         Ok(delivered)
+    }
+
+    /// Apply an incoming raw Automerge delta into the pinned doc and
+    /// persist the updated snapshot, so the host materializes
+    /// authoritative current state rather than relying solely on the
+    /// per-peer pending queues. Returns `true` when the doc advanced.
+    ///
+    /// Best-effort and fully isolated from routing:
+    /// - runs only when the workspace is pinned (`doc.is_some()`);
+    /// - a delta that is not a raw Automerge incremental (e.g. a co-edit
+    ///   `CoeditPayload` wrapper, or a non-CRDT test payload) is applied
+    ///   to a throwaway clone first, so a decode failure leaves the live
+    ///   doc + snapshot untouched;
+    /// - a delta that adds nothing new writes no snapshot.
+    fn materialize(&mut self, delta_bytes: &[u8]) -> bool {
+        if self.doc.is_none() || delta_bytes.is_empty() {
+            return false;
+        }
+        // Apply to a clone so a malformed / non-Automerge payload cannot
+        // half-apply and corrupt the authoritative doc.
+        let mut candidate = self.doc.as_ref().expect("doc.is_some checked").clone();
+        match candidate.load_incremental(delta_bytes) {
+            Ok(n) if n > 0 => {
+                let saved = candidate.save();
+                self.doc = Some(candidate);
+                // Persist; save_snapshot no-ops on an unpinned store, and
+                // a write failure must not break routing (already done).
+                let _ = self.store.save_snapshot(&saved);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// The host's current Automerge heads for this workspace, as wire
+    /// 32-byte hashes. Empty when the workspace is not materialized here
+    /// (unpinned) — a requester then receives the whole document.
+    pub fn current_heads(&mut self) -> Vec<[u8; 32]> {
+        match self.doc.as_mut() {
+            Some(doc) => doc.get_heads().into_iter().map(|h| h.0).collect(),
+            None => Vec::new(),
+        }
+    }
+
+    /// Anti-entropy: compute the changes a peer is missing — every
+    /// change in the host's materialized doc that is not a (transitive)
+    /// dependency of `have_heads`. Returns a concatenated series of
+    /// Automerge changes loadable via `load_incremental`. Empty when the
+    /// workspace is not materialized here, or the peer is already
+    /// converged.
+    pub fn changes_since(&mut self, have_heads: &[[u8; 32]]) -> Vec<u8> {
+        let Some(doc) = self.doc.as_mut() else {
+            return Vec::new();
+        };
+        let heads: Vec<ChangeHash> = have_heads.iter().copied().map(ChangeHash).collect();
+        doc.save_after(&heads)
+    }
+
+    /// Ingest a batch of Automerge changes obtained via anti-entropy
+    /// from an upstream peer relay: materialize them into the pinned
+    /// doc, and — if they advanced the doc — fan the batch out to local
+    /// device subscribers as a `Delta` so devices on THIS relay converge
+    /// even when echo-suppression prevented the change from arriving via
+    /// live fan-out (the middle hop of a relay chain). Returns `true`
+    /// when new changes were ingested.
+    ///
+    /// Fanned out with a zero sentinel author + `PeerRole::PeerRelay`
+    /// origin, so it reuses the same routing (offline members get
+    /// store-and-forward; other peer relays are not re-echoed) as any
+    /// federated delta — no new delivery path.
+    pub fn ingest_sync_changes(
+        &mut self,
+        workspace_id: u64,
+        changes: &[u8],
+        seq: u64,
+    ) -> Result<bool, crate::store::StoreError> {
+        if !self.materialize(changes) {
+            // Nothing new (empty, already-held, or non-Automerge bytes).
+            return Ok(false);
+        }
+        let env = Envelope::Delta {
+            workspace_id,
+            author_device_public_key: [0u8; 32],
+            authored_at_ns: seq,
+            delta: changes.to_vec(),
+            signature: [0u8; 64],
+        };
+        // fan-out re-materializes, but `changes` are now already present
+        // so that inner call is a no-op (no second snapshot write).
+        self.fanout_delta(&[0u8; 32], PeerRole::PeerRelay, env, changes, seq)?;
+        Ok(true)
     }
 
     /// Route a presence envelope (no persistence, drop-on-empty).
@@ -376,5 +480,139 @@ mod tests {
         let env = env_delta(13, author);
         rt.fanout_delta(&author, PeerRole::PeerRelay, env, b"x", 42).unwrap();
         assert_eq!(rt.store.count_pending(&pr_pk).unwrap(), 0);
+    }
+
+    /// A pinned host materializes an incoming raw Automerge delta into
+    /// its doc and can then serve it back via `changes_since` — the
+    /// source of truth for anti-entropy. A fresh peer converges from
+    /// that alone.
+    #[test]
+    fn materialize_pins_delta_and_serves_it_via_changes_since() {
+        use automerge::transaction::Transactable;
+        use automerge::{AutoCommit, ROOT};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let mut rt = WorkspaceRuntime::open(tmp.path(), 55, true, Membership::default()).unwrap();
+
+        let mut doc_a = AutoCommit::new();
+        doc_a.put(ROOT, "title", "hello").unwrap();
+        let d1 = doc_a.save_incremental();
+
+        let env = env_delta(55, [1u8; 32]);
+        rt.fanout_delta(&[1u8; 32], PeerRole::Device, env, &d1, 1)
+            .unwrap();
+
+        // Host materialized the change — its heads match the author's.
+        let host_heads: Vec<[u8; 32]> = doc_a.get_heads().into_iter().map(|h| h.0).collect();
+        assert_eq!(rt.current_heads(), host_heads);
+        // And it persisted a snapshot (durable across restart).
+        assert!(rt.store.load_snapshot().unwrap().is_some());
+
+        // A fresh peer with nothing converges purely from the host's
+        // anti-entropy response.
+        let delta_since = rt.changes_since(&[]);
+        assert!(!delta_since.is_empty());
+        let mut doc_peer = AutoCommit::new();
+        doc_peer.load_incremental(&delta_since).unwrap();
+        assert_eq!(doc_peer.get_heads(), doc_a.get_heads());
+    }
+
+    /// A non-Automerge payload (the byte-blob deltas some peers publish,
+    /// or a co-edit wrapper) must not corrupt or advance the pinned doc,
+    /// and must not write a snapshot — materialization is best-effort and
+    /// isolated from routing.
+    #[test]
+    fn materialize_skips_non_automerge_payload() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut rt = WorkspaceRuntime::open(tmp.path(), 56, true, Membership::default()).unwrap();
+        let env = env_delta(56, [5u8; 32]);
+        // fanout still succeeds (routing is unaffected)...
+        rt.fanout_delta(&[5u8; 32], PeerRole::Device, env, b"not-automerge", 1)
+            .unwrap();
+        // ...but the doc did not advance and no snapshot was written.
+        assert!(rt.current_heads().is_empty());
+        assert!(rt.store.load_snapshot().unwrap().is_none());
+        assert!(rt.changes_since(&[]).is_empty());
+    }
+
+    /// The previously-unrecoverable disconnect race, at the runtime
+    /// level: a delta fanned out to a *live* subscriber whose channel
+    /// then dies before the write lands. Because the subscriber was
+    /// live, the delta is counted delivered and is NEVER written to its
+    /// pending queue — so the store-and-forward tier has nothing to
+    /// recover from. Anti-entropy against the host's materialized doc
+    /// reconciles the peer to convergence anyway.
+    ///
+    /// This exercises the real `WorkspaceRuntime` (`fanout_delta`,
+    /// `changes_since`, the production mpsc subscriber channel) — no
+    /// mock of the code under test.
+    #[test]
+    fn anti_entropy_recovers_delta_lost_in_half_closed_channel_race() {
+        use automerge::transaction::Transactable;
+        use automerge::{AutoCommit, ROOT};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let a = [1u8; 32];
+        let b = [2u8; 32];
+        let mut membership = Membership::default();
+        membership.set(vec![a, b]);
+        let mut rt = WorkspaceRuntime::open(tmp.path(), 77, true, membership).unwrap();
+
+        // B is a LIVE subscriber — exactly what `run_peer` registers.
+        let (tx_b, rx_b) = mpsc::unbounded_channel();
+        rt.add_subscriber(Subscriber {
+            device_public_key: b,
+            role: PeerRole::Device,
+            tx: tx_b,
+        });
+
+        // A authors a genuine Automerge edit and publishes it.
+        let mut doc_a = AutoCommit::new();
+        doc_a.set_actor(automerge::ActorId::from(b"alice".as_slice()));
+        doc_a.put(ROOT, "title", "shared").unwrap();
+        let d1 = doc_a.save_incremental();
+        let env = Envelope::Delta {
+            workspace_id: 77,
+            author_device_public_key: a,
+            authored_at_ns: 1,
+            delta: d1.clone(),
+            signature: [0u8; 64],
+        };
+        let delivered = rt.fanout_delta(&a, PeerRole::Device, env, &d1, 111).unwrap();
+        assert_eq!(delivered, 1, "delta fanned out to the live subscriber B");
+
+        // The gap: a delivered delta is NOT queued, so the pending tier
+        // holds nothing to recover B from.
+        assert_eq!(
+            rt.store.count_pending(&b).unwrap(),
+            0,
+            "a delivered delta is never written to the pending queue"
+        );
+
+        // The genuine disconnect race: B's wire dies before the outbound
+        // channel drained, so B never applied d1. Dropping the receiver
+        // models the dead wire — the fanned-out delta is simply lost.
+        drop(rx_b);
+
+        // Pre-anti-entropy: B (fresh, empty) is divergent and has no
+        // queue entry — the previously-unrecoverable state.
+        let mut doc_b = AutoCommit::new();
+        doc_b.set_actor(automerge::ActorId::from(b"bob".as_slice()));
+        assert_ne!(doc_b.get_heads(), doc_a.get_heads(), "B starts divergent");
+
+        // ---- Anti-entropy against the host's materialized doc. ----
+        let have: Vec<[u8; 32]> = doc_b.get_heads().into_iter().map(|h| h.0).collect();
+        let delta_since = rt.changes_since(&have);
+        assert!(
+            !delta_since.is_empty(),
+            "host serves the lost change from its materialized doc"
+        );
+        doc_b.load_incremental(&delta_since).unwrap();
+
+        assert_eq!(
+            doc_b.get_heads(),
+            doc_a.get_heads(),
+            "anti-entropy reconciles B to convergence despite the lost fan-out and empty queue"
+        );
     }
 }
