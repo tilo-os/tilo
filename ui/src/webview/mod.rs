@@ -28,6 +28,9 @@ pub mod adblock_service;
 #[cfg(feature = "webview-wpe")]
 pub mod wpe;
 
+#[cfg(feature = "webview-wpe")]
+pub mod compositor;
+
 use std::sync::{Arc, Mutex};
 
 /// One rendered frame from the engine: tightly-packed RGBA8 at physical
@@ -230,6 +233,15 @@ pub trait WebViewEngine: Send + Sync {
     /// deliver pixels through [`frames`](Self::frames) instead.
     fn take_dmabuf(&self) -> Option<DmabufFrame> {
         None
+    }
+
+    /// Whether this engine delivers frames as zero-copy DMA-BUFs (via
+    /// [`take_dmabuf`](Self::take_dmabuf)) rather than CPU pixels through
+    /// [`frames`](Self::frames). When true, the `WebView` widget leaves a
+    /// transparent hole and registers a compositor layer instead of
+    /// drawing the (absent) SHM image. Default: false.
+    fn uses_dmabuf(&self) -> bool {
+        false
     }
 }
 

@@ -98,9 +98,6 @@ pub struct BrowserWidget {
     /// Debug/`--shots-overlay`: keep forced suggestions visible without a
     /// real focus + query, so the overlay can be rendered headlessly.
     force_suggestions: bool,
-    /// The WebView content rect as window fractions `[x0,y0,x1,y1]`,
-    /// published each layout for the zero-copy compositor to blit into.
-    content_rect: std::sync::Arc<std::sync::Mutex<Option<[f32; 4]>>>,
 }
 
 impl BrowserWidget {
@@ -151,7 +148,6 @@ impl BrowserWidget {
             structure_dirty: false,
             last_query: None,
             force_suggestions: false,
-            content_rect: std::sync::Arc::new(std::sync::Mutex::new(None)),
         }
     }
 
@@ -160,12 +156,6 @@ impl BrowserWidget {
     pub fn debug_force_suggestions(&mut self, items: Vec<crate::history::HistoryEntry>) {
         self.suggestions.set_suggestions(items);
         self.force_suggestions = true;
-    }
-
-    /// Handle to the live WebView content rect (window fractions), for the
-    /// zero-copy compositor. Updated every layout.
-    pub fn content_rect_handle(&self) -> std::sync::Arc<std::sync::Mutex<Option<[f32; 4]>>> {
-        self.content_rect.clone()
     }
 
     fn build_composition(&self) -> Box<dyn Widget> {
@@ -441,23 +431,6 @@ impl BrowserWidget {
         self.composed.as_ref().and_then(|c| walk(c.as_ref(), id))
     }
 
-    /// Publish the WebView surface rect as window fractions for the
-    /// zero-copy compositor.
-    fn publish_content_rect(&self) {
-        let full = self.rect;
-        if full.width() <= 0.0 || full.height() <= 0.0 {
-            return;
-        }
-        let frac = self.find_rect("browser.surface").map(|r| {
-            [
-                ((r.x0 - full.x0) / full.width()) as f32,
-                ((r.y0 - full.y0) / full.height()) as f32,
-                ((r.x1 - full.x0) / full.width()) as f32,
-                ((r.y1 - full.y0) / full.height()) as f32,
-            ]
-        });
-        *self.content_rect.lock().unwrap() = frac;
-    }
 }
 
 impl Default for BrowserWidget {
@@ -573,7 +546,6 @@ impl Widget for BrowserWidget {
             self.suggestions
                 .set_anchor(Point::new(r.x0, r.y1 + 2.0), r.width() as f32);
         }
-        self.publish_content_rect();
     }
 
     fn draw(

@@ -65,6 +65,10 @@ struct Shared {
     /// Latest exported dmabuf frame (zero-copy path). Consumed by the
     /// render side via [`WpeEngine::take_dmabuf`].
     dmabuf: Mutex<Option<egl::DmabufFrame>>,
+    /// Set once the engine thread has committed to the EGL/dmabuf export
+    /// path (vs the SHM copy path). Read by `uses_dmabuf` so the widget
+    /// knows to register a compositor layer instead of drawing SHM pixels.
+    dmabuf_active: std::sync::atomic::AtomicBool,
     events: Mutex<Vec<WebViewEvent>>,
     /// Host wake callback — pokes the winit loop so an idle app paints
     /// engine activity promptly.
@@ -106,6 +110,7 @@ impl WpeEngine {
         let shared = Arc::new(Shared {
             frames: Arc::new(Mutex::new(None)),
             dmabuf: Mutex::new(None),
+            dmabuf_active: std::sync::atomic::AtomicBool::new(false),
             events: Mutex::new(Vec::new()),
             waker: Mutex::new(None),
             ctx: AtomicUsize::new(0),
@@ -159,6 +164,12 @@ impl WebViewEngine for WpeEngine {
     fn take_dmabuf(&self) -> Option<crate::webview::DmabufFrame> {
         self.shared.dmabuf.lock().unwrap().take()
     }
+
+    fn uses_dmabuf(&self) -> bool {
+        self.shared
+            .dmabuf_active
+            .load(std::sync::atomic::Ordering::Acquire)
+    }
 }
 
 /// Everything the engine thread owns. Boxed and leaked so GLib callbacks
@@ -203,6 +214,12 @@ struct EngineState {
     /// EGL/dmabuf export state — `Some` only on the zero-copy path
     /// (`QOS_WEBVIEW_DMABUF=1`); `None` uses the SHM copy path.
     egl: Option<egl::EglExport>,
+    /// The previously exported EGL image, released only when the next one
+    /// arrives (a 1-frame hold). Releasing immediately let WPE recycle the
+    /// GPU buffer while the render thread was still compositing from it —
+    /// the tearing hazard. Holding one frame keeps the buffer stable for
+    /// the ~16 ms until the compositor consumes it.
+    held_egl_image: *mut ffi::wpe_fdo_egl_exported_image,
 }
 
 fn engine_thread(
@@ -227,13 +244,36 @@ fn engine_thread(
             let _ = init_tx.send(Err("wpe_loader_init(libWPEBackend-fdo) failed".into()));
             return;
         }
-        // Zero-copy dmabuf export is opt-in; if EGL setup fails we fall
-        // back to the SHM copy path so the browser still runs.
-        let egl = if std::env::var_os("QOS_WEBVIEW_DMABUF").is_some() {
+        // Zero-copy dmabuf export is opt-in via `QOS_WEBVIEW_DMABUF`
+        // (`1`/`on`/`auto`); default is the SHM copy path. SHM is what the
+        // offscreen `--shots` renderer and software-GPU VMs use, so it
+        // stays the safe default; opting in tries EGL and still falls back
+        // to SHM if the GPU/EGL stack isn't usable. When opted in the whole
+        // path self-wires (the WebView registers a compositor layer) and
+        // auto-configures the driver — no per-app setup.
+        let dmabuf_pref = std::env::var("QOS_WEBVIEW_DMABUF").unwrap_or_default();
+        let want_egl = matches!(
+            dmabuf_pref.as_str(),
+            "1" | "on" | "true" | "auto" | "yes"
+        );
+        let egl = if want_egl {
+            // The wgpu import needs LINEAR, single-plane buffers (wgpu-hal
+            // enables external_memory_dma_buf/fd but not
+            // image_drm_format_modifier), so WebKit's WebProcess must not
+            // tile/DCC-compress its render target. On AMD that's
+            // AMD_DEBUG=nodcc,notiling; set it before the WebProcess is
+            // spawned (env is inherited) so the GPU path works out of the
+            // box. Harmless on other drivers.
+            if std::env::var_os("AMD_DEBUG").is_none() {
+                unsafe { std::env::set_var("AMD_DEBUG", "nodcc,notiling") };
+            }
             egl::EglExport::setup()
         } else {
             None
         };
+        shared
+            .dmabuf_active
+            .store(egl.is_some(), Ordering::Release);
         let init_ok = match &egl {
             Some(e) => {
                 ffi::wpe_fdo_initialize_for_egl_display(e.display);
@@ -264,6 +304,7 @@ fn engine_thread(
             adblock_desired: false,
             adblock_installed_version: None,
             egl,
+            held_egl_image: std::ptr::null_mut(),
         }));
         let state_ptr = state as *mut EngineState as *mut c_void;
 
@@ -520,10 +561,16 @@ extern "C" fn on_export_fdo_egl_image(
                 state.shared.wake();
             }
         }
-        ffi::wpe_view_backend_exportable_fdo_egl_dispatch_release_exported_image(
-            state.exportable,
-            image,
-        );
+        // 1-frame hold: release the PREVIOUS image now (the compositor has
+        // had a frame to consume it), and keep this one until the next
+        // export so WPE can't recycle its buffer mid-composite.
+        if !state.held_egl_image.is_null() {
+            ffi::wpe_view_backend_exportable_fdo_egl_dispatch_release_exported_image(
+                state.exportable,
+                state.held_egl_image,
+            );
+        }
+        state.held_egl_image = image;
         ffi::wpe_view_backend_exportable_fdo_dispatch_frame_complete(state.exportable);
     }
 }

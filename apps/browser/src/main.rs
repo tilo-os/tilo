@@ -101,18 +101,10 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     let widget = BrowserWidget::new();
     let engine = widget.engine_handle();
 
-    // Zero-copy GPU compositing: when the WebView engine exports dmabuf
-    // frames (QOS_WEBVIEW_DMABUF=1), install a render-thread hook that
-    // blits the imported texture over the content rect. A no-op otherwise.
-    #[cfg(feature = "wpe")]
-    if std::env::var_os("QOS_WEBVIEW_DMABUF").is_some() {
-        ui::render_thread::set_frame_post_processor(Box::new(
-            browser::compositor::WebViewCompositor::new(
-                engine.clone(),
-                widget.content_rect_handle(),
-            ),
-        ));
-    }
+    // Zero-copy GPU compositing (when the engine takes the dmabuf path) is
+    // handled entirely by the toolkit now: the WebView widget registers a
+    // compositor layer during draw, and the render thread composites it.
+    // No app wiring.
 
     let state = ui::State::new();
     let app = ui::App::new(state, Box::new(widget));
@@ -196,6 +188,10 @@ fn render_live_shot_to_png(
     // Dev environments (containers) can't nest WebKit's bubblewrap
     // sandbox; on qOS the cluster sandbox is the outer boundary anyway.
     unsafe { std::env::set_var("WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS", "1") };
+    // The offscreen shot renders through the CPU readback path, not the
+    // render-thread compositor, so force the SHM export — the zero-copy
+    // dmabuf path would leave the page region blank here.
+    unsafe { std::env::set_var("QOS_WEBVIEW_DMABUF", "0") };
 
     let engine: SharedEngine = ui::webview::wpe::WpeEngine::new()
         .map_err(|e| format!("WPE engine failed to boot: {e}"))?;

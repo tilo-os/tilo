@@ -208,6 +208,25 @@ impl Widget for WebView {
             &self.rect,
         );
 
+        // Zero-copy GPU path: the engine delivers frames as external
+        // dmabuf textures vello cannot sample. Leave the placeholder above
+        // as the region and register a compositor layer; the render thread
+        // composites the page over it after encoding the scene. The
+        // device-pixel rect assumes the window origin maps to (0,0) with a
+        // uniform scale (true for a top-level app surface).
+        if self.engine.uses_dmabuf() {
+            let sf = self.scale_factor as f64;
+            let dev_rect = [
+                (self.rect.x0 * sf) as f32,
+                (self.rect.y0 * sf) as f32,
+                (self.rect.x1 * sf) as f32,
+                (self.rect.y1 * sf) as f32,
+            ];
+            crate::webview::profile::record_draw(self.rect.width(), self.rect.height(), None);
+            crate::render_thread::push_external_layer(self.engine.clone(), dev_rect);
+            return;
+        }
+
         let latest = {
             let slot = self.engine.frames();
             let guard = slot.lock();

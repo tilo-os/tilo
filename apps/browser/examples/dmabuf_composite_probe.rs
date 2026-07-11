@@ -1,26 +1,44 @@
-//! End-to-end probe for the zero-copy composite: bring up the WPE engine
-//! in dmabuf mode, clear a target texture to a marker grey, run the
-//! `WebViewCompositor` (import + blit) into a content sub-rect, read the
-//! target back, and assert the content rect shows the live page while the
-//! reserved "toolbar" strip stays grey.
+//! End-to-end probe for the zero-copy composite through the multi-layer
+//! registry: bring up a WPE engine in dmabuf mode, clear a target texture
+//! to marker grey, run the shared `MultiLayerCompositor` with a
+//! `LayerSnapshot` into a content sub-rect, read the target back, and
+//! assert the content rect shows the live page while the reserved top
+//! "toolbar" strip stays grey.
+//!
+//! The compositor is fully multi-layer (it composites a `Vec` of layers,
+//! each into its own rect), but WPE-FDO supports only **one nested host /
+//! EGL display per process** — so a single process can drive at most one
+//! dmabuf-exporting engine. In qOS each web-viewing app is its own
+//! process, so that's the real topology. This probe therefore exercises
+//! the supported single-engine path through the new registry API.
 //!
 //! Run:
 //!   QOS_WEBVIEW_DMABUF=1 QOS_WEBVIEW_DRM_NODE=/dev/dri/renderD128 \
 //!   GALLIUM_DRIVER=radeonsi AMD_DEBUG=nodcc,notiling \
 //!   cargo run -p browser --example dmabuf_composite_probe --features wpe --release
 
-use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use browser::compositor::WebViewCompositor;
-use ui::render_thread::FramePostProcess;
+use ui::render_thread::LayerSnapshot;
+use ui::webview::compositor::MultiLayerCompositor;
 use ui::webview::wpe::WpeEngine;
 use ui::webview::{SharedEngine, WebViewCommand};
 use vello::wgpu;
 
 const W: u32 = 1000;
 const H: u32 = 700;
-const TOOLBAR_FRAC: f32 = 0.1; // top 10% reserved for "chrome"
+const TOOLBAR: u32 = 70; // top strip reserved for "chrome" (stays grey)
+
+fn boot(url: &str, w: u32, h: u32) -> SharedEngine {
+    let engine: SharedEngine = WpeEngine::new().expect("WpeEngine::new");
+    engine.send(WebViewCommand::Resize {
+        width: w,
+        height: h,
+        scale_factor: 1.0,
+    });
+    engine.send(WebViewCommand::Navigate(url.into()));
+    engine
+}
 
 fn main() {
     let mut idesc = wgpu::InstanceDescriptor::new_without_display_handle();
@@ -53,9 +71,8 @@ fn main() {
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
         format: wgpu::TextureFormat::Rgba8Unorm,
-        // RENDER_ATTACHMENT for the grey clear, STORAGE_BINDING for the
-        // compositor's compute write, COPY_SRC for readback — mirroring
-        // vello's intermediate (STORAGE_BINDING) that the live path uses.
+        // Mirrors vello's intermediate (STORAGE_BINDING) that the live path
+        // uses; RENDER_ATTACHMENT for the grey clear, COPY_SRC for readback.
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT
             | wgpu::TextureUsages::STORAGE_BINDING
             | wgpu::TextureUsages::COPY_SRC,
@@ -63,24 +80,23 @@ fn main() {
     });
     let view = target.create_view(&wgpu::TextureViewDescriptor::default());
 
-    let engine: SharedEngine = WpeEngine::new().expect("WpeEngine::new");
-    engine.send(WebViewCommand::Resize {
-        width: W,
-        height: (H as f32 * (1.0 - TOOLBAR_FRAC)) as u32,
-        scale_factor: 1.0,
-    });
-    engine.send(WebViewCommand::Navigate("https://example.org".into()));
+    // One engine (WPE-FDO caps it at one per process), composited into the
+    // content region below a reserved toolbar strip.
+    let content_h = H - TOOLBAR;
+    let engine = boot("https://example.org", W, content_h);
+    let layers = vec![LayerSnapshot {
+        engine: engine.clone(),
+        dev_rect: [0.0, TOOLBAR as f32, W as f32, H as f32],
+    }];
 
-    let rect = Arc::new(Mutex::new(Some([0.0, TOOLBAR_FRAC, 1.0, 1.0])));
-    let mut comp = WebViewCompositor::new(engine, rect);
-
-    let deadline = Instant::now() + Duration::from_secs(25);
+    let mut comp = MultiLayerCompositor::new();
+    let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         if Instant::now() > deadline {
-            eprintln!("[composite] FAIL: no composited frame within 25s");
+            eprintln!("[composite] FAIL: composited content not seen within 30s");
             std::process::exit(1);
         }
-        // Clear the target to marker grey, then let the compositor blit.
+        // Clear to marker grey, then composite both layers.
         let mut enc = device.create_command_encoder(&Default::default());
         {
             let _clear = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -107,25 +123,25 @@ fn main() {
         }
         queue.submit([enc.finish()]);
 
-        comp.post_render(&device, &queue, &view, W, H);
+        comp.composite(&device, &queue, &view, W, H, &layers);
 
         let (toolbar, content) = readback(&device, &queue, &target);
-        // Toolbar strip should stay grey (~38); content should be the live
-        // page (bright, ~white background of example.org).
-        if content.0 > 200 && content.1 > 200 && content.2 > 200 && toolbar.0 < 80 {
+        let bright = |c: (u8, u8, u8)| c.0 > 200 && c.1 > 200 && c.2 > 200;
+        if bright(content) && toolbar.0 < 80 {
             println!(
-                "[composite] toolbar RGB {:?} (grey), content RGB {:?} (page)",
+                "[composite] toolbar {:?} (grey), content {:?} (page)",
                 toolbar, content
             );
-            println!("[composite] SUCCESS: zero-copy WebView composited into its rect.");
+            println!(
+                "[composite] SUCCESS: zero-copy WebView composited into its rect via the registry."
+            );
             return;
         }
         std::thread::sleep(Duration::from_millis(60));
     }
 }
 
-/// Read back the target; return the average RGB of a pixel in the toolbar
-/// strip and one in the content region.
+/// Read back a toolbar pixel plus one content pixel.
 fn readback(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
@@ -173,7 +189,7 @@ fn readback(
         let p = (y * bpr + x * 4) as usize;
         (data[p], data[p + 1], data[p + 2])
     };
-    let toolbar = at(W / 2, (H as f32 * TOOLBAR_FRAC * 0.5) as u32);
+    let toolbar = at(W / 2, TOOLBAR / 2);
     let content = at(W / 2, H * 3 / 4);
     (toolbar, content)
 }

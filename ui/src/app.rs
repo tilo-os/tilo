@@ -2594,6 +2594,10 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     width,
                     height,
                     base_color: app.theme.bg_app,
+                    // Zero-copy WebView layers collected while drawing the
+                    // tree just above (empty for apps without a GPU-path
+                    // WebView).
+                    layers: crate::render_thread::take_external_layers(),
                 };
                 if render.render_tx.send(req).is_err() {
                     tracing::error!("ui-render thread receiver closed; exiting");

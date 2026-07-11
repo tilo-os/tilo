@@ -70,31 +70,52 @@ use vello::peniko::Color;
 use vello::util::{RenderContext, RenderSurface};
 use vello::{RenderParams, Renderer, Scene};
 
-/// A hook run on the render thread *after* vello encodes the frame into its
-/// intermediate texture and *before* that texture is blit to the surface.
-/// It may composite extra GPU content into `target` — used by the browser
-/// to draw its zero-copy WebView texture (which vello cannot sample) over
-/// the transparent region the chrome leaves for it.
-pub trait FramePostProcess: Send {
-    fn post_render(
-        &mut self,
-        device: &vello::wgpu::Device,
-        queue: &vello::wgpu::Queue,
-        target: &vello::wgpu::TextureView,
-        width: u32,
-        height: u32,
-    );
+/// One WebView's page content to composite this frame: its engine (the
+/// source of the zero-copy dmabuf frame, which vello cannot sample) and
+/// its rect in **device pixels** `[x0, y0, x1, y1]`. Collected while
+/// drawing the widget tree and handed to the render thread with the scene,
+/// which composites each layer over the region the chrome left for it.
+#[derive(Clone)]
+pub struct LayerSnapshot {
+    pub engine: crate::webview::SharedEngine,
+    pub dev_rect: [f32; 4],
 }
 
-static POST_PROCESSOR: std::sync::Mutex<Option<Box<dyn FramePostProcess>>> =
+impl LayerSnapshot {
+    /// Stable per-engine identity, used to key the compositor's
+    /// imported-texture cache.
+    pub fn engine_id(&self) -> usize {
+        std::sync::Arc::as_ptr(&self.engine) as *const () as usize
+    }
+}
+
+thread_local! {
+    /// External WebView layers pushed during the current frame's draw
+    /// pass, drained into the [`RenderRequest::Frame`] by the app right
+    /// after it encodes the scene. Thread-local because both collection
+    /// (in `WebView::draw`) and drain (in the app) run on the main thread.
+    static PENDING_LAYERS: std::cell::RefCell<Vec<LayerSnapshot>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Queue a WebView layer to composite this frame. Called from
+/// `WebView::draw` when its engine is on the zero-copy GPU path; a no-op
+/// path (SHM engines / no dmabuf) never calls it.
+pub fn push_external_layer(engine: crate::webview::SharedEngine, dev_rect: [f32; 4]) {
+    PENDING_LAYERS.with(|l| l.borrow_mut().push(LayerSnapshot { engine, dev_rect }));
+}
+
+/// Take (and clear) the layers collected this frame. Called by the app
+/// when it builds the frame request.
+pub fn take_external_layers() -> Vec<LayerSnapshot> {
+    PENDING_LAYERS.with(|l| std::mem::take(&mut *l.borrow_mut()))
+}
+
+/// Persistent multi-layer compositor, created on first use on the render
+/// thread. Only compiled with the WPE engine (the only dmabuf source).
+#[cfg(feature = "webview-wpe")]
+static COMPOSITOR: std::sync::Mutex<Option<crate::webview::compositor::MultiLayerCompositor>> =
     std::sync::Mutex::new(None);
-
-/// Install a [`FramePostProcess`] hook (replacing any previous). Called by
-/// an app before its window comes up. A no-op for apps that don't set one,
-/// so the shared render path is unchanged for everyone else.
-pub fn set_frame_post_processor(p: Box<dyn FramePostProcess>) {
-    *POST_PROCESSOR.lock().unwrap() = Some(p);
-}
 
 /// Compile-time `Send` check. If a future `vello` / `wgpu` version
 /// regresses the `Send` impl on either `Renderer` or `Scene`, the
@@ -121,6 +142,9 @@ pub enum RenderRequest {
         width: u32,
         height: u32,
         base_color: Color,
+        /// Zero-copy WebView layers to composite over the scene this
+        /// frame (empty for every app without a GPU-path WebView).
+        layers: Vec<LayerSnapshot>,
     },
     /// Drain the channel and exit the worker loop. Sent from
     /// `AppHandler::exiting`; the App then `join()`s the handle.
@@ -214,9 +238,9 @@ pub fn spawn_render_thread(
             let present_dbg = std::env::var("QUICK_UI_PRESENT").is_ok();
             let mut frame_ix: u64 = 0;
             while let Ok(msg) = rx.recv() {
-                let (mut scene, width, height, base_color) = match msg {
-                    RenderRequest::Frame { scene, width, height, base_color } => {
-                        (scene, width, height, base_color)
+                let (mut scene, width, height, base_color, layers) = match msg {
+                    RenderRequest::Frame { scene, width, height, base_color, layers } => {
+                        (scene, width, height, base_color, layers)
                     }
                     RenderRequest::Shutdown => break,
                 };
@@ -239,6 +263,7 @@ pub fn spawn_render_thread(
                     width,
                     height,
                     base_color,
+                    &layers,
                     present_dbg,
                     frame_ix,
                 );
@@ -292,6 +317,7 @@ fn render_one_frame(
     width: u32,
     height: u32,
     base_color: Color,
+    #[allow(unused_variables)] layers: &[LayerSnapshot],
     present_dbg: bool,
     frame_ix: u64,
 ) -> FrameOutcome {
@@ -320,18 +346,21 @@ fn render_one_frame(
         return FrameOutcome::Skipped;
     }
 
-    // Composite any post-processor content (the browser's zero-copy WebView
-    // texture) into the intermediate texture before it goes to the surface.
-    if let Ok(mut guard) = POST_PROCESSOR.lock() {
-        if let Some(p) = guard.as_mut() {
-            p.post_render(
-                &device_handle.device,
-                &device_handle.queue,
-                &surface.target_view,
-                width,
-                height,
-            );
-        }
+    // Composite any zero-copy WebView layers into the intermediate texture
+    // before it goes to the surface (vello can't sample their external
+    // textures). Empty on every frame without a GPU-path WebView.
+    #[cfg(feature = "webview-wpe")]
+    if !layers.is_empty() {
+        let mut guard = COMPOSITOR.lock().unwrap();
+        let comp = guard.get_or_insert_with(crate::webview::compositor::MultiLayerCompositor::new);
+        comp.composite(
+            &device_handle.device,
+            &device_handle.queue,
+            &surface.target_view,
+            width,
+            height,
+            layers,
+        );
     }
 
     let encode_us = t_encode.map(|t| t.elapsed().as_secs_f64() * 1e6);
