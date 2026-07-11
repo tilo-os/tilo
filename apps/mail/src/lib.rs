@@ -35,6 +35,7 @@ pub mod compose;
 pub mod doc;
 pub mod draw;
 pub mod engine;
+pub mod html_mail;
 pub mod model;
 pub mod oauth;
 pub mod pane;
@@ -63,6 +64,7 @@ pub fn shot_viewport(scenario: &str) -> (u32, u32) {
         "mid" => (1000, 720),
         "compose" => (1180, 820),
         "setup" | "setup_add" | "setup_oauth" | "firstrun" => (1100, 780),
+        "html_mail" => (1280, 820),
         _ => (1280, 800),
     }
 }
@@ -87,6 +89,7 @@ pub fn app_root_scenario(scenario: &str) -> Box<dyn Widget> {
         // fields rather than an existing account's values.
         "setup_add" => app.prime_setup_add_shot(),
         "setup_oauth" => app.prime_setup_oauth_shot(),
+        "html_mail" => app.prime_html_mail_shot(),
         _ => {}
     }
     Box::new(app)

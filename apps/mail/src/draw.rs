@@ -25,6 +25,12 @@ pub const LIST_ROW_H: f64 = 78.0;
 pub const FOLDER_ROW_H: f64 = 36.0;
 /// Height of an account header in the sidebar.
 pub const ACCOUNT_HEADER_H: f64 = 44.0;
+/// Geometry of the NavShell top-left chip (collapse / hamburger / back),
+/// mirrored from `ui`'s `NavShell` so a pane header can vertically centre its
+/// title on the chip beside it and space itself a consistent gap away. The chip
+/// is a `CHIP_SIZE`-square inset `CHIP_INSET` from the pane's top-left corner.
+pub const CHIP_INSET: f64 = 12.0;
+pub const CHIP_SIZE: f64 = 36.0;
 /// Horizontal room the NavShell hamburger/chevron chip needs at a pane's
 /// top-left; pane headers inset their leading content past it.
 pub const CHIP_CLEARANCE: f64 = 52.0;

@@ -140,6 +140,20 @@ pub fn parse_eml(raw: &[u8], timestamp_min: i64, folder: Folder) -> Option<Messa
         .body_text(0)
         .map(|c| c.into_owned())
         .unwrap_or_default();
+    // The original text/html part, if the message carried a GENUINE one. The
+    // reader renders it sandboxed in a WebView (remote content blocked by
+    // default). We match `PartType::Html` explicitly rather than calling
+    // `body_html`, because `body_html` auto-converts a text/plain part into HTML
+    // as a fallback — which would wrongly route every plain-text mail through
+    // the webview. A plain-text mail therefore keeps `html_body == None` and
+    // renders as text.
+    let html_body = parsed
+        .html_bodies()
+        .find_map(|part| match &part.body {
+            mail_parser::PartType::Html(h) => Some(h.to_string()),
+            _ => None,
+        })
+        .filter(|h| !h.trim().is_empty());
 
     let rfc_message_id = parsed.message_id().map(|s| s.to_string());
 
@@ -163,8 +177,19 @@ pub fn parse_eml(raw: &[u8], timestamp_min: i64, folder: Folder) -> Option<Messa
         })
         .collect();
 
+    // Derive a STABLE id from the RFC `Message-ID` so that re-fetching the same
+    // server message (initial connect, folder switch, periodic refresh) maps to
+    // the same local message and overwrites in place, rather than piling up N
+    // duplicates keyed by fresh random UUIDs — which is what made an opened mail
+    // render its header several times, stacked. Only mint a random id when the
+    // message genuinely has no `Message-ID`.
+    let id = match &rfc_message_id {
+        Some(mid) if !mid.trim().is_empty() => stable_message_id(mid),
+        _ => Uuid::new_v4(),
+    };
+
     Some(Message {
-        id: Uuid::new_v4(),
+        id,
         rfc_message_id,
         in_reply_to: None,
         from,
@@ -172,12 +197,34 @@ pub fn parse_eml(raw: &[u8], timestamp_min: i64, folder: Folder) -> Option<Messa
         cc,
         subject,
         body,
+        html_body,
         attachments,
         timestamp_min,
         read: false,
         starred: false,
         folder,
     })
+}
+
+/// A deterministic [`Uuid`] for an RFC 5322 `Message-ID`. Hashing the
+/// (globally unique) header into the 128-bit id space means the same server
+/// message always resolves to the same local id, so a re-fetch dedupes instead
+/// of duplicating. Uses the message body's own FNV-1a hash folded into 128 bits
+/// — no crate needed, and stable across processes and machines.
+pub fn stable_message_id(message_id: &str) -> Uuid {
+    // Two independent 64-bit FNV-1a passes (different seeds) fill the 128 bits.
+    fn fnv1a(bytes: &[u8], mut hash: u64) -> u64 {
+        const PRIME: u64 = 0x0000_0100_0000_01B3;
+        for &b in bytes {
+            hash ^= b as u64;
+            hash = hash.wrapping_mul(PRIME);
+        }
+        hash
+    }
+    let norm = message_id.trim().trim_start_matches('<').trim_end_matches('>');
+    let hi = fnv1a(norm.as_bytes(), 0xcbf2_9ce4_8422_2325);
+    let lo = fnv1a(norm.as_bytes(), 0x0102_0304_0506_0708);
+    Uuid::from_u128(((hi as u128) << 64) | lo as u128)
 }
 
 /// Parse a raw RFC 5322 message fetched over IMAP, carrying the server's flag
@@ -284,6 +331,57 @@ mod tests {
         assert!(text.to_ascii_lowercase().contains("multipart/mixed"));
         assert!(text.contains("me@qos.example"));
         std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn refetching_the_same_message_id_dedupes_not_duplicates() {
+        // The confirmed defect: a re-fetch minted a fresh UUID per parse, so
+        // the same server message piled up as N copies in the mailbox and the
+        // reader drew its header once per copy. A stable id keyed on the
+        // Message-ID must collapse them to one.
+        let raw = b"From: Ada <ada@x.example>\r\n\
+To: you@qos.example\r\n\
+Subject: Re: Launch\r\n\
+Message-ID: <thread-42@x.example>\r\n\
+\r\n\
+Body of the message.\r\n";
+        let a = parse_eml(raw, 1000, Folder::Inbox).unwrap();
+        let b = parse_eml(raw, 2000, Folder::Inbox).unwrap();
+        assert_eq!(a.id, b.id, "same Message-ID → same local id across fetches");
+
+        let mut mb = crate::model::Mailbox::default();
+        mb.insert(a);
+        mb.insert(b);
+        assert_eq!(
+            mb.messages_in(Folder::Inbox).len(),
+            1,
+            "re-inserting the same server message must not duplicate it"
+        );
+    }
+
+    #[test]
+    fn messages_without_a_message_id_stay_distinct() {
+        // No Message-ID → a random id, so two genuinely-separate mails without
+        // the header don't collapse into one.
+        let raw = b"From: a@x.example\r\nSubject: No id\r\n\r\nHi\r\n";
+        let a = parse_eml(raw, 1000, Folder::Inbox).unwrap();
+        let b = parse_eml(raw, 1000, Folder::Inbox).unwrap();
+        assert_ne!(a.id, b.id, "absent Message-ID falls back to a unique id");
+    }
+
+    #[test]
+    fn parse_eml_captures_the_html_part() {
+        let raw = b"From: a@x.example\r\n\
+Subject: Rich\r\n\
+Message-ID: <html-1@x.example>\r\n\
+Content-Type: text/html; charset=utf-8\r\n\
+\r\n\
+<html><body><h1>Hi</h1><p>Rich <b>content</b>.</p></body></html>\r\n";
+        let msg = parse_eml(raw, 1000, Folder::Inbox).unwrap();
+        assert!(msg.html_body.is_some(), "an HTML mail keeps its html part");
+        assert!(msg.html_body.as_deref().unwrap().contains("<h1>"));
+        // A stripped text fallback is still available for the list snippet.
+        assert!(msg.body.to_ascii_lowercase().contains("hi"));
     }
 
     #[test]
