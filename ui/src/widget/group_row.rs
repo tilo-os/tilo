@@ -394,6 +394,16 @@ impl GroupRow {
         self.handles.get(idx)
     }
 
+    /// Read-only access to the child [`WindowGroup`] at `idx` — exposed so
+    /// integration tests (in `ui/tests/`) can read a group's live
+    /// `bar_rect` / `tab_rects` / screen rect to drive hit-tested gestures.
+    /// `debug_assertions`-gated so it's available to `ui/tests` (which build
+    /// in debug) but not shipped in release.
+    #[cfg(any(test, debug_assertions))]
+    pub fn group_at_for_test(&self, idx: usize) -> Option<&WindowGroup> {
+        self.groups.get(idx)
+    }
+
     /// Total natural content width (sum of group widths + inter-group
     /// gaps), as captured by the most recent `apply_layout`. Returns
     /// `0.0` before the first layout pass.
