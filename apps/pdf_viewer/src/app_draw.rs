@@ -390,19 +390,56 @@ impl PdfApp {
             }
         }
 
+        // Full-page renders are the expensive part of a frame (a real page can
+        // take tens to hundreds of ms). Rasterise only a small budget of *new*
+        // (uncached) pages per frame so the open→first-paint path pays for the
+        // single top page and lets the rest — a page's bottom sliver peeking in,
+        // pages scrolling into view — fill in over the following frames. Cached
+        // pages always draw (a cache hit is ~free).
+        let mut new_budget = MAX_NEW_PAGE_RASTERS_PER_FRAME;
+        let mut skipped_renderable = false;
+        let mut rendered_new = false;
         if let Some(rz) = self.raster.as_mut() {
             for i in want_pages {
-                if let Some(img) = rz.render(i, page_bucket) {
+                if !rz.is_page_cached(i, page_bucket) {
+                    if new_budget == 0 {
+                        skipped_renderable = true;
+                        continue;
+                    }
+                    new_budget -= 1;
+                    if rz.render(i, page_bucket).map(|img| page_imgs.insert(i + 1, img)).is_some() {
+                        rendered_new = true;
+                    }
+                } else if let Some(img) = rz.render(i, page_bucket) {
                     page_imgs.insert(i + 1, img);
                 }
             }
+            // Rail thumbnails are also real page rasters — for a scanned PDF a
+            // single 192px thumbnail can cost 15-30ms, so a rail-full on the
+            // open frame added ~90ms. Budget them the same way: a couple of new
+            // ones per frame, the rest deferred to follow-up frames.
+            let mut thumb_budget = MAX_NEW_THUMB_RASTERS_PER_FRAME;
             for (i, tw) in want_thumbs {
-                if let Some(img) = rz.render(i, tw) {
+                if !rz.is_page_cached(i, tw) {
+                    if thumb_budget == 0 {
+                        skipped_renderable = true;
+                        continue;
+                    }
+                    thumb_budget -= 1;
+                    if rz.render(i, tw).map(|img| thumb_imgs.insert(i + 1, img)).is_some() {
+                        rendered_new = true;
+                    }
+                } else if let Some(img) = rz.render(i, tw) {
                     thumb_imgs.insert(i + 1, img);
                 }
             }
             rz.prune(page_bucket);
         }
+        // Schedule a follow-up frame to render the pages we skipped this one —
+        // but only when *this* frame made forward progress (rendered a new page).
+        // A page that persistently fails to render therefore can't wedge the
+        // frame pump into a permanent ~60 Hz spin.
+        self.pending_raster = skipped_renderable && rendered_new;
         (page_imgs, thumb_imgs)
     }
 
