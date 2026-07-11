@@ -6510,6 +6510,33 @@ impl ShellOverlayHost {
         );
     }
 
+    /// Centred dim empty-state message for a drill-in pane with no rows
+    /// (e.g. Wi-Fi list before the first scan returns). Without this the
+    /// pane rendered as a blank panel that read as broken rather than
+    /// "nothing here yet".
+    fn draw_qs_drill_in_empty(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        message: &str,
+    ) {
+        let tokens = &theme.tokens;
+        let rect = self.quick_settings_rect();
+        let (tw, th) = text_renderer.measure(message, tokens.typography.scale.sm, None);
+        let tx = rect.x0 + (rect.width() - tw as f64) / 2.0;
+        let ty = rect.y0 + 56.0 + 24.0 - th as f64 / 2.0;
+        text_renderer.draw_text(
+            scene,
+            message,
+            tokens.typography.scale.sm,
+            tokens.colors.text_dim,
+            transform * Affine::translate((tx, ty)),
+            None,
+        );
+    }
+
     /// Hit rect for the back-chevron in the drill-in header. Click here
     /// pops `nav_stack`. Sized 32×32 with a small expansion for forgiving
     /// touch targets — the painted glyph is 24×24 inside.
@@ -6549,6 +6576,11 @@ impl ShellOverlayHost {
         let rect = self.quick_settings_rect();
 
         self.draw_qs_drill_in_header(scene, transform, text_renderer, theme, "Wi-Fi");
+
+        if qs.wifi_networks.is_empty() {
+            self.draw_qs_drill_in_empty(scene, transform, text_renderer, theme, "Scanning for networks…");
+            return;
+        }
 
         let row_h = 56.0_f64;
         let list_y0 = rect.y0 + 56.0;
@@ -6651,6 +6683,11 @@ impl ShellOverlayHost {
         let rect = self.quick_settings_rect();
 
         self.draw_qs_drill_in_header(scene, transform, text_renderer, theme, "Bluetooth");
+
+        if qs.bt_devices.is_empty() {
+            self.draw_qs_drill_in_empty(scene, transform, text_renderer, theme, "No devices found");
+            return;
+        }
 
         let row_h = 56.0_f64;
         let list_y0 = rect.y0 + 56.0;
