@@ -1,0 +1,43 @@
+[package]
+name = "registry-server"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "registry_server"
+path = "src/lib.rs"
+
+[[bin]]
+name = "qos-registry-server"
+path = "src/main.rs"
+
+# Self-hostable HTTP registry for `.qpkg` bundles. Serves the
+# `RegistryHandshake`, entry index, and a signed-POST endpoint so
+# publishers can add / update / delete their own entries. Owner
+# controls a `publishers.toml` allowlist; TLS is deliberately out
+# of scope — deployments put the server behind nginx or Caddy.
+
+[dependencies]
+registry-types = { path = "../registry-types" }
+
+tokio        = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "sync", "fs", "time", "io-util"] }
+hyper        = { version = "1", features = ["server", "http1"] }
+hyper-util   = { version = "0.1", features = ["tokio", "server-auto"] }
+http-body-util = "0.1"
+
+serde        = { version = "1", features = ["derive"] }
+serde_json   = "1"
+toml         = "0.8"
+clap         = { version = "4", features = ["derive"] }
+ed25519-dalek = { version = "2", features = ["serde", "rand_core"] }
+hex          = "0.4"
+thiserror    = "1"
+tracing      = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+bytes        = "1"
+anyhow       = "1"
+
+[dev-dependencies]
+tempfile = "3"
+rand     = "0.8"
+reqwest  = { version = "0.12", default-features = false, features = ["json"] }
