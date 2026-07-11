@@ -9,7 +9,9 @@ use crate::snapshot::{AttrVal, BlockView, DocSnapshot};
 use automerge::marks::{ExpandMark, Mark};
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, ScalarValue, Value};
-use std::collections::BTreeMap;
+use std::cmp::Ordering;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::ops::Bound;
 
 /// Resolved object ids for the canonical container maps under a document root.
 #[derive(Clone, Debug)]
@@ -86,21 +88,72 @@ impl NoteKind {
     }
 }
 
+/// A block's `(order_key, id)` pair, ordered exactly as [`ordered_keys`] orders
+/// blocks: by the base-256 fractional key (via [`crate::order::cmp_keys`]), then
+/// by id as a deterministic tiebreak. Used as the key type of the in-memory order
+/// index so successor lookups match the on-disk block order byte-for-byte.
+#[derive(Clone, PartialEq, Eq)]
+struct OrderKey {
+    key: Vec<u8>,
+    id: String,
+}
+
+impl Ord for OrderKey {
+    fn cmp(&self, other: &Self) -> Ordering {
+        crate::order::cmp_keys(&self.key, &other.key).then_with(|| self.id.cmp(&other.id))
+    }
+}
+impl PartialOrd for OrderKey {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+/// One container's block order held in memory: the ordered `(key, id)` set (for
+/// O(log n) successor lookup) plus an `id → key` map (for O(1) predecessor lookup
+/// by id). Mirrors the automerge block order of a single block container.
+#[derive(Default)]
+struct ContainerOrder {
+    entries: BTreeSet<OrderKey>,
+    by_id: HashMap<String, Vec<u8>>,
+}
+
+/// A lazily-built, incrementally-maintained index of every touched block
+/// container's order. It exists purely to make block insertion sub-linear: the
+/// naive `order_after_in` rescanned + resorted the whole container on every insert
+/// (O(n log n) each → O(n² log n) to build/import n blocks). With this index a new
+/// block's neighbours are found in O(log n).
+///
+/// Correctness: it is a per-[`IdGen`] mirror that every order-mutating [`DocMut`]
+/// method keeps in sync (insert/remove/move/clear). A fresh `IdGen` — the only way
+/// a second writer reaches the same document (`&mut IdGen` is exclusive, and
+/// [`seeded_id_gen`] mints a new one over a reloaded/merged doc) — starts empty and
+/// rebuilds from the live document on first use, so the index can never outlive the
+/// state it mirrors.
+#[derive(Default)]
+struct OrderIndex {
+    by_container: HashMap<ObjId, ContainerOrder>,
+}
+
 /// Per-replica, collision-free block id generator: `{actor_hex}.{counter}`.
 pub struct IdGen {
     actor_hex: String,
     next: u64,
+    /// In-memory block-order index (see [`OrderIndex`]). Private bookkeeping; not
+    /// part of the id-generation contract, but carried here because an `IdGen`
+    /// threads through every `DocMut` and persists across a `Document`'s ops.
+    order: OrderIndex,
 }
 
 impl IdGen {
     pub fn new(actor_hex: String) -> Self {
-        Self { actor_hex, next: 0 }
+        Self { actor_hex, next: 0, order: OrderIndex::default() }
     }
     /// Start the counter at `next` — used to seed past ids that already exist in
     /// a loaded/opened document (otherwise a fresh generator re-mints existing
     /// ids and overwrites those blocks).
     pub fn with_counter(actor_hex: String, next: u64) -> Self {
-        Self { actor_hex, next }
+        Self { actor_hex, next, order: OrderIndex::default() }
     }
     pub fn mint(&mut self) -> String {
         let id = format!("{}.{}", self.actor_hex, self.next);
@@ -629,7 +682,26 @@ fn block_order(doc: &AutoCommit, container: &ObjId, id: &str) -> Option<Vec<u8>>
     }
 }
 
+thread_local! {
+    /// Per-thread count of full [`ordered_keys`] container scans — each is an O(n)
+    /// read-and-sort of a whole block container. The in-memory order index means a
+    /// *bulk* insert (build or import of n blocks) triggers only O(1) of these — one
+    /// per container, to seed the index — instead of one per insert. A regression
+    /// that dropped the index back to a per-insert scan would make this O(n) again,
+    /// so the perf test asserts on the delta directly and catches the O(n²) return in
+    /// *any* build mode (it does not depend on wall-clock).
+    static ORDERED_KEYS_SCANS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// The number of full container scans this thread has performed (see
+/// [`ORDERED_KEYS_SCANS`]). Sample it around a bulk insert to prove the order index
+/// kept the work near-constant rather than O(n).
+pub fn ordered_keys_scan_count() -> u64 {
+    ORDERED_KEYS_SCANS.with(|c| c.get())
+}
+
 fn ordered_keys(doc: &AutoCommit, container: &ObjId) -> Vec<String> {
+    ORDERED_KEYS_SCANS.with(|c| c.set(c.get() + 1));
     let mut v: Vec<(Vec<u8>, String)> = doc
         .keys(container)
         .filter_map(|id| block_order(doc, container, &id).map(|ord| (ord, id)))
@@ -640,6 +712,17 @@ fn ordered_keys(doc: &AutoCommit, container: &ObjId) -> Vec<String> {
 
 pub fn blocks_in_order(doc: &AutoCommit, c: &Containers) -> Vec<String> {
     ordered_keys(doc, &c.blocks)
+}
+
+/// The byte length of every body block's fractional order key. The truncating
+/// [`crate::order::key_between`] keeps these bounded (~constant) for a run of
+/// sequential appends; a naive append-a-byte scheme grows them one byte per insert
+/// (O(n)-length keys, so every comparison is O(n)). The perf test asserts the max
+/// stays small — a direct, mode-independent guard on the key-growth half of the fix.
+pub fn block_order_key_lengths(doc: &AutoCommit, c: &Containers) -> Vec<usize> {
+    doc.keys(&c.blocks)
+        .filter_map(|id| block_order(doc, &c.blocks, &id).map(|k| k.len()))
+        .collect()
 }
 
 /// Read a document-level meta string (e.g. the serialized stylesheet).
@@ -1191,24 +1274,72 @@ impl<'a> DocMut<'a> {
         self.doc.put_object(&self.c.root, key, ObjType::Map).unwrap()
     }
 
-    fn order_after_in(&self, container: &ObjId, after: Option<&str>) -> Vec<u8> {
-        let doc: &AutoCommit = &*self.doc;
-        let ordered = ordered_keys(doc, container);
-        let pos = match after {
-            None => 0,
-            Some(id) => ordered
-                .iter()
-                .position(|x| x == id)
-                .map(|i| i + 1)
-                .unwrap_or(ordered.len()),
+    /// A fractional key ordered strictly after block `after` (or at the front when
+    /// `after` is `None`) within `container`. Uses the in-memory order index so the
+    /// predecessor/successor lookup is O(log n), not an O(n log n) rescan — the
+    /// difference between O(n log n) and O(n² log n) to build/import n blocks.
+    fn order_after_in(&mut self, container: &ObjId, after: Option<&str>) -> Vec<u8> {
+        self.ensure_order_cache(container);
+        let co = self.ids.order.by_container.get(container).expect("order cache just built");
+        let (lo, hi): (Option<Vec<u8>>, Option<Vec<u8>>) = match after {
+            // Insert at the front: bounded above by the first block's key.
+            None => (None, co.entries.iter().next().map(|k| k.key.clone())),
+            Some(id) => match co.by_id.get(id) {
+                // `after` exists: lo is its key, hi is the next block's key.
+                Some(after_key) => {
+                    let probe = OrderKey { key: after_key.clone(), id: id.to_string() };
+                    let hi = co.entries.range((Bound::Excluded(probe), Bound::Unbounded)).next().map(|k| k.key.clone());
+                    (Some(after_key.clone()), hi)
+                }
+                // `after` unknown → append at the end (mirrors the old `unwrap_or(len)`).
+                None => (co.entries.iter().next_back().map(|k| k.key.clone()), None),
+            },
         };
-        let lo = if pos == 0 { None } else { block_order(doc, container, &ordered[pos - 1]) };
-        let hi = if pos >= ordered.len() { None } else { block_order(doc, container, &ordered[pos]) };
         crate::order::key_between(lo.as_deref(), hi.as_deref())
     }
 
-    fn order_after(&self, after: Option<&str>) -> Vec<u8> {
-        self.order_after_in(&self.c.blocks, after)
+    fn order_after(&mut self, after: Option<&str>) -> Vec<u8> {
+        let container = self.c.blocks.clone();
+        self.order_after_in(&container, after)
+    }
+
+    /// Build the order index for `container` on first use (one O(n log n) scan),
+    /// then keep it incrementally. Later inserts/removes/moves update it in place.
+    fn ensure_order_cache(&mut self, container: &ObjId) {
+        if self.ids.order.by_container.contains_key(container) {
+            return;
+        }
+        let mut co = ContainerOrder::default();
+        for id in ordered_keys(self.doc, container) {
+            if let Some(key) = block_order(self.doc, container, &id) {
+                co.by_id.insert(id.clone(), key.clone());
+                co.entries.insert(OrderKey { key, id });
+            }
+        }
+        self.ids.order.by_container.insert(container.clone(), co);
+    }
+
+    /// Record (or re-key) a block's order in the index. Called right after the block
+    /// is written to the document, so the index stays in lock-step with it. A
+    /// re-key (move) transparently replaces the block's previous entry.
+    fn record_order(&mut self, container: &ObjId, id: &str, key: &[u8]) {
+        if let Some(co) = self.ids.order.by_container.get_mut(container) {
+            if let Some(old) = co.by_id.insert(id.to_string(), key.to_vec()) {
+                co.entries.remove(&OrderKey { key: old, id: id.to_string() });
+            }
+            co.entries.insert(OrderKey { key: key.to_vec(), id: id.to_string() });
+        }
+    }
+
+    /// Drop a block from the order index (on delete). A no-op if the container's
+    /// index hasn't been built yet — it will rebuild from the (already-updated)
+    /// document on next use.
+    fn forget_order(&mut self, container: &ObjId, id: &str) {
+        if let Some(co) = self.ids.order.by_container.get_mut(container) {
+            if let Some(old) = co.by_id.remove(id) {
+                co.entries.remove(&OrderKey { key: old, id: id.to_string() });
+            }
+        }
     }
 
     // NOTE: DocMut does NOT commit the automerge transaction — the host owns the
@@ -1229,9 +1360,10 @@ impl<'a> DocMut<'a> {
         let key = self.order_after_in(&container, after);
         let id = self.ids.mint();
         let obj = self.doc.put_object(&container, id.as_str(), ObjType::Map).unwrap();
-        self.doc.put(&obj, BLOCK_ORDER, ScalarValue::Bytes(key)).unwrap();
+        self.doc.put(&obj, BLOCK_ORDER, ScalarValue::Bytes(key.clone())).unwrap();
         self.doc.put(&obj, BLOCK_KIND, kind).unwrap();
         self.doc.put_object(&obj, BLOCK_ATTRS, ObjType::Map).unwrap();
+        self.record_order(&container, &id, &key);
         id
     }
 
@@ -1340,9 +1472,10 @@ impl<'a> DocMut<'a> {
         let key = self.order_after_in(&container, after);
         let id = self.ids.mint();
         let obj = self.doc.put_object(&container, id.as_str(), ObjType::Map).unwrap();
-        self.doc.put(&obj, BLOCK_ORDER, ScalarValue::Bytes(key)).unwrap();
+        self.doc.put(&obj, BLOCK_ORDER, ScalarValue::Bytes(key.clone())).unwrap();
         self.doc.put(&obj, BLOCK_KIND, kind).unwrap();
         self.doc.put_object(&obj, BLOCK_ATTRS, ObjType::Map).unwrap();
+        self.record_order(&container, &id, &key);
         Some(id)
     }
 
@@ -1442,9 +1575,10 @@ impl<'a> DocMut<'a> {
         let key = self.order_after_in(&container, after);
         let id = self.ids.mint();
         let obj = self.doc.put_object(&container, id.as_str(), ObjType::Map).unwrap();
-        self.doc.put(&obj, BLOCK_ORDER, ScalarValue::Bytes(key)).unwrap();
+        self.doc.put(&obj, BLOCK_ORDER, ScalarValue::Bytes(key.clone())).unwrap();
         self.doc.put(&obj, BLOCK_KIND, kind).unwrap();
         self.doc.put_object(&obj, BLOCK_ATTRS, ObjType::Map).unwrap();
+        self.record_order(&container, &id, &key);
         Some(id)
     }
 
@@ -1645,6 +1779,8 @@ impl<'a> DocMut<'a> {
         for id in ordered_keys(self.doc, &container) {
             let _ = self.doc.delete(&container, &id);
         }
+        // Drop the (now-empty) container's cached order; it rebuilds lazily.
+        self.ids.order.by_container.remove(&container);
     }
 
     /// Resolve-or-create the Text object of a region block.
@@ -1663,12 +1799,18 @@ impl<'a> DocMut<'a> {
 
     pub fn remove_block(&mut self, id: &str) {
         let _ = self.doc.delete(&self.c.blocks, id);
+        let container = self.c.blocks.clone();
+        self.forget_order(&container, id);
     }
 
     pub fn move_block(&mut self, id: &str, after: Option<&str>) {
+        // Compute the target key with the block still at its old position (mirrors
+        // the pre-index behaviour: `after`'s successor may be the moved block).
         let key = self.order_after(after);
         if let Some(obj) = block_obj(self.doc, &self.c.blocks, id) {
-            self.doc.put(&obj, BLOCK_ORDER, ScalarValue::Bytes(key)).unwrap();
+            self.doc.put(&obj, BLOCK_ORDER, ScalarValue::Bytes(key.clone())).unwrap();
+            let container = self.c.blocks.clone();
+            self.record_order(&container, id, &key); // re-keys the moved block in the index
         }
     }
 
