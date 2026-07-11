@@ -57,6 +57,7 @@
 
 pub mod auth;
 pub mod client;
+pub mod coedit;
 pub mod config;
 pub mod daemon;
 pub mod metrics;
@@ -68,6 +69,7 @@ pub mod workspace;
 
 pub use auth::PeerRole;
 pub use client::{ClientError, RelayClient};
+pub use coedit::{CoeditError, CoeditPayload, Inbound, RelayCoeditSession};
 pub use config::{PeerRelayConfig, RelayConfig, WorkspaceBinding};
 pub use daemon::{Relay, RelayError, RelayHandle};
 pub use policy::TrustPolicy;
