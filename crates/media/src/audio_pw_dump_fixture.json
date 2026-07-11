@@ -1,0 +1,179 @@
+[
+  {
+    "id": 38,
+    "type": "PipeWire:Interface:Metadata",
+    "metadata": [
+      {
+        "subject": 0,
+        "key": "default.audio.sink",
+        "value": {
+          "name": "alsa_output.pci-0000_66_00.6.analog-stereo"
+        }
+      },
+      {
+        "subject": 0,
+        "key": "default.audio.source",
+        "value": {
+          "name": "alsa_input.pci-0000_66_00.6.analog-stereo"
+        }
+      }
+    ]
+  },
+  {
+    "id": 51,
+    "type": "PipeWire:Interface:Node",
+    "info": {
+      "props": {
+        "media.class": "Audio/Sink",
+        "object.serial": 51,
+        "node.name": "alsa_output.pci-0000_66_00.6.analog-stereo",
+        "node.description": "Ryzen HD Audio Controller Analoges Stereo"
+      },
+      "params": {
+        "Props": [
+          {
+            "channelVolumes": [
+              0.94118,
+              0.94118
+            ],
+            "mute": false
+          }
+        ]
+      }
+    }
+  },
+  {
+    "id": 52,
+    "type": "PipeWire:Interface:Node",
+    "info": {
+      "props": {
+        "media.class": "Audio/Source",
+        "object.serial": 52,
+        "node.name": "alsa_input.pci-0000_66_00.6.analog-stereo",
+        "node.description": "Ryzen HD Audio Controller Analoges Stereo"
+      },
+      "params": {
+        "Props": [
+          {
+            "channelVolumes": [
+              1.0,
+              1.0
+            ],
+            "mute": false
+          }
+        ]
+      }
+    }
+  },
+  {
+    "id": 81,
+    "type": "PipeWire:Interface:Node",
+    "info": {
+      "props": {
+        "media.class": "Stream/Output/Audio",
+        "object.serial": 246,
+        "node.name": "LibreWolf",
+        "application.name": "LibreWolf",
+        "media.name": "Maciej Ceglowski - Superintelligence: The Idea That Eats Smart People (Keynote) - YouTube"
+      },
+      "params": {
+        "Props": [
+          {
+            "channelVolumes": [
+              0.799991,
+              0.799991
+            ],
+            "mute": false
+          }
+        ]
+      }
+    }
+  },
+  {
+    "id": 73,
+    "type": "PipeWire:Interface:Link",
+    "info": {
+      "props": {
+        "link.output.node": 81,
+        "link.input.node": 51
+      }
+    }
+  },
+  {
+    "id": 83,
+    "type": "PipeWire:Interface:Link",
+    "info": {
+      "props": {
+        "link.output.node": 81,
+        "link.input.node": 51
+      }
+    }
+  },
+  {
+    "id": 91,
+    "type": "PipeWire:Interface:Node",
+    "info": {
+      "props": {
+        "media.class": "Audio/Sink",
+        "object.serial": 269,
+        "node.name": "fx_a",
+        "node.description": "Headphones"
+      },
+      "params": {
+        "Props": [
+          {
+            "channelVolumes": [
+              1.0,
+              1.0
+            ],
+            "mute": false
+          }
+        ]
+      }
+    }
+  },
+  {
+    "id": 84,
+    "type": "PipeWire:Interface:Node",
+    "info": {
+      "props": {
+        "media.class": "Stream/Output/Audio",
+        "object.serial": 275,
+        "node.name": "pw-play",
+        "application.name": "pw-play",
+        "media.name": "silent.wav"
+      },
+      "params": {
+        "Props": [
+          {
+            "channelVolumes": [
+              0.125,
+              0.125
+            ],
+            "mute": false
+          }
+        ]
+      }
+    }
+  },
+  {
+    "id": 86,
+    "type": "PipeWire:Interface:Link",
+    "info": {
+      "props": {
+        "link.output.node": 84,
+        "link.input.node": 91
+      }
+    }
+  },
+  {
+    "id": 87,
+    "type": "PipeWire:Interface:Link",
+    "info": {
+      "props": {
+        "link.output.node": 84,
+        "link.input.node": 91
+      }
+    }
+  }
+]
