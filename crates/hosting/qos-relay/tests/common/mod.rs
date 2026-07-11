@@ -81,8 +81,31 @@ pub async fn spawn_relay(
 ) -> TestRelay {
     let tmp = tempfile::tempdir().unwrap();
     let state_root = tmp.path().to_path_buf();
+    let relay = spawn_relay_on(&state_root, user, relay_dev, workspaces, members).await;
+    TestRelay {
+        relay,
+        state_root,
+        tmp,
+    }
+}
+
+/// Start a relay bound to `workspaces` (all pinned) with `members`,
+/// persisting to a caller-owned `state_root`. Unlike [`spawn_relay`]
+/// the caller keeps the directory alive, so it can drop the returned
+/// `Relay` and call this again on the same `state_root` to model a
+/// host that restarts — the on-disk pending queues + iroh secret
+/// survive the restart. The relay device cert is minted fresh on
+/// each call (only its *user* identity must be stable), mirroring a
+/// host that re-enrols a device key on reinstall.
+pub async fn spawn_relay_on(
+    state_root: &std::path::Path,
+    user: &TestUser,
+    relay_dev: TestDevice,
+    workspaces: &[u64],
+    members: &[[u8; 32]],
+) -> Relay {
     let mut cfg = RelayConfig {
-        state_root: state_root.clone(),
+        state_root: state_root.to_path_buf(),
         ..Default::default()
     };
     for id in workspaces {
@@ -98,15 +121,11 @@ pub async fn spawn_relay(
     let relay = Relay::start(cfg, identity).await.unwrap();
     for id in workspaces {
         relay
-            .set_workspace_membership(*id, true, members.to_vec(), state_root.clone())
+            .set_workspace_membership(*id, true, members.to_vec(), state_root.to_path_buf())
             .await
             .unwrap();
     }
-    TestRelay {
-        relay,
-        state_root,
-        tmp,
-    }
+    relay
 }
 
 /// Bind a plain iroh endpoint the tests can use to dial a relay.
