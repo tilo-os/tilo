@@ -7,6 +7,13 @@
 //! Run:  cargo run -p ui --example gallery_shots
 //! Out:  $GALLERY_SHOTS_OUT (default /tmp/gallery_shots) — gallery-dark.png,
 //!       gallery-light.png
+//!
+//! Fractional HiDPI: set `GALLERY_SHOTS_SCALE=1.5` (or 1.25 / 1.75 / 2.0)
+//! to render at that display scale. This reproduces the exact live-window
+//! path — a physical-pixel surface sized `logical × scale`, taffy solved
+//! at the logical size, and the whole scene composited through
+//! `Affine::scale(scale)` — so the PNG is crisp (vector-rasterized) at a
+//! fractional factor rather than a blurry upscale of a 1× frame.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -28,7 +35,7 @@ mod gallery_scene;
 const WIDTH: u32 = 1200;
 const HEIGHT: u32 = 1940;
 
-fn shoot(theme: &Theme, out: PathBuf) {
+fn shoot(theme: &Theme, out: PathBuf, scale: f64) {
     let mut state = State::new();
     let mut root = gallery_scene::build_showcase(&mut state, theme);
 
@@ -39,6 +46,9 @@ fn shoot(theme: &Theme, out: PathBuf) {
     // sync pulls the seeded control state out of the CRDT.
     root.sync(&mut state.doc, &state.root);
 
+    // Layout is solved in LOGICAL space (the same WIDTH/HEIGHT regardless
+    // of scale) — HiDPI must not change the logical layout, only how many
+    // physical pixels each logical unit covers.
     let node = root.build_layout(&mut taffy, theme, &mut node_map);
     taffy
         .compute_layout_with_measure(
@@ -59,11 +69,16 @@ fn shoot(theme: &Theme, out: PathBuf) {
 
     let mut scene = Scene::new();
     let presence = PresenceCtx::default();
-    root.draw(&mut scene, Affine::IDENTITY, &mut tr, theme, &presence);
+    // Composite through a pure scale by the (possibly fractional) factor —
+    // exactly what `App` does live with `Affine::scale(window.scale_factor())`.
+    root.draw(&mut scene, Affine::scale(scale), &mut tr, theme, &presence);
 
-    let mut r = OffscreenRenderer::new(WIDTH, HEIGHT);
+    // The offscreen target is sized in PHYSICAL pixels: logical × scale.
+    let phys_w = ((WIDTH as f64) * scale).round() as u32;
+    let phys_h = ((HEIGHT as f64) * scale).round() as u32;
+    let mut r = OffscreenRenderer::new(phys_w, phys_h);
     r.render_png(&scene, theme.bg_app, &out);
-    println!("wrote {}", out.display());
+    println!("wrote {} ({phys_w}x{phys_h} px @ {scale}x)", out.display());
 }
 
 fn main() {
@@ -72,6 +87,14 @@ fn main() {
     std::fs::create_dir_all(&dir).unwrap();
     let dir = PathBuf::from(dir);
 
-    shoot(&Theme::dark(), dir.join("gallery-dark.png"));
-    shoot(&Theme::light(), dir.join("gallery-light.png"));
+    // Fractional HiDPI factor from the environment (default 1.0). 1.5 / 1.25
+    // / 1.75 exercise the crisp fractional-scale render path.
+    let scale = std::env::var("GALLERY_SHOTS_SCALE")
+        .ok()
+        .and_then(|s| s.parse::<f64>().ok())
+        .filter(|s| *s > 0.0)
+        .unwrap_or(1.0);
+
+    shoot(&Theme::dark(), dir.join("gallery-dark.png"), scale);
+    shoot(&Theme::light(), dir.join("gallery-light.png"), scale);
 }

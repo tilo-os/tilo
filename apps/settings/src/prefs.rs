@@ -68,11 +68,23 @@ impl Default for AudioPrefs {
 pub struct DisplayPrefs {
     pub auto_brightness: bool,
     pub night_light: bool,
+    /// HiDPI display scale factor: `1.0` = 100 %, `1.25`, `1.5`, `1.75`,
+    /// `2.0`. The compositor reads this section of the shared settings
+    /// file at session start and advertises it to clients as the
+    /// preferred `wp_fractional_scale`, so a `ui` app renders crisp at a
+    /// fractional factor. `#[serde(default)]` keeps configs written before
+    /// this field existed loadable (they take `1.0`).
+    #[serde(default = "default_display_scale")]
+    pub scale: f64,
+}
+
+fn default_display_scale() -> f64 {
+    1.0
 }
 
 impl Default for DisplayPrefs {
     fn default() -> Self {
-        Self { auto_brightness: false, night_light: false }
+        Self { auto_brightness: false, night_light: false, scale: 1.0 }
     }
 }
 
