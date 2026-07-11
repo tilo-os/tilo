@@ -1,29 +1,19 @@
-//! Built-in ad blocking. Two complementary mechanisms:
+//! Shared ad-filter service backing the per-WebView `set_ad_blocking`
+//! toggle.
 //!
-//! 1. **Content filter** — fetch Brave/EasyList-syntax filter lists,
-//!    cache them on disk, compile them to WebKit content-blocker JSON via
-//!    [`ui::webview::adblock`], and hand the result to the engine
-//!    ([`spawn_filter_loader`]). Blocking then runs natively inside the
-//!    engine's network process — no per-request work in the app. This
-//!    covers network blocking + cosmetic (`css-display-none`) hiding for
-//!    ordinary sites.
+//! Fetches the canonical WebKit-clean filter lists, caches them on disk,
+//! compiles them (chunked) to WebKit content-blocker JSON via
+//! [`crate::webview::adblock`], and exposes the compiled chunks plus the
+//! scriptlet-style user scripts the declarative filter can't express.
 //!
-//! 2. **User scripts** — [`user_scripts`] returns JavaScript injected at
-//!    document-start into every frame. WebKit content filters are purely
-//!    *declarative* (block + hide only); they cannot run scriptlets. Sites
-//!    that serve their ads same-origin and need JS to defeat — YouTube
-//!    being the canonical case — are handled here instead. `user_scripts`
-//!    is consumed separately by the app: the orchestrator sends each
-//!    string to the engine as a document-start, all-frames user script.
-//!
-//! The content-filter path happens on a spawned thread so a cold cache /
-//! slow network never delays first paint; pages loaded before the filter
-//! compiles simply go unfiltered once.
+//! The service is **process-wide and lazily started** ([`service`]): the
+//! first WebView to enable blocking kicks a background fetch+compile
+//! thread, and every WebView shares the single compiled result — the heavy
+//! WebKit compile happens once regardless of how many WebViews block. The
+//! engine polls [`Shared::filters`] and installs when it turns `Some`.
 
-use std::path::PathBuf;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
-
-use ui::webview::{SharedEngine, WebViewCommand};
 
 /// Filter lists to fetch, as `(cache file name, URL)`.
 ///
@@ -39,12 +29,12 @@ use ui::webview::{SharedEngine, WebViewCommand};
 /// Deliberately excluded: uBO **quick-fixes** and **AdGuard Base**. Both
 /// lean on rule types WebKit content blocking cannot express — `$replace`
 /// (response-body rewriting), `$redirect`, and raw-regex `$frame` filters
-/// spanning a huge URL range. adblock-rust's lossy conversion turns some
-/// of those into over-broad `block` rules that catch a page's *own*
+/// spanning a huge URL range. adblock-rust's lossy conversion turns some of
+/// those into over-broad `block` rules that catch a page's *own*
 /// first-party document/scripts during load, blanking it. They also churn
 /// daily, so a fresh compile can regress unpredictably. EasyList + uBO
 /// already cover the same targets through WebKit-safe rules.
-const LISTS: &[(&str, &str)] = &[
+pub const LISTS: &[(&str, &str)] = &[
     ("easylist.txt", "https://easylist.to/easylist/easylist.txt"),
     (
         "easyprivacy.txt",
@@ -75,50 +65,69 @@ const LISTS: &[(&str, &str)] = &[
 /// Re-download a cached list after this age.
 const CACHE_MAX_AGE: Duration = Duration::from_secs(7 * 24 * 3600);
 
-/// Load + compile the filter lists in the background and install the
-/// compiled content filter into `engine` when ready.
-///
-/// This is only the declarative content-filter path. The scriptlet path
-/// ([`user_scripts`]) is installed separately by the app, since it maps
-/// to a different engine capability (user scripts, not content filters).
-pub fn spawn_filter_loader(engine: SharedEngine) {
-    std::thread::Builder::new()
-        .name("filter-loader".into())
-        .spawn(move || match load_and_compile() {
-            Ok((version, filter)) => {
-                tracing::info!(
-                    rules = filter.rule_count,
-                    chunks = filter.chunks.len(),
-                    skipped = filter.skipped,
-                    "content filter compiled"
-                );
-                // Installed as several filters — the full rule set exceeds
-                // WebKit's per-filter cap (see `MAX_RULES_PER_FILTER`). The
-                // `version` (hash of the source lists) lets the engine reuse
-                // previously compiled filters when the lists are unchanged.
-                engine.send(WebViewCommand::SetContentFilters {
-                    version,
-                    chunks: std::sync::Arc::new(filter.chunks),
+/// A compiled, ready-to-install filter set. Cheap to clone (Arc-shared).
+#[derive(Clone)]
+pub struct AdFilters {
+    /// Stable id of the *source* lists, so the engine reuses previously
+    /// compiled WebKit filters when the lists are unchanged.
+    pub version: u64,
+    /// WebKit content-blocker JSON, split under the per-filter rule cap.
+    pub chunks: Arc<Vec<Arc<String>>>,
+    /// Document-start user scripts for scriptlet-style blocking (YouTube).
+    pub user_scripts: Arc<Vec<String>>,
+}
+
+/// Shared service handle. Obtain via [`service`].
+pub struct Shared {
+    ready: Mutex<Option<AdFilters>>,
+}
+
+impl Shared {
+    /// The compiled filters if the background load has finished, else
+    /// `None` (still loading, or the fetch failed and blocking is
+    /// unavailable this run).
+    pub fn filters(&self) -> Option<AdFilters> {
+        self.ready.lock().unwrap().clone()
+    }
+}
+
+static SERVICE: OnceLock<Arc<Shared>> = OnceLock::new();
+
+/// Start the shared loader (idempotent) and return its handle. The first
+/// call spawns the fetch+compile thread; later calls return the same
+/// handle without doing more work.
+pub fn service() -> Arc<Shared> {
+    SERVICE
+        .get_or_init(|| {
+            let shared = Arc::new(Shared {
+                ready: Mutex::new(None),
+            });
+            let sink = shared.clone();
+            let spawned = std::thread::Builder::new()
+                .name("qos-adblock".into())
+                .spawn(move || match load_and_compile() {
+                    Ok(filters) => {
+                        tracing::info!(
+                            rules = filters.chunks.len(),
+                            "ad filters compiled and ready"
+                        );
+                        *sink.ready.lock().unwrap() = Some(filters);
+                    }
+                    Err(err) => tracing::warn!("ad blocking unavailable: {err}"),
                 });
+            if let Err(e) = spawned {
+                tracing::warn!("could not spawn ad-filter loader: {e}");
             }
-            Err(err) => tracing::warn!("ad blocking unavailable: {err}"),
+            shared
         })
-        .expect("spawn filter-loader thread");
+        .clone()
 }
 
 /// JavaScript user scripts for scriptlet-style blocking that the
-/// declarative content filter cannot express.
-///
-/// Each entry is a standalone, self-contained script meant to be injected
-/// at **document-start** into **all frames**. They are defensive (feature
-/// detection, no throwing) so an injection into an unexpected page is
-/// harmless. The app/orchestrator owns delivery to the engine — this
-/// function is a pure catalogue with no engine dependency, which keeps it
-/// trivially unit-testable.
-///
-/// The YouTube ad-skip script is the priority: YouTube stitches video ads
-/// into the same origin as the player, so no network rule can drop them —
-/// only page-side JS can mute, fast-forward, and click past them.
+/// declarative content filter cannot express. Each entry is standalone,
+/// injected at document-start into all frames, and defensive (feature
+/// detection, no throwing) so injection into an unexpected page is
+/// harmless.
 pub fn user_scripts() -> Vec<String> {
     vec![
         youtube_ad_skip_script().to_string(),
@@ -126,26 +135,11 @@ pub fn user_scripts() -> Vec<String> {
     ]
 }
 
-/// Robust YouTube video-ad skipper.
-///
-/// Detection + skip strategy (kept resilient to YouTube's frequent markup
-/// churn by matching on several class/selector variants and re-running on
-/// every DOM mutation plus a short interval, so it survives SPA
-/// navigation between videos without a full reload):
-///
-/// - **Ad in progress?** `#movie_player` carries the `ad-showing` class
-///   while a video ad plays.
-/// - **Skip button** — click any of the known skip-button variants the
-///   moment it appears (`.ytp-ad-skip-button`,
-///   `.ytp-ad-skip-button-modern`, `.ytp-skip-ad-button`, …).
-/// - **Unskippable portion** — mute the `<video>` (recording that *we*
-///   muted it so the user's own mute is never clobbered), crank
-///   `playbackRate`, and seek `currentTime` to `duration` to fast-forward
-///   the ad to its end; restore audio + rate once the ad clears.
-/// - **Overlays/banners** — inject CSS hiding the in-player ad modules,
-///   overlay slots, and feed/masthead ad renderers that the declarative
-///   filter can't target on this same-origin markup, and click the
-///   overlay close button.
+/// Robust YouTube video-ad skipper. YouTube stitches video ads into the
+/// same origin as the player, so no network rule can drop them — only
+/// page-side JS can mute, fast-forward, and click past them. Resilient to
+/// YouTube's frequent markup churn (several selector variants, re-run on
+/// every DOM mutation plus an interval so it survives SPA navigation).
 fn youtube_ad_skip_script() -> &'static str {
     r#"(function () {
   'use strict';
@@ -238,12 +232,8 @@ fn youtube_ad_skip_script() -> &'static str {
 
 /// Generic cosmetic belt-and-suspenders: hide the most common ad-slot
 /// containers at document-start, before the content filter's CSS lands.
-///
-/// Conservative on purpose — it only matches attribute/id shapes that are
-/// unambiguously ad slots (AdSense, Google Publisher Tag, generic
-/// `data-ad-*` slots), never generic layout, so it can't hide real
-/// content. Injecting the rule from JS lets it apply inside frames the
-/// declarative filter may reach later.
+/// Conservative — only unambiguous ad-slot attribute/id shapes, never
+/// generic layout, so it can't hide real content.
 fn generic_ad_cosmetic_script() -> &'static str {
     r#"(function () {
   'use strict';
@@ -261,8 +251,8 @@ fn generic_ad_cosmetic_script() -> &'static str {
 "#
 }
 
-fn cache_dir() -> Option<PathBuf> {
-    dirs::cache_dir().map(|d| d.join("qos-browser").join("filters"))
+fn cache_dir() -> Option<std::path::PathBuf> {
+    dirs::cache_dir().map(|d| d.join("qos-webview").join("filters"))
 }
 
 /// Return the list text: fresh cache if young enough, otherwise fetch
@@ -305,7 +295,7 @@ fn load_list(name: &str, url: &str) -> Option<String> {
     }
 }
 
-fn load_and_compile() -> Result<(u64, ui::webview::adblock::ChunkedFilter), String> {
+fn load_and_compile() -> Result<AdFilters, String> {
     let texts: Vec<String> = LISTS
         .iter()
         .filter_map(|(name, url)| load_list(name, url))
@@ -313,15 +303,17 @@ fn load_and_compile() -> Result<(u64, ui::webview::adblock::ChunkedFilter), Stri
     if texts.is_empty() {
         return Err("no filter lists available (offline with an empty cache)".into());
     }
-    // A stable id of the *source* rule set, so the engine can reuse the
-    // previously compiled WebKit filters when the lists haven't changed.
     let version = source_version(&texts);
-    let filter = ui::webview::adblock::compile_filter_lists_chunked(
+    let filter = super::adblock::compile_filter_lists_chunked(
         texts.iter().map(String::as_str),
-        ui::webview::adblock::MAX_RULES_PER_FILTER,
+        super::adblock::MAX_RULES_PER_FILTER,
     )
     .map_err(|e| e.to_string())?;
-    Ok((version, filter))
+    Ok(AdFilters {
+        version,
+        chunks: Arc::new(filter.chunks),
+        user_scripts: Arc::new(user_scripts()),
+    })
 }
 
 /// FNV-1a over the concatenated source lists — the cache version tag.
@@ -341,41 +333,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn user_scripts_are_present_and_non_empty() {
-        let scripts = user_scripts();
-        assert!(!scripts.is_empty(), "expected at least one user script");
-        for (i, s) in scripts.iter().enumerate() {
-            assert!(!s.trim().is_empty(), "user script {i} is empty");
-        }
-    }
-
-    #[test]
-    fn youtube_ad_skip_script_is_included_and_functional() {
-        let scripts = user_scripts();
-        let yt = scripts
-            .iter()
-            .find(|s| s.contains("ytp-ad"))
-            .expect("a YouTube ad-skip script referencing ytp-ad");
-
-        assert!(!yt.trim().is_empty(), "YouTube script is empty");
-        // References the skip logic the content filter can't express.
-        assert!(yt.contains("ytp-ad-skip-button"), "no skip-button click");
-        assert!(
-            yt.to_lowercase().contains("skip"),
-            "no skip logic in YouTube script"
-        );
-        // Detects an ad in progress and fast-forwards past it.
-        assert!(yt.contains("ad-showing"), "no ad-in-progress detection");
-        assert!(yt.contains("currentTime"), "no fast-forward seek");
-        // Survives SPA navigation.
-        assert!(
-            yt.contains("MutationObserver") && yt.contains("setInterval"),
-            "no SPA-navigation resilience",
-        );
-    }
-
-    #[test]
-    fn filter_list_set_covers_the_expected_sources() {
+    fn list_set_is_the_webkit_clean_seven() {
         let names: Vec<&str> = LISTS.iter().map(|(n, _)| *n).collect();
         for expected in [
             "easylist.txt",
@@ -385,14 +343,40 @@ mod tests {
             "ublock-privacy.txt",
             "ublock-badware.txt",
             "ublock-resource-abuse.txt",
-            "ublock-quick-fixes.txt",
-            "adguard-base.txt",
         ] {
             assert!(names.contains(&expected), "missing filter list {expected}");
         }
-        // Every entry points at an https raw source.
+        // The two page-blanking lists must stay excluded.
+        assert!(!names.contains(&"ublock-quick-fixes.txt"));
+        assert!(!names.contains(&"adguard-base.txt"));
         for (_, url) in LISTS {
             assert!(url.starts_with("https://"), "non-https list URL: {url}");
         }
+    }
+
+    #[test]
+    fn user_scripts_present_and_youtube_functional() {
+        let scripts = user_scripts();
+        assert!(!scripts.is_empty());
+        let yt = scripts
+            .iter()
+            .find(|s| s.contains("ytp-ad"))
+            .expect("a YouTube ad-skip script");
+        assert!(yt.contains("ytp-ad-skip-button"), "no skip-button click");
+        assert!(yt.contains("ad-showing"), "no ad-in-progress detection");
+        assert!(yt.contains("currentTime"), "no fast-forward seek");
+        assert!(
+            yt.contains("MutationObserver") && yt.contains("setInterval"),
+            "no SPA-navigation resilience"
+        );
+    }
+
+    #[test]
+    fn source_version_is_stable_and_order_sensitive() {
+        let a = source_version(&["hello".into(), "world".into()]);
+        let b = source_version(&["hello".into(), "world".into()]);
+        let c = source_version(&["world".into(), "hello".into()]);
+        assert_eq!(a, b);
+        assert_ne!(a, c);
     }
 }

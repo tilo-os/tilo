@@ -22,6 +22,9 @@ pub mod profile;
 #[cfg(feature = "webview-adblock")]
 pub mod adblock;
 
+#[cfg(feature = "webview-adblock")]
+pub mod adblock_service;
+
 #[cfg(feature = "webview-wpe")]
 pub mod wpe;
 
@@ -148,6 +151,14 @@ pub enum WebViewCommand {
     /// express, e.g. skipping YouTube video ads. Run at document-start in
     /// all frames.
     SetUserScripts(Arc<Vec<String>>),
+    /// Turn the WebView's built-in ad blocking on or off. This is the
+    /// high-level, per-WebView toggle: the engine owns the whole lifecycle
+    /// (kick the shared filter service, install the compiled content
+    /// filters + user scripts once ready, clear them when turned off) and
+    /// is idempotent, so the widget can re-assert the desired state every
+    /// frame. Engines without content filtering ignore it. Requires the
+    /// `webview-adblock` feature to have any effect.
+    SetAdBlocking(bool),
     /// Clear all persistent website data (cookies, caches, storage,
     /// service workers). Backends without a data store ignore this.
     ClearWebsiteData,

@@ -79,14 +79,14 @@ fn main() {
     match mode.as_str() {
         "filter" | "both" => {
             if max_chunks == usize::MAX {
-                println!("installing content filter (all chunks)…");
-                browser::blocker::spawn_filter_loader(engine.clone());
+                println!("enabling ad blocking (real per-WebView SetAdBlocking path)…");
+                engine.send(WebViewCommand::SetAdBlocking(true));
             } else {
                 println!("installing content filter (first {max_chunks} chunks)…");
                 // REPRO_LISTS=easylist,easyprivacy restricts to those lists
                 // (name prefix match); default = all cached lists.
                 let want = std::env::var("REPRO_LISTS").unwrap_or_default();
-                let dir = dirs::cache_dir().unwrap().join("qos-browser").join("filters");
+                let dir = dirs::cache_dir().unwrap().join("qos-webview").join("filters");
                 let texts: Vec<String> = std::fs::read_dir(&dir)
                     .unwrap()
                     .flatten()
@@ -121,7 +121,9 @@ fn main() {
     }
     if mode == "scripts" || mode == "both" {
         println!("installing user scripts…");
-        engine.send(WebViewCommand::SetUserScripts(Arc::new(browser::blocker::user_scripts())));
+        engine.send(WebViewCommand::SetUserScripts(Arc::new(
+            ui::webview::adblock_service::user_scripts(),
+        )));
     }
 
     // Wait past the async fetch + compile + install (~5–15s).
@@ -169,7 +171,7 @@ fn main() {
 /// stylesheets), which is how a generic list can kill a page's own assets.
 fn analyze() {
     let want = std::env::var("REPRO_LISTS").unwrap_or_default();
-    let dir = dirs::cache_dir().unwrap().join("qos-browser").join("filters");
+    let dir = dirs::cache_dir().unwrap().join("qos-webview").join("filters");
     let mut texts = Vec::new();
     let mut names = Vec::new();
     for e in std::fs::read_dir(&dir).unwrap().flatten() {

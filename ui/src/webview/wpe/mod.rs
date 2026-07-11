@@ -193,6 +193,13 @@ struct EngineState {
     pending_nav: Option<String>,
     /// Fallback deadline: load `pending_nav` even without a Resize.
     nav_deadline: Option<std::time::Instant>,
+    /// Whether the app wants built-in ad blocking on (via `SetAdBlocking`).
+    /// The install lifecycle is reconciled in the drain loop against the
+    /// shared filter service.
+    adblock_desired: bool,
+    /// Version of the ad-filter set currently installed (`None` = none).
+    /// Guards against re-installing the same compiled filters every frame.
+    adblock_installed_version: Option<u64>,
     /// EGL/dmabuf export state — `Some` only on the zero-copy path
     /// (`QOS_WEBVIEW_DMABUF=1`); `None` uses the SHM copy path.
     egl: Option<egl::EglExport>,
@@ -254,6 +261,8 @@ fn engine_thread(
             first_resize_seen: false,
             pending_nav: None,
             nav_deadline: None,
+            adblock_desired: false,
+            adblock_installed_version: None,
             egl,
         }));
         let state_ptr = state as *mut EngineState as *mut c_void;
@@ -346,7 +355,7 @@ fn filter_store_dir() -> std::path::PathBuf {
         .map(std::path::PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".cache")))
         .unwrap_or_else(std::env::temp_dir);
-    base.join("qos-browser").join("filter-store")
+    base.join("qos-webview").join("filter-store")
 }
 
 unsafe fn connect(
@@ -384,6 +393,83 @@ fn load_uri(state: &mut EngineState, uri: &str) {
     state.ua_reload_pending = false;
     if let Ok(c) = CString::new(uri) {
         unsafe { ffi::webkit_web_view_load_uri(state.view, c.as_ptr()) };
+    }
+}
+
+/// Replace all content filters with the given chunked ad-filter set (empty
+/// `chunks` just clears them). Shared by the explicit `SetContentFilters`
+/// command and the `SetAdBlocking` reconcile.
+///
+/// Always `save` (compile fresh) rather than loading a cached
+/// WKContentRuleList: a loaded (rather than freshly compiled) filter
+/// reproducibly blanked whole pages a few seconds after load. `version`
+/// only keeps the on-disk id stable across launches.
+fn install_content_filters(state: &mut EngineState, version: u64, chunks: &[Arc<String>]) {
+    let sptr = state as *mut EngineState as *mut c_void;
+    unsafe {
+        let ucm = ffi::webkit_web_view_get_user_content_manager(state.view);
+        ffi::webkit_user_content_manager_remove_all_filters(ucm);
+        for (i, json) in chunks.iter().enumerate() {
+            let Ok(id) = CString::new(format!("qos-adblock-{version:016x}-{i}")) else {
+                continue;
+            };
+            let bytes = ffi::g_bytes_new(json.as_ptr() as *const c_void, json.len());
+            ffi::webkit_user_content_filter_store_save(
+                state.filter_store,
+                id.as_ptr(),
+                bytes,
+                std::ptr::null_mut(),
+                on_filter_saved,
+                sptr,
+            );
+            ffi::g_bytes_unref(bytes);
+        }
+    }
+}
+
+/// Replace all user scripts with the given set (empty just clears them),
+/// injected at document-start in all frames.
+fn install_user_scripts(state: &mut EngineState, scripts: &[String]) {
+    unsafe {
+        let ucm = ffi::webkit_web_view_get_user_content_manager(state.view);
+        ffi::webkit_user_content_manager_remove_all_scripts(ucm);
+        for src in scripts.iter() {
+            if let Ok(c) = CString::new(src.as_str()) {
+                let script = ffi::webkit_user_script_new(
+                    c.as_ptr(),
+                    ffi::WEBKIT_USER_CONTENT_INJECT_ALL_FRAMES,
+                    ffi::WEBKIT_USER_SCRIPT_INJECT_AT_DOCUMENT_START,
+                    std::ptr::null(),
+                    std::ptr::null(),
+                );
+                if !script.is_null() {
+                    ffi::webkit_user_content_manager_add_script(ucm, script);
+                    ffi::webkit_user_script_unref(script);
+                }
+            }
+        }
+    }
+}
+
+/// Reconcile the installed ad-filter state against `adblock_desired` and
+/// the shared filter service. Idempotent + cheap when nothing changed, so
+/// it can run every drain tick.
+#[cfg(feature = "webview-adblock")]
+fn reconcile_adblock(state: &mut EngineState) {
+    if state.adblock_desired {
+        if let Some(f) = crate::webview::adblock_service::service().filters() {
+            if state.adblock_installed_version != Some(f.version) {
+                install_content_filters(state, f.version, &f.chunks);
+                install_user_scripts(state, &f.user_scripts);
+                state.adblock_installed_version = Some(f.version);
+                tracing::info!(version = f.version, "ad blocking installed");
+            }
+        }
+    } else if state.adblock_installed_version.is_some() {
+        install_content_filters(state, 0, &[]);
+        install_user_scripts(state, &[]);
+        state.adblock_installed_version = None;
+        tracing::info!("ad blocking cleared");
     }
 }
 
@@ -649,6 +735,9 @@ extern "C" fn on_drain_commands(data: *mut c_void) -> ffi::gboolean {
             }
         }
     }
+    // Install / clear ad blocking once the shared filter service is ready.
+    #[cfg(feature = "webview-adblock")]
+    reconcile_adblock(state);
     1 // keep the source
 }
 
@@ -829,50 +918,24 @@ fn dispatch(state: &mut EngineState, cmd: WebViewCommand) {
                 ffi::webkit_user_content_manager_remove_all_filters(ucm);
             }
             WebViewCommand::SetContentFilters { version, chunks } => {
-                // Replace all filters, then compile+install each chunk fresh.
-                //
-                // We do NOT load a previously compiled filter back from the
-                // store: loading a cached WKContentRuleList (rather than
-                // compiling it this run) reproducibly blanked whole pages a
-                // few seconds after load — the compiled-fresh filter is fine,
-                // the loaded one is not. So always `save` (compile). `version`
-                // only keeps the on-disk id stable across launches.
-                let ucm = ffi::webkit_web_view_get_user_content_manager(state.view);
-                ffi::webkit_user_content_manager_remove_all_filters(ucm);
-                for (i, json) in chunks.iter().enumerate() {
-                    let Ok(id) = CString::new(format!("qos-adblock-{version:016x}-{i}")) else {
-                        continue;
-                    };
-                    let bytes = ffi::g_bytes_new(json.as_ptr() as *const c_void, json.len());
-                    ffi::webkit_user_content_filter_store_save(
-                        state.filter_store,
-                        id.as_ptr(),
-                        bytes,
-                        std::ptr::null_mut(),
-                        on_filter_saved,
-                        state as *mut EngineState as *mut c_void,
-                    );
-                    ffi::g_bytes_unref(bytes);
-                }
+                install_content_filters(state, version, &chunks);
             }
             WebViewCommand::SetUserScripts(scripts) => {
-                let ucm = ffi::webkit_web_view_get_user_content_manager(state.view);
-                ffi::webkit_user_content_manager_remove_all_scripts(ucm);
-                for src in scripts.iter() {
-                    if let Ok(c) = CString::new(src.as_str()) {
-                        let script = ffi::webkit_user_script_new(
-                            c.as_ptr(),
-                            ffi::WEBKIT_USER_CONTENT_INJECT_ALL_FRAMES,
-                            ffi::WEBKIT_USER_SCRIPT_INJECT_AT_DOCUMENT_START,
-                            std::ptr::null(),
-                            std::ptr::null(),
-                        );
-                        if !script.is_null() {
-                            ffi::webkit_user_content_manager_add_script(ucm, script);
-                            ffi::webkit_user_script_unref(script);
-                        }
+                install_user_scripts(state, &scripts);
+            }
+            WebViewCommand::SetAdBlocking(on) => {
+                #[cfg(feature = "webview-adblock")]
+                {
+                    state.adblock_desired = on;
+                    // Kick the shared loader eagerly so the compile overlaps
+                    // the current page load; the install is reconciled in the
+                    // drain loop once the filters are ready.
+                    if on {
+                        let _ = crate::webview::adblock_service::service();
                     }
                 }
+                #[cfg(not(feature = "webview-adblock"))]
+                let _ = on;
             }
             WebViewCommand::ClearWebsiteData => {
                 let session = ffi::webkit_web_view_get_network_session(state.view);

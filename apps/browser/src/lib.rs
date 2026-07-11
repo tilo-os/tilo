@@ -3,13 +3,13 @@
 //! the whole chrome without booting an event loop.
 //!
 //! The browser is deliberately small: it is chrome (address bar,
-//! navigation, progress, filter loading) around the `ui` toolkit's
-//! `WebView` widget. The web engine itself lives behind
-//! `ui::webview::WebViewEngine`; there is no tab UI — tabbing is the
+//! navigation, progress) around the `ui` toolkit's `WebView` widget. The
+//! web engine itself lives behind `ui::webview::WebViewEngine`; ad
+//! blocking is a per-WebView toggle owned by the toolkit
+//! (`WebView::with_ad_blocking`). There is no tab UI — tabbing is the
 //! compositor's WindowGroup frame primitive.
 
 pub mod address_overlay;
-pub mod blocker;
 pub mod browser_widget;
 /// Zero-copy WebView compositor — needs the WPE engine's dmabuf import.
 #[cfg(feature = "wpe")]

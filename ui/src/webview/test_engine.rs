@@ -160,6 +160,7 @@ impl WebViewEngine for TestEngine {
             | WebViewCommand::SetContentFilter(_)
             | WebViewCommand::SetContentFilters { .. }
             | WebViewCommand::SetUserScripts(_)
+            | WebViewCommand::SetAdBlocking(_)
             | WebViewCommand::ClearWebsiteData => {}
         }
     }

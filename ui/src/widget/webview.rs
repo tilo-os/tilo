@@ -50,6 +50,10 @@ pub struct WebView {
     cached_image: Option<PenikoImage>,
     cached_key: (usize, u32, u32),
     test_id: String,
+    /// Whether this WebView's built-in ad blocking is on. Re-asserted to
+    /// the engine every `sync` (the engine owns the install lifecycle and
+    /// dedups), so it survives the widget being rebuilt each layout pass.
+    ad_blocking: bool,
 }
 
 impl WebView {
@@ -64,6 +68,7 @@ impl WebView {
             cached_image: None,
             cached_key: (0, 0, 0),
             test_id: "webview".to_string(),
+            ad_blocking: false,
         }
     }
 
@@ -72,6 +77,24 @@ impl WebView {
     pub fn with_test_id(mut self, id: &str) -> Self {
         self.test_id = id.to_string();
         self
+    }
+
+    /// Enable or disable this WebView's built-in ad blocking (default
+    /// off). Per instance — two WebViews in one app can differ. When on,
+    /// the engine lazily fetches + compiles the shared filter set once and
+    /// installs its content filters + scriptlet-style user scripts; when
+    /// off it clears them. Needs the engine's `webview-adblock` feature to
+    /// have a real effect (the deterministic test engine ignores it).
+    pub fn with_ad_blocking(mut self, enabled: bool) -> Self {
+        self.ad_blocking = enabled;
+        self
+    }
+
+    /// Toggle ad blocking at runtime. See [`with_ad_blocking`].
+    ///
+    /// [`with_ad_blocking`]: Self::with_ad_blocking
+    pub fn set_ad_blocking(&mut self, enabled: bool) {
+        self.ad_blocking = enabled;
     }
 
     /// Engine-space (physical, view-relative) coordinates for a
@@ -129,7 +152,12 @@ impl WebView {
 }
 
 impl Widget for WebView {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
+    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {
+        // Re-assert the desired ad-blocking state. The engine owns the
+        // install lifecycle and dedups, so re-sending each frame is cheap
+        // and lets a transient (rebuilt-per-layout) widget still drive it.
+        self.engine.send(WebViewCommand::SetAdBlocking(self.ad_blocking));
+    }
 
     fn build_layout(
         &mut self,

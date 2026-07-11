@@ -15,10 +15,11 @@ edition = "2024"
 default = ["legacy-broker"]
 legacy-broker = []
 # Brave/EasyList filter-list → WebKit content-blocker JSON compiler
-# (`webview::adblock`). Off by default: only the browser app (and any
-# other app embedding a WebView with built-in blocking) pays for the
-# adblock-rust dependency.
-webview-adblock = ["dep:adblock"]
+# (`webview::adblock`) plus the shared filter-fetch/compile service
+# (`webview::adblock_service`) behind the per-WebView `set_ad_blocking`
+# toggle. Off by default: only apps embedding a WebView with built-in
+# blocking pay for adblock-rust + the HTTP fetch (`reqwest`).
+webview-adblock = ["dep:adblock", "dep:reqwest", "dep:dirs"]
 # WPE WebKit engine backend for the WebView widget (`webview::wpe`).
 # Links the WPE stack (not packaged by Fedora — build it with
 # os/dev/build-wpe.sh and export PKG_CONFIG_PATH/LD_LIBRARY_PATH to its
@@ -41,6 +42,10 @@ qos-startup-metrics = { path = "../crates/system/qos-startup-metrics" }
 # EasyList→WebKit-content-blocker conversion; blocking then runs inside
 # WebKit's network process, not in Rust.
 adblock = { version = "0.12", optional = true, features = ["content-blocking"] }
+# HTTP fetch + cache-dir lookup for the shared ad-filter service
+# (`webview::adblock_service`); both gated behind `webview-adblock`.
+reqwest = { version = "0.12", optional = true, features = ["blocking"] }
+dirs = { version = "6.0.0", optional = true }
 # runtime-collab is the qOS collab-broker Cap'n Proto SDK.
 # `CollaborationManager` now delegates to it via a shovel thread; the
 # legacy Unix-socket JSON dialect stays available behind the

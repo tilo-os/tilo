@@ -220,7 +220,11 @@ impl BrowserWidget {
         let content: Box<dyn Widget> = if self.show_settings {
             Box::new(SettingsPane::with_settings(self.settings.clone()))
         } else {
-            Box::new(WebView::new(self.engine.clone()).with_test_id("browser.surface"))
+            Box::new(
+                WebView::new(self.engine.clone())
+                    .with_ad_blocking(self.settings.adblock_enabled)
+                    .with_test_id("browser.surface"),
+            )
         };
         column = column.push(content);
         Box::new(column)
@@ -339,18 +343,12 @@ impl BrowserWidget {
         }
     }
 
-    /// Enable or disable ad blocking on the engine (filter + scriptlets).
+    /// Enable or disable ad blocking. The WebView widget re-asserts this
+    /// each frame from `settings.adblock_enabled`; this direct send makes a
+    /// settings-pane toggle take effect immediately, before the pane closes
+    /// and the WebView re-appears in the tree.
     fn set_adblock(&self, enabled: bool) {
-        if enabled {
-            crate::blocker::spawn_filter_loader(self.engine.clone());
-            self.engine.send(WebViewCommand::SetUserScripts(std::sync::Arc::new(
-                crate::blocker::user_scripts(),
-            )));
-        } else {
-            self.engine.send(WebViewCommand::SetContentFilter(None));
-            self.engine
-                .send(WebViewCommand::SetUserScripts(std::sync::Arc::new(Vec::new())));
-        }
+        self.engine.send(WebViewCommand::SetAdBlocking(enabled));
     }
 
     /// Poll the settings pane's one-shot + level intents and act on them.
@@ -496,14 +494,10 @@ impl Widget for BrowserWidget {
                     self.history.clear();
                     let _ = self.history.save();
                 }
-                if self.settings.adblock_enabled {
-                    crate::blocker::spawn_filter_loader(self.engine.clone());
-                    // Scriptlet-style blocking (YouTube ad-skip etc.) the
-                    // declarative content filter can't express.
-                    self.engine.send(WebViewCommand::SetUserScripts(std::sync::Arc::new(
-                        crate::blocker::user_scripts(),
-                    )));
-                }
+                // Ad blocking is driven by the WebView widget
+                // (`with_ad_blocking`), but send it once here too so it's
+                // active from the very first load, before the first sync.
+                self.set_adblock(self.settings.adblock_enabled);
                 self.engine
                     .send(WebViewCommand::Navigate(self.initial_url.to_string()));
             }
