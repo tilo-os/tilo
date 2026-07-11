@@ -45,6 +45,7 @@ use std::time::SystemTime;
 
 use thiserror::Error;
 
+use crate::caps::{CapDecision, CapOverride, ResourceScope, decide, verb_for_opclass};
 use crate::channel::ArtifactId;
 use crate::compaction::{CompactionCheckpoint, CompactionError, hash_op_prefix};
 use crate::crypto::{Ed25519PublicKey, VerifyError, verify_event, verify_op};
@@ -108,6 +109,15 @@ pub enum ValidationError {
     /// (role, artifact-kind, op-class) triple.
     #[error("role does not permit this op class on this artifact kind")]
     RoleForbidsOpClass,
+
+    /// Step 5a: the coarse role table would have permitted this op, but
+    /// a per-app / per-resource capability override
+    /// ([`crate::caps::CapOverride`]) narrowed the actor's authority
+    /// within the matched scope below what the op requires. This is the
+    /// finer capability layer biting: e.g. an Editor whose role permits
+    /// `Splice` everywhere is capped to comment-only inside one app.
+    #[error("capability override denies this op class within its scope")]
+    CapabilityDenied,
 
     /// Step 5 sub-case: the artifact referenced by `op.artifact`
     /// is unknown to the validator. Without an artifact kind the
@@ -229,6 +239,21 @@ pub struct ChannelState {
     /// step-5 role-table query.
     pub artifacts: HashMap<ArtifactId, ArtifactKind>,
 
+    /// The app that owns each artifact, if known. Feeds the
+    /// [`crate::caps::ResourceScope`] the step-5a capability check
+    /// builds, so an `App`-scoped override can match an op by the app
+    /// its artifact belongs to. Artifacts absent from this map have no
+    /// app scope (only `Workspace` / `ResourceType` / `ResourceInstance`
+    /// overrides can bite them).
+    pub artifact_apps: HashMap<ArtifactId, String>,
+
+    /// The channel's `(subject × scope × verb)` capability overrides —
+    /// per-app / per-resource-type / per-instance restrictions and
+    /// per-user shares. Empty by default (the coarse role table alone
+    /// decides). Consulted in step 5a after `role_permits` passes; see
+    /// [`crate::caps::decide`].
+    pub cap_overrides: Vec<CapOverride>,
+
     /// Per-artifact classification override. Composed with the
     /// channel-level floor via `max(channel_min, artifact_classification)`.
     pub artifact_classifications: HashMap<ArtifactId, Clearance>,
@@ -293,6 +318,8 @@ impl Default for ChannelState {
             identity_attestations: HashMap::new(),
             accepted_trust_roots: Vec::new(),
             artifacts: HashMap::new(),
+            artifact_apps: HashMap::new(),
+            cap_overrides: Vec::new(),
             artifact_classifications: HashMap::new(),
             channel_min_clearance: None,
             last_seq_per_author: HashMap::new(),
@@ -329,6 +356,34 @@ impl ChannelState {
             self.op_log.pop_front();
         }
         self.op_log.push_back(op);
+    }
+
+    /// The host's op-time enforcement gate: validate an inbound op and,
+    /// **only if** it passes, apply it to the op log that fan-out reads
+    /// from.
+    ///
+    /// This is the real "apply-and-relay" path a host runs for every
+    /// inbound signed op (see the coherence doc §2: "the host validates
+    /// each incoming op against the actor's role + per-app caps before
+    /// applying/relaying"). It is not a test helper — it is the single
+    /// entry point that couples the [`validate_inbound_op`] gate to the
+    /// [`ChannelState::record_validated_op`] apply step, so the "reject
+    /// at validation ⇒ not applied, not relayed" invariant holds by
+    /// construction:
+    ///
+    /// - On `Ok`, the op is pushed to `op_log`. A relaying host fans out
+    ///   exactly the ops in that log; recording is therefore the apply
+    ///   **and** the pre-condition for relay.
+    /// - On `Err`, the op is **not** recorded and `last_seq_per_author`
+    ///   is left untouched by [`validate_inbound_op`], so there is
+    ///   nothing to apply and nothing to relay.
+    ///
+    /// Returns the same [`ValidationError`] the validator would, so a
+    /// caller can audit-log the precise rejection reason.
+    pub fn apply_and_relay(&mut self, op: &SignedOp) -> Result<(), ValidationError> {
+        validate_inbound_op(op, self)?;
+        self.record_validated_op(op.clone());
+        Ok(())
     }
 
     /// Phase 6: apply a host-emitted compaction checkpoint to this
@@ -511,6 +566,11 @@ impl ChannelState {
 /// 3. Verify the op's signature against the author's public key.
 /// 4. `op.author == attestation.subject`.
 /// 5. `role_permits(role, kind, op_class)` for the resolved triple.
+/// 5a. **Capability overrides:** consult the `(subject × scope × verb)`
+///     overrides on top of the role table — an app / resource-type /
+///     instance `Restrict` can narrow the actor below the role baseline,
+///     a per-user `Grant` (share) can extend it. See
+///     [`crate::caps::decide`]. Fail-closed.
 /// 5b. **Phase 9, Redact-specific:** if `op.op_class == Redact`,
 ///     parse the payload as a `RedactRequest`; reject recursive
 ///     redactions (target id resolves to another Redact in the
@@ -572,8 +632,32 @@ pub fn validate_inbound_op(
         .get(&op.artifact)
         .copied()
         .ok_or(ValidationError::UnknownArtifact(op.artifact))?;
-    if !role_permits(ra.role, artifact_kind, op.op_class) {
-        return Err(ValidationError::RoleForbidsOpClass);
+    let base_role_allows = role_permits(ra.role, artifact_kind, op.op_class);
+
+    // Step 5a: consult the `(subject × scope × verb)` capability
+    // overrides on top of the coarse role table. `role_permits` is the
+    // base cap-bundle; the overrides narrow (an app-scoped `Restrict`)
+    // or extend (a per-user `Grant` / per-resource share) that base.
+    // Fail-closed: an op with neither base authority nor a matching
+    // grant is denied. The two failure variants distinguish a pure role
+    // denial (`RoleForbidsOpClass`, preserving the coarse table's
+    // behaviour) from an override narrowing (`CapabilityDenied`).
+    let ctx = ResourceScope {
+        app: channel_state.artifact_apps.get(&op.artifact).cloned(),
+        kind: artifact_kind,
+        instance: op.artifact,
+    };
+    match decide(
+        base_role_allows,
+        verb_for_opclass(op.op_class),
+        ra.role,
+        op.author,
+        &ctx,
+        &channel_state.cap_overrides,
+    ) {
+        CapDecision::Allow => {}
+        CapDecision::DeniedByRole => return Err(ValidationError::RoleForbidsOpClass),
+        CapDecision::DeniedByRestriction => return Err(ValidationError::CapabilityDenied),
     }
 
     // Step 5b (Phase 9): if this is a Redact op, parse the payload and
