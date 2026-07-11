@@ -1,0 +1,50 @@
+[Unit]
+Description=qOS app registry — self-hostable HTTP server for .qpkg metadata
+Documentation=file:///usr/share/doc/qos-registry/registry.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=qos-registry
+Group=qos-registry
+ExecStart=/usr/libexec/qos-registry-server serve --port 8443 --bind 127.0.0.1
+Environment=RUST_LOG=info
+Environment=XDG_STATE_HOME=/var/lib
+
+# Hardening. The registry serves public metadata + accepts signed
+# POSTs; nothing here needs privileges.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectHostname=yes
+ProtectClock=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+RemoveIPC=yes
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+# Where the data lives — persistent across restarts, owned by the
+# service user. `systemd-tmpfiles` is expected to create it.
+ReadWritePaths=/var/lib/qos-registry
+StateDirectory=qos-registry
+StateDirectoryMode=0750
+
+# Restart policy — a public-facing metadata server should self-heal.
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target

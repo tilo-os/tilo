@@ -1,0 +1,460 @@
+//! Data model shared across the store.
+//!
+//! Everything the UI renders is a [`StoreItem`] — one uniform shape whether
+//! the item came from a qOS registry or from Flathub. That merge happens in
+//! [`crate::sources`]; downstream (widget, filter, search) only ever sees
+//! [`StoreItem`].
+//!
+//! Kept deliberately serde-friendly so tests can round-trip fixtures through
+//! JSON without importing the transport crates. The registry-facing types
+//! (`RegistryEntry`, `RegistryVersion`) live in `registry-types`; we do
+//! **not** re-export them from here because the store's UI needs to unify
+//! them with Flathub records anyway, and using our own uniform shape keeps
+//! that seam explicit.
+
+use serde::{Deserialize, Serialize};
+
+/// Which upstream feed a [`StoreItem`] came from.
+///
+/// Encoded in the item so the widget can pick the right action-button
+/// label + colour (Add vs Install) without touching the source-of-truth.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum StoreSource {
+    /// A qOS registry entry. The tuple carries the human-readable
+    /// registry name so the detail sheet can say "from qOS main".
+    Qos { registry_name: String },
+    /// A Flathub-hosted Flatpak app.
+    Flathub,
+}
+
+impl StoreSource {
+    /// Short label used on filter chips.
+    pub fn short_label(&self) -> &'static str {
+        match self {
+            StoreSource::Qos { .. } => "qOS",
+            StoreSource::Flathub => "Flatpak",
+        }
+    }
+}
+
+/// Whether the item is already on the machine, and if so at what
+/// version. The store cross-references its item feed against the
+/// on-disk install registry when producing this.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum InstalledState {
+    /// Not installed.
+    Not,
+    /// Installed / cached. `version` is what's on-disk; `available`
+    /// is the newest version the source knows about (which drives
+    /// the "Update available" indicator). `pinned` is the user's
+    /// "mark installed" flag — a pinned app is kept, ranked first,
+    /// and never evicted under size pressure.
+    Installed {
+        version: String,
+        available: String,
+        #[serde(default)]
+        pinned: bool,
+    },
+}
+
+impl InstalledState {
+    /// True if the source's newest version differs from what's installed.
+    pub fn update_available(&self) -> bool {
+        match self {
+            InstalledState::Not => false,
+            InstalledState::Installed { version, available, .. } => version != available,
+        }
+    }
+
+    /// Whether this app is present (cached / installed) at all.
+    pub fn is_installed(&self) -> bool {
+        matches!(self, InstalledState::Installed { .. })
+    }
+
+    /// Whether the user has pinned ("marked installed") this app.
+    pub fn is_pinned(&self) -> bool {
+        matches!(self, InstalledState::Installed { pinned: true, .. })
+    }
+}
+
+/// Which primary action the card's button will invoke.
+///
+/// The button label + colour derive from this, so the caller can render
+/// with a single `match` and stay in step with the underlying dispatcher
+/// in [`crate::actions`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ActionKind {
+    /// qOS registry → **Open**. Fetch-on-demand (if not already
+    /// cached) + launch. The qOS path never shows a separate
+    /// "Install" step — opening an app *is* adding it.
+    Open,
+    /// qOS registry, installed → **Remove**.
+    Remove,
+    /// qOS registry, installed but older version available → **Update**.
+    Update,
+    /// qOS registry, cached but not pinned → **Mark installed** (pin).
+    MarkInstalled,
+    /// qOS registry, pinned → **Installed** (click unpins).
+    Unmark,
+    /// Flatpak, not installed → **Install** (spawns `flatpak install`).
+    FlatpakInstall,
+    /// Flatpak, installed → **Remove** (spawns `flatpak uninstall`).
+    FlatpakRemove,
+    /// Flatpak but the host has no `flatpak` binary — offer a link to
+    /// Flathub's install docs instead.
+    NeedsFlatpakHost,
+}
+
+impl ActionKind {
+    /// Label shown on the card's action button.
+    pub fn label(self) -> &'static str {
+        match self {
+            ActionKind::Open => "Open",
+            ActionKind::Remove => "Remove",
+            ActionKind::Update => "Update",
+            ActionKind::MarkInstalled => "Mark installed",
+            ActionKind::Unmark => "Installed",
+            ActionKind::FlatpakInstall => "Install",
+            ActionKind::FlatpakRemove => "Remove",
+            ActionKind::NeedsFlatpakHost => "Install flatpak first",
+        }
+    }
+}
+
+/// One version the source knows about.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StoreItemVersion {
+    pub version: String,
+    /// Unix seconds. `0` means the source didn't publish a release date.
+    pub released_at_unix: u64,
+    /// Download URL — a `.qpkg` for qOS entries, `None` for Flatpak
+    /// (Flatpak installs go through the `flatpak` CLI, not a URL).
+    pub download_url: Option<String>,
+    /// BLAKE3 hex root hash of the download. Only meaningful for qOS
+    /// entries.
+    pub root_hash_hex: Option<String>,
+    /// Byte size. `0` when unknown.
+    pub size_bytes: u64,
+}
+
+/// Unified store item: what every card renders from.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StoreItem {
+    /// Stable identifier. For qOS this is the reverse-DNS package id
+    /// (`dev.qos.notes`). For Flathub it's the app-id
+    /// (`org.gnome.Calculator`).
+    pub id: String,
+    /// Human-readable name shown in the card title.
+    pub name: String,
+    /// One-line description under the name.
+    pub description: String,
+    /// Free-form categories used for the derived category chip row.
+    pub categories: Vec<String>,
+    /// Icon URL, if the source publishes one. The store may leave this
+    /// unfetched at first render and just show a placeholder — decoding
+    /// remote images is a follow-up.
+    pub icon_url: Option<String>,
+    /// Project homepage URL, if known.
+    pub homepage_url: Option<String>,
+    /// Source-code URL, if the item exposes it. qOS entries do; most
+    /// Flathub apps don't via the v2 API.
+    pub source_url: Option<String>,
+    /// Where this came from.
+    pub source: StoreSource,
+    /// Newest → oldest.
+    pub versions: Vec<StoreItemVersion>,
+    /// Publisher pubkey (hex) for qOS entries. `None` for Flatpak.
+    pub publisher_pubkey_hex: Option<String>,
+    /// Cross-referenced install state at merge time.
+    pub installed: InstalledState,
+}
+
+impl StoreItem {
+    /// The version the UI advertises as "latest" — the first entry, or
+    /// an empty string when the source didn't ship any versions.
+    pub fn latest_version(&self) -> &str {
+        self.versions
+            .first()
+            .map(|v| v.version.as_str())
+            .unwrap_or("")
+    }
+
+    /// Which primary action the card should offer this frame.
+    ///
+    /// For qOS apps the primary is always **Open** — it fetches the
+    /// package on demand the first time and launches it every time
+    /// (never a distinct "Install" step). **Update** takes its place
+    /// when a newer version is available. Flatpak apps keep the
+    /// legacy Install / Remove semantics.
+    pub fn action_kind(&self, flatpak_available: bool) -> ActionKind {
+        match (&self.source, &self.installed, flatpak_available) {
+            (StoreSource::Qos { .. }, InstalledState::Not, _) => ActionKind::Open,
+            (StoreSource::Qos { .. }, InstalledState::Installed { .. }, _) => {
+                if self.installed.update_available() {
+                    ActionKind::Update
+                } else {
+                    ActionKind::Open
+                }
+            }
+            (StoreSource::Flathub, _, false) => ActionKind::NeedsFlatpakHost,
+            (StoreSource::Flathub, InstalledState::Not, true) => ActionKind::FlatpakInstall,
+            (StoreSource::Flathub, InstalledState::Installed { .. }, true) => {
+                ActionKind::FlatpakRemove
+            }
+        }
+    }
+
+    /// The optional **pin** ("mark installed") toggle a qOS card
+    /// offers once the app is cached. `None` for apps that aren't
+    /// cached yet or for Flatpak apps (whose install *is* the pin).
+    pub fn pin_action(&self) -> Option<ActionKind> {
+        match (&self.source, &self.installed) {
+            (StoreSource::Qos { .. }, InstalledState::Installed { pinned, .. }) => {
+                Some(if *pinned {
+                    ActionKind::Unmark
+                } else {
+                    ActionKind::MarkInstalled
+                })
+            }
+            _ => None,
+        }
+    }
+
+    /// Whether a qOS card should offer a secondary **Remove**.
+    pub fn offers_remove(&self) -> bool {
+        matches!(
+            (&self.source, &self.installed),
+            (StoreSource::Qos { .. }, InstalledState::Installed { .. })
+        )
+    }
+
+    /// Ranking rank: pinned first, then merely-cached, then the
+    /// rest. Higher sorts earlier. Drives the "mark installed →
+    /// rank first" behaviour.
+    pub fn install_rank(&self) -> u8 {
+        if self.installed.is_pinned() {
+            2
+        } else if self.installed.is_installed() {
+            1
+        } else {
+            0
+        }
+    }
+
+    /// Case-insensitive substring match against name + description.
+    /// Empty needle matches everything (so the search bar can start empty).
+    pub fn matches_query(&self, needle: &str) -> bool {
+        let n = needle.trim().to_ascii_lowercase();
+        if n.is_empty() {
+            return true;
+        }
+        self.name.to_ascii_lowercase().contains(&n)
+            || self.description.to_ascii_lowercase().contains(&n)
+    }
+
+    /// Fuzzy rank — higher is better. Used to break ties in the item
+    /// list when a search is active. A hit in the name outranks a hit
+    /// in the description; an exact prefix outranks a mid-string hit.
+    pub fn fuzzy_score(&self, needle: &str) -> u32 {
+        let n = needle.trim().to_ascii_lowercase();
+        if n.is_empty() {
+            return 0;
+        }
+        let mut score = 0u32;
+        let name = self.name.to_ascii_lowercase();
+        let desc = self.description.to_ascii_lowercase();
+        if name.starts_with(&n) {
+            score += 100;
+        }
+        if let Some(idx) = name.find(&n) {
+            score += 50u32.saturating_sub(idx as u32);
+        }
+        if let Some(idx) = desc.find(&n) {
+            score += 10u32.saturating_sub((idx / 8) as u32);
+        }
+        score
+    }
+}
+
+/// Which source-side filter chip is active.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SourceFilter {
+    /// Show everything.
+    All,
+    /// Only qOS registry entries.
+    Qos,
+    /// Only Flatpak entries.
+    Flatpak,
+    /// Only installed items regardless of source.
+    Installed,
+}
+
+impl SourceFilter {
+    pub const ALL: &'static [SourceFilter] = &[
+        SourceFilter::All,
+        SourceFilter::Qos,
+        SourceFilter::Flatpak,
+        SourceFilter::Installed,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            SourceFilter::All => "All",
+            SourceFilter::Qos => "qOS",
+            SourceFilter::Flatpak => "Flatpak",
+            SourceFilter::Installed => "Installed",
+        }
+    }
+
+    /// Does an item pass this filter?
+    pub fn accepts(self, item: &StoreItem) -> bool {
+        match self {
+            SourceFilter::All => true,
+            SourceFilter::Qos => matches!(item.source, StoreSource::Qos { .. }),
+            SourceFilter::Flatpak => matches!(item.source, StoreSource::Flathub),
+            SourceFilter::Installed => !matches!(item.installed, InstalledState::Not),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn qos_item(name: &str, installed: InstalledState, latest: &str) -> StoreItem {
+        StoreItem {
+            id: format!("dev.qos.{}", name.to_ascii_lowercase()),
+            name: name.into(),
+            description: format!("Some {} app", name),
+            categories: vec!["Productivity".into()],
+            icon_url: None,
+            homepage_url: None,
+            source_url: None,
+            source: StoreSource::Qos { registry_name: "qOS main".into() },
+            versions: vec![StoreItemVersion {
+                version: latest.into(),
+                released_at_unix: 0,
+                download_url: Some("https://x/y.qpkg".into()),
+                root_hash_hex: Some("de".repeat(32)),
+                size_bytes: 100,
+            }],
+            publisher_pubkey_hex: Some("aa".repeat(32)),
+            installed,
+        }
+    }
+
+    fn flatpak_item(name: &str, installed: InstalledState) -> StoreItem {
+        StoreItem {
+            id: format!("org.example.{}", name),
+            name: name.into(),
+            description: format!("{} on Flathub", name),
+            categories: vec!["Games".into()],
+            icon_url: None,
+            homepage_url: None,
+            source_url: None,
+            source: StoreSource::Flathub,
+            versions: vec![StoreItemVersion {
+                version: "1.0".into(),
+                released_at_unix: 0,
+                download_url: None,
+                root_hash_hex: None,
+                size_bytes: 0,
+            }],
+            publisher_pubkey_hex: None,
+            installed,
+        }
+    }
+
+    fn qinstalled(version: &str, available: &str, pinned: bool) -> InstalledState {
+        InstalledState::Installed {
+            version: version.into(),
+            available: available.into(),
+            pinned,
+        }
+    }
+
+    #[test]
+    fn action_kind_reflects_source_and_install_state() {
+        // qOS not-installed → Open (fetch-on-demand + run).
+        let a = qos_item("Notes", InstalledState::Not, "0.1.0");
+        assert_eq!(a.action_kind(true), ActionKind::Open);
+        assert!(a.pin_action().is_none());
+
+        // qOS installed + up-to-date → still Open (relaunch), and it
+        // now offers the pin toggle + a secondary Remove.
+        let b = qos_item("Notes", qinstalled("0.1.0", "0.1.0", false), "0.1.0");
+        assert_eq!(b.action_kind(true), ActionKind::Open);
+        assert_eq!(b.pin_action(), Some(ActionKind::MarkInstalled));
+        assert!(b.offers_remove());
+
+        // qOS installed but newer available → Update.
+        let c = qos_item("Notes", qinstalled("0.1.0", "0.2.0", false), "0.2.0");
+        assert_eq!(c.action_kind(true), ActionKind::Update);
+
+        // qOS pinned → pin toggle flips to Unmark.
+        let p = qos_item("Notes", qinstalled("0.1.0", "0.1.0", true), "0.1.0");
+        assert_eq!(p.pin_action(), Some(ActionKind::Unmark));
+
+        let d = flatpak_item("Chess", InstalledState::Not);
+        assert_eq!(d.action_kind(true), ActionKind::FlatpakInstall);
+        assert_eq!(d.action_kind(false), ActionKind::NeedsFlatpakHost);
+        assert!(d.pin_action().is_none());
+
+        let e = flatpak_item("Chess", qinstalled("1.0", "1.0", false));
+        assert_eq!(e.action_kind(true), ActionKind::FlatpakRemove);
+    }
+
+    #[test]
+    fn install_rank_orders_pinned_first() {
+        let not = qos_item("A", InstalledState::Not, "1");
+        let cached = qos_item("B", qinstalled("1", "1", false), "1");
+        let pinned = qos_item("C", qinstalled("1", "1", true), "1");
+        assert!(pinned.install_rank() > cached.install_rank());
+        assert!(cached.install_rank() > not.install_rank());
+    }
+
+    #[test]
+    fn search_matches_name_and_description_case_insensitive() {
+        let n = qos_item("Notes", InstalledState::Not, "0.1.0");
+        assert!(n.matches_query(""));
+        assert!(n.matches_query("Notes"));
+        assert!(n.matches_query("notes"));
+        assert!(n.matches_query("some notes app"));
+        assert!(!n.matches_query("terminal"));
+    }
+
+    #[test]
+    fn fuzzy_score_prefers_name_prefix_hits() {
+        let mut n = qos_item("Notes", InstalledState::Not, "0.1.0");
+        n.description = "great little app".into();
+        let prefix = n.fuzzy_score("no");
+        let mid = n.fuzzy_score("les");
+        let desc = n.fuzzy_score("little");
+        assert!(prefix > mid, "prefix ({prefix}) should outrank mid-name ({mid})");
+        assert!(prefix > desc, "prefix ({prefix}) should outrank description ({desc})");
+    }
+
+    #[test]
+    fn source_filter_gates_items() {
+        let q = qos_item("A", InstalledState::Not, "1");
+        let f = flatpak_item("B", InstalledState::Not);
+        let installed_q = qos_item("C", qinstalled("1", "1", false), "1");
+        assert!(SourceFilter::All.accepts(&q));
+        assert!(SourceFilter::All.accepts(&f));
+        assert!(SourceFilter::Qos.accepts(&q));
+        assert!(!SourceFilter::Qos.accepts(&f));
+        assert!(SourceFilter::Flatpak.accepts(&f));
+        assert!(!SourceFilter::Flatpak.accepts(&q));
+        assert!(SourceFilter::Installed.accepts(&installed_q));
+        assert!(!SourceFilter::Installed.accepts(&q));
+    }
+
+    #[test]
+    fn update_available_only_true_on_version_mismatch() {
+        let same = qinstalled("1", "1", false);
+        assert!(!same.update_available());
+        let diff = qinstalled("1", "2", false);
+        assert!(diff.update_available());
+        assert!(!InstalledState::Not.update_available());
+    }
+}

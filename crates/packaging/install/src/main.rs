@@ -21,6 +21,8 @@
 //! qos-install install  <path.qpkg> [--require-attestor <id>] [--allow-self-signed] [--pinned] [--force]
 //! qos-install list
 //! qos-install remove   <pkg-id>
+//! qos-install pin      <pkg-id>
+//! qos-install unpin    <pkg-id>
 //! qos-install run      <pkg-id> [--require-attestor <id>] [--allow-self-signed] [--no-services]
 //! qos-install inspect  <pkg-id>
 //! qos-install trust add    --id <id> --pubkey <hex> [--scope <spec>]
@@ -106,6 +108,17 @@ enum Cmd {
     List,
     /// Remove an installed package by id.
     Remove {
+        /// Package id (as printed by `qos-install list`).
+        pkg_id: String,
+    },
+    /// Pin an installed package so it's kept + ranked first and never
+    /// evicted under store-side size pressure.
+    Pin {
+        /// Package id (as printed by `qos-install list`).
+        pkg_id: String,
+    },
+    /// Unpin an installed package (drops it back to the eviction pool).
+    Unpin {
         /// Package id (as printed by `qos-install list`).
         pkg_id: String,
     },
@@ -610,6 +623,22 @@ fn remove(pkg_id: &str) -> Result<(), Error> {
     Ok(())
 }
 
+/// Flip the `pinned` flag on an installed package. Pinning is what
+/// the store surfaces as "mark installed" — a pinned package is kept
+/// and ranked first, and is exempt from any future size-pressure GC.
+fn set_pinned(pkg_id: &str, pinned: bool) -> Result<(), Error> {
+    let mut reg = load_registry()?;
+    let entry = reg
+        .entry
+        .iter_mut()
+        .find(|e| e.id == pkg_id)
+        .ok_or_else(|| Error::NotInstalled(pkg_id.into()))?;
+    entry.pinned = pinned;
+    save_registry(&reg)?;
+    println!("{}: {pkg_id}", if pinned { "pinned" } else { "unpinned" });
+    Ok(())
+}
+
 fn run(
     pkg_id: &str,
     no_services: bool,
@@ -925,6 +954,8 @@ fn main() {
         Cmd::Install { qpkg, pinned, force, trust } => install(&qpkg, pinned, force, trust),
         Cmd::List => list(),
         Cmd::Remove { pkg_id } => remove(&pkg_id),
+        Cmd::Pin { pkg_id } => set_pinned(&pkg_id, true),
+        Cmd::Unpin { pkg_id } => set_pinned(&pkg_id, false),
         Cmd::Run {
             pkg_id,
             no_services,
