@@ -1,0 +1,497 @@
+//! The owned [`Workbook`] handle over an automerge `AutoCommit` holding the
+//! canonical spreadsheet model, plus the borrowed read/write helpers the codecs
+//! drive it through. Mirrors the rich-text [`crate::model`]/[`crate::document`]
+//! split, but the spreadsheet shape is simpler: a workbook is an ordered set of
+//! sheets, each a sparse map of A1-keyed cells.
+
+use crate::document::DocError;
+use crate::sheet::schema::*;
+use crate::sheet::snapshot::{CellType, CellView, SheetView, WorkbookSnapshot};
+use automerge::transaction::Transactable;
+use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, ScalarValue, Value, ROOT};
+use std::collections::BTreeMap;
+
+/// The data written into a cell: its value + type, an optional preserved formula
+/// (source without the leading `=`), and an optional opaque style ref.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct CellInput {
+    pub value: String,
+    pub cell_type: CellType,
+    pub formula: Option<String>,
+    pub style: Option<String>,
+}
+
+impl Default for CellType {
+    fn default() -> Self {
+        CellType::Empty
+    }
+}
+
+impl CellInput {
+    /// A plain number cell.
+    pub fn number(v: impl Into<String>) -> Self {
+        Self { value: v.into(), cell_type: CellType::Number, formula: None, style: None }
+    }
+    /// A plain text cell.
+    pub fn text(v: impl Into<String>) -> Self {
+        Self { value: v.into(), cell_type: CellType::Text, formula: None, style: None }
+    }
+    /// A formula cell: the formula source (no leading `=`) plus its cached result
+    /// value + type.
+    pub fn formula(src: impl Into<String>, cached: impl Into<String>, ty: CellType) -> Self {
+        Self { value: cached.into(), cell_type: ty, formula: Some(src.into()), style: None }
+    }
+    /// Attach an opaque style ref (builder-style).
+    pub fn with_style(mut self, style: impl Into<String>) -> Self {
+        self.style = Some(style.into());
+        self
+    }
+}
+
+/// Resolved container object ids under a workbook root.
+#[derive(Clone, Debug)]
+pub struct SheetContainers {
+    pub root: ObjId,
+    pub sheets: ObjId,
+    pub meta: ObjId,
+    pub preserved: ObjId,
+}
+
+/// Write the schema scalars + create the container maps under `root`.
+pub fn init(doc: &mut AutoCommit, root: &ObjId) -> SheetContainers {
+    doc.put(root, KEY_SHEET_SCHEMA, SHEET_SCHEMA_ID).unwrap();
+    doc.put(root, KEY_SHEET_SCHEMA_VERSION, SHEET_SCHEMA_VERSION).unwrap();
+    let sheets = doc.put_object(root, KEY_SHEETS, ObjType::Map).unwrap();
+    let meta = doc.put_object(root, KEY_SHEET_META, ObjType::Map).unwrap();
+    let preserved = doc.put_object(root, KEY_SHEET_PRESERVED, ObjType::Map).unwrap();
+    SheetContainers { root: root.clone(), sheets, meta, preserved }
+}
+
+/// Resolve existing containers under `root`.
+pub fn open(doc: &AutoCommit, root: &ObjId) -> Result<SheetContainers, DocError> {
+    Ok(SheetContainers {
+        root: root.clone(),
+        sheets: map_at(doc, root, KEY_SHEETS)?,
+        meta: map_at(doc, root, KEY_SHEET_META)?,
+        preserved: map_at(doc, root, KEY_SHEET_PRESERVED)?,
+    })
+}
+
+fn map_at(doc: &AutoCommit, root: &ObjId, key: &str) -> Result<ObjId, DocError> {
+    match doc.get(root, key)? {
+        Some((Value::Object(ObjType::Map), id)) => Ok(id),
+        _ => Err(DocError::Invalid(format!("workbook root.{key} is not a map"))),
+    }
+}
+
+// ---- reads -----------------------------------------------------------------
+
+fn sheet_obj(doc: &AutoCommit, c: &SheetContainers, id: &str) -> Option<ObjId> {
+    match doc.get(&c.sheets, id) {
+        Ok(Some((Value::Object(ObjType::Map), oid))) => Some(oid),
+        _ => None,
+    }
+}
+
+fn sheet_order(doc: &AutoCommit, c: &SheetContainers, id: &str) -> Option<Vec<u8>> {
+    let obj = sheet_obj(doc, c, id)?;
+    match doc.get(&obj, SHEET_ORDER) {
+        Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
+            ScalarValue::Bytes(b) => Some(b.clone()),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Sheet ids in tab order (by fractional order key, then id as a tiebreak so two
+/// replicas that merged in different orders converge byte-identically).
+pub fn sheet_ids_in_order(doc: &AutoCommit, c: &SheetContainers) -> Vec<String> {
+    let mut v: Vec<(Vec<u8>, String)> = doc
+        .keys(&c.sheets)
+        .filter_map(|id| sheet_order(doc, c, &id).map(|ord| (ord, id)))
+        .collect();
+    v.sort_by(|a, b| crate::order::cmp_keys(&a.0, &b.0).then(a.1.cmp(&b.1)));
+    v.into_iter().map(|(_, id)| id).collect()
+}
+
+/// A sheet's tab name (empty if unset / unknown id).
+pub fn sheet_name(doc: &AutoCommit, c: &SheetContainers, id: &str) -> Option<String> {
+    let obj = sheet_obj(doc, c, id)?;
+    match doc.get(&obj, SHEET_NAME) {
+        Ok(Some((v, _))) => v.to_str().map(|s| s.to_string()),
+        _ => None,
+    }
+}
+
+fn cells_obj(doc: &AutoCommit, c: &SheetContainers, id: &str) -> Option<ObjId> {
+    let obj = sheet_obj(doc, c, id)?;
+    match doc.get(&obj, SHEET_CELLS) {
+        Ok(Some((Value::Object(ObjType::Map), cid))) => Some(cid),
+        _ => None,
+    }
+}
+
+fn cell_str(doc: &AutoCommit, cell: &ObjId, key: &str) -> Option<String> {
+    match doc.get(cell, key) {
+        Ok(Some((v, _))) => v.to_str().map(|s| s.to_string()),
+        _ => None,
+    }
+}
+
+/// Materialize a single cell (by A1 ref) into a [`CellView`], or `None` if the
+/// ref is unknown or malformed.
+pub fn cell(doc: &AutoCommit, c: &SheetContainers, sheet_id: &str, reference: &str) -> Option<CellView> {
+    let cells = cells_obj(doc, c, sheet_id)?;
+    let cell_obj = match doc.get(&cells, reference) {
+        Ok(Some((Value::Object(ObjType::Map), o))) => o,
+        _ => return None,
+    };
+    materialize_cell(doc, &cell_obj, reference)
+}
+
+fn materialize_cell(doc: &AutoCommit, cell_obj: &ObjId, reference: &str) -> Option<CellView> {
+    let (col, row) = crate::sheet::a1::parse_ref(reference)?;
+    let value = cell_str(doc, cell_obj, CELL_VALUE).unwrap_or_default();
+    let cell_type = cell_str(doc, cell_obj, CELL_TYPE).map(|s| CellType::from_str(&s)).unwrap_or(CellType::Text);
+    let formula = cell_str(doc, cell_obj, CELL_FORMULA).filter(|s| !s.is_empty());
+    let style = cell_str(doc, cell_obj, CELL_STYLE).filter(|s| !s.is_empty());
+    Some(CellView { reference: reference.to_string(), col, row, value, cell_type, formula, style })
+}
+
+/// Materialize one sheet into a [`SheetView`] (cells sorted row-major).
+pub fn materialize_sheet(doc: &AutoCommit, c: &SheetContainers, id: &str) -> SheetView {
+    let name = sheet_name(doc, c, id).unwrap_or_default();
+    let mut cells: Vec<CellView> = Vec::new();
+    if let Some(cells_obj) = cells_obj(doc, c, id) {
+        for reference in doc.keys(&cells_obj) {
+            if let Ok(Some((Value::Object(ObjType::Map), cell_obj))) = doc.get(&cells_obj, &reference) {
+                if let Some(view) = materialize_cell(doc, &cell_obj, &reference) {
+                    cells.push(view);
+                }
+            }
+        }
+    }
+    cells.sort_by(|a, b| (a.row, a.col).cmp(&(b.row, b.col)));
+    SheetView { id: id.to_string(), name, cells }
+}
+
+// ---- document properties ---------------------------------------------------
+
+fn props_obj(doc: &AutoCommit, c: &SheetContainers) -> Option<ObjId> {
+    match doc.get(&c.meta, KEY_SHEET_PROPS) {
+        Ok(Some((Value::Object(ObjType::Map), id))) => Some(id),
+        _ => None,
+    }
+}
+
+/// All document properties (`name → value`) as a sorted map.
+pub fn doc_props(doc: &AutoCommit, c: &SheetContainers) -> BTreeMap<String, String> {
+    let mut out = BTreeMap::new();
+    if let Some(props) = props_obj(doc, c) {
+        for k in doc.keys(&props) {
+            if let Ok(Some((v, _))) = doc.get(&props, &k) {
+                if let Some(s) = v.to_str() {
+                    out.insert(k, s.to_string());
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Read a single document property, or `None` if unset.
+pub fn doc_prop(doc: &AutoCommit, c: &SheetContainers, name: &str) -> Option<String> {
+    let props = props_obj(doc, c)?;
+    match doc.get(&props, name) {
+        Ok(Some((v, _))) => v.to_str().map(|s| s.to_string()),
+        _ => None,
+    }
+}
+
+/// All preserved (verbatim, unmodeled) package parts as `(part_name, bytes)`.
+pub fn preserved_parts(doc: &AutoCommit, c: &SheetContainers) -> Vec<(String, Vec<u8>)> {
+    let mut out = Vec::new();
+    for k in doc.keys(&c.preserved) {
+        if let Ok(Some((Value::Scalar(s), _))) = doc.get(&c.preserved, &k) {
+            if let ScalarValue::Bytes(b) = s.as_ref() {
+                out.push((k, b.clone()));
+            }
+        }
+    }
+    out
+}
+
+/// Fetch one preserved part's verbatim bytes by name.
+pub fn preserved_part(doc: &AutoCommit, c: &SheetContainers, name: &str) -> Option<Vec<u8>> {
+    match doc.get(&c.preserved, name) {
+        Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
+            ScalarValue::Bytes(b) => Some(b.clone()),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Materialize the whole workbook.
+pub fn materialize(doc: &AutoCommit, c: &SheetContainers) -> WorkbookSnapshot {
+    let sheets = sheet_ids_in_order(doc, c).into_iter().map(|id| materialize_sheet(doc, c, &id)).collect();
+    WorkbookSnapshot {
+        schema: SHEET_SCHEMA_ID.to_string(),
+        schema_version: SHEET_SCHEMA_VERSION,
+        sheets,
+        properties: doc_props(doc, c),
+    }
+}
+
+// ---- writes ----------------------------------------------------------------
+
+/// Compute a fractional tab-order key placing a sheet after `after` (or at the
+/// front when `after` is `None`). Sheets are few, so a full scan is fine.
+fn sheet_order_after(doc: &AutoCommit, c: &SheetContainers, after: Option<&str>) -> Vec<u8> {
+    let ordered = sheet_ids_in_order(doc, c);
+    let pos = match after {
+        None => 0,
+        Some(id) => ordered.iter().position(|x| x == id).map(|i| i + 1).unwrap_or(ordered.len()),
+    };
+    let lo = if pos == 0 { None } else { sheet_order(doc, c, &ordered[pos - 1]) };
+    let hi = if pos >= ordered.len() { None } else { sheet_order(doc, c, &ordered[pos]) };
+    crate::order::key_between(lo.as_deref(), hi.as_deref())
+}
+
+/// The owned spreadsheet handle. Wraps an automerge document; syncs, versions,
+/// and merges like any CRDT.
+pub struct Workbook {
+    pub(crate) doc: AutoCommit,
+    #[allow(dead_code)]
+    pub(crate) root: ObjId,
+    pub(crate) c: SheetContainers,
+    ids: crate::model::IdGen,
+}
+
+impl Workbook {
+    pub fn new() -> Self {
+        let mut doc = AutoCommit::new();
+        let c = init(&mut doc, &ROOT);
+        let ids = crate::model::IdGen::new(doc.get_actor().to_hex_string());
+        doc.commit();
+        Self { doc, root: ROOT, c, ids }
+    }
+
+    pub fn load(bytes: &[u8]) -> Result<Self, DocError> {
+        let doc = AutoCommit::load(bytes).map_err(|e| DocError::Load(e.to_string()))?;
+        let c = open(&doc, &ROOT)?;
+        let ids = seeded_sheet_id_gen(&doc, &c);
+        Ok(Self { doc, root: ROOT, c, ids })
+    }
+
+    pub fn save(&mut self) -> Vec<u8> {
+        self.doc.save()
+    }
+
+    pub fn actor_hex(&self) -> String {
+        self.doc.get_actor().to_hex_string()
+    }
+
+    /// Add a sheet named `name` at the end of the tab order; returns its id.
+    pub fn add_sheet(&mut self, name: &str) -> String {
+        let after = self.sheet_ids_in_order().last().cloned();
+        self.add_sheet_after(name, after.as_deref())
+    }
+
+    /// Add a sheet after the sheet with id `after` (or at the front if `None`).
+    pub fn add_sheet_after(&mut self, name: &str, after: Option<&str>) -> String {
+        let key = sheet_order_after(&self.doc, &self.c, after);
+        let id = self.ids.mint();
+        let obj = self.doc.put_object(&self.c.sheets, id.as_str(), ObjType::Map).unwrap();
+        self.doc.put(&obj, SHEET_ORDER, ScalarValue::Bytes(key)).unwrap();
+        self.doc.put(&obj, SHEET_NAME, name).unwrap();
+        self.doc.put_object(&obj, SHEET_CELLS, ObjType::Map).unwrap();
+        self.doc.commit();
+        id
+    }
+
+    /// Rename a sheet (no-op if the id is unknown).
+    pub fn rename_sheet(&mut self, id: &str, name: &str) {
+        if let Some(obj) = sheet_obj(&self.doc, &self.c, id) {
+            self.doc.put(&obj, SHEET_NAME, name).unwrap();
+            self.doc.commit();
+        }
+    }
+
+    fn cells_container(&mut self, sheet_id: &str) -> Option<ObjId> {
+        let obj = sheet_obj(&self.doc, &self.c, sheet_id)?;
+        match self.doc.get(&obj, SHEET_CELLS) {
+            Ok(Some((Value::Object(ObjType::Map), cid))) => Some(cid),
+            _ => self.doc.put_object(&obj, SHEET_CELLS, ObjType::Map).ok(),
+        }
+    }
+
+    /// Set (or overwrite) the cell at A1 `reference` on `sheet_id`. Only fields
+    /// whose value actually changed are written, so re-setting an identical cell
+    /// adds no CRDT churn. `None` for the formula/style clears that field. Returns
+    /// `false` if the sheet id is unknown or the reference is malformed.
+    pub fn set_cell(&mut self, sheet_id: &str, reference: &str, input: CellInput) -> bool {
+        if crate::sheet::a1::parse_ref(reference).is_none() {
+            return false;
+        }
+        let Some(cells) = self.cells_container(sheet_id) else { return false };
+        let cell_obj = match self.doc.get(&cells, reference) {
+            Ok(Some((Value::Object(ObjType::Map), o))) => o,
+            _ => self.doc.put_object(&cells, reference, ObjType::Map).unwrap(),
+        };
+        put_str_if_changed(&mut self.doc, &cell_obj, CELL_VALUE, &input.value);
+        put_str_if_changed(&mut self.doc, &cell_obj, CELL_TYPE, input.cell_type.as_str());
+        set_opt_str(&mut self.doc, &cell_obj, CELL_FORMULA, input.formula.as_deref());
+        set_opt_str(&mut self.doc, &cell_obj, CELL_STYLE, input.style.as_deref());
+        self.doc.commit();
+        true
+    }
+
+    /// Remove a cell entirely (no-op if absent).
+    pub fn clear_cell(&mut self, sheet_id: &str, reference: &str) {
+        if let Some(cells) = cells_obj(&self.doc, &self.c, sheet_id) {
+            let _ = self.doc.delete(&cells, reference);
+            self.doc.commit();
+        }
+    }
+
+    /// Stash a verbatim (unmodeled) package part so export can re-emit it losslessly.
+    pub fn set_preserved(&mut self, name: &str, bytes: &[u8]) {
+        self.doc.put(&self.c.preserved, name, ScalarValue::Bytes(bytes.to_vec())).unwrap();
+        self.doc.commit();
+    }
+
+    /// Set a document property (`title`/`author`/…).
+    pub fn set_prop(&mut self, name: &str, value: &str) {
+        let props = match self.doc.get(&self.c.meta, KEY_SHEET_PROPS) {
+            Ok(Some((Value::Object(ObjType::Map), id))) => id,
+            _ => self.doc.put_object(&self.c.meta, KEY_SHEET_PROPS, ObjType::Map).unwrap(),
+        };
+        self.doc.put(&props, name, value).unwrap();
+        self.doc.commit();
+    }
+
+    // ---- reads ----
+
+    pub fn sheet_ids_in_order(&self) -> Vec<String> {
+        sheet_ids_in_order(&self.doc, &self.c)
+    }
+    pub fn sheet_name(&self, id: &str) -> Option<String> {
+        sheet_name(&self.doc, &self.c, id)
+    }
+    pub fn cell(&self, sheet_id: &str, reference: &str) -> Option<CellView> {
+        cell(&self.doc, &self.c, sheet_id, reference)
+    }
+    pub fn doc_prop(&self, name: &str) -> Option<String> {
+        doc_prop(&self.doc, &self.c, name)
+    }
+    pub fn preserved_part(&self, name: &str) -> Option<Vec<u8>> {
+        preserved_part(&self.doc, &self.c, name)
+    }
+    pub fn materialize(&self) -> WorkbookSnapshot {
+        materialize(&self.doc, &self.c)
+    }
+
+    // ---- history / versioning ----
+
+    /// Timeline of authored changes (oldest first).
+    pub fn versions(&mut self) -> Vec<crate::history::VersionMeta> {
+        crate::history::versions(&mut self.doc)
+    }
+
+    /// Reconstruct the workbook as of `version` (time-travel).
+    pub fn materialize_at(&mut self, version: usize) -> Result<WorkbookSnapshot, DocError> {
+        let changes = self.doc.get_changes(&[]);
+        let take = (version + 1).min(changes.len());
+        let mut rebuilt = AutoCommit::new();
+        rebuilt
+            .apply_changes(changes.into_iter().take(take))
+            .map_err(|e| DocError::Invalid(format!("apply_changes: {e}")))?;
+        let c = open(&rebuilt, &ROOT)?;
+        Ok(materialize(&rebuilt, &c))
+    }
+
+    /// Structural diff between two points on this workbook's own timeline.
+    pub fn diff_versions(&mut self, from: usize, to: usize) -> Result<crate::diff::SheetDiff, DocError> {
+        let a = self.materialize_at(from)?;
+        let b = self.materialize_at(to)?;
+        Ok(crate::diff::diff_workbooks(&a, &b))
+    }
+
+    /// Independent replica with a fresh actor id (distinct edit lineage).
+    pub fn fork(&mut self) -> Workbook {
+        let bytes = self.save();
+        let mut doc = AutoCommit::load(&bytes).expect("fork load");
+        doc.set_actor(automerge::ActorId::random());
+        let c = open(&doc, &ROOT).expect("fork open");
+        let ids = crate::model::IdGen::new(doc.get_actor().to_hex_string());
+        Workbook { doc, root: ROOT, c, ids }
+    }
+
+    /// Merge another replica's changes into this one (low-level merge to sidestep
+    /// the automerge-0.8 `AutoCommit::merge` patch-log panic, as the rich-text
+    /// [`crate::Document::merge`] does).
+    pub fn merge(&mut self, other: &mut Workbook) {
+        let merged = {
+            let mut a = automerge::Automerge::load(&self.doc.save()).expect("merge: load self");
+            let mut b = automerge::Automerge::load(&other.doc.save()).expect("merge: load other");
+            let _ = a.merge(&mut b);
+            a.save()
+        };
+        self.doc = AutoCommit::load(&merged).expect("merge: reload");
+        self.c = open(&self.doc, &ROOT).expect("merge: open");
+        self.ids = seeded_sheet_id_gen(&self.doc, &self.c);
+    }
+}
+
+impl Default for Workbook {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// An [`crate::model::IdGen`] for `doc`'s actor, seeded past existing sheet ids so
+/// a generator over a reloaded workbook won't re-mint (and overwrite) a sheet.
+fn seeded_sheet_id_gen(doc: &AutoCommit, c: &SheetContainers) -> crate::model::IdGen {
+    let actor = doc.get_actor().to_hex_string();
+    let prefix = format!("{actor}.");
+    let mut next = 0u64;
+    for id in doc.keys(&c.sheets) {
+        if let Some(rest) = id.strip_prefix(&prefix) {
+            if let Ok(n) = rest.parse::<u64>() {
+                next = next.max(n + 1);
+            }
+        }
+    }
+    crate::model::IdGen::with_counter(actor, next)
+}
+
+/// Write a string field only when it differs from the stored value (avoids a
+/// redundant CRDT op — the store-churn guard).
+fn put_str_if_changed(doc: &mut AutoCommit, obj: &ObjId, key: &str, value: &str) {
+    let current = match doc.get(obj, key) {
+        Ok(Some((v, _))) => v.to_str().map(|s| s.to_string()),
+        _ => None,
+    };
+    if current.as_deref() != Some(value) {
+        doc.put(obj, key, value).unwrap();
+    }
+}
+
+/// Set an optional string field: write it when `Some` and changed, delete it when
+/// `None` and currently present.
+fn set_opt_str(doc: &mut AutoCommit, obj: &ObjId, key: &str, value: Option<&str>) {
+    let current = match doc.get(obj, key) {
+        Ok(Some((v, _))) => v.to_str().map(|s| s.to_string()),
+        _ => None,
+    };
+    match value {
+        Some(v) if current.as_deref() != Some(v) => doc.put(obj, key, v).unwrap(),
+        Some(_) => {}
+        None if current.is_some() => {
+            let _ = doc.delete(obj, key);
+        }
+        None => {}
+    }
+}
