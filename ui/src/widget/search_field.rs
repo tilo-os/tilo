@@ -11,6 +11,18 @@
 //! for a filter box) and **bound** to a doc path. The query is read back with
 //! [`SearchField::value`] or the one-shot [`SearchField::take_dirty`], which
 //! also reports a clear as an empty-string edit.
+//!
+//! ## Launcher mode — search does not live in the app
+//!
+//! Built with [`SearchField::opens_palette`], the field stops being an inline
+//! filter and becomes a *thin affordance* that raises the shared Ctrl+K
+//! [`CommandPalette`](crate::widget::CommandPalette) scoped to the hosting app.
+//! The pill renders a leading magnifier, a placeholder, and a trailing `Ctrl+K`
+//! kbd chip; it is **non-editable** — a click anywhere on it just latches a
+//! request the host polls with [`SearchField::take_palette_request`], then opens
+//! its own `CommandPalette` seeded with the app's resources. The search UI and
+//! ranking thus live in one shared toolkit widget, not in every app's bespoke
+//! search bar.
 
 use std::collections::HashMap;
 
@@ -42,6 +54,12 @@ pub struct SearchField {
     rect: Rect,
     clear_rect: Rect,
     last_cursor: Point,
+    /// Launcher mode: the field opens the shared Ctrl+K palette instead
+    /// of editing an inline query. See [`SearchField::opens_palette`].
+    opens_palette: bool,
+    /// Latched when the (non-editable) launcher pill is activated;
+    /// drained by the host via [`SearchField::take_palette_request`].
+    palette_requested: bool,
 }
 
 impl SearchField {
@@ -57,7 +75,38 @@ impl SearchField {
             rect: Rect::ZERO,
             clear_rect: Rect::ZERO,
             last_cursor: Point::ZERO,
+            opens_palette: false,
+            palette_requested: false,
         }
+    }
+
+    /// Turn this into a **launcher**: instead of an inline filter, the
+    /// pill becomes a non-editable affordance that opens the shared
+    /// Ctrl+K [`CommandPalette`](crate::widget::CommandPalette) scoped to
+    /// the app. Renders a trailing `Ctrl+K` kbd chip and, on click,
+    /// latches a request the host reads with
+    /// [`take_palette_request`](Self::take_palette_request).
+    ///
+    /// This is the "search does not live in the app" contract — the app
+    /// stops hand-rolling search UI and delegates to the OS-shared
+    /// palette.
+    pub fn opens_palette(mut self) -> Self {
+        self.opens_palette = true;
+        self.clearable = false;
+        self
+    }
+
+    /// Whether this field is a palette launcher (vs. an inline filter).
+    pub fn is_palette_launcher(&self) -> bool {
+        self.opens_palette
+    }
+
+    /// One-shot read: `true` exactly once after the launcher pill was
+    /// activated (clicked). The host uses this to open its
+    /// [`CommandPalette`](crate::widget::CommandPalette). Always `false`
+    /// for a non-launcher field.
+    pub fn take_palette_request(&mut self) -> bool {
+        std::mem::take(&mut self.palette_requested)
     }
 
     /// Set the placeholder shown when the query is empty.
@@ -125,8 +174,52 @@ impl SearchField {
     }
 
     /// Whether the clear button is currently showing (clearable + non-empty).
+    /// Never in launcher mode — the trailing slot holds the `Ctrl+K` chip.
     fn clear_visible(&self) -> bool {
-        self.clearable && !self.input.value().is_empty()
+        self.clearable && !self.opens_palette && !self.input.value().is_empty()
+    }
+
+    /// Draw the trailing `Ctrl+K` kbd chip shown in launcher mode. A small
+    /// rounded pill with a hairline border and dim label, right-aligned
+    /// inside the field so it reads as a keyboard hint rather than a
+    /// control.
+    fn draw_kbd_chip(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        const LABEL: &str = "Ctrl+K";
+        const SIZE: f32 = 11.0;
+        let (tw, _) = text_renderer.measure(LABEL, SIZE, None);
+        let chip_h = 20.0_f64;
+        let chip_w = tw as f64 + 14.0;
+        let right_inset = 10.0_f64;
+        let cy = self.rect.center().y;
+        let chip = Rect::new(
+            self.rect.x1 - right_inset - chip_w,
+            cy - chip_h / 2.0,
+            self.rect.x1 - right_inset,
+            cy + chip_h / 2.0,
+        );
+        let rounded = RoundedRect::from_rect(chip, 5.0);
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            transform,
+            vello::peniko::Color::from_rgba8(255, 255, 255, 16),
+            None,
+            &rounded,
+        );
+        scene.stroke(&Stroke::new(1.0), transform, theme.border_standard, None, &rounded);
+        text_renderer.draw_text(
+            scene,
+            LABEL,
+            SIZE,
+            theme.text_dim,
+            transform * Affine::translate((chip.x0 + 7.0, cy - 6.5)),
+            None,
+        );
     }
 }
 
@@ -216,8 +309,12 @@ impl Widget for SearchField {
         // Editable text.
         self.input.draw(scene, transform, text_renderer, theme, presence);
 
-        // Trailing clear.
-        if self.clear_visible() {
+        // Trailing slot: a `Ctrl+K` kbd chip in launcher mode, otherwise
+        // the clear button (when there's a query to clear).
+        if self.opens_palette {
+            self.clear_rect = Rect::ZERO;
+            self.draw_kbd_chip(scene, transform, text_renderer, theme);
+        } else if self.clear_visible() {
             let cr = Rect::from_center_size(
                 Point::new(self.rect.x1 - CLEAR_GUTTER / 2.0, self.rect.center().y),
                 (CLEAR_D, CLEAR_D),
@@ -246,6 +343,23 @@ impl Widget for SearchField {
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
         }
+        // Launcher mode: the pill is non-editable. A left press anywhere on
+        // it latches a palette-open request and never reaches the inner
+        // input, so the field never takes focus or edits a query.
+        if self.opens_palette {
+            if let WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } = event
+            {
+                if self.rect.contains(self.last_cursor) {
+                    self.palette_requested = true;
+                    *handled = true;
+                }
+            }
+            return;
+        }
         // Intercept a click on the clear button before the input sees it.
         if let WindowEvent::MouseInput {
             state: ElementState::Pressed,
@@ -266,6 +380,13 @@ impl Widget for SearchField {
     }
 
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
+        // The whole launcher pill is a click target.
+        if self.opens_palette {
+            if self.rect.contains(point) {
+                return Some(winit::window::CursorIcon::Pointer);
+            }
+            return None;
+        }
         if self.clear_visible() && self.clear_rect.contains(point) {
             return Some(winit::window::CursorIcon::Pointer);
         }
@@ -294,6 +415,15 @@ impl Widget for SearchField {
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
+        // Launcher mode is a button that opens the shared palette, not an
+        // editable field — expose it as such so AT surfaces the action.
+        if self.opens_palette {
+            return Some(
+                AccessNode::new(Role::Button)
+                    .with_name("Open search (Ctrl+K)")
+                    .with_state(AccessState::new().focusable(true)),
+            );
+        }
         // A search box is a labelled text input; its current query is the value.
         Some(
             AccessNode::new(Role::TextInput)
@@ -418,6 +548,66 @@ mod tests {
         let node = Widget::accessibility(&sf).expect("search field exposes a11y");
         assert_eq!(node.role, Role::TextInput);
         assert_eq!(node.value.as_deref(), Some("abc"));
+        assert!(node.state.focusable);
+    }
+
+    #[test]
+    fn launcher_click_latches_a_palette_request_and_stays_non_editable() {
+        // A launcher field: build a tree whose root IS the field so
+        // handle_event resolves the child via `taffy.children(node)`.
+        let theme = Theme::dark();
+        let mut sf = SearchField::new().opens_palette().with_placeholder("Search containers…");
+        assert!(sf.is_palette_launcher());
+        let mut taffy = TaffyTree::<()>::new();
+        let mut nm: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let mut tr = TextRenderer::new();
+        let node = sf.build_layout(&mut taffy, &theme, &mut nm);
+        taffy
+            .compute_layout_with_measure(
+                node,
+                taffy::Size {
+                    width: taffy::AvailableSpace::Definite(320.0),
+                    height: taffy::AvailableSpace::Definite(HEIGHT as f32),
+                },
+                |k, a, id, _, _| nm.get(&id).map(|&p| unsafe { (*p).measure(k, a, &mut tr) }).unwrap_or(taffy::Size::ZERO),
+            )
+            .unwrap();
+        sf.apply_layout(&taffy, node, Point::ZERO);
+        draw(&mut sf);
+
+        // No pending request before any interaction.
+        assert!(!sf.take_palette_request());
+
+        // Click somewhere inside the pill.
+        let center = sf.get_rect().center();
+        let mut handled = false;
+        let mut ft = None;
+        let mut doc = AutoCommit::new();
+        let rootid = automerge::ROOT;
+        let mods = winit::event::Modifiers::default();
+        sf.handle_event(
+            &WindowEvent::CursorMoved { device_id: unsafe { std::mem::zeroed() }, position: winit::dpi::PhysicalPosition::new(center.x, center.y) },
+            1.0, &mods, &mut doc, &rootid, &mut handled, &mut ft, node, &taffy,
+        );
+        sf.handle_event(
+            &WindowEvent::MouseInput { device_id: unsafe { std::mem::zeroed() }, state: ElementState::Pressed, button: MouseButton::Left },
+            1.0, &mods, &mut doc, &rootid, &mut handled, &mut ft, node, &taffy,
+        );
+        assert!(handled, "the launcher consumes the click");
+        // The click did NOT focus the inner input (search never lives in
+        // the field itself).
+        assert!(!sf.input.is_focused(), "launcher pill stays non-editable");
+        // Exactly one request is latched, and it drains once.
+        assert!(sf.take_palette_request(), "click latches a palette-open request");
+        assert!(!sf.take_palette_request(), "the request drains after one read");
+    }
+
+    #[test]
+    fn launcher_reports_button_role_for_accessibility() {
+        use crate::a11y::Role;
+        let sf = SearchField::new().opens_palette();
+        let node = Widget::accessibility(&sf).expect("launcher exposes a11y");
+        assert_eq!(node.role, Role::Button, "launcher is a button, not a text field");
         assert!(node.state.focusable);
     }
 }
