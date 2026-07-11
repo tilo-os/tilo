@@ -196,6 +196,9 @@ impl<'a> ControlState for FrameBuilderControlState<'a> {
             "revision": chrome.revision,
             "editing_workspace_name": chrome.editing_workspace_name,
             "pending_grants_count": chrome.pending_grants.len(),
+            // Mirrored from the compositor's SessionManager each tick; lets a
+            // headless test observe lock/unlock transitions over the wire.
+            "session_locked": chrome.session_locked(),
         })
     }
 }
@@ -388,6 +391,30 @@ fn execute_planned_action(
     }
 }
 
+/// Route a test-control [`PlannedAction`] to the lock screen while the session
+/// is locked, instead of to the app/chrome. The test-control socket is a real
+/// input source, so — exactly like live winit input — it must be captured by
+/// the lock surface while locked (never delivered to hidden apps). Keyboard
+/// actions feed the password field via the same winit→`LockKey` routing the
+/// live backend uses; pointer/modifier actions and snapshots are swallowed (a
+/// snapshot must not capture and leak the hidden chrome). Returns whether the
+/// action authenticated and unlocked the session.
+fn execute_locked_action(action: &PlannedAction, lock: &mut LockController) -> UnlockOutcome {
+    match action {
+        PlannedAction::KeyboardKey { key, pressed } => {
+            let winit_key = keytag_into_winit_key(*key);
+            let event = keyboard_input_event(winit_key, *pressed);
+            lock.handle_key(winit_event_to_lock_key(&event))
+        }
+        // Pointer moves/clicks, modifier sets, and snapshots: swallowed while
+        // locked. Input goes only to the lock surface.
+        PlannedAction::CursorMoved { .. }
+        | PlannedAction::MouseLeftButton { .. }
+        | PlannedAction::SetModifiers { .. }
+        | PlannedAction::Snapshot { .. } => UnlockOutcome::StillLocked,
+    }
+}
+
 /// Re-paint the current scene into a fresh `OffscreenRenderer` and
 /// encode the resulting RGBA buffer as a PNG at `path`. Best-effort:
 /// every failure path logs to stderr and returns, so an executor
@@ -563,6 +590,9 @@ fn pump_test_control_conn(
     conn: &mut TestControlConn,
     frame_builder: &mut FrameBuilder,
     ctx: &mut TestControlCtx,
+    session: &mut SessionManager,
+    lock: &mut LockController,
+    backend: &mut dyn Backend,
 ) {
     loop {
         let mut line = String::new();
@@ -580,7 +610,18 @@ fn pump_test_control_conn(
                     Err(err_resp) => (err_resp, Vec::new()),
                 };
                 for action in &actions {
-                    execute_planned_action(action, frame_builder, ctx);
+                    if session.is_locked() {
+                        // While locked the test-control socket is captured by
+                        // the lock surface, just like live input — actions go
+                        // to the password field, never to the hidden chrome.
+                        if execute_locked_action(action, lock) == UnlockOutcome::Unlocked {
+                            for t in session.request_unlock(Instant::now()) {
+                                apply_session_transition(t, backend);
+                            }
+                        }
+                    } else {
+                        execute_planned_action(action, frame_builder, ctx);
+                    }
                 }
                 // Re-run layout so the next `list_targets` (or paint
                 // tick) sees rects post-mutation. Chrome state
@@ -1358,7 +1399,14 @@ pub fn run() -> ! {
                 }
             }
             for conn in test_control_conns.iter_mut() {
-                pump_test_control_conn(conn, &mut frame_builder, &mut test_control_ctx);
+                pump_test_control_conn(
+                    conn,
+                    &mut frame_builder,
+                    &mut test_control_ctx,
+                    &mut session,
+                    &mut lock,
+                    backend.as_mut(),
+                );
             }
             test_control_conns.retain(|c| !c.closed);
         }
