@@ -64,6 +64,9 @@ const OVERVIEW_W: f64 = 340.0;
 /// use. Checked each active frame; a manual refresh (the `r` shortcut) forces
 /// one immediately regardless.
 const AUTO_REFRESH_MIN: i64 = 5;
+/// How long a status toast ("Synced N messages", "Account saved", …) stays on
+/// screen before it fades out on its own, like any normal transient toast.
+const TOAST_TTL: std::time::Duration = std::time::Duration::from_millis(3500);
 
 /// An open row context menu.
 struct ContextMenu {
@@ -180,6 +183,14 @@ pub struct MailApp {
     /// fires at most once per [`AUTO_REFRESH_MIN`] while the app is in use.
     last_auto_refresh_min: i64,
 
+    /// The status text currently being shown as a toast, and the instant it
+    /// should auto-dismiss. Any code path may set `shared.status`; the app
+    /// notices the change each frame, (re)arms the deadline, and clears the
+    /// status once [`TOAST_TTL`] elapses — so a "Synced N messages" toast fades
+    /// on its own instead of lingering forever.
+    toast_text: Option<String>,
+    toast_deadline: Option<std::time::Instant>,
+
     overlay_hits: Vec<(Rect, OverlayHit)>,
     rect: Rect,
     /// The shell's reveal flap starts fully open (its docked default); the
@@ -247,6 +258,8 @@ impl MailApp {
             connect_requested: false,
             awaiting_engine: false,
             last_auto_refresh_min: 0,
+            toast_text: None,
+            toast_deadline: None,
             overlay_hits: Vec::new(),
             rect: Rect::ZERO,
             first_layout: true,
@@ -294,6 +307,26 @@ impl MailApp {
         self.setup_inputs[1].set_text("grace.hopper@gmail.com");
         self.maybe_autofill();
         self.focus_setup(Some(1));
+    }
+
+    /// Select the bundled HTML newsletter so the reader renders it through the
+    /// sandboxed WebView (HTML-mail shot). Also demonstrates the filled-star
+    /// action (the newsletter is starred).
+    pub fn prime_html_mail_shot(&mut self) {
+        let id = {
+            let st = self.shared.borrow();
+            st.mailbox
+                .messages
+                .values()
+                .find(|m| m.from.email == "news@weekly.qos.example")
+                .map(|m| m.id)
+        };
+        if let Some(id) = id {
+            let mut doc = AutoCommit::new();
+            self.shared.borrow_mut().select_message(&mut doc, id);
+            self.process_intents();
+        }
+        self.dirty = true;
     }
 
     /// Open the sidebar overlay drawer and snap it (narrow drawer shot).
@@ -508,6 +541,7 @@ impl MailApp {
                     cc: crate::transport::parse_addr_list(&draft.cc),
                     subject: draft.subject.clone(),
                     body: draft.body.clone(),
+                    html_body: draft.html_body.clone(),
                     attachments: draft.attachments.iter().map(|p| attachment_meta(p)).collect(),
                     timestamp_min: now,
                     read: true,
@@ -576,6 +610,7 @@ impl MailApp {
             cc: crate::transport::parse_addr_list(&draft.cc),
             subject: if draft.subject.trim().is_empty() { "(no subject)".into() } else { draft.subject.clone() },
             body: draft.body.clone(),
+            html_body: draft.html_body.clone(),
             attachments: draft.attachments.iter().map(|p| attachment_meta(p)).collect(),
             timestamp_min: now,
             read: true,
@@ -694,12 +729,29 @@ impl MailApp {
         }
     }
 
-    /// Fill IMAP/SMTP hosts + ports from the typed email when the host fields
-    /// are still blank, and detect the provider so Gmail/Outlook preset to
-    /// OAuth. Under `live` this runs the real Mozilla autoconfig lookup;
-    /// offline it falls back to [`AccountConfig::autofill_from_email`]'s guess.
-    /// Runs when focus leaves the email field and again on save.
+    /// Fill IMAP/SMTP hosts + ports from the typed email when focus leaves the
+    /// email field (and again on save). Consults the network Mozilla autoconfig
+    /// lookup for unknown domains under `live`; the built-in provider table
+    /// covers the common providers instantly and offline.
     fn maybe_autofill(&mut self) {
+        self.apply_autofill(true);
+    }
+
+    /// The instant, network-free fill applied as the address is typed: it uses
+    /// only the built-in provider table (see [`crate::autoconfig::builtin_autoconfig`]),
+    /// so `me@gmail.com` pre-fills the Gmail servers the moment it's complete —
+    /// without waiting for a focus change or opening a socket. Unknown domains
+    /// are left for the focus-leave/save pass to discover over the network.
+    fn maybe_autofill_live_typing(&mut self) {
+        self.apply_autofill(false);
+    }
+
+    /// Fill IMAP/SMTP host/port/TLS from the typed email when the host fields
+    /// are still blank, and detect the provider so Gmail/Outlook preset to
+    /// OAuth. Resolution order: the built-in provider table first (instant,
+    /// offline), then — only when `network` and nothing matched — the real
+    /// Mozilla autoconfig lookup (`live`), then the generic heuristic.
+    fn apply_autofill(&mut self, network: bool) {
         let email = self.setup_inputs[1].value().trim().to_string();
         if !email.contains('@') {
             return;
@@ -726,11 +778,29 @@ impl MailApp {
             auth: self.setup_auth,
             ..Default::default()
         };
-        // Real autoconfig discovery (live) or the built-in heuristic (offline).
-        match autoconfig_lookup(&email) {
-            Some(ac) => ac.apply_to(&mut cfg),
-            None => {
-                cfg.autofill_from_email();
+        // Built-in table first (instant, offline). Network discovery only for
+        // domains it doesn't cover, and only on the focus-leave/save pass.
+        if let Some(ac) = crate::autoconfig::builtin_autoconfig(&domain) {
+            ac.apply_to(&mut cfg);
+        } else if network {
+            match autoconfig_lookup(&email) {
+                Some(ac) => ac.apply_to(&mut cfg),
+                None => {
+                    cfg.autofill_from_email();
+                }
+            }
+        } else {
+            cfg.autofill_from_email();
+        }
+        // The provider table fills only the connection fields; default the
+        // identity fields from the address (username = the email, display name =
+        // its local part) so a table-filled account is immediately savable.
+        if cfg.username.trim().is_empty() {
+            cfg.username = email.clone();
+        }
+        if cfg.display_name.trim().is_empty() {
+            if let Some((local, _)) = email.split_once('@') {
+                cfg.display_name = local.to_string();
             }
         }
 
@@ -1023,6 +1093,35 @@ impl MailApp {
         if now - self.last_auto_refresh_min >= AUTO_REFRESH_MIN {
             self.refresh_active_folder();
         }
+    }
+
+    // ---- transient status toast ------------------------------------------
+
+    /// Notice a newly-set status toast, arm its dismiss deadline, and clear the
+    /// status once the deadline passes. Parameterised on `now` so the timing is
+    /// unit-testable without a real sleep.
+    fn expire_toast_at(&mut self, now: std::time::Instant) {
+        let current = self.shared.borrow().status.clone();
+        if current != self.toast_text {
+            // The status changed (or was cleared): (re)arm the timer.
+            self.toast_text = current.clone();
+            self.toast_deadline = current.as_ref().map(|_| now + TOAST_TTL);
+        }
+        if let Some(deadline) = self.toast_deadline {
+            if now >= deadline {
+                let mut st = self.shared.borrow_mut();
+                st.status = None;
+                st.dirty = true;
+                self.toast_text = None;
+                self.toast_deadline = None;
+            }
+        }
+    }
+
+    /// Whether a toast is currently on screen and still counting down — used to
+    /// keep the frame pump alive so the auto-dismiss fires even with no input.
+    fn toast_pending(&self) -> bool {
+        self.toast_deadline.is_some()
     }
 
     // ---- engine drain -----------------------------------------------------
@@ -1545,6 +1644,8 @@ impl Widget for MailApp {
         // Drain any engine results first so freshly-fetched messages are present
         // before layout/draw.
         self.drain_engine(state);
+        // Fade out a transient status toast once its lifetime elapses.
+        self.expire_toast_at(std::time::Instant::now());
 
         let mem_seeded = self.shared.borrow().seeded;
         if !mem_seeded {
@@ -1767,15 +1868,17 @@ impl Widget for MailApp {
     fn needs_animation_frame(&self) -> bool {
         // Keep the event loop pumping frames while a worker request is in
         // flight so its result (a fetched batch, a send ack, an error) drains
-        // and surfaces promptly instead of waiting for unrelated input. Drops
-        // back to idle the moment the reply settles.
-        self.awaiting_engine || self.nav.needs_animation_frame()
+        // and surfaces promptly instead of waiting for unrelated input, and
+        // while a toast is counting down so it fades on time. Drops back to
+        // idle the moment the reply settles and the toast clears.
+        self.awaiting_engine || self.toast_pending() || self.nav.needs_animation_frame()
     }
 
     fn needs_idle_sync(&self) -> bool {
-        // Only keep syncing while a connect/fetch reply is still outstanding, so
-        // the app idles instead of busy-looping once results have arrived.
-        self.awaiting_engine || self.nav.needs_idle_sync()
+        // Keep syncing while a connect/fetch reply is outstanding or a toast is
+        // still on screen (so `sync` can expire it), then idle rather than
+        // busy-loop once results have arrived and the toast has cleared.
+        self.awaiting_engine || self.toast_pending() || self.nav.needs_idle_sync()
     }
 
     fn mark_drawn(&mut self) {
@@ -1829,8 +1932,15 @@ impl MailApp {
             }
         }
         if matches!(event, WindowEvent::KeyboardInput { .. }) {
-            if let Some(i) = self.setup_focus.and_then(|i| self.setup_inputs.get_mut(i)) {
+            let focused = self.setup_focus;
+            if let Some(i) = focused.and_then(|i| self.setup_inputs.get_mut(i)) {
                 i.handle_event(event, scale_factor, modifiers, state, path, handled, focus_target, node_id, taffy);
+            }
+            // Typing in the email field pre-fills the server settings from the
+            // built-in provider table the instant the address is recognised —
+            // the user rarely needs to touch the advanced fields.
+            if focused == Some(1) {
+                self.maybe_autofill_live_typing();
             }
             return;
         }
@@ -2525,6 +2635,83 @@ mod tests {
         assert_eq!(app.setup_auth, crate::model::AuthMethod::OAuth, "Gmail presets to OAuth");
         assert!(app.setup_provider.is_some(), "provider detected from the domain");
         assert_eq!(app.setup_inputs[4].value(), "imap.gmail.com", "IMAP host still autofilled");
+    }
+
+    #[test]
+    fn setup_tab_traverses_every_field_in_order() {
+        // Tab must reach every field, in the email → … → IMAP → port → SMTP
+        // order the user expects, wrapping at the end; Shift+Tab steps back.
+        let (mut app, mut doc) = app();
+        app.open_setup_edit(None);
+        app.setup_auth = crate::model::AuthMethod::Password; // password field tabbable
+        app.focus_setup(Some(0));
+        for exp in [1usize, 2, 3, 4, 5, 6, 7, 0] {
+            assert!(dispatch(&mut app, &named_key(NamedKey::Tab), &mut doc), "Tab consumed");
+            assert_eq!(app.setup_focus, Some(exp), "Tab lands on field {exp}");
+        }
+        // The order genuinely walks email(1) → IMAP host(4) → IMAP port(5) →
+        // SMTP host(6) → SMTP port(7).
+        let order = app.setup_tab_order();
+        let pos = |i: usize| order.iter().position(|&x| x == i).unwrap();
+        assert!(pos(1) < pos(4) && pos(4) < pos(5) && pos(5) < pos(6) && pos(6) < pos(7));
+        // Shift+Tab (the reverse the handler drives) steps back a field.
+        app.focus_setup(Some(4));
+        app.focus_setup_step(-1);
+        assert_eq!(app.setup_focus, Some(3), "Shift+Tab moves back to the previous field");
+    }
+
+    #[test]
+    fn autofill_uses_the_builtin_table_across_providers() {
+        // The built-in table fills the RIGHT servers offline, including cases
+        // the old generic `imap.<domain>` guess got wrong (Outlook → office365).
+        let (mut app, _doc) = app();
+        app.open_setup_edit(None);
+        app.setup_inputs[1].set_text("person@outlook.de");
+        app.maybe_autofill();
+        assert_eq!(app.setup_inputs[4].value(), "outlook.office365.com", "Outlook → office365, any TLD");
+        assert_eq!(app.setup_inputs[6].value(), "smtp.office365.com");
+
+        app.open_setup_edit(None);
+        app.setup_inputs[1].set_text("hi@gmx.net");
+        app.maybe_autofill();
+        assert_eq!(app.setup_inputs[4].value(), "imap.gmx.net", "GMX resolved offline from the table");
+
+        app.open_setup_edit(None);
+        app.setup_inputs[1].set_text("me@fastmail.com");
+        app.maybe_autofill();
+        assert_eq!(app.setup_inputs[4].value(), "imap.fastmail.com");
+        assert_eq!(app.setup_inputs[5].value(), "993", "port filled from the table too");
+    }
+
+    #[test]
+    fn typing_the_email_fills_servers_without_leaving_the_field() {
+        // Autofill runs as the address is typed, not only on focus-leave: a key
+        // event in the email field pre-fills the servers.
+        let (mut app, mut doc) = app();
+        app.open_setup_edit(None);
+        app.focus_setup(Some(1));
+        assert!(app.setup_inputs[4].value().is_empty(), "IMAP host starts blank");
+        app.setup_inputs[1].set_text("me@gmail.com");
+        // A key event routed to the focused email field triggers the live fill.
+        dispatch(&mut app, &named_key(NamedKey::ArrowRight), &mut doc);
+        assert_eq!(app.setup_inputs[4].value(), "imap.gmail.com", "servers fill as the address is typed");
+        assert_eq!(app.setup_inputs[6].value(), "smtp.gmail.com");
+    }
+
+    #[test]
+    fn status_toast_auto_dismisses_after_its_lifetime() {
+        // A "Synced N messages" toast must fade on its own, not linger forever.
+        let (mut app, _doc) = app();
+        let t0 = std::time::Instant::now();
+        app.shared.borrow_mut().status = Some("Synced 3 messages".into());
+        app.expire_toast_at(t0); // first observation arms the deadline
+        assert!(app.shared.borrow().status.is_some(), "toast shows immediately");
+        assert!(app.toast_pending(), "a dismiss deadline is armed");
+        app.expire_toast_at(t0 + std::time::Duration::from_millis(1000));
+        assert!(app.shared.borrow().status.is_some(), "still visible within its lifetime");
+        app.expire_toast_at(t0 + std::time::Duration::from_secs(5));
+        assert!(app.shared.borrow().status.is_none(), "toast auto-dismissed past its deadline");
+        assert!(!app.toast_pending(), "the deadline cleared once dismissed");
     }
 
     // ---- test-before-save state machine (persist on success only) --------

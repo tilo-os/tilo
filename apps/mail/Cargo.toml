@@ -64,6 +64,12 @@ futures = { version = "0.3", optional = true, default-features = false, features
 # Compile the real IMAP/SMTP engine backend + remote avatar fetch. Requires
 # network + a TLS/async stack; not used by the headless build or `--shots`.
 live = ["dep:async-imap", "dep:lettre", "dep:reqwest", "dep:tokio", "dep:tokio-rustls", "dep:rustls", "dep:webpki-roots", "dep:futures"]
+# Render HTML mail bodies with the real WPE WebKit engine (the same one the
+# browser uses), so an opened HTML email shows true rendered content instead of
+# the deterministic test-engine surface. Needs the WPE stack from
+# os/dev/build-wpe.sh; the default build renders HTML through the hermetic test
+# engine (the sandbox/remote-block plumbing is identical either way).
+html-webview = ["ui/webview-wpe"]
 
 [dev-dependencies]
 # Generates a throwaway self-signed certificate so the `live` engine tests can
