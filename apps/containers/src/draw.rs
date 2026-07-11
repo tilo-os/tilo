@@ -52,7 +52,10 @@ pub fn set_base(transform: Affine) {
     BASE.with(|b| b.set(transform));
 }
 
-fn base() -> Affine {
+/// The per-frame base transform installed by [`set_base`]. Exposed so
+/// hosted `ui` widgets (which take an explicit transform) compose onto
+/// the same HiDPI transform the immediate-mode `draw::*` helpers use.
+pub fn base() -> Affine {
     BASE.with(|b| b.get())
 }
 
