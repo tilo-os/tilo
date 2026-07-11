@@ -1,15 +1,17 @@
-//! Track D2 — the compositor-owned session-lock overlay.
+//! The compositor-owned session-lock overlay.
 //!
 //! When [`crate::compositor::idle::SessionManager::is_locked`] is set,
 //! [`crate::compositor::native::run`] paints *this* scene instead of the
-//! chrome's. The overlay is fully opaque (it fills the viewport), so app
-//! / chrome content is hidden, and the loop captures input until the
-//! explicit unlock action — together that is the security boundary the
-//! lock provides without an `ext-session-lock-v1` client.
+//! chrome's. The overlay is fully opaque (it fills the viewport), so app /
+//! chrome content is hidden, and the loop routes every keystroke into the
+//! lock screen's password field ([`crate::compositor::lock_controller`]) —
+//! the session only unlocks on a verified password. Hidden content + captured
+//! input + credential-gated unlock together are the lock's security boundary.
+//! (`ext-session-lock-v1` is also served as a standard external lock trigger;
+//! qOS renders this overlay rather than a client lock surface.)
 //!
-//! The visual is deliberately minimal (a padlock glyph + two lines of
-//! text): the point of this pass is correct state handling, not a
-//! polished lock screen. The colours come from the OS [`Theme`] so the
+//! The visual is a padlock glyph, a clock/date, and a masked password field
+//! with an inline error line. The colours come from the OS [`Theme`] so the
 //! lock screen matches the rest of the desktop.
 
 use std::f64::consts::PI;
