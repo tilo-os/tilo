@@ -230,6 +230,12 @@ pub struct Message {
     /// Plain-text body (the parsed text/plain part, or an HTML-stripped
     /// fallback).
     pub body: String,
+    /// The original `text/html` part, when the message carried one. Rendered
+    /// sandboxed in the reader's WebView (remote content blocked by default);
+    /// `None` for plain-text-only mail, which renders as text. Never
+    /// serialised into the shared settings store — it is message content.
+    #[serde(default)]
+    pub html_body: Option<String>,
     pub attachments: Vec<Attachment>,
     /// Minutes since the Unix epoch — coarse, but enough for relative
     /// "2h ago" style rendering without pulling `chrono`.
@@ -678,6 +684,7 @@ mod tests {
             cc: vec![],
             subject: subject.into(),
             body: "First line.\nSecond line.".into(),
+            html_body: None,
             attachments: vec![],
             timestamp_min: ts,
             read: false,
