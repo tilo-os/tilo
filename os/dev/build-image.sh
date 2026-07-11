@@ -17,10 +17,10 @@
 # Notes / gotchas baked in from bringup:
 #   * First build is a long COLD Rust compile inside the container; the
 #     Containerfile uses cargo + sccache cache mounts so rebuilds are fast.
-#   * The browser (Servo) is OMITTED: it is unmaintained and does not build
-#     against GCC 15 / C23 (glsl-optimizer 'once_flag' conflict). To re-enable,
-#     add `-p browser` to the builder cargo invocation and a `COPY` in
-#     os/Containerfile.
+#   * The browser is built in-image (`-p browser --features browser/wpe`) and
+#     its WPE WebKit engine + runtime libs are compiled in the `wpe-builder`
+#     stage and copied into the final image (see os/Containerfile). The old
+#     Servo browser is gone.
 source "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
 
 # Fail loudly: a broken container build must NOT silently fall through to imaging
