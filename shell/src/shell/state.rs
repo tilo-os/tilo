@@ -1687,6 +1687,130 @@ impl WorkspaceTree {
         false
     }
 
+    /// Mirror a [`Self::reorder_group_within_strip`] cache move into the
+    /// automerge doc: delete the group's existing entry from the strip's
+    /// `window_groups` list and re-insert a fresh map carrying the group's
+    /// full content (id, `maximized`, `width_pixels`, and its `tabs`) at
+    /// `new_index`. Rebuilt from the passed-in cache [`WindowGroup`] rather
+    /// than read back out of the doc, so it can't drift from what the cache
+    /// just committed.
+    ///
+    /// Tolerant of an unseeded doc: if the strip / group isn't present it
+    /// no-ops (the cache write already happened; a later
+    /// [`Self::seed_doc_from_cache`] picks up the new order). Same shape
+    /// as [`Self::doc_move_tab_across_strips`].
+    pub fn doc_reorder_group_within_strip(
+        &mut self,
+        strip_id: StripId,
+        group: &WindowGroup,
+        new_index: usize,
+    ) {
+        use automerge::{
+            ObjType, ReadDoc, ROOT, ScalarValue, Value, transaction::Transactable,
+        };
+        // Locate the strip's window_groups list.
+        let Some((_, workspaces_id)) =
+            self.doc.get(&ROOT, "workspaces").ok().flatten()
+        else {
+            return;
+        };
+        let ws_len = self.doc.length(&workspaces_id);
+        for ws_idx in 0..ws_len {
+            let Some((_, ws_entry)) =
+                self.doc.get(&workspaces_id, ws_idx).ok().flatten()
+            else {
+                continue;
+            };
+            let Some((_, strips_id)) =
+                self.doc.get(&ws_entry, "strips").ok().flatten()
+            else {
+                continue;
+            };
+            let strips_len = self.doc.length(&strips_id);
+            for s_idx in 0..strips_len {
+                let Some((_, strip_entry)) =
+                    self.doc.get(&strips_id, s_idx).ok().flatten()
+                else {
+                    continue;
+                };
+                let matches = matches!(
+                    self.doc.get(&strip_entry, "id").ok().flatten(),
+                    Some((Value::Scalar(s), _))
+                        if matches!(s.as_ref(), ScalarValue::Uint(id) if *id == strip_id.raw())
+                );
+                if !matches {
+                    continue;
+                }
+                let Some((_, groups_id)) =
+                    self.doc.get(&strip_entry, "window_groups").ok().flatten()
+                else {
+                    return;
+                };
+                // Find the group's current doc index by id.
+                let glen = self.doc.length(&groups_id);
+                let mut cur: Option<usize> = None;
+                for gi in 0..glen {
+                    if let Some((_, g_entry)) =
+                        self.doc.get(&groups_id, gi).ok().flatten()
+                    {
+                        if matches!(
+                            self.doc.get(&g_entry, "id").ok().flatten(),
+                            Some((Value::Scalar(s), _))
+                                if matches!(s.as_ref(), ScalarValue::Uint(id) if *id == group.id)
+                        ) {
+                            cur = Some(gi);
+                            break;
+                        }
+                    }
+                }
+                let Some(cur) = cur else { return };
+                let _ = self.doc.delete(&groups_id, cur);
+                let dest = new_index.min(self.doc.length(&groups_id));
+                let Ok(group_entry) =
+                    self.doc.insert_object(&groups_id, dest, ObjType::Map)
+                else {
+                    return;
+                };
+                let _ = self
+                    .doc
+                    .put(&group_entry, "id", ScalarValue::Uint(group.id));
+                let _ = self.doc.put(
+                    &group_entry,
+                    "maximized",
+                    ScalarValue::Boolean(group.maximized),
+                );
+                let _ = self.doc.put(
+                    &group_entry,
+                    "width_pixels",
+                    ScalarValue::Uint(group.width.pixels() as u64),
+                );
+                if let Ok(tabs_id) =
+                    self.doc.put_object(&group_entry, "tabs", ObjType::List)
+                {
+                    for (l, tab) in group.tabs.iter().enumerate() {
+                        if let Ok(tab_entry) =
+                            self.doc.insert_object(&tabs_id, l, ObjType::Map)
+                        {
+                            let _ = self
+                                .doc
+                                .put(&tab_entry, "id", ScalarValue::Uint(tab.id));
+                            let _ =
+                                self.doc.put(&tab_entry, "title", tab.title.clone());
+                            if let Ok(blob) = serde_json::to_vec(&tab.tile) {
+                                let _ = self.doc.put(
+                                    &tab_entry,
+                                    "tile_json",
+                                    ScalarValue::Bytes(blob),
+                                );
+                            }
+                        }
+                    }
+                }
+                return;
+            }
+        }
+    }
+
     /// Mirror an `apply_drop`-style insert: append a tab map to the
     /// active workspace's first strip's first window-group's `tabs`
     /// list. v1 hardcodes "first/first" because that's what
@@ -2210,6 +2334,65 @@ impl WorkspaceTree {
         // the source strip's first group as a recovery (rare edge case;
         // dest strip vanished between drag start and harvest tick).
         false
+    }
+
+    /// Reorder the window group `group_id` within `strip_id` so it lands
+    /// at `new_index` in the strip's `window_groups` vector. Neighbours
+    /// shift to fill the vacated slot — the whole group (all its tabs,
+    /// its width, its maximized flag) moves as a unit, unlike
+    /// [`Self::move_tab_across_strips`] which relocates a single tab.
+    ///
+    /// `new_index` is clamped to `[0, window_groups.len() - 1]` (the
+    /// index space *after* the group is lifted out), so a caller can pass
+    /// a raw gap index without worrying about the off-by-one that a
+    /// removal introduces. Returns `true` when the order actually changed;
+    /// `false` when the strip / group wasn't found or the group was
+    /// already at the requested slot (so callers can skip a redundant
+    /// doc write / revision bump).
+    ///
+    /// Mirrors the reorder into the automerge doc via
+    /// [`Self::doc_reorder_group_within_strip`] so peer-sync ships the new
+    /// order on the next tick — same cache-then-doc shape as
+    /// [`Self::move_tab_across_strips`].
+    pub fn reorder_group_within_strip(
+        &mut self,
+        strip_id: StripId,
+        group_id: u64,
+        new_index: usize,
+    ) -> bool {
+        // Locate the strip (StripId is workspace-agnostic, so scan all).
+        let mut located: Option<(usize, usize, usize)> = None; // (ws_idx, strip_idx, cur_idx)
+        'scan: for (ws_idx, ws) in self.workspaces.iter().enumerate() {
+            for (strip_idx, strip) in ws.strips.iter().enumerate() {
+                if strip.id != strip_id {
+                    continue;
+                }
+                if let Some(cur_idx) =
+                    strip.window_groups.iter().position(|g| g.id == group_id)
+                {
+                    located = Some((ws_idx, strip_idx, cur_idx));
+                }
+                break 'scan;
+            }
+        }
+        let Some((ws_idx, strip_idx, cur_idx)) = located else {
+            return false;
+        };
+        let groups = &mut self.workspaces[ws_idx].strips[strip_idx].window_groups;
+        // Clamp into the post-removal index space so a raw gap index
+        // (which can equal `len`, "append") lands on the last slot.
+        let dest = new_index.min(groups.len().saturating_sub(1));
+        if dest == cur_idx {
+            return false;
+        }
+        let moved = groups.remove(cur_idx);
+        groups.insert(dest, moved.clone());
+        // Mirror into the doc from the cache copy we just placed, so the
+        // doc's group entry carries the group's full content (tabs +
+        // width + maximized) at the new slot. Tolerant of an unseeded
+        // doc — see [`Self::locate_group`].
+        self.doc_reorder_group_within_strip(strip_id, &moved, dest);
+        true
     }
 
     /// Reconcile the active-group pointer against the set of currently-
@@ -2922,6 +3105,88 @@ mod active_group_tests {
         }"#;
         let g: WindowGroup = serde_json::from_str(legacy).unwrap();
         assert!(!g.maximized);
+    }
+
+    fn group_order(tree: &WorkspaceTree, strip_id: StripId) -> Vec<u64> {
+        tree.workspaces[0]
+            .strips
+            .iter()
+            .find(|s| s.id == strip_id)
+            .unwrap()
+            .window_groups
+            .iter()
+            .map(|g| g.id)
+            .collect()
+    }
+
+    #[test]
+    fn reorder_group_moves_group_to_dropped_index() {
+        // Strip [1, 2, 3]. Drag group 1 to index 2 → [2, 3, 1].
+        let (mut tree, strip_id, ids) = tree_with_n_groups(3);
+        assert_eq!(group_order(&tree, strip_id), vec![1, 2, 3]);
+        let changed = tree.reorder_group_within_strip(strip_id, ids[0], 2);
+        assert!(changed, "moving group 1 to a new slot must report a change");
+        assert_eq!(
+            group_order(&tree, strip_id),
+            vec![2, 3, 1],
+            "group 1 must land at the dropped index, neighbours shift left",
+        );
+    }
+
+    #[test]
+    fn reorder_group_forward_and_backward() {
+        let (mut tree, strip_id, ids) = tree_with_n_groups(4); // [1,2,3,4]
+        // Move last group (4) to the front.
+        assert!(tree.reorder_group_within_strip(strip_id, ids[3], 0));
+        assert_eq!(group_order(&tree, strip_id), vec![4, 1, 2, 3]);
+        // Move it back to the end (index >= len clamps to last slot).
+        assert!(tree.reorder_group_within_strip(strip_id, 4, 99));
+        assert_eq!(group_order(&tree, strip_id), vec![1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn reorder_group_to_same_index_is_a_noop() {
+        let (mut tree, strip_id, ids) = tree_with_n_groups(3);
+        let changed = tree.reorder_group_within_strip(strip_id, ids[1], 1);
+        assert!(!changed, "moving a group to its own slot reports no change");
+        assert_eq!(group_order(&tree, strip_id), vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn reorder_group_unknown_group_is_a_noop() {
+        let (mut tree, strip_id, _ids) = tree_with_n_groups(2);
+        assert!(!tree.reorder_group_within_strip(strip_id, 999, 0));
+        assert_eq!(group_order(&tree, strip_id), vec![1, 2]);
+    }
+
+    #[test]
+    fn reorder_group_mirrors_into_the_seeded_doc() {
+        // With the doc seeded from the cache, a reorder must also reshuffle
+        // the doc's `window_groups` list so peer-sync ships the new order.
+        let (mut tree, strip_id, ids) = tree_with_n_groups(3);
+        tree.seed_doc_from_cache();
+        tree.reorder_group_within_strip(strip_id, ids[0], 2); // [2,3,1]
+
+        use automerge::{ReadDoc, ROOT, ScalarValue, Value};
+        let (_, workspaces_id) = tree.doc.get(&ROOT, "workspaces").unwrap().unwrap();
+        let (_, ws0) = tree.doc.get(&workspaces_id, 0_usize).unwrap().unwrap();
+        let (_, strips_id) = tree.doc.get(&ws0, "strips").unwrap().unwrap();
+        let (_, strip0) = tree.doc.get(&strips_id, 0_usize).unwrap().unwrap();
+        let (_, groups_id) = tree.doc.get(&strip0, "window_groups").unwrap().unwrap();
+        let mut doc_order = Vec::new();
+        for i in 0..tree.doc.length(&groups_id) {
+            let (_, g) = tree.doc.get(&groups_id, i).unwrap().unwrap();
+            if let Some((Value::Scalar(s), _)) = tree.doc.get(&g, "id").unwrap() {
+                if let ScalarValue::Uint(id) = s.as_ref() {
+                    doc_order.push(*id);
+                }
+            }
+        }
+        assert_eq!(
+            doc_order,
+            vec![2, 3, 1],
+            "the doc's window_groups list must mirror the cache reorder",
+        );
     }
 }
 
