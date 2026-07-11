@@ -899,8 +899,33 @@ pub fn run() -> ! {
     // *after* `poll_events` returns — the input arm needs `&mut backend`
     // (for `set_dpms`) which can't be borrowed inside the poll closure.
     let mut pending_events: Vec<BackendEvent> = Vec::new();
+    // Redraw gating. The loop used to `paint()` + `submit_frame()` on
+    // every tick regardless of whether anything changed, pinning a CPU
+    // core at 100% (and driving needless GPU work) even on a completely
+    // static desktop. We now repaint only when there's a reason to:
+    //   - a backend event arrived (input / resize / focus / redraw),
+    //   - the widget tree has an animation in flight,
+    //   - the chrome revision bumped (a state mutation: overlay toggle,
+    //     notification, tab switch, …),
+    //   - a session transition fired (blank / lock / unlock),
+    //   - or the keepalive interval elapsed (a safety net so any missed
+    //     dirty source still refreshes within a second).
+    // Layout still runs every tick so input hit-testing stays current;
+    // only the expensive paint + GPU submit are gated.
+    let keepalive = Duration::from_millis(1000);
+    let mut last_paint = Instant::now();
+    let mut last_revision = frame_builder.chrome_revision();
+    let mut force_first_paint = true;
+    // Optional paint-rate diagnostics (`QOS_PAINT_STATS=1`).
+    let paint_stats = std::env::var("QOS_PAINT_STATS").is_ok();
+    let mut stats_since = Instant::now();
+    let (mut frames_total, mut frames_painted) = (0u32, 0u32);
+    let (mut cause_events, mut cause_revision, mut cause_anim) = (0u32, 0u32, 0u32);
+    let (mut cause_session, mut cause_keepalive) = (0u32, 0u32);
     while !close_requested {
         backend.poll_events(&mut |event| pending_events.push(event));
+        let had_backend_events = !pending_events.is_empty();
+        let mut session_changed = false;
         for event in pending_events.drain(..) {
             match event {
                 BackendEvent::CloseRequested => {
@@ -968,6 +993,7 @@ pub fn run() -> ! {
         // transitions (blank, auto-lock) for this tick.
         for t in session.tick(Instant::now()) {
             apply_session_transition(t, backend.as_mut());
+            session_changed = true;
         }
 
         // Track D1: pump the D-Bus notification bridge into the live
@@ -988,24 +1014,86 @@ pub fn run() -> ! {
         // rather than blanking the shell.
         frame_builder.set_fullscreen(state.fullscreen_group);
 
-        frame_builder.relayout();
-        // When locked, paint the compositor-owned lock overlay instead
-        // of the chrome — app content is never submitted while locked.
-        let scene = if session.is_locked() {
-            let theme = frame_builder.theme().clone();
-            let viewport = frame_builder.viewport();
-            // Count-only summary on the lock screen — no bodies leak.
-            let notif_count = frame_builder.chrome().notification_count();
-            lock_screen::draw_lock_scene(
-                viewport,
-                &theme,
-                frame_builder.text_renderer_mut(),
-                notif_count,
-            )
-        } else {
-            frame_builder.paint()
-        };
-        backend.submit_frame(&scene, OutputId(0));
+        // Decide whether this frame needs repainting *before* doing the
+        // expensive layout pass. Both queries below are cheap and don't
+        // need a fresh layout: `needs_animation_frame` just walks the
+        // widget tree, and the chrome revision is a plain counter bumped
+        // by state mutations (input handlers, the notification pump, the
+        // fullscreen mirror above). Skipping `relayout` + `paint` entirely
+        // on idle frames is what lets the loop fall to near-zero CPU at
+        // rest instead of burning a core re-laying-out an unchanged tree.
+        // Hit-testing stays correct because input is only dispatched on
+        // ticks that carry a backend event, and those force a repaint (and
+        // thus a relayout) below.
+        let revision = frame_builder.chrome_revision();
+        let revision_changed = revision != last_revision;
+        let animating = frame_builder.needs_animation_frame();
+        let keepalive_due = last_paint.elapsed() >= keepalive;
+        let should_paint = force_first_paint
+            || had_backend_events
+            || session_changed
+            || revision_changed
+            || animating
+            || keepalive_due;
+
+        // Diagnostic: `QOS_PAINT_STATS=1` logs, every ~2 s, how many
+        // frames painted vs idled and which condition forced the repaints.
+        // Lets us confirm the render loop actually idles (and pinpoint any
+        // perpetual-animation source) without guessing.
+        if paint_stats {
+            frames_total += 1;
+            if should_paint {
+                frames_painted += 1;
+                if had_backend_events { cause_events += 1; }
+                if session_changed { cause_session += 1; }
+                if revision_changed { cause_revision += 1; }
+                if animating { cause_anim += 1; }
+                if keepalive_due && !(had_backend_events || session_changed || revision_changed || animating) {
+                    cause_keepalive += 1;
+                }
+            }
+            if stats_since.elapsed() >= Duration::from_secs(2) {
+                eprintln!(
+                    "paint-stats: {frames_painted}/{frames_total} painted | \
+                     events={cause_events} revision={cause_revision} anim={cause_anim} \
+                     session={cause_session} keepalive={cause_keepalive}"
+                );
+                frames_total = 0; frames_painted = 0;
+                cause_events = 0; cause_revision = 0; cause_anim = 0;
+                cause_session = 0; cause_keepalive = 0;
+                stats_since = Instant::now();
+            }
+        }
+
+        if should_paint {
+            // Lay out only when we're about to paint. Any structural change
+            // (spliced group, tab switch, resize) is applied here, right
+            // before the scene is built.
+            frame_builder.relayout();
+            // When locked, paint the compositor-owned lock overlay instead
+            // of the chrome — app content is never submitted while locked.
+            let scene = if session.is_locked() {
+                let theme = frame_builder.theme().clone();
+                let viewport = frame_builder.viewport();
+                // Count-only summary on the lock screen — no bodies leak.
+                let notif_count = frame_builder.chrome().notification_count();
+                lock_screen::draw_lock_scene(
+                    viewport,
+                    &theme,
+                    frame_builder.text_renderer_mut(),
+                    notif_count,
+                )
+            } else {
+                frame_builder.paint()
+            };
+            backend.submit_frame(&scene, OutputId(0));
+            last_paint = Instant::now();
+            // Re-read after `relayout`: its `resync_strips_from_tree` pass
+            // can bump the revision, and we must capture that post-paint
+            // value so the next idle tick doesn't see a phantom change.
+            last_revision = frame_builder.chrome_revision();
+            force_first_paint = false;
+        }
 
         // Real-input e2e Phase 1b: accept any new test-control
         // connections, then drain pending bytes from each open one

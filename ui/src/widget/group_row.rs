@@ -1245,16 +1245,16 @@ impl Widget for GroupRow {
         if let WindowEvent::MouseWheel { delta, .. } = event
             && self.rect.contains(self.last_cursor)
         {
-            // Sign convention: GTK / browser `overflow-x-auto`
-            // (LineDelta y>0 = wheel-up = reveal content to the
-            // LEFT = decrease scroll_x → contribution `-y`).
-            // Trackpad horizontal: dx>0 = swipe-right = reveal
-            // content to the RIGHT → contribution `+x`. PixelDelta
-            // carries the same axis convention 1:1. 30 px / LineDelta
-            // matches the strip's prior per-line factor.
+            // Sign convention: a horizontal trackpad swipe pans the strip
+            // in the natural direction — swipe-right (dx>0) reveals content
+            // to the LEFT (decrease scroll_x → contribution `-x`), matching
+            // touch-content-tracks-the-finger. Vertical wheel is promoted to
+            // a horizontal pan the same way (wheel-up reveals content to the
+            // LEFT → `-y`). PixelDelta carries the same axis convention 1:1.
+            // 30 px / LineDelta matches the strip's prior per-line factor.
             let dx = match delta {
-                MouseScrollDelta::LineDelta(x, y) => (*x - *y) as f64 * 30.0,
-                MouseScrollDelta::PixelDelta(pp) => pp.x - pp.y,
+                MouseScrollDelta::LineDelta(x, y) => (-*x - *y) as f64 * 30.0,
+                MouseScrollDelta::PixelDelta(pp) => -pp.x - pp.y,
             };
             if dx != 0.0 {
                 let viewport = self.rect.width().max(1.0);

@@ -124,6 +124,18 @@ pub struct WindowGroup {
     /// `build_layout` rebuild and the new flex_grow / width style takes
     /// effect on the cached taffy node.
     style_dirty: bool,
+    /// The tab id whose `TileHost` the current taffy tile-node was built
+    /// for. `build_layout` only builds the *active* tab's host into the
+    /// tree (inactive tabs are absent), so when the active tab switches
+    /// the cached node stops matching the tab `apply_layout` wants to
+    /// place. Without a rebuild, an `App` tab that becomes active inherits
+    /// the previous tab's node — which for a `Stub`/leaf has no child, so
+    /// `TileHost::apply_layout` skips (the "App content with no taffy
+    /// child" warning) and the app renders at a stale top-left rect.
+    /// `take_structure_dirty` compares this against the live active id and
+    /// requests a rebuild on any divergence so the newly-active host gets
+    /// its own node (and, for apps, its child).
+    built_active: Option<u64>,
     /// One-shot pending maximize value awaiting harvest by the shell.
     /// Set whenever `self.maximized` is mutated by user input (the tab-
     /// bar Maximize2 toggle or the floating restore / close-while-
@@ -175,6 +187,7 @@ impl WindowGroup {
             closing_hosts: HashMap::new(),
             closing_at: None,
             style_dirty: false,
+            built_active: Some(active_id),
             pending_maximize_change: None,
             pending_width_change: None,
         }
@@ -451,6 +464,7 @@ impl WindowGroup {
             closing_hosts: HashMap::new(),
             closing_at: None,
             style_dirty: false,
+            built_active: Some(active_id),
             pending_maximize_change: None,
             pending_width_change: None,
         }
@@ -654,6 +668,11 @@ impl Widget for WindowGroup {
     fn build_layout(&mut self, taffy: &mut TaffyTree<()>, theme: &Theme, node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>) -> NodeId {
         let bar_node = self.bar.build_layout(taffy, theme, node_map);
         let active_id = self.bar.active_id();
+        // Record which tab this tile-node was built for so
+        // `take_structure_dirty` can force a rebuild when the active tab
+        // later switches (otherwise the stale node desyncs from the tab
+        // `apply_layout` places — see `built_active`).
+        self.built_active = Some(active_id);
         let tile_node = if let Some((_, h)) = self.hosts.iter_mut().find(|(i, _)| *i == active_id) {
             h.build_layout(taffy, theme, node_map)
         } else {
@@ -1370,7 +1389,15 @@ impl Widget for WindowGroup {
             .map(|(_, h)| h.take_structure_dirty())
             .fold(false, |acc, d| acc || d);
         let style = std::mem::take(&mut self.style_dirty);
-        bar || hosts || style
+        // The active tab switched since the last `build_layout` (e.g. a tab
+        // click or wheel-cycle that only touched `TabBar::active_id`). The
+        // cached tile-node still belongs to the previously-active host, so
+        // request a rebuild to give the newly-active host its own node —
+        // and, for an `App` tab, its child. `built_active` is seeded to the
+        // constructor's active id and updated in `build_layout`, so a fresh
+        // group that hasn't switched tabs reports clean here.
+        let active_switched = self.built_active != Some(self.bar.active_id());
+        bar || hosts || style || active_switched
     }
     fn needs_animation_frame(&self) -> bool {
         // The tab bar runs a frame-driven drop-zone expand animation
@@ -1402,14 +1429,25 @@ impl Widget for WindowGroup {
         let group_close_in_flight = self.closing_at.is_some_and(|t| {
             t.elapsed() < Duration::from_millis(GROUP_CLOSE_FADE_MS)
         });
+        // Only the *active* tab is laid out and drawn (see `build_layout`
+        // / `draw`, which render just the active host). An inactive tab's
+        // animation signal is therefore invisible and must not keep the
+        // compositor's redraw pump running — otherwise a background tab
+        // hosting a live terminal (whose PTY-poll keeps `needs_animation_
+        // frame` perpetually true) pins the whole shell at 60 fps / 100%
+        // CPU forever. Consider only the active host.
+        let active_id = self.bar.active_id();
+        let host = self
+            .hosts
+            .iter()
+            .find(|(i, _)| *i == active_id)
+            .map(|(_, h)| h.needs_animation_frame())
+            .unwrap_or(false);
         spawn_in_flight
             || close_in_flight
             || group_close_in_flight
             || self.bar.needs_animation_frame()
-            || self
-                .hosts
-                .iter()
-                .any(|(_, h)| h.needs_animation_frame())
+            || host
     }
 }
 
@@ -1565,6 +1603,54 @@ mod tests {
         );
         // Drained — second poll within the same frame is clean.
         assert!(!g.take_structure_dirty(), "structure_dirty drains on poll");
+    }
+
+    /// Switching the active tab must report `take_structure_dirty()` so the
+    /// host re-runs `build_layout` and the newly-active tile gets its own
+    /// taffy node. `build_layout` only builds the *active* tab's host, so
+    /// without this a switched-to `App` tab inherits the previous tab's
+    /// (childless) node and `TileHost::apply_layout` skips it — the app
+    /// then renders at a stale top-left rect. Regression for the live
+    /// "Files app offset to the top-left of its WindowGroup" report.
+    #[test]
+    fn active_tab_switch_marks_structure_dirty_for_layout_rebuild() {
+        use std::collections::HashMap;
+        use taffy::Style;
+        use taffy::prelude::TaffyMaxContent;
+
+        let mut g = make_group();
+        // A fresh group that has never switched tabs is clean.
+        assert!(!g.take_structure_dirty(), "fresh group is not dirty");
+
+        // Do a real build so `built_active` is stamped for the active tab.
+        let theme = Theme::dark();
+        let mut taffy = TaffyTree::<()>::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let group_node = g.build_layout(&mut taffy, &theme, &mut node_map);
+        let root = taffy.new_with_children(Style::default(), &[group_node]).unwrap();
+        taffy.compute_layout(root, taffy::Size::MAX_CONTENT).unwrap();
+        g.apply_layout(&taffy, group_node, Point::ZERO);
+        assert!(
+            !g.take_structure_dirty(),
+            "a built group with no tab switch stays clean",
+        );
+
+        // Switch the active tab the same way the wheel-cycle / click path
+        // does (mutates `TabBar::active_id` only, no rebuild).
+        assert!(g.cycle_active_tab(1), "cycle must change the active tab");
+        assert!(
+            g.take_structure_dirty(),
+            "active-tab switch must report structure dirty so the new tile gets a node",
+        );
+
+        // Once the host rebuilds for the new active tab, it drains clean.
+        let mut taffy2 = TaffyTree::<()>::new();
+        let mut node_map2: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let _ = g.build_layout(&mut taffy2, &theme, &mut node_map2);
+        assert!(
+            !g.take_structure_dirty(),
+            "structure_dirty drains once the host rebuilds for the new active tab",
+        );
     }
 
     /// `take_pending_maximize_change` reports the new maximize value once
