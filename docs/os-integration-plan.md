@@ -60,23 +60,22 @@ enterprise = the same workspace with its host being that machine. Everything dow
 `worktree-*`, `feat-qos-tts`, `scrub-planning-refs`. Local unpushed `wt-{actionmodel,presence,
 deskenv,fracscale,hdr}` are likely superseded by the concurrent-session branches above.
 
-## Phase 6c — daily-driver subsystems (roadmap; each is its own build, not integration)
-Assessment (2026-07-11): unlike phases 1–5, these are **mostly settings-UI-only on `main`** — the
-system integration is genuinely missing. Each is a separate subsystem, so 6c is a roadmap; build
-highest-value first, delineate the rest honestly.
+## Phase 6c — daily-driver subsystems (mostly already built; corrected 2026-07-11)
+A careful re-grep overturned the first-pass "settings-UI-only" read — most of these ARE on `main`;
+the pattern from phases 1–5 (≈80% built) holds even here. Status:
 
-- **Notifications** — settings toggle only; **no notification server**. Build: a compositor-side
-  `org.freedesktop.Notifications` D-Bus service + a layer/overlay surface to display them + a
-  history/DND model the shell owns (apps post via the fdo API). *Highest-value, cleanest scope.*
-- **Session-lock** — `crates/session/greeter` is greetd *login*, not lock-while-active. Build:
-  `ext_session_lock_v1` in the compositor + a lock surface (reuse the greeter's auth). 
-- **Audio routing** — playback engine (`crates/media`) + a `wpctl` settings pane exist; missing is
-  per-app sink/source routing + device hot-switch UI (PipeWire/WirePlumber node graph). Partial → finish.
-- **Power management** — settings pane (powerprofilesctl) exists; missing deeper logind/UPower
-  integration: suspend-on-idle, lid-switch, battery thresholds, inhibitors. Partial → finish.
-- **Accessibility (AT-SPI)** — `ui` has an a11y semantic model + high-contrast + OSK, but **no AT-SPI
-  bridge**. Build: wire `accesskit`'s AT-SPI adapter to the `ui` a11y tree so screen readers see it.
-  *Named daily-driver blocker.*
+- **Notifications** — ✅ **on main + extended.** A real `org.freedesktop.Notifications` zbus service
+  (`shell/src/notifications.rs`) + shell-owned model + themed toast overlay, D-Bus round-trip tested.
+  Added **history + Do-Not-Disturb** (`5e4b6e7d`).
+- **Accessibility (AT-SPI)** — ✅ **on main.** `ui/src/accesskit_bridge.rs` + `screen_reader.rs` +
+  `a11y.rs`, wired into button/link/toggle/tree_view. (Depth of coverage per-widget is the follow-up.)
+- **Session-lock** — 🟡 idle/session scaffolding exists (`shell/src/compositor/idle.rs`); confirm/finish
+  `ext_session_lock_v1` + a lock surface reusing the greeter's auth.
+- **Audio routing** — 🟡 PipeWire infra (screencast) + media engine + a `wpctl` settings pane exist;
+  per-app sink/source routing + device hot-switch UI is the genuine remaining build.
+- **Power management** — 🔴 thinnest: settings pane (powerprofilesctl) only; deeper logind/UPower
+  (suspend-on-idle, lid-switch, battery thresholds, inhibitors) is a real build.
 
-Do NOT fake completion of these. Build the notification server (and/or AT-SPI bridge) with real tests;
-ship the rest as this tracked roadmap.
+Genuine remaining daily-driver work: **power-management (logind/UPore)** and **per-app audio routing**;
+session-lock likely a small finish. Notifications + AT-SPI are done. Don't fake completion of the rest —
+this is the tracked tail.
