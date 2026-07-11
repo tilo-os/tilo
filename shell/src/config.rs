@@ -53,7 +53,7 @@ impl Default for DesktopConfig {
             flatpak_share: FlatpakShareConfig::default(),
             apps: vec![
                 AppConfig { name: "Terminal".into(), icon: "󰆍".into(), command: "quick-terminal".into() },
-                AppConfig { name: "Browser".into(), icon: "󰈹".into(), command: "firefox".into() },
+                AppConfig { name: "Browser".into(), icon: "󰈹".into(), command: "browser".into() },
                 AppConfig { name: "Files".into(), icon: "󰉋".into(), command: "file-explorer".into() },
             ],
         }
