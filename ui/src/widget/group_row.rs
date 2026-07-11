@@ -16,7 +16,7 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 use taffy::{Dimension, Display, FlexDirection, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::{Affine, Point, Rect, RoundedRect};
 use winit::event::{ElementState, Modifiers, MouseButton, MouseScrollDelta, WindowEvent};
 
 use crate::presence::PresenceCtx;
@@ -46,6 +46,30 @@ struct SnapAnim {
     from: f64,
     to: f64,
     started: Instant,
+}
+
+/// Pointer displacement (logical px) a press on a group's tab-bar
+/// background must exceed before it's treated as a whole-group reorder
+/// drag rather than a plain click. Below the threshold the gesture stays
+/// a click (focus the group); past it the row starts moving the group and
+/// paints the drop indicator. Matches the feel of the tab-detach
+/// threshold so grabbing a group's header and jiggling doesn't yank it out
+/// of place.
+const GROUP_DRAG_THRESHOLD: f64 = 6.0;
+
+/// In-flight whole-group reorder drag. Set when a press lands on a
+/// group's tab-bar background (its "titlebar" — see
+/// [`WindowGroup::bar_grab_hit`]) and cleared on release. `src_idx` is the
+/// group's index in `groups` at grab time; `start` is the press point, used
+/// to gate the click-vs-drag threshold. `moved` latches once the pointer
+/// travels past [`GROUP_DRAG_THRESHOLD`], at which point the row claims the
+/// motion events and paints the drop indicator.
+#[derive(Clone, Copy, Debug)]
+struct GroupDrag {
+    src_idx: usize,
+    group_id: u64,
+    start: Point,
+    moved: bool,
 }
 
 /// Payload published by [`GroupRow::take_pending_cross_strip_detach`] when
@@ -192,6 +216,25 @@ pub struct GroupRow {
     /// surface is the only thing painted over the output. `build_layout`
     /// collapses the whole row to `Display::None` while set. Not persisted.
     hidden: bool,
+    /// In-flight whole-group reorder drag (grab a group's tab-bar
+    /// background and slide it to a new slot). `None` when no group is
+    /// being dragged. Distinct from a tab-detach drag (which lives inside
+    /// a child `TabBar` and moves a single tab) and from an inter-group
+    /// resize drag (which changes widths, not order).
+    group_drag: Option<GroupDrag>,
+    /// While a group reorder drag is past its threshold, the insertion
+    /// gap index the cursor currently targets (`0..=groups.len()`). `draw`
+    /// reads it to paint the drop indicator so the user sees where the
+    /// group will land before releasing. Cleared on release.
+    group_reorder_target: Option<usize>,
+    /// One-shot published when a group reorder drag commits: `(group_id,
+    /// new_index)` where `new_index` is the group's landing slot in the
+    /// post-move `groups` vector. The shell drains it each frame via
+    /// [`Self::take_pending_group_reorder`] and mirrors the move into the
+    /// persisted [`WorkspaceTree`] so the new order survives a restart and
+    /// replicates to peers. Take-pattern (leaves `None`) so a later
+    /// harvest tick can't double-apply.
+    pending_group_reorder: Option<(u64, usize)>,
 }
 
 impl GroupRow {
@@ -215,6 +258,9 @@ impl GroupRow {
             leading_inset: 0.0,
             fullscreen_group: None,
             hidden: false,
+            group_drag: None,
+            group_reorder_target: None,
+            pending_group_reorder: None,
         }
     }
 
@@ -359,6 +405,56 @@ impl GroupRow {
     /// the row's viewport rect, otherwise the overflow distance.
     pub fn max_scroll_x(&self) -> f64 {
         (self.content_w - self.rect.width()).max(0.0)
+    }
+
+    /// Pan `scroll_x` so the group with `group_id` is fully inside the
+    /// row's viewport — the Niri "focused column follows into view"
+    /// behaviour. If the group hangs off the right edge the strip scrolls
+    /// right just enough to reveal its right edge; off the left (behind the
+    /// leading wheel-disc gutter) it scrolls left to clear it. A no-op when
+    /// the group is already visible, not found, or not yet laid out.
+    /// Returns `true` if `scroll_x` changed.
+    ///
+    /// Uses the group's live screen rect (populated by `apply_layout`), so
+    /// it must be called after a layout pass — which the shell always has
+    /// by the time it reconciles focus. Cancels any in-flight wheel-snap so
+    /// the into-view target isn't immediately overridden by a snap-back.
+    pub fn scroll_group_into_view(&mut self, group_id: u64) -> bool {
+        let Some(g) = self.groups.iter().find(|g| g.id == group_id) else {
+            return false;
+        };
+        let gr = g.get_rect();
+        // Degenerate rect → layout hasn't run for this group yet.
+        if gr.width() <= 0.0 {
+            return false;
+        }
+        // Groups must clear the leading wheel-disc gutter on the left and
+        // the row's right edge on the right.
+        let left_bound = self.rect.x0 + self.leading_inset;
+        let right_bound = self.rect.x1;
+        let before = self.scroll_x;
+        let mut sx = self.scroll_x;
+        // Reveal the right edge first, then the left — so for a group wider
+        // than the clear viewport the left (start) edge wins and the user
+        // sees the group's beginning.
+        if gr.x1 > right_bound {
+            sx += gr.x1 - right_bound;
+        }
+        if gr.x0 < left_bound {
+            sx -= left_bound - gr.x0;
+        }
+        let viewport = self.rect.width().max(1.0);
+        let upper = self.max_scroll_x().max(viewport * 3.0);
+        sx = sx.clamp(0.0, upper);
+        if (sx - before).abs() > f64::EPSILON {
+            self.scroll_x = sx;
+            self.scroll_dirty = true;
+            self.snap_anim = None;
+            self.last_wheel_at = None;
+            true
+        } else {
+            false
+        }
     }
 
     /// True while a snap-to-nearest-group animation is in flight, or
@@ -704,6 +800,154 @@ impl GroupRow {
     /// [`WindowGroup::take_pending_maximize_change`].
     pub fn take_pending_cross_strip_detach(&mut self) -> Option<CrossStripDetach> {
         self.pending_cross_strip_detach.take()
+    }
+
+    /// Drain the pending whole-group reorder one-shot published when a
+    /// group-drag gesture commits. `Some((group_id, new_index))` means the
+    /// user dragged that group to `new_index` in this row; the shell
+    /// mirrors the move into the persisted [`WorkspaceTree`] so it survives
+    /// a restart and replicates to peers. Take-pattern: leaves `None`
+    /// behind so a later harvest tick can't double-apply.
+    pub fn take_pending_group_reorder(&mut self) -> Option<(u64, usize)> {
+        self.pending_group_reorder.take()
+    }
+
+    /// Whether a whole-group reorder drag is currently past its threshold
+    /// (i.e. actively moving a group). Read by tests and by `draw` to gate
+    /// the drop indicator.
+    pub fn group_drag_active(&self) -> bool {
+        self.group_drag.map(|d| d.moved).unwrap_or(false)
+    }
+
+    /// The insertion gap the active group-drag currently targets, if any.
+    /// Exposed so integration tests can assert the drop indicator tracks
+    /// the cursor without scraping the painted scene.
+    pub fn group_reorder_target(&self) -> Option<usize> {
+        self.group_reorder_target
+    }
+
+    /// Insertion index (`0..=groups.len()`) for a whole-group reorder given
+    /// the cursor position `p`: the slot *before* the first group whose
+    /// horizontal centre sits right of the cursor, or `groups.len()`
+    /// (append) when the cursor is past every group's centre. Center-based
+    /// so nudging a group just past a neighbour's midpoint commits the
+    /// swap, matching the feel of tab reorder.
+    fn group_insertion_index_for(&self, p: Point) -> usize {
+        for (i, g) in self.groups.iter().enumerate() {
+            if p.x < g.get_rect().center().x {
+                return i;
+            }
+        }
+        self.groups.len()
+    }
+
+    /// Apply a committed group reorder to `self.groups` and stamp the
+    /// `pending_group_reorder` one-shot for the shell to mirror. `insert_at`
+    /// is the gap index from [`Self::group_insertion_index_for`] (in the
+    /// pre-removal index space); it's converted to the group's landing slot
+    /// in the post-removal vector so the shell's
+    /// `WorkspaceTree::reorder_group_within_strip` reproduces the exact same
+    /// order. Marks the row structurally dirty so the App rebuilds the
+    /// taffy tree (resize-handle pool + node ids must track the new order).
+    fn commit_group_reorder(&mut self, src: usize, group_id: u64, insert_at: usize) {
+        if src >= self.groups.len() {
+            return;
+        }
+        // Removing `src` shifts every later slot left by one, so an
+        // insertion gap to the right of the source lands one index lower
+        // once the source is lifted out.
+        let final_idx = if insert_at > src { insert_at - 1 } else { insert_at };
+        let dest = final_idx.min(self.groups.len().saturating_sub(1));
+        if dest == src {
+            return;
+        }
+        let g = self.groups.remove(src);
+        self.groups.insert(dest, g);
+        self.structure_dirty = true;
+        self.pending_group_reorder = Some((group_id, dest));
+    }
+
+    /// Whole-group reorder drag state machine. Returns `true` when the
+    /// event is claimed by an in-flight group drag (so the caller skips the
+    /// resize-handle + per-child dispatch that would otherwise fight it).
+    ///
+    /// Click-vs-drag: a press on a group's tab-bar background records a
+    /// *candidate* drag but does NOT claim the press, so a plain click still
+    /// falls through to the child for focus. Only once the pointer travels
+    /// past [`GROUP_DRAG_THRESHOLD`] does the row start claiming motion and
+    /// the eventual release.
+    fn update_group_drag(&mut self, event: &WindowEvent) -> bool {
+        match event {
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } => {
+                // Don't start a group drag while a tab-detach or resize
+                // drag is already in flight, or one is already tracked.
+                if self.group_drag.is_some()
+                    || self.groups.iter().any(|g| g.drag_in_flight())
+                    || self.handles.iter().any(|h| h.is_dragging())
+                {
+                    return false;
+                }
+                if let Some(idx) = self
+                    .groups
+                    .iter()
+                    .position(|g| g.bar_grab_hit(self.last_cursor))
+                {
+                    self.group_drag = Some(GroupDrag {
+                        src_idx: idx,
+                        group_id: self.groups[idx].id,
+                        start: self.last_cursor,
+                        moved: false,
+                    });
+                }
+                // Never claim the press — let it set focus on the group.
+                false
+            }
+            WindowEvent::CursorMoved { .. } => {
+                let Some(mut drag) = self.group_drag else {
+                    return false;
+                };
+                if !drag.moved {
+                    let dx = self.last_cursor.x - drag.start.x;
+                    let dy = self.last_cursor.y - drag.start.y;
+                    if (dx * dx + dy * dy).sqrt() > GROUP_DRAG_THRESHOLD {
+                        drag.moved = true;
+                    }
+                }
+                self.group_drag = Some(drag);
+                if drag.moved {
+                    self.group_reorder_target =
+                        Some(self.group_insertion_index_for(self.last_cursor));
+                    return true;
+                }
+                false
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Released,
+                button: MouseButton::Left,
+                ..
+            } => {
+                let Some(drag) = self.group_drag.take() else {
+                    return false;
+                };
+                let claimed = drag.moved;
+                if drag.moved {
+                    if let Some(insert_at) = self.group_reorder_target.take() {
+                        self.commit_group_reorder(
+                            drag.src_idx,
+                            drag.group_id,
+                            insert_at,
+                        );
+                    }
+                }
+                self.group_reorder_target = None;
+                claimed
+            }
+            _ => false,
+        }
     }
 
     /// Accept a tab payload that the shell-side harvester routed to this
@@ -1142,6 +1386,47 @@ impl Widget for GroupRow {
             }
         }
 
+        // Whole-group reorder drop indicator: a bright accent rule at the
+        // gap the dragged group will land in. Painted only while a group
+        // drag is past its threshold so an idle cursor never shows it.
+        if let (Some(_), Some(ins)) = (
+            self.group_drag.filter(|d| d.moved),
+            self.group_reorder_target,
+        ) {
+            if !self.groups.is_empty() {
+                let gap_x = if ins == 0 {
+                    self.groups[0].get_rect().x0 - 5.0
+                } else if ins >= self.groups.len() {
+                    self.groups.last().unwrap().get_rect().x1 + 5.0
+                } else {
+                    (self.groups[ins - 1].get_rect().x1
+                        + self.groups[ins].get_rect().x0)
+                        / 2.0
+                };
+                let y0 = self.rect.y0;
+                let y1 = self.rect.y1;
+                if y1 > y0 {
+                    let thickness = 4.0;
+                    let capsule = RoundedRect::from_rect(
+                        Rect::new(
+                            gap_x - thickness / 2.0,
+                            y0,
+                            gap_x + thickness / 2.0,
+                            y1,
+                        ),
+                        thickness / 2.0,
+                    );
+                    scene.fill(
+                        vello::peniko::Fill::NonZero,
+                        transform,
+                        theme.tokens.colors.accent[6],
+                        None,
+                        &capsule,
+                    );
+                }
+            }
+        }
+
         // No inter-group drop-zone visual: the white line drawn by the
         // active tab bar already shows the per-pill drop target, and any
         // release in a sibling group's tile-area edge band (resolved by
@@ -1214,6 +1499,17 @@ impl Widget for GroupRow {
         } = event
         {
             self.hover_gap_idx = None;
+        }
+
+        // Whole-group reorder drag (grab a group's tab-bar background and
+        // slide it to a new slot). Runs before the resize-handle and
+        // per-child dispatch so, once past its threshold, it claims the
+        // motion / release those would otherwise contend for. A press
+        // records a candidate without claiming, so a plain click still
+        // reaches the child for focus.
+        if self.update_group_drag(event) {
+            *handled = true;
+            return;
         }
 
         // Horizontal scroll for the strip. Niri-style: the user spins
@@ -2037,6 +2333,149 @@ mod tests {
     /// and don't need a live tree.
     fn make_row_with_groups(tab_specs: &[&[u64]]) -> GroupRow {
         make_row_with_groups_with_taffy(tab_specs).0
+    }
+
+    /// A point in group `idx`'s tab-bar background — right of the last tab
+    /// pill, at the bar's vertical centre — where a whole-group reorder
+    /// grab lands.
+    fn group_grab_point(row: &GroupRow, idx: usize) -> Point {
+        let g = &row.groups[idx];
+        let bar = g.bar_rect();
+        let last = g.tab_rects().last().copied().unwrap_or(bar);
+        Point::new((last.x1 + bar.x1) / 2.0, (bar.y0 + bar.y1) / 2.0)
+    }
+
+    fn press_at(row: &mut GroupRow, taffy: &TaffyTree<()>, root: NodeId, p: Point) {
+        dispatch_at(row, taffy, root, WindowEvent::CursorMoved {
+            device_id: unsafe { std::mem::zeroed() },
+            position: winit::dpi::PhysicalPosition::new(p.x, p.y),
+        });
+        dispatch_at(row, taffy, root, WindowEvent::MouseInput {
+            device_id: unsafe { std::mem::zeroed() },
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+        });
+    }
+
+    fn dispatch_at(row: &mut GroupRow, taffy: &TaffyTree<()>, root: NodeId, ev: WindowEvent) {
+        let modifiers = Modifiers::default();
+        let mut state = AutoCommit::new();
+        let path = automerge::ROOT.clone();
+        let mut handled = false;
+        let mut focus: Option<NodeId> = None;
+        row.handle_event(&ev, 1.0, &modifiers, &mut state, &path, &mut handled, &mut focus, root, taffy);
+    }
+
+    #[test]
+    fn bar_grab_point_hits_the_group_grab_zone() {
+        let row = make_row_with_groups(&[&[1], &[2]]);
+        let p = group_grab_point(&row, 0);
+        assert!(
+            row.groups[0].bar_grab_hit(p),
+            "the trailing tab-bar background must be a valid group-grab zone",
+        );
+        // A tab pill is NOT a grab zone (it drives the tab gesture).
+        let pill = row.groups[0].tab_rects()[0].center();
+        assert!(!row.groups[0].bar_grab_hit(pill));
+    }
+
+    #[test]
+    fn drag_group_to_end_reorders_group_vector_and_publishes_one_shot() {
+        // Row [100, 200, 300]. Grab group 100's header and drag it past
+        // group 300's centre → it lands last: [200, 300, 100].
+        let (mut row, taffy, root) = make_row_with_groups_with_taffy(&[&[1], &[2], &[3]]);
+        assert_eq!(row.group_ids(), vec![100, 200, 300]);
+
+        let grab = group_grab_point(&row, 0);
+        press_at(&mut row, &taffy, root, grab);
+        // Move past group 300's centre so the insertion gap is "append".
+        let past = Point::new(row.groups[2].get_rect().center().x + 60.0, grab.y);
+        dispatch_at(&mut row, &taffy, root, WindowEvent::CursorMoved {
+            device_id: unsafe { std::mem::zeroed() },
+            position: winit::dpi::PhysicalPosition::new(past.x, past.y),
+        });
+        assert!(row.group_drag_active(), "past-threshold move must engage the drag");
+        assert_eq!(
+            row.group_reorder_target(),
+            Some(3),
+            "cursor past every group's centre targets the append gap",
+        );
+        dispatch_at(&mut row, &taffy, root, WindowEvent::MouseInput {
+            device_id: unsafe { std::mem::zeroed() },
+            state: ElementState::Released,
+            button: MouseButton::Left,
+        });
+
+        assert_eq!(
+            row.group_ids(),
+            vec![200, 300, 100],
+            "dragged group must land at the dropped slot; neighbours shift left",
+        );
+        assert_eq!(
+            row.take_pending_group_reorder(),
+            Some((100, 2)),
+            "commit must publish (group_id, landing_index) for the shell to persist",
+        );
+    }
+
+    #[test]
+    fn drag_group_backwards_between_two_groups() {
+        // Row [100, 200, 300]. Grab group 300 and drop it between 100 and
+        // 200 → [100, 300, 200].
+        let (mut row, taffy, root) = make_row_with_groups_with_taffy(&[&[1], &[2], &[3]]);
+        let grab = group_grab_point(&row, 2);
+        press_at(&mut row, &taffy, root, grab);
+        // Aim at the left half of group 200 so the insertion gap is 1
+        // (drop before group 200).
+        let target = Point::new(row.groups[1].get_rect().center().x - 20.0, grab.y);
+        dispatch_at(&mut row, &taffy, root, WindowEvent::CursorMoved {
+            device_id: unsafe { std::mem::zeroed() },
+            position: winit::dpi::PhysicalPosition::new(target.x, target.y),
+        });
+        dispatch_at(&mut row, &taffy, root, WindowEvent::MouseInput {
+            device_id: unsafe { std::mem::zeroed() },
+            state: ElementState::Released,
+            button: MouseButton::Left,
+        });
+        assert_eq!(row.group_ids(), vec![100, 300, 200]);
+    }
+
+    #[test]
+    fn plain_click_on_bar_background_does_not_reorder() {
+        // Press + release with no motion past the threshold is a click,
+        // not a drag: the order is unchanged and nothing is published.
+        let (mut row, taffy, root) = make_row_with_groups_with_taffy(&[&[1], &[2], &[3]]);
+        let grab = group_grab_point(&row, 0);
+        press_at(&mut row, &taffy, root, grab);
+        dispatch_at(&mut row, &taffy, root, WindowEvent::MouseInput {
+            device_id: unsafe { std::mem::zeroed() },
+            state: ElementState::Released,
+            button: MouseButton::Left,
+        });
+        assert_eq!(row.group_ids(), vec![100, 200, 300], "a click must not reorder");
+        assert_eq!(row.take_pending_group_reorder(), None);
+        assert!(!row.group_drag_active());
+    }
+
+    #[test]
+    fn scroll_group_into_view_pans_to_reveal_offscreen_group() {
+        // A wide strip whose content overflows the (narrow) viewport. The
+        // last group starts off the right edge; scroll_group_into_view must
+        // pan right so it's fully visible.
+        let (mut row, _taffy, _root) = make_row_with_groups_with_taffy(&[&[1], &[2], &[3], &[4], &[5]]);
+        // Shrink the row's viewport so content overflows.
+        row.set_rect_for_test(Rect::new(0.0, 0.0, 700.0, 600.0));
+        row.set_content_w_for_test(row.content_width());
+        // The far-right group is group id 500 (100 + 4*100).
+        let target_id = 500;
+        let before = row.scroll_x();
+        let changed = row.scroll_group_into_view(target_id);
+        assert!(changed, "an off-screen group must trigger a scroll");
+        assert!(
+            row.scroll_x() > before,
+            "revealing a right-edge group must increase scroll_x (was {before}, now {})",
+            row.scroll_x(),
+        );
     }
 
     #[test]

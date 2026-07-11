@@ -176,6 +176,13 @@ pub struct ShellOverlayHost {
     /// the content for the rest of the process lifetime, so the pointer
     /// remains valid as long as `&mut self` does.
     group_row_ptrs: HashMap<StripId, *mut GroupRow>,
+    /// Per-strip record of the last active-group id that
+    /// [`Self::scroll_active_group_into_view`] scrolled into view. Lets the
+    /// focus-follow scroll stay edge-triggered: it only re-centres the
+    /// strip when the persisted `active_group` pointer actually changes, so
+    /// a user who wheels away from the focused group isn't fought by a
+    /// per-frame snap-back. Seeded lazily on first reconcile.
+    last_scrolled_active_group: HashMap<StripId, GroupId>,
     /// Hit rect for the "+ Add workspace" affordance painted at the tail
     /// of the overview's vertical workspace list. `Rect::ZERO` until the
     /// first overview draw populates it; cleared back to `Rect::ZERO`
@@ -445,6 +452,7 @@ impl ShellOverlayHost {
             palette_opened_at: None,
             palette_was_visible: false,
             group_row_ptrs: HashMap::new(),
+            last_scrolled_active_group: HashMap::new(),
             add_workspace_rect: Rect::ZERO,
             ws_settings_tab_pill_rects: [Rect::ZERO; 5],
             permissions_revoke_rects: Vec::new(),
@@ -1075,6 +1083,88 @@ impl ShellOverlayHost {
         }
     }
 
+    /// Per-tick wire-up that mirrors a completed whole-group reorder drag
+    /// into the persisted [`crate::shell::state::WorkspaceTree`]. Walks the
+    /// captured [`GroupRow`] pointers, drains each row's
+    /// [`GroupRow::take_pending_group_reorder`] one-shot, and calls
+    /// [`WorkspaceTree::reorder_group_within_strip`] so the strip's
+    /// `window_groups` order in the data layer matches what the user just
+    /// dropped on screen. That method also mirrors the move into the
+    /// automerge doc, so peer-sync ships the new order.
+    ///
+    /// Without this hook a group-drag is a widget-only reshuffle that
+    /// resets to the persisted order on the next shell restart. Mirrors
+    /// [`Self::harvest_pending_width_changes`] in shape; gated on a
+    /// non-empty pending pile so quiescent frames cost a single map walk.
+    fn harvest_pending_group_reorder(&mut self) {
+        if self.group_row_ptrs.is_empty() {
+            return;
+        }
+        let Some(chrome) = self.chrome.clone() else {
+            return;
+        };
+        let mut changes: Vec<(StripId, u64, usize)> = Vec::new();
+        for (&strip_id, &ptr) in &self.group_row_ptrs {
+            // SAFETY: see field doc on `group_row_ptrs`.
+            let row: &mut GroupRow = unsafe { &mut *ptr };
+            if let Some((group_id, new_index)) = row.take_pending_group_reorder() {
+                changes.push((strip_id, group_id, new_index));
+            }
+        }
+        if changes.is_empty() {
+            return;
+        }
+        let st = chrome.borrow_mut();
+        let mut tree = st.tree_mut();
+        for (strip_id, group_id, new_index) in changes {
+            tree.reorder_group_within_strip(strip_id, group_id, new_index);
+        }
+    }
+
+    /// Per-tick wire-up that keeps the focused window group scrolled into
+    /// view. Edge-triggered on a change to the persisted `active_group`
+    /// pointer for a strip: when the focused group differs from the one we
+    /// last scrolled to, [`GroupRow::scroll_group_into_view`] pans the
+    /// strip so the newly-focused group is fully visible. Comparing against
+    /// the last-scrolled id (rather than scrolling every frame) is what lets
+    /// the user freely wheel away from the focused group without the strip
+    /// yanking it back — only a genuine focus change re-centres it.
+    fn scroll_active_group_into_view(&mut self) {
+        if self.group_row_ptrs.is_empty() {
+            return;
+        }
+        let Some(chrome) = self.chrome.clone() else {
+            return;
+        };
+        // Snapshot each strip's current active group from the tree.
+        let active: Vec<(StripId, GroupId)> = {
+            let st = chrome.borrow();
+            let tree = st.tree();
+            self.group_row_ptrs
+                .keys()
+                .filter_map(|&sid| {
+                    tree.active_group_for(sid).map(|gid| (sid, gid))
+                })
+                .collect()
+        };
+        for (strip_id, group_id) in active {
+            let changed = self
+                .last_scrolled_active_group
+                .get(&strip_id)
+                .copied()
+                != Some(group_id);
+            if !changed {
+                continue;
+            }
+            if let Some(&ptr) = self.group_row_ptrs.get(&strip_id) {
+                // SAFETY: see field doc on `group_row_ptrs`.
+                let row: &mut GroupRow = unsafe { &mut *ptr };
+                row.scroll_group_into_view(group_id);
+            }
+            self.last_scrolled_active_group.insert(strip_id, group_id);
+        }
+    }
+
     /// Per-tick wire-up for cross-strip tab drag-drop (#151).
     ///
     /// Walks the captured [`GroupRow`] pointers, drains each row's
@@ -1360,6 +1450,33 @@ impl ShellOverlayHost {
     #[cfg(any(test, debug_assertions))]
     pub fn tick_cross_strip_dispatch_for_tests(&mut self) {
         self.dispatch_cross_strip_detaches();
+    }
+
+    /// Test-only one-shot harvest: lets integration tests invoke the
+    /// per-frame whole-group reorder writeback from outside `update`.
+    #[cfg(any(test, debug_assertions))]
+    pub fn tick_pending_group_reorder_harvest_for_tests(&mut self) {
+        self.harvest_pending_group_reorder();
+    }
+
+    /// Test-only one-shot: run the focus-follow scroll reconcile from
+    /// outside `update`. Mirrors what [`Widget::update`] runs each frame.
+    #[cfg(any(test, debug_assertions))]
+    pub fn tick_scroll_active_into_view_for_tests(&mut self) {
+        self.scroll_active_group_into_view();
+    }
+
+    /// Test-only mutable access to a strip's live [`GroupRow`] so
+    /// integration tests can read `scroll_x` / handle geometry and drive
+    /// the reorder / resize / scroll gestures through the real widget.
+    #[cfg(any(test, debug_assertions))]
+    pub fn group_row_mut_for_tests(
+        &mut self,
+        strip_id: StripId,
+    ) -> Option<&mut GroupRow> {
+        let &ptr = self.group_row_ptrs.get(&strip_id)?;
+        // SAFETY: see field doc on `group_row_ptrs`.
+        Some(unsafe { &mut *ptr })
     }
 
     /// Read-only accessor for the cached "+ Add workspace" tile rect.
@@ -2419,6 +2536,12 @@ impl Widget for ShellOverlayHost {
         // `WorkspaceTree`. Same take-pattern as the maximize writeback;
         // runs once per gesture, not once per pixel.
         self.harvest_pending_width_changes();
+        // Mirror any in-frame whole-group reorder drag (grab a group's
+        // tab-bar background, slide it to a new slot) into the persisted
+        // `WorkspaceTree` so the strip's group order survives a restart and
+        // replicates to peers. Same one-shot take-pattern as the width
+        // writeback.
+        self.harvest_pending_group_reorder();
         // Mirror the widget-side `TabBar::active_id` into the persisted
         // `WorkspaceTree::group.active_tab`. Without this, clicking a
         // different tab pill flips the visible content but the tree's
@@ -2428,6 +2551,13 @@ impl Widget for ShellOverlayHost {
         // `tree.active_group` / `tree.active_strip` on group focus so
         // the search-scope narrowing has an honest anchor.
         self.harvest_active_tab_writeback();
+        // Keep the focused group scrolled into view. Edge-triggered on a
+        // change to the strip's `active_group` pointer, so a manual wheel
+        // pan away from the focus isn't fought — only a genuine focus
+        // change re-centres the strip (Niri "focused column follows").
+        // Runs after `harvest_active_tab_writeback` so a focus change made
+        // this frame is already reflected in `active_group`.
+        self.scroll_active_group_into_view();
         // Cross-strip tab drag-drop (#151): drain any `GroupRow` that
         // published a cross-strip detach during this frame's events and
         // splice the dragged tab into whichever strip's row contains the
