@@ -20,7 +20,7 @@
 use std::path::Path;
 
 use crate::shell::state::{
-    AppKind, Tab, TileContent, WindowGroup, WindowWidth, WorkspaceTree, next_id,
+    AppKind, GroupId, StripId, Tab, TileContent, WindowGroup, WindowWidth, WorkspaceTree, next_id,
 };
 use crate::shell::tile::{
     Strip as RuntimeStrip, Tab as RuntimeTab, TileContent as RuntimeTile,
@@ -141,6 +141,70 @@ pub fn apply_workspace_drop(tree: &mut WorkspaceTree, item: DraggedItem) -> Opti
         doc_tile_blob,
     );
     Some(tab_id)
+}
+
+/// Cursor-targeted counterpart of [`apply_workspace_drop`]. Splices the
+/// new tab into the **specific** `(strip_id, group_id)` the pointer was
+/// over at drop time, rather than the active workspace's first group.
+/// This is the routing path the compositor takes for a real
+/// `WindowEvent::DroppedFile`: the caller resolves the group under the
+/// cursor via the same hit-test used for click-focus
+/// (`overlay_host::pick_group_at`) and passes the winner here.
+///
+/// Only the active workspace is rendered, so its strips are the only
+/// ones a cursor can be over — we look the strip/group up inside the
+/// active workspace and return `None` if either id is stale (e.g. the
+/// group closed between the pointer move and the drop). Returning `None`
+/// lets the caller treat an empty-area / stale-target drop as a defined
+/// no-op instead of dumping the file into an arbitrary window.
+pub fn apply_workspace_drop_at(
+    tree: &mut WorkspaceTree,
+    item: DraggedItem,
+    strip_id: StripId,
+    group_id: GroupId,
+) -> Option<u64> {
+    let kind = decide_app_for_drop(&item);
+    let label = tab_label_for(&item, &kind);
+    let tab = Tab {
+        id: next_id(),
+        title: label.clone(),
+        tile: TileContent::AppPlaceholder { kind, label },
+    };
+    let tab_id = tab.id;
+    // Capture for the doc mirror before the cache `push` consumes the tab.
+    let doc_title = tab.title.clone();
+    let doc_tile_blob = serde_json::to_vec(&tab.tile).unwrap_or_default();
+
+    let ws = tree.active_workspace_mut()?;
+    let strip = ws.strips.iter_mut().find(|s| s.id == strip_id)?;
+    let group = strip.window_groups.iter_mut().find(|g| g.id == group_id)?;
+    group.tabs.push(tab);
+    group.active_tab = tab_id;
+
+    // Mirror the cache append into the automerge doc so peers observe the
+    // new tab on the next sync round. No-op if the active workspace / the
+    // target group isn't seeded into the doc yet.
+    tree.doc_append_tab_to_group_of_active_workspace(
+        group_id,
+        tab_id,
+        doc_title,
+        doc_tile_blob,
+    );
+    Some(tab_id)
+}
+
+/// [`apply_workspace_drop_at`] overload that takes a `Path` and does the
+/// [`DraggedItem::from_path`] conversion. Used by
+/// [`super::chrome_state::ChromeState::handle_file_drop_at`] on the real
+/// `WindowEvent::DroppedFile` path.
+pub fn apply_workspace_drop_at_from_path(
+    tree: &mut WorkspaceTree,
+    path: &Path,
+    strip_id: StripId,
+    group_id: GroupId,
+) -> Option<u64> {
+    let item = DraggedItem::from_path(path)?;
+    apply_workspace_drop_at(tree, item, strip_id, group_id)
 }
 
 /// Map a persisted-state [`AppKind`] onto a UI-layer [`UiAppKind`]. The
@@ -410,6 +474,99 @@ mod tests {
         assert_eq!(strip.window_groups.len(), 1);
         assert_eq!(strip.window_groups[0].active_tab, tab_id);
         assert_eq!(strip.window_groups[0].tabs[0].title, "Files — src");
+    }
+
+    #[test]
+    fn apply_drop_at_targets_the_named_group_not_the_first() {
+        let mut tree = WorkspaceTree::bootstrap_default();
+        // Give the active workspace's first strip a SECOND group, so
+        // "first group" and "target group" are distinguishable.
+        let (strip_id, first_group_id, second_group_id) = {
+            let ws = tree.active_workspace_mut().unwrap();
+            let strip = ws.strips.first_mut().unwrap();
+            let first_group_id = strip.window_groups[0].id;
+            let second = WindowGroup {
+                id: next_id(),
+                tabs: vec![Tab {
+                    id: next_id(),
+                    title: "existing".into(),
+                    tile: TileContent::AppPlaceholder {
+                        kind: AppKind::FileExplorer,
+                        label: "existing".into(),
+                    },
+                }],
+                active_tab: 0,
+                width: WindowWidth::Normal,
+                maximized: false,
+            };
+            let second_group_id = second.id;
+            strip.window_groups.push(second);
+            (strip.id, first_group_id, second_group_id)
+        };
+
+        let first_before = group_by_id(&tree, first_group_id).tabs.len();
+        let second_before = group_by_id(&tree, second_group_id).tabs.len();
+
+        let tab_id = apply_workspace_drop_at(
+            &mut tree,
+            DraggedItem::file("main.ts"),
+            strip_id,
+            second_group_id,
+        )
+        .expect("tab_id");
+
+        assert_eq!(
+            group_by_id(&tree, first_group_id).tabs.len(),
+            first_before,
+            "the first group must be untouched when the drop targets another group"
+        );
+        let second = group_by_id(&tree, second_group_id);
+        assert_eq!(second.tabs.len(), second_before + 1);
+        assert_eq!(second.active_tab, tab_id);
+        assert_eq!(second.tabs.last().unwrap().id, tab_id);
+        assert_eq!(second.tabs.last().unwrap().title, "main.ts");
+    }
+
+    #[test]
+    fn apply_drop_at_returns_none_for_unknown_group() {
+        let mut tree = WorkspaceTree::bootstrap_default();
+        let strip_id = tree.active_workspace().unwrap().strips[0].id;
+        // A group id that doesn't exist in the strip → stale target.
+        let result = apply_workspace_drop_at(
+            &mut tree,
+            DraggedItem::file("x.ts"),
+            strip_id,
+            9_999_999,
+        );
+        assert!(
+            result.is_none(),
+            "a drop onto a stale/unknown group must resolve to None, not panic \
+             or fall back to the first group"
+        );
+    }
+
+    #[test]
+    fn apply_drop_at_returns_none_for_unknown_strip() {
+        let mut tree = WorkspaceTree::bootstrap_default();
+        let group_id = tree.active_workspace().unwrap().strips[0].window_groups[0].id;
+        let result = apply_workspace_drop_at(
+            &mut tree,
+            DraggedItem::file("x.ts"),
+            crate::shell::state::StripId::new(),
+            group_id,
+        );
+        assert!(result.is_none(), "an unknown strip must resolve to None");
+    }
+
+    /// Locate a group by id anywhere in the active workspace's strips.
+    fn group_by_id(tree: &WorkspaceTree, group_id: u64) -> &WindowGroup {
+        tree.active_workspace()
+            .unwrap()
+            .strips
+            .iter()
+            .flat_map(|s| s.window_groups.iter())
+            .find(|g| g.id == group_id)
+            .expect("group present")
     }
 
     #[test]
