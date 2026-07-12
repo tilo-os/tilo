@@ -62,6 +62,14 @@ enum Cmd {
         /// `signature_hex`. Same shape as `qos-pkg`'s identity files.
         #[arg(long)]
         identity: Option<PathBuf>,
+        /// Extra shared object to place at the top of the bundle's
+        /// `lib/` (repeatable). Use it to fold the Rust
+        /// `libstd-<hash>.so` and the qOS `libruntime_dylib.so` into
+        /// the bundle so thin (`-C prefer-dynamic`) apps resolve them
+        /// via the launcher's `LD_LIBRARY_PATH=<mount>/lib`. Each is
+        /// hashed + signed like every other bundle file.
+        #[arg(long = "include", value_name = "PATH")]
+        include: Vec<PathBuf>,
     },
     /// Verify an existing bundle by recomputing hashes (and, when
     /// signed, checking the signature).
@@ -120,6 +128,7 @@ fn main() -> ExitCode {
             from,
             arch,
             identity,
+            include,
         } => match build_bundle_with(
             &out,
             &version,
@@ -127,6 +136,7 @@ fn main() -> ExitCode {
                 from: from.as_deref(),
                 arch: arch.as_deref(),
                 identity: identity.as_deref(),
+                extra_libs: &include,
             },
         ) {
             Ok(manifest) => {

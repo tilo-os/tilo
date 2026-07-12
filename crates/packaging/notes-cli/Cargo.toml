@@ -11,7 +11,18 @@ path = "src/main.rs"
 # Uses the `cli` SDK for workspace-path resolution + terminal-aware
 # output. Ships as a `type = "cli"` package (see manifest.toml).
 
+[features]
+# Build `notes` as a thin app. Enabling this brings the shared runtime
+# SDK dylib (`runtime-dylib` → libruntime_dylib.so) onto the link path;
+# combined with `-C prefer-dynamic --profile thin-app` it links `cli`
+# (and its whole runtime + tokio graph) and libstd dynamically, so the
+# `notes` binary carries only its own code. Off by default — a normal
+# `cargo build --release -p notes-cli` is an unchanged static build.
+thin = ["dep:runtime-dylib"]
+
 [dependencies]
 cli    = { path = "../../runtime/cli" }
 anyhow = "1"
 clap   = { version = "4", features = ["derive"] }
+# Only pulled in under `--features thin`; see the `thin` feature above.
+runtime-dylib = { path = "../../runtime/runtime-dylib", optional = true }
