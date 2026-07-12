@@ -23,7 +23,9 @@ use crate::shell::notification::{
     MAX_HISTORY, MAX_NOTIFICATIONS, Notification, NotificationIconKind, NotificationSeverity,
 };
 use crate::shell::quick_settings::{BtDevice, PowerProfile, QsLevel, WifiNetwork};
-use crate::shell::state::{AppId, Capability, WorkspaceTree, WorkspaceTreeHandle};
+use crate::shell::state::{
+    AppId, Capability, GroupId, StripId, WorkspaceTree, WorkspaceTreeHandle,
+};
 // Re-export WsTab so chrome users can refer to the tab routing enum
 // without reaching into `workspace_settings`. The enum itself lives
 // next to the modal widget; the chrome holds a copy of the active tab
@@ -382,6 +384,76 @@ impl ChromeState {
             self.bump();
         }
         tab_id
+    }
+
+    /// Cursor-targeted file drop: splice the dropped file's app into the
+    /// specific `(strip_id, group_id)` the pointer was over at drop time,
+    /// then record a per-workspace filesystem grant so the target app can
+    /// actually read the file. This is the production
+    /// `WindowEvent::DroppedFile` path — the overlay host resolves the
+    /// group under the cursor via the same hit-test used for click-focus
+    /// (`overlay_host::pick_group_at`) and hands the winner here.
+    ///
+    /// Returns the new tab id, or `None` when the target is stale / the
+    /// path has no filename — the caller treats `None` as a defined
+    /// no-op (an empty-area drop opens nothing rather than dumping the
+    /// file into an arbitrary window). No grant is recorded on `None`.
+    pub fn handle_file_drop_at(
+        &mut self,
+        path: &std::path::Path,
+        strip_id: StripId,
+        group_id: GroupId,
+    ) -> Option<u64> {
+        let tab_id = {
+            let mut tree = self.tree_mut();
+            super::workspace_drop::apply_workspace_drop_at_from_path(
+                &mut *tree, path, strip_id, group_id,
+            )
+        };
+        if tab_id.is_some() {
+            // A dropped file is an explicit capability grant to the app
+            // the user aimed at — record it before the widget re-syncs.
+            self.grant_dropped_file_access(path);
+            self.bump();
+        }
+        tab_id
+    }
+
+    /// Record the dropped file as a per-workspace filesystem capability
+    /// for the app that will open it, honouring the sandbox: the grant
+    /// goes through the SAME [`GrantStoreHandle`] the portal / permission
+    /// prompt uses, so `sandbox::profile::apply_grants` picks it up when
+    /// the app spawns. Keyed by the built-in app's name (the same
+    /// vocabulary the persisted tile uses) so `Files` / `Editor` drops
+    /// each accrue their own allowlist entry.
+    ///
+    /// A drop is treated like the permission prompt's "Session" choice:
+    /// read-only, session-scoped (cleared on shell restart) — the least
+    /// privilege that satisfies "let this app use this file now". Skipped
+    /// if the app already holds a grant covering the path, so repeated
+    /// drops don't pile up duplicate capabilities.
+    fn grant_dropped_file_access(&self, path: &std::path::Path) {
+        use crate::shell::state::{FsMode, GrantScope};
+        // Which built-in app opens this file governs which grant key we
+        // write — same classification the tab splice used.
+        let Some(item) = super::workspace_drop::DraggedItem::from_path(path) else {
+            return;
+        };
+        let app_id = super::workspace_drop::decide_app_for_drop(&item)
+            .as_str()
+            .to_string();
+        let ws_id = self.tree().active;
+        let store = crate::portal::GrantStoreHandle::new(self.tree_handle());
+        let caller = crate::portal::PortalCaller::new(ws_id, app_id);
+        if store.filesystem_path_granted(&caller, path) {
+            return;
+        }
+        let cap = Capability::Filesystem {
+            path: path.to_path_buf(),
+            mode: FsMode::Read,
+            scope: GrantScope::Session,
+        };
+        store.insert(&caller, cap);
     }
 
     /// Append a new empty workspace to `tree.workspaces`, activate it,
