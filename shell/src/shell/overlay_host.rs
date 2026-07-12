@@ -132,13 +132,11 @@ pub struct ShellOverlayHost {
     /// over — we slide the new one toward its rest position from an
     /// offset of `sign * viewport_height` to 0.
     ws_slide_dir: f32,
-    /// Rising-edge timestamp for the quick-settings popover entry
-    /// animation (concept `QuickSettings.tsx:165-168`, opens with
-    /// `initial={{ opacity: 0, y: -10, scale: 0.95 }}` →
-    /// `animate={{ opacity: 1, y: 0, scale: 1 }}`). `None` means no
-    /// animation is in flight; cleared when the popover closes so the
-    /// next open replays the motion.
-    qs_opened_at: Option<Instant>,
+    /// Interruptible open/close driver for the quick-settings popover.
+    /// Follows the `quick_settings` flag each frame; unlike the raw flag
+    /// it keeps the popover drawn through its close curve so it fades +
+    /// slides OUT instead of vanishing.
+    qs_transition: ui::Transition,
     /// Previous-frame visibility of the quick-settings flag, used to
     /// detect the rising edge (open transition) without reaching into
     /// the chrome on every tick.
@@ -150,18 +148,14 @@ pub struct ShellOverlayHost {
     /// only on Released so a fast drag doesn't spawn a subprocess per
     /// pixel of motion.
     qs_slider_drag: Option<usize>,
-    /// Rising-edge timestamp for the workspace-settings modal entry
-    /// animation. Concept `WorkspaceSettingsModal.tsx:42-46` uses
-    /// `initial={{ opacity: 0, scale: 0.95, y: 20 }}` →
-    /// `animate={{ opacity: 1, scale: 1, y: 0 }}`. Cleared on close.
-    ws_settings_opened_at: Option<Instant>,
     ws_settings_was_open: bool,
-    /// Rising-edge timestamp for the command-palette / global-search
-    /// modal entry animation. Concept `GlobalSearch.tsx:109-113` uses
-    /// `initial={{ opacity: 0, scale: 0.9, y: 20 }}` →
-    /// `animate={{ opacity: 1, scale: 1, y: 0 }}`. Cleared on close.
-    palette_opened_at: Option<Instant>,
+    /// Interruptible open/close driver for the workspace-settings modal
+    /// — like `qs_transition` but for the modal, so it fades + scales
+    /// OUT on close instead of vanishing.
+    ws_settings_transition: ui::Transition,
     palette_was_visible: bool,
+    /// Interruptible open/close driver for the command palette.
+    palette_transition: ui::Transition,
     /// Per-strip raw pointers to the [`GroupRow`] widgets inside `content`.
     /// Captured at [`build_nirios_overlay_host_with_chrome`] time and used
     /// each frame by [`Self::reconcile_active_group_off_closing`] to harvest
@@ -444,13 +438,13 @@ impl ShellOverlayHost {
             last_active_ws: None,
             ws_slide_started: None,
             ws_slide_dir: 0.0,
-            qs_opened_at: None,
+            qs_transition: ui::Transition::closed(),
             qs_was_open: false,
             qs_slider_drag: None,
-            ws_settings_opened_at: None,
             ws_settings_was_open: false,
-            palette_opened_at: None,
+            ws_settings_transition: ui::Transition::closed(),
             palette_was_visible: false,
+            palette_transition: ui::Transition::closed(),
             group_row_ptrs: HashMap::new(),
             last_scrolled_active_group: HashMap::new(),
             add_workspace_rect: Rect::ZERO,
@@ -1992,9 +1986,7 @@ impl ShellOverlayHost {
             return;
         }
         self.palette_was_visible = true;
-        self.palette_opened_at = Some(
-            Instant::now() - Duration::from_millis(MODAL_OPEN_ANIM_MS + 1),
-        );
+        self.palette_transition = ui::Transition::open();
     }
 
     /// See [`Self::force_palette_settled`].
@@ -2003,9 +1995,7 @@ impl ShellOverlayHost {
             return;
         }
         self.qs_was_open = true;
-        self.qs_opened_at = Some(
-            Instant::now() - Duration::from_millis(QS_OPEN_ANIM_MS + 1),
-        );
+        self.qs_transition = ui::Transition::open();
     }
 
     /// Refresh every quick-settings field from the OS by calling the
@@ -2080,9 +2070,7 @@ impl ShellOverlayHost {
             return;
         }
         self.ws_settings_was_open = true;
-        self.ws_settings_opened_at = Some(
-            Instant::now() - Duration::from_millis(MODAL_OPEN_ANIM_MS + 1),
-        );
+        self.ws_settings_transition = ui::Transition::open();
     }
 
     /// Font size the overview "Workspaces" h1 is drawn at, in logical pixels.
@@ -2246,9 +2234,24 @@ impl ShellOverlayHost {
         }
         // Tall enough for scope pills (top row) + kind-chip strip
         // (bottom row) + padding. 64 px = 20 (scope row) + 8 (gap) +
-        // 20 (chip row) + 8*2 (banner padding).
+        // 20 (chip row) + 8*2 (banner padding). Sits FLUSH on top of the
+        // palette (no gap) so the two compose into one search surface —
+        // the unified background + soft shadow behind them is painted in
+        // the palette draw block.
         let h = 64.0_f64;
-        Rect::new(p.x0, p.y0 - h - 8.0, p.x1, p.y0 - 8.0)
+        Rect::new(p.x0, p.y0 - h, p.x1, p.y0)
+    }
+
+    /// The banner + palette drawn as one surface — from the banner top
+    /// to the palette bottom. The unified background and drop shadow use
+    /// this so the search chrome reads as a single card, not two.
+    fn search_surface_rect(&self) -> Rect {
+        let p = self.palette.get_rect();
+        let b = self.search_banner_rect();
+        if p.width() <= 0.0 {
+            return p;
+        }
+        Rect::new(p.x0, b.y0, p.x1, p.y1)
     }
 
     /// Full ordered list of scopes shown in the banner. Includes
@@ -2927,30 +2930,32 @@ impl Widget for ShellOverlayHost {
 
         // Workspace settings modal — concept wraps the content in
         // `motion.div initial={{ opacity: 0, scale: 0.95, y: 20 }}` →
-        // `animate={{ opacity: 1, scale: 1, y: 0 }}` over ~220 ms.
-        // Detect the open rising edge and play the matching motion.
-        // The scrim underneath stays full-alpha so the modal appears to
-        // "lift" out of the scrim rather than the whole layer fading.
-        if flags.ws_settings && !self.ws_settings_was_open {
-            self.ws_settings_opened_at = Some(Instant::now());
-        }
+        // `animate={{ opacity: 1, scale: 1, y: 0 }}` over ~220 ms. The
+        // `ws_settings_transition` plays this on open AND in reverse on
+        // close, so the modal + its scrim fade out instead of popping.
         if !flags.ws_settings {
-            self.ws_settings_opened_at = None;
-            // Clear cached pill rects so a stray click during the
-            // crossfade close (where the modal is fully invisible but
-            // not yet flipped to false in the chrome) can't flip tabs.
-            // Mirrors the `add_workspace_rect = Rect::ZERO` pattern
-            // above (#6, B-7).
+            // Clear cached pill rects so a click during the close fade
+            // (flag already false, modal still painting) can't flip
+            // tabs. Mirrors the `add_workspace_rect = Rect::ZERO`
+            // pattern above (#6, B-7).
             self.ws_settings_tab_pill_rects = [Rect::ZERO; 5];
             self.permissions_revoke_rects.clear();
         }
         self.ws_settings_was_open = flags.ws_settings;
-        if flags.ws_settings {
+        self.ws_settings_transition.set_open(
+            flags.ws_settings,
+            Duration::from_millis(MODAL_OPEN_ANIM_MS),
+            ui::Curve::EaseOut,
+        );
+        let now = Instant::now();
+        if self.ws_settings_transition.is_visible(now) {
             // Settings modal: concept §4.1 uses `bg-black/30 backdrop-blur-[1px]`
             // — the softer modal scrim rather than the stronger overview /
-            // palette dimmer.
-            draw_modal_scrim(scene, transform, self.rect);
-            let (alpha, dy, scale) = modal_open_curve(self.ws_settings_opened_at, 0.95);
+            // palette dimmer. The scrim's own alpha follows the openness
+            // so it fades out with the panel on close.
+            draw_modal_scrim_at(scene, transform, self.rect, self.ws_settings_transition.value(now));
+            let (alpha, dy, scale) =
+                modal_transition_curve(&self.ws_settings_transition, now, 0.95);
             let in_flight = alpha < 1.0;
             let panel_rect = self.ws_settings_rect();
             if in_flight {
@@ -2968,6 +2973,17 @@ impl Widget for ShellOverlayHost {
             } else {
                 transform
             };
+            // Soft elevation so the modal lifts off its scrim. Faded by
+            // openness (== alpha here) so it animates with the panel.
+            ui::surface::soft_shadow(
+                scene,
+                panel_xform,
+                panel_rect,
+                theme.tokens.colors.neutral[0],
+                40.0,
+                16.0,
+                0.55 * alpha,
+            );
             self.draw_ws_settings(scene, panel_xform, text_renderer, theme);
             if in_flight {
                 scene.pop_layer();
@@ -2981,7 +2997,6 @@ impl Widget for ShellOverlayHost {
         // as "slipping out of the top-right". Detect the open rising edge
         // and play the same motion for `QS_OPEN_ANIM_MS`.
         if flags.quick_settings && !self.qs_was_open {
-            self.qs_opened_at = Some(Instant::now());
             // Rising edge: refresh QS state from the OS. Reads are
             // inline because each shell-out completes in <50 ms on
             // typical hardware; if any take longer, the worst case is
@@ -2990,31 +3005,23 @@ impl Widget for ShellOverlayHost {
             // place so a missing daemon doesn't blank the UI.
             self.refresh_quick_settings_from_os();
         }
-        if !flags.quick_settings {
-            self.qs_opened_at = None;
-        }
         self.qs_was_open = flags.quick_settings;
-        if flags.quick_settings {
-            let fade_window = Duration::from_millis(QS_OPEN_ANIM_MS);
-            let (alpha, dy, scale): (f32, f64, f64) = match self.qs_opened_at {
-                Some(started) => {
-                    let elapsed = started.elapsed();
-                    if elapsed >= fade_window {
-                        (1.0, 0.0, 1.0)
-                    } else {
-                        let raw = (elapsed.as_secs_f64()
-                            / (QS_OPEN_ANIM_MS as f64 / 1000.0))
-                            .clamp(0.0, 1.0);
-                        let eased = 1.0 - (1.0 - raw).powi(3);
-                        (
-                            eased as f32,
-                            -10.0 * (1.0 - eased),
-                            0.95 + 0.05 * eased,
-                        )
-                    }
-                }
-                None => (1.0, 0.0, 1.0),
-            };
+        // Drive the interruptible transition from the flag. `is_visible`
+        // keeps the popover drawn through its close curve so it fades +
+        // slides OUT instead of popping.
+        self.qs_transition.set_open(
+            flags.quick_settings,
+            Duration::from_millis(QS_OPEN_ANIM_MS),
+            ui::Curve::EaseOut,
+        );
+        let now = Instant::now();
+        if self.qs_transition.is_visible(now) {
+            // `openness` runs 0→1 opening and 1→0 closing; the same
+            // alpha/dy/scale expression covers both directions.
+            let openness = self.qs_transition.value(now);
+            let alpha = openness;
+            let dy = -10.0 * (1.0 - openness) as f64;
+            let scale = 0.95 + 0.05 * openness as f64;
             let in_flight = alpha < 1.0;
             let qs_rect = self.quick_settings_rect();
             let clip = Rect::new(
@@ -3036,6 +3043,18 @@ impl Widget for ShellOverlayHost {
             } else {
                 transform
             };
+            // Soft elevation behind the popover so it lifts off the
+            // desktop like the toasts do. Faded by openness so it
+            // animates in/out with the panel.
+            ui::surface::soft_shadow(
+                scene,
+                qs_xform,
+                qs_rect,
+                theme.tokens.colors.neutral[0],
+                34.0,
+                12.0,
+                0.5 * openness,
+            );
             self.draw_quick_settings(scene, qs_xform, text_renderer, theme);
             if in_flight {
                 scene.pop_layer();
@@ -3051,17 +3070,20 @@ impl Widget for ShellOverlayHost {
 
         // Command palette / global search — concept `GlobalSearch.tsx:109-113`
         // wraps the panel in a motion.div with a scale 0.9 → 1.0 and
-        // y 20 → 0 + opacity 0 → 1 entry. Detect open rising edge.
-        if self.palette_visible && !self.palette_was_visible {
-            self.palette_opened_at = Some(Instant::now());
-        }
-        if !self.palette_visible {
-            self.palette_opened_at = None;
-        }
+        // y 20 → 0 + opacity 0 → 1 entry, now played in reverse on close
+        // by `palette_transition`.
         self.palette_was_visible = self.palette_visible;
-        if self.palette_visible {
-            draw_scrim(scene, transform, self.rect);
-            let (alpha, dy, scale) = modal_open_curve(self.palette_opened_at, 0.9);
+        self.palette_transition.set_open(
+            self.palette_visible,
+            Duration::from_millis(MODAL_OPEN_ANIM_MS),
+            ui::Curve::EaseOut,
+        );
+        let palette_now = Instant::now();
+        if self.palette_transition.is_visible(palette_now) {
+            let openness = self.palette_transition.value(palette_now);
+            draw_scrim_at(scene, transform, self.rect, openness);
+            let (alpha, dy, scale) =
+                modal_transition_curve(&self.palette_transition, palette_now, 0.9);
             let in_flight = alpha < 1.0;
             let palette_rect = self.palette.get_rect();
             if in_flight {
@@ -3077,6 +3099,24 @@ impl Widget for ShellOverlayHost {
             } else {
                 transform
             };
+            // The banner + palette compose into ONE surface. Draw a
+            // single unified background card spanning both, with a soft
+            // shadow behind it, so there's no seam between "Search in:"
+            // and the input. The banner then draws its content directly
+            // on this background (no card of its own) and the palette
+            // widget's own opaque card paints over the lower region in
+            // the same colour.
+            let surface_rect = self.search_surface_rect();
+            let radius = theme.tokens.radii.xl as f64;
+            ui::surface::soft_shadow(
+                scene,
+                palette_xform,
+                surface_rect,
+                theme.tokens.colors.neutral[0],
+                44.0,
+                14.0,
+                0.55 * alpha,
+            );
             // Re-theme just the palette surface to the concept's
             // `bg-slate-900/70` glass tint (visual-gap #3). The
             // `CommandPalette` widget lives in `quick-ui` and paints its
@@ -3084,10 +3124,18 @@ impl Widget for ShellOverlayHost {
             // theme whose `surfaces.raised` is pre-tinted rather than
             // reaching inside the shared widget to plumb an override.
             let palette_theme = palette_surface_theme(theme, MODAL_SURFACE_ALPHA);
+            let unified = RoundedRect::from_rect(surface_rect, radius);
+            scene.fill(
+                vello::peniko::Fill::NonZero,
+                palette_xform,
+                palette_theme.tokens.colors.surfaces.raised,
+                None,
+                &unified,
+            );
             self.palette
                 .draw(scene, palette_xform, text_renderer, &palette_theme, presence);
-            // Search-banner rides along with the panel so the two read
-            // as one composed unit during the entry curve.
+            // Banner content (label + scope pills + kind chips) painted
+            // directly on the unified background — no card of its own.
             self.draw_search_banner(scene, palette_xform, text_renderer, theme);
             if in_flight {
                 scene.pop_layer();
@@ -4361,21 +4409,15 @@ impl Widget for ShellOverlayHost {
         // Continuous redraws while any of:
         //   - overview crossfade (transition_started)
         //   - workspace slide-swap (ws_slide_started)
-        //   - quick-settings open fade (qs_opened_at, within window)
+        //   - quick-settings open/close (qs_transition)
         //   - any inner widget (tab drop-zones, tab layout spring, …)
         // is in flight. `tick_*` methods clear their own flags once the
         // animation duration has fully elapsed, so at rest this returns
         // false and the app event loop can go idle.
-        let qs_in_flight = self
-            .qs_opened_at
-            .map(|t| t.elapsed() < Duration::from_millis(QS_OPEN_ANIM_MS))
-            .unwrap_or(false);
-        let modal_in_flight = |ts: Option<Instant>| {
-            ts.map(|t| t.elapsed() < Duration::from_millis(MODAL_OPEN_ANIM_MS))
-                .unwrap_or(false)
-        };
-        let ws_settings_in_flight = modal_in_flight(self.ws_settings_opened_at);
-        let palette_in_flight = modal_in_flight(self.palette_opened_at);
+        let now = Instant::now();
+        let qs_in_flight = self.qs_transition.is_animating(now);
+        let ws_settings_in_flight = self.ws_settings_transition.is_animating(now);
+        let palette_in_flight = self.palette_transition.is_animating(now);
         let sidebar_frame = self
             .sidebar
             .as_ref()
@@ -4535,12 +4577,23 @@ fn is_active_workspace_owner(state: &crate::shell::chrome_state::ChromeState) ->
 }
 
 fn draw_scrim(scene: &mut Scene, transform: Affine, rect: Rect) {
+    draw_scrim_at(scene, transform, rect, 1.0);
+}
+
+/// [`draw_scrim`] scaled by `openness` so the palette/overview scrim
+/// fades with its surface.
+fn draw_scrim_at(scene: &mut Scene, transform: Affine, rect: Rect, openness: f32) {
     // Concept uses `bg-black/30` (≈ alpha 77) on overlay scrims — we were
     // painting black/60 (alpha 154) which reads too heavy and muddies the
     // content behind the palette / ws-settings. Centralised on
     // [`PALETTE_SCRIM_ALPHA`] so a future tweak only edits one constant
     // and the chrome-test suite has a single source-of-truth to pin.
-    let alpha = (PALETTE_SCRIM_ALPHA * 255.0).round().clamp(0.0, 255.0) as u8;
+    let alpha = (PALETTE_SCRIM_ALPHA * openness.clamp(0.0, 1.0) * 255.0)
+        .round()
+        .clamp(0.0, 255.0) as u8;
+    if alpha == 0 {
+        return;
+    }
     scene.fill(
         Fill::NonZero,
         transform,
@@ -4560,7 +4613,18 @@ fn draw_scrim(scene: &mut Scene, transform: Affine, rect: Rect) {
 /// pub constant so the chrome-test suite can pin the exact value
 /// without sampling pixels.
 fn draw_modal_scrim(scene: &mut Scene, transform: Affine, rect: Rect) {
-    let alpha = (MODAL_SCRIM_ALPHA * 255.0).round().clamp(0.0, 255.0) as u8;
+    draw_modal_scrim_at(scene, transform, rect, 1.0);
+}
+
+/// [`draw_modal_scrim`] scaled by `openness` in `0.0..=1.0` so the scrim
+/// fades in with the modal opening and out with it closing.
+fn draw_modal_scrim_at(scene: &mut Scene, transform: Affine, rect: Rect, openness: f32) {
+    let alpha = (MODAL_SCRIM_ALPHA * openness.clamp(0.0, 1.0) * 255.0)
+        .round()
+        .clamp(0.0, 255.0) as u8;
+    if alpha == 0 {
+        return;
+    }
     scene.fill(
         Fill::NonZero,
         transform,
@@ -4714,6 +4778,21 @@ fn modal_open_curve(opened_at: Option<Instant>, start_scale: f64) -> (f32, f64, 
     let eased = 1.0 - (1.0 - raw).powi(3);
     let scale = start_scale + (1.0 - start_scale) * eased;
     (eased as f32, 20.0 * (1.0 - eased), scale)
+}
+
+/// `(alpha, dy, scale)` for a modal driven by a [`ui::Transition`],
+/// covering BOTH the enter (openness 0→1) and the exit (openness 1→0).
+/// Same visual shape `modal_open_curve` produced for the enter — panel
+/// starts 20 px low at `start_scale`, rises to rest — but now the exit
+/// plays the curve in reverse instead of the panel vanishing.
+fn modal_transition_curve(
+    t: &ui::Transition,
+    now: Instant,
+    start_scale: f64,
+) -> (f32, f64, f64) {
+    let o = t.value(now);
+    let scale = start_scale + (1.0 - start_scale) * o as f64;
+    (o, 20.0 * (1.0 - o) as f64, scale)
 }
 
 /// Format the workspace-card footer counter, pluralising "window" so
@@ -4940,42 +5019,23 @@ impl ShellOverlayHost {
 
             // Active: `bg-slate-900` solid + indigo-500 ring + glow.
             // Inactive: `bg-slate-900/50` translucent; on hover bumps to
-            // full opacity + slate-700 border. We approximate the
-            // concept's `shadow-[0_0_40px_-10px_rgba(99,102,241,0.3)]`
-            // by painting a concentric-ring glow beneath the card. A
-            // single flat outer rect reads as a hard-edged pale halo
-            // (visual gap #4 in docs/nirios/visual-gaps.md); four rings
-            // at decreasing alpha and increasing spread (6/14/28/48 px
-            // at 0.10/0.06/0.03/0.01) produce a soft fall-off that
-            // fades into the slate-950 backdrop rather than stopping at
-            // a sharp outer edge.
+            // full opacity + slate-700 border. The concept's
+            // `shadow-[0_0_40px_-10px_rgba(99,102,241,0.3)]` accent glow
+            // is now the shared soft-shadow Gaussian (was a 4-ring
+            // concentric-rect stack that stair-stepped) — matching the
+            // wheel spoke + focused tile.
             let card = RoundedRect::from_rect(rect, OVERVIEW_ROW_RADIUS_PX);
             if is_active {
                 let indigo = colors.accent[5];
-                // (spread_px, alpha). Near-card alpha stays ≤ 0.10 so
-                // it doesn't compete with the 2 px indigo border; the
-                // outermost 48 px ring at 0.01 fades imperceptibly into
-                // the backdrop instead of stopping.
-                let glow_steps: [(f64, f64); 4] = [
-                    (6.0, 0.10),
-                    (14.0, 0.06),
-                    (28.0, 0.03),
-                    (48.0, 0.01),
-                ];
-                for (spread, alpha) in glow_steps.iter() {
-                    let glow_rect = Rect::new(
-                        rect.x0 - spread,
-                        rect.y0 - spread,
-                        rect.x1 + spread,
-                        rect.y1 + spread,
-                    );
-                    let glow = RoundedRect::from_rect(
-                        glow_rect,
-                        OVERVIEW_ROW_RADIUS_PX + spread,
-                    );
-                    let glow_color = indigo.with_alpha_factor(*alpha as f32);
-                    scene.fill(Fill::NonZero, card_xform, glow_color, None, &glow);
-                }
+                ui::surface::soft_shadow(
+                    scene,
+                    card_xform,
+                    rect,
+                    indigo,
+                    40.0,
+                    0.0,
+                    0.35,
+                );
                 scene.fill(
                     Fill::NonZero,
                     card_xform,
@@ -6143,24 +6203,21 @@ impl ShellOverlayHost {
             return;
         }
 
-        let card = RoundedRect::from_rect(banner, tokens.radii.sm as f64);
-        // Search banner rides with the GlobalSearch palette surface. Concept
-        // §5.1: `bg-slate-900/70 backdrop-blur-md`. We tint with the same
-        // [`MODAL_SURFACE_ALPHA`] as the palette so the pair read as one
-        // composed "frosted" unit over the scrim.
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            slate_900_tint(theme, MODAL_SURFACE_ALPHA),
-            None,
-            &card,
-        );
+        // The banner has no card of its own — it sits on the unified
+        // search-surface background painted by the palette draw block,
+        // so "Search in:" and the input read as one panel. A faint 1px
+        // divider under the banner separates the scope/chip controls
+        // from the query input below.
+        let divider_y = banner.y1;
         scene.stroke(
             &vello::kurbo::Stroke::new(1.0),
             transform,
-            colors.border_standard,
+            colors.border_standard.with_alpha_factor(0.5),
             None,
-            &card,
+            &vello::kurbo::Line::new(
+                Point::new(banner.x0 + 12.0, divider_y),
+                Point::new(banner.x1 - 12.0, divider_y),
+            ),
         );
 
         // "Search in:" label
@@ -6189,19 +6246,8 @@ impl ShellOverlayHost {
         for (idx, scope) in scopes.into_iter().enumerate() {
             let pill = self.search_scope_pill_rect(idx);
             let is_active = scope == active;
-            let radius = pill.height() / 2.0;
-            let pill_rr = RoundedRect::new(pill.x0, pill.y0, pill.x1, pill.y1, radius);
-            let fill = if is_active { colors.accent[5] } else { colors.surfaces.raised };
-            scene.fill(Fill::NonZero, transform, fill, None, &pill_rr);
-            if !is_active {
-                scene.stroke(
-                    &vello::kurbo::Stroke::new(1.0),
-                    transform,
-                    colors.border_standard,
-                    None,
-                    &pill_rr,
-                );
-            }
+            let (fill, border) = ui::surface::chip_colors(theme, is_active);
+            ui::surface::pill(scene, transform, pill, fill, border, None);
 
             let text = self.search_scope_pill_label(scope);
             let (tw, th) = text_renderer.measure(&text, tokens.typography.scale.sm, None);
@@ -6237,24 +6283,9 @@ impl ShellOverlayHost {
                 let (lw, _) = text_renderer.measure(label, tokens.typography.scale.xs, None);
                 let chip_w = (lw as f64) + 20.0;
                 let rect = Rect::new(x, chip_row_y, x + chip_w, chip_row_y + chip_h);
-                let radius = rect.height() / 2.0;
-                let rr = RoundedRect::new(rect.x0, rect.y0, rect.x1, rect.y1, radius);
                 let is_active = self.active_kind_filter.contains(kind);
-                let fill = if is_active {
-                    colors.accent[5]
-                } else {
-                    colors.surfaces.raised
-                };
-                scene.fill(Fill::NonZero, transform, fill, None, &rr);
-                if !is_active {
-                    scene.stroke(
-                        &vello::kurbo::Stroke::new(1.0),
-                        transform,
-                        colors.border_standard,
-                        None,
-                        &rr,
-                    );
-                }
+                let (fill, border) = ui::surface::chip_colors(theme, is_active);
+                ui::surface::pill(scene, transform, rect, fill, border, None);
                 let (_, th) = text_renderer.measure(label, tokens.typography.scale.xs, None);
                 let ty = (rect.y0 + rect.y1) / 2.0 - th as f64 / 2.0;
                 text_renderer.draw_text(
@@ -6641,6 +6672,33 @@ impl ShellOverlayHost {
         );
     }
 
+    /// Centred dim empty-state message for a drill-in pane with no rows
+    /// (e.g. Wi-Fi list before the first scan returns). Without this the
+    /// pane rendered as a blank panel that read as broken rather than
+    /// "nothing here yet".
+    fn draw_qs_drill_in_empty(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        message: &str,
+    ) {
+        let tokens = &theme.tokens;
+        let rect = self.quick_settings_rect();
+        let (tw, th) = text_renderer.measure(message, tokens.typography.scale.sm, None);
+        let tx = rect.x0 + (rect.width() - tw as f64) / 2.0;
+        let ty = rect.y0 + 56.0 + 24.0 - th as f64 / 2.0;
+        text_renderer.draw_text(
+            scene,
+            message,
+            tokens.typography.scale.sm,
+            tokens.colors.text_dim,
+            transform * Affine::translate((tx, ty)),
+            None,
+        );
+    }
+
     /// Hit rect for the back-chevron in the drill-in header. Click here
     /// pops `nav_stack`. Sized 32×32 with a small expansion for forgiving
     /// touch targets — the painted glyph is 24×24 inside.
@@ -6680,6 +6738,11 @@ impl ShellOverlayHost {
         let rect = self.quick_settings_rect();
 
         self.draw_qs_drill_in_header(scene, transform, text_renderer, theme, "Wi-Fi");
+
+        if qs.wifi_networks.is_empty() {
+            self.draw_qs_drill_in_empty(scene, transform, text_renderer, theme, "Scanning for networks…");
+            return;
+        }
 
         let row_h = 56.0_f64;
         let list_y0 = rect.y0 + 56.0;
@@ -6782,6 +6845,11 @@ impl ShellOverlayHost {
         let rect = self.quick_settings_rect();
 
         self.draw_qs_drill_in_header(scene, transform, text_renderer, theme, "Bluetooth");
+
+        if qs.bt_devices.is_empty() {
+            self.draw_qs_drill_in_empty(scene, transform, text_renderer, theme, "No devices found");
+            return;
+        }
 
         let row_h = 56.0_f64;
         let list_y0 = rect.y0 + 56.0;
@@ -7504,40 +7572,69 @@ mod modal_curve_tests {
     }
 
     #[test]
-    fn palette_rising_edge_stamps_opened_at_and_pumps_frames() {
+    fn palette_exit_interpolates_not_pops() {
+        // Deterministic proof (no wall-clock sleep) that the palette
+        // FADES out rather than popping: sample the transition's openness
+        // at explicit instants across the close window. Openness must be
+        // strictly between 0 and 1 mid-flight — the pre-refactor bool
+        // gate jumped straight to invisible.
+        let mut t = ui::Transition::open();
+        t.set_open(
+            false,
+            Duration::from_millis(MODAL_OPEN_ANIM_MS),
+            ui::Curve::EaseOut,
+        );
+        let start = Instant::now();
+        let at_start = t.value(start);
+        let at_mid = t.value(start + Duration::from_millis(MODAL_OPEN_ANIM_MS / 3));
+        let at_end = t.value(start + Duration::from_millis(MODAL_OPEN_ANIM_MS + 50));
+        assert!(at_start > 0.95, "close begins near fully-open: {at_start}");
+        assert!(
+            at_mid > 0.01 && at_mid < 0.99,
+            "mid-close openness must be a partial fade, not a pop: {at_mid}"
+        );
+        assert!(at_end < 0.01, "close settles fully closed: {at_end}");
+        // And ease-out means it's past the linear midpoint at 1/3 in.
+        assert!(at_mid < at_start, "openness decreases while closing");
+    }
+
+    #[test]
+    fn palette_open_transition_pumps_frames_and_is_visible() {
         use ui::widget::Container;
         let mut h = ShellOverlayHost::new(Box::new(Container::new()));
-        assert!(h.palette_opened_at.is_none());
-        h.palette_visible = true;
-        // Normally `draw` does the rising-edge detection; emulate it here
-        // by poking the state machine the same way.
-        if h.palette_visible && !h.palette_was_visible {
-            h.palette_opened_at = Some(Instant::now());
-        }
-        h.palette_was_visible = h.palette_visible;
-        assert!(h.palette_opened_at.is_some());
+        assert!(!h.palette_transition.is_visible(Instant::now()));
+        // Drive the open transition the way `draw` does.
+        h.palette_transition.set_open(
+            true,
+            Duration::from_millis(MODAL_OPEN_ANIM_MS),
+            ui::Curve::EaseOut,
+        );
+        assert!(h.palette_transition.is_visible(Instant::now()));
         assert!(
             h.needs_animation_frame(),
-            "in-flight palette open must pump redraws"
+            "an in-flight palette open must pump redraws"
         );
     }
 
     #[test]
-    fn ws_settings_close_clears_opened_at() {
+    fn ws_settings_close_still_draws_through_exit_then_settles() {
         use ui::widget::Container;
         let mut h = ShellOverlayHost::new(Box::new(Container::new()));
-        h.ws_settings_opened_at = Some(Instant::now());
-        h.ws_settings_was_open = true;
-        // Emulate the close branch of the draw path.
-        let flags_open = false;
-        if !flags_open {
-            h.ws_settings_opened_at = None;
-        }
-        h.ws_settings_was_open = flags_open;
-        assert!(
-            h.ws_settings_opened_at.is_none(),
-            "close must clear the timestamp so next open replays motion"
+        // Open + settle, then request close.
+        h.ws_settings_transition = ui::Transition::open();
+        h.ws_settings_transition.set_open(
+            false,
+            Duration::from_millis(MODAL_OPEN_ANIM_MS),
+            ui::Curve::EaseOut,
         );
+        let now = Instant::now();
+        assert!(
+            h.ws_settings_transition.is_visible(now),
+            "a closing modal must stay drawn so its exit animates (no pop)"
+        );
+        // Long after the exit window it has settled invisible.
+        let later = now + Duration::from_millis(MODAL_OPEN_ANIM_MS + 500);
+        assert!(!h.ws_settings_transition.is_visible(later));
     }
 
     /// Concept `OverviewView.tsx:60-68` — rows tile vertically down the
