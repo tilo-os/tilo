@@ -221,6 +221,37 @@ impl GrantStoreHandle {
         true
     }
 
+    /// True if `caller` already holds a filesystem grant whose path
+    /// covers `path` — an exact match or an ancestor directory. The
+    /// file-drop router calls this before recording a drop grant so a
+    /// second drop of the same file (or a file already inside a granted
+    /// directory) doesn't append a duplicate `Capability::Filesystem`.
+    ///
+    /// Acquires a read lock for the lookup; returns `false` if the
+    /// workspace or the app has no grants (default-deny, so the caller
+    /// records the grant).
+    pub fn filesystem_path_granted(
+        &self,
+        caller: &PortalCaller,
+        path: &std::path::Path,
+    ) -> bool {
+        let tree = self.tree.read();
+        let Some(ws) = tree
+            .workspaces
+            .iter()
+            .find(|w| w.id == caller.workspace_id)
+        else {
+            return false;
+        };
+        let Some(caps) = ws.grants.get(&caller.app_id) else {
+            return false;
+        };
+        caps.iter().any(|cap| match cap {
+            Capability::Filesystem { path: granted, .. } => path.starts_with(granted),
+            _ => false,
+        })
+    }
+
     /// Direct tree-handle accessor for tests that need to assert on
     /// multiple fields at once, or that need to construct a peer
     /// subsystem holding the same handle. Production callers go through
@@ -668,6 +699,29 @@ mod tests {
             store.lookup(&caller, CapabilityKind::Camera),
             Some(GrantScope::Always)
         );
+    }
+
+    #[test]
+    fn filesystem_path_granted_covers_exact_and_ancestor_paths() {
+        let mut ws = empty_ws(21);
+        ws.grants.insert(
+            "Editor".into(),
+            vec![Capability::Filesystem {
+                path: "/home/u/proj".into(),
+                mode: FsMode::Read,
+                scope: GrantScope::Session,
+            }],
+        );
+        let (store, ws_id) = GrantStoreHandle::test_with_workspace(ws);
+        let caller = PortalCaller::new(ws_id, "Editor");
+        // Exact match and any descendant are covered.
+        assert!(store.filesystem_path_granted(&caller, std::path::Path::new("/home/u/proj")));
+        assert!(store.filesystem_path_granted(&caller, std::path::Path::new("/home/u/proj/main.ts")));
+        // A sibling path outside the granted subtree is NOT covered.
+        assert!(!store.filesystem_path_granted(&caller, std::path::Path::new("/home/u/other.ts")));
+        // A different app id has no grants → not covered.
+        let other = PortalCaller::new(ws_id, "Files");
+        assert!(!store.filesystem_path_granted(&other, std::path::Path::new("/home/u/proj/main.ts")));
     }
 
     #[test]
