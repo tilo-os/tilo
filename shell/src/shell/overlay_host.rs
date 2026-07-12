@@ -1779,6 +1779,35 @@ impl ShellOverlayHost {
         }
     }
 
+    /// Snapshot the `(strip_id, group_id, rect)` triples from the live
+    /// per-strip [`GroupRow`] pointers, in traversal order. Shared by the
+    /// click-focus stamp and the file-drop router so both resolve a
+    /// pointer coordinate to a window group through the exact same
+    /// post-layout geometry (see [`pick_group_at`]).
+    fn group_hit_candidates(&self) -> Vec<(StripId, GroupId, Rect)> {
+        let mut candidates: Vec<(StripId, GroupId, Rect)> = Vec::new();
+        for (&strip_id, &ptr) in &self.group_row_ptrs {
+            // SAFETY: same contract as every other `group_row_ptrs`
+            // accessor — captured from a `Box<GroupRow>` owned through
+            // the content tree, host outlives the content, and the `&self`
+            // borrow keeps any reconcile sweep from aliasing the read.
+            let row: &GroupRow = unsafe { &*ptr };
+            for g in row.groups.iter() {
+                candidates.push((strip_id, g.id, g.get_rect()));
+            }
+        }
+        candidates
+    }
+
+    /// Resolve the window group directly under pointer position `p`, if
+    /// any. Reuses the click-focus hit-test ([`pick_group_at`] over
+    /// [`Self::group_hit_candidates`]) so a file drop lands on exactly
+    /// the group a click at the same spot would focus. `None` means the
+    /// pointer is over empty strip / desktop space.
+    fn resolve_drop_target(&self, p: Point) -> Option<(StripId, GroupId)> {
+        pick_group_at(&self.group_hit_candidates(), p)
+    }
+
     fn stamp_active_group_from_click(&mut self, p: Point) {
         if self.group_row_ptrs.is_empty() {
             return;
@@ -1791,17 +1820,7 @@ impl ShellOverlayHost {
         // production path shares its logic with the unit test at the
         // bottom of the file (which drives synthetic rects without a
         // real widget tree).
-        let mut candidates: Vec<(StripId, GroupId, Rect)> = Vec::new();
-        for (&strip_id, &ptr) in &self.group_row_ptrs {
-            // SAFETY: same contract as every other `group_row_ptrs`
-            // accessor — captured from a `Box<GroupRow>` owned through
-            // the content tree, host outlives the content, `&mut self`
-            // ensures no other reconcile path aliases.
-            let row: &GroupRow = unsafe { &*ptr };
-            for g in row.groups.iter() {
-                candidates.push((strip_id, g.id, g.get_rect()));
-            }
-        }
+        let candidates = self.group_hit_candidates();
         let Some((strip_id, group_id)) = pick_group_at(&candidates, p) else {
             return;
         };
@@ -3317,17 +3336,34 @@ impl Widget for ShellOverlayHost {
             }
         }
 
-        // File-drop (§10, concept `DesktopView.tsx:187-205`) — route the
-        // winit `WindowEvent::DroppedFile` payload straight into chrome
-        // state so the active workspace's first group gets a new tab.
-        // Consumes the event so downstream widgets don't re-handle it.
+        // Cursor-targeted file-drop. winit's `WindowEvent::DroppedFile`
+        // carries the path but NO coordinate, so we route it to the
+        // window group under `last_cursor` — the pointer position tracked
+        // from `CursorMoved` above. The group is resolved with the same
+        // hit-test click-focus uses (`resolve_drop_target` → `pick_group_at`),
+        // and the dropped file is delivered to that group's app together
+        // with a per-workspace filesystem grant (see
+        // `ChromeState::handle_file_drop_at`). A drop over empty strip /
+        // desktop space (no group under the cursor) is a defined no-op —
+        // the file is not dumped into an arbitrary window. Either way the
+        // event is consumed so downstream widgets don't re-handle it.
         if let WindowEvent::DroppedFile(path) = event {
-            if let Some(chrome) = &self.chrome {
-                if chrome.borrow_mut().handle_file_drop(path).is_some() {
-                    *handled = true;
-                    return;
+            if let Some(chrome) = self.chrome.clone() {
+                if let Some(p) = self.last_cursor {
+                    if let Some((strip_id, group_id)) = self.resolve_drop_target(p) {
+                        // Mirror `stamp_active_group_from_click`: fold any
+                        // widget-only group into the tree before we splice
+                        // into it, so the target group id is resolvable in
+                        // the persisted tree.
+                        self.harvest_widget_only_groups_into_tree();
+                        chrome
+                            .borrow_mut()
+                            .handle_file_drop_at(path, strip_id, group_id);
+                    }
                 }
             }
+            *handled = true;
+            return;
         }
 
         // Global shortcuts first. Palette-open chords split by scope:
