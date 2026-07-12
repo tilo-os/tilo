@@ -162,6 +162,12 @@ pub struct SidebarWheelDisc {
     /// rim from the pre-snap rotation to the snapped target. `None` when
     /// idle. Constructed lazily on release using the `snappy` preset.
     pub rotation_spring: Option<Spring>,
+    /// Wall-clock timestamp of the previous `update` tick, used to feed
+    /// the rotation spring the *real* frame dt instead of a hardcoded
+    /// `1/60`. Under frame drops a fixed dt made the spring integrate too
+    /// little time and run in slow-motion; real (clamped) dt keeps it
+    /// wall-clock-correct. `None` until the first tick.
+    pub last_update_at: Option<std::time::Instant>,
     /// Cached bounding rect of the "+" add-workspace slot painted below
     /// the disc's rim. `Rect::ZERO` until the first draw pass populates it.
     pub plus_rect: Rect,
@@ -307,6 +313,7 @@ impl SidebarWheelDisc {
             diameter_px: 4500.0,
             chrome: None,
             rotation_spring: None,
+            last_update_at: None,
             plus_rect: Rect::ZERO,
             last_cursor_pos: None,
             wheel_accumulator: 0.0,
@@ -1047,10 +1054,7 @@ impl Widget for SidebarWheelDisc {
                     self.snap_to_nearest();
                     let snapped_deg = self.rotation_deg;
                     if (pre_snap_deg - snapped_deg).abs() > f32::EPSILON {
-                        let params = SpringPresets::default().snappy;
-                        let mut s = Spring::new(pre_snap_deg, params);
-                        s.set_target(snapped_deg);
-                        self.rotation_spring = Some(s);
+                        self.aim_rotation_spring(pre_snap_deg, snapped_deg);
                     } else {
                         self.rotation_spring = None;
                     }
@@ -1114,16 +1118,17 @@ impl Widget for SidebarWheelDisc {
     }
 
     fn update(&mut self, _state: &mut AutoCommit, _path: &ObjId) -> bool {
-        let mut keep = false;
-        // Step the snap-spring at fixed 60 Hz.
-        if let Some(spring) = self.rotation_spring.as_mut() {
-            if spring.is_settled() {
-                self.rotation_spring = None;
-            } else {
-                spring.step(1.0 / 60.0);
-                keep = true;
-            }
-        }
+        // Real (clamped) frame dt, so the spring stays wall-clock-correct
+        // under frame drops instead of running slow on a fixed 1/60.
+        // Clamp to 1/30 s: semi-implicit Euler stays stable, and a long
+        // stall just resumes rather than exploding.
+        let now = std::time::Instant::now();
+        let dt = self
+            .last_update_at
+            .map(|prev| (now - prev).as_secs_f32().clamp(0.0, 1.0 / 30.0))
+            .unwrap_or(1.0 / 60.0);
+        self.last_update_at = Some(now);
+        let mut keep = self.tick_rotation_spring(dt);
         // Wheel-scroll idle reset. The discrete-detent path in
         // `handle_event` already triggers `click_to_spoke` (and its
         // spring animation) for each `WHEEL_DETENT_PX` of scroll, so
@@ -1250,10 +1255,45 @@ impl SidebarWheelDisc {
         self.active_idx = target_idx;
         self.publish_active_to_chrome();
 
-        let params = SpringPresets::default().snappy;
-        let mut s = Spring::new(pre_snap_deg, params);
-        s.set_target(snapped);
-        self.rotation_spring = Some(s);
+        self.aim_rotation_spring(pre_snap_deg, snapped);
+    }
+
+    /// Advance the rim snap-spring by `dt` seconds. Drops the spring
+    /// (and the dt clock) once settled. Returns whether the spring is
+    /// still animating. Split out of `update` so production feeds it the
+    /// real frame dt while tests can pump a deterministic fixed dt.
+    fn tick_rotation_spring(&mut self, dt: f32) -> bool {
+        if let Some(spring) = self.rotation_spring.as_mut() {
+            if spring.is_settled() {
+                self.rotation_spring = None;
+                self.last_update_at = None;
+                false
+            } else {
+                spring.step(dt);
+                true
+            }
+        } else {
+            false
+        }
+    }
+
+    /// Point the rim's snap-spring at `to`. If a spring is already
+    /// in-flight (a rapid second detent), keep its current value AND
+    /// velocity and just re-aim — so fast scrolling flows continuously
+    /// instead of discarding momentum and re-springing from rest on
+    /// every detent (the pre-refactor "wheel jumps then springs" jank).
+    /// Only when there's no live spring do we seed a fresh one from
+    /// `from_hint`.
+    fn aim_rotation_spring(&mut self, from_hint: f32, to: f32) {
+        match self.rotation_spring.as_mut() {
+            Some(s) if !s.is_settled() => s.set_target(to),
+            _ => {
+                let params = SpringPresets::default().snappy;
+                let mut s = Spring::new(from_hint, params);
+                s.set_target(to);
+                self.rotation_spring = Some(s);
+            }
+        }
     }
 
     /// Test helper: pins the post-`apply_layout` rect for tests that
@@ -1679,11 +1719,11 @@ mod tests {
         // to land inside `is_settled`'s 0.1° / 0.1 °/s window for a
         // 90° displacement. 180 frames (~3 s) is well over the budget
         // with headroom for the integrator's step bias.
-        use automerge::AutoCommit;
-        let mut doc = AutoCommit::new();
-        let path = automerge::ROOT.clone();
+        // Drive the spring with a deterministic 1/60 s dt (production
+        // uses real wall-clock dt via `update`; the test pumps the
+        // extracted stepper so a tight loop doesn't collapse to ~0 dt).
         for _ in 0..180 {
-            d.update(&mut doc, &path);
+            d.tick_rotation_spring(1.0 / 60.0);
         }
 
         // After settling, `update` drops the spring so further frames

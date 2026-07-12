@@ -548,66 +548,135 @@ async fn run_peer_relay_session(
             .map_err(|_| "outbound closed on subscribe".to_string())?;
     }
 
-    // 4. Drain inbound envelopes for the life of this connection.
-    //    For each Delta / Presence we receive, look up the workspace
-    //    runtime and fan it out LOCALLY. `PeerRole::PeerRelay` is
-    //    passed so the same one-line filter suppresses re-echo to
-    //    any other peer relays we might federate with.
+    // 4. Drain inbound envelopes for the life of this connection AND
+    //    periodically run anti-entropy against the upstream relay.
+    //
+    //    Live fan-out (Delta / Presence) is forwarded LOCALLY via the
+    //    same `fanout_delta` / `fanout_presence` device peers use;
+    //    `PeerRole::PeerRelay` suppresses re-echo to other peer relays.
+    //
+    //    Anti-entropy is the recovery tier layered on top: on a timer we
+    //    advertise our local materialized heads (`SyncRequest`) so the
+    //    upstream backfills any change we are missing. This heals two
+    //    cases live fan-out cannot: a change kept off the live path by
+    //    echo-suppression (the middle hop of a relay chain — a relay does
+    //    not re-forward a PeerRelay-origin delta to another peer relay),
+    //    and anything missed across a reconnect/restart. A converged pair
+    //    exchanges empty `SyncResponse`s, so this quiesces to near-zero
+    //    work once caught up.
+    let mut resync = tokio::time::interval(Duration::from_millis(500));
+    resync.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
-        let env = match client.recv().await {
-            Some(e) => e,
-            None => return Ok(()), // clean EOF
-        };
-        match &env {
-            Envelope::Delta {
-                workspace_id,
-                author_device_public_key,
-                delta,
-                ..
-            } => {
-                let ws = {
-                    let map = workspaces.lock().await;
-                    map.get(workspace_id).cloned()
-                };
-                if let Some(ws) = ws {
-                    let mut wr = ws.lock().await;
-                    let raw = delta.clone();
-                    let seq = now_ns();
-                    let author = *author_device_public_key;
-                    let _ = wr.fanout_delta(
-                        &author,
-                        PeerRole::PeerRelay,
-                        env.clone(),
-                        &raw,
-                        seq,
-                    );
+        tokio::select! {
+            // `interval` fires its first tick immediately, so the initial
+            // resync goes out as soon as we enter the loop.
+            _ = resync.tick() => {
+                for id in &intersection {
+                    send_sync_request_for(client, workspaces, *id).await;
                 }
             }
-            Envelope::Presence { workspace_id, .. } => {
-                let ws = {
-                    let map = workspaces.lock().await;
-                    map.get(workspace_id).cloned()
+            maybe = client.recv() => {
+                let env = match maybe {
+                    Some(e) => e,
+                    None => return Ok(()), // clean EOF
                 };
-                if let Some(ws) = ws {
-                    // Presence has no persistent author field on the
-                    // wire; use zero as a sentinel — presence fanout
-                    // only compares to subscriber pubkeys and the
-                    // "don't echo to peer relays" filter.
-                    ws.lock()
-                        .await
-                        .fanout_presence(&[0u8; 32], PeerRole::PeerRelay, env.clone());
+                match &env {
+                    Envelope::Delta {
+                        workspace_id,
+                        author_device_public_key,
+                        delta,
+                        ..
+                    } => {
+                        let ws = {
+                            let map = workspaces.lock().await;
+                            map.get(workspace_id).cloned()
+                        };
+                        if let Some(ws) = ws {
+                            let mut wr = ws.lock().await;
+                            let raw = delta.clone();
+                            let seq = now_ns();
+                            let author = *author_device_public_key;
+                            let _ = wr.fanout_delta(
+                                &author,
+                                PeerRole::PeerRelay,
+                                env.clone(),
+                                &raw,
+                                seq,
+                            );
+                        }
+                    }
+                    Envelope::Presence { workspace_id, .. } => {
+                        let ws = {
+                            let map = workspaces.lock().await;
+                            map.get(workspace_id).cloned()
+                        };
+                        if let Some(ws) = ws {
+                            // Presence has no persistent author field on
+                            // the wire; use zero as a sentinel — presence
+                            // fanout only compares to subscriber pubkeys
+                            // and the "don't echo to peer relays" filter.
+                            ws.lock()
+                                .await
+                                .fanout_presence(&[0u8; 32], PeerRole::PeerRelay, env.clone());
+                        }
+                    }
+                    Envelope::SyncResponse {
+                        workspace_id,
+                        delta_since,
+                    } => {
+                        // The upstream backfilled changes we were missing.
+                        // Materialize them into our pinned doc and fan the
+                        // batch out to our LOCAL devices so they converge —
+                        // even when echo-suppression kept these changes off
+                        // the live fan-out path.
+                        if !delta_since.is_empty() {
+                            let ws = {
+                                let map = workspaces.lock().await;
+                                map.get(workspace_id).cloned()
+                            };
+                            if let Some(ws) = ws {
+                                let seq = now_ns();
+                                let _ = ws.lock().await.ingest_sync_changes(
+                                    *workspace_id,
+                                    delta_since,
+                                    seq,
+                                );
+                            }
+                        }
+                    }
+                    Envelope::Ready { .. } => {}
+                    Envelope::NotAuthorised { workspace_id, reason } => {
+                        tracing::warn!(workspace_id, %reason, "peer relay refused subscribe");
+                    }
+                    Envelope::Ping => {
+                        let _ = client.send(Envelope::Pong);
+                    }
+                    _ => {}
                 }
             }
-            Envelope::Ready { .. } => {}
-            Envelope::NotAuthorised { workspace_id, reason } => {
-                tracing::warn!(workspace_id, %reason, "peer relay refused subscribe");
-            }
-            Envelope::Ping => {
-                let _ = client.send(Envelope::Pong);
-            }
-            _ => {}
         }
     }
+}
+
+/// Advertise our local materialized heads for `ws_id` to the upstream
+/// peer relay via a [`Envelope::SyncRequest`]. Best-effort: a workspace
+/// we don't host, or a closed outbound, is silently skipped.
+async fn send_sync_request_for(
+    client: &RelayClient,
+    workspaces: &WorkspaceRegistry,
+    ws_id: u64,
+) {
+    let have_heads = {
+        let map = workspaces.lock().await;
+        match map.get(&ws_id) {
+            Some(ws) => ws.lock().await.current_heads(),
+            None => return,
+        }
+    };
+    let _ = client.send(Envelope::SyncRequest {
+        workspace_id: ws_id,
+        have_heads,
+    });
 }
 
 /// Parse the hex-encoded iroh node id string into an iroh
