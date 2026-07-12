@@ -1899,6 +1899,98 @@ impl WorkspaceTree {
         false
     }
 
+    /// Cursor-targeted counterpart of
+    /// [`Self::doc_append_tab_to_first_group_of_active_workspace`]: mirror
+    /// a tab append into the automerge doc under the active workspace's
+    /// group whose `id` matches `group_id`, scanning every strip. Used by
+    /// the file-drop router so a drop onto a non-first group replicates to
+    /// peers on the same object path the cache append wrote to.
+    ///
+    /// Returns `true` if the group was found and the tab written, `false`
+    /// otherwise (doc not seeded, active workspace absent, or no group
+    /// with that id) — the caller treats a `false` return as "cache-only
+    /// mirror; peer-sync will backfill on the next full snapshot".
+    pub fn doc_append_tab_to_group_of_active_workspace(
+        &mut self,
+        group_id: u64,
+        tab_id: u64,
+        title: String,
+        tile_blob: Vec<u8>,
+    ) -> bool {
+        use automerge::{ObjType, ReadDoc, ROOT, ScalarValue, Value, transaction::Transactable};
+        let Some((_, workspaces_id)) = self.doc.get(&ROOT, "workspaces").ok().flatten() else {
+            return false;
+        };
+        let ws_len = self.doc.length(&workspaces_id);
+        let active_raw = self.active.raw();
+        for ws_idx in 0..ws_len {
+            let Some((_, ws_entry)) = self.doc.get(&workspaces_id, ws_idx).ok().flatten() else {
+                continue;
+            };
+            let active_matches = matches!(
+                self.doc.get(&ws_entry, "id").ok().flatten(),
+                Some((Value::Scalar(s), _)) if matches!(s.as_ref(), ScalarValue::Uint(id) if *id == active_raw));
+            if !active_matches {
+                continue;
+            }
+            let Some((_, strips_id)) = self.doc.get(&ws_entry, "strips").ok().flatten() else {
+                return false;
+            };
+            let strips_len = self.doc.length(&strips_id);
+            for strip_idx in 0..strips_len {
+                let Some((_, strip_entry)) =
+                    self.doc.get(&strips_id, strip_idx).ok().flatten()
+                else {
+                    continue;
+                };
+                let Some((_, groups_id)) =
+                    self.doc.get(&strip_entry, "window_groups").ok().flatten()
+                else {
+                    continue;
+                };
+                let groups_len = self.doc.length(&groups_id);
+                for group_idx in 0..groups_len {
+                    let Some((_, group_entry)) =
+                        self.doc.get(&groups_id, group_idx).ok().flatten()
+                    else {
+                        continue;
+                    };
+                    let id_matches = matches!(
+                        self.doc.get(&group_entry, "id").ok().flatten(),
+                        Some((Value::Scalar(s), _)) if matches!(s.as_ref(), ScalarValue::Uint(id) if *id == group_id));
+                    if !id_matches {
+                        continue;
+                    }
+                    let tabs_id = match self.doc.get(&group_entry, "tabs").ok().flatten() {
+                        Some((_, id)) => id,
+                        None => match self.doc.put_object(&group_entry, "tabs", ObjType::List) {
+                            Ok(id) => id,
+                            Err(_) => return false,
+                        },
+                    };
+                    let new_idx = self.doc.length(&tabs_id);
+                    let Ok(tab_entry) =
+                        self.doc.insert_object(&tabs_id, new_idx, ObjType::Map)
+                    else {
+                        return false;
+                    };
+                    let _ = self.doc.put(&tab_entry, "id", ScalarValue::Uint(tab_id));
+                    let _ = self.doc.put(&tab_entry, "title", title);
+                    if !tile_blob.is_empty() {
+                        let _ = self.doc.put(
+                            &tab_entry,
+                            "tile_json",
+                            ScalarValue::Bytes(tile_blob),
+                        );
+                    }
+                    return true;
+                }
+            }
+            return false;
+        }
+        false
+    }
+
     pub fn bootstrap_default() -> Self {
         let ws_id = WorkspaceId::new();
         let strip_id = StripId::new();
