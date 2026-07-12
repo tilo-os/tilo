@@ -33,6 +33,7 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
 use std::thread;
@@ -79,11 +80,29 @@ const BINARY_EXTS: &[&str] = &[
 ];
 
 const MAX_DEPTH: usize = 8;
-const MAX_FILE_BYTES: u64 = 1_000_000;
+/// Bytes of each file's body we index. Only the head of a file is needed
+/// for the name/content search this powers, and capping it low is the
+/// single biggest lever on total index size — which in turn bounds the
+/// memory tantivy's background segment merge needs. A 1 MB cap over a
+/// 50k-file home produced a multi-GB merge spike that OOM'd the nested
+/// compositor ~90 s after boot; 16 KB keeps relevance for real text
+/// files while holding the on-disk index (and its merges) small.
+/// Peak merge memory scales with `MAX_FILE_BYTES * MAX_DOCS_BEFORE_MERGE`,
+/// so both are kept small deliberately.
+const MAX_FILE_BYTES: u64 = 16_384;
 const MAX_ENTRIES: usize = 50_000;
 const COMMIT_BATCH: usize = 512;
 const COMMIT_INTERVAL_SECS: u64 = 3;
 const QUERY_CACHE_CAPACITY: usize = 32;
+/// Cap on how many docs a segment may hold before the merge policy stops
+/// growing it further. Without a cap tantivy's default `LogMergePolicy`
+/// will merge every segment into one ever-larger segment, and that final
+/// merge reads the whole index into memory at once. Capping segment size
+/// keeps every merge bounded (at the cost of a few more segments, which
+/// the reader handles fine at this scale). With `MAX_FILE_BYTES` at 16 KB
+/// this caps a merged segment's indexed text at ~32 MB, so the transient
+/// memory a background merge needs stays well under the OOM threshold.
+const MAX_DOCS_BEFORE_MERGE: usize = 2_000;
 /// Minimum gap between reader-reload calls. Reader-reload does disk I/O
 /// (unmap old segment, map new), so per-keystroke reloads produced a
 /// visible palette jitter as the user typed fast. Anything under a
@@ -91,9 +110,11 @@ const QUERY_CACHE_CAPACITY: usize = 32;
 /// in batches anyway — and this keeps the query hot-path allocation-
 /// and-syscall-free on cache misses.
 const READER_RELOAD_INTERVAL_MS: u64 = 500;
-/// Tantivy writer heap. 50 MB is plenty for the batch sizes we push and
-/// comfortably fits on any qOS-eligible machine.
-const WRITER_HEAP_BYTES: usize = 50_000_000;
+/// Tantivy writer heap for the single indexing thread. Bounds the
+/// in-memory buffer before each flush; smaller means smaller segments
+/// (and smaller merges). 15 MB comfortably fits the `COMMIT_BATCH` doc
+/// batches we push.
+const WRITER_HEAP_BYTES: usize = 15_000_000;
 
 /// One row of tantivy output.
 #[derive(Clone, Debug)]
@@ -199,9 +220,18 @@ impl FilesIndex {
             let handle = thread::Builder::new()
                 .name("qos-files-index-walker".into())
                 .spawn(move || {
-                    let Ok(mut writer) = index.writer(WRITER_HEAP_BYTES) else {
+                    // Single indexing thread with a bounded heap, plus a
+                    // merge policy that caps segment size — together these
+                    // keep the walker's peak memory small. The default
+                    // multi-threaded writer + unbounded `LogMergePolicy`
+                    // merged the whole home index in one shot and spiked to
+                    // >1 GB ~90 s after boot, OOM-ing the compositor.
+                    let Ok(mut writer) = index.writer_with_num_threads(1, WRITER_HEAP_BYTES) else {
                         return;
                     };
+                    let mut merge_policy = tantivy::merge_policy::LogMergePolicy::default();
+                    merge_policy.set_max_docs_before_merge(MAX_DOCS_BEFORE_MERGE);
+                    writer.set_merge_policy(Box::new(merge_policy));
                     // Load a `path → indexed mtime` snapshot from the
                     // reader so we can decide which files need re-indexing.
                     let existing = load_mtime_snapshot(&index, path, mtime).unwrap_or_default();
@@ -361,6 +391,24 @@ fn load_mtime_snapshot(
     Ok(out)
 }
 
+/// Read at most `cap` bytes from the head of `path` into a fresh buffer.
+///
+/// Crucially this never allocates more than `cap` bytes regardless of the
+/// file's real size: `File::take(cap).read_to_end` stops reading at the
+/// cap. The obvious `fs::read(path)` alternative allocates the *entire*
+/// file first and truncates after, so a single large non-binary file (a
+/// multi-GB log / json / csv / sql dump the extension filter doesn't
+/// catch) ballooned the background walker to gigabytes and OOM'd the
+/// compositor. `known_len` just sizes the initial `Vec` to avoid growth
+/// churn; it is not trusted as an upper bound (the file may have grown).
+fn read_head(path: &Path, known_len: u64, cap: u64) -> Option<Vec<u8>> {
+    let reserve = known_len.min(cap) as usize;
+    let file = fs::File::open(path).ok()?;
+    let mut bytes = Vec::with_capacity(reserve);
+    file.take(cap).read_to_end(&mut bytes).ok()?;
+    Some(bytes)
+}
+
 fn walk_and_index(
     home: &Path,
     existing: &HashMap<PathBuf, u64>,
@@ -398,12 +446,10 @@ fn walk_and_index(
         if existing.get(path).copied() == Some(mtime) {
             continue;
         }
-        let take = meta.len().min(MAX_FILE_BYTES) as usize;
-        let Ok(bytes) = fs::read(path) else {
+        let Some(bytes) = read_head(path, meta.len(), MAX_FILE_BYTES) else {
             continue;
         };
-        let bytes = &bytes[..take.min(bytes.len())];
-        let Ok(body) = std::str::from_utf8(bytes) else {
+        let Ok(body) = std::str::from_utf8(&bytes) else {
             continue;
         };
         let stem = path
@@ -486,6 +532,44 @@ mod tests {
         assert!(should_skip(Path::new("/home/x/proj/node_modules"), home));
         assert!(should_skip(Path::new("/home/x/.cache/foo"), home));
         assert!(!should_skip(Path::new("/home/x/proj/src/lib.rs"), home));
+    }
+
+    #[test]
+    fn read_head_caps_allocation_regardless_of_file_size() {
+        // Regression: `walk_and_index` used `fs::read` (whole file into
+        // memory) then truncated, so one large non-binary file OOM'd the
+        // walker. `read_head` must never return more than `cap` bytes even
+        // when the file is far larger — and even when `known_len` lies
+        // (understates the real size, e.g. a file that grew after `stat`).
+        let dir = std::env::temp_dir().join(format!(
+            "qos-read-head-test-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("big.log");
+        // 5 MiB file; cap at 16 KiB.
+        let big = vec![b'a'; 5 * 1024 * 1024];
+        fs::write(&path, &big).unwrap();
+
+        let cap = 16_384u64;
+        let out = read_head(&path, big.len() as u64, cap).unwrap();
+        assert_eq!(
+            out.len(),
+            cap as usize,
+            "read_head must stop at the cap for a large file",
+        );
+        // Even if the caller under-reports the length (0), the read is
+        // still capped — proves the bound comes from `take`, not `known_len`.
+        let out2 = read_head(&path, 0, cap).unwrap();
+        assert_eq!(out2.len(), cap as usize, "cap holds even when known_len lies");
+
+        // A small file returns its whole content, not the cap.
+        let small = dir.join("small.txt");
+        fs::write(&small, b"hello").unwrap();
+        let out3 = read_head(&small, 5, cap).unwrap();
+        assert_eq!(out3, b"hello");
+
+        fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
