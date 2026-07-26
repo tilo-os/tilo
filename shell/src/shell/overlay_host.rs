@@ -1115,6 +1115,44 @@ impl ShellOverlayHost {
         }
     }
 
+    /// Per-tick wire-up that mirrors a completed *intra-group* tab reorder
+    /// into the persisted [`crate::shell::state::WorkspaceTree`]. Walks the
+    /// captured [`GroupRow`] pointers, drains each group's
+    /// [`UiWindowGroup::take_pending_tab_reorder`] one-shot, and calls
+    /// [`WorkspaceTree::reorder_tab_within_group`] so the group's `tabs` order
+    /// in the data layer matches the pill order the user just dropped. That
+    /// method also mirrors the move into the automerge doc for peer-sync.
+    ///
+    /// Without this hook dragging a tab within its group is a widget-only
+    /// reshuffle that resets to the persisted order on the next shell
+    /// restart. Mirrors [`Self::harvest_pending_group_reorder`] in shape.
+    fn harvest_pending_tab_reorder(&mut self) {
+        if self.group_row_ptrs.is_empty() {
+            return;
+        }
+        let Some(chrome) = self.chrome.clone() else {
+            return;
+        };
+        let mut changes: Vec<(GroupId, usize, usize)> = Vec::new();
+        for &ptr in self.group_row_ptrs.values() {
+            // SAFETY: see field doc on `group_row_ptrs`.
+            let row: &mut GroupRow = unsafe { &mut *ptr };
+            for g in row.groups.iter_mut() {
+                if let Some((from, to)) = g.take_pending_tab_reorder() {
+                    changes.push((g.id, from, to));
+                }
+            }
+        }
+        if changes.is_empty() {
+            return;
+        }
+        let st = chrome.borrow_mut();
+        let mut tree = st.tree_mut();
+        for (group_id, from, to) in changes {
+            tree.reorder_tab_within_group(group_id, from, to);
+        }
+    }
+
     /// Per-tick wire-up that keeps the focused window group scrolled into
     /// view. Edge-triggered on a change to the persisted `active_group`
     /// pointer for a strip: when the focused group differs from the one we
@@ -1451,6 +1489,13 @@ impl ShellOverlayHost {
     #[cfg(any(test, debug_assertions))]
     pub fn tick_pending_group_reorder_harvest_for_tests(&mut self) {
         self.harvest_pending_group_reorder();
+    }
+
+    /// Test-only one-shot harvest: lets integration tests invoke the
+    /// per-frame intra-group tab reorder writeback from outside `update`.
+    #[cfg(any(test, debug_assertions))]
+    pub fn tick_pending_tab_reorder_harvest_for_tests(&mut self) {
+        self.harvest_pending_tab_reorder();
     }
 
     /// Test-only one-shot: run the focus-follow scroll reconcile from
@@ -2564,6 +2609,11 @@ impl Widget for ShellOverlayHost {
         // replicates to peers. Same one-shot take-pattern as the width
         // writeback.
         self.harvest_pending_group_reorder();
+        // Mirror any in-frame intra-group tab reorder (drag a pill to a new
+        // slot inside its own group) into the persisted `WorkspaceTree` so the
+        // tab order survives a restart and replicates to peers. Same one-shot
+        // take-pattern as the group reorder above.
+        self.harvest_pending_tab_reorder();
         // Mirror the widget-side `TabBar::active_id` into the persisted
         // `WorkspaceTree::group.active_tab`. Without this, clicking a
         // different tab pill flips the visible content but the tree's
