@@ -2487,6 +2487,76 @@ impl WorkspaceTree {
         true
     }
 
+    /// Move the tab at `from` to index `to` inside `group_id`'s tab list.
+    ///
+    /// This is the persisted half of an intra-group tab drag: the widget tree
+    /// reorders its own pills + hosts immediately, and the shell mirrors the
+    /// new order here so it survives a restart and reaches peers. Both indices
+    /// are in the group's own tab-index space; `to` is clamped to the last
+    /// slot. Returns `true` only when the order actually changed, so callers
+    /// can skip a redundant revision bump.
+    pub fn reorder_tab_within_group(&mut self, group_id: u64, from: usize, to: usize) -> bool {
+        // Locate the group in the cache (ids are workspace-agnostic).
+        let mut located: Option<(usize, usize, usize)> = None;
+        'scan: for (ws_idx, ws) in self.workspaces.iter().enumerate() {
+            for (strip_idx, strip) in ws.strips.iter().enumerate() {
+                if let Some(g_idx) =
+                    strip.window_groups.iter().position(|g| g.id == group_id)
+                {
+                    located = Some((ws_idx, strip_idx, g_idx));
+                    break 'scan;
+                }
+            }
+        }
+        let Some((ws_idx, strip_idx, g_idx)) = located else {
+            return false;
+        };
+        let group = &mut self.workspaces[ws_idx].strips[strip_idx].window_groups[g_idx];
+        if from >= group.tabs.len() {
+            return false;
+        }
+        let dest = to.min(group.tabs.len().saturating_sub(1));
+        if dest == from {
+            return false;
+        }
+        let moved = group.tabs.remove(from);
+        group.tabs.insert(dest, moved);
+        // Mirror the reordered list into the doc so peer-sync ships the new
+        // order. Cloned first because the doc write borrows `self` mutably.
+        let tabs = group.tabs.clone();
+        self.doc_rewrite_group_tabs(group_id, &tabs);
+        true
+    }
+
+    /// Replace `group_id`'s doc-side `tabs` list with `tabs`, in order.
+    ///
+    /// Used by [`Self::reorder_tab_within_group`]. Rewriting the whole list
+    /// (rather than splicing one entry) keeps this in step with
+    /// [`Self::doc_reorder_group_within_strip`], which also re-emits a
+    /// group's tabs wholesale after a move. No-op when the doc isn't seeded
+    /// for this group yet — the cache write already happened, and the next
+    /// [`Self::seed_doc_from_cache`] carries the order over.
+    fn doc_rewrite_group_tabs(&mut self, group_id: u64, tabs: &[Tab]) {
+        use automerge::{ObjType, ScalarValue, transaction::Transactable};
+        let Some((group_entry, _, _, _)) = self.locate_group(group_id) else {
+            return;
+        };
+        let Ok(tabs_id) = self.doc.put_object(&group_entry, "tabs", ObjType::List) else {
+            return;
+        };
+        for (i, tab) in tabs.iter().enumerate() {
+            if let Ok(tab_entry) = self.doc.insert_object(&tabs_id, i, ObjType::Map) {
+                let _ = self.doc.put(&tab_entry, "id", ScalarValue::Uint(tab.id));
+                let _ = self.doc.put(&tab_entry, "title", tab.title.clone());
+                if let Ok(blob) = serde_json::to_vec(&tab.tile) {
+                    let _ = self
+                        .doc
+                        .put(&tab_entry, "tile_json", ScalarValue::Bytes(blob));
+                }
+            }
+        }
+    }
+
     /// Reconcile the active-group pointer against the set of currently-
     /// closing groups in `strip_id`. If the recorded active group is in
     /// `closing_ids`, advance the pointer to the next non-closing
@@ -3211,6 +3281,69 @@ mod active_group_tests {
             .collect()
     }
 
+    /// Dragging a tab to a new slot inside its own window group must persist
+    /// into the tree (and be mirrored into the doc), or the reorder is
+    /// in-memory only and resets on the next shell restart — the same class of
+    /// gap that `pending_maximize_change` / `pending_width_change` exist to
+    /// close for maximize and width.
+    #[test]
+    #[serial_test::serial(next_id_statics)]
+    fn reorder_tab_within_group_persists_and_mirrors_into_the_doc() {
+        // One group (id 1) carrying three tabs: [10, 11, 12].
+        let (mut tree, _strip_id, ids) = tree_with_n_groups(1);
+        let group_id = ids[0];
+        let mk = |id: u64, name: &str| Tab {
+            id,
+            title: name.into(),
+            tile: TileContent::Stub { kind: AppKind::Terminal, label: name.into() },
+        };
+        {
+            let g = &mut tree.workspaces[0].strips[0].window_groups[0];
+            g.tabs = vec![mk(10, "A"), mk(11, "B"), mk(12, "C")];
+            g.active_tab = 10;
+        }
+        tree.seed_doc_from_cache();
+
+        let tab_order = |t: &WorkspaceTree| -> Vec<u64> {
+            t.workspaces[0].strips[0].window_groups[0]
+                .tabs
+                .iter()
+                .map(|tb| tb.id)
+                .collect()
+        };
+        assert_eq!(tab_order(&tree), vec![10, 11, 12]);
+
+        // Drag the first tab to the last slot → [11, 12, 10].
+        let changed = tree.reorder_tab_within_group(group_id, 0, 2);
+        assert!(changed, "moving a tab to a new slot reports a change");
+        assert_eq!(tab_order(&tree), vec![11, 12, 10], "cache order updated");
+
+        // Same slot is a no-op; unknown group is a no-op.
+        assert!(!tree.reorder_tab_within_group(group_id, 1, 1));
+        assert!(!tree.reorder_tab_within_group(999, 0, 1));
+        assert_eq!(tab_order(&tree), vec![11, 12, 10]);
+
+        // The doc must carry the new order too, so peers/persistence agree.
+        use automerge::{ReadDoc, ROOT, ScalarValue, Value};
+        let (_, workspaces_id) = tree.doc.get(&ROOT, "workspaces").unwrap().unwrap();
+        let (_, ws0) = tree.doc.get(&workspaces_id, 0_usize).unwrap().unwrap();
+        let (_, strips_id) = tree.doc.get(&ws0, "strips").unwrap().unwrap();
+        let (_, strip0) = tree.doc.get(&strips_id, 0_usize).unwrap().unwrap();
+        let (_, groups_id) = tree.doc.get(&strip0, "window_groups").unwrap().unwrap();
+        let (_, g0) = tree.doc.get(&groups_id, 0_usize).unwrap().unwrap();
+        let (_, tabs_id) = tree.doc.get(&g0, "tabs").unwrap().unwrap();
+        let mut doc_order = Vec::new();
+        for i in 0..tree.doc.length(&tabs_id) {
+            let (_, t) = tree.doc.get(&tabs_id, i).unwrap().unwrap();
+            if let Some((Value::Scalar(s), _)) = tree.doc.get(&t, "id").unwrap() {
+                if let ScalarValue::Uint(id) = s.as_ref() {
+                    doc_order.push(*id);
+                }
+            }
+        }
+        assert_eq!(doc_order, vec![11, 12, 10], "doc mirrors the new tab order");
+    }
+
     #[test]
     fn reorder_group_moves_group_to_dropped_index() {
         // Strip [1, 2, 3]. Drag group 1 to index 2 → [2, 3, 1].
@@ -3620,6 +3753,7 @@ mod next_id_seed_tests {
     }
 
     #[test]
+    #[serial_test::serial(next_id_statics)]
     fn next_id_seeds_above_max_used_id_on_load() {
         let _guard = SaltGuard::new();
         // The default tree path runs with salt=0 (back-compat); the
@@ -3657,6 +3791,7 @@ mod next_id_seed_tests {
     /// would silently break every fixture that expects `WorkspaceId(1)`
     /// to round-trip through serde.
     #[test]
+    #[serial_test::serial(next_id_statics)]
     fn peer_salt_zero_default_keeps_old_ids() {
         let _guard = SaltGuard::new();
         // Reset both the salt and the counter so a parallel test that
@@ -3678,6 +3813,7 @@ mod next_id_seed_tests {
     /// freshly-minted id must equal `0xABCD`. Sanity check on the
     /// bit-packing.
     #[test]
+    #[serial_test::serial(next_id_statics)]
     fn peer_salt_high_bits_are_the_salt() {
         let _guard = SaltGuard::new();
         let mut tree = WorkspaceTree::default();
@@ -3714,6 +3850,7 @@ mod next_id_seed_tests {
     /// the only thing left to differ between the two `append` calls is
     /// the id their respective `next_id` counter mints.
     #[test]
+    #[serial_test::serial(next_id_statics)]
     fn two_peers_with_independent_next_id_collide_under_sync() {
         let _guard = SaltGuard::new();
 
@@ -3784,6 +3921,7 @@ mod next_id_seed_tests {
     /// not drag the local counter forward — that would burn legitimate
     /// local slots for no reason.
     #[test]
+    #[serial_test::serial(next_id_statics)]
     fn seed_next_id_from_self_respects_peer_salt() {
         let _guard = SaltGuard::new();
         NEXT_ID_PEER_SALT.store(0x1111, AtomicOrdering::Relaxed);

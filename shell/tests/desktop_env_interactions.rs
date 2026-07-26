@@ -320,6 +320,138 @@ fn group_drag_reorders_strip_window_groups_in_tree() {
     );
 }
 
+/// A lone window group has no *inter*-group resize handle, so its only resize
+/// affordance is the grip on its own right edge. Dragging that must widen the
+/// group both on screen (the laid-out rect) and in the persisted tree.
+/// Regression for "resizing windows doesn't work": the drag used to update the
+/// width field without flagging the layout dirty, so the baked taffy length
+/// stayed put and nothing moved.
+#[test]
+fn group_right_edge_drag_resizes_on_screen_and_persists() {
+    let (tree, strip_id, _ids) = single_strip_tree(&[100]);
+    let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
+    let mut layout = lay_out_host(&mut host);
+
+    let width_in_tree = |chrome: &shell::shell::chrome_state::Chrome| -> u32 {
+        let st = chrome.borrow();
+        let tree = st.tree();
+        tree.workspaces[0].strips[0].window_groups[0].width.pixels()
+    };
+    assert_eq!(width_in_tree(&chrome), 600, "Normal = 600 px at boot");
+
+    let rect = host
+        .group_at_for_tests(strip_id, 0)
+        .expect("group after layout")
+        .get_rect();
+    let on_screen_before = rect.width();
+    // Grab 2 px inside the right-edge grip and drag +120 px.
+    let grab = Point::new(rect.x1 - 2.0, rect.center().y);
+    cursor(&mut host, &layout, grab);
+    press(&mut host, &layout);
+    cursor(&mut host, &layout, Point::new(grab.x + 120.0, grab.y));
+    release(&mut host, &layout);
+
+    // The width change must report structure-dirty so the tree is rebuilt;
+    // re-laying out is what the production frame loop does next.
+    layout = lay_out_host(&mut host);
+    let on_screen_after = host
+        .group_at_for_tests(strip_id, 0)
+        .unwrap()
+        .get_rect()
+        .width();
+    assert!(
+        on_screen_after > on_screen_before,
+        "the group must actually get wider on screen: {on_screen_before} -> {on_screen_after}",
+    );
+    assert_eq!(
+        on_screen_after,
+        on_screen_before + 120.0,
+        "and by exactly the dragged distance",
+    );
+
+    // Production runs this harvest each frame inside `Widget::update`.
+    host.tick_pending_width_harvest_for_tests();
+    assert_eq!(
+        width_in_tree(&chrome),
+        720,
+        "the new width must persist into the tree so it survives a restart",
+    );
+    let _ = &layout;
+}
+
+/// Dragging a tab pill to a new slot *inside its own group* must reorder the
+/// group's `tabs` list in the persisted tree. Drives the real press → move →
+/// release path and then the per-frame harvest `Widget::update` runs, so this
+/// covers the whole wire: `TabBar` release → `WindowGroup` pill/host swap →
+/// `pending_tab_reorder` → `ShellOverlayHost` harvest →
+/// `WorkspaceTree::reorder_tab_within_group`.
+#[test]
+fn tab_drag_reorders_tabs_within_group_in_tree() {
+    // One group carrying three tabs so there are gaps to drop into.
+    let (mut tree, strip_id, _ids) = single_strip_tree(&[100]);
+    {
+        let g = &mut tree.workspaces[0].strips[0].window_groups[0];
+        g.tabs = vec![
+            Tab { id: 1, title: "A".into(), tile: TileContent::Stub { kind: AppKind::Other("T".into()), label: "A".into() } },
+            Tab { id: 2, title: "B".into(), tile: TileContent::Stub { kind: AppKind::Other("T".into()), label: "B".into() } },
+            Tab { id: 3, title: "C".into(), tile: TileContent::Stub { kind: AppKind::Other("T".into()), label: "C".into() } },
+        ];
+        g.active_tab = 1;
+    }
+    let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
+    let layout = lay_out_host(&mut host);
+
+    let tab_order = |chrome: &shell::shell::chrome_state::Chrome| -> Vec<u64> {
+        let st = chrome.borrow();
+        let tree = st.tree();
+        tree.workspaces[0].strips[0].window_groups[0]
+            .tabs
+            .iter()
+            .map(|t| t.id)
+            .collect()
+    };
+    assert_eq!(tab_order(&chrome), vec![1, 2, 3], "persisted order at boot");
+
+    // Grab pill A (index 0) and drop it past pill C's midpoint → [B, C, A].
+    let (grab, target) = {
+        let g = host
+            .group_at_for_tests(strip_id, 0)
+            .expect("group after layout");
+        let rects = g.tab_rects();
+        assert!(rects.len() >= 3, "three pills must be laid out");
+        // Grab over the pill's label area (left inset), NOT its centre: the
+        // centre is where the per-tab close / maximize / search chips sit and
+        // those consume the press before a drag can start.
+        (
+            Point::new(rects[0].x0 + 8.0, rects[0].center().y),
+            Point::new(rects[2].center().x + 10.0, rects[2].center().y),
+        )
+    };
+    cursor(&mut host, &layout, grab);
+    press(&mut host, &layout);
+    // Move past the drag threshold, then onto the target gap.
+    cursor(&mut host, &layout, Point::new(grab.x + 20.0, grab.y));
+    cursor(&mut host, &layout, target);
+    release(&mut host, &layout);
+
+    // The widget's own pill order must have moved too — the persisted write
+    // below is a mirror of it, not an independent path.
+    {
+        let g = host.group_at_for_tests(strip_id, 0).unwrap();
+        let widget_order: Vec<u64> = g.tabs().iter().map(|t| t.id).collect();
+        assert_eq!(widget_order, vec![2, 3, 1], "pill order after the drop");
+    }
+
+    // Production runs this harvest each frame inside `Widget::update`.
+    host.tick_pending_tab_reorder_harvest_for_tests();
+
+    assert_eq!(
+        tab_order(&chrome),
+        vec![2, 3, 1],
+        "the dragged tab must move to the dropped slot in the persisted tree",
+    );
+}
+
 // -----------------------------------------------------------------------
 // 3. Horizontal strip scroll
 // -----------------------------------------------------------------------
