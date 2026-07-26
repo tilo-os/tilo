@@ -151,6 +151,12 @@ pub struct WindowGroup {
     /// width survives a shell restart and replicates across collaborators.
     /// Same take-pattern as [`Self::take_pending_maximize_change`].
     pending_width_change: Option<u32>,
+    /// One-shot `(from, to)` tab-index pair awaiting harvest by the shell.
+    /// Set whenever an intra-group drag reorder is applied to the pill list,
+    /// so the shell can mirror the same move into the persisted
+    /// [`crate::widget::WindowGroup`]'s tree entry. Without this writeback the
+    /// new order is in-memory only and resets across a shell restart.
+    pending_tab_reorder: Option<(usize, usize)>,
     /// Group-level close-fade timestamp. `None` while the group is
     /// alive; `Some(started)` once the user's last tab-close drains
     /// through `handle_event` and the group has no remaining tabs or
@@ -190,6 +196,7 @@ impl WindowGroup {
             built_active: Some(active_id),
             pending_maximize_change: None,
             pending_width_change: None,
+            pending_tab_reorder: None,
         }
     }
     pub fn width(&self) -> WindowWidth { self.width }
@@ -296,7 +303,14 @@ impl WindowGroup {
             let delta = pointer_x - origin_x;
             let new_w = ((origin_w as f32) + delta).round().max(0.0) as i64;
             let clamped = (new_w.max(WIDTH_MIN_PX as i64).min(WIDTH_MAX_PX as i64)) as u32;
-            self.width = WindowWidth::Custom(clamped);
+            if self.width.pixels() != clamped {
+                self.width = WindowWidth::Custom(clamped);
+                // `build_layout` bakes the width into the taffy node as a
+                // fixed `Dimension::length`, so a width change is only
+                // visible after the tree is rebuilt. Without this flag the
+                // drag updated the field and nothing moved on screen.
+                self.style_dirty = true;
+            }
         }
     }
     pub fn end_resize(&mut self) {
@@ -316,9 +330,15 @@ impl WindowGroup {
         // still land on the clamping path's invariant — Custom(p) clamps
         // internally in `pixels()`. Mid-drag math operates on raw pixels
         // and feeds clamped values back in via `Custom(px)`.
+        let before = self.width.pixels();
         match w {
             WindowWidth::Custom(p) => self.width = WindowWidth::Custom(p.clamp(WIDTH_MIN_PX, WIDTH_MAX_PX)),
             other => self.width = other,
+        }
+        // Same reason as `update_resize`: the taffy node carries a baked
+        // length, so the new width only takes effect after a rebuild.
+        if self.width.pixels() != before {
+            self.style_dirty = true;
         }
     }
 
@@ -338,6 +358,14 @@ impl WindowGroup {
     /// [`WorkspaceTree`] so resizes survive a restart.
     pub fn take_pending_width_change(&mut self) -> Option<u32> {
         self.pending_width_change.take()
+    }
+
+    /// Drain a one-shot intra-group tab reorder `(from, to)` produced by a
+    /// completed drag. Returns `Some` once per reorder, then `None` until the
+    /// next one. The shell harvests this each frame and mirrors the move into
+    /// the persisted `WorkspaceTree` via `reorder_tab_within_group`.
+    pub fn take_pending_tab_reorder(&mut self) -> Option<(usize, usize)> {
+        self.pending_tab_reorder.take()
     }
     pub fn active_host_mut(&mut self) -> Option<&mut TileHost> {
         let id = self.bar.active_id();
@@ -467,6 +495,7 @@ impl WindowGroup {
             built_active: Some(active_id),
             pending_maximize_change: None,
             pending_width_change: None,
+            pending_tab_reorder: None,
         }
     }
 
@@ -1243,8 +1272,12 @@ impl Widget for WindowGroup {
                 return;
             }
             WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. } if self.hover_resize => {
-                // the origin x is captured at the current pointer via the current rect
-                self.begin_resize(self.rect.x1 as f32);
+                // Anchor on where the pointer actually is, not on the group's
+                // right edge: the hit zone is `RESIZE_HANDLE_PX` wide, so
+                // anchoring on the edge offsets every subsequent delta by
+                // however far inside the zone the user pressed (the window
+                // visibly jumps on grab).
+                self.begin_resize(self.last_cursor.x as f32);
                 *handled = true; return;
             }
             WindowEvent::MouseInput { state: ElementState::Released, button: MouseButton::Left, .. } if self.resize_origin.is_some() => {
@@ -1388,6 +1421,9 @@ impl Widget for WindowGroup {
             self.bar.reorder(from, to);
             let item = self.hosts.remove(from);
             self.hosts.insert(to, item);
+            // Publish for the shell so the new order reaches the persisted
+            // tree (and peers) instead of living only in this widget.
+            self.pending_tab_reorder = Some((from, to));
             *handled = true;
         }
 
@@ -1753,6 +1789,188 @@ mod tests {
     /// harvests each frame to mirror the value into the persisted
     /// `WorkspaceTree`. Without it the on-screen drag is in-memory only
     /// and resets to the pre-drag width across a shell restart.
+    /// A resize drag must actually change the group's *laid out* width, not
+    /// just its in-memory `width` field. `build_layout` bakes
+    /// `Dimension::length(self.width.pixels())` into the taffy node, so a
+    /// width change that doesn't report `take_structure_dirty()` leaves the
+    /// stale length in the tree and the window never visibly resizes —
+    /// which is exactly how "resizing windows doesn't work" shipped.
+    #[test]
+    fn resize_drag_changes_laid_out_width() {
+        use std::collections::HashMap;
+        use taffy::prelude::TaffyMaxContent;
+        use taffy::Style;
+
+        let theme = Theme::dark();
+        let mut g = make_group();
+
+        // Helper: (re)build the taffy tree from the group's current state and
+        // run a full layout pass, returning the group's laid-out width.
+        fn layout_width(
+            g: &mut WindowGroup,
+            theme: &Theme,
+        ) -> f64 {
+            let mut taffy = TaffyTree::<()>::new();
+            let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+            let node = g.build_layout(&mut taffy, theme, &mut node_map);
+            let root = taffy.new_with_children(Style::default(), &[node]).unwrap();
+            taffy.compute_layout(root, taffy::Size::MAX_CONTENT).unwrap();
+            g.apply_layout(&taffy, node, Point::ZERO);
+            g.get_rect().width()
+        }
+
+        let before = layout_width(&mut g, &theme);
+        assert_eq!(before, 600.0, "make_group() starts at WindowWidth::Normal");
+
+        // Drag the right-edge handle +200 px.
+        g.begin_resize(600.0);
+        g.update_resize(800.0);
+        assert_eq!(g.width().pixels(), 800, "drag updates the width field");
+
+        // The width changed, so the group must report structure-dirty; that
+        // is the signal `App` / `FrameBuilder` use to re-run `build_layout`.
+        assert!(
+            g.take_structure_dirty(),
+            "a width change must report structure-dirty so the taffy node's \
+             baked length is rebuilt",
+        );
+
+        let after = layout_width(&mut g, &theme);
+        assert_eq!(
+            after, 800.0,
+            "after the rebuild the group must actually be laid out 200 px wider",
+        );
+    }
+
+    /// An intra-group tab reorder must publish a one-shot `(from, to)` for the
+    /// shell to mirror into the persisted `WorkspaceTree`. Without it the new
+    /// pill order is in-memory only and resets on the next shell restart —
+    /// same take-pattern contract as maximize and width.
+    #[test]
+    fn take_pending_tab_reorder_drains_after_a_reorder() {
+        use std::collections::HashMap;
+        use taffy::prelude::TaffyMaxContent;
+        use taffy::Style;
+
+        let theme = Theme::dark();
+        let mut g = make_group();
+        assert_eq!(g.take_pending_tab_reorder(), None, "nothing pending initially");
+
+        let mut taffy = TaffyTree::<()>::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let node = g.build_layout(&mut taffy, &theme, &mut node_map);
+        let root = taffy.new_with_children(Style::default(), &[node]).unwrap();
+        taffy.compute_layout(root, taffy::Size::MAX_CONTENT).unwrap();
+
+        // Publish a reorder the same way the bar does on a drag release, then
+        // pump the group's drain block via a harmless event.
+        g.bar_mut_for_tests().pending_reorder = Some((0, 1));
+        let mut handled = false;
+        let mut focus = None;
+        let mut state = automerge::AutoCommit::new();
+        let root_id = automerge::ROOT;
+        let moved = WindowEvent::CursorMoved {
+            device_id: unsafe { std::mem::zeroed() },
+            position: winit::dpi::PhysicalPosition::new(9000.0, 9000.0),
+        };
+        g.handle_event(
+            &moved, 1.0, &winit::event::Modifiers::default(),
+            &mut state, &root_id, &mut handled, &mut focus, node, &taffy,
+        );
+
+        assert_eq!(
+            g.take_pending_tab_reorder(),
+            Some((0, 1)),
+            "a harvested reorder publishes (from, to) for the shell exactly once",
+        );
+        assert_eq!(
+            g.take_pending_tab_reorder(),
+            None,
+            "take-pattern: drained on the first poll",
+        );
+    }
+
+    /// Grabbing the resize handle must anchor on the *press position*, not on
+    /// the group's right edge. The hit zone is `RESIZE_HANDLE_PX` wide, so
+    /// anchoring on the edge makes the window jump by however far inside the
+    /// zone the user actually clicked, and every subsequent delta is offset
+    /// by that amount. Driving the real event path here (CursorMoved →
+    /// Pressed → CursorMoved) is what catches it; calling `begin_resize`
+    /// directly would hide the bug, since the bug is in its caller.
+    #[test]
+    fn resize_grab_anchors_on_press_position_not_group_edge() {
+        use std::collections::HashMap;
+        use taffy::prelude::TaffyMaxContent;
+        use taffy::Style;
+        use winit::event::{ElementState, MouseButton};
+
+        let theme = Theme::dark();
+        let mut g = make_group();
+        let mut taffy = TaffyTree::<()>::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let node = g.build_layout(&mut taffy, &theme, &mut node_map);
+        // Definite-size root: the group sizes its height as `percent(1.0)`,
+        // which resolves to 0 against an indefinite parent — the resize
+        // handle's rect would then be empty and no press could ever hit it.
+        let root = taffy
+            .new_with_children(
+                Style {
+                    size: Size {
+                        width: Dimension::length(1600.0),
+                        height: Dimension::length(900.0),
+                    },
+                    ..Default::default()
+                },
+                &[node],
+            )
+            .unwrap();
+        taffy.compute_layout(root, taffy::Size::MAX_CONTENT).unwrap();
+        g.apply_layout(&taffy, node, Point::ZERO);
+
+        let rect = g.get_rect();
+        assert!(rect.height() > 0.0, "group must have a real height to hit-test");
+        let right_edge = rect.x1;
+        let press_y = rect.center().y;
+        let start_w = g.width().pixels();
+        // Press 3 px inside the handle zone (still a valid grab) rather than
+        // exactly on the edge.
+        let press_x = right_edge - 3.0;
+
+        let mut state = automerge::AutoCommit::new();
+        let root_id = automerge::ROOT;
+        let mods = winit::event::Modifiers::default();
+        let mut focus = None;
+
+        let mut dispatch = |g: &mut WindowGroup, ev: &WindowEvent, taffy: &TaffyTree<()>| {
+            let mut handled = false;
+            g.handle_event(
+                ev, 1.0, &mods, &mut state, &root_id, &mut handled, &mut focus, node, taffy,
+            );
+        };
+
+        let move_to = |x: f64| WindowEvent::CursorMoved {
+            device_id: unsafe { std::mem::zeroed() },
+            position: winit::dpi::PhysicalPosition::new(x, press_y),
+        };
+        let press = WindowEvent::MouseInput {
+            device_id: unsafe { std::mem::zeroed() },
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+        };
+
+        dispatch(&mut g, &move_to(press_x), &taffy);
+        dispatch(&mut g, &press, &taffy);
+        // Drag exactly +100 px from the press position.
+        dispatch(&mut g, &move_to(press_x + 100.0), &taffy);
+
+        assert_eq!(
+            g.width().pixels(),
+            start_w + 100,
+            "a 100 px drag from the press point must widen the group by exactly \
+             100 px (no jump from anchoring on the group edge)",
+        );
+    }
+
     #[test]
     fn take_pending_width_change_drains_after_resize_gesture() {
         let mut g = make_group();
