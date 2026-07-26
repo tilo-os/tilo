@@ -1,3 +1,0 @@
-{
-  "apiKeyHelper": "bash -c 'source .env && echo $ANTHROPIC_API_KEY'"
-}
