@@ -60,14 +60,28 @@ for t in "$LIBWPE" "$FDO" "$WPEWK"; do
     [ -d "$d" ] || tar xf "$t"
 done
 
-export PKG_CONFIG_PATH="$DESTDIR_ROOT$PREFIX/lib64/pkgconfig:$DESTDIR_ROOT$PREFIX/share/pkgconfig:${PKG_CONFIG_PATH:-}"
-export LD_LIBRARY_PATH="$DESTDIR_ROOT$PREFIX/lib64:${LD_LIBRARY_PATH:-}"
-# Staged installs: make pkg-config resolve the .pc files' unstaged
-# ${prefix} paths inside the staging root.
-[ -n "$DESTDIR_ROOT" ] && export PKG_CONFIG_SYSROOT_DIR="$DESTDIR_ROOT"
+# Resolve our own libs (libwpe, wpebackend-fdo) at the REAL prefix: each
+# component installs there (below) as well as into the DESTDIR staging root
+# that the image COPYs. We deliberately do NOT set PKG_CONFIG_SYSROOT_DIR:
+# it prepends the staging root to EVERY pkg-config path — including system
+# libraries (xkbcommon, glib, …) whose headers live at /usr, not
+# /wpe/usr — and the newer base's stricter CMake then hard-errors on the
+# resulting non-existent "$DESTDIR_ROOT/usr/include" in an imported target's
+# INTERFACE_INCLUDE_DIRECTORIES ("Build files cannot be regenerated
+# correctly"). Installing to the real prefix keeps every path valid.
+export PKG_CONFIG_PATH="$PREFIX/lib64/pkgconfig:$PREFIX/share/pkgconfig:${PKG_CONFIG_PATH:-}"
+export LD_LIBRARY_PATH="$PREFIX/lib64:${LD_LIBRARY_PATH:-}"
 # Pin real compilers: meson otherwise auto-wraps with sccache, whose shared
 # daemon may run outside the build container and not see its /usr/include.
 export CC=gcc CXX=g++
+
+# Install to the real prefix (for build-time resolution by later
+# components) AND stage into DESTDIR (for the image COPY). A no-op second
+# copy when DESTDIR_ROOT is empty (local dev installs straight to $PREFIX).
+install_real_and_staged() {
+    ninja -C build install 2>&1 | tail -1
+    [ -n "$DESTDIR_ROOT" ] && DESTDIR="$DESTDIR_ROOT" ninja -C build install 2>&1 | tail -1
+}
 
 echo "=== libwpe ==="
 cd "$CACHE/${LIBWPE%.tar.xz}"
@@ -77,13 +91,13 @@ cd "$CACHE/${LIBWPE%.tar.xz}"
 rm -f build/CMakeCache.txt; rm -rf build/CMakeFiles
 cmake -B build -GNinja -Wno-dev -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_INSTALL_PREFIX="$PREFIX" -DCMAKE_INSTALL_LIBDIR=lib64 >/dev/null
-DESTDIR="$DESTDIR_ROOT" ninja -C build install | tail -1
+install_real_and_staged
 
 echo "=== wpebackend-fdo ==="
 cd "$CACHE/${FDO%.tar.xz}"
 rm -rf build
 meson setup build --prefix="$PREFIX" --libdir lib64 --buildtype=release >/dev/null
-DESTDIR="$DESTDIR_ROOT" ninja -C build install 2>&1 | tail -1
+install_real_and_staged
 
 echo "=== wpewebkit (long) ==="
 cd "$CACHE/${WPEWK%.tar.xz}"
