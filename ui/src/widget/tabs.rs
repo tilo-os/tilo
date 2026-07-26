@@ -970,6 +970,57 @@ impl TabBar {
             .find(|c| c.desc.id == id)
             .map(|c| c.started_at)
     }
+    /// Finalise a drag release. Three possible outcomes:
+    ///
+    ///   1. Released inside this bar → `pending_reorder` (within-group move)
+    ///      to the gap the white insertion indicator is pointing at.
+    ///   2. Released outside this bar's rect → `pending_detach` (cross-group
+    ///      move; the parent `GroupRow` resolves the target bar by hit-testing
+    ///      sibling `bar_rect()`s against the release point).
+    ///   3. Released back where it started → no-op.
+    ///
+    /// The in-bar case uses [`Self::drop_index_for`] — the same midpoint
+    /// insertion index that drives `hover_drop_idx`, so the drop lands exactly
+    /// where the indicator promised. It previously required the release point
+    /// to be *inside another pill's rect*, which silently dropped every
+    /// gap-targeted reorder (and made reordering feel broken).
+    ///
+    /// Extracted from the `Released` arm of `handle_event` so the outcome
+    /// logic is unit-testable without staging a full winit event sequence.
+    fn finish_drag_release(&mut self, handled: &mut bool) {
+        if self.pending_drag.is_some() {
+            if let Some((from, _)) = self.press_origin {
+                if self.rect.contains(self.last_cursor) {
+                    // `drop_index_for` returns an *insertion* index in
+                    // `0..=len`. Removing the dragged pill first shifts every
+                    // later slot down by one, so an insertion point past the
+                    // pill's own position maps to `ins - 1`.
+                    let ins = self.drop_index_for(self.last_cursor);
+                    let to = if ins > from { ins - 1 } else { ins };
+                    if to != from && to < self.tabs.len() {
+                        self.pending_reorder = Some((from, to));
+                        *handled = true;
+                    }
+                } else if let Some(t) = self.tabs.get(from) {
+                    self.pending_detach = Some((t.id, self.last_cursor));
+                    *handled = true;
+                }
+            }
+            self.pending_drag = None;
+        }
+        self.press_origin = None;
+        // Drag is over — clear the cached grab offset so a fresh press
+        // computes it from its own cursor position and the ghost stops
+        // painting.
+        self.drag_offset = None;
+        // Drag is over — stop pumping redraws for the drop-zone animation and
+        // clear the target so a fresh drag starts with no stale zone visible.
+        self.drop_zone_target = None;
+        self.drop_zone_animated_at = None;
+        self.hover_drop_idx = None;
+        self.hover_drop_animated_at = None;
+    }
+
     pub fn reorder(&mut self, from: usize, to: usize) {
         if from >= self.tabs.len() || to >= self.tabs.len() || from == to { return; }
         self.snapshot_layout_for_spring();
@@ -1803,36 +1854,7 @@ impl Widget for TabBar {
                 //      sibling `bar_rect()`s against the release point).
                 //   3. Released inside the bar but not on another pill →
                 //      dropped in the gap, treated as "cancel".
-                if self.pending_drag.is_some() {
-                    if let Some((from, _)) = self.press_origin {
-                        let in_bar = self.rect.contains(self.last_cursor);
-                        if in_bar {
-                            let to = self.tab_rects.iter().position(|r| r.contains(self.last_cursor));
-                            if let Some(to) = to {
-                                if to != from {
-                                    self.pending_reorder = Some((from, to));
-                                    *handled = true;
-                                }
-                            }
-                        } else if let Some(t) = self.tabs.get(from) {
-                            self.pending_detach = Some((t.id, self.last_cursor));
-                            *handled = true;
-                        }
-                    }
-                    self.pending_drag = None;
-                }
-                self.press_origin = None;
-                // Drag is over — clear the cached grab offset so a fresh
-                // press computes it from its own cursor position and the
-                // ghost stops painting.
-                self.drag_offset = None;
-                // Drag is over — stop pumping redraws for the drop-zone
-                // animation and clear the target so a fresh drag starts
-                // with no stale zone visible.
-                self.drop_zone_target = None;
-                self.drop_zone_animated_at = None;
-                self.hover_drop_idx = None;
-                self.hover_drop_animated_at = None;
+                self.finish_drag_release(handled);
             }
             _ => {}
         }
@@ -2345,6 +2367,78 @@ mod tests {
         assert_eq!(b.drop_index_for(Point::new(170.0, 20.0)), 2);
         // Past every midpoint → append at len().
         assert_eq!(b.drop_index_for(Point::new(230.0, 20.0)), 3);
+    }
+
+    /// Releasing a dragged pill anywhere in the bar must reorder to the gap
+    /// the white insertion indicator is pointing at — including the gaps at
+    /// the very start/end and the space between pills. The release path used
+    /// to accept only a drop landing *inside* another pill's rect, so a drop
+    /// aimed at an indicated gap silently did nothing: the indicator promised
+    /// an insertion the release then discarded.
+    #[test]
+    fn release_reorders_to_indicated_gap_not_only_onto_a_pill() {
+        use winit::event::{ElementState, MouseButton};
+
+        // Pills A [0,80], B [80,160], C [160,240] inside a 240 px bar. The
+        // pills are contiguous here (as they are on screen), so "the gap" is
+        // addressed by which side of a midpoint the cursor is on — exactly
+        // what `drop_index_for` computes and what the indicator draws.
+        let make = || {
+            let mut b = bar();
+            b.rect = Rect::new(0.0, 0.0, 240.0, 40.0);
+            b.tab_rects = vec![
+                Rect::new(0.0, 6.0, 80.0, 34.0),
+                Rect::new(80.0, 6.0, 160.0, 34.0),
+                Rect::new(160.0, 6.0, 240.0, 34.0),
+            ];
+            b
+        };
+
+        // Simulate "drag pill 0, release past C's midpoint" (append to end).
+        let mut b = make();
+        b.pending_drag = Some(DragPayload::Tab { group: 1, tab: b.tabs[0].id });
+        b.press_origin = Some((0, Point::new(40.0, 20.0)));
+        b.last_cursor = Point::new(230.0, 20.0);
+        let mut handled = false;
+        b.finish_drag_release(&mut handled);
+        assert_eq!(
+            b.take_reorder(),
+            Some((0, 2)),
+            "released past the last midpoint must move the tab to the end",
+        );
+
+        // Drag pill 2, release before A's midpoint (insert at the very start).
+        let mut b = make();
+        b.pending_drag = Some(DragPayload::Tab { group: 1, tab: b.tabs[2].id });
+        b.press_origin = Some((2, Point::new(200.0, 20.0)));
+        b.last_cursor = Point::new(5.0, 20.0);
+        let mut handled = false;
+        b.finish_drag_release(&mut handled);
+        assert_eq!(
+            b.take_reorder(),
+            Some((2, 0)),
+            "released before the first midpoint must move the tab to the front",
+        );
+
+        // Releasing where the tab already is must NOT publish a reorder.
+        let mut b = make();
+        b.pending_drag = Some(DragPayload::Tab { group: 1, tab: b.tabs[1].id });
+        b.press_origin = Some((1, Point::new(120.0, 20.0)));
+        b.last_cursor = Point::new(120.0, 20.0);
+        let mut handled = false;
+        b.finish_drag_release(&mut handled);
+        assert_eq!(b.take_reorder(), None, "a no-op drop publishes nothing");
+
+        // Released outside the bar entirely → detach, not reorder.
+        let mut b = make();
+        b.pending_drag = Some(DragPayload::Tab { group: 1, tab: b.tabs[0].id });
+        b.press_origin = Some((0, Point::new(40.0, 20.0)));
+        b.last_cursor = Point::new(120.0, 400.0);
+        let mut handled = false;
+        b.finish_drag_release(&mut handled);
+        assert_eq!(b.take_reorder(), None, "outside the bar is not a reorder");
+        assert!(b.pending_detach.is_some(), "outside the bar detaches");
+        let _ = (ElementState::Pressed, MouseButton::Left);
     }
 
     #[test]
