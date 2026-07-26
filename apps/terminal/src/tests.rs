@@ -212,6 +212,55 @@ mod tests {
         assert_eq!(doc.length(&grid_id), 24);
     }
 
+    /// Lines are created *empty* (not pre-filled with `width` spaces — that
+    /// per-character Automerge fill was O(n^2) and froze the whole
+    /// compositor for seconds the first time a terminal synced). A write
+    /// whose cursor lands past a fresh line's current end must therefore
+    /// pad the gap with spaces so the printed char still renders at the
+    /// correct column. Regression for the "dropping a window freezes the
+    /// shell ~3-5 s" report.
+    #[test]
+    fn empty_line_pads_on_cursor_jump_write() {
+        let (mut widget, _rx) = build_test_widget();
+        let mut doc = AutoCommit::new();
+        widget.init_crdt(&mut doc, &ROOT);
+
+        // Fresh lines start empty.
+        let grid_id = doc.get(ROOT, "terminal_grid").unwrap().unwrap().1;
+        let line0 = doc.get(&grid_id, 0usize).unwrap().unwrap().1;
+        let text0 = doc.get(&line0, "text").unwrap().unwrap().1;
+        assert_eq!(doc.text(&text0).unwrap().len(), 0, "blank lines are seeded empty");
+
+        // CSI 1;11 H → row 1, col 11 (1-based); print 'X' at 0-based col 10
+        // on the still-empty first line — this exercises the pad path.
+        widget.feed(&mut doc, &ROOT, b"\x1b[1;11HX");
+
+        // Read the grid directly from the CRDT: find the line carrying 'X'
+        // and assert it was padded to column 10 with spaces.
+        let grid_id = doc.get(ROOT, "terminal_grid").unwrap().unwrap().1;
+        let n = doc.length(&grid_id);
+        let mut found: Option<String> = None;
+        for i in 0..n {
+            let line = doc.get(&grid_id, i).unwrap().unwrap().1;
+            let text = doc.get(&line, "text").unwrap().unwrap().1;
+            let s = doc.text(&text).unwrap();
+            if s.contains('X') {
+                found = Some(s);
+                break;
+            }
+        }
+        let line = found.expect("a grid line must carry the printed 'X'");
+        assert_eq!(
+            line.chars().nth(10),
+            Some('X'),
+            "printed char must land at column 10; got {line:?}",
+        );
+        assert!(
+            line.chars().take(10).all(|c| c == ' '),
+            "columns 0-9 must be padded with spaces; got {line:?}",
+        );
+    }
+
     #[test]
     fn test_terminal_performer_print() {
         use crate::TermModes;
