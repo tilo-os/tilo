@@ -955,7 +955,7 @@ impl TerminalWidget {
                 self.grid_id = Some(id);
             }
         }
-        Self::ensure_lines(state, self.grid_id.as_ref().unwrap(), self.height, self.width, &mut self.line_ids);
+        Self::ensure_lines(state, self.grid_id.as_ref().unwrap(), self.height, &mut self.line_ids);
 
         if self.alt_grid_id.is_none() {
             if let Ok(Some((Value::Object(ObjType::List), id))) = state.get(root, "terminal_grid_alt") {
@@ -965,7 +965,7 @@ impl TerminalWidget {
                 self.alt_grid_id = Some(id);
             }
         }
-        Self::ensure_lines(state, self.alt_grid_id.as_ref().unwrap(), self.height, self.width, &mut self.alt_line_ids);
+        Self::ensure_lines(state, self.alt_grid_id.as_ref().unwrap(), self.height, &mut self.alt_line_ids);
 
         if self.links_id.is_none() {
             if let Ok(Some((Value::Object(ObjType::Map), id))) = state.get(root, "terminal_links") {
@@ -1009,15 +1009,24 @@ impl TerminalWidget {
 
     /// Ensure `grid_id` holds at least `min_len` blank lines and refresh
     /// `ids` to mirror the list. Shared by the main and alternate buffers.
-    fn ensure_lines(state: &mut AutoCommit, grid_id: &ObjId, min_len: usize, width: usize, ids: &mut Vec<ObjId>) {
+    /// Lines are created empty; `print` grows them on demand (see below),
+    /// so no width is needed here.
+    fn ensure_lines(state: &mut AutoCommit, grid_id: &ObjId, min_len: usize, ids: &mut Vec<ObjId>) {
         let current_len = state.length(grid_id);
         if current_len < min_len {
+            // Blank lines are created *empty*, not pre-filled with `width`
+            // spaces. Pre-filling every new line splices `width` characters
+            // into a fresh Automerge `Text` per row, and the columnar op-set
+            // insert is O(doc) per character — so seeding a full screen the
+            // first time a terminal syncs cost seconds (≈3 s in debug for an
+            // 80-col screen) and froze the whole compositor. A short/empty
+            // line renders as blank cells (the draw path already pads
+            // visually) and the write path (`print`) pads a line on demand
+            // when the cursor lands past its current end, so nothing depends
+            // on the eager fill.
             for y in current_len..min_len {
                 let line_id = state.insert_object(grid_id, y, ObjType::Map).unwrap();
-                let text_id = state.put_object(&line_id, "text", ObjType::Text).unwrap();
-                let _ = state.splice_text(&text_id, 0, 0, &" ".repeat(width));
-                let attr_bytes: Vec<u8> = vec![Attr::default().pack(); width].concat();
-                let _ = state.put(&line_id, "attrs", attr_bytes);
+                let _ = state.put_object(&line_id, "text", ObjType::Text).unwrap();
             }
         }
         let new_len = state.length(grid_id);
@@ -2306,7 +2315,20 @@ impl<'a> Perform for TerminalPerformer<'a> {
         let y = self.absolute_y().min(self.active_len().saturating_sub(1));
         let line_obj = match self.active_line_id(y) { Some(o) => o, None => return };
         if let Ok(Some((Value::Object(ObjType::Text), text_id))) = self.state.get(&line_obj, "text") {
-            let current_len = self.state.length(&text_id);
+            // Lines are created empty and grown on demand. If the cursor
+            // sits past the line's current end (a cursor-position jump on a
+            // fresh line), pad the gap with spaces so the splice below lands
+            // at a valid index.
+            let mut current_len = self.state.length(&text_id);
+            if self.cursor_x > current_len {
+                let _ = self.state.splice_text(
+                    &text_id,
+                    current_len,
+                    0,
+                    &" ".repeat(self.cursor_x - current_len),
+                );
+                current_len = self.cursor_x;
+            }
             let replacement = format!("{}{}", c, if char_w > 1 { " ".repeat(char_w - 1) } else { "".into() });
 
             if self.cursor_x < current_len {
@@ -2315,30 +2337,34 @@ impl<'a> Perform for TerminalPerformer<'a> {
                 let _ = self.state.splice_text(&text_id, self.cursor_x, 0, &replacement);
             }
 
-            if let Ok(Some((Value::Scalar(v), _))) = self.state.get(&line_obj, "attrs") {
-                if let automerge::ScalarValue::Bytes(bytes) = v.as_ref() {
-                    let mut attr_bytes = bytes.clone();
-                    let start = self.cursor_x * ATTR_BYTES;
-                    let end = (self.cursor_x + char_w) * ATTR_BYTES;
-                    if attr_bytes.len() < end { attr_bytes.resize(end, 0); }
+            // Attrs mirror the text; the array is created lazily and grown to
+            // fit the cell being written (matching the on-demand text fill).
+            let mut attr_bytes = match self.state.get(&line_obj, "attrs") {
+                Ok(Some((Value::Scalar(v), _))) => match v.as_ref() {
+                    automerge::ScalarValue::Bytes(bytes) => bytes.clone(),
+                    _ => Vec::new(),
+                },
+                _ => Vec::new(),
+            };
+            let start = self.cursor_x * ATTR_BYTES;
+            let end = (self.cursor_x + char_w) * ATTR_BYTES;
+            if attr_bytes.len() < end { attr_bytes.resize(end, 0); }
 
-                    // Carry the active OSC 8 hyperlink id onto the cell,
-                    // independent of SGR so a link and its styling compose.
-                    let mut cell_attr = self.current_attr;
-                    cell_attr.link_id = self.current_link_id;
-                    attr_bytes[start..start + ATTR_BYTES].copy_from_slice(&cell_attr.pack());
-                    if char_w > 1 {
-                        let mut cont = cell_attr;
-                        cont.is_wide_cont = true;
-                        let cont_packed = cont.pack();
-                        for i in 1..char_w {
-                            let s = (self.cursor_x + i) * ATTR_BYTES;
-                            if s + ATTR_BYTES <= attr_bytes.len() { attr_bytes[s..s + ATTR_BYTES].copy_from_slice(&cont_packed); }
-                        }
-                    }
-                    let _ = self.state.put(&line_obj, "attrs", attr_bytes);
+            // Carry the active OSC 8 hyperlink id onto the cell,
+            // independent of SGR so a link and its styling compose.
+            let mut cell_attr = self.current_attr;
+            cell_attr.link_id = self.current_link_id;
+            attr_bytes[start..start + ATTR_BYTES].copy_from_slice(&cell_attr.pack());
+            if char_w > 1 {
+                let mut cont = cell_attr;
+                cont.is_wide_cont = true;
+                let cont_packed = cont.pack();
+                for i in 1..char_w {
+                    let s = (self.cursor_x + i) * ATTR_BYTES;
+                    if s + ATTR_BYTES <= attr_bytes.len() { attr_bytes[s..s + ATTR_BYTES].copy_from_slice(&cont_packed); }
                 }
             }
+            let _ = self.state.put(&line_obj, "attrs", attr_bytes);
 
             self.cursor_x += char_w;
             if self.cursor_x >= self.width {

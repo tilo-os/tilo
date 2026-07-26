@@ -1077,11 +1077,17 @@ pub fn run() -> ! {
     let mut force_first_paint = true;
     // Optional paint-rate diagnostics (`QOS_PAINT_STATS=1`).
     let paint_stats = std::env::var("QOS_PAINT_STATS").is_ok();
+    // Optional per-iteration timing (`QOS_LOOP_TIMING=1`): logs any tick
+    // whose non-sleeping work exceeds 100 ms, with a phase breakdown, so a
+    // main-thread stall (e.g. a synchronous drop/detach handler) shows up
+    // as an actual measurement instead of a guess.
+    let loop_timing = std::env::var("QOS_LOOP_TIMING").is_ok();
     let mut stats_since = Instant::now();
     let (mut frames_total, mut frames_painted) = (0u32, 0u32);
     let (mut cause_events, mut cause_revision, mut cause_anim) = (0u32, 0u32, 0u32);
     let (mut cause_session, mut cause_keepalive) = (0u32, 0u32);
     while !close_requested {
+        let iter_t0 = Instant::now();
         backend.poll_events(&mut |event| pending_events.push(event));
         let had_backend_events = !pending_events.is_empty();
         let mut session_changed = false;
@@ -1169,6 +1175,7 @@ pub fn run() -> ! {
                 }
             }
         }
+        let t_input_done = iter_t0.elapsed();
 
         // Track D2: advance the idle timers and apply any timeout-driven
         // transitions (blank, auto-lock, suspend) for this tick.
@@ -1362,6 +1369,7 @@ pub fn run() -> ! {
             last_revision = frame_builder.chrome_revision();
             force_first_paint = false;
         }
+        let t_paint_done = iter_t0.elapsed();
 
         // Confirm an `ext_session_lock_v1` client's lock only after the lock
         // overlay has been presented and the session is actually locked, so
@@ -1410,6 +1418,7 @@ pub fn run() -> ! {
             }
             test_control_conns.retain(|c| !c.closed);
         }
+        let t_testctl_done = iter_t0.elapsed();
 
         // Phase 7 fix: drain wayland client traffic + push pending
         // protocol updates back out. `dispatch_clients` advances each
@@ -1424,6 +1433,17 @@ pub fn run() -> ! {
         if let Err(err) = display.flush_clients() {
             eprintln!("nirios compositor: flush_clients error: {err}");
             break;
+        }
+        let t_work_done = iter_t0.elapsed();
+        if loop_timing && t_work_done > Duration::from_millis(100) {
+            eprintln!(
+                "SLOW-ITER total_work={:?} | input={:?} paint=+{:?} testctl=+{:?} dispatch_clients=+{:?}",
+                t_work_done,
+                t_input_done,
+                t_paint_done - t_input_done,
+                t_testctl_done - t_paint_done,
+                t_work_done - t_testctl_done,
+            );
         }
 
         // Pump any pending calloop sources (the listening socket
