@@ -189,7 +189,11 @@ After all three layers, your `main()` sees:
   Apps opened into the same workspace exchange CRDT deltas; apps in
   different workspaces are different rooms and never see each other's
   traffic. It names a room, not a permission — see `--capabilities` for
-  what an app is actually allowed to touch.
+  what an app is actually allowed to touch. Because `is_qos_native()` now
+  answers `true` inside a GUI launch, `cli::workspace_root()` resolves to
+  `/var/workspace` there instead of the standalone
+  `~/.local/share/<pkg-id>/` fallback; an app that writes through it needs
+  a capability on the path it writes to.
 
 ## Debugging
 
