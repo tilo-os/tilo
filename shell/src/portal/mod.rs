@@ -308,16 +308,14 @@ fn capability_scope(cap: &Capability) -> GrantScope {
     }
 }
 
-/// The longer-lived of two expiries. `Never` outlives an explicit
-/// deadline, which outlives the session, which outlives a single use.
+/// The longer-lived of two expiries.
+///
+/// Delegates to [`Expiry::longest`] rather than re-deriving the order:
+/// the capability store merges a re-grant with the same rule, and two
+/// implementations of "strongest wins" would eventually disagree about
+/// whether a permanent grant is permanent.
 fn stronger_scope(a: GrantScope, b: GrantScope) -> GrantScope {
-    let rank = |e: GrantScope| match e {
-        Expiry::AfterUse => 0u8,
-        Expiry::EndOfSession => 1,
-        Expiry::AtUnix(_) => 2,
-        Expiry::Never => 3,
-    };
-    if rank(a) >= rank(b) { a } else { b }
+    Expiry::longest(a, b)
 }
 
 /// The user-prompt the portal needs to surface, waiting on a choice.
