@@ -1,10 +1,16 @@
 # Terminal — qOS application manifest.
 #
-# A terminal is a shell host: it needs a PTY pair, the host bin dirs
-# for whatever the user runs, the shell's own rc files, and `$HOME` as
-# the working tree. That is a wide grant by nature — the confinement
-# that matters for a terminal is the workspace sandbox it is launched
-# into, not this manifest.
+# A terminal is a shell host: it needs the host bin dirs for whatever
+# the user runs, the shell's own rc files, and `$HOME` as the working
+# tree. That is a wide grant by nature — the confinement that matters
+# for a terminal is the workspace sandbox it is launched into, not this
+# manifest.
+#
+# The PTY is deliberately NOT granted: bwrap mounts a fresh devpts at
+# /dev, and binding the host's /dev/ptmx + /dev/pts over it leaves the
+# master on the host instance and the slave lookup on the sandbox one,
+# so openpty() fails with EACCES. Letting the sandbox's own devpts serve
+# is both what works and the tighter grant.
 #
 # Pack and install:
 #
@@ -97,8 +103,6 @@ write = [
     "/dev/nvidia-caps",
     "~",
     "/var/workspace",
-    "/dev/ptmx",
-    "/dev/pts",
 ]
 
 [sandbox.net]
