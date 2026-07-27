@@ -272,6 +272,16 @@ impl FrameBuilder {
         &mut self.host
     }
 
+    /// On-screen rectangle of the tile currently painting the foreign
+    /// wayland surface `surface_id`, or `None` when no visible tile hosts
+    /// it. See [`ShellOverlayHost::foreign_surface_rect`].
+    pub fn foreign_surface_rect(
+        &mut self,
+        surface_id: u64,
+    ) -> Option<vello::kurbo::Rect> {
+        self.host.foreign_surface_rect(surface_id)
+    }
+
     pub fn theme(&self) -> &Theme {
         &self.theme
     }

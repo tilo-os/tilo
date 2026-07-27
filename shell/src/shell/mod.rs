@@ -1082,21 +1082,38 @@ pub fn resolve_tile_shape_for_test(t: &ShellTile) -> &'static str {
     }
 }
 
-fn to_ui_tile(t: &ShellTile) -> UiTile {
+/// Which UI app-kind glyph a persisted tile advertises in its tab pill.
+///
+/// Shared by the initial tree→widget build and by
+/// [`overlay_host::ShellOverlayHost`]'s per-revision resync, which splices
+/// individual tabs into live groups and needs the same mapping.
+pub(crate) fn tile_app_kind(t: &ShellTile) -> UiKind {
+    match t {
+        ShellTile::Stub { kind, .. } => to_ui_kind(kind),
+        ShellTile::AppPlaceholder { kind, .. } => to_ui_kind(kind),
+        // No `AppKind` describes "arbitrary external client"; `Settings`
+        // is the same catch-all `to_ui_kind` uses for unknown kinds.
+        ShellTile::Foreign { .. } => UiKind::Settings,
+    }
+}
+
+pub(crate) fn to_ui_tile(t: &ShellTile) -> UiTile {
     match t {
         ShellTile::Stub { kind, label } => UiTile::Stub {
             kind: to_ui_kind(kind),
             label: label.clone(),
         },
-        // Foreign-client tiles (Phase 6 of the compositor plan) fall
-        // through to a Stub for the chrome-side render — the compositor's
-        // frame loop is responsible for blitting the actual buffer over
-        // this stub. `UiKind::Settings` is the catch-all glyph; same
-        // fallback `to_ui_kind` uses for `ShellKind::Other(_)`.
-        ShellTile::Foreign { app_id, .. } => UiTile::Stub {
-            kind: UiKind::Settings,
-            label: app_id.clone(),
-        },
+        // Foreign-client tiles host an external wayland surface. The
+        // widget pulls the client's most recent buffer out of
+        // `compositor::foreign`'s frame store and paints it into the
+        // tab's rect; it also publishes that rect back so the compositor
+        // can configure the client to the right size.
+        ShellTile::Foreign { app_id, surface_id } => {
+            UiTile::App(Box::new(crate::compositor::foreign::ForeignSurfaceWidget::new(
+                *surface_id,
+                app_id.clone(),
+            )))
+        }
         ShellTile::AppPlaceholder { kind, label } => match kind {
             // Terminal — spawn a real PTY; on failure fall back to a Stub per
             // spec §9a, mirroring the same pattern `default_demo_tabs` uses
@@ -1217,11 +1234,7 @@ pub fn to_ui_window_group(g: &state::WindowGroup) -> UiGroup {
         .tabs
         .iter()
         .map(|t| {
-            let kind = match &t.tile {
-                ShellTile::Stub { kind, .. } => to_ui_kind(kind),
-                ShellTile::AppPlaceholder { kind, .. } => to_ui_kind(kind),
-                ShellTile::Foreign { .. } => UiKind::Settings,
-            };
+            let kind = tile_app_kind(&t.tile);
             (
                 TabDescriptor {
                     id: t.id,
