@@ -497,6 +497,33 @@ pub struct Workspace {
 /// the local user's account name.
 pub type UserId = String;
 
+/// The id of the person sitting at this machine.
+///
+/// Derived from the device identity when one is provisioned, so a
+/// capability granted to this user is the same subject a peer sees, and
+/// falls back to the OS account name otherwise. Deliberately stable
+/// across restarts: an owner whose id changed every boot would lose
+/// their own workspaces.
+pub fn local_user_id() -> UserId {
+    if let Ok(v) = std::env::var("QOS_USER_ID")
+        && !v.is_empty()
+    {
+        return v;
+    }
+    if let Ok(bytes) = std::fs::read("/var/lib/qos/user-identity/pubkey.bin")
+        && bytes.len() == 32
+    {
+        let mut key = [0u8; 32];
+        key.copy_from_slice(&bytes);
+        if let Principal::Person(id) = Principal::person_from_key(
+            collab_types::crypto::Ed25519PublicKey::from_bytes(key),
+        ) {
+            return id;
+        }
+    }
+    std::env::var("USER").unwrap_or_else(|_| "local".to_string())
+}
+
 /// Seconds since the Unix epoch, for capability expiry.
 ///
 /// A clock that has not been set yet reads as 0, which makes every

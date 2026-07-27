@@ -96,6 +96,18 @@ fn unique_socket(label: &str) -> PathBuf {
     std::env::temp_dir().join(format!("qos-broker-rd-{label}-{pid}-{nanos}.sock"))
 }
 
+/// The collaboration cluster every client in these scenarios joins.
+///
+/// The broker routes CRDT traffic by the `(app_id, cluster_id)` pair a
+/// client announces on its `Hello`, so peers that are meant to observe
+/// each other's edits must announce the same pair — these scenarios
+/// pair this cluster with a single app id per file. A per-client
+/// random uuid would put every client in a cluster of its own, which
+/// is how a real deployment keeps unrelated documents apart.
+fn test_cluster() -> uuid::Uuid {
+    uuid::Uuid::from_u128(0x3f2b_1c00_0000_4000_8000_0000_0000_0001)
+}
+
 fn wait_for_broker(socket: &PathBuf) -> UnixStream {
     let deadline = Instant::now() + Duration::from_secs(2);
     loop {
@@ -266,7 +278,7 @@ fn owner_can_redact_a_recent_op() {
             s,
             &CollabRequest::Hello {
                 app_id: "test".into(),
-                cluster_id: uuid::Uuid::new_v4(),
+                cluster_id: test_cluster(),
             },
         );
     }
@@ -384,7 +396,7 @@ fn editor_redact_request_is_rejected() {
             s,
             &CollabRequest::Hello {
                 app_id: "test".into(),
-                cluster_id: uuid::Uuid::new_v4(),
+                cluster_id: test_cluster(),
             },
         );
     }
@@ -474,7 +486,7 @@ fn redaction_persists_through_audit_log_across_compaction() {
             s,
             &CollabRequest::Hello {
                 app_id: "test".into(),
-                cluster_id: uuid::Uuid::new_v4(),
+                cluster_id: test_cluster(),
             },
         );
     }
@@ -591,7 +603,7 @@ fn redacted_op_is_filtered_from_scrollback() {
             s,
             &CollabRequest::Hello {
                 app_id: "test".into(),
-                cluster_id: uuid::Uuid::new_v4(),
+                cluster_id: test_cluster(),
             },
         );
     }
@@ -694,7 +706,7 @@ fn late_arriving_op_with_already_redacted_id_is_dropped() {
             s,
             &CollabRequest::Hello {
                 app_id: "test".into(),
-                cluster_id: uuid::Uuid::new_v4(),
+                cluster_id: test_cluster(),
             },
         );
     }
@@ -804,7 +816,7 @@ fn redaction_of_mls_encrypted_op_succeeds() {
             s,
             &CollabRequest::Hello {
                 app_id: "test".into(),
-                cluster_id: uuid::Uuid::new_v4(),
+                cluster_id: test_cluster(),
             },
         );
     }
@@ -883,7 +895,7 @@ fn recursive_redaction_is_rejected() {
             s,
             &CollabRequest::Hello {
                 app_id: "test".into(),
-                cluster_id: uuid::Uuid::new_v4(),
+                cluster_id: test_cluster(),
             },
         );
     }
@@ -1006,7 +1018,7 @@ fn audit_entry_carries_reason_and_redactor_pk() {
             s,
             &CollabRequest::Hello {
                 app_id: "test".into(),
-                cluster_id: uuid::Uuid::new_v4(),
+                cluster_id: test_cluster(),
             },
         );
     }
