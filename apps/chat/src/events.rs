@@ -1856,29 +1856,14 @@ mod tests {
 
     #[test]
     fn a_view_only_peer_cannot_post_react_or_hydrate_embeds() {
-        use ui::permissions::{
-            PermissionAssignment, PermissionContext, Role, RoleId, RolePermissions, UserId,
-            WorkspaceSettingsView,
-        };
+        use ui::permissions::{Actor, PermissionContext, Role};
         let (mut app, mut doc) = app_with_doc();
-        // Restrict this peer to a member role: no file grants, no workspace
-        // admin — exactly what an invite without write/file access produces.
-        let view = WorkspaceSettingsView {
-            roles: vec![Role {
-                id: RoleId("member".into()),
-                name: "Member".into(),
-                permissions: RolePermissions {
-                    app_access: vec![],
-                    file_ops: vec![],
-                    workspace_admin: false,
-                },
-            }],
-            assignments: vec![PermissionAssignment {
-                user: UserId(model::ME.into()),
-                role: RoleId("member".into()),
-            }],
-        };
-        let ctx = PermissionContext::from_workspace_settings(&view, &UserId(model::ME.into())).unwrap();
+        // Restrict this peer to a read-only member with no file capabilities —
+        // exactly what an invite without write/file access produces.
+        let ctx = PermissionContext::from_capabilities(
+            Actor::person(Some(Role::Viewer), model::ME),
+            vec![],
+        );
         app.perms = crate::permissions::ChatPermissions::from_context(ctx);
 
         assert!(!app.can_participate(), "a member without admin can't write to the workspace");
