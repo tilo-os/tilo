@@ -53,6 +53,8 @@ use std::process::{Command, Stdio};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
+use crate::shell::state::WorkspaceId;
+
 /// How long an enumeration of installed packages is reused before the
 /// registry + manifests are re-read. The palette queries this on every
 /// keystroke; a couple of seconds is short enough that an app installed
@@ -363,14 +365,25 @@ pub fn resolve_launcher_bin() -> Result<PathBuf, LaunchError> {
 // Building + starting a launch.
 // ---------------------------------------------------------------------
 
-/// Render the `qos-launcher` invocation for `app`.
+/// Render the `qos-launcher` invocation for `app`, launched into
+/// `workspace`.
 ///
 /// Pure — no I/O, no spawning — so tests can assert on the exact command
 /// the production path builds.
+///
+/// `workspace` is the room the app is being opened into. It rides in as
+/// `--workspace-id`, which the launcher turns into `QOS_WORKSPACE_ID`
+/// inside the sandbox and the toolkit turns into the collaboration
+/// cluster every CRDT delta is addressed to. Without it an app has no
+/// room, so two apps the user opened side by side would never see each
+/// other's edits — which is why this is a required argument rather than
+/// an option: there is no such thing as launching an app into no
+/// workspace from the compositor.
 pub fn build_launch_command(
     app: &InstalledApp,
     launcher_bin: &Path,
     wayland_socket: &Path,
+    workspace: WorkspaceId,
 ) -> LaunchCommand {
     let mut args = vec![
         "run".to_string(),
@@ -380,6 +393,8 @@ pub fn build_launch_command(
         app.payload_root.display().to_string(),
         "--wayland-socket".to_string(),
         wayland_socket.display().to_string(),
+        "--workspace-id".to_string(),
+        workspace.collab_cluster_id().to_string(),
     ];
     // Service sockets (collab, qos-fs, …) are resolved by the launcher
     // against `$XDG_RUNTIME_DIR/qos/services`. Optional ones that are
@@ -399,12 +414,15 @@ pub fn build_launch_command(
     }
 }
 
-/// Resolve `package_id` and start it.
+/// Resolve `package_id` and start it in `workspace`.
 ///
 /// Returns as soon as the launch is handed to its worker thread — it
 /// never waits for the app to appear. The `Ok` value is the resolved
 /// app, so callers can name it in their UI without a second lookup.
-pub fn launch(package_id: &str) -> Result<InstalledApp, LaunchError> {
+///
+/// `workspace` is the caller's active workspace; it becomes the app's
+/// collaboration room (see [`build_launch_command`]).
+pub fn launch(package_id: &str, workspace: WorkspaceId) -> Result<InstalledApp, LaunchError> {
     let app = installed_apps()?
         .into_iter()
         .find(|a| a.package_id == package_id)
@@ -418,7 +436,7 @@ pub fn launch(package_id: &str) -> Result<InstalledApp, LaunchError> {
     }
     let socket = wayland_socket().ok_or(LaunchError::NoDisplay)?;
     let launcher_bin = resolve_launcher_bin()?;
-    let command = build_launch_command(&app, &launcher_bin, &socket);
+    let command = build_launch_command(&app, &launcher_bin, &socket, workspace);
     remember_launch(&app);
     spawn_detached(app.clone(), command);
     Ok(app)
