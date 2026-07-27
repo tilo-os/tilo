@@ -33,7 +33,7 @@ use zbus::object_server::SignalContext;
 use zbus::names::OwnedUniqueName;
 use zbus::zvariant::{ObjectPath, OwnedValue, Value};
 
-use crate::shell::state::{Capability, FsMode, GrantScope};
+use crate::shell::state::{Capability, FsMode, GRANT_ALWAYS, GRANT_ONCE, GRANT_SESSION};
 
 use super::{
     flow, CapabilityKind, PortalCaller, PortalContext, PromptOutcome, WorkspaceId,
@@ -104,7 +104,7 @@ impl FileChooserBackend {
             // knows this is a filesystem capability.
             path: PathBuf::from("/"),
             mode: FsMode::Read,
-            scope: GrantScope::Once,
+            scope: GRANT_ONCE,
         };
         let outcome = flow::resolve(
             &self.ctx,
@@ -137,7 +137,7 @@ impl FileChooserBackend {
         let cap_template = Capability::Filesystem {
             path: PathBuf::from("/"),
             mode: FsMode::ReadWrite,
-            scope: GrantScope::Once,
+            scope: GRANT_ONCE,
         };
         let outcome = flow::resolve(
             &self.ctx,
@@ -170,7 +170,7 @@ impl FileChooserBackend {
         let cap_template = Capability::Filesystem {
             path: PathBuf::from("/"),
             mode: FsMode::ReadWrite,
-            scope: GrantScope::Once,
+            scope: GRANT_ONCE,
         };
         let outcome = flow::resolve(
             &self.ctx,
@@ -278,7 +278,8 @@ mod tests {
             roles: vec![],
             workspace_files: vec![],
             collaborators: vec![],
-            grants: HashMap::new(),
+            owner: None,
+            capabilities: Vec::new(),
             shared_surfaces: HashMap::new(),
         }
     }

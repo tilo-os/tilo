@@ -202,7 +202,7 @@ pub struct ChromeState {
     /// for `front()` and drains the entry once the user clicks an
     /// action button. v1 stores pairs of `(app_id, capability)` —
     /// the capability's `scope` is set by the portal layer before
-    /// pushing (typically `GrantScope::Once`, since the prompt
+    /// pushing (typically `GRANT_ONCE`, since the prompt
     /// itself escalates to `Session`/`Always` based on the user's
     /// click). Empty by default.
     pub pending_grants: VecDeque<(AppId, Capability)>,
@@ -465,7 +465,7 @@ impl ChromeState {
     /// if the app already holds a grant covering the path, so repeated
     /// drops don't pile up duplicate capabilities.
     fn grant_dropped_file_access(&self, path: &std::path::Path) {
-        use crate::shell::state::{FsMode, GrantScope};
+        use crate::shell::state::{FsMode, GRANT_ALWAYS, GRANT_ONCE, GRANT_SESSION};
         // Which built-in app opens this file governs which grant key we
         // write — same classification the tab splice used.
         let Some(item) = super::workspace_drop::DraggedItem::from_path(path) else {
@@ -483,7 +483,7 @@ impl ChromeState {
         let cap = Capability::Filesystem {
             path: path.to_path_buf(),
             mode: FsMode::Read,
-            scope: GrantScope::Session,
+            scope: GRANT_SESSION,
         };
         store.insert(&caller, cap);
     }
