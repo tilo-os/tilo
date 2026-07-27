@@ -340,6 +340,12 @@ pub struct State {
     /// gated on the compositor routing local libinput pointer input through the
     /// seat (today local input drives the shell chrome, not client surfaces).
     pub pointer_gestures_state: PointerGesturesState,
+    /// Local-input → client-surface routing state: the live foreign-surface
+    /// registry, the seat's keyboard / pointer focus bookkeeping, and the
+    /// queue of foreign toplevels waiting to be mirrored into the shell
+    /// chrome's tab tree. Every method on this field lives in
+    /// [`crate::compositor::client_input`].
+    pub client_input: crate::compositor::client_input::ClientInput,
 }
 
 impl State {
@@ -469,6 +475,7 @@ impl State {
             session_lock_state,
             session_lock: SessionLockHooks::default(),
             pointer_gestures_state,
+            client_input: Default::default(),
         }
     }
 
@@ -988,7 +995,17 @@ impl XdgShellHandler for State {
                 .get::<XdgToplevelSurfaceData>()
                 .and_then(|data| data.lock().ok().and_then(|d| d.app_id.clone()))
         });
-        tab_binding::adopt_toplevel(&mut self.workspace_tree, surface_id, app_id);
+        tab_binding::adopt_toplevel(&mut self.workspace_tree, surface_id, app_id.clone());
+
+        // Register the toplevel with the input router so local keyboard /
+        // pointer events can be delivered to it once it is focused. The
+        // matching chrome-side tab is spliced in by
+        // `client_input::sync_foreign_tabs` on the next run-loop tick.
+        self.client_input.register_toplevel(
+            surface_id,
+            surface.wl_surface().clone(),
+            app_id,
+        );
 
         // Send a default configure so the client can map. Phase 4 will pick a
         // real size/position from the cluster layout; Phase 2 just needs the
@@ -1021,6 +1038,10 @@ impl XdgShellHandler for State {
         // surface, accumulates across long sessions with many
         // short-lived toplevels.
         self.surface_tracker.drop_surface(surface_id as SurfaceId);
+        // Drop the input router's handle so no further key / pointer event
+        // can be aimed at a dead surface, and queue the chrome-side tab
+        // reap for the next run-loop tick.
+        self.client_input.unregister_toplevel(surface_id);
     }
 
     fn app_id_changed(&mut self, surface: ToplevelSurface) {
@@ -1042,8 +1063,11 @@ impl XdgShellHandler for State {
             let _ = tab_binding::rename_tab_for_app_id(
                 &mut self.workspace_tree,
                 surface_id,
-                app_id,
+                app_id.clone(),
             );
+            // Mirror the rename onto the chrome-side tab the input router
+            // mounted (or onto its still-pending adoption).
+            self.client_input.note_app_id(surface_id, app_id);
         }
     }
 
