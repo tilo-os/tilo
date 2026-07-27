@@ -32,7 +32,7 @@
 //! location to produce surface-local coordinates — see
 //! [`crate::shell::overlay_host::ShellOverlayHost::active_tile_rect`].
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use smithay::backend::input::{Axis, AxisSource, ButtonState, KeyState};
 use smithay::input::keyboard::FilterResult;
@@ -41,7 +41,7 @@ use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::{Logical, Point as SmithayPoint, Serial};
 use vello::kurbo::{Point as KurboPoint, Rect};
 use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, MouseScrollDelta, WindowEvent};
-use winit::keyboard::{Key, NamedKey};
+use winit::keyboard::{Key, NamedKey, PhysicalKey};
 use winit::platform::scancode::PhysicalKeyExtScancode;
 
 use crate::compositor::frame::FrameBuilder;
@@ -119,6 +119,14 @@ pub struct ClientInput {
     pending_renames: Vec<(u64, String)>,
     /// Where each mirrored surface ended up: `surface id -> (strip, group)`.
     placements: HashMap<u64, (StripId, GroupId)>,
+    /// evdev codes whose *press* was forwarded to a client. A release is
+    /// forwarded if and only if its press was, which keeps two things in
+    /// step: a client never sees a release for a key it never saw pressed
+    /// (a shell chord), and smithay's `forwarded_pressed_keys` never keeps
+    /// a phantom entry that every later focus `enter` would replay (a key
+    /// pressed with a client focused and released after an overlay took
+    /// the keyboard).
+    forwarded_keys: HashSet<u32>,
 }
 
 impl ClientInput {
@@ -321,6 +329,40 @@ fn is_modifier_key(key: &Key) -> bool {
     )
 }
 
+/// Fold a bare modifier key press / release into `modifiers`.
+///
+/// winit reports modifier state through a *separate* `ModifiersChanged`
+/// event, so a backend that only synthesises `KeyboardInput` (the DRM
+/// libinput bridge before its own mask update, the headless test-control
+/// socket) would leave the running mask stale — and a stale mask means
+/// [`is_shell_chord`] misses `Ctrl+K` and hands it to the client instead.
+/// Deriving the mask from the key stream as well closes that hole.
+///
+/// Returns `true` when the mask changed. A backend that *does* emit
+/// `ModifiersChanged` already agrees with the key stream, so this is a
+/// no-op there and the richer left/right state winit tracks is preserved.
+pub fn apply_modifier_key(modifiers: &mut Modifiers, key: &KeyEvent) -> bool {
+    use winit::keyboard::ModifiersState;
+    let bit = match &key.logical_key {
+        Key::Named(NamedKey::Shift) => ModifiersState::SHIFT,
+        Key::Named(NamedKey::Control) => ModifiersState::CONTROL,
+        Key::Named(NamedKey::Alt) | Key::Named(NamedKey::AltGraph) => ModifiersState::ALT,
+        Key::Named(NamedKey::Super) | Key::Named(NamedKey::Meta) => ModifiersState::SUPER,
+        _ => return false,
+    };
+    let mut mask = modifiers.state();
+    if key.state == ElementState::Pressed {
+        mask |= bit;
+    } else {
+        mask -= bit;
+    }
+    if mask == modifiers.state() {
+        return false;
+    }
+    *modifiers = Modifiers::from(mask);
+    true
+}
+
 /// Is this key event a compositor-level binding that must be handled by the
 /// shell *before* a focused client ever sees it?
 ///
@@ -361,9 +403,15 @@ pub fn is_shell_chord(event: &WindowEvent, modifiers: &Modifiers, overlay_open: 
 /// key — the DRM backend's libinput bridge and the test-control socket both
 /// build `KeyEvent`s that way.
 pub fn evdev_keycode(key: &KeyEvent) -> Option<u32> {
-    if let Some(code) = key.physical_key.to_scancode() {
-        if code != 0 {
-            return Some(code);
+    // Only an identified physical key carries a trustworthy scancode:
+    // winit maps `PhysicalKey::Unidentified` back to `KEY_UNKNOWN` (240),
+    // which would otherwise be handed to the client as a real keycode and
+    // make every synthesised keystroke arrive as the same dead key.
+    if let PhysicalKey::Code(code) = key.physical_key {
+        if let Some(scancode) = code.to_scancode() {
+            if scancode != 0 {
+                return Some(scancode);
+            }
         }
     }
     evdev_from_logical(&key.logical_key)
@@ -571,22 +619,29 @@ impl State {
         keyboard.set_focus(self, target.map(|(_, s)| s), serial);
     }
 
-    /// Forward one key press / release to the focused client.
+    /// Push one key press / release through the seat, forwarding it to the
+    /// focused client only when `forward` is set.
+    ///
+    /// **Every** key the compositor sees goes through here, including the
+    /// ones the shell keeps for itself. Smithay's xkb state machine derives
+    /// modifier state from the keycode stream it is fed, so skipping the
+    /// shell's own keys would desynchronise it: a `Ctrl` press delivered to
+    /// a client followed by a `Ctrl` release swallowed by an open overlay
+    /// leaves the seat believing `Ctrl` is still held, and the next focus
+    /// `enter` reports a phantom modifier. `FilterResult::Intercept`
+    /// advances the state without emitting anything on the wire, which is
+    /// exactly the distinction needed.
     ///
     /// `keycode` is an evdev code; smithay wants the xkb form (evdev + 8)
     /// and subtracts the offset again on the wire, so the client receives
-    /// exactly the code the kernel produced. Modifier state is *not*
-    /// force-set: smithay's xkb state machine derives it from this same
-    /// keycode stream, which is why bare modifier keys are forwarded too.
+    /// exactly the code the kernel produced.
     ///
-    /// Returns `false` when no client holds keyboard focus (nothing sent).
-    pub fn forward_client_key(&mut self, keycode: u32, pressed: bool) -> bool {
-        if self.client_input.keyboard_focus.is_none() {
-            return false;
-        }
+    /// Returns `true` only when the event actually reached a client.
+    pub fn deliver_client_key(&mut self, keycode: u32, pressed: bool, forward: bool) -> bool {
         let Some(keyboard) = self.seat.get_keyboard() else {
             return false;
         };
+        let has_focus = self.client_input.keyboard_focus.is_some();
         let serial = mint_serial(self);
         let time = event_time(self);
         let key_state = if pressed {
@@ -594,15 +649,21 @@ impl State {
         } else {
             KeyState::Released
         };
-        let _: Option<()> = keyboard.input(
+        let intercepted: Option<()> = keyboard.input(
             self,
             (keycode + 8).into(),
             key_state,
             serial,
             time,
-            |_, _, _| FilterResult::<()>::Forward,
+            |_, _, _| {
+                if forward {
+                    FilterResult::Forward
+                } else {
+                    FilterResult::Intercept(())
+                }
+            },
         );
-        true
+        forward && has_focus && intercepted.is_none()
     }
 
     /// Move the seat pointer to `global` and focus it on `target`.
@@ -1009,20 +1070,28 @@ pub fn route_input(
             }
         }
         WindowEvent::KeyboardInput { event: key, .. } => {
-            if captured {
-                return false;
-            }
-            let overlay_open = fb.host().palette_visible();
-            if is_shell_chord(event, modifiers, overlay_open) {
-                return false;
-            }
-            if state.client_input.keyboard_focus.is_none() {
-                return false;
-            }
+            let pressed = key.state == ElementState::Pressed;
             let Some(code) = evdev_keycode(key) else {
                 return false;
             };
-            state.forward_client_key(code, key.state == ElementState::Pressed)
+            let overlay_open = fb.host().palette_visible();
+            let shell_owns = captured || is_shell_chord(event, modifiers, overlay_open);
+            let forward = if pressed {
+                let forward =
+                    !shell_owns && state.client_input.keyboard_focus.is_some();
+                if forward {
+                    state.client_input.forwarded_keys.insert(code);
+                }
+                forward
+            } else {
+                // A release mirrors its press exactly — see
+                // `ClientInput::forwarded_keys`.
+                state.client_input.forwarded_keys.remove(&code)
+            };
+            // Runs for shell-owned keys too: the seat's xkb state has to
+            // track every key, or its modifier view drifts (see
+            // `deliver_client_key`).
+            state.deliver_client_key(code, pressed, forward)
         }
         _ => false,
     }
@@ -1450,6 +1519,69 @@ mod tests {
             other => panic!("expected Foreign tile, got {other:?}"),
         }
         assert!(!rename_foreign_tab(&mut tree, 12345, "nope"));
+    }
+
+    /// The geometry contract the pointer router depends on: a foreign
+    /// toplevel mirrored into the chrome's tree becomes a live window
+    /// group whose *tile* rect is laid out, hit-testable, and translates
+    /// a global cursor into surface-local coordinates. Runs against the
+    /// real `FrameBuilder` (the same one the compositor paints with), so
+    /// a regression in the tree→widget resync or in
+    /// `ShellOverlayHost::active_tile_rect` fails here.
+    #[test]
+    fn a_mirrored_foreign_group_is_laid_out_and_hit_testable() {
+        let mut fb = FrameBuilder::new((1600, 900));
+        let _ = fb.paint_settled();
+
+        let mut placed = None;
+        fb.with_chrome(|chrome| {
+            {
+                let mut tree = chrome.tree_mut();
+                placed = insert_foreign_group(&mut tree, 4242, Some("org.example.client"));
+            }
+            chrome.bump();
+        });
+        let (_strip, group) = placed.expect("adoption lands in the bootstrap strip");
+
+        // One settle pass runs the tree→row resync and the layout that
+        // gives the freshly-spliced group its rect.
+        let _ = fb.paint_settled();
+
+        let rect = fb
+            .host()
+            .active_tile_rect(group)
+            .expect("the mirrored group must exist in the live strip row");
+        assert!(
+            rect.width() > 1.0 && rect.height() > 1.0,
+            "the client's tile must have a real extent; got {rect:?}"
+        );
+
+        let chrome = fb.chrome();
+        let tree = chrome.tree();
+        let centre = (rect.center().x, rect.center().y);
+        let hit = foreign_tile_at(&tree, fb.host(), centre)
+            .expect("a cursor inside the tile resolves to the client");
+        assert_eq!(hit.surface_id, 4242);
+        assert_eq!(hit.group, group);
+        assert_eq!(hit.rect, rect);
+
+        // Surface-local translation is the tile origin subtracted.
+        assert_eq!(
+            surface_local(centre, hit.rect),
+            (centre.0 - rect.x0, centre.1 - rect.y0)
+        );
+
+        // Chrome keeps priority: a point on the top bar, and a point on
+        // the tile's own tab bar (just above the tile rect), are not the
+        // client's.
+        assert!(
+            foreign_tile_at(&tree, fb.host(), (800.0, 4.0)).is_none(),
+            "the top bar must never resolve to a client surface"
+        );
+        assert!(
+            foreign_tile_at(&tree, fb.host(), (centre.0, rect.y0 - 4.0)).is_none(),
+            "the tab strip above the tile must never resolve to a client surface"
+        );
     }
 
     #[test]
