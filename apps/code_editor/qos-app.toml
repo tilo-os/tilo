@@ -1,10 +1,13 @@
 # Code Editor — qOS application manifest.
 #
 # The project tree lives in the CRDT — the editor opens and saves no
-# file of the user's today. What it does need is a PTY for the
-# built-in terminal tab (`/dev/ptmx` + `/dev/pts`, un-gated on first
-# use) and the host bin dirs for `$SHELL` and any language server
+# file of the user's today. What it does need is the host bin dirs, for
+# `$SHELL` in the built-in terminal tab and for any language server
 # enabled through `QOS_CODE_LSP`.
+#
+# The PTY the terminal tab needs comes from the devpts bwrap mounts at
+# /dev; binding the host's /dev/ptmx + /dev/pts over it splits master
+# and slave across two devpts instances and openpty() fails EACCES.
 #
 # Pack and install:
 #
@@ -88,8 +91,6 @@ write = [
     "/dev/nvidia-uvm",
     "/dev/nvidia-uvm-tools",
     "/dev/nvidia-caps",
-    "/dev/ptmx",
-    "/dev/pts",
 ]
 
 [sandbox.net]
