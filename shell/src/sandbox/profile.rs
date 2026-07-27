@@ -275,7 +275,7 @@ impl SandboxProfile {
     /// strictly minimal profile should start from
     /// [`for_workspace_test`] and pass an empty grants slice.
     pub fn apply_grants(&mut self, grants: &[crate::shell::state::Capability]) {
-        use crate::shell::state::{Capability, GrantScope};
+        use crate::shell::state::{Capability, GRANT_ALWAYS, GRANT_ONCE, GRANT_SESSION};
         for cap in grants {
             match cap {
                 Capability::Camera { .. } => self.grant_camera(),
@@ -285,7 +285,7 @@ impl SandboxProfile {
                     // `Once` and `Session` are handled by the runtime
                     // portal (it returns an open fd via cap-std, no
                     // bind-mount needed).
-                    if matches!(scope, GrantScope::Always) {
+                    if scope.persists_across_restart() {
                         self.grant_filesystem_path(path, mode.clone());
                     }
                 }
@@ -299,7 +299,7 @@ impl SandboxProfile {
                     // (`Capability::Network::hosts`) but enforcement
                     // requires per-namespace nftables rule generation,
                     // which is deferred to a Phase 5.2 follow-up unit.
-                    if matches!(scope, GrantScope::Always) {
+                    if scope.persists_across_restart() {
                         self.net_isolated = false;
                     }
                 }
@@ -597,14 +597,14 @@ mod tests {
     #[test]
     #[serial(scan_memo)]
     fn apply_grants_with_camera_capability_invokes_grant_camera() {
-        use crate::shell::state::{Capability, GrantScope};
+        use crate::shell::state::{Capability, GRANT_ALWAYS, GRANT_ONCE, GRANT_SESSION};
         let mut p = SandboxProfile::for_workspace_test(
             Path::new("/tmp/ws"),
             Path::new("/tmp/cache"),
         );
         let initial_count = p.binds_rw.len();
         let grants = vec![Capability::Camera {
-            scope: GrantScope::Session,
+            scope: GRANT_SESSION,
         }];
         p.apply_grants(&grants);
         assert!(p.binds_rw.len() >= initial_count);
@@ -613,7 +613,7 @@ mod tests {
     #[test]
     #[serial(scan_memo)]
     fn apply_grants_with_no_camera_or_mic_is_noop_for_those_cases() {
-        use crate::shell::state::{Capability, GrantScope};
+        use crate::shell::state::{Capability, GRANT_ALWAYS, GRANT_ONCE, GRANT_SESSION};
         let mut p = SandboxProfile::for_workspace_test(
             Path::new("/tmp/ws"),
             Path::new("/tmp/cache"),
@@ -623,7 +623,7 @@ mod tests {
         // Screencast remains the only out-of-scope variant for this
         // module — its enforcement lives behind a portal follow-up.
         let grants = vec![Capability::Screencast {
-            scope: GrantScope::Always,
+            scope: GRANT_ALWAYS,
         }];
         p.apply_grants(&grants);
         assert_eq!(p.binds_rw.len(), before_rw);
@@ -679,7 +679,7 @@ mod tests {
     #[test]
     #[serial(scan_memo)]
     fn apply_grants_with_filesystem_always_scope_invokes_grant_filesystem() {
-        use crate::shell::state::{Capability, FsMode, GrantScope};
+        use crate::shell::state::{Capability, FsMode, GRANT_ALWAYS, GRANT_ONCE, GRANT_SESSION};
         let mut p = SandboxProfile::for_workspace_test(
             Path::new("/tmp/ws"),
             Path::new("/tmp/cache"),
@@ -687,7 +687,7 @@ mod tests {
         let grants = vec![Capability::Filesystem {
             path: "/home/u/work".into(),
             mode: FsMode::ReadWrite,
-            scope: GrantScope::Always,
+            scope: GRANT_ALWAYS,
         }];
         p.apply_grants(&grants);
         assert!(
@@ -700,7 +700,7 @@ mod tests {
     #[test]
     #[serial(scan_memo)]
     fn apply_grants_with_filesystem_session_scope_does_not_bind() {
-        use crate::shell::state::{Capability, FsMode, GrantScope};
+        use crate::shell::state::{Capability, FsMode, GRANT_ALWAYS, GRANT_ONCE, GRANT_SESSION};
         let mut p = SandboxProfile::for_workspace_test(
             Path::new("/tmp/ws"),
             Path::new("/tmp/cache"),
@@ -709,7 +709,7 @@ mod tests {
         let grants = vec![Capability::Filesystem {
             path: "/home/u/secret".into(),
             mode: FsMode::ReadWrite,
-            scope: GrantScope::Session,
+            scope: GRANT_SESSION,
         }];
         p.apply_grants(&grants);
         assert_eq!(
@@ -722,7 +722,7 @@ mod tests {
     #[test]
     #[serial(scan_memo)]
     fn apply_grants_with_network_always_scope_disables_isolation() {
-        use crate::shell::state::{Capability, GrantScope};
+        use crate::shell::state::{Capability, GRANT_ALWAYS, GRANT_ONCE, GRANT_SESSION};
         let mut p = SandboxProfile::for_workspace_test(
             Path::new("/tmp/ws"),
             Path::new("/tmp/cache"),
@@ -730,7 +730,7 @@ mod tests {
         p.net_isolated = true;
         let grants = vec![Capability::Network {
             hosts: None,
-            scope: GrantScope::Always,
+            scope: GRANT_ALWAYS,
         }];
         p.apply_grants(&grants);
         assert!(
@@ -742,7 +742,7 @@ mod tests {
     #[test]
     #[serial(scan_memo)]
     fn apply_grants_with_network_session_scope_does_not_change_isolation() {
-        use crate::shell::state::{Capability, GrantScope};
+        use crate::shell::state::{Capability, GRANT_ALWAYS, GRANT_ONCE, GRANT_SESSION};
         let mut p = SandboxProfile::for_workspace_test(
             Path::new("/tmp/ws"),
             Path::new("/tmp/cache"),
@@ -750,7 +750,7 @@ mod tests {
         p.net_isolated = true;
         let grants = vec![Capability::Network {
             hosts: None,
-            scope: GrantScope::Session,
+            scope: GRANT_SESSION,
         }];
         p.apply_grants(&grants);
         assert!(
@@ -762,7 +762,7 @@ mod tests {
     #[test]
     #[serial(scan_memo)]
     fn apply_grants_with_network_always_and_specific_hosts_still_disables_isolation_for_v1() {
-        use crate::shell::state::{Capability, GrantScope};
+        use crate::shell::state::{Capability, GRANT_ALWAYS, GRANT_ONCE, GRANT_SESSION};
         let mut p = SandboxProfile::for_workspace_test(
             Path::new("/tmp/ws"),
             Path::new("/tmp/cache"),
@@ -772,7 +772,7 @@ mod tests {
         // isolation. Per-host nftables filtering is a follow-up.
         let grants = vec![Capability::Network {
             hosts: Some(vec!["github.com".to_string()]),
-            scope: GrantScope::Always,
+            scope: GRANT_ALWAYS,
         }];
         p.apply_grants(&grants);
         assert!(
@@ -911,14 +911,14 @@ mod tests {
     #[test]
     #[serial(scan_memo)]
     fn apply_grants_dev_scan_is_memoised() {
-        use crate::shell::state::{Capability, GrantScope};
+        use crate::shell::state::{Capability, GRANT_ALWAYS, GRANT_ONCE, GRANT_SESSION};
         // Reset both the cache and the counter so other tests can't
         // contaminate our measurement.
         super::clear_scan_memo();
         let _ = super::take_scan_walk_count();
 
         let grants = vec![Capability::Camera {
-            scope: GrantScope::Session,
+            scope: GRANT_SESSION,
         }];
 
         let mut p1 = SandboxProfile::for_workspace_test(
