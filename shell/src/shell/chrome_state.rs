@@ -442,10 +442,11 @@ impl ChromeState {
                 &mut *tree, path, strip_id, group_id,
             )
         };
-        if tab_id.is_some() {
+        if let Some(tab_id) = tab_id {
             // A dropped file is an explicit capability grant to the app
-            // the user aimed at — record it before the widget re-syncs.
-            self.grant_dropped_file_access(path);
+            // the user aimed at — record it before the widget re-syncs,
+            // keyed by the identity of the tab the drop actually created.
+            self.grant_dropped_file_access(path, strip_id, group_id, tab_id);
             self.bump();
         }
         tab_id
@@ -455,25 +456,35 @@ impl ChromeState {
     /// for the app that will open it, honouring the sandbox: the grant
     /// goes through the SAME [`GrantStoreHandle`] the portal / permission
     /// prompt uses, so `sandbox::profile::apply_grants` picks it up when
-    /// the app spawns. Keyed by the built-in app's name (the same
-    /// vocabulary the persisted tile uses) so `Files` / `Editor` drops
-    /// each accrue their own allowlist entry.
+    /// the app spawns.
+    ///
+    /// The grant is keyed by the **real app identity of the target tab**
+    /// — the tab the drop just spliced into `(strip_id, group_id)`, found
+    /// by `tab_id`. An adopted foreign Wayland client contributes its
+    /// actual `xdg_toplevel::set_app_id` value; a built-in app contributes
+    /// its canonical [`AppKind::app_id`]. Either way the key lives in the
+    /// same app-id namespace the portal keys grants by, rather than the
+    /// display label the earlier stand-in used.
     ///
     /// A drop is treated like the permission prompt's "Session" choice:
     /// read-only, session-scoped (cleared on shell restart) — the least
     /// privilege that satisfies "let this app use this file now". Skipped
     /// if the app already holds a grant covering the path, so repeated
     /// drops don't pile up duplicate capabilities.
-    fn grant_dropped_file_access(&self, path: &std::path::Path) {
+    fn grant_dropped_file_access(
+        &self,
+        path: &std::path::Path,
+        strip_id: StripId,
+        group_id: GroupId,
+        tab_id: u64,
+    ) {
         use crate::shell::state::{FsMode, GrantScope};
-        // Which built-in app opens this file governs which grant key we
-        // write — same classification the tab splice used.
-        let Some(item) = super::workspace_drop::DraggedItem::from_path(path) else {
+        // Resolve the identity of the tab the drop landed on. If the tab
+        // can't be found (raced away between splice and grant) we skip
+        // silently rather than key a grant to a guessed identity.
+        let Some(app_id) = self.tab_app_id(strip_id, group_id, tab_id) else {
             return;
         };
-        let app_id = super::workspace_drop::decide_app_for_drop(&item)
-            .as_str()
-            .to_string();
         let ws_id = self.tree().active;
         let store = crate::portal::GrantStoreHandle::new(self.tree_handle());
         let caller = crate::portal::PortalCaller::new(ws_id, app_id);
@@ -486,6 +497,33 @@ impl ChromeState {
             scope: GrantScope::Session,
         };
         store.insert(&caller, cap);
+    }
+
+    /// Resolve the app-id of the tab `tab_id` inside `(strip_id, group_id)`
+    /// of the active workspace, from its live `TileContent`:
+    /// * [`TileContent::Foreign`] → the client's real Wayland app-id.
+    /// * [`TileContent::AppPlaceholder`] / [`TileContent::Stub`] → the
+    ///   built-in app's canonical [`AppKind::app_id`].
+    ///
+    /// Returns `None` if any of the ids no longer resolve (the tab closed
+    /// or moved between the drop splice and this lookup).
+    fn tab_app_id(
+        &self,
+        strip_id: StripId,
+        group_id: GroupId,
+        tab_id: u64,
+    ) -> Option<crate::shell::state::AppId> {
+        use crate::shell::state::TileContent;
+        let tree = self.tree();
+        let ws = tree.active_workspace()?;
+        let strip = ws.strips.iter().find(|s| s.id == strip_id)?;
+        let group = strip.window_groups.iter().find(|g| g.id == group_id)?;
+        let tab = group.tabs.iter().find(|t| t.id == tab_id)?;
+        Some(match &tab.tile {
+            TileContent::Foreign { app_id, .. } => app_id.clone(),
+            TileContent::AppPlaceholder { kind, .. }
+            | TileContent::Stub { kind, .. } => kind.app_id(),
+        })
     }
 
     /// Append a new empty workspace to `tree.workspaces`, activate it,
@@ -1062,5 +1100,123 @@ mod active_tab_tests {
         let chrome = ChromeState::new_with_handle(handle);
         let st = chrome.borrow();
         assert_eq!(st.active_tab_id(), None);
+    }
+
+    /// Build a tree whose active workspace has one strip / one group
+    /// holding the single `tile`. Returns the handle plus the ids needed
+    /// to address that tab. Used to drive `grant_dropped_file_access`
+    /// against tabs of a chosen `TileContent` identity.
+    fn tree_with_single_tab(
+        tile: TileContent,
+    ) -> (WorkspaceTree, StripId, GroupId, u64) {
+        let ws_id = WorkspaceId::new();
+        let strip_id = StripId::new();
+        let group_id: GroupId = 8;
+        let tab_id = 4242u64;
+        let strip = Strip {
+            id: strip_id,
+            name: "Solo".into(),
+            window_groups: vec![StateGroup {
+                id: group_id,
+                tabs: vec![Tab {
+                    id: tab_id,
+                    title: "Dropped".into(),
+                    tile,
+                }],
+                active_tab: tab_id,
+                width: StateWidth::Normal,
+                maximized: false,
+            }],
+        };
+        let mut ws = Workspace::new(ws_id, "Home");
+        ws.strips = vec![strip];
+        let mut active_strip = StdMap::new();
+        active_strip.insert(ws_id, strip_id);
+        let mut active_group = StdMap::new();
+        active_group.insert(strip_id, group_id);
+        let tree = WorkspaceTree {
+            workspaces: vec![ws],
+            active: ws_id,
+            active_strip,
+            active_group,
+            ..WorkspaceTree::default()
+        };
+        (tree, strip_id, group_id, tab_id)
+    }
+
+    /// Gap-2 proof: when the drop target is a real adopted Wayland client,
+    /// the recorded grant is keyed by that client's actual
+    /// `xdg_toplevel::set_app_id` value — not a re-derived display label.
+    #[test]
+    fn dropped_file_grant_keyed_by_foreign_tabs_real_wayland_app_id() {
+        let (tree, strip_id, group_id, tab_id) = tree_with_single_tab(
+            TileContent::Foreign {
+                app_id: "org.gimp.GIMP".into(),
+                surface_id: 77,
+            },
+        );
+        let ws_id = tree.active;
+        let handle = Arc::new(RwLock::new(tree));
+        let chrome = ChromeState::new_with_handle(handle);
+        let st = chrome.borrow();
+
+        let path = std::path::Path::new("/drop/photo.xcf");
+        st.grant_dropped_file_access(path, strip_id, group_id, tab_id);
+
+        let guard = st.tree();
+        let ws = guard.workspaces.iter().find(|w| w.id == ws_id).unwrap();
+        let caps = ws.grants.get("org.gimp.GIMP").unwrap_or_else(|| {
+            panic!(
+                "grant must be keyed by the foreign client's real app-id; \
+                 grants = {:?}",
+                ws.grants
+            )
+        });
+        assert!(
+            caps.iter().any(|c| matches!(
+                c,
+                Capability::Filesystem { path: p, .. } if p == path
+            )),
+            "the dropped path must be recorded as a Filesystem grant: {caps:?}"
+        );
+        // The old stand-in ("Foreign"/label) must NOT be a key.
+        assert!(
+            !ws.grants.contains_key("Foreign"),
+            "grant must not be keyed by a display label: {:?}",
+            ws.grants
+        );
+    }
+
+    /// Gap-2 proof: a built-in app (drawn in-process, no `set_app_id`) is
+    /// keyed by its canonical reverse-DNS app-id, not the display label.
+    #[test]
+    fn dropped_file_grant_keyed_by_builtin_canonical_app_id() {
+        let (tree, strip_id, group_id, tab_id) = tree_with_single_tab(
+            TileContent::AppPlaceholder {
+                kind: AppKind::Other("Editor".into()),
+                label: "notes.ts".into(),
+            },
+        );
+        let ws_id = tree.active;
+        let handle = Arc::new(RwLock::new(tree));
+        let chrome = ChromeState::new_with_handle(handle);
+        let st = chrome.borrow();
+
+        let path = std::path::Path::new("/drop/notes.ts");
+        st.grant_dropped_file_access(path, strip_id, group_id, tab_id);
+
+        let guard = st.tree();
+        let ws = guard.workspaces.iter().find(|w| w.id == ws_id).unwrap();
+        assert!(
+            ws.grants.contains_key("org.nirios.Editor"),
+            "built-in Editor must be keyed by its canonical app-id; \
+             grants = {:?}",
+            ws.grants
+        );
+        assert!(
+            !ws.grants.contains_key("Editor"),
+            "the display label 'Editor' must no longer be a grant key: {:?}",
+            ws.grants
+        );
     }
 }

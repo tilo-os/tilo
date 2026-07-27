@@ -336,11 +336,19 @@ fn drop_records_filesystem_grant_for_target_app_on_the_workspace() {
     let ws = &tree.workspaces[0];
     // The dropped file must be recorded as a per-app filesystem
     // capability on the target workspace — the same grants map the
-    // portal / permission-prompt path writes into.
+    // portal / permission-prompt path writes into. The key is the
+    // built-in Editor's canonical app-id (the same value it would
+    // advertise via `xdg_toplevel::set_app_id`), NOT the display label.
+    let editor_key = AppKind::Other("Editor".into()).app_id();
+    assert_eq!(
+        editor_key, "org.nirios.Editor",
+        "the Editor app-id must be a real reverse-DNS app-id, not the \
+         display label 'Editor'"
+    );
     let editor_caps = ws
         .grants
-        .get("Editor")
-        .expect("a .ts drop must record a grant under the Editor app id");
+        .get(&editor_key)
+        .unwrap_or_else(|| panic!("a .ts drop must record a grant under {editor_key}"));
     let granted_path = editor_caps.iter().any(|cap| {
         matches!(
             cap,
@@ -373,9 +381,10 @@ fn repeated_drop_of_same_file_does_not_duplicate_the_grant() {
 
     let st = chrome.borrow();
     let tree = st.tree();
+    let editor_key = AppKind::Other("Editor".into()).app_id();
     let editor_caps = tree.workspaces[0]
         .grants
-        .get("Editor")
+        .get(&editor_key)
         .expect("grant present");
     let count = editor_caps
         .iter()
