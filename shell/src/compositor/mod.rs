@@ -22,6 +22,7 @@
 
 pub mod backend;
 pub mod bridge;
+pub mod client_input;
 pub mod foreign;
 pub mod frame;
 pub mod hosted;
