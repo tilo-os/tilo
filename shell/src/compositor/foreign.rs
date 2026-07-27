@@ -495,7 +495,54 @@ impl ForeignFrameStore {
     }
 
     /// Import an already-resolved [`Dmabuf`] into the store.
+    ///
+    /// Two routes, tried in order:
+    ///
+    /// 1. **GPU** ([`crate::compositor::gpu_import`]) — EGL wraps the
+    ///    client's buffer as a texture and the GPU reads it back. This
+    ///    is the route that works for a Vulkan client: `wgpu` (and thus
+    ///    every qOS app) allocates device-local swapchain images, which
+    ///    on amdgpu carry `NO_CPU_ACCESS` and refuse `mmap` with
+    ///    `EPERM` however linear they are.
+    /// 2. **CPU mmap** ([`import_dmabuf_rgba`]) — no GL context needed,
+    ///    and correct for the CPU-visible linear buffers a GBM/EGL
+    ///    client (alacritty, GTK, …) allocates. This is the route on a
+    ///    machine with no usable EGL device at all.
+    ///
+    /// Both failing is reported on the tile with the GPU route's reason
+    /// *and* the CPU route's, because "which one would have worked" is
+    /// the only useful thing to know at that point.
     pub fn capture_dmabuf(&self, id: SurfaceId, dmabuf: &Dmabuf) -> CaptureOutcome {
+        let gpu_err = match crate::compositor::render_node::advertised() {
+            Some(node) => {
+                let attempt = crate::compositor::gpu_import::with_importer(node, |imp| {
+                    self.with_entry(id, |e| {
+                        imp.import(dmabuf, &mut e.rgba).map(|(w, h)| {
+                            e.width = w;
+                            e.height = h;
+                            e.seq = e.seq.wrapping_add(1);
+                            e.last_error = None;
+                            (w, h)
+                        })
+                    })
+                });
+                match attempt {
+                    Ok(Ok((w, h))) => {
+                        return CaptureOutcome::Dmabuf {
+                            width: w,
+                            height: h,
+                            route: DmabufRoute::Gpu,
+                        };
+                    }
+                    // The import itself failed for this buffer…
+                    Ok(Err(e)) => Some(e.to_string()),
+                    // …or there is no GPU import context at all.
+                    Err(e) => Some(e.to_string()),
+                }
+            }
+            None => Some("no dmabuf main device was advertised".to_string()),
+        };
+
         let result = self.with_entry(id, |e| {
             import_dmabuf_rgba(dmabuf, &mut e.rgba).map(|(w, h)| {
                 e.width = w;
@@ -509,9 +556,13 @@ impl ForeignFrameStore {
             Ok((w, h)) => CaptureOutcome::Dmabuf {
                 width: w,
                 height: h,
+                route: DmabufRoute::CpuMmap,
             },
-            Err(err) => {
-                let msg = err.to_string();
+            Err(cpu_err) => {
+                let msg = match gpu_err {
+                    Some(g) => format!("{cpu_err}; GPU import also failed: {g}"),
+                    None => cpu_err.to_string(),
+                };
                 self.note_failure(id, msg.clone());
                 CaptureOutcome::Failed(msg)
             }

@@ -419,6 +419,10 @@ impl State {
         let dmabuf_global = match &dmabuf_device {
             Ok(node) => match DmabufFeedbackBuilder::new(node.dev, dmabuf_formats.clone()).build() {
                 Ok(feedback) => {
+                    // Publish the decision for the import side: the
+                    // buffers clients hand us were allocated on this
+                    // GPU, so that is the GPU that must read them back.
+                    crate::compositor::render_node::set_advertised(node.path.clone());
                     tracing::info!(
                         target: "shell::compositor::dmabuf",
                         device = %node.path.display(),
