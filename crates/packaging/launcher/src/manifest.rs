@@ -50,6 +50,12 @@ use serde::Deserialize;
 #[serde(from = "RawManifest")]
 pub struct MinimalManifest {
     pub package_id: String,
+    /// `[package].name` — the publisher's human-facing name. `None`
+    /// when the manifest omits it; callers fall back to deriving one
+    /// from the package id.
+    pub name: Option<String>,
+    /// `[package].category` — freedesktop-style menu category.
+    pub category: Option<String>,
     pub version: String,
     /// Optional `[package].runtime` reference from the manifest, of
     /// the form `qos-runtime/<version>`. When present, the launcher
@@ -104,6 +110,10 @@ struct PackageBlock {
     #[serde(default)]
     id: Option<String>,
     #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    category: Option<String>,
+    #[serde(default)]
     version: Option<String>,
     #[serde(default)]
     runtime: Option<String>,
@@ -121,8 +131,12 @@ impl From<RawManifest> for MinimalManifest {
             .unwrap_or_default();
         let cli_commands = raw.cli.map(|c| c.commands).unwrap_or_default();
         let runtime = raw.package.as_ref().and_then(|p| p.runtime.clone());
+        let name = raw.package.as_ref().and_then(|p| p.name.clone());
+        let category = raw.package.as_ref().and_then(|p| p.category.clone());
         MinimalManifest {
             package_id,
+            name,
+            category,
             version,
             runtime,
             entrypoint: raw.entrypoint,
