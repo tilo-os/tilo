@@ -65,6 +65,15 @@ enum Cmd {
         /// inherited from the launcher's own environment.
         #[arg(long)]
         wayland_socket: Option<PathBuf>,
+        /// Workspace (collaboration room) this launch belongs to.
+        /// Forwarded into the sandbox as `QOS_WORKSPACE_ID`, which the
+        /// UI toolkit turns into the cluster id CRDT deltas are
+        /// addressed to — so two apps launched with the same value can
+        /// collaborate and two apps with different values cannot.
+        /// The compositor passes a UUID; omit it for launches with no
+        /// session behind them.
+        #[arg(long)]
+        workspace_id: Option<String>,
         /// JSON file holding the capabilities (`Vec<CapOverride>`) the
         /// user granted in the workspace this app is launching into.
         /// The compositor writes it just before spawning us.
@@ -137,6 +146,7 @@ fn main() -> ExitCode {
             allow_unsigned_runtime,
             require_runtime_publisher,
             wayland_socket,
+            workspace_id,
             capabilities,
             app_id,
         } => {
@@ -159,6 +169,7 @@ fn main() -> ExitCode {
                 require_runtime_publisher,
                 identity_host_path: None,
                 wayland_socket,
+                workspace_id,
                 capabilities_path: capabilities,
                 app_id,
             };
@@ -291,6 +302,19 @@ fn run_installed(
         identity_host_path: None,
         // CLI launches are stdio-only: no display in the sandbox.
         wayland_socket: None,
+        // Inherit the room from the shell the command was typed into.
+        // A terminal opened in a workspace already carries that
+        // workspace's id, so a CLI app started from it lands in the
+        // same collaboration room rather than in none. Outside a
+        // session the var is unset and the child gets nothing.
+        //
+        // This carries no authority: it names a room, not a
+        // permission. The capabilities that decide what the app may
+        // touch are resolved separately, and deliberately not
+        // inherited — see below.
+        workspace_id: std::env::var(launcher::sandbox::WORKSPACE_ID_ENV)
+            .ok()
+            .filter(|s| !s.is_empty()),
         // A shell invocation via the PATH shim has no workspace behind
         // it, so there are no workspace capabilities to honour: the
         // package runs with what its manifest declares and nothing more.

@@ -488,10 +488,10 @@ impl CollaborationManager {
     /// 2. Otherwise try `runtime_collab::try_connect()` and enter SDK
     ///    mode on `Ok`; enter Disabled mode on `Err(NotAvailable)`.
     ///
-    /// SDK mode auto-sends `Hello { app_id, cluster_id }` derived from
-    /// `QUICK_APP_ID` / `QUICK_CLUSTER_ID` (nil-uuid fallback) to
-    /// preserve the legacy auto-join behaviour every existing app
-    /// depends on.
+    /// Both modes auto-send `Hello { app_id, cluster_id }` — the
+    /// address the broker routes this connection's traffic on. See
+    /// [`auto_hello_env`] for where those two values come from and in
+    /// what order.
     pub fn new() -> Self {
         // Attempt to load the user's on-disk identity via the
         // runtime SDK. When the file is present, its pubkey bytes
@@ -863,17 +863,78 @@ impl CollaborationManager {
     }
 }
 
-/// Read `QUICK_APP_ID` / `QUICK_CLUSTER_ID` env vars (with the same
-/// defaults the legacy new() used) and return the tuple for a
-/// [`CollabRequest::Hello`].
+/// The `(app_id, cluster_id)` pair this process announces in its
+/// [`CollabRequest::Hello`] — its address on the broker's fan-out.
+///
+/// The broker delivers a CRDT delta only to connections announcing the
+/// same pair, so these two values are the whole of "who am I allowed to
+/// collaborate with". Getting them from the environment (rather than
+/// letting each app invent them) is what makes two separately-launched
+/// processes recognise each other as the same app in the same room.
+///
+/// # Precedence
+///
+/// Both halves resolve independently, each in the same order:
+///
+/// 1. **`QOS_PACKAGE_ID` / `QOS_WORKSPACE_ID`** — set by the launcher
+///    for every app the compositor starts. This is the production
+///    path: the app id is the package's reverse-DNS id (so two windows
+///    of one app agree, and a different app never collides with it),
+///    and the cluster is the workspace the user opened it into.
+/// 2. **`QUICK_APP_ID` / `QUICK_CLUSTER_ID`** — the standalone-dev
+///    override, for running apps straight out of `cargo run` with no
+///    session behind them. `QUICK_APP_ID` doubles as a *per-instance*
+///    identity in the sample apps (`QUICK_APP_ID=alice` /
+///    `QUICK_APP_ID=bob` runs one app as two people), which is why it
+///    ranks below `QOS_PACKAGE_ID` instead of overriding it: under a
+///    real session the package id is the routing truth, and a
+///    per-instance name must not fragment it. Those sample setups
+///    still work because they run against the development broker in
+///    [`crate::collaboration::broker`], which reads `app_id` as a
+///    presence attribution and fans out to everyone — the compositor's
+///    broker is the one that routes.
+/// 3. **A fresh random app id and the nil cluster** — the last-resort
+///    default, for a process that was told nothing. The random app id
+///    is what makes this fail closed: no other process can announce
+///    the same one, so nothing is ever delivered here. An app that
+///    cannot say where it belongs must not be handed another app's
+///    document.
+///
+/// `QOS_WORKSPACE_ID` is only *used* as a cluster when it parses as a
+/// uuid, which is the shape the launcher writes. It is also read
+/// elsewhere as a bare "am I on qOS?" flag
+/// (`runtime_portal::is_qos_native`), so a value we cannot route on is
+/// passed over here rather than rejected — the next fallback applies
+/// and the flag keeps working.
 fn auto_hello_env() -> (String, Uuid) {
-    let app_id =
-        std::env::var("QUICK_APP_ID").unwrap_or_else(|_| Uuid::new_v4().to_string());
-    let cluster_id = std::env::var("QUICK_CLUSTER_ID")
-        .ok()
-        .and_then(|s| Uuid::parse_str(&s).ok())
+    let app_id = non_empty_env("QOS_PACKAGE_ID")
+        .or_else(|| non_empty_env("QUICK_APP_ID"))
+        .unwrap_or_else(|| Uuid::new_v4().to_string());
+
+    let cluster_id = non_empty_env("QOS_WORKSPACE_ID")
+        .and_then(|s| match Uuid::parse_str(&s) {
+            Ok(id) => Some(id),
+            Err(_) => {
+                tracing::debug!(
+                    "QOS_WORKSPACE_ID={s:?} is not a uuid; \
+                     falling back to QUICK_CLUSTER_ID for collaboration routing"
+                );
+                None
+            }
+        })
+        .or_else(|| non_empty_env("QUICK_CLUSTER_ID").and_then(|s| Uuid::parse_str(&s).ok()))
         .unwrap_or_else(Uuid::nil);
+
     (app_id, cluster_id)
+}
+
+/// `std::env::var` with empty treated as unset. An env var explicitly
+/// set to `""` is the shape a shell script produces when a variable it
+/// meant to forward was itself unset; taking it literally would give
+/// every such app the same empty identity, i.e. put them all in one
+/// room.
+fn non_empty_env(key: &str) -> Option<String> {
+    std::env::var(key).ok().filter(|v| !v.is_empty())
 }
 
 /// One-shot init-result value emitted by the shovel thread before it
