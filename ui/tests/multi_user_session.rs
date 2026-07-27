@@ -4,8 +4,7 @@ use support::{MemoryRelay, pump, headless_app};
 use ui::collaboration::{CollabRequest, CollabEvent, PresencePayload};
 use ui::presence::{PresenceKey, PathSegment};
 use ui::permissions::{
-    AppKind, Op, PermissionAssignment, PermissionContext, PermissionScope, ResourceId,
-    Role, RoleId, RolePermissions, UserId, WorkspaceSettingsView,
+    Actor, AppKind, PermissionContext, PermissionScope, Role, UserId, Verb,
 };
 use ui::widget::{TextInput, Widget};
 
@@ -188,31 +187,16 @@ fn peer_pointer_position_follows_layout_change() {
     );
 }
 
-fn make_view(alice_role: &str, bob_role: &str) -> WorkspaceSettingsView {
-    WorkspaceSettingsView {
-        roles: vec![
-            Role {
-                id: RoleId("viewer".into()),
-                name: "Viewer".into(),
-                permissions: RolePermissions {
-                    app_access: vec![(AppKind::Terminal, Op::View)],
-                    ..Default::default()
-                },
-            },
-            Role {
-                id: RoleId("editor".into()),
-                name: "Editor".into(),
-                permissions: RolePermissions {
-                    app_access: vec![(AppKind::Terminal, Op::Edit)],
-                    ..Default::default()
-                },
-            },
-        ],
-        assignments: vec![
-            PermissionAssignment { user: UserId("alice".into()), role: RoleId(alice_role.into()) },
-            PermissionAssignment { user: UserId("bob".into()),   role: RoleId(bob_role.into()) },
-        ],
-    }
+/// The context a member of the workspace holds: their role, no
+/// individual capabilities. Roles carry base authority over the room
+/// and its apps, so a Viewer reads the terminal surface and an Editor
+/// writes it — with nothing else needed.
+fn member_ctx(user: &str, role: Role) -> PermissionContext {
+    PermissionContext::from_capabilities(Actor::person(Some(role), user), vec![])
+}
+
+fn terminal_write() -> PermissionScope {
+    PermissionScope::app_kind(AppKind::Terminal, Verb::Write)
 }
 
 #[test]
@@ -221,16 +205,15 @@ fn viewer_role_denies_terminal_edit_after_settings_applied() {
     let alice_peer = relay.attach("alice");
     let (mut alice_app, _) = headless_app("alice", alice_peer);
 
-    let view = make_view("viewer", "editor");
-    let ctx = PermissionContext::from_workspace_settings(&view, &UserId("alice".into()))
-        .expect("assignment exists");
-    alice_app.set_permission_ctx(ctx);
+    alice_app.set_permission_ctx(member_ctx("alice", Role::Viewer));
 
-    let scope = PermissionScope {
-        resource: ResourceId::App(AppKind::Terminal),
-        op: Op::Edit,
-    };
-    assert!(!alice_app.permission_ctx().check(&scope));
+    assert!(!alice_app.permission_ctx().check(&terminal_write()));
+    // …and the denial is specific, not blanket: reading is allowed.
+    assert!(
+        alice_app
+            .permission_ctx()
+            .check(&PermissionScope::app_kind(AppKind::Terminal, Verb::Read))
+    );
 }
 
 #[test]
@@ -241,21 +224,14 @@ fn permission_change_from_peer_reflects_locally_after_sync() {
     let (mut alice_app, _) = headless_app("alice", alice_peer);
     let (bob_app, _) = headless_app("bob", bob_peer);
 
-    // Bob edits workspace settings -> promotes alice to editor.
-    let new_view = make_view("editor", "editor");
+    // Alice starts as a viewer and cannot write.
+    alice_app.set_permission_ctx(member_ctx("alice", Role::Viewer));
+    assert!(!alice_app.permission_ctx().check(&terminal_write()));
 
-    // Simulate CRDT sync: bob broadcasts the serialized settings;
-    // alice receives and rebuilds her PermissionContext.
-    let ctx_for_alice = PermissionContext::from_workspace_settings(
-        &new_view, &UserId("alice".into()),
-    ).unwrap();
-    alice_app.set_permission_ctx(ctx_for_alice);
-
-    let scope = PermissionScope {
-        resource: ResourceId::App(AppKind::Terminal),
-        op: Op::Edit,
-    };
-    assert!(alice_app.permission_ctx().check(&scope));
+    // Bob promotes alice to editor; the new context replaces the old.
+    alice_app.set_permission_ctx(member_ctx("alice", Role::Editor));
+    assert!(alice_app.permission_ctx().check(&terminal_write()));
+    assert_eq!(alice_app.permission_ctx().user(), &UserId("alice".into()));
 
     // bob_app is constructed to confirm the two-App harness is exercised;
     // its permission context is independent of alice's.

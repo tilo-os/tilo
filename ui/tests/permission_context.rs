@@ -1,99 +1,110 @@
 use ui::permissions::{
-    AppKind, FileId, Op, PermissionContext, PermissionScope, ResourceId,
-    Role, RoleId, RolePermissions, UserId, WorkspaceId, DenyReason,
+    Actor, AppKind, CapDecision, CapOverride, PermissionContext, PermissionScope, ResourceRef,
+    Role, Scope, Subject, UserId, Verb,
 };
 use ui::widget::Widget as _;
 
-fn viewer_role() -> Role {
-    Role {
-        id: RoleId("viewer".into()),
-        name: "Viewer".into(),
-        permissions: RolePermissions {
-            app_access: vec![(AppKind::FileExplorer, Op::View)],
-            file_ops: vec![],
-            workspace_admin: false,
-        },
-    }
+/// A viewer in the room: role only, no individual capabilities.
+fn viewer_ctx(user: &str) -> PermissionContext {
+    PermissionContext::from_capabilities(Actor::person(Some(Role::Viewer), user), vec![])
 }
 
-fn editor_role() -> Role {
-    Role {
-        id: RoleId("editor".into()),
-        name: "Editor".into(),
-        permissions: RolePermissions {
-            app_access: vec![
-                (AppKind::FileExplorer, Op::Edit),
-                (AppKind::Terminal, Op::Edit),
-            ],
-            file_ops: vec![(FileId("report.md".into()), Op::Edit)],
-            workspace_admin: false,
-        },
-    }
+/// An editor in the room, additionally shared one file.
+///
+/// The share is a capability, not a role property — roles carry no base
+/// authority over the filesystem, so even an Owner needs one of these
+/// to touch a path.
+fn editor_ctx(user: &str) -> PermissionContext {
+    PermissionContext::from_capabilities(
+        Actor::person(Some(Role::Editor), user),
+        vec![CapOverride::grant(
+            Subject::person(user),
+            Scope::FsPath("/var/workspace/report.md".into()),
+            Verb::Write,
+        )],
+    )
 }
 
 #[test]
 fn viewer_cannot_edit_terminal() {
-    let ctx = PermissionContext::new(
-        UserId("alice".into()),
-        &[viewer_role(), editor_role()],
-        RoleId("viewer".into()),
-    );
-    let scope = PermissionScope {
-        resource: ResourceId::App(AppKind::Terminal),
-        op: Op::Edit,
-    };
+    let ctx = viewer_ctx("alice");
+    let scope = PermissionScope::app_kind(AppKind::Terminal, Verb::Write);
     assert!(!ctx.check(&scope));
-    assert!(matches!(
+    assert_eq!(
         ctx.check_with_denied_feedback(&scope),
-        Some(DenyReason::Role { .. })
-    ));
+        Some(CapDecision::DeniedByRole)
+    );
 }
 
 #[test]
 fn editor_can_edit_file() {
-    let ctx = PermissionContext::new(
-        UserId("bob".into()),
-        &[viewer_role(), editor_role()],
-        RoleId("editor".into()),
-    );
-    let scope = PermissionScope {
-        resource: ResourceId::File(FileId("report.md".into())),
-        op: Op::Edit,
-    };
+    let ctx = editor_ctx("bob");
+    let scope = PermissionScope::path("/var/workspace/report.md", Verb::Write);
     assert!(ctx.check(&scope));
     assert_eq!(ctx.check_with_denied_feedback(&scope), None);
 }
 
 #[test]
-fn workspace_admin_requires_admin_flag() {
-    let ctx = PermissionContext::new(
-        UserId("bob".into()),
-        &[editor_role()],
-        RoleId("editor".into()),
-    );
-    let scope = PermissionScope {
-        resource: ResourceId::Workspace(WorkspaceId("ws-42".into())),
-        op: Op::Admin,
-    };
-    assert!(!ctx.check(&scope));
+fn a_file_share_does_not_leak_to_its_siblings() {
+    // The grant is scoped to one path. Component-aligned prefix
+    // matching must not let it cover a sibling that merely shares a
+    // textual prefix.
+    let ctx = editor_ctx("bob");
+    assert!(!ctx.check(&PermissionScope::path(
+        "/var/workspace/report.md.bak",
+        Verb::Write
+    )));
+    assert!(!ctx.check(&PermissionScope::path(
+        "/var/workspace/payroll.md",
+        Verb::Write
+    )));
 }
 
 #[test]
-fn unknown_role_denies_everything() {
-    let ctx = PermissionContext::new(
-        UserId("x".into()),
-        &[viewer_role()],
-        RoleId("does-not-exist".into()),
-    );
-    let scope = PermissionScope {
-        resource: ResourceId::App(AppKind::FileExplorer),
-        op: Op::View,
-    };
+fn workspace_admin_requires_admin_authority() {
+    let ctx = editor_ctx("bob");
+    let scope = PermissionScope::workspace(Verb::Admin);
     assert!(!ctx.check(&scope));
-    assert!(matches!(
+    assert_eq!(
         ctx.check_with_denied_feedback(&scope),
-        Some(DenyReason::RoleNotAssigned)
-    ));
+        Some(CapDecision::DeniedByRole)
+    );
+    // An Editor's ceiling is Write; writing the room is still fine.
+    assert!(ctx.check(&PermissionScope::workspace(Verb::Write)));
+}
+
+#[test]
+fn actor_with_no_role_denies_everything() {
+    // The replacement for "the named role wasn't found": an actor that
+    // holds no role has no base authority at all, so absent an explicit
+    // capability it is denied — fail-closed by construction.
+    let ctx = PermissionContext::from_capabilities(Actor::person(None, "x"), vec![]);
+    let scope = PermissionScope::app_kind(AppKind::FileExplorer, Verb::Read);
+    assert!(!ctx.check(&scope));
+    assert_eq!(
+        ctx.check_with_denied_feedback(&scope),
+        Some(CapDecision::DeniedByRole)
+    );
+    assert!(!ctx.check(&PermissionScope::workspace(Verb::Read)));
+    assert!(!ctx.check(&PermissionScope::path("/var/workspace/a.txt", Verb::Read)));
+}
+
+#[test]
+fn an_explicitly_denied_role_cannot_be_rescued_by_a_grant() {
+    // Role::Denied is a block, not an absence. A share must not undo it.
+    let ctx = PermissionContext::from_capabilities(
+        Actor::person(Some(Role::Denied), "mallory"),
+        vec![CapOverride::grant(
+            Subject::person("mallory"),
+            Scope::Workspace,
+            Verb::Admin,
+        )],
+    );
+    assert!(!ctx.check(&PermissionScope::workspace(Verb::Read)));
+    assert_eq!(
+        ctx.check_with_denied_feedback(&PermissionScope::workspace(Verb::Read)),
+        Some(CapDecision::DeniedByRole)
+    );
 }
 
 // --- Task 6: Widget trait hooks for presence + permission ---
@@ -176,9 +187,7 @@ fn draw_with_presence_default_delegates_to_draw() {
 
 // --- Task 7: Framework-level permission gating in event dispatch ---
 
-use ui::permissions::{
-    AppKind as AK, Op as OpX, PermissionScope as PS, ResourceId as RI,
-};
+use ui::permissions::PermissionScope as PS;
 
 struct GatedButton {
     clicked: bool,
@@ -238,17 +247,10 @@ impl ui::widget::Widget for GatedButton {
 
 #[test]
 fn gated_widget_rejected_by_framework_helper() {
-    let ctx = PermissionContext::new(
-        UserId("alice".into()),
-        &[viewer_role()],
-        RoleId("viewer".into()),
-    );
+    let ctx = viewer_ctx("alice");
     let w = GatedButton {
         clicked: false,
-        scope: PS {
-            resource: RI::App(AK::Terminal),
-            op: OpX::Edit,
-        },
+        scope: PermissionScope::app_kind(AppKind::Terminal, Verb::Write),
     };
     let mut fired = false;
     let allowed = ui::app::dispatch_gated_event(&ctx, &w, || {
@@ -260,17 +262,10 @@ fn gated_widget_rejected_by_framework_helper() {
 
 #[test]
 fn gated_widget_allowed_when_role_grants_edit() {
-    let ctx = PermissionContext::new(
-        UserId("bob".into()),
-        &[editor_role()],
-        RoleId("editor".into()),
-    );
+    let ctx = editor_ctx("bob");
     let w = GatedButton {
         clicked: false,
-        scope: PS {
-            resource: RI::App(AK::Terminal),
-            op: OpX::Edit,
-        },
+        scope: PermissionScope::app_kind(AppKind::Terminal, Verb::Write),
     };
     let mut fired = false;
     let allowed = ui::app::dispatch_gated_event(&ctx, &w, || {
@@ -280,36 +275,62 @@ fn gated_widget_allowed_when_role_grants_edit() {
     assert!(fired);
 }
 
-// --- Task 8: Build PermissionContext from a WorkspaceSettings view ---
-
-use ui::permissions::{WorkspaceSettingsView, PermissionAssignment};
+// --- Installing a real actor + capability set on an App ---
 
 #[test]
-fn permission_context_built_from_workspace_settings_view() {
-    let settings = WorkspaceSettingsView {
-        roles: vec![viewer_role(), editor_role()],
-        assignments: vec![PermissionAssignment {
-            user: UserId("alice".into()),
-            role: RoleId("editor".into()),
-        }],
-    };
-    let ctx = PermissionContext::from_workspace_settings(
-        &settings,
-        &UserId("alice".into()),
-    ).expect("alice has an assignment");
-    assert!(ctx.check(&PermissionScope {
-        resource: ResourceId::App(AppKind::Terminal),
-        op: Op::Edit,
-    }));
+fn permission_context_built_from_an_actor_and_its_capabilities() {
+    let ctx = PermissionContext::from_capabilities(
+        Actor::person(Some(Role::Editor), "alice"),
+        vec![CapOverride::grant(
+            Subject::person("alice"),
+            Scope::App("terminal".into()),
+            Verb::Admin,
+        )],
+    );
+    assert_eq!(ctx.user(), &UserId("alice".into()));
+    assert_eq!(ctx.role(), Some(Role::Editor));
+    assert!(ctx.check(&PermissionScope::app_kind(AppKind::Terminal, Verb::Write)));
+    // The individual grant lifts her above her role's ceiling — but only
+    // inside the scope it names.
+    assert!(ctx.check(&PermissionScope::app_kind(AppKind::Terminal, Verb::Admin)));
+    assert!(!ctx.check(&PermissionScope::app_kind(AppKind::FileExplorer, Verb::Admin)));
 }
 
 #[test]
-fn permission_context_from_settings_returns_none_when_unassigned() {
-    let settings = WorkspaceSettingsView {
-        roles: vec![viewer_role()],
-        assignments: vec![],
-    };
-    assert!(PermissionContext::from_workspace_settings(
-        &settings, &UserId("carol".into()),
-    ).is_none());
+fn a_lapsed_capability_stops_granting() {
+    let cap = CapOverride::grant(
+        Subject::person("alice"),
+        Scope::App("terminal".into()),
+        Verb::Admin,
+    )
+    .with_expiry(2_000);
+    let actor = Actor::person(Some(Role::Editor), "alice");
+    let scope = PermissionScope::app_kind(AppKind::Terminal, Verb::Admin);
+
+    let live =
+        PermissionContext::from_capabilities(actor.clone(), vec![cap.clone()]).at_unix_time(1_999);
+    assert!(live.check(&scope));
+
+    let lapsed = PermissionContext::from_capabilities(actor, vec![cap]).at_unix_time(2_000);
+    assert!(!lapsed.check(&scope), "the deadline is exclusive: at it, the grant is dead");
+    assert_eq!(
+        lapsed.check_with_denied_feedback(&scope),
+        Some(CapDecision::DeniedByRole)
+    );
+}
+
+#[test]
+fn permissive_holds_one_real_workspace_wide_admin_capability() {
+    let ctx = PermissionContext::permissive();
+    // Not a bypass flag — an inspectable capability.
+    assert_eq!(ctx.capabilities().len(), 1);
+    assert_eq!(ctx.capabilities()[0].scope, Scope::Workspace);
+    assert_eq!(ctx.capabilities()[0].verb, Verb::Admin);
+    assert!(ctx.check(&PermissionScope::workspace(Verb::Admin)));
+    assert!(ctx.check(&PermissionScope::app_kind(AppKind::Terminal, Verb::Write)));
+    assert!(ctx.check(&PermissionScope::path("/var/workspace/anything", Verb::Write)));
+    assert_eq!(
+        ctx.decide(&ResourceRef::Device("camera".into()), Verb::Read),
+        CapDecision::Allow
+    );
 }
