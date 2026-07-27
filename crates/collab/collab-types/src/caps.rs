@@ -549,6 +549,38 @@ impl Expiry {
     pub fn persists_across_restart(self) -> bool {
         matches!(self, Expiry::Never | Expiry::AtUnix(_))
     }
+
+    /// Does a capability with this expiry outlive one with `other`?
+    ///
+    /// The order is `Never` > `AtUnix(later)` > `AtUnix(earlier)` >
+    /// `EndOfSession` > `AfterUse`. An explicit deadline is treated as
+    /// longer-lived than the session because it survives a restart,
+    /// which is the property that actually distinguishes them.
+    pub fn outlives(self, other: Expiry) -> bool {
+        fn tier(e: Expiry) -> u8 {
+            match e {
+                Expiry::AfterUse => 0,
+                Expiry::EndOfSession => 1,
+                Expiry::AtUnix(_) => 2,
+                Expiry::Never => 3,
+            }
+        }
+        match (self, other) {
+            (Expiry::AtUnix(a), Expiry::AtUnix(b)) => a > b,
+            (a, b) => tier(a) > tier(b),
+        }
+    }
+
+    /// The longer-lived of two expiries.
+    ///
+    /// The single definition of "strongest scope wins", used both when
+    /// merging a re-grant and when the portal reports the strength of an
+    /// existing grant. Two answers to this question would eventually
+    /// disagree, and the disagreement would read as a permanent grant
+    /// silently becoming a session one.
+    pub fn longest(a: Expiry, b: Expiry) -> Expiry {
+        if a.outlives(b) { a } else { b }
+    }
 }
 
 /// Whether an override grants or restricts.

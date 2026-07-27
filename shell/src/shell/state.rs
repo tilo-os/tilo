@@ -765,19 +765,38 @@ impl Workspace {
         if cap.id.is_empty() {
             cap.id = format!("cap-{}", next_id());
         }
-        let id = cap.id.clone();
-        // A re-grant of the same (subject, scope, effect, verb)
-        // replaces rather than stacks, so revoking once is enough.
+        // A re-grant of the same (subject, scope, effect, verb) merges
+        // rather than stacks, so revoking once is enough.
+        //
+        // Merging keeps the **longer-lived** expiry. A grant is
+        // monotonic: granting something for this session when it is
+        // already granted permanently must not quietly demote it to the
+        // session. That is not a hypothetical — an app that holds
+        // "Always" for the camera and then makes a fresh request would
+        // have had its permanent grant replaced by the one-shot the
+        // prompt defaults to, and the user would never be told. Reducing
+        // authority is what revoke and `Effect::Restrict` are for, and
+        // both are explicit acts.
         if let Some(slot) = self.capabilities.iter_mut().find(|c| {
             c.subject == cap.subject
                 && c.scope == cap.scope
                 && c.effect == cap.effect
                 && c.verb == cap.verb
         }) {
-            *slot = cap;
-        } else {
-            self.capabilities.push(cap);
+            slot.expiry = Expiry::longest(slot.expiry, cap.expiry);
+            if !cap.id.is_empty() {
+                slot.id = cap.id;
+            }
+            if cap.granted_by.is_some() {
+                slot.granted_by = cap.granted_by;
+            }
+            return slot.id.clone();
         }
+        if cap.id.is_empty() {
+            cap.id = format!("cap-{}", next_id());
+        }
+        let id = cap.id.clone();
+        self.capabilities.push(cap);
         id
     }
 
