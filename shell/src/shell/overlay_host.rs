@@ -395,9 +395,10 @@ impl ShellOverlayHost {
         // Palette entries are now produced by the search registry on
         // every keystroke (`refresh_search_results`). The registry ships
         // with in-shell providers: `actions` (the old chrome-command
-        // rows), `notes` (per-tab Automerge body search), `files`
-        // (walkdir + tantivy content index). New providers slot in via
-        // `SearchRegistry::register`; the palette picks up their
+        // rows), `applications` (installed packages — picking a row
+        // launches one), `notes` (per-tab Automerge body search),
+        // `files` (walkdir + tantivy content index). New providers slot
+        // in via `SearchRegistry::register`; the palette picks up their
         // resource-kind chips automatically.
         let mut palette = CommandPalette::new();
         palette.set_bypass_fuzzy(true);
@@ -405,6 +406,9 @@ impl ShellOverlayHost {
         let mut search_registry = crate::shell::search::SearchRegistry::new();
         search_registry.register(std::rc::Rc::new(
             crate::shell::search::providers::ActionsProvider::new(),
+        ));
+        search_registry.register(std::rc::Rc::new(
+            crate::shell::search::providers::ApplicationsProvider::new(),
         ));
         search_registry.register(std::rc::Rc::new(
             crate::shell::search::providers::NotesProvider::new(),
@@ -1459,6 +1463,67 @@ impl ShellOverlayHost {
     /// matches the prompt's `app_id` before draining (defends
     /// against an out-of-band push that swapped the head of the
     /// queue between frames).
+    /// Drain the app-launcher's worker-thread reports and turn the ones
+    /// the user needs to know about into notifications.
+    ///
+    /// A launch that starts and an app that exits cleanly are silent —
+    /// the window appearing (or closing) is the feedback. A launch that
+    /// dies is not: the sandbox refusing, a missing runtime bundle, or
+    /// the app crashing on start all leave nothing on screen, so they
+    /// surface here with the child's own stderr quoted back.
+    ///
+    /// Returns whether anything was posted, so the caller can mark the
+    /// frame dirty.
+    pub(crate) fn drain_launch_events(&mut self) -> bool {
+        let events = crate::shell::launcher::drain_events();
+        if events.is_empty() {
+            return false;
+        }
+        let Some(chrome_handle) = self.chrome.clone() else {
+            return false;
+        };
+        use crate::shell::launcher::LaunchEventKind;
+        let mut posted = false;
+        for event in events {
+            let (title, body) = match event.kind {
+                LaunchEventKind::Started { pid } => {
+                    eprintln!(
+                        "shell: launched {} (pid {pid})",
+                        event.package_id
+                    );
+                    continue;
+                }
+                LaunchEventKind::Exited => continue,
+                LaunchEventKind::SpawnFailed { detail } => (
+                    format!("Couldn't open {}", event.display_name),
+                    detail,
+                ),
+                LaunchEventKind::Failed { code, stderr_tail } => {
+                    let reason = if stderr_tail.trim().is_empty() {
+                        match code {
+                            Some(c) => format!("the launcher exited with status {c}"),
+                            None => "the launcher was killed by a signal".to_string(),
+                        }
+                    } else {
+                        stderr_tail
+                    };
+                    (format!("{} stopped", event.display_name), reason)
+                }
+            };
+            let mut st = chrome_handle.borrow_mut();
+            st.push_notification_full(
+                crate::shell::notification::Notification::new(title, body)
+                    .with_severity(
+                        crate::shell::notification::NotificationSeverity::Error,
+                    )
+                    .with_app_name("Applications"),
+            );
+            st.bump();
+            posted = true;
+        }
+        posted
+    }
+
     pub(crate) fn pump_permission_prompt(&mut self) {
         let Some(chrome_handle) = self.chrome.clone() else {
             return;
@@ -2806,6 +2871,11 @@ impl Widget for ShellOverlayHost {
         // and drains entries when the user clicks an action button.
         // Idempotent — runs every frame regardless of queue state.
         self.pump_permission_prompt();
+        // App launches report back from their worker threads. Draining
+        // here is what turns "the sandbox refused to start" into
+        // something the user can see; the frame thread only ever takes
+        // a mutex and moves a Vec out.
+        let launch_dirty = self.drain_launch_events();
         // Notification lifecycle: drop expired toasts so the stack
         // shrinks even on frames where the user does nothing. The
         // widget's own `update` also drives this, but routing it
@@ -2819,7 +2889,7 @@ impl Widget for ShellOverlayHost {
         } else {
             false
         };
-        a || b || c || d || chrome_dirty
+        a || b || c || d || launch_dirty || chrome_dirty
     }
 
     fn build_layout(
