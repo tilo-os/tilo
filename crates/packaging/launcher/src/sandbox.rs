@@ -860,4 +860,252 @@ mod tests {
             .expect("service env var");
         let _ = env_pos;
     }
+
+    // -----------------------------------------------------------------
+    // Capability enforcement.
+    //
+    // These are the tests that make "Always allow" mean something. They
+    // assert on the argv the production builder emits — the exact string
+    // list handed to `bwrap` — because that argv *is* the sandbox. A
+    // path missing from it is a path the app cannot reach, whatever the
+    // permissions UI says.
+    // -----------------------------------------------------------------
+
+    use collab_types::caps::{CapOverride, Expiry, Scope, Subject, Verb};
+
+    /// Deterministic stand-in for the host's device nodes, so a camera
+    /// assertion doesn't depend on whether the machine running the test
+    /// owns a webcam. The *policy* — who gets a camera at all — is the
+    /// production path either way.
+    fn fake_device_paths(device: &str) -> Vec<PathBuf> {
+        match device {
+            "camera" => vec![PathBuf::from("/dev/video0")],
+            "microphone" => vec![PathBuf::from("/dev/snd")],
+            _ => Vec::new(),
+        }
+    }
+
+    /// Build the argv the launcher would really produce for `app_id`,
+    /// given the workspace's capability list. Goes through the same
+    /// `CapabilityPlan::for_app_with` → `build_bwrap_argv` pair that
+    /// `run_with` uses; only the device-node lookup is substituted.
+    fn argv_with_caps(app_id: &str, caps: &[CapOverride], now: u64) -> Vec<String> {
+        let m = mk_manifest("off");
+        let plan = CapabilityPlan::for_app_with(app_id, caps, Some(now), fake_device_paths);
+        build_bwrap_argv(&m, Path::new("/host/pkg"), None, &[], None, None, &plan)
+    }
+
+    /// Every bind triple in an argv, as `(flag, src, dst)`.
+    fn bind_triples(argv: &[String]) -> Vec<(String, String, String)> {
+        argv.windows(3)
+            .filter(|w| {
+                matches!(
+                    w[0].as_str(),
+                    "--bind"
+                        | "--bind-try"
+                        | "--ro-bind"
+                        | "--ro-bind-try"
+                        | "--dev-bind"
+                        | "--dev-bind-try"
+                )
+            })
+            .map(|w| (w[0].clone(), w[1].clone(), w[2].clone()))
+            .collect()
+    }
+
+    fn fs_grant(app: &str, path: &str, verb: Verb) -> CapOverride {
+        CapOverride::grant(Subject::app(app), Scope::FsPath(path.to_string()), verb)
+    }
+
+    #[test]
+    fn no_capabilities_adds_no_binds_beyond_the_manifest() {
+        let baseline = argv_with_caps("com.example.notes", &[], 1_000);
+        let m = mk_manifest("off");
+        let manifest_only =
+            build_bwrap_argv(&m, Path::new("/host/pkg"), None, &[], None, None, &CapabilityPlan::empty());
+        assert_eq!(
+            baseline, manifest_only,
+            "an app granted nothing must get byte-identical argv to a manifest-only launch"
+        );
+        // And that argv contains exactly the manifest's own binds: the
+        // payload, plus `fs.read` and `fs.write`. Nothing else.
+        assert_eq!(
+            bind_triples(&baseline),
+            vec![
+                (
+                    "--ro-bind".to_string(),
+                    "/host/pkg".to_string(),
+                    "/var/qos-apps/com.example.notes".to_string()
+                ),
+                (
+                    "--ro-bind".to_string(),
+                    "/usr/share/fonts".to_string(),
+                    "/usr/share/fonts".to_string()
+                ),
+                (
+                    "--bind".to_string(),
+                    "/var/lib/qos/notes".to_string(),
+                    "/var/lib/qos/notes".to_string()
+                ),
+            ],
+            "a capability-less launch binds only what the manifest declares: {baseline:?}"
+        );
+    }
+
+    #[test]
+    fn read_capability_binds_the_path_read_only_and_never_writable() {
+        let caps = vec![fs_grant("dev.qos.books", "/var/workspace/books", Verb::Read)];
+        let argv = argv_with_caps("dev.qos.books", &caps, 1_000);
+        assert!(
+            argv.windows(3).any(|w| w[0] == "--ro-bind-try"
+                && w[1] == "/var/workspace/books"
+                && w[2] == "/var/workspace/books"),
+            "a Read capability must produce a read-only bind of exactly that path: {argv:?}"
+        );
+        for (flag, src, _dst) in bind_triples(&argv) {
+            if src == "/var/workspace/books" {
+                assert!(
+                    flag == "--ro-bind" || flag == "--ro-bind-try",
+                    "a Read capability must never produce the writable bind `{flag}`: {argv:?}"
+                );
+            }
+        }
+        // The grant is for that path and nothing above it: the parent
+        // directory must not be reachable.
+        assert!(
+            !argv.iter().any(|a| a == "/var/workspace"),
+            "a grant on /var/workspace/books must not bind its parent: {argv:?}"
+        );
+    }
+
+    #[test]
+    fn write_capability_binds_the_path_read_write() {
+        let caps = vec![fs_grant("dev.qos.books", "/var/workspace/books", Verb::Write)];
+        let argv = argv_with_caps("dev.qos.books", &caps, 1_000);
+        assert!(
+            argv.windows(3).any(|w| w[0] == "--bind-try"
+                && w[1] == "/var/workspace/books"
+                && w[2] == "/var/workspace/books"),
+            "a Write capability must produce a read-write bind: {argv:?}"
+        );
+        assert!(
+            !argv.iter().any(|a| a == "--ro-bind-try"),
+            "a Write capability must not also emit a read-only bind: {argv:?}"
+        );
+    }
+
+    #[test]
+    fn camera_bind_appears_only_with_a_camera_capability() {
+        let without = argv_with_caps("dev.qos.meet", &[], 1_000);
+        assert!(
+            !without.iter().any(|a| a.starts_with("/dev/video")),
+            "no camera capability must mean no camera device in the namespace: {without:?}"
+        );
+
+        let caps = vec![CapOverride::grant(
+            Subject::app("dev.qos.meet"),
+            Scope::Device("camera".to_string()),
+            Verb::Read,
+        )];
+        let with = argv_with_caps("dev.qos.meet", &caps, 1_000);
+        assert!(
+            with.windows(3).any(
+                |w| w[0] == "--dev-bind-try" && w[1] == "/dev/video0" && w[2] == "/dev/video0"
+            ),
+            "a camera capability must bind the device node: {with:?}"
+        );
+    }
+
+    #[test]
+    fn a_capability_for_another_app_never_reaches_this_apps_argv() {
+        let caps = vec![
+            fs_grant("dev.qos.other", "/var/workspace/secrets", Verb::Write),
+            CapOverride::grant(
+                Subject::app("dev.qos.other"),
+                Scope::Device("camera".to_string()),
+                Verb::Read,
+            ),
+            CapOverride::grant(
+                Subject::app("dev.qos.other"),
+                Scope::NetHost("*".to_string()),
+                Verb::Write,
+            ),
+        ];
+        let argv = argv_with_caps("dev.qos.books", &caps, 1_000);
+        assert!(
+            !argv.iter().any(|a| a == "/var/workspace/secrets"),
+            "another app's filesystem grant must not appear here: {argv:?}"
+        );
+        assert!(
+            !argv.iter().any(|a| a.starts_with("/dev/video")),
+            "another app's camera grant must not appear here: {argv:?}"
+        );
+        assert!(
+            !argv.iter().any(|a| a == "--share-net"),
+            "another app's network grant must not open this app's namespace: {argv:?}"
+        );
+        // Proof the fixture is capable of granting: the same list, read
+        // as the app it names, does produce those binds.
+        let theirs = argv_with_caps("dev.qos.other", &caps, 1_000);
+        assert!(theirs.iter().any(|a| a == "/var/workspace/secrets"));
+        assert!(theirs.iter().any(|a| a == "--share-net"));
+    }
+
+    #[test]
+    fn an_expired_capability_produces_no_bind() {
+        let caps = vec![
+            fs_grant("dev.qos.books", "/var/workspace/books", Verb::Write)
+                .expiring(Expiry::AtUnix(500)),
+        ];
+        let expired = argv_with_caps("dev.qos.books", &caps, 1_000);
+        assert!(
+            !expired.iter().any(|a| a == "/var/workspace/books"),
+            "a capability that expired at 500 must bind nothing at now=1000: {expired:?}"
+        );
+        assert_eq!(
+            bind_triples(&expired).len(),
+            3,
+            "only the manifest's own three binds survive an expired grant: {expired:?}"
+        );
+        // Same capability before its deadline does bind — so the
+        // emptiness above is the expiry, not a broken fixture.
+        let live = argv_with_caps("dev.qos.books", &caps, 499);
+        assert!(
+            live.windows(3).any(|w| w[0] == "--bind-try"
+                && w[1] == "/var/workspace/books"
+                && w[2] == "/var/workspace/books"),
+            "the same capability evaluated before its deadline must bind: {live:?}"
+        );
+    }
+
+    #[test]
+    fn network_capability_is_what_shares_the_namespace() {
+        // The manifest says net.mode = "off": without a capability the
+        // sandbox keeps the empty network namespace `--unshare-all` gave
+        // it, and no packet can leave.
+        let isolated = argv_with_caps("dev.qos.mail", &[], 1_000);
+        assert!(
+            !isolated.iter().any(|a| a == "--share-net"),
+            "no network capability must leave the netns unshared: {isolated:?}"
+        );
+
+        let caps = vec![CapOverride::grant(
+            Subject::app("dev.qos.mail"),
+            Scope::NetHost("mail.example.com".to_string()),
+            Verb::Write,
+        )];
+        let granted = argv_with_caps("dev.qos.mail", &caps, 1_000);
+        assert!(
+            granted.iter().any(|a| a == "--share-net"),
+            "a network capability must share the namespace: {granted:?}"
+        );
+        // Honest about the gap: the host the user named reaches no
+        // filter. bwrap has no per-host vocabulary, so the argv cannot
+        // and does not mention it. See `CapabilityPlan::for_app`, which
+        // logs a warning whenever this happens.
+        assert!(
+            !granted.iter().any(|a| a.contains("mail.example.com")),
+            "per-host filtering is NOT enforced — the named host reaches no mechanism: {granted:?}"
+        );
+    }
 }
