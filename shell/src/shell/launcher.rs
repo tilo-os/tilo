@@ -36,6 +36,23 @@
 //! there is no display in the sandbox, and the launch is refused up
 //! front rather than silently starting an app that can never draw.
 //!
+//! ## Permissions
+//!
+//! The manifest is what the *packager* asked for. What the **user**
+//! granted lives on the workspace, as capabilities
+//! ([`crate::shell::state::Workspace::capabilities`]). Both have to be
+//! true before an app can reach a path, a device or the network, so
+//! every launch carries the workspace's capabilities across to
+//! `qos-launcher`: they are written to a private JSON file in the
+//! runtime dir and named on the command line with `--capabilities`.
+//!
+//! The launcher turns them into bind mounts and Landlock rules. That is
+//! the whole of what "Always allow" does — with no capability there is
+//! no mount, and an app cannot open what is not in its namespace. A
+//! launch with no capabilities (nothing published, nothing granted,
+//! file missing) gets exactly the sandbox the manifest describes;
+//! nothing here can widen one.
+//!
 //! ## Never on the frame thread
 //!
 //! [`launch`] resolves the package from an in-memory cache and hands the
@@ -52,6 +69,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
+
+use crate::shell::state::{CapOverride, Effect, Subject, Workspace};
 
 /// How long an enumeration of installed packages is reused before the
 /// registry + manifests are re-read. The palette queries this on every
@@ -190,6 +209,14 @@ static APP_CACHE: Mutex<Option<(Vec<InstalledApp>, Instant)>> = Mutex::new(None)
 /// Consulted when a foreign toplevel is adopted so the tab shows the
 /// app's name instead of a raw wayland app-id.
 static LAUNCHED: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new());
+/// The capability list of the workspace apps are being launched into.
+///
+/// Published by [`set_workspace_capabilities`] (or by
+/// [`launch_in_workspace`], which does it for you) the same way
+/// [`set_wayland_socket`] publishes the display. Empty is the safe
+/// default and the correct one: an app launched before anything is
+/// published gets its manifest's sandbox and nothing more.
+static WORKSPACE_CAPABILITIES: Mutex<Vec<CapOverride>> = Mutex::new(Vec::new());
 
 /// Publish the compositor's Wayland socket. Called once by the
 /// compositor after `ListeningSocketSource` binds, with the socket name
@@ -205,6 +232,114 @@ pub fn wayland_socket() -> Option<PathBuf> {
         .lock()
         .expect("WAYLAND_SOCKET poisoned")
         .clone()
+}
+
+// ---------------------------------------------------------------------
+// Workspace capabilities.
+//
+// One publisher, one reader, one file per launch. The compositor knows
+// which workspace an app is being launched into; the launcher knows how
+// to turn a capability into a mount. This is the seam between them.
+// ---------------------------------------------------------------------
+
+/// Publish the capability list of the workspace apps launch into.
+///
+/// Call this whenever the active workspace changes or its capabilities
+/// do — a grant made in the permissions UI only reaches the next launch
+/// if the list is republished. The whole workspace list is published,
+/// not a per-app slice: [`launch`] filters it for the app it is starting
+/// and the launcher filters it again on the other side.
+pub fn set_workspace_capabilities(capabilities: Vec<CapOverride>) {
+    *WORKSPACE_CAPABILITIES
+        .lock()
+        .expect("WORKSPACE_CAPABILITIES poisoned") = capabilities;
+}
+
+/// Drop the published capability list. Subsequent launches get manifest
+/// permissions only.
+pub fn clear_workspace_capabilities() {
+    set_workspace_capabilities(Vec::new());
+}
+
+/// The capabilities published for `app_id`, as the launcher will see
+/// them.
+///
+/// Filtered to grants whose subject is this app: a capability naming a
+/// person, a room, or another app never reaches the launcher's file at
+/// all. `Restrict` overrides that mention the app are carried through
+/// too — the launcher's decision function needs them to be able to
+/// *narrow* a grant, and dropping them here would silently widen the
+/// sandbox.
+pub fn capabilities_for_app(app_id: &str) -> Vec<CapOverride> {
+    let want = Subject::app(app_id);
+    WORKSPACE_CAPABILITIES
+        .lock()
+        .expect("WORKSPACE_CAPABILITIES poisoned")
+        .iter()
+        .filter(|c| c.subject == want)
+        .filter(|c| c.effect == Effect::Grant || c.effect == Effect::Restrict)
+        .cloned()
+        .collect()
+}
+
+/// Where a launch's capability file lives: `<runtime>/qos/capabilities/`.
+///
+/// Under `$XDG_RUNTIME_DIR`, which is already a per-user `0700` tmpfs —
+/// the file describes what one app may reach and is readable by nobody
+/// else. It is deliberately *not* bound into the sandbox: the app never
+/// sees its own permission record.
+fn capabilities_dir() -> PathBuf {
+    runtime_dir().join("qos").join("capabilities")
+}
+
+/// Write `capabilities` where `qos-launcher --capabilities` will read
+/// them, returning the path.
+///
+/// `Ok(None)` means "nothing to write": the app was granted nothing, so
+/// there is no file and no flag, and the launcher applies the manifest
+/// alone. Any previously written file for this app is removed in that
+/// case — a revoked grant must not survive as a stale file on disk.
+fn write_capabilities_file(
+    package_id: &str,
+    capabilities: &[CapOverride],
+) -> std::io::Result<Option<PathBuf>> {
+    // A package id is reverse-DNS (`dev.qos.hello`), but it arrives from
+    // a registry file, so refuse anything that could escape the
+    // directory rather than trusting that.
+    let file_name = format!("{package_id}.json");
+    if package_id.is_empty() || package_id.contains('/') || package_id.contains("..") {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("refusing to write a capability file for package id {package_id:?}"),
+        ));
+    }
+    let path = capabilities_dir().join(file_name);
+    if capabilities.is_empty() {
+        // Best-effort: a missing file is the same as an empty one.
+        let _ = std::fs::remove_file(&path);
+        return Ok(None);
+    }
+    std::fs::create_dir_all(capabilities_dir())?;
+    let json = serde_json::to_vec(capabilities).map_err(|e| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("serialising capabilities: {e}"),
+        )
+    })?;
+    // Create at 0600 rather than writing and chmod-ing after: the
+    // window between the two is exactly when another process could open
+    // it.
+    use std::io::Write as _;
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(&path)?;
+    file.write_all(&json)?;
+    file.sync_all()?;
+    Ok(Some(path))
 }
 
 /// `$XDG_RUNTIME_DIR`, falling back to `/run/user/<uid>`.
@@ -367,10 +502,17 @@ pub fn resolve_launcher_bin() -> Result<PathBuf, LaunchError> {
 ///
 /// Pure — no I/O, no spawning — so tests can assert on the exact command
 /// the production path builds.
+///
+/// `capabilities_file` is the path [`write_capabilities_file`] produced,
+/// or `None` when the app was granted nothing. `None` emits no
+/// `--capabilities` flag at all, which is what makes an ungranted app
+/// indistinguishable from one launched before capabilities existed: it
+/// gets its manifest's sandbox.
 pub fn build_launch_command(
     app: &InstalledApp,
     launcher_bin: &Path,
     wayland_socket: &Path,
+    capabilities_file: Option<&Path>,
 ) -> LaunchCommand {
     let mut args = vec![
         "run".to_string(),
@@ -380,7 +522,16 @@ pub fn build_launch_command(
         app.payload_root.display().to_string(),
         "--wayland-socket".to_string(),
         wayland_socket.display().to_string(),
+        // The identity capabilities are addressed to. Always passed, so
+        // the launcher checks every capability against this id instead
+        // of trusting the file to have been filtered for it.
+        "--app-id".to_string(),
+        app.package_id.clone(),
     ];
+    if let Some(path) = capabilities_file {
+        args.push("--capabilities".to_string());
+        args.push(path.display().to_string());
+    }
     // Service sockets (collab, qos-fs, …) are resolved by the launcher
     // against `$XDG_RUNTIME_DIR/qos/services`. Optional ones that are
     // absent degrade to a warning; a package that declares a *required*
@@ -399,7 +550,8 @@ pub fn build_launch_command(
     }
 }
 
-/// Resolve `package_id` and start it.
+/// Resolve `package_id` and start it, with whatever the published
+/// workspace granted it.
 ///
 /// Returns as soon as the launch is handed to its worker thread — it
 /// never waits for the app to appear. The `Ok` value is the resolved
@@ -418,10 +570,43 @@ pub fn launch(package_id: &str) -> Result<InstalledApp, LaunchError> {
     }
     let socket = wayland_socket().ok_or(LaunchError::NoDisplay)?;
     let launcher_bin = resolve_launcher_bin()?;
-    let command = build_launch_command(&app, &launcher_bin, &socket);
+
+    // Hand the user's decision across to the process that can enforce
+    // it. A failure to write the file is *not* a launch failure: the app
+    // starts with manifest permissions only, which is the safe
+    // direction, and the reason is logged rather than swallowed.
+    let capabilities = capabilities_for_app(&app.package_id);
+    let capabilities_file = match write_capabilities_file(&app.package_id, &capabilities) {
+        Ok(path) => path,
+        Err(e) => {
+            eprintln!(
+                "[launch {}] could not stage {} capabilities ({e}); \
+                 starting with manifest permissions only",
+                app.package_id,
+                capabilities.len()
+            );
+            None
+        }
+    };
+
+    let command =
+        build_launch_command(&app, &launcher_bin, &socket, capabilities_file.as_deref());
     remember_launch(&app);
     spawn_detached(app.clone(), command);
     Ok(app)
+}
+
+/// Publish `workspace`'s capabilities and launch `package_id` into it.
+///
+/// The one call a caller holding a `&Workspace` needs: it keeps the
+/// grant the user made and the sandbox the app runs in from being two
+/// separate decisions.
+pub fn launch_in_workspace(
+    package_id: &str,
+    workspace: &Workspace,
+) -> Result<InstalledApp, LaunchError> {
+    set_workspace_capabilities(workspace.capabilities.clone());
+    launch(package_id)
 }
 
 /// Run `command` on a worker thread and report the outcome through
@@ -674,6 +859,7 @@ mod tests {
             &app,
             Path::new("/usr/bin/qos-launcher"),
             Path::new("/run/user/1000/wayland-3"),
+            None,
         );
         assert_eq!(cmd.program, Path::new("/usr/bin/qos-launcher"));
         assert_eq!(cmd.args[0], "run");
@@ -861,5 +1047,194 @@ mod tests {
         );
         // An unrelated client keeps its own label.
         assert_eq!(display_name_for_app_id("org.gnome.NeverLaunched"), None);
+    }
+
+    // -----------------------------------------------------------------
+    // Capabilities crossing to the launcher.
+    // -----------------------------------------------------------------
+
+    use crate::shell::state::{Scope, Verb};
+
+    fn test_app(package_id: &str) -> InstalledApp {
+        InstalledApp {
+            package_id: package_id.to_string(),
+            display_name: display_name_for_package_id(package_id),
+            version: "0.1.0".into(),
+            manifest_path: PathBuf::from("/apps/x/manifest.toml"),
+            payload_root: PathBuf::from("/apps/x"),
+            has_gui: true,
+        }
+    }
+
+    fn fs_grant(app: &str, path: &str, verb: Verb) -> CapOverride {
+        CapOverride::grant(Subject::app(app), Scope::FsPath(path.to_string()), verb)
+    }
+
+    #[test]
+    fn launch_command_names_the_app_id_and_omits_capabilities_when_none_are_granted() {
+        let cmd = build_launch_command(
+            &test_app("dev.qos.books"),
+            Path::new("/usr/bin/qos-launcher"),
+            Path::new("/run/user/1000/wayland-3"),
+            None,
+        );
+        assert!(
+            cmd.args
+                .windows(2)
+                .any(|w| w[0] == "--app-id" && w[1] == "dev.qos.books"),
+            "the launcher must be told which app id capabilities are addressed to: {:?}",
+            cmd.args
+        );
+        assert!(
+            !cmd.args.iter().any(|a| a == "--capabilities"),
+            "an app granted nothing must not name a capability file: {:?}",
+            cmd.args
+        );
+    }
+
+    #[test]
+    fn launch_command_names_the_capability_file_when_one_was_written() {
+        let cmd = build_launch_command(
+            &test_app("dev.qos.books"),
+            Path::new("/usr/bin/qos-launcher"),
+            Path::new("/run/user/1000/wayland-3"),
+            Some(Path::new("/run/user/1000/qos/capabilities/dev.qos.books.json")),
+        );
+        let pos = cmd
+            .args
+            .iter()
+            .position(|a| a == "--capabilities")
+            .expect("--capabilities flag");
+        assert_eq!(
+            cmd.args[pos + 1],
+            "/run/user/1000/qos/capabilities/dev.qos.books.json"
+        );
+    }
+
+    #[test]
+    fn published_capabilities_are_filtered_to_the_launching_app() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        set_workspace_capabilities(vec![
+            fs_grant("dev.qos.books", "/var/workspace/books", Verb::Read),
+            fs_grant("dev.qos.other", "/var/workspace/secrets", Verb::Write),
+            // A person's share of a file is a capability in the same
+            // list; it is not an app grant and must not travel.
+            CapOverride::grant(
+                Subject::person("alice"),
+                Scope::FsPath("/var/workspace/private".into()),
+                Verb::Write,
+            ),
+        ]);
+        let mine = capabilities_for_app("dev.qos.books");
+        clear_workspace_capabilities();
+
+        assert_eq!(mine.len(), 1, "only this app's grant travels: {mine:?}");
+        assert_eq!(mine[0].scope, Scope::FsPath("/var/workspace/books".into()));
+        assert_eq!(mine[0].subject, Subject::app("dev.qos.books"));
+    }
+
+    #[test]
+    fn nothing_published_means_nothing_granted() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear_workspace_capabilities();
+        assert!(
+            capabilities_for_app("dev.qos.books").is_empty(),
+            "with no workspace published, an app is granted nothing"
+        );
+    }
+
+    /// The whole handoff, end to end: publish a workspace capability,
+    /// write the file a launch would write, then read it back with
+    /// `qos-launcher`'s **own** loader and planner — the same code the
+    /// launcher process runs — and check the bind that comes out.
+    #[test]
+    fn a_granted_path_survives_the_handoff_and_becomes_a_read_only_bind() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        // SAFETY: guarded by ENV_LOCK.
+        unsafe { std::env::set_var("XDG_RUNTIME_DIR", tmp.path()) };
+        set_workspace_capabilities(vec![
+            fs_grant("dev.qos.books", "/var/workspace/books", Verb::Read),
+            fs_grant("dev.qos.other", "/var/workspace/secrets", Verb::Write),
+        ]);
+
+        let caps = capabilities_for_app("dev.qos.books");
+        let path = write_capabilities_file("dev.qos.books", &caps)
+            .expect("write capability file")
+            .expect("a granted app gets a file");
+
+        // Readable only by the user: this file says what one app may
+        // reach.
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "capability file must not be world-readable");
+
+        let records = launcher::capabilities::load_capability_file(&path);
+        let plan = launcher::capabilities::CapabilityPlan::for_app(
+            "dev.qos.books",
+            &records,
+            Some(launcher::capabilities::now_unix()),
+        );
+
+        clear_workspace_capabilities();
+        unsafe { std::env::remove_var("XDG_RUNTIME_DIR") };
+
+        assert_eq!(
+            plan.ro_paths,
+            vec![PathBuf::from("/var/workspace/books")],
+            "the granted path arrives at the launcher as a read-only bind: {plan:?}"
+        );
+        assert!(
+            plan.rw_paths.is_empty(),
+            "a Read grant must not cross as writable: {plan:?}"
+        );
+        assert!(
+            !plan.allow_network,
+            "no network capability was granted: {plan:?}"
+        );
+    }
+
+    /// Revoking is not a UI state — the file the launcher reads has to
+    /// go away too, or the next launch would honour a grant the user
+    /// took back.
+    #[test]
+    fn revoking_the_last_capability_removes_the_file() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        // SAFETY: guarded by ENV_LOCK.
+        unsafe { std::env::set_var("XDG_RUNTIME_DIR", tmp.path()) };
+
+        let granted = vec![fs_grant("dev.qos.books", "/var/workspace/books", Verb::Read)];
+        let path = write_capabilities_file("dev.qos.books", &granted)
+            .unwrap()
+            .expect("file written while granted");
+        assert!(path.exists());
+
+        let after_revoke = write_capabilities_file("dev.qos.books", &[]).unwrap();
+        let still_there = path.exists();
+        unsafe { std::env::remove_var("XDG_RUNTIME_DIR") };
+
+        assert_eq!(
+            after_revoke, None,
+            "with nothing granted there is no file to name on the command line"
+        );
+        assert!(
+            !still_there,
+            "the stale capability file must be gone, not left for the next launch to read"
+        );
+    }
+
+    #[test]
+    fn a_package_id_that_could_escape_the_directory_is_refused() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        // SAFETY: guarded by ENV_LOCK.
+        unsafe { std::env::set_var("XDG_RUNTIME_DIR", tmp.path()) };
+        let caps = vec![fs_grant("../../etc/x", "/var/workspace/books", Verb::Read)];
+        let escaped = write_capabilities_file("../../etc/x", &caps);
+        let slashed = write_capabilities_file("a/b", &caps);
+        unsafe { std::env::remove_var("XDG_RUNTIME_DIR") };
+        assert!(escaped.is_err(), "`..` in a package id must be refused");
+        assert!(slashed.is_err(), "`/` in a package id must be refused");
     }
 }
