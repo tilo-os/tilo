@@ -265,6 +265,17 @@ pub struct ChromeState {
     /// itself; the overlay host reads it to promote the group and hide the
     /// sidebar + other strips. Clearing it restores the exact prior layout.
     fullscreen_group: Option<u64>,
+    /// **User-expanded window group** — the id of the group the user put full
+    /// screen with the tab's Expand chip. Deliberately a *separate* field from
+    /// [`Self::fullscreen_group`]: the compositor rewrites that one every frame
+    /// from its live client-fullscreen state (normally `None`), so a value
+    /// parked there by the Expand harvest would be wiped on the next tick.
+    ///
+    /// Both fields feed [`Self::is_fullscreen`], which is the single lever the
+    /// top bar and the sidebar wheel gate their suppression on — so an
+    /// expanded window covers the whole output (wheel included) exactly like a
+    /// client-driven fullscreen surface does.
+    maximized_group: Option<u64>,
 }
 
 impl ChromeState {
@@ -300,6 +311,7 @@ impl ChromeState {
             dnd: false,
             session_locked: false,
             fullscreen_group: None,
+            maximized_group: None,
         }))
     }
 
@@ -310,9 +322,29 @@ impl ChromeState {
         self.fullscreen_group
     }
 
-    /// Whether any surface currently holds the output fullscreen.
+    /// Whether anything currently holds the output fullscreen — either a
+    /// client that requested `xdg_toplevel.set_fullscreen`, or a group the
+    /// user expanded with the tab's Expand chip. The top bar and the sidebar
+    /// wheel both suppress themselves on this, so either route genuinely
+    /// covers the whole output.
     pub fn is_fullscreen(&self) -> bool {
-        self.fullscreen_group.is_some()
+        self.fullscreen_group.is_some() || self.maximized_group.is_some()
+    }
+
+    /// The group the user expanded to full screen, if any. See
+    /// [`Self::maximized_group`]'s field docs for why this is distinct from
+    /// [`Self::fullscreen_group`].
+    pub fn maximized_group(&self) -> Option<u64> {
+        self.maximized_group
+    }
+
+    /// Set (or clear) the user-expanded group and bump the revision so the top
+    /// bar / overlay host re-sync their presentation next frame. Idempotent.
+    pub fn set_maximized_group(&mut self, group: Option<u64>) {
+        if self.maximized_group != group {
+            self.maximized_group = group;
+            self.bump();
+        }
     }
 
     /// Set (or clear) the transient fullscreen surface and bump the revision so

@@ -590,6 +590,14 @@ impl Widget for TopBarChrome {
         // zero for static Calendar). Anything that affects the painted
         // pixels lives in there; anything that doesn't (e.g. cursor
         // position used for hit-testing) deliberately doesn't.
+        // Collapsed to zero height (a window holds the output fullscreen — see
+        // the `Display::None` branch in `build_layout`): paint nothing. Without
+        // this the encode below still ran and emitted the clock band / nav pill
+        // at their intrinsic sizes, which overflowed the zero-height rect and
+        // left a stray fragment floating over the fullscreen window.
+        if self.rect.height() <= 0.0 || self.rect.width() <= 0.0 {
+            return;
+        }
         let fp = self.current_fingerprint();
         if fp == self.cache_fp && fp.rect_px.2 > 0 {
             // Cache hit — `*_btn_rect` / `center_rect` / `avatar_stack_rect`

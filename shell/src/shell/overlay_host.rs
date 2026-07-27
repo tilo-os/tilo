@@ -772,7 +772,13 @@ impl ShellOverlayHost {
         let Some(chrome) = self.chrome.clone() else {
             return;
         };
-        let fs_group = chrome.borrow().fullscreen_group();
+        // Either route promotes a group to the whole output: a client that
+        // asked for `xdg_toplevel.set_fullscreen`, or a group the user expanded
+        // with the tab's Expand chip. The client request wins if both are set.
+        let fs_group = {
+            let st = chrome.borrow();
+            st.fullscreen_group().or_else(|| st.maximized_group())
+        };
         // Only apply the scene override when the fullscreen group actually
         // exists in the *rendered* tree. The live client tree (which the xdg
         // handler mutates) and this rendered tree are not yet unified (Phase
@@ -880,7 +886,19 @@ impl ShellOverlayHost {
         if changes.is_empty() {
             return;
         }
-        let st = chrome.borrow_mut();
+        let mut st = chrome.borrow_mut();
+        for (_strip_id, group_id, new_value) in &changes {
+            // An expanded window takes over the whole output: park the group id
+            // in the chrome's user-maximize slot so `is_fullscreen()` reports
+            // true and the top bar + sidebar wheel suppress themselves. Exiting
+            // maximize clears it (only if this group owns the slot, so a stale
+            // exit from another group can't steal the state).
+            if *new_value {
+                st.set_maximized_group(Some(*group_id));
+            } else if st.maximized_group() == Some(*group_id) {
+                st.set_maximized_group(None);
+            }
+        }
         for (_strip_id, group_id, new_value) in changes {
             // Walk the tree to find the group by id — group ids are
             // unique across the whole tree, so a flat scan is correct.
@@ -1151,6 +1169,34 @@ impl ShellOverlayHost {
         for (group_id, from, to) in changes {
             tree.reorder_tab_within_group(group_id, from, to);
         }
+    }
+
+    /// Per-tick wire-up for the magnifier chip in a tab's window decoration:
+    /// drains each group's [`UiWindowGroup::take_pending_search_open`] one-shot
+    /// and opens the search bar scoped to the active app — the same entry point
+    /// Ctrl+K uses. The group can't do this itself because the palette lives
+    /// here on the host.
+    fn harvest_pending_search_open(&mut self) {
+        if self.group_row_ptrs.is_empty() {
+            return;
+        }
+        let mut requested = false;
+        for &ptr in self.group_row_ptrs.values() {
+            // SAFETY: see field doc on `group_row_ptrs`.
+            let row: &mut GroupRow = unsafe { &mut *ptr };
+            for g in row.groups.iter_mut() {
+                if g.take_pending_search_open().is_some() {
+                    requested = true;
+                }
+            }
+        }
+        if !requested {
+            return;
+        }
+        // Mirror the widget-side active tab into the tree first so the scope
+        // resolves to the app whose chip was clicked, not a stale pointer.
+        self.harvest_active_tab_writeback();
+        self.open_palette_with_scope(crate::shell::chrome_state::SearchScope::ActiveApp);
     }
 
     /// Per-tick wire-up that keeps the focused window group scrolled into
@@ -1491,11 +1537,26 @@ impl ShellOverlayHost {
         self.harvest_pending_group_reorder();
     }
 
+    /// Test-only accessor for the sidebar wheel's laid-out rect. Returns
+    /// `None` when the host has no sidebar at all. A zero-area rect means the
+    /// wheel is currently suppressed (a window holds the output fullscreen).
+    #[cfg(any(test, debug_assertions))]
+    pub fn sidebar_rect_for_tests(&self) -> Option<vello::kurbo::Rect> {
+        self.sidebar.as_ref().map(|s| s.get_rect())
+    }
+
     /// Test-only one-shot harvest: lets integration tests invoke the
     /// per-frame intra-group tab reorder writeback from outside `update`.
     #[cfg(any(test, debug_assertions))]
     pub fn tick_pending_tab_reorder_harvest_for_tests(&mut self) {
         self.harvest_pending_tab_reorder();
+    }
+
+    /// Test-only one-shot harvest: lets integration tests invoke the per-frame
+    /// decoration-search-chip handling from outside `update`.
+    #[cfg(any(test, debug_assertions))]
+    pub fn tick_pending_search_open_for_tests(&mut self) {
+        self.harvest_pending_search_open();
     }
 
     /// Test-only one-shot: run the focus-follow scroll reconcile from
@@ -2614,6 +2675,9 @@ impl Widget for ShellOverlayHost {
         // tab order survives a restart and replicates to peers. Same one-shot
         // take-pattern as the group reorder above.
         self.harvest_pending_tab_reorder();
+        // Open the search bar scoped to the app whose decoration magnifier the
+        // user just clicked.
+        self.harvest_pending_search_open();
         // Mirror the widget-side `TabBar::active_id` into the persisted
         // `WorkspaceTree::group.active_tab`. Without this, clicking a
         // different tab pill flips the visible content but the tree's
