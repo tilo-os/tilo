@@ -1947,8 +1947,6 @@ mod tests {
         // Driven over a raw socket rather than a CollaborationManager,
         // because the manager always auto-Hellos on construct — the
         // silent case only exists at the wire level.
-        use std::io::Write as _;
-
         let socket_path = temp_sock("silent-client");
         let handle = spawn(socket_path.clone()).expect("broker should bind");
 
@@ -1983,7 +1981,7 @@ mod tests {
         // Nothing was ever written to the silent socket: the read
         // times out rather than yielding a frame header.
         let mut len_buf = [0u8; 4];
-        let read = std::io::Read::read_exact(&mut silent, &mut len_buf);
+        let read = silent.read_exact(&mut len_buf);
         assert!(
             read.is_err(),
             "a client that never announced a route must receive no frame, \
