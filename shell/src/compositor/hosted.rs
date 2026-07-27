@@ -113,6 +113,26 @@ pub fn run_with_full_options(opts: HostedOptions) {
         }
     }
 
+    // Permissions must outlive the process. Recording where to write
+    // the tree is what turns an `Always` grant into a durable one:
+    // every capability mutation flushes here, so a grant survives both
+    // a clean exit and a crash.
+    tree.persist_path = Some(path.clone());
+
+    // Someone has to own each room, or nobody can grant anything in it.
+    // Workspaces restored from a state file written before ownership
+    // existed carry no owner; the local user adopts them here. The
+    // alternative — treating an unowned workspace as owned by whoever
+    // asks — is the hole this replaces.
+    let local_user = crate::shell::state::local_user_id();
+    let adopted = tree.adopt_ownerless_workspaces(&local_user);
+    if !adopted.is_empty() {
+        tracing::info!(
+            "capabilities: {} workspace(s) adopted by {local_user}",
+            adopted.len()
+        );
+    }
+
     // C-3: one `WorkspaceTreeHandle` shared across compositor / portal /
     // peer-sync. The shell chrome, the portal's `GrantStoreHandle`, and
     // the peer-sync `WorkspaceTreeReplica` each hold a clone of this
