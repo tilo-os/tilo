@@ -245,6 +245,30 @@ impl Strip {
     }
 }
 
+/// **Displaced vocabulary — presentation only, enforces nothing.**
+///
+/// [`Role`], [`RolePermissions`], [`AppPerm`], [`FilePerm`] and
+/// [`WorkspaceFile`] are the compositor's original permission model.
+/// They are superseded by [`Workspace::capabilities`] and are retained
+/// solely because the Workspace Settings "Roles" tab still renders
+/// tables over them.
+///
+/// Nothing in this vocabulary is consulted by any enforcement point.
+/// No decision anywhere reads `RolePermissions`; `Workspace::roles` and
+/// `Workspace::workspace_files` are `vec![]` in every production
+/// construction, so the tab is a UI over two empty vectors.
+///
+/// The replacements, all in the one model:
+/// - a member's role → the verb on their membership capability,
+///   [`Workspace::role_of`]
+/// - `per_app` → a capability scoped to [`Scope::App`]
+/// - `per_file` → a capability scoped to [`Scope::FsPath`], which
+///   inherits down the tree and is enforced by both the compositor and
+///   the filesystem
+///
+/// Do not add call sites. Porting the Roles tab onto
+/// [`Workspace::roster`] + [`Workspace::shares_of`] retires these
+/// types entirely.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Role {
     pub id: String,
@@ -252,6 +276,7 @@ pub struct Role {
     pub permissions: RolePermissions,
 }
 
+/// Displaced vocabulary — see [`Role`]. Read by no enforcement point.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct RolePermissions {
     pub can_invite: bool,
@@ -262,6 +287,8 @@ pub struct RolePermissions {
     pub per_file: HashMap<String, FilePerm>,
 }
 
+/// Displaced vocabulary — see [`Role`]. Superseded by a capability
+/// scoped to [`Scope::App`].
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub enum AppPerm {
     #[default]
@@ -271,6 +298,9 @@ pub enum AppPerm {
     Admin,
 }
 
+/// Displaced vocabulary — see [`Role`]. Superseded by a capability
+/// scoped to [`Scope::FsPath`], which inherits down the tree and is
+/// enforced by the compositor and the filesystem alike.
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub enum FilePerm {
     #[default]
@@ -279,6 +309,8 @@ pub enum FilePerm {
     Write,
 }
 
+/// Displaced vocabulary — see [`Role`]. `Workspace::workspace_files`
+/// is `vec![]` in every production construction.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct WorkspaceFile {
     pub id: String,
