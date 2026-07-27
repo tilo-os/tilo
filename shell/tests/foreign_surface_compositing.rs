@@ -324,6 +324,49 @@ fn destroying_the_toplevel_removes_the_tab_from_the_rendered_tree() {
     store().forget(surface_id);
 }
 
+/// Painting is free: the expensive part of a foreign tile is turning the
+/// client's buffer into RGBA, and that must happen once per *commit*,
+/// never once per *paint*.
+///
+/// A dmabuf import is a GPU readback (or a full-frame CPU map). The
+/// compositor paints far more often than a client commits, so an import
+/// hung off the paint loop would turn a single idle GPU client into
+/// permanent load — the exact regression this asserts against, on the
+/// production `FrameBuilder::paint` path.
+#[test]
+fn painting_does_not_reimport_the_clients_buffer() {
+    let surface_id = 0x5EED_0007;
+    store().forget(surface_id);
+
+    let (mut fb, _protocol) = adopt_into_frame_builder(surface_id, "org.example.steady");
+    settle(&mut fb);
+    let (bw, bh) = store().viewport(surface_id).expect("tab laid out");
+
+    // One commit's worth of pixels lands in the store. `publish_rgba` is
+    // the same publish both import routes end in.
+    let before = store().import_count();
+    store().publish_rgba(surface_id, &solid(bw, bh, (0x30, 0x90, 0xD0)), bw, bh);
+
+    // Now paint repeatedly with no further commits, the way the
+    // compositor's loop does while the client sits idle.
+    for _ in 0..30 {
+        let _ = fb.paint_settled();
+    }
+
+    assert_eq!(
+        store().import_count(),
+        before,
+        "painting re-imported the client buffer; import must be driven by \
+         the commit hook, not by the paint loop"
+    );
+    assert!(
+        !fb.needs_animation_frame(),
+        "an idle client kept asking for animation frames after its frame was drawn"
+    );
+
+    store().forget(surface_id);
+}
+
 /// A tab that is not the active one in its group must not paint its
 /// client's pixels — and, because `WindowGroup` only consults the active
 /// host, must not keep the compositor's paint loop awake either.
