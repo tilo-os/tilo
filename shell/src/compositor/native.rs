@@ -1288,6 +1288,13 @@ pub fn run() -> ! {
         // Hit-testing stays correct because input is only dispatched on
         // ticks that carry a backend event, and those force a repaint (and
         // thus a relayout) below.
+        // Pump the widget tree's per-frame state (sync + update) before
+        // deciding whether to paint. This is what drains a hosted terminal's
+        // PTY into its grid; without it a live app that produces output
+        // asynchronously would sit frozen on its empty state. Returns true
+        // when something actually changed, which is itself a paint reason.
+        let apps_changed = frame_builder
+            .pump_apps(&mut test_control_ctx.doc, &test_control_ctx.root_obj);
         let revision = frame_builder.chrome_revision();
         let revision_changed = revision != last_revision;
         let animating = frame_builder.needs_animation_frame();
@@ -1297,6 +1304,7 @@ pub fn run() -> ! {
             || session_changed
             || revision_changed
             || animating
+            || apps_changed
             || keepalive_due;
 
         // Diagnostic: `QOS_PAINT_STATS=1` logs, every ~2 s, how many

@@ -631,6 +631,14 @@ impl WindowGroup {
     #[cfg(any(test, debug_assertions))]
     pub fn bar_mut_for_tests(&mut self) -> &mut crate::widget::TabBar { &mut self.bar }
 
+    /// Per-tab content kind labels (`"App"` for a live app widget, otherwise
+    /// the stub's app-kind name). Lets a probe tell a genuinely-running app
+    /// apart from a placeholder without downcasting.
+    #[cfg(any(test, debug_assertions))]
+    pub fn tile_kind_labels_for_tests(&self) -> Vec<String> {
+        self.hosts.iter().map(|(_, h)| h.kind_string()).collect()
+    }
+
     /// Read-only twin of [`Self::bar_mut_for_tests`]. Integration tests use it
     /// to resolve per-tab chip rects (close / maximize / search) from live
     /// geometry so they can drive the real click instead of publishing an
