@@ -11,7 +11,7 @@
 //! at all.
 
 use collab_types::caps::{
-    Actor, CapDecision, CapOverride, Effect, Principal, ResourceRef, Scope, Subject, Verb,
+    Actor, CapDecision, CapOverride, Effect, Expiry, Principal, ResourceRef, Scope, Subject, Verb,
     decide_capability, role_base_applies,
 };
 use collab_types::channel::ArtifactId;
@@ -686,7 +686,7 @@ fn a_capability_round_trips_through_json() {
 fn a_capability_written_before_expiry_existed_still_loads() {
     let legacy = r#"{"subject":{"Role":"Editor"},"scope":"Workspace","effect":"Grant","verb":"Write"}"#;
     let cap: CapOverride = serde_json::from_str(legacy).expect("legacy record must still load");
-    assert_eq!(cap.expires_at_unix, None, "no expiry means never expires");
+    assert_eq!(cap.expiry, Expiry::Never, "no expiry means never expires");
     assert_eq!(cap.id, "");
     assert_eq!(cap.granted_by, None);
     assert!(cap.is_live_at(Some(u64::MAX)));
