@@ -372,28 +372,32 @@ mod tests {
         // Total data-block bytes: 4 (col) + 7 (hdr) = 11.
         // DTD offset must point past these = 4 + 11 = 15.
         edid[130] = 15;
+        // Byte 3 of a CTA-861 block is the flags / native-DTD-count
+        // byte; the Data Block Collection only begins at byte 4. No
+        // native DTDs and no audio/YCbCr flags for this fixture.
+        edid[131] = 0x00;
         //
         // Colorimetry block: bytes 132..136 (header + 3 payload).
-        edid[131] = 0xE3;
-        edid[132] = 0x05; // extended tag 5
-        edid[133] = 0b1110_0000; // BT2020RGB + BT2020YCC + BT2020cYCC
-        edid[134] = 0x00;
+        edid[132] = 0xE3;
+        edid[133] = 0x05; // extended tag 5
+        edid[134] = 0b1110_0000; // BT2020RGB + BT2020YCC + BT2020cYCC
+        edid[135] = 0x00;
         //
-        // HDR Static Metadata: bytes 135..142 (header + 6 payload).
-        edid[135] = 0xE6;
-        edid[136] = 0x06; // extended tag 6
+        // HDR Static Metadata: bytes 136..143 (header + 6 payload).
+        edid[136] = 0xE6;
+        edid[137] = 0x06; // extended tag 6
         // EOTF: SDR (bit 0) + PQ (bit 2) + HLG (bit 3).
-        edid[137] = 0b0000_1101;
-        edid[138] = 0x01; // Static Metadata Type 1 supported.
+        edid[138] = 0b0000_1101;
+        edid[139] = 0x01; // Static Metadata Type 1 supported.
         // max_luminance_code such that 50 * 2^(code/32) ≈ 1000.
         // code = 32 * log2(1000/50) ≈ 32 * 4.322 ≈ 138.
-        edid[139] = 138;
+        edid[140] = 138;
         // frame-average ≈ 400 → code = 32 * log2(400/50) ≈ 32 * 3 = 96.
-        edid[140] = 96;
+        edid[141] = 96;
         // min_luminance: 0.05 cd/m² given max=1000 →
         // min = max * (code/255)^2 / 100 → 0.05 = 1000 * (code/255)^2 / 100
         // → (code/255)^2 = 0.005 → code/255 ≈ 0.0707 → code ≈ 18.
-        edid[141] = 18;
+        edid[142] = 18;
 
         edid
     }
