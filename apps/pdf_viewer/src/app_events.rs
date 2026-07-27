@@ -682,13 +682,15 @@ impl PdfApp {
                 *handled = true;
             }
 
-            // Touchpad pinch: zoom toward the cursor. winit only emits
-            // `PinchGesture` on its macOS/iOS backends — the Wayland (and X11)
-            // backend never does, and binds no pointer-gesture protocol, so a
-            // bare two-finger pinch produces NO event there. On Wayland/GNOME
-            // the touchpad zoom is therefore Ctrl + two-finger scroll, which
-            // arrives as the `MouseWheel` PixelDelta handled above; this arm is
-            // the native pinch for the platforms that do deliver it.
+            // Touchpad pinch: zoom toward the cursor. Upstream winit emits
+            // `PinchGesture` only on its macOS/iOS backends; qOS ships a
+            // vendored winit fork whose Wayland backend binds
+            // `zwp_pointer_gestures_v1` and delivers the same event, so a bare
+            // two-finger pinch reaches this arm on Wayland too (wherever the
+            // compositor advertises the protocol — Mutter does; the qOS
+            // compositor advertises it as well). Ctrl + two-finger scroll,
+            // which arrives as the `MouseWheel` PixelDelta handled above,
+            // remains a fallback for stacks without the gesture protocol.
             WindowEvent::PinchGesture { delta, .. } => {
                 if delta.is_finite() && *delta != 0.0 {
                     self.zoom_at(1.0 + *delta, self.last_mouse);
