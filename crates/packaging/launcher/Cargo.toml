@@ -31,6 +31,11 @@ libc = "0.2"
 seccompiler = "0.5"
 landlock = "0.4"
 runtime-bundle = { path = "../runtime-bundle" }
+# The canonical manifest schema. The launcher still carries its own
+# `MinimalManifest` decoder, but security-relevant enums that both
+# sides must agree on (portal policy) come from here rather than
+# being duplicated.
+pkg = { path = "../pkg" }
 
 [dev-dependencies]
 tempfile = "3"
