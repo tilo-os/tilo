@@ -1580,6 +1580,7 @@ pub fn spawn_full(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
     use std::time::Duration;
     use ui::collaboration::{CollaborationManager, PresencePayload};
     use ui::presence::PresenceKey;
