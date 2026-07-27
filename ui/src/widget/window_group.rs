@@ -151,6 +151,13 @@ pub struct WindowGroup {
     /// width survives a shell restart and replicates across collaborators.
     /// Same take-pattern as [`Self::take_pending_maximize_change`].
     pending_width_change: Option<u32>,
+    /// One-shot "open search scoped to this app" request awaiting harvest by
+    /// the shell, carrying the tab id whose magnifier chip was clicked. The
+    /// group itself can't open the palette (that lives on the shell overlay
+    /// host), so the click has to travel out the same take-pattern wire the
+    /// maximize / width / reorder writebacks use. Without it the chip only
+    /// toggled a local focus ring and appeared to do nothing.
+    pending_search_open: Option<u64>,
     /// One-shot `(from, to)` tab-index pair awaiting harvest by the shell.
     /// Set whenever an intra-group drag reorder is applied to the pill list,
     /// so the shell can mirror the same move into the persisted
@@ -197,6 +204,7 @@ impl WindowGroup {
             pending_maximize_change: None,
             pending_width_change: None,
             pending_tab_reorder: None,
+            pending_search_open: None,
         }
     }
     pub fn width(&self) -> WindowWidth { self.width }
@@ -367,6 +375,12 @@ impl WindowGroup {
     pub fn take_pending_tab_reorder(&mut self) -> Option<(usize, usize)> {
         self.pending_tab_reorder.take()
     }
+
+    /// Drain a one-shot "open search scoped to this app" request produced by a
+    /// click on a tab's magnifier chip. Returns the tab id once per click.
+    pub fn take_pending_search_open(&mut self) -> Option<u64> {
+        self.pending_search_open.take()
+    }
     pub fn active_host_mut(&mut self) -> Option<&mut TileHost> {
         let id = self.bar.active_id();
         self.hosts.iter_mut().find(|(i, _)| *i == id).map(|(_, h)| h)
@@ -496,6 +510,7 @@ impl WindowGroup {
             pending_maximize_change: None,
             pending_width_change: None,
             pending_tab_reorder: None,
+            pending_search_open: None,
         }
     }
 
@@ -615,6 +630,13 @@ impl WindowGroup {
     /// [`Self::publish_maximize_intent_for_tests`].
     #[cfg(any(test, debug_assertions))]
     pub fn bar_mut_for_tests(&mut self) -> &mut crate::widget::TabBar { &mut self.bar }
+
+    /// Read-only twin of [`Self::bar_mut_for_tests`]. Integration tests use it
+    /// to resolve per-tab chip rects (close / maximize / search) from live
+    /// geometry so they can drive the real click instead of publishing an
+    /// intent directly.
+    #[cfg(any(test, debug_assertions))]
+    pub fn bar_for_tests(&self) -> &crate::widget::TabBar { &self.bar }
 
     /// Test-only accessor pinning the lucide glyph drawn over the
     /// maximized floating close chip. Paired with
@@ -761,6 +783,13 @@ impl Widget for WindowGroup {
             style.size.width = Dimension::auto();
             style.flex_grow = 1.0e6;
             style.flex_basis = Dimension::length(0.0);
+            // A maximized group is genuinely fullscreen: the tab strip neither
+            // paints (see `draw`) nor reserves height, so the hosted app runs
+            // edge-to-edge instead of sitting below an empty bar-height band.
+            // The compact floating pill is drawn over the content instead.
+            let mut bar_style = taffy.style(bar_node).unwrap().clone();
+            bar_style.display = taffy::Display::None;
+            taffy.set_style(bar_node, bar_style).unwrap();
         }
         let node = taffy.new_with_children(style, &[bar_node, tile_node]).unwrap();
         node_map.insert(node, self as *mut dyn Widget);
@@ -863,7 +892,15 @@ impl Widget for WindowGroup {
         } else {
             transform
         };
-        self.bar.draw(scene, transform, tr, theme, presence);
+        // A maximized (fullscreen) group replaces its whole tab strip with the
+        // compact floating pill painted further down: the window owns the
+        // entire output, so a persistent multi-pill bar would be exactly the
+        // chrome the user asked to get out of the way. The bar's hit rects stay
+        // live either way — only the paint is gated — so a click that lands on
+        // the revealed pill still resolves through the normal arms.
+        if !self.maximized {
+            self.bar.draw(scene, transform, tr, theme, presence);
+        }
         let active_id = self.bar.active_id();
         // Mirror `search_active` onto the active host so its card paints
         // the concept's focused indigo bloom
@@ -1063,22 +1100,22 @@ impl Widget for WindowGroup {
                 self.rect.x0 + pad + title_pill_w,
                 y0 + pill_h,
             );
-            let title_rr =
-                vello::kurbo::RoundedRect::from_rect(title_pill, pill_h / 2.0);
-            scene.fill(
-                vello::peniko::Fill::NonZero,
+            // Same look as a WindowGroup tab pill: an opaque raised surface
+            // with the standard border, lifted off the content by a soft
+            // shadow. The previous translucent-white fill was designed for a
+            // dark desktop and disappeared entirely once it floated over a
+            // light app card — the decoration was invisible in fullscreen.
+            crate::surface::soft_shadow(
+                scene,
                 transform,
-                vello::peniko::Color::from_rgba8(255, 255, 255, 38),
-                None,
-                &title_rr,
+                title_pill,
+                vello::peniko::Color::BLACK,
+                10.0,
+                2.0,
+                0.35,
             );
-            scene.stroke(
-                &vello::kurbo::Stroke::new(1.0),
-                transform,
-                theme.tokens.colors.accent[5],
-                None,
-                &title_rr,
-            );
+            let (title_fill, title_border) = crate::surface::chip_colors(theme, false);
+            crate::surface::pill(scene, transform, title_pill, title_fill, title_border, None);
             let title_tx = title_pill.center().x - tw as f64 / 2.0;
             let title_ty = title_pill.center().y - th as f64 / 2.0;
             tr.draw_text(
@@ -1100,24 +1137,26 @@ impl Widget for WindowGroup {
                 Rect::new(restore_x0, y0, restore_x0 + restore_w, y0 + pill_h);
 
             // Restore pill.
-            let pill = vello::kurbo::RoundedRect::from_rect(
+            crate::surface::soft_shadow(
+                scene,
+                transform,
                 self.restore_rect,
-                pill_h / 2.0,
+                vello::peniko::Color::BLACK,
+                10.0,
+                2.0,
+                0.35,
             );
-            let fill_alpha: u8 = if self.restore_hover { 64 } else { 38 };
-            scene.fill(
-                vello::peniko::Fill::NonZero,
+            // Hover promotes the chip to the accent fill, matching how a
+            // selected pill reads everywhere else in the toolkit.
+            let (restore_fill, restore_border) =
+                crate::surface::chip_colors(theme, self.restore_hover);
+            crate::surface::pill(
+                scene,
                 transform,
-                vello::peniko::Color::from_rgba8(255, 255, 255, fill_alpha),
+                self.restore_rect,
+                restore_fill,
+                restore_border,
                 None,
-                &pill,
-            );
-            scene.stroke(
-                &vello::kurbo::Stroke::new(1.0),
-                transform,
-                theme.tokens.colors.accent[5],
-                None,
-                &pill,
             );
             // Prepend a lucide `Minimize2` glyph to the Restore pill so
             // the action reads at a glance — matches the concept's
@@ -1163,19 +1202,32 @@ impl Widget for WindowGroup {
             // `hover:bg-red-500/80` (WindowFrame.tsx:249) — red-500 at
             // 80% alpha — so we multiply `semantic.danger` by 0.8 rather
             // than painting it fully opaque.
-            let close_rr =
-                vello::kurbo::RoundedRect::from_rect(self.close_rect, pill_h / 2.0);
+            crate::surface::soft_shadow(
+                scene,
+                transform,
+                self.close_rect,
+                vello::peniko::Color::BLACK,
+                10.0,
+                2.0,
+                0.35,
+            );
             let close_fill = if self.close_hover {
                 theme.tokens.colors.semantic.danger.with_alpha_factor(0.8)
             } else {
-                vello::peniko::Color::from_rgba8(255, 255, 255, 38)
+                crate::surface::chip_colors(theme, false).0
             };
-            scene.fill(
-                vello::peniko::Fill::NonZero,
+            let close_border = if self.close_hover {
+                None
+            } else {
+                crate::surface::chip_colors(theme, false).1
+            };
+            crate::surface::pill(
+                scene,
                 transform,
+                self.close_rect,
                 close_fill,
+                close_border,
                 None,
-                &close_rr,
             );
             // Close glyph: lucide `X` painted over the (already-filled)
             // red-on-hover close chip. Replaces the previous literal
@@ -1384,8 +1436,12 @@ impl Widget for WindowGroup {
         // Search toggle from the tab bar's hover-action icon. Same pattern
         // as maximize — the bar publishes `pending_search` once per click,
         // we drain it here and flip the search-active ring on the group.
-        if let Some(_id) = self.bar.take_search() {
+        if let Some(id) = self.bar.take_search() {
             self.search_active = !self.search_active;
+            // Ask the shell to open the search bar scoped to this app — the
+            // same thing Ctrl+K does. The ring toggle above is only the local
+            // focus affordance.
+            self.pending_search_open = Some(id);
             *handled = true;
         }
 
@@ -1839,6 +1895,59 @@ mod tests {
         assert_eq!(
             after, 800.0,
             "after the rebuild the group must actually be laid out 200 px wider",
+        );
+    }
+
+    /// A maximized group is genuinely fullscreen: the tab strip must not
+    /// reserve any height, so the hosted app runs edge-to-edge instead of
+    /// sitting below an empty bar-height band. (The strip's controls move into
+    /// the floating pill, which paints over the content and auto-hides.)
+    #[test]
+    fn maximized_group_gives_all_its_height_to_the_app() {
+        use std::collections::HashMap;
+        use taffy::prelude::TaffyMaxContent;
+        use taffy::Style;
+
+        let theme = Theme::dark();
+
+        // Lay a group out and report (group_height, tile_height).
+        fn measure(g: &mut WindowGroup, theme: &Theme) -> (f64, f64) {
+            let mut taffy = TaffyTree::<()>::new();
+            let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+            let node = g.build_layout(&mut taffy, theme, &mut node_map);
+            let root = taffy
+                .new_with_children(
+                    Style {
+                        size: Size {
+                            width: Dimension::length(1600.0),
+                            height: Dimension::length(900.0),
+                        },
+                        ..Default::default()
+                    },
+                    &[node],
+                )
+                .unwrap();
+            taffy.compute_layout(root, taffy::Size::MAX_CONTENT).unwrap();
+            g.apply_layout(&taffy, node, Point::ZERO);
+            let tile = taffy.children(node).unwrap()[1];
+            let tile_h = taffy.layout(tile).unwrap().size.height as f64;
+            (g.get_rect().height(), tile_h)
+        }
+
+        let mut g = make_group();
+        let (group_h, tile_h) = measure(&mut g, &theme);
+        assert!(
+            tile_h < group_h,
+            "while tiled, the tab strip takes height off the app: \
+             group={group_h} tile={tile_h}",
+        );
+
+        g.maximized = true;
+        let (group_h, tile_h) = measure(&mut g, &theme);
+        assert_eq!(
+            tile_h, group_h,
+            "maximized: the app must get the group's full height (no reserved \
+             tab-strip band)",
         );
     }
 

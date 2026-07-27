@@ -1070,8 +1070,17 @@ impl TabBar {
     /// `WindowGroup`'s integration test drives a synthetic press against
     /// these rects to assert the maximize click toggles `WindowGroup::maximized`
     /// end-to-end.
-    #[cfg(test)]
+    /// Gated `cfg(any(test, debug_assertions))` rather than `cfg(test)` so
+    /// *integration* tests in other crates (which link the release-shaped lib)
+    /// can resolve the chip from live geometry and drive a real click, matching
+    /// how `WindowGroup::bar_for_tests` is gated.
+    #[cfg(any(test, debug_assertions))]
     pub fn max_rects(&self) -> &[Rect] { &self.max_rects }
+
+    /// Per-tab search-chip hit rects, same gating + purpose as
+    /// [`Self::max_rects`].
+    #[cfg(any(test, debug_assertions))]
+    pub fn search_rects(&self) -> &[Rect] { &self.search_rects }
     /// Compute an insertion index for a drop at `release_point`. Returns
     /// an index in `[0, tab_rects.len()]` — `0` means "before the first
     /// pill", `len` means "after the last pill". Vertical position is
@@ -1802,6 +1811,13 @@ impl Widget for TabBar {
                 // Search icon — same deal; shell drains `pending_search`.
                 if let Some(si) = search_idx {
                     if let Some(t) = self.tabs.get(si) {
+                        // Deliberately does NOT activate the tab — chip hits
+                        // never bleed into selection (same contract as the
+                        // close / maximize chips), pinned by
+                        // `press_on_inactive_tab_search_icon_fires_on_first_click`.
+                        // The shell scopes the opened palette to the active
+                        // app, which is the pill the user is looking at in the
+                        // normal case.
                         self.pending_search = Some(t.id);
                         *handled = true;
                         return;
