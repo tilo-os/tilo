@@ -183,7 +183,13 @@ After all three layers, your `main()` sees:
 - `QOS_PACKAGE_ID=<your reverse-DNS id>`.
 - `QOS_SVC_<NAME>_FD=<fd>` for every service the launcher opened.
 - `DBUS_SESSION_BUS_ADDRESS` (only if a portal is `via-host`).
-- `QOS_WORKSPACE_ID` — set when running inside a real qOS session.
+- `QOS_WORKSPACE_ID` — the workspace the compositor opened you into, as a
+  UUID. Two things read it: `runtime::is_qos_native()` only asks whether it
+  is set, and the UI toolkit uses the value as the collaboration cluster id.
+  Apps opened into the same workspace exchange CRDT deltas; apps in
+  different workspaces are different rooms and never see each other's
+  traffic. It names a room, not a permission — see `--capabilities` for
+  what an app is actually allowed to touch.
 
 ## Debugging
 
