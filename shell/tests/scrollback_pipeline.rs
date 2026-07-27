@@ -79,6 +79,18 @@ fn unique_socket(label: &str) -> PathBuf {
     std::env::temp_dir().join(format!("qos-broker-sb-{label}-{pid}-{nanos}.sock"))
 }
 
+/// The collaboration cluster every client in these scenarios joins.
+///
+/// The broker routes CRDT traffic by the `(app_id, cluster_id)` pair a
+/// client announces on its `Hello`, so peers that are meant to observe
+/// each other's edits must announce the same pair — these scenarios
+/// pair this cluster with a single app id per file. A per-client
+/// random uuid would put every client in a cluster of its own, which
+/// is how a real deployment keeps unrelated documents apart.
+fn test_cluster() -> uuid::Uuid {
+    uuid::Uuid::from_u128(0x3f2b_1c00_0000_4000_8000_0000_0000_0001)
+}
+
 fn wait_for_broker(socket: &PathBuf) -> UnixStream {
     let deadline = Instant::now() + Duration::from_secs(2);
     loop {
@@ -189,7 +201,7 @@ fn peer_can_fetch_recent_scrollback() {
             s,
             &CollabRequest::Hello {
                 app_id: "test".into(),
-                cluster_id: uuid::Uuid::new_v4(),
+                cluster_id: test_cluster(),
             },
         );
     }
@@ -274,7 +286,7 @@ fn empty_scrollback_returns_exhausted_true() {
         &mut peer,
         &CollabRequest::Hello {
             app_id: "test".into(),
-            cluster_id: uuid::Uuid::new_v4(),
+            cluster_id: test_cluster(),
         },
     );
 
@@ -322,7 +334,7 @@ fn scrollback_paging_respects_max() {
             s,
             &CollabRequest::Hello {
                 app_id: "test".into(),
-                cluster_id: uuid::Uuid::new_v4(),
+                cluster_id: test_cluster(),
             },
         );
     }
@@ -392,7 +404,7 @@ fn compaction_evicts_log_then_scrollback_returns_exhausted() {
             s,
             &CollabRequest::Hello {
                 app_id: "test".into(),
-                cluster_id: uuid::Uuid::new_v4(),
+                cluster_id: test_cluster(),
             },
         );
     }
@@ -523,7 +535,7 @@ fn compaction_op_class_rejected_for_editor() {
             s,
             &CollabRequest::Hello {
                 app_id: "test".into(),
-                cluster_id: uuid::Uuid::new_v4(),
+                cluster_id: test_cluster(),
             },
         );
     }
@@ -615,7 +627,7 @@ fn cooperative_scrollback_round_trip() {
         &mut app,
         &CollabRequest::Hello {
             app_id: "test".into(),
-            cluster_id: uuid::Uuid::new_v4(),
+            cluster_id: test_cluster(),
         },
     );
 
@@ -730,7 +742,7 @@ fn cooperative_request_published_when_local_empty() {
         &mut app,
         &CollabRequest::Hello {
             app_id: "test".into(),
-            cluster_id: uuid::Uuid::new_v4(),
+            cluster_id: test_cluster(),
         },
     );
 
@@ -801,7 +813,7 @@ fn cooperative_responder_answers_when_log_has_match() {
         &mut editor,
         &CollabRequest::Hello {
             app_id: "test".into(),
-            cluster_id: uuid::Uuid::new_v4(),
+            cluster_id: test_cluster(),
         },
     );
     for seq in 1..=3_u64 {

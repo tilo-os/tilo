@@ -1556,22 +1556,12 @@ impl ShellOverlayHost {
                             // satisfied for this single call.
                         }
                         PromptChoice::Session => {
-                            if let Some(ws) = st.tree_mut().active_workspace_mut() {
-                                let cap = with_grant_scope(capability, GRANT_SESSION);
-                                ws.grants
-                                    .entry(app_id)
-                                    .or_default()
-                                    .push(cap);
-                            }
+                            let cap = with_grant_scope(capability, GRANT_SESSION);
+                            record_app_grant(&mut st, &app_id, &cap);
                         }
                         PromptChoice::Always => {
-                            if let Some(ws) = st.tree_mut().active_workspace_mut() {
-                                let cap = with_grant_scope(capability, GRANT_ALWAYS);
-                                ws.grants
-                                    .entry(app_id)
-                                    .or_default()
-                                    .push(cap);
-                            }
+                            let cap = with_grant_scope(capability, GRANT_ALWAYS);
+                            record_app_grant(&mut st, &app_id, &cap);
                         }
                         PromptChoice::Deny => {
                             // No-op — the caller treats absence of a
@@ -4878,30 +4868,64 @@ fn with_grant_scope(cap: Capability, scope: GrantScope) -> Capability {
     }
 }
 
-/// Stub for the "is the active user the workspace owner?" predicate
-/// the prompt's `Always` button gates on. v1 returns `true`
-/// unconditionally — the shell currently has no concept of a logged-
-/// in user identity, so every local user is treated as the owner of
-/// the workspaces they hold. Real ownership tracking lands alongside
-/// the collaboration / invite flow (`docs/superpowers/plans/peer-
-/// sync.md`); when it does, this helper reads from the chrome's
-/// `local_user_id` and compares it to the active workspace's
-/// `owner_id` (currently absent — schema change tracked in the same
-/// follow-up). Tests that need the disabled-Always path can poke
-/// the prompt's `is_owner` field through
-/// [`crate::shell::overlay_host::ShellOverlayHost::permission_prompt_mut_for_tests`].
+/// Is the local user the owner of the active workspace?
 ///
-/// Sandbox Phase 6 — also gates the WS-Settings Permissions tab's
-/// Revoke buttons. Tests that need the non-owner code path can flip
-/// `ChromeState::test_only_owner_override` to `Some(false)`; the
-/// override is surfaced exclusively for tests, never for production
-/// code (the field's setter is `cfg(test)`-gated only insofar as
-/// callers in `src/` never read it).
+/// Gates the permission prompt's "Always" button and the Workspace
+/// Settings Permissions tab's Revoke buttons.
+///
+/// This used to return `true` unconditionally, which made every local
+/// user the owner of every workspace — including ones a peer had shared
+/// with them — so "only the owner may grant permanently" and "only the
+/// owner may revoke" were not enforced at all. It now asks the
+/// workspace, which answers from the capability model: the recorded
+/// owner, or anyone the owner has given `Admin` over the room.
+///
+/// A workspace with no owner recorded has no administrators. That is
+/// the fail-closed direction, and the load path
+/// ([`crate::shell::state::WorkspaceTree::adopt_ownerless_workspaces`])
+/// makes sure the local user's own workspaces are never in that state.
 fn is_active_workspace_owner(state: &crate::shell::chrome_state::ChromeState) -> bool {
     if let Some(forced) = state.test_only_owner_override {
         return forced;
     }
-    true
+    let user = state.local_user_id.clone();
+    state
+        .tree()
+        .active_workspace()
+        .map(|ws| ws.may_administer(&user))
+        .unwrap_or(false)
+}
+
+/// Record an app's capability grant on the active workspace and make it
+/// durable + replicated.
+///
+/// Everything the prompt hands out flows through here, so a grant is
+/// never merely in memory: it is written into the workspace's
+/// capability list, mirrored into the replicated doc, and flushed to
+/// disk when its expiry says it should survive a restart.
+fn record_app_grant(
+    state: &mut crate::shell::chrome_state::ChromeState,
+    app_id: &str,
+    capability: &Capability,
+) {
+    let mut tree = state.tree_mut();
+    let Some(ws_id) = tree.active_workspace().map(|w| w.id) else {
+        return;
+    };
+    let Some(ws) = tree.workspaces.iter_mut().find(|w| w.id == ws_id) else {
+        return;
+    };
+    let ids = ws.grant_app(app_id, capability);
+    let written: Vec<crate::shell::state::CapOverride> = ws
+        .capabilities
+        .iter()
+        .filter(|c| ids.contains(&c.id))
+        .cloned()
+        .collect();
+    for cap in written {
+        tree.doc_insert_capability(ws_id, &cap);
+    }
+    tree.flush_to_disk();
 }
 
 fn draw_scrim(scene: &mut Scene, transform: Affine, rect: Rect) {
@@ -5956,7 +5980,7 @@ impl ShellOverlayHost {
         // don't shift.
         let permissions_visible = tree
             .active_workspace()
-            .map(|ws| !ws.grants.is_empty())
+            .map(|ws| ws.has_app_grants())
             .unwrap_or(false);
         let mut tab_labels: Vec<&str> = vec!["General", "Roles", "Files", "Collaborators"];
         if permissions_visible {

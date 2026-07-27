@@ -1612,16 +1612,41 @@ mod tests {
         }
     }
 
-    /// Connect a CollaborationManager to `path`, mirroring the toolkit's
-    /// own `new()` constructor but using the explicit path so the test
-    /// is independent of process-wide env state.
-    fn connect_manager(path: &PathBuf) -> CollaborationManager {
-        // SAFETY: tests set this env var serially before each call;
-        // no other thread reads QUICK_COLLAB_SOCK between sets.
+    /// Connect a CollaborationManager to `path` announcing `app_id` in
+    /// cluster `cluster_id`, mirroring the toolkit's own `new()`
+    /// constructor but using explicit values so the test is
+    /// independent of process-wide env state.
+    ///
+    /// The env vars are what `ui::collaboration::auto_hello_env` reads
+    /// to build the auto-Hello, so a manager built here announces
+    /// exactly the route the caller names — which is what the broker
+    /// filters delivery on. Left unset, `QUICK_APP_ID` defaults to a
+    /// fresh random uuid per manager, i.e. every peer would be a
+    /// different app and nothing would be delivered.
+    fn connect_manager_as(
+        path: &PathBuf,
+        app_id: &str,
+        cluster_id: &str,
+    ) -> CollaborationManager {
+        // SAFETY: tests set these env vars serially before each call;
+        // no other thread reads them between sets. Every test in this
+        // module is `#[serial_test::serial(collab_broker)]`.
         unsafe {
             std::env::set_var("QUICK_COLLAB_SOCK", path);
+            std::env::set_var("QUICK_APP_ID", app_id);
+            std::env::set_var("QUICK_CLUSTER_ID", cluster_id);
         }
         CollaborationManager::new()
+    }
+
+    /// A fixed cluster uuid the peers in a scenario share. Any valid
+    /// uuid works; a constant keeps the scenarios readable.
+    const TEST_CLUSTER: &str = "3f2b1c00-0000-4000-8000-000000000001";
+
+    /// Connect a manager as a peer of the same app in the shared test
+    /// cluster — the common case for "N instances of one app".
+    fn connect_manager(path: &PathBuf) -> CollaborationManager {
+        connect_manager_as(path, "test-app", TEST_CLUSTER)
     }
 
     #[test]
@@ -1797,6 +1822,200 @@ mod tests {
 
         drop(peer_a);
         drop(peer_b);
+        drop(handle);
+    }
+
+    #[test]
+    #[serial_test::serial(collab_broker)]
+    fn crdt_deltas_do_not_cross_app_boundaries() {
+        // The leak this closes: the broker used to write every CRDT
+        // payload to every connected socket, so a note-taking app
+        // received a terminal's document deltas.
+        //
+        // Three peers in ONE cluster: two instances of "app-alpha" and
+        // one of "app-beta". Alpha-1 sends a delta. Alpha-2 must get
+        // it (otherwise this test would pass by simply breaking
+        // delivery) and beta must not see it at all.
+        let socket_path = temp_sock("app-isolation");
+        let handle = spawn(socket_path.clone()).expect("broker should bind");
+
+        let mut alpha_1 = connect_manager_as(&socket_path, "app-alpha", TEST_CLUSTER);
+        let mut alpha_2 = connect_manager_as(&socket_path, "app-alpha", TEST_CLUSTER);
+        let mut beta = connect_manager_as(&socket_path, "app-beta", TEST_CLUSTER);
+
+        wait_for_peers(&handle, 3, Duration::from_millis(500));
+        assert_eq!(handle.peer_count(), 3, "broker should see all three peers");
+
+        let _ = alpha_1.poll();
+        let _ = alpha_2.poll();
+        let _ = beta.poll();
+
+        alpha_1.send(CollabRequest::SyncIncremental {
+            data: b"alpha-private".to_vec(),
+        });
+
+        // The delta reaches the other instance of the same app.
+        let events_alpha_2 = poll_until(&mut alpha_2, 1, Duration::from_millis(500));
+        let alpha_2_crdt: Vec<&Vec<u8>> = events_alpha_2
+            .iter()
+            .filter_map(|e| match e {
+                CollabEvent::CRDTIncremental { data } => Some(data),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            alpha_2_crdt.len(),
+            1,
+            "the second app-alpha instance must receive exactly one \
+             CRDTIncremental, got {events_alpha_2:?}"
+        );
+        assert_eq!(alpha_2_crdt[0].as_slice(), b"alpha-private");
+
+        // The other app sees nothing. Polled over the same window the
+        // positive half needed, so "nothing" is not just "not yet".
+        let events_beta = poll_until(&mut beta, 1, Duration::from_millis(500));
+        assert!(
+            !events_beta
+                .iter()
+                .any(|e| matches!(e, CollabEvent::CRDTIncremental { .. })),
+            "app-beta must receive no CRDT payload from app-alpha, got {events_beta:?}"
+        );
+
+        drop(alpha_1);
+        drop(alpha_2);
+        drop(beta);
+        drop(handle);
+    }
+
+    #[test]
+    #[serial_test::serial(collab_broker)]
+    fn crdt_deltas_do_not_cross_cluster_boundaries() {
+        // Same app id, different collaboration clusters: a document
+        // shared in one cluster must not leak into the other.
+        let socket_path = temp_sock("cluster-isolation");
+        let handle = spawn(socket_path.clone()).expect("broker should bind");
+
+        let other_cluster = "3f2b1c00-0000-4000-8000-000000000002";
+        let mut same_cluster_sender =
+            connect_manager_as(&socket_path, "app-alpha", TEST_CLUSTER);
+        let mut same_cluster_peer =
+            connect_manager_as(&socket_path, "app-alpha", TEST_CLUSTER);
+        let mut other_cluster_peer =
+            connect_manager_as(&socket_path, "app-alpha", other_cluster);
+
+        wait_for_peers(&handle, 3, Duration::from_millis(500));
+
+        let _ = same_cluster_sender.poll();
+        let _ = same_cluster_peer.poll();
+        let _ = other_cluster_peer.poll();
+
+        same_cluster_sender.send(CollabRequest::SyncIncremental {
+            data: b"cluster-one-only".to_vec(),
+        });
+
+        let events_same = poll_until(&mut same_cluster_peer, 1, Duration::from_millis(500));
+        assert!(
+            events_same.iter().any(|e| matches!(
+                e,
+                CollabEvent::CRDTIncremental { data }
+                    if data.as_slice() == b"cluster-one-only"
+            )),
+            "the peer in the sender's cluster must receive the delta, got {events_same:?}"
+        );
+
+        let events_other = poll_until(&mut other_cluster_peer, 1, Duration::from_millis(500));
+        assert!(
+            !events_other
+                .iter()
+                .any(|e| matches!(e, CollabEvent::CRDTIncremental { .. })),
+            "a peer in a different cluster must receive no CRDT payload, got {events_other:?}"
+        );
+
+        drop(same_cluster_sender);
+        drop(same_cluster_peer);
+        drop(other_cluster_peer);
+        drop(handle);
+    }
+
+    #[test]
+    #[serial_test::serial(collab_broker)]
+    fn silent_client_receives_nothing() {
+        // Fail-closed: a connection that never said Hello has no route,
+        // so nothing is addressed to it. It must not fall back to
+        // receiving everything.
+        //
+        // Driven over a raw socket rather than a CollaborationManager,
+        // because the manager always auto-Hellos on construct — the
+        // silent case only exists at the wire level.
+        use std::io::Write as _;
+
+        let socket_path = temp_sock("silent-client");
+        let handle = spawn(socket_path.clone()).expect("broker should bind");
+
+        let mut talker = connect_manager(&socket_path);
+        let mut silent = UnixStream::connect(&socket_path).expect("silent client connects");
+        silent
+            .set_read_timeout(Some(Duration::from_millis(500)))
+            .expect("set read timeout");
+        // A second announced peer proves the fan-out is live at all —
+        // otherwise "silent got nothing" could just mean the delta
+        // never left the sender.
+        let mut listener_peer = connect_manager(&socket_path);
+
+        wait_for_peers(&handle, 3, Duration::from_millis(500));
+        let _ = talker.poll();
+        let _ = listener_peer.poll();
+
+        talker.send(CollabRequest::SyncIncremental {
+            data: b"for-announced-peers".to_vec(),
+        });
+
+        let heard = poll_until(&mut listener_peer, 1, Duration::from_millis(500));
+        assert!(
+            heard.iter().any(|e| matches!(
+                e,
+                CollabEvent::CRDTIncremental { data }
+                    if data.as_slice() == b"for-announced-peers"
+            )),
+            "the announced peer must receive the delta, got {heard:?}"
+        );
+
+        // Nothing was ever written to the silent socket: the read
+        // times out rather than yielding a frame header.
+        let mut len_buf = [0u8; 4];
+        let read = std::io::Read::read_exact(&mut silent, &mut len_buf);
+        assert!(
+            read.is_err(),
+            "a client that never announced a route must receive no frame, \
+             got a {} byte length prefix",
+            u32::from_le_bytes(len_buf),
+        );
+
+        // And a frame *from* the silent client is not fanned out
+        // either — the broker cannot address it anywhere.
+        let req = serde_json::to_vec(&CollabRequest::SyncIncremental {
+            data: b"from-the-silent-one".to_vec(),
+        })
+        .expect("serialize request");
+        silent
+            .write_all(&(req.len() as u32).to_le_bytes())
+            .expect("write len");
+        silent.write_all(&req).expect("write body");
+
+        let after = poll_until(&mut listener_peer, 1, Duration::from_millis(500));
+        assert!(
+            !after.iter().any(|e| matches!(
+                e,
+                CollabEvent::CRDTIncremental { data }
+                    if data.as_slice() == b"from-the-silent-one"
+            )),
+            "a delta from a client that never announced a route must not be \
+             fanned out, got {after:?}"
+        );
+
+        drop(talker);
+        drop(silent);
+        drop(listener_peer);
         drop(handle);
     }
 }
