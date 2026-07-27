@@ -1,0 +1,1312 @@
+//! Compositing of foreign (external Wayland client) surfaces into tabs.
+//!
+//! An external client that binds our `wl_compositor` + `xdg_wm_base` gets
+//! its toplevel adopted into the workspace tab tree by
+//! [`crate::compositor::tab_binding::adopt_toplevel`]. This module is what
+//! turns that bookkeeping entry into *pixels on screen*:
+//!
+//! ```text
+//!  client commit
+//!      │
+//!      ├─ wl_shm  ──► surface_readback::buffer_to_rgba ──┐
+//!      └─ dmabuf  ──► import_dmabuf_rgba (linear mmap) ──┤
+//!                                                        ▼
+//!                                            ForeignFrameStore (per surface)
+//!                                                        │  snapshot on seq change
+//!                                                        ▼
+//!                              ForeignSurfaceWidget::draw → peniko::ImageBrush
+//!                                                        │
+//!                                            widget rect ─┴─► xdg_toplevel.configure
+//! ```
+//!
+//! ## Why a widget rather than a post-pass blit
+//!
+//! The tab's on-screen rectangle is owned by the shell's widget tree
+//! (`WindowGroup` → `TileHost`). Hosting the foreign surface *as* a
+//! [`ui::widget::AppWidget`] means placement, clipping, rounded-corner
+//! masking, spawn/close fades and "only the active tab paints" all come
+//! from the same code path every other tile uses — instead of a second,
+//! parallel geometry calculation that would drift out of sync. The widget
+//! also publishes its own laid-out rect back into the store, which is what
+//! the `xdg_toplevel.configure` sizing pass reads.
+//!
+//! ## Repaint gating
+//!
+//! [`ForeignSurfaceWidget::needs_animation_frame`] reports `true` exactly
+//! when the store holds a frame the widget has not drawn yet. The native
+//! render loop's existing `needs_animation_frame()` condition therefore
+//! wakes the compositor for a new client frame and for nothing else — an
+//! idle client costs one `Mutex` lock + one `HashMap` lookup per tick and
+//! zero paints. `ui::widget::WindowGroup::needs_animation_frame` only
+//! consults the *active* host, so a background tab whose client renders
+//! continuously cannot pin the paint loop either.
+//!
+//! ## Buffer formats
+//!
+//! - `wl_shm` `Argb8888` / `Xrgb8888`: handled by
+//!   [`crate::compositor::surface_readback::buffer_to_rgba`].
+//! - dmabuf: imported by **CPU-mapping the plane fd**, not by a GPU
+//!   texture import. This is sound because the compositor only ever
+//!   advertises `Modifier::Linear` on its `zwp_linux_dmabuf` global
+//!   (see `State::new`), so a conforming client's buffer is a plain
+//!   row-major image we can `mmap`. A non-linear or multi-planar buffer
+//!   is **rejected with a visible on-tile message**, never silently
+//!   painted as a stale or blank frame.
+
+use std::collections::HashMap;
+use std::os::fd::AsRawFd;
+use std::sync::{Mutex, OnceLock};
+
+use smithay::backend::allocator::dmabuf::Dmabuf;
+use smithay::backend::allocator::{Buffer as _, Fourcc, Modifier};
+use smithay::reexports::wayland_server::Resource;
+use smithay::reexports::wayland_server::protocol::wl_buffer::WlBuffer;
+
+use ui::presence::PresenceCtx;
+use ui::text_render::TextRenderer;
+use ui::theme::Theme;
+use ui::widget::{AppKind, AppWidget, IconDescriptor, Widget};
+
+use automerge::{AutoCommit, ObjId};
+use taffy::{NodeId, TaffyTree};
+use vello::Scene;
+use vello::kurbo::{Affine, Point, Rect, RoundedRect};
+use vello::peniko::{
+    Blob, Extend, Fill, ImageAlphaType, ImageBrush, ImageData, ImageFormat,
+};
+use winit::event::{Modifiers, WindowEvent};
+
+use crate::compositor::surface_readback::{ReadbackError, buffer_to_rgba};
+use crate::shell::state::{TileContent as ShellTile, WorkspaceTree};
+
+/// Wayland `wl_surface` protocol id, widened. Same key space the rest of
+/// the compositor uses for foreign surfaces.
+pub type SurfaceId = u64;
+
+// ---------------------------------------------------------------------------
+// dmabuf CPU import
+// ---------------------------------------------------------------------------
+
+/// `struct dma_buf_sync { __u64 flags; }` — `DMA_BUF_IOCTL_SYNC` is
+/// `_IOW('b', 0, struct dma_buf_sync)`, i.e.
+/// `(_IOC_WRITE << 30) | (8 << 16) | ('b' << 8) | 0`.
+const DMA_BUF_IOCTL_SYNC: libc::c_ulong = 0x4008_6200;
+const DMA_BUF_SYNC_READ: u64 = 1 << 0;
+const DMA_BUF_SYNC_START: u64 = 0;
+const DMA_BUF_SYNC_END: u64 = 1 << 2;
+
+/// Why a dmabuf could not be imported. Every variant is reported to the
+/// user on the tile itself rather than degrading to a blank surface.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DmabufImportError {
+    /// The buffer carries a vendor tiling / compression modifier. We only
+    /// advertise `Modifier::Linear`, so this means the client ignored the
+    /// advertised set (or a future change widened it without teaching this
+    /// importer about GPU-side import).
+    NonLinearModifier(u64),
+    /// Multi-planar (e.g. NV12). The RGBA path here is single-plane only.
+    MultiPlanar(usize),
+    /// FourCC we don't know how to swizzle.
+    UnsupportedFormat(Fourcc),
+    /// Degenerate width / height / stride.
+    InvalidDimensions { width: u32, height: u32, stride: u32 },
+    /// `mmap` failed (errno attached).
+    MapFailed(i32),
+}
+
+impl std::fmt::Display for DmabufImportError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DmabufImportError::NonLinearModifier(m) => {
+                write!(f, "dmabuf modifier 0x{m:x} is not linear")
+            }
+            DmabufImportError::MultiPlanar(n) => {
+                write!(f, "dmabuf has {n} planes; only single-plane RGBA is imported")
+            }
+            DmabufImportError::UnsupportedFormat(c) => {
+                write!(f, "dmabuf fourcc {c:?} is not an RGBA-family format")
+            }
+            DmabufImportError::InvalidDimensions {
+                width,
+                height,
+                stride,
+            } => write!(
+                f,
+                "dmabuf dimensions invalid: {width}x{height} stride {stride}"
+            ),
+            DmabufImportError::MapFailed(e) => write!(f, "dmabuf mmap failed: errno {e}"),
+        }
+    }
+}
+
+impl std::error::Error for DmabufImportError {}
+
+/// Byte layout of one pixel as it sits in memory for a DRM FourCC.
+///
+/// DRM format names read the *most significant* byte first of a
+/// little-endian 32-bit word, so `ARGB8888` is `[B, G, R, A]` in memory
+/// and `ABGR8888` is `[R, G, B, A]`.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+enum PixelOrder {
+    /// `[B, G, R, A]` — needs an R/B swap to reach RGBA.
+    Bgra { opaque: bool },
+    /// `[R, G, B, A]` — already RGBA.
+    Rgba { opaque: bool },
+}
+
+impl PixelOrder {
+    fn for_fourcc(code: Fourcc) -> Option<Self> {
+        match code {
+            Fourcc::Argb8888 => Some(PixelOrder::Bgra { opaque: false }),
+            Fourcc::Xrgb8888 => Some(PixelOrder::Bgra { opaque: true }),
+            Fourcc::Abgr8888 => Some(PixelOrder::Rgba { opaque: false }),
+            Fourcc::Xbgr8888 => Some(PixelOrder::Rgba { opaque: true }),
+            _ => None,
+        }
+    }
+}
+
+/// Convert one row of `width` pixels laid out per `order` into RGBA,
+/// appending to `out`.
+///
+/// Extracted as a free function so the unit tests can pin the channel
+/// mapping without a GPU or a wayland connection — the dmabuf mmap path
+/// is otherwise untestable in-process.
+fn swizzle_row(order: PixelOrder, src: &[u8], width: usize, out: &mut Vec<u8>) {
+    debug_assert_eq!(src.len(), width * 4);
+    match order {
+        PixelOrder::Bgra { opaque } => {
+            for px in src.chunks_exact(4) {
+                out.push(px[2]);
+                out.push(px[1]);
+                out.push(px[0]);
+                out.push(if opaque { 0xFF } else { px[3] });
+            }
+        }
+        PixelOrder::Rgba { opaque } => {
+            for px in src.chunks_exact(4) {
+                out.push(px[0]);
+                out.push(px[1]);
+                out.push(px[2]);
+                out.push(if opaque { 0xFF } else { px[3] });
+            }
+        }
+    }
+}
+
+/// CPU-import a single-plane linear dmabuf into row-major RGBA.
+///
+/// `out` is cleared and refilled. Returns the buffer's `(width, height)`.
+///
+/// This is a **CPU mmap import**, not a zero-copy GPU import: the plane fd
+/// is mapped read-only, `DMA_BUF_IOCTL_SYNC` brackets the read so the
+/// GPU's writes are visible and caches are handled, and the rows are
+/// swizzled into RGBA. It is correct for every buffer the compositor
+/// advertises (LINEAR only) and costs one full-frame copy.
+pub fn import_dmabuf_rgba(
+    dmabuf: &Dmabuf,
+    out: &mut Vec<u8>,
+) -> Result<(u32, u32), DmabufImportError> {
+    let format = dmabuf.format();
+    if format.modifier != Modifier::Linear {
+        return Err(DmabufImportError::NonLinearModifier(u64::from(
+            format.modifier,
+        )));
+    }
+    let planes = dmabuf.num_planes();
+    if planes != 1 {
+        return Err(DmabufImportError::MultiPlanar(planes));
+    }
+    let order = PixelOrder::for_fourcc(format.code)
+        .ok_or(DmabufImportError::UnsupportedFormat(format.code))?;
+
+    let width = dmabuf.width();
+    let height = dmabuf.height();
+    let stride = dmabuf.strides().next().unwrap_or(0);
+    let offset = dmabuf.offsets().next().unwrap_or(0);
+    if width == 0 || height == 0 || stride < width.saturating_mul(4) {
+        return Err(DmabufImportError::InvalidDimensions {
+            width,
+            height,
+            stride,
+        });
+    }
+    let map_len = (offset as usize)
+        .checked_add((stride as usize).saturating_mul(height as usize))
+        .ok_or(DmabufImportError::InvalidDimensions {
+            width,
+            height,
+            stride,
+        })?;
+
+    let fd = dmabuf
+        .handles()
+        .next()
+        .ok_or(DmabufImportError::MultiPlanar(0))?;
+    let raw_fd = fd.as_raw_fd();
+
+    // SAFETY: `raw_fd` is a live dma-buf fd owned by the `Dmabuf` (which
+    // outlives this call). `mmap` with a null hint and `MAP_SHARED` is
+    // the documented way to CPU-access a dma-buf; failure is reported
+    // through `MAP_FAILED` and converted into an error below.
+    let ptr = unsafe {
+        libc::mmap(
+            std::ptr::null_mut(),
+            map_len,
+            libc::PROT_READ,
+            libc::MAP_SHARED,
+            raw_fd,
+            0,
+        )
+    };
+    if ptr == libc::MAP_FAILED {
+        let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
+        return Err(DmabufImportError::MapFailed(errno));
+    }
+
+    // Bracket the CPU read with DMA_BUF_IOCTL_SYNC so the exporting driver
+    // flushes/invalidates as needed. A driver that doesn't implement the
+    // ioctl returns an error we deliberately ignore — the mapping is still
+    // readable, we just lose the explicit cache hint.
+    sync_dmabuf(raw_fd, DMA_BUF_SYNC_START | DMA_BUF_SYNC_READ);
+
+    out.clear();
+    out.reserve((width as usize) * (height as usize) * 4);
+    let row_bytes = (width as usize) * 4;
+    // SAFETY: the mapping covers `[0, map_len)`; every row slice below is
+    // inside `[offset, offset + stride*height) ⊆ [0, map_len)`, checked
+    // above. The slice is dropped before `munmap`.
+    let mapped: &[u8] = unsafe { std::slice::from_raw_parts(ptr as *const u8, map_len) };
+    for row in 0..height as usize {
+        let start = offset as usize + row * stride as usize;
+        swizzle_row(order, &mapped[start..start + row_bytes], width as usize, out);
+    }
+
+    sync_dmabuf(raw_fd, DMA_BUF_SYNC_END | DMA_BUF_SYNC_READ);
+    // SAFETY: `ptr`/`map_len` are exactly what `mmap` returned above and
+    // `mapped` is out of scope for any further use.
+    unsafe {
+        libc::munmap(ptr, map_len);
+    }
+    Ok((width, height))
+}
+
+fn sync_dmabuf(fd: libc::c_int, flags: u64) {
+    #[repr(C)]
+    struct DmaBufSync {
+        flags: u64,
+    }
+    let arg = DmaBufSync { flags };
+    // SAFETY: `DMA_BUF_IOCTL_SYNC` takes a pointer to a single `__u64`
+    // flags word; `arg` matches that layout and outlives the call.
+    unsafe {
+        libc::ioctl(fd, DMA_BUF_IOCTL_SYNC, &arg as *const DmaBufSync);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Frame store
+// ---------------------------------------------------------------------------
+
+/// Per-surface capture + placement state.
+struct ForeignEntry {
+    /// Most recent frame, row-major RGBA, `width * height * 4` bytes.
+    /// Reused across commits so a steady-state client costs no
+    /// reallocation.
+    rgba: Vec<u8>,
+    width: u32,
+    height: u32,
+    /// Monotonic frame counter. `0` means "no frame has ever landed".
+    /// Bumped on every successful capture *and* on unmap, so a consumer
+    /// comparing sequence numbers always notices a transition.
+    seq: u64,
+    /// Human-readable reason the last capture failed, drawn on the tile
+    /// so an unsupported buffer is visible rather than silently blank.
+    last_error: Option<String>,
+    /// The tab's on-screen rectangle in physical pixels, published by the
+    /// widget's `apply_layout`. `None` until the surface's tab has been
+    /// laid out (a surface whose tab is in a background group or an
+    /// inactive workspace never gets one — those tiles aren't built).
+    placement: Option<Rect>,
+    /// Size most recently sent to the client in an `xdg_toplevel`
+    /// configure, in surface-local (logical) pixels.
+    configured: Option<(i32, i32)>,
+}
+
+impl ForeignEntry {
+    fn new() -> Self {
+        Self {
+            rgba: Vec::new(),
+            width: 0,
+            height: 0,
+            seq: 0,
+            last_error: None,
+            placement: None,
+            configured: None,
+        }
+    }
+}
+
+/// A copy of a surface's most recent frame, handed to the render side.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FrameSnapshot {
+    pub rgba: Vec<u8>,
+    pub width: u32,
+    pub height: u32,
+    pub seq: u64,
+}
+
+/// Process-wide capture + placement registry for foreign surfaces.
+///
+/// A singleton rather than a field threaded through the widget tree
+/// because `crate::shell::to_ui_tile` — the one place a
+/// `TileContent::Foreign` becomes a widget — is a pure tree→widget
+/// conversion reached from half a dozen call sites (initial build,
+/// strip resync, the offscreen `shots` harness) that carry no compositor
+/// context. Keying every entry on the wayland protocol id keeps the
+/// shared state trivially partitioned per surface.
+#[derive(Default)]
+pub struct ForeignFrameStore {
+    entries: Mutex<HashMap<SurfaceId, ForeignEntry>>,
+}
+
+static STORE: OnceLock<ForeignFrameStore> = OnceLock::new();
+
+/// The process-wide [`ForeignFrameStore`].
+pub fn store() -> &'static ForeignFrameStore {
+    STORE.get_or_init(ForeignFrameStore::default)
+}
+
+/// Which capture route a commit took, for logging + tests.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CaptureOutcome {
+    /// `wl_shm` pool readback.
+    Shm { width: u32, height: u32 },
+    /// dmabuf CPU (linear mmap) import.
+    Dmabuf { width: u32, height: u32 },
+    /// Neither path could produce pixels; the reason is recorded on the
+    /// entry and drawn on the tile.
+    Failed(String),
+}
+
+impl ForeignFrameStore {
+    fn with_entry<R>(&self, id: SurfaceId, f: impl FnOnce(&mut ForeignEntry) -> R) -> R {
+        let mut guard = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+        f(guard.entry(id).or_insert_with(ForeignEntry::new))
+    }
+
+    /// Capture the buffer a client just committed. Tries the `wl_shm`
+    /// readback first; a buffer smithay reports as not-shm is routed to
+    /// the dmabuf importer.
+    ///
+    /// The `wl_buffer → Dmabuf` lookup is done by the caller-visible
+    /// [`smithay::wayland::dmabuf::get_dmabuf`], so this stays a single
+    /// entry point for the commit hook.
+    pub fn capture_commit(&self, id: SurfaceId, buffer: &WlBuffer) -> CaptureOutcome {
+        let shm_result = self.with_entry(id, |e| {
+            let r = buffer_to_rgba(buffer, &mut e.rgba);
+            match r {
+                Ok((w, h)) => {
+                    e.width = w;
+                    e.height = h;
+                    e.seq = e.seq.wrapping_add(1);
+                    e.last_error = None;
+                    Ok((w, h))
+                }
+                Err(err) => {
+                    // Leave the previous frame intact for now; the dmabuf
+                    // branch below may still succeed. A genuine failure
+                    // clears it via `note_failure`.
+                    Err(err)
+                }
+            }
+        });
+        match shm_result {
+            Ok((w, h)) => CaptureOutcome::Shm {
+                width: w,
+                height: h,
+            },
+            Err(ReadbackError::DmaBufUnsupported) => {
+                match smithay::wayland::dmabuf::get_dmabuf(buffer) {
+                    Ok(dmabuf) => self.capture_dmabuf(id, &dmabuf),
+                    Err(_) => {
+                        let msg = "buffer is neither wl_shm nor dmabuf".to_string();
+                        self.note_failure(id, msg.clone());
+                        CaptureOutcome::Failed(msg)
+                    }
+                }
+            }
+            Err(err) => {
+                let msg = err.to_string();
+                self.note_failure(id, msg.clone());
+                CaptureOutcome::Failed(msg)
+            }
+        }
+    }
+
+    /// Import an already-resolved [`Dmabuf`] into the store.
+    pub fn capture_dmabuf(&self, id: SurfaceId, dmabuf: &Dmabuf) -> CaptureOutcome {
+        let result = self.with_entry(id, |e| {
+            import_dmabuf_rgba(dmabuf, &mut e.rgba).map(|(w, h)| {
+                e.width = w;
+                e.height = h;
+                e.seq = e.seq.wrapping_add(1);
+                e.last_error = None;
+                (w, h)
+            })
+        });
+        match result {
+            Ok((w, h)) => CaptureOutcome::Dmabuf {
+                width: w,
+                height: h,
+            },
+            Err(err) => {
+                let msg = err.to_string();
+                self.note_failure(id, msg.clone());
+                CaptureOutcome::Failed(msg)
+            }
+        }
+    }
+
+    /// Publish an RGBA frame directly. Used by callers that already hold
+    /// decoded pixels (the dmabuf importer's own tests, and any future
+    /// capture route that doesn't go through a `wl_buffer`).
+    pub fn publish_rgba(&self, id: SurfaceId, rgba: &[u8], width: u32, height: u32) {
+        self.with_entry(id, |e| {
+            e.rgba.clear();
+            e.rgba.extend_from_slice(rgba);
+            e.width = width;
+            e.height = height;
+            e.seq = e.seq.wrapping_add(1);
+            e.last_error = None;
+        });
+    }
+
+    /// Record that the last capture failed and drop the stale frame, so
+    /// the tile shows the reason instead of the previous image.
+    pub fn note_failure(&self, id: SurfaceId, reason: String) {
+        self.with_entry(id, |e| {
+            e.rgba.clear();
+            e.rgba.shrink_to_fit();
+            e.width = 0;
+            e.height = 0;
+            e.seq = e.seq.wrapping_add(1);
+            e.last_error = Some(reason);
+        });
+    }
+
+    /// The client detached its buffer (`wl_surface.attach(NULL)`): the
+    /// surface is unmapped, so drop the frame but keep the placement
+    /// bookkeeping (the tab still exists until the toplevel is destroyed).
+    pub fn clear_frame(&self, id: SurfaceId) {
+        self.with_entry(id, |e| {
+            e.rgba.clear();
+            e.rgba.shrink_to_fit();
+            e.width = 0;
+            e.height = 0;
+            e.seq = e.seq.wrapping_add(1);
+            e.last_error = None;
+        });
+    }
+
+    /// Drop everything tracked for `id`. Called when the toplevel is
+    /// destroyed — without this the frame `Vec` (a full framebuffer)
+    /// would outlive the client.
+    pub fn forget(&self, id: SurfaceId) {
+        let mut guard = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+        guard.remove(&id);
+    }
+
+    /// Current frame counter for `id`; `0` when nothing has landed.
+    pub fn frame_seq(&self, id: SurfaceId) -> u64 {
+        let guard = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+        guard.get(&id).map(|e| e.seq).unwrap_or(0)
+    }
+
+    /// Copy out the current frame, or `None` when the surface has no
+    /// pixels staged.
+    pub fn snapshot(&self, id: SurfaceId) -> Option<FrameSnapshot> {
+        let guard = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+        let e = guard.get(&id)?;
+        if e.rgba.is_empty() || e.width == 0 || e.height == 0 {
+            return None;
+        }
+        Some(FrameSnapshot {
+            rgba: e.rgba.clone(),
+            width: e.width,
+            height: e.height,
+            seq: e.seq,
+        })
+    }
+
+    /// Reason the last capture failed, if any.
+    pub fn last_error(&self, id: SurfaceId) -> Option<String> {
+        let guard = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+        guard.get(&id).and_then(|e| e.last_error.clone())
+    }
+
+    /// Record the tab rectangle the surface is currently laid out into,
+    /// in physical pixels. Called from the widget's `apply_layout` — the
+    /// widget tree is the authority on where a tab lives, so it publishes
+    /// rather than the compositor querying.
+    pub fn note_placement(&self, id: SurfaceId, rect: Rect) {
+        self.with_entry(id, |e| {
+            e.placement = Some(rect);
+        });
+    }
+
+    /// The tab rectangle last published by [`Self::note_placement`].
+    pub fn placement(&self, id: SurfaceId) -> Option<Rect> {
+        let guard = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+        guard.get(&id).and_then(|e| e.placement)
+    }
+
+    /// Size of the tab rectangle in physical pixels.
+    pub fn viewport(&self, id: SurfaceId) -> Option<(u32, u32)> {
+        self.placement(id).map(|r| {
+            (
+                r.width().max(0.0).round() as u32,
+                r.height().max(0.0).round() as u32,
+            )
+        })
+    }
+
+    /// The size the client should be configured to, in surface-local
+    /// (logical) pixels, **iff** it differs from the last size we sent.
+    /// Records the returned value as sent, so repeated calls with an
+    /// unchanged layout return `None` and the client is not spammed with
+    /// redundant configures.
+    pub fn take_pending_configure(&self, id: SurfaceId, scale: f64) -> Option<(i32, i32)> {
+        let scale = if scale.is_finite() && scale > 0.0 {
+            scale
+        } else {
+            1.0
+        };
+        self.with_entry(id, |e| {
+            let rect = e.placement?;
+            let w_px = rect.width().max(0.0).round() as u32;
+            let h_px = rect.height().max(0.0).round() as u32;
+            if w_px == 0 || h_px == 0 {
+                return None;
+            }
+            let logical = (
+                ((w_px as f64) / scale).round().max(1.0) as i32,
+                ((h_px as f64) / scale).round().max(1.0) as i32,
+            );
+            if e.configured == Some(logical) {
+                return None;
+            }
+            e.configured = Some(logical);
+            Some(logical)
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The widget
+// ---------------------------------------------------------------------------
+
+/// Hosts one foreign wayland surface inside a tab.
+///
+/// Holds no pixel state of its own beyond a cached [`ImageData`] built
+/// from the store's most recent frame; the cache is rebuilt only when the
+/// store's sequence number moves, so a static client costs nothing per
+/// frame beyond the `ImageBrush` fill.
+pub struct ForeignSurfaceWidget {
+    surface_id: SurfaceId,
+    app_id: String,
+    rect: Rect,
+    /// GPU-uploadable copy of the last frame we drew, plus the store
+    /// sequence it came from.
+    cached: Option<ImageData>,
+    cached_seq: u64,
+    /// Stable, human-addressable name so `FrameBuilder::widget_registry`
+    /// (and therefore the shell's click/rect resolver) can find the tile.
+    test_id: String,
+}
+
+impl ForeignSurfaceWidget {
+    pub fn new(surface_id: SurfaceId, app_id: String) -> Self {
+        Self {
+            surface_id,
+            app_id,
+            rect: Rect::ZERO,
+            cached: None,
+            cached_seq: 0,
+            test_id: format!("foreign-surface-{surface_id}"),
+        }
+    }
+
+    pub fn surface_id(&self) -> SurfaceId {
+        self.surface_id
+    }
+
+    /// Pull a fresh frame out of the store if one has landed since the
+    /// last call. Returns `true` when the cache changed.
+    fn refresh_cache(&mut self) -> bool {
+        let seq = store().frame_seq(self.surface_id);
+        if seq == self.cached_seq {
+            return false;
+        }
+        self.cached_seq = seq;
+        match store().snapshot(self.surface_id) {
+            Some(frame) => {
+                self.cached = Some(ImageData {
+                    data: Blob::new(std::sync::Arc::new(frame.rgba)),
+                    format: ImageFormat::Rgba8,
+                    // Wayland `ARGB8888` carries premultiplied alpha; the
+                    // `X` variants are forced opaque during the swizzle,
+                    // for which premultiplied and straight coincide.
+                    alpha_type: ImageAlphaType::AlphaPremultiplied,
+                    width: frame.width,
+                    height: frame.height,
+                });
+            }
+            None => self.cached = None,
+        }
+        true
+    }
+
+    /// Destination rect for the client image inside `self.rect`,
+    /// preserving aspect ratio and centring the result.
+    ///
+    /// A correctly-configured client renders at exactly the tab size, in
+    /// which case this is the identity fit. The letterbox only shows
+    /// during the frame or two between a resize configure and the
+    /// client's answering commit — better than a stretched image.
+    fn fit_rect(&self, img_w: u32, img_h: u32) -> Option<Rect> {
+        if img_w == 0 || img_h == 0 || self.rect.width() <= 0.0 || self.rect.height() <= 0.0 {
+            return None;
+        }
+        let iw = img_w as f64;
+        let ih = img_h as f64;
+        let scale = (self.rect.width() / iw).min(self.rect.height() / ih);
+        let dw = iw * scale;
+        let dh = ih * scale;
+        let dx = self.rect.x0 + (self.rect.width() - dw) * 0.5;
+        let dy = self.rect.y0 + (self.rect.height() - dh) * 0.5;
+        Some(Rect::new(dx, dy, dx + dw, dy + dh))
+    }
+}
+
+impl Widget for ForeignSurfaceWidget {
+    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
+
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        _theme: &Theme,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        let node = taffy
+            .new_leaf(taffy::Style {
+                size: taffy::Size {
+                    width: taffy::Dimension::percent(1.0),
+                    height: taffy::Dimension::percent(1.0),
+                },
+                ..Default::default()
+            })
+            .expect("foreign surface leaf node");
+        node_map.insert(node, self as *mut dyn Widget);
+        node
+    }
+
+    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        let Ok(l) = taffy.layout(node) else {
+            return;
+        };
+        let x = origin.x + l.location.x as f64;
+        let y = origin.y + l.location.y as f64;
+        self.rect = Rect::new(x, y, x + l.size.width as f64, y + l.size.height as f64);
+        // Publish the laid-out rect so the compositor's configure pass can
+        // tell the client what resolution to render at. This is the
+        // production seam between "where the shell put the tab" and "what
+        // size the wayland client is asked for".
+        if self.rect.width() > 0.0 && self.rect.height() > 0.0 {
+            store().note_placement(self.surface_id, self.rect);
+        }
+    }
+
+    fn draw(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        _presence: &PresenceCtx,
+    ) {
+        self.refresh_cache();
+        if self.rect.width() <= 0.0 || self.rect.height() <= 0.0 {
+            return;
+        }
+        let radius = theme.tokens.radii.xl as f64;
+        let clip = RoundedRect::from_rect(self.rect, radius);
+
+        if let Some(image) = self.cached.clone() {
+            if let Some(dst) = self.fit_rect(image.width, image.height) {
+                // Neutral backdrop so the letterbox bands (and any client
+                // transparency) read as compositor surface rather than
+                // whatever the tile card happened to paint.
+                scene.fill(
+                    Fill::NonZero,
+                    transform,
+                    theme.tokens.colors.surfaces.base,
+                    None,
+                    &clip,
+                );
+                let sx = dst.width() / image.width as f64;
+                let sy = dst.height() / image.height as f64;
+                let brush_transform = transform
+                    * Affine::translate((dst.x0, dst.y0))
+                    * Affine::scale_non_uniform(sx, sy);
+                let brush = ImageBrush::new(image.clone()).with_extend(Extend::Pad);
+                scene.push_layer(
+                    Fill::NonZero,
+                    vello::peniko::BlendMode::default(),
+                    1.0,
+                    transform,
+                    &clip,
+                );
+                scene.fill(
+                    Fill::NonZero,
+                    brush_transform,
+                    &brush,
+                    None,
+                    &Rect::new(0.0, 0.0, image.width as f64, image.height as f64),
+                );
+                scene.pop_layer();
+                return;
+            }
+        }
+
+        // No frame yet (or the last capture failed). Say so — a blank tile
+        // that silently hides an unsupported buffer is exactly the failure
+        // mode this module must not have.
+        let headline = self.app_id.clone();
+        let detail = match store().last_error(self.surface_id) {
+            Some(err) => err,
+            None => "waiting for first frame".to_string(),
+        };
+        let on_card = theme.tokens.colors.neutral[1];
+        let on_card_dim = theme.tokens.colors.neutral[4];
+        let size = theme.tokens.typography.scale.xl;
+        let (tw, _) = text_renderer.measure(&headline, size, None);
+        let cx = self.rect.center().x;
+        let y = self.rect.center().y - size as f64 / 2.0;
+        text_renderer.draw_text(
+            scene,
+            &headline,
+            size,
+            on_card,
+            transform * Affine::translate((cx - tw as f64 / 2.0, y)),
+            None,
+        );
+        let sm = theme.tokens.typography.scale.sm;
+        let (dw, _) = text_renderer.measure(&detail, sm, None);
+        text_renderer.draw_text(
+            scene,
+            &detail,
+            sm,
+            on_card_dim,
+            transform * Affine::translate((cx - dw as f64 / 2.0, y + size as f64 + 8.0)),
+            None,
+        );
+    }
+
+    fn handle_event(
+        &mut self,
+        _event: &WindowEvent,
+        _scale_factor: f64,
+        _modifiers: &Modifiers,
+        _state: &mut AutoCommit,
+        _path: &ObjId,
+        _handled: &mut bool,
+        _focus_target: &mut Option<NodeId>,
+        _node_id: NodeId,
+        _taffy: &TaffyTree<()>,
+    ) {
+        // Input routing to client surfaces goes through the seat, not the
+        // widget tree.
+    }
+
+    fn name(&self) -> &str {
+        "ForeignSurfaceWidget"
+    }
+
+    fn test_id(&self) -> Option<&str> {
+        Some(&self.test_id)
+    }
+
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
+
+    /// A pending frame in the store is the only reason this widget needs
+    /// the compositor to repaint. Cheap enough to poll every tick and
+    /// `false` whenever the client is idle, so the paint-gating budget is
+    /// unaffected by a foreign tab that isn't rendering.
+    fn needs_animation_frame(&self) -> bool {
+        store().frame_seq(self.surface_id) != self.cached_seq
+    }
+
+    fn needs_redraw(&self) -> bool {
+        store().frame_seq(self.surface_id) != self.cached_seq
+    }
+}
+
+impl AppWidget for ForeignSurfaceWidget {
+    fn app_kind(&self) -> AppKind {
+        // No `AppKind` describes "arbitrary external client"; `Settings`
+        // is the catch-all `to_ui_kind` already uses for unknown kinds.
+        AppKind::Settings
+    }
+    fn app_title(&self) -> &str {
+        &self.app_id
+    }
+    fn app_icon(&self) -> IconDescriptor {
+        IconDescriptor::Glyph("󰖯")
+    }
+    fn permission_hint(&self) -> Option<AppKind> {
+        None
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tree mirroring: protocol-side adoptions → rendered chrome tree
+// ---------------------------------------------------------------------------
+
+/// One foreign tile as seen in a workspace tree.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ForeignTab {
+    pub surface_id: SurfaceId,
+    pub app_id: String,
+    pub tab_id: u64,
+    pub title: String,
+}
+
+/// Every `TileContent::Foreign` tab in `tree`'s active workspace, in
+/// traversal order.
+pub fn foreign_tabs(tree: &WorkspaceTree) -> Vec<ForeignTab> {
+    let mut out = Vec::new();
+    let Some(ws) = tree.active_workspace() else {
+        return out;
+    };
+    for strip in &ws.strips {
+        for group in &strip.window_groups {
+            for tab in &group.tabs {
+                if let ShellTile::Foreign { app_id, surface_id } = &tab.tile {
+                    out.push(ForeignTab {
+                        surface_id: *surface_id,
+                        app_id: app_id.clone(),
+                        tab_id: tab.id,
+                        title: tab.title.clone(),
+                    });
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Whether `surface_id` is the active tab of its group in the active
+/// workspace — i.e. whether its pixels are on screen.
+pub fn is_visible_tab(tree: &WorkspaceTree, surface_id: SurfaceId) -> bool {
+    let Some(ws) = tree.active_workspace() else {
+        return false;
+    };
+    for strip in &ws.strips {
+        for group in &strip.window_groups {
+            for tab in &group.tabs {
+                if matches!(
+                    &tab.tile,
+                    ShellTile::Foreign { surface_id: s, .. } if *s == surface_id
+                ) {
+                    return group.active_tab == tab.id;
+                }
+            }
+        }
+    }
+    false
+}
+
+/// Reconcile the set of foreign tabs in `rendered` against `source`.
+///
+/// The compositor's protocol state (`State::workspace_tree`, mutated by
+/// `XdgShellHandler`) and the chrome's rendered tree are separate trees —
+/// the chrome owns its own `WorkspaceTreeHandle` so widget state survives
+/// protocol churn. This copies foreign adoptions and teardowns across, and
+/// is the only direction data flows (the chrome never invents foreign
+/// tabs).
+///
+/// Returns `true` when `rendered` was mutated, which is the caller's
+/// signal to bump the chrome revision so the strip resync splices the tab
+/// into the live widget tree.
+pub fn reconcile_foreign_tabs(source: &WorkspaceTree, rendered: &mut WorkspaceTree) -> bool {
+    let wanted = foreign_tabs(source);
+    let present = foreign_tabs(rendered);
+    let mut changed = false;
+
+    // Remove foreign tabs the protocol side no longer has.
+    let wanted_ids: std::collections::HashSet<SurfaceId> =
+        wanted.iter().map(|t| t.surface_id).collect();
+    for gone in present.iter().filter(|t| !wanted_ids.contains(&t.surface_id)) {
+        if crate::compositor::tab_binding::close_tab_for_destroyed_surface(
+            rendered,
+            gone.surface_id,
+        ) {
+            changed = true;
+        }
+    }
+
+    // Add foreign tabs the rendered tree is missing. `adopt_toplevel` is
+    // the same production splice the protocol side uses, so placement
+    // rules (empty-workspace bootstrap, first strip / first group) stay in
+    // exactly one place.
+    let present_ids: std::collections::HashSet<SurfaceId> =
+        foreign_tabs(rendered).iter().map(|t| t.surface_id).collect();
+    for add in wanted.iter().filter(|t| !present_ids.contains(&t.surface_id)) {
+        crate::compositor::tab_binding::adopt_toplevel(
+            rendered,
+            add.surface_id,
+            Some(add.app_id.clone()),
+        );
+        changed = true;
+    }
+
+    // Keep titles / app-ids in step for tabs that exist on both sides
+    // (a client can call `set_app_id` after mapping).
+    for want in &wanted {
+        for ws in rendered.workspaces.iter_mut() {
+            for strip in ws.strips.iter_mut() {
+                for group in strip.window_groups.iter_mut() {
+                    for tab in group.tabs.iter_mut() {
+                        if let ShellTile::Foreign { app_id, surface_id } = &mut tab.tile {
+                            if *surface_id == want.surface_id && *app_id != want.app_id {
+                                *app_id = want.app_id.clone();
+                                tab.title = want.title.clone();
+                                changed = true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    changed
+}
+
+// ---------------------------------------------------------------------------
+// Per-frame compositor passes
+// ---------------------------------------------------------------------------
+
+/// Tell every foreign client what pixel size to render at.
+///
+/// Reads the tab rects the widgets published during the layout pass and
+/// sends an `xdg_toplevel.configure` to any client whose size changed
+/// (group resize, tab switch, output resize, fullscreen promotion). The
+/// size is converted from physical pixels to surface-local logical pixels
+/// with the compositor's current display scale, which is the same value
+/// pushed to clients through `wp_fractional_scale_v1` on commit.
+///
+/// Returns the number of configures sent — used by the wiring test.
+pub fn flush_configures(state: &mut crate::compositor::state::State) -> usize {
+    let scale = state.scale;
+    // `toplevel_surfaces` borrows the shell state; the configure calls
+    // below don't touch `State`, so a cheap clone of the handles releases
+    // the borrow for the loop.
+    let toplevels: Vec<_> = state.xdg_shell_state.toplevel_surfaces().to_vec();
+    let mut sent = 0;
+    for toplevel in toplevels {
+        let id = toplevel.wl_surface().id().protocol_id() as SurfaceId;
+        let Some((w, h)) = store().take_pending_configure(id, scale) else {
+            continue;
+        };
+        toplevel.with_pending_state(|pending| {
+            pending.size = Some((w, h).into());
+        });
+        toplevel.send_configure();
+        sent += 1;
+        tracing::debug!(
+            target: "shell::compositor::foreign",
+            surface_id = id,
+            width = w,
+            height = h,
+            "configured foreign toplevel to its tab size"
+        );
+    }
+    sent
+}
+
+/// Release the frame throttle for foreign surfaces that are actually on
+/// screen.
+///
+/// Wayland clients that draw on demand (every toolkit worth the name) wait
+/// for `wl_surface.frame` before producing their next buffer. Without this
+/// pass a client renders exactly one frame and then freezes forever.
+/// Callbacks are fired only for the *visible* tab of each group, which is
+/// also what keeps a background client from burning CPU rendering frames
+/// nobody can see.
+///
+/// Returns the number of surfaces signalled.
+pub fn release_frame_throttle(state: &mut crate::compositor::state::State) -> usize {
+    let time_ms = state.start_time.elapsed().as_millis() as u32;
+    let toplevels: Vec<_> = state.xdg_shell_state.toplevel_surfaces().to_vec();
+    let mut signalled = 0;
+    for toplevel in toplevels {
+        let surface = toplevel.wl_surface();
+        let id = surface.id().protocol_id() as SurfaceId;
+        if !is_visible_tab(&state.workspace_tree, id) {
+            continue;
+        }
+        let mut fired = false;
+        smithay::wayland::compositor::with_states(surface, |states| {
+            let mut attrs = states
+                .cached_state
+                .get::<smithay::wayland::compositor::SurfaceAttributes>();
+            for callback in attrs.current().frame_callbacks.drain(..) {
+                callback.done(time_ms);
+                fired = true;
+            }
+        });
+        if fired {
+            signalled += 1;
+        }
+    }
+    signalled
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::shell::state::WorkspaceTree;
+
+    /// Distinct ids per test so the process-wide store can't leak state
+    /// between parallel test threads.
+    fn sid(n: u64) -> SurfaceId {
+        900_000 + n
+    }
+
+    #[test]
+    fn swizzle_row_bgra_swaps_red_and_blue() {
+        // Memory bytes for DRM_FORMAT_ARGB8888 are [B, G, R, A].
+        let src = [10u8, 20, 30, 200, 1, 2, 3, 4];
+        let mut out = Vec::new();
+        swizzle_row(PixelOrder::Bgra { opaque: false }, &src, 2, &mut out);
+        assert_eq!(out, vec![30, 20, 10, 200, 3, 2, 1, 4]);
+    }
+
+    #[test]
+    fn swizzle_row_opaque_variant_forces_alpha() {
+        let src = [10u8, 20, 30, 0x00];
+        let mut out = Vec::new();
+        swizzle_row(PixelOrder::Bgra { opaque: true }, &src, 1, &mut out);
+        assert_eq!(out, vec![30, 20, 10, 0xFF]);
+    }
+
+    #[test]
+    fn swizzle_row_rgba_passes_channels_through() {
+        // DRM_FORMAT_ABGR8888 is already [R, G, B, A] in memory.
+        let src = [10u8, 20, 30, 40];
+        let mut out = Vec::new();
+        swizzle_row(PixelOrder::Rgba { opaque: false }, &src, 1, &mut out);
+        assert_eq!(out, vec![10, 20, 30, 40]);
+    }
+
+    #[test]
+    fn pixel_order_rejects_non_rgba_fourcc() {
+        assert!(PixelOrder::for_fourcc(Fourcc::Nv12).is_none());
+        assert!(PixelOrder::for_fourcc(Fourcc::Argb8888).is_some());
+    }
+
+    #[test]
+    fn publish_then_snapshot_round_trips_and_bumps_seq() {
+        let id = sid(1);
+        store().forget(id);
+        assert_eq!(store().frame_seq(id), 0);
+        assert!(store().snapshot(id).is_none());
+
+        store().publish_rgba(id, &[1, 2, 3, 4, 5, 6, 7, 8], 2, 1);
+        let seq = store().frame_seq(id);
+        assert_eq!(seq, 1, "first publish bumps the sequence to 1");
+        let snap = store().snapshot(id).expect("frame present");
+        assert_eq!(snap.rgba, vec![1, 2, 3, 4, 5, 6, 7, 8]);
+        assert_eq!((snap.width, snap.height), (2, 1));
+
+        // A non-draining read: a second snapshot still sees the frame.
+        assert!(store().snapshot(id).is_some());
+        store().forget(id);
+    }
+
+    #[test]
+    fn note_failure_drops_the_stale_frame_and_records_the_reason() {
+        let id = sid(2);
+        store().forget(id);
+        store().publish_rgba(id, &[9; 16], 2, 2);
+        assert!(store().snapshot(id).is_some());
+
+        store().note_failure(id, "test failure".into());
+        assert!(
+            store().snapshot(id).is_none(),
+            "a failed capture must not leave the previous frame visible"
+        );
+        assert_eq!(store().last_error(id).as_deref(), Some("test failure"));
+        store().forget(id);
+    }
+
+    #[test]
+    fn clear_frame_unmaps_without_forgetting_placement() {
+        let id = sid(3);
+        store().forget(id);
+        store().note_placement(id, Rect::new(0.0, 0.0, 800.0, 600.0));
+        store().publish_rgba(id, &[7; 16], 2, 2);
+        store().clear_frame(id);
+        assert!(store().snapshot(id).is_none());
+        assert_eq!(
+            store().viewport(id),
+            Some((800, 600)),
+            "unmap keeps the tab's placement; only destroy forgets it"
+        );
+        store().forget(id);
+        assert_eq!(store().viewport(id), None);
+    }
+
+    #[test]
+    fn pending_configure_fires_once_per_size_change() {
+        let id = sid(4);
+        store().forget(id);
+        assert_eq!(store().take_pending_configure(id, 1.0), None);
+
+        store().note_placement(id, Rect::new(0.0, 0.0, 1200.0, 800.0));
+        assert_eq!(store().take_pending_configure(id, 1.0), Some((1200, 800)));
+        assert_eq!(
+            store().take_pending_configure(id, 1.0),
+            None,
+            "an unchanged layout must not re-send a configure every frame"
+        );
+
+        store().note_placement(id, Rect::new(0.0, 0.0, 600.0, 400.0));
+        assert_eq!(store().take_pending_configure(id, 1.0), Some((600, 400)));
+        store().forget(id);
+    }
+
+    #[test]
+    fn pending_configure_divides_physical_pixels_by_scale() {
+        let id = sid(5);
+        store().forget(id);
+        store().note_placement(id, Rect::new(0.0, 0.0, 2400.0, 1600.0));
+        assert_eq!(
+            store().take_pending_configure(id, 2.0),
+            Some((1200, 800)),
+            "the configure carries surface-local (logical) size, not physical px"
+        );
+        store().forget(id);
+    }
+
+    #[test]
+    fn frame_seq_forget_resets_to_zero() {
+        let id = sid(6);
+        store().forget(id);
+        store().publish_rgba(id, &[0; 4], 1, 1);
+        assert_ne!(store().frame_seq(id), 0);
+        store().forget(id);
+        assert_eq!(
+            store().frame_seq(id),
+            0,
+            "destroying a toplevel must release its cached frame"
+        );
+    }
+
+    #[test]
+    fn widget_reports_animation_frame_only_while_a_new_frame_is_pending() {
+        let id = sid(7);
+        store().forget(id);
+        let mut w = ForeignSurfaceWidget::new(id, "org.example.app".into());
+        assert!(
+            !w.needs_animation_frame(),
+            "no frames yet: nothing to repaint for"
+        );
+        store().publish_rgba(id, &[255, 0, 0, 255], 1, 1);
+        assert!(w.needs_animation_frame(), "a fresh frame requests a repaint");
+        assert!(w.refresh_cache(), "cache picks up the new frame");
+        assert!(
+            !w.needs_animation_frame(),
+            "once drawn, an idle client must not keep the paint loop awake"
+        );
+        store().forget(id);
+    }
+
+    #[test]
+    fn widget_fit_rect_letterboxes_preserving_aspect() {
+        let mut w = ForeignSurfaceWidget::new(sid(8), "x".into());
+        w.rect = Rect::new(0.0, 0.0, 400.0, 200.0);
+        // A square image inside a 2:1 tile: height-limited, centred.
+        let fit = w.fit_rect(100, 100).expect("fit");
+        assert_eq!((fit.width(), fit.height()), (200.0, 200.0));
+        assert_eq!(fit.x0, 100.0);
+        assert_eq!(fit.y0, 0.0);
+        // An exactly-matching client fills the tile with no letterbox.
+        let exact = w.fit_rect(400, 200).expect("fit");
+        assert_eq!(exact, w.rect);
+    }
+
+    #[test]
+    fn reconcile_copies_adoptions_and_teardowns_across_trees() {
+        let mut source = WorkspaceTree::bootstrap_default();
+        let mut rendered = WorkspaceTree::bootstrap_default();
+        assert!(
+            !reconcile_foreign_tabs(&source, &mut rendered),
+            "two pristine trees need no mirroring"
+        );
+
+        crate::compositor::tab_binding::adopt_toplevel(
+            &mut source,
+            4242,
+            Some("org.example.client".into()),
+        );
+        assert!(reconcile_foreign_tabs(&source, &mut rendered));
+        let mirrored = foreign_tabs(&rendered);
+        assert_eq!(mirrored.len(), 1);
+        assert_eq!(mirrored[0].surface_id, 4242);
+        assert_eq!(mirrored[0].app_id, "org.example.client");
+        assert!(
+            !reconcile_foreign_tabs(&source, &mut rendered),
+            "mirroring is idempotent"
+        );
+
+        crate::compositor::tab_binding::close_tab_for_destroyed_surface(&mut source, 4242);
+        assert!(reconcile_foreign_tabs(&source, &mut rendered));
+        assert!(foreign_tabs(&rendered).is_empty());
+    }
+
+    #[test]
+    fn reconcile_propagates_a_late_set_app_id() {
+        let mut source = WorkspaceTree::bootstrap_default();
+        let mut rendered = WorkspaceTree::bootstrap_default();
+        crate::compositor::tab_binding::adopt_toplevel(&mut source, 77, None);
+        assert!(reconcile_foreign_tabs(&source, &mut rendered));
+        assert_eq!(foreign_tabs(&rendered)[0].app_id, "anon-77");
+
+        crate::compositor::tab_binding::rename_tab_for_app_id(
+            &mut source,
+            77,
+            "io.example.late".into(),
+        );
+        assert!(reconcile_foreign_tabs(&source, &mut rendered));
+        let t = &foreign_tabs(&rendered)[0];
+        assert_eq!(t.app_id, "io.example.late");
+        assert_eq!(t.title, "late");
+    }
+
+    #[test]
+    fn visibility_tracks_the_groups_active_tab() {
+        let mut tree = WorkspaceTree::bootstrap_default();
+        let first = crate::compositor::tab_binding::adopt_toplevel(&mut tree, 11, None);
+        assert!(is_visible_tab(&tree, 11), "a fresh adoption becomes active");
+        let _second = crate::compositor::tab_binding::adopt_toplevel(&mut tree, 12, None);
+        assert!(!is_visible_tab(&tree, 11), "the first tab is now behind");
+        assert!(is_visible_tab(&tree, 12));
+        assert!(!is_visible_tab(&tree, 999), "unknown surfaces are not visible");
+        let _ = first;
+    }
+}
