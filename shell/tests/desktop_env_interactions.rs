@@ -320,6 +320,114 @@ fn group_drag_reorders_strip_window_groups_in_tree() {
     );
 }
 
+/// The magnifier chip in a tab's window decoration must open the search bar
+/// *scoped to that app* — the same thing Ctrl+K does. It used to only toggle a
+/// local focus ring on the group, so clicking it appeared to do nothing.
+#[test]
+fn tab_search_chip_opens_palette_scoped_to_that_app() {
+    use shell::shell::chrome_state::SearchScope;
+
+    let (tree, strip_id, _ids) = single_strip_tree(&[100]);
+    let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
+    let layout = lay_out_host(&mut host);
+
+    assert!(!host.palette_visible(), "palette starts closed");
+
+    // Hover the pill so the per-tab chips get hit rects, then click search.
+    let (pill, chip) = {
+        let g = host
+            .group_at_for_tests(strip_id, 0)
+            .expect("group after layout");
+        let pill = g.tab_rects().first().copied().expect("a pill").center();
+        (pill, g.bar_for_tests().search_rects().first().copied())
+    };
+    cursor(&mut host, &layout, pill);
+    let chip = chip
+        .filter(|r| r.area() > 0.0)
+        .or_else(|| {
+            host.group_at_for_tests(strip_id, 0)
+                .unwrap()
+                .bar_for_tests()
+                .search_rects()
+                .first()
+                .copied()
+        })
+        .expect("search chip rect");
+    cursor(&mut host, &layout, chip.center());
+    press(&mut host, &layout);
+    release(&mut host, &layout);
+
+    // Production runs this each frame inside `Widget::update`.
+    host.tick_pending_search_open_for_tests();
+
+    assert!(
+        host.palette_visible(),
+        "the decoration's search chip must open the search bar",
+    );
+    assert_eq!(
+        chrome.borrow().search_scope,
+        SearchScope::ActiveApp,
+        "and it must be scoped to the app, not global",
+    );
+}
+
+/// Clicking a tab's Expand chip must take the window *genuinely* full screen:
+/// the radial workspace switcher (sidebar wheel) and the top bar both get out
+/// of the way, and the promoted group covers the whole output. Expand used to
+/// only flex-grow the group inside its own strip, so the wheel and top bar kept
+/// painting over/next to it — "it isn't properly full screen".
+#[test]
+fn expand_takes_the_group_genuinely_fullscreen() {
+    let (tree, strip_id, _ids) = single_strip_tree(&[100, 200]);
+    let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
+    let layout = lay_out_host(&mut host);
+
+    assert!(
+        !chrome.borrow().is_fullscreen(),
+        "nothing holds the output at boot",
+    );
+
+    // Click the Expand (maximize) chip on group 0's active tab — the real
+    // production path, not a test-only intent publisher.
+    let chip = {
+        let g = host
+            .group_at_for_tests(strip_id, 0)
+            .expect("group after layout");
+        let rects = g.bar_for_tests().max_rects();
+        assert!(!rects.is_empty(), "the active tab must expose an Expand chip");
+        rects[0].center()
+    };
+    cursor(&mut host, &layout, chip);
+    press(&mut host, &layout);
+
+    // Production runs this harvest each frame inside `Widget::update`.
+    host.tick_pending_maximize_harvest_for_tests();
+
+    assert!(
+        host.group_at_for_tests(strip_id, 0).unwrap().maximized,
+        "the Expand click must flip the group's maximized flag",
+    );
+    assert!(
+        chrome.borrow().is_fullscreen(),
+        "an expanded window must hold the whole output, so the shell suppresses \
+         the wheel + top bar (both gate on ChromeState::is_fullscreen)",
+    );
+
+    // Re-lay out: the sidebar wheel must now be display:none (zero-area) so
+    // nothing paints over the fullscreen window.
+    let layout2 = lay_out_host(&mut host);
+    let sidebar = host
+        .sidebar_rect_for_tests()
+        .expect("sidebar node exists even when suppressed");
+    assert_eq!(
+        sidebar.area(),
+        0.0,
+        "the radial workspace switcher must be collapsed to zero area while a \
+         window is expanded; got {sidebar:?}",
+    );
+    let _ = &layout2;
+}
+
 /// A lone window group has no *inter*-group resize handle, so its only resize
 /// affordance is the grip on its own right edge. Dragging that must widen the
 /// group both on screen (the laid-out rect) and in the persisted tree.
