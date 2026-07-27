@@ -8873,13 +8873,14 @@ mod maximize_harvest_tests {
             }],
         };
         let ws = Workspace {
+            owner: None,
+            capabilities: Vec::new(),
             id: ws_id,
             name: "Test".into(),
             strips: vec![strip],
             roles: vec![],
             workspace_files: vec![],
             collaborators: vec![],
-            grants: StdHashMap::new(),
             shared_surfaces: StdHashMap::new(),
         };
         let mut active_strip = StdHashMap::new();
@@ -9068,13 +9069,14 @@ mod resync_strips_tests {
             }],
         };
         let ws = Workspace {
+            owner: None,
+            capabilities: Vec::new(),
             id: ws_id,
             name: "Test".into(),
             strips: vec![strip],
             roles: vec![],
             workspace_files: vec![],
             collaborators: vec![],
-            grants: StdHashMap::new(),
             shared_surfaces: StdHashMap::new(),
         };
         let mut active_strip = StdHashMap::new();

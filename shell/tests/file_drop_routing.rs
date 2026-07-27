@@ -338,8 +338,8 @@ fn drop_records_filesystem_grant_for_target_app_on_the_workspace() {
     // The dropped file must be recorded as a per-app filesystem
     // capability on the target workspace — the same grants map the
     // portal / permission-prompt path writes into.
-    let editor_caps = ws
-        .grants
+    let view = ws.grants();
+    let editor_caps = view
         .get("Editor")
         .expect("a .ts drop must record a grant under the Editor app id");
     let granted_path = editor_caps.iter().any(|cap| {
@@ -374,10 +374,8 @@ fn repeated_drop_of_same_file_does_not_duplicate_the_grant() {
 
     let st = chrome.borrow();
     let tree = st.tree();
-    let editor_caps = tree.workspaces[0]
-        .grants
-        .get("Editor")
-        .expect("grant present");
+    let view = tree.workspaces[0].grants();
+    let editor_caps = view.get("Editor").expect("grant present");
     let count = editor_caps
         .iter()
         .filter(|cap| {

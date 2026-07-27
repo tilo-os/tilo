@@ -22,6 +22,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use launcher::manifest::{Entrypoint, Fs, MinimalManifest, Net, Sandbox, read_manifest};
+use launcher::capabilities::CapabilityPlan;
 use launcher::run::{RunError, RunOptions, run, run_with, run_with_captured};
 use launcher::services::EXIT_REQUIRED_SERVICE_MISSING;
 
@@ -414,6 +415,7 @@ fn runtime_bundle_wins_over_minimal_libs_in_argv() {
         &[],
         None,
         None,
+        &CapabilityPlan::empty(),
     );
     assert!(
         argv.windows(3)
@@ -553,6 +555,7 @@ fn thin_app_bundle_exposes_shared_libs_on_ld_library_path() {
         &[],
         None,
         None,
+        &CapabilityPlan::empty(),
     );
     let mount = format!("/usr/lib/qos-runtime/{version}");
     assert!(
@@ -651,6 +654,7 @@ wait $!
         &[],
         Some(&plan),
         None,
+        &CapabilityPlan::empty(),
     );
     // The host source must be the proxy socket, NOT /run/user/1234/bus itself.
     let proxy_sock = plan.host_socket.display().to_string();
@@ -706,6 +710,7 @@ fn dbus_direct_bind_used_when_proxy_missing() {
         &[],
         Some(&plan),
         None,
+        &CapabilityPlan::empty(),
     );
     assert!(
         argv.windows(3)
