@@ -17,7 +17,6 @@ path = "src/lib.rs"
 
 [dependencies]
 runtime          = { path = "../runtime" }
-runtime-portal   = { path = "../runtime-portal" }
 runtime-fs       = { path = "../runtime-fs" }
 runtime-collab   = { path = "../runtime-collab" }
 runtime-identity = { path = "../runtime-identity" }
