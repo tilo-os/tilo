@@ -1,5 +1,4 @@
-//! `TriStateControl` + `ColorSwatchPicker` — two small value-out widgets
-//! promoted from `apps/permissions/src/editor.rs`.
+//! `TriStateControl` + `ColorSwatchPicker` — two small value-out widgets.
 //!
 //! * [`TriStateControl`]: a three-segment selector (e.g. allow / inherit /
 //!   deny). Clicking a segment selects that exact value; clicking the
