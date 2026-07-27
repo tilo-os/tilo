@@ -664,6 +664,44 @@ impl ShellOverlayHost {
         self
     }
 
+    /// On-screen rectangle of the tile hosting the foreign wayland
+    /// surface `surface_id`, or `None` when no *visible* tile hosts it
+    /// (unknown surface, background tab, inactive workspace).
+    ///
+    /// Walks the live widget tree rather than the persisted state, so the
+    /// answer is the rect the surface's pixels are actually painted into
+    /// this frame — which is what the compositor needs when it tells the
+    /// client what size to render at. Only the active tile of each group
+    /// is consulted because that is the only one laid out and drawn.
+    ///
+    /// Valid after a layout pass; before the first `apply_layout` every
+    /// rect is `Rect::ZERO` and this reports `None`.
+    pub fn foreign_surface_rect(&mut self, surface_id: u64) -> Option<Rect> {
+        let wanted = format!("foreign-surface-{surface_id}");
+        for &row_ptr in self.group_row_ptrs.values() {
+            // SAFETY: same contract as every other `group_row_ptrs`
+            // accessor — the pointer comes from a `Box<GroupRow>` owned by
+            // the content tree, the host outlives the content, and
+            // `&mut self` gives us unaliased access for this call.
+            let row: &mut GroupRow = unsafe { &mut *row_ptr };
+            for group in row.groups.iter_mut() {
+                let Some(host) = group.active_host_mut() else {
+                    continue;
+                };
+                let ui::widget::TileContent::App(app) = host.content_mut() else {
+                    continue;
+                };
+                if app.test_id() == Some(wanted.as_str()) {
+                    let rect = app.get_rect();
+                    if rect.width() > 0.0 && rect.height() > 0.0 {
+                        return Some(rect);
+                    }
+                }
+            }
+        }
+        None
+    }
+
     /// Per-tick wire-up for the data-layer active-group reconciler.
     ///
     /// Walks the captured [`GroupRow`] pointers, harvests the set of
@@ -741,6 +779,41 @@ impl ShellOverlayHost {
                 for id in live_ids.difference(&tree_ids) {
                     if row.remove_group_by_id(*id) {
                         any_change = true;
+                    }
+                }
+                // Reconcile *tabs* inside groups that already exist. The
+                // group-level splice above only fires for whole new
+                // groups, so a tab appended to an existing group — which
+                // is what adopting an external wayland toplevel does —
+                // would otherwise never reach the widget tree.
+                for g in strip.window_groups.iter() {
+                    let Some(live) = row.groups.iter_mut().find(|lg| lg.id == g.id) else {
+                        continue;
+                    };
+                    let live_tab_ids: std::collections::HashSet<u64> =
+                        live.tabs().iter().map(|t| t.id).collect();
+                    let tree_tab_ids: std::collections::HashSet<u64> =
+                        g.tabs.iter().map(|t| t.id).collect();
+                    for (idx, tab) in g.tabs.iter().enumerate() {
+                        if live_tab_ids.contains(&tab.id) {
+                            continue;
+                        }
+                        let desc = ui::widget::TabDescriptor {
+                            id: tab.id,
+                            title: tab.title.clone(),
+                            app_kind: Some(crate::shell::tile_app_kind(&tab.tile)),
+                        };
+                        live.insert_detached_tab(
+                            idx.min(live.tab_count()),
+                            desc,
+                            ui::widget::TileHost::new(crate::shell::to_ui_tile(&tab.tile)),
+                        );
+                        any_change = true;
+                    }
+                    for stale in live_tab_ids.difference(&tree_tab_ids) {
+                        if live.detach_tab(*stale).is_some() {
+                            any_change = true;
+                        }
                     }
                 }
             }
@@ -4544,7 +4617,11 @@ impl Widget for ShellOverlayHost {
         // it from both sites makes the diff idempotent (the
         // `last_chrome_revision` guard short-circuits the second
         // call when nothing changed).
-        let _ = self.resync_strips_from_tree();
+        // A resync that spliced a group or a tab into a live `GroupRow`
+        // has changed the widget structure, so it must force the taffy
+        // rebuild in its own right — the children it just inserted have
+        // no layout node yet.
+        let resynced = self.resync_strips_from_tree();
         let content = self.content.take_structure_dirty();
         let sidebar = self
             .sidebar
@@ -4552,7 +4629,7 @@ impl Widget for ShellOverlayHost {
             .map(|s| s.take_structure_dirty())
             .unwrap_or(false);
         let palette = std::mem::take(&mut self.palette_layout_dirty);
-        content | sidebar | palette
+        content | sidebar | palette | resynced
     }
 
     fn needs_animation_frame(&self) -> bool {

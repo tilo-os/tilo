@@ -39,6 +39,7 @@ use crate::compositor::backend::{
     combined_geometry, headless, Backend, BackendEvent, DrmBackend, HeadlessBackend, OutputId,
     WinitBackend,
 };
+use crate::compositor::foreign;
 use crate::compositor::frame::FrameBuilder;
 use crate::compositor::idle::{IdleConfig, SessionManager, SessionTransition};
 use crate::compositor::lock_auth;
@@ -1277,6 +1278,22 @@ pub fn run() -> ! {
         // rather than blanking the shell.
         frame_builder.set_fullscreen(state.fullscreen_group);
 
+        // Mirror foreign-client adoptions / teardowns from the protocol
+        // tree into the rendered one. A change bumps the chrome revision,
+        // which is what drives the strip resync that splices the tab (and
+        // therefore the surface's `ForeignSurfaceWidget`) into the live
+        // widget tree on the next layout pass.
+        {
+            let mirrored = {
+                let chrome = frame_builder.chrome();
+                let mut rendered = chrome.tree_mut();
+                foreign::reconcile_foreign_tabs(&state.workspace_tree, &mut rendered)
+            };
+            if mirrored {
+                frame_builder.with_chrome(|st| st.bump());
+            }
+        }
+
         // Decide whether this frame needs repainting *before* doing the
         // expensive layout pass. Both queries below are cheap and don't
         // need a fresh layout: `needs_animation_frame` just walks the
@@ -1376,6 +1393,13 @@ pub fn run() -> ! {
             // value so the next idle tick doesn't see a phantom change.
             last_revision = frame_builder.chrome_revision();
             force_first_paint = false;
+            // The layout pass above published each foreign tab's rect.
+            // Tell the clients what size to render at, then release the
+            // frame throttle for the ones that are actually on screen so
+            // they produce their next buffer. Both are no-ops when no
+            // external client is connected.
+            foreign::flush_configures(&mut state);
+            foreign::release_frame_throttle(&mut state);
         }
         let t_paint_done = iter_t0.elapsed();
 
