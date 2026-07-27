@@ -70,7 +70,7 @@ use std::process::{Command, Stdio};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use crate::shell::state::{CapOverride, Effect, Subject, Workspace};
+use crate::shell::state::{CapOverride, Subject, Workspace};
 
 /// How long an enumeration of installed packages is reused before the
 /// registry + manifests are re-read. The palette queries this on every
@@ -264,12 +264,12 @@ pub fn clear_workspace_capabilities() {
 /// The capabilities published for `app_id`, as the launcher will see
 /// them.
 ///
-/// Filtered to grants whose subject is this app: a capability naming a
-/// person, a room, or another app never reaches the launcher's file at
-/// all. `Restrict` overrides that mention the app are carried through
-/// too — the launcher's decision function needs them to be able to
-/// *narrow* a grant, and dropping them here would silently widen the
-/// sandbox.
+/// Filtered by subject: a capability naming a person, a room, or
+/// another app never reaches this app's file at all.
+///
+/// Both effects travel. A `Restrict` is not a grant, but the launcher's
+/// decision function needs it to be able to *narrow* one — filtering
+/// restrictions out here would silently widen the sandbox.
 pub fn capabilities_for_app(app_id: &str) -> Vec<CapOverride> {
     let want = Subject::app(app_id);
     WORKSPACE_CAPABILITIES
@@ -277,7 +277,6 @@ pub fn capabilities_for_app(app_id: &str) -> Vec<CapOverride> {
         .expect("WORKSPACE_CAPABILITIES poisoned")
         .iter()
         .filter(|c| c.subject == want)
-        .filter(|c| c.effect == Effect::Grant || c.effect == Effect::Restrict)
         .cloned()
         .collect()
 }
@@ -319,7 +318,13 @@ fn write_capabilities_file(
         let _ = std::fs::remove_file(&path);
         return Ok(None);
     }
-    std::fs::create_dir_all(capabilities_dir())?;
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(capabilities_dir())?;
+    }
     let json = serde_json::to_vec(capabilities).map_err(|e| {
         std::io::Error::new(
             std::io::ErrorKind::InvalidData,
