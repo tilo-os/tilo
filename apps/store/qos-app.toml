@@ -15,7 +15,9 @@
 #     target/release/qos-install run    dev.qos.store
 
 [package]
-id      = "dev.qos.store"
+id       = "dev.qos.store"
+name     = "App Store"
+category = "System"
 version = "0.1.0"
 kind    = "app"
 runtime = "qos-runtime/2026.07"
