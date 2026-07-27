@@ -68,6 +68,26 @@ fn test_cluster() -> uuid::Uuid {
     uuid::Uuid::from_u128(0x3f2b_1c00_0000_4000_8000_0000_0000_0001)
 }
 
+/// Block until `n` clients have announced their route.
+///
+/// Connecting and saying `Hello` are separate steps, and only the
+/// second makes a client addressable — the broker routes CRDT traffic
+/// by the announced `(app_id, cluster_id)` pair. A send that races
+/// another client's `Hello` would reach nobody.
+fn wait_for_announced(handle: &collab_broker::BrokerHandle, n: usize) {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while Instant::now() < deadline {
+        if handle.announced_peer_count() >= n {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    panic!(
+        "only {} of {n} clients announced a route within 2s",
+        handle.announced_peer_count()
+    );
+}
+
 fn make_role_attestation(
     issuer_sk: &SigningKey,
     issuer_pk: Ed25519PublicKey,
@@ -169,6 +189,7 @@ fn valid_signed_op_reaches_other_peers_invalid_one_is_dropped() {
             },
         );
     }
+    wait_for_announced(&handle, 3);
 
     // Editor publishes a valid signed op.
     let valid_op = build_signed_op(&editor_sk, editor_pk, artifact, editor_att_id, 1);
@@ -278,6 +299,7 @@ fn replay_of_same_signed_op_is_dropped() {
             },
         );
     }
+    wait_for_announced(&handle, 2);
 
     let op = build_signed_op(&editor_sk, editor_pk, artifact, editor_att_id, 1);
 

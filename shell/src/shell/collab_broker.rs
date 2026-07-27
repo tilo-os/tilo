@@ -1065,6 +1065,18 @@ impl BrokerHandle {
             .unwrap_or(0)
     }
 
+    /// How many connected peers have announced a route (i.e. have
+    /// said `Hello`). Connecting and announcing are separate steps, so
+    /// this is strictly ≤ [`Self::peer_count`]; anything above the
+    /// difference is a peer the broker cannot address yet.
+    pub fn announced_peer_count(&self) -> usize {
+        self.peers
+            .peers
+            .lock()
+            .map(|g| g.iter().filter(|p| p.route().is_some()).count())
+            .unwrap_or(0)
+    }
+
     /// Fan a `CollabEvent` to the connected peers `route` addresses.
     /// The optional `except` skips a single peer id (used by the
     /// libp2p bridge: a remote update should reach every addressed
@@ -1612,6 +1624,20 @@ mod tests {
         }
     }
 
+    /// Block until `n` peers have announced a route. Accepting a
+    /// connection and reading its `Hello` are separate steps, and only
+    /// the second one makes a peer addressable — a send that races the
+    /// second peer's `Hello` would otherwise reach nobody.
+    fn wait_for_announced(handle: &BrokerHandle, n: usize, timeout: Duration) {
+        let deadline = std::time::Instant::now() + timeout;
+        while std::time::Instant::now() < deadline {
+            if handle.announced_peer_count() >= n {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
     /// Connect a CollaborationManager to `path` announcing `app_id` in
     /// cluster `cluster_id`, mirroring the toolkit's own `new()`
     /// constructor but using explicit values so the test is
@@ -1664,6 +1690,7 @@ mod tests {
 
         wait_for_peers(&handle, 3, Duration::from_millis(500));
         assert_eq!(handle.peer_count(), 3, "broker should see all three peers");
+        wait_for_announced(&handle, 3, Duration::from_millis(500));
 
         // Drain the Hello echoes. The broker swallows them, so this is
         // just a steady-state hygiene poll.
@@ -1769,6 +1796,7 @@ mod tests {
         let peer_b = connect_manager(&socket_path);
         let mut peer_c = connect_manager(&socket_path);
         wait_for_peers(&handle, 3, Duration::from_millis(500));
+        wait_for_announced(&handle, 3, Duration::from_millis(500));
 
         // Drop B; its reader thread observes EOF and removes it from
         // the table. We then assert a send from A reaches only C.
@@ -1808,6 +1836,7 @@ mod tests {
         let mut peer_a = connect_manager(&socket_path);
         let mut peer_b = connect_manager(&socket_path);
         wait_for_peers(&handle, 2, Duration::from_millis(500));
+        wait_for_announced(&handle, 2, Duration::from_millis(500));
 
         let _ = peer_a.poll();
         let _ = peer_b.poll();
@@ -1845,6 +1874,7 @@ mod tests {
 
         wait_for_peers(&handle, 3, Duration::from_millis(500));
         assert_eq!(handle.peer_count(), 3, "broker should see all three peers");
+        wait_for_announced(&handle, 3, Duration::from_millis(500));
 
         let _ = alpha_1.poll();
         let _ = alpha_2.poll();
@@ -1904,6 +1934,7 @@ mod tests {
             connect_manager_as(&socket_path, "app-alpha", other_cluster);
 
         wait_for_peers(&handle, 3, Duration::from_millis(500));
+        wait_for_announced(&handle, 3, Duration::from_millis(500));
 
         let _ = same_cluster_sender.poll();
         let _ = same_cluster_peer.poll();
@@ -1961,6 +1992,12 @@ mod tests {
         let mut listener_peer = connect_manager(&socket_path);
 
         wait_for_peers(&handle, 3, Duration::from_millis(500));
+        wait_for_announced(&handle, 2, Duration::from_millis(500));
+        assert_eq!(
+            handle.announced_peer_count(),
+            2,
+            "only the two managers announce a route; the silent client never does",
+        );
         let _ = talker.poll();
         let _ = listener_peer.poll();
 
