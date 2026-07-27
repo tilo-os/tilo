@@ -31,9 +31,20 @@ pub struct InstalledPackage {
 /// Load-and-search wrapper: parses `registry.toml`, returns the
 /// entry matching `pkg_id`, or `None` if it isn't installed.
 pub fn find_installed(pkg_id: &str) -> Result<Option<InstalledPackage>, RegistryError> {
+    Ok(list_installed()?.into_iter().find(|e| e.id == pkg_id))
+}
+
+/// Every package the registry knows about, in file order.
+///
+/// A missing `registry.toml` is "nothing installed", not an error — a
+/// fresh machine has no registry until the first `qos-install install`.
+/// A registry that exists but doesn't parse *is* an error: silently
+/// reporting "no apps" for a corrupt file would hide the breakage from
+/// whoever is looking at an empty launcher.
+pub fn list_installed() -> Result<Vec<InstalledPackage>, RegistryError> {
     let path = default_registry_path()?;
     if !path.exists() {
-        return Ok(None);
+        return Ok(Vec::new());
     }
     let raw = fs::read_to_string(&path).map_err(|e| RegistryError::Read {
         path: path.clone(),
@@ -41,7 +52,7 @@ pub fn find_installed(pkg_id: &str) -> Result<Option<InstalledPackage>, Registry
     })?;
     let reg: Registry = toml::from_str(&raw)
         .map_err(|e| RegistryError::Parse(e.to_string()))?;
-    Ok(reg.entry.into_iter().find(|e| e.id == pkg_id))
+    Ok(reg.entry)
 }
 
 #[derive(Debug, Deserialize)]
@@ -111,6 +122,40 @@ mod tests {
         let entry = found.expect("dev.qos.notes-cli present in registry");
         assert_eq!(entry.id, "dev.qos.notes-cli");
         assert_eq!(entry.payload_root, payload);
+    }
+
+    #[test]
+    fn list_installed_returns_every_entry_in_file_order() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut toml_src = String::new();
+        for id in ["dev.qos.alpha", "dev.qos.beta"] {
+            let payload = tmp.path().join("payloads").join(id);
+            std::fs::create_dir_all(&payload).unwrap();
+            let manifest = payload.join("manifest.toml");
+            std::fs::write(&manifest, "").unwrap();
+            toml_src.push_str(&format!(
+                "[[entry]]\nid = '{id}'\npayload_root = {:?}\nmanifest_path = {:?}\n",
+                payload.display().to_string(),
+                manifest.display().to_string()
+            ));
+        }
+        std::fs::write(tmp.path().join("registry.toml"), toml_src).unwrap();
+
+        // SAFETY: no other thread reads QOS_APPS_DATA_DIR during this test.
+        unsafe { std::env::set_var("QOS_APPS_DATA_DIR", tmp.path()) };
+        let all = list_installed().expect("read");
+        unsafe { std::env::remove_var("QOS_APPS_DATA_DIR") };
+        let ids: Vec<&str> = all.iter().map(|e| e.id.as_str()).collect();
+        assert_eq!(ids, vec!["dev.qos.alpha", "dev.qos.beta"]);
+    }
+
+    #[test]
+    fn list_installed_is_empty_when_registry_missing() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        unsafe { std::env::set_var("QOS_APPS_DATA_DIR", tmp.path()) };
+        let all = list_installed().expect("read");
+        unsafe { std::env::remove_var("QOS_APPS_DATA_DIR") };
+        assert!(all.is_empty());
     }
 
     #[test]

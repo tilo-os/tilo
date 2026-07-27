@@ -183,6 +183,12 @@ rand_core = { version = "0.6", features = ["getrandom"] }
 # supplies the connected-fd lift + service-fd lookup.
 runtime-collab = { path = "../crates/runtime/runtime-collab" }
 runtime-portal = { path = "../crates/runtime/runtime-portal" }
+# Launching installed applications: the shell reads the app registry and
+# package manifests through this crate's types, then execs its
+# `qos-launcher` binary to build the actual bwrap + seccomp + Landlock
+# sandbox. Library-only use here — see `shell::shell::launcher` for why
+# the sandbox itself is built by the binary rather than in-process.
+launcher = { path = "../crates/packaging/launcher" }
 # User root identity + device cert + revocation. See
 # `network::identity` for the peer-side wiring: on connect we
 # expect the remote to present its device pubkey + cert; we validate
