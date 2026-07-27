@@ -25,6 +25,7 @@ pub mod bridge;
 pub mod client_input;
 pub mod foreign;
 pub mod frame;
+pub mod gpu_import;
 pub mod hosted;
 pub mod idle;
 pub mod lock_auth;
