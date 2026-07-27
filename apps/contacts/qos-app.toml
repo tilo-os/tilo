@@ -18,7 +18,9 @@
 # open to Contacts (see the [providers] block).
 
 [package]
-id      = "dev.qos.contacts"
+id       = "dev.qos.contacts"
+name     = "Contacts"
+category = "Office"
 version = "0.1.0"
 kind    = "app"
 runtime = "qos-runtime/2026.07"
