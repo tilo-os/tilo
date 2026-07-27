@@ -1,0 +1,116 @@
+# Sheets — qOS application manifest.
+#
+# Documents under `~/Documents` with a fallback data dir, plus the
+# shared `~/.config/qos/settings.json` for theme/locale. Reads the
+# settings file but does NOT get the account vault — only Mail and
+# Settings do.
+#
+# Pack and install:
+#
+#     cargo build -p sheets -p pkg-cli -p install
+#     mkdir -p target/qpkg/sheets/bin
+#     cp target/debug/sheets target/qpkg/sheets/bin/sheets
+#     target/debug/qos-pkg pack --manifest apps/sheets/qos-app.toml \
+#         --payload target/qpkg/sheets --output target/sheets.qpkg
+#     target/debug/qos-install install target/sheets.qpkg --allow-self-signed
+
+[package]
+id       = "dev.qos.sheets"
+name     = "Sheets"
+category = "Office"
+version  = "0.1.0"
+kind     = "app"
+runtime  = "qos-runtime/2026.07"
+
+# The workspace pins `-C target-cpu=x86-64-v3` in .cargo/config.toml,
+# so the shipped binaries genuinely require AVX2/BMI2/FMA.
+[package.isa]
+x86_64 = "v3"
+
+[publisher]
+identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
+signature = ""
+
+[[trust.attested_by]]
+attestor  = "qos-demo/2026.07"
+claim     = "deadbeef"
+signature = ""
+
+[sandbox]
+# `net` deliberately absent from `namespaces`: this app opens no
+# socket of its own.
+namespaces = [
+    "user",
+    "pid",
+    "uts",
+    "ipc",
+    "mount",
+]
+seccomp    = "qos-default"
+landlock   = "strict"
+
+[sandbox.fs]
+read = [
+    "$XDG_RUNTIME_DIR/wayland-0",
+    "/usr/lib64",
+    "/usr/lib",
+    "/usr/share/fonts",
+    "/usr/share/fontconfig",
+    "/etc/fonts",
+    "/usr/share/vulkan",
+    "/usr/share/glvnd",
+    "/usr/share/drirc.d",
+    "/usr/share/libdrm",
+    "/usr/share/nvidia",
+    "/etc/vulkan",
+    "/etc/machine-id",
+    "/etc/ld.so.cache",
+    "/etc/ld.so.conf",
+    "/etc/ld.so.conf.d",
+    "/usr/lib/locale",
+    "/sys",
+    "~/.config/qos/settings.json",
+]
+write = [
+    "~/.cache/mesa_shader_cache",
+    "~/.cache/mesa_shader_cache_db",
+    "~/.cache/radv_builtin_shaders",
+    "/dev/dri",
+    "/dev/nvidia0",
+    "/dev/nvidiactl",
+    "/dev/nvidia-modeset",
+    "/dev/nvidia-uvm",
+    "/dev/nvidia-uvm-tools",
+    "/dev/nvidia-caps",
+    "~/Documents",
+    "~/.local/share/qos/sheets",
+]
+
+[sandbox.net]
+mode = "off"
+
+[sandbox.portals]
+file-chooser = "via-host"
+
+[sandbox.services]
+collab = "optional@1"
+qos-fs = "optional@1"
+spellcheck = "optional@1"
+
+[entrypoint]
+bin             = "bin/sheets"
+type            = "gui"
+splash-segments = ["bin/sheets[0x0:0x400000]"]
+splash-budget   = 250
+
+[providers]
+mime = [
+    "application/vnd.oasis.opendocument.spreadsheet",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "text/csv",
+]
+ext  = [
+    "ods",
+    "xlsx",
+    "csv",
+]

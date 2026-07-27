@@ -1,0 +1,119 @@
+# Browser — qOS application manifest.
+#
+# A web browser's egress set is the web, so `mode = "host"`. The
+# adblock filter lists (easylist.to, secure.fanboy.co.nz) are fetched
+# into the cache dir even in the hermetic default build; the WPE
+# engine (feature `wpe`) additionally needs the GStreamer plugin path
+# for media playback.
+#
+# Pack and install:
+#
+#     cargo build -p browser -p pkg-cli -p install
+#     mkdir -p target/qpkg/browser/bin
+#     cp target/debug/browser target/qpkg/browser/bin/browser
+#     target/debug/qos-pkg pack --manifest apps/browser/qos-app.toml \
+#         --payload target/qpkg/browser --output target/browser.qpkg
+#     target/debug/qos-install install target/browser.qpkg --allow-self-signed
+
+[package]
+id       = "dev.qos.browser"
+name     = "Browser"
+category = "Network"
+version  = "0.1.0"
+kind     = "app"
+runtime  = "qos-runtime/2026.07"
+
+# The workspace pins `-C target-cpu=x86-64-v3` in .cargo/config.toml,
+# so the shipped binaries genuinely require AVX2/BMI2/FMA.
+[package.isa]
+x86_64 = "v3"
+
+[publisher]
+identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
+signature = ""
+
+[[trust.attested_by]]
+attestor  = "qos-demo/2026.07"
+claim     = "deadbeef"
+signature = ""
+
+[sandbox]
+namespaces = [
+    "user",
+    "pid",
+    "uts",
+    "ipc",
+    "mount",
+    "net",
+]
+seccomp    = "qos-default"
+landlock   = "strict"
+
+[sandbox.fs]
+read = [
+    "$XDG_RUNTIME_DIR/wayland-0",
+    "/usr/lib64",
+    "/usr/lib",
+    "/usr/share/fonts",
+    "/usr/share/fontconfig",
+    "/etc/fonts",
+    "/usr/share/vulkan",
+    "/usr/share/glvnd",
+    "/usr/share/drirc.d",
+    "/usr/share/libdrm",
+    "/usr/share/nvidia",
+    "/etc/vulkan",
+    "/etc/machine-id",
+    "/etc/ld.so.cache",
+    "/etc/ld.so.conf",
+    "/etc/ld.so.conf.d",
+    "/usr/lib/locale",
+    "/sys",
+    "/usr/lib64/gstreamer-1.0",
+    "/usr/share/gstreamer-1.0",
+    "/etc/resolv.conf",
+    "/etc/hosts",
+    "/etc/pki",
+    "/etc/ssl",
+    "/etc/crypto-policies",
+]
+write = [
+    "~/.cache/mesa_shader_cache",
+    "~/.cache/mesa_shader_cache_db",
+    "~/.cache/radv_builtin_shaders",
+    "/dev/dri",
+    "/dev/nvidia0",
+    "/dev/nvidiactl",
+    "/dev/nvidia-modeset",
+    "/dev/nvidia-uvm",
+    "/dev/nvidia-uvm-tools",
+    "/dev/nvidia-caps",
+    "~/.config/qos-browser",
+    "~/.local/share/qos-browser",
+    "~/.cache/qos-browser",
+]
+
+[sandbox.net]
+mode = "host"
+
+[sandbox.portals]
+
+[sandbox.services]
+collab = "optional@1"
+qos-fs = "optional@1"
+
+[entrypoint]
+bin             = "bin/browser"
+type            = "gui"
+splash-segments = ["bin/browser[0x0:0x400000]"]
+splash-budget   = 250
+
+[providers]
+mime = [
+    "text/html",
+    "application/xhtml+xml",
+]
+ext  = [
+    "html",
+    "htm",
+]
