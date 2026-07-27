@@ -8,6 +8,23 @@ pub fn state_json_path() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("state.json"))
 }
 
+/// Where the compositor exports the capability list the FUSE mount
+/// enforces, and where `qos-fs --acl` reads it from.
+///
+/// One path, named in one place, so the two processes cannot end up
+/// enforcing different lists. `QOS_FS_ACL_PATH` overrides it for tests
+/// and for a session running a mount somewhere unusual.
+pub fn fs_capability_export_path() -> PathBuf {
+    if let Ok(v) = std::env::var("QOS_FS_ACL_PATH")
+        && !v.is_empty()
+    {
+        return PathBuf::from(v);
+    }
+    dirs::config_dir()
+        .map(|c| c.join("qos").join("fs-capabilities.json"))
+        .unwrap_or_else(|| PathBuf::from("fs-capabilities.json"))
+}
+
 /// Write the tree to `path`, atomically.
 ///
 /// Capabilities whose expiry does not survive a restart

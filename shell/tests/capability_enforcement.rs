@@ -406,6 +406,68 @@ fn always_survives_a_restart_and_session_does_not() {
 }
 
 #[test]
+fn the_filesystem_capability_export_carries_exactly_the_path_capabilities() {
+    // The FUSE mount is a separate process enforcing the list it reads
+    // from this file. If the compositor never writes it, the
+    // filesystem's enforcement is real but always enforcing nothing —
+    // which is indistinguishable from having no enforcement at all.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let acl_path = dir.path().join("fs-capabilities.json");
+
+    let (mut tree, id) = room_owned_by(ALICE);
+    tree.fs_acl_path = Some(acl_path.clone());
+    tree.grant_in_workspace(
+        id,
+        &ALICE.to_string(),
+        CapOverride::grant(
+            Subject::person(BOB),
+            Scope::FsPath("/var/workspace/design".into()),
+            Verb::Write,
+        )
+        .with_id("bob-design"),
+    )
+    .expect("grant a path");
+    // A non-path capability must NOT reach the filesystem: it has no
+    // business deciding room membership.
+    tree.grant_in_workspace(
+        id,
+        &ALICE.to_string(),
+        CapOverride::membership(Subject::person(BOB), id.raw().to_string(), Verb::Write)
+            .with_id("bob-membership"),
+    )
+    .expect("grant membership");
+
+    let raw = std::fs::read_to_string(&acl_path).expect("the export must exist after a grant");
+    let exported: Vec<CapOverride> =
+        serde_json::from_str(&raw).expect("the export must be the array the filesystem parses");
+
+    assert!(
+        exported.iter().any(|c| c.id == "bob-design"),
+        "a path capability must reach the filesystem"
+    );
+    assert!(
+        !exported.iter().any(|c| c.id == "bob-membership"),
+        "room membership is not a filesystem fact and must not be exported"
+    );
+    assert!(
+        exported
+            .iter()
+            .all(|c| matches!(c.scope, Scope::FsPath(_))),
+        "only path-scoped capabilities belong in the filesystem's list"
+    );
+
+    // Revoking rewrites the file, so the filesystem stops honouring it.
+    assert!(tree.revoke_in_workspace(id, &ALICE.to_string(), "bob-design"));
+    let raw = std::fs::read_to_string(&acl_path).expect("export still present");
+    let exported: Vec<CapOverride> = serde_json::from_str(&raw).expect("parse");
+    assert!(
+        !exported.iter().any(|c| c.id == "bob-design"),
+        "a revoked capability must disappear from the filesystem's list, or the mount \
+         keeps honouring access the owner took away"
+    );
+}
+
+#[test]
 fn an_expired_capability_stops_working_without_being_revoked() {
     let (mut tree, id) = room_owned_by(ALICE);
     let past = 1_000u64; // long before any plausible `now`

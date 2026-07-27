@@ -1121,6 +1121,13 @@ pub struct WorkspaceTree {
     /// `Always` behaved exactly like `EndOfSession`.
     #[serde(skip)]
     pub persist_path: Option<std::path::PathBuf>,
+    /// Where to export the capability list the FUSE mount enforces.
+    ///
+    /// `None` disables the export. The compositor sets it at boot to the
+    /// same path it passes to `qos-fs --acl`, so the filesystem and the
+    /// compositor decide from one list rather than two.
+    #[serde(skip)]
+    pub fs_acl_path: Option<std::path::PathBuf>,
 }
 
 impl Default for WorkspaceTree {
@@ -1133,6 +1140,7 @@ impl Default for WorkspaceTree {
             collaborators: Vec::new(),
             doc: AutoCommit::new(),
             persist_path: None,
+            fs_acl_path: None,
         }
     }
 }
@@ -1950,11 +1958,54 @@ impl WorkspaceTree {
     /// silently losing an `Always` grant on a crash — is the failure
     /// mode we are fixing.
     pub fn flush_to_disk(&self) {
-        let Some(path) = &self.persist_path else {
+        if let Some(path) = &self.persist_path
+            && let Err(e) = crate::shell::persist::save_tree_to(self, path)
+        {
+            tracing::warn!("capability persistence failed: {e}");
+        }
+        self.export_fs_capabilities();
+    }
+
+    /// Write the capability list the filesystem enforces.
+    ///
+    /// The FUSE mount is a separate process with its own address space,
+    /// so it cannot read `self`. It reads a JSON array of capabilities
+    /// from the path its `--acl` flag names, and this is what writes it.
+    /// Without this the filesystem's enforcement is real but always
+    /// enforcing an empty list.
+    ///
+    /// Every workspace's capabilities are exported together, because
+    /// `/var/workspace` is one mount for the whole session. Path scopes
+    /// are absolute, so workspaces with disjoint subtrees stay
+    /// disjoint — but two workspaces granting the *same* path to
+    /// different subjects would union, which is a known limitation of
+    /// having one mount rather than one per room.
+    ///
+    /// Written atomically via a temp file + rename, so the filesystem
+    /// never reads a half-written list and concludes the user has no
+    /// permissions.
+    pub fn export_fs_capabilities(&self) {
+        let Some(path) = &self.fs_acl_path else {
             return;
         };
-        if let Err(e) = crate::shell::persist::save_tree_to(self, path) {
-            tracing::warn!("capability persistence failed: {e}");
+        let caps: Vec<&CapOverride> = self
+            .workspaces
+            .iter()
+            .flat_map(|w| w.capabilities.iter())
+            .filter(|c| matches!(c.scope, Scope::FsPath(_)))
+            .collect();
+        let Ok(json) = serde_json::to_vec_pretty(&caps) else {
+            return;
+        };
+        let tmp = path.with_extension("json.tmp");
+        if let Some(parent) = path.parent()
+            && let Err(e) = std::fs::create_dir_all(parent)
+        {
+            tracing::warn!("filesystem capability export failed: {e}");
+            return;
+        }
+        if let Err(e) = std::fs::write(&tmp, &json).and_then(|()| std::fs::rename(&tmp, path)) {
+            tracing::warn!("filesystem capability export failed: {e}");
         }
     }
 
