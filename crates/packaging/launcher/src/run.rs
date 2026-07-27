@@ -156,6 +156,21 @@ pub struct RunOptions {
     /// `runtime-identity::load()` finds a real identity to attach to
     /// join_channel presence + signed-op attribution.
     pub identity_host_path: Option<PathBuf>,
+    /// Workspace (collaboration room) this launch belongs to, as the
+    /// compositor names it. Forwarded into the sandbox as
+    /// [`crate::sandbox::WORKSPACE_ID_ENV`].
+    ///
+    /// This is what makes collaboration between two locally-hosted
+    /// apps possible at all: the toolkit turns it into the cluster id
+    /// every CRDT delta is addressed to, so apps sharing a workspace
+    /// share a room and apps in different workspaces do not.
+    ///
+    /// `None` — the default — means the child sees no
+    /// `QOS_WORKSPACE_ID`, which is the correct answer for a launch
+    /// that isn't inside a session (`qos-launcher run` from a shell,
+    /// the CLI shim, tests). Apps then fall back to their
+    /// standalone-dev identity.
+    pub workspace_id: Option<String>,
     /// Host path of a JSON file holding the `Vec<CapOverride>` the user
     /// granted in the workspace this app is being launched into. Written
     /// by the compositor immediately before spawning us.
@@ -638,6 +653,15 @@ pub fn run_with(
         argv.push(entry);
     }
 
+    // Workspace id. Spliced the same way — in front of the entrypoint
+    // token — so the child learns which collaboration room it was
+    // opened into. Absent when the launch has no session behind it.
+    if let Some(workspace_id) = opts.workspace_id.as_deref() {
+        let entry = argv.pop().expect("argv non-empty after build_bwrap_argv");
+        crate::sandbox::push_workspace_id(&mut argv, workspace_id);
+        argv.push(entry);
+    }
+
     // Wayland display. Spliced in front of the entrypoint token (the
     // last argv entry) so bwrap parses it as a flag, exactly like the
     // minimal-libs binds above. A GUI app with no `wayland_socket`
@@ -897,6 +921,11 @@ pub fn run_with_captured(
         identity_arg,
         &capabilities,
     );
+    if let Some(workspace_id) = opts.workspace_id.as_deref() {
+        let entry = argv.pop().expect("argv non-empty after build_bwrap_argv");
+        crate::sandbox::push_workspace_id(&mut argv, workspace_id);
+        argv.push(entry);
+    }
     let mut prefix = vec!["--seccomp".to_string(), SECCOMP_CHILD_FD.to_string()];
     prefix.extend(argv.drain(..));
     argv = prefix;
