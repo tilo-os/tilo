@@ -1017,10 +1017,16 @@ mod tests {
                 && w[2] == "/var/workspace/books"),
             "a Write capability must produce a read-write bind: {argv:?}"
         );
-        assert!(
-            !argv.iter().any(|a| a == "--ro-bind-try"),
-            "a Write capability must not also emit a read-only bind: {argv:?}"
-        );
+        // Scoped to the granted path: the manifest's own `fs.read`
+        // declarations legitimately emit read-only binds of their own.
+        for (flag, src, _dst) in bind_triples(&argv) {
+            if src == "/var/workspace/books" {
+                assert!(
+                    flag == "--bind" || flag == "--bind-try",
+                    "a Write capability must not also emit the read-only bind `{flag}`: {argv:?}"
+                );
+            }
+        }
     }
 
     #[test]
