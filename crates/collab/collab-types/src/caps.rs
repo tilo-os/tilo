@@ -90,28 +90,228 @@ impl Verb {
     }
 }
 
+/// A named principal — the string-keyed half of the subject space.
+///
+/// [`Subject::User`] names a person by signing key, which is the right
+/// answer whenever a signature is available. Most enforcement points in
+/// the OS have no signature to check: the portal knows a wayland
+/// app-id, an agent broker knows an agent name, an invite link carries
+/// a bearer token, and a room grant names a room. `Principal` is the
+/// one vocabulary for all of those, tagged by *kind* so the UI can
+/// never confuse "Bob, who I shared one file with" for "the Ebook app,
+/// which asked for a Documents path".
+///
+/// The kind tag is load-bearing, not decoration. A share list renders
+/// [`Principal::Person`] rows; a workspace roster renders room
+/// membership. They are the same machinery and must never be the same
+/// list — see [`Principal::is_person`].
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub enum Principal {
+    /// A human, by stable id. When the person has a signing key the id
+    /// is its lowercase hex (see [`Principal::person_from_key`]) so a
+    /// `Person` principal and a [`Subject::User`] naming the same human
+    /// are interchangeable.
+    Person(String),
+    /// An application, by its stable app id (the wayland app-id the
+    /// portal sees). This is the subject of the *only* case that
+    /// prompts the user: an app reaching outside what it owns.
+    App(String),
+    /// An automated agent acting for the user. Same shape as an app —
+    /// a subject holding a scoped, revocable capability set — but
+    /// tagged distinctly so it can be listed and revoked as an agent.
+    Agent(String),
+    /// A bearer token: whoever presents this token id holds the
+    /// capability. Used by invite links and one-shot share URLs.
+    Token(String),
+    /// A room (workspace). A capability whose subject is a room is held
+    /// by everyone currently in that room; a capability whose
+    /// *resource* is a room is room membership itself.
+    Room(String),
+}
+
+impl Principal {
+    /// Name a person by their Ed25519 public key, in the canonical
+    /// lowercase-hex form. Keeps [`Subject::User`] and
+    /// `Subject::Principal(Principal::Person(..))` interchangeable.
+    pub fn person_from_key(key: Ed25519PublicKey) -> Self {
+        let mut s = String::with_capacity(64);
+        for b in key.0.iter() {
+            use std::fmt::Write as _;
+            let _ = write!(s, "{b:02x}");
+        }
+        Principal::Person(s)
+    }
+
+    /// Is this principal a human?
+    ///
+    /// The share-list / roster split keys off this: a capability whose
+    /// subject is a person belongs on the *resource's* share list, and
+    /// only room membership belongs in the roster.
+    pub fn is_person(&self) -> bool {
+        matches!(self, Principal::Person(_))
+    }
+
+    /// The bare id string, without the kind tag.
+    pub fn id(&self) -> &str {
+        match self {
+            Principal::Person(s)
+            | Principal::App(s)
+            | Principal::Agent(s)
+            | Principal::Token(s)
+            | Principal::Room(s) => s.as_str(),
+        }
+    }
+}
+
 /// Who a permission is about.
 ///
 /// A permission's subject is either a whole role (the cap-bundle every
-/// holder of that role inherits) or one specific identity (an
-/// individual override / per-resource share).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// holder of that role inherits), one specific signing identity, or a
+/// named [`Principal`] (person / app / agent / bearer token / room).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub enum Subject {
     /// Everyone holding this role in the channel.
     Role(Role),
     /// One specific identity, by public key.
     User(Ed25519PublicKey),
+    /// A named principal. The general case.
+    Principal(Principal),
 }
 
 impl Subject {
     /// Does this subject cover an actor with role `role` and key
     /// `author`?
+    ///
+    /// Signature-only form, kept for the wire validator which always
+    /// has both. [`Subject::matches_actor`] is the general form.
     pub fn matches(&self, role: Role, author: Ed25519PublicKey) -> bool {
+        self.matches_actor(&Actor::signed(role, author))
+    }
+
+    /// Does this subject cover `actor`?
+    ///
+    /// A `Role` subject matches only an actor that *holds* a role — an
+    /// app or bearer token carries none and is therefore never covered
+    /// by a role-wide grant. That is deliberate: role bundles describe
+    /// people in a room, and an app is not a person in a room.
+    pub fn matches_actor(&self, actor: &Actor) -> bool {
         match self {
-            Subject::Role(r) => *r == role,
-            Subject::User(pk) => *pk == author,
+            Subject::Role(r) => actor.role == Some(*r),
+            Subject::User(pk) => {
+                actor.key == Some(*pk)
+                    || actor.principals.contains(&Principal::person_from_key(*pk))
+            }
+            Subject::Principal(p) => {
+                if let (Principal::Person(_), Some(k)) = (p, actor.key)
+                    && *p == Principal::person_from_key(k)
+                {
+                    return true;
+                }
+                actor.principals.contains(p)
+            }
         }
+    }
+
+    /// Convenience constructor for an app subject.
+    pub fn app(app_id: impl Into<String>) -> Self {
+        Subject::Principal(Principal::App(app_id.into()))
+    }
+
+    /// Convenience constructor for a person subject.
+    pub fn person(user_id: impl Into<String>) -> Self {
+        Subject::Principal(Principal::Person(user_id.into()))
+    }
+
+    /// Convenience constructor for an agent subject.
+    pub fn agent(agent_id: impl Into<String>) -> Self {
+        Subject::Principal(Principal::Agent(agent_id.into()))
+    }
+
+    /// Convenience constructor for a bearer-token subject.
+    pub fn token(token_id: impl Into<String>) -> Self {
+        Subject::Principal(Principal::Token(token_id.into()))
+    }
+
+    /// Convenience constructor for a room subject.
+    pub fn room(room_id: impl Into<String>) -> Self {
+        Subject::Principal(Principal::Room(room_id.into()))
+    }
+}
+
+/// The thing asking to act.
+///
+/// An actor presents *at most one* role (people in a room have one;
+/// apps, agents and bearer tokens have none), optionally a signing key,
+/// and a set of [`Principal`]s it can prove it is — its own person id,
+/// its app id, the rooms it is in, any bearer token it presented.
+///
+/// `role: None` is the fail-closed default and the correct value for
+/// every non-person subject: with no role there is no base authority,
+/// so such an actor can only ever act through an explicit capability.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Actor {
+    /// The role this actor holds in the room, if it holds one.
+    pub role: Option<Role>,
+    /// The actor's signing key, if it has one.
+    pub key: Option<Ed25519PublicKey>,
+    /// Every principal this actor presents.
+    pub principals: Vec<Principal>,
+}
+
+impl Actor {
+    /// A person in a room, identified by signing key.
+    pub fn signed(role: Role, key: Ed25519PublicKey) -> Self {
+        Self {
+            role: Some(role),
+            key: Some(key),
+            principals: vec![Principal::person_from_key(key)],
+        }
+    }
+
+    /// A person in a room, identified by a stable string id (the shape
+    /// the compositor's collaborator table uses).
+    pub fn person(role: Option<Role>, user_id: impl Into<String>) -> Self {
+        Self {
+            role,
+            key: None,
+            principals: vec![Principal::Person(user_id.into())],
+        }
+    }
+
+    /// An application. Holds no role — apps act only through explicit
+    /// capabilities, which is what makes the portal prompt the *only*
+    /// user-facing permission dialog.
+    pub fn app(app_id: impl Into<String>) -> Self {
+        Self {
+            role: None,
+            key: None,
+            principals: vec![Principal::App(app_id.into())],
+        }
+    }
+
+    /// An automated agent. Same authority shape as an app.
+    pub fn agent(agent_id: impl Into<String>) -> Self {
+        Self {
+            role: None,
+            key: None,
+            principals: vec![Principal::Agent(agent_id.into())],
+        }
+    }
+
+    /// Add a principal (a room the actor is in, a token it presented,
+    /// the app it is running as).
+    pub fn with_principal(mut self, p: Principal) -> Self {
+        if !self.principals.contains(&p) {
+            self.principals.push(p);
+        }
+        self
+    }
+
+    /// Add room membership.
+    pub fn in_room(self, room: impl Into<String>) -> Self {
+        self.with_principal(Principal::Room(room.into()))
     }
 }
 
@@ -136,21 +336,153 @@ pub enum Scope {
     /// One specific artifact.
     ResourceInstance(ArtifactId),
     /// A filesystem path prefix. Filesystem-only; inert against ops.
+    ///
+    /// Matching is **recursive and component-aligned**: a scope on
+    /// `/w/docs` covers `/w/docs` and `/w/docs/a/b.txt` but not
+    /// `/w/docsX`. This is the inheritance-down-the-tree the file
+    /// permission model needs.
     FsPath(String),
+    /// A hardware or system device class the portal brokers:
+    /// `"camera"`, `"microphone"`, `"screencast"`. Filesystem- and
+    /// op-inert.
+    Device(String),
+    /// An outbound network host. `"*"` matches every host; a leading
+    /// dot (`".example.com"`) matches the domain and its subdomains;
+    /// anything else is an exact hostname.
+    NetHost(String),
+    /// One action an app exports, named `(app, action)`. The finest
+    /// scope there is: it authorises exactly one verb-bearing operation
+    /// on one app's surface.
+    Action { app: String, action: String },
+    /// A room (workspace) as a *resource*. A capability whose scope is
+    /// a room and whose subject is a person **is** that person's room
+    /// membership — the same machinery as any other share, which is
+    /// why there is no second sharing system.
+    Room(String),
 }
 
 impl Scope {
     /// Does this scope apply to an op with the given resource context?
     pub fn matches_op(&self, ctx: &ResourceScope) -> bool {
-        match self {
-            Scope::Workspace => true,
-            Scope::App(a) => ctx.app.as_deref() == Some(a.as_str()),
-            Scope::ResourceType(k) => ctx.kind == *k,
-            Scope::ResourceInstance(i) => ctx.instance == *i,
-            // Filesystem-path scopes do not describe CRDT ops.
-            Scope::FsPath(_) => false,
+        self.matches_resource(&ResourceRef::Artifact {
+            app: ctx.app.clone(),
+            kind: ctx.kind,
+            instance: ctx.instance,
+        })
+    }
+
+    /// Does this scope cover `resource`?
+    ///
+    /// Scopes **nest**: `Workspace` covers everything, `App(a)` covers
+    /// every artifact and action belonging to `a`, and `FsPath(p)`
+    /// covers every path under `p`. A scope that is about a different
+    /// enforcement point than the resource (an fs-path scope asked
+    /// about a CRDT op, a device scope asked about a path) simply does
+    /// not match — it is inert, never permissive.
+    pub fn matches_resource(&self, resource: &ResourceRef) -> bool {
+        match (self, resource) {
+            (Scope::Workspace, _) => true,
+
+            (Scope::App(a), ResourceRef::App(b)) => a == b,
+            (Scope::App(a), ResourceRef::Artifact { app: Some(b), .. }) => a == b,
+            (Scope::App(a), ResourceRef::Action { app: b, .. }) => a == b,
+            (Scope::App(_), _) => false,
+
+            (Scope::ResourceType(k), ResourceRef::Artifact { kind, .. }) => k == kind,
+            (Scope::ResourceType(_), _) => false,
+
+            (Scope::ResourceInstance(i), ResourceRef::Artifact { instance, .. }) => i == instance,
+            (Scope::ResourceInstance(_), _) => false,
+
+            (Scope::FsPath(prefix), ResourceRef::FsPath(path)) => path_covers(prefix, path),
+            (Scope::FsPath(_), _) => false,
+
+            (Scope::Device(d), ResourceRef::Device(e)) => d == e,
+            (Scope::Device(_), _) => false,
+
+            (Scope::NetHost(h), ResourceRef::NetHost(target)) => host_covers(h, target),
+            (Scope::NetHost(_), _) => false,
+
+            (Scope::Action { app, action }, ResourceRef::Action { app: b, action: c }) => {
+                app == b && action == c
+            }
+            (Scope::Action { .. }, _) => false,
+
+            (Scope::Room(r), ResourceRef::Room(s)) => r == s,
+            (Scope::Room(_), _) => false,
         }
     }
+}
+
+/// Does the path-prefix `prefix` cover `path`, respecting component
+/// boundaries?
+///
+/// `/` covers everything. `/w/docs` covers `/w/docs` and
+/// `/w/docs/a.txt`, but **not** `/w/docsX` — a prefix that stops
+/// mid-component is not a parent directory. This is the same rule
+/// `fs::acl::prefix_covers` implements; the two enforcement points must
+/// agree byte-for-byte or a path could be readable through one and not
+/// the other.
+pub fn path_covers(prefix: &str, path: &str) -> bool {
+    if prefix == "/" || prefix.is_empty() {
+        return true;
+    }
+    let prefix = prefix.strip_suffix('/').unwrap_or(prefix);
+    if path == prefix {
+        return true;
+    }
+    let mut with_sep = String::with_capacity(prefix.len() + 1);
+    with_sep.push_str(prefix);
+    with_sep.push('/');
+    path.starts_with(&with_sep)
+}
+
+/// Does the host pattern `pattern` cover `host`?
+///
+/// `"*"` covers every host. A pattern starting with `.` covers the
+/// domain and every subdomain (`.example.com` covers `example.com` and
+/// `api.example.com`). Anything else is an exact, case-insensitive
+/// match. Deliberately *not* a glob: `*.evil.com` style patterns invite
+/// mistakes and this is a security boundary.
+pub fn host_covers(pattern: &str, host: &str) -> bool {
+    if pattern == "*" {
+        return true;
+    }
+    let pattern = pattern.to_ascii_lowercase();
+    let host = host.to_ascii_lowercase();
+    if let Some(domain) = pattern.strip_prefix('.') {
+        return host == domain || host.ends_with(&pattern);
+    }
+    pattern == host
+}
+
+/// A resource a subject might act on.
+///
+/// Resources nest — see [`Scope::matches_resource`]. **Showing** a
+/// resource is not an action and needs no capability; only *acting* on
+/// one is checked.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ResourceRef {
+    /// The room/workspace itself.
+    Workspace,
+    /// An app's own surface, as a whole.
+    App(String),
+    /// One CRDT artifact.
+    Artifact {
+        app: Option<String>,
+        kind: ArtifactKind,
+        instance: ArtifactId,
+    },
+    /// A filesystem path (absolute, already normalised by the caller).
+    FsPath(String),
+    /// A brokered device: `"camera"`, `"microphone"`, `"screencast"`.
+    Device(String),
+    /// An outbound network host.
+    NetHost(String),
+    /// One exported action on one app.
+    Action { app: String, action: String },
+    /// A room, as the target of a membership capability.
+    Room(String),
 }
 
 /// The resource context an op carries, used to match [`Scope`]s.
