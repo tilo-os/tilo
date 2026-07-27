@@ -29,7 +29,7 @@ use zbus::object_server::SignalContext;
 use zbus::names::OwnedUniqueName;
 use zbus::zvariant::{ObjectPath, OwnedValue, Value};
 
-use crate::shell::state::{Capability, GrantScope};
+use crate::shell::state::{Capability, GRANT_ALWAYS, GRANT_ONCE, GRANT_SESSION};
 
 use super::screencast_pipewire::{PipewireStreamInfo, PipewireStreamRequest};
 use super::{
@@ -80,7 +80,7 @@ impl ScreenCastBackend {
         let sender = hdr.sender().cloned().map(OwnedUniqueName::from);
         let caller = FileChooserBackend::resolve_caller(&self.ctx, sender.as_ref(), &app_id);
         let cap_template = Capability::Screencast {
-            scope: GrantScope::Once,
+            scope: GRANT_ONCE,
         };
         let outcome = flow::resolve(
             &self.ctx,
@@ -113,7 +113,7 @@ impl ScreenCastBackend {
         let sender = hdr.sender().cloned().map(OwnedUniqueName::from);
         let caller = FileChooserBackend::resolve_caller(&self.ctx, sender.as_ref(), &app_id);
         let cap_template = Capability::Screencast {
-            scope: GrantScope::Once,
+            scope: GRANT_ONCE,
         };
         let outcome = flow::resolve(
             &self.ctx,
@@ -220,7 +220,8 @@ mod tests {
             roles: vec![],
             workspace_files: vec![],
             collaborators: vec![],
-            grants: HashMap::new(),
+            owner: None,
+            capabilities: Vec::new(),
             shared_surfaces: HashMap::new(),
         }
     }

@@ -44,14 +44,15 @@
 //!
 //! ## Portal grants
 //!
-//! [`request_grant`] is a placeholder — the real grant dance
-//! goes through the portal (`runtime-portal`) and involves a
-//! human confirmation. The v0 implementation returns
-//! `NotAvailable::ServiceFdMissing` when no portal is present
-//! and `Ok(())` when one is (i.e. we DELIBERATELY don't gate
-//! CLI apps on portal grants today; the sandbox's declared
-//! `sandbox.fs.write` covers most use-cases). When the compositor
-//! grows a text/dbus portal, wire the real call here.
+//! This SDK exposes **no** grant API. Access control for a CLI
+//! app is the launcher's declarative sandbox (`sandbox.fs.read` /
+//! `sandbox.fs.write` / `sandbox.net`) plus the capability model
+//! in `collab-types::caps`, both enforced outside the app. A
+//! `request_grant` helper that returned `Ok(())` without asking
+//! anyone used to live here; a permission call that always
+//! succeeds is worse than no permission call, so it is gone. When
+//! the compositor grows a text/dbus portal, add the real request
+//! here — one that can actually say no.
 //!
 //! ## Output helpers
 //!
@@ -69,11 +70,9 @@ use anyhow::Result;
 pub use runtime::NotAvailable;
 pub use runtime::is_qos_native;
 
-pub mod grant;
 pub mod output;
 pub mod workspace;
 
-pub use grant::{Grant, request_grant};
 pub use output::{OutputBuilder, output};
 pub use workspace::{
     WorkspaceHandle, act, is_workspace_available, resolve_workspace_path, workspace_root,
