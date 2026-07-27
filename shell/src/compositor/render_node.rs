@@ -43,6 +43,7 @@
 //!    the compositor would have to reject.
 
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 /// Env override: absolute path to the DRM render node to advertise as
 /// the dmabuf main device. Set this on a multi-GPU box to pin clients to
@@ -246,6 +247,28 @@ pub fn probe() -> Result<RenderNode, ProbeError> {
         }
     }
     Err(ProbeError::NoneUsable(rejected))
+}
+
+/// The node the running compositor advertised, published by
+/// [`crate::compositor::state::State::new`].
+///
+/// The buffer-import side ([`crate::compositor::foreign`]) needs the
+/// same node the protocol side advertised, and it is reached from a
+/// process-wide store with no `State` in scope — so the decision is
+/// published here once rather than threaded through every call site.
+static ADVERTISED: OnceLock<PathBuf> = OnceLock::new();
+
+/// Record the node advertised as `dmabuf_feedback.main_device`.
+/// Idempotent: the first caller wins, so a second `State` in the same
+/// process (tests) cannot repoint a live importer at another GPU.
+pub fn set_advertised(path: PathBuf) {
+    let _ = ADVERTISED.set(path);
+}
+
+/// The node recorded by [`set_advertised`], if a dmabuf global was
+/// advertised at all.
+pub fn advertised() -> Option<&'static Path> {
+    ADVERTISED.get().map(PathBuf::as_path)
 }
 
 #[cfg(test)]
