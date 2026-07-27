@@ -58,6 +58,13 @@ enum Cmd {
         /// accepted; a strict deployment pins one here.
         #[arg(long)]
         require_runtime_publisher: Option<String>,
+        /// Host path of the Wayland socket the app should connect to,
+        /// e.g. `/run/user/1000/wayland-1`. Bound into the sandbox at
+        /// `/run/user/<uid>/wayland-0` with `WAYLAND_DISPLAY` set to
+        /// match. Omit for apps that don't need a display — nothing is
+        /// inherited from the launcher's own environment.
+        #[arg(long)]
+        wayland_socket: Option<PathBuf>,
     },
     /// Launch a CLI command from an already-installed package. Used
     /// by the PATH shim (`qos-cli-shim`) so a user typing `notes` in
@@ -113,6 +120,7 @@ fn main() -> ExitCode {
             allow_missing_runtime,
             allow_unsigned_runtime,
             require_runtime_publisher,
+            wayland_socket,
         } => {
             if minimal_libs {
                 eprintln!(
@@ -132,6 +140,7 @@ fn main() -> ExitCode {
                 allow_unsigned_runtime,
                 require_runtime_publisher,
                 identity_host_path: None,
+                wayland_socket,
             };
             match run(&manifest, &payload_root, &opts) {
                 Ok(status) => {
@@ -260,6 +269,8 @@ fn run_installed(
             .ok()
             .filter(|s| !s.is_empty()),
         identity_host_path: None,
+        // CLI launches are stdio-only: no display in the sandbox.
+        wayland_socket: None,
     };
     match launcher::run::run_with(&manifest, &entry.payload_root, &opts) {
         Ok(status) => {
