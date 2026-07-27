@@ -173,6 +173,23 @@ impl FrameBuilder {
         self.host.apply_layout(&self.taffy, child, Point::ORIGIN);
     }
 
+    /// Run the widget tree's per-frame state pump: `sync` (pull external state
+    /// into the CRDT) then `update` (advance widget-local state). Returns
+    /// `true` when something changed and the frame should be repainted.
+    ///
+    /// `ui::App::run` does this every frame for standalone apps, but the
+    /// compositor's frame loop only ever laid out and painted — so a hosted app
+    /// that depends on the pump never advanced. The visible symptom was a live
+    /// terminal that stayed on its empty placeholder forever: `sync` is what
+    /// drains the PTY into the grid, so without it no shell output ever
+    /// arrived. Apps whose content is captured at construction (the notes seed,
+    /// the file listing) looked fine, which is why only the terminal appeared
+    /// "not real".
+    pub fn pump_apps(&mut self, doc: &mut AutoCommit, root: &ObjId) -> bool {
+        self.host.sync(doc, root);
+        self.host.update(doc, root)
+    }
+
     /// Render the current frame into a fresh Vello scene. Caller is
     /// responsible for handing it to a renderer (offscreen / live /
     /// compositor backend).
