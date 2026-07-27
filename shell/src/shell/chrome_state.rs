@@ -202,7 +202,7 @@ pub struct ChromeState {
     /// for `front()` and drains the entry once the user clicks an
     /// action button. v1 stores pairs of `(app_id, capability)` —
     /// the capability's `scope` is set by the portal layer before
-    /// pushing (typically `GrantScope::Once`, since the prompt
+    /// pushing (typically `GRANT_ONCE`, since the prompt
     /// itself escalates to `Session`/`Always` based on the user's
     /// click). Empty by default.
     pub pending_grants: VecDeque<(AppId, Capability)>,
@@ -216,6 +216,15 @@ pub struct ChromeState {
     /// replace this field once the peer-sync work lands a
     /// `local_user_id` + `Workspace::owner_id` pair.
     pub test_only_owner_override: Option<bool>,
+    /// Who is sitting at this machine.
+    ///
+    /// Every permission decision the compositor makes on a person's
+    /// behalf is made for *this* id: it is what
+    /// [`crate::shell::overlay_host`] compares against a workspace's
+    /// owner, and the subject of any capability the local user grants.
+    /// Seeded at boot from the device identity
+    /// ([`crate::shell::state::local_user_id`]).
+    pub local_user_id: crate::shell::state::UserId,
     /// Active toast / banner notifications. Ordered oldest-first so the
     /// stack widget paints from the top of the screen downward in the
     /// same order entries were pushed. Capped at
@@ -305,6 +314,7 @@ impl ChromeState {
             revision: 0,
             pending_grants: VecDeque::new(),
             test_only_owner_override: None,
+            local_user_id: crate::shell::state::local_user_id(),
             notifications: Vec::new(),
             notification_bridge: None,
             notification_history: Vec::new(),
@@ -465,7 +475,7 @@ impl ChromeState {
     /// if the app already holds a grant covering the path, so repeated
     /// drops don't pile up duplicate capabilities.
     fn grant_dropped_file_access(&self, path: &std::path::Path) {
-        use crate::shell::state::{FsMode, GrantScope};
+        use crate::shell::state::{FsMode, GRANT_ALWAYS, GRANT_ONCE, GRANT_SESSION};
         // Which built-in app opens this file governs which grant key we
         // write — same classification the tab splice used.
         let Some(item) = super::workspace_drop::DraggedItem::from_path(path) else {
@@ -483,7 +493,7 @@ impl ChromeState {
         let cap = Capability::Filesystem {
             path: path.to_path_buf(),
             mode: FsMode::Read,
-            scope: GrantScope::Session,
+            scope: GRANT_SESSION,
         };
         store.insert(&caller, cap);
     }

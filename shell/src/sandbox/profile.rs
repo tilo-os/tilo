@@ -2,9 +2,24 @@
 //! Bubblewrap sandbox, rendered into the argv expected by the `bwrap` CLI.
 //!
 //! The profile intentionally stays a pure value type — no I/O, no fd
-//! plumbing — so we can build it from the workspace CRDT in one place
-//! and feed the rendered argv to either `std::process::Command` (Phase 1
-//! spawn helper) or future fd-passing launchers (Phase 2+).
+//! plumbing — so it can be built from the workspace CRDT in one place
+//! and rendered wherever the argv is needed.
+//!
+//! ## This is not the enforcement point
+//!
+//! Nothing in the compositor spawns an application through this type.
+//! Apps are launched by execing `qos-launcher`, which builds its own
+//! bubblewrap namespace from the package manifest **and** the
+//! workspace capabilities the shell hands it (`launcher::capabilities`,
+//! reached via [`crate::shell::launcher`]). That is where a grant
+//! becomes a mount and a revocation becomes a missing one.
+//!
+//! What remains here is the compositor-side *model* of a per-workspace
+//! sandbox: the bind/env/uid shape, the seccomp + Landlock plumbing
+//! points, and [`SandboxProfile::apply_grants`], which mirrors the
+//! launcher's capability rules for the profile shape. Treat a
+//! disagreement between the two as a bug in this file, not in the
+//! launcher.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -108,25 +123,22 @@ pub struct SandboxProfile {
     pub gid: u32,
     /// Optional path to a compiled seccomp-bpf blob.
     ///
-    /// C-5 fix: the spawn helper in [`crate::sandbox::spawn`] now
-    /// pre-opens this file before forking, ensures the resulting fd
-    /// stays open across `execve` (via `pre_exec`'s `dup2` into a
-    /// reserved slot), and renders the matching `--seccomp <fd>` triple
-    /// into argv with the *actual* fd number — not the previous
-    /// hardcoded `10` which left bwrap reading whatever stale fd
-    /// happened to be at slot 10. See [`SandboxProfile::into_argv`]
-    /// and [`crate::sandbox::spawn::spawn_in_workspace_with_grants`].
+    /// A spawner must pre-open this file before forking, keep the fd
+    /// open across `execve` (`pre_exec` + `dup2` into a reserved slot),
+    /// and record that descriptor in [`Self::seccomp_fd`] so the argv
+    /// carries the *actual* fd number. Rendering `--seccomp` with a
+    /// guessed number leaves bwrap reading whatever happens to be at
+    /// that slot — typically nothing, silently dropping the filter.
+    /// See [`SandboxProfile::into_argv`].
     pub seccomp: Option<PathBuf>,
-    /// Fd number to render in the `--seccomp <fd>` argv triple. The
-    /// spawn helper plumbs the open seccomp.bpf file to this descriptor
-    /// in the child via `dup2`. `None` when [`Self::seccomp`] is also
-    /// `None`; when both are set the argv carries the matching number.
+    /// Fd number to render in the `--seccomp <fd>` argv triple, once a
+    /// spawner has plumbed the blob to that descriptor in the child.
+    /// `None` when [`Self::seccomp`] is also `None`; when both are set
+    /// the argv carries the matching number.
     ///
-    /// This field is set by [`crate::sandbox::spawn`] just before
-    /// rendering argv. Callers that build a profile by hand and skip
-    /// the spawn helper (only the unit tests) should leave it `None`
-    /// — the argv rendering then suppresses the `--seccomp` flag
-    /// rather than emitting a stale magic number.
+    /// Left `None` on a profile built by hand: the argv rendering then
+    /// suppresses the `--seccomp` flag rather than emitting a stale
+    /// magic number.
     pub seccomp_fd: Option<i32>,
     /// Per-workspace Wayland bridge socket on the host. Bound into the
     /// sandbox at `/run/user/<uid>/wayland-0` by [`for_workspace_test`].
@@ -146,12 +158,11 @@ pub struct SandboxProfile {
     /// the namespace, then `execvp`s the real app. Layered with seccomp:
     /// both filters apply.
     ///
-    /// Set by [`crate::sandbox::spawn`] just before rendering argv (it
-    /// points at the running `shell` binary via `current_exe()`), mirroring
-    /// the `seccomp_fd` plumbing. Profiles built by hand (unit tests, or
-    /// callers that skip the spawn helper) leave this `None`, in which case
-    /// argv rendering appends the command verbatim — the app still runs
-    /// inside bwrap + seccomp, just without the extra Landlock layer.
+    /// A spawner points this at the running `shell` binary
+    /// (`current_exe()`), mirroring the `seccomp_fd` plumbing. Profiles
+    /// built by hand leave it `None`, in which case argv rendering
+    /// appends the command verbatim — the process still runs inside
+    /// bwrap + seccomp, just without the extra Landlock layer.
     pub landlock_shim: Option<PathBuf>,
 }
 
@@ -275,7 +286,7 @@ impl SandboxProfile {
     /// strictly minimal profile should start from
     /// [`for_workspace_test`] and pass an empty grants slice.
     pub fn apply_grants(&mut self, grants: &[crate::shell::state::Capability]) {
-        use crate::shell::state::{Capability, GrantScope};
+        use crate::shell::state::{Capability, GRANT_ALWAYS, GRANT_ONCE, GRANT_SESSION};
         for cap in grants {
             match cap {
                 Capability::Camera { .. } => self.grant_camera(),
@@ -285,23 +296,42 @@ impl SandboxProfile {
                     // `Once` and `Session` are handled by the runtime
                     // portal (it returns an open fd via cap-std, no
                     // bind-mount needed).
-                    if matches!(scope, GrantScope::Always) {
+                    if scope.persists_across_restart() {
                         self.grant_filesystem_path(path, mode.clone());
                     }
                 }
-                Capability::Network { hosts: _, scope } => {
-                    // Any `Always`-scope network grant disables the
-                    // default network namespace isolation (Phase 1's
-                    // `--unshare-net` flag). For v1 we treat
-                    // `hosts: Some(allowlist)` and `hosts: None` the
-                    // same: both lift isolation. Per-host nftables
-                    // filtering is recorded by the data model
-                    // (`Capability::Network::hosts`) but enforcement
-                    // requires per-namespace nftables rule generation,
-                    // which is deferred to a Phase 5.2 follow-up unit.
-                    if matches!(scope, GrantScope::Always) {
-                        self.net_isolated = false;
+                Capability::Network { hosts, scope } => {
+                    // A network grant lifts the default namespace
+                    // isolation (`--unshare-net`). That is the *only*
+                    // mechanism in play, and a namespace is
+                    // all-or-nothing: there is no packet filter here and
+                    // no nftables code anywhere in this repository.
+                    //
+                    // So an allowlist naming specific hosts is recorded
+                    // faithfully and then applied as unrestricted
+                    // outbound access. Say so out loud rather than
+                    // leaving the difference buried in a comment — an
+                    // operator reading the journal should be able to
+                    // see that the allowlist they configured is not
+                    // what is protecting them.
+                    if !scope.persists_across_restart() {
+                        continue;
                     }
+                    if let Some(list) = hosts {
+                        let specific: Vec<&String> =
+                            list.iter().filter(|h| h.as_str() != "*").collect();
+                        if !specific.is_empty() {
+                            tracing::warn!(
+                                workspace = self.workspace_id,
+                                hosts = ?specific,
+                                "network grant names specific hosts, but the sandbox can only \
+                                 share or unshare the whole network namespace: applying it as \
+                                 UNRESTRICTED outbound network access. Per-host filtering is \
+                                 not enforced."
+                            );
+                        }
+                    }
+                    self.net_isolated = false;
                 }
                 // Screencast: out of scope for this unit — handled by
                 // the portal screencast follow-up.
@@ -332,7 +362,7 @@ impl SandboxProfile {
     /// Render this profile to the argv slice we'd pass to `bwrap`.
     ///
     /// The rendered argv is *just* the arguments — the caller is
-    /// responsible for invoking `bwrap` itself (see [`crate::sandbox::spawn`]).
+    /// responsible for invoking `bwrap` itself.
     /// `command` is appended verbatim so callers can pass through both
     /// the program and its arguments without escaping.
     ///
@@ -407,18 +437,13 @@ impl SandboxProfile {
             argv.push("--unshare-net".to_string());
         }
 
-        // C-5 fix: only emit `--seccomp <fd>` when the spawn helper has
-        // actually plumbed the file to a known descriptor (`seccomp_fd`
-        // is `Some`). The previous code hardcoded fd `10` whenever
-        // `self.seccomp` was set, which left bwrap reading whatever
-        // happened to be at fd 10 — typically nothing, so the
-        // deny-list filter was silently bypassed.
-        //
-        // Profiles built outside the spawn helper (e.g. unit tests
-        // that render argv for inspection) leave `seccomp_fd` `None`,
-        // which now correctly drops the flag entirely. The matching
-        // `pre_exec` plumbing lives in
-        // [`crate::sandbox::spawn::spawn_in_workspace_with_grants`].
+        // Only emit `--seccomp <fd>` when a spawner has actually plumbed
+        // the file to a known descriptor (`seccomp_fd` is `Some`). An
+        // earlier version hardcoded fd `10` whenever `self.seccomp` was
+        // set, which left bwrap reading whatever happened to be at fd 10
+        // — typically nothing, so the deny-list filter was silently
+        // bypassed. A profile rendered for inspection leaves
+        // `seccomp_fd` `None` and drops the flag entirely.
         if let Some(fd) = self.seccomp_fd {
             argv.push("--seccomp".to_string());
             argv.push(fd.to_string());
@@ -597,14 +622,14 @@ mod tests {
     #[test]
     #[serial(scan_memo)]
     fn apply_grants_with_camera_capability_invokes_grant_camera() {
-        use crate::shell::state::{Capability, GrantScope};
+        use crate::shell::state::{Capability, GRANT_ALWAYS, GRANT_ONCE, GRANT_SESSION};
         let mut p = SandboxProfile::for_workspace_test(
             Path::new("/tmp/ws"),
             Path::new("/tmp/cache"),
         );
         let initial_count = p.binds_rw.len();
         let grants = vec![Capability::Camera {
-            scope: GrantScope::Session,
+            scope: GRANT_SESSION,
         }];
         p.apply_grants(&grants);
         assert!(p.binds_rw.len() >= initial_count);
@@ -613,7 +638,7 @@ mod tests {
     #[test]
     #[serial(scan_memo)]
     fn apply_grants_with_no_camera_or_mic_is_noop_for_those_cases() {
-        use crate::shell::state::{Capability, GrantScope};
+        use crate::shell::state::{Capability, GRANT_ALWAYS, GRANT_ONCE, GRANT_SESSION};
         let mut p = SandboxProfile::for_workspace_test(
             Path::new("/tmp/ws"),
             Path::new("/tmp/cache"),
@@ -623,7 +648,7 @@ mod tests {
         // Screencast remains the only out-of-scope variant for this
         // module — its enforcement lives behind a portal follow-up.
         let grants = vec![Capability::Screencast {
-            scope: GrantScope::Always,
+            scope: GRANT_ALWAYS,
         }];
         p.apply_grants(&grants);
         assert_eq!(p.binds_rw.len(), before_rw);
@@ -679,7 +704,7 @@ mod tests {
     #[test]
     #[serial(scan_memo)]
     fn apply_grants_with_filesystem_always_scope_invokes_grant_filesystem() {
-        use crate::shell::state::{Capability, FsMode, GrantScope};
+        use crate::shell::state::{Capability, FsMode, GRANT_ALWAYS, GRANT_ONCE, GRANT_SESSION};
         let mut p = SandboxProfile::for_workspace_test(
             Path::new("/tmp/ws"),
             Path::new("/tmp/cache"),
@@ -687,7 +712,7 @@ mod tests {
         let grants = vec![Capability::Filesystem {
             path: "/home/u/work".into(),
             mode: FsMode::ReadWrite,
-            scope: GrantScope::Always,
+            scope: GRANT_ALWAYS,
         }];
         p.apply_grants(&grants);
         assert!(
@@ -700,7 +725,7 @@ mod tests {
     #[test]
     #[serial(scan_memo)]
     fn apply_grants_with_filesystem_session_scope_does_not_bind() {
-        use crate::shell::state::{Capability, FsMode, GrantScope};
+        use crate::shell::state::{Capability, FsMode, GRANT_ALWAYS, GRANT_ONCE, GRANT_SESSION};
         let mut p = SandboxProfile::for_workspace_test(
             Path::new("/tmp/ws"),
             Path::new("/tmp/cache"),
@@ -709,7 +734,7 @@ mod tests {
         let grants = vec![Capability::Filesystem {
             path: "/home/u/secret".into(),
             mode: FsMode::ReadWrite,
-            scope: GrantScope::Session,
+            scope: GRANT_SESSION,
         }];
         p.apply_grants(&grants);
         assert_eq!(
@@ -722,7 +747,7 @@ mod tests {
     #[test]
     #[serial(scan_memo)]
     fn apply_grants_with_network_always_scope_disables_isolation() {
-        use crate::shell::state::{Capability, GrantScope};
+        use crate::shell::state::{Capability, GRANT_ALWAYS, GRANT_ONCE, GRANT_SESSION};
         let mut p = SandboxProfile::for_workspace_test(
             Path::new("/tmp/ws"),
             Path::new("/tmp/cache"),
@@ -730,7 +755,7 @@ mod tests {
         p.net_isolated = true;
         let grants = vec![Capability::Network {
             hosts: None,
-            scope: GrantScope::Always,
+            scope: GRANT_ALWAYS,
         }];
         p.apply_grants(&grants);
         assert!(
@@ -742,7 +767,7 @@ mod tests {
     #[test]
     #[serial(scan_memo)]
     fn apply_grants_with_network_session_scope_does_not_change_isolation() {
-        use crate::shell::state::{Capability, GrantScope};
+        use crate::shell::state::{Capability, GRANT_ALWAYS, GRANT_ONCE, GRANT_SESSION};
         let mut p = SandboxProfile::for_workspace_test(
             Path::new("/tmp/ws"),
             Path::new("/tmp/cache"),
@@ -750,7 +775,7 @@ mod tests {
         p.net_isolated = true;
         let grants = vec![Capability::Network {
             hosts: None,
-            scope: GrantScope::Session,
+            scope: GRANT_SESSION,
         }];
         p.apply_grants(&grants);
         assert!(
@@ -759,25 +784,49 @@ mod tests {
         );
     }
 
+    /// A network allowlist reaches no enforcement mechanism.
+    ///
+    /// This test used to assert that `hosts: Some([...])` and
+    /// `hosts: None` behave identically, which read as approval of the
+    /// gap. What is actually true — and what is asserted here — is
+    /// narrower and more uncomfortable: the *only* thing a host
+    /// allowlist does is toggle network-namespace isolation, and the
+    /// hostname the user named appears nowhere in the rendered `bwrap`
+    /// argv, because bwrap has no vocabulary for it and there is no
+    /// packet filter behind it. Per-host filtering would need
+    /// per-namespace nftables rules, which this repository does not have.
     #[test]
     #[serial(scan_memo)]
-    fn apply_grants_with_network_always_and_specific_hosts_still_disables_isolation_for_v1() {
-        use crate::shell::state::{Capability, GrantScope};
+    fn network_allowlist_only_toggles_namespace_isolation_and_reaches_no_host_filter() {
+        use crate::shell::state::{Capability, GRANT_ALWAYS, GRANT_ONCE, GRANT_SESSION};
         let mut p = SandboxProfile::for_workspace_test(
             Path::new("/tmp/ws"),
             Path::new("/tmp/cache"),
         );
         p.net_isolated = true;
-        // v1 treats `Some([...])` and `None` the same — both disable
-        // isolation. Per-host nftables filtering is a follow-up.
         let grants = vec![Capability::Network {
             hosts: Some(vec!["github.com".to_string()]),
-            scope: GrantScope::Always,
+            scope: GRANT_ALWAYS,
         }];
         p.apply_grants(&grants);
         assert!(
             !p.net_isolated,
-            "v1: any Always-network grant disables isolation"
+            "an allowlisted-host grant lifts namespace isolation — that is the whole of its effect"
+        );
+
+        // The rendered argv is the sandbox. The allowlisted host is not
+        // in it, in any form: nothing downstream of this profile can
+        // restrict the app to `github.com`.
+        let argv = p.into_argv(&["true".into()]);
+        assert!(
+            !argv.iter().any(|a| a.contains("github.com")),
+            "the recorded allowlist reaches no enforcement mechanism — it is absent from the \
+             argv that builds the sandbox: {argv:?}"
+        );
+        assert!(
+            !argv.iter().any(|a| a == "--unshare-net"),
+            "isolation was lifted, so the app has unrestricted outbound network access, not \
+             access to github.com: {argv:?}"
         );
     }
 
@@ -911,14 +960,14 @@ mod tests {
     #[test]
     #[serial(scan_memo)]
     fn apply_grants_dev_scan_is_memoised() {
-        use crate::shell::state::{Capability, GrantScope};
+        use crate::shell::state::{Capability, GRANT_ALWAYS, GRANT_ONCE, GRANT_SESSION};
         // Reset both the cache and the counter so other tests can't
         // contaminate our measurement.
         super::clear_scan_memo();
         let _ = super::take_scan_walk_count();
 
         let grants = vec![Capability::Camera {
-            scope: GrantScope::Session,
+            scope: GRANT_SESSION,
         }];
 
         let mut p1 = SandboxProfile::for_workspace_test(

@@ -107,7 +107,7 @@ impl WsTab {
     /// strip at the tail.
     pub fn visible(ws: &Workspace) -> Vec<WsTab> {
         let base = vec![WsTab::General, WsTab::Roles, WsTab::Files];
-        if ws.grants.is_empty() {
+        if !ws.has_app_grants() {
             base
         } else {
             let mut v = base;
@@ -1166,7 +1166,8 @@ pub fn permissions_pane_rows(workspace: &Workspace, pane_rect: Rect) -> Vec<Perm
     // Iterate sorted by app_id so the on-screen order is stable across
     // runs — HashMap iteration is unspecified, but the renderer wants
     // a deterministic visual order so visual snapshots don't churn.
-    let mut entries: Vec<(&AppId, &Vec<Capability>)> = workspace.grants.iter().collect();
+    let owned = workspace.grants();
+    let mut entries: Vec<(&AppId, &Vec<Capability>)> = owned.iter().collect();
     entries.sort_by(|a, b| a.0.cmp(b.0));
     for (app_id, caps) in entries {
         for (cap_index, capability) in caps.iter().enumerate() {
@@ -1224,7 +1225,7 @@ pub fn capability_label(cap: &Capability) -> String {
 /// capability's `scope` field. Mirrors the GrantScope enum's three
 /// variants from `state.rs:323-332`.
 pub fn capability_scope_label(cap: &Capability) -> &'static str {
-    use crate::shell::state::GrantScope;
+    use crate::shell::state::Expiry;
     let scope = match cap {
         Capability::Filesystem { scope, .. } => scope,
         Capability::Camera { scope } => scope,
@@ -1233,33 +1234,43 @@ pub fn capability_scope_label(cap: &Capability) -> &'static str {
         Capability::Network { scope, .. } => scope,
     };
     match scope {
-        GrantScope::Once => "Once",
-        GrantScope::Session => "Session",
-        GrantScope::Always => "Always",
+        Expiry::AfterUse => "Once",
+        Expiry::EndOfSession => "Session",
+        Expiry::AtUnix(_) => "Until",
+        Expiry::Never => "Always",
     }
 }
 
-/// Remove `(app_id, cap_index)` from `workspace.grants`. No-op when
-/// `app_id` is missing or `cap_index` is out of bounds. Cleans up an
-/// empty `Vec` entry so the workspace's `grants.is_empty()` predicate
-/// (used by [`WsTab::visible`] to hide the tab) flips back to true
-/// once the last grant for the workspace is revoked.
+/// Revoke the `cap_index`-th grant the Permissions tab renders for
+/// `app_id`. No-op when the app has no grants or the index is out of
+/// bounds.
 ///
-/// Returns `true` if a capability was removed, `false` otherwise —
-/// callers (the click router) can use this to decide whether to bump
-/// the chrome's revision counter.
+/// Resolves the row index to the underlying capability's stable id
+/// before removing it, so the revoke targets the capability the user
+/// actually clicked rather than whatever currently sits at that
+/// position. Returns `true` if a capability was removed.
+///
+/// This is the storage-level revoke. The production click path goes
+/// through [`crate::shell::state::WorkspaceTree::revoke_in_workspace`],
+/// which additionally checks the revoker's authority and mirrors the
+/// removal to peers and to disk.
 pub fn revoke_grant(workspace: &mut Workspace, app_id: &AppId, cap_index: usize) -> bool {
-    let Some(caps) = workspace.grants.get_mut(app_id) else {
+    let ids = workspace.app_grant_ids(app_id);
+    let Some(id) = ids.get(cap_index) else {
         return false;
     };
-    if cap_index >= caps.len() {
-        return false;
-    }
-    caps.remove(cap_index);
-    if caps.is_empty() {
-        workspace.grants.remove(app_id);
-    }
-    true
+    let id = id.clone();
+    workspace.revoke_capability(&id)
+}
+
+/// Same as [`revoke_grant`], but returns the revoked capability's
+/// stable id so the caller can mirror the removal to peers.
+pub fn revoke_grant_id(
+    workspace: &Workspace,
+    app_id: &AppId,
+    cap_index: usize,
+) -> Option<String> {
+    workspace.app_grant_ids(app_id).get(cap_index).cloned()
 }
 
 /// Paint the Permissions tab body into `pane_rect`. Renders one row
@@ -1532,11 +1543,11 @@ mod tab_tests {
         // joins the strip at the tail. Owner-only revoke enforcement
         // happens at click-time (not visibility-time).
         let mut ws = Workspace::new(WorkspaceId::default(), "with-grants");
-        ws.grants.insert(
-            "firefox".into(),
-            vec![Capability::Camera {
-                scope: crate::shell::state::GrantScope::Always,
-            }],
+        ws.grant_app(
+            "firefox",
+            &Capability::Camera {
+                scope: crate::shell::state::GRANT_ALWAYS,
+            },
         );
         let visible = WsTab::visible(&ws);
         assert_eq!(visible.last(), Some(&WsTab::Permissions));
@@ -1799,21 +1810,22 @@ mod permissions_pane_tests {
     //! follow-up); the click router writes through and bumps the
     //! revision counter so widgets resync on the next frame.
     use super::*;
-    use crate::shell::state::{Capability, GrantScope, Workspace, WorkspaceId};
+    use crate::shell::state::{Capability, GRANT_ALWAYS, GRANT_ONCE, GRANT_SESSION, Workspace, WorkspaceId};
 
     fn ws_with_grants() -> Workspace {
         let mut ws = Workspace::new(WorkspaceId::default(), "perm-test");
-        ws.grants.insert(
-            "firefox".into(),
-            vec![
-                Capability::Camera {
-                    scope: GrantScope::Always,
-                },
-                Capability::Network {
-                    hosts: None,
-                    scope: GrantScope::Session,
-                },
-            ],
+        ws.grant_app(
+            "firefox",
+            &Capability::Camera {
+                scope: GRANT_ALWAYS,
+            },
+        );
+        ws.grant_app(
+            "firefox",
+            &Capability::Network {
+                hosts: None,
+                scope: GRANT_SESSION,
+            },
         );
         ws
     }
@@ -1860,10 +1872,20 @@ mod permissions_pane_tests {
         let mut ws = ws_with_grants();
         let removed = revoke_grant(&mut ws, &"firefox".to_string(), 0);
         assert!(removed);
-        // After removing the Camera grant the Network grant remains.
-        let firefox = ws.grants.get("firefox").expect("entry");
+        // After removing the Camera grant the Network grant remains,
+        // and the app is denied the camera it no longer holds.
+        let view = ws.grants();
+        let firefox = view.get("firefox").expect("entry");
         assert_eq!(firefox.len(), 1);
         assert!(matches!(firefox[0], Capability::Network { .. }));
+        assert!(
+            !ws.allows(
+                &ws.actor_for_app("firefox"),
+                &crate::shell::state::ResourceRef::Device("camera".into()),
+                crate::shell::state::Verb::Read
+            ),
+            "the revoked capability must stop working, not merely stop rendering"
+        );
     }
 
     #[test]
@@ -1874,15 +1896,16 @@ mod permissions_pane_tests {
         // grant is revoked. Without this cleanup the Permissions tab
         // would stay visible (`WsTab::visible` checks `is_empty()`).
         let mut ws = Workspace::new(WorkspaceId::default(), "single-grant");
-        ws.grants.insert(
-            "vscode".into(),
-            vec![Capability::Camera {
-                scope: GrantScope::Once,
-            }],
+        ws.grant_app(
+            "vscode",
+            &Capability::Camera {
+                scope: GRANT_ONCE,
+            },
         );
         let removed = revoke_grant(&mut ws, &"vscode".to_string(), 0);
         assert!(removed);
-        assert!(ws.grants.is_empty(), "empty cap vec must be cleaned up");
+        assert!(!ws.has_app_grants(), "the last grant's removal hides the tab again");
+        assert!(ws.grants().is_empty());
     }
 
     #[test]
@@ -1890,12 +1913,12 @@ mod permissions_pane_tests {
         // Out-of-bounds index and missing app id are both no-ops —
         // hit-test misalignment / racy clicks must not panic.
         let mut ws = ws_with_grants();
-        let before = ws.grants.get("firefox").map(|v| v.len());
+        let before = ws.grants().get("firefox").map(|v| v.len());
         let r1 = revoke_grant(&mut ws, &"unknown".to_string(), 0);
         let r2 = revoke_grant(&mut ws, &"firefox".to_string(), 99);
         assert!(!r1);
         assert!(!r2);
-        assert_eq!(ws.grants.get("firefox").map(|v| v.len()), before);
+        assert_eq!(ws.grants().get("firefox").map(|v| v.len()), before);
     }
 
     #[test]
@@ -1905,16 +1928,16 @@ mod permissions_pane_tests {
         // revoking. This pins the helper's outputs against the
         // canonical labels.
         let cam = Capability::Camera {
-            scope: GrantScope::Always,
+            scope: GRANT_ALWAYS,
         };
         assert_eq!(capability_label(&cam), "Camera access");
         let mic = Capability::Microphone {
-            scope: GrantScope::Once,
+            scope: GRANT_ONCE,
         };
         assert_eq!(capability_label(&mic), "Microphone access");
         let net = Capability::Network {
             hosts: None,
-            scope: GrantScope::Session,
+            scope: GRANT_SESSION,
         };
         assert_eq!(capability_label(&net), "Network access");
     }
@@ -1923,13 +1946,13 @@ mod permissions_pane_tests {
     fn capability_scope_label_returns_short_badge_text() {
         // Three-variant short label used by the row-side scope badge.
         let always = Capability::Camera {
-            scope: GrantScope::Always,
+            scope: GRANT_ALWAYS,
         };
         let session = Capability::Camera {
-            scope: GrantScope::Session,
+            scope: GRANT_SESSION,
         };
         let once = Capability::Camera {
-            scope: GrantScope::Once,
+            scope: GRANT_ONCE,
         };
         assert_eq!(capability_scope_label(&always), "Always");
         assert_eq!(capability_scope_label(&session), "Session");
