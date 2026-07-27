@@ -118,6 +118,10 @@ pub fn run_with_full_options(opts: HostedOptions) {
     // every capability mutation flushes here, so a grant survives both
     // a clean exit and a crash.
     tree.persist_path = Some(path.clone());
+    // The FUSE mount runs in another process and enforces the list it
+    // reads from this path (`qos-fs --acl`). Exporting here is what
+    // stops the filesystem from enforcing an empty list forever.
+    tree.fs_acl_path = Some(persist::fs_capability_export_path());
 
     // Someone has to own each room, or nobody can grant anything in it.
     // Workspaces restored from a state file written before ownership
