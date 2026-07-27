@@ -888,11 +888,17 @@ impl CollaborationManager {
 ///    `QUICK_APP_ID=bob` runs one app as two people), which is why it
 ///    ranks below `QOS_PACKAGE_ID` instead of overriding it: under a
 ///    real session the package id is the routing truth, and a
-///    per-instance name must not fragment it.
+///    per-instance name must not fragment it. Those sample setups
+///    still work because they run against the development broker in
+///    [`crate::collaboration::broker`], which reads `app_id` as a
+///    presence attribution and fans out to everyone — the compositor's
+///    broker is the one that routes.
 /// 3. **A fresh random app id and the nil cluster** — the last-resort
-///    default. This addresses nobody, which is the right failure mode:
-///    an app that cannot say where it belongs must not be handed
-///    another app's document.
+///    default, for a process that was told nothing. The random app id
+///    is what makes this fail closed: no other process can announce
+///    the same one, so nothing is ever delivered here. An app that
+///    cannot say where it belongs must not be handed another app's
+///    document.
 ///
 /// `QOS_WORKSPACE_ID` is only *used* as a cluster when it parses as a
 /// uuid, which is the shape the launcher writes. It is also read
