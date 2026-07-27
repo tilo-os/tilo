@@ -68,27 +68,38 @@ impl ApplicationsProvider {
                 subtitle: Some(subtitle),
                 score,
                 on_open: Rc::new(move |_doc, _root, chrome: &Chrome| {
-                    // Publish the capabilities of the workspace the app
-                    // is being launched into, so the sandbox it starts
-                    // in reflects what the user actually granted. Read
-                    // immediately before the launch rather than cached:
-                    // a grant made a moment ago in the permissions UI
-                    // must reach this launch, and a revoked one must
-                    // not.
-                    {
+                    // The app opens into the workspace the user is
+                    // looking at: that workspace's grants become its
+                    // sandbox, and its id becomes the collaboration
+                    // room it joins — so opening the same app in two
+                    // workspaces gives two independent sessions.
+                    //
+                    // The grants are published immediately before the
+                    // launch rather than cached: a grant made a moment
+                    // ago in the permissions UI must reach this launch,
+                    // and a revoked one must not.
+                    //
+                    // Scoped so the borrow is released before the error
+                    // branch below takes a mutable one.
+                    let launched = {
                         let st = chrome.borrow();
-                        let caps = st
-                            .tree()
-                            .active_workspace()
-                            .map(|ws| ws.capabilities.clone())
-                            .unwrap_or_default();
-                        launcher::set_workspace_capabilities(caps);
-                    }
+                        let tree = st.tree();
+                        tree.active_workspace().map(|ws| {
+                            launcher::set_workspace_capabilities(ws.capabilities.clone());
+                            launcher::launch_in_workspace(&package_id, ws)
+                        })
+                    };
                     // The launch itself is non-blocking: everything past
                     // resolution happens on a worker thread. Only the
                     // pre-fork failures land here; the rest arrive as
                     // launch events the chrome drains each frame.
-                    if let Err(err) = launcher::launch(&package_id) {
+                    //
+                    // No active workspace means there is no room and no
+                    // grant to launch into, so there is nothing to
+                    // start — reported the same way a resolution
+                    // failure is.
+                    let outcome = launched.unwrap_or(Err(launcher::LaunchError::NoWorkspace));
+                    if let Err(err) = outcome {
                         let mut st = chrome.borrow_mut();
                         st.push_notification_full(
                             Notification::new(
