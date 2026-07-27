@@ -29,6 +29,7 @@ pub mod desktop_backdrop;
 pub mod editor_app;
 pub mod hdr_display;
 pub mod hdr_tonemap;
+pub mod launcher;
 pub mod network;
 pub mod nirios_tokens;
 pub mod notes_app;

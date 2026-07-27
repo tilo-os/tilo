@@ -871,6 +871,10 @@ pub fn run() -> ! {
         ListeningSocketSource::new_auto().expect("bind listening wayland socket");
     let socket_name = listening_socket.socket_name().to_os_string();
     eprintln!("nirios compositor listening on {socket_name:?}");
+    // Publish it to the app launcher: every app we start is pointed at
+    // this socket explicitly (`qos-launcher --wayland-socket`), never at
+    // whatever display the compositor's own environment happens to name.
+    crate::shell::launcher::set_wayland_socket(&socket_name);
 
     event_loop
         .handle()
