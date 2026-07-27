@@ -1689,6 +1689,35 @@ impl ShellOverlayHost {
         Some(row.get_rect())
     }
 
+    /// Screen-space rect of the *content* area (the active tab's tile
+    /// host, i.e. everything below the tab bar) of the window group with
+    /// id `group_id`, or `None` when no live strip row hosts that group
+    /// yet.
+    ///
+    /// The compositor's input router uses this as the origin for
+    /// translating a global cursor position into the surface-local
+    /// coordinates a Wayland client expects: a foreign toplevel is
+    /// mounted as the tile of its own window group, so the group's active
+    /// tile rect *is* the surface's on-screen rectangle.
+    ///
+    /// A zero-area rect is returned as-is (it means the row hasn't been
+    /// laid out yet); callers treat that as "no hit".
+    ///
+    /// SAFETY mirrors [`Self::groups_per_strip`]: pointers were captured
+    /// from `Box<GroupRow>`s owned by the content tree, the host outlives
+    /// the content, and `&self` keeps the reconcile sweeps from racing
+    /// the read.
+    pub fn active_tile_rect(&self, group_id: u64) -> Option<Rect> {
+        for &ptr in self.group_row_ptrs.values() {
+            // SAFETY: see field doc on `group_row_ptrs`.
+            let row: &GroupRow = unsafe { &*ptr };
+            if let Some(group) = row.groups.iter().find(|g| g.id == group_id) {
+                return group.active_host().map(|h| h.get_rect());
+            }
+        }
+        None
+    }
+
     pub fn groups_per_strip(&self) -> Vec<(StripId, Vec<(u64, Vec<u64>)>)> {
         let mut out = Vec::with_capacity(self.group_row_ptrs.len());
         for (&strip_id, &ptr) in &self.group_row_ptrs {
