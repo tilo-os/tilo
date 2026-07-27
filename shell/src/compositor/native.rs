@@ -251,6 +251,10 @@ fn keytag_into_winit_key(tag: KeyTag) -> Key {
             NamedKeyTag::PageUp => NamedKey::PageUp,
             NamedKeyTag::PageDown => NamedKey::PageDown,
             NamedKeyTag::Space => NamedKey::Space,
+            NamedKeyTag::Shift => NamedKey::Shift,
+            NamedKeyTag::Control => NamedKey::Control,
+            NamedKeyTag::Alt => NamedKey::Alt,
+            NamedKeyTag::Super => NamedKey::Super,
         }),
         KeyTag::Char(c) => Key::Character(SmolStr::new(c.to_string())),
     }
@@ -313,11 +317,36 @@ fn apply_modifier_mask(ctx: &mut TestControlCtx, ctrl: bool, shift: bool, alt: b
 /// uses for in-process scenarios. `device_id` is zeroed because
 /// winit's `DeviceId` is opaque and the host's input path doesn't
 /// inspect it.
+///
+/// `state` is the live compositor state when one exists (the run loop
+/// always passes it; the in-process unit tests below pass `None`). When
+/// present, the synthesised event is offered to
+/// [`client_input::route_input`] first — exactly like the live
+/// `BackendEvent::Input` arm — so a headless harness drives foreign client
+/// surfaces through the same production routing the winit / DRM backends
+/// use, instead of a parallel path that could pass while the real one is
+/// broken.
 fn execute_planned_action(
     action: &PlannedAction,
     fb: &mut FrameBuilder,
     ctx: &mut TestControlCtx,
+    state: Option<&mut State>,
 ) {
+    /// Offer `event` to the focused Wayland client; returns `true` when it
+    /// was consumed and must not also reach the chrome.
+    fn to_client(
+        state: &mut Option<&mut State>,
+        fb: &mut FrameBuilder,
+        event: &WindowEvent,
+        modifiers: &Modifiers,
+    ) -> bool {
+        match state {
+            Some(st) => client_input::route_input(st, fb, event, modifiers),
+            None => false,
+        }
+    }
+
+    let mut state = state;
     match action {
         PlannedAction::CursorMoved { x, y } => {
             ctx.cursor = PhysicalPosition::new(*x, *y);
@@ -325,6 +354,9 @@ fn execute_planned_action(
                 device_id: unsafe { std::mem::zeroed() },
                 position: ctx.cursor,
             };
+            if to_client(&mut state, fb, &event, &ctx.modifiers) {
+                return;
+            }
             fb.dispatch_event(
                 &event,
                 &ctx.modifiers,
@@ -343,6 +375,9 @@ fn execute_planned_action(
                 },
                 button: MouseButton::Left,
             };
+            if to_client(&mut state, fb, &event, &ctx.modifiers) {
+                return;
+            }
             fb.dispatch_event(
                 &event,
                 &ctx.modifiers,
@@ -354,6 +389,33 @@ fn execute_planned_action(
         PlannedAction::KeyboardKey { key, pressed } => {
             let winit_key = keytag_into_winit_key(*key);
             let event = keyboard_input_event(winit_key, *pressed);
+            // Keep the running mask in step with the injected key stream:
+            // this wire carries no `ModifiersChanged`, so a held modifier
+            // would otherwise be invisible to both the chord check and the
+            // chrome's own chord handling.
+            if let WindowEvent::KeyboardInput { event: key_ev, .. } = &event {
+                client_input::apply_modifier_key(&mut ctx.modifiers, key_ev);
+            }
+            if to_client(&mut state, fb, &event, &ctx.modifiers) {
+                return;
+            }
+            fb.dispatch_event(
+                &event,
+                &ctx.modifiers,
+                &mut ctx.doc,
+                &ctx.root_obj,
+                &mut ctx.focus,
+            );
+        }
+        PlannedAction::MouseWheel { dx, dy } => {
+            let event = WindowEvent::MouseWheel {
+                device_id: unsafe { std::mem::zeroed() },
+                delta: winit::event::MouseScrollDelta::LineDelta(*dx, *dy),
+                phase: winit::event::TouchPhase::Moved,
+            };
+            if to_client(&mut state, fb, &event, &ctx.modifiers) {
+                return;
+            }
             fb.dispatch_event(
                 &event,
                 &ctx.modifiers,
@@ -411,6 +473,7 @@ fn execute_locked_action(action: &PlannedAction, lock: &mut LockController) -> U
         // locked. Input goes only to the lock surface.
         PlannedAction::CursorMoved { .. }
         | PlannedAction::MouseLeftButton { .. }
+        | PlannedAction::MouseWheel { .. }
         | PlannedAction::SetModifiers { .. }
         | PlannedAction::Snapshot { .. } => UnlockOutcome::StillLocked,
     }
@@ -594,6 +657,7 @@ fn pump_test_control_conn(
     session: &mut SessionManager,
     lock: &mut LockController,
     backend: &mut dyn Backend,
+    state: &mut State,
 ) {
     loop {
         let mut line = String::new();
@@ -621,7 +685,12 @@ fn pump_test_control_conn(
                             }
                         }
                     } else {
-                        execute_planned_action(action, frame_builder, ctx);
+                        execute_planned_action(
+                            action,
+                            frame_builder,
+                            ctx,
+                            Some(state),
+                        );
                     }
                 }
                 // Re-run layout so the next `list_targets` (or paint
@@ -1152,6 +1221,16 @@ pub fn run() -> ! {
                             apply_session_transition(t, backend.as_mut());
                         }
                     } else {
+                        // Backends that don't pair a `ModifiersChanged`
+                        // with every modifier keystroke would otherwise
+                        // leave the mask stale, which is what decides
+                        // whether a chord belongs to the shell.
+                        if let WindowEvent::KeyboardInput { event: key_ev, .. } = &wev {
+                            client_input::apply_modifier_key(
+                                &mut test_control_ctx.modifiers,
+                                key_ev,
+                            );
+                        }
                         // Offer the event to the focused Wayland client
                         // first. `route_input` returns `false` for anything
                         // the shell owns — compositor chords, overlay-
@@ -1450,6 +1529,7 @@ pub fn run() -> ! {
                     &mut session,
                     &mut lock,
                     backend.as_mut(),
+                    &mut state,
                 );
             }
             test_control_conns.retain(|c| !c.closed);
@@ -1533,6 +1613,20 @@ mod tests {
     //! wire without spinning up a process, so a CI run that can't open
     //! winit still gates against regressions here.
     use super::*;
+
+    /// These unit tests exercise the *chrome* half of the executor with no
+    /// compositor `State` attached — building one needs a live wayland
+    /// `Display`. Shadowing the production function here keeps the call
+    /// sites below unchanged while still running the real executor. The
+    /// client-routing half is covered by `compositor::client_input`'s own
+    /// tests and by `tests/client_input_routing.rs`.
+    fn execute_planned_action(
+        action: &PlannedAction,
+        fb: &mut FrameBuilder,
+        ctx: &mut TestControlCtx,
+    ) {
+        super::execute_planned_action(action, fb, ctx, None);
+    }
 
     /// Sanity: `CursorMoved` planned action updates the context's cached
     /// cursor and dispatches through the FrameBuilder without panicking.
