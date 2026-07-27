@@ -1076,6 +1076,7 @@ mod tests {
         InstalledApp {
             package_id: package_id.to_string(),
             display_name: display_name_for_package_id(package_id),
+            category: None,
             version: "0.1.0".into(),
             manifest_path: PathBuf::from("/apps/x/manifest.toml"),
             payload_root: PathBuf::from("/apps/x"),
