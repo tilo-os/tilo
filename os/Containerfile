@@ -64,7 +64,7 @@ FROM ${KERNEL_RPMS_REF} AS kernel-rpms
 # wpewebkit version in build-wpe.sh and reused from the layer cache until
 # that changes. Folding the builddep set into the frozen snapshot is a
 # follow-up.
-FROM quay.io/fedora/fedora-bootc@sha256:077182b6ba853b3348d0bede602ac30b9e6568c6422bcf0654de5af96f19b9c3 AS wpe-builder
+FROM quay.io/fedora/fedora-bootc@sha256:d11e5d5bb82dcde8df09d937f7be7e3255de6c7c39503e8e91364c5ef893c38d AS wpe-builder
 
 RUN dnf install -y 'dnf5-command(builddep)' \
     && dnf builddep -y webkitgtk6.0 \
@@ -86,7 +86,7 @@ RUN --mount=type=cache,target=/wpe-cache \
 # tag can be repointed, a digest can't). fedora-bootc:44 as of 2026-06-30.
 # Builder and final MUST share the SAME digest so glibc matches (the A1 reason).
 # Bump deliberately (re-resolve the tag → update both FROM lines).
-FROM quay.io/fedora/fedora-bootc@sha256:077182b6ba853b3348d0bede602ac30b9e6568c6422bcf0654de5af96f19b9c3 AS builder
+FROM quay.io/fedora/fedora-bootc@sha256:d11e5d5bb82dcde8df09d937f7be7e3255de6c7c39503e8e91364c5ef893c38d AS builder
 
 # Rust toolchain + the C/-devel deps the workspace's *-sys crates link or build
 # against. Superset of the my-distrobox dev deps (repo CLAUDE.md) plus the base
@@ -202,7 +202,7 @@ RUN /out/qos-runtime-bundle key generate --out /out/runtime-bundle-identity.json
 
 
 # ---- Stage 2: final (the OS image) -----------------------------------------
-FROM quay.io/fedora/fedora-bootc@sha256:077182b6ba853b3348d0bede602ac30b9e6568c6422bcf0654de5af96f19b9c3
+FROM quay.io/fedora/fedora-bootc@sha256:d11e5d5bb82dcde8df09d937f7be7e3255de6c7c39503e8e91364c5ef893c38d
 
 # Graphics stack
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
