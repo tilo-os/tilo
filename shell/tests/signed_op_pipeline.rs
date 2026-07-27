@@ -56,6 +56,18 @@ fn unique_socket(label: &str) -> PathBuf {
     std::env::temp_dir().join(format!("qos-broker-{label}-{pid}-{nanos}.sock"))
 }
 
+/// The collaboration cluster every client in these scenarios joins.
+///
+/// The broker routes CRDT traffic by the `(app_id, cluster_id)` pair a
+/// client announces on its `Hello`, so peers that are meant to observe
+/// each other's edits must announce the same pair — these scenarios
+/// pair this cluster with a single app id per file. A per-client
+/// random uuid would put every client in a cluster of its own, which
+/// is how a real deployment keeps unrelated documents apart.
+fn test_cluster() -> uuid::Uuid {
+    uuid::Uuid::from_u128(0x3f2b_1c00_0000_4000_8000_0000_0000_0001)
+}
+
 fn make_role_attestation(
     issuer_sk: &SigningKey,
     issuer_pk: Ed25519PublicKey,
@@ -153,7 +165,7 @@ fn valid_signed_op_reaches_other_peers_invalid_one_is_dropped() {
             s,
             &CollabRequest::Hello {
                 app_id: "test".into(),
-                cluster_id: uuid::Uuid::new_v4(),
+                cluster_id: test_cluster(),
             },
         );
     }
@@ -262,7 +274,7 @@ fn replay_of_same_signed_op_is_dropped() {
             s,
             &CollabRequest::Hello {
                 app_id: "test".into(),
-                cluster_id: uuid::Uuid::new_v4(),
+                cluster_id: test_cluster(),
             },
         );
     }

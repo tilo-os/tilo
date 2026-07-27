@@ -216,6 +216,15 @@ pub struct ChromeState {
     /// replace this field once the peer-sync work lands a
     /// `local_user_id` + `Workspace::owner_id` pair.
     pub test_only_owner_override: Option<bool>,
+    /// Who is sitting at this machine.
+    ///
+    /// Every permission decision the compositor makes on a person's
+    /// behalf is made for *this* id: it is what
+    /// [`crate::shell::overlay_host`] compares against a workspace's
+    /// owner, and the subject of any capability the local user grants.
+    /// Seeded at boot from the device identity
+    /// ([`crate::shell::state::local_user_id`]).
+    pub local_user_id: crate::shell::state::UserId,
     /// Active toast / banner notifications. Ordered oldest-first so the
     /// stack widget paints from the top of the screen downward in the
     /// same order entries were pushed. Capped at
@@ -305,6 +314,7 @@ impl ChromeState {
             revision: 0,
             pending_grants: VecDeque::new(),
             test_only_owner_override: None,
+            local_user_id: crate::shell::state::local_user_id(),
             notifications: Vec::new(),
             notification_bridge: None,
             notification_history: Vec::new(),

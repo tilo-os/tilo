@@ -71,8 +71,8 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::oneshot;
 
 use crate::shell::state::{
-    AppId, Capability, Expiry, FsMode, GRANT_ALWAYS, GRANT_ONCE, GRANT_SESSION, GrantScope,
-    Workspace, WorkspaceId, WorkspaceTree,
+    AppId, CapOverride, Capability, Expiry, FsMode, GRANT_ALWAYS, GRANT_ONCE, GRANT_SESSION,
+    GrantScope, ResourceRef, Verb, Workspace, WorkspaceId, WorkspaceTree,
     WorkspaceTreeHandle,
 };
 

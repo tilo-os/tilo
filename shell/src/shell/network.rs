@@ -916,7 +916,11 @@ mod tests {
         let tree = WorkspaceTree::bootstrap_default().shared();
         let (net, mut cmd_rx) = shell_network_for_test(tree, 0xFEED_u64);
         let envelope = make_envelope(7);
-        net.publish_app_crdt_signed(envelope.clone());
+        net.publish_app_crdt_signed(
+            "notes".to_string(),
+            "cluster-7".to_string(),
+            envelope.clone(),
+        );
         let cmd = cmd_rx
             .try_recv()
             .expect("publish_app_crdt_signed must enqueue a NetCmd");
@@ -926,9 +930,16 @@ mod tests {
                 match msg {
                     NeighbourMsg::AppCrdtIncrementalSigned {
                         peer,
+                        app_id,
+                        cluster_id,
                         envelope: got,
                     } => {
                         assert_eq!(peer, 0xFEED_u64);
+                        // The route the receiving broker filters on
+                        // has to survive the wrap verbatim, or the
+                        // envelope arrives unaddressed and is dropped.
+                        assert_eq!(app_id, "notes");
+                        assert_eq!(cluster_id, "cluster-7");
                         assert_eq!(*got, envelope);
                     }
                     other => panic!(
@@ -943,16 +954,24 @@ mod tests {
     #[test]
     fn handle_app_crdt_signed_message_buffers_for_drain() {
         // The inbound adapter pushes onto the signed buffer the broker
-        // drainer reads from. Verify the entry preserves the peer hash
-        // and the envelope verbatim.
+        // drainer reads from. Verify the entry preserves the peer hash,
+        // the route the drainer delivers against, and the envelope
+        // verbatim.
         let tree = WorkspaceTree::bootstrap_default().shared();
         let (net, _cmd_rx) = shell_network_for_test(tree, 0u64);
         let buf_handle = net.inbound_app_crdt_signed_handle();
         let envelope = make_envelope(13);
-        net.handle_app_crdt_signed_message(99u64, envelope.clone());
+        net.handle_app_crdt_signed_message(
+            99u64,
+            "notes".to_string(),
+            "cluster-7".to_string(),
+            envelope.clone(),
+        );
         let buf = buf_handle.lock().unwrap();
         assert_eq!(buf.len(), 1);
         assert_eq!(buf[0].peer, 99u64);
+        assert_eq!(buf[0].app_id, "notes");
+        assert_eq!(buf[0].cluster_id, "cluster-7");
         assert_eq!(*buf[0].envelope, envelope);
     }
 
