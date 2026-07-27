@@ -9,7 +9,8 @@
 //!  client commit
 //!      │
 //!      ├─ wl_shm  ──► surface_readback::buffer_to_rgba ──┐
-//!      └─ dmabuf  ──► import_dmabuf_rgba (linear mmap) ──┤
+//!      └─ dmabuf  ──► gpu_import (EGL → GL → readback) ──┤
+//!                     └ or import_dmabuf_rgba (mmap) ────┤
 //!                                                        ▼
 //!                                            ForeignFrameStore (per surface)
 //!                                                        │  snapshot on seq change
@@ -45,13 +46,22 @@
 //!
 //! - `wl_shm` `Argb8888` / `Xrgb8888`: handled by
 //!   [`crate::compositor::surface_readback::buffer_to_rgba`].
-//! - dmabuf: imported by **CPU-mapping the plane fd**, not by a GPU
-//!   texture import. This is sound because the compositor only ever
-//!   advertises `Modifier::Linear` on its `zwp_linux_dmabuf` global
-//!   (see `State::new`), so a conforming client's buffer is a plain
-//!   row-major image we can `mmap`. A non-linear or multi-planar buffer
-//!   is **rejected with a visible on-tile message**, never silently
-//!   painted as a stale or blank frame.
+//! - dmabuf: two routes, tried in order by
+//!   [`ForeignFrameStore::capture_dmabuf`].
+//!   1. **GPU** — EGL wraps the client's buffer as a texture and the GPU
+//!      reads it back ([`crate::compositor::gpu_import`]). This is the
+//!      route that works for a Vulkan client, whose device-local
+//!      swapchain images refuse `mmap` outright.
+//!   2. **CPU mmap** — [`import_dmabuf_rgba`] maps the plane fd
+//!      directly. Correct for the CPU-visible linear buffers a GBM/EGL
+//!      client allocates, and the only route on a box with no usable
+//!      EGL device.
+//!
+//!   The compositor only ever advertises single-plane RGBA under
+//!   `Modifier::Linear` (see `State::new`), so both routes cover the
+//!   whole advertised set. A buffer neither route can read is
+//!   **rejected with a visible on-tile message** carrying both
+//!   failures, never silently painted as a stale or blank frame.
 
 use std::collections::HashMap;
 use std::os::fd::AsRawFd;
@@ -402,6 +412,15 @@ pub struct FrameSnapshot {
 #[derive(Default)]
 pub struct ForeignFrameStore {
     entries: Mutex<HashMap<SurfaceId, ForeignEntry>>,
+    /// Total buffer imports performed, of any route.
+    ///
+    /// A dmabuf import costs a GPU readback (or a full-frame CPU map),
+    /// so it must happen **once per client commit** and never once per
+    /// paint — the compositor paints far more often than a client
+    /// commits, and re-importing per frame would turn an idle GPU client
+    /// into a permanent load. This counter is what
+    /// `painting_does_not_reimport_the_buffer` asserts on.
+    imports: std::sync::atomic::AtomicU64,
 }
 
 static STORE: OnceLock<ForeignFrameStore> = OnceLock::new();
@@ -445,6 +464,18 @@ impl ForeignFrameStore {
         f(guard.entry(id).or_insert_with(ForeignEntry::new))
     }
 
+    fn note_import(&self) {
+        self.imports
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Buffer imports performed since process start, across every
+    /// surface and route. Read by the repaint-cost test — see the
+    /// field's doc for why the number must not track paints.
+    pub fn import_count(&self) -> u64 {
+        self.imports.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
     /// Capture the buffer a client just committed. Tries the `wl_shm`
     /// readback first; a buffer smithay reports as not-shm is routed to
     /// the dmabuf importer.
@@ -472,10 +503,13 @@ impl ForeignFrameStore {
             }
         });
         match shm_result {
-            Ok((w, h)) => CaptureOutcome::Shm {
-                width: w,
-                height: h,
-            },
+            Ok((w, h)) => {
+                self.note_import();
+                CaptureOutcome::Shm {
+                    width: w,
+                    height: h,
+                }
+            }
             Err(ReadbackError::DmaBufUnsupported) => {
                 match smithay::wayland::dmabuf::get_dmabuf(buffer) {
                     Ok(dmabuf) => self.capture_dmabuf(id, &dmabuf),
@@ -528,6 +562,7 @@ impl ForeignFrameStore {
                 });
                 match attempt {
                     Ok(Ok((w, h))) => {
+                        self.note_import();
                         return CaptureOutcome::Dmabuf {
                             width: w,
                             height: h,
@@ -553,11 +588,14 @@ impl ForeignFrameStore {
             })
         });
         match result {
-            Ok((w, h)) => CaptureOutcome::Dmabuf {
-                width: w,
-                height: h,
-                route: DmabufRoute::CpuMmap,
-            },
+            Ok((w, h)) => {
+                self.note_import();
+                CaptureOutcome::Dmabuf {
+                    width: w,
+                    height: h,
+                    route: DmabufRoute::CpuMmap,
+                }
+            }
             Err(cpu_err) => {
                 let msg = match gpu_err {
                     Some(g) => format!("{cpu_err}; GPU import also failed: {g}"),
