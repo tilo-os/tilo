@@ -15,6 +15,7 @@ use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus};
 
+use crate::capabilities::{CapabilityPlan, load_capability_file, now_unix};
 use crate::dbus_proxy::{self, DBusProxyGuard};
 use crate::manifest::{MinimalManifest, PortalPolicy, read_manifest};
 use crate::sandbox::{DBusBindKind, DBusBindPlan, build_bwrap_argv};
@@ -155,6 +156,49 @@ pub struct RunOptions {
     /// `runtime-identity::load()` finds a real identity to attach to
     /// join_channel presence + signed-op attribution.
     pub identity_host_path: Option<PathBuf>,
+    /// Host path of a JSON file holding the `Vec<CapOverride>` the user
+    /// granted in the workspace this app is being launched into. Written
+    /// by the compositor immediately before spawning us.
+    ///
+    /// `None` — and any file that is missing, unreadable or malformed —
+    /// means the app gets exactly the sandbox its manifest describes.
+    /// There is no failure mode here that widens the sandbox.
+    pub capabilities_path: Option<PathBuf>,
+    /// The app id capabilities are addressed to
+    /// (`Subject::Principal(Principal::App(..))`). Defaults to the
+    /// manifest's package id. The launcher re-checks every capability
+    /// against this id rather than trusting the file to have been
+    /// pre-filtered, so a capability file that names another app's
+    /// grants still binds nothing for this one.
+    pub app_id: Option<String>,
+}
+
+/// Resolve the capability plan for a launch: read the file the
+/// compositor wrote, then evaluate it for this app at the current time.
+///
+/// Split out of [`run_with`] so both it and [`run_with_captured`] reach
+/// the same answer, and so tests can exercise the file → plan step
+/// without spawning bwrap.
+pub fn resolve_capabilities(manifest: &MinimalManifest, opts: &RunOptions) -> CapabilityPlan {
+    let Some(path) = opts.capabilities_path.as_deref() else {
+        return CapabilityPlan::empty();
+    };
+    let app_id = opts
+        .app_id
+        .clone()
+        .unwrap_or_else(|| manifest.package_id.clone());
+    let records = load_capability_file(path);
+    let plan = CapabilityPlan::for_app(&app_id, &records, Some(now_unix()));
+    tracing::info!(
+        target: "qos_launcher::capabilities",
+        app = %app_id,
+        ro = plan.ro_paths.len(),
+        rw = plan.rw_paths.len(),
+        devices = ?plan.devices,
+        network = plan.allow_network,
+        "workspace capabilities resolved",
+    );
+    plan
 }
 
 /// Resolve which runtime bundle to mount, if any.
@@ -512,6 +556,12 @@ pub fn run_with(
     let identity_host = resolve_identity_host_path(opts);
     let identity_arg = identity_host.as_deref();
 
+    // The user's decision, as capabilities. Empty unless the compositor
+    // wrote a capability file for this launch — so an app launched
+    // without one is confined to its manifest, which is the same
+    // sandbox it had before capabilities existed.
+    let capabilities = resolve_capabilities(manifest, opts);
+
     // Pick the entrypoint bin per launch mode. GUI uses the default
     // `bin`; CLI uses `cli_bin()` if set (falling back to `bin`) and
     // splices QOS_CLI_COMMAND / forwards passthrough argv.
@@ -525,6 +575,7 @@ pub fn run_with(
                 &binds,
                 dbus_plan.as_ref(),
                 identity_arg,
+                &capabilities,
             ),
             None,
             Vec::new(),
@@ -543,6 +594,7 @@ pub fn run_with(
                 dbus_plan.as_ref(),
                 identity_arg,
                 &entry_bin_owned,
+                &capabilities,
             );
             (
                 v,
@@ -644,6 +696,18 @@ pub fn run_with(
             argv.push("--ro".to_string());
             argv.push(expanded.display().to_string());
         }
+        // Capability-granted paths need matching Landlock rules, or the
+        // bind would be visible and every open() on it would still
+        // return EACCES. The bind and the rule are derived from the same
+        // plan so the two layers cannot disagree about what was granted.
+        for path in &capabilities.ro_paths {
+            argv.push("--ro".to_string());
+            argv.push(path.display().to_string());
+        }
+        for path in &capabilities.rw_paths {
+            argv.push("--rw".to_string());
+            argv.push(path.display().to_string());
+        }
         // If we bound a D-Bus socket in for portal use, Landlock must
         // also grant read on the sandbox-side path so ashpd's connect()
         // doesn't surface EACCES. Path is either `/run/user/<uid>/bus`
@@ -688,7 +752,10 @@ pub fn run_with(
             argv.push("--rw".to_string());
             argv.push(path.display().to_string());
         }
-        if manifest.sandbox.net.mode == "off" {
+        // Landlock's network restriction mirrors the namespace decision
+        // above: an app the user granted network keeps TCP, everything
+        // else is denied bind/connect on top of an already-empty netns.
+        if manifest.sandbox.net.mode == "off" && !capabilities.allow_network {
             argv.push("--net-restricted".to_string());
         }
         argv.push("--".to_string());
@@ -743,7 +810,7 @@ pub fn run_with(
             .map(|s| crate::manifest::expand_path(s))
             .collect::<Vec<_>>(),
     );
-    let net_restricted = manifest.sandbox.net.mode == "off";
+    let net_restricted = manifest.sandbox.net.mode == "off" && !capabilities.allow_network;
     // The shim now IS wired via opts.landlock_enforce (see argv splice
     // above). Log intent from the parent for observability; the shim's
     // own "landlock: {fully,partially} enforced" line surfaces the real
@@ -820,6 +887,7 @@ pub fn run_with_captured(
     let (dbus_plan, _dbus_guard) = resolve_dbus_bind(&manifest.sandbox.portals);
     let identity_host = resolve_identity_host_path(opts);
     let identity_arg = identity_host.as_deref();
+    let capabilities = resolve_capabilities(manifest, opts);
     let mut argv = build_bwrap_argv(
         manifest,
         payload_root,
@@ -827,6 +895,7 @@ pub fn run_with_captured(
         &binds,
         dbus_plan.as_ref(),
         identity_arg,
+        &capabilities,
     );
     let mut prefix = vec!["--seccomp".to_string(), SECCOMP_CHILD_FD.to_string()];
     prefix.extend(argv.drain(..));

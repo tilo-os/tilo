@@ -8,10 +8,38 @@ pub fn state_json_path() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("state.json"))
 }
 
+/// Where the compositor exports the capability list the FUSE mount
+/// enforces, and where `qos-fs --acl` reads it from.
+///
+/// One path, named in one place, so the two processes cannot end up
+/// enforcing different lists. `QOS_FS_ACL_PATH` overrides it for tests
+/// and for a session running a mount somewhere unusual.
+pub fn fs_capability_export_path() -> PathBuf {
+    if let Ok(v) = std::env::var("QOS_FS_ACL_PATH")
+        && !v.is_empty()
+    {
+        return PathBuf::from(v);
+    }
+    dirs::config_dir()
+        .map(|c| c.join("qos").join("fs-capabilities.json"))
+        .unwrap_or_else(|| PathBuf::from("fs-capabilities.json"))
+}
+
+/// Write the tree to `path`, atomically.
+///
+/// Capabilities whose expiry does not survive a restart
+/// (`EndOfSession`, `AfterUse`) are dropped on the way out. That
+/// filtering is the whole difference between "Always" and "Until I log
+/// out": persisting a session grant would quietly promote it to a
+/// permanent one, which is the worse failure of the two.
 pub fn save_tree_to(tree: &WorkspaceTree, path: &Path) -> std::io::Result<()> {
     if let Some(parent) = path.parent() { std::fs::create_dir_all(parent)?; }
     let tmp = path.with_extension("json.tmp");
-    let json = serde_json::to_string_pretty(tree).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    let mut durable = tree.clone();
+    for ws in &mut durable.workspaces {
+        ws.capabilities.retain(|c| c.persists_across_restart());
+    }
+    let json = serde_json::to_string_pretty(&durable).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
     {
         let mut f = std::fs::File::create(&tmp)?;
         f.write_all(json.as_bytes())?;

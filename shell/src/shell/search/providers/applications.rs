@@ -68,6 +68,22 @@ impl ApplicationsProvider {
                 subtitle: Some(subtitle),
                 score,
                 on_open: Rc::new(move |_doc, _root, chrome: &Chrome| {
+                    // Publish the capabilities of the workspace the app
+                    // is being launched into, so the sandbox it starts
+                    // in reflects what the user actually granted. Read
+                    // immediately before the launch rather than cached:
+                    // a grant made a moment ago in the permissions UI
+                    // must reach this launch, and a revoked one must
+                    // not.
+                    {
+                        let st = chrome.borrow();
+                        let caps = st
+                            .tree()
+                            .active_workspace()
+                            .map(|ws| ws.capabilities.clone())
+                            .unwrap_or_default();
+                        launcher::set_workspace_capabilities(caps);
+                    }
                     // The launch itself is non-blocking: everything past
                     // resolution happens on a worker thread. Only the
                     // pre-fork failures land here; the rest arrive as

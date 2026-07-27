@@ -106,13 +106,15 @@ pub struct ShellNetwork {
 /// to every locally-connected app.
 #[derive(Debug, Clone)]
 pub struct InboundAppCrdt {
-    /// Hashed libp2p peer id of the publisher. Useful for future
-    /// debugging / attribution; the broker's fan-out doesn't filter
-    /// on it.
+    /// Hashed libp2p peer id of the publisher. Useful for
+    /// debugging / attribution; the broker's fan-out routes on the
+    /// app + cluster pair below rather than on this.
     pub peer: u64,
-    /// Originating app id (e.g. `"terminal"`), opaque to the bridge.
+    /// Originating app id (e.g. `"terminal"`), opaque to the bridge
+    /// but the first half of the broker's delivery filter.
     pub app_id: String,
-    /// Originating cluster id (uuid as string), opaque to the bridge.
+    /// Originating cluster id (uuid as string); second half of the
+    /// broker's delivery filter.
     pub cluster_id: String,
     /// Opaque Automerge incremental change blob, passed through to
     /// the receiving app's `CollaborationManager` as a
@@ -129,6 +131,13 @@ pub struct InboundAppCrdt {
 pub struct InboundAppCrdtSigned {
     /// Hashed libp2p peer id of the publisher.
     pub peer: u64,
+    /// Originating app id, mirroring [`InboundAppCrdt::app_id`]. The
+    /// broker delivers the validated payload only to local apps that
+    /// announced the same `(app_id, cluster_id)` pair; empty (a peer
+    /// too old to stamp one) addresses nobody.
+    pub app_id: String,
+    /// Originating cluster id; second half of the delivery filter.
+    pub cluster_id: String,
     /// The signed envelope. Wrapped in `Box` to mirror the wire shape
     /// and keep the queue entry size bounded — `SignedOp` is large
     /// (32-byte pubkey + 64-byte sig + variable payload + UUIDs).
@@ -401,10 +410,14 @@ impl ShellNetwork {
     /// successful send will republish.
     pub fn publish_app_crdt_signed(
         &self,
+        app_id: String,
+        cluster_id: String,
         envelope: collab_types::SignedOp,
     ) {
         let msg = NeighbourMsg::AppCrdtIncrementalSigned {
             peer: self.local_peer_id_hash(),
+            app_id,
+            cluster_id,
             envelope: Box::new(envelope),
         };
         let _ = self.cmd_tx.try_send(NetCmd::Publish {
@@ -420,11 +433,15 @@ impl ShellNetwork {
     pub fn handle_app_crdt_signed_message(
         &self,
         peer: u64,
+        app_id: String,
+        cluster_id: String,
         envelope: collab_types::SignedOp,
     ) {
         if let Ok(mut buf) = self.inbound_app_crdt_signed.lock() {
             buf.push(InboundAppCrdtSigned {
                 peer,
+                app_id,
+                cluster_id,
                 envelope: Box::new(envelope),
             });
         }
@@ -603,12 +620,16 @@ impl ShellNetwork {
                 // broker drainer to validate + fan.
                 if let NeighbourMsg::AppCrdtIncrementalSigned {
                     peer: peer_hash,
+                    ref app_id,
+                    ref cluster_id,
                     ref envelope,
                 } = msg
                 {
                     if peer_hash != self.local_peer_hash {
                         self.handle_app_crdt_signed_message(
                             peer_hash,
+                            app_id.clone(),
+                            cluster_id.clone(),
                             (**envelope).clone(),
                         );
                     }
@@ -895,7 +916,11 @@ mod tests {
         let tree = WorkspaceTree::bootstrap_default().shared();
         let (net, mut cmd_rx) = shell_network_for_test(tree, 0xFEED_u64);
         let envelope = make_envelope(7);
-        net.publish_app_crdt_signed(envelope.clone());
+        net.publish_app_crdt_signed(
+            "notes".to_string(),
+            "cluster-7".to_string(),
+            envelope.clone(),
+        );
         let cmd = cmd_rx
             .try_recv()
             .expect("publish_app_crdt_signed must enqueue a NetCmd");
@@ -905,9 +930,16 @@ mod tests {
                 match msg {
                     NeighbourMsg::AppCrdtIncrementalSigned {
                         peer,
+                        app_id,
+                        cluster_id,
                         envelope: got,
                     } => {
                         assert_eq!(peer, 0xFEED_u64);
+                        // The route the receiving broker filters on
+                        // has to survive the wrap verbatim, or the
+                        // envelope arrives unaddressed and is dropped.
+                        assert_eq!(app_id, "notes");
+                        assert_eq!(cluster_id, "cluster-7");
                         assert_eq!(*got, envelope);
                     }
                     other => panic!(
@@ -922,16 +954,24 @@ mod tests {
     #[test]
     fn handle_app_crdt_signed_message_buffers_for_drain() {
         // The inbound adapter pushes onto the signed buffer the broker
-        // drainer reads from. Verify the entry preserves the peer hash
-        // and the envelope verbatim.
+        // drainer reads from. Verify the entry preserves the peer hash,
+        // the route the drainer delivers against, and the envelope
+        // verbatim.
         let tree = WorkspaceTree::bootstrap_default().shared();
         let (net, _cmd_rx) = shell_network_for_test(tree, 0u64);
         let buf_handle = net.inbound_app_crdt_signed_handle();
         let envelope = make_envelope(13);
-        net.handle_app_crdt_signed_message(99u64, envelope.clone());
+        net.handle_app_crdt_signed_message(
+            99u64,
+            "notes".to_string(),
+            "cluster-7".to_string(),
+            envelope.clone(),
+        );
         let buf = buf_handle.lock().unwrap();
         assert_eq!(buf.len(), 1);
         assert_eq!(buf[0].peer, 99u64);
+        assert_eq!(buf[0].app_id, "notes");
+        assert_eq!(buf[0].cluster_id, "cluster-7");
         assert_eq!(*buf[0].envelope, envelope);
     }
 

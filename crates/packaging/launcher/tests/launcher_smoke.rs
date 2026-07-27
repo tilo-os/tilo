@@ -22,6 +22,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use launcher::manifest::{Entrypoint, Fs, MinimalManifest, Net, Sandbox, read_manifest};
+use launcher::capabilities::CapabilityPlan;
 use launcher::run::{RunError, RunOptions, run, run_with, run_with_captured};
 use launcher::services::EXIT_REQUIRED_SERVICE_MISSING;
 
@@ -418,6 +419,7 @@ fn runtime_bundle_wins_over_minimal_libs_in_argv() {
         &[],
         None,
         None,
+        &CapabilityPlan::empty(),
     );
     assert!(
         argv.windows(3)
@@ -559,6 +561,7 @@ fn thin_app_bundle_exposes_shared_libs_on_ld_library_path() {
         &[],
         None,
         None,
+        &CapabilityPlan::empty(),
     );
     let mount = format!("/usr/lib/qos-runtime/{version}");
     assert!(
@@ -657,6 +660,7 @@ wait $!
         &[],
         Some(&plan),
         None,
+        &CapabilityPlan::empty(),
     );
     // The host source must be the proxy socket, NOT /run/user/1234/bus itself.
     let proxy_sock = plan.host_socket.display().to_string();
@@ -712,6 +716,7 @@ fn dbus_direct_bind_used_when_proxy_missing() {
         &[],
         Some(&plan),
         None,
+        &CapabilityPlan::empty(),
     );
     assert!(
         argv.windows(3)
@@ -915,3 +920,102 @@ fn signed_bundle_publisher_pin_enforced() {
     }
 }
 
+
+// ------------------------------------------------- workspace capabilities
+
+/// A capability file on disk becomes a bind in the argv, through the
+/// exact pair `run_with` uses: `resolve_capabilities` reads and
+/// evaluates the file, `build_bwrap_argv` renders the result.
+#[test]
+fn a_capability_file_on_disk_becomes_a_bind_in_the_argv() {
+    use collab_types::caps::{CapOverride, Scope, Subject, Verb};
+
+    let dir = tempfile::tempdir().unwrap();
+    let caps_file = dir.path().join("caps.json");
+    let caps = vec![
+        CapOverride::grant(
+            Subject::app("com.example.hello"),
+            Scope::FsPath("/var/workspace/books".to_string()),
+            Verb::Read,
+        ),
+        // Addressed to a different app: must not survive the crossing,
+        // even though it sits in the same file.
+        CapOverride::grant(
+            Subject::app("com.example.other"),
+            Scope::FsPath("/var/workspace/secrets".to_string()),
+            Verb::Write,
+        ),
+    ];
+    std::fs::write(&caps_file, serde_json::to_vec(&caps).unwrap()).unwrap();
+
+    let m = hello_manifest(dir.path(), BTreeMap::new());
+    let opts = RunOptions {
+        no_services: true,
+        landlock_enforce: false,
+        capabilities_path: Some(caps_file),
+        ..Default::default()
+    };
+    let plan = launcher::run::resolve_capabilities(&m, &opts);
+    let argv = launcher::sandbox::build_bwrap_argv(
+        &m,
+        Path::new("/host/pkg"),
+        None,
+        &[],
+        None,
+        None,
+        &plan,
+    );
+
+    assert!(
+        argv.windows(3).any(|w| w[0] == "--ro-bind-try"
+            && w[1] == "/var/workspace/books"
+            && w[2] == "/var/workspace/books"),
+        "the granted path must be bound read-only: {argv:?}"
+    );
+    assert!(
+        !argv.iter().any(|a| a == "/var/workspace/secrets"),
+        "another app's grant in the same file must not be bound: {argv:?}"
+    );
+}
+
+/// Deny by default at the file boundary: a capability file the launcher
+/// cannot parse grants nothing, and a launch without one grants nothing.
+/// Neither is a launch failure — both are just the manifest's sandbox.
+#[test]
+fn an_unparseable_or_absent_capability_file_grants_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let m = hello_manifest(dir.path(), BTreeMap::new());
+
+    let malformed = dir.path().join("caps.json");
+    std::fs::write(&malformed, b"not json at all").unwrap();
+    let opts = RunOptions {
+        no_services: true,
+        capabilities_path: Some(malformed),
+        ..Default::default()
+    };
+    assert_eq!(
+        launcher::run::resolve_capabilities(&m, &opts),
+        CapabilityPlan::empty(),
+        "a malformed capability file must not fall open"
+    );
+
+    let opts_missing = RunOptions {
+        no_services: true,
+        capabilities_path: Some(dir.path().join("does-not-exist.json")),
+        ..Default::default()
+    };
+    assert_eq!(
+        launcher::run::resolve_capabilities(&m, &opts_missing),
+        CapabilityPlan::empty(),
+        "a missing capability file must not fall open"
+    );
+
+    let opts_none = RunOptions {
+        no_services: true,
+        ..Default::default()
+    };
+    assert_eq!(
+        launcher::run::resolve_capabilities(&m, &opts_none),
+        CapabilityPlan::empty()
+    );
+}
