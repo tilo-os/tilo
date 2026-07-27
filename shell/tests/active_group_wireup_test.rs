@@ -88,7 +88,8 @@ fn two_strip_two_group_tree() -> (
         roles: vec![],
         workspace_files: vec![],
         collaborators: vec![],
-        grants: HashMap::new(),
+        owner: None,
+        capabilities: Vec::new(),
         shared_surfaces: HashMap::new(),
     };
 

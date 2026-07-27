@@ -38,7 +38,9 @@ use ui::{CommandEntry, CommandPalette};
 
 use crate::shell::chrome_state::{Chrome, WsTab};
 use crate::shell::notification::NotificationStack;
-use crate::shell::state::{Capability, GrantScope, GroupId, StripId, WorkspaceId};
+use crate::shell::state::{
+    Capability, GRANT_ALWAYS, GRANT_ONCE, GRANT_SESSION, GrantScope, GroupId, StripId, WorkspaceId,
+};
 use crate::shell::workspace_settings::{draw_files_pane, draw_roles_pane};
 
 pub struct ShellOverlayHost {
@@ -1555,7 +1557,7 @@ impl ShellOverlayHost {
                         }
                         PromptChoice::Session => {
                             if let Some(ws) = st.tree_mut().active_workspace_mut() {
-                                let cap = with_grant_scope(capability, GrantScope::Session);
+                                let cap = with_grant_scope(capability, GRANT_SESSION);
                                 ws.grants
                                     .entry(app_id)
                                     .or_default()
@@ -1564,7 +1566,7 @@ impl ShellOverlayHost {
                         }
                         PromptChoice::Always => {
                             if let Some(ws) = st.tree_mut().active_workspace_mut() {
-                                let cap = with_grant_scope(capability, GrantScope::Always);
+                                let cap = with_grant_scope(capability, GRANT_ALWAYS);
                                 ws.grants
                                     .entry(app_id)
                                     .or_default()
@@ -4864,7 +4866,7 @@ fn capability_label(cap: &Capability) -> String {
 
 /// Return a copy of `cap` with its `scope` field replaced. The portal
 /// layer pushes onto `pending_grants` with a placeholder scope (typically
-/// [`GrantScope::Once`]); the prompt's button choice is what determines
+/// [`GRANT_ONCE`]); the prompt's button choice is what determines
 /// what gets persisted.
 fn with_grant_scope(cap: Capability, scope: GrantScope) -> Capability {
     match cap {
