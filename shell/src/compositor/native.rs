@@ -39,6 +39,7 @@ use crate::compositor::backend::{
     combined_geometry, headless, Backend, BackendEvent, DrmBackend, HeadlessBackend, OutputId,
     WinitBackend,
 };
+use crate::compositor::client_input;
 use crate::compositor::frame::FrameBuilder;
 use crate::compositor::idle::{IdleConfig, SessionManager, SessionTransition};
 use crate::compositor::lock_auth;
@@ -1151,15 +1152,30 @@ pub fn run() -> ! {
                             apply_session_transition(t, backend.as_mut());
                         }
                     } else {
-                        // Dispatch real input through the same wire the
-                        // headless `execute_planned_action` path uses.
-                        frame_builder.dispatch_event(
+                        // Offer the event to the focused Wayland client
+                        // first. `route_input` returns `false` for anything
+                        // the shell owns — compositor chords, overlay-
+                        // captured input, and every pointer position that
+                        // isn't inside a client tile — so chrome keeps
+                        // priority and only genuinely client-bound events
+                        // are withheld from the chrome dispatch below.
+                        let to_client = client_input::route_input(
+                            &mut state,
+                            &mut frame_builder,
                             &wev,
                             &test_control_ctx.modifiers,
-                            &mut test_control_ctx.doc,
-                            &test_control_ctx.root_obj,
-                            &mut test_control_ctx.focus,
                         );
+                        if !to_client {
+                            // Dispatch real input through the same wire the
+                            // headless `execute_planned_action` path uses.
+                            frame_builder.dispatch_event(
+                                &wev,
+                                &test_control_ctx.modifiers,
+                                &mut test_control_ctx.doc,
+                                &test_control_ctx.root_obj,
+                                &mut test_control_ctx.focus,
+                            );
+                        }
                     }
                 }
                 BackendEvent::ModifiersChanged(modifiers) => {
@@ -1276,6 +1292,18 @@ pub fn run() -> ! {
         // tree are not yet unified (Phase 4), so an unknown id is a safe no-op
         // rather than blanking the shell.
         frame_builder.set_fullscreen(state.fullscreen_group);
+
+        // Mirror foreign toplevels adopted at the protocol layer into the
+        // rendered tab tree (each becomes its own window group in the active
+        // strip) and reap the tabs of clients that went away. Bumps the
+        // chrome revision on a real change, which is what drives the
+        // relayout that gives the new tile its rect.
+        client_input::sync_foreign_tabs(&mut state, &mut frame_builder);
+        // Reconcile the seat's keyboard focus with the focused tab. Runs
+        // every tick so a tab / group / workspace switch, an overlay
+        // opening, or a window closing all move the keyboard immediately —
+        // not only on the next keystroke.
+        client_input::sync_keyboard_focus(&mut state, &frame_builder);
 
         // Decide whether this frame needs repainting *before* doing the
         // expensive layout pass. Both queries below are cheap and don't
