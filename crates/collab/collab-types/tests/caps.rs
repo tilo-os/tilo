@@ -265,12 +265,12 @@ fn denied_role_cannot_be_rescued_by_a_grant() {
 
     // Even a workspace-wide Admin grant to this exact user is inert
     // against an explicit Denied block.
-    state.cap_overrides.push(CapOverride {
-        subject: Subject::User(author_pk),
-        scope: Scope::Workspace,
-        effect: Effect::Grant,
-        verb: Verb::Admin,
-    });
+    state.cap_overrides.push(CapOverride::new(
+        Subject::User(author_pk),
+        Scope::Workspace,
+        Effect::Grant,
+        Verb::Admin,
+    ));
 
     let comment = build_op(artifact, author_pk, &author_sk, att, OpClass::Comment, 1);
     assert_eq!(

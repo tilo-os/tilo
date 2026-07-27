@@ -1,6 +1,7 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use collab_types::{CapOverride, Ed25519PublicKey, Effect, Role, Scope, Subject, Verb};
 use fs::namespace::ROOT_INO;
 use fs::{Access, ContentStore, Heuristics, Hydrator, Namespace, QuickFS, WorkspaceAcl};
 use fuser::{Config, MountOption};
@@ -27,6 +28,219 @@ macro_rules! require_fuse {
 
 const ALICE: [u8; 32] = [0xA1; 32];
 const BOB: [u8; 32] = [0xB0; 32];
+
+// ---------------------------------------------------------------------
+// Capability enforcement
+//
+// The capability model in `collab_types` is the system's one permission
+// vocabulary. `WorkspaceAcl::from_capabilities` binds a capability list
+// to a mount identity; these tests prove the binding *denies* through
+// `QuickFS::check_access` — the exact function `open`, `read` and `write`
+// route every access through. Nothing here pokes at ACL internals.
+// ---------------------------------------------------------------------
+
+/// A workspace tree with a granted subtree, a sibling subtree, and a
+/// path that shares a *string* prefix with the granted one but is not
+/// beneath it. Returns the inode of each interesting path.
+struct CapFixture {
+    fs: QuickFS,
+    /// `/w/docs` — the granted subtree itself.
+    docs: u64,
+    /// `/w/docs/report.md` — beneath the granted subtree.
+    docs_child: u64,
+    /// `/w/other/private.md` — a sibling subtree, never granted.
+    other_child: u64,
+    /// `/w/docsSECRET/leak.md` — shares the string prefix `/w/docs`,
+    /// but is a different directory.
+    look_alike_child: u64,
+}
+
+async fn cap_fixture(identity: [u8; 32], caps: &[CapOverride], now: Option<u64>) -> CapFixture {
+    let endpoint = Endpoint::bind().await.expect("bind endpoint");
+    let store = Arc::new(ContentStore::memory());
+    let body = b"contents";
+    let hash = store.write_content(body).await.unwrap().unwrap();
+    let namespace = Arc::new(Mutex::new(Namespace::new("cap-peer")));
+
+    let (docs, docs_child, other_child, look_alike_child) = {
+        let mut ns = namespace.lock().unwrap();
+        let w = ns.create_dir(ROOT_INO, "w", 1).unwrap();
+        let docs = ns.create_dir(w, "docs", 1).unwrap();
+        let docs_child = ns
+            .create_file(docs, "report.md", Some(&hash), body.len() as u64, 1)
+            .unwrap();
+        let other = ns.create_dir(w, "other", 1).unwrap();
+        let other_child = ns
+            .create_file(other, "private.md", Some(&hash), body.len() as u64, 1)
+            .unwrap();
+        // Same string prefix as "/w/docs", different directory.
+        let look_alike = ns.create_dir(w, "docsSECRET", 1).unwrap();
+        let look_alike_child = ns
+            .create_file(look_alike, "leak.md", Some(&hash), body.len() as u64, 1)
+            .unwrap();
+        (docs, docs_child, other_child, look_alike_child)
+    };
+
+    let hydrator = Arc::new(Hydrator::new(endpoint, store));
+    let heuristics = Arc::new(Heuristics::new(hydrator.clone(), namespace.clone()));
+    let acl = WorkspaceAcl::from_capabilities(identity, caps, &[], now);
+    let fs = QuickFS::new(namespace, hydrator, heuristics).with_acl(acl, identity);
+
+    CapFixture {
+        fs,
+        docs,
+        docs_child,
+        other_child,
+        look_alike_child,
+    }
+}
+
+/// A read grant for `who` on `path`.
+fn read_cap(who: [u8; 32], path: &str) -> CapOverride {
+    CapOverride::new(
+        Subject::User(Ed25519PublicKey(who)),
+        Scope::FsPath(path.into()),
+        Effect::Grant,
+        Verb::Read,
+    )
+}
+
+// A capability names a subtree. Everything outside that subtree is
+// denied — a grant is not a foot in the door.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_capability_on_one_subtree_denies_a_sibling_subtree() {
+    let f = cap_fixture(ALICE, &[read_cap(ALICE, "/w/docs")], Some(1_000)).await;
+
+    assert_eq!(
+        f.fs.check_access(f.docs_child, Access::Read),
+        Ok(()),
+        "the granted subtree is readable"
+    );
+    assert_eq!(
+        f.fs.check_access(f.other_child, Access::Read),
+        Err(libc::EACCES),
+        "a capability on /w/docs must NOT reach /w/other/private.md"
+    );
+    assert_eq!(
+        f.fs.check_access(f.other_child, Access::Write),
+        Err(libc::EACCES),
+        "nor may it write there"
+    );
+}
+
+// The prefix is a *path* prefix, not a string prefix. `/w/docsSECRET`
+// is a different directory that merely starts with the same characters;
+// treating it as covered would leak a whole tree.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_capability_stops_at_the_path_component_boundary() {
+    let f = cap_fixture(ALICE, &[read_cap(ALICE, "/w/docs")], Some(1_000)).await;
+
+    assert_eq!(
+        f.fs.check_access(f.docs, Access::Read),
+        Ok(()),
+        "the granted directory itself is readable"
+    );
+    assert_eq!(
+        f.fs.check_access(f.look_alike_child, Access::Read),
+        Err(libc::EACCES),
+        "/w/docs must NOT cover /w/docsSECRET/leak.md — component boundary"
+    );
+}
+
+// `Verb::Read` does not imply `Verb::Write`. A share that says "read"
+// must not become a write when it reaches the filesystem.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_read_capability_is_denied_a_write() {
+    let f = cap_fixture(ALICE, &[read_cap(ALICE, "/w/docs")], Some(1_000)).await;
+
+    assert_eq!(
+        f.fs.check_access(f.docs_child, Access::Read),
+        Ok(()),
+        "read is what was granted"
+    );
+    assert_eq!(
+        f.fs.check_access(f.docs_child, Access::Write),
+        Err(libc::EACCES),
+        "a read-only capability must be denied a write"
+    );
+}
+
+// An expired capability is gone, not merely stale. Evaluated at a later
+// instant than its deadline it authorises nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_expired_capability_authorises_nothing() {
+    let expired = read_cap(ALICE, "/w/docs").with_expiry(1_000);
+
+    // Before the deadline the very same capability allows the read, so
+    // the denial below is expiry biting and not an unrelated failure.
+    let live = cap_fixture(ALICE, std::slice::from_ref(&expired), Some(999)).await;
+    assert_eq!(
+        live.fs.check_access(live.docs_child, Access::Read),
+        Ok(()),
+        "the capability allows the read while it is live"
+    );
+
+    let lapsed = cap_fixture(ALICE, &[expired], Some(1_001)).await;
+    assert_eq!(
+        lapsed.fs.check_access(lapsed.docs_child, Access::Read),
+        Err(libc::EACCES),
+        "a capability whose AtUnix deadline has passed must be denied"
+    );
+    assert_eq!(
+        lapsed.fs.check_access(lapsed.docs, Access::Read),
+        Err(libc::EACCES),
+        "including on the granted directory itself"
+    );
+}
+
+// The fail-closed floor: an identity holding nothing gets nothing —
+// including the mount root, and including for capabilities that name
+// somebody else.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_identity_with_no_capability_is_denied_everything() {
+    // Bob's mount, evaluated against a list that grants only Alice.
+    let f = cap_fixture(BOB, &[read_cap(ALICE, "/w/docs")], Some(1_000)).await;
+
+    for (ino, what) in [
+        (f.docs, "/w/docs"),
+        (f.docs_child, "/w/docs/report.md"),
+        (f.other_child, "/w/other/private.md"),
+        (f.look_alike_child, "/w/docsSECRET/leak.md"),
+        (ROOT_INO, "/"),
+    ] {
+        assert_eq!(
+            f.fs.check_access(ino, Access::Read),
+            Err(libc::EACCES),
+            "an identity with no capability must be denied read on {what}"
+        );
+        assert_eq!(
+            f.fs.check_access(ino, Access::Write),
+            Err(libc::EACCES),
+            "an identity with no capability must be denied write on {what}"
+        );
+    }
+}
+
+// A role is not a key to the filesystem. `role_base_applies` is false
+// for every `ResourceRef::FsPath`, so even an Owner reaches a path only
+// through an explicit capability — and a role-scoped grant does not
+// cover a mount actor, which holds no role.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_role_wide_grant_does_not_authorise_a_path() {
+    let role_cap = CapOverride::new(
+        Subject::Role(Role::Owner),
+        Scope::FsPath("/w/docs".into()),
+        Effect::Grant,
+        Verb::Write,
+    );
+    let f = cap_fixture(ALICE, &[role_cap], Some(1_000)).await;
+
+    assert_eq!(
+        f.fs.check_access(f.docs_child, Access::Read),
+        Err(libc::EACCES),
+        "an Owner-role grant must not authorise a path for a mount that holds no role"
+    );
+}
 
 // The per-identity ACL enforcement decision, exercised on the REAL fs
 // access method (`QuickFS::check_access`, the exact function every

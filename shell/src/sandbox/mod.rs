@@ -1,16 +1,31 @@
-//! Per-workspace Bubblewrap sandbox primitives.
+//! Compositor-side sandbox primitives.
 //!
-//! Phase 1 of `docs/superpowers/plans/2026-05-02-per-workspace-sandbox-permissions.md`:
-//! a `SandboxProfile` value type that renders to a `bwrap`-compatible argv,
-//! plus a thin spawn helper. Higher phases (seccomp, Wayland bridge, portal
-//! grants) layer on top of this without changing the wire shape here.
+//! ## Where enforcement actually happens
+//!
+//! The compositor does **not** spawn applications itself. It execs
+//! `qos-launcher` (the `launcher` crate), and that process is what
+//! builds the bubblewrap namespace, compiles the seccomp filter,
+//! installs Landlock and execs the app. It is the single enforcement
+//! point, and it is where a workspace's capabilities become real kernel
+//! restrictions — see [`crate::shell::launcher`] for the shell's side
+//! of the handoff and `launcher::capabilities` for the other.
+//!
+//! What is left here:
+//!
+//! - [`landlock_shim`] — the compositor binary's own `__sandbox-exec`
+//!   re-entry point, dispatched from `main.rs`. Live code.
+//! - [`profile`] — [`SandboxProfile`], the value type describing a
+//!   per-workspace bubblewrap sandbox and rendering it to argv. It is
+//!   **not** on any launch path today; the spawn helper that used it
+//!   had no callers anywhere in the repository and was removed rather
+//!   than left standing as a decoy enforcement point.
+//! - [`seccomp`] — the per-workspace filter compiler that feeds
+//!   [`profile`].
 
 pub mod landlock_shim;
 pub mod profile;
 pub mod seccomp;
-pub mod spawn;
 
 pub use landlock_shim::{run_sandbox_exec, SANDBOX_EXEC_SUBCOMMAND};
 pub use profile::SandboxProfile;
 pub use seccomp::{cache_blob, cache_blob_at, compile_workspace_seccomp};
-pub use spawn::{spawn_in_workspace, spawn_in_workspace_with_grants};

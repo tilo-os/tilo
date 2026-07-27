@@ -23,7 +23,7 @@ use shell::portal::{
     ScreenCastStreamProvisionerHandle, BUS_NAME, OBJECT_PATH,
 };
 use shell::shell::state::{
-    Capability, FsMode, GrantScope, Workspace, WorkspaceId,
+    Capability, FsMode, GRANT_ALWAYS, GRANT_ONCE, GRANT_SESSION, Workspace, WorkspaceId,
 };
 use std::time::Duration;
 use tokio::net::UnixStream;
@@ -42,7 +42,8 @@ fn empty_workspace(id: u64, name: &str) -> Workspace {
         roles: vec![],
         workspace_files: vec![],
         collaborators: vec![],
-        grants: HashMap::new(),
+        owner: None,
+        capabilities: Vec::new(),
         shared_surfaces: HashMap::new(),
     }
 }
@@ -273,10 +274,10 @@ async fn always_grant_skips_prompt_queue() {
     // the queue entirely, so the queue stays at 0 and the call
     // resolves with response=0.
     let mut ws = empty_workspace(104, "ws");
-    ws.grants.insert(
+    ws.grants().insert(
         "org.example.always".into(),
         vec![Capability::Camera {
-            scope: GrantScope::Always,
+            scope: GRANT_ALWAYS,
         }],
     );
     let (store, ws_id) = GrantStoreHandle::test_with_workspace(ws);
@@ -427,10 +428,10 @@ async fn screencast_start_provisions_pipewire_stream() {
     // provisioner regardless of whether the consent came via fast or
     // slow path; this just avoids needing to fulfil a queued prompt
     // from the test harness.
-    ws.grants.insert(
+    ws.grants().insert(
         "org.example.cast".into(),
         vec![Capability::Screencast {
-            scope: GrantScope::Always,
+            scope: GRANT_ALWAYS,
         }],
     );
     let (store, ws_id) = GrantStoreHandle::test_with_workspace(ws);
@@ -498,18 +499,18 @@ fn capability_kind_round_trips_through_grant_store() {
     // round-trip the public types — guards against a stray re-export
     // miss that would silently break the test harness.
     let mut ws = empty_workspace(107, "ws");
-    ws.grants.insert(
+    ws.grants().insert(
         "x".into(),
         vec![Capability::Filesystem {
             path: "/work/a.txt".into(),
             mode: FsMode::Read,
-            scope: GrantScope::Once,
+            scope: GRANT_ONCE,
         }],
     );
     let (store, id) = GrantStoreHandle::test_with_workspace(ws);
     let caller = PortalCaller::new(id, "x");
     assert_eq!(
         store.lookup(&caller, CapabilityKind::FilesystemRead),
-        Some(GrantScope::Once)
+        Some(GRANT_ONCE)
     );
 }
