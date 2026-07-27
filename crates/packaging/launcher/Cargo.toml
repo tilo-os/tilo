@@ -23,6 +23,7 @@ path = "src/lib.rs"
 [dependencies]
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 toml = "0.8"
 thiserror = "1"
 tracing = "0.1"
@@ -36,6 +37,11 @@ runtime-bundle = { path = "../runtime-bundle" }
 # sides must agree on (portal policy) come from here rather than
 # being duplicated.
 pkg = { path = "../pkg" }
+# The capability vocabulary. Workspace grants arrive as `CapOverride`
+# records and are evaluated with the same fail-closed decision function
+# the compositor and the filesystem use — a launcher-local permission
+# type would be a second vocabulary to drift out of sync.
+collab-types = { path = "../../collab/collab-types" }
 
 [dev-dependencies]
 tempfile = "3"
