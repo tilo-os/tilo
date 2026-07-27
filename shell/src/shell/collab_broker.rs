@@ -2086,6 +2086,7 @@ mod tests {
         crate::shell::launcher::InstalledApp {
             package_id: package_id.to_string(),
             display_name: package_id.to_string(),
+            category: None,
             version: "1.0.0".to_string(),
             manifest_path,
             payload_root: dir.join("payload"),
