@@ -1326,7 +1326,7 @@ impl WorkspaceTree {
     ///
     /// Tabs, `active_strip`, `active_group`, and collaborators stay
     /// cache-only — unit D wires those.
-    pub(crate) fn seed_doc_from_cache(&mut self) {
+    pub fn seed_doc_from_cache(&mut self) {
         use automerge::{
             ObjType, ReadDoc, ROOT, ScalarValue, transaction::Transactable,
         };
