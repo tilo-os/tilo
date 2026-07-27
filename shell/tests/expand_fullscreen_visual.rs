@@ -1,0 +1,157 @@
+//! Visual harness for expand-to-fullscreen + its floating pill decoration.
+//!
+//! Renders the real chrome (same `FrameBuilder` the live compositor paints
+//! with) before and after clicking a tab's Expand chip, and writes PNGs so the
+//! result can actually be looked at rather than inferred from assertions.
+//!
+//! `#[ignore]` by default — it needs a GPU adapter and is a review tool, not a
+//! gate. Run it with an output directory:
+//!
+//! ```text
+//! QOS_SHOT_DIR=/tmp/shots cargo test -p shell --test expand_fullscreen_visual \
+//!     -- --ignored --nocapture
+//! ```
+
+mod support;
+
+use support::offscreen::OffscreenRenderer;
+
+use automerge::{AutoCommit, ROOT};
+use shell::compositor::frame::FrameBuilder;
+use vello::kurbo::Point;
+use vello::peniko::Color;
+use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
+
+const W: u32 = 1600;
+const H: u32 = 900;
+
+fn shot_dir() -> std::path::PathBuf {
+    std::env::var("QOS_SHOT_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| std::env::temp_dir().join("qos-expand-shots"))
+}
+
+struct Driver {
+    doc: AutoCommit,
+    focus: Option<taffy::NodeId>,
+}
+
+impl Driver {
+    fn new() -> Self {
+        Self { doc: AutoCommit::new(), focus: None }
+    }
+    fn send(&mut self, fb: &mut FrameBuilder, ev: WindowEvent) {
+        let mods = Modifiers::default();
+        fb.dispatch_event(&ev, &mods, &mut self.doc, &ROOT, &mut self.focus);
+    }
+    fn cursor(&mut self, fb: &mut FrameBuilder, p: Point) {
+        self.send(
+            fb,
+            WindowEvent::CursorMoved {
+                device_id: unsafe { std::mem::zeroed() },
+                position: winit::dpi::PhysicalPosition::new(p.x, p.y),
+            },
+        );
+    }
+    fn click(&mut self, fb: &mut FrameBuilder) {
+        self.send(
+            fb,
+            WindowEvent::MouseInput {
+                device_id: unsafe { std::mem::zeroed() },
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+            },
+        );
+        self.send(
+            fb,
+            WindowEvent::MouseInput {
+                device_id: unsafe { std::mem::zeroed() },
+                state: ElementState::Released,
+                button: MouseButton::Left,
+            },
+        );
+    }
+}
+
+#[test]
+#[ignore]
+fn render_expand_to_fullscreen() {
+    let dir = shot_dir();
+    std::fs::create_dir_all(&dir).expect("shot dir");
+    let mut fb = FrameBuilder::new((W, H));
+    let mut r = OffscreenRenderer::new(W, H);
+    let mut d = Driver::new();
+
+    // --- before: normal tiled desktop -------------------------------------
+    fb.relayout();
+    let scene = fb.paint();
+    r.render_png(&scene, Color::BLACK, dir.join("01-tiled.png"));
+
+    // Which strip are we driving? Take the active one from the tree.
+    let strip_id = {
+        let chrome = fb.chrome();
+        let tree = chrome.tree();
+        tree.active_workspace()
+            .and_then(|w| w.strips.first())
+            .map(|s| s.id)
+            .expect("one strip")
+    };
+
+    // Hover the active tab's pill: the per-tab chips only lay out hit rects
+    // once the pointer is over the pill.
+    let pill_center = {
+        let g = fb
+            .host_mut()
+            .group_at_for_tests(strip_id, 0)
+            .expect("first group");
+        g.tab_rects().first().copied().expect("one pill").center()
+    };
+    d.cursor(&mut fb, pill_center);
+    fb.relayout();
+
+    let chip = {
+        let g = fb.host_mut().group_at_for_tests(strip_id, 0).unwrap();
+        g.bar_for_tests()
+            .max_rects()
+            .first()
+            .copied()
+            .expect("Expand chip")
+            .center()
+    };
+    println!("pill_center={pill_center:?} expand_chip={chip:?}");
+    let scene = fb.paint();
+    r.render_png(&scene, Color::BLACK, dir.join("02-pill-hovered.png"));
+
+    // --- click Expand ------------------------------------------------------
+    d.cursor(&mut fb, chip);
+    d.click(&mut fb);
+    fb.host_mut().tick_pending_maximize_harvest_for_tests();
+    fb.relayout();
+    let maximized = fb
+        .host_mut()
+        .group_at_for_tests(strip_id, 0)
+        .map(|g| g.maximized)
+        .unwrap_or(false);
+    println!("after Expand click: maximized={maximized}");
+    // Put the cursor in the top reveal band so the floating pill is showing.
+    d.cursor(&mut fb, Point::new(200.0, 20.0));
+    fb.relayout();
+    let scene = fb.paint();
+    r.render_png(
+        &scene,
+        Color::BLACK,
+        dir.join("03-fullscreen-chrome-shown.png"),
+    );
+
+    // --- cursor away from the top: the floating pill must auto-hide --------
+    d.cursor(&mut fb, Point::new(800.0, 600.0));
+    fb.relayout();
+    let scene = fb.paint();
+    r.render_png(
+        &scene,
+        Color::BLACK,
+        dir.join("04-fullscreen-chrome-hidden.png"),
+    );
+
+    println!("wrote shots to {}", dir.display());
+}
