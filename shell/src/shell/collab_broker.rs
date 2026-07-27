@@ -1580,6 +1580,7 @@ pub fn spawn_full(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
     use std::time::Duration;
     use ui::collaboration::{CollaborationManager, PresencePayload};
     use ui::presence::PresenceKey;
@@ -2052,5 +2053,307 @@ mod tests {
         drop(silent);
         drop(listener_peer);
         drop(handle);
+    }
+
+    // -----------------------------------------------------------------
+    // Launch → sandbox env → collaboration room.
+    //
+    // The tests above address peers by hand. The ones below drive the
+    // production chain instead: the argv the compositor builds when the
+    // user opens an app, the bwrap argv the launcher builds from it,
+    // the env that argv gives the child, and finally what the live
+    // broker does or does not deliver to a manager built under that
+    // env. Nothing in between is stubbed, so a break anywhere along the
+    // chain — a dropped flag, a renamed variable, a lost precedence
+    // rule — surfaces here as a delivery failure.
+    // -----------------------------------------------------------------
+
+    /// Write a minimal but real package manifest and return the
+    /// [`InstalledApp`] the registry reader would have produced for it.
+    fn staged_app(dir: &Path, package_id: &str) -> crate::shell::launcher::InstalledApp {
+        let manifest_path = dir.join(format!("{package_id}.toml"));
+        std::fs::write(
+            &manifest_path,
+            format!(
+                "package_id = \"{package_id}\"\n\
+                 version = \"1.0.0\"\n\
+                 [entrypoint]\n\
+                 bin = \"bin/app\"\n\
+                 [sandbox]\n",
+            ),
+        )
+        .expect("stage manifest");
+        crate::shell::launcher::InstalledApp {
+            package_id: package_id.to_string(),
+            display_name: package_id.to_string(),
+            version: "1.0.0".to_string(),
+            manifest_path,
+            payload_root: dir.join("payload"),
+            has_gui: true,
+        }
+    }
+
+    /// Read one flag's value out of an argv, or panic naming the flag.
+    fn flag_value(argv: &[String], flag: &str) -> String {
+        argv.windows(2)
+            .find(|w| w[0] == flag)
+            .map(|w| w[1].clone())
+            .unwrap_or_else(|| panic!("argv is missing {flag}: {argv:?}"))
+    }
+
+    /// The environment a child opened into `workspace` actually
+    /// receives, derived by walking the real launch chain:
+    ///
+    /// 1. the compositor renders the `qos-launcher` invocation,
+    /// 2. we read back the flags `qos-launcher` parses from it,
+    /// 3. the launcher builds the bwrap argv from that manifest and
+    ///    splices the workspace in exactly where `run_with` does,
+    /// 4. every `--setenv K V` triple in that argv is collected.
+    ///
+    /// Step 4 is the child's view of the world, which is precisely what
+    /// `auto_hello_env` reads.
+    fn sandbox_env_for_launch(
+        dir: &Path,
+        package_id: &str,
+        workspace: crate::shell::state::WorkspaceId,
+    ) -> Vec<(String, String)> {
+        let app = staged_app(dir, package_id);
+        let launch = crate::shell::launcher::build_launch_command(
+            &app,
+            Path::new("/usr/libexec/qos-launcher"),
+            Path::new("/run/user/1000/wayland-1"),
+            workspace,
+            None,
+        );
+
+        let manifest_path = PathBuf::from(flag_value(&launch.args, "--manifest"));
+        let payload_root = PathBuf::from(flag_value(&launch.args, "--payload-root"));
+        let workspace_id = flag_value(&launch.args, "--workspace-id");
+
+        let manifest = launcher::manifest::read_manifest(&manifest_path)
+            .expect("launcher parses the manifest");
+        let mut argv = launcher::sandbox::build_bwrap_argv(
+            &manifest,
+            &payload_root,
+            None,
+            &[],
+            None,
+            None,
+            &launcher::capabilities::CapabilityPlan::empty(),
+        );
+        // The same splice `run_with` performs: in front of the trailing
+        // entrypoint token, so bwrap still reads it as a flag.
+        let entry = argv.pop().expect("argv non-empty");
+        launcher::sandbox::push_workspace_id(&mut argv, &workspace_id);
+        argv.push(entry);
+
+        let mut env = Vec::new();
+        let mut i = 0;
+        while i + 2 < argv.len() {
+            if argv[i] == "--setenv" {
+                env.push((argv[i + 1].clone(), argv[i + 2].clone()));
+                i += 3;
+            } else {
+                i += 1;
+            }
+        }
+        env
+    }
+
+    /// Connect a manager under the env a real launch into `workspace`
+    /// would have given the app.
+    ///
+    /// `instance` goes to `QUICK_APP_ID` — the standalone-dev
+    /// per-instance identity, deliberately *different* for every peer
+    /// here. Under a launched session it must not influence routing,
+    /// and leaving it set and distinct is what proves that.
+    fn connect_as_launched_app(
+        sock: &PathBuf,
+        dir: &Path,
+        package_id: &str,
+        workspace: crate::shell::state::WorkspaceId,
+        instance: &str,
+    ) -> CollaborationManager {
+        let env = sandbox_env_for_launch(dir, package_id, workspace);
+        // SAFETY: every test in this module is serialised on the
+        // `collab_broker` key, so nothing else reads these between the
+        // writes and the `new()` that consumes them.
+        unsafe {
+            std::env::set_var("QUICK_COLLAB_SOCK", sock);
+            std::env::set_var("QUICK_APP_ID", instance);
+            std::env::remove_var("QUICK_CLUSTER_ID");
+            std::env::remove_var("QOS_PACKAGE_ID");
+            std::env::remove_var("QOS_WORKSPACE_ID");
+            for (k, v) in &env {
+                std::env::set_var(k, v);
+            }
+        }
+        let mgr = CollaborationManager::new();
+        // Leave no launched-app env behind for the next manager.
+        unsafe {
+            for (k, _) in &env {
+                std::env::remove_var(k);
+            }
+        }
+        mgr
+    }
+
+    /// Every `CRDTIncremental` payload in `events`.
+    fn crdt_payloads(events: &[CollabEvent]) -> Vec<Vec<u8>> {
+        events
+            .iter()
+            .filter_map(|e| match e {
+                CollabEvent::CRDTIncremental { data } => Some(data.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Scratch directory for staged manifests, unique per test.
+    fn scratch_dir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "qos-launch-{}-{}-{:?}",
+            tag,
+            std::process::id(),
+            std::thread::current().id(),
+        ));
+        std::fs::create_dir_all(&dir).expect("scratch dir");
+        dir
+    }
+
+    #[test]
+    #[serial_test::serial(collab_broker)]
+    fn apps_launched_into_the_same_workspace_exchange_deltas() {
+        let dir = scratch_dir("same-ws");
+        let socket_path = temp_sock("same-workspace");
+        let handle = spawn(socket_path.clone()).expect("broker should bind");
+
+        let workspace = crate::shell::state::WorkspaceId(7);
+        // Two windows of one app, opened into the same workspace. Their
+        // per-instance dev ids differ; that must not matter.
+        let mut first =
+            connect_as_launched_app(&socket_path, &dir, "dev.qos.notes", workspace, "alice");
+        let mut second =
+            connect_as_launched_app(&socket_path, &dir, "dev.qos.notes", workspace, "bob");
+
+        wait_for_announced(&handle, 2, Duration::from_millis(2000));
+        let _ = first.poll();
+        let _ = second.poll();
+
+        first.send(CollabRequest::SyncIncremental {
+            data: b"same-room".to_vec(),
+        });
+
+        let received = poll_until(&mut second, 1, Duration::from_millis(1000));
+        assert_eq!(
+            crdt_payloads(&received),
+            vec![b"same-room".to_vec()],
+            "two windows of one app opened in the same workspace must \
+             exchange deltas — their QUICK_APP_ID differs, and that must \
+             not split the room. Got {received:?}"
+        );
+
+        drop(first);
+        drop(second);
+        drop(handle);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    #[serial_test::serial(collab_broker)]
+    fn apps_launched_into_different_workspaces_do_not_exchange_deltas() {
+        // The half that matters. A workspace is a room: an app opened
+        // in workspace 7 must never see the document of the same app
+        // opened in workspace 8. Restoring the old
+        // broadcast-to-every-socket behaviour makes this fail, which a
+        // positive-only test would not.
+        let dir = scratch_dir("diff-ws");
+        let socket_path = temp_sock("diff-workspace");
+        let handle = spawn(socket_path.clone()).expect("broker should bind");
+
+        let here = crate::shell::state::WorkspaceId(7);
+        let elsewhere = crate::shell::state::WorkspaceId(8);
+
+        // Two peers in `here` — the second is the control. Without it,
+        // "the other workspace heard nothing" could just mean the delta
+        // never left the sender.
+        let mut sender =
+            connect_as_launched_app(&socket_path, &dir, "dev.qos.notes", here, "alice");
+        let mut same_workspace =
+            connect_as_launched_app(&socket_path, &dir, "dev.qos.notes", here, "bob");
+        let mut other_workspace =
+            connect_as_launched_app(&socket_path, &dir, "dev.qos.notes", elsewhere, "carol");
+
+        wait_for_announced(&handle, 3, Duration::from_millis(2000));
+        let _ = sender.poll();
+        let _ = same_workspace.poll();
+        let _ = other_workspace.poll();
+
+        sender.send(CollabRequest::SyncIncremental {
+            data: b"workspace-seven-only".to_vec(),
+        });
+
+        // Control: the room the sender is in does receive it.
+        let heard = poll_until(&mut same_workspace, 1, Duration::from_millis(1000));
+        assert_eq!(
+            crdt_payloads(&heard),
+            vec![b"workspace-seven-only".to_vec()],
+            "the peer in the sender's workspace must receive the delta, \
+             got {heard:?}"
+        );
+
+        // The assertion this whole change exists for. Polled over the
+        // same window the control needed, so "nothing" is not "not yet".
+        let leaked = poll_until(&mut other_workspace, 1, Duration::from_millis(1000));
+        assert!(
+            crdt_payloads(&leaked).is_empty(),
+            "an app opened in workspace {} must receive no CRDT payload \
+             from the same app opened in workspace {}; it received {:?}",
+            elsewhere.raw(),
+            here.raw(),
+            crdt_payloads(&leaked),
+        );
+
+        drop(sender);
+        drop(same_workspace);
+        drop(other_workspace);
+        drop(handle);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    #[serial_test::serial(collab_broker)]
+    fn a_launch_tells_the_app_its_package_and_its_workspace() {
+        // The precedence rule read straight off the env the launcher
+        // produces: under a session the package id and the workspace
+        // are both present, so they win over the dev-only override.
+        let dir = scratch_dir("env");
+        let workspace = crate::shell::state::WorkspaceId(7);
+        let env = sandbox_env_for_launch(&dir, "dev.qos.notes", workspace);
+        let lookup = |key: &str| {
+            env.iter()
+                .find(|(k, _)| k == key)
+                .map(|(_, v)| v.clone())
+                .unwrap_or_else(|| panic!("sandbox env is missing {key}: {env:?}"))
+        };
+
+        assert_eq!(
+            lookup("QOS_PACKAGE_ID"),
+            "dev.qos.notes",
+            "the launcher must tell the app which package it is"
+        );
+        assert_eq!(
+            lookup("QOS_WORKSPACE_ID"),
+            workspace.collab_cluster_id().to_string(),
+            "the launcher must tell the app which workspace it was opened into"
+        );
+        // Two workspaces are two rooms, not one.
+        assert_ne!(
+            crate::shell::state::WorkspaceId(7).collab_cluster_id(),
+            crate::shell::state::WorkspaceId(8).collab_cluster_id(),
+            "distinct workspaces must derive distinct cluster ids"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
