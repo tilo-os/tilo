@@ -411,13 +411,29 @@ pub fn store() -> &'static ForeignFrameStore {
     STORE.get_or_init(ForeignFrameStore::default)
 }
 
+/// How a dmabuf's bytes were obtained.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DmabufRoute {
+    /// EGL imported the buffer as a GL texture and the GPU read it back.
+    /// Works for every buffer the GPU can sample, including the
+    /// device-local Vulkan swapchain images `wgpu` clients allocate.
+    Gpu,
+    /// The plane fd was CPU-mapped directly. Only possible for a linear
+    /// buffer in CPU-visible memory, but needs no GL context.
+    CpuMmap,
+}
+
 /// Which capture route a commit took, for logging + tests.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CaptureOutcome {
     /// `wl_shm` pool readback.
     Shm { width: u32, height: u32 },
-    /// dmabuf CPU (linear mmap) import.
-    Dmabuf { width: u32, height: u32 },
+    /// dmabuf import — see [`DmabufRoute`] for how.
+    Dmabuf {
+        width: u32,
+        height: u32,
+        route: DmabufRoute,
+    },
     /// Neither path could produce pixels; the reason is recorded on the
     /// entry and drawn on the tile.
     Failed(String),
