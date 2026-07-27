@@ -468,6 +468,48 @@ fn the_filesystem_capability_export_carries_exactly_the_path_capabilities() {
 }
 
 #[test]
+fn re_granting_never_shortens_an_existing_grant() {
+    // A grant is monotonic. An app holding "Always" for the camera that
+    // then makes a fresh request — which the prompt defaults to
+    // one-shot — must not have its permanent grant quietly demoted.
+    // Reducing authority is what revoke and Restrict are for, and both
+    // are explicit acts the user can see.
+    let (mut tree, id) = room_owned_by(ALICE);
+    let ws = tree.workspaces.iter_mut().find(|w| w.id == id).unwrap();
+
+    ws.grant_app("org.qos.Meet", &Capability::Camera { scope: GRANT_ALWAYS });
+    ws.grant_app("org.qos.Meet", &Capability::Camera { scope: GRANT_ONCE });
+    ws.grant_app(
+        "org.qos.Meet",
+        &Capability::Camera {
+            scope: GRANT_SESSION,
+        },
+    );
+
+    let live: Vec<&CapOverride> = ws.app_capabilities("org.qos.Meet");
+    assert_eq!(live.len(), 1, "re-granting merges rather than stacking");
+    assert_eq!(
+        live[0].expiry, GRANT_ALWAYS,
+        "the longest-lived expiry must win; a later one-shot or session request \
+         must not demote a permanent grant"
+    );
+
+    // And it really does still survive a restart.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("state.json");
+    persist::save_tree_to(&tree, &path).expect("save");
+    let reloaded = persist::load_tree_from(&path).expect("load");
+    assert!(
+        ws_of(&reloaded, id).allows(
+            &ws_of(&reloaded, id).actor_for_app("org.qos.Meet"),
+            &ResourceRef::Device("camera".into()),
+            Verb::Read
+        ),
+        "the merged grant is still the permanent one after a restart"
+    );
+}
+
+#[test]
 fn an_expired_capability_stops_working_without_being_revoked() {
     let (mut tree, id) = room_owned_by(ALICE);
     let past = 1_000u64; // long before any plausible `now`
