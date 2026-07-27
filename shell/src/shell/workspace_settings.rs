@@ -1543,11 +1543,11 @@ mod tab_tests {
         // joins the strip at the tail. Owner-only revoke enforcement
         // happens at click-time (not visibility-time).
         let mut ws = Workspace::new(WorkspaceId::default(), "with-grants");
-        ws.grants.insert(
-            "firefox".into(),
-            vec![Capability::Camera {
+        ws.grant_app(
+            "firefox",
+            &Capability::Camera {
                 scope: crate::shell::state::GRANT_ALWAYS,
-            }],
+            },
         );
         let visible = WsTab::visible(&ws);
         assert_eq!(visible.last(), Some(&WsTab::Permissions));
@@ -1814,17 +1814,18 @@ mod permissions_pane_tests {
 
     fn ws_with_grants() -> Workspace {
         let mut ws = Workspace::new(WorkspaceId::default(), "perm-test");
-        ws.grants.insert(
-            "firefox".into(),
-            vec![
-                Capability::Camera {
-                    scope: GRANT_ALWAYS,
-                },
-                Capability::Network {
-                    hosts: None,
-                    scope: GRANT_SESSION,
-                },
-            ],
+        ws.grant_app(
+            "firefox",
+            &Capability::Camera {
+                scope: GRANT_ALWAYS,
+            },
+        );
+        ws.grant_app(
+            "firefox",
+            &Capability::Network {
+                hosts: None,
+                scope: GRANT_SESSION,
+            },
         );
         ws
     }
@@ -1871,10 +1872,20 @@ mod permissions_pane_tests {
         let mut ws = ws_with_grants();
         let removed = revoke_grant(&mut ws, &"firefox".to_string(), 0);
         assert!(removed);
-        // After removing the Camera grant the Network grant remains.
-        let firefox = ws.grants.get("firefox").expect("entry");
+        // After removing the Camera grant the Network grant remains,
+        // and the app is denied the camera it no longer holds.
+        let view = ws.grants();
+        let firefox = view.get("firefox").expect("entry");
         assert_eq!(firefox.len(), 1);
         assert!(matches!(firefox[0], Capability::Network { .. }));
+        assert!(
+            !ws.allows(
+                &ws.actor_for_app("firefox"),
+                &crate::shell::state::ResourceRef::Device("camera".into()),
+                crate::shell::state::Verb::Read
+            ),
+            "the revoked capability must stop working, not merely stop rendering"
+        );
     }
 
     #[test]
@@ -1885,15 +1896,16 @@ mod permissions_pane_tests {
         // grant is revoked. Without this cleanup the Permissions tab
         // would stay visible (`WsTab::visible` checks `is_empty()`).
         let mut ws = Workspace::new(WorkspaceId::default(), "single-grant");
-        ws.grants.insert(
-            "vscode".into(),
-            vec![Capability::Camera {
+        ws.grant_app(
+            "vscode",
+            &Capability::Camera {
                 scope: GRANT_ONCE,
-            }],
+            },
         );
         let removed = revoke_grant(&mut ws, &"vscode".to_string(), 0);
         assert!(removed);
-        assert!(ws.grants.is_empty(), "empty cap vec must be cleaned up");
+        assert!(!ws.has_app_grants(), "the last grant's removal hides the tab again");
+        assert!(ws.grants().is_empty());
     }
 
     #[test]
@@ -1901,12 +1913,12 @@ mod permissions_pane_tests {
         // Out-of-bounds index and missing app id are both no-ops —
         // hit-test misalignment / racy clicks must not panic.
         let mut ws = ws_with_grants();
-        let before = ws.grants.get("firefox").map(|v| v.len());
+        let before = ws.grants().get("firefox").map(|v| v.len());
         let r1 = revoke_grant(&mut ws, &"unknown".to_string(), 0);
         let r2 = revoke_grant(&mut ws, &"firefox".to_string(), 99);
         assert!(!r1);
         assert!(!r2);
-        assert_eq!(ws.grants.get("firefox").map(|v| v.len()), before);
+        assert_eq!(ws.grants().get("firefox").map(|v| v.len()), before);
     }
 
     #[test]
