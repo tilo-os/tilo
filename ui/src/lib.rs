@@ -45,7 +45,7 @@ pub use selection::SelectionModel;
 
 // Accessibility semantic model (W0). `a11y::Role` / `a11y::Action` are reached
 // through the module path to avoid clashing with `permissions::{Role}` /
-// `permissions::Op`, which are already re-exported at the crate root.
+// `permissions::Verb`, which are already re-exported at the crate root.
 pub use a11y::{A11ySettings, AccessNode, AccessState};
 
 // Built-in screen reader (W6): the first-party narrator over the a11y tree +
@@ -100,7 +100,11 @@ pub use animation::{ease_out, Animated, Curve, Lerp, Spring, Transition};
 
 // Collaboration contract types (Phase C).
 pub use presence::{PresenceCtx, PresenceKey, PathSegment, SelectionRange};
+// The capability model (`collab_types::caps`), reached through the
+// toolkit. These are re-exports, not toolkit-local copies — see
+// `permissions/mod.rs`.
 pub use permissions::{
-    Op, PermissionContext, PermissionScope, ResourceId, Role, UserId,
+    Actor, CapDecision, CapOverride, PermissionContext, PermissionScope, ResourceRef, Role,
+    Scope as CapScope, Subject, UserId, Verb,
 };
 pub use collaboration::PresencePayload;

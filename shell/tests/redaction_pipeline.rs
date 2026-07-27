@@ -96,6 +96,38 @@ fn unique_socket(label: &str) -> PathBuf {
     std::env::temp_dir().join(format!("qos-broker-rd-{label}-{pid}-{nanos}.sock"))
 }
 
+/// The collaboration cluster every client in these scenarios joins.
+///
+/// The broker routes CRDT traffic by the `(app_id, cluster_id)` pair a
+/// client announces on its `Hello`, so peers that are meant to observe
+/// each other's edits must announce the same pair — these scenarios
+/// pair this cluster with a single app id per file. A per-client
+/// random uuid would put every client in a cluster of its own, which
+/// is how a real deployment keeps unrelated documents apart.
+fn test_cluster() -> uuid::Uuid {
+    uuid::Uuid::from_u128(0x3f2b_1c00_0000_4000_8000_0000_0000_0001)
+}
+
+/// Block until `n` clients have announced their route.
+///
+/// Connecting and saying `Hello` are separate steps, and only the
+/// second makes a client addressable — the broker routes CRDT traffic
+/// by the announced `(app_id, cluster_id)` pair. A send that races
+/// another client's `Hello` would reach nobody.
+fn wait_for_announced(handle: &collab_broker::BrokerHandle, n: usize) {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while Instant::now() < deadline {
+        if handle.announced_peer_count() >= n {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    panic!(
+        "only {} of {n} clients announced a route within 2s",
+        handle.announced_peer_count()
+    );
+}
+
 fn wait_for_broker(socket: &PathBuf) -> UnixStream {
     let deadline = Instant::now() + Duration::from_secs(2);
     loop {
@@ -266,10 +298,11 @@ fn owner_can_redact_a_recent_op() {
             s,
             &CollabRequest::Hello {
                 app_id: "test".into(),
-                cluster_id: uuid::Uuid::new_v4(),
+                cluster_id: test_cluster(),
             },
         );
     }
+    wait_for_announced(&handle, 3);
 
     // Editor publishes one op carrying a secret payload.
     let secret_payload = b"PII: alice@example.com home address 123 Main St".to_vec();
@@ -384,10 +417,11 @@ fn editor_redact_request_is_rejected() {
             s,
             &CollabRequest::Hello {
                 app_id: "test".into(),
-                cluster_id: uuid::Uuid::new_v4(),
+                cluster_id: test_cluster(),
             },
         );
     }
+    wait_for_announced(&handle, 2);
 
     // Craft a target op (unused, but lets us build a well-formed Redact).
     let target = build_signed_op(
@@ -474,10 +508,11 @@ fn redaction_persists_through_audit_log_across_compaction() {
             s,
             &CollabRequest::Hello {
                 app_id: "test".into(),
-                cluster_id: uuid::Uuid::new_v4(),
+                cluster_id: test_cluster(),
             },
         );
     }
+    wait_for_announced(&handle, 2);
 
     // Editor publishes 3 ops.
     let mut ops: Vec<SignedOp> = Vec::new();
@@ -591,10 +626,11 @@ fn redacted_op_is_filtered_from_scrollback() {
             s,
             &CollabRequest::Hello {
                 app_id: "test".into(),
-                cluster_id: uuid::Uuid::new_v4(),
+                cluster_id: test_cluster(),
             },
         );
     }
+    wait_for_announced(&handle, 3);
 
     let confidential = b"the password is hunter2".to_vec();
     let target = build_signed_op(
@@ -694,10 +730,11 @@ fn late_arriving_op_with_already_redacted_id_is_dropped() {
             s,
             &CollabRequest::Hello {
                 app_id: "test".into(),
-                cluster_id: uuid::Uuid::new_v4(),
+                cluster_id: test_cluster(),
             },
         );
     }
+    wait_for_announced(&handle, 3);
 
     // Build an op (the redaction target). DO NOT push it through the
     // broker yet — we redact it first so we can simulate "late
@@ -804,10 +841,11 @@ fn redaction_of_mls_encrypted_op_succeeds() {
             s,
             &CollabRequest::Hello {
                 app_id: "test".into(),
-                cluster_id: uuid::Uuid::new_v4(),
+                cluster_id: test_cluster(),
             },
         );
     }
+    wait_for_announced(&handle, 2);
 
     // Editor publishes an op whose payload is "ciphertext" (we fake
     // the ciphertext with arbitrary bytes — the broker treats
@@ -883,10 +921,11 @@ fn recursive_redaction_is_rejected() {
             s,
             &CollabRequest::Hello {
                 app_id: "test".into(),
-                cluster_id: uuid::Uuid::new_v4(),
+                cluster_id: test_cluster(),
             },
         );
     }
+    wait_for_announced(&handle, 3);
 
     // 1) Editor publishes a Splice op.
     let target = build_signed_op(
@@ -1006,10 +1045,11 @@ fn audit_entry_carries_reason_and_redactor_pk() {
             s,
             &CollabRequest::Hello {
                 app_id: "test".into(),
-                cluster_id: uuid::Uuid::new_v4(),
+                cluster_id: test_cluster(),
             },
         );
     }
+    wait_for_announced(&handle, 2);
 
     let target = build_signed_op(
         &editor_sk,
