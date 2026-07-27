@@ -79,6 +79,38 @@ fn unique_socket(label: &str) -> PathBuf {
     std::env::temp_dir().join(format!("qos-broker-sb-{label}-{pid}-{nanos}.sock"))
 }
 
+/// The collaboration cluster every client in these scenarios joins.
+///
+/// The broker routes CRDT traffic by the `(app_id, cluster_id)` pair a
+/// client announces on its `Hello`, so peers that are meant to observe
+/// each other's edits must announce the same pair — these scenarios
+/// pair this cluster with a single app id per file. A per-client
+/// random uuid would put every client in a cluster of its own, which
+/// is how a real deployment keeps unrelated documents apart.
+fn test_cluster() -> uuid::Uuid {
+    uuid::Uuid::from_u128(0x3f2b_1c00_0000_4000_8000_0000_0000_0001)
+}
+
+/// Block until `n` clients have announced their route.
+///
+/// Connecting and saying `Hello` are separate steps, and only the
+/// second makes a client addressable — the broker routes CRDT traffic
+/// by the announced `(app_id, cluster_id)` pair. A send that races
+/// another client's `Hello` would reach nobody.
+fn wait_for_announced(handle: &collab_broker::BrokerHandle, n: usize) {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while Instant::now() < deadline {
+        if handle.announced_peer_count() >= n {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    panic!(
+        "only {} of {n} clients announced a route within 2s",
+        handle.announced_peer_count()
+    );
+}
+
 fn wait_for_broker(socket: &PathBuf) -> UnixStream {
     let deadline = Instant::now() + Duration::from_secs(2);
     loop {
@@ -189,10 +221,11 @@ fn peer_can_fetch_recent_scrollback() {
             s,
             &CollabRequest::Hello {
                 app_id: "test".into(),
-                cluster_id: uuid::Uuid::new_v4(),
+                cluster_id: test_cluster(),
             },
         );
     }
+    wait_for_announced(&handle, 2);
 
     // Editor publishes 5 valid signed ops; each fans out to the observer.
     for seq in 1..=5_u64 {
@@ -274,7 +307,7 @@ fn empty_scrollback_returns_exhausted_true() {
         &mut peer,
         &CollabRequest::Hello {
             app_id: "test".into(),
-            cluster_id: uuid::Uuid::new_v4(),
+            cluster_id: test_cluster(),
         },
     );
 
@@ -322,10 +355,11 @@ fn scrollback_paging_respects_max() {
             s,
             &CollabRequest::Hello {
                 app_id: "test".into(),
-                cluster_id: uuid::Uuid::new_v4(),
+                cluster_id: test_cluster(),
             },
         );
     }
+    wait_for_announced(&handle, 2);
     for seq in 1..=10_u64 {
         let op = build_signed_op(
             &editor_sk,
@@ -392,10 +426,11 @@ fn compaction_evicts_log_then_scrollback_returns_exhausted() {
             s,
             &CollabRequest::Hello {
                 app_id: "test".into(),
-                cluster_id: uuid::Uuid::new_v4(),
+                cluster_id: test_cluster(),
             },
         );
     }
+    wait_for_announced(&handle, 3);
 
     // Editor publishes 5 ops.
     let mut ops: Vec<SignedOp> = Vec::new();
@@ -523,10 +558,11 @@ fn compaction_op_class_rejected_for_editor() {
             s,
             &CollabRequest::Hello {
                 app_id: "test".into(),
-                cluster_id: uuid::Uuid::new_v4(),
+                cluster_id: test_cluster(),
             },
         );
     }
+    wait_for_announced(&handle, 2);
 
     let cp = CompactionCheckpoint {
         artifact,
@@ -615,7 +651,7 @@ fn cooperative_scrollback_round_trip() {
         &mut app,
         &CollabRequest::Hello {
             app_id: "test".into(),
-            cluster_id: uuid::Uuid::new_v4(),
+            cluster_id: test_cluster(),
         },
     );
 
@@ -730,7 +766,7 @@ fn cooperative_request_published_when_local_empty() {
         &mut app,
         &CollabRequest::Hello {
             app_id: "test".into(),
-            cluster_id: uuid::Uuid::new_v4(),
+            cluster_id: test_cluster(),
         },
     );
 
@@ -801,7 +837,7 @@ fn cooperative_responder_answers_when_log_has_match() {
         &mut editor,
         &CollabRequest::Hello {
             app_id: "test".into(),
-            cluster_id: uuid::Uuid::new_v4(),
+            cluster_id: test_cluster(),
         },
     );
     for seq in 1..=3_u64 {

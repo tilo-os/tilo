@@ -17,7 +17,7 @@
 //!   hardcoded N=2).
 //! - For each peer, spawn a reader thread that decodes `CollabRequest`s
 //!   and translates them to the matching `CollabEvent`, then fans the
-//!   event to every OTHER currently-connected peer.
+//!   event to the peers the event is addressed to (see "Routing").
 //! - Drop dead peers (write failure) from the fan-out table.
 //!
 //! The mapping from request → event mirrors the test relay verbatim:
@@ -25,7 +25,27 @@
 //! - `SyncCRDT { data }` → `CRDTUpdate { data }`
 //! - `Presence { key, payload }` → `RemotePresenceUpdate { user_id:
 //!   "peer-<src_id>", key, payload }`
-//! - `Hello { .. }` → swallowed (no fan-out; the hello is a no-op handshake)
+//! - `Hello { .. }` → swallowed (no fan-out; the hello records the
+//!   connection's [`CrdtRoute`])
+//!
+//! ## Routing
+//!
+//! Every event is delivered against a [`CrdtRoute`] — the `(app_id,
+//! cluster_id)` pair the sender announced on its `Hello`. A connection
+//! only receives an event when its own announced route matches:
+//!
+//! - **CRDT payloads** (`CRDTIncremental`, `CRDTUpdate`,
+//!   `SignedCRDTIncremental`, cooperative `ScrollbackBatch`) carry a
+//!   full `(app_id, cluster_id)` route: the Notes app never sees the
+//!   Terminal's document deltas, and cluster A never sees cluster B.
+//! - **Chrome traffic** (presence, cursors, context) carries a
+//!   cluster-only route — every app in the cluster is a legitimate
+//!   audience for "who else is here".
+//!
+//! Routing **fails closed**: a connection that has not said `Hello`
+//! receives nothing at all, and a frame whose sender has not said
+//! `Hello` is neither fanned out locally nor republished over libp2p.
+//! There is no broadcast primitive left in the broker.
 
 use std::collections::HashMap;
 use std::collections::VecDeque;
@@ -181,19 +201,90 @@ struct Peer {
     /// Write side of the connected stream. The read side is owned by
     /// the per-peer reader thread.
     writer: Mutex<UnixStream>,
-    /// App identity from the peer's `CollabRequest::Hello`. Used by
-    /// the Phase 2 libp2p bridge to stamp outbound
-    /// `NeighbourMsg::AppCrdtIncremental` payloads. `None` until the
-    /// peer says hello.
-    identity: Mutex<Option<PeerIdentity>>,
+    /// The route this connection announced on its
+    /// `CollabRequest::Hello`. Both the delivery filter and the stamp
+    /// the libp2p bridge puts on outbound `NeighbourMsg`s. `None`
+    /// until the peer says hello — and a peer with `None` neither
+    /// receives nor originates routed traffic.
+    route: Mutex<Option<CrdtRoute>>,
 }
 
-/// App identity carried on every `CollabRequest::Hello` and forwarded
-/// onto libp2p as part of `NeighbourMsg::AppCrdtIncremental`.
-#[derive(Clone, Debug)]
-struct PeerIdentity {
-    app_id: String,
-    cluster_id: String,
+impl Peer {
+    /// Snapshot the announced route, if any.
+    fn route(&self) -> Option<CrdtRoute> {
+        self.route.lock().ok().and_then(|g| g.clone())
+    }
+}
+
+/// The address a CRDT (or chrome) event is delivered to.
+///
+/// Built from the `(app_id, cluster_id)` pair a connection announces
+/// on `CollabRequest::Hello`. Two granularities exist:
+///
+/// - **app scope** — both fields set. Used for every CRDT payload so
+///   one app's document deltas never reach a different app.
+/// - **cluster scope** — `app_id` empty. Used for chrome traffic
+///   (presence / cursors / context), where every app in the cluster is
+///   a legitimate audience, and for the Cap'n Proto transport, whose
+///   `joinChannel(channelId, identity)` surface carries a channel id
+///   but no app identity (the SDK sets `channelId = cluster_id`).
+///
+/// A route with an empty `cluster_id` addresses nobody: that is the
+/// fail-closed case for a connection that never said hello, or for a
+/// libp2p frame published by a peer that could not stamp one.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CrdtRoute {
+    /// App identity from the sender's `Hello`. Empty means "this
+    /// transport does not announce an app identity" — matched at
+    /// cluster granularity.
+    pub app_id: String,
+    /// Collaboration cluster id (a uuid rendered as a string on the
+    /// legacy dialect, the `channelId` on the capnp one).
+    pub cluster_id: String,
+}
+
+impl CrdtRoute {
+    /// App-scoped route — the addressing every CRDT payload uses.
+    pub fn app(app_id: impl Into<String>, cluster_id: impl Into<String>) -> Self {
+        Self {
+            app_id: app_id.into(),
+            cluster_id: cluster_id.into(),
+        }
+    }
+
+    /// Cluster-scoped route — chrome traffic and the capnp transport.
+    pub fn cluster(cluster_id: impl Into<String>) -> Self {
+        Self {
+            app_id: String::new(),
+            cluster_id: cluster_id.into(),
+        }
+    }
+
+    /// Widen an app-scoped route to its cluster. Presence frames from
+    /// an app-scoped sender ride this.
+    fn to_cluster_scope(&self) -> Self {
+        Self::cluster(self.cluster_id.clone())
+    }
+
+    /// Whether an event addressed to `self` should be delivered to a
+    /// subscriber that announced `subscriber`.
+    ///
+    /// Fails closed on either side lacking a cluster. App granularity
+    /// applies only when both ends announced an app id — a capnp
+    /// subscriber (which cannot announce one) stays cluster-scoped
+    /// rather than silently receiving nothing.
+    pub fn delivers_to(&self, subscriber: &CrdtRoute) -> bool {
+        if self.cluster_id.is_empty() || subscriber.cluster_id.is_empty() {
+            return false;
+        }
+        if self.cluster_id != subscriber.cluster_id {
+            return false;
+        }
+        if self.app_id.is_empty() || subscriber.app_id.is_empty() {
+            return true;
+        }
+        self.app_id == subscriber.app_id
+    }
 }
 
 /// Phase 3 channel-state cache.
@@ -253,7 +344,7 @@ impl BrokerChannels {
 }
 
 /// Shared registry of connected peers. Reader threads call
-/// [`PeerTable::fanout_except`] for every translated event.
+/// [`PeerTable::fanout_to_route`] for every translated event.
 ///
 /// The table owns:
 /// - the legacy JSON peer connections,
@@ -329,12 +420,28 @@ impl PeerTable {
             .unwrap_or_default()
     }
 
-    /// Serialize `event` and write it to every peer in the table whose
-    /// id is not `except`. Drops any peer that errors on write. Also
-    /// pushes the same event onto every capnp subscription queue held
-    /// by the attached [`CapnpBrokerState`] (if any) so both transports
-    /// see the same fanout.
-    pub(crate) fn fanout_except(&self, event: &CollabEvent, except: u64) {
+    /// Serialize `event` and write it to every peer that `route`
+    /// addresses, skipping the peer whose id is `except` (the
+    /// originator; pass [`u64::MAX`] when the event came from off-host
+    /// and no local peer should be skipped).
+    ///
+    /// Delivery is decided by [`CrdtRoute::delivers_to`] against the
+    /// route each peer announced on its `Hello`. A peer that has not
+    /// announced one is skipped — there is no broadcast fallback, so a
+    /// silent app receives nothing rather than everything.
+    ///
+    /// Drops any peer that errors on write. Also pushes the event onto
+    /// the capnp subscription queues that the same route addresses (if
+    /// a [`CapnpBrokerState`] is attached) so both transports observe
+    /// the same routing.
+    pub(crate) fn fanout_to_route(&self, event: &CollabEvent, except: u64, route: &CrdtRoute) {
+        if route.cluster_id.is_empty() {
+            tracing::debug!(
+                "collab_broker: dropping event with an unaddressed route \
+                 (sender never announced a cluster)"
+            );
+            return;
+        }
         let bytes = match serde_json::to_vec(event) {
             Ok(b) => b,
             Err(_) => return,
@@ -342,6 +449,15 @@ impl PeerTable {
         let mut dead: Vec<u64> = Vec::new();
         for peer in self.snapshot() {
             if peer.id == except {
+                continue;
+            }
+            let Some(peer_route) = peer.route() else {
+                // Connected but silent: it has not told us which app
+                // or cluster it belongs to, so nothing is addressed
+                // to it yet.
+                continue;
+            };
+            if !route.delivers_to(&peer_route) {
                 continue;
             }
             if write_frame(&peer.writer, &bytes).is_err() {
@@ -352,7 +468,7 @@ impl PeerTable {
             self.remove(id);
         }
         if let Some(capnp) = self.capnp_state() {
-            capnp.fanout_except(event, except);
+            capnp.fanout_to_route(event, except, route);
         }
     }
 
@@ -395,11 +511,14 @@ impl PeerTable {
 /// logic dispatch-on-pattern clean.
 enum TranslatedAction {
     /// Nothing to do — `Hello` swallowed, invalid op dropped after
-    /// auditing, etc.
+    /// auditing, sender never announced a route, etc.
     Nothing,
-    /// Forward `event` to every locally-connected peer *except* the
-    /// originating one (the pre-Phase-6 fan-out behaviour).
-    FanoutExcept(CollabEvent),
+    /// Forward `event` to the peers `route` addresses, skipping the
+    /// originating one.
+    Fanout {
+        event: CollabEvent,
+        route: CrdtRoute,
+    },
     /// Reply only to the originating peer. Used by `FetchScrollback`
     /// — peers other than the requester have no interest in a paged
     /// history fetch they didn't ask for.
@@ -415,9 +534,10 @@ enum TranslatedAction {
     /// "Compaction applied (N ops collapsed)" toast even though the
     /// current reader loop only reads `event`. Marked `allow(dead_code)`
     /// so the contract stays explicit without a compiler warning.
-    #[allow(dead_code)]
     CompactionApplied {
         event: CollabEvent,
+        route: CrdtRoute,
+        #[allow(dead_code)]
         evicted: usize,
     },
 }
@@ -507,31 +627,78 @@ pub(crate) fn apply_redaction_from_envelope(
     }
 }
 
+/// Log-and-drop for a frame whose sender never announced a route.
+/// Factored out so every fail-closed branch in [`translate`] reads the
+/// same and leaves the same trace behind.
+fn unrouted(src_id: u64, kind: &str) -> TranslatedAction {
+    tracing::debug!(
+        "collab_broker: dropping {kind} from peer-{src_id}: no Hello, \
+         so the frame has no route",
+    );
+    TranslatedAction::Nothing
+}
+
 /// Translate one `CollabRequest` (already deserialized off the wire)
 /// to the action peers should observe. Returns
 /// [`TranslatedAction::Nothing`] for `Hello` (which is swallowed —
 /// see module docs).
+///
+/// `src_route` is the route the sending connection announced on its
+/// `Hello`. `None` means it never announced one: every fan-out case
+/// then resolves to [`TranslatedAction::Nothing`], because the broker
+/// has no idea who the frame is for. Only [`CollabRequest::FetchScrollback`]
+/// still answers, since that reply is addressed to the requester by
+/// peer id rather than by route.
 fn translate(
     src_id: u64,
+    src_route: Option<&CrdtRoute>,
     req: CollabRequest,
     channels: &Arc<Mutex<BrokerChannels>>,
 ) -> TranslatedAction {
     match req {
         CollabRequest::Hello { .. } => TranslatedAction::Nothing,
         CollabRequest::SyncIncremental { data } => {
-            TranslatedAction::FanoutExcept(CollabEvent::CRDTIncremental { data })
+            let Some(route) = src_route.cloned() else {
+                return unrouted(src_id, "SyncIncremental");
+            };
+            TranslatedAction::Fanout {
+                event: CollabEvent::CRDTIncremental { data },
+                route,
+            }
         }
         CollabRequest::SyncCRDT { data } => {
-            TranslatedAction::FanoutExcept(CollabEvent::CRDTUpdate { data })
+            let Some(route) = src_route.cloned() else {
+                return unrouted(src_id, "SyncCRDT");
+            };
+            TranslatedAction::Fanout {
+                event: CollabEvent::CRDTUpdate { data },
+                route,
+            }
         }
         CollabRequest::Presence { key, payload } => {
-            TranslatedAction::FanoutExcept(CollabEvent::RemotePresenceUpdate {
-                user_id: format!("peer-{src_id}"),
-                key,
-                payload,
-            })
+            // Chrome traffic: cluster scope. Every app in the cluster
+            // is a legitimate audience for "who else is here", but a
+            // different cluster is not.
+            let Some(route) = src_route.map(CrdtRoute::to_cluster_scope) else {
+                return unrouted(src_id, "Presence");
+            };
+            TranslatedAction::Fanout {
+                event: CollabEvent::RemotePresenceUpdate {
+                    user_id: format!("peer-{src_id}"),
+                    key,
+                    payload,
+                },
+                route,
+            }
         }
         CollabRequest::SignedSyncIncremental { envelope } => {
+            // A signed envelope is still a CRDT payload: it belongs to
+            // the sender's app + cluster and goes nowhere else. Bail
+            // before validation when the sender never said hello —
+            // there is no audience to validate for.
+            let Some(route) = src_route.cloned() else {
+                return unrouted(src_id, "SignedSyncIncremental");
+            };
             // Phase 3 hot path: validate the envelope against the
             // per-artifact `ChannelState` before fanning out. Default
             // state has empty `authorised_signers`, so a freshly-
@@ -611,9 +778,13 @@ fn translate(
                         from_user_id: format!("peer-{src_id}"),
                     };
                     if let Some(evicted) = compaction_evicted {
-                        TranslatedAction::CompactionApplied { event, evicted }
+                        TranslatedAction::CompactionApplied {
+                            event,
+                            route,
+                            evicted,
+                        }
                     } else {
-                        TranslatedAction::FanoutExcept(event)
+                        TranslatedAction::Fanout { event, route }
                     }
                 }
                 Err(ValidationError::OpAlreadyRedacted { target }) => {
@@ -718,6 +889,7 @@ fn reader_loop(
     table: Arc<PeerTable>,
     peer_sync: Option<Arc<ShellNetwork>>,
     channels: Arc<Mutex<BrokerChannels>>,
+    pending_scrollback: Arc<Mutex<HashMap<ArtifactId, Vec<CrdtRoute>>>>,
 ) {
     while let Some(frame) = read_frame(&mut stream) {
         let Ok(req) = serde_json::from_slice::<CollabRequest>(&frame) else {
@@ -728,34 +900,39 @@ fn reader_loop(
             );
             continue;
         };
-        // Capture the Hello identity before translating — the
-        // request is consumed by `translate`, and the bridge needs
-        // the (app_id, cluster_id) pair to stamp every
-        // `AppCrdtIncremental` it republishes.
+        // Capture the Hello route before translating — the request is
+        // consumed by `translate`, and both the local fan-out filter
+        // and the libp2p bridge need the (app_id, cluster_id) pair.
         if let CollabRequest::Hello { ref app_id, cluster_id } = req {
-            if let Ok(mut guard) = peer.identity.lock() {
-                *guard = Some(PeerIdentity {
-                    app_id: app_id.clone(),
-                    cluster_id: cluster_id.to_string(),
-                });
+            if let Ok(mut guard) = peer.route.lock() {
+                *guard = Some(CrdtRoute::app(app_id.clone(), cluster_id.to_string()));
             }
         }
+        let src_route = peer.route();
         // Phase 2 outbound bridge: send the raw incremental over
         // libp2p before we fan it to local peers. Cloning the data
         // here is unavoidable because we still need the original
-        // payload for the local `translate` path.
+        // payload for the local `translate` path. A peer that never
+        // said hello has no route to stamp, so its frame is not
+        // republished either — the same fail-closed rule the local
+        // fan-out applies.
         if let (Some(net), CollabRequest::SyncIncremental { data }) =
             (peer_sync.as_ref(), &req)
         {
-            let identity = peer
-                .identity
-                .lock()
-                .ok()
-                .and_then(|g| g.clone());
-            let (app_id, cluster_id) = identity
-                .map(|i| (i.app_id, i.cluster_id))
-                .unwrap_or_else(|| (String::new(), String::new()));
-            net.publish_app_crdt_incremental(app_id, cluster_id, data.clone());
+            match &src_route {
+                Some(route) => net.publish_app_crdt_incremental(
+                    route.app_id.clone(),
+                    route.cluster_id.clone(),
+                    data.clone(),
+                ),
+                None => {
+                    tracing::debug!(
+                        "collab_broker: not republishing SyncIncremental from \
+                         peer-{}: no Hello, so the frame has no route",
+                        peer.id,
+                    );
+                }
+            }
         }
         // Phase 6 cooperative-fetch outbound bridge: a local
         // `FetchScrollback` always replies first from the local op
@@ -775,10 +952,10 @@ fn reader_loop(
         } else {
             None
         };
-        match translate(peer.id, req, &channels) {
+        match translate(peer.id, src_route.as_ref(), req, &channels) {
             TranslatedAction::Nothing => {}
-            TranslatedAction::FanoutExcept(event) => {
-                table.fanout_except(&event, peer.id);
+            TranslatedAction::Fanout { event, route } => {
+                table.fanout_to_route(&event, peer.id, &route);
             }
             TranslatedAction::ReplyToSource(event) => {
                 // Phase 6 targeted reply: scrollback batches only go
@@ -800,16 +977,36 @@ fn reader_loop(
                         CollabEvent::ScrollbackBatch { ops, .. } if ops.is_empty()
                     );
                     if is_empty {
-                        net.publish_scrollback_request(art, before_seq, max);
+                        // Remember who is waiting. The gossipsub
+                        // response comes back with an artifact id and
+                        // nothing else, so without this note the
+                        // broker would have to guess at delivery —
+                        // and guessing means broadcasting.
+                        if let Some(route) = &src_route {
+                            if let Ok(mut pending) = pending_scrollback.lock() {
+                                let waiting = pending.entry(art).or_default();
+                                if !waiting.contains(route) {
+                                    waiting.push(route.clone());
+                                }
+                            }
+                            net.publish_scrollback_request(art, before_seq, max);
+                        } else {
+                            tracing::debug!(
+                                "collab_broker: not publishing a cooperative \
+                                 scrollback request for peer-{}: no Hello, so \
+                                 the answer would have nowhere to go",
+                                peer.id,
+                            );
+                        }
                     }
                 }
             }
-            TranslatedAction::CompactionApplied { event, evicted: _ } => {
+            TranslatedAction::CompactionApplied { event, route, evicted: _ } => {
                 // The local compaction has already been applied
                 // inside `translate`. Fan the envelope out so peers
                 // can replicate the same eviction; without this they
                 // never converge on the new horizon.
-                table.fanout_except(&event, peer.id);
+                table.fanout_to_route(&event, peer.id, &route);
             }
         }
     }
@@ -868,18 +1065,35 @@ impl BrokerHandle {
             .unwrap_or(0)
     }
 
-    /// Fan a `CollabEvent` to every connected peer. The optional
-    /// `except` skips a single peer id (used by the libp2p bridge: a
-    /// remote update should reach every local peer, but a locally-
-    /// originated update has already been delivered to the broker's
-    /// other peers via the per-reader fan-out and only needs to go
-    /// onto the wire).
+    /// How many connected peers have announced a route (i.e. have
+    /// said `Hello`). Connecting and announcing are separate steps, so
+    /// this is strictly ≤ [`Self::peer_count`]; anything above the
+    /// difference is a peer the broker cannot address yet.
+    pub fn announced_peer_count(&self) -> usize {
+        self.peers
+            .peers
+            .lock()
+            .map(|g| g.iter().filter(|p| p.route().is_some()).count())
+            .unwrap_or(0)
+    }
+
+    /// Fan a `CollabEvent` to the connected peers `route` addresses.
+    /// The optional `except` skips a single peer id (used by the
+    /// libp2p bridge: a remote update should reach every addressed
+    /// local peer, but a locally-originated update has already been
+    /// delivered to the broker's other peers via the per-reader
+    /// fan-out and only needs to go onto the wire).
     ///
-    /// Phase 2 entry point; harmless to call in Phase 1 unit tests
-    /// that want to simulate an "inbound" update without setting up
-    /// a real libp2p mesh.
-    pub fn fanout_event(&self, event: &CollabEvent, except: Option<u64>) {
-        self.peers.fanout_except(event, except.unwrap_or(u64::MAX));
+    /// There is deliberately no "reach everyone" form — see
+    /// [`PeerTable::fanout_to_route`].
+    pub fn fanout_event(
+        &self,
+        event: &CollabEvent,
+        except: Option<u64>,
+        route: &CrdtRoute,
+    ) {
+        self.peers
+            .fanout_to_route(event, except.unwrap_or(u64::MAX), route);
     }
 
     /// Shared handle to the broker's per-channel state + audit log.
@@ -1015,10 +1229,18 @@ pub fn spawn_full(
     // same instance reader threads consult during validation.
     let channels: Arc<Mutex<BrokerChannels>> =
         Arc::new(Mutex::new(BrokerChannels::default()));
+    // Who is waiting on a cooperative scrollback answer, keyed by the
+    // artifact they asked about. A `ScrollbackResponse` off gossipsub
+    // carries an artifact id and nothing else, so this is the only
+    // record of where the answer belongs; without it the drain thread
+    // would have to broadcast the batch to every local app.
+    let pending_scrollback: Arc<Mutex<HashMap<ArtifactId, Vec<CrdtRoute>>>> =
+        Arc::new(Mutex::new(HashMap::new()));
 
     let listener_table = Arc::clone(&table);
     let listener_peer_sync = peer_sync.clone();
     let listener_channels = Arc::clone(&channels);
+    let listener_pending = Arc::clone(&pending_scrollback);
     let listener_thread = std::thread::Builder::new()
         .name("qos-collab-broker-listener".into())
         .spawn(move || {
@@ -1038,7 +1260,7 @@ pub fn spawn_full(
                         let peer = Arc::new(Peer {
                             id,
                             writer: Mutex::new(writer),
-                            identity: Mutex::new(None),
+                            route: Mutex::new(None),
                         });
                         listener_table.insert(Arc::clone(&peer));
                         tracing::info!(
@@ -1049,6 +1271,7 @@ pub fn spawn_full(
                         let reader_peer = Arc::clone(&peer);
                         let reader_peer_sync = listener_peer_sync.clone();
                         let reader_channels = Arc::clone(&listener_channels);
+                        let reader_pending = Arc::clone(&listener_pending);
                         if let Err(e) = std::thread::Builder::new()
                             .name(format!("qos-collab-broker-peer-{id}"))
                             .spawn(move || {
@@ -1058,6 +1281,7 @@ pub fn spawn_full(
                                     reader_table,
                                     reader_peer_sync,
                                     reader_channels,
+                                    reader_pending,
                                 );
                             })
                         {
@@ -1088,11 +1312,14 @@ pub fn spawn_full(
     //   - inbound cooperative-scrollback requests (consult local op
     //     log; if matching ops exist, publish a response over
     //     gossipsub),
-    //   - inbound cooperative-scrollback responses (fan a
-    //     `ScrollbackBatch` to every local app — every locally-
-    //     connected app gets it, because the broker can't tell which
-    //     app issued the original request once it's been bridged via
-    //     gossipsub).
+    //   - inbound cooperative-scrollback responses (delivered to the
+    //     route that asked, recorded in `pending_scrollback` when the
+    //     request went out).
+    //
+    // Every remote entry is routed the same way a local one is: the
+    // `(app_id, cluster_id)` the publishing host stamped on the wire
+    // decides which local apps see it. A frame that arrives without a
+    // route reaches nobody.
     let drain_quit = Arc::new(AtomicBool::new(false));
     let drain_thread = peer_sync.as_ref().map(|net| {
         let inbound = net.inbound_app_crdt_handle();
@@ -1102,6 +1329,7 @@ pub fn spawn_full(
         let drain_table = Arc::clone(&table);
         let drain_channels = Arc::clone(&channels);
         let drain_net = Arc::clone(net);
+        let drain_pending = Arc::clone(&pending_scrollback);
         let quit = Arc::clone(&drain_quit);
         std::thread::Builder::new()
             .name("qos-collab-broker-drain".into())
@@ -1117,10 +1345,13 @@ pub fn spawn_full(
                     };
                     for entry in drained {
                         let event = CollabEvent::CRDTIncremental { data: entry.data };
-                        // Remote messages go to ALL local peers — they
-                        // originated outside this host, so no peer here
-                        // should be skipped.
-                        drain_table.fanout_except(&event, u64::MAX);
+                        // The publishing host stamped the originating
+                        // app + cluster onto the wire; deliver only to
+                        // local apps that announced the same pair. No
+                        // local peer is skipped by id — the update
+                        // originated outside this host.
+                        let route = CrdtRoute::app(entry.app_id, entry.cluster_id);
+                        drain_table.fanout_to_route(&event, u64::MAX, &route);
                     }
 
                     // Drain inbound signed envelopes — validate
@@ -1167,7 +1398,17 @@ pub fn spawn_full(
                                     envelope: Box::new(envelope),
                                     from_user_id: format!("peer-net-{}", entry.peer),
                                 };
-                                drain_table.fanout_except(&event, u64::MAX);
+                                // Signed envelopes carry the same
+                                // app + cluster stamp as the unsigned
+                                // ones. A peer too old to stamp one
+                                // leaves both fields empty, and an
+                                // unaddressed envelope is dropped
+                                // rather than shown to every app.
+                                let route = CrdtRoute::app(
+                                    entry.app_id.clone(),
+                                    entry.cluster_id.clone(),
+                                );
+                                drain_table.fanout_to_route(&event, u64::MAX, &route);
                             }
                             Err(ValidationError::OpAlreadyRedacted { target }) => {
                                 // Phase 9 §7: late-arriving op via the
@@ -1246,11 +1487,12 @@ pub fn spawn_full(
                         }
                     }
 
-                    // Drain inbound scrollback responses — fan the
-                    // payload to every locally-connected app as a
-                    // `ScrollbackBatch`. The bridge can't tell which
-                    // app originally asked, so we deliver
-                    // best-effort to all; apps filter by `artifact`.
+                    // Drain inbound scrollback responses — deliver the
+                    // payload to the route(s) that asked for it. The
+                    // request side recorded them in
+                    // `pending_scrollback`; a response for an artifact
+                    // nobody here asked about is dropped rather than
+                    // shown to every app.
                     let drained_resp: Vec<_> = {
                         let mut buf = match sb_resp_inbound.lock() {
                             Ok(g) => g,
@@ -1259,6 +1501,19 @@ pub fn spawn_full(
                         std::mem::take(&mut *buf)
                     };
                     for entry in drained_resp {
+                        let waiting = drain_pending
+                            .lock()
+                            .ok()
+                            .and_then(|mut p| p.remove(&entry.artifact))
+                            .unwrap_or_default();
+                        if waiting.is_empty() {
+                            tracing::debug!(
+                                artifact = ?entry.artifact,
+                                "collab_broker: dropping cooperative scrollback \
+                                 response nobody asked for",
+                            );
+                            continue;
+                        }
                         // A response from gossipsub is the closing
                         // half of a cooperative round-trip; mark
                         // exhausted=true so the receiving app
@@ -1268,7 +1523,9 @@ pub fn spawn_full(
                             ops: entry.ops,
                             exhausted: true,
                         };
-                        drain_table.fanout_except(&event, u64::MAX);
+                        for route in waiting {
+                            drain_table.fanout_to_route(&event, u64::MAX, &route);
+                        }
                     }
 
                     std::thread::sleep(Duration::from_millis(100));
@@ -1279,7 +1536,7 @@ pub fn spawn_full(
 
     // Optional capnp interface. Attaches its `CapnpBrokerState` to the
     // shared `PeerTable` so every existing fanout call (`translate` →
-    // `table.fanout_except`, drain thread → `drain_table.fanout_except`,
+    // `table.fanout_to_route`, drain thread → `drain_table.fanout_to_route`,
     // `BrokerHandle::fanout_event`) also reaches capnp subscribers.
     // Bind failure surfaces on the return path; a capnp bind failure
     // does NOT tear down the legacy broker (the shell must keep
@@ -1367,16 +1624,55 @@ mod tests {
         }
     }
 
-    /// Connect a CollaborationManager to `path`, mirroring the toolkit's
-    /// own `new()` constructor but using the explicit path so the test
-    /// is independent of process-wide env state.
-    fn connect_manager(path: &PathBuf) -> CollaborationManager {
-        // SAFETY: tests set this env var serially before each call;
-        // no other thread reads QUICK_COLLAB_SOCK between sets.
+    /// Block until `n` peers have announced a route. Accepting a
+    /// connection and reading its `Hello` are separate steps, and only
+    /// the second one makes a peer addressable — a send that races the
+    /// second peer's `Hello` would otherwise reach nobody.
+    fn wait_for_announced(handle: &BrokerHandle, n: usize, timeout: Duration) {
+        let deadline = std::time::Instant::now() + timeout;
+        while std::time::Instant::now() < deadline {
+            if handle.announced_peer_count() >= n {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    /// Connect a CollaborationManager to `path` announcing `app_id` in
+    /// cluster `cluster_id`, mirroring the toolkit's own `new()`
+    /// constructor but using explicit values so the test is
+    /// independent of process-wide env state.
+    ///
+    /// The env vars are what `ui::collaboration::auto_hello_env` reads
+    /// to build the auto-Hello, so a manager built here announces
+    /// exactly the route the caller names — which is what the broker
+    /// filters delivery on. Left unset, `QUICK_APP_ID` defaults to a
+    /// fresh random uuid per manager, i.e. every peer would be a
+    /// different app and nothing would be delivered.
+    fn connect_manager_as(
+        path: &PathBuf,
+        app_id: &str,
+        cluster_id: &str,
+    ) -> CollaborationManager {
+        // SAFETY: tests set these env vars serially before each call;
+        // no other thread reads them between sets. Every test in this
+        // module is `#[serial_test::serial(collab_broker)]`.
         unsafe {
             std::env::set_var("QUICK_COLLAB_SOCK", path);
+            std::env::set_var("QUICK_APP_ID", app_id);
+            std::env::set_var("QUICK_CLUSTER_ID", cluster_id);
         }
         CollaborationManager::new()
+    }
+
+    /// A fixed cluster uuid the peers in a scenario share. Any valid
+    /// uuid works; a constant keeps the scenarios readable.
+    const TEST_CLUSTER: &str = "3f2b1c00-0000-4000-8000-000000000001";
+
+    /// Connect a manager as a peer of the same app in the shared test
+    /// cluster — the common case for "N instances of one app".
+    fn connect_manager(path: &PathBuf) -> CollaborationManager {
+        connect_manager_as(path, "test-app", TEST_CLUSTER)
     }
 
     #[test]
@@ -1394,6 +1690,7 @@ mod tests {
 
         wait_for_peers(&handle, 3, Duration::from_millis(500));
         assert_eq!(handle.peer_count(), 3, "broker should see all three peers");
+        wait_for_announced(&handle, 3, Duration::from_millis(500));
 
         // Drain the Hello echoes. The broker swallows them, so this is
         // just a steady-state hygiene poll.
@@ -1499,6 +1796,7 @@ mod tests {
         let peer_b = connect_manager(&socket_path);
         let mut peer_c = connect_manager(&socket_path);
         wait_for_peers(&handle, 3, Duration::from_millis(500));
+        wait_for_announced(&handle, 3, Duration::from_millis(500));
 
         // Drop B; its reader thread observes EOF and removes it from
         // the table. We then assert a send from A reaches only C.
@@ -1538,6 +1836,7 @@ mod tests {
         let mut peer_a = connect_manager(&socket_path);
         let mut peer_b = connect_manager(&socket_path);
         wait_for_peers(&handle, 2, Duration::from_millis(500));
+        wait_for_announced(&handle, 2, Duration::from_millis(500));
 
         let _ = peer_a.poll();
         let _ = peer_b.poll();
@@ -1552,6 +1851,206 @@ mod tests {
 
         drop(peer_a);
         drop(peer_b);
+        drop(handle);
+    }
+
+    #[test]
+    #[serial_test::serial(collab_broker)]
+    fn crdt_deltas_do_not_cross_app_boundaries() {
+        // The leak this closes: the broker used to write every CRDT
+        // payload to every connected socket, so a note-taking app
+        // received a terminal's document deltas.
+        //
+        // Three peers in ONE cluster: two instances of "app-alpha" and
+        // one of "app-beta". Alpha-1 sends a delta. Alpha-2 must get
+        // it (otherwise this test would pass by simply breaking
+        // delivery) and beta must not see it at all.
+        let socket_path = temp_sock("app-isolation");
+        let handle = spawn(socket_path.clone()).expect("broker should bind");
+
+        let mut alpha_1 = connect_manager_as(&socket_path, "app-alpha", TEST_CLUSTER);
+        let mut alpha_2 = connect_manager_as(&socket_path, "app-alpha", TEST_CLUSTER);
+        let mut beta = connect_manager_as(&socket_path, "app-beta", TEST_CLUSTER);
+
+        wait_for_peers(&handle, 3, Duration::from_millis(500));
+        assert_eq!(handle.peer_count(), 3, "broker should see all three peers");
+        wait_for_announced(&handle, 3, Duration::from_millis(500));
+
+        let _ = alpha_1.poll();
+        let _ = alpha_2.poll();
+        let _ = beta.poll();
+
+        alpha_1.send(CollabRequest::SyncIncremental {
+            data: b"alpha-private".to_vec(),
+        });
+
+        // The delta reaches the other instance of the same app.
+        let events_alpha_2 = poll_until(&mut alpha_2, 1, Duration::from_millis(500));
+        let alpha_2_crdt: Vec<&Vec<u8>> = events_alpha_2
+            .iter()
+            .filter_map(|e| match e {
+                CollabEvent::CRDTIncremental { data } => Some(data),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            alpha_2_crdt.len(),
+            1,
+            "the second app-alpha instance must receive exactly one \
+             CRDTIncremental, got {events_alpha_2:?}"
+        );
+        assert_eq!(alpha_2_crdt[0].as_slice(), b"alpha-private");
+
+        // The other app sees nothing. Polled over the same window the
+        // positive half needed, so "nothing" is not just "not yet".
+        let events_beta = poll_until(&mut beta, 1, Duration::from_millis(500));
+        assert!(
+            !events_beta
+                .iter()
+                .any(|e| matches!(e, CollabEvent::CRDTIncremental { .. })),
+            "app-beta must receive no CRDT payload from app-alpha, got {events_beta:?}"
+        );
+
+        drop(alpha_1);
+        drop(alpha_2);
+        drop(beta);
+        drop(handle);
+    }
+
+    #[test]
+    #[serial_test::serial(collab_broker)]
+    fn crdt_deltas_do_not_cross_cluster_boundaries() {
+        // Same app id, different collaboration clusters: a document
+        // shared in one cluster must not leak into the other.
+        let socket_path = temp_sock("cluster-isolation");
+        let handle = spawn(socket_path.clone()).expect("broker should bind");
+
+        let other_cluster = "3f2b1c00-0000-4000-8000-000000000002";
+        let mut same_cluster_sender =
+            connect_manager_as(&socket_path, "app-alpha", TEST_CLUSTER);
+        let mut same_cluster_peer =
+            connect_manager_as(&socket_path, "app-alpha", TEST_CLUSTER);
+        let mut other_cluster_peer =
+            connect_manager_as(&socket_path, "app-alpha", other_cluster);
+
+        wait_for_peers(&handle, 3, Duration::from_millis(500));
+        wait_for_announced(&handle, 3, Duration::from_millis(500));
+
+        let _ = same_cluster_sender.poll();
+        let _ = same_cluster_peer.poll();
+        let _ = other_cluster_peer.poll();
+
+        same_cluster_sender.send(CollabRequest::SyncIncremental {
+            data: b"cluster-one-only".to_vec(),
+        });
+
+        let events_same = poll_until(&mut same_cluster_peer, 1, Duration::from_millis(500));
+        assert!(
+            events_same.iter().any(|e| matches!(
+                e,
+                CollabEvent::CRDTIncremental { data }
+                    if data.as_slice() == b"cluster-one-only"
+            )),
+            "the peer in the sender's cluster must receive the delta, got {events_same:?}"
+        );
+
+        let events_other = poll_until(&mut other_cluster_peer, 1, Duration::from_millis(500));
+        assert!(
+            !events_other
+                .iter()
+                .any(|e| matches!(e, CollabEvent::CRDTIncremental { .. })),
+            "a peer in a different cluster must receive no CRDT payload, got {events_other:?}"
+        );
+
+        drop(same_cluster_sender);
+        drop(same_cluster_peer);
+        drop(other_cluster_peer);
+        drop(handle);
+    }
+
+    #[test]
+    #[serial_test::serial(collab_broker)]
+    fn silent_client_receives_nothing() {
+        // Fail-closed: a connection that never said Hello has no route,
+        // so nothing is addressed to it. It must not fall back to
+        // receiving everything.
+        //
+        // Driven over a raw socket rather than a CollaborationManager,
+        // because the manager always auto-Hellos on construct — the
+        // silent case only exists at the wire level.
+        let socket_path = temp_sock("silent-client");
+        let handle = spawn(socket_path.clone()).expect("broker should bind");
+
+        let mut talker = connect_manager(&socket_path);
+        let mut silent = UnixStream::connect(&socket_path).expect("silent client connects");
+        silent
+            .set_read_timeout(Some(Duration::from_millis(500)))
+            .expect("set read timeout");
+        // A second announced peer proves the fan-out is live at all —
+        // otherwise "silent got nothing" could just mean the delta
+        // never left the sender.
+        let mut listener_peer = connect_manager(&socket_path);
+
+        wait_for_peers(&handle, 3, Duration::from_millis(500));
+        wait_for_announced(&handle, 2, Duration::from_millis(500));
+        assert_eq!(
+            handle.announced_peer_count(),
+            2,
+            "only the two managers announce a route; the silent client never does",
+        );
+        let _ = talker.poll();
+        let _ = listener_peer.poll();
+
+        talker.send(CollabRequest::SyncIncremental {
+            data: b"for-announced-peers".to_vec(),
+        });
+
+        let heard = poll_until(&mut listener_peer, 1, Duration::from_millis(500));
+        assert!(
+            heard.iter().any(|e| matches!(
+                e,
+                CollabEvent::CRDTIncremental { data }
+                    if data.as_slice() == b"for-announced-peers"
+            )),
+            "the announced peer must receive the delta, got {heard:?}"
+        );
+
+        // Nothing was ever written to the silent socket: the read
+        // times out rather than yielding a frame header.
+        let mut len_buf = [0u8; 4];
+        let read = silent.read_exact(&mut len_buf);
+        assert!(
+            read.is_err(),
+            "a client that never announced a route must receive no frame, \
+             got a {} byte length prefix",
+            u32::from_le_bytes(len_buf),
+        );
+
+        // And a frame *from* the silent client is not fanned out
+        // either — the broker cannot address it anywhere.
+        let req = serde_json::to_vec(&CollabRequest::SyncIncremental {
+            data: b"from-the-silent-one".to_vec(),
+        })
+        .expect("serialize request");
+        silent
+            .write_all(&(req.len() as u32).to_le_bytes())
+            .expect("write len");
+        silent.write_all(&req).expect("write body");
+
+        let after = poll_until(&mut listener_peer, 1, Duration::from_millis(500));
+        assert!(
+            !after.iter().any(|e| matches!(
+                e,
+                CollabEvent::CRDTIncremental { data }
+                    if data.as_slice() == b"from-the-silent-one"
+            )),
+            "a delta from a client that never announced a route must not be \
+             fanned out, got {after:?}"
+        );
+
+        drop(talker);
+        drop(silent);
+        drop(listener_peer);
         drop(handle);
     }
 }

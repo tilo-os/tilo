@@ -81,6 +81,38 @@ fn unique_socket(label: &str) -> PathBuf {
     std::env::temp_dir().join(format!("qos-everything-{label}-{pid}-{nanos}.sock"))
 }
 
+/// The collaboration cluster every client in these scenarios joins.
+///
+/// The broker routes CRDT traffic by the `(app_id, cluster_id)` pair a
+/// client announces on its `Hello`, so peers that are meant to observe
+/// each other's edits must announce the same pair — these scenarios
+/// pair this cluster with a single app id per file. A per-client
+/// random uuid would put every client in a cluster of its own, which
+/// is how a real deployment keeps unrelated documents apart.
+fn test_cluster() -> uuid::Uuid {
+    uuid::Uuid::from_u128(0x3f2b_1c00_0000_4000_8000_0000_0000_0001)
+}
+
+/// Block until `n` clients have announced their route.
+///
+/// Connecting and saying `Hello` are separate steps, and only the
+/// second makes a client addressable — the broker routes CRDT traffic
+/// by the announced `(app_id, cluster_id)` pair. A send that races
+/// another client's `Hello` would reach nobody.
+fn wait_for_announced(handle: &collab_broker::BrokerHandle, n: usize) {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while Instant::now() < deadline {
+        if handle.announced_peer_count() >= n {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    panic!(
+        "only {} of {n} clients announced a route within 2s",
+        handle.announced_peer_count()
+    );
+}
+
 fn wait_for_broker(socket: &PathBuf) -> UnixStream {
     let deadline = Instant::now() + Duration::from_secs(2);
     loop {
@@ -234,10 +266,11 @@ fn threshold_signed_mls_encrypted_op_traverses_broker_then_compaction_evicts() {
             s,
             &CollabRequest::Hello {
                 app_id: "everything".into(),
-                cluster_id: uuid::Uuid::new_v4(),
+                cluster_id: test_cluster(),
             },
         );
     }
+    wait_for_announced(&handle, 3);
 
     // === 8. Alice publishes 3 MLS-encrypted, threshold-signed
     //         ops. Bob's app receives + decrypts each one. ===
