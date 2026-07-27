@@ -128,6 +128,20 @@ pub struct RunOptions {
     /// by policy-strict callers and by tests. The launcher's trust
     /// config (a follow-up) will pin this by default.
     pub require_runtime_publisher: Option<String>,
+    /// Host path of the Wayland socket a GUI app should connect to
+    /// (typically `$XDG_RUNTIME_DIR/wayland-N` for the running
+    /// compositor). When set, the socket is bound into the sandbox at
+    /// `/run/user/<uid>/wayland-0` and `WAYLAND_DISPLAY` /
+    /// `XDG_RUNTIME_DIR` are set to match, so `wl_display_connect`
+    /// inside the sandbox finds it.
+    ///
+    /// `None` means the app gets no display at all — which is correct
+    /// for CLI launches and for a GUI app launched from a context with
+    /// no compositor. A GUI app without this simply fails to connect;
+    /// we never fall back to the launcher process's own
+    /// `$WAYLAND_DISPLAY`, because "whatever display the launcher
+    /// happened to inherit" is not a security decision anyone made.
+    pub wayland_socket: Option<PathBuf>,
     /// Explicit host path to the user identity JSON. When `None`,
     /// the launcher resolves the default location from the process's
     /// `$XDG_CONFIG_HOME` / `$HOME` env vars and uses it only if the
@@ -497,6 +511,20 @@ pub fn run_with(
         argv.push(entry);
     }
 
+    // Wayland display. Spliced in front of the entrypoint token (the
+    // last argv entry) so bwrap parses it as a flag, exactly like the
+    // minimal-libs binds above. A GUI app with no `wayland_socket`
+    // simply has no display in its namespace.
+    let wayland_bind = opts
+        .wayland_socket
+        .as_ref()
+        .map(|host| crate::sandbox::wayland_bind_for(host, current_uid()));
+    if let Some(bind) = &wayland_bind {
+        let entry = argv.pop().expect("argv non-empty after build_bwrap_argv");
+        crate::sandbox::push_wayland_bind(&mut argv, bind);
+        argv.push(entry);
+    }
+
     // Landlock shim wiring. Bind this launcher binary into the sandbox
     // and rewrite the trailing entrypoint token into
     //   <shim-in-sandbox> __sandbox-exec --ro <p>* --rw <p>* [--net-restricted] -- <entry>
@@ -557,6 +585,14 @@ pub fn run_with(
         if identity_arg.is_some() {
             argv.push("--ro".to_string());
             argv.push(crate::sandbox::SANDBOX_IDENTITY_PATH.to_string());
+        }
+        // The Wayland socket needs read+write in the Landlock ruleset:
+        // `connect(2)` on a Unix socket is a write-flavoured access, so
+        // a read-only rule surfaces as EACCES at `wl_display_connect`
+        // and the app dies with "failed to connect to display".
+        if let Some(bind) = &wayland_bind {
+            argv.push("--rw".to_string());
+            argv.push(bind.sandbox_socket.display().to_string());
         }
         for path in &manifest.sandbox.fs.write {
             let expanded = crate::manifest::expand_path(path);
