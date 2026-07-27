@@ -1435,13 +1435,18 @@ mod tests {
         let (artifact, editor_sk, editor_pk, editor_att_id) = setup_role_table(&handle);
 
         // Connect the legacy JSON peer + say hello (so the broker
-        // sees a subscriber to fan out to).
+        // sees a subscriber to fan out to). The capnp side joins the
+        // channel named by this cluster id: that pairing is what the
+        // production SDK does (`channelId = cluster_id.to_string()`)
+        // and it is what the broker routes on.
+        let cluster = uuid::Uuid::new_v4();
+        let channel_id = cluster.to_string();
         let mut legacy = wait_for_json_broker(&json_path);
         write_json_frame(
             &mut legacy,
             &CollabRequest::Hello {
                 app_id: "legacy-editor".into(),
-                cluster_id: uuid::Uuid::new_v4(),
+                cluster_id: cluster,
             },
         );
 
@@ -1451,6 +1456,7 @@ mod tests {
         // test thread.
         let (op_tx, op_rx) = std::sync::mpsc::channel::<(Vec<u8>, String)>();
         let capnp_path_clone = capnp_path.clone();
+        let channel_id = channel_id.clone();
         std::thread::spawn(move || {
             let rt = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
@@ -1463,7 +1469,7 @@ mod tests {
                     .expect("dial capnp");
                 let sdk = runtime_collab::CollabClient::from_raw(client);
                 let channel = sdk
-                    .join_channel("channel-A", b"identity-A")
+                    .join_channel(&channel_id, b"identity-A")
                     .await
                     .expect("join channel");
                 let stream = channel.subscribe().await.expect("subscribe");
@@ -1482,7 +1488,7 @@ mod tests {
 
         // Let the capnp subscriber register before the legacy peer
         // sends. The capnp side registers its op-tx into
-        // `CapnpBrokerState.channels["channel-A"].op` synchronously
+        // `CapnpBrokerState.channels[<cluster uuid>].op` synchronously
         // inside `subscribe()`; poll on the broker's state until the
         // slot is populated.
         let deadline = Instant::now() + Duration::from_secs(2);
@@ -1540,12 +1546,14 @@ mod tests {
 
         // Legacy peer connects + says hello so the broker will
         // fan events out to it.
+        let cluster = uuid::Uuid::new_v4();
+        let channel_id = cluster.to_string();
         let mut legacy = wait_for_json_broker(&json_path);
         write_json_frame(
             &mut legacy,
             &CollabRequest::Hello {
                 app_id: "legacy-observer".into(),
-                cluster_id: uuid::Uuid::new_v4(),
+                cluster_id: cluster,
             },
         );
 
@@ -1565,7 +1573,7 @@ mod tests {
                     .expect("dial capnp");
                 let sdk = runtime_collab::CollabClient::from_raw(client);
                 let channel = sdk
-                    .join_channel("channel-B", b"identity-B")
+                    .join_channel(&channel_id, b"identity-B")
                     .await
                     .expect("join channel");
                 channel.send(&op_bytes).await.expect("send signed op");
@@ -1606,13 +1614,15 @@ mod tests {
         let handle = spawn_full(json_path.clone(), Some(capnp_path.clone()), None)
             .expect("spawn broker");
 
-        // Legacy observer.
+        // Legacy observer, in the cluster the capnp sessions join.
+        let cluster = uuid::Uuid::new_v4();
+        let channel_id = cluster.to_string();
         let mut legacy = wait_for_json_broker(&json_path);
         write_json_frame(
             &mut legacy,
             &CollabRequest::Hello {
                 app_id: "legacy-cursor-observer".into(),
-                cluster_id: uuid::Uuid::new_v4(),
+                cluster_id: cluster,
             },
         );
 
@@ -1622,6 +1632,7 @@ mod tests {
         let (presence_tx, presence_rx) =
             std::sync::mpsc::channel::<(String, Vec<u8>, f32, f32)>();
         let capnp_path_sub = capnp_path.clone();
+        let channel_id_sub = channel_id.clone();
         std::thread::spawn(move || {
             let rt = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
@@ -1634,7 +1645,7 @@ mod tests {
                     .expect("dial capnp (sub)");
                 let sdk = runtime_collab::CollabClient::from_raw(client);
                 let channel = sdk
-                    .join_channel("cursor-ch", b"identity-sub")
+                    .join_channel(&channel_id_sub, b"identity-sub")
                     .await
                     .expect("join channel");
                 let ph = channel.presence().await.expect("presence");
@@ -1658,6 +1669,7 @@ mod tests {
         std::thread::sleep(Duration::from_millis(400));
 
         let capnp_path_pub = capnp_path.clone();
+        let channel_id_pub = channel_id.clone();
         std::thread::spawn(move || {
             let rt = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
@@ -1670,7 +1682,7 @@ mod tests {
                     .expect("dial capnp (pub)");
                 let sdk = runtime_collab::CollabClient::from_raw(client);
                 let channel = sdk
-                    .join_channel("cursor-ch", b"identity-pub")
+                    .join_channel(&channel_id_pub, b"identity-pub")
                     .await
                     .expect("join channel");
                 let ph = channel.presence().await.expect("presence");

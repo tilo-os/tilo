@@ -107,7 +107,7 @@ impl WsTab {
     /// strip at the tail.
     pub fn visible(ws: &Workspace) -> Vec<WsTab> {
         let base = vec![WsTab::General, WsTab::Roles, WsTab::Files];
-        if ws.grants.is_empty() {
+        if !ws.has_app_grants() {
             base
         } else {
             let mut v = base;
@@ -1166,7 +1166,8 @@ pub fn permissions_pane_rows(workspace: &Workspace, pane_rect: Rect) -> Vec<Perm
     // Iterate sorted by app_id so the on-screen order is stable across
     // runs — HashMap iteration is unspecified, but the renderer wants
     // a deterministic visual order so visual snapshots don't churn.
-    let mut entries: Vec<(&AppId, &Vec<Capability>)> = workspace.grants.iter().collect();
+    let owned = workspace.grants();
+    let mut entries: Vec<(&AppId, &Vec<Capability>)> = owned.iter().collect();
     entries.sort_by(|a, b| a.0.cmp(b.0));
     for (app_id, caps) in entries {
         for (cap_index, capability) in caps.iter().enumerate() {
@@ -1240,27 +1241,36 @@ pub fn capability_scope_label(cap: &Capability) -> &'static str {
     }
 }
 
-/// Remove `(app_id, cap_index)` from `workspace.grants`. No-op when
-/// `app_id` is missing or `cap_index` is out of bounds. Cleans up an
-/// empty `Vec` entry so the workspace's `grants.is_empty()` predicate
-/// (used by [`WsTab::visible`] to hide the tab) flips back to true
-/// once the last grant for the workspace is revoked.
+/// Revoke the `cap_index`-th grant the Permissions tab renders for
+/// `app_id`. No-op when the app has no grants or the index is out of
+/// bounds.
 ///
-/// Returns `true` if a capability was removed, `false` otherwise —
-/// callers (the click router) can use this to decide whether to bump
-/// the chrome's revision counter.
+/// Resolves the row index to the underlying capability's stable id
+/// before removing it, so the revoke targets the capability the user
+/// actually clicked rather than whatever currently sits at that
+/// position. Returns `true` if a capability was removed.
+///
+/// This is the storage-level revoke. The production click path goes
+/// through [`crate::shell::state::WorkspaceTree::revoke_in_workspace`],
+/// which additionally checks the revoker's authority and mirrors the
+/// removal to peers and to disk.
 pub fn revoke_grant(workspace: &mut Workspace, app_id: &AppId, cap_index: usize) -> bool {
-    let Some(caps) = workspace.grants.get_mut(app_id) else {
+    let ids = workspace.app_grant_ids(app_id);
+    let Some(id) = ids.get(cap_index) else {
         return false;
     };
-    if cap_index >= caps.len() {
-        return false;
-    }
-    caps.remove(cap_index);
-    if caps.is_empty() {
-        workspace.grants.remove(app_id);
-    }
-    true
+    let id = id.clone();
+    workspace.revoke_capability(&id)
+}
+
+/// Same as [`revoke_grant`], but returns the revoked capability's
+/// stable id so the caller can mirror the removal to peers.
+pub fn revoke_grant_id(
+    workspace: &Workspace,
+    app_id: &AppId,
+    cap_index: usize,
+) -> Option<String> {
+    workspace.app_grant_ids(app_id).get(cap_index).cloned()
 }
 
 /// Paint the Permissions tab body into `pane_rect`. Renders one row

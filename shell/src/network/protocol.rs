@@ -471,6 +471,8 @@ mod tests {
         // without touching this test.)
         round_trip(NeighbourMsg::AppCrdtIncrementalSigned {
             peer: 0xABCDEF,
+            app_id: "notes".to_string(),
+            cluster_id: "11111111-2222-3333-4444-555555555555".to_string(),
             envelope: dummy_envelope(),
         });
     }
@@ -484,6 +486,8 @@ mod tests {
         // accidentally dropping the new variant.
         let msg = NeighbourMsg::AppCrdtIncrementalSigned {
             peer: 0x1234,
+            app_id: "notes".to_string(),
+            cluster_id: "11111111-2222-3333-4444-555555555555".to_string(),
             envelope: dummy_envelope(),
         };
         let bytes = postcard::to_allocvec(&msg).expect("postcard serialize");
