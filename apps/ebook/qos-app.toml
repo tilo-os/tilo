@@ -1,0 +1,111 @@
+# E-Book Reader — qOS application manifest.
+#
+# Scans a fixed library set at startup — `~/Books`, `~/Documents`,
+# `~/Downloads` and `/var/workspace[/Books]`, two levels deep
+# (override `EBOOK_LIBRARY_DIR`). Read-only: annotations live in the
+# CRDT, never on disk.
+#
+# Pack and install:
+#
+#     cargo build -p ebook -p pkg-cli -p install
+#     mkdir -p target/qpkg/ebook/bin
+#     cp target/debug/ebook target/qpkg/ebook/bin/ebook
+#     target/debug/qos-pkg pack --manifest apps/ebook/qos-app.toml \
+#         --payload target/qpkg/ebook --output target/ebook.qpkg
+#     target/debug/qos-install install target/ebook.qpkg --allow-self-signed
+
+[package]
+id       = "dev.qos.ebook"
+name     = "E-Book Reader"
+category = "Office"
+version  = "0.1.0"
+kind     = "app"
+runtime  = "qos-runtime/2026.07"
+
+# The workspace pins `-C target-cpu=x86-64-v3` in .cargo/config.toml,
+# so the shipped binaries genuinely require AVX2/BMI2/FMA.
+[package.isa]
+x86_64 = "v3"
+
+[publisher]
+identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
+signature = ""
+
+[[trust.attested_by]]
+attestor  = "qos-demo/2026.07"
+claim     = "deadbeef"
+signature = ""
+
+[sandbox]
+# `net` deliberately absent from `namespaces`: this app opens no
+# socket of its own.
+namespaces = [
+    "user",
+    "pid",
+    "uts",
+    "ipc",
+    "mount",
+]
+seccomp    = "qos-default"
+landlock   = "strict"
+
+[sandbox.fs]
+read = [
+    "$XDG_RUNTIME_DIR/wayland-0",
+    "/usr/lib64",
+    "/usr/lib",
+    "/usr/share/fonts",
+    "/usr/share/fontconfig",
+    "/etc/fonts",
+    "/usr/share/vulkan",
+    "/usr/share/glvnd",
+    "/usr/share/drirc.d",
+    "/usr/share/libdrm",
+    "/usr/share/nvidia",
+    "/etc/vulkan",
+    "/etc/machine-id",
+    "/etc/ld.so.cache",
+    "/etc/ld.so.conf",
+    "/etc/ld.so.conf.d",
+    "/usr/lib/locale",
+    "/sys",
+    "~/Books",
+    "~/Documents",
+    "~/Downloads",
+    "/var/workspace",
+]
+write = [
+    "~/.cache/mesa_shader_cache",
+    "~/.cache/mesa_shader_cache_db",
+    "~/.cache/radv_builtin_shaders",
+    "/dev/dri",
+    "/dev/nvidia0",
+    "/dev/nvidiactl",
+    "/dev/nvidia-modeset",
+    "/dev/nvidia-uvm",
+    "/dev/nvidia-uvm-tools",
+    "/dev/nvidia-caps",
+]
+
+[sandbox.net]
+mode = "off"
+
+[sandbox.portals]
+
+[sandbox.services]
+collab = "optional@1"
+qos-fs = "optional@1"
+
+[entrypoint]
+bin             = "bin/ebook"
+type            = "gui"
+splash-segments = ["bin/ebook[0x0:0x400000]"]
+splash-budget   = 250
+
+[providers]
+mime = [
+    "application/epub+zip",
+]
+ext  = [
+    "epub",
+]
