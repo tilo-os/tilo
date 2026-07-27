@@ -69,11 +69,16 @@ const STDERR_TAIL_LINES: usize = 12;
 pub struct InstalledApp {
     /// Reverse-DNS package id — the identity `qos-install` records.
     pub package_id: String,
-    /// Human-facing name derived from the package id's trailing
-    /// component (`dev.qos.text-editor` → `Text Editor`). The manifest
-    /// has no display-name field today; when it grows one this is the
-    /// single place that changes.
+    /// Human-facing name. The manifest's `[package].name` when the
+    /// publisher set one, else derived from the package id's trailing
+    /// component (`dev.qos.text-editor` → `Text Editor`) — the
+    /// derivation cannot know that `api-tester` means `API Tester`,
+    /// so a publisher that cares declares it.
     pub display_name: String,
+    /// The manifest's `[package].category`, when declared. Matched by
+    /// the Applications provider so typing a category word offers the
+    /// apps in it.
+    pub category: Option<String>,
     pub version: String,
     pub manifest_path: PathBuf,
     pub payload_root: PathBuf,
@@ -245,7 +250,12 @@ pub fn read_installed_apps() -> Result<Vec<InstalledApp>, LaunchError> {
             manifest.package_id.clone()
         };
         out.push(InstalledApp {
-            display_name: display_name_for_package_id(&package_id),
+            display_name: manifest
+                .name
+                .clone()
+                .filter(|n| !n.trim().is_empty())
+                .unwrap_or_else(|| display_name_for_package_id(&package_id)),
+            category: manifest.category.clone().filter(|c| !c.trim().is_empty()),
             package_id,
             version: manifest.version.clone(),
             manifest_path: entry.manifest_path,
@@ -665,6 +675,7 @@ mod tests {
         let app = InstalledApp {
             package_id: "dev.qos.hello".into(),
             display_name: "Hello".into(),
+            category: None,
             version: "0.1.0".into(),
             manifest_path: PathBuf::from("/apps/hello/manifest.toml"),
             payload_root: PathBuf::from("/apps/hello"),
@@ -841,6 +852,7 @@ mod tests {
         remember_launch(&InstalledApp {
             package_id: "dev.qos.matchfixture".into(),
             display_name: "Match Fixture".into(),
+            category: None,
             version: "0.1.0".into(),
             manifest_path: PathBuf::new(),
             payload_root: PathBuf::new(),

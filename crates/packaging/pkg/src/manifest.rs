@@ -52,6 +52,19 @@ pub struct Package {
     /// Reverse-DNS identifier — `dev.qos.editor`. Stable across
     /// versions; pinned in CLI / loader / sandbox profile names.
     pub id: String,
+    /// Human-facing name — `"API Tester"`, `"On-Screen Keyboard"`.
+    /// Absent means "derive one from the id's trailing component",
+    /// which is what every consumer did before this field existed;
+    /// it is here because that derivation cannot produce `API` from
+    /// `api-tester` or `E-Book Reader` from `ebook`.
+    #[serde(default)]
+    pub name: Option<String>,
+    /// Freedesktop-style menu category — `Office`, `Development`,
+    /// `Network`, `System`, `Utility`, `Multimedia`, `Accessibility`.
+    /// Surfaced by the shell's Applications search provider so a
+    /// category word finds the apps in it.
+    #[serde(default)]
+    pub category: Option<String>,
     /// Semver string. Validated by [`crate::validate`] via the
     /// `semver` crate; rejected if not parseable.
     pub version: String,

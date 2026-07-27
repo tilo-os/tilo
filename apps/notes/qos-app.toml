@@ -20,7 +20,9 @@
 # is the interim escape hatch.
 
 [package]
-id      = "dev.qos.notes"
+id       = "dev.qos.notes"
+name     = "Notes"
+category = "Office"
 version = "0.1.0"
 kind    = "app"
 runtime = "qos-runtime/2026.07"
