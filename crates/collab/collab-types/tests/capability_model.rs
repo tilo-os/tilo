@@ -170,6 +170,71 @@ fn even_an_owner_needs_a_capability_to_touch_a_path() {
     );
 }
 
+/// `Scope::Workspace` really does mean *everything*, including paths
+/// and devices — unlike a role, which stops at the room's own content.
+///
+/// This is a sharp edge, pinned deliberately rather than left to be
+/// discovered. It is the right semantics for "this local user is
+/// unrestricted" (`ui::PermissionContext::permissive`), and the wrong
+/// thing to hand a remote peer: a workspace-wide grant to Bob would
+/// give Bob every path on the machine.
+///
+/// The compositor therefore never issues one to a peer — room
+/// membership is written as `Scope::Room`, which does **not** reach
+/// paths (asserted below). If a future call site wants to grant a peer
+/// the run of a room, it must name the room, not the workspace.
+#[test]
+fn a_workspace_wide_grant_reaches_everything_but_a_room_grant_does_not() {
+    let path = ResourceRef::FsPath("/etc/shadow".into());
+
+    let workspace_wide = vec![CapOverride::grant(
+        Subject::person("bob"),
+        Scope::Workspace,
+        Verb::Admin,
+    )];
+    assert_eq!(
+        decide_capability(
+            &Actor::person(None, "bob"),
+            &path,
+            Verb::Write,
+            &workspace_wide,
+            None
+        ),
+        CapDecision::Allow,
+        "Scope::Workspace matches every resource, paths included — this is what \
+         makes it usable as 'unrestricted local user' and unsafe to hand a peer"
+    );
+
+    let room_wide = vec![CapOverride::membership(
+        Subject::person("bob"),
+        "ws-design",
+        Verb::Admin,
+    )];
+    assert_eq!(
+        decide_capability(
+            &Actor::person(None, "bob").in_room("ws-design"),
+            &path,
+            Verb::Write,
+            &room_wide,
+            None
+        ),
+        CapDecision::DeniedByRole,
+        "room membership — even as an Admin — must NOT reach the filesystem; this is \
+         the shape the compositor actually writes for a peer"
+    );
+    assert_eq!(
+        decide_capability(
+            &Actor::person(None, "bob").in_room("ws-design"),
+            &ResourceRef::Device("camera".into()),
+            Verb::Read,
+            &room_wide,
+            None
+        ),
+        CapDecision::DeniedByRole,
+        "nor the camera"
+    );
+}
+
 #[test]
 fn role_base_applies_exactly_to_in_room_resources() {
     assert!(role_base_applies(&ResourceRef::Workspace));
