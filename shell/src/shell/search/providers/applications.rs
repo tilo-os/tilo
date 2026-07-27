@@ -42,17 +42,30 @@ impl ApplicationsProvider {
         for app in apps {
             let name_lower = app.display_name.to_lowercase();
             let id_lower = app.package_id.to_lowercase();
-            let Some(score) = match_score(&needle_lower, &name_lower, &id_lower) else {
+            let category_lower = app.category.as_deref().map(str::to_lowercase);
+            let Some(score) = match_score(
+                &needle_lower,
+                &name_lower,
+                &id_lower,
+                category_lower.as_deref(),
+            ) else {
                 continue;
             };
             let package_id = app.package_id.clone();
             let display_name = app.display_name.clone();
+            // The category, when the publisher declared one, is the more
+            // useful second line than the version: it tells you what kind
+            // of app the row will open.
+            let subtitle = match app.category.as_deref() {
+                Some(cat) => format!("{cat} · {}", app.package_id),
+                None => format!("{} · {}", app.package_id, app.version),
+            };
             out.push(SearchResult {
                 kind: kind.clone(),
                 provider_id: self.id().to_string(),
                 id: app.package_id.clone(),
                 title: format!("Open {}", app.display_name),
-                subtitle: Some(format!("{} · {}", app.package_id, app.version)),
+                subtitle: Some(subtitle),
                 score,
                 on_open: Rc::new(move |_doc, _root, chrome: &Chrome| {
                     // The launch itself is non-blocking: everything past
@@ -108,10 +121,19 @@ impl SearchProvider for ApplicationsProvider {
 
 /// Case-insensitive scoring, same scale as the actions provider:
 /// prefix on the name → 100, substring on the name → 50, substring on
-/// the package id → 25, fuzzy subsequence on the name → 10. An empty
-/// needle matches everything at score 0 so an empty palette lists the
-/// installed apps.
-fn match_score(needle: &str, name: &str, package_id: &str) -> Option<i32> {
+/// the package id → 25, substring on the declared category → 20, fuzzy
+/// subsequence on the name → 10. An empty needle matches everything at
+/// score 0 so an empty palette lists the installed apps.
+///
+/// Category ranks below the package id because it is a bucket, not an
+/// identity: "office" should offer every office app, but never above an
+/// app whose own name or id the user actually typed.
+fn match_score(
+    needle: &str,
+    name: &str,
+    package_id: &str,
+    category: Option<&str>,
+) -> Option<i32> {
     if needle.is_empty() {
         return Some(0);
     }
@@ -123,6 +145,9 @@ fn match_score(needle: &str, name: &str, package_id: &str) -> Option<i32> {
     }
     if package_id.contains(needle) {
         return Some(25);
+    }
+    if category.is_some_and(|c| c.contains(needle)) {
+        return Some(20);
     }
     if fuzzy_subsequence(needle, name) {
         return Some(10);
@@ -159,9 +184,14 @@ mod tests {
     }
 
     fn app(package_id: &str, display_name: &str) -> InstalledApp {
+        app_in(package_id, display_name, None)
+    }
+
+    fn app_in(package_id: &str, display_name: &str, category: Option<&str>) -> InstalledApp {
         InstalledApp {
             package_id: package_id.to_string(),
             display_name: display_name.to_string(),
+            category: category.map(str::to_string),
             version: "0.1.0".to_string(),
             manifest_path: PathBuf::from("/apps/x/manifest.toml"),
             payload_root: PathBuf::from("/apps/x"),
@@ -182,6 +212,45 @@ mod tests {
             Some("dev.qos.hello · 0.1.0"),
             "the row names the package it will launch"
         );
+    }
+
+    #[test]
+    fn declared_category_is_matchable_and_replaces_the_version_subtitle() {
+        let p = ApplicationsProvider::new();
+        let out = p.results_for(
+            "office",
+            vec![
+                app_in("dev.qos.sheets", "Sheets", Some("Office")),
+                app_in("dev.qos.calculator", "Calculator", Some("Utility")),
+            ],
+        );
+        assert_eq!(out.len(), 1, "only the Office app matched: {out:?}");
+        assert_eq!(out[0].id, "dev.qos.sheets");
+        assert_eq!(out[0].score, 20, "category ranks below name and id matches");
+        assert_eq!(
+            out[0].subtitle.as_deref(),
+            Some("Office · dev.qos.sheets"),
+            "a declared category is the more useful second line than the version"
+        );
+    }
+
+    #[test]
+    fn category_never_outranks_a_name_or_id_match() {
+        let p = ApplicationsProvider::new();
+        // "system" is Monitor's category AND a substring of the other
+        // app's display name. The name match has to win.
+        let out = p.results_for(
+            "system",
+            vec![
+                app_in("dev.qos.monitor", "Monitor", Some("System")),
+                app_in("dev.qos.sysinfo", "System Info", Some("Utility")),
+            ],
+        );
+        assert_eq!(out.len(), 2);
+        let score = |id: &str| out.iter().find(|r| r.id == id).unwrap().score;
+        assert_eq!(score("dev.qos.sysinfo"), 100, "prefix on the display name");
+        assert_eq!(score("dev.qos.monitor"), 20, "category-only match");
+        assert!(score("dev.qos.sysinfo") > score("dev.qos.monitor"));
     }
 
     #[test]
