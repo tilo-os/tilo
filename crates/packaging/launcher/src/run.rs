@@ -1073,23 +1073,14 @@ fn current_uid() -> u32 {
     unsafe { libc::getuid() }
 }
 
-/// One serial guard for every test in this crate that mutates `HOME` or
-/// `XDG_CONFIG_HOME`. Those are process-wide, so a per-module mutex is
-/// not enough — two modules each holding their own lock still race each
-/// other, and the symptom is a test that passes alone and fails in a
-/// full run.
-#[cfg(test)]
-pub(crate) static ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
 #[cfg(test)]
 mod identity_resolution_tests {
     use super::*;
-    use super::ENV_MUTEX;
 
     fn snapshot_and_clear() -> (Option<std::ffi::OsString>, Option<std::ffi::OsString>) {
         let x = std::env::var_os("XDG_CONFIG_HOME");
         let h = std::env::var_os("HOME");
-        // SAFETY: guarded by ENV_MUTEX in each test.
+        // SAFETY: the callers are all in the `process_env` serial group.
         unsafe {
             std::env::remove_var("XDG_CONFIG_HOME");
             std::env::remove_var("HOME");
@@ -1098,7 +1089,7 @@ mod identity_resolution_tests {
     }
 
     fn restore(x: Option<std::ffi::OsString>, h: Option<std::ffi::OsString>) {
-        // SAFETY: guarded by ENV_MUTEX in each test.
+        // SAFETY: the callers are all in the `process_env` serial group.
         unsafe {
             match x {
                 Some(v) => std::env::set_var("XDG_CONFIG_HOME", v),
@@ -1112,8 +1103,8 @@ mod identity_resolution_tests {
     }
 
     #[test]
+    #[serial_test::serial(process_env)]
     fn explicit_override_wins_and_skips_existence_check() {
-        let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         let saved = snapshot_and_clear();
         let opts = RunOptions {
             identity_host_path: Some(PathBuf::from("/nowhere/does/not/exist.json")),
@@ -1129,8 +1120,8 @@ mod identity_resolution_tests {
     }
 
     #[test]
+    #[serial_test::serial(process_env)]
     fn xdg_wins_when_file_exists_there() {
-        let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         let saved = snapshot_and_clear();
         let tmp = tempfile::tempdir().unwrap();
         let ident = tmp
@@ -1140,7 +1131,7 @@ mod identity_resolution_tests {
             .join("primary.json");
         std::fs::create_dir_all(ident.parent().unwrap()).unwrap();
         std::fs::write(&ident, b"{}").unwrap();
-        // SAFETY: guarded by ENV_MUTEX.
+        // SAFETY: this test is in the `process_env` serial group.
         unsafe { std::env::set_var("XDG_CONFIG_HOME", tmp.path()) };
         let opts = RunOptions::default();
         let resolved = resolve_identity_host_path(&opts);
@@ -1149,8 +1140,8 @@ mod identity_resolution_tests {
     }
 
     #[test]
+    #[serial_test::serial(process_env)]
     fn home_fallback_used_when_no_xdg() {
-        let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         let saved = snapshot_and_clear();
         let tmp = tempfile::tempdir().unwrap();
         let ident = tmp
@@ -1161,7 +1152,7 @@ mod identity_resolution_tests {
             .join("primary.json");
         std::fs::create_dir_all(ident.parent().unwrap()).unwrap();
         std::fs::write(&ident, b"{}").unwrap();
-        // SAFETY: guarded by ENV_MUTEX.
+        // SAFETY: this test is in the `process_env` serial group.
         unsafe { std::env::set_var("HOME", tmp.path()) };
         let opts = RunOptions::default();
         let resolved = resolve_identity_host_path(&opts);
@@ -1170,8 +1161,8 @@ mod identity_resolution_tests {
     }
 
     #[test]
+    #[serial_test::serial(process_env)]
     fn none_when_nothing_resolves() {
-        let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         let saved = snapshot_and_clear();
         let opts = RunOptions::default();
         let resolved = resolve_identity_host_path(&opts);
@@ -1187,7 +1178,6 @@ mod identity_resolution_tests {
 #[cfg(test)]
 mod write_grant_tests {
     use super::*;
-    use super::ENV_MUTEX;
 
     fn manifest_with_writes(writes: &[&str]) -> crate::manifest::MinimalManifest {
         let list = writes
@@ -1212,11 +1202,11 @@ write = [{list}]
     }
 
     #[test]
+    #[serial_test::serial(process_env)]
     fn a_first_launch_gets_its_declared_state_directory() {
-        let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         let home = tempfile::tempdir().expect("tempdir");
         let prev = std::env::var_os("HOME");
-        // SAFETY: guarded by ENV_MUTEX.
+        // SAFETY: this test is in the `process_env` serial group.
         unsafe { std::env::set_var("HOME", home.path()) };
 
         let m = manifest_with_writes(&["~/.local/share/qos-fixture"]);
@@ -1231,7 +1221,7 @@ write = [{list}]
              to bind it, or the app comes up with nowhere to save"
         );
 
-        // SAFETY: guarded by ENV_MUTEX.
+        // SAFETY: this test is in the `process_env` serial group.
         unsafe {
             match prev {
                 Some(v) => std::env::set_var("HOME", v),
@@ -1241,11 +1231,11 @@ write = [{list}]
     }
 
     #[test]
+    #[serial_test::serial(process_env)]
     fn a_grant_naming_a_file_is_created_as_a_file_not_a_directory() {
-        let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         let home = tempfile::tempdir().expect("tempdir");
         let prev = std::env::var_os("HOME");
-        // SAFETY: guarded by ENV_MUTEX.
+        // SAFETY: this test is in the `process_env` serial group.
         unsafe { std::env::set_var("HOME", home.path()) };
 
         let m = manifest_with_writes(&["~/.config/qos/settings.json"]);
@@ -1258,7 +1248,7 @@ write = [{list}]
             "the dotdir on the way to it is still a directory"
         );
 
-        // SAFETY: guarded by ENV_MUTEX.
+        // SAFETY: this test is in the `process_env` serial group.
         unsafe {
             match prev {
                 Some(v) => std::env::set_var("HOME", v),
@@ -1268,11 +1258,11 @@ write = [{list}]
     }
 
     #[test]
+    #[serial_test::serial(process_env)]
     fn system_paths_are_left_to_the_system() {
-        let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         let home = tempfile::tempdir().expect("tempdir");
         let prev = std::env::var_os("HOME");
-        // SAFETY: guarded by ENV_MUTEX.
+        // SAFETY: this test is in the `process_env` serial group.
         unsafe { std::env::set_var("HOME", home.path()) };
 
         // A device node and a mount point the launcher has no business
@@ -1285,7 +1275,7 @@ write = [{list}]
             "the launcher must not create paths outside the user's own dirs"
         );
 
-        // SAFETY: guarded by ENV_MUTEX.
+        // SAFETY: this test is in the `process_env` serial group.
         unsafe {
             match prev {
                 Some(v) => std::env::set_var("HOME", v),
