@@ -2,6 +2,12 @@ use automerge::{AutoCommit, ChangeHash};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+pub use collab_types::caps::{
+    Actor, CapDecision, CapOverride, Effect, Expiry, Principal, ResourceRef, Scope, Subject, Verb,
+    decide_capability,
+};
+pub use collab_types::role::Role as CapRole;
+
 /// Monotonic workspace identifier. Wrapped as a newtype so call-sites can
 /// mint fresh ids via `WorkspaceId::new()`; integer literals still flow in
 /// ergonomically through `From<u64>`.
@@ -259,6 +265,30 @@ impl Strip {
     }
 }
 
+/// **Displaced vocabulary — presentation only, enforces nothing.**
+///
+/// [`Role`], [`RolePermissions`], [`AppPerm`], [`FilePerm`] and
+/// [`WorkspaceFile`] are the compositor's original permission model.
+/// They are superseded by [`Workspace::capabilities`] and are retained
+/// solely because the Workspace Settings "Roles" tab still renders
+/// tables over them.
+///
+/// Nothing in this vocabulary is consulted by any enforcement point.
+/// No decision anywhere reads `RolePermissions`; `Workspace::roles` and
+/// `Workspace::workspace_files` are `vec![]` in every production
+/// construction, so the tab is a UI over two empty vectors.
+///
+/// The replacements, all in the one model:
+/// - a member's role → the verb on their membership capability,
+///   [`Workspace::role_of`]
+/// - `per_app` → a capability scoped to [`Scope::App`]
+/// - `per_file` → a capability scoped to [`Scope::FsPath`], which
+///   inherits down the tree and is enforced by both the compositor and
+///   the filesystem
+///
+/// Do not add call sites. Porting the Roles tab onto
+/// [`Workspace::roster`] + [`Workspace::shares_of`] retires these
+/// types entirely.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Role {
     pub id: String,
@@ -266,6 +296,7 @@ pub struct Role {
     pub permissions: RolePermissions,
 }
 
+/// Displaced vocabulary — see [`Role`]. Read by no enforcement point.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct RolePermissions {
     pub can_invite: bool,
@@ -276,6 +307,8 @@ pub struct RolePermissions {
     pub per_file: HashMap<String, FilePerm>,
 }
 
+/// Displaced vocabulary — see [`Role`]. Superseded by a capability
+/// scoped to [`Scope::App`].
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub enum AppPerm {
     #[default]
@@ -285,6 +318,9 @@ pub enum AppPerm {
     Admin,
 }
 
+/// Displaced vocabulary — see [`Role`]. Superseded by a capability
+/// scoped to [`Scope::FsPath`], which inherits down the tree and is
+/// enforced by the compositor and the filesystem alike.
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub enum FilePerm {
     #[default]
@@ -293,6 +329,8 @@ pub enum FilePerm {
     Write,
 }
 
+/// Displaced vocabulary — see [`Role`]. `Workspace::workspace_files`
+/// is `vec![]` in every production construction.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct WorkspaceFile {
     pub id: String,
@@ -396,19 +434,21 @@ pub enum FsMode {
     ReadWrite,
 }
 
-/// How long a capability grant lives. The variants match the prompt
-/// widget's three buttons (Phase 4 Task 4.2): "Just once", "Until I
-/// log out", "Always".
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum GrantScope {
-    /// One-shot — the grant evaporates after the request finishes.
-    Once,
-    /// Held for this shell session; cleared on shell restart.
-    Session,
-    /// Persists across restarts. Owner-only at v1; invited peers
-    /// can't escalate to `Always` without the owner's confirmation.
-    Always,
-}
+/// How long a capability grant lives.
+///
+/// This is [`collab_types::caps::Expiry`] under the name the prompt UI
+/// already uses. It is an alias, not a parallel enum: the compositor's
+/// "Just once / Until I log out / Always" buttons are
+/// `AfterUse` / `EndOfSession` / `Never`, and the same three values
+/// travel to the filesystem, the launcher sandbox and every peer.
+pub type GrantScope = Expiry;
+
+/// "Just once" — the prompt's one-shot button.
+pub const GRANT_ONCE: Expiry = Expiry::AfterUse;
+/// "Until I log out" — held for this shell session, never written to disk.
+pub const GRANT_SESSION: Expiry = Expiry::EndOfSession;
+/// "Always" — survives a restart.
+pub const GRANT_ALWAYS: Expiry = Expiry::Never;
 
 /// Per-app capability grant stored on a [`Workspace`]. Phase 5 wires
 /// each variant to its enforcement layer (Bubblewrap allowlist for
@@ -454,17 +494,35 @@ pub struct Workspace {
     pub workspace_files: Vec<WorkspaceFile>,
     #[serde(default)]
     pub collaborators: Vec<Collaborator>,
-    /// Capability grants per app installed in this workspace. Keyed by
-    /// [`AppId`] (the wayland app-id of the requesting client). Each app
-    /// can hold multiple capabilities (e.g., a code editor with
-    /// filesystem + network grants).
+    /// Who owns this room.
     ///
-    /// `#[serde(default)]` so persisted state files written before this
-    /// field existed still load — a missing `grants` map deserialises
-    /// to empty. Phase 4 Task 4.1 lays down the schema; Tasks 4.2/4.3
-    /// (UI prompt + portal backend) populate it.
+    /// Ownership is the root of trust and the answer to the
+    /// bootstrapping question every capability system has: someone must
+    /// be able to issue the first capability. The owner is the one
+    /// principal whose authority is not itself a capability; everything
+    /// else in [`Self::capabilities`] descends from them.
+    ///
+    /// `None` means "no owner recorded" — a workspace restored from a
+    /// state file written before ownership existed. Such a workspace is
+    /// adopted by the local user on first load
+    /// ([`WorkspaceTree::adopt_ownerless_workspaces`]) rather than being
+    /// treated as owned by everybody.
     #[serde(default)]
-    pub grants: HashMap<AppId, Vec<Capability>>,
+    pub owner: Option<UserId>,
+    /// **Every** permission in this room, as capabilities.
+    ///
+    /// One list, one vocabulary. Room membership lives here (scope
+    /// [`Scope::Room`]); a file shared with one person lives here
+    /// (scope [`Scope::FsPath`]); an app's portal grant lives here
+    /// (subject [`Principal::App`]). There is deliberately no second
+    /// list for "shares" and no per-app map — those were the shapes
+    /// that let the two ideas drift apart.
+    ///
+    /// `#[serde(default)]` so state files written before this field
+    /// existed still load; they come back with no capabilities, which
+    /// is the safe direction.
+    #[serde(default)]
+    pub capabilities: Vec<CapOverride>,
     /// Surfaces from this workspace that are being streamed to one or
     /// more peers — peer-sync Phase 4 v2. Keys are the wayland
     /// `wl_surface` protocol ids the compositor passes through
@@ -486,7 +544,479 @@ pub struct Workspace {
     pub shared_surfaces: HashMap<u64, std::collections::HashSet<u64>>,
 }
 
+/// Stable identifier for a person. The compositor's collaborator table
+/// keys on this; a peer's Ed25519 key hex is a valid value, and so is
+/// the local user's account name.
+pub type UserId = String;
+
+/// The id of the person sitting at this machine.
+///
+/// Derived from the device identity when one is provisioned, so a
+/// capability granted to this user is the same subject a peer sees, and
+/// falls back to the OS account name otherwise. Deliberately stable
+/// across restarts: an owner whose id changed every boot would lose
+/// their own workspaces.
+pub fn local_user_id() -> UserId {
+    if let Ok(v) = std::env::var("QOS_USER_ID")
+        && !v.is_empty()
+    {
+        return v;
+    }
+    if let Ok(bytes) = std::fs::read("/var/lib/qos/user-identity/pubkey.bin")
+        && bytes.len() == 32
+    {
+        let mut key = [0u8; 32];
+        key.copy_from_slice(&bytes);
+        if let Principal::Person(id) = Principal::person_from_key(
+            collab_types::crypto::Ed25519PublicKey::from_bytes(key),
+        ) {
+            return id;
+        }
+    }
+    std::env::var("USER").unwrap_or_else(|_| "local".to_string())
+}
+
+/// Seconds since the Unix epoch, for capability expiry.
+///
+/// A clock that has not been set yet reads as 0, which makes every
+/// `AtUnix` capability look live. That is the safe direction for a
+/// *grant* and the unsafe one for a *restriction*, so restrictions
+/// should be written without an expiry.
+pub fn now_unix() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+impl Capability {
+    /// The `(scope, verb)` this request descriptor asks for.
+    ///
+    /// [`Capability`] is what an app *asks* for — a path, a device, a
+    /// set of hosts. It is not a storage vocabulary: granting one
+    /// writes [`CapOverride`]s, and this is the translation. A network
+    /// request names one scope per host, so an allowlist of three hosts
+    /// becomes three capabilities and dropping one of them is a
+    /// meaningful, expressible act.
+    pub fn requested_scopes(&self) -> Vec<(Scope, Verb)> {
+        match self {
+            Capability::Filesystem { path, mode, .. } => {
+                let verb = match mode {
+                    FsMode::Read => Verb::Read,
+                    FsMode::ReadWrite => Verb::Write,
+                };
+                vec![(Scope::FsPath(path.to_string_lossy().into_owned()), verb)]
+            }
+            Capability::Camera { .. } => vec![(Scope::Device("camera".into()), Verb::Read)],
+            Capability::Microphone { .. } => {
+                vec![(Scope::Device("microphone".into()), Verb::Read)]
+            }
+            Capability::Screencast { .. } => {
+                vec![(Scope::Device("screencast".into()), Verb::Read)]
+            }
+            Capability::Network { hosts, .. } => match hosts {
+                // An allowlist means exactly those hosts. `None` is the
+                // explicit "any host" request and is the only thing
+                // that produces a wildcard scope — recording an
+                // allowlist and then behaving as if it said `None` is
+                // the bug this shape exists to prevent.
+                Some(list) => list
+                    .iter()
+                    .map(|h| (Scope::NetHost(h.clone()), Verb::Write))
+                    .collect(),
+                None => vec![(Scope::NetHost("*".into()), Verb::Write)],
+            },
+        }
+    }
+
+    /// The lifetime the requester asked for.
+    pub fn requested_expiry(&self) -> Expiry {
+        match self {
+            Capability::Filesystem { scope, .. }
+            | Capability::Camera { scope }
+            | Capability::Microphone { scope }
+            | Capability::Screencast { scope }
+            | Capability::Network { scope, .. } => *scope,
+        }
+    }
+
+    /// Rebuild a descriptor from a stored capability, for the
+    /// Permissions tab. `None` when the capability is not an app grant
+    /// this UI knows how to render.
+    pub fn from_capability(cap: &CapOverride) -> Option<Self> {
+        let scope = cap.expiry;
+        match &cap.scope {
+            Scope::FsPath(p) => Some(Capability::Filesystem {
+                path: std::path::PathBuf::from(p),
+                mode: if cap.verb.implies(Verb::Write) {
+                    FsMode::ReadWrite
+                } else {
+                    FsMode::Read
+                },
+                scope,
+            }),
+            Scope::Device(d) if d == "camera" => Some(Capability::Camera { scope }),
+            Scope::Device(d) if d == "microphone" => Some(Capability::Microphone { scope }),
+            Scope::Device(d) if d == "screencast" => Some(Capability::Screencast { scope }),
+            Scope::NetHost(h) => Some(Capability::Network {
+                hosts: if h == "*" {
+                    None
+                } else {
+                    Some(vec![h.clone()])
+                },
+                scope,
+            }),
+            _ => None,
+        }
+    }
+}
+
 impl Workspace {
+    // ---------------------------------------------------------------
+    // App grants — the portal's view of the one capability list.
+    //
+    // These are not a second store. They read and write
+    // `self.capabilities`, filtered to subjects that are apps.
+    // ---------------------------------------------------------------
+
+    /// Record an app's grant. Returns the ids of the capabilities
+    /// written (one per requested scope).
+    pub fn grant_app(&mut self, app_id: &str, cap: &Capability) -> Vec<String> {
+        let expiry = cap.requested_expiry();
+        cap.requested_scopes()
+            .into_iter()
+            .map(|(scope, verb)| {
+                self.grant_capability(
+                    CapOverride::grant(Subject::app(app_id), scope, verb).expiring(expiry),
+                )
+            })
+            .collect()
+    }
+
+    /// Every capability whose subject is the app `app_id`.
+    pub fn app_capabilities(&self, app_id: &str) -> Vec<&CapOverride> {
+        let want = Subject::app(app_id);
+        let now = Some(now_unix());
+        self.capabilities
+            .iter()
+            .filter(|c| c.subject == want && c.effect == Effect::Grant && c.is_live_at(now))
+            .collect()
+    }
+
+    /// The portal-shaped view of app grants, for the Permissions tab.
+    ///
+    /// Derived on every call from [`Self::capabilities`] — there is no
+    /// cached copy to fall out of sync.
+    pub fn grants(&self) -> HashMap<AppId, Vec<Capability>> {
+        let now = Some(now_unix());
+        let mut out: HashMap<AppId, Vec<Capability>> = HashMap::new();
+        for c in &self.capabilities {
+            if c.effect != Effect::Grant || !c.is_live_at(now) {
+                continue;
+            }
+            let Subject::Principal(Principal::App(app)) = &c.subject else {
+                continue;
+            };
+            if let Some(desc) = Capability::from_capability(c) {
+                out.entry(app.clone()).or_default().push(desc);
+            }
+        }
+        out
+    }
+
+    /// Does any app hold a grant in this room? Drives the Permissions
+    /// tab's visibility.
+    pub fn has_app_grants(&self) -> bool {
+        let now = Some(now_unix());
+        self.capabilities.iter().any(|c| {
+            c.effect == Effect::Grant
+                && c.is_live_at(now)
+                && matches!(&c.subject, Subject::Principal(Principal::App(_)))
+                && Capability::from_capability(c).is_some()
+        })
+    }
+
+    /// Ids of the capabilities backing app `app_id`'s grants, in the
+    /// same order [`Self::grants`] renders them, so a Revoke button
+    /// that knows a row index can name the capability it removes.
+    pub fn app_grant_ids(&self, app_id: &str) -> Vec<String> {
+        let now = Some(now_unix());
+        let want = Subject::app(app_id);
+        self.capabilities
+            .iter()
+            .filter(|c| {
+                c.subject == want
+                    && c.effect == Effect::Grant
+                    && c.is_live_at(now)
+                    && Capability::from_capability(c).is_some()
+            })
+            .map(|c| c.id.clone())
+            .collect()
+    }
+
+    // ---------------------------------------------------------------
+    // The capability store. Every permission question in the
+    // compositor bottoms out in `decide` / `allows` below; nothing
+    // else is authorised to answer one.
+    // ---------------------------------------------------------------
+
+    /// Decide whether `actor` may apply `verb` to `resource` in this
+    /// room, at the current wall-clock time.
+    ///
+    /// Fail-closed: this is `collab_types::decide_capability`, which
+    /// denies unless something explicitly permits.
+    pub fn decide(&self, actor: &Actor, resource: &ResourceRef, verb: Verb) -> CapDecision {
+        decide_capability(actor, resource, verb, &self.capabilities, Some(now_unix()))
+    }
+
+    /// [`Self::decide`] reduced to a bool, for call sites that only
+    /// gate an action rather than explaining a denial.
+    pub fn allows(&self, actor: &Actor, resource: &ResourceRef, verb: Verb) -> bool {
+        self.decide(actor, resource, verb) == CapDecision::Allow
+    }
+
+    /// Record a capability. Returns the capability's id, minting one if
+    /// the caller did not supply it so the grant can always be revoked
+    /// by name later.
+    ///
+    /// Authority to *make* a grant is checked by the caller
+    /// ([`Self::grant_as`]), not here — this is the storage primitive.
+    pub fn grant_capability(&mut self, mut cap: CapOverride) -> String {
+        if cap.id.is_empty() {
+            cap.id = format!("cap-{}", next_id());
+        }
+        let id = cap.id.clone();
+        // A re-grant of the same (subject, scope, effect, verb)
+        // replaces rather than stacks, so revoking once is enough.
+        if let Some(slot) = self.capabilities.iter_mut().find(|c| {
+            c.subject == cap.subject
+                && c.scope == cap.scope
+                && c.effect == cap.effect
+                && c.verb == cap.verb
+        }) {
+            *slot = cap;
+        } else {
+            self.capabilities.push(cap);
+        }
+        id
+    }
+
+    /// Grant a capability **on behalf of** `grantor`, enforcing that
+    /// the grantor actually holds authority to delegate it.
+    ///
+    /// This is the check that makes ownership mean something: a peer
+    /// who is not the owner and holds no `Admin` over the scope cannot
+    /// widen anyone's access, including their own. Returns `None` when
+    /// the grantor lacks that authority and nothing was recorded.
+    pub fn grant_as(&mut self, grantor: &UserId, cap: CapOverride) -> Option<String> {
+        if !self.may_administer(grantor) {
+            return None;
+        }
+        let cap = cap.granted_by(Principal::Person(grantor.clone()));
+        Some(self.grant_capability(cap))
+    }
+
+    /// Drop the capability with this id. Returns whether anything was
+    /// removed.
+    pub fn revoke_capability(&mut self, id: &str) -> bool {
+        let before = self.capabilities.len();
+        self.capabilities.retain(|c| c.id != id);
+        self.capabilities.len() != before
+    }
+
+    /// Revoke on behalf of `revoker`, enforcing the same authority as
+    /// [`Self::grant_as`].
+    pub fn revoke_as(&mut self, revoker: &UserId, id: &str) -> bool {
+        self.may_administer(revoker) && self.revoke_capability(id)
+    }
+
+    /// Drop every capability matching `pred`. Returns the ids removed,
+    /// so the caller can mirror each removal into the replicated doc.
+    pub fn revoke_matching(&mut self, pred: impl Fn(&CapOverride) -> bool) -> Vec<String> {
+        let mut removed = Vec::new();
+        self.capabilities.retain(|c| {
+            if pred(c) {
+                removed.push(c.id.clone());
+                false
+            } else {
+                true
+            }
+        });
+        removed
+    }
+
+    // ---------------------------------------------------------------
+    // Ownership and membership.
+    // ---------------------------------------------------------------
+
+    /// Is `user` the owner of this room?
+    ///
+    /// True for the recorded owner, and for anyone the owner has given
+    /// `Admin` over the room — a delegated co-owner. Everyone else is
+    /// false, including when no owner is recorded at all: an ownerless
+    /// workspace has no administrators, rather than only administrators.
+    pub fn may_administer(&self, user: &UserId) -> bool {
+        if self.owner.as_deref() == Some(user.as_str()) {
+            return true;
+        }
+        self.allows(
+            &self.actor_for_person(user),
+            &ResourceRef::Workspace,
+            Verb::Admin,
+        )
+    }
+
+    /// Install `user` as owner, and record the membership capability
+    /// that makes them an `Admin` of the room.
+    ///
+    /// Both halves matter: `owner` is the root of trust that survives
+    /// an empty capability list, and the capability is what replicates
+    /// to peers and what the decision function actually reads.
+    pub fn set_owner(&mut self, user: impl Into<UserId>) {
+        let user = user.into();
+        self.owner = Some(user.clone());
+        self.grant_capability(
+            CapOverride::membership(
+                Subject::Principal(Principal::Person(user)),
+                self.id.raw().to_string(),
+                Verb::Admin,
+            )
+            .with_id(format!("owner-{}", self.id.raw())),
+        );
+    }
+
+    /// The role `user` holds in this room, derived from their
+    /// membership capability.
+    ///
+    /// A role is not stored separately — it *is* the verb on the
+    /// membership capability, which is what keeps "being in a room" and
+    /// "being allowed to do something" from drifting apart. `None`
+    /// means "not a member", which is different from `Viewer`.
+    pub fn role_of(&self, user: &UserId) -> Option<CapRole> {
+        if self.owner.as_deref() == Some(user.as_str()) {
+            return Some(CapRole::Owner);
+        }
+        let room = self.id.raw().to_string();
+        let subject_is_user = |c: &CapOverride| match &c.subject {
+            Subject::Principal(Principal::Person(p)) => p == user,
+            _ => false,
+        };
+        let now = Some(now_unix());
+        let mut best: Option<Verb> = None;
+        let mut blocked = false;
+        for c in &self.capabilities {
+            if !subject_is_user(c) || !c.is_live_at(now) {
+                continue;
+            }
+            let covers_room = matches!(&c.scope, Scope::Room(r) if *r == room)
+                || matches!(c.scope, Scope::Workspace);
+            if !covers_room {
+                continue;
+            }
+            match c.effect {
+                Effect::Grant => {
+                    best = Some(match best {
+                        Some(prev) if prev.implies(c.verb) => prev,
+                        _ => c.verb,
+                    })
+                }
+                // A room-wide Restrict below Read is how a member is
+                // blocked without being erased from history.
+                Effect::Restrict if !c.verb.implies(Verb::Read) => blocked = true,
+                Effect::Restrict => {}
+            }
+        }
+        if blocked {
+            return Some(CapRole::Denied);
+        }
+        best.map(|v| match v {
+            Verb::Admin => CapRole::Owner,
+            Verb::Write => CapRole::Editor,
+            Verb::Comment => CapRole::Commenter,
+            Verb::Read | Verb::Invite => CapRole::Viewer,
+        })
+    }
+
+    /// Build the [`Actor`] for a person acting in this room.
+    pub fn actor_for_person(&self, user: &UserId) -> Actor {
+        Actor::person(self.role_of(user), user.clone()).in_room(self.id.raw().to_string())
+    }
+
+    /// Build the [`Actor`] for an app running in this room.
+    ///
+    /// The app carries the room as a principal so room-wide capabilities
+    /// reach it, but **no role** — so it has no base authority and can
+    /// only act through a capability granted to it by name. That is
+    /// precisely the property that makes the portal prompt the one
+    /// user-facing permission dialog.
+    pub fn actor_for_app(&self, app_id: &str) -> Actor {
+        Actor::app(app_id).in_room(self.id.raw().to_string())
+    }
+
+    /// Build the [`Actor`] for an agent acting for the user. Same
+    /// authority shape as an app: scoped, revocable, no role.
+    pub fn actor_for_agent(&self, agent_id: &str) -> Actor {
+        Actor::agent(agent_id).in_room(self.id.raw().to_string())
+    }
+
+    /// The room roster: the people who are *members*.
+    ///
+    /// Deliberately built from room-scoped capabilities only. Someone
+    /// who holds a capability on one file and nothing else is **not**
+    /// here — presenting them as a collaborator is the exact confusion
+    /// the model exists to prevent. See [`Self::shares_of`] for where
+    /// they do appear.
+    pub fn roster(&self) -> Vec<(UserId, CapRole)> {
+        let room = self.id.raw().to_string();
+        let now = Some(now_unix());
+        let mut seen: Vec<UserId> = Vec::new();
+        for c in &self.capabilities {
+            if !c.is_live_at(now) || c.effect != Effect::Grant {
+                continue;
+            }
+            let covers_room = matches!(&c.scope, Scope::Room(r) if *r == room)
+                || matches!(c.scope, Scope::Workspace);
+            if !covers_room {
+                continue;
+            }
+            if let Subject::Principal(Principal::Person(p)) = &c.subject
+                && !seen.contains(p)
+            {
+                seen.push(p.clone());
+            }
+        }
+        if let Some(owner) = &self.owner
+            && !seen.contains(owner)
+        {
+            seen.insert(0, owner.clone());
+        }
+        seen.into_iter()
+            .filter_map(|u| self.role_of(&u).map(|r| (u, r)))
+            .collect()
+    }
+
+    /// The share list for one resource: the people who hold a
+    /// capability naming *this* resource specifically.
+    ///
+    /// Room-scoped capabilities are excluded — those are membership and
+    /// belong in [`Self::roster`]. The two lists are disjoint by
+    /// construction, which is how the UI is stopped from ever
+    /// presenting "I shared one file with Bob" as "Bob is a
+    /// collaborator".
+    pub fn shares_of(&self, resource: &ResourceRef) -> Vec<&CapOverride> {
+        let now = Some(now_unix());
+        self.capabilities
+            .iter()
+            .filter(|c| {
+                c.is_live_at(now)
+                    && c.effect == Effect::Grant
+                    && c.subject_is_person()
+                    && !c.is_room_membership()
+                    && c.scope.matches_resource(resource)
+            })
+            .collect()
+    }
+
     /// Build an empty workspace with the given id and name. The workspace
     /// starts with no strips, roles, files, collaborators, or grants —
     /// those are populated by the compositor or the persistence layer.
@@ -498,7 +1028,8 @@ impl Workspace {
             roles: Vec::new(),
             workspace_files: Vec::new(),
             collaborators: Vec::new(),
-            grants: HashMap::new(),
+            owner: None,
+            capabilities: Vec::new(),
             shared_surfaces: HashMap::new(),
         }
     }
@@ -582,7 +1113,8 @@ impl Default for Workspace {
             roles: Vec::new(),
             workspace_files: Vec::new(),
             collaborators: Vec::new(),
-            grants: HashMap::new(),
+            owner: None,
+            capabilities: Vec::new(),
             shared_surfaces: HashMap::new(),
         }
     }
@@ -632,6 +1164,22 @@ pub struct WorkspaceTree {
     /// safe for peer-sync internals or tests.
     #[serde(skip, default = "AutoCommit::new")]
     pub doc: AutoCommit,
+    /// Where to write this tree when a capability changes.
+    ///
+    /// `None` disables the write, which is what tests and the offscreen
+    /// renderer want. The compositor sets it at boot, and that is what
+    /// makes an `Always` grant actually survive a restart: before this,
+    /// nothing in the compositor called `save_tree_to` at all, so
+    /// `Always` behaved exactly like `EndOfSession`.
+    #[serde(skip)]
+    pub persist_path: Option<std::path::PathBuf>,
+    /// Where to export the capability list the FUSE mount enforces.
+    ///
+    /// `None` disables the export. The compositor sets it at boot to the
+    /// same path it passes to `qos-fs --acl`, so the filesystem and the
+    /// compositor decide from one list rather than two.
+    #[serde(skip)]
+    pub fs_acl_path: Option<std::path::PathBuf>,
 }
 
 impl Default for WorkspaceTree {
@@ -643,6 +1191,8 @@ impl Default for WorkspaceTree {
             active_group: HashMap::new(),
             collaborators: Vec::new(),
             doc: AutoCommit::new(),
+            persist_path: None,
+            fs_acl_path: None,
         }
     }
 }
@@ -836,7 +1386,7 @@ impl WorkspaceTree {
     ///
     /// Tabs, `active_strip`, `active_group`, and collaborators stay
     /// cache-only — unit D wires those.
-    pub(crate) fn seed_doc_from_cache(&mut self) {
+    pub fn seed_doc_from_cache(&mut self) {
         use automerge::{
             ObjType, ReadDoc, ROOT, ScalarValue, transaction::Transactable,
         };
@@ -867,6 +1417,21 @@ impl WorkspaceTree {
                 .doc
                 .put(&entry, "id", ScalarValue::Uint(ws.id.raw()));
             let _ = self.doc.put(&entry, "name", ws.name.clone());
+            // Ownership + capabilities travel with the workspace, so a
+            // peer that hydrates from this doc learns who may do what
+            // at the same moment it learns the room exists.
+            if let Some(owner) = &ws.owner {
+                let _ = self.doc.put(&entry, "owner", owner.clone());
+            }
+            let caps_id = self
+                .doc
+                .put_object(&entry, "capabilities", ObjType::Map)
+                .expect("create capabilities map");
+            for cap in &ws.capabilities {
+                if let Ok(blob) = serde_json::to_vec(cap) {
+                    let _ = self.doc.put(&caps_id, &cap.id, ScalarValue::Bytes(blob));
+                }
+            }
             // Unit C: nested strips + window_groups so per-group
             // maximized + width_pixels writes have a doc-side path
             // to land in.
@@ -987,7 +1552,17 @@ impl WorkspaceTree {
                     _ => String::new(),
                 };
                 let ws_id = WorkspaceId::from(id_raw);
-                if let Some(existing_idx) =
+                // Capabilities and ownership replicate through the doc,
+                // so they are rebuilt from it here rather than being
+                // carried over from the local cache. This is the half
+                // that makes a *revocation* take effect: a capability a
+                // peer deleted is simply absent from the doc, so it is
+                // absent from the cache after this rebuild. Carrying the
+                // cached list over instead would let a revoked
+                // capability survive indefinitely on every peer that
+                // already had it.
+                let replicated = self.doc_read_capabilities(&entry_id);
+                let mut ws = if let Some(existing_idx) =
                     self.workspaces.iter().position(|w| w.id == ws_id)
                 {
                     // Take the existing cached workspace by swap-remove
@@ -995,10 +1570,17 @@ impl WorkspaceTree {
                     // -> reinsert. Simplest: remove and rename.
                     let mut existing = self.workspaces.remove(existing_idx);
                     existing.name = name;
-                    new_workspaces.push(existing);
+                    existing
                 } else {
-                    new_workspaces.push(Workspace::new(ws_id, name));
+                    Workspace::new(ws_id, name)
+                };
+                if let Some((owner, caps)) = replicated {
+                    if owner.is_some() {
+                        ws.owner = owner;
+                    }
+                    ws.capabilities = caps;
                 }
+                new_workspaces.push(ws);
             }
             self.workspaces = new_workspaces;
         }
@@ -1419,88 +2001,249 @@ impl WorkspaceTree {
         None
     }
 
-    /// Mirror a `Workspace::grants` insert into the automerge doc so
-    /// peer-sync ships it on the next tick. Grants are stored under
-    /// `workspaces[i]/grants/<app_id>/[]: bytes(JSON of Capability)` —
-    /// the JSON-blob shim mirrors the v1 tab `tile_json` pattern from
-    /// [`Self::seed_doc_from_cache`]. A peer that receives the change
-    /// deserialises each blob back into a [`Capability`] enum.
+    /// Write the tree to [`Self::persist_path`], if one is set.
     ///
-    /// Tolerant of the doc not yet carrying the workspace (e.g. a
-    /// fresh tree that hasn't been flushed through
-    /// [`Self::seed_doc_from_cache`]): the cache write already
-    /// happened in the caller, and a future seed pass will pick up
-    /// the new grant alongside everything else. Same shape as
-    /// [`Self::doc_set_maximized`] in that respect.
+    /// Called on every capability mutation. Persistence is deliberately
+    /// synchronous and eager rather than batched on shutdown: a
+    /// compositor that is killed rather than asked to exit must not
+    /// forget which permissions the user granted, and the alternative —
+    /// silently losing an `Always` grant on a crash — is the failure
+    /// mode we are fixing.
+    pub fn flush_to_disk(&self) {
+        if let Some(path) = &self.persist_path
+            && let Err(e) = crate::shell::persist::save_tree_to(self, path)
+        {
+            tracing::warn!("capability persistence failed: {e}");
+        }
+        self.export_fs_capabilities();
+    }
+
+    /// Write the capability list the filesystem enforces.
     ///
-    /// C-3 (`docs/superpowers/specs/2026-05-22-workspace-tree-arc-mutex-design.md`,
-    /// Phase C): without this mirror, portal-side `GrantStoreHandle::insert`
-    /// updates only the cache; peer-sync's next `export_changes_since`
-    /// returns empty and the grant never reaches other peers.
-    pub fn doc_insert_grant(
+    /// The FUSE mount is a separate process with its own address space,
+    /// so it cannot read `self`. It reads a JSON array of capabilities
+    /// from the path its `--acl` flag names, and this is what writes it.
+    /// Without this the filesystem's enforcement is real but always
+    /// enforcing an empty list.
+    ///
+    /// Every workspace's capabilities are exported together, because
+    /// `/var/workspace` is one mount for the whole session. Path scopes
+    /// are absolute, so workspaces with disjoint subtrees stay
+    /// disjoint — but two workspaces granting the *same* path to
+    /// different subjects would union, which is a known limitation of
+    /// having one mount rather than one per room.
+    ///
+    /// Written atomically via a temp file + rename, so the filesystem
+    /// never reads a half-written list and concludes the user has no
+    /// permissions.
+    ///
+    /// Two gaps this does **not** close, recorded here rather than left
+    /// to be discovered:
+    ///
+    /// 1. `qos-fs` reads this file once, when the mount is established
+    ///    (`fs::main::resolve_acl`). A grant or revoke made afterwards
+    ///    is written here but does not reach an already-mounted
+    ///    filesystem without a remount. Only expiry is evaluated live.
+    /// 2. `os/usr/lib/systemd/system/fs.service` does not pass `--acl`,
+    ///    so the mount in the shipped OS image runs unenforced. Wiring
+    ///    it needs an ordering fix first: the unit starts before any
+    ///    session exists, and `resolve_acl` refuses to mount when the
+    ///    file it was pointed at is missing — correctly, but that would
+    ///    turn "no session yet" into a failed boot.
+    pub fn export_fs_capabilities(&self) {
+        let Some(path) = &self.fs_acl_path else {
+            return;
+        };
+        let caps: Vec<&CapOverride> = self
+            .workspaces
+            .iter()
+            .flat_map(|w| w.capabilities.iter())
+            .filter(|c| matches!(c.scope, Scope::FsPath(_)))
+            .collect();
+        let Ok(json) = serde_json::to_vec_pretty(&caps) else {
+            return;
+        };
+        let tmp = path.with_extension("json.tmp");
+        if let Some(parent) = path.parent()
+            && let Err(e) = std::fs::create_dir_all(parent)
+        {
+            tracing::warn!("filesystem capability export failed: {e}");
+            return;
+        }
+        if let Err(e) = std::fs::write(&tmp, &json).and_then(|()| std::fs::rename(&tmp, path)) {
+            tracing::warn!("filesystem capability export failed: {e}");
+        }
+    }
+
+    /// Give every workspace that has no recorded owner to `user`.
+    ///
+    /// State files written before ownership existed have `owner: None`.
+    /// Treating them as unowned forever would leave the user unable to
+    /// grant anything in their own workspaces; treating unowned as
+    /// "owned by anyone" is what the old
+    /// `is_active_workspace_owner` did and is exactly the hole we are
+    /// closing. Adopting them for the local user at load is the only
+    /// answer that is both usable and closed: it names a specific
+    /// owner, and it names the person sitting at the machine.
+    ///
+    /// Returns the ids adopted, so the caller can mirror them.
+    pub fn adopt_ownerless_workspaces(&mut self, user: &UserId) -> Vec<WorkspaceId> {
+        let mut adopted = Vec::new();
+        for ws in &mut self.workspaces {
+            if ws.owner.is_none() {
+                ws.set_owner(user.clone());
+                adopted.push(ws.id);
+            }
+        }
+        for id in &adopted {
+            self.doc_set_owner(*id, user);
+            let caps: Vec<CapOverride> = self
+                .workspaces
+                .iter()
+                .find(|w| w.id == *id)
+                .map(|w| w.capabilities.clone())
+                .unwrap_or_default();
+            for cap in caps {
+                self.doc_insert_capability(*id, &cap);
+            }
+        }
+        if !adopted.is_empty() {
+            self.flush_to_disk();
+        }
+        adopted
+    }
+
+    /// Grant a capability in `workspace_id` on behalf of `grantor`,
+    /// mirroring it to peers and to disk.
+    ///
+    /// The single production entry point for handing out authority.
+    /// Returns the new capability's id, or `None` when the grantor
+    /// lacked the authority to delegate it — the check that makes
+    /// ownership mean something.
+    pub fn grant_in_workspace(
         &mut self,
         workspace_id: WorkspaceId,
-        app_id: &AppId,
-        capability: &Capability,
-    ) {
+        grantor: &UserId,
+        cap: CapOverride,
+    ) -> Option<String> {
+        let ws = self
+            .workspaces
+            .iter_mut()
+            .find(|w| w.id == workspace_id)?;
+        let id = ws.grant_as(grantor, cap)?;
+        let stored = ws.capabilities.iter().find(|c| c.id == id).cloned()?;
+        self.doc_insert_capability(workspace_id, &stored);
+        self.flush_to_disk();
+        Some(id)
+    }
+
+    /// Revoke a capability in `workspace_id` on behalf of `revoker`,
+    /// mirroring the removal to peers and to disk.
+    ///
+    /// The mirror is the point. A revoke that only touched the local
+    /// cache left every peer still holding the capability and let a
+    /// restart bring it back.
+    pub fn revoke_in_workspace(
+        &mut self,
+        workspace_id: WorkspaceId,
+        revoker: &UserId,
+        cap_id: &str,
+    ) -> bool {
+        let Some(ws) = self.workspaces.iter_mut().find(|w| w.id == workspace_id) else {
+            return false;
+        };
+        if !ws.revoke_as(revoker, cap_id) {
+            return false;
+        }
+        self.doc_revoke_capability(workspace_id, cap_id);
+        self.flush_to_disk();
+        true
+    }
+
+    /// Mirror a capability grant into the automerge doc so peer-sync
+    /// ships it on the next tick and a restart reloads it.
+    ///
+    /// Capabilities live at `workspaces[i]/capabilities` as a **map
+    /// keyed by capability id**, not a list. That choice is what makes
+    /// revocation replicate: deleting a map key is a well-defined
+    /// concurrent operation that merges, whereas deleting list index 3
+    /// on two peers at once removes two different capabilities.
+    ///
+    /// Null-tolerant: a doc that has not been seeded yet is left alone
+    /// rather than panicking, and the cache remains authoritative until
+    /// the next seed.
+    pub fn doc_insert_capability(&mut self, workspace_id: WorkspaceId, cap: &CapOverride) {
         use automerge::{ObjType, ReadDoc, ScalarValue, transaction::Transactable};
         let Some(ws_entry) = self.locate_workspace(workspace_id) else {
             return;
         };
-        // grants/ map under the workspace entry — create lazily.
-        let grants_id = match self.doc.get(&ws_entry, "grants").ok().flatten() {
+        let caps_id = match self.doc.get(&ws_entry, "capabilities").ok().flatten() {
             Some((_, id)) => id,
-            None => match self.doc.put_object(&ws_entry, "grants", ObjType::Map) {
+            None => match self.doc.put_object(&ws_entry, "capabilities", ObjType::Map) {
                 Ok(id) => id,
                 Err(_) => return,
             },
         };
-        // grants/<app_id> list — create lazily so multiple grants for
-        // the same app stack.
-        let app_key: String = app_id.as_str().to_string();
-        let app_list = match self.doc.get(&grants_id, &app_key).ok().flatten() {
-            Some((_, id)) => id,
-            None => match self.doc.put_object(&grants_id, &app_key, ObjType::List) {
-                Ok(id) => id,
-                Err(_) => return,
-            },
-        };
-        let Ok(blob) = serde_json::to_vec(capability) else {
+        let Ok(blob) = serde_json::to_vec(cap) else {
             return;
         };
-        let idx = self.doc.length(&app_list);
-        let _ = self
-            .doc
-            .insert(&app_list, idx, ScalarValue::Bytes(blob));
+        let _ = self.doc.put(&caps_id, &cap.id, ScalarValue::Bytes(blob));
     }
 
-    /// Mirror a `Workspace::grants` revoke into the automerge doc.
-    /// Removes the entry at `cap_index` from the
-    /// `workspaces[i]/grants/<app_id>` list. Tolerant of the doc not
-    /// carrying the workspace / app / index — see
-    /// [`Self::doc_insert_grant`] for the null-tolerance rationale.
-    pub fn doc_revoke_grant(
-        &mut self,
-        workspace_id: WorkspaceId,
-        app_id: &AppId,
-        cap_index: usize,
-    ) {
+    /// Mirror a revocation into the automerge doc.
+    ///
+    /// This is the half that used to be missing: without it a revoke
+    /// mutated only the local cache, so a peer kept using a capability
+    /// the owner had taken away, and a restart resurrected it.
+    pub fn doc_revoke_capability(&mut self, workspace_id: WorkspaceId, cap_id: &str) {
         use automerge::{ReadDoc, transaction::Transactable};
         let Some(ws_entry) = self.locate_workspace(workspace_id) else {
             return;
         };
-        let Some((_, grants_id)) = self.doc.get(&ws_entry, "grants").ok().flatten()
-        else {
+        let Some((_, caps_id)) = self.doc.get(&ws_entry, "capabilities").ok().flatten() else {
             return;
         };
-        let app_key: String = app_id.as_str().to_string();
-        let Some((_, app_list)) = self.doc.get(&grants_id, &app_key).ok().flatten()
-        else {
+        let _ = self.doc.delete(&caps_id, cap_id);
+    }
+
+    /// Mirror the room's owner into the doc.
+    pub fn doc_set_owner(&mut self, workspace_id: WorkspaceId, owner: &str) {
+        use automerge::transaction::Transactable;
+        let Some(ws_entry) = self.locate_workspace(workspace_id) else {
             return;
         };
-        if cap_index < self.doc.length(&app_list) {
-            let _ = self.doc.delete(&app_list, cap_index);
+        let _ = self.doc.put(&ws_entry, "owner", owner);
+    }
+
+    /// Read a workspace's capabilities and owner back out of the doc.
+    ///
+    /// Called by [`Self::rebuild_cache_from_doc`] after applying peer
+    /// changes. Capabilities absent from the doc are absent from the
+    /// cache — that is what makes a peer's revocation take effect
+    /// locally rather than merely being recorded somewhere.
+    fn doc_read_capabilities(
+        &self,
+        ws_entry: &automerge::ObjId,
+    ) -> Option<(Option<UserId>, Vec<CapOverride>)> {
+        use automerge::{ReadDoc, ScalarValue, Value};
+        let owner = match self.doc.get(ws_entry, "owner").ok().flatten() {
+            Some((Value::Scalar(s), _)) => match s.as_ref() {
+                ScalarValue::Str(v) => Some(v.to_string()),
+                _ => None,
+            },
+            _ => None,
+        };
+        let (_, caps_id) = self.doc.get(ws_entry, "capabilities").ok().flatten()?;
+        let mut caps = Vec::new();
+        for key in self.doc.keys(&caps_id) {
+            if let Some((Value::Scalar(s), _)) = self.doc.get(&caps_id, &key).ok().flatten()
+                && let ScalarValue::Bytes(blob) = s.as_ref()
+                && let Ok(cap) = serde_json::from_slice::<CapOverride>(blob)
+            {
+                caps.push(cap);
+            }
         }
+        Some((owner, caps))
     }
 
     /// Walk the doc to the `Tab` map for `(strip_id, tab_id)`. Returns
@@ -2088,7 +2831,8 @@ impl WorkspaceTree {
                     .with_cursor_color("#ec4899")
                     .with_role("editor"),
             ],
-            grants: HashMap::new(),
+            owner: None,
+            capabilities: Vec::new(),
             shared_surfaces: HashMap::new(),
         };
 
@@ -2155,7 +2899,8 @@ impl WorkspaceTree {
             roles: vec![],
             workspace_files: vec![],
             collaborators: vec![],
-            grants: HashMap::new(),
+            owner: None,
+            capabilities: Vec::new(),
             shared_surfaces: HashMap::new(),
         };
         self.active_strip.insert(ws_id, strip_id);
@@ -3104,7 +3849,8 @@ mod active_group_tests {
             roles: vec![],
             workspace_files: vec![],
             collaborators: vec![],
-            grants: HashMap::new(),
+            owner: None,
+            capabilities: Vec::new(),
             shared_surfaces: HashMap::new(),
         };
         let mut active_strip = HashMap::new();
@@ -3463,7 +4209,8 @@ mod active_workspace_peer_count_tests {
             roles: vec![],
             workspace_files: vec![],
             collaborators: collabs,
-            grants: HashMap::new(),
+            owner: None,
+            capabilities: Vec::new(),
             shared_surfaces: HashMap::new(),
         };
         let mut active_strip = HashMap::new();
@@ -3518,57 +4265,87 @@ mod capability_tests {
     use std::path::PathBuf;
 
     #[test]
-    fn empty_workspace_has_empty_grants_map() {
+    fn a_new_workspace_holds_no_capabilities_and_grants_nothing() {
         // Both `Workspace::default()` (used by `..Default::default()`
-        // sweeps) and `Workspace::new(...)` must seed an empty grants
-        // map so reads don't have to special-case `None`.
-        let ws = Workspace::default();
-        assert!(ws.grants.is_empty());
-        let ws_new = Workspace::new(WorkspaceId::from(1), "Demo");
-        assert!(ws_new.grants.is_empty());
+        // sweeps) and `Workspace::new(...)` must start empty, and an
+        // empty room must deny rather than default-allow.
+        for ws in [Workspace::default(), Workspace::new(WorkspaceId::from(1), "Demo")] {
+            assert!(ws.capabilities.is_empty());
+            assert!(ws.grants().is_empty());
+            assert!(!ws.has_app_grants());
+            assert!(
+                !ws.may_administer(&"anyone".to_string()),
+                "a room with no owner has no administrators"
+            );
+            assert!(
+                !ws.allows(
+                    &ws.actor_for_app("org.gnome.gedit"),
+                    &ResourceRef::FsPath("/home/u/work".into()),
+                    Verb::Read
+                ),
+                "an app with no capability is denied"
+            );
+        }
     }
 
     #[test]
-    fn grants_round_trip_via_serde_json() {
-        // Build a workspace with two grants for one app and round-trip
-        // through serde_json. Re-serialising the deserialised value
-        // must yield the same JSON shape — pinning the on-disk schema
-        // for portal-side consumers.
+    fn app_grants_round_trip_via_serde_json() {
+        // Grants are stored as capabilities and re-derived for the
+        // portal view. Round-tripping the workspace must preserve both
+        // the stored form and the derived one.
         let mut ws = Workspace::new(WorkspaceId::from(1), "Demo");
-        ws.grants.insert(
-            "org.gnome.gedit".into(),
-            vec![
-                Capability::Filesystem {
-                    path: PathBuf::from("/home/u/work"),
-                    mode: FsMode::ReadWrite,
-                    scope: GrantScope::Always,
-                },
-                Capability::Network {
-                    hosts: Some(vec!["github.com".into()]),
-                    scope: GrantScope::Session,
-                },
-            ],
+        ws.grant_app(
+            "org.gnome.gedit",
+            &Capability::Filesystem {
+                path: PathBuf::from("/home/u/work"),
+                mode: FsMode::ReadWrite,
+                scope: GRANT_ALWAYS,
+            },
+        );
+        ws.grant_app(
+            "org.gnome.gedit",
+            &Capability::Network {
+                hosts: Some(vec!["github.com".into()]),
+                scope: GRANT_SESSION,
+            },
         );
 
         let json = serde_json::to_string(&ws).expect("serialize");
         let round: Workspace = serde_json::from_str(&json).expect("deserialize");
-        assert_eq!(round.grants.len(), 1);
-        let caps = round.grants.get("org.gnome.gedit").expect("app present");
+
+        let view = round.grants();
+        assert_eq!(view.len(), 1);
+        let caps = view.get("org.gnome.gedit").expect("app present");
         assert_eq!(caps.len(), 2);
-        assert_eq!(
-            caps[0],
-            Capability::Filesystem {
-                path: PathBuf::from("/home/u/work"),
-                mode: FsMode::ReadWrite,
-                scope: GrantScope::Always,
-            }
+        assert!(caps.contains(&Capability::Filesystem {
+            path: PathBuf::from("/home/u/work"),
+            mode: FsMode::ReadWrite,
+            scope: GRANT_ALWAYS,
+        }));
+        assert!(caps.contains(&Capability::Network {
+            hosts: Some(vec!["github.com".into()]),
+            scope: GRANT_SESSION,
+        }));
+
+        // And the decision function agrees after the round-trip.
+        let app = round.actor_for_app("org.gnome.gedit");
+        assert!(round.allows(
+            &app,
+            &ResourceRef::FsPath("/home/u/work/notes.txt".into()),
+            Verb::Write
+        ));
+        assert!(
+            !round.allows(
+                &app,
+                &ResourceRef::FsPath("/home/u/secrets".into()),
+                Verb::Read
+            ),
+            "a path outside the grant stays denied across serialisation"
         );
-        assert_eq!(
-            caps[1],
-            Capability::Network {
-                hosts: Some(vec!["github.com".into()]),
-                scope: GrantScope::Session,
-            }
+        assert!(round.allows(&app, &ResourceRef::NetHost("github.com".into()), Verb::Write));
+        assert!(
+            !round.allows(&app, &ResourceRef::NetHost("evil.example".into()), Verb::Write),
+            "and a host outside the allowlist stays denied"
         );
     }
 
@@ -3586,7 +4363,9 @@ mod capability_tests {
             "workspace_files": []
         }"#;
         let ws: Workspace = serde_json::from_str(legacy).expect("legacy compat");
-        assert!(ws.grants.is_empty());
+        assert!(ws.capabilities.is_empty());
+        assert!(ws.grants().is_empty());
+        assert_eq!(ws.owner, None, "a legacy workspace records no owner");
         assert_eq!(ws.id, WorkspaceId::from(1));
         assert_eq!(ws.name, "Old");
     }
@@ -3601,20 +4380,20 @@ mod capability_tests {
             Capability::Filesystem {
                 path: PathBuf::from("/tmp/ws"),
                 mode: FsMode::Read,
-                scope: GrantScope::Once,
+                scope: GRANT_ONCE,
             },
             Capability::Camera {
-                scope: GrantScope::Session,
+                scope: GRANT_SESSION,
             },
             Capability::Microphone {
-                scope: GrantScope::Always,
+                scope: GRANT_ALWAYS,
             },
             Capability::Screencast {
-                scope: GrantScope::Once,
+                scope: GRANT_ONCE,
             },
             Capability::Network {
                 hosts: None,
-                scope: GrantScope::Always,
+                scope: GRANT_ALWAYS,
             },
         ];
         let json = serde_json::to_string(&caps).expect("serialize caps");

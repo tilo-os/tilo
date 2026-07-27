@@ -24,7 +24,7 @@ use zbus::object_server::SignalContext;
 use zbus::names::OwnedUniqueName;
 use zbus::zvariant::{ObjectPath, OwnedValue};
 
-use crate::shell::state::{Capability, GrantScope};
+use crate::shell::state::{Capability, GRANT_ALWAYS, GRANT_ONCE, GRANT_SESSION};
 
 use super::{
     flow, file_chooser::FileChooserBackend, CapabilityKind, PortalContext, PromptOutcome,
@@ -97,7 +97,7 @@ pub(super) fn classify(
         return (
             CapabilityKind::Microphone,
             Capability::Microphone {
-                scope: GrantScope::Once,
+                scope: GRANT_ONCE,
             },
         );
     }
@@ -105,7 +105,7 @@ pub(super) fn classify(
     (
         CapabilityKind::Camera,
         Capability::Camera {
-            scope: GrantScope::Once,
+            scope: GRANT_ONCE,
         },
     )
 }

@@ -100,7 +100,6 @@ Public API:
 ```rust
 pub use runtime::NotAvailable;
 pub use runtime::is_qos_native;
-pub use grant::{Grant, request_grant};
 pub use output::{OutputBuilder, output};
 pub use workspace::{
     /* WorkspaceHandle, is_workspace_available, workspace_root, resolve_workspace_path */
