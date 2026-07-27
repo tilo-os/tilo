@@ -43,7 +43,7 @@ use crate::compositor::frame::FrameBuilder;
 use crate::compositor::idle::{IdleConfig, SessionManager, SessionTransition};
 use crate::compositor::lock_auth;
 use crate::compositor::lock_controller::{LockController, LockKey, UnlockOutcome};
-use crate::compositor::lock_screen::{self, LockView};
+use crate::compositor::lock_screen::{self, LockOutput, LockView};
 use crate::compositor::state::{ClientState, State};
 use crate::compositor::test_control::{
     self, ControlState, KeyTag, NamedKeyTag, PlannedAction, parse_command, serialise_response,
@@ -397,21 +397,22 @@ fn execute_planned_action(
 /// the lock surface while locked (never delivered to hidden apps). Keyboard
 /// actions feed the password field via the same winit→`LockKey` routing the
 /// live backend uses; pointer/modifier actions and snapshots are swallowed (a
-/// snapshot must not capture and leak the hidden chrome). Returns whether the
-/// action authenticated and unlocked the session.
-fn execute_locked_action(action: &PlannedAction, lock: &mut LockController) -> UnlockOutcome {
+/// snapshot must not capture and leak the hidden chrome). A submit (Enter)
+/// starts an asynchronous verify; the actual unlock is delivered by the run
+/// loop's per-tick `lock.poll_verification()`, not here.
+fn execute_locked_action(action: &PlannedAction, lock: &mut LockController) {
     match action {
         PlannedAction::KeyboardKey { key, pressed } => {
             let winit_key = keytag_into_winit_key(*key);
             let event = keyboard_input_event(winit_key, *pressed);
-            lock.handle_key(winit_event_to_lock_key(&event))
+            lock.handle_key(winit_event_to_lock_key(&event));
         }
         // Pointer moves/clicks, modifier sets, and snapshots: swallowed while
         // locked. Input goes only to the lock surface.
         PlannedAction::CursorMoved { .. }
         | PlannedAction::MouseLeftButton { .. }
         | PlannedAction::SetModifiers { .. }
-        | PlannedAction::Snapshot { .. } => UnlockOutcome::StillLocked,
+        | PlannedAction::Snapshot { .. } => {}
     }
 }
 
@@ -590,9 +591,8 @@ fn pump_test_control_conn(
     conn: &mut TestControlConn,
     frame_builder: &mut FrameBuilder,
     ctx: &mut TestControlCtx,
-    session: &mut SessionManager,
+    session: &SessionManager,
     lock: &mut LockController,
-    backend: &mut dyn Backend,
 ) {
     loop {
         let mut line = String::new();
@@ -613,12 +613,10 @@ fn pump_test_control_conn(
                     if session.is_locked() {
                         // While locked the test-control socket is captured by
                         // the lock surface, just like live input — actions go
-                        // to the password field, never to the hidden chrome.
-                        if execute_locked_action(action, lock) == UnlockOutcome::Unlocked {
-                            for t in session.request_unlock(Instant::now()) {
-                                apply_session_transition(t, backend);
-                            }
-                        }
+                        // to the password field, never to the hidden chrome. A
+                        // submit starts an async verify; the run loop's
+                        // per-tick `poll_verification` delivers the unlock.
+                        execute_locked_action(action, lock);
                     } else {
                         execute_planned_action(action, frame_builder, ctx);
                     }
@@ -1114,17 +1112,14 @@ pub fn run() -> ! {
                     if session.is_locked() {
                         // Locked: every input is captured by the lock
                         // surface — routed into the password field, never to
-                        // apps/chrome behind the overlay. The session only
-                        // unlocks when the controller authenticates a correct
-                        // password (`UnlockOutcome::Unlocked`); no key can
-                        // bypass that. This is the input half of the lock's
-                        // security boundary.
+                        // apps/chrome behind the overlay. Enter starts an
+                        // asynchronous credential verify on a worker thread;
+                        // the session only unlocks when the per-tick
+                        // `lock.poll_verification()` below observes a verified
+                        // success. No key can bypass that. This is the input
+                        // half of the lock's security boundary.
                         let key = winit_event_to_lock_key(&wev);
-                        if lock.handle_key(key) == UnlockOutcome::Unlocked {
-                            for t in session.request_unlock(Instant::now()) {
-                                apply_session_transition(t, backend.as_mut());
-                            }
-                        }
+                        lock.handle_key(key);
                         // Any keystroke changes the masked field / error, so
                         // force a repaint this tick.
                         session_changed = true;
@@ -1251,6 +1246,23 @@ pub fn run() -> ! {
             }
         }
 
+        // Async unlock: pick up the result of any in-flight credential verify
+        // running on the worker thread (started by an Enter on the lock
+        // screen). The compositor loop is never blocked while the verify runs
+        // — it keeps ticking and only unlocks here, once the worker reports a
+        // verified success. A wrong/failed result surfaces a non-leaky error
+        // and stays locked. Polling every tick (~16 ms) picks the result up
+        // promptly without busy-waiting.
+        if let Some(outcome) = lock.poll_verification() {
+            // The field/status changed (unlocked, or error shown) — repaint.
+            session_changed = true;
+            if outcome == UnlockOutcome::Unlocked {
+                for t in session.request_unlock(Instant::now()) {
+                    apply_session_transition(t, backend.as_mut());
+                }
+            }
+        }
+
         // Reset the lock screen's input the instant the lock engages, so a
         // fresh lock always starts with an empty field and no stale error
         // carried over from a previous lock episode.
@@ -1345,7 +1357,28 @@ pub fn run() -> ! {
             // of the chrome — app content is never submitted while locked.
             let scene = if session.is_locked() {
                 let theme = frame_builder.theme().clone();
-                let viewport = frame_builder.viewport();
+                // The lock overlay covers **every** output the compositor
+                // knows about, drawing a centred widget on each (single-output
+                // today on winit/headless; the DRM backend lays real monitors
+                // out side-by-side). Fall back to a single output spanning the
+                // current viewport if the backend reports none yet.
+                let lock_outputs: Vec<LockOutput> = backend
+                    .outputs()
+                    .iter()
+                    .map(|o| LockOutput {
+                        origin: (o.position.0 as f64, o.position.1 as f64),
+                        size: (o.size.0 as f64, o.size.1 as f64),
+                    })
+                    .collect();
+                let lock_outputs = if lock_outputs.is_empty() {
+                    let vp = frame_builder.viewport();
+                    vec![LockOutput {
+                        origin: (0.0, 0.0),
+                        size: (vp.0, vp.1),
+                    }]
+                } else {
+                    lock_outputs
+                };
                 // Count-only summary on the lock screen — no bodies leak.
                 let notif_count = frame_builder.chrome().notification_count();
                 // Wall clock/date computed here (not in the pure paint) so the
@@ -1359,9 +1392,10 @@ pub fn run() -> ! {
                     clock: &clock,
                     date: &date,
                     notification_count: notif_count,
+                    verifying: lock.is_verifying(),
                 };
                 lock_screen::draw_lock_scene(
-                    viewport,
+                    &lock_outputs,
                     &theme,
                     frame_builder.text_renderer_mut(),
                     &view,
@@ -1419,9 +1453,8 @@ pub fn run() -> ! {
                     conn,
                     &mut frame_builder,
                     &mut test_control_ctx,
-                    &mut session,
+                    &session,
                     &mut lock,
-                    backend.as_mut(),
                 );
             }
             test_control_conns.retain(|c| !c.closed);
