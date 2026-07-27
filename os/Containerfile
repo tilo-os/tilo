@@ -155,7 +155,7 @@ RUN --mount=type=cache,target=/build/.cargo-home \
     cp os/Cargo.lock.pinned Cargo.lock \
     && cargo build --release \
         -p shell -p fs -p terminal -p file-explorer -p greeter -p installer \
-        -p runtime-bundle -p launcher -p qos-power \
+        -p runtime-bundle -p launcher -p qos-power -p qos-unlock-helper \
         -p browser --features browser/wpe \
     && mkdir -p /out \
     && cp target/release/shell \
@@ -168,6 +168,7 @@ RUN --mount=type=cache,target=/build/.cargo-home \
           target/release/qos-runtime-bundle \
           target/release/qos-launcher \
           target/release/qos-power \
+          target/release/qos-unlock-helper \
           /out/ \
     && { sccache --show-stats 2>/dev/null || true; }
 
@@ -335,10 +336,15 @@ COPY --from=builder /out/qos-installer /usr/bin/qos-installer
 COPY --from=builder /out/qos-launcher /usr/bin/qos-launcher
 COPY --from=builder /out/qos-runtime-bundle /usr/bin/qos-runtime-bundle
 COPY --from=builder /out/qos-power /usr/bin/qos-power
+# The session-unlock verify helper: the compositor spawns it while the session
+# is locked to verify the user's password via PAM (see os/etc/pam.d/qos-unlock).
+# It lives under /usr/libexec (not on $PATH) since only the compositor invokes
+# it, and matches the compositor's DEFAULT_UNLOCK_HELPER path.
+COPY --from=builder /out/qos-unlock-helper /usr/libexec/qos-unlock-helper
 RUN chmod 755 /usr/bin/shell /usr/bin/fs /usr/bin/terminal \
               /usr/bin/file-explorer /usr/bin/browser /usr/bin/qos-greeter \
               /usr/bin/qos-installer /usr/bin/qos-launcher /usr/bin/qos-runtime-bundle \
-              /usr/bin/qos-power
+              /usr/bin/qos-power /usr/libexec/qos-unlock-helper
 
 # ---- WPE WebKit runtime (browser engine) ------------------------------------
 # Engine libraries + the WebKit helper processes (WPEWebProcess,
@@ -401,6 +407,8 @@ COPY os/etc/greetd/config.toml /etc/greetd/config.toml
 # PAM stack for the greetd auth service (adds tolerant pam_fprintd so a
 # fingerprint can satisfy login; falls back to password-auth).
 COPY os/etc/pam.d/greetd /etc/pam.d/greetd
+# PAM stack for in-session unlock (qos-unlock-helper). Auth + account only.
+COPY os/etc/pam.d/qos-unlock /etc/pam.d/qos-unlock
 
 # polkit rule authorising the greeter's Reboot / Shut down buttons. Lets the
 # `greetd` user issue org.freedesktop.login1.{reboot,power-off} via logind
