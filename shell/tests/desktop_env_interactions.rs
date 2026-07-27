@@ -76,7 +76,8 @@ fn single_strip_tree(group_ids: &[u64]) -> (WorkspaceTree, StripId, Vec<GroupId>
         roles: vec![],
         workspace_files: vec![],
         collaborators: vec![],
-        grants: HashMap::new(),
+        owner: None,
+        capabilities: Vec::new(),
         shared_surfaces: HashMap::new(),
     };
 

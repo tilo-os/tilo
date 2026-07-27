@@ -83,7 +83,8 @@ fn two_group_one_strip_tree() -> (WorkspaceTree, StripId, GroupId, GroupId) {
         roles: vec![],
         workspace_files: vec![],
         collaborators: vec![],
-        grants: HashMap::new(),
+        owner: None,
+        capabilities: Vec::new(),
         shared_surfaces: HashMap::new(),
     };
 
