@@ -101,7 +101,13 @@ pub enum RegistryError {
 mod tests {
     use super::*;
 
+    // Every test here sets `QOS_APPS_DATA_DIR`, which is process-wide:
+    // run in parallel they clobber each other's override (and the last
+    // one to finish removes the var out from under the others). Same
+    // `process_env` serial group as the tests in `run` that shim `HOME`.
+
     #[test]
+    #[serial_test::serial(process_env)]
     fn find_installed_reads_registry_via_override_env() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let payload = tmp.path().join("payloads/dev.qos.notes-cli");
@@ -115,7 +121,7 @@ mod tests {
         );
         std::fs::write(tmp.path().join("registry.toml"), registry_toml).unwrap();
 
-        // SAFETY: no other thread reads QOS_APPS_DATA_DIR during this test.
+        // SAFETY: this test is in the `process_env` serial group.
         unsafe { std::env::set_var("QOS_APPS_DATA_DIR", tmp.path()) };
         let found = find_installed("dev.qos.notes-cli").expect("read");
         unsafe { std::env::remove_var("QOS_APPS_DATA_DIR") };
@@ -125,6 +131,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(process_env)]
     fn list_installed_returns_every_entry_in_file_order() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let mut toml_src = String::new();
@@ -141,7 +148,7 @@ mod tests {
         }
         std::fs::write(tmp.path().join("registry.toml"), toml_src).unwrap();
 
-        // SAFETY: no other thread reads QOS_APPS_DATA_DIR during this test.
+        // SAFETY: this test is in the `process_env` serial group.
         unsafe { std::env::set_var("QOS_APPS_DATA_DIR", tmp.path()) };
         let all = list_installed().expect("read");
         unsafe { std::env::remove_var("QOS_APPS_DATA_DIR") };
@@ -150,6 +157,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(process_env)]
     fn list_installed_is_empty_when_registry_missing() {
         let tmp = tempfile::tempdir().expect("tempdir");
         unsafe { std::env::set_var("QOS_APPS_DATA_DIR", tmp.path()) };
@@ -159,6 +167,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(process_env)]
     fn find_installed_returns_none_when_registry_missing() {
         let tmp = tempfile::tempdir().expect("tempdir");
         // No registry.toml written.
