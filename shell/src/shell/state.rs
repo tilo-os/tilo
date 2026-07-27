@@ -2016,6 +2016,20 @@ impl WorkspaceTree {
     /// Written atomically via a temp file + rename, so the filesystem
     /// never reads a half-written list and concludes the user has no
     /// permissions.
+    ///
+    /// Two gaps this does **not** close, recorded here rather than left
+    /// to be discovered:
+    ///
+    /// 1. `qos-fs` reads this file once, when the mount is established
+    ///    (`fs::main::resolve_acl`). A grant or revoke made afterwards
+    ///    is written here but does not reach an already-mounted
+    ///    filesystem without a remount. Only expiry is evaluated live.
+    /// 2. `os/usr/lib/systemd/system/fs.service` does not pass `--acl`,
+    ///    so the mount in the shipped OS image runs unenforced. Wiring
+    ///    it needs an ordering fix first: the unit starts before any
+    ///    session exists, and `resolve_acl` refuses to mount when the
+    ///    file it was pointed at is missing — correctly, but that would
+    ///    turn "no session yet" into a failed boot.
     pub fn export_fs_capabilities(&self) {
         let Some(path) = &self.fs_acl_path else {
             return;
