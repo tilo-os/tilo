@@ -488,6 +488,42 @@ impl State {
         self.active_sessions.remove(&surface);
     }
 
+    /// Stage the buffer a foreign (external-client) toplevel just
+    /// committed so its tab can paint the client's actual pixels.
+    ///
+    /// Split out of [`CompositorHandler::commit`] to keep the hook itself
+    /// a plain dispatch. `wl_shm` and dmabuf are both handled by
+    /// [`crate::compositor::foreign::ForeignFrameStore::capture_commit`];
+    /// a buffer neither path can decode is recorded as an error the tile
+    /// renders, never as a silently stale frame.
+    fn capture_foreign_surface(&mut self, surface: &WlSurface, surface_id: u64) {
+        use crate::compositor::foreign::{CaptureOutcome, store};
+        wl_compositor::with_states(surface, |states| {
+            let mut attrs = states.cached_state.get::<wl_compositor::SurfaceAttributes>();
+            match &attrs.current().buffer {
+                Some(wl_compositor::BufferAssignment::NewBuffer(buffer)) => {
+                    if let CaptureOutcome::Failed(reason) =
+                        store().capture_commit(surface_id, buffer)
+                    {
+                        tracing::warn!(
+                            target: "shell::compositor::foreign",
+                            surface_id,
+                            reason,
+                            "foreign surface capture failed; tile shows the reason"
+                        );
+                    }
+                }
+                Some(wl_compositor::BufferAssignment::Removed) => {
+                    // The client unmapped: stop painting the last frame.
+                    store().clear_frame(surface_id);
+                }
+                None => {
+                    // Damage-only commit — keep the staged frame.
+                }
+            }
+        });
+    }
+
     /// Pump the share-session encoder for `surface_id` on a fresh
     /// commit. Called from [`CompositorHandler::commit`] after
     /// [`SurfaceTracker::on_commit`] has staged the buffer bytes.
@@ -813,6 +849,16 @@ impl CompositorHandler for State {
             .workspaces
             .iter()
             .any(|ws| ws.is_surface_shared(surface_id));
+        // Foreign-surface compositing: a toplevel adopted into a tab needs
+        // its buffer captured every commit so
+        // `compositor::foreign::ForeignSurfaceWidget` can paint it into
+        // the tab's rect. Independent of the collaboration share path
+        // above — a surface can be one, both, or neither.
+        let is_foreign_tab =
+            tab_binding::group_id_for_surface(&self.workspace_tree, surface_id as u64).is_some();
+        if is_foreign_tab {
+            self.capture_foreign_surface(surface, surface_id as u64);
+        }
         if !is_shared {
             return;
         }
@@ -1021,6 +1067,11 @@ impl XdgShellHandler for State {
         // surface, accumulates across long sessions with many
         // short-lived toplevels.
         self.surface_tracker.drop_surface(surface_id as SurfaceId);
+        // Same reclaim on the foreign-compositing side: the store holds a
+        // full framebuffer per surface, so a destroyed toplevel that kept
+        // its entry would leak `width*height*4` bytes for the life of the
+        // session.
+        crate::compositor::foreign::store().forget(surface_id);
     }
 
     fn app_id_changed(&mut self, surface: ToplevelSurface) {
