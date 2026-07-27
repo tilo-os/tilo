@@ -1,7 +1,7 @@
 //! Toolkit-side collab client.
 //!
 //! Historical shape (still the public API, so every downstream app —
-//! `apps/notes`, `apps/word-processor`, `apps/permissions`,
+//! `apps/notes`, `apps/word-processor`,
 //! `apps/collab-broker`, plus the toolkit's own `ui::App` — keeps
 //! compiling): a synchronous, non-blocking `send` / `poll` pair
 //! trading typed [`CollabRequest`] / [`CollabEvent`] frames.

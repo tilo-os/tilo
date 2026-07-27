@@ -13,7 +13,7 @@
 //!   path **and** before the renderer paints it, so an ungranted embed shows a
 //!   locked card and never touches the file.
 //! * [`ChatPermissions::can_participate`] — may this peer send / react / join a
-//!   call in the current workspace? (Edit on the workspace resource.)
+//!   call in the current workspace? (`Write` on the room.)
 //! * [`ChatPermissions::allows`] — the call-action seam (join / speak / camera
 //!   / screen-share), backed by the same context.
 //!
@@ -22,7 +22,7 @@
 //! a restricted `PermissionContext` (a member role without the relevant grant)
 //! gates exactly the actions it should.
 
-use ui::permissions::{FileId, Op, PermissionContext, ResourceId, PermissionScope, WorkspaceId};
+use ui::permissions::{PermissionContext, PermissionScope, Verb};
 
 use crate::call::CallAction;
 
@@ -52,28 +52,24 @@ impl ChatPermissions {
     }
 
     /// May this peer hydrate + render the bytes behind an attachment at `path`?
-    /// A `View` grant on the file resource. The permissive admin allows every
-    /// file; a member role only sees files it was explicitly granted.
+    /// A `Read` capability on the path. Roles carry no authority over the
+    /// filesystem at all, so this always needs an explicit grant: the
+    /// unrestricted local user has a workspace-wide one; a member has only the
+    /// paths that were shared with them.
     pub fn can_embed(&self, path: &str) -> bool {
-        self.ctx.check(&PermissionScope {
-            resource: ResourceId::File(FileId(path.to_string())),
-            op: Op::View,
-        })
+        self.ctx.check(&PermissionScope::path(path, Verb::Read))
     }
 
-    /// May this peer post / react / join a call in `workspace`? An `Edit` grant
-    /// on the workspace resource (View-only members can read but not write).
-    pub fn can_participate(&self, workspace: &str) -> bool {
-        self.ctx.check(&PermissionScope {
-            resource: ResourceId::Workspace(WorkspaceId(workspace.to_string())),
-            op: Op::Edit,
-        })
+    /// May this peer post / react / join a call in `workspace`? `Write` on the
+    /// room (a Viewer can read the channels but not write into them).
+    pub fn can_participate(&self, _workspace: &str) -> bool {
+        self.ctx.check(&PermissionScope::workspace(Verb::Write))
     }
 
     /// The call-action seam, backed by the real context. Join / Speak / Camera
-    /// / ShareScreen all require Edit on the workspace (you can't transmit into
-    /// a room you can't write to); Leave is always allowed so a downgraded peer
-    /// can always drop out.
+    /// / ShareScreen all require Write on the workspace (you can't transmit
+    /// into a room you can't write to); Leave is always allowed so a downgraded
+    /// peer can always drop out.
     pub fn allows(&self, workspace: &str, action: CallAction) -> bool {
         match action {
             CallAction::Leave => true,
@@ -85,30 +81,15 @@ impl ChatPermissions {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ui::permissions::{Role, RoleId, RolePermissions, PermissionAssignment, UserId, WorkspaceSettingsView};
+    use ui::permissions::{Actor, Role};
 
-    /// A member role with no file grants and no workspace-admin — the restricted
-    /// peer a real invite without file access would produce.
+    /// A read-only member with no file capabilities — the restricted peer a
+    /// real invite without write or file access would produce.
     fn restricted_member() -> ChatPermissions {
-        let roles = vec![Role {
-            id: RoleId("member".into()),
-            name: "Member".into(),
-            permissions: RolePermissions {
-                app_access: vec![],
-                file_ops: vec![],
-                workspace_admin: false,
-            },
-        }];
-        let view = WorkspaceSettingsView {
-            roles,
-            assignments: vec![PermissionAssignment {
-                user: UserId("u_guest".into()),
-                role: RoleId("member".into()),
-            }],
-        };
-        let ctx = PermissionContext::from_workspace_settings(&view, &UserId("u_guest".into()))
-            .expect("assignment resolves");
-        ChatPermissions::from_context(ctx)
+        ChatPermissions::from_context(PermissionContext::from_capabilities(
+            Actor::person(Some(Role::Viewer), "u_guest"),
+            vec![],
+        ))
     }
 
     #[test]
@@ -139,10 +120,7 @@ mod tests {
         // A member without admin still passes the View check on a workspace
         // (they can read channels) — it's Edit that's gated.
         let p = restricted_member();
-        let view_ok = p.ctx.check(&PermissionScope {
-            resource: ResourceId::Workspace(WorkspaceId("ws_home".into())),
-            op: Op::View,
-        });
+        let view_ok = p.ctx.check(&PermissionScope::workspace(Verb::Read));
         assert!(view_ok, "a member can read the workspace");
         assert!(!p.can_participate("ws_home"), "but cannot write to it");
     }

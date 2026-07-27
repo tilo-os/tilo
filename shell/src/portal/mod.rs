@@ -71,7 +71,8 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::oneshot;
 
 use crate::shell::state::{
-    AppId, Capability, FsMode, GrantScope, Workspace, WorkspaceId, WorkspaceTree,
+    AppId, CapOverride, Capability, Expiry, FsMode, GRANT_ALWAYS, GRANT_ONCE, GRANT_SESSION,
+    GrantScope, ResourceRef, Verb, Workspace, WorkspaceId, WorkspaceTree,
     WorkspaceTreeHandle,
 };
 
@@ -178,19 +179,39 @@ impl GrantStoreHandle {
             .workspaces
             .iter()
             .find(|w| w.id == caller.workspace_id)?;
-        let caps = ws.grants.get(&caller.app_id)?;
         let mut best: Option<GrantScope> = None;
-        for cap in caps {
-            if !kind.matches(cap) {
+        for cap in ws.app_capabilities(&caller.app_id) {
+            let Some(desc) = Capability::from_capability(cap) else {
+                continue;
+            };
+            if !kind.matches(&desc) {
                 continue;
             }
-            let scope = capability_scope(cap);
             best = Some(match best {
-                Some(prev) => stronger_scope(prev, scope),
-                None => scope,
+                Some(prev) => stronger_scope(prev, cap.expiry),
+                None => cap.expiry,
             });
         }
         best
+    }
+
+    /// The authoritative "may this app do this?" check.
+    ///
+    /// Unlike [`Self::lookup`], which answers "is there a grant of this
+    /// shape" for the prompt logic, this asks the capability model
+    /// directly about a concrete resource — so a filesystem grant on a
+    /// directory correctly authorises a file inside it, and a network
+    /// grant on one host does not authorise another.
+    ///
+    /// Fail-closed on every unknown: a missing workspace, an unknown
+    /// app, an expired capability all deny.
+    pub fn permits(&self, caller: &PortalCaller, resource: &ResourceRef, verb: Verb) -> bool {
+        let tree = self.tree.read();
+        let Some(ws) = tree.workspaces.iter().find(|w| w.id == caller.workspace_id) else {
+            return false;
+        };
+        let actor = ws.actor_for_app(&caller.app_id);
+        ws.allows(&actor, resource, verb)
     }
 
     /// Persist `capability` under `caller.app_id` in `caller.workspace_id`.
@@ -209,15 +230,20 @@ impl GrantStoreHandle {
         else {
             return false;
         };
-        ws.grants
-            .entry(caller.app_id.clone())
-            .or_default()
-            .push(capability.clone());
+        let ids = ws.grant_app(&caller.app_id, &capability);
         // Mirror into the automerge doc so peer-sync ships the grant on
-        // the next tick. Tolerant of the doc not being seeded yet (e.g.
-        // a brand-new workspace not yet flushed through
-        // `seed_doc_from_cache`).
-        tree.doc_insert_grant(caller.workspace_id, &caller.app_id, &capability);
+        // the next tick, and so a restart reloads it. Tolerant of the
+        // doc not being seeded yet (e.g. a brand-new workspace not yet
+        // flushed through `seed_doc_from_cache`).
+        let written: Vec<CapOverride> = ws
+            .capabilities
+            .iter()
+            .filter(|c| ids.contains(&c.id))
+            .cloned()
+            .collect();
+        for cap in written {
+            tree.doc_insert_capability(caller.workspace_id, &cap);
+        }
         true
     }
 
@@ -243,13 +269,16 @@ impl GrantStoreHandle {
         else {
             return false;
         };
-        let Some(caps) = ws.grants.get(&caller.app_id) else {
-            return false;
-        };
-        caps.iter().any(|cap| match cap {
-            Capability::Filesystem { path: granted, .. } => path.starts_with(granted),
-            _ => false,
-        })
+        // Asks the capability model rather than re-deriving prefix
+        // logic: `Scope::FsPath` already covers its subtree, on
+        // component boundaries, and the same rule is what the
+        // filesystem itself enforces.
+        let actor = ws.actor_for_app(&caller.app_id);
+        ws.allows(
+            &actor,
+            &ResourceRef::FsPath(path.to_string_lossy().into_owned()),
+            Verb::Read,
+        )
     }
 
     /// Direct tree-handle accessor for tests that need to assert on
@@ -279,13 +308,14 @@ fn capability_scope(cap: &Capability) -> GrantScope {
     }
 }
 
+/// The longer-lived of two expiries.
+///
+/// Delegates to [`Expiry::longest`] rather than re-deriving the order:
+/// the capability store merges a re-grant with the same rule, and two
+/// implementations of "strongest wins" would eventually disagree about
+/// whether a permanent grant is permanent.
 fn stronger_scope(a: GrantScope, b: GrantScope) -> GrantScope {
-    use GrantScope::*;
-    match (a, b) {
-        (Always, _) | (_, Always) => Always,
-        (Session, _) | (_, Session) => Session,
-        _ => Once,
-    }
+    Expiry::longest(a, b)
 }
 
 /// The user-prompt the portal needs to surface, waiting on a choice.
@@ -315,9 +345,9 @@ impl PromptOutcome {
     }
     pub fn to_scope(self) -> Option<GrantScope> {
         match self {
-            PromptOutcome::AllowOnce => Some(GrantScope::Once),
-            PromptOutcome::AllowSession => Some(GrantScope::Session),
-            PromptOutcome::AllowAlways => Some(GrantScope::Always),
+            PromptOutcome::AllowOnce => Some(GRANT_ONCE),
+            PromptOutcome::AllowSession => Some(GRANT_SESSION),
+            PromptOutcome::AllowAlways => Some(GRANT_ALWAYS),
             PromptOutcome::Deny => None,
         }
     }
@@ -537,7 +567,7 @@ pub mod flow {
         // 1. Fast path — `Always`-scoped grant already present.
         if matches!(
             ctx.grants.lookup(&caller, kind),
-            Some(GrantScope::Always)
+            Some(GRANT_ALWAYS)
         ) {
             return PromptOutcome::AllowAlways;
         }
@@ -547,7 +577,7 @@ pub mod flow {
             Ok(outcome) => {
                 // Persist Session/Always — Once is treated as one-shot.
                 if let Some(scope) = outcome.to_scope() {
-                    if !matches!(scope, GrantScope::Once) {
+                    if !matches!(scope, GRANT_ONCE) {
                         let cap = super::with_scope(cap_template, scope);
                         ctx.grants.insert(&caller, cap);
                     }
@@ -652,7 +682,8 @@ mod tests {
             roles: vec![],
             workspace_files: vec![],
             collaborators: vec![],
-            grants: HashMap::new(),
+            owner: None,
+            capabilities: Vec::new(),
             shared_surfaces: HashMap::new(),
         }
     }
@@ -662,12 +693,12 @@ mod tests {
         let read = Capability::Filesystem {
             path: "/tmp".into(),
             mode: FsMode::Read,
-            scope: GrantScope::Once,
+            scope: GRANT_ONCE,
         };
         let rw = Capability::Filesystem {
             path: "/tmp".into(),
             mode: FsMode::ReadWrite,
-            scope: GrantScope::Always,
+            scope: GRANT_ALWAYS,
         };
         assert!(CapabilityKind::FilesystemRead.matches(&read));
         assert!(CapabilityKind::FilesystemRead.matches(&rw));
@@ -679,38 +710,27 @@ mod tests {
     #[test]
     fn grant_store_returns_strongest_scope() {
         let mut ws = empty_ws(11);
-        ws.grants.insert(
-            "app.org".into(),
-            vec![
-                Capability::Camera {
-                    scope: GrantScope::Once,
-                },
-                Capability::Camera {
-                    scope: GrantScope::Always,
-                },
-                Capability::Camera {
-                    scope: GrantScope::Session,
-                },
-            ],
-        );
+        for scope in [GRANT_ONCE, GRANT_ALWAYS, GRANT_SESSION] {
+            ws.grant_app("app.org", &Capability::Camera { scope });
+        }
         let (store, ws_id) = GrantStoreHandle::test_with_workspace(ws);
         let caller = PortalCaller::new(ws_id, "app.org");
         assert_eq!(
             store.lookup(&caller, CapabilityKind::Camera),
-            Some(GrantScope::Always)
+            Some(GRANT_ALWAYS)
         );
     }
 
     #[test]
     fn filesystem_path_granted_covers_exact_and_ancestor_paths() {
         let mut ws = empty_ws(21);
-        ws.grants.insert(
-            "Editor".into(),
-            vec![Capability::Filesystem {
+        ws.grant_app(
+            "Editor",
+            &Capability::Filesystem {
                 path: "/home/u/proj".into(),
                 mode: FsMode::Read,
-                scope: GrantScope::Session,
-            }],
+                scope: GRANT_SESSION,
+            },
         );
         let (store, ws_id) = GrantStoreHandle::test_with_workspace(ws);
         let caller = PortalCaller::new(ws_id, "Editor");
@@ -744,12 +764,12 @@ mod tests {
         assert!(store.insert(
             &caller,
             Capability::Microphone {
-                scope: GrantScope::Always
+                scope: GRANT_ALWAYS
             }
         ));
         assert_eq!(
             store.lookup(&caller, CapabilityKind::Microphone),
-            Some(GrantScope::Always)
+            Some(GRANT_ALWAYS)
         );
     }
 
@@ -785,7 +805,7 @@ mod tests {
         // landing on the camera capability for `camera-app`.
         let caller = PortalCaller::new(ws_id, "camera-app");
         let cap = Capability::Camera {
-            scope: GrantScope::Session,
+            scope: GRANT_SESSION,
         };
         assert!(
             portal.insert(&caller, cap),
@@ -802,7 +822,7 @@ mod tests {
             .active_workspace()
             .expect("active workspace exists");
         assert!(
-            ws.grants.iter().any(|(app, _)| app.as_str() == "camera-app"),
+            ws.grants().contains_key("camera-app"),
             "portal-side grant insert must be visible to the shell chrome \
              (audit C-3: shared WorkspaceTreeHandle ties subsystems together)",
         );
@@ -815,7 +835,7 @@ mod tests {
         let rx = q.enqueue(
             caller,
             Capability::Screencast {
-                scope: GrantScope::Once,
+                scope: GRANT_ONCE,
             },
         );
         // No `.await` needed — AutoAllow fills the oneshot synchronously
@@ -833,7 +853,7 @@ mod tests {
         let _rx = q.enqueue(
             caller.clone(),
             Capability::Camera {
-                scope: GrantScope::Once,
+                scope: GRANT_ONCE,
             },
         );
         assert_eq!(q.queued_len(), 1);
@@ -850,12 +870,7 @@ mod tests {
         // any enqueued request — by asserting the queue stays empty,
         // we prove the fast-path bypassed it.
         let mut ws = empty_ws(21);
-        ws.grants.insert(
-            "app".into(),
-            vec![Capability::Camera {
-                scope: GrantScope::Always,
-            }],
-        );
+        ws.grant_app("app", &Capability::Camera { scope: GRANT_ALWAYS });
         let (store, ws_id) = GrantStoreHandle::test_with_workspace(ws);
         let queue = PromptQueueHandle::new(PromptResolver::Channel);
         let caller = PortalCaller::new(ws_id, "app");
@@ -874,7 +889,7 @@ mod tests {
             caller,
             CapabilityKind::Camera,
             Capability::Camera {
-                scope: GrantScope::Once,
+                scope: GRANT_ONCE,
             },
         ));
         assert_eq!(outcome, PromptOutcome::AllowAlways);
@@ -903,14 +918,14 @@ mod tests {
             caller.clone(),
             CapabilityKind::Microphone,
             Capability::Microphone {
-                scope: GrantScope::Once,
+                scope: GRANT_ONCE,
             },
         ));
         assert_eq!(outcome, PromptOutcome::AllowSession);
         // The Session-scoped grant should now be persisted.
         assert_eq!(
             store.lookup(&caller, CapabilityKind::Microphone),
-            Some(GrantScope::Session)
+            Some(GRANT_SESSION)
         );
     }
 
@@ -934,7 +949,7 @@ mod tests {
             caller.clone(),
             CapabilityKind::Camera,
             Capability::Camera {
-                scope: GrantScope::Once,
+                scope: GRANT_ONCE,
             },
         ));
         assert_eq!(outcome, PromptOutcome::AllowOnce);
@@ -967,7 +982,7 @@ mod tests {
             CapabilityKind::Network,
             Capability::Network {
                 hosts: None,
-                scope: GrantScope::Once,
+                scope: GRANT_ONCE,
             },
         ));
         assert_eq!(outcome, PromptOutcome::Deny);
