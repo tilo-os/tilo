@@ -712,20 +712,9 @@ mod tests {
     #[test]
     fn grant_store_returns_strongest_scope() {
         let mut ws = empty_ws(11);
-        ws.grants.insert(
-            "app.org".into(),
-            vec![
-                Capability::Camera {
-                    scope: GRANT_ONCE,
-                },
-                Capability::Camera {
-                    scope: GRANT_ALWAYS,
-                },
-                Capability::Camera {
-                    scope: GRANT_SESSION,
-                },
-            ],
-        );
+        for scope in [GRANT_ONCE, GRANT_ALWAYS, GRANT_SESSION] {
+            ws.grant_app("app.org", &Capability::Camera { scope });
+        }
         let (store, ws_id) = GrantStoreHandle::test_with_workspace(ws);
         let caller = PortalCaller::new(ws_id, "app.org");
         assert_eq!(
@@ -737,13 +726,13 @@ mod tests {
     #[test]
     fn filesystem_path_granted_covers_exact_and_ancestor_paths() {
         let mut ws = empty_ws(21);
-        ws.grants.insert(
-            "Editor".into(),
-            vec![Capability::Filesystem {
+        ws.grant_app(
+            "Editor",
+            &Capability::Filesystem {
                 path: "/home/u/proj".into(),
                 mode: FsMode::Read,
                 scope: GRANT_SESSION,
-            }],
+            },
         );
         let (store, ws_id) = GrantStoreHandle::test_with_workspace(ws);
         let caller = PortalCaller::new(ws_id, "Editor");
@@ -835,7 +824,7 @@ mod tests {
             .active_workspace()
             .expect("active workspace exists");
         assert!(
-            ws.grants.iter().any(|(app, _)| app.as_str() == "camera-app"),
+            ws.grants().contains_key("camera-app"),
             "portal-side grant insert must be visible to the shell chrome \
              (audit C-3: shared WorkspaceTreeHandle ties subsystems together)",
         );
@@ -883,12 +872,7 @@ mod tests {
         // any enqueued request — by asserting the queue stays empty,
         // we prove the fast-path bypassed it.
         let mut ws = empty_ws(21);
-        ws.grants.insert(
-            "app".into(),
-            vec![Capability::Camera {
-                scope: GRANT_ALWAYS,
-            }],
-        );
+        ws.grant_app("app", &Capability::Camera { scope: GRANT_ALWAYS });
         let (store, ws_id) = GrantStoreHandle::test_with_workspace(ws);
         let queue = PromptQueueHandle::new(PromptResolver::Channel);
         let caller = PortalCaller::new(ws_id, "app");

@@ -4148,57 +4148,87 @@ mod capability_tests {
     use std::path::PathBuf;
 
     #[test]
-    fn empty_workspace_has_empty_grants_map() {
+    fn a_new_workspace_holds_no_capabilities_and_grants_nothing() {
         // Both `Workspace::default()` (used by `..Default::default()`
-        // sweeps) and `Workspace::new(...)` must seed an empty grants
-        // map so reads don't have to special-case `None`.
-        let ws = Workspace::default();
-        assert!(ws.grants.is_empty());
-        let ws_new = Workspace::new(WorkspaceId::from(1), "Demo");
-        assert!(ws_new.grants.is_empty());
+        // sweeps) and `Workspace::new(...)` must start empty, and an
+        // empty room must deny rather than default-allow.
+        for ws in [Workspace::default(), Workspace::new(WorkspaceId::from(1), "Demo")] {
+            assert!(ws.capabilities.is_empty());
+            assert!(ws.grants().is_empty());
+            assert!(!ws.has_app_grants());
+            assert!(
+                !ws.may_administer(&"anyone".to_string()),
+                "a room with no owner has no administrators"
+            );
+            assert!(
+                !ws.allows(
+                    &ws.actor_for_app("org.gnome.gedit"),
+                    &ResourceRef::FsPath("/home/u/work".into()),
+                    Verb::Read
+                ),
+                "an app with no capability is denied"
+            );
+        }
     }
 
     #[test]
-    fn grants_round_trip_via_serde_json() {
-        // Build a workspace with two grants for one app and round-trip
-        // through serde_json. Re-serialising the deserialised value
-        // must yield the same JSON shape — pinning the on-disk schema
-        // for portal-side consumers.
+    fn app_grants_round_trip_via_serde_json() {
+        // Grants are stored as capabilities and re-derived for the
+        // portal view. Round-tripping the workspace must preserve both
+        // the stored form and the derived one.
         let mut ws = Workspace::new(WorkspaceId::from(1), "Demo");
-        ws.grants.insert(
-            "org.gnome.gedit".into(),
-            vec![
-                Capability::Filesystem {
-                    path: PathBuf::from("/home/u/work"),
-                    mode: FsMode::ReadWrite,
-                    scope: GRANT_ALWAYS,
-                },
-                Capability::Network {
-                    hosts: Some(vec!["github.com".into()]),
-                    scope: GRANT_SESSION,
-                },
-            ],
+        ws.grant_app(
+            "org.gnome.gedit",
+            &Capability::Filesystem {
+                path: PathBuf::from("/home/u/work"),
+                mode: FsMode::ReadWrite,
+                scope: GRANT_ALWAYS,
+            },
+        );
+        ws.grant_app(
+            "org.gnome.gedit",
+            &Capability::Network {
+                hosts: Some(vec!["github.com".into()]),
+                scope: GRANT_SESSION,
+            },
         );
 
         let json = serde_json::to_string(&ws).expect("serialize");
         let round: Workspace = serde_json::from_str(&json).expect("deserialize");
-        assert_eq!(round.grants.len(), 1);
-        let caps = round.grants.get("org.gnome.gedit").expect("app present");
+
+        let view = round.grants();
+        assert_eq!(view.len(), 1);
+        let caps = view.get("org.gnome.gedit").expect("app present");
         assert_eq!(caps.len(), 2);
-        assert_eq!(
-            caps[0],
-            Capability::Filesystem {
-                path: PathBuf::from("/home/u/work"),
-                mode: FsMode::ReadWrite,
-                scope: GRANT_ALWAYS,
-            }
+        assert!(caps.contains(&Capability::Filesystem {
+            path: PathBuf::from("/home/u/work"),
+            mode: FsMode::ReadWrite,
+            scope: GRANT_ALWAYS,
+        }));
+        assert!(caps.contains(&Capability::Network {
+            hosts: Some(vec!["github.com".into()]),
+            scope: GRANT_SESSION,
+        }));
+
+        // And the decision function agrees after the round-trip.
+        let app = round.actor_for_app("org.gnome.gedit");
+        assert!(round.allows(
+            &app,
+            &ResourceRef::FsPath("/home/u/work/notes.txt".into()),
+            Verb::Write
+        ));
+        assert!(
+            !round.allows(
+                &app,
+                &ResourceRef::FsPath("/home/u/secrets".into()),
+                Verb::Read
+            ),
+            "a path outside the grant stays denied across serialisation"
         );
-        assert_eq!(
-            caps[1],
-            Capability::Network {
-                hosts: Some(vec!["github.com".into()]),
-                scope: GRANT_SESSION,
-            }
+        assert!(round.allows(&app, &ResourceRef::NetHost("github.com".into()), Verb::Write));
+        assert!(
+            !round.allows(&app, &ResourceRef::NetHost("evil.example".into()), Verb::Write),
+            "and a host outside the allowlist stays denied"
         );
     }
 
@@ -4216,7 +4246,9 @@ mod capability_tests {
             "workspace_files": []
         }"#;
         let ws: Workspace = serde_json::from_str(legacy).expect("legacy compat");
-        assert!(ws.grants.is_empty());
+        assert!(ws.capabilities.is_empty());
+        assert!(ws.grants().is_empty());
+        assert_eq!(ws.owner, None, "a legacy workspace records no owner");
         assert_eq!(ws.id, WorkspaceId::from(1));
         assert_eq!(ws.name, "Old");
     }

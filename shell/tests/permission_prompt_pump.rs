@@ -21,7 +21,8 @@ use std::time::Duration;
 use shell::shell::chrome_state::{ChromeState, OverlayFlags};
 use shell::shell::overlay_host::ShellOverlayHost;
 use shell::shell::state::{
-    Capability, FsMode, GrantScope, Workspace, WorkspaceId, WorkspaceTree,
+    Capability, FsMode, GRANT_ALWAYS, GRANT_ONCE, GRANT_SESSION, Workspace, WorkspaceId,
+    WorkspaceTree,
 };
 use ui::widget::{PermissionPrompt, PromptChoice, Widget};
 
@@ -199,10 +200,10 @@ fn pump_drains_pending_grant_after_choice() {
     );
     let tree = st.tree(); let ws = tree.active_workspace().expect("active workspace");
     assert!(
-        ws.grants.get("org.example.app").is_none(),
+        ws.grants().get("org.example.app").is_none(),
         "Once doesn't persist on the workspace's grants map — \
          got: {:?}",
-        ws.grants.get("org.example.app"),
+        ws.grants().get("org.example.app"),
     );
 }
 
@@ -235,8 +236,8 @@ fn pump_persists_session_grant_to_workspace_grants_map() {
     let st = chrome.borrow();
     assert!(st.pending_grants.is_empty(), "queue must drain");
     let tree = st.tree(); let ws = tree.active_workspace().expect("active workspace");
-    let caps = ws
-        .grants
+    let view = ws.grants();
+    let caps = view
         .get("org.example.app")
         .expect("Session click must persist a grant on the active workspace");
     assert_eq!(caps.len(), 1);
@@ -286,7 +287,8 @@ fn pump_persists_always_grant_with_filesystem_capability() {
 
     let st = chrome.borrow();
     let tree = st.tree(); let ws = tree.active_workspace().expect("active workspace");
-    let caps = ws.grants.get("org.gnome.gedit").expect("grant persisted");
+    let view = ws.grants();
+    let caps = view.get("org.gnome.gedit").expect("grant persisted");
     assert_eq!(caps.len(), 1);
     assert!(
         matches!(
@@ -330,9 +332,9 @@ fn pump_deny_drops_pending_grant_without_persisting() {
     assert!(st.pending_grants.is_empty(), "queue must drain on Deny");
     let tree = st.tree(); let ws = tree.active_workspace().expect("active workspace");
     assert!(
-        ws.grants.get("org.example.app").is_none(),
+        ws.grants().get("org.example.app").is_none(),
         "Deny must not persist any grant — got {:?}",
-        ws.grants.get("org.example.app"),
+        ws.grants().get("org.example.app"),
     );
 }
 
