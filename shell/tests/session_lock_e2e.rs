@@ -11,11 +11,14 @@
 //! 3. the **correct** password **unlocks** and restores the session.
 //!
 //! Real vs injected: everything here is the shipped path — the run loop, the
-//! `LockController`, the input gating, the overlay — *except* credential
-//! verification, which is the injected [`FixedVerifier`] (via
-//! `QOS_LOCK_TEST_PASSWORD`) standing in for the greetd/PAM `GreetdVerifier`,
-//! since PAM cannot run in a headless test. The state machine and gating are
-//! fully real; only "is this password correct?" is stubbed.
+//! `LockController`, the input gating, the overlay, and the **asynchronous**
+//! verify (Enter hands the credential to a worker thread; the run loop's
+//! per-tick `poll_verification` delivers the unlock) — *except* the credential
+//! check itself, which is the injected [`FixedVerifier`] (via
+//! `QOS_LOCK_TEST_PASSWORD`) standing in for the real in-session PAM path
+//! (`HelperVerifier` → `qos-unlock-helper`), since PAM cannot run in a
+//! headless test. The state machine, async plumbing, and gating are fully
+//! real; only "is this password correct?" is stubbed.
 //!
 //! ## Why `#[ignore]` by default
 //!
