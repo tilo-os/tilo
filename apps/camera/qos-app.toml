@@ -1,0 +1,114 @@
+# Camera — qOS application manifest.
+#
+# Owns one directory — `~/Pictures/Camera` — where captures land and
+# deletions happen. `/dev/video*` and the v4l2 GStreamer path are
+# behind feature `live-capture` (off by default, not even compiled),
+# but the device grant ships so a live build works unchanged.
+# Scanned QR codes are opened through the host, not by the app.
+#
+# Pack and install:
+#
+#     cargo build -p camera -p pkg-cli -p install
+#     mkdir -p target/qpkg/camera/bin
+#     cp target/debug/camera target/qpkg/camera/bin/camera
+#     target/debug/qos-pkg pack --manifest apps/camera/qos-app.toml \
+#         --payload target/qpkg/camera --output target/camera.qpkg
+#     target/debug/qos-install install target/camera.qpkg --allow-self-signed
+
+[package]
+id       = "dev.qos.camera"
+name     = "Camera"
+category = "Multimedia"
+version  = "0.1.0"
+kind     = "app"
+runtime  = "qos-runtime/2026.07"
+
+# The workspace pins `-C target-cpu=x86-64-v3` in .cargo/config.toml,
+# so the shipped binaries genuinely require AVX2/BMI2/FMA.
+[package.isa]
+x86_64 = "v3"
+
+[publisher]
+identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
+signature = ""
+
+[[trust.attested_by]]
+attestor  = "qos-demo/2026.07"
+claim     = "deadbeef"
+signature = ""
+
+[sandbox]
+# `net` deliberately absent from `namespaces`: this app opens no
+# socket of its own.
+namespaces = [
+    "user",
+    "pid",
+    "uts",
+    "ipc",
+    "mount",
+]
+seccomp    = "qos-default"
+landlock   = "strict"
+
+[sandbox.fs]
+read = [
+    "$XDG_RUNTIME_DIR/wayland-0",
+    "/usr/lib64",
+    "/usr/lib",
+    "/usr/share/fonts",
+    "/usr/share/fontconfig",
+    "/etc/fonts",
+    "/usr/share/vulkan",
+    "/usr/share/glvnd",
+    "/usr/share/drirc.d",
+    "/usr/share/libdrm",
+    "/usr/share/nvidia",
+    "/etc/vulkan",
+    "/etc/machine-id",
+    "/etc/ld.so.cache",
+    "/etc/ld.so.conf",
+    "/etc/ld.so.conf.d",
+    "/usr/lib/locale",
+    "/sys",
+    "/usr/lib64/gstreamer-1.0",
+    "/usr/share/gstreamer-1.0",
+    "/usr/bin",
+    "/bin",
+    "/usr/sbin",
+    "/sbin",
+]
+write = [
+    "~/.cache/mesa_shader_cache",
+    "~/.cache/mesa_shader_cache_db",
+    "~/.cache/radv_builtin_shaders",
+    "/dev/dri",
+    "/dev/nvidia0",
+    "/dev/nvidiactl",
+    "/dev/nvidia-modeset",
+    "/dev/nvidia-uvm",
+    "/dev/nvidia-uvm-tools",
+    "/dev/nvidia-caps",
+    "~/Pictures/Camera",
+    "/dev/video0",
+    "/dev/video1",
+]
+
+[sandbox.net]
+mode = "off"
+
+[sandbox.portals]
+open-uri = "via-host"
+
+[sandbox.services]
+collab = "optional@1"
+qos-fs = "optional@1"
+
+[entrypoint]
+bin             = "bin/camera"
+type            = "gui"
+splash-segments = ["bin/camera[0x0:0x400000]"]
+splash-budget   = 250
+
+[providers]
+mime = []
+ext  = []
