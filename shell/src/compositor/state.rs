@@ -44,7 +44,7 @@ use smithay::wayland::compositor::{
     self as wl_compositor, CompositorClientState, CompositorHandler, CompositorState,
 };
 use smithay::wayland::dmabuf::{
-    DmabufGlobal, DmabufHandler, DmabufState, ImportNotifier,
+    DmabufFeedbackBuilder, DmabufGlobal, DmabufHandler, DmabufState, ImportNotifier,
 };
 use smithay::wayland::fractional_scale::{
     self, FractionalScaleHandler, FractionalScaleManagerState,
@@ -69,6 +69,7 @@ use smithay::{
 
 use crate::collab::flatpak_share::SharedFlatpakSession;
 use crate::compositor::remote_seat::RemoteSeats;
+use crate::compositor::render_node::{ProbeError, RenderNode};
 use crate::compositor::surface_readback::SurfaceTracker;
 use crate::compositor::tab_binding;
 use crate::network::protocol::{PeerId as MsgPeerId, SurfaceId};
@@ -176,23 +177,42 @@ pub struct State {
     /// list for now; `wl_shm` always advertises ARGB8888 + XRGB8888.
     pub shm_state: ShmState,
     /// `zwp_linux_dmabuf_v1` global state — enables clients to attach
-    /// GPU-allocated (usually GBM) buffers to their surfaces. When
-    /// present, the encoder path can `av_hwframe_map` a shared
-    /// surface's committed buffer straight into a VA-API surface with
-    /// zero CPU-side copy.
+    /// GPU-allocated (usually GBM) buffers to their surfaces.
     ///
-    /// The advertised format list is the intersection of "what the
-    /// compositor's wgpu/vello backend will accept for sampling" and
-    /// "what a hardware H.264 encoder can consume as
-    /// `AV_PIX_FMT_DRM_PRIME`". BGRA/XRGB8888 covers the common
-    /// client-side render output; NV12 matches VA-API's native encode
-    /// input; P010 is retained for eventual HDR paths but currently
-    /// falls back to SHM at the encoder side.
+    /// The global is created **with default feedback** (protocol
+    /// version 4), which is what carries the `main_device` event. That
+    /// event is the only remaining way a Mesa EGL/Vulkan client can
+    /// learn which GPU to allocate on now that `wl_drm` is gone; a
+    /// version-3 global leaves the client with no device, which it
+    /// reports as `failed to get driver name for fd -1` before failing
+    /// to create its window at all.
+    ///
+    /// The advertised formats are RGBA-family FourCCs under
+    /// `Modifier::Linear` only, because
+    /// [`crate::compositor::foreign::import_dmabuf_rgba`] imports a
+    /// client buffer by CPU-mapping its plane. The compositor
+    /// deliberately advertises exactly what it can composite — offering
+    /// tiled modifiers or multi-planar YUV would make conforming
+    /// clients hand us buffers we would then have to reject on screen.
     pub dmabuf_state: DmabufState,
     /// The advertised `zwp_linux_dmabuf_v1` global handle. Held for
     /// the process lifetime — dropping it would revoke the global
     /// from clients that already bound it.
-    pub dmabuf_global: DmabufGlobal,
+    ///
+    /// `None` when [`crate::compositor::render_node::probe`] found no
+    /// GPU whose dma-bufs the compositor can actually read (no DRM
+    /// render node at all, or only drivers that can't CPU-map their
+    /// exports). Not advertising is the honest answer there: Mesa then
+    /// takes its `wl_shm` software path, which the compositor composites
+    /// correctly, instead of negotiating dmabufs every frame would have
+    /// to reject.
+    pub dmabuf_global: Option<DmabufGlobal>,
+    /// The render node handed to clients as
+    /// `zwp_linux_dmabuf_feedback_v1.main_device`, or the reason none
+    /// was. Kept so the boot log, the test-control state dump and the
+    /// integration tests can all read the *decision* rather than
+    /// re-deriving it.
+    pub dmabuf_device: Result<RenderNode, ProbeError>,
     /// `wl_seat` collection. Phase 2 doesn't add a seat yet; phase 4 will.
     pub seat_state: SeatState<Self>,
     /// `wl_output` + xdg-output manager. Phase 2 advertises the manager
@@ -363,31 +383,30 @@ impl State {
         let output_manager_state =
             OutputManagerState::new_with_xdg_output::<Self>(&display_handle);
 
-        // Advertise a small, deliberately safe DMABUF format set — the
-        // intersection of "the compositor can render / sample this"
-        // and "a downstream H.264 encoder can consume it directly".
-        // Every format is offered under LINEAR only (implicit modifier
-        // negotiation would require an EGL-side format probe we don't
-        // do here). Vendor-specific tiling / DCC modifiers are a
-        // follow-up once the wgpu backend exposes the driver's
-        // modifier list.
+        // `zwp_linux_dmabuf_v1`. Two things have to be right for a GPU
+        // client to boot against us, and only one of them is the format
+        // list:
         //
-        // Format rationale:
-        // - BGRA/XRGB8888: client-side RGBA output (most GPU-rendered
-        //   toplevels).
-        // - NV12: VA-API's native H.264 encode input; a GPU that
-        //   composites into NV12 skips the RGBA→NV12 swscale on the
-        //   encoder side.
-        // - P010: 10-bit HDR; kept in the advertisement so a future
-        //   HDR client can attach one, even though the VA-API path
-        //   currently falls back to SHM for P010.
+        // 1. **A main device.** Mesa dropped `wl_drm`, so
+        //    `dmabuf_feedback.main_device` (protocol version 4) is the
+        //    only channel that tells a client which GPU to allocate on.
+        //    A version-3 global — what `DmabufState::create_global`
+        //    builds — gives the client the protocol without the device,
+        //    and EGL dies with `failed to get driver name for fd -1`
+        //    before the client ever maps a toplevel.
+        // 2. **Only formats we can composite.** A client buffer becomes
+        //    tile pixels through `foreign::import_dmabuf_rgba`, which
+        //    CPU-maps the plane fd. That is correct for single-plane
+        //    RGBA under `Modifier::Linear` and nothing else, so that is
+        //    exactly what goes on the wire. (The NV12/P010 the encoder
+        //    path consumes are *capture* formats produced downstream of
+        //    a share session — advertising them to clients would invite
+        //    toplevels we'd have to reject on screen every frame.)
         let dmabuf_formats: Vec<Format> = [
             Fourcc::Argb8888,
             Fourcc::Xrgb8888,
             Fourcc::Abgr8888,
             Fourcc::Xbgr8888,
-            Fourcc::Nv12,
-            Fourcc::P010,
         ]
         .into_iter()
         .map(|code| Format {
@@ -396,8 +415,47 @@ impl State {
         })
         .collect();
         let mut dmabuf_state = DmabufState::new();
-        let dmabuf_global =
-            dmabuf_state.create_global::<Self>(&display_handle, dmabuf_formats);
+        let dmabuf_device = crate::compositor::render_node::probe();
+        let dmabuf_global = match &dmabuf_device {
+            Ok(node) => match DmabufFeedbackBuilder::new(node.dev, dmabuf_formats.clone()).build() {
+                Ok(feedback) => {
+                    tracing::info!(
+                        target: "shell::compositor::dmabuf",
+                        device = %node.path.display(),
+                        driver = node.driver.as_deref().unwrap_or("<unknown>"),
+                        dev = node.dev,
+                        formats = dmabuf_formats.len(),
+                        "advertising zwp_linux_dmabuf_v1 with feedback"
+                    );
+                    Some(dmabuf_state.create_global_with_default_feedback::<Self>(
+                        &display_handle,
+                        &feedback,
+                    ))
+                }
+                Err(e) => {
+                    // The format table lives in a sealed memfd; if we
+                    // can't create it we cannot send correct feedback,
+                    // and a feedback-less global is the broken state
+                    // this whole block exists to avoid.
+                    tracing::error!(
+                        target: "shell::compositor::dmabuf",
+                        error = %e,
+                        "could not build dmabuf feedback; not advertising dmabuf — \
+                         GPU clients will fall back to wl_shm"
+                    );
+                    None
+                }
+            },
+            Err(e) => {
+                tracing::warn!(
+                    target: "shell::compositor::dmabuf",
+                    reason = %e,
+                    "not advertising zwp_linux_dmabuf_v1 — GPU clients will render \
+                     through wl_shm (software) instead"
+                );
+                None
+            }
+        };
 
         // D-1 fix: register a real seat with a pointer device so
         // `apply_remote_input` has something to inject into. The seat
@@ -454,6 +512,7 @@ impl State {
             shm_state,
             dmabuf_state,
             dmabuf_global,
+            dmabuf_device,
             seat_state,
             output_manager_state,
             workspace_tree: WorkspaceTree::bootstrap_default(),
@@ -986,32 +1045,49 @@ impl DmabufHandler for State {
         dmabuf: Dmabuf,
         notifier: ImportNotifier,
     ) {
-        // Phase 4 v3: accept every advertised DMABUF import.
+        // Smithay's `DmabufHandler` is the "can you actually use this
+        // buffer?" gate, and it is the last point at which a client can
+        // still be told *no* in a way it can act on: a failed import
+        // makes `zwp_linux_buffer_params_v1.create` fail, which is a
+        // toolkit's cue to renegotiate or drop to `wl_shm`. Accepting
+        // a buffer we cannot composite would instead leave the client
+        // submitting frames into a tile that shows an error string, with
+        // no protocol-level signal that anything is wrong.
         //
-        // Smithay's `DmabufHandler` is the "does your renderer accept
-        // this DMABUF?" gate — the compositor is free to refuse a
-        // format the wgpu/vello backend can't sample. In practice the
-        // advertised format list is the same list we'd accept, and
-        // the eventual failure surface for a bad buffer is the render
-        // pass itself (which drops the frame with a warn). So we
-        // accept unconditionally; `notifier.successful()` registers
-        // the Dmabuf as the buffer's user-data so the compositor's
-        // commit hook can later pull it back via
+        // So the gate is exactly the importer's own precondition —
+        // single-plane, linear (or implicit), RGBA-family — shared with
+        // `foreign::import_dmabuf_rgba` so the two can't drift.
+        if let Err(err) = crate::compositor::foreign::validate_importable(&dmabuf) {
+            tracing::warn!(
+                target: "shell::compositor::dmabuf",
+                width = dmabuf.width(),
+                height = dmabuf.height(),
+                fourcc = ?dmabuf.format().code,
+                modifier = u64::from(dmabuf.format().modifier),
+                planes = dmabuf.num_planes(),
+                error = %err,
+                "rejecting client dmabuf: not composable by this compositor"
+            );
+            notifier.failed();
+            return;
+        }
+        // `notifier.successful()` registers the Dmabuf as the buffer's
+        // user-data so the commit hook can pull it back via
         // [`smithay::wayland::dmabuf::get_dmabuf`].
         //
         // We don't stash the Dmabuf here because we don't yet know
         // which surface it will land on — a client can import
         // DMABUFs eagerly and attach them to different surfaces
-        // later. The tracker's per-surface cache is populated at
-        // commit-time via `SurfaceTracker::note_dmabuf_committed`
-        // when the compositor's commit hook sees the buffer attached
-        // to a shared surface.
+        // later. The per-surface caches are populated at commit time
+        // (`foreign::ForeignFrameStore::capture_commit` for tiles,
+        // `SurfaceTracker::note_dmabuf_committed` for share sessions).
         let _ = notifier.successful::<Self>();
         tracing::debug!(
-            target: "shell::compositor::state",
+            target: "shell::compositor::dmabuf",
             width = dmabuf.width(),
             height = dmabuf.height(),
             fourcc = ?dmabuf.format().code,
+            modifier = u64::from(dmabuf.format().modifier),
             "dmabuf imported and accepted"
         );
     }
