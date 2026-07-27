@@ -234,13 +234,27 @@ fn manifest_library_name(path: &Path) -> Option<String> {
     )
 }
 
+/// The architecture token this build's ICDs are named with.
+///
+/// `std::env::consts::ARCH` is Rust's spelling; the manifest file names
+/// use the platform's. They agree on `x86_64` and `aarch64` but not on
+/// 32-bit x86 (`x86` vs `i686`) or 32-bit arm (`arm` vs `armv7l`), and a
+/// mismatch there would filter out the only manifest that *does* fit.
+fn host_arch_token() -> &'static str {
+    match std::env::consts::ARCH {
+        "x86" => "i686",
+        "arm" => "armv7l",
+        other => other,
+    }
+}
+
 /// Is this manifest file name for an architecture we can't load?
 ///
 /// `radeon_icd.i686.json` on an x86_64 host describes a 32-bit library
 /// this process could never dlopen. Files with no architecture token
 /// are always eligible.
 fn is_foreign_arch(file_name: &str) -> bool {
-    let host = std::env::consts::ARCH;
+    let host = host_arch_token();
     file_name
         .split('.')
         .any(|part| ARCH_TOKENS.contains(&part) && part != host)
@@ -572,9 +586,27 @@ mod tests {
         let sel = select_for_driver(Path::new("/dev/dri/renderD128"), "amdgpu", &search);
         let picked = sel.vulkan_icd_json.expect("exactly one arch is eligible");
         assert!(
-            picked.to_string_lossy().contains(std::env::consts::ARCH),
+            picked.to_string_lossy().contains(host_arch_token()),
             "picked {picked:?} on {}",
-            std::env::consts::ARCH
+            host_arch_token()
+        );
+    }
+
+    /// The architecture token has to be the one the manifest *files*
+    /// are named with, which is not always Rust's spelling. Getting
+    /// this wrong filters out the only manifest that fits and silently
+    /// unpins the driver.
+    #[test]
+    fn arch_token_uses_the_manifest_spelling_not_rusts() {
+        assert!(
+            ARCH_TOKENS.contains(&host_arch_token()),
+            "`{}` is not a token any ICD file name uses",
+            host_arch_token()
+        );
+        assert!(!is_foreign_arch("50_mesa.json"), "no token means eligible");
+        assert!(
+            !is_foreign_arch(&format!("radeon_icd.{}.json", host_arch_token())),
+            "the host's own architecture must always be eligible"
         );
     }
 
