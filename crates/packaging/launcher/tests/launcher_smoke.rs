@@ -73,6 +73,8 @@ fn hello_manifest(payload_root: &Path, services: BTreeMap<String, String>) -> Mi
     let _ = payload_root;
     MinimalManifest {
         package_id: "com.example.hello".to_string(),
+        name: None,
+        category: None,
         version: "0.0.0".to_string(),
         runtime: None,
         entrypoint: Entrypoint {
@@ -389,6 +391,8 @@ fn runtime_bundle_wins_over_minimal_libs_in_argv() {
 
     let mut m = MinimalManifest {
         package_id: "com.example.hello".to_string(),
+        name: None,
+        category: None,
         version: "0.0.0".to_string(),
         runtime: Some("qos-runtime/smoke-1.0.0".to_string()),
         entrypoint: Entrypoint {
@@ -513,6 +517,8 @@ fn thin_app_bundle_exposes_shared_libs_on_ld_library_path() {
 
     let m = MinimalManifest {
         package_id: "dev.qos.thin".to_string(),
+        name: None,
+        category: None,
         version: "0.1.0".to_string(),
         runtime: Some(format!("qos-runtime/{version}")),
         entrypoint: Entrypoint {

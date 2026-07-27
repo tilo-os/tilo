@@ -183,6 +183,74 @@ pub fn resolve_runtime_test_helper(
 
 /// Resolve the host path to the user identity JSON.
 ///
+/// Create the write grants an app owns but that don't exist on the host
+/// yet.
+///
+/// bwrap binds existing inodes; it cannot conjure one. A first launch of
+/// an app whose manifest declares `~/.local/share/qos-chat` would
+/// otherwise get no such directory in its namespace — and, because every
+/// path in the sandbox is an explicit bind, no writable parent to create
+/// it from either. So the app would come up unable to save anything, on
+/// every machine, until something outside the sandbox happened to make
+/// the directory first.
+///
+/// Only paths under the user's own home and runtime dir are created:
+/// those are the ones the app is the owner of. System locations
+/// (`/dev/snd`, `/var/workspace`, `/etc/…`) are the session's or the
+/// distribution's to provide — the launcher binds them if they exist and
+/// silently skips them if they don't, which is what `--bind-try` gives.
+///
+/// A trailing component carrying a file extension (`settings.json`,
+/// `Untitled.md`) is created as an empty file, everything else as a
+/// directory. Failures are logged and ignored: a grant we could not
+/// materialise degrades to "not bound", never to a refused launch.
+fn materialise_write_grants(manifest: &crate::manifest::MinimalManifest) {
+    let owned_roots: Vec<PathBuf> = [
+        std::env::var_os("HOME").map(PathBuf::from),
+        std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+
+    for entry in &manifest.sandbox.fs.write {
+        let host = crate::manifest::expand_path(entry);
+        if host.exists() {
+            continue;
+        }
+        if !owned_roots.iter().any(|root| host.starts_with(root)) {
+            continue;
+        }
+        let is_file = host
+            .file_name()
+            .and_then(|n| n.to_str())
+            // `.config` is a dotdir, not an extension — only a dot past
+            // the first character marks a file name.
+            .is_some_and(|n| n.rfind('.').is_some_and(|i| i > 0));
+        let result = if is_file {
+            host.parent()
+                .map(std::fs::create_dir_all)
+                .unwrap_or(Ok(()))
+                .and_then(|()| {
+                    std::fs::OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(&host)
+                        .map(|_| ())
+                })
+        } else {
+            std::fs::create_dir_all(&host)
+        };
+        match result {
+            Ok(()) => tracing::debug!(path = %host.display(), "created declared write grant"),
+            Err(e) => tracing::warn!(
+                path = %host.display(),
+                "could not create declared write grant: {e}"
+            ),
+        }
+    }
+}
+
 /// Priority:
 /// 1. `opts.identity_host_path` explicit override — used verbatim,
 ///    without an existence check (tests may point at a not-yet-created
@@ -429,6 +497,13 @@ pub fn run_with(
     let runtime_arg = resolved_runtime
         .as_ref()
         .map(|(p, v)| (p.as_path(), v.as_str()));
+
+    // Write grants the app owns but that don't exist yet — its state
+    // directory on a first run, a shader cache before the GPU driver
+    // has ever written one. bwrap can only bind what is already there,
+    // so create them here rather than letting a first launch come up
+    // with no place to save.
+    materialise_write_grants(manifest);
 
     // Identity resolution: host location of the user identity JSON.
     // Threaded through both bwrap-argv builders so the child receives
@@ -998,14 +1073,18 @@ fn current_uid() -> u32 {
     unsafe { libc::getuid() }
 }
 
+/// One serial guard for every test in this crate that mutates `HOME` or
+/// `XDG_CONFIG_HOME`. Those are process-wide, so a per-module mutex is
+/// not enough — two modules each holding their own lock still race each
+/// other, and the symptom is a test that passes alone and fails in a
+/// full run.
+#[cfg(test)]
+pub(crate) static ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[cfg(test)]
 mod identity_resolution_tests {
     use super::*;
-
-    // A serial guard: these tests mutate `XDG_CONFIG_HOME` / `HOME`,
-    // which are shared with every other test in the process. Cargo's
-    // parallel runner would race them without the mutex.
-    static ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    use super::ENV_MUTEX;
 
     fn snapshot_and_clear() -> (Option<std::ffi::OsString>, Option<std::ffi::OsString>) {
         let x = std::env::var_os("XDG_CONFIG_HOME");
@@ -1104,3 +1183,114 @@ mod identity_resolution_tests {
 // The prior HEAD block above the identity_resolution_tests module
 // carried the resolve_dbus_bind helper; find_proxy_binary and
 // spawn_dbus_proxy live in the crate::dbus_proxy module.
+
+#[cfg(test)]
+mod write_grant_tests {
+    use super::*;
+    use super::ENV_MUTEX;
+
+    fn manifest_with_writes(writes: &[&str]) -> crate::manifest::MinimalManifest {
+        let list = writes
+            .iter()
+            .map(|w| format!("{w:?}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let src = format!(
+            r#"
+[package]
+id = "dev.qos.fixture"
+version = "0.1.0"
+
+[entrypoint]
+bin = "bin/fixture"
+
+[sandbox.fs]
+write = [{list}]
+"#
+        );
+        toml::from_str(&src).expect("fixture manifest decodes")
+    }
+
+    #[test]
+    fn a_first_launch_gets_its_declared_state_directory() {
+        let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let home = tempfile::tempdir().expect("tempdir");
+        let prev = std::env::var_os("HOME");
+        // SAFETY: guarded by ENV_MUTEX.
+        unsafe { std::env::set_var("HOME", home.path()) };
+
+        let m = manifest_with_writes(&["~/.local/share/qos-fixture"]);
+        let target = home.path().join(".local/share/qos-fixture");
+        assert!(!target.exists(), "precondition: nothing there yet");
+
+        materialise_write_grants(&m);
+
+        assert!(
+            target.is_dir(),
+            "an app's own declared state dir must exist before bwrap tries \
+             to bind it, or the app comes up with nowhere to save"
+        );
+
+        // SAFETY: guarded by ENV_MUTEX.
+        unsafe {
+            match prev {
+                Some(v) => std::env::set_var("HOME", v),
+                None => std::env::remove_var("HOME"),
+            }
+        }
+    }
+
+    #[test]
+    fn a_grant_naming_a_file_is_created_as_a_file_not_a_directory() {
+        let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let home = tempfile::tempdir().expect("tempdir");
+        let prev = std::env::var_os("HOME");
+        // SAFETY: guarded by ENV_MUTEX.
+        unsafe { std::env::set_var("HOME", home.path()) };
+
+        let m = manifest_with_writes(&["~/.config/qos/settings.json"]);
+        materialise_write_grants(&m);
+
+        let target = home.path().join(".config/qos/settings.json");
+        assert!(target.is_file(), "settings.json must be a file: {target:?}");
+        assert!(
+            home.path().join(".config/qos").is_dir(),
+            "the dotdir on the way to it is still a directory"
+        );
+
+        // SAFETY: guarded by ENV_MUTEX.
+        unsafe {
+            match prev {
+                Some(v) => std::env::set_var("HOME", v),
+                None => std::env::remove_var("HOME"),
+            }
+        }
+    }
+
+    #[test]
+    fn system_paths_are_left_to_the_system() {
+        let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let home = tempfile::tempdir().expect("tempdir");
+        let prev = std::env::var_os("HOME");
+        // SAFETY: guarded by ENV_MUTEX.
+        unsafe { std::env::set_var("HOME", home.path()) };
+
+        // A device node and a mount point the launcher has no business
+        // fabricating — if they are absent the grant is simply unused.
+        let m = manifest_with_writes(&["/dev/snd", "/var/workspace/nope-qos-fixture"]);
+        materialise_write_grants(&m);
+
+        assert!(
+            !Path::new("/var/workspace/nope-qos-fixture").exists(),
+            "the launcher must not create paths outside the user's own dirs"
+        );
+
+        // SAFETY: guarded by ENV_MUTEX.
+        unsafe {
+            match prev {
+                Some(v) => std::env::set_var("HOME", v),
+                None => std::env::remove_var("HOME"),
+            }
+        }
+    }
+}
