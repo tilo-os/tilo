@@ -41,7 +41,7 @@ fn theme_exposes_tokens() {
 }
 
 use ui::presence::{PresenceCtx, PresenceKey};
-use ui::permissions::{PermissionScope, ResourceId, Op, WorkspaceId};
+use ui::permissions::{PermissionScope, ResourceRef, Verb};
 use ui::dnd::{DragPayload};
 
 #[test]
@@ -52,8 +52,9 @@ fn presence_ctx_empty_is_constructible() {
 
 #[test]
 fn permission_scope_constructs() {
-    let s = PermissionScope { resource: ResourceId::Workspace(WorkspaceId("0".into())), op: Op::Edit };
-    assert!(matches!(s.op, Op::Edit));
+    let s = PermissionScope::workspace(Verb::Write);
+    assert_eq!(s.op, Verb::Write);
+    assert_eq!(s.resource, ResourceRef::Workspace);
 }
 
 #[test]
