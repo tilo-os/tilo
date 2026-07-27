@@ -141,6 +141,22 @@ impl std::fmt::Display for DmabufImportError {
 
 impl std::error::Error for DmabufImportError {}
 
+/// Whether a buffer carrying `modifier` has a row-major layout the CPU
+/// import can read.
+///
+/// `LINEAR` obviously qualifies. `INVALID` — the "implicit modifier"
+/// escape hatch a client uses when it calls
+/// `zwp_linux_buffer_params_v1.create` without `add`-ing a modifier — is
+/// accepted too, because the compositor's dmabuf global advertises
+/// `LINEAR` and nothing else: a conforming client that allocated against
+/// our advertisement and then dropped the modifier on the wire still
+/// allocated a linear buffer. Anything else is a vendor tiling or
+/// compression layout whose bytes are not an image, and is rejected so
+/// the tile reports it rather than painting noise.
+fn modifier_is_cpu_readable(modifier: Modifier) -> bool {
+    matches!(modifier, Modifier::Linear | Modifier::Invalid)
+}
+
 /// Byte layout of one pixel as it sits in memory for a DRM FourCC.
 ///
 /// DRM format names read the *most significant* byte first of a
@@ -203,12 +219,19 @@ fn swizzle_row(order: PixelOrder, src: &[u8], width: usize, out: &mut Vec<u8>) {
 /// GPU's writes are visible and caches are handled, and the rows are
 /// swizzled into RGBA. It is correct for every buffer the compositor
 /// advertises (LINEAR only) and costs one full-frame copy.
-pub fn import_dmabuf_rgba(
-    dmabuf: &Dmabuf,
-    out: &mut Vec<u8>,
-) -> Result<(u32, u32), DmabufImportError> {
+/// Cheap, allocation-free "can this compositor turn that buffer into
+/// tile pixels?" check — format, modifier and plane count only.
+///
+/// Split out from [`import_dmabuf_rgba`] so the
+/// `zwp_linux_dmabuf_v1` import gate
+/// ([`smithay::wayland::dmabuf::DmabufHandler::dmabuf_imported`]) can
+/// answer the client *at negotiation time*. Rejecting there makes the
+/// client's `create` fail, which is its cue to renegotiate or fall back
+/// to `wl_shm`; accepting and then failing at commit would leave it
+/// happily submitting frames into an error tile forever.
+pub fn validate_importable(dmabuf: &Dmabuf) -> Result<(), DmabufImportError> {
     let format = dmabuf.format();
-    if format.modifier != Modifier::Linear {
+    if !modifier_is_cpu_readable(format.modifier) {
         return Err(DmabufImportError::NonLinearModifier(u64::from(
             format.modifier,
         )));
@@ -217,6 +240,17 @@ pub fn import_dmabuf_rgba(
     if planes != 1 {
         return Err(DmabufImportError::MultiPlanar(planes));
     }
+    PixelOrder::for_fourcc(format.code)
+        .ok_or(DmabufImportError::UnsupportedFormat(format.code))?;
+    Ok(())
+}
+
+pub fn import_dmabuf_rgba(
+    dmabuf: &Dmabuf,
+    out: &mut Vec<u8>,
+) -> Result<(u32, u32), DmabufImportError> {
+    validate_importable(dmabuf)?;
+    let format = dmabuf.format();
     let order = PixelOrder::for_fourcc(format.code)
         .ok_or(DmabufImportError::UnsupportedFormat(format.code))?;
 
