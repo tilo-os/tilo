@@ -320,15 +320,23 @@ pub fn build_bwrap_argv_for_entry(
     // the host-side expanded path — the app sees the same paths it
     // declared, so e.g. `~/Documents` resolves identically in and out of
     // the sandbox. Same convention as the per-workspace profile.
-    // Device paths (anything under `/dev`) get `--dev-bind-try` instead
-    // of --ro-bind/--bind so bwrap accepts the character-device inode
-    // and silently skips paths that don't exist on the host.
+    //
+    // Every one of these is a `-try` bind. A manifest entry is a
+    // *permission*, not an assertion that the path exists: `/dev/snd`
+    // on a machine with no sound card, `/usr/share/nvidia` on an AMD
+    // box, or `~/.cache/mesa_shader_cache_db` before Mesa has ever run
+    // are all normal, and none of them is a reason to refuse the
+    // launch. Plain `--bind`/`--ro-bind` make bwrap abort on a missing
+    // source, which turns an unused grant into a dead app. Write paths
+    // the app genuinely owns are created on the host before this point
+    // (see `run::materialise_write_grants`), so `-try` does not quietly
+    // cost an app its own state directory.
     for entry in &manifest.sandbox.fs.read {
         let host = expand_path(entry);
         let flag = if host.starts_with("/dev") {
             "--dev-bind-try"
         } else {
-            "--ro-bind"
+            "--ro-bind-try"
         };
         push_bind(&mut argv, flag, &host, &host);
     }
@@ -337,7 +345,7 @@ pub fn build_bwrap_argv_for_entry(
         let flag = if host.starts_with("/dev") {
             "--dev-bind-try"
         } else {
-            "--bind"
+            "--bind-try"
         };
         push_bind(&mut argv, flag, &host, &host);
     }
@@ -466,6 +474,8 @@ mod tests {
     fn mk_manifest(net_mode: &str) -> MinimalManifest {
         MinimalManifest {
             package_id: "com.example.notes".to_string(),
+            name: Some("Notes".to_string()),
+            category: Some("Office".to_string()),
             version: "0.1.0".to_string(),
             runtime: None,
             entrypoint: Entrypoint {
@@ -563,17 +573,34 @@ mod tests {
     fn argv_includes_fs_read_and_write_binds() {
         let m = mk_manifest("off");
         let argv = build_bwrap_argv(&m, Path::new("/host/pkg"), None, &[], None, None);
-        // --ro-bind /usr/share/fonts /usr/share/fonts
+        // --ro-bind-try /usr/share/fonts /usr/share/fonts
+        //
+        // `-try`, not the plain flag: a declared path that does not
+        // exist on this host must not abort the launch.
         let ro_pos = argv
             .windows(3)
-            .position(|w| w[0] == "--ro-bind" && w[1] == "/usr/share/fonts" && w[2] == "/usr/share/fonts")
-            .expect("fs.read ro-bind");
+            .position(|w| {
+                w[0] == "--ro-bind-try"
+                    && w[1] == "/usr/share/fonts"
+                    && w[2] == "/usr/share/fonts"
+            })
+            .expect("fs.read ro-bind-try");
         let _ = ro_pos;
         let rw_pos = argv
             .windows(3)
-            .position(|w| w[0] == "--bind" && w[1] == "/var/lib/qos/notes" && w[2] == "/var/lib/qos/notes")
-            .expect("fs.write bind");
+            .position(|w| {
+                w[0] == "--bind-try"
+                    && w[1] == "/var/lib/qos/notes"
+                    && w[2] == "/var/lib/qos/notes"
+            })
+            .expect("fs.write bind-try");
         let _ = rw_pos;
+        // The payload mount stays a hard `--ro-bind`: a package whose
+        // own payload is missing genuinely cannot run.
+        assert!(
+            argv.windows(3).any(|w| w[0] == "--ro-bind" && w[1] == "/host/pkg"),
+            "payload bind must stay non-try: {argv:?}"
+        );
     }
 
     #[test]
