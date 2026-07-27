@@ -42,7 +42,8 @@ fn empty_workspace(id: u64, name: &str) -> Workspace {
         roles: vec![],
         workspace_files: vec![],
         collaborators: vec![],
-        grants: HashMap::new(),
+        owner: None,
+        capabilities: Vec::new(),
         shared_surfaces: HashMap::new(),
     }
 }
@@ -276,7 +277,7 @@ async fn always_grant_skips_prompt_queue() {
     ws.grants.insert(
         "org.example.always".into(),
         vec![Capability::Camera {
-            scope: GrantScope::Always,
+            scope: GRANT_ALWAYS,
         }],
     );
     let (store, ws_id) = GrantStoreHandle::test_with_workspace(ws);
@@ -430,7 +431,7 @@ async fn screencast_start_provisions_pipewire_stream() {
     ws.grants.insert(
         "org.example.cast".into(),
         vec![Capability::Screencast {
-            scope: GrantScope::Always,
+            scope: GRANT_ALWAYS,
         }],
     );
     let (store, ws_id) = GrantStoreHandle::test_with_workspace(ws);
@@ -503,13 +504,13 @@ fn capability_kind_round_trips_through_grant_store() {
         vec![Capability::Filesystem {
             path: "/work/a.txt".into(),
             mode: FsMode::Read,
-            scope: GrantScope::Once,
+            scope: GRANT_ONCE,
         }],
     );
     let (store, id) = GrantStoreHandle::test_with_workspace(ws);
     let caller = PortalCaller::new(id, "x");
     assert_eq!(
         store.lookup(&caller, CapabilityKind::FilesystemRead),
-        Some(GrantScope::Once)
+        Some(GRANT_ONCE)
     );
 }

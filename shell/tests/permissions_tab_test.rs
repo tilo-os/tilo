@@ -182,11 +182,11 @@ fn permissions_tab_renders_one_row_per_capability_per_app() {
         "firefox",
         vec![
             Capability::Camera {
-                scope: GrantScope::Always,
+                scope: GRANT_ALWAYS,
             },
             Capability::Network {
                 hosts: None,
-                scope: GrantScope::Session,
+                scope: GRANT_SESSION,
             },
         ],
     )]);
@@ -215,11 +215,11 @@ fn revoke_click_removes_capability_from_grants() {
         "firefox",
         vec![
             Capability::Camera {
-                scope: GrantScope::Always,
+                scope: GRANT_ALWAYS,
             },
             Capability::Network {
                 hosts: None,
-                scope: GrantScope::Session,
+                scope: GRANT_SESSION,
             },
         ],
     )]);
@@ -268,7 +268,7 @@ fn revoke_button_disabled_for_non_owner() {
     let tree = tree_with_grants(vec![(
         "firefox",
         vec![Capability::Camera {
-            scope: GrantScope::Always,
+            scope: GRANT_ALWAYS,
         }],
     )]);
     let (mut host, chrome, _scene) = render_at_permissions_tab(&tree);
@@ -317,7 +317,7 @@ fn permissions_tab_appears_in_ws_tab_iter() {
     empty_ws.grants.insert(
         "vscode".into(),
         vec![Capability::Camera {
-            scope: GrantScope::Once,
+            scope: GRANT_ONCE,
         }],
     );
     assert!(WsTab::visible(&empty_ws).contains(&WsTab::Permissions));
@@ -338,7 +338,7 @@ fn revoking_last_grant_clears_workspace_grants_map() {
     ws.grants.insert(
         "vscode".into(),
         vec![Capability::Camera {
-            scope: GrantScope::Once,
+            scope: GRANT_ONCE,
         }],
     );
     assert!(WsTab::visible(&ws).contains(&WsTab::Permissions));

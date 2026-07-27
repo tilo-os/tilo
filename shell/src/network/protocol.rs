@@ -159,12 +159,13 @@ pub enum NeighbourMsg {
     /// local fan-out does.
     AppCrdtIncremental {
         peer: PeerId,
-        /// App-id from the originating `CollabRequest::Hello`. v1
-        /// doesn't route on this — every app on a peer sees every
-        /// app's update — but the field lets future routers filter.
+        /// App-id from the originating `CollabRequest::Hello`. The
+        /// receiving broker routes on it: only local apps that
+        /// announced the same `(app_id, cluster_id)` pair are handed
+        /// the payload. An empty value addresses nobody.
         app_id: String,
-        /// Cluster id from the originating Hello. Same caveat —
-        /// v1 doesn't filter on it.
+        /// Cluster id from the originating Hello. Second half of the
+        /// routing key.
         cluster_id: String,
         /// Opaque Automerge incremental change blob, passed through
         /// untouched.
@@ -193,6 +194,17 @@ pub enum NeighbourMsg {
         /// filter out self-publishes when they observe their own
         /// gossipsub echoes.
         peer: PeerId,
+        /// App-id of the originating app, same routing key as on
+        /// [`NeighbourMsg::AppCrdtIncremental`]. `#[serde(default)]`
+        /// so an envelope from a peer that predates routing still
+        /// parses — it arrives unaddressed, and an unaddressed
+        /// envelope is dropped rather than shown to every local app.
+        #[serde(default)]
+        app_id: String,
+        /// Cluster id of the originating app. Second half of the
+        /// routing key; same backward-compatible default.
+        #[serde(default)]
+        cluster_id: String,
         /// The signed-op envelope. The validator on the receiving
         /// shell consults its channel state to decide whether to
         /// fan the payload out to local apps or to drop it with an

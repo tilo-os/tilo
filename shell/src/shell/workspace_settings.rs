@@ -1224,7 +1224,7 @@ pub fn capability_label(cap: &Capability) -> String {
 /// capability's `scope` field. Mirrors the GrantScope enum's three
 /// variants from `state.rs:323-332`.
 pub fn capability_scope_label(cap: &Capability) -> &'static str {
-    use crate::shell::state::GrantScope;
+    use crate::shell::state::Expiry;
     let scope = match cap {
         Capability::Filesystem { scope, .. } => scope,
         Capability::Camera { scope } => scope,
@@ -1233,9 +1233,10 @@ pub fn capability_scope_label(cap: &Capability) -> &'static str {
         Capability::Network { scope, .. } => scope,
     };
     match scope {
-        GrantScope::Once => "Once",
-        GrantScope::Session => "Session",
-        GrantScope::Always => "Always",
+        Expiry::AfterUse => "Once",
+        Expiry::EndOfSession => "Session",
+        Expiry::AtUnix(_) => "Until",
+        Expiry::Never => "Always",
     }
 }
 
@@ -1535,7 +1536,7 @@ mod tab_tests {
         ws.grants.insert(
             "firefox".into(),
             vec![Capability::Camera {
-                scope: crate::shell::state::GrantScope::Always,
+                scope: crate::shell::state::GRANT_ALWAYS,
             }],
         );
         let visible = WsTab::visible(&ws);
@@ -1799,7 +1800,7 @@ mod permissions_pane_tests {
     //! follow-up); the click router writes through and bumps the
     //! revision counter so widgets resync on the next frame.
     use super::*;
-    use crate::shell::state::{Capability, GrantScope, Workspace, WorkspaceId};
+    use crate::shell::state::{Capability, GRANT_ALWAYS, GRANT_ONCE, GRANT_SESSION, Workspace, WorkspaceId};
 
     fn ws_with_grants() -> Workspace {
         let mut ws = Workspace::new(WorkspaceId::default(), "perm-test");
@@ -1807,11 +1808,11 @@ mod permissions_pane_tests {
             "firefox".into(),
             vec![
                 Capability::Camera {
-                    scope: GrantScope::Always,
+                    scope: GRANT_ALWAYS,
                 },
                 Capability::Network {
                     hosts: None,
-                    scope: GrantScope::Session,
+                    scope: GRANT_SESSION,
                 },
             ],
         );
@@ -1877,7 +1878,7 @@ mod permissions_pane_tests {
         ws.grants.insert(
             "vscode".into(),
             vec![Capability::Camera {
-                scope: GrantScope::Once,
+                scope: GRANT_ONCE,
             }],
         );
         let removed = revoke_grant(&mut ws, &"vscode".to_string(), 0);
@@ -1905,16 +1906,16 @@ mod permissions_pane_tests {
         // revoking. This pins the helper's outputs against the
         // canonical labels.
         let cam = Capability::Camera {
-            scope: GrantScope::Always,
+            scope: GRANT_ALWAYS,
         };
         assert_eq!(capability_label(&cam), "Camera access");
         let mic = Capability::Microphone {
-            scope: GrantScope::Once,
+            scope: GRANT_ONCE,
         };
         assert_eq!(capability_label(&mic), "Microphone access");
         let net = Capability::Network {
             hosts: None,
-            scope: GrantScope::Session,
+            scope: GRANT_SESSION,
         };
         assert_eq!(capability_label(&net), "Network access");
     }
@@ -1923,13 +1924,13 @@ mod permissions_pane_tests {
     fn capability_scope_label_returns_short_badge_text() {
         // Three-variant short label used by the row-side scope badge.
         let always = Capability::Camera {
-            scope: GrantScope::Always,
+            scope: GRANT_ALWAYS,
         };
         let session = Capability::Camera {
-            scope: GrantScope::Session,
+            scope: GRANT_SESSION,
         };
         let once = Capability::Camera {
-            scope: GrantScope::Once,
+            scope: GRANT_ONCE,
         };
         assert_eq!(capability_scope_label(&always), "Always");
         assert_eq!(capability_scope_label(&session), "Session");

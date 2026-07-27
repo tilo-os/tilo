@@ -159,7 +159,7 @@ fn pump_drains_pending_grant_after_choice() {
     let (chrome, _ws_id) = chrome_with_pending_grant(
         "org.example.app",
         Capability::Camera {
-            scope: GrantScope::Once,
+            scope: GRANT_ONCE,
         },
     );
     let mut host = host_with_chrome(chrome.clone());
@@ -211,7 +211,7 @@ fn pump_persists_session_grant_to_workspace_grants_map() {
     let (chrome, _ws_id) = chrome_with_pending_grant(
         "org.example.app",
         Capability::Camera {
-            scope: GrantScope::Once,
+            scope: GRANT_ONCE,
         },
     );
     let mut host = host_with_chrome(chrome.clone());
@@ -246,7 +246,7 @@ fn pump_persists_session_grant_to_workspace_grants_map() {
         matches!(
             &caps[0],
             Capability::Camera {
-                scope: GrantScope::Session
+                scope: GRANT_SESSION
             }
         ),
         "session grant scope must be Session, got {:?}",
@@ -264,7 +264,7 @@ fn pump_persists_always_grant_with_filesystem_capability() {
         Capability::Filesystem {
             path: PathBuf::from("/home/u/work"),
             mode: FsMode::ReadWrite,
-            scope: GrantScope::Once,
+            scope: GRANT_ONCE,
         },
     );
     let mut host = host_with_chrome(chrome.clone());
@@ -293,7 +293,7 @@ fn pump_persists_always_grant_with_filesystem_capability() {
             &caps[0],
             Capability::Filesystem {
                 mode: FsMode::ReadWrite,
-                scope: GrantScope::Always,
+                scope: GRANT_ALWAYS,
                 ..
             }
         ),
@@ -308,7 +308,7 @@ fn pump_deny_drops_pending_grant_without_persisting() {
     let (chrome, _ws_id) = chrome_with_pending_grant(
         "org.example.app",
         Capability::Microphone {
-            scope: GrantScope::Once,
+            scope: GRANT_ONCE,
         },
     );
     let mut host = host_with_chrome(chrome.clone());
@@ -369,13 +369,13 @@ fn pump_advances_to_next_grant_after_first_drain() {
         st.pending_grants.push_back((
             "org.example.app".into(),
             Capability::Camera {
-                scope: GrantScope::Once,
+                scope: GRANT_ONCE,
             },
         ));
         st.pending_grants.push_back((
             "org.other.app".into(),
             Capability::Microphone {
-                scope: GrantScope::Once,
+                scope: GRANT_ONCE,
             },
         ));
     }
