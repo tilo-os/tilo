@@ -8,9 +8,11 @@
 //! [`SearchProvider`]: crate::shell::search::SearchProvider
 
 pub mod actions;
+pub mod applications;
 pub mod files;
 pub mod notes;
 
 pub use actions::ActionsProvider;
+pub use applications::ApplicationsProvider;
 pub use files::FilesProvider;
 pub use notes::NotesProvider;

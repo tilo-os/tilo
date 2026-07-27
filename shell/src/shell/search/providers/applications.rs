@@ -1,0 +1,258 @@
+//! Applications provider: installed apps, launchable from the palette.
+//!
+//! Typing an app's name into Ctrl+K offers `Open <App>`; picking the row
+//! starts the package as a real sandboxed process through
+//! [`crate::shell::launcher`]. The row's `on_open` is the only launch
+//! trigger in the shell today, so everything a launch needs to report —
+//! "not installed", "no display yet", "qos-launcher missing" — surfaces
+//! here as a notification.
+
+use std::rc::Rc;
+
+use crate::shell::chrome_state::Chrome;
+use crate::shell::launcher::{self, InstalledApp};
+use crate::shell::notification::{Notification, NotificationSeverity};
+use crate::shell::search::{ResourceKind, SearchContext, SearchProvider, SearchResult};
+
+/// Chip label / group header for launchable apps.
+pub const APPLICATIONS_KIND: &str = "Applications";
+
+pub struct ApplicationsProvider {
+    kinds: Vec<ResourceKind>,
+}
+
+impl ApplicationsProvider {
+    pub fn new() -> Self {
+        Self {
+            kinds: vec![ResourceKind::Custom(APPLICATIONS_KIND.to_string())],
+        }
+    }
+
+    /// The installed GUI apps this provider offers. Split out so tests
+    /// can exercise scoring against a known list without an installed
+    /// registry.
+    fn apps(&self) -> Vec<InstalledApp> {
+        launcher::gui_apps()
+    }
+
+    fn results_for(&self, needle: &str, apps: Vec<InstalledApp>) -> Vec<SearchResult> {
+        let needle_lower = needle.to_lowercase();
+        let kind = ResourceKind::Custom(APPLICATIONS_KIND.to_string());
+        let mut out = Vec::new();
+        for app in apps {
+            let name_lower = app.display_name.to_lowercase();
+            let id_lower = app.package_id.to_lowercase();
+            let Some(score) = match_score(&needle_lower, &name_lower, &id_lower) else {
+                continue;
+            };
+            let package_id = app.package_id.clone();
+            let display_name = app.display_name.clone();
+            out.push(SearchResult {
+                kind: kind.clone(),
+                provider_id: self.id().to_string(),
+                id: app.package_id.clone(),
+                title: format!("Open {}", app.display_name),
+                subtitle: Some(format!("{} · {}", app.package_id, app.version)),
+                score,
+                on_open: Rc::new(move |_doc, _root, chrome: &Chrome| {
+                    // The launch itself is non-blocking: everything past
+                    // resolution happens on a worker thread. Only the
+                    // pre-fork failures land here; the rest arrive as
+                    // launch events the chrome drains each frame.
+                    if let Err(err) = launcher::launch(&package_id) {
+                        let mut st = chrome.borrow_mut();
+                        st.push_notification_full(
+                            Notification::new(
+                                format!("Couldn't open {display_name}"),
+                                err.user_message(),
+                            )
+                            .with_severity(NotificationSeverity::Error)
+                            .with_app_name("Applications"),
+                        );
+                        st.bump();
+                    }
+                }),
+            });
+        }
+        out
+    }
+}
+
+impl Default for ApplicationsProvider {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl SearchProvider for ApplicationsProvider {
+    fn id(&self) -> &str {
+        "applications"
+    }
+    fn name(&self) -> &str {
+        APPLICATIONS_KIND
+    }
+    fn resource_kinds(&self) -> &[ResourceKind] {
+        &self.kinds
+    }
+    fn query(&self, ctx: SearchContext<'_>) -> Vec<SearchResult> {
+        if !ctx
+            .wanted
+            .iter()
+            .any(|k| matches!(k, ResourceKind::Custom(s) if s == APPLICATIONS_KIND))
+        {
+            return Vec::new();
+        }
+        self.results_for(ctx.needle, self.apps())
+    }
+}
+
+/// Case-insensitive scoring, same scale as the actions provider:
+/// prefix on the name → 100, substring on the name → 50, substring on
+/// the package id → 25, fuzzy subsequence on the name → 10. An empty
+/// needle matches everything at score 0 so an empty palette lists the
+/// installed apps.
+fn match_score(needle: &str, name: &str, package_id: &str) -> Option<i32> {
+    if needle.is_empty() {
+        return Some(0);
+    }
+    if name.starts_with(needle) {
+        return Some(100);
+    }
+    if name.contains(needle) {
+        return Some(50);
+    }
+    if package_id.contains(needle) {
+        return Some(25);
+    }
+    if fuzzy_subsequence(needle, name) {
+        return Some(10);
+    }
+    None
+}
+
+fn fuzzy_subsequence(needle: &str, hay: &str) -> bool {
+    let mut hi = hay.chars();
+    'ch: for nc in needle.chars() {
+        for hc in hi.by_ref() {
+            if hc == nc {
+                continue 'ch;
+            }
+        }
+        return false;
+    }
+    true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::shell::chrome_state::ChromeState;
+    use crate::shell::state::{WorkspaceTree, WorkspaceTreeHandle};
+    use automerge::AutoCommit;
+    use parking_lot::RwLock;
+    use std::path::PathBuf;
+    use std::sync::Arc;
+
+    fn chrome_rc() -> Chrome {
+        let handle: WorkspaceTreeHandle = Arc::new(RwLock::new(WorkspaceTree::default()));
+        ChromeState::new_with_handle(handle)
+    }
+
+    fn app(package_id: &str, display_name: &str) -> InstalledApp {
+        InstalledApp {
+            package_id: package_id.to_string(),
+            display_name: display_name.to_string(),
+            version: "0.1.0".to_string(),
+            manifest_path: PathBuf::from("/apps/x/manifest.toml"),
+            payload_root: PathBuf::from("/apps/x"),
+            has_gui: true,
+        }
+    }
+
+    #[test]
+    fn matching_app_offers_an_open_row() {
+        let p = ApplicationsProvider::new();
+        let out = p.results_for("hel", vec![app("dev.qos.hello", "Hello")]);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].title, "Open Hello");
+        assert_eq!(out[0].id, "dev.qos.hello");
+        assert_eq!(out[0].score, 100, "prefix match on the display name");
+        assert_eq!(
+            out[0].subtitle.as_deref(),
+            Some("dev.qos.hello · 0.1.0"),
+            "the row names the package it will launch"
+        );
+    }
+
+    #[test]
+    fn package_id_matches_score_below_name_matches() {
+        let p = ApplicationsProvider::new();
+        let out = p.results_for(
+            "dev.qos",
+            vec![app("dev.qos.hello", "Hello"), app("org.x.zed", "Zed")],
+        );
+        assert_eq!(out.len(), 1, "only the matching package: {out:?}");
+        assert_eq!(out[0].score, 25);
+    }
+
+    #[test]
+    fn non_matching_needle_returns_nothing() {
+        let p = ApplicationsProvider::new();
+        let out = p.results_for("zzzqqq", vec![app("dev.qos.hello", "Hello")]);
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn empty_needle_lists_every_app() {
+        let p = ApplicationsProvider::new();
+        let out = p.results_for(
+            "",
+            vec![app("dev.qos.hello", "Hello"), app("org.x.zed", "Zed")],
+        );
+        assert_eq!(out.len(), 2);
+        assert!(out.iter().all(|r| r.score == 0));
+    }
+
+    #[test]
+    fn unrequested_kind_returns_empty() {
+        let p = ApplicationsProvider::new();
+        let c = chrome_rc();
+        let cs = c.borrow();
+        let doc = AutoCommit::new();
+        let out = p.query(SearchContext {
+            needle: "hello",
+            wanted: &[ResourceKind::File],
+            chrome: &cs,
+            doc: &doc,
+            doc_root: &automerge::ROOT,
+        });
+        assert!(out.is_empty());
+    }
+
+    /// Opening a row for a package that isn't installed must surface a
+    /// visible error rather than failing silently. Drives the real
+    /// `on_open` closure the palette fires on Enter.
+    #[test]
+    fn failed_launch_pushes_an_error_notification() {
+        let p = ApplicationsProvider::new();
+        let c = chrome_rc();
+        let mut doc = AutoCommit::new();
+        // The row is built against an app that the registry does not
+        // actually contain, so `launcher::launch` refuses it.
+        let out = p.results_for("ghost", vec![app("dev.qos.ghost", "Ghost")]);
+        let row = out.first().expect("a row for the ghost app");
+        assert!(c.borrow().notifications().is_empty());
+        (row.on_open)(&mut doc, &automerge::ROOT, &c);
+        let st = c.borrow();
+        let n = st
+            .notifications()
+            .last()
+            .expect("a failed launch must notify the user");
+        assert_eq!(n.title, "Couldn't open Ghost");
+        assert_eq!(n.severity, NotificationSeverity::Error);
+        assert!(
+            !n.body.is_empty(),
+            "the notification must say why the launch failed"
+        );
+    }
+}
