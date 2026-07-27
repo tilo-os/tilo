@@ -29,15 +29,17 @@ pub struct QuickFS {
     /// Cached serialized form of each document inode, keyed by the doc's heads,
     /// so a multi-chunk read exports once (and getattr's size stays current).
     doc_exports: Mutex<HashMap<u64, (Vec<automerge::ChangeHash>, Vec<u8>)>>,
-    /// Per-identity workspace ACL — the real access-control check. `None`
-    /// leaves the pre-existing Unix-veneer-only behaviour intact (single-user
-    /// unshared mounts). When `Some`, every open/read/write is checked
-    /// against it for [`Self::identity`]. See [`crate::acl`].
-    acl: Option<WorkspaceAcl>,
-    /// The identity this mount serves. Every ACL check is made *as* this
-    /// identity — the app runs as the OS user, the fs enforces the qOS
-    /// per-identity policy on top.
-    identity: crate::acl::IdentityKey,
+    /// The workspace ACL and the identity it is evaluated as — the real
+    /// access-control check. `None` leaves the pre-existing
+    /// Unix-veneer-only behaviour intact (single-user unshared mounts).
+    /// When `Some`, every open/read/write is checked against the ACL as
+    /// that identity: the app runs as the OS user, the fs enforces the
+    /// qOS per-identity policy on top. See [`crate::acl`].
+    ///
+    /// The two are one field precisely so an ACL can never be attached
+    /// without the identity it answers for — there is no placeholder
+    /// identity to accidentally enforce against.
+    enforcement: Option<(WorkspaceAcl, crate::acl::IdentityKey)>,
 }
 
 impl QuickFS {
@@ -68,8 +70,7 @@ impl QuickFS {
             sync: None,
             write_buffers: Mutex::new(HashMap::new()),
             doc_exports: Mutex::new(HashMap::new()),
-            acl: None,
-            identity: [0u8; 32],
+            enforcement: None,
         }
     }
 
@@ -190,8 +191,7 @@ impl QuickFS {
     /// against `acl` as `identity`; without this the mount keeps the
     /// Unix-veneer-only behaviour. See [`crate::acl`].
     pub fn with_acl(mut self, acl: WorkspaceAcl, identity: crate::acl::IdentityKey) -> Self {
-        self.acl = Some(acl);
-        self.identity = identity;
+        self.enforcement = Some((acl, identity));
         self
     }
 
@@ -204,7 +204,7 @@ impl QuickFS {
     /// the single production decision point — `open`/`read`/`write` all
     /// call it, so a test that drives it exercises the real access path.
     pub fn check_access(&self, ino: u64, access: Access) -> Result<(), i32> {
-        let Some(acl) = &self.acl else {
+        let Some((acl, identity)) = &self.enforcement else {
             return Ok(());
         };
         let path = self
@@ -213,7 +213,7 @@ impl QuickFS {
             .unwrap()
             .path_for(ino)
             .ok_or(ENOENT)?;
-        if acl.permits(&self.identity, &path, access) {
+        if acl.permits(identity, &path, access) {
             Ok(())
         } else {
             Err(EACCES)
