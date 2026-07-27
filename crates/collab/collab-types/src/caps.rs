@@ -499,6 +499,58 @@ pub struct ResourceScope {
     pub instance: ArtifactId,
 }
 
+/// When a capability dies — the `expiry` of
+/// `(subject, resource, verbs, expiry)`.
+///
+/// This is the *whole* lifetime vocabulary. The compositor's portal
+/// prompt offers "Just once" / "Until I log out" / "Always"; those are
+/// [`Expiry::AfterUse`], [`Expiry::EndOfSession`] and [`Expiry::Never`]
+/// respectively, not a parallel enum.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub enum Expiry {
+    /// Lives until explicitly revoked, and survives a restart.
+    #[default]
+    Never,
+    /// Dies at this wall-clock instant (seconds since the Unix epoch).
+    /// Survives a restart if the instant has not passed.
+    AtUnix(u64),
+    /// Dies when the granting session ends. Never written to disk, so a
+    /// restart is what ends it.
+    EndOfSession,
+    /// Dies as soon as the request that prompted it completes. Never
+    /// written to disk.
+    AfterUse,
+}
+
+impl Expiry {
+    /// Is a capability with this expiry still live at `now` (seconds
+    /// since the Unix epoch)?
+    ///
+    /// `now: None` skips time evaluation — used by the wire validator,
+    /// which shares no clock with an op's author.
+    ///
+    /// [`Expiry::EndOfSession`] and [`Expiry::AfterUse`] are live here:
+    /// their deaths are events, not instants, enforced by not persisting
+    /// them and by the caller dropping them after use.
+    pub fn is_live_at(self, now: Option<u64>) -> bool {
+        match (self, now) {
+            (Expiry::AtUnix(deadline), Some(now)) => now < deadline,
+            _ => true,
+        }
+    }
+
+    /// Should a capability with this expiry be written to disk?
+    ///
+    /// This is the single answer to "does `Always` survive a restart?".
+    /// Session- and use-scoped capabilities are deliberately excluded:
+    /// persisting them is what would silently turn a one-shot grant into
+    /// a permanent one.
+    pub fn persists_across_restart(self) -> bool {
+        matches!(self, Expiry::Never | Expiry::AtUnix(_))
+    }
+}
+
 /// Whether an override grants or restricts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -546,11 +598,11 @@ pub struct CapOverride {
     /// matching on its content.
     #[serde(default)]
     pub id: String,
-    /// Wall-clock expiry, seconds since the Unix epoch. `None` = never
-    /// expires. An expired capability is invisible to [`decide_actor`]:
-    /// it is not "denied by restriction", it simply is not there.
+    /// When this capability dies. An expired capability is invisible to
+    /// [`decide_actor`]: it is not "denied by restriction", it simply is
+    /// not there.
     #[serde(default)]
-    pub expires_at_unix: Option<u64>,
+    pub expiry: Expiry,
     /// Who granted this, for the share-list UI and for audit. Advisory:
     /// authority to grant is enforced where the grant is *made*, not
     /// here.
@@ -568,7 +620,7 @@ impl CapOverride {
             effect,
             verb,
             id: String::new(),
-            expires_at_unix: None,
+            expiry: Expiry::Never,
             granted_by: None,
         }
     }
@@ -614,7 +666,13 @@ impl CapOverride {
 
     /// Attach a wall-clock expiry (seconds since the Unix epoch).
     pub fn with_expiry(mut self, unix_seconds: u64) -> Self {
-        self.expires_at_unix = Some(unix_seconds);
+        self.expiry = Expiry::AtUnix(unix_seconds);
+        self
+    }
+
+    /// Attach any [`Expiry`].
+    pub fn expiring(mut self, expiry: Expiry) -> Self {
+        self.expiry = expiry;
         self
     }
 
@@ -630,10 +688,12 @@ impl CapOverride {
     /// validator, which has no trustworthy clock shared with the author
     /// and must not make replay depend on local time.
     pub fn is_live_at(&self, now: Option<u64>) -> bool {
-        match (self.expires_at_unix, now) {
-            (Some(exp), Some(now)) => now < exp,
-            _ => true,
-        }
+        self.expiry.is_live_at(now)
+    }
+
+    /// Should this capability be written to disk?
+    pub fn persists_across_restart(&self) -> bool {
+        self.expiry.persists_across_restart()
     }
 
     /// Does this capability name a person as its subject?
