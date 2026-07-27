@@ -92,7 +92,9 @@ pub mod validator;
 // without reaching into individual modules.
 pub use canonical::{CanonicalError, canonical_bytes};
 pub use caps::{
-    CapDecision, CapOverride, Effect, ResourceScope, Scope, Subject, Verb, decide, role_caps,
+    Actor, CapDecision, CapOverride, Effect, Principal, ResourceRef, ResourceScope, Scope, Subject,
+    Verb, decide, decide_actor, decide_capability, host_covers, path_covers, role_base_applies,
+    role_caps,
     verb_for_opclass,
 };
 pub use invite::{
