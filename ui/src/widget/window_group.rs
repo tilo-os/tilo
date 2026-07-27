@@ -386,6 +386,17 @@ impl WindowGroup {
         self.hosts.iter_mut().find(|(i, _)| *i == id).map(|(_, h)| h)
     }
 
+    /// Read-only twin of [`Self::active_host_mut`]. The compositor's
+    /// input router needs the active tile's laid-out rect to translate a
+    /// global cursor position into surface-local coordinates for the
+    /// Wayland client hosted in that tile; taking a `&mut` borrow just to
+    /// read `get_rect()` would conflict with the frame builder's own
+    /// borrows during event dispatch.
+    pub fn active_host(&self) -> Option<&TileHost> {
+        let id = self.bar.active_id();
+        self.hosts.iter().find(|(i, _)| *i == id).map(|(_, h)| h)
+    }
+
     // ------------------------------------------------------------------
     // Cross-group drag-drop routing (parent: `GroupRow`)
     // ------------------------------------------------------------------
