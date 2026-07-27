@@ -511,13 +511,24 @@ pub enum Effect {
     Restrict,
 }
 
-/// One permission override: `(subject × scope × verb)` plus whether it
-/// grants or restricts.
+/// **The capability.** `(subject × scope × verb)`, an expiry, and
+/// whether it grants or restricts.
+///
+/// This one record is the whole primitive. Room membership is a
+/// capability whose scope is [`Scope::Room`]; sharing a single file is
+/// a capability whose scope is [`Scope::FsPath`]; an app's portal grant
+/// is a capability whose subject is [`Principal::App`]. There is no
+/// second sharing system and no second vocabulary — anything that wants
+/// to express "X may do Y to Z until T" writes one of these.
 ///
 /// A `Grant { verb: Comment }` says "this subject may (at least)
 /// comment within this scope". A `Restrict { verb: Comment }` says
 /// "this subject may do **no more than** comment within this scope" —
 /// any required verb not implied by `Comment` is removed.
+///
+/// The added fields all carry `#[serde(default)]` so capability records
+/// persisted before they existed still load: no id, no expiry (never
+/// expires), no recorded grantor.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CapOverride {
@@ -529,28 +540,124 @@ pub struct CapOverride {
     pub effect: Effect,
     /// The verb the effect is phrased in.
     pub verb: Verb,
+    /// Stable id, so a specific capability can be revoked by name even
+    /// after it has replicated to peers that never saw it granted.
+    /// Empty means "unnamed" — such a capability can only be revoked by
+    /// matching on its content.
+    #[serde(default)]
+    pub id: String,
+    /// Wall-clock expiry, seconds since the Unix epoch. `None` = never
+    /// expires. An expired capability is invisible to [`decide_actor`]:
+    /// it is not "denied by restriction", it simply is not there.
+    #[serde(default)]
+    pub expires_at_unix: Option<u64>,
+    /// Who granted this, for the share-list UI and for audit. Advisory:
+    /// authority to grant is enforced where the grant is *made*, not
+    /// here.
+    #[serde(default)]
+    pub granted_by: Option<Principal>,
 }
 
 impl CapOverride {
+    /// The general constructor. Prefer the named helpers below when one
+    /// fits — they read better at the call site.
+    pub fn new(subject: Subject, scope: Scope, effect: Effect, verb: Verb) -> Self {
+        Self {
+            subject,
+            scope,
+            effect,
+            verb,
+            id: String::new(),
+            expires_at_unix: None,
+            granted_by: None,
+        }
+    }
+
     /// Convenience: a per-resource share granting `verb` to `user` on
     /// one artifact instance.
     pub fn share(user: Ed25519PublicKey, instance: ArtifactId, verb: Verb) -> Self {
-        Self {
-            subject: Subject::User(user),
-            scope: Scope::ResourceInstance(instance),
-            effect: Effect::Grant,
+        Self::new(
+            Subject::User(user),
+            Scope::ResourceInstance(instance),
+            Effect::Grant,
             verb,
-        }
+        )
     }
 
     /// Convenience: cap a role at `verb` within an app.
     pub fn restrict_role_in_app(role: Role, app: impl Into<String>, verb: Verb) -> Self {
-        Self {
-            subject: Subject::Role(role),
-            scope: Scope::App(app.into()),
-            effect: Effect::Restrict,
+        Self::new(
+            Subject::Role(role),
+            Scope::App(app.into()),
+            Effect::Restrict,
             verb,
+        )
+    }
+
+    /// Convenience: grant `verb` to `subject` on `scope`.
+    pub fn grant(subject: Subject, scope: Scope, verb: Verb) -> Self {
+        Self::new(subject, scope, Effect::Grant, verb)
+    }
+
+    /// Convenience: room membership — the capability that *is* being in
+    /// a room. Deliberately spelled as an ordinary grant, because that
+    /// is exactly what it is.
+    pub fn membership(subject: Subject, room: impl Into<String>, verb: Verb) -> Self {
+        Self::grant(subject, Scope::Room(room.into()), verb)
+    }
+
+    /// Attach a stable id.
+    pub fn with_id(mut self, id: impl Into<String>) -> Self {
+        self.id = id.into();
+        self
+    }
+
+    /// Attach a wall-clock expiry (seconds since the Unix epoch).
+    pub fn with_expiry(mut self, unix_seconds: u64) -> Self {
+        self.expires_at_unix = Some(unix_seconds);
+        self
+    }
+
+    /// Record who granted this.
+    pub fn granted_by(mut self, who: Principal) -> Self {
+        self.granted_by = Some(who);
+        self
+    }
+
+    /// Is this capability live at `now` (seconds since the Unix epoch)?
+    ///
+    /// `now: None` means "do not evaluate expiry" — used by the wire
+    /// validator, which has no trustworthy clock shared with the author
+    /// and must not make replay depend on local time.
+    pub fn is_live_at(&self, now: Option<u64>) -> bool {
+        match (self.expires_at_unix, now) {
+            (Some(exp), Some(now)) => now < exp,
+            _ => true,
         }
+    }
+
+    /// Does this capability name a person as its subject?
+    ///
+    /// The hard UI constraint keys off this: capabilities whose subject
+    /// is a person and whose scope is a single resource belong on *that
+    /// resource's* share list, never in the room roster.
+    pub fn subject_is_person(&self) -> bool {
+        match &self.subject {
+            Subject::User(_) => true,
+            Subject::Principal(p) => p.is_person(),
+            Subject::Role(_) => false,
+        }
+    }
+
+    /// Is this capability room membership — i.e. does it belong in the
+    /// roster rather than on a resource's share list?
+    ///
+    /// Exactly the capabilities scoped to a [`Scope::Room`] (or the
+    /// whole workspace) qualify. A person holding `FsPath` or
+    /// `ResourceInstance` capabilities and nothing else is **not** a
+    /// member and must never be rendered as one.
+    pub fn is_room_membership(&self) -> bool {
+        matches!(self.scope, Scope::Room(_) | Scope::Workspace)
     }
 }
 
@@ -632,15 +739,60 @@ pub fn decide(
     ctx: &ResourceScope,
     overrides: &[CapOverride],
 ) -> CapDecision {
+    decide_actor(
+        base_role_allows,
+        required,
+        &Actor::signed(role, author),
+        &ResourceRef::Artifact {
+            app: ctx.app.clone(),
+            kind: ctx.kind,
+            instance: ctx.instance,
+        },
+        overrides,
+        // The wire validator has no clock it shares with the op's
+        // author. Evaluating expiry here would make two peers disagree
+        // about the validity of the same signed op, so expiry is a
+        // *local* enforcement concern only.
+        None,
+    )
+}
+
+/// Decide whether `actor` may perform `required` on `resource` — the
+/// general form, and the one every non-wire enforcement point calls.
+///
+/// Same fail-closed, deny-biased semantics as [`decide`], generalised
+/// on three axes:
+/// - the actor may be an app, agent or bearer token, not only a keyed
+///   person (see [`Actor`]);
+/// - the resource may be a path, device, host or action, not only a
+///   CRDT artifact (see [`ResourceRef`]);
+/// - capabilities expire. `now: Some(unix_seconds)` drops expired ones
+///   before deciding; `None` skips expiry evaluation entirely.
+///
+/// An actor with `role: None` — every app, agent and token — has no
+/// base authority whatsoever, so it can act *only* through an explicit
+/// capability. That is the property that makes the portal prompt the
+/// only user-facing permission dialog in the system.
+pub fn decide_actor(
+    base_role_allows: bool,
+    required: Verb,
+    actor: &Actor,
+    resource: &ResourceRef,
+    caps: &[CapOverride],
+    now: Option<u64>,
+) -> CapDecision {
     // An explicit block overrides any inherited or shared grant.
-    if role == Role::Denied {
+    if actor.role == Some(Role::Denied) {
         return CapDecision::DeniedByRole;
     }
 
     let mut granted = false;
     let mut restricted = false;
-    for ov in overrides {
-        if !ov.subject.matches(role, author) || !ov.scope.matches_op(ctx) {
+    for ov in caps {
+        if !ov.is_live_at(now)
+            || !ov.subject.matches_actor(actor)
+            || !ov.scope.matches_resource(resource)
+        {
             continue;
         }
         match ov.effect {
@@ -658,6 +810,57 @@ pub fn decide(
     } else {
         CapDecision::DeniedByRestriction
     }
+}
+
+/// Does a role's cap-bundle confer *any* base authority over this kind
+/// of resource?
+///
+/// Roles describe standing in a room, so they carry base authority over
+/// the room and its contents: the workspace itself, its apps, their
+/// artifacts and exported actions.
+///
+/// They carry **none** over the filesystem, devices, or the network.
+/// Those live outside the room — `/etc/shadow` is not "content of the
+/// workspace an Editor may edit" — so reaching them always requires an
+/// explicit capability, even for an Owner. The workspace's own file
+/// tree is reached the same way: by an explicit `FsPath` capability
+/// scoped to the workspace root, granted when the room is created.
+///
+/// This is the single most load-bearing line in the model. Without it,
+/// `role_caps(Editor) == Write` would silently authorise writing every
+/// path on the machine.
+pub fn role_base_applies(resource: &ResourceRef) -> bool {
+    match resource {
+        ResourceRef::Workspace
+        | ResourceRef::App(_)
+        | ResourceRef::Artifact { .. }
+        | ResourceRef::Action { .. }
+        | ResourceRef::Room(_) => true,
+        ResourceRef::FsPath(_) | ResourceRef::Device(_) | ResourceRef::NetHost(_) => false,
+    }
+}
+
+/// [`decide_actor`] with the base authority derived from the actor's
+/// own role rather than passed in.
+///
+/// The role's cap-bundle ([`role_caps`]) is the base, but only over
+/// resources [`role_base_applies`] admits; an actor with no role never
+/// has a base. This is the entry point for every local check — in-app
+/// actions, file access, device access — where there is no separate
+/// op-class table to consult.
+pub fn decide_capability(
+    actor: &Actor,
+    resource: &ResourceRef,
+    required: Verb,
+    caps: &[CapOverride],
+    now: Option<u64>,
+) -> CapDecision {
+    let base = role_base_applies(resource)
+        && actor
+            .role
+            .and_then(role_caps)
+            .is_some_and(|ceiling| ceiling.implies(required));
+    decide_actor(base, required, actor, resource, caps, now)
 }
 
 #[cfg(test)]
