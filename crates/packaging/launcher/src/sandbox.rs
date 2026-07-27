@@ -813,6 +813,39 @@ mod tests {
     }
 
     #[test]
+    fn workspace_id_is_setenv_before_the_entrypoint() {
+        // bwrap reads everything after the entrypoint token as the
+        // child's argv, so a `--setenv` spliced after it would silently
+        // become a command-line argument to the app instead of an env
+        // var — the app would start, and only collaboration would be
+        // quietly dead. Pin the ordering.
+        let m = mk_manifest("off");
+        let mut argv = build_bwrap_argv(
+            &m,
+            Path::new("/host/pkg"),
+            None,
+            &[],
+            None,
+            None,
+            &CapabilityPlan::empty(),
+        );
+        let entry = argv.pop().expect("argv non-empty");
+        push_workspace_id(&mut argv, "3f2b1c00-0000-4000-8000-000000000001");
+        argv.push(entry);
+
+        let setenv = argv
+            .windows(3)
+            .position(|w| w[0] == "--setenv" && w[1] == WORKSPACE_ID_ENV)
+            .unwrap_or_else(|| panic!("no {WORKSPACE_ID_ENV} setenv in {argv:?}"));
+        assert_eq!(argv[setenv + 2], "3f2b1c00-0000-4000-8000-000000000001");
+        assert!(
+            setenv + 3 < argv.len(),
+            "the setenv triple must come before the trailing entrypoint \
+             token, not after it: {argv:?}"
+        );
+    }
+
+    #[test]
     fn build_bwrap_argv_for_entry_uses_provided_bin() {
         let m = mk_manifest("off");
         let argv = build_bwrap_argv_for_entry(
