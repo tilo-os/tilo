@@ -93,6 +93,19 @@ pub enum Command {
     /// `"Space"`, or a single character like `"a"`, `"1"`. Unknown
     /// names return a `parse_error`.
     Key { key: String },
+    /// Press `key` and hold it. Pairs with [`Command::KeyUp`]. Same key
+    /// names as [`Command::Key`], plus the bare modifiers `"Shift"`,
+    /// `"Control"`, `"Alt"` and `"Super"` — holding a real modifier
+    /// keycode across another keystroke is the only way to drive the
+    /// seat's xkb modifier state the way hardware does.
+    KeyDown { key: String },
+    /// Release a key held by [`Command::KeyDown`].
+    KeyUp { key: String },
+    /// Scroll `(dx, dy)` wheel notches at the current cursor position.
+    /// Positive `dy` scrolls up, matching winit's `LineDelta` sign
+    /// convention (the compositor inverts it for the Wayland axis
+    /// convention when forwarding to a client).
+    Scroll { dx: f32, dy: f32 },
     /// Inject a press + release pair for each character in `text`.
     /// Useful for typing into a focused text input (palette,
     /// rename-workspace field, …). Empty string emits no actions and
@@ -228,6 +241,11 @@ pub enum PlannedAction {
     /// translates `KeyTag` to `winit::keyboard::Key` and synthesises
     /// a `WindowEvent::KeyboardInput`.
     KeyboardKey { key: KeyTag, pressed: bool },
+    /// Inject a discrete wheel scroll of `(dx, dy)` notches at the
+    /// current cursor position. The transport synthesises a
+    /// `WindowEvent::MouseWheel` carrying a `LineDelta`, the same shape
+    /// winit reports for a mouse wheel.
+    MouseWheel { dx: f32, dy: f32 },
     /// Update the modifier mask carried by the executor. Modifiers
     /// are state, not events — the transport mutates its
     /// `TestControlCtx::modifiers` directly rather than dispatching
@@ -285,6 +303,16 @@ pub enum NamedKeyTag {
     PageUp,
     PageDown,
     Space,
+    /// Bare modifier keys. Reachable only through `key_down` / `key_up`
+    /// (a `key` press+release pair would release the modifier before the
+    /// next key arrives), which is what lets a harness hold a real
+    /// modifier across another keystroke — the same shape hardware
+    /// produces, and the only way to exercise the seat's xkb modifier
+    /// tracking end-to-end.
+    Shift,
+    Control,
+    Alt,
+    Super,
 }
 
 /// Parse a `key` field (from a `Key`/`Type` command) into a [`KeyTag`].
@@ -306,6 +334,10 @@ pub fn parse_key_tag(key: &str) -> Option<KeyTag> {
         "PageUp" => Some(KeyTag::Named(NamedKeyTag::PageUp)),
         "PageDown" => Some(KeyTag::Named(NamedKeyTag::PageDown)),
         "Space" => Some(KeyTag::Named(NamedKeyTag::Space)),
+        "Shift" => Some(KeyTag::Named(NamedKeyTag::Shift)),
+        "Control" => Some(KeyTag::Named(NamedKeyTag::Control)),
+        "Alt" => Some(KeyTag::Named(NamedKeyTag::Alt)),
+        "Super" => Some(KeyTag::Named(NamedKeyTag::Super)),
         other => {
             // Single character (any `char`, including multibyte) — map to
             // `KeyTag::Char`. Multi-character strings that didn't match a
@@ -438,6 +470,26 @@ pub fn dispatch_command<S: ControlState>(
                 Vec::new(),
             ),
         },
+        Command::Scroll { dx, dy } => (
+            Response::Ok { frame: 0 },
+            vec![PlannedAction::MouseWheel { dx: *dx, dy: *dy }],
+        ),
+        Command::KeyDown { key } | Command::KeyUp { key } => {
+            let pressed = matches!(cmd, Command::KeyDown { .. });
+            match parse_key_tag(key) {
+                Some(tag) => (
+                    Response::Ok { frame: 0 },
+                    vec![PlannedAction::KeyboardKey { key: tag, pressed }],
+                ),
+                None => (
+                    Response::Err {
+                        code: "parse_error".to_string(),
+                        message: format!("unrecognised key name `{key}`"),
+                    },
+                    Vec::new(),
+                ),
+            }
+        }
         Command::Type { text } => {
             let mut actions = Vec::with_capacity(text.chars().count() * 2);
             for c in text.chars() {
