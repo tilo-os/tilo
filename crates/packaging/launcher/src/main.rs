@@ -74,6 +74,22 @@ enum Cmd {
         /// session behind them.
         #[arg(long)]
         workspace_id: Option<String>,
+        /// JSON file holding the capabilities (`Vec<CapOverride>`) the
+        /// user granted in the workspace this app is launching into.
+        /// The compositor writes it just before spawning us.
+        ///
+        /// Omitted, missing or malformed all mean the same thing: the
+        /// app gets exactly the sandbox its manifest describes. Nothing
+        /// about this flag can widen a manifest — it only adds binds
+        /// the user explicitly approved.
+        #[arg(long)]
+        capabilities: Option<PathBuf>,
+        /// App id the capabilities are addressed to. Defaults to the
+        /// manifest's package id. Capabilities naming any other app are
+        /// ignored, so a capability file is never trusted to have been
+        /// filtered before it reached us.
+        #[arg(long)]
+        app_id: Option<String>,
     },
     /// Launch a CLI command from an already-installed package. Used
     /// by the PATH shim (`qos-cli-shim`) so a user typing `notes` in
@@ -131,6 +147,8 @@ fn main() -> ExitCode {
             require_runtime_publisher,
             wayland_socket,
             workspace_id,
+            capabilities,
+            app_id,
         } => {
             if minimal_libs {
                 eprintln!(
@@ -152,6 +170,8 @@ fn main() -> ExitCode {
                 identity_host_path: None,
                 wayland_socket,
                 workspace_id,
+                capabilities_path: capabilities,
+                app_id,
             };
             match run(&manifest, &payload_root, &opts) {
                 Ok(status) => {
@@ -287,9 +307,19 @@ fn run_installed(
         // workspace's id, so a CLI app started from it lands in the
         // same collaboration room rather than in none. Outside a
         // session the var is unset and the child gets nothing.
+        //
+        // This carries no authority: it names a room, not a
+        // permission. The capabilities that decide what the app may
+        // touch are resolved separately, and deliberately not
+        // inherited — see below.
         workspace_id: std::env::var(launcher::sandbox::WORKSPACE_ID_ENV)
             .ok()
             .filter(|s| !s.is_empty()),
+        // A shell invocation via the PATH shim has no workspace behind
+        // it, so there are no workspace capabilities to honour: the
+        // package runs with what its manifest declares and nothing more.
+        capabilities_path: None,
+        app_id: Some(package.to_string()),
     };
     match launcher::run::run_with(&manifest, &entry.payload_root, &opts) {
         Ok(status) => {
