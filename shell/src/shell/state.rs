@@ -26,6 +26,26 @@ impl WorkspaceId {
     pub fn raw(&self) -> u64 {
         self.0
     }
+
+    /// This workspace as a collaboration cluster id.
+    ///
+    /// A workspace *is* the collaboration room: apps opened into it
+    /// exchange CRDT deltas with each other and with the peers invited
+    /// to it, and apps in another workspace are a different room. The
+    /// wire has always spoken `Uuid` for that room; workspace ids are
+    /// `u64`. This is the bridge, and it is deliberately a pure
+    /// function of the id rather than a stored field — every process
+    /// that knows the workspace derives the same cluster without
+    /// having to be told it, and no persisted state can drift out of
+    /// sync with it.
+    ///
+    /// The high half is a fixed marker so a derived cluster id is
+    /// recognisable in a log and can never collide with a v4 uuid
+    /// minted elsewhere (v4 sets version/variant bits this doesn't).
+    pub fn collab_cluster_id(&self) -> uuid::Uuid {
+        const WORKSPACE_CLUSTER_MARKER: u64 = 0x716f_735f_7773_7000; // "qos_wsp\0"
+        uuid::Uuid::from_u64_pair(WORKSPACE_CLUSTER_MARKER, self.0)
+    }
 }
 
 impl From<u64> for WorkspaceId {
