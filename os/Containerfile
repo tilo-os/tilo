@@ -71,6 +71,7 @@ RUN dnf install -y 'dnf5-command(builddep)' \
     && dnf install -y \
         meson ninja-build gperf unifdef libgbm-devel curl xz \
         wayland-devel wayland-protocols-devel libepoxy-devel \
+        libinput-devel libseat-devel \
     && dnf clean all
 
 COPY os/dev/build-wpe.sh /build-wpe.sh
