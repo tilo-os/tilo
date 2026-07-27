@@ -27,7 +27,7 @@ use shell::shell::build_nirios_overlay_host_with_chrome;
 use shell::shell::chrome_state::{Chrome, WsTab};
 use shell::shell::overlay_host::ShellOverlayHost;
 use shell::shell::state::{
-    Capability, GrantScope, Workspace, WorkspaceId, WorkspaceTree,
+    Capability, GRANT_ALWAYS, GRANT_ONCE, GRANT_SESSION, Workspace, WorkspaceId, WorkspaceTree,
 };
 use shell::shell::workspace_settings;
 
@@ -72,7 +72,7 @@ fn tree_with_grants(entries: Vec<(&str, Vec<Capability>)>) -> WorkspaceTree {
     let id = WorkspaceId::from(1);
     let mut ws = Workspace::new(id, "perm-test");
     for (app_id, caps) in entries {
-        ws.grants.insert(app_id.to_string(), caps);
+        ws.grants().insert(app_id.to_string(), caps);
     }
     tree.workspaces.push(ws);
     tree.set_active(id);
@@ -182,11 +182,11 @@ fn permissions_tab_renders_one_row_per_capability_per_app() {
         "firefox",
         vec![
             Capability::Camera {
-                scope: GrantScope::Always,
+                scope: GRANT_ALWAYS,
             },
             Capability::Network {
                 hosts: None,
-                scope: GrantScope::Session,
+                scope: GRANT_SESSION,
             },
         ],
     )]);
@@ -215,11 +215,11 @@ fn revoke_click_removes_capability_from_grants() {
         "firefox",
         vec![
             Capability::Camera {
-                scope: GrantScope::Always,
+                scope: GRANT_ALWAYS,
             },
             Capability::Network {
                 hosts: None,
-                scope: GrantScope::Session,
+                scope: GRANT_SESSION,
             },
         ],
     )]);
@@ -240,7 +240,8 @@ fn revoke_click_removes_capability_from_grants() {
     let tree = st.tree(); let ws = tree.active_workspace().expect("active workspace");
     // After revoking one of two grants, the app entry still exists
     // with one capability remaining.
-    let firefox = ws.grants.get(&target_app);
+    let view = ws.grants();
+    let firefox = view.get(&target_app);
     if target_idx == 0 {
         // Revoked the Camera grant ⇒ Network remains.
         let caps = firefox.expect("firefox entry must remain after partial revoke");
@@ -268,7 +269,7 @@ fn revoke_button_disabled_for_non_owner() {
     let tree = tree_with_grants(vec![(
         "firefox",
         vec![Capability::Camera {
-            scope: GrantScope::Always,
+            scope: GRANT_ALWAYS,
         }],
     )]);
     let (mut host, chrome, _scene) = render_at_permissions_tab(&tree);
@@ -285,7 +286,7 @@ fn revoke_button_disabled_for_non_owner() {
     let st = chrome.borrow();
     let tree = st.tree(); let ws = tree.active_workspace().expect("active workspace");
     let caps = ws
-        .grants
+        .grants()
         .get("firefox")
         .expect("non-owner click must NOT remove the grant");
     assert_eq!(
@@ -314,10 +315,10 @@ fn permissions_tab_appears_in_ws_tab_iter() {
     // grants are non-empty.
     let mut empty_ws = Workspace::new(WorkspaceId::default(), "empty");
     assert!(!WsTab::visible(&empty_ws).contains(&WsTab::Permissions));
-    empty_ws.grants.insert(
+    empty_ws.grants().insert(
         "vscode".into(),
         vec![Capability::Camera {
-            scope: GrantScope::Once,
+            scope: GRANT_ONCE,
         }],
     );
     assert!(WsTab::visible(&empty_ws).contains(&WsTab::Permissions));
@@ -335,14 +336,14 @@ fn revoking_last_grant_clears_workspace_grants_map() {
     // tab from the strip. Verifies the
     // `revoke_grant` ↔ `WsTab::visible` contract end-to-end.
     let mut ws = Workspace::new(WorkspaceId::default(), "single-grant");
-    ws.grants.insert(
+    ws.grants().insert(
         "vscode".into(),
         vec![Capability::Camera {
-            scope: GrantScope::Once,
+            scope: GRANT_ONCE,
         }],
     );
     assert!(WsTab::visible(&ws).contains(&WsTab::Permissions));
     workspace_settings::revoke_grant(&mut ws, &"vscode".to_string(), 0);
-    assert!(ws.grants.is_empty());
+    assert!(ws.grants().is_empty());
     assert!(!WsTab::visible(&ws).contains(&WsTab::Permissions));
 }

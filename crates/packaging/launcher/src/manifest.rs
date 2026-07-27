@@ -217,17 +217,13 @@ pub struct Sandbox {
 }
 
 /// How the launcher should route a portal request. Kebab-case wire
-/// form: `"via-host"` / `"deny"`. Matches the enum on the pkg side
-/// verbatim — the shim carries its own copy so this crate doesn't
-/// depend on `pkg`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum PortalPolicy {
-    /// Route through the freedesktop portal on the host session bus.
-    ViaHost,
-    /// Portal explicitly denied.
-    Deny,
-}
+/// form: `"via-host"` / `"deny"`.
+///
+/// This is `pkg`'s type, re-exported — not a copy. The launcher and
+/// the packager decide the same question from the same manifest
+/// field, so they must not be able to disagree about what the string
+/// means.
+pub use pkg::manifest::PortalPolicy;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Net {
