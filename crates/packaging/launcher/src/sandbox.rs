@@ -169,6 +169,42 @@ pub fn push_wayland_bind(argv: &mut Vec<String>, bind: &WaylandBind) {
     argv.push(bind.sandbox_runtime_dir.display().to_string());
 }
 
+/// Env var naming the workspace an app was launched into.
+///
+/// Two consumers, and they must not be confused:
+///
+/// - `runtime_portal::is_qos_native()` only asks whether it is *set*
+///   ("am I running under a qOS session?"). Giving it a real value
+///   keeps that answer `true`.
+/// - `ui::collaboration` uses the value as the **collaboration
+///   cluster id** — the room a CRDT delta is addressed to. Two apps
+///   launched into the same workspace share a cluster and exchange
+///   deltas; apps in different workspaces are different rooms and
+///   never see each other's traffic.
+///
+/// The value the compositor sets is a UUID string (see
+/// `shell::shell::launcher`). Anything else is accepted and passed
+/// through — it just doesn't name a cluster, so the app falls back to
+/// its standalone-dev identity.
+pub const WORKSPACE_ID_ENV: &str = "QOS_WORKSPACE_ID";
+
+/// Splice the workspace id into an argv built by [`build_bwrap_argv`].
+///
+/// Same contract as [`push_wayland_bind`]: callers must splice this in
+/// *before* the trailing entrypoint token, because bwrap treats
+/// everything after it as the child's argv.
+///
+/// Deliberately a splice rather than a parameter on
+/// [`build_bwrap_argv`]: the workspace is a property of the *launch*
+/// (which room did the user open this app into), not of the package,
+/// so it arrives from `RunOptions` alongside the Wayland socket rather
+/// than from the manifest the way `QOS_PACKAGE_ID` does.
+pub fn push_workspace_id(argv: &mut Vec<String>, workspace_id: &str) {
+    argv.push("--setenv".to_string());
+    argv.push(WORKSPACE_ID_ENV.to_string());
+    argv.push(workspace_id.to_string());
+}
+
 /// In-sandbox path the launcher ro-binds the host identity JSON at.
 ///
 /// Deliberately outside `~/.config` so the launcher doesn't need to

@@ -55,11 +55,22 @@ impl ApplicationsProvider {
                 subtitle: Some(format!("{} · {}", app.package_id, app.version)),
                 score,
                 on_open: Rc::new(move |_doc, _root, chrome: &Chrome| {
+                    // The app opens into the workspace the user is
+                    // looking at. That is also the collaboration room
+                    // it joins, so opening the same app in two
+                    // workspaces gives two independent sessions.
+                    // Scoped so the borrow is released before the
+                    // error branch below takes a mutable one.
+                    let workspace = {
+                        let st = chrome.borrow();
+                        let tree = st.tree();
+                        tree.active_workspace().map(|w| w.id).unwrap_or_default()
+                    };
                     // The launch itself is non-blocking: everything past
                     // resolution happens on a worker thread. Only the
                     // pre-fork failures land here; the rest arrive as
                     // launch events the chrome drains each frame.
-                    if let Err(err) = launcher::launch(&package_id) {
+                    if let Err(err) = launcher::launch(&package_id, workspace) {
                         let mut st = chrome.borrow_mut();
                         st.push_notification_full(
                             Notification::new(
