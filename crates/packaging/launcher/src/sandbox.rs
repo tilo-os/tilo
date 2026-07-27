@@ -116,6 +116,59 @@ pub enum DBusBindKind {
     Direct,
 }
 
+/// Where a GUI app's Wayland socket appears inside the sandbox, and the
+/// env it needs to find it.
+///
+/// The in-sandbox name is normalised to `wayland-0` no matter which
+/// display the compositor actually bound on the host (`wayland-1`,
+/// `wayland-4`, …): the sandbox has its own mount namespace, so there is
+/// exactly one socket in it and the app has no business knowing the
+/// host-side name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WaylandBind {
+    /// Host-side socket path (the compositor's listening socket).
+    pub host_socket: PathBuf,
+    /// In-sandbox absolute path of the socket.
+    pub sandbox_socket: PathBuf,
+    /// In-sandbox `XDG_RUNTIME_DIR`.
+    pub sandbox_runtime_dir: PathBuf,
+    /// Value of `WAYLAND_DISPLAY` inside the sandbox.
+    pub display_name: String,
+}
+
+/// Build the [`WaylandBind`] plan for `host_socket`, exposing it under
+/// `/run/user/<uid>` inside the sandbox.
+pub fn wayland_bind_for(host_socket: &Path, uid: u32) -> WaylandBind {
+    let runtime_dir = PathBuf::from(format!("/run/user/{uid}"));
+    let display_name = "wayland-0".to_string();
+    WaylandBind {
+        host_socket: host_socket.to_path_buf(),
+        sandbox_socket: runtime_dir.join(&display_name),
+        sandbox_runtime_dir: runtime_dir,
+        display_name,
+    }
+}
+
+/// Splice a Wayland display into an argv built by [`build_bwrap_argv`].
+///
+/// `--ro-bind` (not `--bind`) matches what Flatpak does for
+/// `$WAYLAND_DISPLAY`: `connect(2)` on a Unix socket needs write
+/// permission on the *inode*, which a read-only bind mount does not take
+/// away, while the read-only mount does stop the app from unlinking or
+/// replacing the compositor's socket.
+///
+/// Callers must splice this in *before* the trailing entrypoint token —
+/// bwrap treats everything after it as the child's argv.
+pub fn push_wayland_bind(argv: &mut Vec<String>, bind: &WaylandBind) {
+    push_bind(argv, "--ro-bind", &bind.host_socket, &bind.sandbox_socket);
+    argv.push("--setenv".to_string());
+    argv.push("WAYLAND_DISPLAY".to_string());
+    argv.push(bind.display_name.clone());
+    argv.push("--setenv".to_string());
+    argv.push("XDG_RUNTIME_DIR".to_string());
+    argv.push(bind.sandbox_runtime_dir.display().to_string());
+}
+
 /// In-sandbox path the launcher ro-binds the host identity JSON at.
 ///
 /// Deliberately outside `~/.config` so the launcher doesn't need to
@@ -448,6 +501,42 @@ mod tests {
         assert!(argv.windows(2).any(|w| w[0] == "--tmpfs" && w[1] == "/tmp"));
         assert!(argv.windows(2).any(|w| w[0] == "--proc" && w[1] == "/proc"));
         assert!(argv.windows(2).any(|w| w[0] == "--dev" && w[1] == "/dev"));
+    }
+
+    #[test]
+    fn wayland_bind_normalises_the_in_sandbox_display_name() {
+        // Host is on wayland-4; the app must still see wayland-0.
+        let bind = wayland_bind_for(Path::new("/run/user/1000/wayland-4"), 1000);
+        assert_eq!(bind.display_name, "wayland-0");
+        assert_eq!(bind.sandbox_socket, Path::new("/run/user/1000/wayland-0"));
+        assert_eq!(bind.sandbox_runtime_dir, Path::new("/run/user/1000"));
+        assert_eq!(bind.host_socket, Path::new("/run/user/1000/wayland-4"));
+    }
+
+    #[test]
+    fn wayland_bind_argv_carries_socket_and_env() {
+        let mut argv = Vec::new();
+        let bind = wayland_bind_for(Path::new("/run/user/1000/wayland-4"), 1000);
+        push_wayland_bind(&mut argv, &bind);
+        // ro-bind <host socket> /run/user/1000/wayland-0
+        let pos = argv
+            .iter()
+            .position(|a| a == "/run/user/1000/wayland-4")
+            .expect("host socket in argv");
+        assert_eq!(argv[pos - 1], "--ro-bind");
+        assert_eq!(argv[pos + 1], "/run/user/1000/wayland-0");
+        assert!(
+            argv.windows(3).any(|w| w[0] == "--setenv"
+                && w[1] == "WAYLAND_DISPLAY"
+                && w[2] == "wayland-0"),
+            "WAYLAND_DISPLAY setenv missing: {argv:?}"
+        );
+        assert!(
+            argv.windows(3).any(|w| w[0] == "--setenv"
+                && w[1] == "XDG_RUNTIME_DIR"
+                && w[2] == "/run/user/1000"),
+            "XDG_RUNTIME_DIR setenv missing: {argv:?}"
+        );
     }
 
     #[test]

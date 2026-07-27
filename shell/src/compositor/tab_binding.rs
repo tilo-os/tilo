@@ -213,10 +213,17 @@ pub fn close_tab_for_destroyed_surface(
     false
 }
 
-/// Truncate a wayland app-id down to a tab-bar friendly label. The
-/// concept of "trailing component" mirrors what most apps actually want
-/// to show: `org.example.MyApp` → `MyApp`.
+/// Turn a wayland app-id into a tab-bar friendly label.
+///
+/// If this session launched the package the client belongs to, the
+/// installed app's name wins — a tab for an app the user opened by name
+/// in the palette should carry that name. Otherwise we fall back to the
+/// trailing app-id component, which is what most apps would want shown
+/// anyway: `org.example.MyApp` → `MyApp`.
 fn tab_label_for_foreign(app_id: &str) -> String {
+    if let Some(name) = crate::shell::launcher::display_name_for_app_id(app_id) {
+        return name;
+    }
     let trimmed = app_id.split('.').next_back().unwrap_or(app_id);
     if trimmed.len() > 32 {
         trimmed[..32].to_string()
@@ -369,6 +376,50 @@ mod tests {
             }
             other => panic!("expected Foreign tile, got {other:?}"),
         }
+    }
+
+    /// A toplevel from a package this session launched is labelled with
+    /// the installed app's name, not the raw wayland app-id. Drives the
+    /// production `adopt_toplevel` path — the same call the compositor's
+    /// `XdgShellHandler::new_toplevel` makes.
+    ///
+    /// The launch history is process-global, so the fixture uses an id
+    /// no other test registers.
+    #[test]
+    fn adopted_tab_takes_the_launched_app_name() {
+        crate::shell::launcher::remember_launch(&crate::shell::launcher::InstalledApp {
+            package_id: "dev.qos.adoptfixture".into(),
+            display_name: "Adopt Fixture".into(),
+            version: "0.1.0".into(),
+            manifest_path: std::path::PathBuf::new(),
+            payload_root: std::path::PathBuf::new(),
+            has_gui: true,
+        });
+        let mut tree = WorkspaceTree::bootstrap_default();
+        // The client announces the bare app-id — the trailing component
+        // of the package id, which is the reverse-DNS convention.
+        let tab_id = adopt_toplevel(&mut tree, 31337, Some("adoptfixture".into()));
+        let tab = tree.workspaces[0].strips[0].window_groups[0]
+            .tabs
+            .iter()
+            .find(|t| t.id == tab_id)
+            .expect("adopted tab present");
+        assert_eq!(
+            tab.title, "Adopt Fixture",
+            "a launched app's tab carries the app's name"
+        );
+        // A late `set_app_id` re-resolves through the same rule.
+        let _ = adopt_toplevel(&mut tree, 31338, None);
+        assert!(rename_tab_for_app_id(
+            &mut tree,
+            31338,
+            "dev.qos.adoptfixture".into()
+        ));
+        let renamed = tree.workspaces[0].strips[0].window_groups[0]
+            .tabs
+            .last()
+            .expect("renamed tab present");
+        assert_eq!(renamed.title, "Adopt Fixture");
     }
 
     #[test]
