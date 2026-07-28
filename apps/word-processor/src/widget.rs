@@ -34,9 +34,23 @@ use ui::permissions::UserId;
 use ui::{PathSegment, PresenceCtx, PresenceKey};
 
 use crate::i18n::{arg, t, t_args};
-use crate::portal;
 use crate::word_processor::{Caret, ClipBlock, WordProcessor};
 use crate::WpFormat;
+use ui::portal;
+
+/// Why a portal file-dialog was opened: the drain path routes the chosen file to
+/// the matching action. One request is in flight at a time (`portal_rx`), so a
+/// single purpose is enough to disambiguate the outcome.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PortalPurpose {
+    /// Insert the chosen image at the caret (toolbar Image button).
+    InsertImage,
+    /// Open the chosen document in place, replacing the current one (Ctrl+O).
+    OpenDocument,
+    /// Save the current document to the chosen path (Save As / first save of an
+    /// untitled document).
+    SaveAs,
+}
 
 /// What a right-click context-menu row does. The shared [`ContextMenu`]'s
 /// `Arc<dyn Fn>` callbacks can't mutate the widget, so the widget keeps this
@@ -1740,12 +1754,15 @@ pub struct WordProcessorWidget {
     new_menu: ContextMenu,
     /// The [`crate::Template`] parallel to `new_menu`'s rows (selection dispatch).
     new_menu_templates: Vec<crate::Template>,
-    // ---- image insert via the host file-chooser portal --------------------
-    /// An in-flight host image-open request. `Some(rx)` means the XDG portal's
-    /// chooser is open (or the pick is being processed) on a worker thread; the
-    /// chosen path arrives over this channel, drained each frame in
+    // ---- host file-chooser portal (open / save / image insert) ------------
+    /// An in-flight host file request. `Some(rx)` means the XDG portal's chooser
+    /// is open (or the pick is being processed) on a worker thread; the chosen
+    /// path arrives over this channel, drained each frame in
     /// [`WordProcessorWidget::drain_portal`]. `None` = idle.
     portal_rx: Option<portal::PortalChannel>,
+    /// What the in-flight [`Self::portal_rx`] request is for (open a document,
+    /// save the current one, or insert an image). Set alongside `portal_rx`.
+    portal_purpose: Option<PortalPurpose>,
     // ---- paragraph-style context menu -------------------------------------
     /// Right-click-a-style menu (Delete / Duplicate). Reuses the shared
     /// [`ContextMenu`] primitive; painted in the overlay pass.
@@ -1891,6 +1908,7 @@ impl WordProcessorWidget {
             new_menu: ContextMenu::new(),
             new_menu_templates: Vec::new(),
             portal_rx: None,
+            portal_purpose: None,
             style_menu: ContextMenu::new(),
             style_menu_actions: Vec::new(),
             toast: None,
@@ -1987,7 +2005,7 @@ impl WordProcessorWidget {
 
     /// Toolbar "Insert image" affordance. Opens the host **XDG file-chooser
     /// portal** (per the qOS HIG the app never draws its own picker): the D-Bus
-    /// round-trip + host dialog run on a worker thread ([`portal::request_open`]);
+    /// round-trip + host dialog run on a worker thread ([`portal::FileDialog`]);
     /// the chosen path comes back over a channel drained each frame in
     /// [`Self::drain_portal`], which inserts the image at the caret. A second
     /// request while one is already in flight is ignored.
@@ -1995,48 +2013,185 @@ impl WordProcessorWidget {
         if self.portal_rx.is_some() {
             return;
         }
-        self.portal_rx = Some(portal::request_open());
+        self.portal_rx = Some(
+            portal::FileDialog::open("Insert image")
+                .accept_label("Insert")
+                .filter(
+                    portal::Filter::new("Images")
+                        .glob("*.png")
+                        .glob("*.jpg")
+                        .glob("*.jpeg")
+                        .glob("*.gif")
+                        .glob("*.webp")
+                        .glob("*.bmp")
+                        .glob("*.svg"),
+                )
+                .thread_name("wp-portal-image")
+                .spawn(),
+        );
+        self.portal_purpose = Some(PortalPurpose::InsertImage);
     }
 
-    /// Drain a completed portal request, if any: on a chosen file, insert it as
-    /// an image at the caret; a cancel or portal failure leaves the document
-    /// untouched. Called once per frame from `sync`. Draining clears the
-    /// in-flight channel so the button can be pressed again.
+    /// **Open** a document through the host portal: pick a `.docx`/`.odt`/`.md`
+    /// (etc.) file; the chosen path is drained next frame and replaces the
+    /// current document in place. A request while one is already in flight is
+    /// ignored.
+    fn request_open_document(&mut self) {
+        if self.portal_rx.is_some() {
+            return;
+        }
+        self.portal_rx = Some(
+            portal::FileDialog::open("Open document")
+                .accept_label("Open")
+                .filter(
+                    portal::Filter::new("Documents")
+                        .glob("*.docx")
+                        .glob("*.odt")
+                        .glob("*.md")
+                        .glob("*.markdown")
+                        .glob("*.html")
+                        .glob("*.htm")
+                        .glob("*.rtf"),
+                )
+                .thread_name("wp-portal-open")
+                .spawn(),
+        );
+        self.portal_purpose = Some(PortalPurpose::OpenDocument);
+    }
+
+    /// **Save As**: pick a destination through the host portal. The format is
+    /// chosen from the extension the user types/selects (`.docx` → Word, `.odt`
+    /// → OpenDocument, …); the current document is written there on drain and
+    /// becomes the document's path. Also the fallback first-save path for an
+    /// untitled document (no more silent `~/Untitled.md`).
+    fn request_save_as(&mut self) {
+        if self.portal_rx.is_some() {
+            return;
+        }
+        // Pre-fill the current file name, or a sensible untitled default.
+        let suggested = self
+            .path
+            .as_ref()
+            .and_then(|p| p.file_name())
+            .map(|f| f.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "Untitled.md".to_string());
+        self.portal_rx = Some(
+            portal::FileDialog::save("Save as")
+                .accept_label("Save")
+                .suggested_name(suggested)
+                .filter(portal::Filter::new("Word document").glob("*.docx"))
+                .filter(portal::Filter::new("OpenDocument text").glob("*.odt"))
+                .filter(portal::Filter::new("Markdown").glob("*.md").glob("*.markdown"))
+                .filter(portal::Filter::new("Rich Text").glob("*.rtf"))
+                .filter(portal::Filter::new("HTML").glob("*.html").glob("*.htm"))
+                .filter(portal::Filter::new("PDF").glob("*.pdf"))
+                .filter(portal::Filter::new("EPUB").glob("*.epub"))
+                .thread_name("wp-portal-save")
+                .spawn(),
+        );
+        self.portal_purpose = Some(PortalPurpose::SaveAs);
+    }
+
+    /// Drain a completed portal request, if any, and route the chosen file by the
+    /// request's [`PortalPurpose`]: insert an image, open a document in place, or
+    /// save the current document there. A cancel or portal failure leaves the
+    /// document untouched. Called once per frame from `sync`; draining clears the
+    /// in-flight channel so another request can start.
     fn drain_portal(&mut self, state: &mut AutoCommit) {
         let Some(rx) = self.portal_rx.as_ref() else { return };
         match rx.try_recv() {
             Ok(outcome) => {
+                let purpose = self.portal_purpose.take();
                 self.portal_rx = None;
-                if let portal::PortalOutcome::Opened(path) = outcome {
-                    self.insert_image_from_path(state, &path);
+                // A single-select open/save reports `Opened`; take the first path
+                // (also accepts the head of a multi-select for robustness).
+                if let Some(path) = outcome.first_path().map(std::path::Path::to_path_buf) {
+                    match purpose {
+                        Some(PortalPurpose::InsertImage) => {
+                            self.insert_image_from_path(state, &path);
+                        }
+                        Some(PortalPurpose::OpenDocument) => {
+                            self.open_document_in_place(state, &path);
+                        }
+                        Some(PortalPurpose::SaveAs) => {
+                            let format = WpFormat::from_path(&path);
+                            self.set_file(path, format);
+                            self.write_to_current_path(state);
+                        }
+                        None => {}
+                    }
+                } else if let portal::PortalOutcome::Failed(reason) = outcome {
+                    eprintln!("word-processor: portal error: {reason}");
                 }
             }
             // Still open (Empty) — leave the channel in place; a hangup
             // (worker gone without sending) clears it so we don't leak.
             Err(std::sync::mpsc::TryRecvError::Empty) => {}
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => self.portal_rx = None,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.portal_rx = None;
+                self.portal_purpose = None;
+            }
         }
     }
 
-    fn save(&mut self, state: &AutoCommit) {
-        // A brand-new (untitled) document has no path yet — fall back to
-        // `~/Untitled.md` so Ctrl+S always saves *something* and the filename
-        // then shows in the status bar (a proper Save-As dialog is a follow-up).
-        if self.path.is_none() {
-            let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-            self.path = Some(std::path::PathBuf::from(home).join("Untitled.md"));
-            self.format = Some(WpFormat::Markdown);
+    /// Replace the current document in place with the file at `path` (format by
+    /// extension), re-seat the caret, and adopt the path/format. Returns whether
+    /// the document was replaced (a read or import failure leaves it untouched).
+    fn open_document_in_place(&mut self, state: &mut AutoCommit, path: &std::path::Path) -> bool {
+        let bytes = match std::fs::read(path) {
+            Ok(b) => b,
+            Err(e) => {
+                eprintln!("word-processor: could not open {}: {e}", path.display());
+                return false;
+            }
+        };
+        let format = WpFormat::from_path(path);
+        if !self.inner.replace_with_format(state, &bytes, format) {
+            eprintln!("word-processor: could not parse {}", path.display());
+            return false;
         }
+        self.set_file(path.to_path_buf(), format);
+        self.refresh_blocks(state);
+        // The whole body changed; per-block caches keyed by id/text are stale.
+        self.layout_cache.clear();
+        self.spell_cache.clear();
+        // A freshly-opened document is not "modified" — it matches its file.
+        self.modified = false;
+        self.needs_commit = true;
+        self.dirty = true;
+        self.clear_recovery();
+        true
+    }
+
+    /// Ctrl+S: save to the current path, or — for an untitled document — open the
+    /// **Save As** portal instead of silently inventing a path.
+    fn save(&mut self, state: &AutoCommit) {
+        if self.path.is_none() {
+            self.request_save_as();
+            return;
+        }
+        self.write_to_current_path(state);
+    }
+
+    /// Write the current document to its already-set path/format via the qdoc
+    /// codec. Assumes `path` + `format` are set (the Save-As drain sets them, and
+    /// a document opened with a path already has them).
+    fn write_to_current_path(&mut self, state: &AutoCommit) {
         let mut saved = false;
         if let (Some(path), Some(format), Some(c)) =
             (self.path.as_ref(), self.format, self.inner.containers.as_ref())
         {
             let dr = qdoc::DocRef { doc: state, c };
-            if let Ok(bytes) = format.export(dr) {
-                if std::fs::write(path, bytes).is_ok() {
-                    self.modified = false;
-                    saved = true;
+            match format.export(dr) {
+                Ok(bytes) => {
+                    if let Err(e) = std::fs::write(path, bytes) {
+                        eprintln!("word-processor: could not write {}: {e}", path.display());
+                    } else {
+                        self.modified = false;
+                        saved = true;
+                    }
                 }
+                Err(e) => eprintln!("word-processor: export failed: {e}"),
             }
         }
         // A successful real save supersedes any recovery copy — drop it so a later
@@ -4002,7 +4157,8 @@ impl WordProcessorWidget {
 impl Widget for WordProcessorWidget {
     fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
         self.inner.bind(state, root);
-        // Fold in a completed host image-open, if the portal worker finished.
+        // Fold in a completed host portal request (open / save / image insert),
+        // if the portal worker finished.
         self.drain_portal(state);
         self.refresh_blocks(state);
         // Reload the stylesheet from the doc unless a live, not-yet-persisted
@@ -5758,9 +5914,24 @@ impl Widget for WordProcessorWidget {
                 if ctrl {
                     if let Key::Character(s) = logical_key {
                         // Save is not an editing action — don't mark the doc
-                        // modified again after writing it.
+                        // modified again after writing it. Ctrl+Shift+S always
+                        // opens the host Save-As picker; a bare Ctrl+S saves to
+                        // the current path (or, when untitled, prompts via the
+                        // same picker rather than inventing a path).
                         if s.eq_ignore_ascii_case("s") {
-                            self.save(state);
+                            if shift {
+                                self.request_save_as();
+                            } else {
+                                self.save(state);
+                            }
+                            self.dirty = true;
+                            *handled = true;
+                            return;
+                        }
+                        // Ctrl+O opens a document through the host portal, in
+                        // place of the current one.
+                        if s.eq_ignore_ascii_case("o") {
+                            self.request_open_document();
                             self.dirty = true;
                             *handled = true;
                             return;
@@ -10670,8 +10841,9 @@ mod tests {
         let (mut state, mut wp) = bound();
         wp.model_mut().insert_str(&mut state.doc, "before");
         let path = temp_png("pick");
-        // Feed the exact per-frame drain path a chosen-file outcome.
+        // Feed the exact per-frame drain path a chosen-file outcome for an image.
         wp.portal_rx = Some(portal::inject_for_test(portal::PortalOutcome::Opened(path.clone())));
+        wp.portal_purpose = Some(PortalPurpose::InsertImage);
         wp.sync(&mut state.doc, &state.root);
         let _ = std::fs::remove_file(&path);
         assert!(wp.portal_rx.is_none(), "a resolved portal request clears the channel");
@@ -10683,9 +10855,113 @@ mod tests {
     fn a_cancelled_portal_pick_inserts_nothing() {
         let (mut state, mut wp) = bound();
         wp.portal_rx = Some(portal::inject_for_test(portal::PortalOutcome::Cancelled));
+        wp.portal_purpose = Some(PortalPurpose::InsertImage);
         wp.sync(&mut state.doc, &state.root);
         assert!(wp.portal_rx.is_none(), "a cancel clears the in-flight channel");
         assert_eq!(image_block_count(&wp, &state), 0, "a cancel inserts nothing");
+    }
+
+    /// A docx opened → edited → **Save As** to a new `.docx` writes a *real* Word
+    /// file (an OOXML ZIP, `PK` signature) that round-trips back through the
+    /// opener with the edit intact. This is the whole point of the portal Save-As
+    /// path: it drives the qdoc docx codec at the user-chosen path — not the old
+    /// silent `~/Untitled.md` markdown fallback.
+    #[test]
+    fn save_as_writes_a_real_docx_that_round_trips() {
+        let dir = std::env::temp_dir();
+        let pid = std::process::id();
+        let src = dir.join(format!("wp-src-{pid}.docx"));
+        let dest = dir.join(format!("wp-dest-{pid}.docx"));
+
+        // Author a real source .docx via the codec (a seeded doc → save_document).
+        {
+            let mut state = ui::State::new();
+            with_doc(&mut state, |dm| {
+                let b = dm.insert_block(None, "paragraph");
+                dm.splice_text(&b, 0, 0, "Hello docx");
+            });
+            crate::save_document(&state, &src, WpFormat::Docx).expect("write source docx");
+        }
+        assert!(
+            std::fs::read(&src).unwrap().starts_with(b"PK"),
+            "the source is a real docx (OOXML zip)"
+        );
+
+        // Open it into a running editor and confirm the text came through.
+        let (mut state, mut wp, fmt) = crate::open_document(&src).expect("open source docx");
+        assert_eq!(fmt, WpFormat::Docx);
+        wp.sync(&mut state.doc, &state.root);
+        assert!(
+            body_text(&wp, &state).iter().any(|t| t.contains("Hello docx")),
+            "opened body carries the source text"
+        );
+
+        // Edit, then Save As to a NEW .docx through the real portal drain path.
+        wp.model_mut().focus_body(&mut state.doc); // seat the caret on a real block
+        wp.model_mut().insert_str(&mut state.doc, "EDITED ");
+        wp.portal_rx =
+            Some(portal::inject_for_test(portal::PortalOutcome::Opened(dest.clone())));
+        wp.portal_purpose = Some(PortalPurpose::SaveAs);
+        wp.sync(&mut state.doc, &state.root);
+
+        // Save As adopted the chosen path/format and cleared the in-flight request.
+        assert!(wp.portal_rx.is_none(), "the Save-As request drained");
+        assert_eq!(wp.path.as_deref(), Some(dest.as_path()), "path is now the Save-As target");
+        assert_eq!(wp.format, Some(WpFormat::Docx), "format follows the chosen extension");
+
+        // The written file is a real docx (ZIP signature) — not markdown ...
+        let written = std::fs::read(&dest).expect("Save As wrote the destination");
+        assert!(
+            written.starts_with(b"PK"),
+            "Save As wrote a real docx zip, not a markdown fallback"
+        );
+        // ... and it round-trips back through the opener with both texts intact.
+        let (mut state2, mut wp2, fmt2) =
+            crate::open_document(&dest).expect("reopen the saved docx");
+        assert_eq!(fmt2, WpFormat::Docx);
+        wp2.sync(&mut state2.doc, &state2.root); // bind containers before reading
+        let reopened = body_text(&wp2, &state2).join("\n");
+        assert!(reopened.contains("Hello docx"), "original text survives: {reopened:?}");
+        assert!(reopened.contains("EDITED"), "the edit survives: {reopened:?}");
+
+        let _ = std::fs::remove_file(&src);
+        let _ = std::fs::remove_file(&dest);
+    }
+
+    /// A resolved **Open** pick replaces the running document in place: a blank
+    /// editor, handed a chosen `.docx` on the drain path, adopts that file's text,
+    /// path, and format — the Ctrl+O path, exercised without a live portal.
+    #[test]
+    fn open_pick_replaces_the_document_in_place() {
+        let dir = std::env::temp_dir();
+        let src = dir.join(format!("wp-open-{}.docx", std::process::id()));
+        {
+            let mut state = ui::State::new();
+            with_doc(&mut state, |dm| {
+                let b = dm.insert_block(None, "paragraph");
+                dm.splice_text(&b, 0, 0, "Opened via portal");
+            });
+            crate::save_document(&state, &src, WpFormat::Docx).expect("write source docx");
+        }
+
+        // Start from a blank, untitled editor.
+        let (mut state, mut wp) = bound();
+        wp.model_mut().insert_str(&mut state.doc, "stale content");
+        assert!(wp.path.is_none(), "untitled before opening");
+
+        // Feed the exact per-frame drain path an Open outcome.
+        wp.portal_rx =
+            Some(portal::inject_for_test(portal::PortalOutcome::Opened(src.clone())));
+        wp.portal_purpose = Some(PortalPurpose::OpenDocument);
+        wp.sync(&mut state.doc, &state.root);
+
+        let body = body_text(&wp, &state).join("\n");
+        assert!(body.contains("Opened via portal"), "opened file's text is now shown: {body:?}");
+        assert!(!body.contains("stale content"), "the previous document was replaced");
+        assert_eq!(wp.path.as_deref(), Some(src.as_path()), "opened path adopted");
+        assert_eq!(wp.format, Some(WpFormat::Docx), "opened format adopted");
+
+        let _ = std::fs::remove_file(&src);
     }
 
     /// Dropping an image file onto the page inserts it at the **drop point**: the
