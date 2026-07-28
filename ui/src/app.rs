@@ -391,6 +391,12 @@ pub struct App {
     /// Distinguishes app-driven from compositor-driven transitions (a global
     /// un-fullscreen keybind flips this without the app asking).
     fullscreen_active: bool,
+
+    /// Background writer for the CRDT document, installed by
+    /// [`App::with_autosave`]. `None` means this App does not persist — the
+    /// pre-existing behaviour, kept for examples, tests and the shell's
+    /// hosted chrome, none of which own a package id.
+    autosave: Option<crate::persist::Autosave>,
 }
 
 impl App {
@@ -447,6 +453,7 @@ impl App {
             text_scale: 1.0,
             fullscreen_requested: false,
             fullscreen_active: false,
+            autosave: None,
         };
 
         // Seed the low-vision preferences from the environment so a sandbox
@@ -1901,6 +1908,54 @@ impl App {
         self.needs_sync = false;
     }
 
+    /// Persist this App's CRDT document through `autosave`.
+    ///
+    /// Pair with [`crate::persist::open`], which hands back the document the
+    /// previous session left behind plus the writer for it:
+    ///
+    /// ```ignore
+    /// let (state, autosave) = ui::persist::open("dev.qos.my-app");
+    /// ui::App::new(state, my_app::app_root())
+    ///     .with_autosave(autosave)
+    ///     .run();
+    /// ```
+    ///
+    /// From here on every change the document takes is written back —
+    /// debounced, atomically, and incrementally — and flushed when the event
+    /// loop exits. Nothing else in the App changes; widgets keep mutating the
+    /// same `AutoCommit` they always did.
+    pub fn with_autosave(mut self, autosave: crate::persist::Autosave) -> Self {
+        self.autosave = Some(autosave);
+        self
+    }
+
+    /// Offer the current document to the background writer.
+    ///
+    /// Called once per idle tick. Cheap when nothing changed: comparing two
+    /// head vectors, no serialisation and no I/O.
+    fn autosave_tick(&mut self) {
+        if let Some(saver) = self.autosave.as_mut() {
+            saver.request(&mut self.state.doc);
+        }
+    }
+
+    /// Write out anything still pending and wait for it to land. Called on
+    /// event-loop teardown so a `kill` right after the last keystroke still
+    /// finds it on disk.
+    fn autosave_flush(&mut self) {
+        if let Some(saver) = self.autosave.as_mut() {
+            saver.request(&mut self.state.doc);
+            saver.flush();
+        }
+    }
+
+    /// The writer installed by [`App::with_autosave`], if any. Exposed so a
+    /// caller can check [`crate::persist::Autosave::last_error`] rather than
+    /// assuming the disk accepted the writes.
+    pub fn autosave(&self) -> Option<&crate::persist::Autosave> {
+        self.autosave.as_ref()
+    }
+
     pub fn run(self) {
         self.run_with_setup(|_| {});
     }
@@ -2201,6 +2256,9 @@ impl ApplicationHandler<UserEvent> for AppHandler {
     /// dropped — the worker's `RenderSurface<'static>` references the
     /// window, and wgpu may panic if the surface outlives the window.
     fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
+        // Last chance to get the user's final edit onto the disk — after
+        // this the process is on its way out.
+        self.app.autosave_flush();
         if let Some(mut render) = self.render.take() {
             render.shutdown_and_join();
             // `render` (and the worker-owned surface inside it) is
@@ -3244,6 +3302,13 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             app.needs_sync = true;
             window.request_redraw();
         }
+
+        // Persist whatever the frame just changed. Level-triggered rather
+        // than hooked into individual mutations: widgets write to the
+        // document from many places (text splices, drag drops, collab
+        // merges) and comparing heads once per idle tick catches all of
+        // them without every call site having to remember.
+        app.autosave_tick();
 
         // Reconcile the root's desired OS-fullscreen state with the window
         // (and observe compositor-driven fullscreen changes). Level-triggered

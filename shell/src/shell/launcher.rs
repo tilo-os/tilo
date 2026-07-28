@@ -70,7 +70,7 @@ use std::process::{Command, Stdio};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use crate::shell::state::{CapOverride, Subject, Workspace, WorkspaceId};
+use crate::shell::state::{CapOverride, RoomId, Subject, Workspace};
 
 /// How long an enumeration of installed packages is reused before the
 /// registry + manifests are re-read. The palette queries this on every
@@ -237,9 +237,9 @@ pub struct LaunchCommand {
 static WAYLAND_SOCKET: Mutex<Option<PathBuf>> = Mutex::new(None);
 static EVENTS: Mutex<Vec<LaunchEvent>> = Mutex::new(Vec::new());
 static APP_CACHE: Mutex<Option<(Vec<InstalledApp>, Instant)>> = Mutex::new(None);
-/// `package_id → display name` for everything this session has launched.
-/// Consulted when a foreign toplevel is adopted so the tab shows the
-/// app's name instead of a raw wayland app-id.
+/// `package_id` -> display name for everything this session has
+/// launched. Consulted when a foreign toplevel is adopted so the tab
+/// shows the app's name instead of a raw wayland app-id.
 static LAUNCHED: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new());
 /// The capability list of the workspace apps are being launched into.
 ///
@@ -249,18 +249,33 @@ static LAUNCHED: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new());
 /// default and the correct one: an app launched before anything is
 /// published gets its manifest's sandbox and nothing more.
 static WORKSPACE_CAPABILITIES: Mutex<Vec<CapOverride>> = Mutex::new(Vec::new());
-/// `package_id → where its next window should land`, for launches that
-/// asked for something other than the default.
+/// `package_id` -> where its next window should land, for launches
+/// that asked for something other than the default.
 ///
 /// A launch and the toplevel it eventually maps are two events seconds
 /// apart, on two processes. This is the note the first leaves for the
-/// second; [`take_placement_for_app_id`] consumes it when the window
-/// arrives. One entry per package: a second window from the same app,
-/// or a window we never launched, gets the default placement, because
-/// the only honest correlation we have is the app-id and it does not
-/// distinguish two windows from one client.
-static PENDING_PLACEMENT: Mutex<Vec<(String, crate::compositor::tab_binding::Placement)>> =
-    Mutex::new(Vec::new());
+/// second; [`placement_for_toplevel`] reads it when the window arrives.
+///
+/// A note is *claimed* by the first surface that reads it, and then
+/// keeps answering for that surface. The compositor adopts every
+/// toplevel into two trees - the protocol-side one `XdgShellHandler`
+/// mutates and the rendered one the chrome paints from - so a note
+/// consumed on the first read would leave the tree the user actually
+/// sees falling back to the default, with the two trees disagreeing
+/// about where the window went. Claiming rather than consuming is what
+/// keeps them in step.
+///
+/// One note per package, and a *different* surface for the same package
+/// retires it: the only honest correlation available is the app-id, and
+/// it cannot distinguish two windows from one client.
+static PENDING_PLACEMENT: Mutex<Vec<PendingPlacement>> = Mutex::new(Vec::new());
+
+struct PendingPlacement {
+    package_id: String,
+    placement: crate::compositor::tab_binding::Placement,
+    /// The surface that claimed this note, once one has.
+    claimed_by: Option<u64>,
+}
 
 /// Publish the compositor's Wayland socket. Called once by the
 /// compositor after `ListeningSocketSource` binds, with the socket name
@@ -572,19 +587,25 @@ pub fn resolve_launcher_bin() -> Result<PathBuf, LaunchError> {
 // ---------------------------------------------------------------------
 
 /// Render the `qos-launcher` invocation for `app`, launched into
-/// `workspace`.
+/// `room`.
 ///
 /// Pure — no I/O, no spawning — so tests can assert on the exact command
 /// the production path builds.
 ///
-/// `workspace` is the room the app is being opened into. It rides in as
-/// `--workspace-id`, which the launcher turns into `QOS_WORKSPACE_ID`
-/// inside the sandbox and the toolkit turns into the collaboration
-/// cluster every CRDT delta is addressed to. Without it an app has no
-/// room, so two apps the user opened side by side would never see each
-/// other's edits — which is why this is a required argument rather than
-/// an option: there is no such thing as launching an app into no
-/// workspace from the compositor.
+/// `room` is the durable identity of the workspace the app is being
+/// opened into, **not** its local [`crate::shell::state::WorkspaceId`].
+/// It rides in as `--workspace-id`, which the launcher turns into
+/// `QOS_WORKSPACE_ID` inside the sandbox and the toolkit turns into the
+/// collaboration cluster every CRDT delta is addressed to. Taking the
+/// room rather than the local handle is what lets a peer's app and ours
+/// land in the same cluster: the local handle differs on every machine,
+/// so an app launched from it could only ever collaborate with apps on
+/// this one.
+///
+/// Without it an app has no room, so two apps the user opened side by
+/// side would never see each other's edits — which is why this is a
+/// required argument rather than an option: there is no such thing as
+/// launching an app into no workspace from the compositor.
 ///
 /// `capabilities_file` is the path [`write_capabilities_file`] produced,
 /// or `None` when the app was granted nothing. `None` emits no
@@ -619,7 +640,7 @@ pub fn build_launch_command(
     app: &InstalledApp,
     launcher_bin: &Path,
     wayland_socket: &Path,
-    workspace: WorkspaceId,
+    room: RoomId,
     capabilities_file: Option<&Path>,
     render_node: Option<&Path>,
     document: Option<&Path>,
@@ -633,7 +654,7 @@ pub fn build_launch_command(
         "--wayland-socket".to_string(),
         wayland_socket.display().to_string(),
         "--workspace-id".to_string(),
-        workspace.collab_cluster_id().to_string(),
+        room.to_string(),
         // The identity capabilities are addressed to. Always passed, so
         // the launcher checks every capability against this id instead
         // of trusting the file to have been filtered for it.
@@ -670,17 +691,17 @@ pub fn build_launch_command(
     }
 }
 
-/// Resolve `package_id` and start it in `workspace`, with whatever the
+/// Resolve `package_id` and start it in `room`, with whatever the
 /// published workspace granted it.
 ///
 /// Returns as soon as the launch is handed to its worker thread — it
 /// never waits for the app to appear. The `Ok` value is the resolved
 /// app, so callers can name it in their UI without a second lookup.
 ///
-/// `workspace` is the caller's active workspace; it becomes the app's
-/// collaboration room (see [`build_launch_command`]).
-pub fn launch(package_id: &str, workspace: WorkspaceId) -> Result<InstalledApp, LaunchError> {
-    launch_with_document(package_id, workspace, None)
+/// `room` is the durable identity of the caller's active workspace; it
+/// becomes the app's collaboration room (see [`build_launch_command`]).
+pub fn launch(package_id: &str, room: RoomId) -> Result<InstalledApp, LaunchError> {
+    launch_with_document(package_id, room, None)
 }
 
 /// [`launch`], additionally asking the app to open `document`.
@@ -690,7 +711,7 @@ pub fn launch(package_id: &str, workspace: WorkspaceId) -> Result<InstalledApp, 
 /// starts and finds nothing at the path it was pointed at.
 pub fn launch_with_document(
     package_id: &str,
-    workspace: WorkspaceId,
+    room: RoomId,
     document: Option<&Path>,
 ) -> Result<InstalledApp, LaunchError> {
     let app = installed_apps()?
@@ -729,7 +750,7 @@ pub fn launch_with_document(
         &app,
         &launcher_bin,
         &socket,
-        workspace,
+        room,
         capabilities_file.as_deref(),
         crate::compositor::render_node::resolved(),
         document,
@@ -764,7 +785,7 @@ pub fn launch_document_in_workspace(
     document: Option<&Path>,
 ) -> Result<InstalledApp, LaunchError> {
     set_workspace_capabilities(workspace.capabilities.clone());
-    launch_with_document(package_id, workspace.id, document)
+    launch_with_document(package_id, workspace.room, document)
 }
 
 /// Run `command` on a worker thread and report the outcome through
@@ -921,35 +942,56 @@ fn app_id_matches_package(app_id: &str, package_id: &str) -> bool {
 
 /// Record where the window of the launch about to start should land.
 ///
-/// Overwrites any unconsumed note for the same package: if two launches
-/// of one app are in flight, the second one's intent is the current one.
+/// Replaces any note for the same package, claimed or not: if two
+/// launches of one app are in flight, the newer intent is the live one.
 pub fn set_pending_placement(
     package_id: &str,
     placement: crate::compositor::tab_binding::Placement,
 ) {
     let mut pending = PENDING_PLACEMENT.lock().expect("PENDING_PLACEMENT poisoned");
-    if let Some(slot) = pending.iter_mut().find(|(id, _)| id == package_id) {
-        slot.1 = placement;
-    } else {
-        pending.push((package_id.to_string(), placement));
-    }
+    pending.retain(|p| p.package_id != package_id);
+    pending.push(PendingPlacement {
+        package_id: package_id.to_string(),
+        placement,
+        claimed_by: None,
+    });
 }
 
-/// Take the placement recorded for whichever package `app_id` belongs
-/// to, consuming it. `None` when this client is not one we launched, or
-/// when its launch asked for nothing special — both of which mean "use
-/// the default".
-pub fn take_placement_for_app_id(
+/// The placement recorded for whichever package `app_id` belongs to, for
+/// the toplevel `surface_id`.
+///
+/// The first surface to ask claims the note, and every later ask for the
+/// same surface gets the same answer - see [`PENDING_PLACEMENT`] for why
+/// that matters. A surface arriving after another has claimed the note
+/// retires it and gets `None`.
+///
+/// `None` means "use the default": this client is not one we launched,
+/// its launch asked for nothing special, or its note already belongs to
+/// an earlier window.
+pub fn placement_for_toplevel(
     app_id: &str,
+    surface_id: u64,
 ) -> Option<crate::compositor::tab_binding::Placement> {
     let mut pending = PENDING_PLACEMENT.lock().expect("PENDING_PLACEMENT poisoned");
     let idx = pending
         .iter()
-        .position(|(package_id, _)| app_id_matches_package(app_id, package_id))?;
-    Some(pending.remove(idx).1)
+        .position(|p| app_id_matches_package(app_id, &p.package_id))?;
+    match pending[idx].claimed_by {
+        None => {
+            pending[idx].claimed_by = Some(surface_id);
+            Some(pending[idx].placement)
+        }
+        Some(claimed) if claimed == surface_id => Some(pending[idx].placement),
+        // A second window from the same client. The note was for the
+        // first one; retire it so a third window can't inherit it either.
+        Some(_) => {
+            pending.remove(idx);
+            None
+        }
+    }
 }
 
-/// Drop every unconsumed placement note. Used by tests, which share this
+/// Drop every placement note. Used by tests, which share this
 /// process-wide state.
 pub fn clear_pending_placements() {
     PENDING_PLACEMENT
@@ -1063,7 +1105,7 @@ mod tests {
             &app,
             Path::new("/usr/bin/qos-launcher"),
             Path::new("/run/user/1000/wayland-3"),
-            WorkspaceId(3),
+            RoomId::new(),
             None,
             Some(Path::new("/dev/dri/renderD128")),
             None,
@@ -1109,7 +1151,7 @@ mod tests {
             &app,
             Path::new("/usr/bin/qos-launcher"),
             Path::new("/run/user/1000/wayland-3"),
-            WorkspaceId(3),
+            RoomId::new(),
             None,
             None,
             None,
@@ -1128,7 +1170,7 @@ mod tests {
         // SAFETY: guarded by ENV_LOCK.
         unsafe { std::env::set_var("QOS_APPS_DATA_DIR", tmp.path()) };
         invalidate_app_cache();
-        let err = launch("dev.qos.nope", WorkspaceId(1)).unwrap_err();
+        let err = launch("dev.qos.nope", RoomId::new()).unwrap_err();
         unsafe { std::env::remove_var("QOS_APPS_DATA_DIR") };
         invalidate_app_cache();
         assert_eq!(
@@ -1148,7 +1190,7 @@ mod tests {
         // SAFETY: guarded by ENV_LOCK.
         unsafe { std::env::set_var("QOS_APPS_DATA_DIR", tmp.path()) };
         invalidate_app_cache();
-        let err = launch("dev.qos.notes-cli", WorkspaceId(1)).unwrap_err();
+        let err = launch("dev.qos.notes-cli", RoomId::new()).unwrap_err();
         unsafe { std::env::remove_var("QOS_APPS_DATA_DIR") };
         invalidate_app_cache();
         assert_eq!(
@@ -1168,7 +1210,7 @@ mod tests {
         unsafe { std::env::set_var("QOS_APPS_DATA_DIR", tmp.path()) };
         invalidate_app_cache();
         set_wayland_socket_path(None);
-        let err = launch("dev.qos.hello", WorkspaceId(1)).unwrap_err();
+        let err = launch("dev.qos.hello", RoomId::new()).unwrap_err();
         unsafe { std::env::remove_var("QOS_APPS_DATA_DIR") };
         invalidate_app_cache();
         assert_eq!(err, LaunchError::NoDisplay);
@@ -1207,7 +1249,7 @@ mod tests {
         set_wayland_socket_path(Some(PathBuf::from("/run/user/1000/wayland-7")));
         let _ = drain_events();
 
-        let app = launch("dev.qos.hello", WorkspaceId(1)).expect("launch accepted");
+        let app = launch("dev.qos.hello", RoomId::new()).expect("launch accepted");
         assert_eq!(app.display_name, "Hello");
 
         // Wait for the worker to report the child's exit.
@@ -1344,7 +1386,7 @@ mod tests {
             &test_app("dev.qos.books"),
             Path::new("/usr/bin/qos-launcher"),
             Path::new("/run/user/1000/wayland-3"),
-            WorkspaceId(3),
+            RoomId::new(),
             None,
             None,
             None,
@@ -1369,7 +1411,7 @@ mod tests {
             &test_app("dev.qos.books"),
             Path::new("/usr/bin/qos-launcher"),
             Path::new("/run/user/1000/wayland-3"),
-            WorkspaceId(3),
+            RoomId::new(),
             Some(Path::new("/run/user/1000/qos/capabilities/dev.qos.books.json")),
             None,
             None,
