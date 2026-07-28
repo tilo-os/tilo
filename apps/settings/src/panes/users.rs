@@ -97,16 +97,18 @@ fn users_for_display() -> Vec<DeviceUser> {
     let admins = fs::read_to_string("/etc/group")
         .map(|c| admins_from_group(&c))
         .unwrap_or_default();
-    let parsed = fs::read_to_string("/etc/passwd")
+    // Real login accounts from `/etc/passwd`. We deliberately do **not**
+    // substitute an illustrative sample: a machine that parses no login users
+    // shows an honest empty roster rather than fabricated people (the same
+    // no-fabrication rule the Printers pane follows).
+    fs::read_to_string("/etc/passwd")
         .map(|c| read_passwd_users(&c, current.as_deref(), &admins))
-        .unwrap_or_default();
-    if parsed.is_empty() {
-        sample_users()
-    } else {
-        parsed
-    }
+        .unwrap_or_default()
 }
 
+/// A realistic roster used only by tests / deterministic `--shots`, never as a
+/// production fallback.
+#[cfg(test)]
 fn sample_users() -> Vec<DeviceUser> {
     vec![
         DeviceUser {
@@ -135,12 +137,16 @@ pub fn build() -> Box<dyn Widget> {
 }
 
 pub fn build_with(users: &[DeviceUser]) -> Box<dyn Widget> {
-    let mut user_rows: Vec<El> = Vec::new();
-    for u in users {
-        user_rows.push(user_row(u));
-    }
-
-    let list = card("People", rows(user_rows));
+    let list = if users.is_empty() {
+        // Honest empty state — never fabricated people.
+        card("People", rows(vec![caption("No user accounts found on this device.")]))
+    } else {
+        let mut user_rows: Vec<El> = Vec::new();
+        for u in users {
+            user_rows.push(user_row(u));
+        }
+        card("People", rows(user_rows))
+    };
 
     let note = card(
         "Roles",
@@ -216,11 +222,36 @@ mod tests {
     }
 
     #[test]
-    fn empty_passwd_falls_back_to_sample() {
+    fn empty_passwd_yields_no_login_users() {
         let admins = HashSet::new();
         let users = read_passwd_users("", None, &admins);
-        assert!(users.is_empty());
+        assert!(users.is_empty(), "no login users parse from an empty passwd");
+        // The sample roster exists only for tests / --shots, never as a
+        // production fallback.
         assert!(!sample_users().is_empty());
+    }
+
+    /// The production roster is the real `/etc/passwd` list (or empty) — it
+    /// must never fall back to the illustrative sample. Mirrors the Printers
+    /// pane's `production_list_never_fabricates_the_sample` guard.
+    #[test]
+    fn production_roster_never_fabricates_the_sample() {
+        let real = users_for_display();
+        assert!(
+            !real.iter().any(|u| u.full_name == "Ada Lovelace" || u.username == "charles"),
+            "the sample must not leak into the production roster: {real:?}"
+        );
+    }
+
+    /// With no login users, the pane renders an honest empty state rather than
+    /// fabricated people.
+    #[test]
+    fn empty_roster_builds_honest_state() {
+        let mut pane = build_with(&[]);
+        let theme = Theme::dark();
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let _ = pane.build_layout(&mut taffy, &theme, &mut node_map);
     }
 
     #[test]
