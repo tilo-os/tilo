@@ -203,6 +203,20 @@ pub struct RunOptions {
     /// pre-filtered, so a capability file that names another app's
     /// grants still binds nothing for this one.
     pub app_id: Option<String>,
+    /// A document the app should open on start, as an absolute host
+    /// path. Forwarded to the entrypoint as its `argv[1]`.
+    ///
+    /// The path is *only* an argument. Whether the app can actually read
+    /// it is decided entirely by the manifest and the capability file:
+    /// naming a path here binds nothing and unlocks nothing, so a caller
+    /// that wants the app to succeed has to grant the path as well
+    /// (`Scope::FsPath`). That separation is deliberate — an argument
+    /// the app chose to pass itself must never be a way to widen its own
+    /// sandbox.
+    ///
+    /// `None` — the default — launches the app with no arguments, which
+    /// is every launch that isn't opening something.
+    pub open_document: Option<PathBuf>,
 }
 
 /// Resolve the capability plan for a launch: read the file the
@@ -643,7 +657,14 @@ pub fn run_with(
                 &capabilities,
             ),
             None,
-            Vec::new(),
+            // A GUI launch carries at most one argument: the document
+            // it was asked to open. It rides the same tail as the CLI
+            // passthrough because it is the same thing to bwrap —
+            // opaque bytes after the entrypoint token.
+            opts.open_document
+                .as_ref()
+                .map(|p| vec![p.display().to_string()])
+                .unwrap_or_default(),
         ),
         LaunchMode::Cli { command, passthrough_argv } => {
             entry_bin_owned = manifest
@@ -870,9 +891,10 @@ pub fn run_with(
     prefix.extend(argv.drain(..));
     argv = prefix;
 
-    // CLI passthrough: everything after the entrypoint token is
-    // opaque to bwrap and forwarded to the sandboxed program as
-    // its argv[1..]. The vec is empty for GUI launches.
+    // Passthrough: everything after the entrypoint token is opaque to
+    // bwrap and forwarded to the sandboxed program as its argv[1..].
+    // For a CLI launch that's the user's own argv; for a GUI launch
+    // it's the document `--open` named, or nothing.
     argv.extend(cli_passthrough);
 
     // 4. Build the bwrap Command.

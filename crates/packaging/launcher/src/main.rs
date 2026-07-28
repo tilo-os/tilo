@@ -99,6 +99,16 @@ enum Cmd {
         /// involved, wrong whenever one is.
         #[arg(long)]
         render_node: Option<PathBuf>,
+        /// A document for the app to open on start, as an absolute host
+        /// path. Handed to the entrypoint as its `argv[1]`.
+        ///
+        /// This is an argument and nothing else. The path is not bound
+        /// into the sandbox by naming it here: whether the app can read
+        /// it is decided by the manifest plus `--capabilities`, exactly
+        /// as it is for every other path. A caller that wants the open
+        /// to succeed grants the path too.
+        #[arg(long)]
+        open: Option<PathBuf>,
     },
     /// Launch a CLI command from an already-installed package. Used
     /// by the PATH shim (`qos-cli-shim`) so a user typing `notes` in
@@ -159,6 +169,7 @@ fn main() -> ExitCode {
             capabilities,
             app_id,
             render_node,
+            open,
         } => {
             if minimal_libs {
                 eprintln!(
@@ -183,6 +194,7 @@ fn main() -> ExitCode {
                 capabilities_path: capabilities,
                 app_id,
                 render_node,
+                open_document: open,
             };
             match run(&manifest, &payload_root, &opts) {
                 Ok(status) => {
