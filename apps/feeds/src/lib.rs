@@ -49,7 +49,12 @@ pub fn app_root() -> Box<dyn Widget> {
 /// [`app_root`].
 pub fn app_root_for_shot(scenario: &str) -> Box<dyn Widget> {
     use crate::model::{ReadFont, ReadTheme};
-    let mut app = FeedsApp::new();
+    // The `empty` scenario renders the real live app (empty on a fresh machine)
+    // so the first-run onboarding state can be screenshotted — no sample data.
+    if scenario == "empty" {
+        return Box::new(FeedsApp::new());
+    }
+    let mut app = FeedsApp::new_demo();
     match scenario {
         "sidebar-open" => app.snap_sidebar_open(true),
         "detail" => app.force_detail_pushed(),
