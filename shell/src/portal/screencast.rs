@@ -1,189 +1,457 @@
 //! `org.freedesktop.impl.portal.ScreenCast` backend.
 //!
 //! Spec: `/usr/share/dbus-1/interfaces/org.freedesktop.impl.portal.ScreenCast.xml`.
-//! Plan: Sandbox Phase 4.3 + §5.3.
 //!
-//! The screencast handshake is a three-step state machine:
+//! The screencast handshake is a session state machine the frontend
+//! (`xdg-desktop-portal`) drives on behalf of a sandboxed app:
 //!
-//! 1. `CreateSession(handle, session_handle, app_id, options) → (response, results)`
-//!    Allocates a session object; backend stores it for later. Response=0,
-//!    results is opaque — frontend caches `session_handle` for the next
-//!    calls.
-//! 2. `SelectSources(handle, session_handle, app_id, options) → (response, results)`
-//!    Lets the app declare *what* it wants to capture. This is where we
-//!    surface the consent prompt — `flow::resolve` with
-//!    `CapabilityKind::Screencast`.
-//! 3. `Start(handle, session_handle, app_id, parent_window, options) → (response, results)`
-//!    Final commit step. On Allow, calls into
-//!    [`ScreenCastStreamProvisioner::provision_stream`] to allocate
-//!    a real Pipewire node and returns its id + props. Deny mirrors
-//!    `SelectSources`. The provisioner abstraction lets tests use a
-//!    [`MockScreenCastProvisioner`]; production wires the real
-//!    Pipewire connection (compiled when the `pipewire` Cargo
-//!    feature is enabled).
+//! 1. `CreateSession(handle, session_handle, app_id, options)` — allocates
+//!    a session object. We record it keyed by `session_handle` so the
+//!    later steps can carry the negotiated selection.
+//! 2. `SelectSources(handle, session_handle, app_id, options)` — the app
+//!    declares *what* it wants to capture (`types` = monitor|window|virtual,
+//!    `cursor_mode` = hidden|embedded|metadata, `multiple`, `persist_mode`,
+//!    and — for a re-share — a `restore_token`). This is where we surface
+//!    the consent prompt (`flow::resolve` with `CapabilityKind::Screencast`)
+//!    and stash the selection on the session. A valid `restore_token`
+//!    short-circuits the prompt so a persisted share doesn't re-ask.
+//! 3. `Start(handle, session_handle, app_id, parent_window, options)` —
+//!    final commit. Re-checks consent (unless restored), provisions a real
+//!    PipeWire node per selected source, and returns the streams with their
+//!    node ids + `size`/`source_type`/`position` props. When the session
+//!    asked to persist, a fresh `restore_token` (+ `persist_mode`) is
+//!    returned so the next share can skip the prompt.
+//!
+//! `OpenPipeWireRemote(session_handle, app_id, options)` hands the app the
+//! fd of a PipeWire remote it can attach the provisioned nodes to. In the
+//! reference xdg-desktop-portal architecture this method lives on the
+//! *frontend* interface; we expose it on the backend too so a qOS-native
+//! frontend (and the test harness) can obtain a real, scoped remote fd
+//! directly from the compositor's provisioner.
+//!
+//! The provisioner abstraction ([`ScreenCastStreamProvisioner`]) lets tests
+//! use a [`MockScreenCastProvisioner`]; production wires the real PipeWire
+//! connection that captures the compositor's rendered output.
 
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 use zbus::interface;
-use zbus::object_server::SignalContext;
 use zbus::names::OwnedUniqueName;
+use zbus::object_server::SignalContext;
 use zbus::zvariant::{ObjectPath, OwnedValue, Value};
 
 use crate::shell::state::{Capability, GrantScope};
 
 use super::screencast_pipewire::{PipewireStreamInfo, PipewireStreamRequest};
 use super::{
-    flow, file_chooser::FileChooserBackend, CapabilityKind, PortalCaller, PortalContext,
+    file_chooser::FileChooserBackend, flow, CapabilityKind, PortalCaller, PortalContext,
 };
 #[cfg(test)]
 use super::PromptOutcome;
 
+/// Source-type bitmask (`ScreenCast.AvailableSourceTypes`).
+pub mod source_type {
+    pub const MONITOR: u32 = 1;
+    pub const WINDOW: u32 = 2;
+    pub const VIRTUAL: u32 = 4;
+    /// Everything the compositor can capture.
+    pub const ALL: u32 = MONITOR | WINDOW | VIRTUAL;
+}
+
+/// Cursor-embedding bitmask (`ScreenCast.AvailableCursorModes`).
+pub mod cursor_mode {
+    pub const HIDDEN: u32 = 1;
+    pub const EMBEDDED: u32 = 2;
+    pub const METADATA: u32 = 4;
+    /// Every mode the compositor supports.
+    pub const ALL: u32 = HIDDEN | EMBEDDED | METADATA;
+}
+
+/// The interface version we advertise. v4 is the first that defines
+/// `persist_mode` + `restore_token`, which we implement.
+pub const SCREENCAST_VERSION: u32 = 4;
+
+/// Per-session negotiated selection, keyed by the frontend's
+/// `session_handle` object path.
+#[derive(Clone, Debug, Default)]
+struct ScreenCastSession {
+    app_id: String,
+    /// Bitmask of requested source types (`SelectSources` `types`).
+    source_types: u32,
+    /// Requested cursor mode.
+    cursor_mode: u32,
+    /// Whether the app allowed selecting multiple sources.
+    multiple: bool,
+    /// Requested persistence: 0 none, 1 while-running, 2 until-revoked.
+    persist_mode: u32,
+    /// True once a valid `restore_token` pre-approved this session, so
+    /// `Start` skips the consent prompt (the persisted-share fast path).
+    restored: bool,
+}
+
+/// What a `restore_token` maps back to. Issued at `Start` when the app
+/// asked to persist; consumed at a later `SelectSources`.
+#[derive(Clone, Debug)]
+struct RestoreData {
+    app_id: String,
+    source_types: u32,
+    cursor_mode: u32,
+    multiple: bool,
+    persist_mode: u32,
+}
+
 pub struct ScreenCastBackend {
     ctx: PortalContext,
+    /// Live sessions keyed by `session_handle` path.
+    sessions: Arc<Mutex<HashMap<String, ScreenCastSession>>>,
+    /// Issued restore tokens → the selection they restore. In-memory for
+    /// the compositor session's lifetime, which satisfies `persist_mode`
+    /// 1 (while-running); durable-until-revoked (mode 2) persistence to
+    /// disk is a documented follow-up.
+    restore: Arc<Mutex<HashMap<String, RestoreData>>>,
 }
 
 impl ScreenCastBackend {
     pub fn new(ctx: PortalContext) -> Self {
-        Self { ctx }
+        Self {
+            ctx,
+            sessions: Arc::new(Mutex::new(HashMap::new())),
+            restore: Arc::new(Mutex::new(HashMap::new())),
+        }
     }
 }
 
 #[interface(name = "org.freedesktop.impl.portal.ScreenCast")]
 impl ScreenCastBackend {
-    /// `CreateSession` — no-op consent-wise. Returns response=0 + an
-    /// empty results dict so the frontend can move on to
-    /// `SelectSources`.
+    /// Source types the compositor can capture.
+    #[zbus(property)]
+    async fn available_source_types(&self) -> u32 {
+        source_type::ALL
+    }
+
+    /// Cursor modes the compositor supports.
+    #[zbus(property)]
+    async fn available_cursor_modes(&self) -> u32 {
+        cursor_mode::ALL
+    }
+
+    /// Interface version. Named lowercase to match the spec's `version`
+    /// property (zbus would otherwise PascalCase it to `Version`).
+    #[zbus(property, name = "version")]
+    async fn version(&self) -> u32 {
+        SCREENCAST_VERSION
+    }
+
+    /// `CreateSession` — register the session so `SelectSources`/`Start`
+    /// can carry the negotiated selection. Consent-neutral: returns
+    /// response=0 with empty results.
     async fn create_session(
         &self,
         #[zbus(signal_context)] _ctx: SignalContext<'_>,
         _handle: ObjectPath<'_>,
-        _session_handle: ObjectPath<'_>,
+        session_handle: ObjectPath<'_>,
         app_id: String,
         _options: HashMap<String, OwnedValue>,
     ) -> (u32, HashMap<String, OwnedValue>) {
         tracing::debug!("ScreenCast.CreateSession: app={app_id}");
+        if let Ok(mut s) = self.sessions.lock() {
+            s.insert(
+                session_handle.to_string(),
+                ScreenCastSession {
+                    app_id,
+                    ..Default::default()
+                },
+            );
+        }
         (0, HashMap::new())
     }
 
-    /// `SelectSources` — surface the user consent prompt here. This is
-    /// the step that decides whether the screencast goes ahead.
+    /// `SelectSources` — record what the app wants to capture and surface
+    /// the consent prompt. A valid `restore_token` pre-approves the
+    /// session (no prompt), which is how a persisted share re-attaches
+    /// without re-asking.
     async fn select_sources(
         &self,
         #[zbus(signal_context)] _ctx: SignalContext<'_>,
         #[zbus(header)] hdr: zbus::message::Header<'_>,
         _handle: ObjectPath<'_>,
-        _session_handle: ObjectPath<'_>,
+        session_handle: ObjectPath<'_>,
         app_id: String,
-        _options: HashMap<String, OwnedValue>,
+        options: HashMap<String, OwnedValue>,
     ) -> (u32, HashMap<String, OwnedValue>) {
         tracing::debug!("ScreenCast.SelectSources: app={app_id}");
-        let sender = hdr.sender().cloned().map(OwnedUniqueName::from);
-        let caller = FileChooserBackend::resolve_caller(&self.ctx, sender.as_ref(), &app_id);
-        let cap_template = Capability::Screencast {
-            scope: GrantScope::Once,
+        let key = session_handle.to_string();
+
+        // Parse the negotiated options, clamped to what we support.
+        let mut types =
+            opt_u32(&options, "types").unwrap_or(source_type::MONITOR) & source_type::ALL;
+        if types == 0 {
+            types = source_type::MONITOR;
+        }
+        let mut curs =
+            opt_u32(&options, "cursor_mode").unwrap_or(cursor_mode::EMBEDDED) & cursor_mode::ALL;
+        if curs == 0 {
+            curs = cursor_mode::EMBEDDED;
+        }
+        let mut multiple = opt_bool(&options, "multiple").unwrap_or(false);
+        let mut persist_mode = opt_u32(&options, "persist_mode").unwrap_or(0);
+
+        // A restore token that matches this app pre-approves the session
+        // and restores its previous selection (source types, cursor mode,
+        // multiple, and persist mode).
+        let restored = if let Some(token) = opt_string(&options, "restore_token") {
+            let stored = self
+                .restore
+                .lock()
+                .ok()
+                .and_then(|r| r.get(&token).cloned())
+                .filter(|d| d.app_id == app_id);
+            if let Some(d) = stored {
+                types = d.source_types;
+                curs = d.cursor_mode;
+                multiple = d.multiple;
+                persist_mode = d.persist_mode;
+                true
+            } else {
+                false
+            }
+        } else {
+            false
         };
-        let outcome = flow::resolve(
-            &self.ctx,
-            caller,
-            CapabilityKind::Screencast,
-            cap_template,
-        )
-        .await;
-        let code = if outcome.is_allowed() { 0 } else { 1 };
+
+        // Consent: an active `Always` grant, or a valid restore token,
+        // skips the prompt. Otherwise ask.
+        let allowed = if restored {
+            true
+        } else {
+            let sender = hdr.sender().cloned().map(OwnedUniqueName::from);
+            let caller = FileChooserBackend::resolve_caller(&self.ctx, sender.as_ref(), &app_id);
+            let cap_template = Capability::Screencast {
+                scope: GrantScope::Once,
+            };
+            flow::resolve(&self.ctx, caller, CapabilityKind::Screencast, cap_template)
+                .await
+                .is_allowed()
+        };
+
+        if let Ok(mut s) = self.sessions.lock() {
+            let entry = s.entry(key).or_insert_with(|| ScreenCastSession {
+                app_id: app_id.clone(),
+                ..Default::default()
+            });
+            entry.app_id = app_id;
+            entry.source_types = types;
+            entry.cursor_mode = curs;
+            entry.multiple = multiple;
+            entry.persist_mode = persist_mode;
+            entry.restored = restored;
+        }
+
+        let code = if allowed { 0 } else { 1 };
         (code, HashMap::new())
     }
 
-    /// `Start` — final commit. Mirrors `SelectSources`'s consent (the
-    /// frontend won't call `Start` if `SelectSources` denied, but
-    /// `xdg-desktop-portal` semantics expect us to re-check the grant
-    /// just in case the user revoked between calls). On Allow, calls
-    /// the [`ScreenCastStreamProvisioner`] to allocate a real
-    /// Pipewire node and returns its id + props.
+    /// `Start` — provision a real PipeWire node per selected source and
+    /// return the streams. Issues a fresh `restore_token` when the session
+    /// asked to persist.
     async fn start(
         &self,
         #[zbus(signal_context)] _ctx: SignalContext<'_>,
         #[zbus(header)] hdr: zbus::message::Header<'_>,
         _handle: ObjectPath<'_>,
-        _session_handle: ObjectPath<'_>,
+        session_handle: ObjectPath<'_>,
         app_id: String,
         _parent_window: String,
         options: HashMap<String, OwnedValue>,
     ) -> (u32, HashMap<String, OwnedValue>) {
         tracing::debug!("ScreenCast.Start: app={app_id}");
+        let key = session_handle.to_string();
+
+        // Pull the selection recorded at SelectSources (defaults if the
+        // frontend somehow skipped it).
+        let session = self
+            .sessions
+            .lock()
+            .ok()
+            .and_then(|s| s.get(&key).cloned())
+            .unwrap_or_else(|| ScreenCastSession {
+                app_id: app_id.clone(),
+                source_types: source_type::MONITOR,
+                cursor_mode: cursor_mode::EMBEDDED,
+                ..Default::default()
+            });
+
+        // Re-check consent unless the session was restored from a token.
         let sender = hdr.sender().cloned().map(OwnedUniqueName::from);
         let caller = FileChooserBackend::resolve_caller(&self.ctx, sender.as_ref(), &app_id);
-        let cap_template = Capability::Screencast {
-            scope: GrantScope::Once,
-        };
-        let outcome = flow::resolve(
-            &self.ctx,
-            caller.clone(),
-            CapabilityKind::Screencast,
-            cap_template,
-        )
-        .await;
-        if !outcome.is_allowed() {
-            return (1, HashMap::new());
-        }
-        let req = build_stream_request(&caller, &options);
-        match self.ctx.screencast_provisioner.provision(&req) {
-            Ok(info) => start_response_with_stream(info),
-            Err(e) => {
-                tracing::warn!("screencast: pipewire provision failed: {e}");
-                // Provisioning failed — response=2 (other error) per
-                // the portal contract.
-                (2, HashMap::new())
+        if !session.restored {
+            let cap_template = Capability::Screencast {
+                scope: GrantScope::Once,
+            };
+            let outcome = flow::resolve(
+                &self.ctx,
+                caller.clone(),
+                CapabilityKind::Screencast,
+                cap_template,
+            )
+            .await;
+            if !outcome.is_allowed() {
+                return (1, HashMap::new());
             }
+        }
+
+        // One stream per selected source type (bounded by `multiple`).
+        let (width, height) = size_from_options(&options);
+        let types = selected_source_types(session.source_types, session.multiple);
+        let mut infos: Vec<PipewireStreamInfo> = Vec::with_capacity(types.len());
+        for st in types {
+            let req = PipewireStreamRequest {
+                caller: caller.clone(),
+                width,
+                height,
+                framerate: 30,
+                source_type: st,
+                cursor_mode: session.cursor_mode,
+            };
+            match self.ctx.screencast_provisioner.provision(&req) {
+                Ok(info) => infos.push(info),
+                Err(e) => {
+                    tracing::warn!("screencast: pipewire provision failed: {e}");
+                    return (2, HashMap::new());
+                }
+            }
+        }
+
+        // Persist: issue a restore token if the session asked for it.
+        let restore_token = if session.persist_mode > 0 {
+            let token = uuid::Uuid::new_v4().to_string();
+            if let Ok(mut r) = self.restore.lock() {
+                r.insert(
+                    token.clone(),
+                    RestoreData {
+                        app_id: session.app_id.clone(),
+                        source_types: session.source_types,
+                        cursor_mode: session.cursor_mode,
+                        multiple: session.multiple,
+                        persist_mode: session.persist_mode,
+                    },
+                );
+            }
+            Some(token)
+        } else {
+            None
+        };
+
+        start_response(infos, restore_token, session.persist_mode)
+    }
+
+    /// `OpenPipeWireRemote` — hand back the fd of a PipeWire remote the app
+    /// attaches the provisioned nodes to. See the module docs on where this
+    /// sits relative to the reference frontend.
+    async fn open_pipe_wire_remote(
+        &self,
+        session_handle: ObjectPath<'_>,
+        _app_id: String,
+        _options: HashMap<String, OwnedValue>,
+    ) -> zbus::fdo::Result<zbus::zvariant::OwnedFd> {
+        let key = session_handle.to_string();
+        let known = self
+            .sessions
+            .lock()
+            .ok()
+            .map(|s| s.contains_key(&key))
+            .unwrap_or(false);
+        if !known {
+            return Err(zbus::fdo::Error::AccessDenied(
+                "OpenPipeWireRemote for an unknown ScreenCast session".into(),
+            ));
+        }
+        match self.ctx.screencast_provisioner.open_remote_fd() {
+            Ok(fd) => Ok(zbus::zvariant::OwnedFd::from(fd)),
+            Err(e) => Err(zbus::fdo::Error::Failed(format!(
+                "could not open PipeWire remote: {e}"
+            ))),
         }
     }
 }
 
-/// Build a [`PipewireStreamRequest`] from the negotiated options
-/// the frontend passed to `Start`. v1 reads the `size` (a (u, u))
-/// and falls back to a 1920x1080 default. The framerate is
-/// hard-coded to 30 — Pipewire's own pacing tracks the actual
-/// frame delivery, and the portal doesn't surface a
-/// frontend-negotiated rate at this stage.
-fn build_stream_request(
-    caller: &PortalCaller,
-    options: &HashMap<String, OwnedValue>,
-) -> PipewireStreamRequest {
-    let (width, height) = options
+/// Read a `(u32, u32)` `size` option, defaulting to 1920x1080.
+fn size_from_options(options: &HashMap<String, OwnedValue>) -> (u32, u32) {
+    options
         .get("size")
         .and_then(|v| v.try_clone().ok())
         .and_then(|owned| <(u32, u32)>::try_from(owned).ok())
-        .unwrap_or((1920, 1080));
-    PipewireStreamRequest {
-        caller: caller.clone(),
-        width,
-        height,
-        framerate: 30,
-    }
+        .unwrap_or((1920, 1080))
 }
 
-/// Translate a successfully-provisioned [`PipewireStreamInfo`] into
-/// Start's (response, results) shape.
-///
-/// The `streams` field in `results` is `a(ua{sv})` — an array of
-/// `(node_id, properties)`. v1 returns exactly one stream — the
-/// owner's composed scene — which is the same shape Phase 4 v1 used
-/// for peer-sync. Multi-surface composition lands in v2.
-fn start_response_with_stream(
-    info: PipewireStreamInfo,
+/// Expand a source-type bitmask into the concrete streams to provision.
+/// Always yields at least one (monitor). When `multiple` is false, only
+/// the first (preferring monitor > window > virtual) is kept.
+fn selected_source_types(mask: u32, multiple: bool) -> Vec<u32> {
+    let mut out = Vec::new();
+    for bit in [source_type::MONITOR, source_type::WINDOW, source_type::VIRTUAL] {
+        if mask & bit != 0 {
+            out.push(bit);
+        }
+    }
+    if out.is_empty() {
+        out.push(source_type::MONITOR);
+    }
+    if !multiple {
+        out.truncate(1);
+    }
+    out
+}
+
+fn opt_u32(options: &HashMap<String, OwnedValue>, key: &str) -> Option<u32> {
+    let v = options.get(key)?.try_clone().ok()?;
+    u32::try_from(v).ok()
+}
+
+fn opt_bool(options: &HashMap<String, OwnedValue>, key: &str) -> Option<bool> {
+    let v = options.get(key)?.try_clone().ok()?;
+    bool::try_from(v).ok()
+}
+
+fn opt_string(options: &HashMap<String, OwnedValue>, key: &str) -> Option<String> {
+    let v = options.get(key)?.try_clone().ok()?;
+    String::try_from(v).ok()
+}
+
+/// Build `Start`'s `(response, results)` from the provisioned streams and
+/// optional restore token. The `streams` field is `a(ua{sv})`.
+fn start_response(
+    infos: Vec<PipewireStreamInfo>,
+    restore_token: Option<String>,
+    persist_mode: u32,
 ) -> (u32, HashMap<String, OwnedValue>) {
     let mut results: HashMap<String, OwnedValue> = HashMap::new();
-    let streams: Vec<(u32, HashMap<String, OwnedValue>)> = vec![info.into_stream_tuple()];
-    let v = Value::new(streams);
-    if let Ok(o) = OwnedValue::try_from(v) {
+    let streams: Vec<(u32, HashMap<String, OwnedValue>)> =
+        infos.into_iter().map(|i| i.into_stream_tuple()).collect();
+    if let Ok(o) = OwnedValue::try_from(Value::new(streams)) {
         results.insert("streams".to_string(), o);
+    }
+    if let Some(token) = restore_token {
+        if let Ok(o) = OwnedValue::try_from(Value::new(token)) {
+            results.insert("restore_token".to_string(), o);
+        }
+        if let Ok(o) = OwnedValue::try_from(Value::U32(persist_mode)) {
+            results.insert("persist_mode".to_string(), o);
+        }
     }
     (0, results)
 }
 
-/// Test-only: the original outcome→response helper, kept so the
-/// "deny path returns response=1" assertion can be exercised
-/// without a provisioner. The production path embeds this via
-/// the early return inside `start`.
+#[cfg(test)]
+fn start_response_with_stream(
+    info: PipewireStreamInfo,
+) -> (u32, HashMap<String, OwnedValue>) {
+    start_response(vec![info], None, 0)
+}
+
+/// Test-only: the outcome→response helper, kept so the "deny path returns
+/// response=1" assertion can be exercised without a provisioner.
 #[cfg(test)]
 fn outcome_to_start_response_for_tests(
     outcome: PromptOutcome,
@@ -191,13 +459,12 @@ fn outcome_to_start_response_for_tests(
     if !outcome.is_allowed() {
         return (1, HashMap::new());
     }
-    // Synth a node id of 1 with default props so the test path
-    // matches the production shape.
     start_response_with_stream(PipewireStreamInfo {
         node_id: 1,
         source_type: 1,
         id: 0,
         size: (1920, 1080),
+        position: (0, 0),
     })
 }
 
@@ -240,10 +507,6 @@ mod tests {
         assert!(results.is_empty());
     }
 
-    /// The required brief test —
-    /// `start_returns_non_empty_streams_on_allow`. Verifies the
-    /// streams array carries a real (non-empty) node id when the
-    /// provisioner succeeds.
     #[test]
     fn start_returns_non_empty_streams_on_allow() {
         let info = PipewireStreamInfo {
@@ -251,6 +514,7 @@ mod tests {
             source_type: 1,
             id: 0,
             size: (1280, 720),
+            position: (0, 0),
         };
         let (code, results) = start_response_with_stream(info);
         assert_eq!(code, 0);
@@ -261,41 +525,74 @@ mod tests {
                 .expect("Vec<(u32, dict)>");
         assert_eq!(streams.len(), 1, "must emit exactly one stream");
         assert_eq!(streams[0].0, 99, "node id must round-trip");
-        // The dict must carry `size`, `source_type`, `id`.
         assert!(streams[0].1.contains_key("size"));
         assert!(streams[0].1.contains_key("source_type"));
         assert!(streams[0].1.contains_key("id"));
     }
 
     #[test]
-    fn build_stream_request_reads_size_option() {
+    fn start_response_includes_restore_token_when_persisted() {
+        let info = PipewireStreamInfo {
+            node_id: 3,
+            source_type: 1,
+            id: 0,
+            size: (640, 480),
+            position: (0, 0),
+        };
+        let (code, results) = start_response(vec![info], Some("tok-123".into()), 2);
+        assert_eq!(code, 0);
+        assert!(results.contains_key("restore_token"));
+        assert!(results.contains_key("persist_mode"));
+        // No token => no restore_token/persist_mode keys.
+        let info2 = PipewireStreamInfo {
+            node_id: 4,
+            source_type: 1,
+            id: 0,
+            size: (640, 480),
+            position: (0, 0),
+        };
+        let (_c, results2) = start_response(vec![info2], None, 0);
+        assert!(!results2.contains_key("restore_token"));
+    }
+
+    #[test]
+    fn selected_source_types_respects_multiple_and_mask() {
+        // Single-source: only the first (monitor preferred).
+        assert_eq!(
+            selected_source_types(source_type::MONITOR | source_type::WINDOW, false),
+            vec![source_type::MONITOR]
+        );
+        // Multiple: every requested type.
+        assert_eq!(
+            selected_source_types(source_type::WINDOW | source_type::VIRTUAL, true),
+            vec![source_type::WINDOW, source_type::VIRTUAL]
+        );
+        // Empty mask defaults to monitor.
+        assert_eq!(selected_source_types(0, true), vec![source_type::MONITOR]);
+    }
+
+    #[test]
+    fn size_from_options_reads_and_defaults() {
         let mut opts: HashMap<String, OwnedValue> = HashMap::new();
         let size: (u32, u32) = (640, 480);
         opts.insert(
             "size".to_string(),
             OwnedValue::try_from(Value::new(size)).unwrap(),
         );
-        let caller = PortalCaller::new(WorkspaceId(1), "app");
-        let req = build_stream_request(&caller, &opts);
-        assert_eq!(req.width, 640);
-        assert_eq!(req.height, 480);
+        assert_eq!(size_from_options(&opts), (640, 480));
+        assert_eq!(size_from_options(&HashMap::new()), (1920, 1080));
     }
 
     #[test]
-    fn build_stream_request_defaults_to_1920x1080() {
-        let opts: HashMap<String, OwnedValue> = HashMap::new();
-        let caller = PortalCaller::new(WorkspaceId(1), "app");
-        let req = build_stream_request(&caller, &opts);
-        assert_eq!(req.width, 1920);
-        assert_eq!(req.height, 1080);
+    fn available_types_and_modes_cover_the_spec_bits() {
+        assert_eq!(source_type::ALL, 1 | 2 | 4);
+        assert_eq!(cursor_mode::ALL, 1 | 2 | 4);
     }
 
-    /// End-to-end smoke: the backend's `start` path threads the
-    /// outcome through the provisioner and emits a real stream id.
-    /// Drives via the public Rust API rather than D-Bus so we can
-    /// assert on the provisioner's recorded request log.
+    /// The provisioner records the request the Start path forwards,
+    /// including the selected source type + size.
     #[test]
-    fn screencast_start_through_provisioner_records_request() {
+    fn screencast_provisioner_records_source_type_and_size() {
         let (store, ws_id) = GrantStoreHandle::test_with_workspace(empty_ws(40));
         let queue = PromptQueueHandle::new(PromptResolver::AutoAllow);
         let provisioner = Arc::new(MockScreenCastProvisioner::new_with_node(13, "sc"));
@@ -311,15 +608,15 @@ mod tests {
                 NullFilePickerSpawner::cancel(),
             )),
             screencast_provisioner: sc_handle,
+            remote_input_injector: crate::portal::RemoteInputInjectorHandle::null(),
         };
-        // Drive provisioning via the public flow rather than through
-        // the D-Bus dispatcher (which is exercised in
-        // `tests/portal_test.rs`).
         let req = PipewireStreamRequest {
             caller: PortalCaller::new(ws_id, "org.example"),
             width: 1024,
             height: 768,
             framerate: 30,
+            source_type: source_type::WINDOW,
+            cursor_mode: cursor_mode::HIDDEN,
         };
         let info = ctx
             .screencast_provisioner
@@ -327,8 +624,10 @@ mod tests {
             .expect("provision");
         assert_eq!(info.node_id, 13);
         assert_eq!(info.size, (1024, 768));
+        assert_eq!(info.source_type, source_type::WINDOW);
         let seen = provisioner.requests();
         assert_eq!(seen.len(), 1);
         assert_eq!(seen[0].caller.app_id, "org.example");
+        assert_eq!(seen[0].source_type, source_type::WINDOW);
     }
 }

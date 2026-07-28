@@ -80,11 +80,12 @@ Capabilities are CRDT-persisted (`shell/src/shell/state.rs`):
 
 ```rust
 pub enum Capability {
-    Filesystem { path, mode: FsMode,            scope: GrantScope },
-    Camera     {                                scope: GrantScope },
-    Microphone {                                scope: GrantScope },
-    Screencast {                                scope: GrantScope },
-    Network    { hosts: Option<Vec<String>>,    scope: GrantScope },
+    Filesystem   { path, mode: FsMode,          scope: GrantScope },
+    Camera       {                              scope: GrantScope },
+    Microphone   {                              scope: GrantScope },
+    Screencast   {                              scope: GrantScope },
+    RemoteDesktop{                              scope: GrantScope },
+    Network      { hosts: Option<Vec<String>>,  scope: GrantScope },
 }
 pub enum FsMode    { Read, ReadWrite }
 pub enum GrantScope { Once, Session, Always, Workspace }
@@ -104,12 +105,13 @@ When an unscoped capability request arrives, a `PermissionPrompt` widget pushes 
 
 ### Portal D-Bus backend
 
-The compositor implements the `org.freedesktop.impl.portal.*` backend (`shell/src/portal/`) via `zbus`. We expose three impls under the service:
+The compositor implements the `org.freedesktop.impl.portal.*` backend (`shell/src/portal/`) via `zbus`. We expose these impls under the service:
 
 | Interface                               | Methods                                | Capability flow                                   |
 |-----------------------------------------|----------------------------------------|---------------------------------------------------|
 | `…impl.portal.FileChooser`              | `OpenFile`, `SaveFile`                 | Returns a one-shot file descriptor, not a path    |
-| `…impl.portal.ScreenCast`               | `CreateSession`, `SelectSources`, `Start` | Bound to the requesting app's tab only — never the full output |
+| `…impl.portal.ScreenCast`               | `CreateSession`, `SelectSources`, `Start`, `OpenPipeWireRemote` (+ `AvailableSourceTypes`/`AvailableCursorModes`/`version` props) | Session-tracked selection: source types (monitor/window/virtual), cursor modes (hidden/embedded/metadata), `multiple`, and `persist_mode`+`restore_token` so a re-share skips the prompt. `Start` provisions a real PipeWire node per source; `OpenPipeWireRemote` hands back a scoped remote fd |
+| `…impl.portal.RemoteDesktop`            | `CreateSession`, `SelectDevices`, `Start`, `NotifyPointer*`/`NotifyKeyboard*` (+ `AvailableDeviceTypes`/`version` props) | `SelectDevices` prompts (`Capability::RemoteDesktop`); `Notify*` is gated on the started session's granted device bitmask, then decoded into a `RemoteAction` and injected into the focused surface via the seat |
 | `…impl.portal.Access` (incl. Camera)    | `AccessCamera` flows here              | `/dev/video*` only bound on grant                 |
 
 Per request:
@@ -118,7 +120,7 @@ Per request:
 2. Look up the caller's app-id in `Workspace::grants`. If `Always`/`Workspace`-scoped, grant immediately.
 3. Else push to `pending_grants`; await user response; cache per `GrantScope` rules.
 
-`xdg-desktop-portal`'s config registers `nirios` as the backend for these interfaces. ScreenCast output streams use PipeWire (`shell/src/portal/screencast_pipewire.rs`).
+`xdg-desktop-portal`'s config (`os/usr/share/xdg-desktop-portal/portals/qos.portal`) registers `org.freedesktop.impl.portal.desktop.qos` as the backend for these interfaces. ScreenCast output streams use PipeWire (`shell/src/portal/screencast_pipewire.rs`); the provisioner is a seam (`MockScreenCastProvisioner` for headless/tests, a real libpipewire connection in the production OS build). RemoteDesktop seat injection reuses the same `RemoteInputSink`/seat path as peer-sync remote input.
 
 `tests/portal_test.rs` exercises one round-trip per interface plus prompt-resolution branches. A `PromptResolver::AutoAllow` mode is used in tests so the round-trip doesn't need a human.
 
@@ -185,7 +187,7 @@ When a peer publishes `RemoteInput { peer, surface, event }`:
 
 - `shell/src/sandbox/{mod.rs, profile.rs, spawn.rs, seccomp.rs}` — the bwrap profile + seccomp blob.
 - `shell/src/compositor/bridge.rs` — the per-workspace Wayland bridge socket.
-- `shell/src/portal/{mod.rs, file_chooser.rs, screencast.rs, camera.rs}` — D-Bus impls.
+- `shell/src/portal/{mod.rs, file_chooser.rs, screencast.rs, screencast_pipewire.rs, remote_desktop.rs, camera.rs}` — D-Bus impls.
 - `shell/src/shell/state.rs` — `Capability`, `GrantScope`, `Workspace.grants`.
 - `shell/src/network/invite.rs` — invite tokens.
 - `docs/superpowers/archive/2026-05-02-per-workspace-sandbox-permissions.md` — phase log.

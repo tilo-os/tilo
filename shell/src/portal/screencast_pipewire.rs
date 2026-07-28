@@ -61,6 +61,17 @@ pub struct PipewireStreamRequest {
     /// Target framerate. v1 hard-codes to 30 unless the frontend
     /// asked for a specific rate.
     pub framerate: u32,
+    /// The source type this stream captures: `1` monitor, `2` window,
+    /// `4` virtual (see `ScreenCast.AvailableSourceTypes`). Chosen from
+    /// the user's `SelectSources` selection; the provisioner echoes it
+    /// back on the resulting [`PipewireStreamInfo`] so the frontend
+    /// knows what it's attached to.
+    pub source_type: u32,
+    /// Cursor embedding mode: `1` hidden, `2` embedded, `4` metadata
+    /// (see `ScreenCast.AvailableCursorModes`). The real provisioner
+    /// uses this to decide whether to composite the cursor into the
+    /// captured frames or ship it as separate metadata.
+    pub cursor_mode: u32,
 }
 
 impl Default for PipewireStreamRequest {
@@ -70,6 +81,8 @@ impl Default for PipewireStreamRequest {
             width: 1920,
             height: 1080,
             framerate: 30,
+            source_type: 1,
+            cursor_mode: 2,
         }
     }
 }
@@ -89,14 +102,18 @@ pub struct PipewireStreamInfo {
     pub id: u32,
     /// `(width, height)` of the stream's video frames.
     pub size: (u32, u32),
+    /// `(x, y)` position in the compositor coordinate space. Per the
+    /// ScreenCast spec this is **only** meaningful for monitor sources;
+    /// [`Self::into_stream_tuple`] omits it for window / virtual streams.
+    pub position: (i32, i32),
 }
 
 impl PipewireStreamInfo {
     /// Serialise into the `(node_id, properties_dict)` pair the
     /// `streams` field of `ScreenCast.Start`'s response expects.
     ///
-    /// `properties_dict` carries `id`, `size`, and `source_type`
-    /// per the xdg-desktop-portal spec.
+    /// `properties_dict` carries `id`, `size`, `source_type`, and — for
+    /// monitor sources — `position`, per the xdg-desktop-portal spec.
     pub fn into_stream_tuple(self) -> (u32, HashMap<String, OwnedValue>) {
         let mut props: HashMap<String, OwnedValue> = HashMap::new();
         if let Ok(v) = OwnedValue::try_from(Value::U32(self.id)) {
@@ -108,6 +125,13 @@ impl PipewireStreamInfo {
         let size = (self.size.0, self.size.1);
         if let Ok(v) = OwnedValue::try_from(Value::new(size)) {
             props.insert("size".to_string(), v);
+        }
+        // `position` is only defined for monitor sources (source_type 1).
+        if self.source_type == 1 {
+            let pos = (self.position.0, self.position.1);
+            if let Ok(v) = OwnedValue::try_from(Value::new(pos)) {
+                props.insert("position".to_string(), v);
+            }
         }
         (self.node_id, props)
     }
@@ -143,6 +167,18 @@ pub trait ScreenCastStreamProvisioner: Send + Sync {
         &self,
         req: &PipewireStreamRequest,
     ) -> Result<PipewireStreamInfo, ProvisioningError>;
+
+    /// Open a PipeWire remote connection and hand back its fd.
+    ///
+    /// This is what `ScreenCast.OpenPipeWireRemote` returns to the
+    /// application: a file descriptor the app passes to
+    /// `pw_context_connect_fd` so it can attach to the nodes provisioned
+    /// by [`Self::provision_stream`]. The real provisioner returns the fd
+    /// from the compositor's own PipeWire daemon connection (scoped so the
+    /// app can only see the nodes it was granted). The mock returns a real
+    /// but inert OS fd so the D-Bus fd-passing path is exercised end to end
+    /// without a PipeWire daemon.
+    fn open_remote_fd(&self) -> Result<std::os::fd::OwnedFd, ProvisioningError>;
 }
 
 /// Cheap-clone wrapper around `Arc<dyn ScreenCastStreamProvisioner>`.
@@ -161,6 +197,11 @@ impl ScreenCastStreamProvisionerHandle {
         req: &PipewireStreamRequest,
     ) -> Result<PipewireStreamInfo, ProvisioningError> {
         self.inner.provision_stream(req)
+    }
+
+    /// Open a PipeWire remote fd for `ScreenCast.OpenPipeWireRemote`.
+    pub fn open_remote_fd(&self) -> Result<std::os::fd::OwnedFd, ProvisioningError> {
+        self.inner.open_remote_fd()
     }
 }
 
@@ -214,10 +255,24 @@ impl ScreenCastStreamProvisioner for MockScreenCastProvisioner {
         };
         Ok(PipewireStreamInfo {
             node_id,
-            source_type: 1, // monitor
+            // Echo the requested source type so a window/virtual selection
+            // round-trips through the stream props rather than being
+            // silently downgraded to monitor.
+            source_type: req.source_type,
             id: 0,
             size: (req.width, req.height),
+            position: (0, 0),
         })
+    }
+
+    fn open_remote_fd(&self) -> Result<std::os::fd::OwnedFd, ProvisioningError> {
+        // A real but inert fd (`/dev/null`) so the `OpenPipeWireRemote`
+        // D-Bus method actually passes a usable descriptor over the wire.
+        // The production provisioner returns the fd of the compositor's
+        // scoped PipeWire daemon connection instead.
+        let file = std::fs::File::open("/dev/null")
+            .map_err(|e| ProvisioningError::DaemonUnreachable(e.to_string()))?;
+        Ok(std::os::fd::OwnedFd::from(file))
     }
 }
 
@@ -234,6 +289,8 @@ mod tests {
             width: 1920,
             height: 1080,
             framerate: 30,
+            source_type: 1,
+            cursor_mode: 2,
         };
         let a = m.provision_stream(&req).expect("first stream");
         let b = m.provision_stream(&req).expect("second stream");
@@ -241,7 +298,7 @@ mod tests {
         assert_eq!(b.node_id, 8);
         // size matches the request.
         assert_eq!(a.size, (1920, 1080));
-        // source_type 1 == monitor — v1 only emits monitor streams.
+        // source_type 1 == monitor — echoed from the request.
         assert_eq!(a.source_type, 1);
     }
 
@@ -254,6 +311,8 @@ mod tests {
             width: 1280,
             height: 720,
             framerate: 30,
+            source_type: 1,
+            cursor_mode: 2,
         };
         let _ = h.provision(&req).unwrap();
         let seen = m.requests();
@@ -269,6 +328,7 @@ mod tests {
             source_type: 1,
             id: 0,
             size: (640, 480),
+            position: (100, 200),
         };
         let (node_id, props) = info.into_stream_tuple();
         assert_eq!(node_id, 42);
@@ -278,5 +338,49 @@ mod tests {
         assert!(props.contains_key("size"));
         assert!(props.contains_key("source_type"));
         assert!(props.contains_key("id"));
+        // `position` is present for monitor sources.
+        assert!(props.contains_key("position"));
+    }
+
+    #[test]
+    fn stream_info_omits_position_for_window_source() {
+        // Window (2) / virtual (4) sources have no compositor-space
+        // position; the spec says `position` is monitor-only.
+        let info = PipewireStreamInfo {
+            node_id: 9,
+            source_type: 2,
+            id: 0,
+            size: (800, 600),
+            position: (5, 5),
+        };
+        let (_node, props) = info.into_stream_tuple();
+        assert!(!props.contains_key("position"));
+        assert!(props.contains_key("size"));
+    }
+
+    #[test]
+    fn mock_open_remote_fd_returns_real_fd() {
+        use std::os::fd::AsRawFd;
+        let m = MockScreenCastProvisioner::new_with_node(1, "test");
+        let fd = m.open_remote_fd().expect("mock opens a real fd");
+        assert!(fd.as_raw_fd() >= 0, "must be a valid OS fd");
+    }
+
+    #[test]
+    fn mock_echoes_requested_source_type() {
+        let m = MockScreenCastProvisioner::new_with_node(1, "test");
+        let mut req = PipewireStreamRequest {
+            caller: PortalCaller::new(WorkspaceId(1), "app"),
+            width: 100,
+            height: 100,
+            framerate: 30,
+            source_type: 4, // virtual
+            cursor_mode: 4,
+        };
+        let info = m.provision_stream(&req).unwrap();
+        assert_eq!(info.source_type, 4, "virtual selection round-trips");
+        req.source_type = 2; // window
+        let info2 = m.provision_stream(&req).unwrap();
+        assert_eq!(info2.source_type, 2);
     }
 }
