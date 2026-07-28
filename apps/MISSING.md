@@ -13,7 +13,26 @@ empty state proves nothing. (I violated this by showing pdf_viewer from an empty
 
 ---
 
+## chrome consistency — the OS owns window chrome (fleet, HIG)
+The compositor draws the window title/app-name/logo; an app must not paint its own
+app-name/logo strip (and video must be immersive, §1e). Swept this pass — each
+verified by an offscreen shot (header gone, functional controls intact) + tests:
+- [x] Dropped the app-drawn name/logo header from calculator, monitor,
+      software_store, themes, video_editor, tube, disks, firewall, logs, totp —
+      keeping functional toolbars and promoting any real status line (drive
+      summary / firewall state / account count) to primary.
+- [x] video-player: edge-to-edge immersive; the persistent 48px bar is replaced by
+      a floating title+Open overlay that auto-hides with the controls.
+- [ ] Follow-up: route each app's title into OS chrome via `AppWidget::app_title`
+      (blocked: the standalone `ui::App` runner doesn't consume it yet; only the
+      compositor does, and these apps don't implement `AppWidget`).
+- [ ] Follow-up: software_store still shows an app tile+"Software" wordmark inside
+      its overlay nav drawer; tube keeps a small play-glyph brand at the nav-rail
+      head. Minor, drawer/rail-local — revisit if tightening further.
+
 ## calculator
+- [x] OS owns window chrome: dropped the "=" logo + "Calculator" wordmark from the
+      topbar; mode + RAD/DEG controls take the full width → fixed.
 - [x] Cards grow-to-fit (up to 96px max) then scroll; fractions + 3D default show
       in full, list reflows, never clips → fixed.
 - [x] Real CRDT editor: Text-backed diff-splice buffer, undo/redo via ui::State,
