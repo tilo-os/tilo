@@ -24,5 +24,5 @@ path = "src/lib.rs"
 # linkage, no GPL propagation (speech-dispatcher sits behind the socket).
 # 0.10.2 is the current release on crates.io as of 2026-06-30.
 ssip-client = "0.10"
-thiserror = "1"
+thiserror.workspace = true
 log = "0.4"
