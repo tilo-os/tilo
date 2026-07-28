@@ -943,10 +943,16 @@ mod tests {
         // empty starter — one local user, a `#general` with no messages — and
         // never the fabricated demo (its people, channels, and the screenshare
         // conversation thread).
+        // Pin the data dir to an empty temp path so the live sync's persistence
+        // load can't adopt a real chat store left on the dev machine — the test
+        // must exercise the fresh-first-run seed, not whatever is on disk.
+        let data = tempfile::tempdir().unwrap();
+        unsafe { std::env::set_var("QOS_CHAT_DATA", data.path()) };
         let mut app = ChatApp::new_ephemeral();
         app.is_live = true; // a live view with no disk behind it
         let mut doc = AutoCommit::new();
         app.sync(&mut doc, &automerge::ROOT);
+        unsafe { std::env::remove_var("QOS_CHAT_DATA") };
 
         let ws = ChatDoc::list_workspaces(&doc);
         assert!(ws.iter().any(|w| w.id == "ws_home"), "the real starter workspace");

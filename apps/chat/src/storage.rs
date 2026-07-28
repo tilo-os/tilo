@@ -27,10 +27,15 @@ use std::time::{Duration, Instant};
 /// File name of the Automerge save inside the data directory.
 pub const WORKSPACE_FILE: &str = "workspace.automerge";
 
-/// Resolve the data directory: `$XDG_DATA_HOME/qos-chat`, falling back to
-/// `$HOME/.local/share/qos-chat`. `None` only if neither can be located
-/// (extreme minimal containers) — the binary then runs in-memory only.
+/// Resolve the data directory: `$QOS_CHAT_DATA` when set (the OS points chat
+/// at a per-sandbox store, and tests pin a temp dir here to stay hermetic),
+/// else `$XDG_DATA_HOME/qos-chat`, falling back to `$HOME/.local/share/qos-chat`.
+/// `None` only if none can be located (extreme minimal containers) — the binary
+/// then runs in-memory only.
 pub fn data_dir() -> Option<PathBuf> {
+    if let Some(dir) = std::env::var_os("QOS_CHAT_DATA") {
+        return Some(PathBuf::from(dir));
+    }
     dirs::data_dir()
         .or_else(|| dirs::home_dir().map(|h| h.join(".local/share")))
         .map(|d| d.join("qos-chat"))
