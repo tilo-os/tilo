@@ -51,17 +51,20 @@ pub struct OverlayFlags {
 /// unless the user explicitly widens or narrows.
 ///
 /// The scope is seeded by which chord opened the palette:
-/// - `Ctrl+K` → [`SearchScope::Workspace`] (every provider, this workspace)
+/// - `Ctrl+K` → [`SearchScope::ActiveApp`] (the focused app's own
+///   resources and actions — "search in what I am looking at")
 /// - `Super+K` / `Super+Space` / `Alt+Space` → [`SearchScope::All`]
+///   (every app plus full-text over the filesystem — "search the
+///   machine", and the only scope that offers to launch something you
+///   do not already have open)
 ///
-/// **No chord narrows to a single app.** [`SearchScope::ActiveApp`] drops
-/// every provider that does not own the focused tab, so a palette opened
-/// in it answers "Terminal" with nothing at all while Terminal sits
-/// installed one keystroke away. A scope that can empty the result set
-/// has to be something the user asked for and can see they asked for:
-/// it is reached only by clicking the focused group's search affordance
-/// or the scope pill itself, and its pill says `Only <App>` so an empty
-/// list explains itself.
+/// Seeding a narrowing scope is safe because it degrades rather than
+/// emptying: when no provider claims the focused tab — a foreign
+/// Wayland surface, say — [`SearchScope::ActiveApp`] allows every
+/// provider, and with no tab focused at all the palette widens to
+/// [`SearchScope::All`]. The pill labels the narrow case `Only <App>`,
+/// so a short result list is attributable to the scope rather than read
+/// as a broken search.
 ///
 /// The `Alt+Space` binding is a nested-friendly Super substitute: when
 /// the compositor runs as a Wayland CLIENT the host DE (GNOME etc.)
@@ -69,8 +72,8 @@ pub struct OverlayFlags {
 /// preserve global-search reachability inside a dev window.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum SearchScope {
-    /// Scoped to the currently focused tab's content. Never seeded by a
-    /// keyboard chord — see the type-level note.
+    /// Scoped to the currently focused tab's content. Seeded by
+    /// `Ctrl+K` and by the focused group's search affordance.
     ActiveApp,
     #[default]
     Workspace,

@@ -3705,24 +3705,29 @@ impl Widget for ShellOverlayHost {
                 if let Key::Character(s) = logical_key {
                     if s.as_str().eq_ignore_ascii_case("k") {
                         use crate::shell::chrome_state::SearchScope;
-                        // Super+K (with or without Ctrl) → every
-                        // workspace. Ctrl+K → this workspace, but still
-                        // every provider.
+                        // The two entry points are different questions,
+                        // and the chords say which one you are asking.
                         //
-                        // Neither chord narrows to the focused app.
-                        // `ActiveApp` drops every provider that doesn't
-                        // own the focused tab, so seeding it here meant
-                        // Ctrl+K → "terminal" → Enter launched nothing
-                        // whenever any app tab had focus: the
-                        // Applications provider was never asked. A scope
-                        // that can empty the result set is something the
-                        // user narrows to on purpose (the group's search
-                        // affordance, or the scope pill), never
-                        // something a chord assumes for them.
+                        // Ctrl+K is "search in what I am looking at" —
+                        // pre-scoped to the focused app's own resources,
+                        // so it answers about your notes, your cells,
+                        // your messages. Super+K is "search the machine"
+                        // — every app plus full-text over the
+                        // filesystem, and the only one that offers to
+                        // launch something you don't have open.
+                        //
+                        // Narrowing is safe to seed because it degrades:
+                        // when no provider claims the focused tab (a
+                        // foreign Wayland surface, say) `ActiveApp`
+                        // allows every provider, and with nothing
+                        // focused at all `open_palette_with_scope`
+                        // widens it to `All`. So the scope can only be
+                        // narrow when there is genuinely something
+                        // narrow to search.
                         let scope = if super_down {
                             SearchScope::All
                         } else {
-                            SearchScope::Workspace
+                            SearchScope::ActiveApp
                         };
                         self.open_palette_with_scope(scope);
                         // Fire an initial refresh so the palette lands
@@ -8694,21 +8699,24 @@ mod tests {
         .unwrap();
     }
 
-    /// Ctrl+K, type an installed app's name, and the Applications
-    /// provider must answer — *while an app tab holds focus*, which is
-    /// every moment after the first launch.
+    /// The two chords ask different questions, and each must answer its
+    /// own.
     ///
-    /// `bootstrap_default`'s active tab is Notes, which `NotesProvider`
-    /// claims via `owns_tab`. Seeding `SearchScope::ActiveApp` from the
-    /// chord therefore narrowed the fanout to the notes provider alone
-    /// and the palette offered nothing for "Terminal" — Enter launched
-    /// nothing, with no visible reason. This drives the whole production
-    /// chain: `handle_event` → `open_palette_with_scope` →
+    /// `Ctrl+K` is scoped to the focused app, so with a Notes tab in
+    /// front it searches notes — an installed app you do not have open
+    /// is deliberately *not* among its answers. `Super+K` is the global
+    /// surface, and it must offer that app.
+    ///
+    /// The precondition matters: `bootstrap_default`'s active tab is
+    /// Notes, which `NotesProvider` claims via `owns_tab`. Without a
+    /// claiming provider `ActiveApp` allows everything and the narrow
+    /// half of this test would pass vacuously. Drives the whole
+    /// production chain: `handle_event` → `open_palette_with_scope` →
     /// `refresh_search_results` → `SearchRegistry::query` →
     /// `ApplicationsProvider` → `launcher::gui_apps`.
     #[test]
     #[serial_test::serial(process_env)]
-    fn ctrl_k_still_finds_installed_apps_when_an_app_tab_has_focus() {
+    fn ctrl_k_scopes_to_the_focused_app_and_super_k_reaches_installed_apps() {
         use crate::shell::chrome_state::SearchScope;
 
         let tmp = tempfile::tempdir().unwrap();
@@ -8732,17 +8740,43 @@ mod tests {
              provider, otherwise ActiveApp scope excludes nothing"
         );
 
-        let mods = Modifiers::from(ModifiersState::CONTROL);
-        assert!(pump(&mut h, &key_press(Key::Character("k".into())), &mods));
+        let doc = AutoCommit::new();
 
-        assert_ne!(
+        // Ctrl+K: scoped to the app in front of you.
+        let ctrl = Modifiers::from(ModifiersState::CONTROL);
+        assert!(pump(&mut h, &key_press(Key::Character("k".into())), &ctrl));
+        assert_eq!(
             h.chrome.borrow().search_scope,
             SearchScope::ActiveApp,
-            "a keyboard chord must not narrow the palette to one app"
+            "Ctrl+K searches within the focused app"
+        );
+        h.host.palette.set_query("zzyzx");
+        h.host.refresh_search_results(&doc, &automerge::ROOT);
+        assert!(
+            !h.host
+                .search_results
+                .iter()
+                .any(|r| r.provider_id == "applications"),
+            "scoped to Notes, an app that is not open is not an answer; got {:?}",
+            h.host
+                .search_results
+                .iter()
+                .map(|r| (&r.provider_id, &r.title))
+                .collect::<Vec<_>>()
         );
 
+        // Super+K: the global surface, and the one that launches.
+        // Closed first so the chord opens the palette rather than
+        // toggling the already-open one shut.
+        h.host.palette_visible = false;
+        let sup = Modifiers::from(ModifiersState::SUPER);
+        assert!(pump(&mut h, &key_press(Key::Character("k".into())), &sup));
+        assert_eq!(
+            h.chrome.borrow().search_scope,
+            SearchScope::All,
+            "Super+K searches the machine"
+        );
         h.host.palette.set_query("zzyzx");
-        let doc = AutoCommit::new();
         h.host.refresh_search_results(&doc, &automerge::ROOT);
 
         let hit = h
