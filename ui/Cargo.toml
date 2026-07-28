@@ -63,6 +63,10 @@ runtime-identity = { path = "../crates/runtime/runtime-identity" }
 # owned by the caller (the shell's network actor) that hands the
 # already-joined session in.
 qos-relay = { path = "../crates/hosting/qos-relay" }
+# The canonical per-package Automerge store. Living here rather than in
+# each app is what makes persistence a three-line change in an app's `main`
+# instead of a bespoke storage module per app.
+app-state = { path = "../crates/system/app-state" }
 automerge = "0.8.0"
 # Diagnostic event/handler tracing. Off by default at WARN; turn up with
 # `RUST_LOG=ui=debug` to see every MouseInput, CursorMoved, KeyboardInput

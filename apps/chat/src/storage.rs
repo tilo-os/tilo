@@ -14,8 +14,11 @@
 //! atomically (temp file + rename) so a crash mid-write can't corrupt the
 //! store.
 //!
-//! `ui` itself never touches disk (its `State::save`/`load` only convert
-//! to/from bytes in memory), so persistence is owned here by the app.
+//! This module predates `ui::persist`, which now persists the app's
+//! `ui::State::doc` for every app from one place. It is kept because the
+//! file it wrote is where existing users' chat history lives: `main`
+//! passes that path to `ui::persist::open_migrating`, which merges it into
+//! the shared store on first launch. Nothing writes through here any more.
 
 use std::io;
 use std::path::{Path, PathBuf};
