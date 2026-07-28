@@ -1962,6 +1962,24 @@ impl WordProcessorWidget {
     pub fn model(&self) -> &WordProcessor {
         &self.inner
     }
+    /// Open or close the version-history strip — the same thing the toolbar's
+    /// History button does. Public so a host, a headless scenario, or the
+    /// `--shots` renderer can put the editor in that state without
+    /// synthesising a toolbar click.
+    pub fn toggle_history(&mut self, doc: &mut AutoCommit) {
+        self.apply_tool(doc, ToolAction::ToggleHistory);
+    }
+
+    /// True while the version-history strip is open.
+    pub fn history_open(&self) -> bool {
+        self.history.is_open()
+    }
+
+    /// The version rows currently on the history strip, oldest first.
+    pub fn history_entries(&self) -> &[ui::HistoryEntry] {
+        self.history.entries()
+    }
+
     pub fn model_mut(&mut self) -> &mut WordProcessor {
         &mut self.inner
     }
