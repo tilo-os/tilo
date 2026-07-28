@@ -166,6 +166,13 @@ impl HistoryScrubber {
         self.rect
     }
 
+    /// True while the handle is latched to the pointer. A host that routes
+    /// events by hit-test must keep forwarding to the scrubber while this is
+    /// set, or a drag that leaves the strip stops tracking mid-gesture.
+    pub fn is_dragging(&self) -> bool {
+        self.is_dragging
+    }
+
     /// Builder: install a preview callback.
     pub fn on_preview<F: FnMut(&HistoryEntryId) + 'static>(mut self, f: F) -> Self {
         self.on_preview = Some(Box::new(f));

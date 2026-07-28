@@ -340,6 +340,8 @@ enum ToolAction {
     ToggleRuler,
     /// Toggle the document outline / navigation pane (left side).
     ToggleOutline,
+    /// Toggle the version-history strip under the canvas.
+    ToggleHistory,
     /// Generate (or regenerate) a table of contents from the document headings.
     InsertToc,
     /// Open the "New ▾" template picker menu (lists every [`crate::Template`];
@@ -1709,6 +1711,9 @@ pub struct WordProcessorWidget {
     outline_open: bool,
     /// The outline pane rect in screen space, cached each frame for hit-testing.
     outline_rect: Rect,
+    /// Version-history strip under the canvas: the document's own change graph
+    /// rendered as a scrubber. Toggled from the toolbar's "History" button.
+    history: crate::history_panel::HistoryPanel,
     /// Clickable outline entries this frame: `(rect, heading_block_id)`. A click
     /// scrolls that heading into view.
     outline_hits: Vec<(Rect, String)>,
@@ -1882,6 +1887,7 @@ impl WordProcessorWidget {
             outline_open: false,
             outline_rect: Rect::ZERO,
             outline_hits: Vec::new(),
+            history: crate::history_panel::HistoryPanel::new(),
             // Overwritten at the top of every `draw` from the live theme.
             chrome: ChromeColors::for_theme(&Theme::dark()),
             edits_since_autosave: 0,
@@ -3843,6 +3849,7 @@ fn tool_action_a11y_label(a: ToolAction) -> String {
         ToolAction::ToggleStyles => "a11y-styles-panel",
         ToolAction::ToggleRuler => "a11y-ruler",
         ToolAction::ToggleOutline => "a11y-document-outline",
+        ToolAction::ToggleHistory => "a11y-version-history",
         ToolAction::InsertToc => "a11y-insert-toc",
         ToolAction::NewMenu => "a11y-new-from-template",
         ToolAction::TextColor(c) => {
@@ -4019,6 +4026,11 @@ impl Widget for WordProcessorWidget {
                 self.margins = Edges { top: t, right: r, bottom: b, left: l };
             }
         }
+        // Re-derive the version-history track when the change graph has moved.
+        // Cheap when it hasn't: `refresh` compares heads first.
+        if self.history.is_open() {
+            self.history.refresh(state);
+        }
         self.dirty = true;
     }
 
@@ -4059,6 +4071,10 @@ impl Widget for WordProcessorWidget {
 
         let status_top = (full.y1 - STATUS_H).max(full.y0 + tb_h);
         let layout_bar_top = (status_top - LAYOUT_BAR_H).max(full.y0 + tb_h);
+        // Version-history strip: a band between the canvas and the layout bar,
+        // so the page shrinks rather than the history painting over the text.
+        let history_h = self.history.band_height();
+        let history_top = (layout_bar_top - history_h).max(full.y0 + tb_h);
         // Reserve the styles panel out of the canvas so the page re-centers in the
         // remaining width (and scrolled content never paints under the panel).
         let canvas_right = if self.styles_panel_open {
@@ -4096,7 +4112,7 @@ impl Widget for WordProcessorWidget {
         // fixed-height strip while the page scrolls/zooms; its tick + marker
         // positions are mapped through the zoom so they track the page edge.
         let ruler_h = if self.ruler_on { RULER_H } else { 0.0 };
-        let canvas = Rect::new(canvas_left, full.y0 + tb_h + recovery_h + find_h + ruler_h, canvas_right, layout_bar_top);
+        let canvas = Rect::new(canvas_left, full.y0 + tb_h + recovery_h + find_h + ruler_h, canvas_right, history_top);
         scene.fill(Fill::NonZero, transform, self.chrome.canvas, None, &canvas);
 
         // Zoom anchor: the canvas top, horizontally centered. The page+content
@@ -5254,11 +5270,16 @@ impl Widget for WordProcessorWidget {
         // layout bar). Drawn after `self.laid` is set so the active-heading
         // highlight reflects this frame's pagination.
         if self.outline_open {
-            let pane = Rect::new(full.x0, full.y0 + tb_h, canvas_left, layout_bar_top);
+            let pane = Rect::new(full.x0, full.y0 + tb_h, canvas_left, history_top);
             self.draw_outline_pane(scene, transform, text_renderer, pane);
         } else {
             self.outline_rect = Rect::ZERO;
             self.outline_hits.clear();
+        }
+
+        if history_h > 0.0 {
+            let band = Rect::new(full.x0, history_top, full.x1, layout_bar_top);
+            self.history.draw(scene, transform, text_renderer, theme, presence, band);
         }
 
         let lbar = Rect::new(full.x0, layout_bar_top, full.x1, status_top);
@@ -5278,6 +5299,34 @@ impl Widget for WordProcessorWidget {
             && self.pump_color_picker(event, scale_factor, modifiers, state, _path, handled)
         {
             return;
+        }
+        // The version-history strip captures pointer input over its own band
+        // (and keeps capturing while its handle is being dragged, so a gesture
+        // that wanders off the strip still tracks). A restore writes into the
+        // open transaction; flagging `needs_commit` hands the commit to
+        // `App::commit_action`, so it lands on the undo stack stamped and
+        // attributed exactly like a typed edit.
+        if self.history.is_open() {
+            let at = match event {
+                WindowEvent::CursorMoved { position, .. } => {
+                    Point::new(position.x / scale_factor, position.y / scale_factor)
+                }
+                _ => self.pointer,
+            };
+            if self.history.band().contains(at) || self.history.is_dragging() {
+                let outcome =
+                    self.history
+                        .handle_event(event, scale_factor, modifiers, state, _path);
+                if outcome.restored {
+                    self.needs_commit = true;
+                    self.history.follow_document();
+                    self.refresh_blocks(state);
+                }
+                if outcome.handled {
+                    *handled = true;
+                    return;
+                }
+            }
         }
         // The toolbar may have wrapped to several rows; hit-test against its
         // actual bottom (`tb_h`), matching `draw`.
@@ -5536,6 +5585,7 @@ impl Widget for WordProcessorWidget {
                             ToolAction::ToggleStyles
                                 | ToolAction::ToggleRuler
                                 | ToolAction::ToggleOutline
+                                | ToolAction::ToggleHistory
                                 | ToolAction::NewMenu
                         ) {
                             self.needs_commit = true;
@@ -6312,6 +6362,14 @@ impl WordProcessorWidget {
             ToolAction::ToggleStyles => self.styles_panel_open = !self.styles_panel_open,
             ToolAction::ToggleRuler => self.ruler_on = !self.ruler_on,
             ToolAction::ToggleOutline => self.outline_open = !self.outline_open,
+            ToolAction::ToggleHistory => {
+                self.history.toggle();
+                if self.history.is_open() {
+                    // Derive the timeline the moment the strip opens, rather
+                    // than waiting for the next document change.
+                    self.history.refresh(state);
+                }
+            }
             ToolAction::InsertToc => self.generate_toc(state),
             ToolAction::NewMenu => self.open_new_menu(),
         }
@@ -7345,6 +7403,7 @@ impl WordProcessorWidget {
         add(ToolAction::ToggleRuler, &t("toolbar-ruler"), 60.0, self.ruler_on);
         // Navigation: outline pane toggle + table-of-contents generator.
         add(ToolAction::ToggleOutline, &t("toolbar-outline"), 72.0, self.outline_open);
+        add(ToolAction::ToggleHistory, &t("toolbar-history"), 68.0, self.history.is_open());
         add(ToolAction::InsertToc, &t("toolbar-toc"), 48.0, false);
         drop(add);
 
@@ -7582,7 +7641,7 @@ mod tests {
     use taffy::AvailableSpace;
     use ui::permissions::PermissionContext;
 
-    fn pipeline_draw(wp: &mut WordProcessorWidget, state: &mut ui::State, w: u32, h: u32) {
+    pub(super) fn pipeline_draw(wp: &mut WordProcessorWidget, state: &mut ui::State, w: u32, h: u32) {
         pipeline_draw_themed(wp, state, w, h, &Theme::dark());
     }
 
@@ -8009,6 +8068,7 @@ mod tests {
                     | ToolAction::ToggleStyles
                     | ToolAction::ToggleRuler
                     | ToolAction::ToggleOutline
+                    | ToolAction::ToggleHistory
                     | ToolAction::InsertToc
                     | ToolAction::NewMenu
             )
@@ -9675,7 +9735,7 @@ mod tests {
     }
 
     /// Drive a real left-click at `pt` through the production `handle_event`.
-    fn left_click(wp: &mut WordProcessorWidget, state: &mut ui::State, pt: Point) {
+    pub(super) fn left_click(wp: &mut WordProcessorWidget, state: &mut ui::State, pt: Point) {
         let taffy: TaffyTree<()> = TaffyTree::new();
         let node = NodeId::new(0);
         let mods = Modifiers::default();
@@ -11126,5 +11186,205 @@ mod tests {
             wp.open_color_picker();
             render_review_png(&mut wp, &mut state, w, h, &dir, "color-picker");
         }
+    }
+}
+
+// ---- version-history strip ------------------------------------------------
+//
+// These drive the real production path end to end: the toolbar action that
+// opens the strip, the strip's own hit-testing through `handle_event`, and the
+// restore that writes a forward change into the live document.
+#[cfg(test)]
+mod history_strip_tests {
+    use super::tests::{left_click, pipeline_draw};
+    use super::*;
+
+    /// Document text as the reader sees it, joined across blocks.
+    fn body(state: &ui::State) -> String {
+        let c = qdoc::model::open(&state.doc, &state.root).expect("qdoc schema");
+        qdoc::model::materialize(&state.doc, &c)
+            .blocks
+            .iter()
+            .map(|b| b.text.clone())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// An editor holding a document with three committed versions, authored by
+    /// two identities — the second edit arrives from a peer, merged the way
+    /// collaboration merges it.
+    fn editor_with_history(w: u32, h: u32) -> (WordProcessorWidget, ui::State) {
+        let mut state = ui::State::new();
+        state.doc.set_actor(automerge::ActorId::from("alice".as_bytes()));
+        let mut wp = WordProcessorWidget::new();
+        wp.sync(&mut state.doc, &state.root);
+        state.commit_action(None, None);
+
+        wp.model_mut().insert_str(&mut state.doc, "first");
+        state.commit_action(None, None);
+
+        // Bob forks from Alice's state, edits under his own actor, and syncs
+        // back — the same shape `load_incremental` produces on a live peer.
+        let mut bob = state.doc.fork();
+        bob.set_actor(automerge::ActorId::from("bob".as_bytes()));
+        {
+            let c = qdoc::model::open(&bob, &state.root).expect("qdoc schema");
+            let blocks = qdoc::model::materialize(&bob, &c).blocks;
+            let mut ids = qdoc::IdGen::new(bob.get_actor().to_hex_string());
+            let mut dm = qdoc::DocMut { doc: &mut bob, c: &c, ids: &mut ids };
+            dm.splice_text(&blocks[0].id, 5, 0, " and second");
+        }
+        qdoc::history::commit_stamped(&mut bob);
+        state.doc.merge(&mut bob).expect("peers merge");
+
+        pipeline_draw(&mut wp, &mut state, w, h);
+        (wp, state)
+    }
+
+    /// The toolbar's History button opens a strip whose ticks are the
+    /// document's own versions, attributed to the identities that made them.
+    /// No seeded demo data anywhere in this path.
+    #[test]
+    fn the_history_strip_shows_this_documents_real_versions() {
+        let (mut wp, mut state) = editor_with_history(1000, 700);
+        assert!(!wp.history.is_open(), "the strip starts closed");
+
+        wp.apply_tool(&mut state.doc, ToolAction::ToggleHistory);
+        pipeline_draw(&mut wp, &mut state, 1000, 700);
+        assert!(wp.history.is_open(), "the toolbar action opens it");
+
+        let entries = wp.history.entries();
+        assert!(
+            entries.len() >= 3,
+            "schema init plus two authored edits: {:?}",
+            entries.iter().map(|e| (&e.author.name, &e.summary)).collect::<Vec<_>>()
+        );
+        let names: Vec<&str> = entries.iter().map(|e| e.author.name.as_str()).collect();
+        assert!(
+            names.contains(&"alice") && names.contains(&"bob"),
+            "both identities are named from the change graph, got {names:?}"
+        );
+        let summaries: Vec<&str> = entries.iter().map(|e| e.summary.as_str()).collect();
+        assert!(
+            summaries.contains(&"+5 -0 chars"),
+            "alice typed five characters: {summaries:?}"
+        );
+        assert!(
+            summaries.contains(&"+11 -0 chars"),
+            "bob typed eleven: {summaries:?}"
+        );
+    }
+
+    /// Opening the strip shrinks the canvas rather than painting over the page.
+    #[test]
+    fn opening_the_strip_reserves_a_band_out_of_the_canvas() {
+        let (mut wp, mut state) = editor_with_history(1000, 700);
+        wp.apply_tool(&mut state.doc, ToolAction::ToggleHistory);
+        pipeline_draw(&mut wp, &mut state, 1000, 700);
+
+        let band = wp.history.band();
+        assert!(band.height() > 100.0, "the strip has a real band: {band:?}");
+        assert!(
+            band.y1 <= wp.rect.y1 - STATUS_H,
+            "the strip sits above the status bar"
+        );
+        assert_eq!(band.width(), wp.rect.width(), "full-width strip");
+
+        wp.apply_tool(&mut state.doc, ToolAction::ToggleHistory);
+        assert_eq!(wp.history.band_height(), 0.0, "closing gives the space back");
+    }
+
+    /// THE END-TO-END CLAIM. Click a tick, click Restore, and the document
+    /// holds the earlier content — with the restore appended to history as a
+    /// new version rather than history being rewritten.
+    #[test]
+    fn clicking_restore_returns_the_earlier_text_as_a_new_version() {
+        let (mut wp, mut state) = editor_with_history(1000, 700);
+        wp.apply_tool(&mut state.doc, ToolAction::ToggleHistory);
+        pipeline_draw(&mut wp, &mut state, 1000, 700);
+        assert_eq!(body(&state), "first and second", "precondition");
+
+        let before: Vec<_> = wp.history.entries().iter().map(|e| e.id).collect();
+        // The tick for the version whose summary is alice's five characters.
+        let target = wp
+            .history
+            .entries()
+            .iter()
+            .position(|e| e.summary == "+5 -0 chars")
+            .expect("alice's edit is on the track");
+
+        // Click that tick on the track, then click Restore — both through the
+        // production `handle_event`.
+        let y = wp.history.track_center_y();
+        let tick_pt = Point::new(wp.history.tick_x(target), y);
+        left_click(&mut wp, &mut state, tick_pt);
+        assert_eq!(wp.history.current_tick(), target, "the click moved the handle");
+
+        let rb = wp.history.restore_button_rect().center();
+        left_click(&mut wp, &mut state, rb);
+
+        assert!(wp.needs_commit(), "the restore asks the host to commit it");
+        // This is what `App::commit_action` does on the next frame.
+        state.commit_action(None, None);
+        wp.on_commit();
+
+        assert_eq!(body(&state), "first", "the earlier content is back");
+
+        pipeline_draw(&mut wp, &mut state, 1000, 700);
+        let after: Vec<_> = wp.history.entries().iter().map(|e| e.id).collect();
+        assert_eq!(
+            after.len(),
+            before.len() + 1,
+            "the restore is a new version, not a rewind"
+        );
+        for id in &before {
+            assert!(
+                after.contains(id),
+                "every earlier version is still on the track: history was rewritten"
+            );
+        }
+    }
+
+    /// Preview reads the past and leaves the present alone.
+    #[test]
+    fn clicking_preview_shows_the_old_text_without_editing() {
+        let (mut wp, mut state) = editor_with_history(1000, 700);
+        wp.apply_tool(&mut state.doc, ToolAction::ToggleHistory);
+        pipeline_draw(&mut wp, &mut state, 1000, 700);
+
+        let target = wp
+            .history
+            .entries()
+            .iter()
+            .position(|e| e.summary == "+5 -0 chars")
+            .expect("alice's edit is on the track");
+        let y = wp.history.track_center_y();
+        let tick_pt = Point::new(wp.history.tick_x(target), y);
+        left_click(&mut wp, &mut state, tick_pt);
+        let preview_pt = wp.history.preview_button_rect().center();
+        left_click(&mut wp, &mut state, preview_pt);
+
+        assert_eq!(wp.history.preview_text(), Some("first"));
+        assert_eq!(body(&state), "first and second", "previewing edits nothing");
+        assert!(!wp.needs_commit(), "previewing is not an edit");
+    }
+
+    /// A click on the strip must not fall through to the page and move the
+    /// caret.
+    #[test]
+    fn the_strip_captures_clicks_instead_of_seating_the_caret() {
+        let (mut wp, mut state) = editor_with_history(1000, 700);
+        wp.apply_tool(&mut state.doc, ToolAction::ToggleHistory);
+        pipeline_draw(&mut wp, &mut state, 1000, 700);
+
+        let caret_before = wp.model().caret().clone();
+        let y = wp.history.track_center_y();
+        let tick_pt = Point::new(wp.history.tick_x(0), y);
+        left_click(&mut wp, &mut state, tick_pt);
+        assert_eq!(
+            *wp.model().caret(),
+            caret_before,
+            "a click on the strip does not reseat the caret in the page"
+        );
     }
 }

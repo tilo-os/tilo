@@ -600,6 +600,9 @@ pub use history::{
 };
 pub use activity_timeline::ActivityTimeline;
 pub use history_scrubber::HistoryScrubber;
+// The op/artifact vocabulary a `HistoryEntry` is written in. Re-exported so a
+// caller can build one without naming the collab-types crate directly.
+pub use collab_types::{ArtifactKind, OpClass};
 
 // === Phase 5: Channel browser =======================================
 // Pure widget work in `ui/` — wheel-disc spoke overflow integration
