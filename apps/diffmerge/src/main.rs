@@ -25,7 +25,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let args: Vec<String> = std::env::args().collect();
     if let Some(out) = parse_shots_arg(&args) {
-        render_shot_to_png(diffmerge::app_root(), DEFAULT_SHOTS_VIEWPORT, &out)?;
+        render_shot_to_png(diffmerge::app_root_demo(), DEFAULT_SHOTS_VIEWPORT, &out)?;
         return Ok(());
     }
 
