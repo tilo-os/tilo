@@ -104,6 +104,13 @@ enum PresentMsg {
     Stop,
 }
 
+/// Signalled by the render thread each time a frame retires.
+///
+/// Boxed as a trait object so `present` doesn't depend on calloop: the
+/// loop passes a closure that pings its event source, the unit tests
+/// pass one that bumps a counter.
+pub type RetireSignal = Box<dyn Fn() + Send>;
+
 /// Handle to the render thread.
 pub struct PresentPipe {
     tx: Sender<PresentMsg>,
@@ -123,7 +130,16 @@ impl PresentPipe {
     ///
     /// The thread is named `qos-present` so it is identifiable in
     /// `perf`/`top` output and in a backtrace.
-    pub fn spawn(mut presenter: Box<dyn Presenter>) -> Self {
+    ///
+    /// `on_retire` is called on the render thread each time a frame
+    /// finishes presenting. The loop uses it to wake its event loop: when
+    /// the pipe is full the paint gate declines and the loop parks, and
+    /// without a wakeup it would sleep out the whole frame interval even
+    /// though capacity came back microseconds later. On a GPU-bound frame
+    /// that halves throughput — measured as a 33.3 ms paint period (every
+    /// other deadline) on a nested run whose render thread was keeping up
+    /// far better than that.
+    pub fn spawn(mut presenter: Box<dyn Presenter>, on_retire: RetireSignal) -> Self {
         let (tx, rx): (Sender<PresentMsg>, Receiver<PresentMsg>) = channel();
         let inflight = Arc::new(AtomicUsize::new(0));
         let presented = Arc::new(AtomicU64::new(0));
@@ -141,6 +157,10 @@ impl PresentPipe {
                             // thread's capacity check reflects work
                             // actually finished, not work dequeued.
                             thread_inflight.fetch_sub(1, Ordering::Release);
+                            // Then wake the loop — strictly after the
+                            // decrement, so a loop that wakes on this
+                            // signal is guaranteed to see the capacity.
+                            on_retire();
                         }
                         PresentMsg::Resize(size) => presenter.resize(size),
                         PresentMsg::Dpms(on) => presenter.set_dpms(on),
@@ -249,6 +269,13 @@ mod tests {
         }
     }
 
+    /// `PresentPipe::spawn` with a retire signal that does nothing —
+    /// what most of these tests want, since they assert on the counters
+    /// rather than the wakeup.
+    fn spawn_with_retire(p: Box<dyn Presenter>) -> PresentPipe {
+        PresentPipe::spawn(p, Box::new(|| {}))
+    }
+
     fn wait_until(mut cond: impl FnMut() -> bool, what: &str) {
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
         while std::time::Instant::now() < deadline {
@@ -273,7 +300,7 @@ mod tests {
     #[test]
     fn frames_are_presented_on_the_render_thread_not_the_caller() {
         let seen = Arc::new(AtomicU64::new(0));
-        let mut pipe = PresentPipe::spawn(Box::new(Blocking {
+        let mut pipe = spawn_with_retire(Box::new(Blocking {
             gate: Arc::new(Mutex::new(())),
             seen: seen.clone(),
             resizes: Arc::new(Mutex::new(Vec::new())),
@@ -292,7 +319,7 @@ mod tests {
         // blocked, this call would not return until the gate is released.
         let gate = Arc::new(Mutex::new(()));
         let held = gate.lock().expect("take the gate before spawning");
-        let mut pipe = PresentPipe::spawn(Box::new(Blocking {
+        let mut pipe = spawn_with_retire(Box::new(Blocking {
             gate: gate.clone(),
             seen: Arc::new(AtomicU64::new(0)),
             resizes: Arc::new(Mutex::new(Vec::new())),
@@ -319,7 +346,7 @@ mod tests {
         // bound.
         let gate = Arc::new(Mutex::new(()));
         let held = gate.lock().expect("take the gate before spawning");
-        let mut pipe = PresentPipe::spawn(Box::new(Blocking {
+        let mut pipe = spawn_with_retire(Box::new(Blocking {
             gate: gate.clone(),
             seen: Arc::new(AtomicU64::new(0)),
             resizes: Arc::new(Mutex::new(Vec::new())),
@@ -368,7 +395,7 @@ mod tests {
         let seen = Arc::new(AtomicU64::new(0));
         let gate = Arc::new(Mutex::new(()));
         let held = gate.lock().expect("take the gate");
-        let mut pipe = PresentPipe::spawn(Box::new(Blocking {
+        let mut pipe = spawn_with_retire(Box::new(Blocking {
             gate: gate.clone(),
             seen: seen.clone(),
             resizes: resizes.clone(),
@@ -392,10 +419,60 @@ mod tests {
     }
 
     #[test]
+    fn the_loop_is_woken_after_the_capacity_is_restored_not_before() {
+        // The wakeup exists so a back-pressured loop doesn't park out the
+        // whole frame interval. It is only useful if, by the time the
+        // loop wakes, `has_capacity` is already true — a signal sent
+        // before the in-flight count drops would wake the loop into
+        // exactly the same "no room" state it just parked from, and the
+        // frame would still wait a full interval.
+        let wakeups = Arc::new(AtomicU64::new(0));
+        let counter = wakeups.clone();
+        let gate = Arc::new(Mutex::new(()));
+        let held = gate.lock().expect("take the gate before spawning");
+        let mut pipe = PresentPipe::spawn(
+            Box::new(Blocking {
+                gate: gate.clone(),
+                seen: Arc::new(AtomicU64::new(0)),
+                resizes: Arc::new(Mutex::new(Vec::new())),
+                dpms: Arc::new(Mutex::new(Vec::new())),
+            }),
+            Box::new(move || {
+                counter.fetch_add(1, Ordering::Release);
+            }),
+        );
+        // Fill the pipe while the presenter is stuck.
+        let mut accepted = 0;
+        while pipe.has_capacity() {
+            assert!(pipe.submit(Scene::new(), OutputId(0)));
+            accepted += 1;
+        }
+        assert_eq!(accepted, QUEUE_DEPTH + 1);
+        assert_eq!(
+            wakeups.load(Ordering::Acquire),
+            0,
+            "nothing has retired, so the loop must not have been woken — a \
+             spurious wakeup would spin it against a still-full pipe"
+        );
+        drop(held);
+        wait_until(
+            || wakeups.load(Ordering::Acquire) as usize == accepted,
+            "one wakeup per retired frame",
+        );
+        assert!(
+            pipe.has_capacity(),
+            "the decrement happens-before the signal, so a loop woken by it \
+             must find room; signalling first would wake it into the same \
+             full pipe it just parked from"
+        );
+        pipe.shutdown();
+    }
+
+    #[test]
     fn submit_after_shutdown_reports_failure_instead_of_panicking() {
         // Presentation dying must not take the session with it: clients
         // stay served, the operator gets a log line.
-        let mut pipe = PresentPipe::spawn(Box::new(Blocking {
+        let mut pipe = spawn_with_retire(Box::new(Blocking {
             gate: Arc::new(Mutex::new(())),
             seen: Arc::new(AtomicU64::new(0)),
             resizes: Arc::new(Mutex::new(Vec::new())),

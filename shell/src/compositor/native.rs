@@ -26,7 +26,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use automerge::{AutoCommit, ObjId};
-use smithay::reexports::calloop::EventLoop;
+use smithay::reexports::calloop::{self, EventLoop};
 use smithay::reexports::wayland_server::Display;
 use smithay::wayland::socket::ListeningSocketSource;
 use taffy::NodeId;
@@ -1203,7 +1203,22 @@ pub fn run() -> ! {
     // inline exactly as before. See `compositor::present`.
     let mut present_pipe = backend.take_presenter().map(|p| {
         eprintln!("nirios compositor: presenting on a dedicated render thread");
-        present::PresentPipe::spawn(p)
+        // Wake the loop when a frame retires. Without this a tick that
+        // declined to paint for lack of pipe capacity would park out the
+        // whole frame interval, even though the GPU freed up microseconds
+        // later — which halves throughput on a GPU-bound frame. The ping
+        // is a calloop source, so the wakeup lands in the same
+        // `event_loop.dispatch` the loop was already parked in.
+        let (ping, ping_source) =
+            calloop::ping::make_ping().expect("create present-retire ping");
+        event_loop
+            .handle()
+            .insert_source(ping_source, |_, _, _| {
+                // Waking is the whole effect: the loop re-evaluates its
+                // paint gate on the next iteration and now finds room.
+            })
+            .expect("insert present-retire ping source");
+        present::PresentPipe::spawn(p, Box::new(move || ping.ping()))
     });
     // Reused per-iteration scratch so backend events can be processed
     // *after* `poll_events` returns — the input arm needs `&mut backend`
