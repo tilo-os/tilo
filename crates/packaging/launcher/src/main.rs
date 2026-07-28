@@ -90,6 +90,15 @@ enum Cmd {
         /// filtered before it reached us.
         #[arg(long)]
         app_id: Option<String>,
+        /// The DRM render node the compositor renders on, e.g.
+        /// `/dev/dri/renderD128`. The app is pinned to the same GPU:
+        /// only that node is visible inside the sandbox, and the EGL
+        /// vendor / Vulkan ICD matching its driver are the only ones
+        /// its loaders will consider. Omit to leave the app's loaders
+        /// at their own defaults — correct when no compositor is
+        /// involved, wrong whenever one is.
+        #[arg(long)]
+        render_node: Option<PathBuf>,
     },
     /// Launch a CLI command from an already-installed package. Used
     /// by the PATH shim (`qos-cli-shim`) so a user typing `notes` in
@@ -149,6 +158,7 @@ fn main() -> ExitCode {
             workspace_id,
             capabilities,
             app_id,
+            render_node,
         } => {
             if minimal_libs {
                 eprintln!(
@@ -172,6 +182,7 @@ fn main() -> ExitCode {
                 workspace_id,
                 capabilities_path: capabilities,
                 app_id,
+                render_node,
             };
             match run(&manifest, &payload_root, &opts) {
                 Ok(status) => {
@@ -300,7 +311,8 @@ fn run_installed(
             .ok()
             .filter(|s| !s.is_empty()),
         identity_host_path: None,
-        // CLI launches are stdio-only: no display in the sandbox.
+        // CLI launches are stdio-only: no display in the sandbox, and
+        // therefore no compositor whose GPU choice they have to match.
         wayland_socket: None,
         // Inherit the room from the shell the command was typed into.
         // A terminal opened in a workspace already carries that
@@ -320,6 +332,7 @@ fn run_installed(
         // package runs with what its manifest declares and nothing more.
         capabilities_path: None,
         app_id: Some(package.to_string()),
+        render_node: None,
     };
     match launcher::run::run_with(&manifest, &entry.payload_root, &opts) {
         Ok(status) => {
