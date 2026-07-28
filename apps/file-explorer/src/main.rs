@@ -211,6 +211,12 @@ fn render_shot_to_png(
 
     // Post-layout scenarios need the laid-out geometry.
     match scenario {
+        Some("detail") => {
+            // The narrow master→detail push: the file view slid in over the
+            // places list, with a Back arrow. Pair with a narrow `--size` (e.g.
+            // `--size 520x800`) to capture the single-pane content screen.
+            widget.debug_show_detail();
+        }
         Some("menu") => {
             // Right-click context menu + the "New File" template flyout, anchored
             // in the content pane.
