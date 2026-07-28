@@ -12,7 +12,7 @@ name = "contacts"
 path = "src/main.rs"
 
 [dependencies]
-ui = { path = "../../ui" }
+ui = { path = "../../ui", features = ["portal"] }
 automerge = "0.8.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
@@ -23,19 +23,6 @@ vello = "0.9"
 winit = "0.30.13"
 taffy = "0.10.1"
 anyhow = "1.0"
-
-# --- Host-native file open/save (XDG Desktop Portal) ------------------
-# Import (open) and Export (save) go through
-# org.freedesktop.portal.FileChooser (via ashpd) — an app never draws its
-# own file picker and never keys off an env var (HIG §5). On GNOME the user
-# sees GNOME's file chooser; on qOS the compositor's portal backend renders
-# qOS's picker (and hosts the per-cluster file-access prompt). The portal
-# call runs off the UI thread on its own small Tokio runtime and the chosen
-# paths come back over a channel (see `portal`). All three are already
-# resolved in the shared workspace lockfile, so this adds no registry fetch.
-ashpd = { version = "0.9", default-features = false, features = ["tokio"] }
-tokio = { version = "1", features = ["rt", "rt-multi-thread", "net", "time"] }
-url = "2"
 
 [dev-dependencies]
 # Serialises the tests that construct scratch files / drive the portal
