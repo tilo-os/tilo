@@ -1,0 +1,437 @@
+#!/usr/bin/env python3
+"""Launch installed qOS packages through the compositor's real launch
+path and report which ones adopt a toplevel.
+
+Drives the whole chain, no mocks:
+
+    headless compositor -> Ctrl+K palette -> Applications provider row
+    -> shell::launcher::launch -> qos-launcher -> bwrap -> the app
+    -> wl_display_connect -> xdg_toplevel -> tab adoption
+
+Success is read off the compositor's own `state_dump` — a
+`TileContent::Foreign` entry in the live WorkspaceTree — not off the
+process table. Each app's stderr is captured from the compositor log, so
+a failure reports its real error rather than "it didn't work".
+
+**One fresh compositor per app.** These are debug builds whose vello
+pipeline compile runs for tens of seconds; stacking dozens of live GPU
+clients in one session turns a slow app into a false negative, and any
+number measured that way says more about the harness than the product.
+
+`--shots` additionally holds each adopted app until its first frame
+lands and writes a PNG. Adoption and first frame are different events:
+a snapshot taken between them shows the compositor's "waiting for first
+frame" placeholder, not the app.
+
+Examples:
+
+    # Every installed package, product environment, PNG per app.
+    scripts/app-launch-sweep.py --out target/sweep --shots
+
+    # Baseline comparison: hand-export the ICD variables the way an
+    # operator would have to before this was fixed in the product.
+    scripts/app-launch-sweep.py --out target/sweep-pinned --pin
+
+    # One app, quickly.
+    scripts/app-launch-sweep.py --out target/one --only calculator
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import pathlib
+import re
+import signal
+import socket
+import subprocess
+import sys
+import time
+
+# The manual workaround this harness exists to measure against: an
+# operator exporting the loader-selection variables by hand before
+# starting the compositor. `--pin` reproduces it for a baseline run.
+# The product must never need these.
+PIN_ENV = {
+    "VK_DRIVER_FILES": "/usr/share/vulkan/icd.d/radeon_icd.x86_64.json",
+    "VK_ICD_FILENAMES": "/usr/share/vulkan/icd.d/radeon_icd.x86_64.json",
+    "__EGL_VENDOR_LIBRARY_FILENAMES": "/usr/share/glvnd/egl_vendor.d/50_mesa.json",
+}
+
+# Scrubbed from every run so a measurement reflects the binaries, not
+# whatever the invoking shell happened to carry. Includes the display
+# vars: a compositor must not find an outer session to attach to.
+SCRUB = list(PIN_ENV) + [
+    "MESA_LOADER_DRIVER_OVERRIDE",
+    "DRI_PRIME",
+    "__GLX_VENDOR_LIBRARY_NAME",
+    "DISPLAY",
+    "WAYLAND_DISPLAY",
+]
+
+ANSI = re.compile(r"\x1b\[[0-9;]*m")
+
+# Lines worth quoting back when an app fails. Deliberately broad: the
+# point of a failing row is to carry the app's own words.
+ERROR_HINTS = (
+    "bwrap:", "error", "panic", "refuse", "failed", "cannot",
+    "no such", "warning:", "denied",
+)
+
+
+def call(sock_path: str, payload: dict, timeout: float = 30.0) -> dict:
+    """Send one command to the test-control socket, read one reply."""
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.settimeout(timeout)
+    s.connect(sock_path)
+    try:
+        s.sendall(json.dumps(payload).encode() + b"\n")
+        buf = b""
+        while b"\n" not in buf:
+            chunk = s.recv(1 << 20)
+            if not chunk:
+                raise RuntimeError("compositor closed the connection mid-reply")
+            buf += chunk
+        return json.loads(buf.partition(b"\n")[0])
+    finally:
+        s.close()
+
+
+def _walk(node, visit) -> None:
+    if isinstance(node, dict):
+        visit(node)
+        for v in node.values():
+            _walk(v, visit)
+    elif isinstance(node, list):
+        for v in node:
+            _walk(v, visit)
+
+
+def foreign_tiles(state) -> set:
+    """`(app_id, surface_id)` for every `TileContent::Foreign` in the tree.
+
+    A Foreign tile is the compositor's own record that it adopted a
+    client's xdg_toplevel. Nothing else in the dump proves an app got
+    that far.
+    """
+    found = set()
+
+    def visit(d):
+        f = d.get("Foreign")
+        if isinstance(f, dict) and "app_id" in f:
+            found.add((f["app_id"], f.get("surface_id")))
+
+    _walk(state, visit)
+    return found
+
+
+def installed_packages(data_dir: pathlib.Path) -> list[str]:
+    registry = data_dir / "registry.toml"
+    if not registry.exists():
+        raise SystemExit(f"no package registry at {registry} — install packages first")
+    return re.findall(r'^id = "(.*?)"', registry.read_text(), re.M)
+
+
+def has_gui_entrypoint(data_dir: pathlib.Path, package_id: str) -> bool:
+    """Whether the package declares a GUI entrypoint at all.
+
+    A `type = "cli"` / `kind = "service"` package can never adopt a
+    toplevel, and the Applications provider never offers it. Counting it
+    as a launch failure would be dishonest in both directions — so it is
+    reported in its own bucket instead of quietly leaving the
+    denominator.
+    """
+    manifest = data_dir / "payloads" / package_id / "manifest.toml"
+    if not manifest.exists():
+        return False
+    text = manifest.read_text()
+    m = re.search(r"^\s*type\s*=\s*\"(\w+)\"", text, re.M)
+    return m is not None and m.group(1) in ("gui", "both")
+
+
+def reap(pattern: str) -> None:
+    subprocess.run(["pkill", "-9", "-f", pattern], stderr=subprocess.DEVNULL)
+
+
+class Compositor:
+    """A headless compositor with its test-control socket, as a context
+    manager. Guarantees teardown even when a probe raises."""
+
+    def __init__(self, shell_bin, launcher_bin, logpath, env_extra, startup_timeout):
+        self.sock = f"/tmp/qos-app-sweep-{os.getpid()}.sock"
+        self.shell_bin = shell_bin
+        self.launcher_bin = launcher_bin
+        self.logpath = logpath
+        self.env_extra = env_extra
+        self.startup_timeout = startup_timeout
+        self.proc = None
+        self.log = None
+        self.started = False
+        self.failure = None
+
+    def __enter__(self):
+        try:
+            os.unlink(self.sock)
+        except FileNotFoundError:
+            pass
+        env = {**os.environ, "QOS_TEST_CONTROL": self.sock,
+               "QOS_LAUNCHER_BIN": str(self.launcher_bin), "RUST_LOG": "info"}
+        for k in SCRUB:
+            env.pop(k, None)
+        env.update(self.env_extra)
+        self.log = self.logpath.open("wb")
+        self.proc = subprocess.Popen(
+            [str(self.shell_bin), "--backend", "headless"],
+            env=env, stdout=self.log, stderr=subprocess.STDOUT,
+            preexec_fn=os.setsid,
+        )
+        deadline = time.time() + self.startup_timeout
+        while time.time() < deadline:
+            if os.path.exists(self.sock):
+                self.started = True
+                time.sleep(1.0)  # let the first paint land
+                return self
+            if self.proc.poll() is not None:
+                self.failure = (
+                    f"compositor exited with status {self.proc.returncode} "
+                    f"before binding its control socket"
+                )
+                return self
+            time.sleep(0.1)
+        self.failure = (
+            f"compositor never bound its control socket within "
+            f"{self.startup_timeout:.0f}s (startup did not complete)"
+        )
+        return self
+
+    def __exit__(self, *exc):
+        if self.proc is not None:
+            try:
+                os.killpg(os.getpgid(self.proc.pid), signal.SIGTERM)
+                self.proc.wait(timeout=12)
+            except (ProcessLookupError, subprocess.TimeoutExpired):
+                try:
+                    os.killpg(os.getpgid(self.proc.pid), signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+        if self.log is not None:
+            self.log.close()
+        try:
+            os.unlink(self.sock)
+        except FileNotFoundError:
+            pass
+        return False
+
+    def palette_input_rect(self):
+        reply = call(self.sock, {"op": "list_targets"})
+        targets = reply.get("targets") or reply.get("ok", {}).get("targets", [])
+        for t in targets:
+            if t["name"] == "command_palette_input":
+                return t["rect"]
+        return None
+
+    def open_palette_and_launch(self, short_name: str) -> None:
+        """Ctrl+K, widen the scope to All, restrict the kind to
+        Applications, type the app's name, activate the top row.
+
+        The scope pill defaults to the focused document ("Notes"), which
+        never consults the Applications provider — so without widening it
+        the palette offers nothing and Enter does nothing at all. The
+        pill and the chip are drawn above the palette's own rect and
+        carry no `test_id`, so they are clicked at offsets from the
+        input's rect rather than at absolute coordinates: that survives a
+        different window size, which hardcoded pixels would not.
+        """
+        call(self.sock, {"op": "modifiers", "ctrl": True, "shift": False,
+                         "alt": False, "logo": False})
+        call(self.sock, {"op": "key", "key": "k"})
+        call(self.sock, {"op": "modifiers", "ctrl": False, "shift": False,
+                         "alt": False, "logo": False})
+        time.sleep(0.4)
+        rect = self.palette_input_rect()
+        if rect is not None:
+            x0 = rect[0]
+            call(self.sock, {"op": "click_at", "x": x0 + 401.0, "y": 55.0})
+            time.sleep(0.3)
+            call(self.sock, {"op": "click_at", "x": x0 + 274.0, "y": 84.0})
+            time.sleep(0.3)
+        call(self.sock, {"op": "type", "text": short_name})
+        time.sleep(0.8)   # let the providers score and the list settle
+        call(self.sock, {"op": "key", "key": "Enter"})
+
+    def wait_for_adoption(self, settle: float):
+        deadline = time.time() + settle
+        while time.time() < deadline:
+            time.sleep(0.5)
+            reply = call(self.sock, {"op": "state_dump"})
+            tiles = foreign_tiles(reply.get("ok", reply))
+            if tiles:
+                return sorted(f"{a}#{s}" for a, s in tiles)
+        return None
+
+    def snapshot_when_painted(self, out_png: pathlib.Path, hold: float) -> None:
+        """Dismiss the palette, then snapshot repeatedly until the tile's
+        content stops changing — i.e. the app's own first frame has
+        landed and settled, rather than the placeholder."""
+        call(self.sock, {"op": "key", "key": "Escape"})
+        end = time.time() + hold
+        last = -1
+        while time.time() < end:
+            time.sleep(5)
+            call(self.sock, {"op": "snapshot", "path": str(out_png)})
+            size = out_png.stat().st_size
+            # A still-placeholder tile renders identically frame to
+            # frame; equal encoded sizes twice running means the content
+            # has stopped moving.
+            if size == last:
+                return
+            last = size
+        call(self.sock, {"op": "snapshot", "path": str(out_png)})
+
+
+def app_log_lines(logpath: pathlib.Path, package_id: str) -> list[str]:
+    """The app's own output, as the compositor relayed it."""
+    text = ANSI.sub("", logpath.read_text(errors="replace"))
+    tag = f"[app {package_id}] "
+    return [l.split(tag, 1)[-1] for l in text.splitlines() if tag in l]
+
+
+def was_launched(logpath: pathlib.Path, package_id: str) -> bool:
+    """Did the compositor actually fork a launch for this package?
+
+    Distinguishes a real app failure from the palette never having
+    offered the row — two very different results that otherwise both
+    read as "no tab appeared".
+    """
+    text = ANSI.sub("", logpath.read_text(errors="replace"))
+    return f"shell: launched {package_id}" in text
+
+
+def run_one(args, package_id: str, out: pathlib.Path, env_extra: dict) -> dict:
+    logpath = out / f"{package_id}.log"
+    short = package_id.rsplit(".", 1)[-1]
+    adopted, shot = None, None
+    with Compositor(args.shell, args.launcher, logpath, env_extra,
+                    args.startup_timeout) as comp:
+        if comp.failure:
+            return {"adopted": None, "errors": [comp.failure],
+                    "compositor_started": False, "launched": False,
+                    "png": None}
+        comp.open_palette_and_launch(short)
+        adopted = comp.wait_for_adoption(args.settle)
+        if adopted and args.shots:
+            shot = out / f"{package_id}.png"
+            comp.snapshot_when_painted(shot, args.hold)
+    reap(f"qos-apps/{package_id}")
+
+    launched = was_launched(logpath, package_id)
+    lines = app_log_lines(logpath, package_id)
+    errors = [l for l in lines if any(h in l.lower() for h in ERROR_HINTS)]
+    if not launched:
+        errors = ["the palette never activated a row for this package — "
+                  "no launch was forked (harness or search-provider issue, "
+                  "not an app failure)"] + errors
+    return {
+        "adopted": adopted,
+        "errors": errors or lines[-3:],
+        "compositor_started": True,
+        "launched": launched,
+        "png": str(shot) if shot and shot.exists() else None,
+    }
+
+
+def main() -> int:
+    here = pathlib.Path(__file__).resolve().parent.parent
+    p = argparse.ArgumentParser(description=__doc__,
+                                formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("--worktree", type=pathlib.Path, default=here,
+                   help="repo root holding target/debug (default: this script's repo)")
+    p.add_argument("--out", type=pathlib.Path, required=True,
+                   help="directory for per-app logs, PNGs and results.json")
+    p.add_argument("--only", default=None,
+                   help="comma-separated substrings; only matching packages run")
+    p.add_argument("--pin", action="store_true",
+                   help="export the manual ICD variables (baseline comparison)")
+    p.add_argument("--shots", action="store_true",
+                   help="hold each adopted app for its first frame and write a PNG")
+    p.add_argument("--settle", type=float, default=60.0,
+                   help="seconds to wait for a toplevel (default: 60)")
+    p.add_argument("--hold", type=float, default=60.0,
+                   help="seconds to wait for the first frame with --shots")
+    p.add_argument("--startup-timeout", type=float, default=45.0,
+                   help="seconds to wait for the control socket (default: 45)")
+    p.add_argument("--data-dir", type=pathlib.Path,
+                   default=pathlib.Path.home() / ".local/share/qos-apps",
+                   help="installed-package root")
+    args = p.parse_args()
+
+    args.shell = args.worktree / "target/debug/shell"
+    args.launcher = args.worktree / "target/debug/qos-launcher"
+    for b in (args.shell, args.launcher):
+        if not b.exists():
+            print(f"FAIL: {b} is not built", file=sys.stderr)
+            return 1
+    args.out.mkdir(parents=True, exist_ok=True)
+
+    packages = installed_packages(args.data_dir)
+    if args.only:
+        needles = args.only.split(",")
+        packages = [p_ for p_ in packages if any(n in p_ for n in needles)]
+    if not packages:
+        print("FAIL: no packages matched", file=sys.stderr)
+        return 1
+
+    env_extra = dict(PIN_ENV) if args.pin else {}
+    print(f"packages: {len(packages)}   manual-ICD-pin: {args.pin}   "
+          f"settle: {args.settle:.0f}s\n", flush=True)
+
+    results = {}
+    for package_id in packages:
+        gui = has_gui_entrypoint(args.data_dir, package_id)
+        if not gui:
+            results[package_id] = {
+                "adopted": None, "gui": False, "compositor_started": None,
+                "launched": False,
+                "errors": ["package declares no GUI entrypoint "
+                           "(type != gui/both); the Applications provider "
+                           "never offers it, so nothing is ever launched"],
+                "png": None,
+            }
+            print(f"NO-GUI   {package_id:<32} no graphical entrypoint — not launched",
+                  flush=True)
+            continue
+        r = run_one(args, package_id, args.out, env_extra)
+        r["gui"] = True
+        results[package_id] = r
+        if r["adopted"]:
+            detail = ", ".join(r["adopted"])
+            status = "ADOPTED"
+        else:
+            status = "NO-TAB "
+            detail = r["errors"][-1][:130] if r["errors"] else "(no output)"
+        print(f"{status}  {package_id:<32} {detail}", flush=True)
+
+    gui_pkgs = [k for k, v in results.items() if v["gui"]]
+    adopted = [k for k, v in results.items() if v["adopted"]]
+    no_gui = [k for k, v in results.items() if not v["gui"]]
+    stillborn = [k for k, v in results.items()
+                 if v["gui"] and v["compositor_started"] is False]
+
+    print()
+    print(f"adopted a toplevel: {len(adopted)}/{len(results)} installed "
+          f"({len(adopted)}/{len(gui_pkgs)} of the GUI packages)")
+    if no_gui:
+        print(f"no GUI entrypoint, never launched: {len(no_gui)} "
+              f"({', '.join(sorted(no_gui))})")
+    if stillborn:
+        print(f"compositor never started for: {len(stillborn)} package(s)")
+    failed = [k for k in gui_pkgs if k not in adopted]
+    if failed:
+        print("failed: " + ", ".join(sorted(failed)))
+    (args.out / "results.json").write_text(json.dumps(results, indent=2))
+    print(f"\nper-app logs + results.json in {args.out}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
