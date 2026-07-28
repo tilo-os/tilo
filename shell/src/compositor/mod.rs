@@ -33,6 +33,7 @@ pub mod idle;
 pub mod lock_auth;
 pub mod lock_controller;
 pub mod lock_screen;
+pub mod metrics;
 pub mod native;
 pub mod remote_seat;
 pub mod render_node;
