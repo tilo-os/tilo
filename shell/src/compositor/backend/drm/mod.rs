@@ -53,7 +53,7 @@ use vello::Scene;
 
 use paint::swizzle_subrect_rgba_to_xrgb8888;
 
-use super::{combined_geometry, Backend, BackendEvent, Output, OutputId};
+use super::{Backend, BackendEvent, Output, OutputId, combined_geometry};
 pub use runtime::DrmBackendError;
 
 /// Public-facing handle. Wraps [`runtime::DrmRuntime`] which owns the
@@ -304,7 +304,11 @@ mod tests {
         let mut outs: Vec<Output> = dispatch.output_meta.values().cloned().collect();
         outs.sort_by_key(|o| o.id.0);
 
-        assert_eq!(outs.len(), 2, "two synthesised outputs must surface as two entries");
+        assert_eq!(
+            outs.len(),
+            2,
+            "two synthesised outputs must surface as two entries"
+        );
         assert_eq!(outs[0].id, OutputId(0));
         assert_eq!(outs[0].size, (1920, 1080));
         assert_eq!(outs[1].id, OutputId(1));

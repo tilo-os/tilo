@@ -142,10 +142,7 @@ fn client_buffer_pixels_are_composited_into_the_tab_rect() {
         .expect("apply_layout must publish the tab rect into the frame store");
     assert_eq!(
         viewport,
-        (
-            rect.width().round() as u32,
-            rect.height().round() as u32
-        ),
+        (rect.width().round() as u32, rect.height().round() as u32),
         "the published viewport is the tab's on-screen extent"
     );
 

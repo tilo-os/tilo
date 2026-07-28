@@ -26,6 +26,6 @@ pub mod landlock_shim;
 pub mod profile;
 pub mod seccomp;
 
-pub use landlock_shim::{run_sandbox_exec, SANDBOX_EXEC_SUBCOMMAND};
+pub use landlock_shim::{SANDBOX_EXEC_SUBCOMMAND, run_sandbox_exec};
 pub use profile::SandboxProfile;
 pub use seccomp::{cache_blob, cache_blob_at, compile_workspace_seccomp};

@@ -51,8 +51,7 @@ const SCAN_MEMO_TTL: Duration = Duration::from_secs(5);
 /// happy-path increments nothing. Tests assert `take_count_since` to
 /// confirm memoization. Production never reads this.
 #[cfg(test)]
-static SCAN_WALK_COUNT: std::sync::atomic::AtomicUsize =
-    std::sync::atomic::AtomicUsize::new(0);
+static SCAN_WALK_COUNT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 #[cfg(test)]
 pub(crate) fn take_scan_walk_count() -> usize {
@@ -68,7 +67,11 @@ pub(crate) fn clear_scan_memo() {
 /// the filter being applied (e.g. `"video"` for `/dev/video*`) — it
 /// keys the cache so two different filters of the same directory get
 /// independent cache slots.
-fn scan_dir_memoised(dir: &Path, filter_tag: &'static str, filter: fn(&str) -> bool) -> Vec<PathBuf> {
+fn scan_dir_memoised(
+    dir: &Path,
+    filter_tag: &'static str,
+    filter: fn(&str) -> bool,
+) -> Vec<PathBuf> {
     let key = (dir.to_path_buf(), filter_tag);
     {
         let cache = SCAN_MEMO.lock().expect("SCAN_MEMO poisoned");
@@ -179,15 +182,11 @@ impl SandboxProfile {
     /// * `uid`/`gid`: 1000.
     /// * `net_isolated`: `true`.
     pub fn for_workspace_test(ws_root: &Path, cache_root: &Path) -> Self {
-        let wayland_socket =
-            PathBuf::from("/run/user/1000").join(format!("quick-bridge-{}", 0u64));
+        let wayland_socket = PathBuf::from("/run/user/1000").join(format!("quick-bridge-{}", 0u64));
 
         let mut env = HashMap::new();
         env.insert("WAYLAND_DISPLAY".to_string(), "wayland-0".to_string());
-        env.insert(
-            "XDG_RUNTIME_DIR".to_string(),
-            "/run/user/1000".to_string(),
-        );
+        env.insert("XDG_RUNTIME_DIR".to_string(), "/run/user/1000".to_string());
         env.insert("HOME".to_string(), "/work".to_string());
 
         Self {
@@ -232,11 +231,8 @@ impl SandboxProfile {
         // D-6: memoise the `/dev` walk so back-to-back cluster spawns
         // don't re-stat every entry. TTL = 5s; hotplug latency is
         // bounded by the next post-TTL launch.
-        let video_devices = scan_dir_memoised(
-            Path::new("/dev"),
-            "video",
-            |name| name.starts_with("video"),
-        );
+        let video_devices =
+            scan_dir_memoised(Path::new("/dev"), "video", |name| name.starts_with("video"));
         for path in video_devices {
             // Bind into the sandbox at the same path. Kernel controls
             // read/write semantics on the device itself, so we bind
@@ -257,10 +253,9 @@ impl SandboxProfile {
     /// the launch still succeeds. The portal layer is responsible for
     /// not granting the capability on hosts where it can't be honoured.
     pub fn grant_microphone(&mut self) {
-        let runtime_dir = std::env::var("XDG_RUNTIME_DIR")
-            .unwrap_or_else(|_| format!("/run/user/{}", self.uid));
-        let pipewire_path =
-            std::path::PathBuf::from(format!("{}/pipewire-0", runtime_dir));
+        let runtime_dir =
+            std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| format!("/run/user/{}", self.uid));
+        let pipewire_path = std::path::PathBuf::from(format!("{}/pipewire-0", runtime_dir));
         if pipewire_path.exists() {
             self.binds_rw.push((pipewire_path.clone(), pipewire_path));
         }
@@ -378,11 +373,16 @@ impl SandboxProfile {
         // restrict the *sandbox-side* (destination) paths — `/work`,
         // `/usr`, … — not the host source paths.
         let landlock_shim = self.landlock_shim.clone();
-        let (ro_targets, rw_targets): (Vec<PathBuf>, Vec<PathBuf>) = if landlock_shim.is_some()
-        {
+        let (ro_targets, rw_targets): (Vec<PathBuf>, Vec<PathBuf>) = if landlock_shim.is_some() {
             (
-                self.binds_ro.iter().map(|(_, sandbox)| sandbox.clone()).collect(),
-                self.binds_rw.iter().map(|(_, sandbox)| sandbox.clone()).collect(),
+                self.binds_ro
+                    .iter()
+                    .map(|(_, sandbox)| sandbox.clone())
+                    .collect(),
+                self.binds_rw
+                    .iter()
+                    .map(|(_, sandbox)| sandbox.clone())
+                    .collect(),
             )
         } else {
             (Vec::new(), Vec::new())
@@ -503,10 +503,7 @@ mod tests {
 
     #[test]
     fn profile_renders_expected_argv_for_minimal_workspace() {
-        let p = SandboxProfile::for_workspace_test(
-            Path::new("/tmp/ws"),
-            Path::new("/tmp/cache"),
-        );
+        let p = SandboxProfile::for_workspace_test(Path::new("/tmp/ws"), Path::new("/tmp/cache"));
         let argv = p.into_argv(&["sh".into(), "-c".into(), "echo hi".into()]);
 
         // `--ro-bind /usr /usr` is present.
@@ -518,8 +515,7 @@ mod tests {
 
         // The workspace root is bound to `/work`.
         assert!(
-            argv.windows(3)
-                .any(|w| w[0] == "--bind" && w[2] == "/work"),
+            argv.windows(3).any(|w| w[0] == "--bind" && w[2] == "/work"),
             "expected `--bind <ws_root> /work` in argv: {argv:?}"
         );
 
@@ -529,10 +525,8 @@ mod tests {
 
     #[test]
     fn profile_unshares_net_when_isolated() {
-        let mut p = SandboxProfile::for_workspace_test(
-            Path::new("/tmp/ws"),
-            Path::new("/tmp/cache"),
-        );
+        let mut p =
+            SandboxProfile::for_workspace_test(Path::new("/tmp/ws"), Path::new("/tmp/cache"));
         p.net_isolated = true;
         let argv = p.into_argv(&["true".into()]);
         assert!(argv.iter().any(|a| a == "--unshare-net"));
@@ -540,10 +534,8 @@ mod tests {
 
     #[test]
     fn profile_keeps_net_when_not_isolated() {
-        let mut p = SandboxProfile::for_workspace_test(
-            Path::new("/tmp/ws"),
-            Path::new("/tmp/cache"),
-        );
+        let mut p =
+            SandboxProfile::for_workspace_test(Path::new("/tmp/ws"), Path::new("/tmp/cache"));
         p.net_isolated = false;
         let argv = p.into_argv(&["true".into()]);
         assert!(
@@ -554,36 +546,27 @@ mod tests {
 
     #[test]
     fn profile_renders_uid_and_gid() {
-        let p = SandboxProfile::for_workspace_test(
-            Path::new("/tmp/ws"),
-            Path::new("/tmp/cache"),
-        );
+        let p = SandboxProfile::for_workspace_test(Path::new("/tmp/ws"), Path::new("/tmp/cache"));
         let argv = p.into_argv(&["true".into()]);
         // `--uid 1000` and `--gid 1000` appear as adjacent pairs.
         assert!(
-            argv.windows(2)
-                .any(|w| w[0] == "--uid" && w[1] == "1000"),
+            argv.windows(2).any(|w| w[0] == "--uid" && w[1] == "1000"),
             "expected `--uid 1000`: {argv:?}"
         );
         assert!(
-            argv.windows(2)
-                .any(|w| w[0] == "--gid" && w[1] == "1000"),
+            argv.windows(2).any(|w| w[0] == "--gid" && w[1] == "1000"),
             "expected `--gid 1000`: {argv:?}"
         );
     }
 
     #[test]
     fn profile_emits_setenv_for_each_env_var() {
-        let p = SandboxProfile::for_workspace_test(
-            Path::new("/tmp/ws"),
-            Path::new("/tmp/cache"),
-        );
+        let p = SandboxProfile::for_workspace_test(Path::new("/tmp/ws"), Path::new("/tmp/cache"));
         let argv = p.into_argv(&["true".into()]);
 
         for key in ["WAYLAND_DISPLAY", "XDG_RUNTIME_DIR", "HOME"] {
             assert!(
-                argv.windows(2)
-                    .any(|w| w[0] == "--setenv" && w[1] == key),
+                argv.windows(2).any(|w| w[0] == "--setenv" && w[1] == key),
                 "expected `--setenv {key}` in argv: {argv:?}"
             );
         }
@@ -591,10 +574,8 @@ mod tests {
 
     #[test]
     fn grant_camera_appends_video_binds_when_devices_exist() {
-        let mut p = SandboxProfile::for_workspace_test(
-            Path::new("/tmp/ws"),
-            Path::new("/tmp/cache"),
-        );
+        let mut p =
+            SandboxProfile::for_workspace_test(Path::new("/tmp/ws"), Path::new("/tmp/cache"));
         let initial_count = p.binds_rw.len();
         p.grant_camera();
         // /dev/video* may or may not exist on CI; assert "no shrink".
@@ -611,10 +592,8 @@ mod tests {
 
     #[test]
     fn grant_microphone_does_not_panic() {
-        let mut p = SandboxProfile::for_workspace_test(
-            Path::new("/tmp/ws"),
-            Path::new("/tmp/cache"),
-        );
+        let mut p =
+            SandboxProfile::for_workspace_test(Path::new("/tmp/ws"), Path::new("/tmp/cache"));
         p.grant_microphone();
         // Pipewire/ALSA may be absent in CI; the contract is "no panic".
     }
@@ -623,10 +602,8 @@ mod tests {
     #[serial(scan_memo)]
     fn apply_grants_with_camera_capability_invokes_grant_camera() {
         use crate::shell::state::{Capability, GRANT_ALWAYS, GRANT_ONCE, GRANT_SESSION};
-        let mut p = SandboxProfile::for_workspace_test(
-            Path::new("/tmp/ws"),
-            Path::new("/tmp/cache"),
-        );
+        let mut p =
+            SandboxProfile::for_workspace_test(Path::new("/tmp/ws"), Path::new("/tmp/cache"));
         let initial_count = p.binds_rw.len();
         let grants = vec![Capability::Camera {
             scope: GRANT_SESSION,
@@ -639,10 +616,8 @@ mod tests {
     #[serial(scan_memo)]
     fn apply_grants_with_no_camera_or_mic_is_noop_for_those_cases() {
         use crate::shell::state::{Capability, GRANT_ALWAYS, GRANT_ONCE, GRANT_SESSION};
-        let mut p = SandboxProfile::for_workspace_test(
-            Path::new("/tmp/ws"),
-            Path::new("/tmp/cache"),
-        );
+        let mut p =
+            SandboxProfile::for_workspace_test(Path::new("/tmp/ws"), Path::new("/tmp/cache"));
         let before_rw = p.binds_rw.len();
         let before_ro = p.binds_ro.len();
         // Screencast remains the only out-of-scope variant for this
@@ -658,10 +633,8 @@ mod tests {
     #[test]
     fn grant_filesystem_path_read_appends_to_binds_ro() {
         use crate::shell::state::FsMode;
-        let mut p = SandboxProfile::for_workspace_test(
-            Path::new("/tmp/ws"),
-            Path::new("/tmp/cache"),
-        );
+        let mut p =
+            SandboxProfile::for_workspace_test(Path::new("/tmp/ws"), Path::new("/tmp/cache"));
         let before_ro = p.binds_ro.len();
         let before_rw = p.binds_rw.len();
         p.grant_filesystem_path(Path::new("/home/u/notes"), FsMode::Read);
@@ -672,10 +645,8 @@ mod tests {
     #[test]
     fn grant_filesystem_path_readwrite_appends_to_binds_rw() {
         use crate::shell::state::FsMode;
-        let mut p = SandboxProfile::for_workspace_test(
-            Path::new("/tmp/ws"),
-            Path::new("/tmp/cache"),
-        );
+        let mut p =
+            SandboxProfile::for_workspace_test(Path::new("/tmp/ws"), Path::new("/tmp/cache"));
         p.grant_filesystem_path(Path::new("/home/u/work"), FsMode::ReadWrite);
         assert!(
             p.binds_rw
@@ -687,10 +658,8 @@ mod tests {
     #[test]
     fn grant_filesystem_path_is_idempotent() {
         use crate::shell::state::FsMode;
-        let mut p = SandboxProfile::for_workspace_test(
-            Path::new("/tmp/ws"),
-            Path::new("/tmp/cache"),
-        );
+        let mut p =
+            SandboxProfile::for_workspace_test(Path::new("/tmp/ws"), Path::new("/tmp/cache"));
         p.grant_filesystem_path(Path::new("/home/u/notes"), FsMode::Read);
         let count_after_first = p.binds_ro.len();
         p.grant_filesystem_path(Path::new("/home/u/notes"), FsMode::Read);
@@ -705,10 +674,8 @@ mod tests {
     #[serial(scan_memo)]
     fn apply_grants_with_filesystem_always_scope_invokes_grant_filesystem() {
         use crate::shell::state::{Capability, FsMode, GRANT_ALWAYS, GRANT_ONCE, GRANT_SESSION};
-        let mut p = SandboxProfile::for_workspace_test(
-            Path::new("/tmp/ws"),
-            Path::new("/tmp/cache"),
-        );
+        let mut p =
+            SandboxProfile::for_workspace_test(Path::new("/tmp/ws"), Path::new("/tmp/cache"));
         let grants = vec![Capability::Filesystem {
             path: "/home/u/work".into(),
             mode: FsMode::ReadWrite,
@@ -726,10 +693,8 @@ mod tests {
     #[serial(scan_memo)]
     fn apply_grants_with_filesystem_session_scope_does_not_bind() {
         use crate::shell::state::{Capability, FsMode, GRANT_ALWAYS, GRANT_ONCE, GRANT_SESSION};
-        let mut p = SandboxProfile::for_workspace_test(
-            Path::new("/tmp/ws"),
-            Path::new("/tmp/cache"),
-        );
+        let mut p =
+            SandboxProfile::for_workspace_test(Path::new("/tmp/ws"), Path::new("/tmp/cache"));
         let before_rw = p.binds_rw.len();
         let grants = vec![Capability::Filesystem {
             path: "/home/u/secret".into(),
@@ -748,10 +713,8 @@ mod tests {
     #[serial(scan_memo)]
     fn apply_grants_with_network_always_scope_disables_isolation() {
         use crate::shell::state::{Capability, GRANT_ALWAYS, GRANT_ONCE, GRANT_SESSION};
-        let mut p = SandboxProfile::for_workspace_test(
-            Path::new("/tmp/ws"),
-            Path::new("/tmp/cache"),
-        );
+        let mut p =
+            SandboxProfile::for_workspace_test(Path::new("/tmp/ws"), Path::new("/tmp/cache"));
         p.net_isolated = true;
         let grants = vec![Capability::Network {
             hosts: None,
@@ -768,10 +731,8 @@ mod tests {
     #[serial(scan_memo)]
     fn apply_grants_with_network_session_scope_does_not_change_isolation() {
         use crate::shell::state::{Capability, GRANT_ALWAYS, GRANT_ONCE, GRANT_SESSION};
-        let mut p = SandboxProfile::for_workspace_test(
-            Path::new("/tmp/ws"),
-            Path::new("/tmp/cache"),
-        );
+        let mut p =
+            SandboxProfile::for_workspace_test(Path::new("/tmp/ws"), Path::new("/tmp/cache"));
         p.net_isolated = true;
         let grants = vec![Capability::Network {
             hosts: None,
@@ -799,10 +760,8 @@ mod tests {
     #[serial(scan_memo)]
     fn network_allowlist_only_toggles_namespace_isolation_and_reaches_no_host_filter() {
         use crate::shell::state::{Capability, GRANT_ALWAYS, GRANT_ONCE, GRANT_SESSION};
-        let mut p = SandboxProfile::for_workspace_test(
-            Path::new("/tmp/ws"),
-            Path::new("/tmp/cache"),
-        );
+        let mut p =
+            SandboxProfile::for_workspace_test(Path::new("/tmp/ws"), Path::new("/tmp/cache"));
         p.net_isolated = true;
         let grants = vec![Capability::Network {
             hosts: Some(vec!["github.com".to_string()]),
@@ -857,7 +816,9 @@ mod tests {
         let mut profile = SandboxProfile::for_workspace_test(&ws, &cache);
         // The wayland bridge socket doesn't exist in this fixture; drop
         // its bind so `bwrap` doesn't fail to mount a missing source.
-        profile.binds_rw.retain(|(host, _)| host != &profile.wayland_socket);
+        profile
+            .binds_rw
+            .retain(|(host, _)| host != &profile.wayland_socket);
         // Add the host paths needed for `cat` to actually link + run.
         for ro in ["/bin", "/lib", "/lib64"] {
             let p = PathBuf::from(ro);
@@ -870,9 +831,16 @@ mod tests {
         // suffix because `SandboxProfile` doesn't model them in Phase 1.
         let mut argv = clone_for_test(&profile).into_argv(&[]);
         argv.extend(
-            ["--proc", "/proc", "--dev", "/dev", "/bin/cat", "/work/notes.txt"]
-                .into_iter()
-                .map(String::from),
+            [
+                "--proc",
+                "/proc",
+                "--dev",
+                "/dev",
+                "/bin/cat",
+                "/work/notes.txt",
+            ]
+            .into_iter()
+            .map(String::from),
         );
         let mut child = std::process::Command::new("bwrap")
             .args(&argv)
@@ -911,10 +879,8 @@ mod tests {
     }
 
     fn tempdir_or_skip() -> PathBuf {
-        let base = std::env::temp_dir().join(format!(
-            "quick-shell-sandbox-test-{}",
-            std::process::id()
-        ));
+        let base =
+            std::env::temp_dir().join(format!("quick-shell-sandbox-test-{}", std::process::id()));
         std::fs::create_dir_all(&base).expect("create tempdir");
         base
     }
@@ -932,10 +898,8 @@ mod tests {
     /// doesn't exist (the previous bug). Suppress instead.
     #[test]
     fn seccomp_some_does_not_emit_argv_without_fd_plumbing() {
-        let mut p = SandboxProfile::for_workspace_test(
-            Path::new("/tmp/ws"),
-            Path::new("/tmp/cache"),
-        );
+        let mut p =
+            SandboxProfile::for_workspace_test(Path::new("/tmp/ws"), Path::new("/tmp/cache"));
         p.seccomp = Some(PathBuf::from("/some/cached/blob.bpf"));
         // Note: seccomp_fd left as None — simulates a caller that
         // didn't go through the spawn helper.
@@ -970,10 +934,8 @@ mod tests {
             scope: GRANT_SESSION,
         }];
 
-        let mut p1 = SandboxProfile::for_workspace_test(
-            Path::new("/tmp/ws"),
-            Path::new("/tmp/cache"),
-        );
+        let mut p1 =
+            SandboxProfile::for_workspace_test(Path::new("/tmp/ws"), Path::new("/tmp/cache"));
         p1.apply_grants(&grants);
         let walks_after_first = super::take_scan_walk_count();
         assert_eq!(
@@ -981,10 +943,8 @@ mod tests {
             "first apply_grants should hit the filesystem once for /dev; got {walks_after_first}"
         );
 
-        let mut p2 = SandboxProfile::for_workspace_test(
-            Path::new("/tmp/ws"),
-            Path::new("/tmp/cache"),
-        );
+        let mut p2 =
+            SandboxProfile::for_workspace_test(Path::new("/tmp/ws"), Path::new("/tmp/cache"));
         p2.apply_grants(&grants);
         let walks_after_second = super::take_scan_walk_count();
         assert_eq!(
@@ -1001,10 +961,8 @@ mod tests {
     /// (destination) bind paths, and the real command must follow `--`.
     #[test]
     fn landlock_shim_wraps_command_with_ro_rw_and_separator() {
-        let mut p = SandboxProfile::for_workspace_test(
-            Path::new("/tmp/ws"),
-            Path::new("/tmp/cache"),
-        );
+        let mut p =
+            SandboxProfile::for_workspace_test(Path::new("/tmp/ws"), Path::new("/tmp/cache"));
         p.landlock_shim = Some(PathBuf::from("/usr/bin/shell"));
         let argv = clone_for_test(&p).into_argv(&["/usr/bin/terminal".into(), "--foo".into()]);
 
@@ -1081,10 +1039,8 @@ mod tests {
     /// workspace (`net_isolated = false`) must NOT carry it.
     #[test]
     fn landlock_shim_net_restricted_tracks_net_isolated() {
-        let mut isolated = SandboxProfile::for_workspace_test(
-            Path::new("/tmp/ws"),
-            Path::new("/tmp/cache"),
-        );
+        let mut isolated =
+            SandboxProfile::for_workspace_test(Path::new("/tmp/ws"), Path::new("/tmp/cache"));
         isolated.landlock_shim = Some(PathBuf::from("/usr/bin/shell"));
         isolated.net_isolated = true;
         let argv = clone_for_test(&isolated).into_argv(&["/bin/true".into()]);
@@ -1107,18 +1063,19 @@ mod tests {
     /// — the backward-compatible path the other argv tests rely on.
     #[test]
     fn no_landlock_shim_appends_command_verbatim() {
-        let p = SandboxProfile::for_workspace_test(
-            Path::new("/tmp/ws"),
-            Path::new("/tmp/cache"),
-        );
+        let p = SandboxProfile::for_workspace_test(Path::new("/tmp/ws"), Path::new("/tmp/cache"));
         assert!(p.landlock_shim.is_none(), "default profile has no shim");
         let argv = p.into_argv(&["/bin/echo".into(), "hi".into()]);
         assert!(
-            !argv.iter().any(|a| a == super::super::SANDBOX_EXEC_SUBCOMMAND),
+            !argv
+                .iter()
+                .any(|a| a == super::super::SANDBOX_EXEC_SUBCOMMAND),
             "no shim token without landlock_shim: {argv:?}"
         );
         assert!(
-            !argv.iter().any(|a| a == "--ro" || a == "--rw" || a == "--net-restricted"),
+            !argv
+                .iter()
+                .any(|a| a == "--ro" || a == "--rw" || a == "--net-restricted"),
             "no shim flags without landlock_shim: {argv:?}"
         );
         assert_eq!(argv.last().unwrap(), "hi");
@@ -1130,10 +1087,8 @@ mod tests {
     /// actually-plumbed descriptor number, NOT a hardcoded `10`.
     #[test]
     fn seccomp_argv_uses_actually_loaded_fd() {
-        let mut p = SandboxProfile::for_workspace_test(
-            Path::new("/tmp/ws"),
-            Path::new("/tmp/cache"),
-        );
+        let mut p =
+            SandboxProfile::for_workspace_test(Path::new("/tmp/ws"), Path::new("/tmp/cache"));
         p.seccomp = Some(PathBuf::from("/some/cached/blob.bpf"));
         // Simulate the spawn helper having opened the bpf file and
         // dup'd it to fd 16 in the child.
@@ -1157,9 +1112,7 @@ mod tests {
         // after a `--seccomp`. If a refactor accidentally re-introduces
         // the hardcoded constant, this catches it.
         assert!(
-            !argv
-                .windows(2)
-                .any(|w| w[0] == "--seccomp" && w[1] == "10"),
+            !argv.windows(2).any(|w| w[0] == "--seccomp" && w[1] == "10"),
             "argv accidentally re-introduced hardcoded `--seccomp 10` \
              (C-5 regression): {argv:?}"
         );

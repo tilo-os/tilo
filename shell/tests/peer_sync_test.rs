@@ -50,9 +50,7 @@ async fn listen_loopback(swarm: &mut Swarm<NiriosBehaviour>) -> Multiaddr {
         .expect("listen_on");
     timeout(Duration::from_secs(5), async {
         loop {
-            if let SwarmEvent::NewListenAddr { address, .. } =
-                swarm.select_next_some().await
-            {
+            if let SwarmEvent::NewListenAddr { address, .. } = swarm.select_next_some().await {
                 return address;
             }
         }
@@ -63,11 +61,7 @@ async fn listen_loopback(swarm: &mut Swarm<NiriosBehaviour>) -> Multiaddr {
 
 /// Build, listen, and join a workspace. Returns the cmd channel, the
 /// event receiver, and the listening multiaddr.
-async fn spawn_actor() -> (
-    mpsc::Sender<NetCmd>,
-    mpsc::Receiver<NetEvent>,
-    Multiaddr,
-) {
+async fn spawn_actor() -> (mpsc::Sender<NetCmd>, mpsc::Receiver<NetEvent>, Multiaddr) {
     let mut swarm = build_swarm();
     let addr = listen_loopback(&mut swarm).await;
     let (cmd_tx, _join) = Actor::spawn(swarm);
@@ -227,8 +221,7 @@ fn invite_token_round_trips() {
 
     let kp = libp2p::identity::Keypair::generate_ed25519();
     let workspace = Workspace::test_default(WorkspaceId(99), "Shared");
-    let token =
-        make_invite_token(&kp, &workspace, "/ip4/127.0.0.1/tcp/8888", 3600).expect("mint");
+    let token = make_invite_token(&kp, &workspace, "/ip4/127.0.0.1/tcp/8888", 3600).expect("mint");
     let parsed = validate_invite_token(&token).expect("validate");
     assert_eq!(parsed.workspace_id, 99);
     assert_eq!(parsed.owner_addr, "/ip4/127.0.0.1/tcp/8888");
@@ -335,10 +328,7 @@ async fn remote_input_round_trips_through_gossipsub() {
     wait_peer_joined(&mut ev_rx_b).await;
     tokio::time::sleep(Duration::from_millis(500)).await;
 
-    let original = InputEvent::PointerMotion {
-        x: 123.5,
-        y: 67.25,
-    };
+    let original = InputEvent::PointerMotion { x: 123.5, y: 67.25 };
     let event_bytes = serde_json::to_vec(&original).expect("serialize event");
     cmd_a
         .send(NetCmd::Publish {

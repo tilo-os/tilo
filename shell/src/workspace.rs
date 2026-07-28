@@ -1,4 +1,4 @@
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq)]
@@ -73,7 +73,7 @@ pub struct Workspace {
     pub color: [f32; 3],
     pub current_bounds: Rectangle,
     pub target_bounds: Rectangle,
-    pub opacity: f32, 
+    pub opacity: f32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

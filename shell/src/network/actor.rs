@@ -232,11 +232,7 @@ impl Actor {
                     Ok(b) => b,
                     Err(_) => return,
                 };
-                let _ = self
-                    .swarm
-                    .behaviour_mut()
-                    .gossipsub
-                    .publish(topic, bytes);
+                let _ = self.swarm.behaviour_mut().gossipsub.publish(topic, bytes);
             }
             NetCmd::Connect { addr } => {
                 let _ = self.swarm.dial(addr);
@@ -244,18 +240,13 @@ impl Actor {
         }
     }
 
-    async fn handle_swarm_event(
-        &mut self,
-        event: SwarmEvent<NiriosBehaviourEvent>,
-    ) {
+    async fn handle_swarm_event(&mut self, event: SwarmEvent<NiriosBehaviourEvent>) {
         match event {
-            SwarmEvent::Behaviour(NiriosBehaviourEvent::Gossipsub(
-                gossipsub::Event::Message {
-                    propagation_source,
-                    message,
-                    ..
-                },
-            )) => {
+            SwarmEvent::Behaviour(NiriosBehaviourEvent::Gossipsub(gossipsub::Event::Message {
+                propagation_source,
+                message,
+                ..
+            })) => {
                 // Touch liveness for the propagation source — that is the
                 // peer we have a direct connection to, regardless of who
                 // originally signed the message.
@@ -288,9 +279,7 @@ impl Actor {
             )) => {
                 if let Some(ws) = ws_for_topic(&self.subscribers, &topic) {
                     if let Some(tx) = self.subscribers.get(&ws) {
-                        let _ = tx
-                            .send(NetEvent::PeerJoined { ws, peer: peer_id })
-                            .await;
+                        let _ = tx.send(NetEvent::PeerJoined { ws, peer: peer_id }).await;
                     }
                 }
             }
@@ -299,15 +288,11 @@ impl Actor {
             )) => {
                 if let Some(ws) = ws_for_topic(&self.subscribers, &topic) {
                     if let Some(tx) = self.subscribers.get(&ws) {
-                        let _ = tx
-                            .send(NetEvent::PeerLeft { ws, peer: peer_id })
-                            .await;
+                        let _ = tx.send(NetEvent::PeerLeft { ws, peer: peer_id }).await;
                     }
                 }
             }
-            SwarmEvent::Behaviour(NiriosBehaviourEvent::Mdns(mdns::Event::Discovered(
-                list,
-            ))) => {
+            SwarmEvent::Behaviour(NiriosBehaviourEvent::Mdns(mdns::Event::Discovered(list))) => {
                 let any_discovered = !list.is_empty();
                 for (peer_id, _addr) in list {
                     self.swarm
@@ -324,8 +309,7 @@ impl Actor {
                         Ok(b) => b,
                         Err(_) => return,
                     };
-                    let workspaces: Vec<WorkspaceId> =
-                        self.subscribers.keys().copied().collect();
+                    let workspaces: Vec<WorkspaceId> = self.subscribers.keys().copied().collect();
                     for ws in workspaces {
                         let topic = ws_topic(ws);
                         let _ = self
@@ -336,9 +320,7 @@ impl Actor {
                     }
                 }
             }
-            SwarmEvent::Behaviour(NiriosBehaviourEvent::Mdns(mdns::Event::Expired(
-                list,
-            ))) => {
+            SwarmEvent::Behaviour(NiriosBehaviourEvent::Mdns(mdns::Event::Expired(list))) => {
                 for (peer_id, _addr) in list {
                     self.swarm
                         .behaviour_mut()
@@ -420,13 +402,9 @@ mod tests {
             .listen_on("/ip4/127.0.0.1/tcp/0".parse().unwrap())
             .unwrap();
 
-        async fn first_listen_addr(
-            swarm: &mut Swarm<NiriosBehaviour>,
-        ) -> Multiaddr {
+        async fn first_listen_addr(swarm: &mut Swarm<NiriosBehaviour>) -> Multiaddr {
             loop {
-                if let SwarmEvent::NewListenAddr { address, .. } =
-                    swarm.select_next_some().await
-                {
+                if let SwarmEvent::NewListenAddr { address, .. } = swarm.select_next_some().await {
                     return address;
                 }
             }
@@ -463,10 +441,7 @@ mod tests {
             .unwrap();
 
         // 4. Dial B from A.
-        cmd_a
-            .send(NetCmd::Connect { addr: addr_b })
-            .await
-            .unwrap();
+        cmd_a.send(NetCmd::Connect { addr: addr_b }).await.unwrap();
 
         // 5. Wait for the gossipsub mesh to form. Peer B emits PeerJoined
         //    once A subscribes to the topic over the established connection.

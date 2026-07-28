@@ -19,8 +19,8 @@
 //! and the manual VM-boot smoke (Phase 5.2 follow-up: vello + DMA-BUF
 //! blit).
 
-use shell::compositor::backend::drm::DrmBackend;
 use shell::compositor::backend::Backend;
+use shell::compositor::backend::drm::DrmBackend;
 
 #[test]
 fn drm_backend_boot_smoke() {

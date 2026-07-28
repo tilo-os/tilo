@@ -108,10 +108,7 @@ pub fn apply_workspace_drop(tree: &mut WorkspaceTree, item: DraggedItem) -> Opti
     let tab = Tab {
         id: next_id(),
         title: label.clone(),
-        tile: TileContent::AppPlaceholder {
-            kind,
-            label,
-        },
+        tile: TileContent::AppPlaceholder { kind, label },
     };
     let tab_id = tab.id;
     // Capture for the doc mirror before the cache `push` consumes the tab.
@@ -135,11 +132,7 @@ pub fn apply_workspace_drop(tree: &mut WorkspaceTree, item: DraggedItem) -> Opti
     // Unit D: mirror the cache append into the automerge doc so peers
     // observe the new tab on the next sync round. No-op if the active
     // workspace isn't seeded into the doc.
-    tree.doc_append_tab_to_first_group_of_active_workspace(
-        tab_id,
-        doc_title,
-        doc_tile_blob,
-    );
+    tree.doc_append_tab_to_first_group_of_active_workspace(tab_id, doc_title, doc_tile_blob);
     Some(tab_id)
 }
 
@@ -184,12 +177,7 @@ pub fn apply_workspace_drop_at(
     // Mirror the cache append into the automerge doc so peers observe the
     // new tab on the next sync round. No-op if the active workspace / the
     // target group isn't seeded into the doc yet.
-    tree.doc_append_tab_to_group_of_active_workspace(
-        group_id,
-        tab_id,
-        doc_title,
-        doc_tile_blob,
-    );
+    tree.doc_append_tab_to_group_of_active_workspace(group_id, tab_id, doc_title, doc_tile_blob);
     Some(tab_id)
 }
 
@@ -234,10 +222,7 @@ fn state_kind_to_ui(kind: &AppKind) -> UiAppKind {
 ///
 /// Returns the new `Tab::id` or `None` if the tree has no active
 /// workspace.
-pub fn apply_runtime_workspace_drop(
-    tree: &mut RuntimeTree,
-    item: DraggedItem,
-) -> Option<u64> {
+pub fn apply_runtime_workspace_drop(tree: &mut RuntimeTree, item: DraggedItem) -> Option<u64> {
     let kind = decide_app_for_drop(&item);
     let label = tab_label_for(&item, &kind);
     let ui_kind = state_kind_to_ui(&kind);
@@ -268,10 +253,7 @@ pub fn apply_runtime_workspace_drop(
 /// the `DraggedItem::from_path` conversion. Convenience wrapper used by
 /// the winit `WindowEvent::DroppedFile` path — the event carries a
 /// `PathBuf` directly.
-pub fn apply_runtime_workspace_drop_from_path(
-    tree: &mut RuntimeTree,
-    path: &Path,
-) -> Option<u64> {
+pub fn apply_runtime_workspace_drop_from_path(tree: &mut RuntimeTree, path: &Path) -> Option<u64> {
     let item = DraggedItem::from_path(path)?;
     apply_runtime_workspace_drop(tree, item)
 }
@@ -281,10 +263,7 @@ pub fn apply_runtime_workspace_drop_from_path(
 /// [`apply_runtime_workspace_drop_from_path`]; used by
 /// [`super::chrome_state::ChromeState::handle_file_drop`] which holds a
 /// `WorkspaceTree` (not a runtime one).
-pub fn apply_workspace_drop_from_path(
-    tree: &mut WorkspaceTree,
-    path: &Path,
-) -> Option<u64> {
+pub fn apply_workspace_drop_from_path(tree: &mut WorkspaceTree, path: &Path) -> Option<u64> {
     let item = DraggedItem::from_path(path)?;
     apply_workspace_drop(tree, item)
 }
@@ -384,8 +363,7 @@ mod tests {
     #[test]
     fn apply_drop_focuses_the_new_tab() {
         let mut tree = WorkspaceTree::bootstrap_default();
-        let tab_id =
-            apply_workspace_drop(&mut tree, DraggedItem::folder("src")).expect("tab_id");
+        let tab_id = apply_workspace_drop(&mut tree, DraggedItem::folder("src")).expect("tab_id");
         let group = &tree.active_workspace().unwrap().strips[0].window_groups[0];
         assert_eq!(group.active_tab, tab_id);
     }
@@ -397,8 +375,8 @@ mod tests {
         tree.active_workspace_mut().unwrap().strips[0]
             .window_groups
             .clear();
-        let tab_id = apply_workspace_drop(&mut tree, DraggedItem::file("readme.md"))
-            .expect("tab_id");
+        let tab_id =
+            apply_workspace_drop(&mut tree, DraggedItem::file("readme.md")).expect("tab_id");
         let strip = &tree.active_workspace().unwrap().strips[0];
         assert_eq!(strip.window_groups.len(), 1);
         assert_eq!(strip.window_groups[0].tabs.len(), 1);
@@ -431,9 +409,13 @@ mod tests {
     #[test]
     fn runtime_drop_appends_stub_tab_to_active_workspace() {
         let mut tree = runtime_tree_with_empty_workspace();
-        let tab_id = apply_runtime_workspace_drop(&mut tree, DraggedItem::file("main.ts"))
-            .expect("tab_id");
-        let ws = tree.workspaces.iter().find(|w| w.id == tree.active).unwrap();
+        let tab_id =
+            apply_runtime_workspace_drop(&mut tree, DraggedItem::file("main.ts")).expect("tab_id");
+        let ws = tree
+            .workspaces
+            .iter()
+            .find(|w| w.id == tree.active)
+            .unwrap();
         let group = &ws.strips[0].window_groups[0];
         assert_eq!(group.tabs.len(), 1);
         assert_eq!(group.tabs[0].id, tab_id);
@@ -454,9 +436,12 @@ mod tests {
         // Use a nonexistent path — is_dir() → false, so it's classified
         // as a file. Extension .md routes to Editor.
         let path = std::path::PathBuf::from("/no/such/file.md");
-        let tab_id = apply_runtime_workspace_drop_from_path(&mut tree, &path)
-            .expect("tab_id");
-        let ws = tree.workspaces.iter().find(|w| w.id == tree.active).unwrap();
+        let tab_id = apply_runtime_workspace_drop_from_path(&mut tree, &path).expect("tab_id");
+        let ws = tree
+            .workspaces
+            .iter()
+            .find(|w| w.id == tree.active)
+            .unwrap();
         let group = &ws.strips[0].window_groups[0];
         assert_eq!(group.active_tab, tab_id);
         assert_eq!(group.tabs[0].title, "file.md");
@@ -467,9 +452,13 @@ mod tests {
         let strip = RuntimeStrip::new("Main", vec![]);
         let ws = crate::shell::tile::Workspace::new("Home", vec![strip]);
         let mut tree = RuntimeTree::new(vec![ws]);
-        let tab_id = apply_runtime_workspace_drop(&mut tree, DraggedItem::folder("src"))
-            .expect("tab_id");
-        let ws = tree.workspaces.iter().find(|w| w.id == tree.active).unwrap();
+        let tab_id =
+            apply_runtime_workspace_drop(&mut tree, DraggedItem::folder("src")).expect("tab_id");
+        let ws = tree
+            .workspaces
+            .iter()
+            .find(|w| w.id == tree.active)
+            .unwrap();
         let strip = &ws.strips[0];
         assert_eq!(strip.window_groups.len(), 1);
         assert_eq!(strip.window_groups[0].active_tab, tab_id);
@@ -532,12 +521,8 @@ mod tests {
         let mut tree = WorkspaceTree::bootstrap_default();
         let strip_id = tree.active_workspace().unwrap().strips[0].id;
         // A group id that doesn't exist in the strip → stale target.
-        let result = apply_workspace_drop_at(
-            &mut tree,
-            DraggedItem::file("x.ts"),
-            strip_id,
-            9_999_999,
-        );
+        let result =
+            apply_workspace_drop_at(&mut tree, DraggedItem::file("x.ts"), strip_id, 9_999_999);
         assert!(
             result.is_none(),
             "a drop onto a stale/unknown group must resolve to None, not panic \
@@ -572,15 +557,14 @@ mod tests {
     #[test]
     fn apply_drop_preserves_previous_tabs() {
         let mut tree = WorkspaceTree::bootstrap_default();
-        let titles_before: Vec<String> = tree.active_workspace().unwrap().strips[0]
-            .window_groups[0]
-            .tabs
-            .iter()
-            .map(|t| t.title.clone())
-            .collect();
+        let titles_before: Vec<String> = tree.active_workspace().unwrap().strips[0].window_groups
+            [0]
+        .tabs
+        .iter()
+        .map(|t| t.title.clone())
+        .collect();
         apply_workspace_drop(&mut tree, DraggedItem::file("app.css")).unwrap();
-        let titles_after: Vec<String> = tree.active_workspace().unwrap().strips[0]
-            .window_groups[0]
+        let titles_after: Vec<String> = tree.active_workspace().unwrap().strips[0].window_groups[0]
             .tabs
             .iter()
             .map(|t| t.title.clone())

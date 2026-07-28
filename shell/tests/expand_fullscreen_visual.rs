@@ -38,7 +38,10 @@ struct Driver {
 
 impl Driver {
     fn new() -> Self {
-        Self { doc: AutoCommit::new(), focus: None }
+        Self {
+            doc: AutoCommit::new(),
+            focus: None,
+        }
     }
     fn send(&mut self, fb: &mut FrameBuilder, ev: WindowEvent) {
         let mods = Modifiers::default();

@@ -153,12 +153,8 @@ impl ui::widget::Widget for RemoteCursorOverlay {
         if bw <= 0.0 || bh <= 0.0 {
             return;
         }
-        let clip_rect = vello::kurbo::Rect::new(
-            bx as f64,
-            by as f64,
-            (bx + bw) as f64,
-            (by + bh) as f64,
-        );
+        let clip_rect =
+            vello::kurbo::Rect::new(bx as f64, by as f64, (bx + bw) as f64, (by + bh) as f64);
 
         // Clip to the active-tile rect so out-of-bounds cursors (e.g. mid-
         // frame drift between filter and draw) never paint over chrome.
@@ -187,13 +183,7 @@ impl ui::widget::Widget for RemoteCursorOverlay {
             caret.line_to((apex.x + CARET_SIZE, apex.y + CARET_SIZE * 0.4));
             caret.line_to((apex.x + CARET_SIZE * 0.4, apex.y + CARET_SIZE));
             caret.close_path();
-            scene.fill(
-                vello::peniko::Fill::NonZero,
-                transform,
-                color,
-                None,
-                &caret,
-            );
+            scene.fill(vello::peniko::Fill::NonZero, transform, color, None, &caret);
 
             // Label chip: a rounded rect sized to the peer's name, tinted
             // with the raised surface so it remains legible over any tile
@@ -203,12 +193,8 @@ impl ui::widget::Widget for RemoteCursorOverlay {
             let chip_h = label_size as f64 + CHIP_PADDING_Y * 2.0;
             let chip_x = apex.x + CARET_SIZE + CHIP_OFFSET;
             let chip_y = apex.y + CARET_SIZE + CHIP_OFFSET;
-            let chip_rect = vello::kurbo::Rect::new(
-                chip_x,
-                chip_y,
-                chip_x + chip_w,
-                chip_y + chip_h,
-            );
+            let chip_rect =
+                vello::kurbo::Rect::new(chip_x, chip_y, chip_x + chip_w, chip_y + chip_h);
             let chip = vello::kurbo::RoundedRect::from_rect(chip_rect, chip_radius);
             scene.fill(
                 vello::peniko::Fill::NonZero,
@@ -316,12 +302,7 @@ impl SimulatedFeed {
     /// staying attributed to the `alice` pinned colour.
     pub fn new_with_user_id(user_id: &str, display_name: &str) -> Self {
         let (r, g, b) = ui::presence::user_color(user_id);
-        let color = [
-            r as f32 / 255.0,
-            g as f32 / 255.0,
-            b as f32 / 255.0,
-            1.0,
-        ];
+        let color = [r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, 1.0];
         Self {
             t: std::time::Duration::ZERO,
             // Seed is unused on the render path for user-id-pinned feeds;

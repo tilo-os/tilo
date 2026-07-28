@@ -29,15 +29,13 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use zbus::interface;
-use zbus::object_server::SignalContext;
 use zbus::names::OwnedUniqueName;
+use zbus::object_server::SignalContext;
 use zbus::zvariant::{ObjectPath, OwnedValue, Value};
 
 use crate::shell::state::{Capability, FsMode, GRANT_ALWAYS, GRANT_ONCE, GRANT_SESSION};
 
-use super::{
-    flow, CapabilityKind, PortalCaller, PortalContext, PromptOutcome, WorkspaceId,
-};
+use super::{CapabilityKind, PortalCaller, PortalContext, PromptOutcome, WorkspaceId, flow};
 
 /// D-Bus interface impl. One instance per [`super::serve`] call; held
 /// by the zbus `ObjectServer` for the lifetime of the connection.
@@ -199,10 +197,7 @@ impl FileChooserBackend {
         if !outcome.is_allowed() {
             return (1, HashMap::new());
         }
-        let rx = self
-            .ctx
-            .file_picker
-            .request(caller, title, save);
+        let rx = self.ctx.file_picker.request(caller, title, save);
         let picked = match rx.await {
             Ok(p) => p,
             Err(_) => {
@@ -263,8 +258,8 @@ mod tests {
     use super::*;
     use crate::portal::{
         CallerMap, FilePickerSpawnerHandle, GrantStoreHandle, MockFilePickerSpawner,
-        PromptQueueHandle, PromptResolver, ScreenCastStreamProvisionerHandle,
-        MockScreenCastProvisioner,
+        MockScreenCastProvisioner, PromptQueueHandle, PromptResolver,
+        ScreenCastStreamProvisionerHandle,
     };
     use crate::shell::state::Workspace;
     use std::collections::HashMap;
@@ -423,9 +418,7 @@ mod tests {
     fn open_file_with_cancelled_spawner_returns_response_one() {
         let (store, ws_id) = GrantStoreHandle::test_with_workspace(empty_ws(34));
         let queue = PromptQueueHandle::new(PromptResolver::AutoAllow);
-        let fp = FilePickerSpawnerHandle::new(Arc::new(
-            MockFilePickerSpawner::always_cancel(),
-        ));
+        let fp = FilePickerSpawnerHandle::new(Arc::new(MockFilePickerSpawner::always_cancel()));
         let sc = ScreenCastStreamProvisionerHandle::new(Arc::new(
             MockScreenCastProvisioner::new_with_node(1, "t"),
         ));

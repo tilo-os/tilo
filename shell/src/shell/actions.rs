@@ -189,9 +189,7 @@ pub fn permitted_actions<'r>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::shell::state::{
-        CapOverride, Principal, Scope, Subject, WorkspaceId,
-    };
+    use crate::shell::state::{CapOverride, Principal, Scope, Subject, WorkspaceId};
 
     fn room() -> Workspace {
         let mut ws = Workspace::new(WorkspaceId::new(), "Reading");
@@ -281,7 +279,14 @@ mod tests {
             ActionOutcome::Allow
         );
         assert_eq!(
-            check_action(&ws, &reg, &bob, "org.qos.Ebook", "delete-annotation", &target),
+            check_action(
+                &ws,
+                &reg,
+                &bob,
+                "org.qos.Ebook",
+                "delete-annotation",
+                &target
+            ),
             ActionOutcome::NeedsConfirmation,
             "a destructive action an actor IS permitted still gets a confirmation step"
         );
@@ -296,7 +301,14 @@ mod tests {
         ));
         let carol = ws2.actor_for_person(&"carol".to_string());
         assert_eq!(
-            check_action(&ws2, &reg, &carol, "org.qos.Ebook", "delete-annotation", &target),
+            check_action(
+                &ws2,
+                &reg,
+                &carol,
+                "org.qos.Ebook",
+                "delete-annotation",
+                &target
+            ),
             ActionOutcome::Denied(DenyReason::Capability(CapDecision::DeniedByRole)),
             "a destructive action must be DENIED, not merely confirmed, when the \
              actor lacks the verb"
@@ -372,7 +384,14 @@ mod tests {
             Verb::Write,
         ));
         assert_eq!(
-            check_action(&ws, &reg, &ws.actor_for_app("org.qos.Ebook"), "org.qos.Ebook", "annotate", &target),
+            check_action(
+                &ws,
+                &reg,
+                &ws.actor_for_app("org.qos.Ebook"),
+                "org.qos.Ebook",
+                "annotate",
+                &target
+            ),
             ActionOutcome::Allow
         );
     }
@@ -404,15 +423,10 @@ mod tests {
     #[test]
     fn a_revoked_capability_stops_offering_the_action() {
         let mut ws = room();
-        let id = ws
-            .grant_capability(
-                CapOverride::membership(
-                    Subject::person("bob"),
-                    ws.id.raw().to_string(),
-                    Verb::Write,
-                )
+        let id = ws.grant_capability(
+            CapOverride::membership(Subject::person("bob"), ws.id.raw().to_string(), Verb::Write)
                 .with_id("bob-write"),
-            );
+        );
         assert_eq!(id, "bob-write");
         let reg = registry();
         let target = ResourceRef::App("org.qos.Ebook".into());

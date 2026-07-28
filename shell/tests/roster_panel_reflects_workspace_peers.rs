@@ -10,9 +10,7 @@
 
 use std::time::{Duration, Instant};
 
-use shell::shell::roster_panel::{
-    PeerStatus, PRUNE_AFTER, RosterModel, RosterUpdate,
-};
+use shell::shell::roster_panel::{PRUNE_AFTER, PeerStatus, RosterModel, RosterUpdate};
 
 fn upsert(uid: &str, label: &str, t: Instant) -> RosterUpdate {
     RosterUpdate::Upsert {

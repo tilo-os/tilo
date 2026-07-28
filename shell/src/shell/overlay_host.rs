@@ -21,10 +21,13 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use automerge::{AutoCommit, ObjId};
-use taffy::{Dimension, Display, LengthPercentageAuto, NodeId, Position, Rect as TaffyRect, Size, Style, TaffyTree};
+use taffy::{
+    Dimension, Display, LengthPercentageAuto, NodeId, Position, Rect as TaffyRect, Size, Style,
+    TaffyTree,
+};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
 use vello::kurbo::RoundedRect;
+use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::{BlendMode, Color, Fill};
 use winit::event::{ElementState, KeyEvent, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
@@ -33,7 +36,10 @@ use ui::ColorCompat;
 use ui::presence::{PresenceCtx, PresenceKey};
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
-use ui::widget::{CrossStripDetach, GroupRow, PermissionPrompt, PromptChoice, Widget, WindowGroup as UiWindowGroup, PROMPT_HEIGHT};
+use ui::widget::{
+    CrossStripDetach, GroupRow, PROMPT_HEIGHT, PermissionPrompt, PromptChoice, Widget,
+    WindowGroup as UiWindowGroup,
+};
 use ui::{CommandEntry, CommandPalette};
 
 use crate::shell::chrome_state::{Chrome, WsTab};
@@ -318,8 +324,7 @@ const SIDEBAR_WIDTH_VIEWPORT_FRACTION: f32 = 0.26;
 /// the lower bound, which is a fine seed: the slot reflows on the
 /// next frame once `ShellOverlayHost::rect` is known.
 fn sidebar_width_for_viewport(viewport_h: f32) -> f32 {
-    (viewport_h * SIDEBAR_WIDTH_VIEWPORT_FRACTION)
-        .clamp(SIDEBAR_WIDTH_MIN_PX, SIDEBAR_WIDTH_MAX_PX)
+    (viewport_h * SIDEBAR_WIDTH_VIEWPORT_FRACTION).clamp(SIDEBAR_WIDTH_MIN_PX, SIDEBAR_WIDTH_MAX_PX)
 }
 
 /// Duration of the vertical workspace-swap slide. Matches the concept's
@@ -499,10 +504,7 @@ impl ShellOverlayHost {
         let dir = match self.last_active_ws {
             Some(prev) if prev == active_raw => 0.0_f32,
             Some(prev) => {
-                let idx_prev = tree
-                    .workspaces
-                    .iter()
-                    .position(|w| w.id.raw() == prev);
+                let idx_prev = tree.workspaces.iter().position(|w| w.id.raw() == prev);
                 let idx_next = tree
                     .workspaces
                     .iter()
@@ -662,10 +664,7 @@ impl ShellOverlayHost {
     /// `Box::new(strip_row)` and passing the same `Box` into the content
     /// tree — the `Box<T>` -> `Box<dyn Widget>` unsizing coercion keeps
     /// the heap address stable.
-    pub fn with_group_row_ptrs(
-        mut self,
-        ptrs: HashMap<StripId, *mut GroupRow>,
-    ) -> Self {
+    pub fn with_group_row_ptrs(mut self, ptrs: HashMap<StripId, *mut GroupRow>) -> Self {
         self.group_row_ptrs = ptrs;
         self
     }
@@ -774,10 +773,7 @@ impl ShellOverlayHost {
                 // vector and losing it).
                 for (idx, g) in strip.window_groups.iter().enumerate() {
                     if !live_ids.contains(&g.id) {
-                        row.insert_group(
-                            crate::shell::to_ui_window_group(g),
-                            idx,
-                        );
+                        row.insert_group(crate::shell::to_ui_window_group(g), idx);
                         any_change = true;
                     }
                 }
@@ -905,8 +901,12 @@ impl ShellOverlayHost {
             // host outlives the content, and we're inside `&mut self`, so
             // the pointer is unaliased.
             let row: &GroupRow = unsafe { &*ptr };
-            let closing: Vec<GroupId> =
-                row.groups.iter().filter(|g| g.is_closing()).map(|g| g.id).collect();
+            let closing: Vec<GroupId> = row
+                .groups
+                .iter()
+                .filter(|g| g.is_closing())
+                .map(|g| g.id)
+                .collect();
             if !closing.is_empty() {
                 closing_per_strip.push((strip_id, closing));
             }
@@ -916,7 +916,8 @@ impl ShellOverlayHost {
         }
         let st = chrome.borrow_mut();
         for (strip_id, closing) in closing_per_strip {
-            st.tree_mut().nudge_active_group_off_closing(strip_id, &closing);
+            st.tree_mut()
+                .nudge_active_group_off_closing(strip_id, &closing);
         }
     }
 
@@ -987,11 +988,7 @@ impl ShellOverlayHost {
             let mut tree = st.tree_mut();
             for ws in tree.workspaces.iter_mut() {
                 for strip in ws.strips.iter_mut() {
-                    if let Some(g) = strip
-                        .window_groups
-                        .iter_mut()
-                        .find(|g| g.id == group_id)
-                    {
+                    if let Some(g) = strip.window_groups.iter_mut().find(|g| g.id == group_id) {
                         g.maximized = new_value;
                     }
                 }
@@ -1073,10 +1070,8 @@ impl ShellOverlayHost {
                         if strip.id != w.strip_id {
                             continue;
                         }
-                        if let Some(group) = strip
-                            .window_groups
-                            .iter_mut()
-                            .find(|g| g.id == w.group_id)
+                        if let Some(group) =
+                            strip.window_groups.iter_mut().find(|g| g.id == w.group_id)
                         {
                             if group.active_tab != w.tab_id {
                                 // Guard: only mirror the widget-side
@@ -1093,10 +1088,7 @@ impl ShellOverlayHost {
                                 // the 2026-07-09 "files window
                                 // completely disappears after Ctrl+K"
                                 // repro.
-                                let tab_exists = group
-                                    .tabs
-                                    .iter()
-                                    .any(|t| t.id == w.tab_id);
+                                let tab_exists = group.tabs.iter().any(|t| t.id == w.tab_id);
                                 if !tab_exists {
                                     continue;
                                 }
@@ -1158,11 +1150,7 @@ impl ShellOverlayHost {
             let mut tree = st.tree_mut();
             for ws in tree.workspaces.iter_mut() {
                 for strip in ws.strips.iter_mut() {
-                    if let Some(g) = strip
-                        .window_groups
-                        .iter_mut()
-                        .find(|g| g.id == group_id)
-                    {
+                    if let Some(g) = strip.window_groups.iter_mut().find(|g| g.id == group_id) {
                         g.width = crate::shell::state::WindowWidth::Custom(new_value);
                     }
                 }
@@ -1299,17 +1287,11 @@ impl ShellOverlayHost {
             let tree = st.tree();
             self.group_row_ptrs
                 .keys()
-                .filter_map(|&sid| {
-                    tree.active_group_for(sid).map(|gid| (sid, gid))
-                })
+                .filter_map(|&sid| tree.active_group_for(sid).map(|gid| (sid, gid)))
                 .collect()
         };
         for (strip_id, group_id) in active {
-            let changed = self
-                .last_scrolled_active_group
-                .get(&strip_id)
-                .copied()
-                != Some(group_id);
+            let changed = self.last_scrolled_active_group.get(&strip_id).copied() != Some(group_id);
             if !changed {
                 continue;
             }
@@ -1400,9 +1382,7 @@ impl ShellOverlayHost {
             let dest_strip_id = strip_rects
                 .iter()
                 .find(|(sid, rect)| {
-                    *sid != src_strip_id
-                        && release.y >= rect.y0
-                        && release.y <= rect.y1
+                    *sid != src_strip_id && release.y >= rect.y0 && release.y <= rect.y1
                 })
                 .map(|(sid, _)| *sid)
                 // No other strip matched — return to source.
@@ -1414,11 +1394,7 @@ impl ShellOverlayHost {
                 None => continue,
             };
             let dest_row: &mut GroupRow = unsafe { &mut *dest_ptr };
-            dest_row.accept_cross_strip_drop(
-                payload.desc,
-                payload.host,
-                release,
-            );
+            dest_row.accept_cross_strip_drop(payload.desc, payload.host, release);
             // Mirror the splice into the persisted `WorkspaceTree` so a
             // shell restart sees the tab in its new strip rather than
             // its old one. The tree-side mutation walks the source strip
@@ -1489,17 +1465,13 @@ impl ShellOverlayHost {
         for event in events {
             let (title, body) = match event.kind {
                 LaunchEventKind::Started { pid } => {
-                    eprintln!(
-                        "shell: launched {} (pid {pid})",
-                        event.package_id
-                    );
+                    eprintln!("shell: launched {} (pid {pid})", event.package_id);
                     continue;
                 }
                 LaunchEventKind::Exited => continue,
-                LaunchEventKind::SpawnFailed { detail } => (
-                    format!("Couldn't open {}", event.display_name),
-                    detail,
-                ),
+                LaunchEventKind::SpawnFailed { detail } => {
+                    (format!("Couldn't open {}", event.display_name), detail)
+                }
                 LaunchEventKind::Failed { code, stderr_tail } => {
                     let reason = if stderr_tail.trim().is_empty() {
                         match code {
@@ -1515,9 +1487,7 @@ impl ShellOverlayHost {
             let mut st = chrome_handle.borrow_mut();
             st.push_notification_full(
                 crate::shell::notification::Notification::new(title, body)
-                    .with_severity(
-                        crate::shell::notification::NotificationSeverity::Error,
-                    )
+                    .with_severity(crate::shell::notification::NotificationSeverity::Error)
                     .with_app_name("Applications"),
             );
             st.bump();
@@ -1700,10 +1670,7 @@ impl ShellOverlayHost {
     /// integration tests can read `scroll_x` / handle geometry and drive
     /// the reorder / resize / scroll gestures through the real widget.
     #[cfg(any(test, debug_assertions))]
-    pub fn group_row_mut_for_tests(
-        &mut self,
-        strip_id: StripId,
-    ) -> Option<&mut GroupRow> {
+    pub fn group_row_mut_for_tests(&mut self, strip_id: StripId) -> Option<&mut GroupRow> {
         let &ptr = self.group_row_ptrs.get(&strip_id)?;
         // SAFETY: see field doc on `group_row_ptrs`.
         Some(unsafe { &mut *ptr })
@@ -1822,9 +1789,7 @@ impl ShellOverlayHost {
     /// — used by `permissions_tab_test.rs` to synthesize Revoke
     /// clicks. Returns an empty slice whenever the modal is closed or
     /// a non-Permissions tab is active.
-    pub fn permissions_revoke_rects(
-        &self,
-    ) -> &[(crate::shell::state::AppId, usize, Rect)] {
+    pub fn permissions_revoke_rects(&self) -> &[(crate::shell::state::AppId, usize, Rect)] {
         &self.permissions_revoke_rects
     }
 
@@ -1841,10 +1806,7 @@ impl ShellOverlayHost {
     ///
     /// `ActiveApp` degrades to `All` when no tab is focused so the pill
     /// never highlights a scope that can't display anything.
-    fn open_palette_with_scope(
-        &mut self,
-        scope: crate::shell::chrome_state::SearchScope,
-    ) {
+    fn open_palette_with_scope(&mut self, scope: crate::shell::chrome_state::SearchScope) {
         use crate::shell::chrome_state::SearchScope;
         let effective = if matches!(scope, SearchScope::ActiveApp)
             && self
@@ -2124,11 +2086,7 @@ impl ShellOverlayHost {
     /// callback (for a `result:N` id) or the legacy chrome-command
     /// dispatcher (for `peer:invite` / `peer:connect`, kept as a bridge
     /// until peer commands migrate into their own provider).
-    fn activate_selected_result(
-        &mut self,
-        doc: &mut automerge::AutoCommit,
-        root: &ObjId,
-    ) {
+    fn activate_selected_result(&mut self, doc: &mut automerge::AutoCommit, root: &ObjId) {
         let Some(id) = self.palette.selected_id().map(|s| s.to_string()) else {
             return;
         };
@@ -2408,9 +2366,18 @@ impl ShellOverlayHost {
         let matched = if let Some(chrome) = self.chrome.clone() {
             let mut st = chrome.borrow_mut();
             let hit = match id {
-                "overview.toggle" => { st.overlays.overview = !st.overlays.overview; true }
-                "settings.open" => { st.overlays.ws_settings = true; true }
-                "quick-settings.open" => { st.overlays.quick_settings = true; true }
+                "overview.toggle" => {
+                    st.overlays.overview = !st.overlays.overview;
+                    true
+                }
+                "settings.open" => {
+                    st.overlays.ws_settings = true;
+                    true
+                }
+                "quick-settings.open" => {
+                    st.overlays.quick_settings = true;
+                    true
+                }
                 // `search.open` is a no-op: the palette is already open
                 // when the user reaches this row. We close it below like
                 // the other commands so behaviour is consistent.
@@ -2562,22 +2529,34 @@ impl ShellOverlayHost {
     /// (e.g. `Notes`), truncated to `MAX_APP_PILL_CHARS` so a very long
     /// title can't push the sibling pills off the banner. Static labels
     /// fall through to [`SearchScope::label`].
-    fn search_scope_pill_label(&self, scope: crate::shell::chrome_state::SearchScope) -> String {
+    ///
+    /// The app pill is prefixed with `Only ` rather than showing the
+    /// bare title. A pill reading `Notes` next to `Workspace` and `All`
+    /// looks like a label for what you are in; `Only Notes` says what it
+    /// does, which is the difference between an empty result list that
+    /// explains itself and one that looks like the search is broken.
+    pub(crate) fn search_scope_pill_label(
+        &self,
+        scope: crate::shell::chrome_state::SearchScope,
+    ) -> String {
         use crate::shell::chrome_state::SearchScope;
         const MAX_APP_PILL_CHARS: usize = 14;
         match scope {
             SearchScope::ActiveApp => {
-                let raw = self
+                let Some(raw) = self
                     .chrome
                     .as_ref()
                     .and_then(|c| c.borrow().active_app_title())
-                    .unwrap_or_else(|| SearchScope::ActiveApp.label().to_string());
-                if raw.chars().count() > MAX_APP_PILL_CHARS {
+                else {
+                    return SearchScope::ActiveApp.label().to_string();
+                };
+                let title = if raw.chars().count() > MAX_APP_PILL_CHARS {
                     let head: String = raw.chars().take(MAX_APP_PILL_CHARS).collect();
                     format!("{head}…")
                 } else {
                     raw
-                }
+                };
+                format!("Only {title}")
             }
             other => other.label().to_string(),
         }
@@ -2657,10 +2636,9 @@ impl ShellOverlayHost {
     /// fits inside the column.
     fn overview_max_scroll_y(&self) -> f64 {
         let col = self.overview_column_rect();
-        let visible = (col.y1 - col.y0
-            - OVERVIEW_HEADER_HEIGHT_PX
-            - OVERVIEW_HEADER_MARGIN_BOTTOM_PX)
-            .max(0.0);
+        let visible =
+            (col.y1 - col.y0 - OVERVIEW_HEADER_HEIGHT_PX - OVERVIEW_HEADER_MARGIN_BOTTOM_PX)
+                .max(0.0);
         (self.overview_content_height() - visible).max(0.0)
     }
 
@@ -2945,36 +2923,31 @@ impl Widget for ShellOverlayHost {
         // widget's own build_layout chose a leaf style — we override it
         // with an absolute position so it hovers above the content pane
         // instead of displacing it.
-        let sidebar_node = self
-            .sidebar
-            .as_mut()
-            .map(|sidebar| {
-                let node = sidebar.build_layout(taffy, theme, node_map);
-                let mut style = taffy.style(node).unwrap().clone();
-                style.position = Position::Absolute;
-                style.inset = TaffyRect {
-                    left: LengthPercentageAuto::length(0.0),
-                    right: LengthPercentageAuto::auto(),
-                    top: LengthPercentageAuto::length(self.sidebar_top_y),
-                    bottom: LengthPercentageAuto::length(0.0),
-                };
-                style.size = Size {
-                    width: Dimension::length(sidebar_width_for_viewport(
-                        self.rect.height() as f32,
-                    )),
-                    height: Dimension::auto(),
-                };
-                style.flex_grow = 0.0;
-                style.flex_shrink = 0.0;
-                // A fullscreen surface covers the whole output: the sidebar
-                // wheel is suppressed alongside the top bar so nothing paints
-                // over the promoted group. Clearing fullscreen restores it.
-                if fullscreen {
-                    style.display = Display::None;
-                }
-                taffy.set_style(node, style).unwrap();
-                node
-            });
+        let sidebar_node = self.sidebar.as_mut().map(|sidebar| {
+            let node = sidebar.build_layout(taffy, theme, node_map);
+            let mut style = taffy.style(node).unwrap().clone();
+            style.position = Position::Absolute;
+            style.inset = TaffyRect {
+                left: LengthPercentageAuto::length(0.0),
+                right: LengthPercentageAuto::auto(),
+                top: LengthPercentageAuto::length(self.sidebar_top_y),
+                bottom: LengthPercentageAuto::length(0.0),
+            };
+            style.size = Size {
+                width: Dimension::length(sidebar_width_for_viewport(self.rect.height() as f32)),
+                height: Dimension::auto(),
+            };
+            style.flex_grow = 0.0;
+            style.flex_shrink = 0.0;
+            // A fullscreen surface covers the whole output: the sidebar
+            // wheel is suppressed alongside the top bar so nothing paints
+            // over the promoted group. Clearing fullscreen restores it.
+            if fullscreen {
+                style.display = Display::None;
+            }
+            taffy.set_style(node, style).unwrap();
+            node
+        });
         self.sidebar_node = sidebar_node;
 
         let children: Vec<NodeId> = match sidebar_node {
@@ -3017,8 +2990,7 @@ impl Widget for ShellOverlayHost {
         // when there's no sidebar (no wheel ⇒ no gutter to reserve).
         const WHEEL_TO_STRIP_GAP_PX: f64 = 28.0;
         let wheel_w = if self.sidebar.is_some() {
-            sidebar_width_for_viewport(self.rect.height() as f32) as f64
-                + WHEEL_TO_STRIP_GAP_PX
+            sidebar_width_for_viewport(self.rect.height() as f32) as f64 + WHEEL_TO_STRIP_GAP_PX
         } else {
             0.0
         };
@@ -3124,7 +3096,13 @@ impl Widget for ShellOverlayHost {
             self.draw_demo_peer(scene, transform, text_renderer, theme);
             self.draw_real_peers(scene, transform, text_renderer, theme, presence);
         } else if content_alpha > 0.0 {
-            scene.push_layer(vello::peniko::Fill::NonZero, BlendMode::default(), content_alpha, transform, &self.rect);
+            scene.push_layer(
+                vello::peniko::Fill::NonZero,
+                BlendMode::default(),
+                content_alpha,
+                transform,
+                &self.rect,
+            );
             self.content
                 .draw(scene, content_xform, text_renderer, theme, presence);
             // Demo + real peers scale with the desktop so they appear to
@@ -3203,7 +3181,13 @@ impl Widget for ShellOverlayHost {
                 scene.fill(Fill::NonZero, transform, slate_950, None, &self.rect);
                 self.draw_overview(scene, transform, text_renderer, theme);
             } else {
-                scene.push_layer(vello::peniko::Fill::NonZero, BlendMode::default(), overview_alpha, transform, &self.rect);
+                scene.push_layer(
+                    vello::peniko::Fill::NonZero,
+                    BlendMode::default(),
+                    overview_alpha,
+                    transform,
+                    &self.rect,
+                );
                 draw_scrim(scene, transform, self.rect);
                 scene.fill(Fill::NonZero, transform, slate_950, None, &self.rect);
                 self.draw_overview(scene, overview_xform, text_renderer, theme);
@@ -3219,7 +3203,13 @@ impl Widget for ShellOverlayHost {
             if content_alpha >= 0.999 && (content_scale - 1.0).abs() <= f64::EPSILON {
                 sidebar.draw(scene, content_xform, text_renderer, theme, presence);
             } else if content_alpha > 0.0 {
-                scene.push_layer(vello::peniko::Fill::NonZero, BlendMode::default(), content_alpha, transform, &self.rect);
+                scene.push_layer(
+                    vello::peniko::Fill::NonZero,
+                    BlendMode::default(),
+                    content_alpha,
+                    transform,
+                    &self.rect,
+                );
                 sidebar.draw(scene, content_xform, text_renderer, theme, presence);
                 scene.pop_layer();
             }
@@ -3250,7 +3240,12 @@ impl Widget for ShellOverlayHost {
             // — the softer modal scrim rather than the stronger overview /
             // palette dimmer. The scrim's own alpha follows the openness
             // so it fades out with the panel on close.
-            draw_modal_scrim_at(scene, transform, self.rect, self.ws_settings_transition.value(now));
+            draw_modal_scrim_at(
+                scene,
+                transform,
+                self.rect,
+                self.ws_settings_transition.value(now),
+            );
             let (alpha, dy, scale) =
                 modal_transition_curve(&self.ws_settings_transition, now, 0.95);
             let in_flight = alpha < 1.0;
@@ -3258,7 +3253,13 @@ impl Widget for ShellOverlayHost {
             if in_flight {
                 // Clip generously so the scrim doesn't get painted over by
                 // the modal's alpha layer.
-                scene.push_layer(vello::peniko::Fill::NonZero, BlendMode::default(), alpha, transform, &self.rect);
+                scene.push_layer(
+                    vello::peniko::Fill::NonZero,
+                    BlendMode::default(),
+                    alpha,
+                    transform,
+                    &self.rect,
+                );
             }
             let panel_xform = if dy != 0.0 || scale != 1.0 {
                 let cx = panel_rect.center().x;
@@ -3328,7 +3329,13 @@ impl Widget for ShellOverlayHost {
                 qs_rect.y1 + 8.0,
             );
             if in_flight {
-                scene.push_layer(vello::peniko::Fill::NonZero, BlendMode::default(), alpha, transform, &clip);
+                scene.push_layer(
+                    vello::peniko::Fill::NonZero,
+                    BlendMode::default(),
+                    alpha,
+                    transform,
+                    &clip,
+                );
             }
             let qs_xform = if dy != 0.0 || scale != 1.0 {
                 let cx = qs_rect.center().x;
@@ -3384,7 +3391,13 @@ impl Widget for ShellOverlayHost {
             let in_flight = alpha < 1.0;
             let palette_rect = self.palette.get_rect();
             if in_flight {
-                scene.push_layer(vello::peniko::Fill::NonZero, BlendMode::default(), alpha, transform, &self.rect);
+                scene.push_layer(
+                    vello::peniko::Fill::NonZero,
+                    BlendMode::default(),
+                    alpha,
+                    transform,
+                    &self.rect,
+                );
             }
             let palette_xform = if dy != 0.0 || scale != 1.0 {
                 let cx = palette_rect.center().x;
@@ -3429,8 +3442,13 @@ impl Widget for ShellOverlayHost {
                 None,
                 &unified,
             );
-            self.palette
-                .draw(scene, palette_xform, text_renderer, &palette_theme, presence);
+            self.palette.draw(
+                scene,
+                palette_xform,
+                text_renderer,
+                &palette_theme,
+                presence,
+            );
             // Banner content (label + scope pills + kind chips) painted
             // directly on the unified background — no card of its own.
             self.draw_search_banner(scene, palette_xform, text_renderer, theme);
@@ -3471,9 +3489,7 @@ impl Widget for ShellOverlayHost {
         if let Some(drag_i) = self.qs_slider_drag {
             match event {
                 WindowEvent::CursorMoved { .. } => {
-                    if let (Some(p), Some(chrome)) =
-                        (self.last_cursor, self.chrome.clone())
-                    {
+                    if let (Some(p), Some(chrome)) = (self.last_cursor, self.chrome.clone()) {
                         let (bar, _) = self.quick_settings_slider_geometry(drag_i);
                         let t = ((p.x - bar.x0) / bar.width()).clamp(0.0, 1.0) as f32;
                         let mut st = chrome.borrow_mut();
@@ -3660,11 +3676,12 @@ impl Widget for ShellOverlayHost {
         // `Ctrl+Tab` / `Super+Tab` toggle the overview, and Esc closes
         // whichever overlay is on top.
         if let WindowEvent::KeyboardInput {
-            event: KeyEvent {
-                logical_key,
-                state: ElementState::Pressed,
-                ..
-            },
+            event:
+                KeyEvent {
+                    logical_key,
+                    state: ElementState::Pressed,
+                    ..
+                },
             ..
         } = event
         {
@@ -3679,9 +3696,7 @@ impl Widget for ShellOverlayHost {
             // Character('K') path further down can't also fire.
             let is_space = matches!(logical_key, Key::Named(NamedKey::Space));
             if is_space && (super_down || alt_down) {
-                self.open_palette_with_scope(
-                    crate::shell::chrome_state::SearchScope::All,
-                );
+                self.open_palette_with_scope(crate::shell::chrome_state::SearchScope::All);
                 self.refresh_search_results(state, path);
                 *handled = true;
                 return;
@@ -3690,12 +3705,24 @@ impl Widget for ShellOverlayHost {
                 if let Key::Character(s) = logical_key {
                     if s.as_str().eq_ignore_ascii_case("k") {
                         use crate::shell::chrome_state::SearchScope;
-                        // Ctrl+K (without Super) → this-app scope.
-                        // Super+K (with or without Ctrl) → global.
+                        // Super+K (with or without Ctrl) → every
+                        // workspace. Ctrl+K → this workspace, but still
+                        // every provider.
+                        //
+                        // Neither chord narrows to the focused app.
+                        // `ActiveApp` drops every provider that doesn't
+                        // own the focused tab, so seeding it here meant
+                        // Ctrl+K → "terminal" → Enter launched nothing
+                        // whenever any app tab had focus: the
+                        // Applications provider was never asked. A scope
+                        // that can empty the result set is something the
+                        // user narrows to on purpose (the group's search
+                        // affordance, or the scope pill), never
+                        // something a chord assumes for them.
                         let scope = if super_down {
                             SearchScope::All
                         } else {
-                            SearchScope::ActiveApp
+                            SearchScope::Workspace
                         };
                         self.open_palette_with_scope(scope);
                         // Fire an initial refresh so the palette lands
@@ -3786,9 +3813,8 @@ impl Widget for ShellOverlayHost {
                 let is_editing = chrome.borrow().editing_workspace_name.is_some();
                 if is_editing {
                     use ui::text_selection::{
-                        clipboard_copy, clipboard_paste, next_char_boundary,
-                        next_word_boundary, prev_char_boundary,
-                        prev_word_boundary, Selection,
+                        Selection, clipboard_copy, clipboard_paste, next_char_boundary,
+                        next_word_boundary, prev_char_boundary, prev_word_boundary,
                     };
                     let mods_state = modifiers.state();
                     let shift = mods_state.shift_key();
@@ -3800,8 +3826,7 @@ impl Widget for ShellOverlayHost {
                     // Pull the selection out by value first so we don't
                     // hold a separate immutable borrow alongside `buf`.
                     let mut sel = st.editing_workspace_name_selection;
-                    let Some(buf) = st.editing_workspace_name.as_mut()
-                    else {
+                    let Some(buf) = st.editing_workspace_name.as_mut() else {
                         return;
                     };
                     let mut consumed = true;
@@ -3820,7 +3845,9 @@ impl Widget for ShellOverlayHost {
                                 prev_char_boundary(buf, sel.cursor)
                             };
                             sel.cursor = new_pos;
-                            if !shift { sel.collapse_to_cursor(); }
+                            if !shift {
+                                sel.collapse_to_cursor();
+                            }
                         }
                         Key::Named(NamedKey::ArrowRight) => {
                             let new_pos = if ctrl {
@@ -3829,15 +3856,21 @@ impl Widget for ShellOverlayHost {
                                 next_char_boundary(buf, sel.cursor)
                             };
                             sel.cursor = new_pos;
-                            if !shift { sel.collapse_to_cursor(); }
+                            if !shift {
+                                sel.collapse_to_cursor();
+                            }
                         }
                         Key::Named(NamedKey::Home) => {
                             sel.cursor = 0;
-                            if !shift { sel.collapse_to_cursor(); }
+                            if !shift {
+                                sel.collapse_to_cursor();
+                            }
                         }
                         Key::Named(NamedKey::End) => {
                             sel.cursor = buf.len();
-                            if !shift { sel.collapse_to_cursor(); }
+                            if !shift {
+                                sel.collapse_to_cursor();
+                            }
                         }
                         Key::Named(NamedKey::Backspace) => {
                             if sel.is_collapsed() {
@@ -3869,59 +3902,58 @@ impl Widget for ShellOverlayHost {
                             buf.replace_range(r.clone(), " ");
                             sel = Selection::collapsed(r.start + 1);
                         }
-                        Key::Character(s) if ctrl => {
-                            match s.as_str() {
-                                "a" | "A" => {
-                                    sel.anchor = 0;
-                                    sel.cursor = buf.len();
-                                    needs_bump = false;
-                                }
-                                "c" | "C" => {
-                                    let r = sel.range();
-                                    if !r.is_empty() {
-                                        clipboard_copy(&buf[r]);
-                                    }
-                                    needs_bump = false;
-                                }
-                                "x" | "X" => {
-                                    let r = sel.range();
-                                    if !r.is_empty() {
-                                        clipboard_copy(&buf[r.clone()]);
-                                        buf.replace_range(r.clone(), "");
-                                        sel = Selection::collapsed(r.start);
-                                    } else {
-                                        needs_bump = false;
-                                    }
-                                }
-                                "v" | "V" => {
-                                    if let Some(paste) = clipboard_paste() {
-                                        let r = sel.range();
-                                        buf.replace_range(r.clone(), &paste);
-                                        sel = Selection::collapsed(
-                                            r.start + paste.len(),
-                                        );
-                                    } else {
-                                        needs_bump = false;
-                                    }
-                                }
-                                _ => { consumed = false; needs_bump = false; }
+                        Key::Character(s) if ctrl => match s.as_str() {
+                            "a" | "A" => {
+                                sel.anchor = 0;
+                                sel.cursor = buf.len();
+                                needs_bump = false;
                             }
-                        }
+                            "c" | "C" => {
+                                let r = sel.range();
+                                if !r.is_empty() {
+                                    clipboard_copy(&buf[r]);
+                                }
+                                needs_bump = false;
+                            }
+                            "x" | "X" => {
+                                let r = sel.range();
+                                if !r.is_empty() {
+                                    clipboard_copy(&buf[r.clone()]);
+                                    buf.replace_range(r.clone(), "");
+                                    sel = Selection::collapsed(r.start);
+                                } else {
+                                    needs_bump = false;
+                                }
+                            }
+                            "v" | "V" => {
+                                if let Some(paste) = clipboard_paste() {
+                                    let r = sel.range();
+                                    buf.replace_range(r.clone(), &paste);
+                                    sel = Selection::collapsed(r.start + paste.len());
+                                } else {
+                                    needs_bump = false;
+                                }
+                            }
+                            _ => {
+                                consumed = false;
+                                needs_bump = false;
+                            }
+                        },
                         Key::Character(s) => {
-                            let filtered: String =
-                                s.chars().filter(|c| !c.is_control()).collect();
+                            let filtered: String = s.chars().filter(|c| !c.is_control()).collect();
                             if filtered.is_empty() {
                                 consumed = false;
                                 needs_bump = false;
                             } else {
                                 let r = sel.range();
                                 buf.replace_range(r.clone(), &filtered);
-                                sel = Selection::collapsed(
-                                    r.start + filtered.len(),
-                                );
+                                sel = Selection::collapsed(r.start + filtered.len());
                             }
                         }
-                        _ => { consumed = false; needs_bump = false; }
+                        _ => {
+                            consumed = false;
+                            needs_bump = false;
+                        }
                     }
                     if consumed {
                         st.editing_workspace_name_selection = sel;
@@ -4014,10 +4046,7 @@ impl Widget for ShellOverlayHost {
                         .as_ref()
                         .map(|c| c.borrow().quick_settings.current_level().clone())
                         .unwrap_or(crate::shell::quick_settings::QsLevel::Root);
-                    if !matches!(
-                        current_level,
-                        crate::shell::quick_settings::QsLevel::Root
-                    ) {
+                    if !matches!(current_level, crate::shell::quick_settings::QsLevel::Root) {
                         // Drill-in pane: the back-chevron pops the stack,
                         // and on the Wi-Fi pane a row click triggers
                         // `nmcli device wifi connect <ssid>` via the
@@ -4032,10 +4061,7 @@ impl Widget for ShellOverlayHost {
                             *handled = true;
                             return;
                         }
-                        if matches!(
-                            current_level,
-                            crate::shell::quick_settings::QsLevel::Wifi
-                        ) {
+                        if matches!(current_level, crate::shell::quick_settings::QsLevel::Wifi) {
                             // Row geometry mirrors `draw_qs_wifi_list`:
                             // row_h = 56 px, list_y0 = rect.y0 + 56, rows
                             // span rect.x0 + 12 to rect.x1 - 12.
@@ -4154,7 +4180,8 @@ impl Widget for ShellOverlayHost {
                         // subprocess per frame.
                         let mut pending_wifi: Option<bool> = None;
                         let mut pending_bt: Option<bool> = None;
-                        let mut pending_power: Option<crate::shell::quick_settings::PowerProfile> = None;
+                        let mut pending_power: Option<crate::shell::quick_settings::PowerProfile> =
+                            None;
                         let mut st = chrome.borrow_mut();
                         let mut changed = false;
                         for i in 0..2 {
@@ -4162,7 +4189,8 @@ impl Widget for ShellOverlayHost {
                             // Extend the hit region vertically so the whole
                             // slider row (including padding + label) is
                             // clickable, not just the 6 px bar.
-                            let hit = Rect::new(bar.x0 - 4.0, bar.y0 - 12.0, bar.x1 + 4.0, bar.y1 + 12.0);
+                            let hit =
+                                Rect::new(bar.x0 - 4.0, bar.y0 - 12.0, bar.x1 + 4.0, bar.y1 + 12.0);
                             if hit.contains(p) {
                                 let t = ((p.x - bar.x0) / bar.width()).clamp(0.0, 1.0) as f32;
                                 if i == 0 {
@@ -4182,7 +4210,12 @@ impl Widget for ShellOverlayHost {
                         }
                         for i in 0..2 {
                             let prect = self.quick_settings_toggle_geometry(i);
-                            let hit = Rect::new(prect.x0 - 4.0, prect.y0 - 4.0, prect.x1 + 4.0, prect.y1 + 4.0);
+                            let hit = Rect::new(
+                                prect.x0 - 4.0,
+                                prect.y0 - 4.0,
+                                prect.x1 + 4.0,
+                                prect.y1 + 4.0,
+                            );
                             if hit.contains(p) {
                                 if i == 0 {
                                     st.quick_settings.wifi = !st.quick_settings.wifi;
@@ -4225,8 +4258,8 @@ impl Widget for ShellOverlayHost {
                                 );
                             }
                             if let Some(p) = pending_power {
-                                use crate::shell::quick_settings::PowerProfile as UiPP;
                                 use crate::shell::qs_actions::PowerProfile as ActPP;
+                                use crate::shell::quick_settings::PowerProfile as UiPP;
                                 let mapped = match p {
                                     UiPP::Saver => ActPP::Saver,
                                     UiPP::Balanced => ActPP::Balanced,
@@ -4357,8 +4390,7 @@ impl Widget for ShellOverlayHost {
                                     .active_workspace()
                                     .map(|w| w.name.clone())
                                     .or_else(|| Some(String::new()));
-                                let caret =
-                                    new_name.as_ref().map(|s| s.len()).unwrap_or(0);
+                                let caret = new_name.as_ref().map(|s| s.len()).unwrap_or(0);
                                 st.editing_workspace_name = new_name;
                                 st.editing_workspace_name_selection =
                                     ui::text_selection::Selection::collapsed(caret);
@@ -4416,9 +4448,7 @@ impl Widget for ShellOverlayHost {
                     // last workspace card. Wins the hit-test before the
                     // row-card scan so a click on it doesn't fall
                     // through to "missed → close overview".
-                    if self.add_workspace_rect.area() > 0.0
-                        && self.add_workspace_rect.contains(p)
-                    {
+                    if self.add_workspace_rect.area() > 0.0 && self.add_workspace_rect.contains(p) {
                         if let Some(chrome) = self.chrome.clone() {
                             let mut st = chrome.borrow_mut();
                             // Mirror the wheel-disc plus slot's literal
@@ -4503,11 +4533,12 @@ impl Widget for ShellOverlayHost {
             }
             // Keyboard Enter: fire the cursor-selected action.
             if let WindowEvent::KeyboardInput {
-                event: KeyEvent {
-                    logical_key: Key::Named(NamedKey::Enter),
-                    state: ElementState::Pressed,
-                    ..
-                },
+                event:
+                    KeyEvent {
+                        logical_key: Key::Named(NamedKey::Enter),
+                        state: ElementState::Pressed,
+                        ..
+                    },
                 ..
             } = event
             {
@@ -5137,11 +5168,7 @@ fn modal_open_curve(opened_at: Option<Instant>, start_scale: f64) -> (f32, f64, 
 /// Same visual shape `modal_open_curve` produced for the enter — panel
 /// starts 20 px low at `start_scale`, rises to rest — but now the exit
 /// plays the curve in reverse instead of the panel vanishing.
-fn modal_transition_curve(
-    t: &ui::Transition,
-    now: Instant,
-    start_scale: f64,
-) -> (f32, f64, f64) {
+fn modal_transition_curve(t: &ui::Transition, now: Instant, start_scale: f64) -> (f32, f64, f64) {
     let o = t.value(now);
     let scale = start_scale + (1.0 - start_scale) * o as f64;
     (o, 20.0 * (1.0 - o) as f64, scale)
@@ -5151,7 +5178,11 @@ fn modal_transition_curve(
 /// the overview reads "1 window" / "0 windows" / "2 windows" rather
 /// than the always-plural "1 windows" placeholder.
 fn windows_label(n: usize) -> String {
-    if n == 1 { "1 window".to_string() } else { format!("{n} windows") }
+    if n == 1 {
+        "1 window".to_string()
+    } else {
+        format!("{n} windows")
+    }
 }
 
 /// Paint a single concept-parity MiniWindow inside `rect`.
@@ -5248,7 +5279,9 @@ impl ShellOverlayHost {
         text_renderer: &mut TextRenderer,
         theme: &Theme,
     ) {
-        let Some(chrome) = self.chrome.clone() else { return };
+        let Some(chrome) = self.chrome.clone() else {
+            return;
+        };
         let state = chrome.borrow();
         let tree = state.tree();
         let tokens = &theme.tokens;
@@ -5354,10 +5387,7 @@ impl ShellOverlayHost {
             // Concept `:66` — `whileHover={{ scale: 1.01 }}`. Skip the
             // scale transform for the active row (it already has the
             // indigo ring + glow marking it as selected).
-            let is_hover = self
-                .last_cursor
-                .map(|c| rect.contains(c))
-                .unwrap_or(false);
+            let is_hover = self.last_cursor.map(|c| rect.contains(c)).unwrap_or(false);
             let card_xform = if is_hover && !is_active {
                 let cx = rect.center().x;
                 let cy = rect.center().y;
@@ -5379,15 +5409,7 @@ impl ShellOverlayHost {
             let card = RoundedRect::from_rect(rect, OVERVIEW_ROW_RADIUS_PX);
             if is_active {
                 let indigo = colors.accent[5];
-                ui::surface::soft_shadow(
-                    scene,
-                    card_xform,
-                    rect,
-                    indigo,
-                    40.0,
-                    0.0,
-                    0.35,
-                );
+                ui::surface::soft_shadow(scene, card_xform, rect, indigo, 40.0, 0.0, 0.35);
                 scene.fill(
                     Fill::NonZero,
                     card_xform,
@@ -5437,7 +5459,8 @@ impl ShellOverlayHost {
             }
 
             // Active-indicator dot on the rail.
-            let dot_cx = col.x0 - OVERVIEW_DOT_OFFSET_PX + OVERVIEW_DOT_SIZE_PX / 2.0 - OVERVIEW_DOT_SIZE_PX / 2.0;
+            let dot_cx = col.x0 - OVERVIEW_DOT_OFFSET_PX + OVERVIEW_DOT_SIZE_PX / 2.0
+                - OVERVIEW_DOT_SIZE_PX / 2.0;
             let dot_center = Point::new(col.x0 - OVERVIEW_DOT_OFFSET_PX, rect.center().y);
             let _ = dot_cx;
             // Outer ring (slate-950 border-4 separating the dot from the rail).
@@ -5500,10 +5523,7 @@ impl ShellOverlayHost {
                 pill_font,
                 colors.neutral[7],
                 card_xform
-                    * Affine::translate((
-                        pill_rect.x0 + pill_pad_x,
-                        pill_rect.y0 + pill_pad_y,
-                    )),
+                    * Affine::translate((pill_rect.x0 + pill_pad_x, pill_rect.y0 + pill_pad_y)),
                 None,
             );
             if is_active {
@@ -5650,12 +5670,11 @@ impl ShellOverlayHost {
             // Roster = workspace-local collaborators first, else fall back
             // to the tree-wide roster so demo workspaces still show
             // avatars.
-            let peers: Vec<&crate::shell::state::Collaborator> =
-                if !ws.collaborators.is_empty() {
-                    ws.collaborators.iter().collect()
-                } else {
-                    tree.collaborators.iter().collect()
-                };
+            let peers: Vec<&crate::shell::state::Collaborator> = if !ws.collaborators.is_empty() {
+                ws.collaborators.iter().collect()
+            } else {
+                tree.collaborators.iter().collect()
+            };
             let avatar_r = 12.0_f64;
             let avatar_step = 22.0_f64; // 28 px avatar - 6 px overlap
             let avatar_y = collab_y0 + 20.0;
@@ -5690,8 +5709,7 @@ impl ShellOverlayHost {
                     &initial,
                     tokens.typography.scale.sm,
                     colors.text_primary,
-                    card_xform
-                        * Affine::translate((cx - iw as f64 / 2.0, cy - ih as f64 / 2.0)),
+                    card_xform * Affine::translate((cx - iw as f64 / 2.0, cy - ih as f64 / 2.0)),
                     None,
                 );
             }
@@ -5787,7 +5805,8 @@ impl ShellOverlayHost {
             if !drew_any {
                 // Empty workspace placeholder — dashed frame spanning the
                 // mini-window region.
-                let empty_rect = Rect::new(mini_x0, mini_y0, mini_x1, mini_y0 + OVERVIEW_MINI_HEIGHT_PX);
+                let empty_rect =
+                    Rect::new(mini_x0, mini_y0, mini_x1, mini_y0 + OVERVIEW_MINI_HEIGHT_PX);
                 let empty_rr = RoundedRect::from_rect(empty_rect, 12.0);
                 scene.stroke(
                     &vello::kurbo::Stroke::new(1.0).with_dashes(0.0, [4.0, 4.0]),
@@ -5898,7 +5917,9 @@ impl ShellOverlayHost {
         text_renderer: &mut TextRenderer,
         theme: &Theme,
     ) {
-        let Some(chrome) = self.chrome.clone() else { return };
+        let Some(chrome) = self.chrome.clone() else {
+            return;
+        };
         let state = chrome.borrow();
         let tree = state.tree();
         let tokens = &theme.tokens;
@@ -6015,9 +6036,19 @@ impl ShellOverlayHost {
                 // modal surface. `surface_white_10` matches the concept's
                 // subtle white-on-glass treatment. Pinned by
                 // `tests::ws_settings_active_tab_pill_uses_white_overlay`.
-                scene.fill(Fill::NonZero, transform, colors.surface_white_10, None, &pill);
+                scene.fill(
+                    Fill::NonZero,
+                    transform,
+                    colors.surface_white_10,
+                    None,
+                    &pill,
+                );
             }
-            let color = if active { colors.text_primary } else { colors.text_dim };
+            let color = if active {
+                colors.text_primary
+            } else {
+                colors.text_dim
+            };
             text_renderer.draw_text(
                 scene,
                 tab,
@@ -6039,18 +6070,9 @@ impl ShellOverlayHost {
                 // Roles tab body sits below the tabs strip and uses the
                 // active workspace's roles/files for the permission grids.
                 let body_top = rect.y0 + 144.0;
-                let body_rect =
-                    Rect::new(rect.x0 + 16.0, body_top, rect.x1 - 16.0, rect.y1 - 16.0);
+                let body_rect = Rect::new(rect.x0 + 16.0, body_top, rect.x1 - 16.0, rect.y1 - 16.0);
                 if let Some(ws) = tree.active_workspace() {
-                    draw_roles_pane(
-                        scene,
-                        transform,
-                        body_rect,
-                        ws,
-                        None,
-                        text_renderer,
-                        theme,
-                    );
+                    draw_roles_pane(scene, transform, body_rect, ws, None, text_renderer, theme);
                 }
                 // Close hint stays consistent across tabs.
                 let hint = "Press Esc to close";
@@ -6074,8 +6096,7 @@ impl ShellOverlayHost {
                 // `WsTab` migration relies on this orthogonality so the
                 // Name-edit buffer can never leak into the Files render.
                 let body_top = rect.y0 + 144.0;
-                let body_rect =
-                    Rect::new(rect.x0 + 16.0, body_top, rect.x1 - 16.0, rect.y1 - 16.0);
+                let body_rect = Rect::new(rect.x0 + 16.0, body_top, rect.x1 - 16.0, rect.y1 - 16.0);
                 if let Some(ws) = tree.active_workspace() {
                     draw_files_pane(scene, transform, body_rect, ws, text_renderer, theme);
                 }
@@ -6102,14 +6123,13 @@ impl ShellOverlayHost {
                 // rect is cached in `self.permissions_revoke_rects`
                 // for the click-router to consume.
                 let body_top = rect.y0 + 144.0;
-                let body_rect =
-                    Rect::new(rect.x0 + 16.0, body_top, rect.x1 - 16.0, rect.y1 - 16.0);
+                let body_rect = Rect::new(rect.x0 + 16.0, body_top, rect.x1 - 16.0, rect.y1 - 16.0);
                 let is_owner = is_active_workspace_owner(&state);
                 self.permissions_revoke_rects.clear();
                 if let Some(ws) = tree.active_workspace() {
-                    for row in crate::shell::workspace_settings::permissions_pane_rows(
-                        ws, body_rect,
-                    ) {
+                    for row in
+                        crate::shell::workspace_settings::permissions_pane_rows(ws, body_rect)
+                    {
                         self.permissions_revoke_rects.push((
                             row.app_id.clone(),
                             row.cap_index,
@@ -6216,7 +6236,12 @@ impl ShellOverlayHost {
         // Small indigo "active sharing" dot before the Invite Link
         // header — concept WorkspaceSettingsModal.tsx:101 has a
         // bg-indigo-500 status indicator next to the link section.
-        let dot = Rect::new(rect.x0 + 24.0, invite_y + 2.0, rect.x0 + 32.0, invite_y + 10.0);
+        let dot = Rect::new(
+            rect.x0 + 24.0,
+            invite_y + 2.0,
+            rect.x0 + 32.0,
+            invite_y + 10.0,
+        );
         scene.fill(Fill::NonZero, transform, colors.accent[5], None, &dot);
         text_renderer.draw_text(
             scene,
@@ -6338,7 +6363,12 @@ impl ShellOverlayHost {
             if *is_self {
                 // Cap radius at half-shorter-side; tokens.radii.full = 9999
                 // can degenerate the rounded-rect path on a narrow badge.
-                let badge = Rect::new(tx + tile_w - 44.0, row_y + 10.0, tx + tile_w - 8.0, row_y + 30.0);
+                let badge = Rect::new(
+                    tx + tile_w - 44.0,
+                    row_y + 10.0,
+                    tx + tile_w - 8.0,
+                    row_y + 30.0,
+                );
                 scene.fill(
                     Fill::NonZero,
                     transform,
@@ -6466,10 +6496,14 @@ impl ShellOverlayHost {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        let Some(chrome_rc) = self.chrome.as_ref() else { return };
+        let Some(chrome_rc) = self.chrome.as_ref() else {
+            return;
+        };
         let active_id_str = format!("{}", chrome_rc.borrow().tree().active.raw());
         let key = PresenceKey::Workspace { id: active_id_str };
-        let Some(peers) = presence.pointers.get(&key) else { return };
+        let Some(peers) = presence.pointers.get(&key) else {
+            return;
+        };
         if peers.is_empty() {
             return;
         }
@@ -6784,8 +6818,7 @@ impl ShellOverlayHost {
             // `ui::icons::Icon`.
             let icon_x = rect.x0 + 16.0 + 12.0 + 8.0;
             let icon_cy = row_y + 12.0;
-            let icon_ring =
-                vello::kurbo::Circle::new(Point::new(icon_x, icon_cy), 6.0);
+            let icon_ring = vello::kurbo::Circle::new(Point::new(icon_x, icon_cy), 6.0);
             scene.stroke(
                 &vello::kurbo::Stroke::new(1.5),
                 transform,
@@ -6895,10 +6928,7 @@ impl ShellOverlayHost {
             // Trailing chevron — placeholder caret for now.
             let chev_cx = card.x1 - 16.0;
             let chev_cy = card.y0 + 22.0;
-            let chev = vello::kurbo::Circle::new(
-                Point::new(chev_cx, chev_cy),
-                3.0,
-            );
+            let chev = vello::kurbo::Circle::new(Point::new(chev_cx, chev_cy), 3.0);
             scene.fill(
                 Fill::NonZero,
                 transform,
@@ -6938,8 +6968,12 @@ impl ShellOverlayHost {
             None,
             &RoundedRect::from_rect(pp, 16.0),
         );
-        let battery_rect =
-            Rect::new(pp.x0 + 12.0, pp.y0 + 14.0, pp.x0 + 12.0 + 20.0, pp.y0 + 34.0);
+        let battery_rect = Rect::new(
+            pp.x0 + 12.0,
+            pp.y0 + 14.0,
+            pp.x0 + 12.0 + 20.0,
+            pp.y0 + 34.0,
+        );
         ui::icons::draw_icon(
             scene,
             transform,
@@ -6974,13 +7008,7 @@ impl ShellOverlayHost {
         let chev_cx = pp.x1 - 16.0;
         let chev_cy = (pp.y0 + pp.y1) / 2.0;
         let chev = vello::kurbo::Circle::new(Point::new(chev_cx, chev_cy), 3.0);
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            colors.text_dim,
-            None,
-            &chev,
-        );
+        scene.fill(Fill::NonZero, transform, colors.text_dim, None, &chev);
     }
 
     /// Draw the QuickSettings drill-in header — back-chevron on the left
@@ -7009,8 +7037,7 @@ impl ShellOverlayHost {
         );
 
         // Centred title (14 px Semibold white, per concept).
-        let (tw, th) =
-            text_renderer.measure(title, tokens.typography.scale.sm, None);
+        let (tw, th) = text_renderer.measure(title, tokens.typography.scale.sm, None);
         let tx = rect.x0 + (rect.width() - tw as f64) / 2.0;
         let ty = rect.y0 + (header_h - th as f64) / 2.0;
         text_renderer.draw_text_weighted(
@@ -7092,7 +7119,13 @@ impl ShellOverlayHost {
         self.draw_qs_drill_in_header(scene, transform, text_renderer, theme, "Wi-Fi");
 
         if qs.wifi_networks.is_empty() {
-            self.draw_qs_drill_in_empty(scene, transform, text_renderer, theme, "Scanning for networks…");
+            self.draw_qs_drill_in_empty(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                "Scanning for networks…",
+            );
             return;
         }
 
@@ -7376,7 +7409,8 @@ impl ShellOverlayHost {
                 &initial_str,
                 tokens.typography.scale.sm,
                 colors.text_primary,
-                transform * Affine::translate((center.x - iw as f64 / 2.0, center.y - ih as f64 / 2.0)),
+                transform
+                    * Affine::translate((center.x - iw as f64 / 2.0, center.y - ih as f64 / 2.0)),
                 None,
             );
             text_renderer.draw_text(
@@ -7492,19 +7526,41 @@ mod overview_transition_tests {
         // smoothstep (0.5*0.5*(3-1.0)) = 0.5 exactly. Desktop scale
         // lerps 1.0 → 0.95, so at eased-0.5 we get 0.975.
         let (ca, cs, oa, os) = compose_overlay_transition(0.25, 1.0);
-        assert!((cs - 0.975).abs() < 1e-6, "desktop scale at t=0.25 should be 0.975, got {}", cs);
-        assert!((ca - 0.5).abs() < 1e-6, "desktop alpha at t=0.25 should be 0.5, got {}", ca);
+        assert!(
+            (cs - 0.975).abs() < 1e-6,
+            "desktop scale at t=0.25 should be 0.975, got {}",
+            cs
+        );
+        assert!(
+            (ca - 0.5).abs() < 1e-6,
+            "desktop alpha at t=0.25 should be 0.5, got {}",
+            ca
+        );
         assert_eq!(oa, 0.0, "overview must still be hidden in the first half");
-        assert_eq!(os, 0.95, "overview scale stays at SHRINK_SCALE during phase 1");
+        assert_eq!(
+            os, 0.95,
+            "overview scale stays at SHRINK_SCALE during phase 1"
+        );
 
         // At t=0.75 we're halfway through the second half (overview
         // zoom-in). Smoothstep(0.5) = 0.5 again, overview scale lerps
         // 0.95 → 1.0, so eased-0.5 gives 0.975.
         let (ca, cs, oa, os) = compose_overlay_transition(0.75, 1.0);
         assert_eq!(ca, 0.0, "desktop must be hidden in the second half");
-        assert_eq!(cs, 0.95, "desktop scale stays at SHRINK_SCALE during phase 2");
-        assert!((os - 0.975).abs() < 1e-6, "overview scale at t=0.75 should be 0.975, got {}", os);
-        assert!((oa - 0.5).abs() < 1e-6, "overview alpha at t=0.75 should be 0.5, got {}", oa);
+        assert_eq!(
+            cs, 0.95,
+            "desktop scale stays at SHRINK_SCALE during phase 2"
+        );
+        assert!(
+            (os - 0.975).abs() < 1e-6,
+            "overview scale at t=0.75 should be 0.975, got {}",
+            os
+        );
+        assert!(
+            (oa - 0.5).abs() < 1e-6,
+            "overview alpha at t=0.75 should be 0.5, got {}",
+            oa
+        );
     }
 
     #[test]
@@ -7560,9 +7616,7 @@ mod overview_transition_tests {
         // than popping.
         let mut h = host();
         h.tick_overview_transition(1.0);
-        std::thread::sleep(std::time::Duration::from_millis(
-            OVERVIEW_TRANSITION_MS / 2,
-        ));
+        std::thread::sleep(std::time::Duration::from_millis(OVERVIEW_TRANSITION_MS / 2));
         let t_mid = h.tick_overview_transition(1.0);
         assert!(
             t_mid > 0.0 && t_mid < 1.0,
@@ -7590,8 +7644,7 @@ mod palette_dispatch_tests {
     fn host_with_chrome() -> (ShellOverlayHost, crate::shell::chrome_state::Chrome) {
         let tree = WorkspaceTree::bootstrap_default();
         let chrome = ChromeState::new(tree);
-        let host = ShellOverlayHost::new(Box::new(Container::new()))
-            .with_chrome(chrome.clone());
+        let host = ShellOverlayHost::new(Box::new(Container::new())).with_chrome(chrome.clone());
         (host, chrome)
     }
 
@@ -7643,7 +7696,8 @@ mod palette_dispatch_tests {
         let before = chrome.borrow().overlays;
         assert!(h.dispatch_palette_command("search.open"));
         assert_eq!(
-            chrome.borrow().overlays, before,
+            chrome.borrow().overlays,
+            before,
             "search.open should not mutate overlay flags"
         );
         assert!(!h.palette_visible);
@@ -7727,8 +7781,8 @@ mod workspace_slide_tests {
         // `switch_down` is a no-op when there's nothing below.
         tree.append_empty_workspace("Second");
         let chrome = ChromeState::new(tree);
-        let mut host = ShellOverlayHost::new(Box::new(Container::new()))
-            .with_chrome(chrome.clone());
+        let mut host =
+            ShellOverlayHost::new(Box::new(Container::new())).with_chrome(chrome.clone());
         // Give the host a viewport so the slide has a non-zero height
         // to translate by. The exact value doesn't matter for the
         // test assertions, only that it's > 0.
@@ -7803,7 +7857,10 @@ mod workspace_slide_tests {
         // Same key-format the shell uses inside `draw_real_peers`: the
         // active workspace id stringified. Mismatches must never match.
         let shell_key = PresenceKey::Workspace {
-            id: format!("{}", h.chrome.as_ref().unwrap().borrow().tree().active.raw()),
+            id: format!(
+                "{}",
+                h.chrome.as_ref().unwrap().borrow().tree().active.raw()
+            ),
         };
         let matches = presence
             .pointers
@@ -7867,7 +7924,8 @@ mod me_tile_fallback_tests {
         // must therefore not also say "You" or the user sees the same
         // word twice in a 160 px tile.
         assert_ne!(
-            ShellOverlayHost::ME_TILE_FALLBACK_NAME, "You",
+            ShellOverlayHost::ME_TILE_FALLBACK_NAME,
+            "You",
             "ME_TILE_FALLBACK_NAME duplicates the adjacent You-badge — \
              see 2026-05-04 critical-UI-inspection sweep"
         );
@@ -8004,8 +8062,7 @@ mod modal_curve_tests {
         tree.append_empty_workspace("Second");
         tree.append_empty_workspace("Third");
         let chrome = ChromeState::new(tree);
-        let mut h = ShellOverlayHost::new(Box::new(Container::new()))
-            .with_chrome(chrome.clone());
+        let mut h = ShellOverlayHost::new(Box::new(Container::new())).with_chrome(chrome.clone());
         h.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
 
         // Aim at the first row's centre via the same geometry helper the
@@ -8040,8 +8097,8 @@ mod overlay_event_absorb_tests {
     use crate::shell::chrome_state::ChromeState;
     use crate::shell::state::WorkspaceTree;
     use std::cell::RefCell;
-    use std::rc::Rc;
     use std::collections::HashMap as StdHashMap;
+    use std::rc::Rc;
     use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
     use vello::Scene;
     use vello::kurbo::Affine;
@@ -8060,7 +8117,10 @@ mod overlay_event_absorb_tests {
 
     impl RecordingContent {
         fn new(log: Rc<RefCell<Vec<String>>>) -> Self {
-            Self { rect: Rect::ZERO, log }
+            Self {
+                rect: Rect::ZERO,
+                log,
+            }
         }
     }
 
@@ -8102,7 +8162,8 @@ mod overlay_event_absorb_tests {
             _text_renderer: &mut TextRenderer,
             _theme: &Theme,
             _presence: &PresenceCtx,
-        ) {}
+        ) {
+        }
 
         fn handle_event(
             &mut self,
@@ -8368,9 +8429,7 @@ mod tests {
     use vello::Scene;
     use vello::kurbo::Affine;
     use winit::dpi::PhysicalPosition;
-    use winit::event::{
-        ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent,
-    };
+    use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent};
     use winit::keyboard::{Key, KeyLocation, ModifiersState, PhysicalKey};
 
     /// Recording mock content widget — the host's `content` slot is a
@@ -8428,7 +8487,8 @@ mod tests {
             _text_renderer: &mut TextRenderer,
             _theme: &Theme,
             _presence: &PresenceCtx,
-        ) {}
+        ) {
+        }
 
         fn handle_event(
             &mut self,
@@ -8512,11 +8572,7 @@ mod tests {
         }
     }
 
-    fn pump(
-        h: &mut Harness,
-        event: &WindowEvent,
-        modifiers: &Modifiers,
-    ) -> bool {
+    fn pump(h: &mut Harness, event: &WindowEvent, modifiers: &Modifiers) -> bool {
         let mut doc = AutoCommit::new();
         let doc_root = automerge::ROOT.clone();
         let mut focus: Option<NodeId> = None;
@@ -8549,8 +8605,7 @@ mod tests {
         // inspected by winit-internal code that the host never reaches).
         let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
         ev.logical_key = logical_key;
-        ev.physical_key =
-            PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
+        ev.physical_key = PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
         ev.location = KeyLocation::Standard;
         ev.state = ElementState::Pressed;
         ev.repeat = false;
@@ -8588,10 +8643,7 @@ mod tests {
         // Seed a stale query so the "clear on open" half of the spec
         // is observable too.
         h.host.palette.set_query("stale residual");
-        assert!(
-            !h.host.palette.is_focused(),
-            "palette must start unfocused"
-        );
+        assert!(!h.host.palette.is_focused(), "palette must start unfocused");
         assert!(!h.host.palette_visible(), "palette must start hidden");
 
         let mods = Modifiers::from(ModifiersState::CONTROL);
@@ -8614,6 +8666,129 @@ mod tests {
              {:?} should have been wiped",
             h.host.palette.query()
         );
+    }
+
+    /// Write a registry + manifest pair under `dir` so the real
+    /// `launcher::gui_apps()` — and therefore the real
+    /// `ApplicationsProvider` — enumerates one installed GUI package.
+    fn install_gui_fixture(dir: &std::path::Path, package_id: &str, name: &str) {
+        let payload = dir.join("payloads").join(package_id);
+        std::fs::create_dir_all(payload.join("bin")).unwrap();
+        let manifest_path = payload.join("manifest.toml");
+        std::fs::write(
+            &manifest_path,
+            format!(
+                "[package]\nid = \"{package_id}\"\nname = \"{name}\"\n\
+                 version = \"1.2.3\"\n[entrypoint]\nbin = \"bin/app\"\ntype = \"gui\"\n"
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("registry.toml"),
+            format!(
+                "[[entry]]\nid = '{package_id}'\npayload_root = {:?}\nmanifest_path = {:?}\n",
+                payload.display().to_string(),
+                manifest_path.display().to_string()
+            ),
+        )
+        .unwrap();
+    }
+
+    /// Ctrl+K, type an installed app's name, and the Applications
+    /// provider must answer — *while an app tab holds focus*, which is
+    /// every moment after the first launch.
+    ///
+    /// `bootstrap_default`'s active tab is Notes, which `NotesProvider`
+    /// claims via `owns_tab`. Seeding `SearchScope::ActiveApp` from the
+    /// chord therefore narrowed the fanout to the notes provider alone
+    /// and the palette offered nothing for "Terminal" — Enter launched
+    /// nothing, with no visible reason. This drives the whole production
+    /// chain: `handle_event` → `open_palette_with_scope` →
+    /// `refresh_search_results` → `SearchRegistry::query` →
+    /// `ApplicationsProvider` → `launcher::gui_apps`.
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn ctrl_k_still_finds_installed_apps_when_an_app_tab_has_focus() {
+        use crate::shell::chrome_state::SearchScope;
+
+        let tmp = tempfile::tempdir().unwrap();
+        install_gui_fixture(tmp.path(), "dev.qos.zzyzx", "Zzyzx");
+        // SAFETY: guarded by the `process_env` serial group.
+        unsafe { std::env::set_var("QOS_APPS_DATA_DIR", tmp.path()) };
+        crate::shell::launcher::invalidate_app_cache();
+
+        let mut h = build_harness();
+        // Precondition: the focused tab really is one a provider owns,
+        // so `ActiveApp` would genuinely exclude the applications
+        // provider. Without this the test would pass vacuously.
+        let owner = {
+            let st = h.chrome.borrow();
+            active_tab_provider_id(&st, &h.host.search_registry)
+        };
+        assert_eq!(
+            owner.as_deref(),
+            Some("notes"),
+            "fixture precondition: the focused tab must be owned by a \
+             provider, otherwise ActiveApp scope excludes nothing"
+        );
+
+        let mods = Modifiers::from(ModifiersState::CONTROL);
+        assert!(pump(&mut h, &key_press(Key::Character("k".into())), &mods));
+
+        assert_ne!(
+            h.chrome.borrow().search_scope,
+            SearchScope::ActiveApp,
+            "a keyboard chord must not narrow the palette to one app"
+        );
+
+        h.host.palette.set_query("zzyzx");
+        let doc = AutoCommit::new();
+        h.host.refresh_search_results(&doc, &automerge::ROOT);
+
+        let hit = h
+            .host
+            .search_results
+            .iter()
+            .find(|r| r.provider_id == "applications");
+        let hit = hit.unwrap_or_else(|| {
+            panic!(
+                "typing an installed app's name must offer a row to launch \
+                 it; got {:?}",
+                h.host
+                    .search_results
+                    .iter()
+                    .map(|r| (&r.provider_id, &r.title))
+                    .collect::<Vec<_>>()
+            )
+        });
+        assert_eq!(hit.id, "dev.qos.zzyzx");
+        assert_eq!(hit.title, "Open Zzyzx");
+
+        // SAFETY: guarded by the `process_env` serial group.
+        unsafe { std::env::remove_var("QOS_APPS_DATA_DIR") };
+        crate::shell::launcher::invalidate_app_cache();
+    }
+
+    /// A scope that can empty the result list has to say so. The app
+    /// pill reads `Only <App>`, not the bare tab title — a pill reading
+    /// `Notes` beside `Workspace` and `All` looks like a caption, and an
+    /// empty result set under it reads as a broken search.
+    #[test]
+    fn narrowing_scope_pill_says_it_narrows() {
+        use crate::shell::chrome_state::SearchScope;
+        let h = build_harness();
+        assert_eq!(
+            h.chrome.borrow().active_app_title().as_deref(),
+            Some("Notes"),
+            "fixture precondition: a tab is focused"
+        );
+        assert_eq!(
+            h.host.search_scope_pill_label(SearchScope::ActiveApp),
+            "Only Notes"
+        );
+        assert!(SearchScope::ActiveApp.narrows_results());
+        assert!(!SearchScope::Workspace.narrows_results());
+        assert!(!SearchScope::All.narrows_results());
     }
 
     /// Click the Files pill in the WS-settings tab strip and assert
@@ -8646,7 +8821,8 @@ mod tests {
         let mut scene = Scene::new();
         let mut tr = TextRenderer::new();
         let presence = PresenceCtx::empty();
-        h.host.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+        h.host
+            .draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
 
         let files_pill = h.host.ws_settings_tab_pill_rect(WsTab::Files);
         assert!(
@@ -8734,8 +8910,7 @@ mod tests {
             "PALETTE_SCRIM_ALPHA must equal concept §5.1's 0.30 (got {})",
             PALETTE_SCRIM_ALPHA
         );
-        let byte =
-            (PALETTE_SCRIM_ALPHA * 255.0).round().clamp(0.0, 255.0) as u8;
+        let byte = (PALETTE_SCRIM_ALPHA * 255.0).round().clamp(0.0, 255.0) as u8;
         assert_eq!(
             byte, 77,
             "0.30 × 255 must round to 77 — the byte literal in `draw_scrim` \
@@ -8753,16 +8928,8 @@ mod tests {
     fn pick_group_at_returns_containing_group() {
         let strip = StripId::from(7);
         let candidates = vec![
-            (
-                strip,
-                1u64,
-                Rect::new(0.0, 100.0, 400.0, 500.0),
-            ),
-            (
-                strip,
-                2u64,
-                Rect::new(400.0, 100.0, 800.0, 500.0),
-            ),
+            (strip, 1u64, Rect::new(0.0, 100.0, 400.0, 500.0)),
+            (strip, 2u64, Rect::new(400.0, 100.0, 800.0, 500.0)),
         ];
         assert_eq!(
             pick_group_at(&candidates, Point::new(200.0, 300.0)),
@@ -8936,7 +9103,7 @@ mod maximize_harvest_tests {
         // Drive a no-op cursor-move so the drain block runs and arms
         // `pending_maximize_change`. We use the public Widget API.
         use std::collections::HashMap;
-        use taffy::{NodeId, Style, TaffyTree, AvailableSpace, Size};
+        use taffy::{AvailableSpace, NodeId, Size, Style, TaffyTree};
         use vello::kurbo::Point;
         use winit::dpi::PhysicalPosition;
         use winit::event::{Modifiers, WindowEvent};
@@ -9222,4 +9389,3 @@ mod resync_strips_tests {
         );
     }
 }
-

@@ -71,7 +71,11 @@ fn make_red_memfd(width: u32, height: u32) -> std::os::fd::OwnedFd {
     let name = c"dmabuf-test-red";
     // SAFETY: syscall with a static nul-terminated name.
     let raw = unsafe { libc::syscall(libc::SYS_memfd_create, name.as_ptr(), 1u32) } as i32;
-    assert!(raw >= 0, "memfd_create failed: {}", std::io::Error::last_os_error());
+    assert!(
+        raw >= 0,
+        "memfd_create failed: {}",
+        std::io::Error::last_os_error()
+    );
     let fd = unsafe { std::os::fd::OwnedFd::from_raw_fd(raw) };
 
     let stride = (width * 4) as usize;
