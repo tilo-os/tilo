@@ -95,7 +95,7 @@ impl WinitBackend {
             (INITIAL_WIDTH, INITIAL_HEIGHT),
             1.0,
         )];
-        Ok(Self {
+        let mut me = Self {
             event_loop,
             inner: Inner {
                 window: None,
@@ -105,7 +105,44 @@ impl WinitBackend {
                 base_color: FALLBACK_BG,
                 closed: false,
             },
-        })
+        };
+        me.pump_until_resumed();
+        Ok(me)
+    }
+
+    /// Pump the event loop until winit delivers `resumed` and the window
+    /// + render state exist.
+    ///
+    /// The window is created lazily because `ActiveEventLoop` semantics
+    /// forbid creating one before the loop has run an iteration. That
+    /// laziness used to leak into everything the compositor asks a
+    /// backend at startup: `outputs()` returned the placeholder size
+    /// rather than the real window's, `refresh_interval()` had no monitor
+    /// to ask, and `take_presenter()` found no render state and silently
+    /// left presentation on the loop thread — a threaded compositor that
+    /// wasn't. Draining the first `resumed` here makes construction mean
+    /// "ready", so none of those three has a lazy case to get wrong.
+    ///
+    /// Bounded: if the platform never delivers `resumed` we return anyway
+    /// and the backend behaves as it did before (lazy init on the first
+    /// `poll_events`), rather than hanging the compositor at startup.
+    fn pump_until_resumed(&mut self) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while self.inner.window.is_none() && std::time::Instant::now() < deadline {
+            let status = self
+                .event_loop
+                .pump_app_events(Some(Duration::from_millis(4)), &mut self.inner);
+            if let PumpStatus::Exit(_) = status {
+                self.inner.closed = true;
+                return;
+            }
+        }
+        if self.inner.window.is_none() {
+            eprintln!(
+                "nirios compositor: winit did not deliver `resumed` within 2s; \
+                 falling back to lazy window creation"
+            );
+        }
     }
 
     /// Override the per-frame clear color. The compositor calls this
@@ -261,7 +298,18 @@ impl Backend for WinitBackend {
     }
 
     fn take_presenter(&mut self) -> Option<Box<dyn Presenter>> {
-        let render = self.inner.render.take()?;
+        let Some(render) = self.inner.render.take() else {
+            // Construction is supposed to have drained `resumed`, so
+            // there is no legitimate path here. Say so rather than
+            // quietly leaving the GPU submit on the input thread — a
+            // compositor that thinks it is threaded and isn't is the
+            // worst of both.
+            eprintln!(
+                "nirios compositor: winit backend has no render state to hand \
+                 to the render thread; presenting inline"
+            );
+            return None;
+        };
         Some(Box::new(WinitPresenter {
             render,
             base_color: self.inner.base_color,
