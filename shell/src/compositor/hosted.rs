@@ -123,6 +123,20 @@ pub fn run_with_full_options(opts: HostedOptions) {
     // stops the filesystem from enforcing an empty list forever.
     tree.fs_acl_path = Some(persist::fs_capability_export_path());
 
+    // Every workspace needs a durable identity as a collaboration room
+    // before anything is launched into it. State files written before
+    // rooms existed come back with none; minting here — after
+    // `persist_path` is set, so the mint is written down in the same
+    // breath — is what makes "the workspace I had yesterday" and "the
+    // workspace I have today" the same room rather than two.
+    let roomless = tree.adopt_roomless_workspaces();
+    if !roomless.is_empty() {
+        tracing::info!(
+            "collaboration: minted a room identity for {} workspace(s)",
+            roomless.len()
+        );
+    }
+
     // Someone has to own each room, or nobody can grant anything in it.
     // Workspaces restored from a state file written before ownership
     // existed carry no owner; the local user adopts them here. The

@@ -232,6 +232,12 @@ impl Peer {
 /// A route with an empty `cluster_id` addresses nobody: that is the
 /// fail-closed case for a connection that never said hello, or for a
 /// libp2p frame published by a peer that could not stamp one.
+/// Rendering of `crate::shell::state::RoomId::nil` — the cluster id a
+/// workspace announces when its durable room identity has not been
+/// minted yet. Never delivered to or from; see
+/// [`CrdtRoute::is_addressable`].
+const UNMINTED_CLUSTER_ID: &str = "00000000-0000-0000-0000-000000000000";
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CrdtRoute {
     /// App identity from the sender's `Hello`. Empty means "this
@@ -266,15 +272,31 @@ impl CrdtRoute {
         Self::cluster(self.cluster_id.clone())
     }
 
+    /// Whether a cluster id names a real room.
+    ///
+    /// Two values do not: the empty string (a connection that never
+    /// said `Hello`, or a frame nobody could stamp) and the nil uuid (a
+    /// workspace whose durable room identity has not been minted yet —
+    /// see `crate::shell::state::RoomId::nil`). The nil case matters
+    /// because it is not empty: without this, every workspace still
+    /// carrying the sentinel would share one enormous room, on every
+    /// machine at once, which is precisely the failure that deriving
+    /// the cluster from a local counter used to cause.
+    fn is_addressable(cluster_id: &str) -> bool {
+        !cluster_id.is_empty() && cluster_id != UNMINTED_CLUSTER_ID
+    }
+
     /// Whether an event addressed to `self` should be delivered to a
     /// subscriber that announced `subscriber`.
     ///
-    /// Fails closed on either side lacking a cluster. App granularity
-    /// applies only when both ends announced an app id — a capnp
-    /// subscriber (which cannot announce one) stays cluster-scoped
+    /// Fails closed on either side lacking an addressable cluster. App
+    /// granularity applies only when both ends announced an app id — a
+    /// capnp subscriber (which cannot announce one) stays cluster-scoped
     /// rather than silently receiving nothing.
     pub fn delivers_to(&self, subscriber: &CrdtRoute) -> bool {
-        if self.cluster_id.is_empty() || subscriber.cluster_id.is_empty() {
+        if !Self::is_addressable(&self.cluster_id)
+            || !Self::is_addressable(&subscriber.cluster_id)
+        {
             return false;
         }
         if self.cluster_id != subscriber.cluster_id {
