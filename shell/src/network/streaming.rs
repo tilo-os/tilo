@@ -157,6 +157,45 @@ pub enum InputEvent {
 /// [`crate::network::protocol::SurfaceId`].
 pub type SurfaceIdWire = crate::network::protocol::SurfaceId;
 
+/// A single decoded `org.freedesktop.impl.portal.RemoteDesktop` `Notify*`
+/// action.
+///
+/// Unlike [`InputEvent`] — which is the *peer-sync* wire format keyed to a
+/// `(peer, surface)` share — a `RemoteAction` is a *local* portal request:
+/// an app the compositor is hosting asked (via `RemoteDesktop`) to inject
+/// input into whatever surface currently holds seat focus. The portal
+/// backend decodes each `Notify*` D-Bus call into one of these and hands it
+/// to a [`RemoteInputInjector`](crate::portal::RemoteInputInjector); the
+/// compositor's event loop drains them and calls
+/// [`crate::compositor::state::State::apply_remote_desktop_action`], which
+/// drives the real smithay `Seat`.
+///
+/// Coordinate spaces mirror the RemoteDesktop spec: relative motion is a
+/// `(dx, dy)` delta in the stream's logical space; absolute motion is a
+/// point in the stream's logical space. Button / keycode use Linux evdev
+/// codes; `state` is the freedesktop `0 = released, 1 = pressed` convention,
+/// captured here as a `bool`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum RemoteAction {
+    /// Relative pointer motion (`NotifyPointerMotion`).
+    PointerMotionRelative { dx: f64, dy: f64 },
+    /// Absolute pointer motion (`NotifyPointerMotionAbsolute`). `stream` is
+    /// the PipeWire node id the coordinate is relative to.
+    PointerMotionAbsolute { stream: u32, x: f64, y: f64 },
+    /// Pointer button (`NotifyPointerButton`). `button` is an evdev code
+    /// (e.g. `BTN_LEFT` = 272).
+    PointerButton { button: i32, pressed: bool },
+    /// Smooth scroll (`NotifyPointerAxis`).
+    PointerAxis { dx: f64, dy: f64 },
+    /// Discrete scroll (`NotifyPointerAxisDiscrete`). `axis` is `0`
+    /// (vertical) or `1` (horizontal) per the spec.
+    PointerAxisDiscrete { axis: u32, steps: i32 },
+    /// Key press/release by evdev keycode (`NotifyKeyboardKeycode`).
+    KeyboardKeycode { keycode: i32, pressed: bool },
+    /// Key press/release by keysym (`NotifyKeyboardKeysym`).
+    KeyboardKeysym { keysym: i32, pressed: bool },
+}
+
 /// Sink the owner's compositor exposes to receive remote-input events.
 ///
 /// Implemented by `crate::compositor::state::State::apply_remote_input`
