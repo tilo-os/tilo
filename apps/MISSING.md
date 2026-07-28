@@ -332,13 +332,42 @@ verified by an offscreen shot (header gone, functional controls intact) + tests:
 - [ ] Polish across widths (review at several widths).
 
 ### sheets
-- [ ] No right-click context menu on the sheet TABS at the bottom.
+- [x] Right-click context menu on the sheet TABS: Rename / Duplicate / Insert
+      sheet / Move left / Move right / Delete + a tab-colour palette → done
+      (verified on the `tabmenu` shot; opens on the Budget tab with all rows +
+      the colour swatches).
+- [x] Excel-style multi-range cell selection: Ctrl+click / Ctrl+drag build a
+      discontiguous selection, drag selects a rectangle, Shift+click extends; the
+      status bar aggregates Sum/Avg/Count over the *whole* multi-range and the
+      name box shows an "N cells" count → done (verified live: B2:B6 + E2:E7 =
+      11 cells, status bar Sum $14,750.00 · Avg $1,340.91 · Count 11; tests
+      `multi_range_selection_aggregates_numeric_cells_over_the_real_pointer_path`
+      drives the real ctrl-drag pointer path and
+      `multi_range_selection_summary_aggregates_both_ranges` asserts the
+      status-bar summary).
 - [ ] Implement a large subset of Excel/LibreOffice FORMULAS (needn't be 1:1; can
-      improve where sensible).
-- [ ] Reference-coloring only shows while EDITING a cell — should also show when a
-      formula cell is just SELECTED.
-- [ ] The top formula edit bar has no caret / text selection — give it a real
-      editable field (shared caret core).
+      improve where sensible). (The engine is already broad — `formula.rs` — but
+      not yet audited for Excel/Calc parity; left open.)
+- [x] Reference-coloring also shows when a formula cell is just SELECTED, not only
+      while editing → done (verified: E2 selected shows `=SUM(B2:D2)` with `B2:D2`
+      tinted in the formula bar AND the B2:D2 range outlined on the grid;
+      `selected_formula_bar_shows_colored_body`).
+- [x] The top formula edit bar is a real editable field with caret + text
+      selection → done (verified on the `fbarselect` shot: the focused formula bar
+      shows a selected `B2:D2` reference with the range highlighted on the grid).
+
+## word-processor
+- [x] Real Save / Save As / Open via the XDG portal (`ui::portal`). Ctrl+S saves
+      to the current path, or — for an untitled document — opens the host Save-As
+      picker instead of silently writing `~/Untitled.md`; Ctrl+Shift+S is always
+      Save As; Ctrl+O opens a document in place. The chosen extension picks the
+      qdoc codec (.docx/.odt/.md/.rtf/.html/…), so a docx opened → edited →
+      saved-as writes a real .docx that round-trips → done (test
+      `save_as_writes_a_real_docx_that_round_trips` proves the PK/OOXML signature
+      + round-trip; `open_pick_replaces_the_document_in_place` proves in-place
+      Open). Retired the bespoke image-only portal module for the shared
+      `ui::portal` primitive (open + save + filters), dropping the app's direct
+      ashpd/tokio/url deps.
 
 ## monitor — remaining (overlap + responsive strip already fixed)
 - [ ] "Copy PID" context-menu action is a no-op stub — reports "PID N copied" but
