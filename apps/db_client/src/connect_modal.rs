@@ -26,6 +26,7 @@ enum Field {
     Port,
     Database,
     User,
+    Password,
     FilePath,
 }
 
@@ -37,6 +38,7 @@ pub struct ConnectModal {
     port: String,
     database: String,
     user: String,
+    password: String,
     file_path: String,
     focus: Option<Field>,
     cursor: Point,
@@ -59,6 +61,7 @@ impl ConnectModal {
             port: "5432".into(),
             database: String::new(),
             user: String::new(),
+            password: String::new(),
             file_path: String::new(),
             focus: None,
             cursor: Point::ZERO,
@@ -82,6 +85,7 @@ impl ConnectModal {
         self.port = "5432".into();
         self.database = String::new();
         self.user = String::new();
+        self.password = String::new();
         self.file_path = String::new();
         self.focus = Some(Field::Name);
     }
@@ -100,6 +104,7 @@ impl ConnectModal {
             Field::Port => &mut self.port,
             Field::Database => &mut self.database,
             Field::User => &mut self.user,
+            Field::Password => &mut self.password,
             Field::FilePath => &mut self.file_path,
         }
     }
@@ -111,6 +116,7 @@ impl ConnectModal {
             Field::Port => &self.port,
             Field::Database => &self.database,
             Field::User => &self.user,
+            Field::Password => &self.password,
             Field::FilePath => &self.file_path,
         }
     }
@@ -128,6 +134,7 @@ impl ConnectModal {
         p.port = self.port.parse().unwrap_or_else(|_| self.engine.default_port());
         p.database = self.database.clone();
         p.user = self.user.clone();
+        p.password = self.password.clone();
         p.file_path = self.file_path.clone();
         p
     }
@@ -234,6 +241,7 @@ impl ConnectModal {
                 Field::Port,
                 Field::Database,
                 Field::User,
+                Field::Password,
             ]
         };
         match self.focus {
@@ -257,7 +265,7 @@ impl ConnectModal {
         );
 
         let pw = 460.0;
-        let ph = if self.engine == Engine::Sqlite { 320.0 } else { 440.0 };
+        let ph = if self.engine == Engine::Sqlite { 320.0 } else { 512.0 };
         let px = root.x0 + (root.width() - pw) / 2.0;
         let py = root.y0 + (root.height() - ph) / 2.0;
         let panel = Rect::new(px, py, px + pw, py + ph);
@@ -326,16 +334,19 @@ impl ConnectModal {
             let (hx, _) = self.field_pair(scene, t, tr, theme, px, pw, y, "Host", Field::Host, "Port", Field::Port);
             y = hx;
             y = self.field(scene, t, tr, theme, px, pw, y, "Database", Field::Database);
-            y = self.field(scene, t, tr, theme, px, pw, y, "User", Field::User);
+            let (ux, _) = self.field_pair(
+                scene, t, tr, theme, px, pw, y, "User", Field::User, "Password", Field::Password,
+            );
+            y = ux;
         }
 
-        // Gated-remote note.
+        // Password-handling note for the network engines.
         if self.engine != Engine::Sqlite {
             tr.draw_text(
                 scene,
-                "Network connections require a sandbox grant (gated in this build).",
+                "The password is kept in memory for this session only and is never written to disk.",
                 10.5,
-                theme.tokens.colors.semantic.warning,
+                theme.text_dim,
                 t * Affine::translate((px + 24.0, y + 2.0)),
                 Some((pw - 48.0) as f32),
             );
@@ -445,7 +456,15 @@ impl ConnectModal {
         scene.fill(Fill::NonZero, t, theme.bg_app, None, &r.to_rounded_rect(6.0));
         let border = if focused { theme.border_focus } else { theme.border_standard };
         scene.stroke(&Stroke::new(if focused { 1.5 } else { 1.0 }), t, border, None, &r.to_rounded_rect(6.0));
-        let val = self.field_value(field);
+        // Password fields render masked; every other field shows its value.
+        let raw = self.field_value(field);
+        let masked;
+        let val: &str = if field == Field::Password {
+            masked = "•".repeat(raw.chars().count());
+            &masked
+        } else {
+            raw
+        };
         tr.draw_text(
             scene,
             val,

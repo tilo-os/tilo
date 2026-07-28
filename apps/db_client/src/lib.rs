@@ -1,13 +1,17 @@
 //! Database — a qOS native database client built on the `ui` toolkit.
 //!
-//! Connects to PostgreSQL, MySQL and SQLite. SQLite runs fully locally and
-//! ships with a bundled sample catalog so the schema browser, SQL editor and
-//! results grid all work offline; the network engines are described and
-//! manageable but their live drivers are gated behind a sandbox grant.
+//! Connects to PostgreSQL, MySQL and SQLite over real drivers. SQLite runs
+//! fully locally (and ships a bundled sample catalog for the offline `--shots`
+//! path); PostgreSQL and MySQL open real TCP connections, introspect the live
+//! catalog and run real queries — a refused socket or a bad password surfaces
+//! as an honest error, never a fabricated success.
 //!
 //! Layers:
-//! - [`model`]     — connection profiles, schema types, query results.
-//! - [`engine`]    — the SQLite driver: introspection + query execution.
+//! - [`model`]        — connection profiles, schema types, query results.
+//! - [`engine`]       — the SQLite driver + the [`engine::LiveEngine`] enum
+//!                      that unifies all three engines behind one handle.
+//! - [`engine_pg`]    — the PostgreSQL driver: introspection + query execution.
+//! - [`engine_mysql`] — the MySQL/MariaDB driver: introspection + execution.
 //! - [`sample`]    — the bundled offline sample database.
 //! - [`session`]   — runtime view state (connections, schema, results).
 //! - [`doc`]       — the CRDT-backed SQL editor buffer.
@@ -26,6 +30,8 @@ pub mod connect_modal;
 pub mod doc;
 pub mod editor;
 pub mod engine;
+pub mod engine_mysql;
+pub mod engine_pg;
 pub mod grid;
 pub mod model;
 pub mod sample;
