@@ -1,8 +1,12 @@
 //! CRDT (Automerge) persistence for the Themes catalog.
 //!
 //! All app state lives in the shared `ui::State::doc` so undo/redo and
-//! live collaboration work for free. The layout is intentionally simple
-//! and collab-friendly:
+//! live collaboration work for free, and — because `main` opens that
+//! document through `ui::persist` — so does the catalog itself: custom
+//! themes the user builds are still there on the next launch. The single
+//! *active* theme additionally goes to `~/.config/qos/settings.json`
+//! (see [`crate::store`]) because that is the file the rest of the
+//! desktop reads. The layout is intentionally simple and collab-friendly:
 //!
 //! ```text
 //! root

@@ -307,6 +307,23 @@ impl State {
         self.doc.save()
     }
 
+    /// Wrap an already-loaded document.
+    ///
+    /// The entry point for persistence (`ui::persist`): the store hands back
+    /// the previous session's `AutoCommit` — history, actor identity and all
+    /// — and this adopts it as the live document without a byte round-trip.
+    pub fn from_doc(mut doc: AutoCommit) -> Self {
+        let last_heads = doc.get_heads();
+        Self {
+            doc,
+            root: automerge::ROOT,
+            collab: CollaborationState::new(),
+            undo_stack: Vec::new(),
+            redo_stack: Vec::new(),
+            last_heads,
+        }
+    }
+
     /// Restores an application state from a serialized byte vector.
     pub fn load(data: &[u8]) -> Result<Self, automerge::AutomergeError> {
         let mut doc = AutoCommit::load(data)?;

@@ -232,6 +232,12 @@ impl Peer {
 /// A route with an empty `cluster_id` addresses nobody: that is the
 /// fail-closed case for a connection that never said hello, or for a
 /// libp2p frame published by a peer that could not stamp one.
+/// Rendering of `crate::shell::state::RoomId::nil` — the cluster id a
+/// workspace announces when its durable room identity has not been
+/// minted yet. Never delivered to or from; see
+/// [`CrdtRoute::is_addressable`].
+const UNMINTED_CLUSTER_ID: &str = "00000000-0000-0000-0000-000000000000";
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CrdtRoute {
     /// App identity from the sender's `Hello`. Empty means "this
@@ -266,15 +272,31 @@ impl CrdtRoute {
         Self::cluster(self.cluster_id.clone())
     }
 
+    /// Whether a cluster id names a real room.
+    ///
+    /// Two values do not: the empty string (a connection that never
+    /// said `Hello`, or a frame nobody could stamp) and the nil uuid (a
+    /// workspace whose durable room identity has not been minted yet —
+    /// see `crate::shell::state::RoomId::nil`). The nil case matters
+    /// because it is not empty: without this, every workspace still
+    /// carrying the sentinel would share one enormous room, on every
+    /// machine at once, which is precisely the failure that deriving
+    /// the cluster from a local counter used to cause.
+    fn is_addressable(cluster_id: &str) -> bool {
+        !cluster_id.is_empty() && cluster_id != UNMINTED_CLUSTER_ID
+    }
+
     /// Whether an event addressed to `self` should be delivered to a
     /// subscriber that announced `subscriber`.
     ///
-    /// Fails closed on either side lacking a cluster. App granularity
-    /// applies only when both ends announced an app id — a capnp
-    /// subscriber (which cannot announce one) stays cluster-scoped
+    /// Fails closed on either side lacking an addressable cluster. App
+    /// granularity applies only when both ends announced an app id — a
+    /// capnp subscriber (which cannot announce one) stays cluster-scoped
     /// rather than silently receiving nothing.
     pub fn delivers_to(&self, subscriber: &CrdtRoute) -> bool {
-        if self.cluster_id.is_empty() || subscriber.cluster_id.is_empty() {
+        if !Self::is_addressable(&self.cluster_id)
+            || !Self::is_addressable(&subscriber.cluster_id)
+        {
             return false;
         }
         if self.cluster_id != subscriber.cluster_id {
@@ -1969,6 +1991,40 @@ mod tests {
         drop(handle);
     }
 
+    /// The nil room addresses nobody, in either direction.
+    ///
+    /// It is not the empty string, so without an explicit rule every
+    /// workspace still carrying the unminted sentinel — on every
+    /// machine at once — would be one enormous shared room. That is the
+    /// exact failure that deriving the cluster from a local counter
+    /// used to cause, and it must not reappear through the migration
+    /// window.
+    #[test]
+    fn the_unminted_room_addresses_nobody() {
+        let unminted =
+            CrdtRoute::app("dev.qos.notes", crate::shell::state::RoomId::nil().to_string());
+        let real = CrdtRoute::app("dev.qos.notes", crate::shell::state::RoomId::new().to_string());
+
+        assert!(
+            !unminted.delivers_to(&unminted),
+            "two workspaces that have not yet been given an identity are not \
+             the same room"
+        );
+        assert!(
+            !unminted.delivers_to(&real),
+            "a sender with no room identity must reach nobody"
+        );
+        assert!(
+            !real.delivers_to(&unminted),
+            "a subscriber with no room identity must receive nothing"
+        );
+        assert!(
+            real.delivers_to(&real.clone()),
+            "and a real room must still deliver to itself, or this rule has \
+             broken delivery outright"
+        );
+    }
+
     #[test]
     #[serial_test::serial(collab_broker)]
     fn silent_client_receives_nothing() {
@@ -2117,14 +2173,14 @@ mod tests {
     fn sandbox_env_for_launch(
         dir: &Path,
         package_id: &str,
-        workspace: crate::shell::state::WorkspaceId,
+        room: crate::shell::state::RoomId,
     ) -> Vec<(String, String)> {
         let app = staged_app(dir, package_id);
         let launch = crate::shell::launcher::build_launch_command(
             &app,
             Path::new("/usr/libexec/qos-launcher"),
             Path::new("/run/user/1000/wayland-1"),
-            workspace,
+            room,
             None,
             None,
             None,
@@ -2164,8 +2220,14 @@ mod tests {
         env
     }
 
-    /// Connect a manager under the env a real launch into `workspace`
+    /// Connect a manager under the env a real launch into `room`
     /// would have given the app.
+    ///
+    /// `room` is the workspace's durable identity, which is what the
+    /// launch chain actually carries — the local `WorkspaceId` never
+    /// reaches the sandbox. Tests read it off a real
+    /// `Workspace`/`WorkspaceTree` rather than inventing one, so what
+    /// they exercise is the value production would have used.
     ///
     /// `instance` goes to `QUICK_APP_ID` — the standalone-dev
     /// per-instance identity, deliberately *different* for every peer
@@ -2175,10 +2237,10 @@ mod tests {
         sock: &PathBuf,
         dir: &Path,
         package_id: &str,
-        workspace: crate::shell::state::WorkspaceId,
+        room: crate::shell::state::RoomId,
         instance: &str,
     ) -> CollaborationManager {
-        let env = sandbox_env_for_launch(dir, package_id, workspace);
+        let env = sandbox_env_for_launch(dir, package_id, room);
         // SAFETY: every test in this module is serialised on the
         // `collab_broker` key, so nothing else reads these between the
         // writes and the `new()` that consumes them.
@@ -2232,13 +2294,16 @@ mod tests {
         let socket_path = temp_sock("same-workspace");
         let handle = spawn(socket_path.clone()).expect("broker should bind");
 
-        let workspace = crate::shell::state::WorkspaceId(7);
+        let workspace = crate::shell::state::Workspace::test_default(
+            crate::shell::state::WorkspaceId(7),
+            "here",
+        );
         // Two windows of one app, opened into the same workspace. Their
         // per-instance dev ids differ; that must not matter.
         let mut first =
-            connect_as_launched_app(&socket_path, &dir, "dev.qos.notes", workspace, "alice");
+            connect_as_launched_app(&socket_path, &dir, "dev.qos.notes", workspace.room, "alice");
         let mut second =
-            connect_as_launched_app(&socket_path, &dir, "dev.qos.notes", workspace, "bob");
+            connect_as_launched_app(&socket_path, &dir, "dev.qos.notes", workspace.room, "bob");
 
         wait_for_announced(&handle, 2, Duration::from_millis(2000));
         let _ = first.poll();
@@ -2275,18 +2340,24 @@ mod tests {
         let socket_path = temp_sock("diff-workspace");
         let handle = spawn(socket_path.clone()).expect("broker should bind");
 
-        let here = crate::shell::state::WorkspaceId(7);
-        let elsewhere = crate::shell::state::WorkspaceId(8);
+        let here = crate::shell::state::Workspace::test_default(
+            crate::shell::state::WorkspaceId(7),
+            "here",
+        );
+        let elsewhere = crate::shell::state::Workspace::test_default(
+            crate::shell::state::WorkspaceId(8),
+            "elsewhere",
+        );
 
         // Two peers in `here` — the second is the control. Without it,
         // "the other workspace heard nothing" could just mean the delta
         // never left the sender.
         let mut sender =
-            connect_as_launched_app(&socket_path, &dir, "dev.qos.notes", here, "alice");
+            connect_as_launched_app(&socket_path, &dir, "dev.qos.notes", here.room, "alice");
         let mut same_workspace =
-            connect_as_launched_app(&socket_path, &dir, "dev.qos.notes", here, "bob");
+            connect_as_launched_app(&socket_path, &dir, "dev.qos.notes", here.room, "bob");
         let mut other_workspace =
-            connect_as_launched_app(&socket_path, &dir, "dev.qos.notes", elsewhere, "carol");
+            connect_as_launched_app(&socket_path, &dir, "dev.qos.notes", elsewhere.room, "carol");
 
         wait_for_announced(&handle, 3, Duration::from_millis(2000));
         let _ = sender.poll();
@@ -2313,8 +2384,8 @@ mod tests {
             crdt_payloads(&leaked).is_empty(),
             "an app opened in workspace {} must receive no CRDT payload \
              from the same app opened in workspace {}; it received {:?}",
-            elsewhere.raw(),
-            here.raw(),
+            elsewhere.id.raw(),
+            here.id.raw(),
             crdt_payloads(&leaked),
         );
 
@@ -2332,8 +2403,11 @@ mod tests {
         // produces: under a session the package id and the workspace
         // are both present, so they win over the dev-only override.
         let dir = scratch_dir("env");
-        let workspace = crate::shell::state::WorkspaceId(7);
-        let env = sandbox_env_for_launch(&dir, "dev.qos.notes", workspace);
+        let workspace = crate::shell::state::Workspace::test_default(
+            crate::shell::state::WorkspaceId(7),
+            "here",
+        );
+        let env = sandbox_env_for_launch(&dir, "dev.qos.notes", workspace.room);
         let lookup = |key: &str| {
             env.iter()
                 .find(|(k, _)| k == key)
@@ -2351,13 +2425,363 @@ mod tests {
             workspace.collab_cluster_id().to_string(),
             "the launcher must tell the app which workspace it was opened into"
         );
-        // Two workspaces are two rooms, not one.
+        // And it must be the workspace's *durable* identity, not
+        // anything derived from the local handle. Pinned against the
+        // stored room verbatim: if `collab_cluster_id` ever goes back
+        // to deriving from `id`, the two differ and this fails.
+        assert_eq!(
+            lookup("QOS_WORKSPACE_ID"),
+            workspace.room.to_string(),
+            "the cluster the app is launched into must be the workspace's \
+             stored room id, which is the only value a peer on another \
+             machine can also hold"
+        );
+        // Two workspaces are two rooms, not one — even when their local
+        // handles are adjacent counter values.
         assert_ne!(
-            crate::shell::state::WorkspaceId(7).collab_cluster_id(),
-            crate::shell::state::WorkspaceId(8).collab_cluster_id(),
-            "distinct workspaces must derive distinct cluster ids"
+            crate::shell::state::Workspace::test_default(
+                crate::shell::state::WorkspaceId(7),
+                "a",
+            )
+            .collab_cluster_id(),
+            crate::shell::state::Workspace::test_default(
+                crate::shell::state::WorkspaceId(8),
+                "b",
+            )
+            .collab_cluster_id(),
+            "distinct workspaces must have distinct cluster ids"
+        );
+        // The half a local-id derivation could never give us: two
+        // workspaces that share a local handle — "workspace 7" on two
+        // different machines — are still two different rooms.
+        assert_ne!(
+            crate::shell::state::Workspace::test_default(
+                crate::shell::state::WorkspaceId(7),
+                "mine",
+            )
+            .collab_cluster_id(),
+            crate::shell::state::Workspace::test_default(
+                crate::shell::state::WorkspaceId(7),
+                "theirs",
+            )
+            .collab_cluster_id(),
+            "two unrelated workspaces that happen to share a local id must \
+             not be the same collaboration room"
         );
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The route the broker recorded for the peer it accepted at
+    /// `index` — the `(app_id, cluster_id)` pair the app announced on
+    /// its `Hello`, derived inside the app from the `QOS_WORKSPACE_ID`
+    /// the launch put in its sandbox.
+    ///
+    /// Read out of the live peer table rather than reconstructed, so a
+    /// test that ships this route over the wire ships the value
+    /// production would have shipped.
+    fn announced_route(handle: &BrokerHandle, index: usize) -> CrdtRoute {
+        handle
+            .peers
+            .snapshot()
+            .get(index)
+            .and_then(|p| p.route())
+            .expect("peer should have announced a route")
+    }
+
+    /// One hop of the peer-sync wire, minus libp2p.
+    ///
+    /// Both ends of the bridge, verbatim. The sending host's
+    /// `reader_loop` stamps the sender's announced route onto the frame
+    /// and hands it to `ShellNetwork::publish_app_crdt_incremental`;
+    /// the receiving host's drain thread rebuilds
+    /// `CrdtRoute::app(app_id, cluster_id)` from the frame and calls
+    /// `fanout_to_route`. Everything between the two is transport, and
+    /// gossipsub is a broadcast — so a frame reaches *every* host
+    /// subscribed to the topic, and which of their apps see it is
+    /// decided entirely by the route. That is the decision under test.
+    fn deliver_over_the_wire(to: &BrokerHandle, wire_route: &CrdtRoute, data: &[u8]) {
+        to.fanout_event(
+            &CollabEvent::CRDTIncremental {
+                data: data.to_vec(),
+            },
+            None,
+            wire_route,
+        );
+    }
+
+    #[test]
+    #[serial_test::serial(collab_broker)]
+    fn a_workspace_is_the_same_room_after_a_restart() {
+        // "The workspace I had yesterday is the workspace I have
+        // today." A room id that changed on restart would quietly
+        // strand every peer who had been invited to it, and quietly
+        // orphan the app windows the user reopens into it.
+        let dir = scratch_dir("restart");
+        let state_dir = tempfile::tempdir().expect("tempdir");
+        let state_path = state_dir.path().join("state.json");
+        let socket_path = temp_sock("restart");
+        let handle = spawn(socket_path.clone()).expect("broker should bind");
+
+        let ws_id = crate::shell::state::WorkspaceId(7);
+        let other_id = crate::shell::state::WorkspaceId(8);
+
+        // --- First run of the compositor. ---------------------------
+        let mut first_run = crate::shell::state::WorkspaceTree::default();
+        first_run.persist_path = Some(state_path.clone());
+        first_run
+            .workspaces
+            .push(crate::shell::state::Workspace::test_default(ws_id, "Home"));
+        first_run
+            .workspaces
+            .push(crate::shell::state::Workspace::test_default(
+                other_id, "Other",
+            ));
+        let room_before = first_run.room_of(ws_id).expect("workspace exists");
+        let other_room = first_run.room_of(other_id).expect("workspace exists");
+        first_run.flush_to_disk();
+
+        // An app the user opened before the restart, through the real
+        // launch chain.
+        let mut before =
+            connect_as_launched_app(&socket_path, &dir, "dev.qos.notes", room_before, "alice");
+
+        // --- The process dies; a new one loads the same state file. --
+        let mut second_run = crate::shell::persist::load_or_default(&state_path);
+        second_run.persist_path = Some(state_path.clone());
+        // The boot-time migration must find nothing to do: these
+        // workspaces already have identities, and re-minting them is
+        // exactly the bug this test exists to catch.
+        let minted = second_run.adopt_roomless_workspaces();
+        assert!(
+            minted.is_empty(),
+            "a workspace loaded with a room already recorded must not have \
+             a new one minted for it; {} were re-minted",
+            minted.len()
+        );
+        let room_after = second_run
+            .room_of(ws_id)
+            .expect("the workspace must survive the restart");
+        assert_eq!(
+            room_after, room_before,
+            "a workspace's collaboration room must be the same after a \
+             restart as before it"
+        );
+
+        // An app the user opens after the restart, through the same
+        // launch chain. Nothing here is told about `before`.
+        let mut after =
+            connect_as_launched_app(&socket_path, &dir, "dev.qos.notes", room_after, "bob");
+        // Control: an app in the *other* workspace, so "the delta
+        // arrived" cannot be the broker having lost its routing.
+        let room_other_after = second_run
+            .room_of(other_id)
+            .expect("the second workspace must survive too");
+        assert_eq!(room_other_after, other_room);
+        let mut elsewhere = connect_as_launched_app(
+            &socket_path,
+            &dir,
+            "dev.qos.notes",
+            room_other_after,
+            "carol",
+        );
+
+        wait_for_announced(&handle, 3, Duration::from_millis(2000));
+        let _ = before.poll();
+        let _ = after.poll();
+        let _ = elsewhere.poll();
+
+        after.send(CollabRequest::SyncIncremental {
+            data: b"still-the-same-room".to_vec(),
+        });
+
+        let heard = poll_until(&mut before, 1, Duration::from_millis(1000));
+        assert_eq!(
+            crdt_payloads(&heard),
+            vec![b"still-the-same-room".to_vec()],
+            "an app launched after the restart must land in the same room as \
+             one launched before it, so their edits still reach each other. \
+             Got {heard:?}"
+        );
+
+        let leaked = poll_until(&mut elsewhere, 1, Duration::from_millis(1000));
+        assert!(
+            crdt_payloads(&leaked).is_empty(),
+            "the other workspace must still be a different room after the \
+             restart; it received {:?}",
+            crdt_payloads(&leaked),
+        );
+
+        drop(before);
+        drop(after);
+        drop(elsewhere);
+        drop(handle);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    #[serial_test::serial(collab_broker)]
+    fn an_invited_host_joins_the_room_and_an_uninvited_one_does_not() {
+        // The cross-machine claim. Three hosts, three brokers, three
+        // independently-built workspace trees — and, deliberately, the
+        // same local workspace id on all three, because that number
+        // used to be what decided the room and it must now decide
+        // nothing.
+        //
+        // Only the second host accepts the first's invite. One frame
+        // goes onto the (broadcast) wire; the assertions are about
+        // which apps it reaches.
+        let dir = scratch_dir("cross-host");
+        let host_sock = temp_sock("cross-host-a");
+        let guest_sock = temp_sock("cross-host-b");
+        let stranger_sock = temp_sock("cross-host-c");
+        let host_broker = spawn(host_sock.clone()).expect("host broker should bind");
+        let guest_broker = spawn(guest_sock.clone()).expect("guest broker should bind");
+        let stranger_broker =
+            spawn(stranger_sock.clone()).expect("stranger broker should bind");
+
+        let local_id = crate::shell::state::WorkspaceId(7);
+
+        let mut host_tree = crate::shell::state::WorkspaceTree::default();
+        host_tree
+            .workspaces
+            .push(crate::shell::state::Workspace::test_default(
+                local_id, "Shared",
+            ));
+        let mut guest_tree = crate::shell::state::WorkspaceTree::default();
+        guest_tree
+            .workspaces
+            .push(crate::shell::state::Workspace::test_default(
+                local_id, "Mine",
+            ));
+        let mut stranger_tree = crate::shell::state::WorkspaceTree::default();
+        stranger_tree
+            .workspaces
+            .push(crate::shell::state::Workspace::test_default(
+                local_id, "Theirs",
+            ));
+
+        let host_room = host_tree.room_of(local_id).expect("host workspace");
+        let guest_room_before = guest_tree.room_of(local_id).expect("guest workspace");
+        let stranger_room = stranger_tree.room_of(local_id).expect("stranger workspace");
+        assert_ne!(
+            host_room, guest_room_before,
+            "three hosts that have never met must start in three different \
+             rooms even when their local workspace ids collide"
+        );
+        assert_ne!(host_room, stranger_room);
+        assert_ne!(guest_room_before, stranger_room);
+
+        // The guest's app as it stood *before* the invite. Same broker,
+        // same package, same everything except the room — which is what
+        // makes the post-invite result attributable to the invite.
+        let mut guest_before_invite = connect_as_launched_app(
+            &guest_sock,
+            &dir,
+            "dev.qos.notes",
+            guest_room_before,
+            "bob-before",
+        );
+
+        // --- The invite. Production path on both ends. ---------------
+        let owner_key = libp2p::identity::Keypair::generate_ed25519();
+        let token = crate::network::invite::make_invite_token(
+            &owner_key,
+            host_tree
+                .workspaces
+                .iter()
+                .find(|w| w.id == local_id)
+                .expect("host workspace"),
+            "/ip4/127.0.0.1/tcp/4001",
+            3600,
+        )
+        .expect("the host issues an invite");
+        let adopted =
+            crate::network::invite::accept_invite_into(&mut guest_tree, local_id, &token)
+                .expect("the guest accepts it");
+        assert_eq!(
+            adopted, host_room,
+            "accepting an invite must put the guest in the host's room"
+        );
+        assert_eq!(
+            guest_tree.room_of(local_id),
+            Some(host_room),
+            "the guest's workspace must now address the host's room"
+        );
+        assert_eq!(
+            stranger_tree.room_of(local_id),
+            Some(stranger_room),
+            "the uninvited host must be untouched by someone else's invite"
+        );
+
+        // --- Each host launches the app into its own workspace. ------
+        let mut host_app =
+            connect_as_launched_app(&host_sock, &dir, "dev.qos.notes", host_room, "alice");
+        let mut guest_app = connect_as_launched_app(
+            &guest_sock,
+            &dir,
+            "dev.qos.notes",
+            guest_tree.room_of(local_id).expect("guest workspace"),
+            "bob",
+        );
+        let mut stranger_app = connect_as_launched_app(
+            &stranger_sock,
+            &dir,
+            "dev.qos.notes",
+            stranger_tree.room_of(local_id).expect("stranger workspace"),
+            "carol",
+        );
+
+        wait_for_announced(&host_broker, 1, Duration::from_millis(2000));
+        wait_for_announced(&guest_broker, 2, Duration::from_millis(2000));
+        wait_for_announced(&stranger_broker, 1, Duration::from_millis(2000));
+        let _ = host_app.poll();
+        let _ = guest_app.poll();
+        let _ = guest_before_invite.poll();
+        let _ = stranger_app.poll();
+
+        // --- One frame, broadcast to both other hosts. ---------------
+        let wire_route = announced_route(&host_broker, 0);
+        let payload = b"from-the-host".to_vec();
+        deliver_over_the_wire(&guest_broker, &wire_route, &payload);
+        deliver_over_the_wire(&stranger_broker, &wire_route, &payload);
+
+        let guest_heard = poll_until(&mut guest_app, 1, Duration::from_millis(1000));
+        assert_eq!(
+            crdt_payloads(&guest_heard),
+            vec![payload.clone()],
+            "an app on a host that accepted the invite must receive the \
+             inviter's delta — that is the whole point of the invite \
+             carrying the room. Got {guest_heard:?}"
+        );
+
+        // Both negatives are polled over the same window the positive
+        // needed, so "nothing" is not "not yet".
+        let stranger_heard = poll_until(&mut stranger_app, 1, Duration::from_millis(1000));
+        assert!(
+            crdt_payloads(&stranger_heard).is_empty(),
+            "an app on a host that was never invited must receive nothing \
+             from the same broadcast frame; it received {:?}",
+            crdt_payloads(&stranger_heard),
+        );
+        let pre_invite_heard =
+            poll_until(&mut guest_before_invite, 1, Duration::from_millis(1000));
+        assert!(
+            crdt_payloads(&pre_invite_heard).is_empty(),
+            "an app the guest opened before accepting the invite is in the \
+             guest's old room and must receive nothing — this is what makes \
+             the delivery above attributable to the invite rather than to \
+             the guest's broker being indiscriminate. It received {:?}",
+            crdt_payloads(&pre_invite_heard),
+        );
+
+        drop(host_app);
+        drop(guest_app);
+        drop(guest_before_invite);
+        drop(stranger_app);
+        drop(host_broker);
+        drop(guest_broker);
+        drop(stranger_broker);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

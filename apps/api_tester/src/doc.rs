@@ -3,7 +3,8 @@
 //! The workspace — collections, environments, the selected environment,
 //! the request currently being edited, and the response history — lives in
 //! the shared CRDT so two peers can edit the same set of requests and
-//! converge. The document shape is:
+//! converge, and so that `ui::persist` can carry all of it across a
+//! restart. The document shape is:
 //!
 //! ```text
 //! root

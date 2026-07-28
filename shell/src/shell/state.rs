@@ -26,25 +26,83 @@ impl WorkspaceId {
     pub fn raw(&self) -> u64 {
         self.0
     }
+}
 
-    /// This workspace as a collaboration cluster id.
-    ///
-    /// A workspace *is* the collaboration room: apps opened into it
-    /// exchange CRDT deltas with each other and with the peers invited
-    /// to it, and apps in another workspace are a different room. The
-    /// wire has always spoken `Uuid` for that room; workspace ids are
-    /// `u64`. This is the bridge, and it is deliberately a pure
-    /// function of the id rather than a stored field — every process
-    /// that knows the workspace derives the same cluster without
-    /// having to be told it, and no persisted state can drift out of
-    /// sync with it.
-    ///
-    /// The high half is a fixed marker so a derived cluster id is
-    /// recognisable in a log and can never collide with a v4 uuid
-    /// minted elsewhere (v4 sets version/variant bits this doesn't).
-    pub fn collab_cluster_id(&self) -> uuid::Uuid {
-        const WORKSPACE_CLUSTER_MARKER: u64 = 0x716f_735f_7773_7000; // "qos_wsp\0"
-        uuid::Uuid::from_u64_pair(WORKSPACE_CLUSTER_MARKER, self.0)
+/// Durable, globally-unique identity of a workspace **as a
+/// collaboration room**.
+///
+/// [`WorkspaceId`] is a *local handle*: a counter that indexes this
+/// process's tree. Two machines that each have a "workspace 7" have two
+/// unrelated workspaces, and the *same* shared workspace generally
+/// carries a different local id on each of them. Deriving the
+/// collaboration cluster from that counter therefore got both halves
+/// wrong at once — it addressed two strangers' workspaces as one room,
+/// and it split one shared room into two.
+///
+/// A `RoomId` is a random v4 uuid minted once, when the workspace is
+/// created. Random rather than derived: the identity has to be unique
+/// between machines that have never met and have no channel to
+/// negotiate over, and every derivation available at mint time (local
+/// counter, hostname, user name, wall clock) is either not unique or
+/// needs the coordination we are trying to avoid. 122 random bits put
+/// the collision probability far below every other failure mode in the
+/// stack, and the cost is that the value must be *carried* rather than
+/// recomputed — which is what [`Workspace::room`] persisting it and the
+/// invite token shipping it are for.
+///
+/// [`Self::nil`] is the "not minted yet" sentinel. It is what a
+/// workspace deserialised from a state file written before rooms
+/// existed comes back with, and
+/// [`WorkspaceTree::adopt_roomless_workspaces`] is what replaces it
+/// with a real identity at boot. A nil room addresses nobody — see
+/// [`Workspace::collab_cluster_id`].
+#[derive(
+    Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq, Hash, PartialOrd, Ord,
+)]
+#[serde(transparent)]
+pub struct RoomId(uuid::Uuid);
+
+impl RoomId {
+    /// Mint a fresh room identity. Called exactly once per workspace,
+    /// at creation; every later reference carries the minted value.
+    pub fn new() -> Self {
+        Self(uuid::Uuid::new_v4())
+    }
+
+    /// The "no identity yet" sentinel. Distinguishable from every
+    /// minted id because `Uuid::new_v4` never produces the nil uuid.
+    pub const fn nil() -> Self {
+        Self(uuid::Uuid::nil())
+    }
+
+    /// Whether this is the unminted sentinel.
+    pub fn is_nil(&self) -> bool {
+        self.0.is_nil()
+    }
+
+    /// The underlying uuid, for the wire formats that speak `Uuid`.
+    pub fn as_uuid(&self) -> uuid::Uuid {
+        self.0
+    }
+
+    /// Parse a room id off the wire (an invite token, the automerge
+    /// doc, `QOS_WORKSPACE_ID`). `None` on anything that is not a
+    /// uuid, so a malformed value cannot become a room nobody else is
+    /// in.
+    pub fn parse(s: &str) -> Option<Self> {
+        uuid::Uuid::parse_str(s).ok().map(Self)
+    }
+}
+
+impl std::fmt::Display for RoomId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl From<uuid::Uuid> for RoomId {
+    fn from(v: uuid::Uuid) -> Self {
+        Self(v)
     }
 }
 
@@ -488,6 +546,21 @@ pub enum Capability {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Workspace {
     pub id: WorkspaceId,
+    /// Durable identity of this workspace as a collaboration room.
+    ///
+    /// [`Self::id`] indexes the local tree and is meaningless off this
+    /// machine; `room` is the value two hosts must agree on for their
+    /// apps to exchange anything. Minted once at creation, written to
+    /// the state file with the rest of the workspace, mirrored into the
+    /// automerge doc so it replicates, and carried in the invite a peer
+    /// accepts.
+    ///
+    /// `#[serde(default)]` yields [`RoomId::nil`] for state files
+    /// written before rooms existed;
+    /// [`WorkspaceTree::adopt_roomless_workspaces`] mints a real one at
+    /// boot and flushes it, so the sentinel survives exactly one load.
+    #[serde(default)]
+    pub room: RoomId,
     pub name: String,
     pub strips: Vec<Strip>,
     pub roles: Vec<Role>,
@@ -1042,6 +1115,11 @@ impl Workspace {
     pub fn new(id: WorkspaceId, name: impl Into<String>) -> Self {
         Self {
             id,
+            // A workspace that exists is a room that exists. Minting
+            // here rather than lazily on first use is what makes the
+            // identity a property of the workspace instead of a
+            // property of whoever asked for it first.
+            room: RoomId::new(),
             name: name.into(),
             strips: Vec::new(),
             roles: Vec::new(),
@@ -1051,6 +1129,40 @@ impl Workspace {
             capabilities: Vec::new(),
             shared_surfaces: HashMap::new(),
         }
+    }
+
+    /// A workspace with `id`, `name`, and a freshly-minted room, and
+    /// every other field empty.
+    ///
+    /// The builder the fixtures want. Hand-written `Workspace { … }`
+    /// literals break on every field this struct gains; going through
+    /// here means a fixture only names what it cares about — and, for
+    /// the room specifically, means a fixture never accidentally sits
+    /// in the nil room alongside every other fixture in the suite.
+    pub fn test_default(id: WorkspaceId, name: impl Into<String>) -> Self {
+        Self::new(id, name)
+    }
+
+    /// This workspace's collaboration cluster id.
+    ///
+    /// A workspace *is* the collaboration room: apps opened into it
+    /// exchange CRDT deltas with each other and with the peers invited
+    /// to it, and apps in another workspace are a different room. The
+    /// wire speaks `Uuid` for that room, and this is the value it
+    /// carries — [`Self::room`], not a function of the local
+    /// [`Self::id`]. That is the whole point: a value two machines can
+    /// both hold, rather than one each derives from a counter that
+    /// means something different on each of them.
+    ///
+    /// A workspace whose room has not been minted yet returns the nil
+    /// uuid. `crate::shell::collab_broker::CrdtRoute::delivers_to`
+    /// refuses to deliver anything to or from it, so the window
+    /// between loading a pre-rooms state file and
+    /// [`WorkspaceTree::adopt_roomless_workspaces`] running cannot
+    /// become one giant room shared by every unminted workspace on
+    /// every machine.
+    pub fn collab_cluster_id(&self) -> uuid::Uuid {
+        self.room.as_uuid()
     }
 
     /// Mark `surface_id` as being streamed to `peer_id` — peer-sync
@@ -1120,13 +1232,24 @@ impl Workspace {
 }
 
 impl Default for Workspace {
-    /// Empty workspace with a zero id and empty name. Useful for
-    /// `..Default::default()` in struct-update syntax (mirrors what
-    /// [`WorkspaceTree`] does for itself) so adding new fields like
-    /// `grants` doesn't force a codebase-wide literal sweep.
+    /// Empty workspace with a zero id, an empty name, and a freshly
+    /// minted room. Useful for `..Default::default()` in struct-update
+    /// syntax (mirrors what [`WorkspaceTree`] does for itself) so
+    /// adding new fields like `grants` doesn't force a codebase-wide
+    /// literal sweep.
+    ///
+    /// The room is minted rather than left at [`RoomId::nil`] on
+    /// purpose: a workspace that exists is a room that exists, and two
+    /// workspaces built this way must not silently turn out to be the
+    /// same room. The nil sentinel is reachable only through
+    /// deserialisation of a state file written before rooms existed —
+    /// `#[serde(default)]` on the field, not this impl — which is
+    /// exactly the case
+    /// [`WorkspaceTree::adopt_roomless_workspaces`] repairs.
     fn default() -> Self {
         Self {
             id: WorkspaceId::default(),
+            room: RoomId::new(),
             name: String::new(),
             strips: Vec::new(),
             roles: Vec::new(),
@@ -1436,6 +1559,12 @@ impl WorkspaceTree {
                 .doc
                 .put(&entry, "id", ScalarValue::Uint(ws.id.raw()));
             let _ = self.doc.put(&entry, "name", ws.name.clone());
+            // The room identity travels with the workspace. A peer that
+            // hydrates a workspace out of this doc must land in *our*
+            // room, not mint one of its own — the local `id` above is
+            // meaningless to it, and a workspace it cannot address is a
+            // workspace it cannot collaborate in.
+            let _ = self.doc.put(&entry, "room", ws.room.to_string());
             // Ownership + capabilities travel with the workspace, so a
             // peer that hydrates from this doc learns who may do what
             // at the same moment it learns the room exists.
@@ -1571,6 +1700,22 @@ impl WorkspaceTree {
                     _ => String::new(),
                 };
                 let ws_id = WorkspaceId::from(id_raw);
+                // The room identity replicates too. A peer that shipped
+                // us this workspace named the room it collaborates in;
+                // adopting it is the difference between hydrating a
+                // workspace we can talk in and hydrating a
+                // same-looking one we cannot. Absent or unparseable
+                // (a doc written before rooms existed) leaves whatever
+                // the cache already had, which for a locally-created
+                // workspace is its own minted id.
+                let replicated_room = match self.doc.get(&entry_id, "room").ok().flatten() {
+                    Some((Value::Scalar(s), _)) => match s.as_ref() {
+                        ScalarValue::Str(v) => RoomId::parse(v.as_str()),
+                        _ => None,
+                    },
+                    _ => None,
+                }
+                .filter(|r| !r.is_nil());
                 // Capabilities and ownership replicate through the doc,
                 // so they are rebuilt from it here rather than being
                 // carried over from the local cache. This is the half
@@ -1593,6 +1738,9 @@ impl WorkspaceTree {
                 } else {
                     Workspace::new(ws_id, name)
                 };
+                if let Some(room) = replicated_room {
+                    ws.room = room;
+                }
                 if let Some((owner, caps)) = replicated {
                     if owner.is_some() {
                         ws.owner = owner;
@@ -2130,6 +2278,109 @@ impl WorkspaceTree {
             self.flush_to_disk();
         }
         adopted
+    }
+
+    /// Mint a durable [`RoomId`] for every workspace that has none, and
+    /// write it down.
+    ///
+    /// State files written before rooms existed deserialise with
+    /// [`RoomId::nil`]. Leaving them there would leave those workspaces
+    /// unable to collaborate at all (the nil cluster addresses nobody);
+    /// minting one *without persisting it* would be worse, because the
+    /// next boot would mint a different one and a workspace's room
+    /// would change every restart — exactly the instability this whole
+    /// identity exists to remove.
+    ///
+    /// So the mint and the flush are one operation, and the caller is
+    /// responsible for having set [`Self::persist_path`] first. The
+    /// compositor calls this right after it does, next to
+    /// [`Self::adopt_ownerless_workspaces`], which has the same shape
+    /// and the same reason.
+    ///
+    /// Returns the ids that were minted for, so the caller can log
+    /// them; an empty vec means every workspace already had a room and
+    /// nothing was written.
+    pub fn adopt_roomless_workspaces(&mut self) -> Vec<WorkspaceId> {
+        let mut adopted = Vec::new();
+        for ws in &mut self.workspaces {
+            if ws.room.is_nil() {
+                ws.room = RoomId::new();
+                adopted.push(ws.id);
+            }
+        }
+        for id in &adopted {
+            let room = self
+                .workspaces
+                .iter()
+                .find(|w| w.id == *id)
+                .map(|w| w.room)
+                .unwrap_or_default();
+            self.doc_set_room(*id, room);
+        }
+        if !adopted.is_empty() {
+            self.flush_to_disk();
+        }
+        adopted
+    }
+
+    /// The durable room identity of `workspace_id`, if the tree has
+    /// that workspace.
+    ///
+    /// The lookup the launch path needs: callers hold a
+    /// [`WorkspaceId`] (the local handle) and have to turn it into the
+    /// value the wire speaks.
+    pub fn room_of(&self, workspace_id: WorkspaceId) -> Option<RoomId> {
+        self.workspaces
+            .iter()
+            .find(|w| w.id == workspace_id)
+            .map(|w| w.room)
+    }
+
+    /// Point `workspace_id` at `room`, mirroring the change to peers
+    /// and to disk.
+    ///
+    /// This is how an invitee stops being in their own room and starts
+    /// being in the inviter's: accepting an invite replaces the local
+    /// workspace's freshly-minted identity with the one the token
+    /// carried. Both ends then address the same cluster, which is the
+    /// only way any delta crosses between them.
+    ///
+    /// Refuses a nil `room` — "join the unminted room" is never a
+    /// meaningful request, and honouring it would drop a workspace out
+    /// of collaboration silently. Returns whether the tree changed.
+    pub fn set_room(&mut self, workspace_id: WorkspaceId, room: RoomId) -> bool {
+        if room.is_nil() {
+            return false;
+        }
+        let Some(ws) = self.workspaces.iter_mut().find(|w| w.id == workspace_id) else {
+            return false;
+        };
+        if ws.room == room {
+            return false;
+        }
+        ws.room = room;
+        self.doc_set_room(workspace_id, room);
+        self.flush_to_disk();
+        true
+    }
+
+    /// Mirror a workspace's room into the automerge doc.
+    ///
+    /// Stored as a string rather than 16 bytes because that is what
+    /// every other consumer of the value speaks (`QOS_WORKSPACE_ID`,
+    /// the invite token, `CrdtRoute::cluster_id`), and a doc field
+    /// that needs re-encoding at every read is a field that will
+    /// eventually be re-encoded wrongly.
+    ///
+    /// Null-tolerant like the other `doc_*` mirrors: a doc that has
+    /// not been seeded is left alone and the cache stays authoritative
+    /// until the next seed.
+    pub fn doc_set_room(&mut self, workspace_id: WorkspaceId, room: RoomId) {
+        use automerge::transaction::Transactable;
+        let Some(ws_entry) = self.locate_workspace(workspace_id) else {
+            return;
+        };
+        let _ = self.doc.put(&ws_entry, "room", room.to_string());
     }
 
     /// Grant a capability in `workspace_id` on behalf of `grantor`,
@@ -2787,6 +3038,7 @@ impl WorkspaceTree {
         // matches `WindowFrame.tsx`'s "fill the container" behaviour.
         let home = Workspace {
             id: ws_id,
+            room: RoomId::new(),
             name: "Home".into(),
             strips: vec![Strip {
                 id: strip_id,
@@ -2907,8 +3159,13 @@ impl WorkspaceTree {
         use automerge::{ObjType, ReadDoc, ROOT, ScalarValue, transaction::Transactable};
         let ws_id = WorkspaceId::new();
         let strip_id = StripId::new();
+        // A workspace the user just created is a room that now exists;
+        // it gets its identity at the same moment it gets its id, not
+        // the first time someone tries to share it.
+        let room = RoomId::new();
         let ws = Workspace {
             id: ws_id,
+            room,
             name: name.into(),
             strips: vec![Strip {
                 id: strip_id,
@@ -2947,6 +3204,11 @@ impl WorkspaceTree {
             .doc
             .put(&entry, "id", ScalarValue::Uint(ws_id.raw()));
         let _ = self.doc.put(&entry, "name", name.to_string());
+        // The room goes into the doc with the workspace, not after it:
+        // a peer that receives this change has to learn the identity in
+        // the same change that tells it the workspace exists, or it
+        // hydrates a workspace it cannot address.
+        let _ = self.doc.put(&entry, "room", room.to_string());
         ws_id
     }
 
@@ -3561,6 +3823,86 @@ mod automerge_foundation_tests {
         );
     }
 
+    /// A peer that hydrates a workspace out of another peer's doc must
+    /// end up in *that peer's* room. Minting a local one instead would
+    /// leave it holding a workspace it can see but cannot collaborate
+    /// in — the same room-of-one failure the invite path exists to
+    /// prevent, arriving by the other route.
+    #[test]
+    fn a_workspaces_room_propagates_via_apply_changes() {
+        let mut tree_a = WorkspaceTree::bootstrap_default();
+        let new_id = tree_a.append_empty_workspace("Project X");
+        let room = tree_a.room_of(new_id).expect("the append mints a room");
+        assert!(!room.is_nil());
+
+        let changes = tree_a.export_changes_since(&[]);
+        let mut tree_b = WorkspaceTree::default();
+        tree_b.apply_changes(&changes).expect("apply changes");
+
+        let hydrated = tree_b
+            .workspaces
+            .iter()
+            .find(|w| w.name == "Project X")
+            .expect("peer B should observe the appended workspace");
+        assert_eq!(
+            hydrated.room, room,
+            "peer B must adopt the room peer A named, not mint one of its \
+             own — otherwise the two hold the same workspace and address \
+             different clusters"
+        );
+        assert_eq!(
+            hydrated.collab_cluster_id(),
+            tree_a
+                .workspaces
+                .iter()
+                .find(|w| w.id == new_id)
+                .expect("peer A's workspace")
+                .collab_cluster_id(),
+            "and the cluster their apps are launched into must match"
+        );
+    }
+
+    /// `set_room` is the mutation an accepted invite performs. It has to
+    /// reach the doc as well as the cache, or the invitee's peers learn
+    /// about a room change that never replicates.
+    #[test]
+    fn set_room_propagates_via_apply_changes() {
+        let mut tree_a = WorkspaceTree::bootstrap_default();
+        let id = tree_a.workspaces[0].id;
+        let inviters_room = RoomId::new();
+        assert!(tree_a.set_room(id, inviters_room), "set_room must apply");
+
+        let changes = tree_a.export_changes_since(&[]);
+        let mut tree_b = WorkspaceTree::default();
+        tree_b.apply_changes(&changes).expect("apply changes");
+
+        assert_eq!(
+            tree_b.room_of(id),
+            Some(inviters_room),
+            "a workspace moved into a new room must carry that room to its \
+             peers"
+        );
+    }
+
+    /// "Join the unminted room" is never a meaningful request, and
+    /// honouring it would drop a workspace out of collaboration with no
+    /// signal at all.
+    #[test]
+    fn set_room_refuses_the_nil_room() {
+        let mut tree = WorkspaceTree::bootstrap_default();
+        let id = tree.workspaces[0].id;
+        let before = tree.room_of(id).expect("bootstrap mints a room");
+        assert!(
+            !tree.set_room(id, RoomId::nil()),
+            "setting the nil room must be refused"
+        );
+        assert_eq!(
+            tree.room_of(id),
+            Some(before),
+            "and must leave the workspace's real room in place"
+        );
+    }
+
     #[test]
     fn set_active_propagates_via_apply_changes() {
         // Unit-B convergence: peer A flips the active pointer; a fresh
@@ -3863,6 +4205,7 @@ mod active_group_tests {
         };
         let ws = Workspace {
             id: ws_id,
+            room: RoomId::new(),
             name: "Test".into(),
             strips: vec![strip],
             roles: vec![],
@@ -4219,6 +4562,7 @@ mod active_workspace_peer_count_tests {
         let strip_id = StripId::new();
         let ws = Workspace {
             id: ws_id,
+            room: RoomId::new(),
             name: "Active".into(),
             strips: vec![Strip {
                 id: strip_id,

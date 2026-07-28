@@ -429,7 +429,9 @@ pub struct ContactsApp {
     /// Where the address book is persisted. `Some` for the live app (loaded
     /// on first `sync`, rewritten after every mutation); `None` for the
     /// hermetic `--shots` / test path so those never touch the user's disk.
-    persist_path: Option<PathBuf>,
+    /// Legacy address-book file to seed from. `None` in production — the
+    /// document arrives already loaded from the shared store.
+    legacy_book: Option<PathBuf>,
     /// When `true`, a first `sync` onto an empty book seeds the varied sample
     /// address book. Only the `--shots` and test constructors set this — the
     /// live app never fabricates content.
@@ -446,10 +448,15 @@ pub struct ContactsApp {
 }
 
 impl ContactsApp {
-    /// The live app: persists to (and loads from) the real address-book file
-    /// on disk, and never fabricates sample content.
+    /// The live app. Never fabricates sample content.
+    ///
+    /// Nothing here touches the disk any more: the address book lives in the
+    /// shared Automerge document, which `main` opens through `ui::persist`
+    /// and which is written back by `App::with_autosave`. The book this app
+    /// used to keep in its own file is imported once, on first launch after
+    /// the upgrade, by `ui::persist::open_migrating`.
     pub fn new() -> Self {
-        Self::configured(crate::storage::default_path(), false)
+        Self::configured(None, false)
     }
 
     /// The hermetic `--shots` / test app: seeds the varied sample address book
@@ -459,15 +466,19 @@ impl ContactsApp {
         Self::configured(None, true)
     }
 
-    /// A disk-backed app pointed at an explicit `path` (used by the
-    /// persistence test to target a scratch directory).
-    pub fn with_persist_path(path: PathBuf) -> Self {
+    /// An app that seeds itself from a legacy address-book file at `path`.
+    ///
+    /// Test-only. The legacy import in production runs one level up, in
+    /// `ui::persist::open_migrating`, against the whole document rather than
+    /// a projection of the contact list.
+    #[cfg(test)]
+    pub fn with_legacy_book(path: PathBuf) -> Self {
         Self::configured(Some(path), false)
     }
 
-    fn configured(persist_path: Option<PathBuf>, seed_samples: bool) -> Self {
+    fn configured(legacy_book: Option<PathBuf>, seed_samples: bool) -> Self {
         Self {
-            persist_path,
+            legacy_book,
             seed_samples,
             store: ContactStore::new(),
             selected: None,
@@ -686,17 +697,18 @@ impl ContactsApp {
         self.dirty = true;
     }
 
-    /// Write the working address book to disk (atomic; no-op in the hermetic
-    /// shots/test path where `persist_path` is `None`). Called after every
-    /// mutation that changes the book — create/edit, delete, favorite toggle,
-    /// import — so the on-disk copy always reflects what's on screen.
-    fn persist(&self) {
-        if let Some(path) = &self.persist_path {
-            if let Err(e) = crate::storage::save(path, &self.store.contacts) {
-                tracing::warn!(error = %e, path = %path.display(), "contacts: failed to persist address book");
-            }
-        }
-    }
+    /// Formerly wrote the working address book out to the app's own file
+    /// after every mutation. That write rebuilt a fresh `AutoCommit` from the
+    /// contact list each time, so the saved document shared no history with
+    /// any peer and could never merge — it was using Automerge as a
+    /// serialisation format.
+    ///
+    /// Every mutation already writes the contact into the shared document via
+    /// [`ContactsDoc`], and that document is what `ui::persist` saves, history
+    /// and actor identity intact. So this is now nothing: the call sites are
+    /// left in place because "and this is where the book is durable" is still
+    /// true, one layer up.
+    fn persist(&self) {}
 
     /// Whether the open edit form holds changes not yet written to the
     /// store. Collects the live input values into a throwaway draft and
@@ -2717,10 +2729,9 @@ impl Widget for ContactsApp {
                     ContactsDoc::upsert_contact(state, &c);
                     self.store.upsert(c);
                 }
-            } else if let Some(path) = self.persist_path.clone() {
-                // Live path: load the real address book off disk. An absent
-                // or empty file yields an empty book and the empty state —
-                // never fabricated content.
+            } else if let Some(path) = self.legacy_book.clone() {
+                // Test-only: seed from a legacy address-book file. The live
+                // app arrives with its document already loaded by the store.
                 for c in crate::storage::load(&path) {
                     ContactsDoc::upsert_contact(state, &c);
                     self.store.upsert(c);
@@ -4035,6 +4046,7 @@ impl ContactsApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use automerge::ReadDoc;
     use automerge::ROOT;
     use taffy::{AvailableSpace, Dimension, Size, Style};
     use vello::kurbo::Point;
@@ -5537,9 +5549,9 @@ mod tests {
 
     #[test]
     fn live_launch_with_no_saved_book_is_empty_not_fabricated() {
-        // The live app must NOT invent sample contacts on an empty disk.
-        let (dir, path) = scratch_book();
-        let mut app = ContactsApp::with_persist_path(path);
+        // The live app must NOT invent sample contacts on an empty store.
+        let (dir, _path) = scratch_book();
+        let mut app = ContactsApp::new();
         let mut doc = AutoCommit::new();
         app.sync(&mut doc, &ROOT);
         assert!(app.store.is_empty(), "a fresh disk-backed launch shows an empty book");
@@ -5550,15 +5562,24 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// The production restart path: a contact created through the real edit
+    /// flow goes into the shared document, the store writes that document,
+    /// and a second launch reading the store finds the contact again.
     #[test]
+    #[serial_test::serial]
     fn created_contact_persists_across_a_restart() {
-        let (dir, path) = scratch_book();
-        // First launch: empty, then create and save a contact through the
-        // real save path (which persists to disk).
-        let mut doc = AutoCommit::new();
-        let mut app = ContactsApp::with_persist_path(path.clone());
+        let home = tempfile::tempdir().unwrap();
+        unsafe {
+            std::env::set_var("XDG_DATA_HOME", home.path());
+            std::env::remove_var("QOS_PACKAGE_ID");
+        }
+
+        // First launch.
+        let mut store = ui::persist::DocStore::open_for("dev.qos.contacts").unwrap();
+        let mut doc = store.load_or_new();
+        let mut app = ContactsApp::new();
         app.sync(&mut doc, &ROOT);
-        assert!(app.store.is_empty());
+        assert!(app.store.is_empty(), "a fresh store shows an empty book");
         let mut c = Contact::new();
         c.first = "Persisted".into();
         c.last = "Person".into();
@@ -5566,16 +5587,118 @@ mod tests {
         app.begin_edit(c, true);
         app.save_edit(&mut doc);
         assert_eq!(app.store.len(), 1, "the contact is in the working set");
-        assert!(path.exists(), "saving wrote the address-book file to disk");
+        store.save(&mut doc).unwrap();
+        drop((store, doc, app)); // the process exits here
 
-        // Second launch ("reboot"): a brand-new app at the same path loads it.
-        let mut doc2 = AutoCommit::new();
-        let mut app2 = ContactsApp::with_persist_path(path.clone());
+        // Second launch ("reboot"): a new app over the reloaded document.
+        let mut store2 = ui::persist::DocStore::open_for("dev.qos.contacts").unwrap();
+        let mut doc2 = store2.load().unwrap().expect("the store has a document");
+        let mut app2 = ContactsApp::new();
         app2.sync(&mut doc2, &ROOT);
         assert_eq!(app2.store.len(), 1, "the saved contact loads on the next launch");
         let loaded = &app2.store.contacts[0];
         assert_eq!(loaded.first, "Persisted");
         assert_eq!(loaded.phones[0].value, "+1 555 0100");
+    }
+
+    /// The property the old save path destroyed, asserted in the app that
+    /// had the bug.
+    ///
+    /// `storage::save` rebuilt a fresh `AutoCommit` from the contact list on
+    /// every write. The document it produced shared no history — and no
+    /// object identity — with the one it came from, so merging it with a
+    /// replica that had diverged produced two unrelated `contacts` objects
+    /// and every record twice. Round-tripping through the store instead must
+    /// leave the two sides mergeable: one shared object, each side's edit
+    /// present exactly once.
+    #[test]
+    #[serial_test::serial]
+    fn a_saved_book_still_merges_with_a_replica_that_diverged_before_the_save() {
+        let home = tempfile::tempdir().unwrap();
+        unsafe {
+            std::env::set_var("XDG_DATA_HOME", home.path());
+            std::env::remove_var("QOS_PACKAGE_ID");
+        }
+        let mut store = ui::persist::DocStore::open_for("dev.qos.contacts").unwrap();
+        let mut doc = store.new_document();
+
+        // A shared ancestor: one contact both sides know about.
+        let mut shared = Contact::new();
+        shared.first = "Ada".into();
+        shared.last = "Lovelace".into();
+        let shared_id = shared.id;
+        ContactsDoc::upsert_contact(&mut doc, &shared);
+        store.save(&mut doc).unwrap();
+
+        // A peer forks here and adds a contact of its own.
+        let mut peer = doc.fork();
+        let mut theirs = Contact::new();
+        theirs.first = "Grace".into();
+        theirs.last = "Hopper".into();
+        let their_id = theirs.id;
+        ContactsDoc::upsert_contact(&mut peer, &theirs);
+
+        // Meanwhile this app adds one and the session ends.
+        let mut mine = Contact::new();
+        mine.first = "Alan".into();
+        mine.last = "Turing".into();
+        let my_id = mine.id;
+        ContactsDoc::upsert_contact(&mut doc, &mine);
+        store.save(&mut doc).unwrap();
+        drop((store, doc));
+
+        // Restart, then merge the peer that diverged before the save.
+        let mut store2 = ui::persist::DocStore::open_for("dev.qos.contacts").unwrap();
+        let mut restored = store2.load().unwrap().expect("the saved document");
+        restored.merge(&mut peer).expect("a stored book merges with a peer");
+
+        let book = ContactsDoc::list_contacts(&restored);
+        assert_eq!(
+            book.len(),
+            3,
+            "each side's contact appears exactly once, not duplicated: {:?}",
+            book.iter().map(|c| c.first.clone()).collect::<Vec<_>>()
+        );
+        for (id, name) in [(shared_id, "Ada"), (my_id, "Alan"), (their_id, "Grace")] {
+            let found = book.iter().filter(|c| c.id == id).count();
+            assert_eq!(found, 1, "{name} must be present exactly once, found {found}");
+        }
+        // The decisive check: both sides edited the *same* contacts object.
+        // A rebuilt-from-scratch save would have made two, and the merge
+        // would leave a conflict at the key.
+        assert_eq!(
+            restored.get_all(&ROOT, "contacts").unwrap().len(),
+            1,
+            "history was preserved, so the merge reconciled one object rather \
+             than colliding two unrelated ones"
+        );
+    }
+
+    /// An address book written by the release that kept its own file must
+    /// come across on the first launch after the upgrade.
+    #[test]
+    #[serial_test::serial]
+    fn a_legacy_address_book_is_imported_into_the_store() {
+        let home = tempfile::tempdir().unwrap();
+        unsafe {
+            std::env::set_var("XDG_DATA_HOME", home.path());
+            std::env::remove_var("QOS_PACKAGE_ID");
+        }
+        let (dir, legacy) = scratch_book();
+        let book = sample_contacts();
+        crate::storage::save(&legacy, &book).unwrap();
+
+        let mut store = ui::persist::DocStore::open_for("dev.qos.contacts").unwrap();
+        assert!(store.migrate_from(&legacy).unwrap(), "the legacy file is imported");
+        let mut doc = store.load().unwrap().expect("document after migration");
+
+        let mut app = ContactsApp::new();
+        app.sync(&mut doc, &ROOT);
+        assert_eq!(
+            app.store.len(),
+            book.len(),
+            "every contact from the old file is in the book"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -5602,7 +5725,7 @@ mod tests {
         .unwrap();
 
         let mut doc = AutoCommit::new();
-        let mut app = ContactsApp::with_persist_path(path.clone());
+        let mut app = ContactsApp::new();
         app.sync(&mut doc, &ROOT);
         assert!(app.store.is_empty());
 
@@ -5617,11 +5740,10 @@ mod tests {
         assert!(firsts.contains("Ada"));
         assert!(firsts.contains("Grace"));
 
-        // The import persisted, so it survives a restart, and every card is in
-        // the CRDT doc.
+        // The import reached the shared document, which is what the store
+        // writes — so it survives a restart.
         assert_eq!(ContactsDoc::list_contacts(&doc).len(), 3, "written to the doc");
-        let reloaded = crate::storage::load(&path);
-        assert_eq!(reloaded.len(), 3, "the imported contacts were written to disk");
+        let _ = path;
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -5642,7 +5764,8 @@ mod tests {
         .unwrap();
 
         let mut doc = AutoCommit::new();
-        let mut app = ContactsApp::with_persist_path(path.clone());
+        let mut app = ContactsApp::new();
+        let _ = &path;
         app.sync(&mut doc, &ROOT);
         assert!(app.store.is_empty());
 
@@ -5665,7 +5788,7 @@ mod tests {
         // invents contacts.
         let (dir, path) = scratch_book();
         let mut doc = AutoCommit::new();
-        let mut app = ContactsApp::with_persist_path(path.clone());
+        let mut app = ContactsApp::new();
         app.sync(&mut doc, &ROOT);
         assert!(app.store.is_empty());
 
@@ -5678,28 +5801,43 @@ mod tests {
         assert!(app.store.is_empty(), "import of nothing adds nothing");
         assert!(ContactsDoc::list_contacts(&doc).is_empty(), "and writes nothing to the doc");
         assert!(!path.exists(), "and never touches disk");
+        let _ = &path;
         assert!(app.toast.is_none(), "a cancelled/empty import stays silent");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
+    #[serial_test::serial]
     fn deleting_a_contact_persists_the_removal() {
-        let (dir, path) = scratch_book();
-        // Seed a book on disk directly, then load it and delete one contact.
+        let home = tempfile::tempdir().unwrap();
+        unsafe {
+            std::env::set_var("XDG_DATA_HOME", home.path());
+            std::env::remove_var("QOS_PACKAGE_ID");
+        }
+        // Seed a book into the store, then delete one contact and restart.
         let book = sample_contacts();
         let removed = book[0].id;
-        crate::storage::save(&path, &book).unwrap();
-        let mut doc = AutoCommit::new();
-        let mut app = ContactsApp::with_persist_path(path.clone());
+        let mut store = ui::persist::DocStore::open_for("dev.qos.contacts").unwrap();
+        let mut doc = store.new_document();
+        for c in &book {
+            ContactsDoc::upsert_contact(&mut doc, c);
+        }
+        store.save(&mut doc).unwrap();
+
+        let mut app = ContactsApp::new();
         app.sync(&mut doc, &ROOT);
         let before = app.store.len();
+        assert_eq!(before, book.len(), "the seeded book loaded");
         app.delete_selected(&mut doc, removed);
+        store.save(&mut doc).unwrap();
+        drop((store, doc, app));
 
-        // Reload from disk: the deletion stuck.
-        let reloaded = crate::storage::load(&path);
-        assert_eq!(reloaded.len(), before - 1, "the removal was written to disk");
+        // Reload from the store: the deletion stuck.
+        let mut store2 = ui::persist::DocStore::open_for("dev.qos.contacts").unwrap();
+        let doc2 = store2.load().unwrap().expect("document after restart");
+        let reloaded = ContactsDoc::list_contacts(&doc2);
+        assert_eq!(reloaded.len(), before - 1, "the removal was written to the store");
         assert!(!reloaded.iter().any(|c| c.id == removed));
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
