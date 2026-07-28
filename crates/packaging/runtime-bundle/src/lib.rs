@@ -150,7 +150,10 @@ pub enum BundleError {
     PublisherMismatch { required: String, actual: String },
     #[error("bundle arch {actual:?} does not match host arch {host:?}")]
     ArchMismatch { actual: String, host: String },
-    #[error("no host source table for arch {0} — supported: {}", supported_archs().join(", "))]
+    // The trailing argument is named: thiserror 2 rejects a format string that
+    // mixes `{0}` (the tuple field) with a bare `{}` (the extra argument),
+    // because it cannot tell which one the `{}` means.
+    #[error("no host source table for arch {0} — supported: {supported}", supported = supported_archs().join(", "))]
     UnsupportedArch(String),
     #[error("identity file: {0}")]
     IdentityIo(String),
