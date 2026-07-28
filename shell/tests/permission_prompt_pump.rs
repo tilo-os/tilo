@@ -83,10 +83,7 @@ fn dispatch(p: &mut PermissionPrompt, event: &WindowEvent) {
 fn chrome_with_pending_grant(
     app_id: &str,
     capability: Capability,
-) -> (
-    std::rc::Rc<std::cell::RefCell<ChromeState>>,
-    WorkspaceId,
-) {
+) -> (std::rc::Rc<std::cell::RefCell<ChromeState>>, WorkspaceId) {
     let mut tree = WorkspaceTree::default();
     let id = WorkspaceId::from(1);
     tree.workspaces.push(Workspace::new(id, "demo"));
@@ -148,21 +145,15 @@ impl ui::widget::Widget for StubContent {
     }
 }
 
-fn host_with_chrome(
-    chrome: std::rc::Rc<std::cell::RefCell<ChromeState>>,
-) -> ShellOverlayHost {
+fn host_with_chrome(chrome: std::rc::Rc<std::cell::RefCell<ChromeState>>) -> ShellOverlayHost {
     let stub = Box::new(StubContent { rect: Rect::ZERO });
     ShellOverlayHost::new(stub).with_chrome(chrome)
 }
 
 #[test]
 fn pump_drains_pending_grant_after_choice() {
-    let (chrome, _ws_id) = chrome_with_pending_grant(
-        "org.example.app",
-        Capability::Camera {
-            scope: GRANT_ONCE,
-        },
-    );
+    let (chrome, _ws_id) =
+        chrome_with_pending_grant("org.example.app", Capability::Camera { scope: GRANT_ONCE });
     let mut host = host_with_chrome(chrome.clone());
 
     // First tick: latch the prompt widget.
@@ -198,7 +189,8 @@ fn pump_drains_pending_grant_after_choice() {
         st.pending_grants.is_empty(),
         "queue must be empty after the user clicks Allow",
     );
-    let tree = st.tree(); let ws = tree.active_workspace().expect("active workspace");
+    let tree = st.tree();
+    let ws = tree.active_workspace().expect("active workspace");
     assert!(
         ws.grants().get("org.example.app").is_none(),
         "Once doesn't persist on the workspace's grants map — \
@@ -209,12 +201,8 @@ fn pump_drains_pending_grant_after_choice() {
 
 #[test]
 fn pump_persists_session_grant_to_workspace_grants_map() {
-    let (chrome, _ws_id) = chrome_with_pending_grant(
-        "org.example.app",
-        Capability::Camera {
-            scope: GRANT_ONCE,
-        },
-    );
+    let (chrome, _ws_id) =
+        chrome_with_pending_grant("org.example.app", Capability::Camera { scope: GRANT_ONCE });
     let mut host = host_with_chrome(chrome.clone());
 
     // Latch the prompt.
@@ -235,7 +223,8 @@ fn pump_persists_session_grant_to_workspace_grants_map() {
 
     let st = chrome.borrow();
     assert!(st.pending_grants.is_empty(), "queue must drain");
-    let tree = st.tree(); let ws = tree.active_workspace().expect("active workspace");
+    let tree = st.tree();
+    let ws = tree.active_workspace().expect("active workspace");
     let view = ws.grants();
     let caps = view
         .get("org.example.app")
@@ -286,7 +275,8 @@ fn pump_persists_always_grant_with_filesystem_capability() {
     host.tick_permission_prompt_for_tests();
 
     let st = chrome.borrow();
-    let tree = st.tree(); let ws = tree.active_workspace().expect("active workspace");
+    let tree = st.tree();
+    let ws = tree.active_workspace().expect("active workspace");
     let view = ws.grants();
     let caps = view.get("org.gnome.gedit").expect("grant persisted");
     assert_eq!(caps.len(), 1);
@@ -309,9 +299,7 @@ fn pump_persists_always_grant_with_filesystem_capability() {
 fn pump_deny_drops_pending_grant_without_persisting() {
     let (chrome, _ws_id) = chrome_with_pending_grant(
         "org.example.app",
-        Capability::Microphone {
-            scope: GRANT_ONCE,
-        },
+        Capability::Microphone { scope: GRANT_ONCE },
     );
     let mut host = host_with_chrome(chrome.clone());
 
@@ -330,7 +318,8 @@ fn pump_deny_drops_pending_grant_without_persisting() {
 
     let st = chrome.borrow();
     assert!(st.pending_grants.is_empty(), "queue must drain on Deny");
-    let tree = st.tree(); let ws = tree.active_workspace().expect("active workspace");
+    let tree = st.tree();
+    let ws = tree.active_workspace().expect("active workspace");
     assert!(
         ws.grants().get("org.example.app").is_none(),
         "Deny must not persist any grant — got {:?}",
@@ -344,7 +333,8 @@ fn pump_does_not_latch_when_queue_is_empty() {
     {
         let st = chrome.borrow_mut();
         let mut tree = st.tree_mut();
-        tree.workspaces.push(Workspace::new(WorkspaceId::from(1), "demo"));
+        tree.workspaces
+            .push(Workspace::new(WorkspaceId::from(1), "demo"));
         let id = WorkspaceId::from(1);
         tree.set_active(id);
     }
@@ -370,15 +360,11 @@ fn pump_advances_to_next_grant_after_first_drain() {
         let mut st = chrome.borrow_mut();
         st.pending_grants.push_back((
             "org.example.app".into(),
-            Capability::Camera {
-                scope: GRANT_ONCE,
-            },
+            Capability::Camera { scope: GRANT_ONCE },
         ));
         st.pending_grants.push_back((
             "org.other.app".into(),
-            Capability::Microphone {
-                scope: GRANT_ONCE,
-            },
+            Capability::Microphone { scope: GRANT_ONCE },
         ));
     }
     let mut host = host_with_chrome(chrome.clone());

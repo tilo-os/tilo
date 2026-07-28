@@ -28,9 +28,9 @@ use shell::shell::state::{
     AppKind, GroupId, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace,
     WorkspaceId, WorkspaceTree,
 };
+use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
 use ui::theme::Theme;
 use ui::widget::Widget;
-use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
 use vello::kurbo::Point;
 use winit::dpi::PhysicalPosition;
 use winit::event::{ElementState, Modifiers, MouseButton, MouseScrollDelta, WindowEvent};
@@ -391,7 +391,10 @@ fn expand_takes_the_group_genuinely_fullscreen() {
             .group_at_for_tests(strip_id, 0)
             .expect("group after layout");
         let rects = g.bar_for_tests().max_rects();
-        assert!(!rects.is_empty(), "the active tab must expose an Expand chip");
+        assert!(
+            !rects.is_empty(),
+            "the active tab must expose an Expand chip"
+        );
         rects[0].center()
     };
     cursor(&mut host, &layout, chip);
@@ -497,9 +500,30 @@ fn tab_drag_reorders_tabs_within_group_in_tree() {
     {
         let g = &mut tree.workspaces[0].strips[0].window_groups[0];
         g.tabs = vec![
-            Tab { id: 1, title: "A".into(), tile: TileContent::Stub { kind: AppKind::Other("T".into()), label: "A".into() } },
-            Tab { id: 2, title: "B".into(), tile: TileContent::Stub { kind: AppKind::Other("T".into()), label: "B".into() } },
-            Tab { id: 3, title: "C".into(), tile: TileContent::Stub { kind: AppKind::Other("T".into()), label: "C".into() } },
+            Tab {
+                id: 1,
+                title: "A".into(),
+                tile: TileContent::Stub {
+                    kind: AppKind::Other("T".into()),
+                    label: "A".into(),
+                },
+            },
+            Tab {
+                id: 2,
+                title: "B".into(),
+                tile: TileContent::Stub {
+                    kind: AppKind::Other("T".into()),
+                    label: "B".into(),
+                },
+            },
+            Tab {
+                id: 3,
+                title: "C".into(),
+                tile: TileContent::Stub {
+                    kind: AppKind::Other("T".into()),
+                    label: "C".into(),
+                },
+            },
         ];
         g.active_tab = 1;
     }
@@ -570,17 +594,17 @@ fn wheel_over_strip_pans_scroll_offset() {
     let row_rect = host
         .group_row_rect_for_tests(strip_id)
         .expect("row rect after layout");
-    let before = host
-        .group_row_mut_for_tests(strip_id)
-        .unwrap()
-        .scroll_x();
+    let before = host.group_row_mut_for_tests(strip_id).unwrap().scroll_x();
 
     // Cursor over the strip, then a downward wheel — Niri-style, the
     // vertical wheel pans the strip horizontally to the right.
     cursor(
         &mut host,
         &layout,
-        Point::new((row_rect.x0 + row_rect.x1) / 2.0, (row_rect.y0 + row_rect.y1) / 2.0),
+        Point::new(
+            (row_rect.x0 + row_rect.x1) / 2.0,
+            (row_rect.y0 + row_rect.y1) / 2.0,
+        ),
     );
     dispatch(
         &mut host,
@@ -592,10 +616,7 @@ fn wheel_over_strip_pans_scroll_offset() {
         },
     );
 
-    let after = host
-        .group_row_mut_for_tests(strip_id)
-        .unwrap()
-        .scroll_x();
+    let after = host.group_row_mut_for_tests(strip_id).unwrap().scroll_x();
     assert!(
         after > before,
         "a wheel over the strip must increase its horizontal scroll offset \
@@ -617,10 +638,7 @@ fn focusing_offscreen_group_scrolls_it_into_view() {
     // Pre-condition: the last group is off the right edge, scroll is home.
     let before = host.group_row_mut_for_tests(strip_id).unwrap().scroll_x();
     assert_eq!(before, 0.0, "strip starts scrolled home");
-    let last_rect_before = host
-        .group_at_for_tests(strip_id, 3)
-        .unwrap()
-        .get_rect();
+    let last_rect_before = host.group_at_for_tests(strip_id, 3).unwrap().get_rect();
     assert!(
         last_rect_before.x1 > row_rect.x1,
         "precondition: the last group must hang off the strip's right edge \
@@ -649,10 +667,7 @@ fn focusing_offscreen_group_scrolls_it_into_view() {
     // assert the focused group is now fully within the strip viewport.
     let _layout = lay_out_host(&mut host);
     let row_rect = host.group_row_rect_for_tests(strip_id).unwrap();
-    let last_rect_after = host
-        .group_at_for_tests(strip_id, 3)
-        .unwrap()
-        .get_rect();
+    let last_rect_after = host.group_at_for_tests(strip_id, 3).unwrap().get_rect();
     assert!(
         last_rect_after.x1 <= row_rect.x1 + 1.0,
         "after scroll-into-view the focused group's right edge must be inside \

@@ -5,9 +5,9 @@
 //! stable API. T25 adds the `SimulatedFeed` that drives cursors for the demo
 //! without a real peer; subsequent tasks append their own cases.
 
-use shell::shell::remote_cursors::{cursor_in_bounds, RemoteCursorOverlay, SimulatedFeed};
-use ui::presence::{PresenceCtx, RemoteCursor};
+use shell::shell::remote_cursors::{RemoteCursorOverlay, SimulatedFeed, cursor_in_bounds};
 use std::time::Duration;
+use ui::presence::{PresenceCtx, RemoteCursor};
 
 #[test]
 fn remote_cursor_is_clipped_to_active_tile_bounds() {

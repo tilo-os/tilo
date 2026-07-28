@@ -120,7 +120,12 @@ fn main() {
     // strategy lands.
     let want_vello = std::env::var("QOS_STARTUP_WARM_VELLO")
         .ok()
-        .is_some_and(|v| !matches!(v.trim().to_ascii_lowercase().as_str(), "" | "0" | "off" | "false" | "no"));
+        .is_some_and(|v| {
+            !matches!(
+                v.trim().to_ascii_lowercase().as_str(),
+                "" | "0" | "off" | "false" | "no"
+            )
+        });
     let _warmup_handle = ui::warmup::spawn_warmup(!want_vello);
 
     // Landlock launcher shim (`plan/security.md` §7.1). bwrap execs us as

@@ -35,7 +35,13 @@ use smithay::backend::libinput::{LibinputInputBackend, LibinputSessionInterface}
 // here, so we don't add a new dependency. `XkbConfig::default()` reads
 // the `XKB_DEFAULT_*` env vars; we mirror that by compiling a keymap with
 // empty rule names (see `KeyboardXkb::new`).
-use smithay::input::keyboard::{keysyms, xkb, Keysym};
+use smithay::backend::session::Session;
+use smithay::backend::session::libseat::LibSeatSession;
+use smithay::backend::udev::{UdevBackend, all_gpus};
+use smithay::input::keyboard::{Keysym, keysyms, xkb};
+use smithay::reexports::calloop::{EventLoop, LoopHandle};
+use smithay::reexports::drm as drm_re;
+use smithay::reexports::input::Libinput;
 use winit::dpi::PhysicalPosition;
 use winit::event::{
     ElementState, KeyEvent, Modifiers, MouseButton, MouseScrollDelta, TouchPhase, WindowEvent,
@@ -43,16 +49,10 @@ use winit::event::{
 use winit::keyboard::{
     Key, KeyLocation, ModifiersState, NamedKey, NativeKeyCode, PhysicalKey, SmolStr,
 };
-use smithay::backend::session::libseat::LibSeatSession;
-use smithay::backend::session::Session;
-use smithay::backend::udev::{all_gpus, UdevBackend};
-use smithay::reexports::calloop::{EventLoop, LoopHandle};
-use smithay::reexports::drm as drm_re;
-use smithay::reexports::input::Libinput;
 
-use super::devices::{filter_kms_nodes, ModeInfo};
+use super::devices::{ModeInfo, filter_kms_nodes};
 use super::outputs::{ConnectorInfo, DrmOutputKey, OutputRegistry};
-use super::scanout::{open_all_scanouts, CursorPlanes, DrmScanout};
+use super::scanout::{CursorPlanes, DrmScanout, open_all_scanouts};
 use super::session::SessionState;
 use crate::compositor::backend::{BackendEvent, Output, OutputId};
 
@@ -215,10 +215,10 @@ impl DrmRuntime {
         // 2. udev enumeration. Even before inserting the source, ask
         //    udev for the current device set so we can refuse early if
         //    nothing is plugged in.
-        let udev = UdevBackend::new(&seat_name)
-            .map_err(|e| DrmBackendError::Udev(format!("{e}")))?;
-        let raw_gpus: Vec<PathBuf> = all_gpus(&seat_name)
-            .map_err(|e| DrmBackendError::Udev(format!("{e}")))?;
+        let udev =
+            UdevBackend::new(&seat_name).map_err(|e| DrmBackendError::Udev(format!("{e}")))?;
+        let raw_gpus: Vec<PathBuf> =
+            all_gpus(&seat_name).map_err(|e| DrmBackendError::Udev(format!("{e}")))?;
         let kms_gpus = filter_kms_nodes(raw_gpus);
         if kms_gpus.is_empty() {
             return Err(DrmBackendError::NoDevices);
@@ -244,10 +244,7 @@ impl DrmRuntime {
                 let mut scanout_session = session.clone();
                 match open_all_scanouts(&mut scanout_session, path) {
                     Ok(b) => {
-                        tracing::info!(
-                            count = b.len(),
-                            "DRM backend: scanout live on primary GPU"
-                        );
+                        tracing::info!(count = b.len(), "DRM backend: scanout live on primary GPU");
                         b
                     }
                     Err(e) => {
@@ -300,8 +297,8 @@ impl DrmRuntime {
         //    page-flip / DRM-device sources will be attached when
         //    individual `cardN` devices are opened in a follow-up
         //    commit; here we wire the seat/input substrate.
-        let event_loop: EventLoop<'static, DrmDispatchState> = EventLoop::try_new()
-            .map_err(|e| DrmBackendError::Calloop(format!("{e}")))?;
+        let event_loop: EventLoop<'static, DrmDispatchState> =
+            EventLoop::try_new().map_err(|e| DrmBackendError::Calloop(format!("{e}")))?;
         let handle: LoopHandle<'static, DrmDispatchState> = event_loop.handle();
 
         // Session events: flip the SessionState's atomic on activate /
@@ -488,9 +485,7 @@ impl DrmRuntime {
         let keyboard = KeyboardXkb::new();
         match &keyboard {
             Some(_) => tracing::info!("DRM backend: xkb keyboard initialised"),
-            None => tracing::warn!(
-                "DRM backend: xkb keymap unavailable; keyboard input disabled"
-            ),
+            None => tracing::warn!("DRM backend: xkb keymap unavailable; keyboard input disabled"),
         }
 
         let dispatch = DrmDispatchState {
@@ -518,9 +513,7 @@ impl DrmRuntime {
     /// cadence.
     pub fn dispatch_pending(&mut self) {
         use std::time::Duration;
-        let _ = self
-            .event_loop
-            .dispatch(Duration::ZERO, &mut self.dispatch);
+        let _ = self.event_loop.dispatch(Duration::ZERO, &mut self.dispatch);
     }
 
     /// Test-only seam: construct a `DrmRuntime`-shaped dispatch state
@@ -633,10 +626,10 @@ impl KeyboardXkb {
         let context = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
         let keymap = xkb::Keymap::new_from_names(
             &context,
-            "", // rules  -> XKB_DEFAULT_RULES
-            "", // model  -> XKB_DEFAULT_MODEL
-            "", // layout -> XKB_DEFAULT_LAYOUT
-            "", // variant-> XKB_DEFAULT_VARIANT
+            "",   // rules  -> XKB_DEFAULT_RULES
+            "",   // model  -> XKB_DEFAULT_MODEL
+            "",   // layout -> XKB_DEFAULT_LAYOUT
+            "",   // variant-> XKB_DEFAULT_VARIANT
             None, // options -> XKB_DEFAULT_OPTIONS
             xkb::KEYMAP_COMPILE_NO_FLAGS,
         )?;
@@ -824,9 +817,9 @@ where
     S: smithay::backend::session::Session,
 {
     use drm_re::control::Device as ControlDevice;
+    use smithay::backend::session::AsErrno;
     use smithay::reexports::rustix::fs::OFlags;
     use smithay::utils::DeviceFd;
-    use smithay::backend::session::AsErrno;
 
     // O_RDWR|O_CLOEXEC|O_NONBLOCK matches what smithay's anvil example
     // uses for the DRM device fd.
@@ -837,14 +830,10 @@ where
         )
         .map_err(|e| format!("session.open({path:?}): errno={:?}", e.as_errno()))?;
     let device_fd = DrmDeviceFd::new(DeviceFd::from(fd));
-    let dev_id_raw: u64 = device_fd
-        .dev_id()
-        .map_err(|e| format!("dev_id: {e}"))?
-        as u64;
+    let dev_id_raw: u64 = device_fd.dev_id().map_err(|e| format!("dev_id: {e}"))? as u64;
 
-    let (drm_device, _notifier) =
-        DrmDevice::new(device_fd, /* disable_connectors */ false)
-            .map_err(|e| format!("DrmDevice::new: {e}"))?;
+    let (drm_device, _notifier) = DrmDevice::new(device_fd, /* disable_connectors */ false)
+        .map_err(|e| format!("DrmDevice::new: {e}"))?;
 
     let resources = drm_device
         .resource_handles()
@@ -854,10 +843,8 @@ where
     for &handle in resources.connectors() {
         match drm_device.get_connector(handle, /* force_probe */ true) {
             Ok(info) => {
-                let connected = matches!(
-                    info.state(),
-                    drm_re::control::connector::State::Connected
-                );
+                let connected =
+                    matches!(info.state(), drm_re::control::connector::State::Connected);
                 let modes: Vec<ModeInfo> = info
                     .modes()
                     .iter()
@@ -1002,7 +989,10 @@ mod tests {
         };
         let conns = enumerate_connectors(
             &mut session,
-            &[PathBuf::from("/dev/dri/card0"), PathBuf::from("/dev/dri/card1")],
+            &[
+                PathBuf::from("/dev/dri/card0"),
+                PathBuf::from("/dev/dri/card1"),
+            ],
         );
         assert!(
             conns.is_empty(),
@@ -1042,7 +1032,10 @@ mod tests {
             },
         ];
         let picked = preferred_mode(&modes).expect("non-empty modes");
-        assert!(picked.preferred, "preferred flag must win over higher resolution");
+        assert!(
+            picked.preferred,
+            "preferred flag must win over higher resolution"
+        );
         assert_eq!(picked.width, 1920);
         assert_eq!(picked.height, 1080);
     }
@@ -1152,7 +1145,10 @@ mod tests {
             .expect("shift press should flip the modifier mask");
         assert!(m.state().shift_key(), "left shift down -> shift active");
         // The bare modifier produces no logical key event.
-        assert!(down.input.is_none(), "bare modifier yields no KeyboardInput");
+        assert!(
+            down.input.is_none(),
+            "bare modifier yields no KeyboardInput"
+        );
 
         let up = kbd.process(shift, false);
         let m = up

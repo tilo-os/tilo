@@ -22,15 +22,16 @@
 pub mod actions;
 pub mod browser_stub;
 pub mod chrome_state;
-pub mod identity_provisioning;
 pub mod collab_broker;
 pub mod collab_broker_capnp;
 pub mod cursor_interp;
 pub mod desktop_backdrop;
 pub mod doc_open;
 pub mod editor_app;
+pub mod global_search;
 pub mod hdr_display;
 pub mod hdr_tonemap;
+pub mod identity_provisioning;
 pub mod launcher;
 pub mod network;
 pub mod nirios_tokens;
@@ -45,7 +46,6 @@ pub mod qs_actions;
 pub mod quick_settings;
 pub mod remote_cursors;
 pub mod roster_panel;
-pub mod global_search;
 pub mod search;
 pub mod sidebar_wheel;
 pub mod sidebar_wheel_chrome;
@@ -56,34 +56,32 @@ pub mod system_monitor;
 pub mod test_support;
 pub mod tile;
 pub mod topbar;
-pub mod typing_indicator;
 pub mod topbar_chrome;
+pub mod typing_indicator;
 pub mod workspace_drop;
 pub mod workspace_settings;
 
+use state::{AppKind as ShellKind, TileContent as ShellTile, WorkspaceTree};
 use ui::widget::{
     AppKind as UiKind, AppWidget, Column, Container, GroupRow, Stack, StripView, TabDescriptor,
-    TileContent as UiTile, Widget, WindowGroup as UiGroup, WindowWidth as UiWidth,
-    WorkspaceView,
+    TileContent as UiTile, Widget, WindowGroup as UiGroup, WindowWidth as UiWidth, WorkspaceView,
     context_menu::{ContextMenu, MenuItem},
     toast::ToastStack,
     tooltip::Tooltip,
 };
-use state::{AppKind as ShellKind, TileContent as ShellTile, WorkspaceTree};
 
 use crate::shell::browser_stub::BrowserStubWidget;
 use crate::shell::editor_app::EditorApp;
+use crate::shell::global_search::GlobalSearch;
 use crate::shell::notes_app::NotesApp;
 use crate::shell::overview::OverviewView;
 use crate::shell::quick_settings::QuickSettings;
 use crate::shell::remote_cursors::{RemoteCursorOverlay, SimulatedFeed};
-use crate::shell::global_search::GlobalSearch;
 use crate::shell::sidebar_wheel::SidebarWheel;
 use crate::shell::system_monitor::SystemMonitor;
 use crate::shell::tile::{
     Strip as RuntimeStrip, Tab as RuntimeTab, TileContent as RuntimeTile,
-    WindowGroup as RuntimeGroup, Workspace as RuntimeWorkspace,
-    WorkspaceTree as RuntimeTree,
+    WindowGroup as RuntimeGroup, Workspace as RuntimeWorkspace, WorkspaceTree as RuntimeTree,
 };
 use crate::shell::topbar::TopBar;
 use crate::shell::workspace_settings::WorkspaceSettings;
@@ -700,11 +698,7 @@ impl Shell {
             ..Default::default()
         };
         // Seed the active-strip entry for the active workspace.
-        if let Some(ws) = self
-            .tree
-            .workspaces
-            .iter()
-            .find(|w| w.id == active_ws)
+        if let Some(ws) = self.tree.workspaces.iter().find(|w| w.id == active_ws)
             && let Some(first) = ws.strips.first()
         {
             scratch.active_strip.insert(active_ws, first.id);
@@ -714,10 +708,15 @@ impl Shell {
         let next_idx = scratch
             .active_strip
             .get(&active_ws)
-            .and_then(|id| scratch.workspaces.iter().find(|w| w.id == active_ws)?
-                .strips
-                .iter()
-                .position(|s| s.id == *id))
+            .and_then(|id| {
+                scratch
+                    .workspaces
+                    .iter()
+                    .find(|w| w.id == active_ws)?
+                    .strips
+                    .iter()
+                    .position(|s| s.id == *id)
+            })
             .unwrap_or(0);
         next_idx
     }
@@ -752,10 +751,7 @@ impl Shell {
         // the toast is what T28 verifies; the workspace-tree mirror is a
         // follow-up task.
         let mut scratch = state::WorkspaceTree {
-            workspaces: vec![state::Workspace::new(
-                state::WorkspaceId::new(),
-                "scratch",
-            )],
+            workspaces: vec![state::Workspace::new(state::WorkspaceId::new(), "scratch")],
             active: state::WorkspaceId::from(0),
             active_strip: Default::default(),
             active_group: Default::default(),
@@ -769,8 +765,7 @@ impl Shell {
             self.sidebar.drag_overscroll(1, 10.0);
         }
         self.sidebar.release_overscroll(&mut scratch);
-        self.toasts
-            .push("Workspace created", ToastKind::Success);
+        self.toasts.push("Workspace created", ToastKind::Success);
     }
 
     /// Simulate a click on the tray gear icon. Toggles the QuickSettings
@@ -797,10 +792,7 @@ impl Shell {
         // which the runtime tree doesn't yet mirror (that's a follow-up
         // task). The observable T29 behaviour is the toast push.
         let mut scratch = state::WorkspaceTree {
-            workspaces: vec![state::Workspace::new(
-                state::WorkspaceId::new(),
-                "scratch",
-            )],
+            workspaces: vec![state::Workspace::new(state::WorkspaceId::new(), "scratch")],
             active: state::WorkspaceId::from(0),
             active_strip: Default::default(),
             active_group: Default::default(),
@@ -825,12 +817,16 @@ impl Shell {
         // workspace so the runtime tree (which doesn't carry `collaborators`
         // / `roles` / `workspace_files`) stays untouched. The test only
         // observes the toast.
-        let mut scratch = state::Workspace::new(self.tree.active, &self.tree
-            .workspaces
-            .iter()
-            .find(|w| w.id == self.tree.active)
-            .map(|w| w.name.clone())
-            .unwrap_or_default());
+        let mut scratch = state::Workspace::new(
+            self.tree.active,
+            &self
+                .tree
+                .workspaces
+                .iter()
+                .find(|w| w.id == self.tree.active)
+                .map(|w| w.name.clone())
+                .unwrap_or_default(),
+        );
         self.ws_settings.rename(&mut scratch, new_name);
         // Mirror the rename into the runtime tree so a subsequent
         // `active_workspace_name()` reflects the user's edit (the
@@ -936,7 +932,8 @@ impl Shell {
         self.ctx_menu.push(MenuItem::action("Close Tab", || {}));
         self.ctx_menu.push(MenuItem::separator());
         self.ctx_menu.push(MenuItem::action("Split Right", || {}));
-        self.ctx_menu.push(MenuItem::action("Move to New Group", || {}));
+        self.ctx_menu
+            .push(MenuItem::action("Move to New Group", || {}));
         self.ctx_menu.open_at(position);
     }
 }
@@ -945,7 +942,6 @@ impl Shell {
 /// [`SystemMonitor`]. Sized to match the topbar's center-cluster width at
 /// the default theme spacing; larger gives diminishing returns.
 const DEFAULT_SPARK_SAMPLES: usize = 64;
-
 
 /// Builder output for the default demo workspace. Carries the tab list plus
 /// test-only raw pointers to the concrete `TerminalWidget` /
@@ -1019,10 +1015,7 @@ fn default_demo_tabs() -> DemoTabs {
          replicate through the same CRDT path every widget uses.\n\n\
          Ctrl+Z / Ctrl+Y undo and redo across the whole shell.",
     );
-    tabs.push(RuntimeTab::new(
-        "Notes",
-        RuntimeTile::App(Box::new(notes)),
-    ));
+    tabs.push(RuntimeTab::new("Notes", RuntimeTile::App(Box::new(notes))));
 
     // Editor — code-leaning sibling to Notes (per-line rendering, gutter,
     // tiny JS/TSX-style tokenizer). Uses its own CRDT key so it doesn't
@@ -1111,12 +1104,9 @@ pub(crate) fn to_ui_tile(t: &ShellTile) -> UiTile {
         // `compositor::foreign`'s frame store and paints it into the
         // tab's rect; it also publishes that rect back so the compositor
         // can configure the client to the right size.
-        ShellTile::Foreign { app_id, surface_id } => {
-            UiTile::App(Box::new(crate::compositor::foreign::ForeignSurfaceWidget::new(
-                *surface_id,
-                app_id.clone(),
-            )))
-        }
+        ShellTile::Foreign { app_id, surface_id } => UiTile::App(Box::new(
+            crate::compositor::foreign::ForeignSurfaceWidget::new(*surface_id, app_id.clone()),
+        )),
         ShellTile::AppPlaceholder { kind, label } => match kind {
             // Terminal — spawn a real PTY; on failure fall back to a Stub per
             // spec §9a, mirroring the same pattern `default_demo_tabs` uses
@@ -1133,9 +1123,7 @@ pub(crate) fn to_ui_tile(t: &ShellTile) -> UiTile {
             },
             // File-explorer — `new` is infallible; the widget surfaces any
             // directory-read errors via its own in-pane status bar.
-            ShellKind::FileExplorer => {
-                UiTile::App(Box::new(FileExplorerWidget::new()))
-            }
+            ShellKind::FileExplorer => UiTile::App(Box::new(FileExplorerWidget::new())),
             // Notes and Editor placeholders resolve to the shell's CRDT-
             // backed apps. Everything else falls through to a Stub until a
             // dedicated widget is wired up.
@@ -1276,9 +1264,8 @@ pub fn build_nirios_overlay_host_with_handle(
             .unwrap_or(0),
     ));
 
-    let topbar: Box<dyn Widget> = Box::new(
-        topbar_chrome::TopBarChrome::from_tree(&tree).with_chrome(chrome.clone()),
-    );
+    let topbar: Box<dyn Widget> =
+        Box::new(topbar_chrome::TopBarChrome::from_tree(&tree).with_chrome(chrome.clone()));
 
     let mut content_col = Column::new()
         // Fill the remaining viewport height AFTER the topbar (its
@@ -1325,11 +1312,7 @@ pub fn build_nirios_overlay_host_with_handle(
             // drag-drops. Each WindowGroup still handles its own close /
             // reorder / maximize; GroupRow only wakes when a drag release
             // lands outside the source bar.
-            let groups: Vec<UiGroup> = strip
-                .window_groups
-                .iter()
-                .map(to_ui_window_group)
-                .collect();
+            let groups: Vec<UiGroup> = strip.window_groups.iter().map(to_ui_window_group).collect();
             let mut strip_row: Box<GroupRow> = Box::new(
                 GroupRow::new(groups)
                     // Reserve canvas-x [0, SIDEBAR_WIDTH] for the
@@ -1338,9 +1321,7 @@ pub fn build_nirios_overlay_host_with_handle(
                     // apply_layout to leave that band empty when
                     // positioning the first group, so wheel and
                     // strip share the same canvas and pan together.
-                    .with_leading_inset(
-                        sidebar_wheel_chrome::SIDEBAR_WIDTH_PX as f64,
-                    ),
+                    .with_leading_inset(sidebar_wheel_chrome::SIDEBAR_WIDTH_PX as f64),
             );
             // Capture the heap address before unsizing into `Box<dyn Widget>`.
             // The unsizing coercion preserves the pointee's address, so this
@@ -1439,7 +1420,9 @@ pub fn sync_tab_presence_from_tree(tree: &WorkspaceTree, ctx: &mut ui::presence:
                 ctx.set_color_override(UserId(c.id.clone()), hex);
             }
             if let Some(tab_id) = c.active_tab {
-                let key = PresenceKey::Tab { id: format!("{:x}", tab_id) };
+                let key = PresenceKey::Tab {
+                    id: format!("{:x}", tab_id),
+                };
                 ctx.register_presence(&key, UserId(c.id.clone()));
             }
         }

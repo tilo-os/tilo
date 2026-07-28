@@ -138,22 +138,13 @@ pub enum EncoderError {
     /// The backend isn't linked (feature disabled) or the runtime probe
     /// determined the host can't drive it (no device, no supported
     /// codec, etc.).
-    Unavailable {
-        kind: EncoderKind,
-        reason: String,
-    },
+    Unavailable { kind: EncoderKind, reason: String },
     /// The backend failed to configure — usually bad dimensions or an
     /// out-of-range bitrate.
-    ConfigFailed {
-        kind: EncoderKind,
-        detail: String,
-    },
+    ConfigFailed { kind: EncoderKind, detail: String },
     /// An encode step failed at runtime (device disappeared, buffer
     /// mismatch, driver error).
-    EncodeFailed {
-        kind: EncoderKind,
-        detail: String,
-    },
+    EncodeFailed { kind: EncoderKind, detail: String },
 }
 
 impl std::fmt::Display for EncoderError {
@@ -359,10 +350,7 @@ pub struct ProbeOutcome {
 /// `Codec::HevcMain10` probe returns [`EncoderKind::Openh264`] as the
 /// picked kind with `available = false` — the caller must fall back to
 /// SDR + [`Codec::H264`] or fail the share.
-pub fn probe(
-    codec: Codec,
-    force: Option<EncoderChoice>,
-) -> (EncoderKind, Vec<ProbeOutcome>) {
+pub fn probe(codec: Codec, force: Option<EncoderChoice>) -> (EncoderKind, Vec<ProbeOutcome>) {
     let mut outcomes = Vec::new();
     match force {
         Some(EncoderChoice::Openh264) => {
@@ -565,14 +553,7 @@ mod tests {
         assert_eq!(sdr.colorimetry, Colorimetry::sdr_bt709());
         assert!(sdr.hdr.is_none());
 
-        let hdr = EncoderInit::hdr10_hevc(
-            1920,
-            1080,
-            30,
-            15_000,
-            2,
-            HdrConfig::pq_reference(),
-        );
+        let hdr = EncoderInit::hdr10_hevc(1920, 1080, 30, 15_000, 2, HdrConfig::pq_reference());
         assert_eq!(hdr.codec, Codec::HevcMain10);
         assert!(hdr.colorimetry.is_hdr());
         assert!(hdr.hdr.is_some());
@@ -587,10 +568,22 @@ mod tests {
 
     #[test]
     fn codec_libav_encoder_name_matches_ffmpeg() {
-        assert_eq!(Codec::H264.libav_encoder_name(EncoderKind::VaApi), Some("h264_vaapi"));
-        assert_eq!(Codec::HevcMain10.libav_encoder_name(EncoderKind::VaApi), Some("hevc_vaapi"));
-        assert_eq!(Codec::H264.libav_encoder_name(EncoderKind::NvEnc), Some("h264_nvenc"));
-        assert_eq!(Codec::HevcMain10.libav_encoder_name(EncoderKind::NvEnc), Some("hevc_nvenc"));
+        assert_eq!(
+            Codec::H264.libav_encoder_name(EncoderKind::VaApi),
+            Some("h264_vaapi")
+        );
+        assert_eq!(
+            Codec::HevcMain10.libav_encoder_name(EncoderKind::VaApi),
+            Some("hevc_vaapi")
+        );
+        assert_eq!(
+            Codec::H264.libav_encoder_name(EncoderKind::NvEnc),
+            Some("h264_nvenc")
+        );
+        assert_eq!(
+            Codec::HevcMain10.libav_encoder_name(EncoderKind::NvEnc),
+            Some("hevc_nvenc")
+        );
         // Openh264 is not a libavcodec encoder.
         assert_eq!(Codec::H264.libav_encoder_name(EncoderKind::Openh264), None);
     }

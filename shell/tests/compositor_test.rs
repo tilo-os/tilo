@@ -87,9 +87,7 @@ fn dump_has_foreign_app_id(dump_path: &std::path::Path, app_id: &str) -> Option<
                 for tab in tabs {
                     // Tab.tile is serialized as externally-tagged enum:
                     // `{"Foreign":{"app_id":"…","surface_id":N}}`.
-                    let foreign = tab
-                        .get("tile")
-                        .and_then(|t| t.get("Foreign"));
+                    let foreign = tab.get("tile").and_then(|t| t.get("Foreign"));
                     if let Some(f) = foreign {
                         if f.get("app_id").and_then(|a| a.as_str()) == Some(app_id) {
                             return Some(true);
@@ -229,8 +227,7 @@ impl Dispatch<wl_registry::WlRegistry, ()> for TestClient {
                     state.compositor = Some(c);
                 }
                 "xdg_wm_base" => {
-                    let b: xdg_wm_base::XdgWmBase =
-                        registry.bind(name, version.min(2), qh, ());
+                    let b: xdg_wm_base::XdgWmBase = registry.bind(name, version.min(2), qh, ());
                     state.wm_base = Some(b);
                 }
                 _ => {}
@@ -315,9 +312,7 @@ fn round_trip_until_bound(
     timeout: Duration,
 ) {
     let deadline = Instant::now() + timeout;
-    while (state.compositor.is_none() || state.wm_base.is_none())
-        && Instant::now() < deadline
-    {
+    while (state.compositor.is_none() || state.wm_base.is_none()) && Instant::now() < deadline {
         let _ = conn.roundtrip();
         let _ = queue.dispatch_pending(state);
         thread::sleep(Duration::from_millis(20));
@@ -328,8 +323,7 @@ fn round_trip_until_bound(
 #[ignore = "requires a host display server (WAYLAND_DISPLAY or DISPLAY) to back winit"]
 fn native_compositor_adopts_and_reaps_foreign_tab() {
     // 1. Set up the introspection sink + spawn the compositor.
-    let dump_path = std::env::temp_dir()
-        .join(format!("nirios-state-{}.json", std::process::id()));
+    let dump_path = std::env::temp_dir().join(format!("nirios-state-{}.json", std::process::id()));
     let _ = std::fs::remove_file(&dump_path);
 
     let (mut child, socket_name) = spawn_compositor(&dump_path);

@@ -20,15 +20,13 @@
 use std::collections::HashMap;
 
 use zbus::interface;
-use zbus::object_server::SignalContext;
 use zbus::names::OwnedUniqueName;
+use zbus::object_server::SignalContext;
 use zbus::zvariant::{ObjectPath, OwnedValue};
 
 use crate::shell::state::{Capability, GRANT_ALWAYS, GRANT_ONCE, GRANT_SESSION};
 
-use super::{
-    flow, file_chooser::FileChooserBackend, CapabilityKind, PortalContext, PromptOutcome,
-};
+use super::{CapabilityKind, PortalContext, PromptOutcome, file_chooser::FileChooserBackend, flow};
 
 pub struct AccessBackend {
     ctx: PortalContext,
@@ -96,17 +94,13 @@ pub(super) fn classify(
     if blob.contains("microphone") || blob.contains("audio") {
         return (
             CapabilityKind::Microphone,
-            Capability::Microphone {
-                scope: GRANT_ONCE,
-            },
+            Capability::Microphone { scope: GRANT_ONCE },
         );
     }
     // Default = Camera. Matches the only consumer in v1.
     (
         CapabilityKind::Camera,
-        Capability::Camera {
-            scope: GRANT_ONCE,
-        },
+        Capability::Camera { scope: GRANT_ONCE },
     )
 }
 

@@ -17,10 +17,10 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use shell::portal::{
-    self, CallerMap, CapabilityKind, FilePickerSpawnerHandle, GrantStoreHandle,
-    MockFilePickerSpawner, MockScreenCastProvisioner, NullFilePickerSpawner,
+    self, BUS_NAME, CallerMap, CapabilityKind, FilePickerSpawnerHandle, GrantStoreHandle,
+    MockFilePickerSpawner, MockScreenCastProvisioner, NullFilePickerSpawner, OBJECT_PATH,
     PortalCaller, PortalContext, PromptQueueHandle, PromptResolver,
-    ScreenCastStreamProvisionerHandle, BUS_NAME, OBJECT_PATH,
+    ScreenCastStreamProvisionerHandle,
 };
 use shell::shell::state::{
     Capability, FsMode, GRANT_ALWAYS, GRANT_ONCE, GRANT_SESSION, Workspace, WorkspaceId,
@@ -54,9 +54,9 @@ async fn bring_up_pair(
         prompts,
         caller_map,
         FilePickerSpawnerHandle::new(Arc::new(NullFilePickerSpawner::cancel())),
-        ScreenCastStreamProvisionerHandle::new(Arc::new(
-            MockScreenCastProvisioner::new_with_node(1, "test"),
-        )),
+        ScreenCastStreamProvisionerHandle::new(Arc::new(MockScreenCastProvisioner::new_with_node(
+            1, "test",
+        ))),
     )
     .await
 }
@@ -114,10 +114,7 @@ async fn bring_up_pair_with_spawners(
 /// real bus name) because zbus's `Builder` requires one — on a p2p
 /// connection that field is informational only; the message is sent
 /// directly down the pipe and dispatched on the remote object server.
-async fn portal_proxy<'a>(
-    client: &'a Connection,
-    interface: &'static str,
-) -> Proxy<'a> {
+async fn portal_proxy<'a>(client: &'a Connection, interface: &'static str) -> Proxy<'a> {
     zbus::proxy::Builder::<Proxy<'a>>::new(client)
         .destination(BUS_NAME)
         .expect("destination")
@@ -147,30 +144,23 @@ async fn file_chooser_open_file_round_trips_auto_allow() {
     let sc_handle = ScreenCastStreamProvisionerHandle::new(Arc::new(
         MockScreenCastProvisioner::new_with_node(1, "test"),
     ));
-    let (_server, client, _ctx) = bring_up_pair_with_spawners(
-        store,
-        queue,
-        caller_map,
-        fp_handle,
-        sc_handle,
-    )
-    .await;
+    let (_server, client, _ctx) =
+        bring_up_pair_with_spawners(store, queue, caller_map, fp_handle, sc_handle).await;
 
     let proxy = portal_proxy(&client, "org.freedesktop.impl.portal.FileChooser").await;
 
     // Args: handle (o), app_id (s), parent_window (s), title (s),
     //       options (a{sv}). Returns: response (u), results (a{sv}).
-    let handle: ObjectPath<'_> = "/org/freedesktop/portal/desktop/request/1".try_into().unwrap();
+    let handle: ObjectPath<'_> = "/org/freedesktop/portal/desktop/request/1"
+        .try_into()
+        .unwrap();
     let app_id: &str = "org.example.test";
     let parent: &str = "";
     let title: &str = "Open File (test)";
     let opts: HashMap<&str, OwnedValue> = HashMap::new();
 
     let (response, results): (u32, HashMap<String, OwnedValue>) = proxy
-        .call_method(
-            "OpenFile",
-            &(&handle, app_id, parent, title, &opts),
-        )
+        .call_method("OpenFile", &(&handle, app_id, parent, title, &opts))
         .await
         .expect("call OpenFile")
         .body()
@@ -181,8 +171,7 @@ async fn file_chooser_open_file_round_trips_auto_allow() {
     assert!(results.contains_key("uris"), "results must include uris");
     if let Some(v) = results.get("uris") {
         let owned: OwnedValue = v.try_clone().expect("clone OwnedValue");
-        let parsed: Vec<String> =
-            Vec::<String>::try_from(owned).expect("as -> Vec<String>");
+        let parsed: Vec<String> = Vec::<String>::try_from(owned).expect("as -> Vec<String>");
         // The mock spawner returned `/tmp/picked.txt`; the URI we
         // emit is `file:///tmp/picked.txt`.
         assert_eq!(parsed, vec!["file:///tmp/picked.txt".to_string()]);
@@ -210,10 +199,7 @@ async fn screencast_select_sources_round_trips_auto_allow() {
     let opts: HashMap<&str, OwnedValue> = HashMap::new();
 
     let (response, _results): (u32, HashMap<String, OwnedValue>) = proxy
-        .call_method(
-            "SelectSources",
-            &(&handle, &session, app_id, &opts),
-        )
+        .call_method("SelectSources", &(&handle, &session, app_id, &opts))
         .await
         .expect("call SelectSources")
         .body()
@@ -328,8 +314,7 @@ async fn always_grant_skips_prompt_queue() {
 async fn deny_outcome_returns_response_one() {
     let (store, _ws_id) = GrantStoreHandle::test_with_workspace(empty_workspace(105, "ws"));
     let queue = PromptQueueHandle::new(PromptResolver::AutoDeny);
-    let (_server, client, _ctx) =
-        bring_up_pair(store, queue, CallerMap::new()).await;
+    let (_server, client, _ctx) = bring_up_pair(store, queue, CallerMap::new()).await;
 
     let proxy = portal_proxy(&client, "org.freedesktop.impl.portal.FileChooser").await;
     let handle: ObjectPath<'_> = "/h/4".try_into().unwrap();
@@ -350,17 +335,16 @@ async fn deny_outcome_returns_response_one() {
 
 #[tokio::test]
 async fn session_outcome_persists_into_grant_store() {
-    let (store, ws_id) =
-        GrantStoreHandle::test_with_workspace(empty_workspace(106, "ws"));
-    let queue =
-        PromptQueueHandle::new(PromptResolver::AutoOutcome(portal::PromptOutcome::AllowSession));
+    let (store, ws_id) = GrantStoreHandle::test_with_workspace(empty_workspace(106, "ws"));
+    let queue = PromptQueueHandle::new(PromptResolver::AutoOutcome(
+        portal::PromptOutcome::AllowSession,
+    ));
 
     let caller_map = CallerMap::new();
     let caller = PortalCaller::new(ws_id, "org.example.session");
     caller_map.force_caller_for_tests(caller.clone());
 
-    let (_server, client, ctx) =
-        bring_up_pair(store.clone(), queue, caller_map).await;
+    let (_server, client, ctx) = bring_up_pair(store.clone(), queue, caller_map).await;
 
     let proxy = portal_proxy(&client, "org.freedesktop.impl.portal.Access").await;
     let handle: ObjectPath<'_> = "/h/5".try_into().unwrap();
@@ -428,21 +412,14 @@ async fn screencast_start_provisions_pipewire_stream() {
     let queue = PromptQueueHandle::new(PromptResolver::Channel);
 
     let caller_map = CallerMap::new();
-    caller_map
-        .force_caller_for_tests(PortalCaller::new(ws_id, "org.example.cast"));
+    caller_map.force_caller_for_tests(PortalCaller::new(ws_id, "org.example.cast"));
 
     let provisioner = Arc::new(MockScreenCastProvisioner::new_with_node(77, "test"));
     let fp_handle = FilePickerSpawnerHandle::new(Arc::new(NullFilePickerSpawner::cancel()));
     let sc_handle = ScreenCastStreamProvisionerHandle::new(provisioner.clone());
 
-    let (_server, client, _ctx) = bring_up_pair_with_spawners(
-        store,
-        queue,
-        caller_map,
-        fp_handle,
-        sc_handle,
-    )
-    .await;
+    let (_server, client, _ctx) =
+        bring_up_pair_with_spawners(store, queue, caller_map, fp_handle, sc_handle).await;
 
     let proxy = portal_proxy(&client, "org.freedesktop.impl.portal.ScreenCast").await;
     let handle: ObjectPath<'_> = "/h/6".try_into().unwrap();
@@ -450,16 +427,10 @@ async fn screencast_start_provisions_pipewire_stream() {
     // Forward a custom size so we can assert the provisioner saw it.
     let mut opts: HashMap<&str, OwnedValue> = HashMap::new();
     let size: (u32, u32) = (1280, 720);
-    opts.insert(
-        "size",
-        OwnedValue::try_from(Value::new(size)).unwrap(),
-    );
+    opts.insert("size", OwnedValue::try_from(Value::new(size)).unwrap());
 
     let (response, results): (u32, HashMap<String, OwnedValue>) = proxy
-        .call_method(
-            "Start",
-            &(&handle, &session, "org.example.cast", "", &opts),
-        )
+        .call_method("Start", &(&handle, &session, "org.example.cast", "", &opts))
         .await
         .expect("call Start")
         .body()
@@ -472,8 +443,7 @@ async fn screencast_start_provisions_pipewire_stream() {
         .expect("results must include streams");
     let cloned: OwnedValue = streams_v.try_clone().expect("clone OwnedValue");
     let streams: Vec<(u32, HashMap<String, OwnedValue>)> =
-        Vec::<(u32, HashMap<String, OwnedValue>)>::try_from(cloned)
-            .expect("Vec<(u32, dict)>");
+        Vec::<(u32, HashMap<String, OwnedValue>)>::try_from(cloned).expect("Vec<(u32, dict)>");
     assert_eq!(streams.len(), 1, "exactly one stream provisioned");
     assert_eq!(streams[0].0, 77, "mock's node id round-trips");
     // The mock recorded the request — size came through the options.

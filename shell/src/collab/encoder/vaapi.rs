@@ -289,12 +289,13 @@ impl VaApiBackend {
         ensure_ffmpeg_init();
 
         // 1. Locate the libav encoder matching the requested codec.
-        let encoder_name = init.codec.libav_encoder_name(EncoderKind::VaApi).ok_or_else(|| {
-            EncoderError::Unavailable {
+        let encoder_name = init
+            .codec
+            .libav_encoder_name(EncoderKind::VaApi)
+            .ok_or_else(|| EncoderError::Unavailable {
                 kind: EncoderKind::VaApi,
                 reason: format!("no VA-API encoder mapping for {:?}", init.codec),
-            }
-        })?;
+            })?;
         let codec_ptr = find_encoder(encoder_name).ok_or_else(|| EncoderError::Unavailable {
             kind: EncoderKind::VaApi,
             reason: format!("libavcodec has no {encoder_name} encoder built in"),
@@ -310,13 +311,11 @@ impl VaApiBackend {
         // 3. Build the frames pool. `hw_pix_fmt = VAAPI`, `sw_pix_fmt`
         // picks NV12 (8-bit H.264) or P010 (10-bit HEVC).
         let sw_pix_fmt = sw_format_for_codec(init.codec);
-        let hw_frames_ctx =
-            build_hw_frames_ctx(hw_device_ctx, init.width, init.height, sw_pix_fmt).map_err(
-                |detail| EncoderError::ConfigFailed {
-                    kind: EncoderKind::VaApi,
-                    detail,
-                },
-            )?;
+        let hw_frames_ctx = build_hw_frames_ctx(hw_device_ctx, init.width, init.height, sw_pix_fmt)
+            .map_err(|detail| EncoderError::ConfigFailed {
+                kind: EncoderKind::VaApi,
+                detail,
+            })?;
 
         // 4. Configure the encoder context: pix_fmt = VAAPI, hw_frames_ctx set.
         let mut ctx = ffmpeg::codec::Context::new_with_codec(codec_ff);
@@ -336,13 +335,13 @@ impl VaApiBackend {
             (*ctx_ptr).hw_frames_ctx = ffi::av_buffer_ref(hw_frames_ctx);
             apply_colorimetry_to_ctx(ctx_ptr, init);
         }
-        let mut video_enc =
-            ctx.encoder()
-                .video()
-                .map_err(|e| EncoderError::ConfigFailed {
-                    kind: EncoderKind::VaApi,
-                    detail: format!("encoder().video(): {e}"),
-                })?;
+        let mut video_enc = ctx
+            .encoder()
+            .video()
+            .map_err(|e| EncoderError::ConfigFailed {
+                kind: EncoderKind::VaApi,
+                detail: format!("encoder().video(): {e}"),
+            })?;
         video_enc.set_width(init.width);
         video_enc.set_height(init.height);
         video_enc.set_format(ffmpeg::format::Pixel::VAAPI);
@@ -393,12 +392,13 @@ impl VaApiBackend {
                     (*cp).hw_frames_ctx = ffi::av_buffer_ref(hw_frames_ctx);
                     apply_colorimetry_to_ctx(cp, init);
                 }
-                let mut ve2 = ctx2.encoder().video().map_err(|e| {
-                    EncoderError::ConfigFailed {
+                let mut ve2 = ctx2
+                    .encoder()
+                    .video()
+                    .map_err(|e| EncoderError::ConfigFailed {
                         kind: EncoderKind::VaApi,
                         detail: format!("encoder().video() retry: {e}"),
-                    }
-                })?;
+                    })?;
                 ve2.set_width(init.width);
                 ve2.set_height(init.height);
                 ve2.set_format(ffmpeg::format::Pixel::VAAPI);
@@ -500,11 +500,8 @@ impl VaApiBackend {
         // pointing at the caller's slice. Easiest is to build the
         // frame + memcpy once; the cost is width*height*4 bytes per
         // encode, dominated by the swscale conversion time.
-        let mut src = ffmpeg::frame::Video::new(
-            ffmpeg::format::Pixel::RGBA,
-            self.width,
-            self.height,
-        );
+        let mut src =
+            ffmpeg::frame::Video::new(ffmpeg::format::Pixel::RGBA, self.width, self.height);
         let src_stride = src.stride(0);
         let row_bytes = (self.width as usize) * 4;
         {
@@ -716,10 +713,8 @@ impl VaApiBackend {
             (*desc_ptr).layers[0].nb_planes = num_planes as i32;
             for i in 0..(num_planes as usize) {
                 (*desc_ptr).layers[0].planes[i].object_index = 0;
-                (*desc_ptr).layers[0].planes[i].offset =
-                    plane_offsets[i] as libc::ptrdiff_t;
-                (*desc_ptr).layers[0].planes[i].pitch =
-                    plane_strides[i] as libc::ptrdiff_t;
+                (*desc_ptr).layers[0].planes[i].offset = plane_offsets[i] as libc::ptrdiff_t;
+                (*desc_ptr).layers[0].planes[i].pitch = plane_strides[i] as libc::ptrdiff_t;
             }
         }
         // SAFETY: fully written above.
@@ -766,8 +761,7 @@ impl VaApiBackend {
         }
         let hw_guard = FrameGuard(hw_frame);
         // SAFETY: bind hw_frame to a fresh VAAPI surface from the pool.
-        let get_rc =
-            unsafe { ffi::av_hwframe_get_buffer(self.hw_frames_ctx, hw_frame, 0) };
+        let get_rc = unsafe { ffi::av_hwframe_get_buffer(self.hw_frames_ctx, hw_frame, 0) };
         if get_rc < 0 {
             return Err(EncoderError::EncodeFailed {
                 kind: EncoderKind::VaApi,
@@ -1150,9 +1144,7 @@ unsafe fn apply_colorimetry_to_ctx(ctx: *mut ffi::AVCodecContext, init: EncoderI
         }
     };
     let mat = match c.matrix {
-        crate::collab::colorimetry::MatrixCoefficients::Bt709 => {
-            ffi::AVColorSpace::AVCOL_SPC_BT709
-        }
+        crate::collab::colorimetry::MatrixCoefficients::Bt709 => ffi::AVColorSpace::AVCOL_SPC_BT709,
         crate::collab::colorimetry::MatrixCoefficients::Bt2020NonConstant => {
             ffi::AVColorSpace::AVCOL_SPC_BT2020_NCL
         }
@@ -1245,21 +1237,45 @@ unsafe fn attach_hdr10_side_data(
         let out = (*sd).data as *mut AVMasteringDisplayMetadata;
         (*out).display_primaries = [
             [
-                ffi::AVRational { num: m.display_primaries[0].0 as i32, den: 50000 },
-                ffi::AVRational { num: m.display_primaries[0].1 as i32, den: 50000 },
+                ffi::AVRational {
+                    num: m.display_primaries[0].0 as i32,
+                    den: 50000,
+                },
+                ffi::AVRational {
+                    num: m.display_primaries[0].1 as i32,
+                    den: 50000,
+                },
             ],
             [
-                ffi::AVRational { num: m.display_primaries[1].0 as i32, den: 50000 },
-                ffi::AVRational { num: m.display_primaries[1].1 as i32, den: 50000 },
+                ffi::AVRational {
+                    num: m.display_primaries[1].0 as i32,
+                    den: 50000,
+                },
+                ffi::AVRational {
+                    num: m.display_primaries[1].1 as i32,
+                    den: 50000,
+                },
             ],
             [
-                ffi::AVRational { num: m.display_primaries[2].0 as i32, den: 50000 },
-                ffi::AVRational { num: m.display_primaries[2].1 as i32, den: 50000 },
+                ffi::AVRational {
+                    num: m.display_primaries[2].0 as i32,
+                    den: 50000,
+                },
+                ffi::AVRational {
+                    num: m.display_primaries[2].1 as i32,
+                    den: 50000,
+                },
             ],
         ];
         (*out).white_point = [
-            ffi::AVRational { num: m.white_point.0 as i32, den: 50000 },
-            ffi::AVRational { num: m.white_point.1 as i32, den: 50000 },
+            ffi::AVRational {
+                num: m.white_point.0 as i32,
+                den: 50000,
+            },
+            ffi::AVRational {
+                num: m.white_point.1 as i32,
+                den: 50000,
+            },
         ];
         (*out).max_luminance = ffi::AVRational {
             num: m.max_display_mastering_luminance as i32,

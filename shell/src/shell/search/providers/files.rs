@@ -104,7 +104,11 @@ impl FilesProvider {
                 .ok();
         }
         let tantivy = crate::shell::search::files_index::FilesIndex::open_or_create(&home).ok();
-        Self { home, name_index, tantivy }
+        Self {
+            home,
+            name_index,
+            tantivy,
+        }
     }
 
     /// Force a re-walk of the home directory. Idempotent; safe to call
@@ -136,6 +140,11 @@ impl SearchProvider for FilesProvider {
     fn resource_kinds(&self) -> &[ResourceKind] {
         &[ResourceKind::File, ResourceKind::Folder]
     }
+    /// A leaf-name prefix hit scores 120 - see [`name_score`].
+    fn max_score(&self) -> i32 {
+        120
+    }
+
     fn query(&self, ctx: SearchContext<'_>) -> Vec<SearchResult> {
         if ctx.needle.trim().is_empty() {
             return Vec::new();
@@ -337,9 +346,7 @@ fn spawn_open(path: &Path, _is_dir: bool) {
     thread::Builder::new()
         .name("qos-search-open".into())
         .spawn(move || {
-            let _ = std::process::Command::new("xdg-open")
-                .arg(path)
-                .spawn();
+            let _ = std::process::Command::new("xdg-open").arg(path).spawn();
         })
         .ok();
 }

@@ -163,12 +163,13 @@ impl NvEncBackend {
             });
         }
         ensure_ffmpeg_init();
-        let encoder_name = init.codec.libav_encoder_name(EncoderKind::NvEnc).ok_or_else(|| {
-            EncoderError::Unavailable {
+        let encoder_name = init
+            .codec
+            .libav_encoder_name(EncoderKind::NvEnc)
+            .ok_or_else(|| EncoderError::Unavailable {
                 kind: EncoderKind::NvEnc,
                 reason: format!("no NVENC encoder mapping for {:?}", init.codec),
-            }
-        })?;
+            })?;
         let codec_ptr = find_encoder(encoder_name).ok_or_else(|| EncoderError::Unavailable {
             kind: EncoderKind::NvEnc,
             reason: format!("{encoder_name} vanished between probe and open"),
@@ -188,13 +189,13 @@ impl NvEncBackend {
             let ctx_ptr = ctx.as_mut_ptr();
             apply_colorimetry_to_ctx(ctx_ptr, init);
         }
-        let mut video_enc =
-            ctx.encoder()
-                .video()
-                .map_err(|e| EncoderError::ConfigFailed {
-                    kind: EncoderKind::NvEnc,
-                    detail: format!("encoder().video(): {e}"),
-                })?;
+        let mut video_enc = ctx
+            .encoder()
+            .video()
+            .map_err(|e| EncoderError::ConfigFailed {
+                kind: EncoderKind::NvEnc,
+                detail: format!("encoder().video(): {e}"),
+            })?;
         // NV12 for 8-bit H.264, P010LE for 10-bit HEVC Main10. NVENC
         // pulls the CPU frame in and uploads to its own GPU surface.
         let sw_pixel = match init.codec {
@@ -239,12 +240,13 @@ impl NvEncBackend {
             }
         }
 
-        let encoder = video_enc.open_as_with(codec_ff, opts).map_err(|e| {
-            EncoderError::ConfigFailed {
-                kind: EncoderKind::NvEnc,
-                detail: format!("avcodec_open2({encoder_name}): {e}"),
-            }
-        })?;
+        let encoder =
+            video_enc
+                .open_as_with(codec_ff, opts)
+                .map_err(|e| EncoderError::ConfigFailed {
+                    kind: EncoderKind::NvEnc,
+                    detail: format!("avcodec_open2({encoder_name}): {e}"),
+                })?;
 
         let sw_frame = ffmpeg::frame::Video::new(sw_pixel, init.width, init.height);
         let sws = ffmpeg::software::scaling::Context::get(
@@ -298,11 +300,8 @@ impl NvEncBackend {
                 ),
             });
         }
-        let mut src = ffmpeg::frame::Video::new(
-            ffmpeg::format::Pixel::RGBA,
-            self.width,
-            self.height,
-        );
+        let mut src =
+            ffmpeg::frame::Video::new(ffmpeg::format::Pixel::RGBA, self.width, self.height);
         let src_stride = src.stride(0);
         let row_bytes = (self.width as usize) * 4;
         {
@@ -408,8 +407,7 @@ impl Encoder for NvEncBackend {
                 if self.codec != Codec::H264 {
                     return Err(EncoderError::EncodeFailed {
                         kind: EncoderKind::NvEnc,
-                        detail: "NV12 input is 8-bit; HEVC Main10 pipeline needs RGBA"
-                            .to_string(),
+                        detail: "NV12 input is 8-bit; HEVC Main10 pipeline needs RGBA".to_string(),
                     });
                 }
                 let expected_y = (self.width as usize) * (self.height as usize);
@@ -498,9 +496,7 @@ unsafe fn apply_colorimetry_to_ctx(ctx: *mut ffi::AVCodecContext, init: EncoderI
         }
     };
     let mat = match c.matrix {
-        crate::collab::colorimetry::MatrixCoefficients::Bt709 => {
-            ffi::AVColorSpace::AVCOL_SPC_BT709
-        }
+        crate::collab::colorimetry::MatrixCoefficients::Bt709 => ffi::AVColorSpace::AVCOL_SPC_BT709,
         crate::collab::colorimetry::MatrixCoefficients::Bt2020NonConstant => {
             ffi::AVColorSpace::AVCOL_SPC_BT2020_NCL
         }
@@ -547,21 +543,45 @@ unsafe fn attach_hdr10_side_data(
         let out = (*sd).data as *mut AVMasteringDisplayMetadata;
         (*out).display_primaries = [
             [
-                ffi::AVRational { num: m.display_primaries[0].0 as i32, den: 50000 },
-                ffi::AVRational { num: m.display_primaries[0].1 as i32, den: 50000 },
+                ffi::AVRational {
+                    num: m.display_primaries[0].0 as i32,
+                    den: 50000,
+                },
+                ffi::AVRational {
+                    num: m.display_primaries[0].1 as i32,
+                    den: 50000,
+                },
             ],
             [
-                ffi::AVRational { num: m.display_primaries[1].0 as i32, den: 50000 },
-                ffi::AVRational { num: m.display_primaries[1].1 as i32, den: 50000 },
+                ffi::AVRational {
+                    num: m.display_primaries[1].0 as i32,
+                    den: 50000,
+                },
+                ffi::AVRational {
+                    num: m.display_primaries[1].1 as i32,
+                    den: 50000,
+                },
             ],
             [
-                ffi::AVRational { num: m.display_primaries[2].0 as i32, den: 50000 },
-                ffi::AVRational { num: m.display_primaries[2].1 as i32, den: 50000 },
+                ffi::AVRational {
+                    num: m.display_primaries[2].0 as i32,
+                    den: 50000,
+                },
+                ffi::AVRational {
+                    num: m.display_primaries[2].1 as i32,
+                    den: 50000,
+                },
             ],
         ];
         (*out).white_point = [
-            ffi::AVRational { num: m.white_point.0 as i32, den: 50000 },
-            ffi::AVRational { num: m.white_point.1 as i32, den: 50000 },
+            ffi::AVRational {
+                num: m.white_point.0 as i32,
+                den: 50000,
+            },
+            ffi::AVRational {
+                num: m.white_point.1 as i32,
+                den: 50000,
+            },
         ];
         (*out).max_luminance = ffi::AVRational {
             num: m.max_display_mastering_luminance as i32,

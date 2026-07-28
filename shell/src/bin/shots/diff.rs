@@ -52,11 +52,7 @@ pub struct DiffReport {
 /// counts as different. Alpha is intentionally ignored — wgpu's
 /// premultiplied output can wobble in the bottom bits without changing
 /// what the user sees.
-pub fn compare_tree(
-    baseline: &Path,
-    current: &Path,
-    threshold: u8,
-) -> Result<DiffReport, String> {
+pub fn compare_tree(baseline: &Path, current: &Path, threshold: u8) -> Result<DiffReport, String> {
     if !baseline.is_dir() {
         return Err(format!(
             "baseline directory '{}' not found",
@@ -75,13 +71,9 @@ fn walk(
     threshold: u8,
     report: &mut DiffReport,
 ) -> Result<(), String> {
-    let entries = std::fs::read_dir(base_dir).map_err(|e| {
-        format!("read_dir '{}': {e}", base_dir.display())
-    })?;
-    let mut entries: Vec<_> = entries
-        .filter_map(|e| e.ok())
-        .map(|e| e.path())
-        .collect();
+    let entries = std::fs::read_dir(base_dir)
+        .map_err(|e| format!("read_dir '{}': {e}", base_dir.display()))?;
+    let mut entries: Vec<_> = entries.filter_map(|e| e.ok()).map(|e| e.path()).collect();
     // Stable order so test output is deterministic across runs.
     entries.sort();
     for entry in entries {
@@ -179,18 +171,11 @@ pub fn count_diff_pixels(a: &[u8], b: &[u8], threshold: u8) -> u64 {
 /// pixel that exceeds `threshold` repainted solid red. Helps the
 /// maintainer eyeball where a regression lives without diffing the
 /// images by hand in GIMP.
-fn write_diff_overlay(
-    baseline: &Path,
-    current: &Path,
-    threshold: u8,
-) -> Result<(), String> {
+fn write_diff_overlay(baseline: &Path, current: &Path, threshold: u8) -> Result<(), String> {
     let (b_pix, dims) = load_rgba(baseline)?;
     let (mut c_pix, c_dims) = load_rgba(current)?;
     if dims != c_dims {
-        return Err(format!(
-            "size mismatch: {:?} vs {:?}",
-            dims, c_dims
-        ));
+        return Err(format!("size mismatch: {:?} vs {:?}", dims, c_dims));
     }
     let t = threshold as i32;
     for (a, b) in c_pix.chunks_exact_mut(4).zip(b_pix.chunks_exact(4)) {
@@ -209,8 +194,7 @@ fn write_diff_overlay(
 }
 
 fn load_rgba(path: &Path) -> Result<(Vec<u8>, (u32, u32)), String> {
-    let file = File::open(path)
-        .map_err(|e| format!("open '{}': {e}", path.display()))?;
+    let file = File::open(path).map_err(|e| format!("open '{}': {e}", path.display()))?;
     let decoder = png::Decoder::new(BufReader::new(file));
     let mut reader = decoder
         .read_info()
@@ -261,8 +245,7 @@ fn save_rgba(path: &Path, pixels: &[u8], width: u32, height: u32) -> Result<(), 
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).ok();
     }
-    let file = File::create(path)
-        .map_err(|e| format!("create '{}': {e}", path.display()))?;
+    let file = File::create(path).map_err(|e| format!("create '{}': {e}", path.display()))?;
     let w = std::io::BufWriter::new(file);
     let mut encoder = png::Encoder::new(w, width, height);
     encoder.set_color(png::ColorType::Rgba);
@@ -322,10 +305,7 @@ mod tests {
     /// tree walker, and assert the report kinds line up.
     #[test]
     fn baseline_diff_tree_walker_classifies_each_file() {
-        let tmp = std::env::temp_dir().join(format!(
-            "shots-diff-test-{}",
-            std::process::id(),
-        ));
+        let tmp = std::env::temp_dir().join(format!("shots-diff-test-{}", std::process::id(),));
         let _ = std::fs::remove_dir_all(&tmp);
         let baseline = tmp.join("baseline");
         let current = tmp.join("current");
@@ -333,7 +313,9 @@ mod tests {
         std::fs::create_dir_all(&current).unwrap();
 
         // Match: identical 2x2 frames.
-        let pixels = vec![10u8, 20, 30, 255, 40, 50, 60, 255, 70, 80, 90, 255, 100, 110, 120, 255];
+        let pixels = vec![
+            10u8, 20, 30, 255, 40, 50, 60, 255, 70, 80, 90, 255, 100, 110, 120, 255,
+        ];
         save_rgba(&baseline.join("ok.png"), &pixels, 2, 2).unwrap();
         save_rgba(&current.join("ok.png"), &pixels, 2, 2).unwrap();
 
@@ -356,7 +338,12 @@ mod tests {
         let by_name: std::collections::HashMap<_, _> = report
             .entries
             .iter()
-            .map(|e| (e.path.file_name().unwrap().to_str().unwrap().to_string(), &e.kind))
+            .map(|e| {
+                (
+                    e.path.file_name().unwrap().to_str().unwrap().to_string(),
+                    &e.kind,
+                )
+            })
             .collect();
         assert!(matches!(by_name["ok.png"], DiffKind::Ok));
         match by_name["diff.png"] {
@@ -368,7 +355,11 @@ mod tests {
 
         // The walker should have written a diff overlay PNG for diff.png.
         let overlay = current.join("diff.diff.png");
-        assert!(overlay.exists(), "diff overlay must be written to {}", overlay.display());
+        assert!(
+            overlay.exists(),
+            "diff overlay must be written to {}",
+            overlay.display()
+        );
 
         let _ = std::fs::remove_dir_all(&tmp);
     }
@@ -378,10 +369,8 @@ mod tests {
     /// previous diff, not real baselines).
     #[test]
     fn diff_overlay_files_are_skipped() {
-        let tmp = std::env::temp_dir().join(format!(
-            "shots-diff-skip-test-{}",
-            std::process::id(),
-        ));
+        let tmp =
+            std::env::temp_dir().join(format!("shots-diff-skip-test-{}", std::process::id(),));
         let _ = std::fs::remove_dir_all(&tmp);
         let baseline = tmp.join("baseline");
         let current = tmp.join("current");

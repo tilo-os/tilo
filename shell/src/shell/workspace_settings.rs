@@ -94,7 +94,12 @@ impl WsTab {
     /// stable iteration order (General → Roles → Files → Permissions)
     /// is what the sidebar nav and the tab strip render against.
     pub fn all() -> [WsTab; 4] {
-        [WsTab::General, WsTab::Roles, WsTab::Files, WsTab::Permissions]
+        [
+            WsTab::General,
+            WsTab::Roles,
+            WsTab::Files,
+            WsTab::Permissions,
+        ]
     }
 
     /// Tabs visible for the supplied workspace. The Permissions tab is
@@ -278,9 +283,7 @@ impl WorkspaceSettings {
         perm: AppPerm,
     ) {
         if let Some(role) = ws.roles.iter_mut().find(|r| r.id == role_id) {
-            role.permissions
-                .per_app
-                .insert(app_name.to_string(), perm);
+            role.permissions.per_app.insert(app_name.to_string(), perm);
         }
         self.refresh_apps_table(ws);
     }
@@ -312,9 +315,7 @@ impl WorkspaceSettings {
         perm: FilePerm,
     ) {
         if let Some(role) = ws.roles.iter_mut().find(|r| r.id == role_id) {
-            role.permissions
-                .per_file
-                .insert(file_id.to_string(), perm);
+            role.permissions.per_file.insert(file_id.to_string(), perm);
         }
         self.refresh_files_table(ws);
     }
@@ -463,13 +464,7 @@ impl WorkspaceSettings {
             let active = self.active_tab == tab;
             let row_rr = RoundedRect::from_rect(row, 12.0);
             if active {
-                scene.fill(
-                    Fill::NonZero,
-                    transform,
-                    colors.accent[5],
-                    None,
-                    &row_rr,
-                );
+                scene.fill(Fill::NonZero, transform, colors.accent[5], None, &row_rr);
             }
             let label_color = if active {
                 colors.text_primary
@@ -695,8 +690,19 @@ pub fn draw_roles_pane(
 
     // 1 px right border separating role list from permission pane —
     // concept ref:155 `border-r border-white/5`.
-    let list_border = Rect::new(list_rect.x1 - 0.5, list_rect.y0, list_rect.x1 + 0.5, list_rect.y1);
-    scene.fill(Fill::NonZero, transform, colors.neutral[3], None, &list_border);
+    let list_border = Rect::new(
+        list_rect.x1 - 0.5,
+        list_rect.y0,
+        list_rect.x1 + 0.5,
+        list_rect.y1,
+    );
+    scene.fill(
+        Fill::NonZero,
+        transform,
+        colors.neutral[3],
+        None,
+        &list_border,
+    );
 
     // "Roles" caption (concept ref:156, `text-[10px] uppercase tracking-widest`).
     let caption_y = list_rect.y0 + ROLES_LIST_PADDING;
@@ -754,7 +760,11 @@ pub fn draw_roles_pane(
             &RoundedRect::from_rect(swatch, swatch_size / 2.0),
         );
         // Role name.
-        let label_color = if active { colors.text_primary } else { colors.text_dim };
+        let label_color = if active {
+            colors.text_primary
+        } else {
+            colors.text_dim
+        };
         text_renderer.draw_text(
             scene,
             &role.name,
@@ -788,8 +798,7 @@ pub fn draw_roles_pane(
             "+ New Role",
             tokens.typography.scale.sm,
             colors.accent[5],
-            transform
-                * Affine::translate((new_role_row.x0 + 12.0, new_role_row.y0 + 8.0)),
+            transform * Affine::translate((new_role_row.x0 + 12.0, new_role_row.y0 + 8.0)),
             None,
         );
     }
@@ -984,12 +993,7 @@ pub fn draw_roles_pane(
             let chip_h = 28.0_f64;
             let strip_x = row.x1 - 12.0 - chip_strip_w;
             let strip_y = row.y0 + (row_h - chip_h) / 2.0;
-            let strip_bg = Rect::new(
-                strip_x,
-                strip_y,
-                strip_x + chip_strip_w,
-                strip_y + chip_h,
-            );
+            let strip_bg = Rect::new(strip_x, strip_y, strip_x + chip_strip_w, strip_y + chip_h);
             scene.fill(
                 Fill::NonZero,
                 transform,
@@ -1003,7 +1007,12 @@ pub fn draw_roles_pane(
                 .enumerate()
             {
                 let cx = strip_x + chip_pad + i as f64 * (chip_w + chip_pad);
-                let chip = Rect::new(cx, strip_y + chip_pad, cx + chip_w, strip_y + chip_h - chip_pad);
+                let chip = Rect::new(
+                    cx,
+                    strip_y + chip_pad,
+                    cx + chip_w,
+                    strip_y + chip_h - chip_pad,
+                );
                 let active = cur_perm == perm;
                 if active {
                     scene.fill(
@@ -1265,11 +1274,7 @@ pub fn revoke_grant(workspace: &mut Workspace, app_id: &AppId, cap_index: usize)
 
 /// Same as [`revoke_grant`], but returns the revoked capability's
 /// stable id so the caller can mirror the removal to peers.
-pub fn revoke_grant_id(
-    workspace: &Workspace,
-    app_id: &AppId,
-    cap_index: usize,
-) -> Option<String> {
+pub fn revoke_grant_id(workspace: &Workspace, app_id: &AppId, cap_index: usize) -> Option<String> {
     workspace.app_grant_ids(app_id).get(cap_index).cloned()
 }
 
@@ -1406,8 +1411,7 @@ pub fn draw_permissions_pane(
             "Revoke",
             tokens.typography.scale.sm,
             colors.semantic.danger.with_alpha_factor(revoke_alpha),
-            transform
-                * Affine::translate((row.revoke_rect.x0 + 16.0, row.revoke_rect.y0 + 6.0)),
+            transform * Affine::translate((row.revoke_rect.x0 + 16.0, row.revoke_rect.y0 + 6.0)),
             None,
         );
     }
@@ -1514,7 +1518,12 @@ mod tab_tests {
         // the iteration order stays pinned to the concept fidelity strip.
         assert_eq!(
             WsTab::all(),
-            [WsTab::General, WsTab::Roles, WsTab::Files, WsTab::Permissions]
+            [
+                WsTab::General,
+                WsTab::Roles,
+                WsTab::Files,
+                WsTab::Permissions
+            ]
         );
     }
 
@@ -1534,7 +1543,10 @@ mod tab_tests {
         // suppressed in that case so the parity tests keep pinning the
         // same x-coordinates for General/Roles/Files.
         let ws = Workspace::new(WorkspaceId::default(), "no-grants");
-        assert_eq!(WsTab::visible(&ws), vec![WsTab::General, WsTab::Roles, WsTab::Files]);
+        assert_eq!(
+            WsTab::visible(&ws),
+            vec![WsTab::General, WsTab::Roles, WsTab::Files]
+        );
     }
 
     #[test]
@@ -1643,9 +1655,10 @@ mod tab_tests {
         let mut scene = Scene::new();
         let theme = Theme::dark();
         let mut tr = TextRenderer::new();
-        let mut drawer = |_s: &mut Scene, _x: Affine, pane: Rect, _t: &mut TextRenderer, _th: &Theme| {
-            observed = Some(pane);
-        };
+        let mut drawer =
+            |_s: &mut Scene, _x: Affine, pane: Rect, _t: &mut TextRenderer, _th: &Theme| {
+                observed = Some(pane);
+            };
         ws.draw_body(
             &mut scene,
             Affine::IDENTITY,
@@ -1810,7 +1823,9 @@ mod permissions_pane_tests {
     //! follow-up); the click router writes through and bumps the
     //! revision counter so widgets resync on the next frame.
     use super::*;
-    use crate::shell::state::{Capability, GRANT_ALWAYS, GRANT_ONCE, GRANT_SESSION, Workspace, WorkspaceId};
+    use crate::shell::state::{
+        Capability, GRANT_ALWAYS, GRANT_ONCE, GRANT_SESSION, Workspace, WorkspaceId,
+    };
 
     fn ws_with_grants() -> Workspace {
         let mut ws = Workspace::new(WorkspaceId::default(), "perm-test");
@@ -1896,15 +1911,13 @@ mod permissions_pane_tests {
         // grant is revoked. Without this cleanup the Permissions tab
         // would stay visible (`WsTab::visible` checks `is_empty()`).
         let mut ws = Workspace::new(WorkspaceId::default(), "single-grant");
-        ws.grant_app(
-            "vscode",
-            &Capability::Camera {
-                scope: GRANT_ONCE,
-            },
-        );
+        ws.grant_app("vscode", &Capability::Camera { scope: GRANT_ONCE });
         let removed = revoke_grant(&mut ws, &"vscode".to_string(), 0);
         assert!(removed);
-        assert!(!ws.has_app_grants(), "the last grant's removal hides the tab again");
+        assert!(
+            !ws.has_app_grants(),
+            "the last grant's removal hides the tab again"
+        );
         assert!(ws.grants().is_empty());
     }
 
@@ -1931,9 +1944,7 @@ mod permissions_pane_tests {
             scope: GRANT_ALWAYS,
         };
         assert_eq!(capability_label(&cam), "Camera access");
-        let mic = Capability::Microphone {
-            scope: GRANT_ONCE,
-        };
+        let mic = Capability::Microphone { scope: GRANT_ONCE };
         assert_eq!(capability_label(&mic), "Microphone access");
         let net = Capability::Network {
             hosts: None,
@@ -1951,9 +1962,7 @@ mod permissions_pane_tests {
         let session = Capability::Camera {
             scope: GRANT_SESSION,
         };
-        let once = Capability::Camera {
-            scope: GRANT_ONCE,
-        };
+        let once = Capability::Camera { scope: GRANT_ONCE };
         assert_eq!(capability_scope_label(&always), "Always");
         assert_eq!(capability_scope_label(&session), "Session");
         assert_eq!(capability_scope_label(&once), "Once");

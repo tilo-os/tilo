@@ -53,8 +53,13 @@ const DEFAULT_SOCKET: &str = "/tmp/nirios.sock";
 #[derive(Debug, Clone, PartialEq)]
 enum Command {
     ListTargets,
-    Click { name: String },
-    ClickAt { x: f64, y: f64 },
+    Click {
+        name: String,
+    },
+    ClickAt {
+        x: f64,
+        y: f64,
+    },
     Drag {
         x1: f64,
         y1: f64,
@@ -62,17 +67,27 @@ enum Command {
         y2: f64,
         steps: Option<u32>,
     },
-    Key { key: String },
-    Type { text: String },
+    Key {
+        key: String,
+    },
+    Type {
+        text: String,
+    },
     Modifiers {
         ctrl: bool,
         shift: bool,
         alt: bool,
         logo: bool,
     },
-    Snapshot { path: String },
-    StateDump { pretty: bool },
-    Raw { json: String },
+    Snapshot {
+        path: String,
+    },
+    StateDump {
+        pretty: bool,
+    },
+    Raw {
+        json: String,
+    },
 }
 
 /// Top-level CLI invocation — socket path + the parsed subcommand.
@@ -133,9 +148,7 @@ fn parse_args(argv: &[String]) -> Result<Invocation, ParseError> {
             let name = iter
                 .next()
                 .ok_or_else(|| ParseError::Usage("click NAME requires a name".to_string()))?;
-            Command::Click {
-                name: name.clone(),
-            }
+            Command::Click { name: name.clone() }
         }
         "click-at" => {
             let x = next_f64(&mut iter, "click-at X Y requires X")?;
@@ -150,12 +163,17 @@ fn parse_args(argv: &[String]) -> Result<Invocation, ParseError> {
             let steps = iter
                 .next()
                 .map(|s| {
-                    s.parse::<u32>().map_err(|e| {
-                        ParseError::Usage(format!("drag STEPS must be u32 ({e})"))
-                    })
+                    s.parse::<u32>()
+                        .map_err(|e| ParseError::Usage(format!("drag STEPS must be u32 ({e})")))
                 })
                 .transpose()?;
-            Command::Drag { x1, y1, x2, y2, steps }
+            Command::Drag {
+                x1,
+                y1,
+                x2,
+                y2,
+                steps,
+            }
         }
         "key" => {
             let key = iter
@@ -172,7 +190,12 @@ fn parse_args(argv: &[String]) -> Result<Invocation, ParseError> {
         "modifiers" => {
             let flags = iter.next().map(String::as_str).unwrap_or("");
             let (ctrl, shift, alt, logo) = parse_modifier_flags(flags)?;
-            Command::Modifiers { ctrl, shift, alt, logo }
+            Command::Modifiers {
+                ctrl,
+                shift,
+                alt,
+                logo,
+            }
         }
         "snapshot" => {
             let path = iter
@@ -194,9 +217,9 @@ fn parse_args(argv: &[String]) -> Result<Invocation, ParseError> {
             Command::StateDump { pretty }
         }
         "raw" => {
-            let json = iter
-                .next()
-                .ok_or_else(|| ParseError::Usage("raw '<json>' requires the JSON payload".to_string()))?;
+            let json = iter.next().ok_or_else(|| {
+                ParseError::Usage("raw '<json>' requires the JSON payload".to_string())
+            })?;
             Command::Raw { json: json.clone() }
         }
         other => {
@@ -219,9 +242,8 @@ fn next_f64<'a>(
     let raw = iter
         .next()
         .ok_or_else(|| ParseError::Usage(err_msg.to_string()))?;
-    raw.parse::<f64>().map_err(|e| {
-        ParseError::Usage(format!("{err_msg} — `{raw}` is not a number ({e})"))
-    })
+    raw.parse::<f64>()
+        .map_err(|e| ParseError::Usage(format!("{err_msg} — `{raw}` is not a number ({e})")))
 }
 
 /// Parse `"ctrl,shift"` into `(ctrl, shift, alt, logo)`. Empty string
@@ -260,7 +282,13 @@ fn command_to_wire(cmd: &Command) -> Result<String, ParseError> {
         Command::ListTargets => json!({ "op": "list_targets" }),
         Command::Click { name } => json!({ "op": "click_named", "name": name }),
         Command::ClickAt { x, y } => json!({ "op": "click_at", "x": x, "y": y }),
-        Command::Drag { x1, y1, x2, y2, steps } => {
+        Command::Drag {
+            x1,
+            y1,
+            x2,
+            y2,
+            steps,
+        } => {
             let mut v = json!({
                 "op": "drag",
                 "x_from": x1,
@@ -275,7 +303,12 @@ fn command_to_wire(cmd: &Command) -> Result<String, ParseError> {
         }
         Command::Key { key } => json!({ "op": "key", "key": key }),
         Command::Type { text } => json!({ "op": "type", "text": text }),
-        Command::Modifiers { ctrl, shift, alt, logo } => json!({
+        Command::Modifiers {
+            ctrl,
+            shift,
+            alt,
+            logo,
+        } => json!({
             "op": "modifiers",
             "ctrl": ctrl,
             "shift": shift,
@@ -292,11 +325,7 @@ fn command_to_wire(cmd: &Command) -> Result<String, ParseError> {
             // here gives a clearer diagnostic.
             return serde_json::from_str::<serde_json::Value>(json)
                 .map(|_| json.clone())
-                .map_err(|e| {
-                    ParseError::Usage(format!(
-                        "raw: payload is not valid JSON ({e})"
-                    ))
-                });
+                .map_err(|e| ParseError::Usage(format!("raw: payload is not valid JSON ({e})")));
         }
     };
     Ok(value.to_string())
@@ -329,7 +358,10 @@ fn round_trip(stream: &mut UnixStream, cmd_json: &str) -> std::io::Result<serde_
 /// 1 on `err`).
 fn print_response(cmd: &Command, response: &serde_json::Value) -> u8 {
     if let Some(err) = response.get("err") {
-        let code = err.get("code").and_then(|v| v.as_str()).unwrap_or("unknown");
+        let code = err
+            .get("code")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown");
         let msg = err.get("message").and_then(|v| v.as_str()).unwrap_or("");
         eprintln!("error [{code}]: {msg}");
         return 1;
@@ -371,7 +403,10 @@ fn print_response(cmd: &Command, response: &serde_json::Value) -> u8 {
             // object so consumers pipe directly to `jq .workspace_tree`
             // / `jq .chrome` without an outer level. `--pretty`
             // enables `serde_json::to_string_pretty`.
-            let inner = response.get("state").cloned().unwrap_or(serde_json::Value::Null);
+            let inner = response
+                .get("state")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null);
             let out = if *pretty {
                 serde_json::to_string_pretty(&inner).unwrap_or_else(|_| inner.to_string())
             } else {
@@ -474,10 +509,7 @@ fn main() -> ExitCode {
     let mut stream = match connect(&invocation.socket) {
         Ok(s) => s,
         Err(e) => {
-            eprintln!(
-                "qos-control: connect {:?}: {e}",
-                invocation.socket
-            );
+            eprintln!("qos-control: connect {:?}: {e}", invocation.socket);
             return ExitCode::from(2);
         }
     };
@@ -541,13 +573,7 @@ mod tests {
     #[test]
     fn click_at_parses_two_floats() {
         let inv = parse(&["click-at", "100.5", "200"]).unwrap();
-        assert_eq!(
-            inv.command,
-            Command::ClickAt {
-                x: 100.5,
-                y: 200.0
-            }
-        );
+        assert_eq!(inv.command, Command::ClickAt { x: 100.5, y: 200.0 });
     }
 
     #[test]
@@ -710,13 +736,17 @@ mod tests {
         // Note: this test asserts the *fallback* path; for the
         // env-var path see `default_socket_reads_env_when_set`.
         let prev = std::env::var_os("QOS_TEST_CONTROL");
-        unsafe { std::env::remove_var("QOS_TEST_CONTROL"); }
+        unsafe {
+            std::env::remove_var("QOS_TEST_CONTROL");
+        }
         let inv = parse(&["list-targets"]).unwrap();
         // Restore before assertion so a panic doesn't poison the
         // test process's env for any later test (defensive — the
         // assertion below shouldn't fail in practice).
         if let Some(v) = prev {
-            unsafe { std::env::set_var("QOS_TEST_CONTROL", v); }
+            unsafe {
+                std::env::set_var("QOS_TEST_CONTROL", v);
+            }
         }
         assert_eq!(inv.socket, PathBuf::from(DEFAULT_SOCKET));
     }
@@ -829,7 +859,10 @@ mod tests {
 
     #[test]
     fn parse_modifier_flags_empty_string_returns_all_false() {
-        assert_eq!(parse_modifier_flags("").unwrap(), (false, false, false, false));
+        assert_eq!(
+            parse_modifier_flags("").unwrap(),
+            (false, false, false, false)
+        );
     }
 
     #[test]

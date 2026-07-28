@@ -36,8 +36,8 @@ use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent};
 use winit::keyboard::{Key, KeyLocation, ModifiersState, NamedKey, PhysicalKey, SmolStr};
 
 use crate::compositor::backend::{
-    combined_geometry, headless, Backend, BackendEvent, DrmBackend, HeadlessBackend, OutputId,
-    WinitBackend,
+    Backend, BackendEvent, DrmBackend, HeadlessBackend, OutputId, WinitBackend, combined_geometry,
+    headless,
 };
 use crate::compositor::client_input;
 use crate::compositor::foreign;
@@ -50,7 +50,7 @@ use crate::compositor::state::{ClientState, State};
 use crate::compositor::test_control::{
     self, ControlState, KeyTag, NamedKeyTag, PlannedAction, parse_command, serialise_response,
 };
-use crate::compositor::{parse_backend_from_args, BackendKind};
+use crate::compositor::{BackendKind, parse_backend_from_args};
 
 /// Env-var name for the Phase 7 CI test introspection hook. When set to a
 /// writable path, [`run`] serializes the shell `WorkspaceTree` to that path
@@ -513,9 +513,7 @@ fn write_snapshot_png(fb: &mut FrameBuilder, path: &std::path::Path) {
     let file = match std::fs::File::create(path) {
         Ok(f) => f,
         Err(e) => {
-            eprintln!(
-                "nirios compositor: test_control snapshot: create {path:?}: {e}"
-            );
+            eprintln!("nirios compositor: test_control snapshot: create {path:?}: {e}");
             return;
         }
     };
@@ -526,16 +524,12 @@ fn write_snapshot_png(fb: &mut FrameBuilder, path: &std::path::Path) {
     let mut png_writer = match encoder.write_header() {
         Ok(w) => w,
         Err(e) => {
-            eprintln!(
-                "nirios compositor: test_control snapshot: png header {path:?}: {e}"
-            );
+            eprintln!("nirios compositor: test_control snapshot: png header {path:?}: {e}");
             return;
         }
     };
     if let Err(e) = png_writer.write_image_data(&rgba) {
-        eprintln!(
-            "nirios compositor: test_control snapshot: png write {path:?}: {e}"
-        );
+        eprintln!("nirios compositor: test_control snapshot: png write {path:?}: {e}");
         return;
     }
     // Drop the PNG writer first so the underlying BufWriter holds the
@@ -543,9 +537,7 @@ fn write_snapshot_png(fb: &mut FrameBuilder, path: &std::path::Path) {
     // assertion on file size could race against a still-buffered tail.
     drop(png_writer);
     if let Err(e) = writer.flush() {
-        eprintln!(
-            "nirios compositor: test_control snapshot: flush {path:?}: {e}"
-        );
+        eprintln!("nirios compositor: test_control snapshot: flush {path:?}: {e}");
     }
 }
 
@@ -686,12 +678,7 @@ fn pump_test_control_conn(
                             }
                         }
                     } else {
-                        execute_planned_action(
-                            action,
-                            frame_builder,
-                            ctx,
-                            Some(state),
-                        );
+                        execute_planned_action(action, frame_builder, ctx, Some(state));
                     }
                 }
                 // Re-run layout so the next `list_targets` (or paint
@@ -712,9 +699,7 @@ fn pump_test_control_conn(
                 }
             }
             Err(ReadLineError::TooLarge) => {
-                tracing::warn!(
-                    "test_control: client sent oversized line; dropping connection"
-                );
+                tracing::warn!("test_control: client sent oversized line; dropping connection");
                 conn.closed = true;
                 return;
             }
@@ -742,9 +727,7 @@ fn apply_session_transition(transition: SessionTransition, backend: &mut dyn Bac
         // Lock/Unlock are reflected via `SessionManager::is_locked`;
         // Suspend is gated by the inhibitor registry + issued through the
         // power service at the call site, never here.
-        SessionTransition::Locked
-        | SessionTransition::Unlocked
-        | SessionTransition::Suspend => {}
+        SessionTransition::Locked | SessionTransition::Unlocked | SessionTransition::Suspend => {}
     }
 }
 
@@ -1171,7 +1154,11 @@ pub fn run() -> ! {
                 BackendEvent::CloseRequested => {
                     close_requested = true;
                 }
-                BackendEvent::OutputResized { id: _, size, scale: _ } => {
+                BackendEvent::OutputResized {
+                    id: _,
+                    size,
+                    scale: _,
+                } => {
                     if size.0 > 0 && size.1 > 0 {
                         frame_builder.set_viewport(size);
                         // Keep the size used for fullscreen configures in sync
@@ -1377,7 +1364,7 @@ pub fn run() -> ! {
         // rather than blanking the shell.
         frame_builder.set_fullscreen(state.fullscreen_group);
 
-{
+        {
             // Mirror foreign toplevels adopted at the protocol layer into the
             // rendered tab tree, and reap tabs whose client went away. This is
             // a diff of the protocol tree against the rendered one, so it is
@@ -1421,8 +1408,8 @@ pub fn run() -> ! {
         // PTY into its grid; without it a live app that produces output
         // asynchronously would sit frozen on its empty state. Returns true
         // when something actually changed, which is itself a paint reason.
-        let apps_changed = frame_builder
-            .pump_apps(&mut test_control_ctx.doc, &test_control_ctx.root_obj);
+        let apps_changed =
+            frame_builder.pump_apps(&mut test_control_ctx.doc, &test_control_ctx.root_obj);
         let revision = frame_builder.chrome_revision();
         let revision_changed = revision != last_revision;
         let animating = frame_builder.needs_animation_frame();
@@ -1443,11 +1430,21 @@ pub fn run() -> ! {
             frames_total += 1;
             if should_paint {
                 frames_painted += 1;
-                if had_backend_events { cause_events += 1; }
-                if session_changed { cause_session += 1; }
-                if revision_changed { cause_revision += 1; }
-                if animating { cause_anim += 1; }
-                if keepalive_due && !(had_backend_events || session_changed || revision_changed || animating) {
+                if had_backend_events {
+                    cause_events += 1;
+                }
+                if session_changed {
+                    cause_session += 1;
+                }
+                if revision_changed {
+                    cause_revision += 1;
+                }
+                if animating {
+                    cause_anim += 1;
+                }
+                if keepalive_due
+                    && !(had_backend_events || session_changed || revision_changed || animating)
+                {
                     cause_keepalive += 1;
                 }
             }
@@ -1457,9 +1454,13 @@ pub fn run() -> ! {
                      events={cause_events} revision={cause_revision} anim={cause_anim} \
                      session={cause_session} keepalive={cause_keepalive}"
                 );
-                frames_total = 0; frames_painted = 0;
-                cause_events = 0; cause_revision = 0; cause_anim = 0;
-                cause_session = 0; cause_keepalive = 0;
+                frames_total = 0;
+                frames_painted = 0;
+                cause_events = 0;
+                cause_revision = 0;
+                cause_anim = 0;
+                cause_session = 0;
+                cause_keepalive = 0;
                 stats_since = Instant::now();
             }
         }
@@ -1739,11 +1740,7 @@ mod tests {
         let mut found = false;
         let mut y = wheel_rect.y0 + 8.0;
         while y < wheel_rect.y1 {
-            execute_planned_action(
-                &PlannedAction::CursorMoved { x: cx, y },
-                &mut fb,
-                &mut ctx,
-            );
+            execute_planned_action(&PlannedAction::CursorMoved { x: cx, y }, &mut fb, &mut ctx);
             execute_planned_action(
                 &PlannedAction::MouseLeftButton { pressed: true },
                 &mut fb,
@@ -1835,8 +1832,7 @@ mod tests {
     /// unavailable.
     #[test]
     fn execute_snapshot_writes_a_png_at_path() {
-        let tmpdir =
-            tempfile::tempdir().expect("create tempdir for snapshot test");
+        let tmpdir = tempfile::tempdir().expect("create tempdir for snapshot test");
         let path = tmpdir.path().join("test.png");
         let mut fb = FrameBuilder::new((640, 360));
         let mut ctx = TestControlCtx::new();
@@ -1957,11 +1953,18 @@ mod tests {
         let (resp, actions) =
             test_control::dispatch_command(&test_control::Command::StateDump, &state);
         assert!(actions.is_empty());
-        let test_control::Response::State { workspace_tree, chrome } = resp else {
+        let test_control::Response::State {
+            workspace_tree,
+            chrome,
+        } = resp
+        else {
             panic!("expected Response::State; got something else");
         };
         // Sanity: both blobs are non-null and shaped like objects.
-        assert!(workspace_tree.is_object(), "workspace_tree should be an object");
+        assert!(
+            workspace_tree.is_object(),
+            "workspace_tree should be an object"
+        );
         assert!(chrome.is_object(), "chrome should be an object");
     }
 
@@ -2065,9 +2068,9 @@ mod tests {
                     out.len()
                 );
             }
-            Err(ReadLineError::Io(e)) => panic!(
-                "expected TooLarge on a 100k newline-less stream; got io: {e}"
-            ),
+            Err(ReadLineError::Io(e)) => {
+                panic!("expected TooLarge on a 100k newline-less stream; got io: {e}")
+            }
             Ok(opt) => panic!(
                 "expected TooLarge on a 100k newline-less stream; got Ok({:?})",
                 opt.is_some()
@@ -2137,10 +2140,7 @@ mod tests {
     #[test]
     fn char_key_maps_to_text() {
         let ev = keyboard_input_event(Key::Character(SmolStr::new("a")), true);
-        assert_eq!(
-            winit_event_to_lock_key(&ev),
-            LockKey::Text("a".to_string())
-        );
+        assert_eq!(winit_event_to_lock_key(&ev), LockKey::Text("a".to_string()));
     }
 
     /// Backspace maps to a buffer edit; a key *release* is ignored (only
@@ -2187,4 +2187,3 @@ mod tests {
         assert_eq!(backend.dpms_calls, vec![false, true]);
     }
 }
-

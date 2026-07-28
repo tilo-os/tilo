@@ -71,9 +71,18 @@ fn sidebar_wheel_disc_renders_a_spoke_per_workspace() {
     };
 
     let spokes = vec![
-        SpokeLabel { text: "Home".into(), workspace_id: Some(1) },
-        SpokeLabel { text: "Research".into(), workspace_id: Some(2) },
-        SpokeLabel { text: "Design".into(), workspace_id: Some(3) },
+        SpokeLabel {
+            text: "Home".into(),
+            workspace_id: Some(1),
+        },
+        SpokeLabel {
+            text: "Research".into(),
+            workspace_id: Some(2),
+        },
+        SpokeLabel {
+            text: "Design".into(),
+            workspace_id: Some(3),
+        },
     ];
     let mut disc = SidebarWheelDisc::new(spokes);
     // Keep the default 4500 px diameter (post 2026-05-23 redesign). The
@@ -134,7 +143,11 @@ fn sidebar_wheel_disc_renders_a_spoke_per_workspace() {
     let path = screenshots_dir().join("wheel-disc-01-baseline.png");
     let bg = Color::from_rgb8(0x02, 0x06, 0x14);
     renderer.render_png(&scene, bg, &path);
-    assert!(path.exists(), "snapshot PNG should be written to {:?}", path);
+    assert!(
+        path.exists(),
+        "snapshot PNG should be written to {:?}",
+        path
+    );
 
     // Pin against the committed golden. Guarded on `path.exists()` to
     // match the soft-skip-on-missing-GPU convention: if the renderer

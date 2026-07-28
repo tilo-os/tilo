@@ -2,17 +2,23 @@
 
 use std::time::{Duration, Instant};
 
-use shell::shell::peer_join_toast::{
-    BATCH_WINDOW, PeerEventKind, PeerToastQueue,
-};
+use shell::shell::peer_join_toast::{BATCH_WINDOW, PeerEventKind, PeerToastQueue};
 
 #[test]
 fn three_joins_within_one_second_produce_one_toast() {
     let t0 = Instant::now();
     let mut q = PeerToastQueue::new();
     q.push(PeerEventKind::Joined, "alice", t0);
-    q.push(PeerEventKind::Joined, "bob", t0 + Duration::from_millis(200));
-    q.push(PeerEventKind::Joined, "charlie", t0 + Duration::from_millis(400));
+    q.push(
+        PeerEventKind::Joined,
+        "bob",
+        t0 + Duration::from_millis(200),
+    );
+    q.push(
+        PeerEventKind::Joined,
+        "charlie",
+        t0 + Duration::from_millis(400),
+    );
 
     // Drain after the batch window closes.
     let ready = q.drain_ready(t0 + BATCH_WINDOW + Duration::from_millis(1));
@@ -64,9 +70,7 @@ fn events_after_window_form_a_new_batch() {
     // Bob still pending.
     assert_eq!(q.pending(), 1);
     // Advance past bob's window.
-    let ready_second = q.drain_ready(
-        t0 + BATCH_WINDOW * 2 + Duration::from_secs(2),
-    );
+    let ready_second = q.drain_ready(t0 + BATCH_WINDOW * 2 + Duration::from_secs(2));
     assert_eq!(ready_second.len(), 1);
     assert_eq!(ready_second[0].title, "bob joined");
 }
