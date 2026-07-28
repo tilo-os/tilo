@@ -53,6 +53,9 @@ enum LiveSession {
     Ssh(SshSession),
     Vnc(VncSession),
     Error(String),
+    /// A fixed status with no transport, for `--shots`/preview rendering of
+    /// the composed connecting/failed/closed surfaces. Never on the live path.
+    Preview(SessionStatus),
 }
 
 impl LiveSession {
@@ -61,6 +64,7 @@ impl LiveSession {
             LiveSession::Ssh(s) => s.status(),
             LiveSession::Vnc(s) => s.status(),
             LiveSession::Error(e) => SessionStatus::Failed(e.clone()),
+            LiveSession::Preview(s) => s.clone(),
         }
     }
 }
@@ -322,7 +326,28 @@ impl RemoteApp {
                     self.apply(Action::Connect(id), &mut doc);
                 }
             }
+            // Preview-only session states (no transport) for `--shots` grading
+            // of the composed status surfaces.
+            "session-connecting" => {
+                self.dev_preview_session(ConnectionKind::Ssh, SessionStatus::Connecting);
+            }
+            "session-failed" => {
+                self.dev_preview_session(
+                    ConnectionKind::Vnc,
+                    SessionStatus::Failed("Connection refused".into()),
+                );
+            }
             _ => {}
+        }
+    }
+
+    /// Stage a preview session in a fixed status (shots/tests only).
+    #[doc(hidden)]
+    fn dev_preview_session(&mut self, kind: ConnectionKind, status: SessionStatus) {
+        if let Some(id) = self.first_of_kind(kind) {
+            self.session_for = Some(id);
+            self.live = Some(LiveSession::Preview(status));
+            self.screen = Screen::Session { id };
         }
     }
 
@@ -1523,19 +1548,26 @@ impl RemoteApp {
             self.workspace.filtered(&self.search).into_iter().cloned().collect();
 
         if rows.is_empty() {
-            let msg = if self.workspace.connections().is_empty() {
-                "No saved machines yet. Press “+ New connection” to add one."
+            let region = Rect::new(content.x0, list_top, content.x1, content.y1);
+            if self.workspace.connections().is_empty() {
+                self.draw_empty_state(scene, transform, text_renderer, theme, region);
             } else {
-                "No machines match your search."
-            };
-            text_renderer.draw_text(
-                scene,
-                msg,
-                14.0,
-                tokens.colors.text_dim,
-                transform * Affine::translate((content.x0 + pad, list_top + 8.0)),
-                None,
-            );
+                // A transient search miss — a quiet centred note, not the
+                // full onboarding zero-state.
+                let msg = "No machines match your search.";
+                let (mw, _) = text_renderer.measure(msg, 14.0, None);
+                text_renderer.draw_text(
+                    scene,
+                    msg,
+                    14.0,
+                    tokens.colors.text_dim,
+                    transform * Affine::translate((
+                        region.center().x - mw as f64 / 2.0,
+                        region.y0 + 48.0,
+                    )),
+                    None,
+                );
+            }
             return;
         }
 
@@ -1549,6 +1581,76 @@ impl RemoteApp {
             y += ROW_H + 10.0;
         }
         scene.pop_layer();
+    }
+
+    /// The composed onboarding zero-state for an empty machine list: an
+    /// emblem, a heading, an inviting subtitle, and the primary action.
+    fn draw_empty_state(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        region: Rect,
+    ) {
+        let tokens = &theme.tokens;
+        let accent = tokens.colors.accent[5];
+        let mid = region.center().x;
+        // Nudge the group above the exact centre so it reads as anchored.
+        let mut y = region.y0 + (region.height() * 0.30).max(24.0);
+
+        // Emblem: an accent-ringed disc with a plus glyph — "add a machine".
+        let r = 36.0;
+        let c = Point::new(mid, y + r);
+        scene.fill(Fill::NonZero, transform, accent.at_alpha(0.12), None, &Circle::new(c, r));
+        scene.stroke(&Stroke::new(2.0), transform, accent.at_alpha(0.8), None, &Circle::new(c, r));
+        let arm = 12.0;
+        let thick = Stroke::new(2.6);
+        scene.stroke(
+            &thick,
+            transform,
+            accent,
+            None,
+            &vello::kurbo::Line::new(Point::new(c.x - arm, c.y), Point::new(c.x + arm, c.y)),
+        );
+        scene.stroke(
+            &thick,
+            transform,
+            accent,
+            None,
+            &vello::kurbo::Line::new(Point::new(c.x, c.y - arm), Point::new(c.x, c.y + arm)),
+        );
+        y += 2.0 * r + 24.0;
+
+        let title = "No machines yet";
+        let (tw, _) = text_renderer.measure_weighted(title, 19.0, None, TextWeight::Bold);
+        text_renderer.draw_text_weighted(
+            scene,
+            title,
+            19.0,
+            tokens.colors.text_primary,
+            transform * Affine::translate((mid - tw as f64 / 2.0, y)),
+            None,
+            TextWeight::Bold,
+        );
+        y += 30.0;
+
+        let sub = "Add one to reach it over SSH, VNC, or the qOS relay.";
+        let (sw, _) = text_renderer.measure(sub, 13.5, None);
+        text_renderer.draw_text(
+            scene,
+            sub,
+            13.5,
+            tokens.colors.text_dim,
+            transform * Affine::translate((mid - sw as f64 / 2.0, y)),
+            None,
+        );
+        y += 34.0;
+
+        let bw = 168.0;
+        let btn = Rect::new(mid - bw / 2.0, y, mid + bw / 2.0, y + 40.0);
+        self.draw_button(scene, transform, text_renderer, theme, btn, "+ New connection", true);
+        self.push_hit(btn, Action::NewConnection);
     }
 
     /// Draw one connection row: status dot, name, address, kind badge,
@@ -2109,9 +2211,12 @@ impl RemoteApp {
             return;
         };
 
-        // Default build: no transport is attempted. Show the honest "not
-        // connected" card — never a fabricated terminal or desktop.
-        if !live_sessions_enabled() {
+        // No live transport object: the honest "not connected" card. The
+        // env gate is enforced at `open_session` (it only creates a live
+        // session when REMOTE_LIVE_SESSIONS is set), so a `None` here means
+        // either the default gated build or a not-yet-opened session — never
+        // a fabricated terminal or desktop.
+        let Some(status) = self.live.as_ref().map(|l| l.status()) else {
             self.draw_status_session(
                 scene,
                 transform,
@@ -2121,19 +2226,16 @@ impl RemoteApp {
                 &c,
                 "Not connected",
                 &[
-                    format!("{} sessions are off in this build.", c.kind.label()),
-                    "Set REMOTE_LIVE_SESSIONS to open a real session.".to_string(),
-                    "Nothing is faked here.".to_string(),
-                    format!("Target: {}", c.address()),
+                    "Live remote sessions are off in this build.".to_string(),
+                    "Set REMOTE_LIVE_SESSIONS to connect for real —".to_string(),
+                    "nothing here is simulated.".to_string(),
                 ],
                 StatusTone::Neutral,
             );
             return;
-        }
+        };
 
         // Live path: reflect the real transport state.
-        let status =
-            self.live.as_ref().map(|l| l.status()).unwrap_or(SessionStatus::Failed("no session".into()));
         match status {
             SessionStatus::Connecting => {
                 self.draw_status_session(
@@ -2144,10 +2246,7 @@ impl RemoteApp {
                     content,
                     &c,
                     "Connecting…",
-                    &[
-                        format!("Opening a {} session to {}.", c.kind.label(), c.address()),
-                        "Negotiating the transport and authenticating…".to_string(),
-                    ],
+                    &["Negotiating the transport and authenticating…".to_string()],
                     StatusTone::Pending,
                 );
             }
@@ -2160,11 +2259,7 @@ impl RemoteApp {
                     content,
                     &c,
                     "Connection failed",
-                    &[
-                        err,
-                        format!("Target: {}", c.address()),
-                        "This is the real error — nothing is faked.".to_string(),
-                    ],
+                    &[err, "This is the real error — nothing is simulated.".to_string()],
                     StatusTone::Error,
                 );
             }
@@ -2177,10 +2272,7 @@ impl RemoteApp {
                     content,
                     &c,
                     "Session ended",
-                    &[
-                        "The remote closed the session.".to_string(),
-                        format!("Target: {}", c.address()),
-                    ],
+                    &["The remote closed the session.".to_string()],
                     StatusTone::Neutral,
                 );
             }
@@ -2203,8 +2295,10 @@ impl RemoteApp {
     }
 
     /// A session surface that is *not* a live pixel/terminal view: the
-    /// honest states (not connected, connecting, failed, ended). Slim
-    /// toolbar with a status dot + Back, and a centred explanation card.
+    /// honest states (not connected, connecting, failed, ended), composed as
+    /// a centred card — a state emblem carrying the protocol, the machine
+    /// identity, a status pill, an explanation, and real actions. The state
+    /// has a visible form (the emblem ring + pill colour), not just a label.
     /// Never draws a fabricated terminal or desktop.
     #[allow(clippy::too_many_arguments)]
     fn draw_status_session(
@@ -2221,75 +2315,142 @@ impl RemoteApp {
     ) {
         let tokens = &theme.tokens;
 
-        let bar = Rect::new(content.x0, content.y0, content.x1, content.y0 + TOOLBAR_H);
-        scene.fill(Fill::NonZero, transform, tokens.colors.neutral[1], None, &bar);
-        let seam = Rect::new(bar.x0, bar.y1 - 1.0, bar.x1, bar.y1);
-        scene.fill(Fill::NonZero, transform, tokens.colors.border_standard, None, &seam);
-        let dot_color = match tone {
+        // Full-surface backdrop.
+        scene.fill(Fill::NonZero, transform, tokens.colors.surfaces.base, None, &content);
+
+        let accent = match tone {
             StatusTone::Neutral => tokens.colors.neutral[4],
             StatusTone::Pending => tokens.colors.semantic.warning,
             StatusTone::Error => tokens.colors.semantic.danger,
         };
-        let dot = Point::new(bar.x0 + 18.0, bar.center().y);
-        scene.fill(Fill::NonZero, transform, dot_color, None, &Circle::new(dot, 5.0));
-        text_renderer.draw_text_weighted(
-            scene,
-            &c.name,
-            14.0,
-            tokens.colors.text_primary,
-            transform * Affine::translate((bar.x0 + 32.0, bar.center().y - 9.0)),
-            None,
-            TextWeight::Semibold,
-        );
-        let (nw, _) = text_renderer.measure_weighted(&c.name, 14.0, None, TextWeight::Semibold);
-        let status_word = match tone {
-            StatusTone::Neutral => "not connected",
-            StatusTone::Pending => "connecting",
-            StatusTone::Error => "failed",
-        };
-        text_renderer.draw_text(
-            scene,
-            &format!("· {} · {}", c.address(), status_word),
-            12.0,
-            tokens.colors.text_dim,
-            transform * Affine::translate((bar.x0 + 40.0 + nw as f64, bar.center().y - 7.0)),
-            None,
-        );
-        let back =
-            Rect::new(bar.x1 - 12.0 - 100.0, bar.center().y - 16.0, bar.x1 - 12.0, bar.center().y + 16.0);
-        self.draw_button(scene, transform, text_renderer, theme, back, "Back", false);
-        self.push_hit(back, Action::Disconnect);
+        // Retry only makes sense after a real failure; the gated/ended states
+        // just return to the list.
+        let can_retry = matches!(tone, StatusTone::Error);
 
-        // Centred explanation card.
-        let surface = Rect::new(content.x0, bar.y1, content.x1, content.y1);
-        scene.fill(Fill::NonZero, transform, tokens.colors.surfaces.base, None, &surface);
-        let cw = 480.0_f64.min(surface.width() - 48.0);
-        let ch = 88.0 + body.len() as f64 * 24.0;
-        let cx = surface.x0 + (surface.width() - cw) / 2.0;
-        let cy = surface.y0 + (surface.height() - ch) / 2.0;
+        // Card geometry, sized to its content so it stays balanced.
+        let cw = 460.0_f64.min(content.width() - 40.0);
+        let ch = 336.0 + body.len() as f64 * 22.0;
+        let cx = content.x0 + (content.width() - cw) / 2.0;
+        let cy = content.y0 + ((content.height() - ch) / 2.0).max(16.0);
         let card = Rect::new(cx, cy, cx + cw, cy + ch);
-        let rr = RoundedRect::from_rect(card, 12.0);
+        let rr = RoundedRect::from_rect(card, 16.0);
         scene.fill(Fill::NonZero, transform, tokens.colors.surfaces.raised, None, &rr);
-        scene.stroke(&Stroke::new(1.0), transform, tokens.colors.border_standard, None, &rr);
+        scene.stroke(&Stroke::new(1.0), transform, tokens.colors.border_white_20, None, &rr);
+
+        let mid = card.center().x;
+        let mut y = card.y0 + 34.0;
+
+        // State emblem: a tone-ringed disc carrying the protocol tag — state
+        // (ring colour) and identity (protocol) in one visible form.
+        let r = 34.0;
+        let emblem = Point::new(mid, y + r);
+        scene.fill(Fill::NonZero, transform, accent.at_alpha(0.14), None, &Circle::new(emblem, r));
+        scene.stroke(
+            &Stroke::new(2.0),
+            transform,
+            accent.at_alpha(0.9),
+            None,
+            &Circle::new(emblem, r),
+        );
+        let tag = c.kind.tag();
+        let (tagw, _) = text_renderer.measure_weighted(tag, 15.0, None, TextWeight::Bold);
         text_renderer.draw_text_weighted(
             scene,
-            title,
-            18.0,
+            tag,
+            15.0,
             tokens.colors.text_primary,
-            transform * Affine::translate((card.x0 + 24.0, card.y0 + 22.0)),
+            transform * Affine::translate((mid - tagw as f64 / 2.0, emblem.y - 10.0)),
             None,
             TextWeight::Bold,
         );
-        for (i, line) in body.iter().enumerate() {
+        y += 2.0 * r + 22.0;
+
+        // Machine name — the title of the card.
+        let (nw, _) = text_renderer.measure_weighted(&c.name, 20.0, None, TextWeight::Bold);
+        text_renderer.draw_text_weighted(
+            scene,
+            &c.name,
+            20.0,
+            tokens.colors.text_primary,
+            transform * Affine::translate((mid - nw as f64 / 2.0, y)),
+            None,
+            TextWeight::Bold,
+        );
+        y += 30.0;
+
+        // Address + protocol, one dim caption line.
+        let addr = format!("{} · {}", c.address(), c.kind.label());
+        let (aw, _) = text_renderer.measure(&addr, 13.0, None);
+        text_renderer.draw_text(
+            scene,
+            &addr,
+            13.0,
+            tokens.colors.text_dim,
+            transform * Affine::translate((mid - aw as f64 / 2.0, y)),
+            None,
+        );
+        y += 30.0;
+
+        // Status pill — the state as a labelled, tone-coloured form.
+        let (pw, _) = text_renderer.measure_weighted(title, 13.0, None, TextWeight::Semibold);
+        let pill_w = pw as f64 + 44.0;
+        let pill = Rect::new(mid - pill_w / 2.0, y, mid + pill_w / 2.0, y + 30.0);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            accent.at_alpha(0.16),
+            None,
+            &RoundedRect::from_rect(pill, 15.0),
+        );
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            accent,
+            None,
+            &Circle::new(Point::new(pill.x0 + 16.0, pill.center().y), 4.0),
+        );
+        text_renderer.draw_text_weighted(
+            scene,
+            title,
+            13.0,
+            tokens.colors.text_primary,
+            transform * Affine::translate((pill.x0 + 28.0, pill.center().y - 8.0)),
+            None,
+            TextWeight::Semibold,
+        );
+        y += 46.0;
+
+        // Explanation body.
+        for line in body {
+            let (lw, _) = text_renderer.measure(line, 13.0, None);
             text_renderer.draw_text(
                 scene,
                 line,
                 13.0,
                 tokens.colors.text_dim,
-                transform * Affine::translate((card.x0 + 24.0, card.y0 + 58.0 + i as f64 * 24.0)),
+                transform * Affine::translate((mid - lw as f64 / 2.0, y)),
                 None,
             );
+            y += 22.0;
         }
+        y += 14.0;
+
+        // Actions: a primary "Back to list", plus "Retry" where it applies.
+        let btn_h = 38.0;
+        let back_w = 132.0;
+        let retry_w = 104.0;
+        let gap = 12.0;
+        let group_w = if can_retry { back_w + gap + retry_w } else { back_w };
+        let mut bx = mid - group_w / 2.0;
+        if can_retry {
+            let retry = Rect::new(bx, y, bx + retry_w, y + btn_h);
+            self.draw_button(scene, transform, text_renderer, theme, retry, "Retry", false);
+            self.push_hit(retry, Action::Connect(c.id));
+            bx += retry_w + gap;
+        }
+        let back = Rect::new(bx, y, bx + back_w, y + btn_h);
+        self.draw_button(scene, transform, text_renderer, theme, back, "Back to list", true);
+        self.push_hit(back, Action::Disconnect);
     }
 
     /// Draw the live VNC framebuffer, scaled to fit (letterboxed) or 1:1.
