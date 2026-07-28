@@ -14,13 +14,16 @@
 //! Ctrl-N for a new connection, `/` to focus search).
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{NodeId, Style, TaffyTree};
 use uuid::Uuid;
 use vello::Scene;
 use vello::kurbo::{Affine, Circle, Point, Rect, RoundedRect, Stroke};
-use vello::peniko::{Color, Fill};
+use vello::peniko::{
+    Blob, Color, Fill, ImageAlphaType, ImageBrush, ImageData as PenikoImage, ImageFormat,
+};
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 
@@ -36,8 +39,39 @@ use crate::model::{
     AuthMethod, Connection, ConnectionDraft, ConnectionId, ConnectionKind, Presence, Screen,
     Workspace,
 };
-use crate::session::{FramebufferScene, TerminalSession};
+use crate::session::{SessionStatus, live_sessions_enabled};
+use crate::ssh::{SshConfig, SshSession};
 use crate::theme_ext::ColorExt;
+use crate::vnc::{VncConfig, VncInput, VncSession};
+
+/// A live transport backing an open session. Real, not simulated: SSH is a
+/// `russh` PTY channel feeding the terminal grid; VNC is an RFB client
+/// decoding the remote framebuffer. `Error` holds a pre-flight failure
+/// (e.g. missing credentials) so the surface can show the honest reason
+/// without ever fabricating a session.
+enum LiveSession {
+    Ssh(SshSession),
+    Vnc(VncSession),
+    Error(String),
+}
+
+impl LiveSession {
+    fn status(&self) -> SessionStatus {
+        match self {
+            LiveSession::Ssh(s) => s.status(),
+            LiveSession::Vnc(s) => s.status(),
+            LiveSession::Error(e) => SessionStatus::Failed(e.clone()),
+        }
+    }
+}
+
+/// Accent of a non-live status surface (drives the toolbar dot colour).
+#[derive(Clone, Copy)]
+enum StatusTone {
+    Neutral,
+    Pending,
+    Error,
+}
 
 /// Width of the left navigation rail.
 const RAIL_W: f64 = 64.0;
@@ -143,8 +177,19 @@ pub struct RemoteApp {
     draft: ConnectionDraft,
     /// Which text field currently has keyboard focus.
     focus: Option<Field>,
-    /// Sample terminal session, lazily built when an SSH session opens.
-    term: Option<TerminalSession>,
+    /// The live transport for the open session (SSH terminal or VNC
+    /// framebuffer). `None` until a session is opened with live sessions
+    /// enabled; the default build leaves it `None` and shows the honest
+    /// "not connected" surface.
+    live: Option<LiveSession>,
+    /// Cached GPU image of the most recent VNC frame, rebuilt only when a
+    /// new framebuffer generation arrives.
+    fb_image: Option<PenikoImage>,
+    /// The framebuffer canvas rect from the last draw, so pointer events can
+    /// be mapped back into remote-desktop coordinates.
+    fb_canvas: Option<Rect>,
+    /// Current VNC pointer button mask (bit 0 = left, 1 = middle, 2 = right).
+    vnc_buttons: u8,
     /// Connection id the current session belongs to.
     session_for: Option<ConnectionId>,
     /// Whether the session surface is scaled to fit (vs. 1:1).
@@ -211,7 +256,10 @@ impl RemoteApp {
             search: String::new(),
             draft: ConnectionDraft::default(),
             focus: None,
-            term: None,
+            live: None,
+            fb_image: None,
+            fb_canvas: None,
+            vnc_buttons: 0,
             session_for: None,
             scale_to_fit: true,
             fullscreen: false,
@@ -359,7 +407,11 @@ impl RemoteApp {
                 // would push the remote selection into the local clipboard.
             }
             Action::Disconnect => {
-                self.term = None;
+                // Dropping the live session closes the transport (the worker
+                // thread sees its channel close and disconnects).
+                self.live = None;
+                self.fb_image = None;
+                self.fb_canvas = None;
                 self.session_for = None;
                 self.fullscreen = false;
                 self.screen = Screen::List;
@@ -393,38 +445,148 @@ impl RemoteApp {
         }
     }
 
-    /// Open the session surface for a connection. Without a live transport
-    /// (the default — `REMOTE_LIVE_SESSIONS` unset) this does **not**
-    /// fabricate a terminal/desktop or fake the machine's presence: the
-    /// session screen shows an honest "not connected" state instead. The
-    /// real byte transport (russh for SSH, an RFB client for VNC) is a
-    /// separate, later task.
+    /// Open the session surface for a connection. When `REMOTE_LIVE_SESSIONS`
+    /// is unset (the default) this does **not** touch the network or
+    /// fabricate a terminal/desktop: the surface shows the honest "not
+    /// connected" card. When it is set, this opens a **real** transport —
+    /// `russh` for SSH, an RFB client for VNC — and the surface tracks the
+    /// real connection state (connecting → connected, or the honest error).
     fn open_session(&mut self, id: ConnectionId) {
         let Some(c) = self.workspace.get(id).cloned() else {
             return;
         };
         self.session_for = Some(id);
         self.fullscreen = false;
-        if crate::session::live_sessions_enabled() {
-            // Live-transport path (opt-in, developer preview until the real
-            // clients are wired through).
-            self.term = if c.kind.is_terminal() {
-                let host = if c.host.is_empty() { c.name.clone() } else { c.host.clone() };
-                let user = if c.user.is_empty() { "guest".into() } else { c.user.clone() };
-                Some(TerminalSession::sample(&host, &user))
-            } else {
-                None
-            };
+        self.fb_image = None;
+        self.fb_canvas = None;
+        self.vnc_buttons = 0;
+        self.live = None;
+        if live_sessions_enabled() {
+            self.live = Some(self.start_live(&c));
+            // Record the attempt in "last used"; presence is only marked
+            // Online once the transport actually reports Connected (in draw).
             if let Some(m) = self.workspace.get_mut(id) {
                 m.last_used = "just now".into();
-                m.presence = Presence::Online;
             }
-        } else {
-            // No transport: never fabricate a session or claim the machine is
-            // reachable.
-            self.term = None;
         }
         self.screen = Screen::Session { id };
+    }
+
+    /// Build the real transport for a connection from its kind + auth and
+    /// the process environment (secrets are never stored in the document).
+    fn start_live(&self, c: &Connection) -> LiveSession {
+        match c.kind {
+            ConnectionKind::Ssh => {
+                let prefer_key = matches!(c.auth, AuthMethod::PublicKey);
+                let auth = match crate::ssh::resolve_auth(
+                    prefer_key,
+                    |k| std::env::var(k).ok(),
+                    &crate::ssh::default_key_paths(),
+                ) {
+                    Ok(a) => a,
+                    Err(e) => return LiveSession::Error(e.to_string()),
+                };
+                let user = if c.user.is_empty() {
+                    std::env::var("USER").unwrap_or_else(|_| "root".into())
+                } else {
+                    c.user.clone()
+                };
+                LiveSession::Ssh(SshSession::connect(SshConfig {
+                    host: c.host.clone(),
+                    port: c.port,
+                    user,
+                    auth,
+                    cols: 80,
+                    rows: 24,
+                }))
+            }
+            ConnectionKind::Vnc => LiveSession::Vnc(VncSession::connect(VncConfig {
+                host: c.host.clone(),
+                port: c.port,
+                password: std::env::var("REMOTE_VNC_PASSWORD").ok(),
+            })),
+            other => {
+                LiveSession::Error(format!("{} transport is not implemented yet", other.label()))
+            }
+        }
+    }
+
+    /// Drain live-session I/O for this frame. Pulls SSH output into the grid
+    /// and picks up new VNC frames. Returns true if the surface changed and
+    /// should repaint.
+    fn pump_live(&mut self) -> bool {
+        let mut changed = false;
+        match self.live.as_mut() {
+            Some(LiveSession::Ssh(s)) => {
+                if s.pump() {
+                    changed = true;
+                }
+            }
+            Some(LiveSession::Vnc(s)) => {
+                if let Some(fb) = s.take_frame() {
+                    self.fb_image = Some(PenikoImage {
+                        data: Blob::new(Arc::new(fb.data)),
+                        format: ImageFormat::Rgba8,
+                        alpha_type: ImageAlphaType::Alpha,
+                        width: fb.width as u32,
+                        height: fb.height as u32,
+                    });
+                    changed = true;
+                }
+            }
+            _ => {}
+        }
+        // Reflect a freshly-established connection in the row's presence.
+        if let (Some(id), Some(live)) = (self.session_for, self.live.as_ref()) {
+            if live.status() == SessionStatus::Connected {
+                if let Some(m) = self.workspace.get_mut(id) {
+                    if m.presence != Presence::Online {
+                        m.presence = Presence::Online;
+                        changed = true;
+                    }
+                }
+            }
+        }
+        changed
+    }
+
+    /// Whether a live transport is currently connecting or connected — used
+    /// to keep the host pumping animation frames so incoming data renders.
+    fn live_active(&self) -> bool {
+        self.live.as_ref().map(|l| l.status().is_live()).unwrap_or(false)
+    }
+
+    /// The connected VNC session, if that's the current live transport.
+    fn vnc_session(&self) -> Option<&VncSession> {
+        match &self.live {
+            Some(LiveSession::Vnc(s)) if s.status() == SessionStatus::Connected => Some(s),
+            _ => None,
+        }
+    }
+
+    /// Map a logical point to remote-desktop pixel coordinates, if it falls
+    /// on the live VNC framebuffer canvas.
+    fn vnc_pointer_target(&self, p: Point) -> Option<(u16, u16)> {
+        let s = self.vnc_session()?;
+        let canvas = self.fb_canvas?;
+        if !canvas.contains(p) || canvas.width() <= 0.0 || canvas.height() <= 0.0 {
+            return None;
+        }
+        let (w, h) = s.size()?;
+        if w == 0 || h == 0 {
+            return None;
+        }
+        let fx = ((p.x - canvas.x0) / canvas.width() * w as f64).clamp(0.0, (w - 1) as f64) as u16;
+        let fy = ((p.y - canvas.y0) / canvas.height() * h as f64).clamp(0.0, (h - 1) as f64) as u16;
+        Some((fx, fy))
+    }
+
+    /// Send a pointer event (current button mask + mapped position) to the
+    /// live remote desktop, if the pointer is over its canvas.
+    fn forward_vnc_pointer(&self, p: Point) {
+        if let (Some(s), Some((x, y))) = (self.vnc_session(), self.vnc_pointer_target(p)) {
+            s.send_input(VncInput::Pointer { button_mask: self.vnc_buttons, x, y });
+        }
     }
 
     /// Commit the form draft into the workspace + CRDT.
@@ -761,6 +923,12 @@ impl Widget for RemoteApp {
             self.dirty = true;
         }
 
+        // Pull any live-session I/O for this frame (remote PTY output, new
+        // VNC frames) so the surface reflects the real connection.
+        if matches!(self.screen, Screen::Session { .. }) && self.pump_live() {
+            self.dirty = true;
+        }
+
         // Whole-window background.
         scene.fill(Fill::NonZero, transform, tokens.colors.surfaces.base, None, &self.rect);
 
@@ -838,7 +1006,27 @@ impl Widget for RemoteApp {
                 if p != self.pointer {
                     self.pointer = p;
                     self.dirty = true; // hover feedback
+                    // Stream pointer motion to a live remote desktop.
+                    self.forward_vnc_pointer(p);
                 }
+            }
+            // A press/release over the live VNC canvas is injected into the
+            // remote desktop rather than hit-testing the local chrome.
+            WindowEvent::MouseInput { state, button, .. }
+                if self.vnc_pointer_target(self.pointer).is_some() =>
+            {
+                let bit = match button {
+                    MouseButton::Left => 1,
+                    MouseButton::Middle => 2,
+                    MouseButton::Right => 4,
+                    _ => 0,
+                };
+                match state {
+                    ElementState::Pressed => self.vnc_buttons |= bit,
+                    ElementState::Released => self.vnc_buttons &= !bit,
+                }
+                self.forward_vnc_pointer(self.pointer);
+                *handled = true;
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
@@ -918,8 +1106,10 @@ impl Widget for RemoteApp {
 
     fn needs_animation_frame(&self) -> bool {
         // While the rail's overlay/dock slide is mid-flight, keep the host
-        // pumping frames so the eased transition plays smoothly.
-        self.rail.is_animating(self.rail_layout)
+        // pumping frames so the eased transition plays smoothly. A live
+        // session likewise needs continuous frames so incoming remote data
+        // (PTY output, framebuffer updates) is drained and rendered.
+        self.rail.is_animating(self.rail_layout) || self.live_active()
     }
 
     fn mark_drawn(&mut self) {
@@ -978,6 +1168,33 @@ impl RemoteApp {
                     }
                     _ => {}
                 }
+            }
+        }
+
+        // A connected session captures keyboard input for the remote — except
+        // Escape while fullscreen, which exits fullscreen locally.
+        let esc_exits_fullscreen =
+            self.fullscreen && matches!(key, Key::Named(NamedKey::Escape));
+        if !esc_exits_fullscreen && matches!(self.screen, Screen::Session { .. }) {
+            match &self.live {
+                Some(LiveSession::Ssh(s)) if s.status() == SessionStatus::Connected => {
+                    if let Some(bytes) = Self::ssh_key_bytes(key, text, mods) {
+                        s.send_input(bytes);
+                        self.dirty = true;
+                        *handled = true;
+                        return;
+                    }
+                }
+                Some(LiveSession::Vnc(s)) if s.status() == SessionStatus::Connected => {
+                    if let Some(sym) = Self::vnc_keysym(key, text) {
+                        s.send_input(VncInput::Key { down: true, key: sym });
+                        s.send_input(VncInput::Key { down: false, key: sym });
+                        self.dirty = true;
+                        *handled = true;
+                        return;
+                    }
+                }
+                _ => {}
             }
         }
 
@@ -1892,83 +2109,105 @@ impl RemoteApp {
             return;
         };
 
-        // No live transport: show an honest "not connected" surface rather
-        // than a fabricated terminal or remote desktop.
-        if !crate::session::live_sessions_enabled() {
-            self.draw_unconnected(scene, transform, text_renderer, theme, content, &c);
+        // Default build: no transport is attempted. Show the honest "not
+        // connected" card — never a fabricated terminal or desktop.
+        if !live_sessions_enabled() {
+            self.draw_status_session(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                content,
+                &c,
+                "Not connected",
+                &[
+                    format!("{} sessions are off in this build.", c.kind.label()),
+                    "Set REMOTE_LIVE_SESSIONS to open a real session.".to_string(),
+                    "Nothing is faked here.".to_string(),
+                    format!("Target: {}", c.address()),
+                ],
+                StatusTone::Neutral,
+            );
             return;
         }
 
-        // Toolbar (hidden in immersive/fullscreen mode).
-        let surface = if immersive {
-            content
-        } else {
-            self.draw_session_toolbar(scene, transform, text_renderer, theme, content, &c);
-            Rect::new(content.x0, content.y0 + TOOLBAR_H, content.x1, content.y1)
-        };
-
-        if c.kind.is_terminal() {
-            self.draw_terminal(scene, transform, text_renderer, theme, surface, &c);
-        } else {
-            // Framebuffer surface, optionally scaled to fit with letterbox.
-            let canvas = if self.scale_to_fit {
-                surface
-            } else {
-                // 1:1 mode: a centered 16:9 region (the "native" remote res).
-                let aspect = 16.0 / 9.0;
-                let mut w = surface.width().min(960.0);
-                let mut h = w / aspect;
-                if h > surface.height() {
-                    h = surface.height();
-                    w = h * aspect;
-                }
-                let cx = surface.center().x;
-                let cy = surface.center().y;
-                Rect::new(cx - w / 2.0, cy - h / 2.0, cx + w / 2.0, cy + h / 2.0)
-            };
-            // Letterbox backdrop.
-            scene.fill(Fill::NonZero, transform, Color::BLACK, None, &surface);
-            FramebufferScene::draw(scene, transform, canvas, c.kind, theme, text_renderer);
-
-            // qOS relay annotation overlay — emphasises the local-render model.
-            if c.kind == ConnectionKind::Qos {
-                let tag = Rect::new(canvas.x0 + 12.0, canvas.y0 + 12.0, canvas.x0 + 232.0, canvas.y0 + 40.0);
-                scene.fill(
-                    Fill::NonZero,
-                    transform,
-                    tokens.colors.accent[5].at_alpha(0.9),
-                    None,
-                    &RoundedRect::from_rect(tag, 6.0),
-                );
-                text_renderer.draw_text_weighted(
+        // Live path: reflect the real transport state.
+        let status =
+            self.live.as_ref().map(|l| l.status()).unwrap_or(SessionStatus::Failed("no session".into()));
+        match status {
+            SessionStatus::Connecting => {
+                self.draw_status_session(
                     scene,
-                    "Local render · relayed",
-                    12.0,
-                    Color::WHITE,
-                    transform * Affine::translate((tag.x0 + 10.0, tag.y0 + 6.0)),
-                    None,
-                    TextWeight::Semibold,
+                    transform,
+                    text_renderer,
+                    theme,
+                    content,
+                    &c,
+                    "Connecting…",
+                    &[
+                        format!("Opening a {} session to {}.", c.kind.label(), c.address()),
+                        "Negotiating the transport and authenticating…".to_string(),
+                    ],
+                    StatusTone::Pending,
                 );
             }
-
-            if immersive {
-                // A small hint to exit fullscreen.
-                text_renderer.draw_text(
+            SessionStatus::Failed(err) => {
+                self.draw_status_session(
                     scene,
-                    "Esc to exit fullscreen",
-                    12.0,
-                    tokens.colors.text_dim,
-                    transform * Affine::translate((surface.x1 - 170.0, surface.y0 + 12.0)),
-                    None,
+                    transform,
+                    text_renderer,
+                    theme,
+                    content,
+                    &c,
+                    "Connection failed",
+                    &[
+                        err,
+                        format!("Target: {}", c.address()),
+                        "This is the real error — nothing is faked.".to_string(),
+                    ],
+                    StatusTone::Error,
                 );
+            }
+            SessionStatus::Closed => {
+                self.draw_status_session(
+                    scene,
+                    transform,
+                    text_renderer,
+                    theme,
+                    content,
+                    &c,
+                    "Session ended",
+                    &[
+                        "The remote closed the session.".to_string(),
+                        format!("Target: {}", c.address()),
+                    ],
+                    StatusTone::Neutral,
+                );
+            }
+            SessionStatus::Connected => {
+                // Real surface. Toolbar hidden in immersive/fullscreen mode.
+                let surface = if immersive {
+                    content
+                } else {
+                    self.draw_session_toolbar(scene, transform, text_renderer, theme, content, &c);
+                    Rect::new(content.x0, content.y0 + TOOLBAR_H, content.x1, content.y1)
+                };
+                let is_ssh = matches!(self.live, Some(LiveSession::Ssh(_)));
+                if is_ssh {
+                    self.draw_terminal(scene, transform, text_renderer, theme, surface, &c);
+                } else {
+                    self.draw_framebuffer(scene, transform, text_renderer, theme, surface, immersive);
+                }
             }
         }
     }
 
-    /// The honest "not connected" surface: SSH/VNC/RDP transport is not
-    /// wired yet, so we never draw a fabricated terminal or remote desktop.
-    /// Shows what would connect and offers a way back to the list.
-    fn draw_unconnected(
+    /// A session surface that is *not* a live pixel/terminal view: the
+    /// honest states (not connected, connecting, failed, ended). Slim
+    /// toolbar with a status dot + Back, and a centred explanation card.
+    /// Never draws a fabricated terminal or desktop.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_status_session(
         &mut self,
         scene: &mut Scene,
         transform: Affine,
@@ -1976,17 +2215,23 @@ impl RemoteApp {
         theme: &Theme,
         content: Rect,
         c: &Connection,
+        title: &str,
+        body: &[String],
+        tone: StatusTone,
     ) {
         let tokens = &theme.tokens;
 
-        // Slim toolbar: connection name + a neutral (not "online") status,
-        // and a Back button that returns to the list.
         let bar = Rect::new(content.x0, content.y0, content.x1, content.y0 + TOOLBAR_H);
         scene.fill(Fill::NonZero, transform, tokens.colors.neutral[1], None, &bar);
         let seam = Rect::new(bar.x0, bar.y1 - 1.0, bar.x1, bar.y1);
         scene.fill(Fill::NonZero, transform, tokens.colors.border_standard, None, &seam);
+        let dot_color = match tone {
+            StatusTone::Neutral => tokens.colors.neutral[4],
+            StatusTone::Pending => tokens.colors.semantic.warning,
+            StatusTone::Error => tokens.colors.semantic.danger,
+        };
         let dot = Point::new(bar.x0 + 18.0, bar.center().y);
-        scene.fill(Fill::NonZero, transform, tokens.colors.neutral[4], None, &Circle::new(dot, 5.0));
+        scene.fill(Fill::NonZero, transform, dot_color, None, &Circle::new(dot, 5.0));
         text_renderer.draw_text_weighted(
             scene,
             &c.name,
@@ -1997,23 +2242,29 @@ impl RemoteApp {
             TextWeight::Semibold,
         );
         let (nw, _) = text_renderer.measure_weighted(&c.name, 14.0, None, TextWeight::Semibold);
+        let status_word = match tone {
+            StatusTone::Neutral => "not connected",
+            StatusTone::Pending => "connecting",
+            StatusTone::Error => "failed",
+        };
         text_renderer.draw_text(
             scene,
-            &format!("· {} · not connected", c.address()),
+            &format!("· {} · {}", c.address(), status_word),
             12.0,
             tokens.colors.text_dim,
             transform * Affine::translate((bar.x0 + 40.0 + nw as f64, bar.center().y - 7.0)),
             None,
         );
-        let back = Rect::new(bar.x1 - 12.0 - 100.0, bar.center().y - 16.0, bar.x1 - 12.0, bar.center().y + 16.0);
+        let back =
+            Rect::new(bar.x1 - 12.0 - 100.0, bar.center().y - 16.0, bar.x1 - 12.0, bar.center().y + 16.0);
         self.draw_button(scene, transform, text_renderer, theme, back, "Back", false);
         self.push_hit(back, Action::Disconnect);
 
-        // Centered explanation card.
+        // Centred explanation card.
         let surface = Rect::new(content.x0, bar.y1, content.x1, content.y1);
         scene.fill(Fill::NonZero, transform, tokens.colors.surfaces.base, None, &surface);
         let cw = 480.0_f64.min(surface.width() - 48.0);
-        let ch = 168.0;
+        let ch = 88.0 + body.len() as f64 * 24.0;
         let cx = surface.x0 + (surface.width() - cw) / 2.0;
         let cy = surface.y0 + (surface.height() - ch) / 2.0;
         let card = Rect::new(cx, cy, cx + cw, cy + ch);
@@ -2022,28 +2273,81 @@ impl RemoteApp {
         scene.stroke(&Stroke::new(1.0), transform, tokens.colors.border_standard, None, &rr);
         text_renderer.draw_text_weighted(
             scene,
-            "Not connected",
+            title,
             18.0,
             tokens.colors.text_primary,
             transform * Affine::translate((card.x0 + 24.0, card.y0 + 22.0)),
             None,
             TextWeight::Bold,
         );
-        for (i, line) in [
-            format!("{} sessions are not wired up yet.", c.kind.label()),
-            "This will open a real session once the SSH and".to_string(),
-            "VNC/RDP transport lands. Nothing is faked here.".to_string(),
-            format!("Target: {}", c.address()),
-        ]
-        .iter()
-        .enumerate()
-        {
+        for (i, line) in body.iter().enumerate() {
             text_renderer.draw_text(
                 scene,
                 line,
                 13.0,
                 tokens.colors.text_dim,
                 transform * Affine::translate((card.x0 + 24.0, card.y0 + 58.0 + i as f64 * 24.0)),
+                None,
+            );
+        }
+    }
+
+    /// Draw the live VNC framebuffer, scaled to fit (letterboxed) or 1:1.
+    fn draw_framebuffer(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        surface: Rect,
+        immersive: bool,
+    ) {
+        let tokens = &theme.tokens;
+        // Letterbox backdrop.
+        scene.fill(Fill::NonZero, transform, Color::BLACK, None, &surface);
+
+        let Some(img) = self.fb_image.clone() else {
+            // Connected, but no framebuffer decoded yet.
+            text_renderer.draw_text(
+                scene,
+                "Connected — waiting for the first framebuffer update…",
+                13.0,
+                tokens.colors.text_dim,
+                transform * Affine::translate((surface.x0 + 24.0, surface.y0 + 24.0)),
+                None,
+            );
+            return;
+        };
+
+        let iw = img.width.max(1) as f64;
+        let ih = img.height.max(1) as f64;
+        let canvas = if self.scale_to_fit {
+            let scale = (surface.width() / iw).min(surface.height() / ih);
+            let (w, h) = (iw * scale, ih * scale);
+            let (cx, cy) = (surface.center().x, surface.center().y);
+            Rect::new(cx - w / 2.0, cy - h / 2.0, cx + w / 2.0, cy + h / 2.0)
+        } else {
+            let w = iw.min(surface.width());
+            let h = ih.min(surface.height());
+            let (cx, cy) = (surface.center().x, surface.center().y);
+            Rect::new(cx - w / 2.0, cy - h / 2.0, cx + w / 2.0, cy + h / 2.0)
+        };
+        self.fb_canvas = Some(canvas);
+
+        let sx = canvas.width() / iw;
+        let sy = canvas.height() / ih;
+        let brush_transform =
+            Affine::translate((canvas.x0, canvas.y0)) * Affine::scale_non_uniform(sx, sy);
+        let brush = ImageBrush::new(img);
+        scene.fill(Fill::NonZero, transform, &brush, Some(brush_transform), &canvas);
+
+        if immersive {
+            text_renderer.draw_text(
+                scene,
+                "Esc to exit fullscreen",
+                12.0,
+                tokens.colors.text_dim,
+                transform * Affine::translate((surface.x1 - 170.0, surface.y0 + 12.0)),
                 None,
             );
         }
@@ -2163,6 +2467,8 @@ impl RemoteApp {
     }
 
     /// Draw the terminal grid for an SSH session.
+    /// Draw the live SSH terminal grid, straight from the real PTY output
+    /// held in the [`crate::vt::VtGrid`].
     fn draw_terminal(
         &mut self,
         scene: &mut Scene,
@@ -2176,8 +2482,10 @@ impl RemoteApp {
         // Terminal background.
         scene.fill(Fill::NonZero, transform, palette.bg_default, None, &surface);
 
-        let Some(term) = &self.term else {
-            return;
+        // Snapshot the live grid (cheap clone of the visible cells + cursor).
+        let (lines, cursor) = match &self.live {
+            Some(LiveSession::Ssh(s)) => (s.grid().lines(), s.grid().cursor()),
+            _ => return,
         };
 
         scene.push_layer(Fill::NonZero, vello::peniko::BlendMode::default(), 1.0, transform, &surface);
@@ -2185,18 +2493,16 @@ impl RemoteApp {
         let char_w = font_size as f64 * 0.6; // monospace advance approximation
         let line_h = font_size as f64 * 1.5;
         let pad = 16.0;
-        let mut y = surface.y0 + pad;
 
-        for line in &term.lines {
+        for (row, line) in lines.iter().enumerate() {
+            let y = surface.y0 + pad + row as f64 * line_h;
             // Draw cells run-by-run (group consecutive same-style cells).
             let mut x = surface.x0 + pad;
             let mut i = 0;
             while i < line.cells.len() {
                 let style = (line.cells[i].color, line.cells[i].bold);
                 let start = i;
-                while i < line.cells.len()
-                    && (line.cells[i].color, line.cells[i].bold) == style
-                {
+                while i < line.cells.len() && (line.cells[i].color, line.cells[i].bold) == style {
                     i += 1;
                 }
                 let run: String = line.cells[start..i].iter().map(|c| c.ch).collect();
@@ -2216,40 +2522,64 @@ impl RemoteApp {
                 );
                 x += run.chars().count() as f64 * char_w;
             }
-            y += line_h;
         }
 
-        // Live prompt + typed input + block caret.
-        let prompt_color = palette.ansi[2];
-        text_renderer.draw_text_weighted(
-            scene,
-            &term.prompt,
-            font_size,
-            prompt_color,
-            transform * Affine::translate((surface.x0 + pad, y)),
-            None,
-            TextWeight::Bold,
-        );
-        let (pw, _) = text_renderer.measure_weighted(&term.prompt, font_size, None, TextWeight::Bold);
-        let input_x = surface.x0 + pad + pw as f64;
-        text_renderer.draw_text(
-            scene,
-            &term.input,
-            font_size,
-            palette.fg_default,
-            transform * Affine::translate((input_x, y)),
-            None,
-        );
-        let (iw, _) = text_renderer.measure(&term.input, font_size, None);
-        let caret = Rect::new(
-            input_x + iw as f64 + 1.0,
-            y,
-            input_x + iw as f64 + 1.0 + char_w,
-            y + font_size as f64 * 1.2,
-        );
-        scene.fill(Fill::NonZero, transform, palette.fg_default.at_alpha(0.7), None, &caret);
+        // Block caret at the real cursor position.
+        let (cx, cy) = cursor;
+        let caret_x = surface.x0 + pad + cx as f64 * char_w;
+        let caret_y = surface.y0 + pad + cy as f64 * line_h;
+        let caret = Rect::new(caret_x, caret_y, caret_x + char_w, caret_y + font_size as f64 * 1.2);
+        scene.fill(Fill::NonZero, transform, palette.fg_default.at_alpha(0.6), None, &caret);
 
         scene.pop_layer();
+    }
+
+    /// Translate a key press into the bytes an interactive PTY expects.
+    fn ssh_key_bytes(key: &Key, text: Option<&str>, mods: ModifiersState) -> Option<Vec<u8>> {
+        match key {
+            Key::Named(NamedKey::Enter) => Some(vec![b'\r']),
+            Key::Named(NamedKey::Backspace) => Some(vec![0x7f]),
+            Key::Named(NamedKey::Tab) => Some(vec![b'\t']),
+            Key::Named(NamedKey::Escape) => Some(vec![0x1b]),
+            Key::Named(NamedKey::Space) => Some(vec![b' ']),
+            Key::Named(NamedKey::ArrowUp) => Some(b"\x1b[A".to_vec()),
+            Key::Named(NamedKey::ArrowDown) => Some(b"\x1b[B".to_vec()),
+            Key::Named(NamedKey::ArrowRight) => Some(b"\x1b[C".to_vec()),
+            Key::Named(NamedKey::ArrowLeft) => Some(b"\x1b[D".to_vec()),
+            Key::Named(NamedKey::Home) => Some(b"\x1b[H".to_vec()),
+            Key::Named(NamedKey::End) => Some(b"\x1b[F".to_vec()),
+            Key::Named(NamedKey::Delete) => Some(b"\x1b[3~".to_vec()),
+            Key::Character(s) => {
+                if mods.control_key() {
+                    // Ctrl+letter → the corresponding control byte (^A=1…^Z=26).
+                    let c = s.chars().next()?;
+                    let up = c.to_ascii_uppercase();
+                    if up.is_ascii_alphabetic() {
+                        return Some(vec![(up as u8) - 0x40]);
+                    }
+                }
+                text.map(|t| t.as_bytes().to_vec()).or_else(|| Some(s.as_bytes().to_vec()))
+            }
+            _ => text.map(|t| t.as_bytes().to_vec()),
+        }
+    }
+
+    /// Map a key press to an X11 keysym for VNC `KeyEvent`s (ASCII + a few
+    /// named keys — enough for basic remote typing).
+    fn vnc_keysym(key: &Key, text: Option<&str>) -> Option<u32> {
+        match key {
+            Key::Named(NamedKey::Enter) => Some(0xff0d),
+            Key::Named(NamedKey::Backspace) => Some(0xff08),
+            Key::Named(NamedKey::Tab) => Some(0xff09),
+            Key::Named(NamedKey::Escape) => Some(0xff1b),
+            Key::Named(NamedKey::Space) => Some(0x20),
+            Key::Named(NamedKey::ArrowUp) => Some(0xff52),
+            Key::Named(NamedKey::ArrowDown) => Some(0xff54),
+            Key::Named(NamedKey::ArrowLeft) => Some(0xff51),
+            Key::Named(NamedKey::ArrowRight) => Some(0xff53),
+            Key::Named(NamedKey::Delete) => Some(0xffff),
+            _ => text.and_then(|t| t.chars().next()).map(|c| c as u32),
+        }
     }
 }
 
@@ -2486,8 +2816,8 @@ mod tests {
     #[test]
     fn connect_ssh_shows_honest_not_connected_session() {
         // Default build has no live transport: Connect opens the session
-        // screen but does NOT fabricate a terminal — an honest "not connected"
-        // state, never a faked shell.
+        // screen but does NOT fabricate a terminal or open a transport — an
+        // honest "not connected" state, never a faked shell.
         let mut app = RemoteApp::new_demo();
         let id = app
             .workspace
@@ -2499,13 +2829,13 @@ mod tests {
         app.apply(Action::Connect(id), &mut doc());
         assert_eq!(app.screen, Screen::Session { id });
         assert!(
-            app.term.is_none(),
-            "no live transport → no fabricated terminal"
+            app.live.is_none(),
+            "no live transport → no session object, no fabricated terminal"
         );
     }
 
     #[test]
-    fn connect_vnc_has_no_terminal() {
+    fn connect_vnc_has_no_live_session_when_gated() {
         let mut app = RemoteApp::new_demo();
         let id = app
             .workspace
@@ -2515,7 +2845,7 @@ mod tests {
             .unwrap()
             .id;
         app.apply(Action::Connect(id), &mut doc());
-        assert!(app.term.is_none(), "framebuffer session has no terminal grid");
+        assert!(app.live.is_none(), "gated build opens no framebuffer transport");
     }
 
     #[test]
