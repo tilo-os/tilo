@@ -1,5 +1,9 @@
 //! Persisted preferences, stored in the shared Automerge document so they
-//! survive restarts and replicate to collaborators. View-level state
+//! survive restarts and replicate to collaborators. Surviving a restart is
+//! the store's doing, not this module's: `main` opens the app's document
+//! through `ui::persist` and hands the writer to `App::with_autosave`, so
+//! everything written here is on disk within the debounce window. View-level
+//! state
 //! (current sort, filter text, selected row, active tab) deliberately
 //! lives in widget fields instead — see [`crate::app`].
 //!

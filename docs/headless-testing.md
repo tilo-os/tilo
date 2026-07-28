@@ -235,6 +235,54 @@ rm -f $QOS_TEST_CONTROL
 
 Both flow through `quick_ui::offscreen::OffscreenRenderer` and run a single `sync → build_layout → compute_layout → apply_layout → draw` cycle — no event loop. Smoke tests live in each app's `tests/shots_smoke.rs` and assert the output starts with the PNG magic header.
 
+## Per-app interaction: `--headless-drive`
+
+`--shots` renders one cold-start frame and delivers no input, so it cannot
+answer "does what the user did survive a restart?". Every `ui` app also
+accepts `--headless-drive '<json>'`, which stands the real widget tree up over
+a real Taffy tree and feeds it the same `WindowEvent` values winit would —
+through the same `Widget::handle_event` a live click goes through — with no
+window and no GPU.
+
+```bash
+# What can I address? (test_id, else the Parent/Child[index] path fallback)
+./target/debug/monitor --headless-drive '{"targets":"/tmp/targets.json"}'
+
+# Click two of them, then write the app's CRDT document out as JSON.
+./target/debug/monitor --headless-drive '{
+  "actions":[{"click_named":"Toolbar/Button[1]"},{"type":"cpu"}],
+  "dump":"/tmp/after.json"}'
+```
+
+Actions: `click_named`, `click_at` (`[x, y]`), `key` (a named key or one
+character), `type`, `modifiers`. Optional `viewport` (`[w, h]`), `dump` and
+`targets` paths. Exit codes: `0` all actions ran, `1` an action failed (the
+reason is on stderr — a missing target is an error, not a silent no-op), `3`
+persistence was unavailable.
+
+The run persists through the app's real store (`ui::persist`), so pointing
+`XDG_DATA_HOME` and `QOS_PACKAGE_ID` at a scratch directory gives a complete
+restart test.
+
+## Persistence sweep
+
+`scripts/persistence-sweep.py` does exactly that, for every app:
+
+```bash
+scripts/persistence-sweep.py                 # all apps
+scripts/persistence-sweep.py ebook monitor   # named apps
+scripts/persistence-sweep.py --json out.json
+```
+
+Each app is run three times against a scratch data directory — cold (no
+input), driven (clicks/keystrokes, then exit), relaunched — and two things are
+asserted: the input actually changed the document (otherwise a passing restart
+proves nothing), and the document that came back off disk matches the one the
+app had when it exited. Apps that need specific actions get them from
+`scripts/persistence-scenarios.json`; otherwise the harness picks addressable
+widgets out of the app's own live tree, skipping anything whose name suggests
+a destructive operation.
+
 ## What's still missing
 
 - **`browser --shots`.** The browser uses `iced` 0.13 directly plus a Servo engine; iced 0.13 has no straightforward headless rendering path (the runtime owns the winit event loop). A future shot harness would need to drive `iced_wgpu::Renderer` against an offscreen wgpu texture with a hand-rolled layout pass, or wait for upstream iced to expose a headless surface. The same gap applies if any future system app picks iced.

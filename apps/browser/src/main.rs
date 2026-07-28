@@ -114,8 +114,15 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         ));
     }
 
-    let state = ui::State::new();
-    let app = ui::App::new(state, Box::new(widget));
+    // Headless drive (`--headless-drive '<json>'`): run a list of clicks and
+    // keystrokes against the real widget tree with no display, persisting
+    // through the same store the live app uses.
+    if let Some(spec) = ui::headless::spec_from_args(&args) {
+        std::process::exit(ui::headless::run(spec, Box::new(widget), "dev.qos.browser"));
+    }
+
+    let (state, autosave) = ui::persist::open("dev.qos.browser");
+    let app = ui::App::new(state, Box::new(widget)).with_autosave(autosave);
     // Wake the (otherwise event-driven) winit loop whenever the engine
     // publishes a frame or a navigation event, so pages animate and
     // finish loading without waiting for user input.

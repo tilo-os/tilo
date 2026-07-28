@@ -43,8 +43,15 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    let state = ui::State::new();
-    let app = ui::App::new(state, slides::app_root());
+    // Headless drive (`--headless-drive '<json>'`): run a list of clicks and
+    // keystrokes against the real widget tree with no display, persisting
+    // through the same store the live app uses.
+    if let Some(spec) = ui::headless::spec_from_args(&args) {
+        std::process::exit(ui::headless::run(spec, slides::app_root(), "dev.qos.slides"));
+    }
+
+    let (state, autosave) = ui::persist::open("dev.qos.slides");
+    let app = ui::App::new(state, slides::app_root()).with_autosave(autosave);
     // Present mode requests true OS fullscreen: `SlidesApp` reports
     // `fullscreen_intent() = Some(true)` while presenting (via
     // `Widget::fullscreen_intent`), and `ui::App` polls that each frame and
