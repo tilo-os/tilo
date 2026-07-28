@@ -77,7 +77,14 @@ pub fn app_root() -> Box<dyn ui::widget::Widget> {
     let args: Vec<String> = std::env::args().collect();
     let is_shots = args.iter().any(|a| a == "--shots" || a.starts_with("--shots="));
 
-    let (probe, worker) = if is_shots {
+    // `SOFTWARE_STORE_SHOT_LIVE` renders the real live cold-start (empty
+    // catalog → "Loading apps from Flathub…") for verification, instead of the
+    // offline sample. The single shot frame captures the loading state before
+    // any network result can land.
+    let shot_live = is_shots && std::env::var_os("SOFTWARE_STORE_SHOT_LIVE").is_some();
+    let (probe, worker) = if shot_live {
+        (None, worker::Worker::spawn())
+    } else if is_shots {
         (None, worker::Worker::offline())
     } else {
         (Some(probe::probe_system()), worker::Worker::spawn())
