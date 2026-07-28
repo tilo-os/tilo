@@ -35,17 +35,7 @@ use zbus::{Connection, Proxy};
 const TEST_GUID: &str = "0123456789abcdef0123456789abcdef";
 
 fn empty_workspace(id: u64, name: &str) -> Workspace {
-    Workspace {
-        id: WorkspaceId(id),
-        name: name.into(),
-        strips: vec![],
-        roles: vec![],
-        workspace_files: vec![],
-        collaborators: vec![],
-        owner: None,
-        capabilities: Vec::new(),
-        shared_surfaces: HashMap::new(),
-    }
+    Workspace::test_default(WorkspaceId(id), name)
 }
 
 /// Spin up a server zbus connection serving the portal and a paired

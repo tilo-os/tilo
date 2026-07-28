@@ -223,11 +223,19 @@ async fn presence_moved_round_trips_between_two_actors() {
 /// minimal cross-crate-boundary smoke test.
 #[test]
 fn invite_token_round_trips() {
+    use shell::shell::state::{Workspace, WorkspaceId};
+
     let kp = libp2p::identity::Keypair::generate_ed25519();
-    let token = make_invite_token(&kp, 99, "/ip4/127.0.0.1/tcp/8888", 3600).expect("mint");
+    let workspace = Workspace::test_default(WorkspaceId(99), "Shared");
+    let token =
+        make_invite_token(&kp, &workspace, "/ip4/127.0.0.1/tcp/8888", 3600).expect("mint");
     let parsed = validate_invite_token(&token).expect("validate");
     assert_eq!(parsed.workspace_id, 99);
     assert_eq!(parsed.owner_addr, "/ip4/127.0.0.1/tcp/8888");
+    // The room the invite grants access to has to survive the crate
+    // boundary too — it is the field the receiver adopts, and a token
+    // that arrived without it would join a topic and reach nobody.
+    assert_eq!(parsed.room_id, workspace.room.to_string());
 }
 
 /// Phase 4 end-to-end smoke test — A encodes an RGBA gradient, publishes
