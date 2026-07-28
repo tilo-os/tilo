@@ -24,6 +24,10 @@ mod vars;
 pub use app::ApiTesterApp;
 
 /// Build and return the app's root widget tree.
+pub fn app_root_demo() -> Box<dyn Widget> {
+    Box::new(ApiTesterApp::new_demo())
+}
+
 pub fn app_root() -> Box<dyn Widget> {
     Box::new(ApiTesterApp::new())
 }
