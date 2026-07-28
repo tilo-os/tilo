@@ -78,7 +78,7 @@ impl Default for Placement {
 /// Returns the freshly-minted tab id.
 ///
 /// The placement comes from whichever launch this client belongs to
-/// ([`crate::shell::launcher::take_placement_for_app_id`]), matched by
+/// ([`crate::shell::launcher::placement_for_toplevel`]), matched by
 /// app-id exactly as the tab's label is. A client we did not launch — or
 /// one whose app-id we cannot correlate — gets [`Placement::NewGroup`],
 /// the same as a launched app: an unrecognised window is still a new
@@ -98,7 +98,7 @@ pub fn adopt_toplevel(
 ) -> TabId {
     let placement = app_id
         .as_deref()
-        .and_then(crate::shell::launcher::take_placement_for_app_id)
+        .and_then(|id| crate::shell::launcher::placement_for_toplevel(id, surface_id))
         .unwrap_or_default();
     adopt_toplevel_at(tree, surface_id, app_id, placement)
 }
@@ -532,13 +532,59 @@ mod tests {
             "the recorded TabIn placement must reach the adoption"
         );
 
-        // The note is one-shot: a second window from the same client is
-        // a new thing again.
+        // The note belongs to that window: a *second* window from the
+        // same client is a new thing again.
         let _ = adopt_toplevel(&mut tree, 8081, Some("placefixture".into()));
         assert_eq!(
             tree.workspaces[0].strips[0].window_groups.len(),
             groups_before + 1,
-            "a consumed placement must not apply twice"
+            "a claimed placement must not apply to the next window too"
+        );
+        launcher::clear_pending_placements();
+    }
+
+    /// The compositor adopts every toplevel **twice** — once into the
+    /// protocol-side tree `XdgShellHandler` mutates, once into the
+    /// rendered tree `reconcile_foreign_tabs` mirrors it onto, which is
+    /// the one the chrome paints. Both adoptions have to reach the same
+    /// answer, or the window is a tab in one tree and a column in the
+    /// other and the user sees the wrong one.
+    ///
+    /// A note that were consumed by the first reader would leave the
+    /// rendered tree on the default placement — the bug this pins.
+    #[test]
+    fn both_trees_place_the_same_toplevel_the_same_way() {
+        use crate::shell::launcher;
+        launcher::clear_pending_placements();
+
+        let mut protocol = WorkspaceTree::bootstrap_default();
+        let strip_id = protocol.workspaces[0].strips[0].id;
+        let opener = protocol.workspaces[0].strips[0].window_groups[0].id;
+        let active = protocol.active;
+        protocol.active_strip.insert(active, strip_id);
+        protocol.set_active_group(strip_id, opener);
+        // The rendered tree is a clone of the persisted one, so the two
+        // share group ids — which is what makes a placement naming a
+        // group meaningful across both.
+        let mut rendered = protocol.clone();
+        let groups_before = rendered.workspaces[0].strips[0].window_groups.len();
+
+        launcher::set_pending_placement("dev.qos.twotrees", Placement::TabIn(opener));
+
+        // Protocol side adopts first, then the rendered tree mirrors it.
+        let _ = adopt_toplevel(&mut protocol, 4711, Some("twotrees".into()));
+        let _ = adopt_toplevel(&mut rendered, 4711, Some("twotrees".into()));
+
+        assert_eq!(
+            rendered.workspaces[0].strips[0].window_groups.len(),
+            groups_before,
+            "the rendered tree must honour the same TabIn placement the \
+             protocol tree did, not fall back to opening a column"
+        );
+        assert_eq!(
+            protocol.workspaces[0].strips[0].window_groups.len(),
+            groups_before,
+            "fixture sanity: the protocol tree honoured it too"
         );
         launcher::clear_pending_placements();
     }
