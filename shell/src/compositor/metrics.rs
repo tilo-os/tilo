@@ -94,11 +94,15 @@ pub struct FrameSample {
 }
 
 impl FrameSample {
-    /// Everything the loop spent doing work, i.e. the period minus the
-    /// parked time. This is the number that has to fit inside a refresh
-    /// interval for the loop to keep up.
-    pub fn work_us(&self) -> u32 {
-        self.period_us.saturating_sub(self.sleep_us)
+    /// Non-parked time in the interval this sample's `period_us` spans.
+    ///
+    /// `period_us` runs from the *previous* tick's start to this one's,
+    /// so the park it contains is the previous tick's, not this one's —
+    /// `prev_sleep_us` is that value. Subtracting this sample's own sleep
+    /// instead is an off-by-one that can go negative on a tick whose park
+    /// was longer than the preceding tick's.
+    pub fn work_us(&self, prev_sleep_us: u32) -> u32 {
+        self.period_us.saturating_sub(prev_sleep_us)
     }
 
     /// CSV row matching [`CSV_HEADER`].
@@ -280,7 +284,12 @@ pub fn summarize(samples: &[FrameSample], target_period_us: u32) -> FrameSummary
         fps,
         tick_period: percentiles(&cadence),
         paint_period: percentiles(&paint_cadence),
-        work: percentiles(&samples.iter().map(|s| s.work_us()).collect::<Vec<_>>()),
+        work: percentiles(
+            &samples
+                .windows(2)
+                .map(|w| w[1].work_us(w[0].sleep_us))
+                .collect::<Vec<_>>(),
+        ),
         input: field(|s| s.input_us),
         pump: field(|s| s.pump_us),
         layout: painted_field(|s| s.layout_us),
@@ -714,15 +723,47 @@ mod tests {
     }
 
     #[test]
-    fn summarize_work_is_period_minus_sleep() {
+    fn summarize_work_subtracts_the_park_that_actually_happened_in_the_period() {
+        // `period_us` spans the previous tick's start to this one's, so
+        // the park inside it belongs to the *previous* sample. Tick 0
+        // worked 4 ms then parked 12 ms; tick 1 therefore starts 16 ms
+        // later and its period contains tick 0's 12 ms park.
+        //
+        // Subtracting the sample's *own* sleep instead reads tick 1's
+        // work as 16 - 2 = 14 ms, and on a tick that parked longer than
+        // its predecessor it goes negative — which is exactly how this
+        // bug announced itself in a live trace ("work/tick p50 = -0.15ms").
         let mut a = sample(0, 0, 0, true);
-        a.sleep_us = 0;
-        let mut b = sample(1, 20_000, 20_000, true);
+        a.sleep_us = 12_000;
+        let mut b = sample(1, 16_000, 16_000, true);
+        b.sleep_us = 2_000;
+        let sum = summarize(&[a, b], 0);
+        assert_eq!(
+            sum.work.count, 1,
+            "work needs a predecessor, so N samples give N-1 work values"
+        );
+        assert_eq!(
+            sum.work.max, 4_000,
+            "work must subtract the park that happened inside the period \
+             (the previous tick's), not the park this tick went on to do"
+        );
+    }
+
+    #[test]
+    fn work_never_goes_negative_when_a_tick_parks_longer_than_its_predecessor() {
+        // The failure mode that surfaced the off-by-one: a tick that
+        // parked 16 ms following one that parked 2 ms. `u32` work would
+        // wrap; `saturating_sub` on the wrong operand would report a
+        // nonsense-but-positive number. With the right operand it is just
+        // the real work.
+        let mut a = sample(0, 0, 0, true);
+        a.sleep_us = 2_000;
+        let mut b = sample(1, 5_000, 5_000, true);
         b.sleep_us = 16_000;
         let sum = summarize(&[a, b], 0);
         assert_eq!(
-            sum.work.max, 4_000,
-            "work must be the non-parked remainder of the period"
+            sum.work.max, 3_000,
+            "5ms period containing a 2ms park is 3ms of work"
         );
     }
 

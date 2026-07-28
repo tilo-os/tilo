@@ -1520,9 +1520,9 @@ pub fn run() -> ! {
         // fullscreen mirror above). Skipping `relayout` + `paint` entirely
         // on idle frames is what lets the loop fall to near-zero CPU at
         // rest instead of burning a core re-laying-out an unchanged tree.
-        // Hit-testing stays correct because input is only dispatched on
-        // ticks that carry a backend event, and those force a repaint (and
-        // thus a relayout) below.
+        // Hit-testing stays correct because a tick that dispatched input
+        // always relayouts — either as part of the paint below, or
+        // explicitly afterwards when the cadence gate deferred the paint.
         // Pump the widget tree's per-frame state (sync + update) before
         // deciding whether to paint. This is what drains a hosted terminal's
         // PTY into its grid; without it a live app that produces output
@@ -1596,9 +1596,8 @@ pub fn run() -> ! {
                     "paint-stats: {frames_painted}/{frames_total} painted | \
                      events={cause_events} revision={cause_revision} anim={cause_anim} \
                      session={cause_session} keepalive={cause_keepalive} | \
-                     {:.3} Hz target, missed={} | present={} backpressure={}",
+                     {:.3} Hz target | present={} backpressure={}",
                     1.0 / frame_clock.interval().as_secs_f64(),
-                    frame_clock.missed_deadlines(),
                     present_pipe
                         .as_ref()
                         .map(|p| p.presented().to_string())
@@ -1702,6 +1701,15 @@ pub fn run() -> ! {
             // external client is connected.
             foreign::flush_configures(&mut state);
             foreign::release_frame_throttle(&mut state);
+        } else if had_backend_events {
+            // Input was dispatched but the frame was deferred (waiting for
+            // the next presentation deadline, or for the render thread to
+            // drain). Lay out anyway so the *next* event hit-tests against
+            // rects that reflect what this one did — a click that opens an
+            // overlay must not be followed by a click resolved against the
+            // pre-overlay tree. Layout is ~0.01 ms; deferring it to save
+            // that would be trading correctness for nothing.
+            frame_builder.relayout();
         }
         let t_paint_done = iter_t0.elapsed();
 
