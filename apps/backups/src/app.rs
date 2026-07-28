@@ -124,9 +124,22 @@ impl Default for BackupsApp {
 }
 
 impl BackupsApp {
+    /// The live app: starts on an empty catalog (real first-run state) and
+    /// shows onboarding until the user configures a source + destination.
     pub fn new() -> Self {
+        Self::with_catalog(Catalog::empty())
+    }
+
+    /// The demo app: pre-seeded with the sample catalog. Used only by the
+    /// `--shots` renderer so screenshots exercise a populated dashboard —
+    /// never the live launch.
+    pub fn new_demo() -> Self {
+        Self::with_catalog(Catalog::sample())
+    }
+
+    fn with_catalog(catalog: Catalog) -> Self {
         Self {
-            catalog: Catalog::sample(),
+            catalog,
             ui: UiCache::default(),
             rect: Rect::ZERO,
             node: None,
@@ -213,11 +226,17 @@ impl BackupsApp {
             self.rect.x1 - PAD,
             self.rect.y1 - STATUS_H - 12.0,
         );
-        match self.ui.view {
-            View::Timeline => self.draw_timeline_view(scene, t, tr, theme, content),
-            View::Sources => self.draw_sources_view(scene, t, tr, theme, content),
-            View::Destinations => self.draw_destinations_view(scene, t, tr, theme, content),
-            View::Schedules => self.draw_schedules_view(scene, t, tr, theme, content),
+        if self.catalog.sources.is_empty() && self.catalog.destinations.is_empty() {
+            // Fresh install: nothing to back up yet. Show onboarding instead of
+            // an empty dashboard so the app reads as ready, not broken.
+            self.draw_empty_onboarding(scene, t, tr, theme, content);
+        } else {
+            match self.ui.view {
+                View::Timeline => self.draw_timeline_view(scene, t, tr, theme, content),
+                View::Sources => self.draw_sources_view(scene, t, tr, theme, content),
+                View::Destinations => self.draw_destinations_view(scene, t, tr, theme, content),
+                View::Schedules => self.draw_schedules_view(scene, t, tr, theme, content),
+            }
         }
 
         self.draw_status_bar(scene, t, tr, theme);
@@ -330,6 +349,26 @@ impl BackupsApp {
         );
         paint::text_right(scene, tr, t, &right, 12.0, c.text_dim, bar.x1 - PAD, cy - 6.0);
         paint::text_center(scene, tr, t, "qOS Backups 1.0", 11.0, c.text_dim.with_alpha_factor(0.7), bar.x0, bar.x1, cy - 5.5);
+    }
+
+    // ---- EMPTY onboarding -----------------------------------------------
+
+    /// First-run state: no sources or destinations configured. Renders a
+    /// centered prompt so the fresh app reads as ready rather than as a broken
+    /// blank dashboard.
+    fn draw_empty_onboarding(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, content: Rect) {
+        let c = &theme.tokens.colors;
+        let cy = content.y0 + content.height() * 0.36;
+        paint::text_center(
+            scene, tr, t,
+            "No backups configured yet",
+            19.0, c.text_primary, content.x0, content.x1, cy,
+        );
+        paint::text_center(
+            scene, tr, t,
+            "Add a source to protect and a destination to store snapshots.",
+            13.0, c.text_dim, content.x0, content.x1, cy + 30.0,
+        );
     }
 
     // ---- TIMELINE view --------------------------------------------------
@@ -1509,5 +1548,28 @@ impl BackupsApp {
             }
             _ => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn live_constructor_starts_with_an_empty_catalog() {
+        // The live app must not fabricate sources / snapshots / destinations.
+        let app = BackupsApp::new();
+        assert!(app.catalog.sources.is_empty(), "no fabricated sources");
+        assert!(app.catalog.snapshots.is_empty(), "no fabricated snapshots");
+        assert!(app.catalog.destinations.is_empty(), "no fabricated destinations");
+    }
+
+    #[test]
+    fn demo_constructor_seeds_the_sample_catalog() {
+        // The --shots/demo builder keeps the populated sample dashboard.
+        let app = BackupsApp::new_demo();
+        assert!(!app.catalog.sources.is_empty(), "demo has sources");
+        assert!(!app.catalog.snapshots.is_empty(), "demo has snapshots");
+        assert!(!app.catalog.destinations.is_empty(), "demo has destinations");
     }
 }
