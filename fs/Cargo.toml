@@ -11,7 +11,7 @@ fuser.workspace = true
 iroh.workspace = true
 iroh-base.workspace = true
 iroh-blobs.workspace = true
-iroh-gossip = "0.96.0"
+iroh-gossip.workspace = true
 automerge.workspace = true
 qdoc = { path = "../crates/doc/qdoc" }
 collab-types = { path = "../crates/collab/collab-types" }
