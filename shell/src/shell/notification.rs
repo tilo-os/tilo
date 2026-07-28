@@ -459,8 +459,7 @@ impl Widget for NotificationStack {
         // so this is belt-and-suspenders for any path that mounts the
         // stack directly (e.g. hosted mode).
         if locked {
-            let card_rect =
-                Rect::new(x0_rest, y, x0_rest + TOAST_WIDTH, y + TOAST_HEIGHT);
+            let card_rect = Rect::new(x0_rest, y, x0_rest + TOAST_WIDTH, y + TOAST_HEIGHT);
             let shape = RoundedRect::from_rect(card_rect, radius);
             scene.fill(
                 Fill::NonZero,
@@ -542,10 +541,7 @@ impl Widget for NotificationStack {
                 body_size,
                 theme.tokens.colors.text_dim,
                 transform
-                    * Affine::translate((
-                        text_x,
-                        pill_rect.y0 + (pill_h - body_size as f64) / 2.0,
-                    )),
+                    * Affine::translate((text_x, pill_rect.y0 + (pill_h - body_size as f64) / 2.0)),
                 Some((TOAST_WIDTH - (text_x - pill_rect.x0) - CARD_PADDING_X) as f32),
             );
             stack_min_y = stack_min_y.min(pill_rect.y0);
@@ -579,18 +575,9 @@ impl Widget for NotificationStack {
             );
 
             // Fill: surfaces.raised at the toast's animated alpha.
-            let fill_color = theme
-                .tokens
-                .colors
-                .surfaces
-                .raised
-                .with_alpha(alpha);
+            let fill_color = theme.tokens.colors.surfaces.raised.with_alpha(alpha);
             scene.fill(Fill::NonZero, transform, fill_color, None, &shape);
-            let border_color = theme
-                .tokens
-                .colors
-                .border_standard
-                .with_alpha(alpha);
+            let border_color = theme.tokens.colors.border_standard.with_alpha(alpha);
             scene.stroke(&Stroke::new(1.0), transform, border_color, None, &shape);
 
             // Severity dot.
@@ -813,33 +800,25 @@ mod tests {
     #[test]
     fn push_appends_to_chrome_queue() {
         let chrome = new_chrome();
-        chrome
-            .borrow_mut()
-            .push_notification("Hello", "World");
+        chrome.borrow_mut().push_notification("Hello", "World");
         let ch = chrome.borrow();
         assert_eq!(ch.notifications().len(), 1);
         assert_eq!(ch.notifications()[0].title, "Hello");
         assert_eq!(ch.notifications()[0].body, "World");
-        assert_eq!(
-            ch.notifications()[0].severity,
-            NotificationSeverity::Info
-        );
+        assert_eq!(ch.notifications()[0].severity, NotificationSeverity::Info);
     }
 
     #[test]
     fn expiry_drops_old_notifications_in_update_lifecycle() {
         let chrome = new_chrome();
         let id = chrome.borrow_mut().push_notification_full(
-            Notification::new("Quick", "fades fast")
-                .with_dismiss_after(Duration::from_millis(50)),
+            Notification::new("Quick", "fades fast").with_dismiss_after(Duration::from_millis(50)),
         );
         // Active immediately after push.
         assert_eq!(chrome.borrow().notifications().len(), 1);
         // Simulate "now" 200 ms in the future.
         let future = Instant::now() + Duration::from_millis(200);
-        let dropped = chrome
-            .borrow_mut()
-            .update_notification_lifecycle(future);
+        let dropped = chrome.borrow_mut().update_notification_lifecycle(future);
         assert_eq!(dropped, 1);
         assert!(chrome.borrow().notifications().is_empty());
         // Re-dismissing a dropped id is a no-op (not a panic).
@@ -872,9 +851,7 @@ mod tests {
     fn cap_enforces_fifo_drop_at_max() {
         let chrome = new_chrome();
         for i in 0..(MAX_NOTIFICATIONS + 3) {
-            chrome
-                .borrow_mut()
-                .push_notification(format!("n{i}"), "");
+            chrome.borrow_mut().push_notification(format!("n{i}"), "");
         }
         assert_eq!(chrome.borrow().notifications().len(), MAX_NOTIFICATIONS);
         // First three should have been evicted from the front.
@@ -969,9 +946,7 @@ mod tests {
     fn pump_dbus_notifications_creates_attributed_toast() {
         let chrome = new_chrome();
         let bridge = NotificationBridge::new();
-        chrome
-            .borrow_mut()
-            .set_notification_bridge(bridge.clone());
+        chrome.borrow_mut().set_notification_bridge(bridge.clone());
         bridge.push_incoming(incoming(11, 1, 5000));
         chrome.borrow_mut().pump_dbus_notifications();
         let ch = chrome.borrow();
@@ -986,9 +961,7 @@ mod tests {
     fn replaces_id_supersedes_existing_toast_via_pump() {
         let chrome = new_chrome();
         let bridge = NotificationBridge::new();
-        chrome
-            .borrow_mut()
-            .set_notification_bridge(bridge.clone());
+        chrome.borrow_mut().set_notification_bridge(bridge.clone());
         bridge.push_incoming(incoming(5, 1, 5000));
         chrome.borrow_mut().pump_dbus_notifications();
         // Same dbus_id replaces, not appends.
@@ -1005,17 +978,13 @@ mod tests {
     fn expire_emits_notification_closed_event() {
         let chrome = new_chrome();
         let bridge = NotificationBridge::new();
-        chrome
-            .borrow_mut()
-            .set_notification_bridge(bridge.clone());
+        chrome.borrow_mut().set_notification_bridge(bridge.clone());
         chrome.borrow_mut().push_notification_full(
             Notification::from_incoming(incoming(21, 1, 5000))
                 .with_dismiss_after(Duration::from_millis(10)),
         );
         let future = Instant::now() + Duration::from_millis(200);
-        chrome
-            .borrow_mut()
-            .update_notification_lifecycle(future);
+        chrome.borrow_mut().update_notification_lifecycle(future);
         assert_eq!(
             bridge.drain_closed_events(),
             vec![(21, CloseReason::Expired)],
@@ -1027,9 +996,7 @@ mod tests {
     fn dismiss_emits_closed_event() {
         let chrome = new_chrome();
         let bridge = NotificationBridge::new();
-        chrome
-            .borrow_mut()
-            .set_notification_bridge(bridge.clone());
+        chrome.borrow_mut().set_notification_bridge(bridge.clone());
         let id = chrome
             .borrow_mut()
             .push_notification_full(Notification::from_incoming(incoming(31, 1, 5000)));
@@ -1044,15 +1011,16 @@ mod tests {
     fn activate_invokes_default_action_then_closes() {
         let chrome = new_chrome();
         let bridge = NotificationBridge::new();
-        chrome
-            .borrow_mut()
-            .set_notification_bridge(bridge.clone());
+        chrome.borrow_mut().set_notification_bridge(bridge.clone());
         let id = chrome
             .borrow_mut()
             .push_notification_full(Notification::from_incoming(incoming(41, 1, 5000)));
         assert!(chrome.borrow_mut().activate_notification(id));
         assert!(chrome.borrow().notifications().is_empty());
-        assert_eq!(bridge.drain_action_events(), vec![(41, "default".to_string())]);
+        assert_eq!(
+            bridge.drain_action_events(),
+            vec![(41, "default".to_string())]
+        );
         assert_eq!(
             bridge.drain_closed_events(),
             vec![(41, CloseReason::Dismissed)]
@@ -1063,9 +1031,7 @@ mod tests {
     fn close_request_pump_removes_and_emits_closed() {
         let chrome = new_chrome();
         let bridge = NotificationBridge::new();
-        chrome
-            .borrow_mut()
-            .set_notification_bridge(bridge.clone());
+        chrome.borrow_mut().set_notification_bridge(bridge.clone());
         bridge.push_incoming(incoming(51, 1, 5000));
         chrome.borrow_mut().pump_dbus_notifications();
         assert_eq!(chrome.borrow().notifications().len(), 1);
@@ -1073,7 +1039,10 @@ mod tests {
         bridge.request_close(51);
         chrome.borrow_mut().pump_dbus_notifications();
         assert!(chrome.borrow().notifications().is_empty());
-        assert_eq!(bridge.drain_closed_events(), vec![(51, CloseReason::Closed)]);
+        assert_eq!(
+            bridge.drain_closed_events(),
+            vec![(51, CloseReason::Closed)]
+        );
     }
 
     #[test]
@@ -1082,9 +1051,7 @@ mod tests {
         // when dismissed — only D-Bus-originated toasts do.
         let chrome = new_chrome();
         let bridge = NotificationBridge::new();
-        chrome
-            .borrow_mut()
-            .set_notification_bridge(bridge.clone());
+        chrome.borrow_mut().set_notification_bridge(bridge.clone());
         let id = chrome.borrow_mut().push_notification("internal", "");
         chrome.borrow_mut().dismiss_notification(id);
         assert!(bridge.drain_closed_events().is_empty());
@@ -1146,7 +1113,9 @@ mod tests {
     #[test]
     fn active_notification_moves_to_history_on_dismiss() {
         let chrome = new_chrome();
-        let id = chrome.borrow_mut().push_notification("Shown", "then dismissed");
+        let id = chrome
+            .borrow_mut()
+            .push_notification("Shown", "then dismissed");
         // While active it is NOT yet in history (history == past toasts).
         assert_eq!(chrome.borrow().notifications().len(), 1);
         assert_eq!(chrome.borrow().notification_history().len(), 0);
@@ -1160,8 +1129,7 @@ mod tests {
     fn expiry_moves_notification_to_history() {
         let chrome = new_chrome();
         chrome.borrow_mut().push_notification_full(
-            Notification::new("Quick", "fades")
-                .with_dismiss_after(Duration::from_millis(10)),
+            Notification::new("Quick", "fades").with_dismiss_after(Duration::from_millis(10)),
         );
         assert_eq!(chrome.borrow().notification_history().len(), 0);
         let future = Instant::now() + Duration::from_millis(200);

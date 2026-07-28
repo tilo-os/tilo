@@ -27,6 +27,8 @@ pub mod foreign;
 pub mod frame;
 pub mod gpu_import;
 pub mod hosted;
+#[cfg(feature = "hosted-test-control")]
+pub mod hosted_test_control;
 pub mod idle;
 pub mod lock_auth;
 pub mod lock_controller;
@@ -36,10 +38,8 @@ pub mod remote_seat;
 pub mod render_node;
 pub mod state;
 pub mod surface_readback;
-pub mod test_control;
-#[cfg(feature = "hosted-test-control")]
-pub mod hosted_test_control;
 pub mod tab_binding;
+pub mod test_control;
 
 /// Which run mode the compositor should boot into.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -140,9 +140,7 @@ impl XdgConfigMarkerSource {
 
 impl MarkerSource for XdgConfigMarkerSource {
     fn peer_sync_marker_exists(&self) -> bool {
-        Self::marker_path()
-            .map(|p| p.exists())
-            .unwrap_or(false)
+        Self::marker_path().map(|p| p.exists()).unwrap_or(false)
     }
 }
 
@@ -398,7 +396,10 @@ mod tests {
 
     #[test]
     fn dash_dash_backend_eq_drm_returns_drm() {
-        assert!(matches!(parse_backend(&["--backend=drm"]), BackendKind::Drm));
+        assert!(matches!(
+            parse_backend(&["--backend=drm"]),
+            BackendKind::Drm
+        ));
     }
 
     #[test]
@@ -528,11 +529,9 @@ mod tests {
 
     #[test]
     fn marker_path_falls_back_to_home_dot_config() {
-        let path = peer_sync_marker_path_from_env(
-            None,
-            Some(std::ffi::OsString::from("/home/alice")),
-        )
-        .expect("path resolves via HOME");
+        let path =
+            peer_sync_marker_path_from_env(None, Some(std::ffi::OsString::from("/home/alice")))
+                .expect("path resolves via HOME");
         assert_eq!(
             path,
             std::path::PathBuf::from("/home/alice/.config/quick-desktop/peer-sync.enabled")

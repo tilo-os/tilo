@@ -152,8 +152,7 @@ fn round_trip_with_timeout(
 fn list_targets_returns_widget_registry() {
     let (mut child, socket_path) = spawn_with_control();
 
-    let mut stream = UnixStream::connect(&socket_path)
-        .expect("connect to test_control socket");
+    let mut stream = UnixStream::connect(&socket_path).expect("connect to test_control socket");
 
     let response = round_trip(&mut stream, r#"{"op":"list_targets"}"#);
 
@@ -192,13 +191,15 @@ fn list_targets_returns_widget_registry() {
 fn unknown_command_returns_parse_error() {
     let (mut child, socket_path) = spawn_with_control();
 
-    let mut stream = UnixStream::connect(&socket_path)
-        .expect("connect to test_control socket");
+    let mut stream = UnixStream::connect(&socket_path).expect("connect to test_control socket");
 
     let response = round_trip(&mut stream, r#"{"op":"go_fishing"}"#);
 
     let err = response.get("err").expect("response has `err` key");
-    assert_eq!(err.get("code").and_then(|c| c.as_str()), Some("parse_error"));
+    assert_eq!(
+        err.get("code").and_then(|c| c.as_str()),
+        Some("parse_error")
+    );
 
     let _ = child.kill();
     let _ = child.wait();
@@ -217,8 +218,7 @@ fn unknown_command_returns_parse_error() {
 fn click_at_returns_ok_response() {
     let (mut child, socket_path) = spawn_with_control();
 
-    let mut stream = UnixStream::connect(&socket_path)
-        .expect("connect to test_control socket");
+    let mut stream = UnixStream::connect(&socket_path).expect("connect to test_control socket");
 
     let response = round_trip(&mut stream, r#"{"op":"click_at","x":400,"y":300}"#);
 
@@ -243,8 +243,7 @@ fn click_at_returns_ok_response() {
 fn click_named_known_target_grows_workspace_registry() {
     let (mut child, socket_path) = spawn_with_control();
 
-    let mut stream = UnixStream::connect(&socket_path)
-        .expect("connect to test_control socket");
+    let mut stream = UnixStream::connect(&socket_path).expect("connect to test_control socket");
 
     // Snapshot the registry before the click — the wheel disc's plus
     // slot adds a workspace, which surfaces additional spoke widgets
@@ -262,10 +261,7 @@ fn click_named_known_target_grows_workspace_registry() {
     // path, so this click is a clean smoke for "Ok came back". The
     // workspace-grow assertion below uses a follow-up click via raw
     // coordinates inside the plus slot's vertical band.
-    let resp = round_trip(
-        &mut stream,
-        r#"{"op":"click_named","name":"wheel_disc"}"#,
-    );
+    let resp = round_trip(&mut stream, r#"{"op":"click_named","name":"wheel_disc"}"#);
     assert!(
         resp.get("ok").is_some(),
         "click_named on a known target should respond `ok`; got {resp:?}"
@@ -299,8 +295,7 @@ fn click_named_known_target_grows_workspace_registry() {
 fn click_named_unknown_target_returns_structured_error() {
     let (mut child, socket_path) = spawn_with_control();
 
-    let mut stream = UnixStream::connect(&socket_path)
-        .expect("connect to test_control socket");
+    let mut stream = UnixStream::connect(&socket_path).expect("connect to test_control socket");
 
     let response = round_trip(
         &mut stream,
@@ -327,8 +322,7 @@ fn click_named_unknown_target_returns_structured_error() {
 fn drag_smoke_completes_round_trip() {
     let (mut child, socket_path) = spawn_with_control();
 
-    let mut stream = UnixStream::connect(&socket_path)
-        .expect("connect to test_control socket");
+    let mut stream = UnixStream::connect(&socket_path).expect("connect to test_control socket");
 
     let response = round_trip(
         &mut stream,
@@ -355,8 +349,7 @@ fn drag_smoke_completes_round_trip() {
 fn type_text_into_palette_when_open() {
     let (mut child, socket_path) = spawn_with_control();
 
-    let mut stream = UnixStream::connect(&socket_path)
-        .expect("connect to test_control socket");
+    let mut stream = UnixStream::connect(&socket_path).expect("connect to test_control socket");
 
     // Ctrl modifier on, then the 'k' key.
     let resp = round_trip(
@@ -408,13 +401,9 @@ fn snapshot_writes_png_at_requested_path() {
     ));
     let _ = std::fs::remove_file(&png_path);
 
-    let mut stream = UnixStream::connect(&socket_path)
-        .expect("connect to test_control socket");
+    let mut stream = UnixStream::connect(&socket_path).expect("connect to test_control socket");
 
-    let cmd = format!(
-        r#"{{"op":"snapshot","path":"{}"}}"#,
-        png_path.display()
-    );
+    let cmd = format!(r#"{{"op":"snapshot","path":"{}"}}"#, png_path.display());
     // `snapshot` is much slower than every other test_control command —
     // it spins up a wgpu adapter, allocates a render-target texture,
     // and copies pixels back from the GPU. On cold caches this can
@@ -464,8 +453,7 @@ fn snapshot_writes_png_at_requested_path() {
 fn state_dump_returns_workspace_id_and_chrome() {
     let (mut child, socket_path) = spawn_with_control();
 
-    let mut stream = UnixStream::connect(&socket_path)
-        .expect("connect to test_control socket");
+    let mut stream = UnixStream::connect(&socket_path).expect("connect to test_control socket");
 
     let response = round_trip(&mut stream, r#"{"op":"state_dump"}"#);
 
@@ -504,8 +492,7 @@ fn state_dump_returns_workspace_id_and_chrome() {
 fn modifiers_alone_returns_ok() {
     let (mut child, socket_path) = spawn_with_control();
 
-    let mut stream = UnixStream::connect(&socket_path)
-        .expect("connect to test_control socket");
+    let mut stream = UnixStream::connect(&socket_path).expect("connect to test_control socket");
 
     let response = round_trip(
         &mut stream,

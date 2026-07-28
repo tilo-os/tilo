@@ -51,8 +51,17 @@ pub struct OverlayFlags {
 /// unless the user explicitly widens or narrows.
 ///
 /// The scope is seeded by which chord opened the palette:
-/// - `Ctrl+K` → [`SearchScope::ActiveApp`] (scoped to the focused tab)
+/// - `Ctrl+K` → [`SearchScope::Workspace`] (every provider, this workspace)
 /// - `Super+K` / `Super+Space` / `Alt+Space` → [`SearchScope::All`]
+///
+/// **No chord narrows to a single app.** [`SearchScope::ActiveApp`] drops
+/// every provider that does not own the focused tab, so a palette opened
+/// in it answers "Terminal" with nothing at all while Terminal sits
+/// installed one keystroke away. A scope that can empty the result set
+/// has to be something the user asked for and can see they asked for:
+/// it is reached only by clicking the focused group's search affordance
+/// or the scope pill itself, and its pill says `Only <App>` so an empty
+/// list explains itself.
 ///
 /// The `Alt+Space` binding is a nested-friendly Super substitute: when
 /// the compositor runs as a Wayland CLIENT the host DE (GNOME etc.)
@@ -60,7 +69,8 @@ pub struct OverlayFlags {
 /// preserve global-search reachability inside a dev window.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum SearchScope {
-    /// Scoped to the currently focused tab's content. Chord: `Ctrl+K`.
+    /// Scoped to the currently focused tab's content. Never seeded by a
+    /// keyboard chord — see the type-level note.
     ActiveApp,
     #[default]
     Workspace,
@@ -73,10 +83,18 @@ impl SearchScope {
     /// with the tab's title instead of this static string.
     pub fn label(self) -> &'static str {
         match self {
-            SearchScope::ActiveApp => "This app",
+            SearchScope::ActiveApp => "Only this app",
             SearchScope::Workspace => "Workspace",
             SearchScope::All => "All",
         }
+    }
+
+    /// Whether this scope can hide results a wider scope would show.
+    /// The pill renders a narrowing scope with an explicit `Only …`
+    /// prefix so an empty result list is attributable to the scope
+    /// rather than to the query.
+    pub fn narrows_results(self) -> bool {
+        matches!(self, SearchScope::ActiveApp)
     }
 }
 
@@ -618,11 +636,7 @@ impl ChromeState {
             let Some(strip) = ws.strips.iter_mut().find(|s| s.id == strip_id) else {
                 return false;
             };
-            let Some(group) = strip
-                .window_groups
-                .iter_mut()
-                .find(|g| g.id == group_id)
-            else {
+            let Some(group) = strip.window_groups.iter_mut().find(|g| g.id == group_id) else {
                 return false;
             };
             if group.tabs.len() < 2 {
@@ -664,10 +678,7 @@ impl ChromeState {
                 .active_workspace()
                 .map(|ws| ws.name.clone())
                 .unwrap_or_else(|| "(unnamed)".to_string());
-            self.push_notification(
-                format!("Switched to workspace {new_name}"),
-                String::new(),
-            );
+            self.push_notification(format!("Switched to workspace {new_name}"), String::new());
             self.bump();
         }
         changed
@@ -685,11 +696,7 @@ impl ChromeState {
     /// body. Returns the freshly assigned id so callers can dismiss
     /// it later via [`Self::dismiss_notification`]. Bumps the chrome
     /// revision so widgets re-sync on the next frame.
-    pub fn push_notification(
-        &mut self,
-        title: impl Into<String>,
-        body: impl Into<String>,
-    ) -> u64 {
+    pub fn push_notification(&mut self, title: impl Into<String>, body: impl Into<String>) -> u64 {
         self.push_notification_full(Notification::new(title, body))
     }
 
@@ -785,8 +792,7 @@ impl ChromeState {
             return false;
         };
         let removed = self.notifications.remove(pos);
-        if let (Some(bridge), Some(dbus_id)) =
-            (self.notification_bridge.as_ref(), removed.dbus_id)
+        if let (Some(bridge), Some(dbus_id)) = (self.notification_bridge.as_ref(), removed.dbus_id)
         {
             if let Some(key) = removed.default_action_key() {
                 bridge.note_action(dbus_id, key);
@@ -955,8 +961,7 @@ impl ChromeState {
     /// Emit a `NotificationClosed` for a removed toast iff it originated
     /// from D-Bus and the bridge is installed.
     fn emit_closed(&self, removed: &Notification, reason: CloseReason) {
-        if let (Some(bridge), Some(dbus_id)) =
-            (self.notification_bridge.as_ref(), removed.dbus_id)
+        if let (Some(bridge), Some(dbus_id)) = (self.notification_bridge.as_ref(), removed.dbus_id)
         {
             bridge.note_closed(dbus_id, reason);
         }

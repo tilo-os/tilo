@@ -87,6 +87,11 @@ pub enum Command {
         y_to: f64,
         steps: Option<u32>,
     },
+    /// Per-surface frame counters for every foreign toplevel the
+    /// compositor is tracking. Read-only. Lets a harness distinguish an
+    /// app that painted from one still showing the first-frame
+    /// placeholder without guessing from a screenshot.
+    ForeignFrames,
     /// Inject a single key press + release. `key` is a winit-style
     /// name — `"Enter"`, `"Escape"`, `"Tab"`, `"ArrowLeft"/Up/Right/Down`,
     /// `"Backspace"`, `"Delete"`, `"Home"`, `"End"`, `"PageUp"/Down`,
@@ -168,6 +173,9 @@ pub enum Response {
     /// `serde_json::Value` is `PartialEq` so the variant participates
     /// in the `PartialEq` derive — same as the rest of the response
     /// envelope.
+    /// `foreign_frames` response - one entry per tracked foreign
+    /// surface, opaque `serde_json::Value` so the shape can grow.
+    ForeignFrames { frames: serde_json::Value },
     State {
         workspace_tree: serde_json::Value,
         chrome: serde_json::Value,
@@ -222,6 +230,20 @@ pub trait ControlState {
     /// fixtures that don't exercise `state_dump` stay terse.
     fn chrome_state_json(&self) -> serde_json::Value {
         serde_json::Value::Null
+    }
+    /// Per-surface frame ground truth: what the compositor itself knows
+    /// about whether each foreign toplevel has ever presented.
+    ///
+    /// A harness that wants to say "this app rendered" must not have to
+    /// infer it from pixels. The placeholder tile is the app-id over a
+    /// flat card, which is near-identical between any two apps and, for
+    /// an app that legitimately starts empty, near-identical to a real
+    /// first frame. `frame_seq > 0` is the fact behind that guess.
+    ///
+    /// Default is an empty list so fixtures that don't exercise it stay
+    /// terse.
+    fn foreign_frames_json(&self) -> serde_json::Value {
+        serde_json::Value::Array(Vec::new())
     }
 }
 
@@ -543,6 +565,12 @@ pub fn dispatch_command<S: ControlState>(
                 )
             }
         }
+        Command::ForeignFrames => (
+            Response::ForeignFrames {
+                frames: state.foreign_frames_json(),
+            },
+            Vec::new(),
+        ),
         Command::StateDump => {
             // `state_dump` is read-only: pull both JSON views from the
             // `ControlState` impl and return them verbatim. No
@@ -594,10 +622,7 @@ mod tests {
     impl StaticState {
         fn new(entries: &[(&str, Rect)]) -> Self {
             Self {
-                registry: entries
-                    .iter()
-                    .map(|(k, v)| (k.to_string(), *v))
-                    .collect(),
+                registry: entries.iter().map(|(k, v)| (k.to_string(), *v)).collect(),
             }
         }
     }
@@ -686,8 +711,7 @@ mod tests {
     #[test]
     fn click_at_emits_motion_press_release_in_order() {
         let state = StaticState::new(&[]);
-        let (resp, actions) =
-            dispatch_command(&Command::ClickAt { x: 42.0, y: 7.0 }, &state);
+        let (resp, actions) = dispatch_command(&Command::ClickAt { x: 42.0, y: 7.0 }, &state);
         assert!(matches!(resp, Response::Ok { .. }));
         assert_eq!(
             actions,
@@ -716,7 +740,10 @@ mod tests {
         );
         assert!(matches!(resp, Response::Ok { .. }));
         // Centre of (100, 200, 40, 20) is (120, 210).
-        assert_eq!(actions[0], PlannedAction::CursorMoved { x: 120.0, y: 210.0 });
+        assert_eq!(
+            actions[0],
+            PlannedAction::CursorMoved { x: 120.0, y: 210.0 }
+        );
     }
 
     #[test]
@@ -810,7 +837,10 @@ mod tests {
         assert_eq!(actions.len(), 7);
         assert_eq!(actions[0], PlannedAction::CursorMoved { x: 0.0, y: 0.0 });
         assert_eq!(actions[1], PlannedAction::MouseLeftButton { pressed: true });
-        assert_eq!(actions[6], PlannedAction::MouseLeftButton { pressed: false });
+        assert_eq!(
+            actions[6],
+            PlannedAction::MouseLeftButton { pressed: false }
+        );
         // Interpolated motions, t = 0/3, 1/3, 2/3, 3/3.
         let expected_ts = [0.0_f64, 1.0 / 3.0, 2.0 / 3.0, 1.0];
         for (idx, t) in expected_ts.iter().enumerate() {
@@ -1101,8 +1131,7 @@ mod tests {
     /// field name visible to clients.
     #[test]
     fn parse_snapshot_command_round_trips() {
-        let cmd =
-            parse_command(r#"{"op":"snapshot","path":"/tmp/round.png"}"#).unwrap();
+        let cmd = parse_command(r#"{"op":"snapshot","path":"/tmp/round.png"}"#).unwrap();
         assert_eq!(
             cmd,
             Command::Snapshot {
@@ -1163,7 +1192,11 @@ mod tests {
         };
         let (resp, actions) = dispatch_command(&Command::StateDump, &state);
         assert!(actions.is_empty(), "state_dump must have no side effects");
-        let Response::State { workspace_tree, chrome } = resp else {
+        let Response::State {
+            workspace_tree,
+            chrome,
+        } = resp
+        else {
             panic!("expected Response::State, got something else");
         };
         // The workspace tree round-trips exactly as the mock returned
@@ -1193,7 +1226,11 @@ mod tests {
         let state = StaticState::new(&[]);
         let (resp, actions) = dispatch_command(&Command::StateDump, &state);
         assert!(actions.is_empty());
-        let Response::State { workspace_tree, chrome } = resp else {
+        let Response::State {
+            workspace_tree,
+            chrome,
+        } = resp
+        else {
             panic!("expected Response::State");
         };
         assert!(workspace_tree.is_null());
@@ -1211,7 +1248,10 @@ mod tests {
             chrome: serde_json::json!({ "overlays": {} }),
         };
         let out = serialise_response(&resp);
-        assert!(out.contains("\"state\""), "tag should be `state`; got {out}");
+        assert!(
+            out.contains("\"state\""),
+            "tag should be `state`; got {out}"
+        );
         assert!(out.contains("\"workspace_tree\""), "got {out}");
         assert!(out.contains("\"chrome\""), "got {out}");
     }

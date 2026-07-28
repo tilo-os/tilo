@@ -74,6 +74,10 @@ rand = "0.10.1"
 ui = { path = "../ui" }
 terminal = { path = "../apps/terminal" }
 file-explorer = { path = "../apps/file-explorer" }
+# The document-format registry. The shell asks it whether a path is an
+# editable document; which installed app opens it comes from the app
+# manifests, not from here.
+qdoc = { path = "../crates/doc/qdoc" }
 # Shared OS-action shell-outs (brightnessctl/wpctl/nmcli/bluetoothctl/
 # powerprofilesctl). Lifted out of `shell::shell::qs_actions` so the
 # Settings app can call the same bindings without depending on the

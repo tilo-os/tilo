@@ -170,10 +170,7 @@ fn topbar_renders_up_to_three_avatars_then_overflow_chip() {
         .expect("active workspace");
 
     // 2 peers → 2 avatars, no overflow.
-    active_ws.collaborators = vec![
-        Collaborator::new("a", "Ada"),
-        Collaborator::new("b", "Ben"),
-    ];
+    active_ws.collaborators = vec![Collaborator::new("a", "Ada"), Collaborator::new("b", "Ben")];
     let top = TopBarChrome::from_tree(&tree);
     assert_eq!(top.collaborator_initials(), &['A', 'B']);
     assert_eq!(top.collaborator_overflow(), 0);
@@ -255,10 +252,8 @@ fn sidebar_cards_read_per_workspace_collaborator_rosters() {
     tree.append_empty_workspace("Second");
     let w2_id = tree.workspaces[1].id;
     // Workspace 0: two peers. Workspace 1: one peer. Tree: none.
-    tree.workspaces[0].collaborators = vec![
-        Collaborator::new("a", "Ada"),
-        Collaborator::new("b", "Ben"),
-    ];
+    tree.workspaces[0].collaborators =
+        vec![Collaborator::new("a", "Ada"), Collaborator::new("b", "Ben")];
     tree.workspaces[1].collaborators = vec![Collaborator::new("c", "Cae")];
     tree.active = w1_id;
 
@@ -290,10 +285,7 @@ fn sidebar_inactive_card_without_per_ws_roster_shows_zero_dots() {
     for ws in tree.workspaces.iter_mut() {
         ws.collaborators.clear();
     }
-    tree.collaborators = vec![
-        Collaborator::new("a", "Ada"),
-        Collaborator::new("b", "Ben"),
-    ];
+    tree.collaborators = vec![Collaborator::new("a", "Ada"), Collaborator::new("b", "Ben")];
     // Workspace 0 is active + has no per-ws roster: borrows tree (2).
     // Every other card is inactive + has no per-ws roster: stays at 0.
     tree.active = w0;
@@ -345,7 +337,10 @@ fn center_widget_cycles_forward_and_backward() {
     assert_eq!(CenterWidget::from_index(3), CenterWidget::Clock);
     // And the top bar starts on Clock by default so the first frame is sane.
     let tree = WorkspaceTree::bootstrap_default();
-    assert_eq!(TopBarChrome::from_tree(&tree).center_widget(), CenterWidget::Clock);
+    assert_eq!(
+        TopBarChrome::from_tree(&tree).center_widget(),
+        CenterWidget::Clock
+    );
 }
 
 #[test]
@@ -359,7 +354,11 @@ fn notes_app_roundtrips_through_crdt() {
 
     let mut a = NotesApp::with_seed("hello");
     a.sync(&mut doc, &tile);
-    assert_eq!(doc.text(&doc.get(&tile, BODY_KEY).unwrap().unwrap().1).unwrap(), "hello");
+    assert_eq!(
+        doc.text(&doc.get(&tile, BODY_KEY).unwrap().unwrap().1)
+            .unwrap(),
+        "hello"
+    );
 
     // A second Notes widget that attaches to the same tile picks up the
     // existing body on sync — this is the CRDT-backed "join the session"
@@ -492,11 +491,7 @@ fn sync_tab_presence_seeds_per_tab_peer_registrations() {
 
     // Cae has no `active_tab` → not attributed anywhere. The map for any
     // tab id Cae might plausibly live on should therefore not mention "c".
-    let all_peers: Vec<&UserId> = ctx
-        .here
-        .values()
-        .flat_map(|v| v.iter())
-        .collect();
+    let all_peers: Vec<&UserId> = ctx.here.values().flat_map(|v| v.iter()).collect();
     assert!(
         all_peers.iter().all(|u| u.0 != "c"),
         "collaborator with no active_tab must not register anywhere: {:?}",
@@ -595,12 +590,12 @@ fn shell_file_drop_appends_tab_to_active_workspace() {
     use shell::shell::Shell;
 
     let mut shell = Shell::new_for_test();
-    let before_titles: Vec<String> = shell.workspace_tree().workspaces[0].strips[0]
-        .window_groups[0]
-        .tabs
-        .iter()
-        .map(|t| t.title.clone())
-        .collect();
+    let before_titles: Vec<String> = shell.workspace_tree().workspaces[0].strips[0].window_groups
+        [0]
+    .tabs
+    .iter()
+    .map(|t| t.title.clone())
+    .collect();
 
     // File does not need to exist on disk; `DraggedItem::from_path` falls
     // back to the non-directory branch when `is_dir()` returns false, which
@@ -694,11 +689,11 @@ fn chrome_file_drop_appends_tab_and_bumps_revision() {
 #[test]
 fn overview_button_click_toggles_overview_overlay() {
     use automerge::AutoCommit;
+    use std::collections::HashMap;
+    use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
     use ui::presence::PresenceCtx;
     use ui::text_render::TextRenderer;
     use ui::theme::Theme;
-    use std::collections::HashMap;
-    use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
     use vello::Scene;
     use vello::kurbo::{Affine, Point};
     use winit::dpi::PhysicalPosition;
@@ -706,7 +701,10 @@ fn overview_button_click_toggles_overview_overlay() {
 
     let tree = WorkspaceTree::bootstrap_default();
     let chrome = ChromeState::new(tree.clone());
-    assert!(!chrome.borrow().overlays.overview, "precondition: overview starts closed");
+    assert!(
+        !chrome.borrow().overlays.overview,
+        "precondition: overview starts closed"
+    );
 
     let mut bar = TopBarChrome::from_tree(&tree).with_chrome(chrome.clone());
 
@@ -746,7 +744,10 @@ fn overview_button_click_toggles_overview_overlay() {
     bar.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
 
     let btn = bar.overview_btn_rect();
-    assert!(btn.area() > 0.0, "draw should have populated overview_btn_rect");
+    assert!(
+        btn.area() > 0.0,
+        "draw should have populated overview_btn_rect"
+    );
     let hit = Point::new((btn.x0 + btn.x1) / 2.0, (btn.y0 + btn.y1) / 2.0);
 
     // Synthesise a cursor move + press at the button centre. The widget
@@ -762,15 +763,38 @@ fn overview_button_click_toggles_overview_overlay() {
         device_id: unsafe { std::mem::zeroed() },
         position: PhysicalPosition::new(hit.x, hit.y),
     };
-    bar.handle_event(&cm, 1.0, &modifiers, &mut state, &root, &mut handled, &mut focus, node, &taffy);
+    bar.handle_event(
+        &cm,
+        1.0,
+        &modifiers,
+        &mut state,
+        &root,
+        &mut handled,
+        &mut focus,
+        node,
+        &taffy,
+    );
     let mi = WindowEvent::MouseInput {
         device_id: unsafe { std::mem::zeroed() },
         state: ElementState::Pressed,
         button: MouseButton::Left,
     };
-    bar.handle_event(&mi, 1.0, &modifiers, &mut state, &root, &mut handled, &mut focus, node, &taffy);
+    bar.handle_event(
+        &mi,
+        1.0,
+        &modifiers,
+        &mut state,
+        &root,
+        &mut handled,
+        &mut focus,
+        node,
+        &taffy,
+    );
 
-    assert!(handled, "click on overview button should be handled by the top bar");
+    assert!(
+        handled,
+        "click on overview button should be handled by the top bar"
+    );
     assert!(
         chrome.borrow().overlays.overview,
         "first click should open the overview overlay"
@@ -778,7 +802,17 @@ fn overview_button_click_toggles_overview_overlay() {
 
     // Second click closes it again.
     let mut handled2 = false;
-    bar.handle_event(&mi, 1.0, &modifiers, &mut state, &root, &mut handled2, &mut focus, node, &taffy);
+    bar.handle_event(
+        &mi,
+        1.0,
+        &modifiers,
+        &mut state,
+        &root,
+        &mut handled2,
+        &mut focus,
+        node,
+        &taffy,
+    );
     assert!(handled2);
     assert!(
         !chrome.borrow().overlays.overview,
@@ -800,11 +834,11 @@ fn overview_button_click_toggles_overview_overlay() {
 #[test]
 fn full_root_click_toggles_overview_via_topbar_button() {
     use automerge::AutoCommit;
+    use std::collections::HashMap;
+    use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
     use ui::presence::PresenceCtx;
     use ui::text_render::TextRenderer;
     use ui::theme::Theme;
-    use std::collections::HashMap;
-    use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
     use vello::Scene;
     use vello::kurbo::{Affine, Point};
     use winit::dpi::PhysicalPosition;
@@ -850,7 +884,11 @@ fn full_root_click_toggles_overview_via_topbar_button() {
     // `with_no_padding` so the topbar lands flush at y=0 / x=0. The
     // probe matches: zero offset.
     let topbar_offset = 0.0_f64;
-    probe.apply_layout(&probe_taffy, pnode, Point::new(topbar_offset, topbar_offset));
+    probe.apply_layout(
+        &probe_taffy,
+        pnode,
+        Point::new(topbar_offset, topbar_offset),
+    );
     let mut probe_scene = Scene::new();
     let mut probe_tr = TextRenderer::new();
     let probe_presence = PresenceCtx::default();
@@ -998,11 +1036,11 @@ fn full_root_click_toggles_overview_via_topbar_button() {
 #[test]
 fn overview_toggle_signals_animation_frames_until_settled() {
     use automerge::AutoCommit;
+    use std::collections::HashMap;
+    use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
     use ui::presence::PresenceCtx;
     use ui::text_render::TextRenderer;
     use ui::theme::Theme;
-    use std::collections::HashMap;
-    use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
     use vello::Scene;
     use vello::kurbo::{Affine, Point};
 
@@ -1013,7 +1051,10 @@ fn overview_toggle_signals_animation_frames_until_settled() {
     let (mut root, chrome) = build_nirios_root_with_chrome(&tree);
 
     // Before any interaction no animation is in flight.
-    assert!(!root.needs_animation_frame(), "static root should not request animation frames");
+    assert!(
+        !root.needs_animation_frame(),
+        "static root should not request animation frames"
+    );
 
     // Toggle the overview directly via the shared chrome handle — the
     // click path is covered by other tests; here we only care about the

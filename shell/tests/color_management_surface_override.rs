@@ -37,8 +37,7 @@ fn hdr10_pq() -> Colorimetry {
 
 #[test]
 fn default_stream_start_reports_sdr_bt709() {
-    let session = SharedFlatpakSession::start(1, "app", 42, 64, 64, sdr_config())
-        .expect("session");
+    let session = SharedFlatpakSession::start(1, "app", 42, 64, 64, sdr_config()).expect("session");
     match session.stream_start_msg() {
         NeighbourMsg::SurfaceStreamStart {
             codec,
@@ -58,8 +57,7 @@ fn default_stream_start_reports_sdr_bt709() {
 
 #[test]
 fn client_attached_image_description_wins_over_config() {
-    let session = SharedFlatpakSession::start(1, "app", 42, 64, 64, sdr_config())
-        .expect("session");
+    let session = SharedFlatpakSession::start(1, "app", 42, 64, 64, sdr_config()).expect("session");
     // Simulate what the compositor's `wp_color_management_surface_v1`
     // dispatch does after a `commit`: push the client's declared
     // colorimetry onto the session.
@@ -79,10 +77,7 @@ fn client_attached_image_description_wins_over_config() {
             assert_eq!(codec, "hevc-main10");
             assert_eq!(bit_depth, 10);
             assert_eq!(colorimetry, Some(hdr10_pq()));
-            assert_eq!(
-                hdr_static_metadata,
-                Some(Hdr10Metadata::reference_bt2020())
-            );
+            assert_eq!(hdr_static_metadata, Some(Hdr10Metadata::reference_bt2020()));
         }
         other => panic!("expected SurfaceStreamStart, got {other:?}"),
     }
@@ -90,8 +85,7 @@ fn client_attached_image_description_wins_over_config() {
 
 #[test]
 fn unset_image_description_falls_back_to_config_default() {
-    let session = SharedFlatpakSession::start(1, "app", 42, 64, 64, sdr_config())
-        .expect("session");
+    let session = SharedFlatpakSession::start(1, "app", 42, 64, 64, sdr_config()).expect("session");
     session.set_color_override(hdr10_pq(), None);
     // Now the client sends `unset_image_description` — the compositor
     // calls `clear_color_override`.

@@ -1,17 +1,24 @@
-use libp2p::{
-    gossipsub, mdns, noise, swarm::NetworkBehaviour, swarm::SwarmEvent, tcp, yamux,
-};
+use crate::workspace::UserCursor;
 use libp2p::futures::StreamExt;
+use libp2p::{gossipsub, mdns, noise, swarm::NetworkBehaviour, swarm::SwarmEvent, tcp, yamux};
 use serde::{Deserialize, Serialize};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::time::Duration;
-use crate::workspace::UserCursor;
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Clone)]
 pub enum NetworkEvent {
     CursorUpdate(UserCursor),
-    WindowMoved { zone_id: String, window_id: String, x: f32, y: f32 },
-    ZoneCreated { name: String, x: f32, y: f32 },
+    WindowMoved {
+        zone_id: String,
+        window_id: String,
+        x: f32,
+        y: f32,
+    },
+    ZoneCreated {
+        name: String,
+        x: f32,
+        y: f32,
+    },
 }
 
 #[derive(NetworkBehaviour)]
@@ -52,7 +59,10 @@ impl P2PClient {
                     gossipsub_config,
                 )?;
 
-                let mdns = mdns::tokio::Behaviour::new(mdns::Config::default(), key.public().to_peer_id())?;
+                let mdns = mdns::tokio::Behaviour::new(
+                    mdns::Config::default(),
+                    key.public().to_peer_id(),
+                )?;
 
                 Ok(DesktopBehaviour { gossipsub, mdns })
             })?
@@ -69,24 +79,32 @@ impl P2PClient {
 
     pub fn broadcast(&mut self, event: NetworkEvent) {
         if let Ok(json) = serde_json::to_vec(&event) {
-            let _ = self.swarm.behaviour_mut().gossipsub.publish(self.topic.clone(), json);
+            let _ = self
+                .swarm
+                .behaviour_mut()
+                .gossipsub
+                .publish(self.topic.clone(), json);
         }
     }
 
     pub async fn next_event(&mut self) -> Option<NetworkEvent> {
         loop {
             match self.swarm.select_next_some().await {
-                SwarmEvent::Behaviour(DesktopBehaviourEvent::Gossipsub(gossipsub::Event::Message {
-                    message,
-                    ..
-                })) => {
+                SwarmEvent::Behaviour(DesktopBehaviourEvent::Gossipsub(
+                    gossipsub::Event::Message { message, .. },
+                )) => {
                     if let Ok(event) = serde_json::from_slice::<NetworkEvent>(&message.data) {
                         return Some(event);
                     }
                 }
-                SwarmEvent::Behaviour(DesktopBehaviourEvent::Mdns(mdns::Event::Discovered(list))) => {
+                SwarmEvent::Behaviour(DesktopBehaviourEvent::Mdns(mdns::Event::Discovered(
+                    list,
+                ))) => {
                     for (peer_id, _multiaddr) in list {
-                        self.swarm.behaviour_mut().gossipsub.add_explicit_peer(&peer_id);
+                        self.swarm
+                            .behaviour_mut()
+                            .gossipsub
+                            .add_explicit_peer(&peer_id);
                     }
                 }
                 _ => {}
@@ -98,8 +116,8 @@ impl P2PClient {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use uuid::Uuid;
     use crate::workspace::Point;
+    use uuid::Uuid;
 
     #[test]
     fn test_network_event_serialization() {
@@ -110,10 +128,10 @@ mod tests {
             color: [1.0, 0.0, 0.0],
         };
         let event = NetworkEvent::CursorUpdate(cursor.clone());
-        
+
         let json = serde_json::to_string(&event).unwrap();
         let decoded: NetworkEvent = serde_json::from_str(&json).unwrap();
-        
+
         assert_eq!(event, decoded);
     }
 }

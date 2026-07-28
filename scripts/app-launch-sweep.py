@@ -222,25 +222,16 @@ class Compositor:
             pass
         return False
 
-    def palette_input_rect(self):
-        reply = call(self.sock, {"op": "list_targets"})
-        targets = reply.get("targets") or reply.get("ok", {}).get("targets", [])
-        for t in targets:
-            if t["name"] == "command_palette_input":
-                return t["rect"]
-        return None
-
     def open_palette_and_launch(self, short_name: str) -> None:
-        """Ctrl+K, widen the scope to All, restrict the kind to
-        Applications, type the app's name, activate the top row.
+        """Ctrl+K, type the app's name, activate the top row.
 
-        The scope pill defaults to the focused document ("Notes"), which
-        never consults the Applications provider — so without widening it
-        the palette offers nothing and Enter does nothing at all. The
-        pill and the chip are drawn above the palette's own rect and
-        carry no `test_id`, so they are clicked at offsets from the
-        input's rect rather than at absolute coordinates: that survives a
-        different window size, which hardcoded pixels would not.
+        Exactly what a person does, with nothing in between. This used to
+        need two chip clicks first, because Ctrl+K seeded the scope to
+        the focused document and that scope never consults the
+        Applications provider — the palette offered nothing and Enter did
+        nothing. A harness needing a workaround to launch an installed
+        app is a harness reporting a product bug; the workaround is gone
+        because the bug is.
         """
         call(self.sock, {"op": "modifiers", "ctrl": True, "shift": False,
                          "alt": False, "logo": False})
@@ -248,13 +239,6 @@ class Compositor:
         call(self.sock, {"op": "modifiers", "ctrl": False, "shift": False,
                          "alt": False, "logo": False})
         time.sleep(0.4)
-        rect = self.palette_input_rect()
-        if rect is not None:
-            x0 = rect[0]
-            call(self.sock, {"op": "click_at", "x": x0 + 401.0, "y": 55.0})
-            time.sleep(0.3)
-            call(self.sock, {"op": "click_at", "x": x0 + 274.0, "y": 84.0})
-            time.sleep(0.3)
         call(self.sock, {"op": "type", "text": short_name})
         time.sleep(0.8)   # let the providers score and the list settle
         call(self.sock, {"op": "key", "key": "Enter"})
@@ -269,21 +253,50 @@ class Compositor:
                 return sorted(f"{a}#{s}" for a, s in tiles)
         return None
 
-    def snapshot_when_painted(self, out_png: pathlib.Path, hold: float) -> None:
+    def foreign_frames(self):
+        """Per-surface frame counters the compositor is keeping.
+
+        Returns a list of {surface_id, app_id, frame_seq, last_error},
+        or None if the compositor is too old to answer - the caller then
+        has nothing better than the picture to go on, and should say so
+        rather than guess.
+        """
+        try:
+            reply = call(self.sock, {"op": "foreign_frames"})
+        except Exception:  # noqa: BLE001
+            return None
+        if not isinstance(reply, dict):
+            return None
+        body = reply.get("foreign_frames", reply.get("ok", reply))
+        if isinstance(body, dict):
+            body = body.get("frames", body)
+        return body if isinstance(body, list) else None
+
+    def snapshot_when_painted(self, out_png: pathlib.Path, hold: float,
+                              min_hold: float) -> None:
         """Dismiss the palette, then snapshot repeatedly until the tile's
         content stops changing — i.e. the app's own first frame has
-        landed and settled, rather than the placeholder."""
+        landed and settled, rather than the placeholder.
+
+        Stability alone is not enough to stop. The compositor's
+        "waiting for first frame" placeholder is a static picture, so it
+        is *perfectly* stable from the moment it appears — a run that
+        returned on two equal sizes would capture the placeholder for
+        every app whose shaders are still compiling and report it as the
+        app. In a debug build that compile is 10-40s. So `min_hold` has
+        to elapse before stability is allowed to end the wait; only
+        after that does an unchanging picture mean "this is what the app
+        looks like".
+        """
         call(self.sock, {"op": "key", "key": "Escape"})
-        end = time.time() + hold
+        start = time.time()
+        end = start + hold
         last = -1
         while time.time() < end:
             time.sleep(5)
             call(self.sock, {"op": "snapshot", "path": str(out_png)})
             size = out_png.stat().st_size
-            # A still-placeholder tile renders identically frame to
-            # frame; equal encoded sizes twice running means the content
-            # has stopped moving.
-            if size == last:
+            if size == last and time.time() - start >= min_hold:
                 return
             last = size
         call(self.sock, {"op": "snapshot", "path": str(out_png)})
@@ -310,18 +323,26 @@ def was_launched(logpath: pathlib.Path, package_id: str) -> bool:
 def run_one(args, package_id: str, out: pathlib.Path, env_extra: dict) -> dict:
     logpath = out / f"{package_id}.log"
     short = package_id.rsplit(".", 1)[-1]
-    adopted, shot = None, None
+    adopted, shot, frames = None, None, None
     with Compositor(args.shell, args.launcher, logpath, env_extra,
                     args.startup_timeout) as comp:
         if comp.failure:
             return {"adopted": None, "errors": [comp.failure],
                     "compositor_started": False, "launched": False,
-                    "png": None}
+                    "png": None, "frames": None}
         comp.open_palette_and_launch(short)
         adopted = comp.wait_for_adoption(args.settle)
         if adopted and args.shots:
             shot = out / f"{package_id}.png"
-            comp.snapshot_when_painted(shot, args.hold)
+            comp.snapshot_when_painted(shot, args.hold, args.min_hold)
+        if adopted:
+            # Ground truth, straight from the compositor's own frame
+            # bookkeeping: frame_seq counts frames actually taken from
+            # the client, so 0 means the tile is still the first-frame
+            # placeholder however much it may look like an app that
+            # legitimately starts empty. Read it while the compositor is
+            # still up - it dies with the `with` block.
+            frames = comp.foreign_frames()
     reap(f"qos-apps/{package_id}")
 
     launched = was_launched(logpath, package_id)
@@ -337,6 +358,7 @@ def run_one(args, package_id: str, out: pathlib.Path, env_extra: dict) -> dict:
         "compositor_started": True,
         "launched": launched,
         "png": str(shot) if shot and shot.exists() else None,
+        "frames": frames,
     }
 
 
@@ -358,6 +380,11 @@ def main() -> int:
                    help="seconds to wait for a toplevel (default: 60)")
     p.add_argument("--hold", type=float, default=60.0,
                    help="seconds to wait for the first frame with --shots")
+    p.add_argument("--min-hold", type=float, default=45.0,
+                   help="seconds a --shots capture must wait before an "
+                        "unchanging picture is accepted as the app's own "
+                        "(the first-frame placeholder is static, so it looks "
+                        "stable immediately)")
     p.add_argument("--startup-timeout", type=float, default=45.0,
                    help="seconds to wait for the control socket (default: 45)")
     p.add_argument("--data-dir", type=pathlib.Path,

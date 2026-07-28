@@ -9,8 +9,8 @@
 //! contains at least one entry with a non-empty name.
 
 use shell::shell::{Shell, tile::TileContent};
-use ui::AppKind;
 use std::time::Duration;
+use ui::AppKind;
 
 #[test]
 fn default_workspace_hosts_terminal_and_files_and_browser_stub() {

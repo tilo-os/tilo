@@ -14,10 +14,11 @@
 //!   background, and answers content queries in the O(matches) range.
 //!
 //! Both backends produce [`SearchResult`]s of kind [`ResourceKind::File`]
-//! or [`ResourceKind::Folder`]. The palette's Enter callback opens the
-//! path via `xdg-open` (files) or focuses the file-explorer app
-//! (folders) — plumbed through the callback so the shell drives the
-//! actual side-effect.
+//! or [`ResourceKind::Folder`]. The palette's Enter callback routes a
+//! file through [`crate::shell::doc_open`], which resolves the extension
+//! to the installed package that declares it and launches that package
+//! into the active workspace; directories and unclaimed types fall back
+//! to the desktop's default handler.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -103,7 +104,11 @@ impl FilesProvider {
                 .ok();
         }
         let tantivy = crate::shell::search::files_index::FilesIndex::open_or_create(&home).ok();
-        Self { home, name_index, tantivy }
+        Self {
+            home,
+            name_index,
+            tantivy,
+        }
     }
 
     /// Force a re-walk of the home directory. Idempotent; safe to call
@@ -135,6 +140,11 @@ impl SearchProvider for FilesProvider {
     fn resource_kinds(&self) -> &[ResourceKind] {
         &[ResourceKind::File, ResourceKind::Folder]
     }
+    /// A leaf-name prefix hit scores 120 - see [`name_score`].
+    fn max_score(&self) -> i32 {
+        120
+    }
+
     fn query(&self, ctx: SearchContext<'_>) -> Vec<SearchResult> {
         if ctx.needle.trim().is_empty() {
             return Vec::new();
@@ -194,7 +204,19 @@ impl SearchProvider for FilesProvider {
                         lower,
                         is_dir: false,
                     };
-                    out.push(make_result(&entry, hit.score.max(20), hit.snippet));
+                    // The index reports raw BM25 relevance, which has
+                    // no upper bound - a term repeated through a large
+                    // file scores arbitrarily high. Left unbounded it
+                    // dwarfs every other provider's whole scale, so a
+                    // source file that merely mentions an app outranks
+                    // the app itself.
+                    //
+                    // Clamp it below the weakest *name* hit: having the
+                    // word in the filename is a stronger signal about
+                    // what a file is than having it somewhere in the
+                    // body, however many times.
+                    let content = hit.score.clamp(CONTENT_SCORE_MIN, CONTENT_SCORE_MAX);
+                    out.push(make_result(&entry, content, hit.snippet));
                 }
             }
         }
@@ -228,8 +250,8 @@ fn make_result(entry: &NameEntry, score: i32, subtitle: Option<String>) -> Searc
         title: file_title(&entry.path),
         subtitle: subtitle.or_else(|| Some(entry.display.clone())),
         score,
-        on_open: Rc::new(move |_doc, _root, _chrome: &Chrome| {
-            spawn_open(&path, is_dir);
+        on_open: Rc::new(move |_doc, _root, chrome: &Chrome| {
+            open_search_hit(&path, is_dir, chrome);
         }),
     }
 }
@@ -239,6 +261,11 @@ fn file_title(path: &Path) -> String {
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_else(|| path.display().to_string())
 }
+
+/// Bounds for a content hit, which ranks below every name-based hit
+/// ([`name_score`]'s weakest is a directory-name prefix at 45).
+const CONTENT_SCORE_MIN: i32 = 20;
+const CONTENT_SCORE_MAX: i32 = 40;
 
 fn name_score(needle_lower: &str, hay_lower: &str) -> Option<i32> {
     if needle_lower.is_empty() {
@@ -276,18 +303,67 @@ fn fuzzy_subsequence(needle: &str, hay: &str) -> bool {
     true
 }
 
-/// Best-effort `xdg-open`. Files open in the associated app; directories
-/// open in the OS file manager (the compositor's own file-explorer app
-/// registers as the mimeapp handler on the qOS image). We don't await
-/// the child — a slow xdg-open shouldn't block the palette.
+/// Open a palette hit.
+///
+/// A file whose type an installed app declares is opened *by that app*,
+/// through the same launch the palette's Applications rows take — so it
+/// lands in the active workspace with that workspace's capabilities and
+/// its collaboration room, and the compositor adopts its window like any
+/// other. See [`crate::shell::doc_open`].
+///
+/// Everything else falls back to the desktop's default handler:
+/// directories (which are not a launch — the file manager navigates
+/// them), and file types nothing installed claims. A document type with
+/// no installed editor is reported rather than silently handed to
+/// `xdg-open`, because "you have no editor for this" is a fact the user
+/// can act on and a silent no-op is not.
+fn open_search_hit(path: &Path, is_dir: bool, chrome: &Chrome) {
+    use crate::shell::doc_open::{self, DocumentTarget};
+    if is_dir {
+        spawn_open(path, is_dir);
+        return;
+    }
+    match doc_open::resolve(path) {
+        DocumentTarget::App { .. } => {
+            if let Err(e) = doc_open::open_in_workspace(path, chrome) {
+                notify_open_failure(path, &e.user_message(), chrome);
+            }
+        }
+        DocumentTarget::NoAppForDocument { ext } => {
+            notify_open_failure(
+                path,
+                &format!("no installed app opens .{ext} documents"),
+                chrome,
+            );
+        }
+        DocumentTarget::Unclaimed | DocumentTarget::Directory => spawn_open(path, is_dir),
+    }
+}
+
+fn notify_open_failure(path: &Path, detail: &str, chrome: &Chrome) {
+    use crate::shell::notification::{Notification, NotificationSeverity};
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| path.display().to_string());
+    let mut st = chrome.borrow_mut();
+    st.push_notification_full(
+        Notification::new(format!("Couldn't open {name}"), detail.to_string())
+            .with_severity(NotificationSeverity::Error)
+            .with_app_name("Files"),
+    );
+    st.bump();
+}
+
+/// Best-effort `xdg-open`. The fallback for directories and for file
+/// types no installed package claims. We don't await the child — a slow
+/// xdg-open shouldn't block the palette.
 fn spawn_open(path: &Path, _is_dir: bool) {
     let path = path.to_owned();
     thread::Builder::new()
         .name("qos-search-open".into())
         .spawn(move || {
-            let _ = std::process::Command::new("xdg-open")
-                .arg(path)
-                .spawn();
+            let _ = std::process::Command::new("xdg-open").arg(path).spawn();
         })
         .ok();
 }

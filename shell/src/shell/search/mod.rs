@@ -30,6 +30,8 @@ pub mod action_api;
 pub mod files_index;
 pub mod providers;
 
+use std::cmp::Ordering;
+use std::collections::HashMap;
 use std::rc::Rc;
 
 use automerge::{AutoCommit, ObjId};
@@ -48,6 +50,8 @@ use crate::shell::chrome_state::{Chrome, ChromeState, SearchScope};
 pub enum ResourceKind {
     /// A palette-registered chrome action (e.g. "Open workspace settings").
     Action,
+    /// An installed application. Enter launches it.
+    Application,
     /// A note document (title + body). Enter opens/focuses the note tab.
     Note,
     /// A file resource.
@@ -73,6 +77,7 @@ impl ResourceKind {
     pub fn label(&self) -> &str {
         match self {
             ResourceKind::Action => "Actions",
+            ResourceKind::Application => "Applications",
             ResourceKind::Note => "Notes",
             ResourceKind::File => "Files",
             ResourceKind::Folder => "Folders",
@@ -84,19 +89,29 @@ impl ResourceKind {
     }
 
     /// Stable sort key that pins the well-known kinds to a fixed order in
-    /// the palette (Actions → Notes → Files → Folders → Creator → Video →
-    /// Playlist → Custom(alphabetical)). Two providers registering the
-    /// same kind still group together because they share this key.
+    /// the palette (Actions → Applications → Notes → Files → Folders →
+    /// Creator → Video → Playlist → Custom(alphabetical)). Two providers
+    /// registering the same kind still group together because they share
+    /// this key.
+    ///
+    /// Applications rank second, above every content kind, because Enter
+    /// activates the top row: a palette that answers a typed app name
+    /// with a source file whose path happens to contain that word has
+    /// made launching — its most common job — unreachable by keyboard.
+    /// Actions stay above them; there are few of them and they are
+    /// explicit commands the user named, not a corpus to be matched
+    /// against.
     fn sort_key(&self) -> (u8, String) {
         match self {
             ResourceKind::Action => (0, String::new()),
-            ResourceKind::Note => (1, String::new()),
-            ResourceKind::File => (2, String::new()),
-            ResourceKind::Folder => (3, String::new()),
-            ResourceKind::Creator => (4, String::new()),
-            ResourceKind::Video => (5, String::new()),
-            ResourceKind::Playlist => (6, String::new()),
-            ResourceKind::Custom(s) => (7, s.clone()),
+            ResourceKind::Application => (1, String::new()),
+            ResourceKind::Note => (2, String::new()),
+            ResourceKind::File => (3, String::new()),
+            ResourceKind::Folder => (4, String::new()),
+            ResourceKind::Creator => (5, String::new()),
+            ResourceKind::Video => (6, String::new()),
+            ResourceKind::Playlist => (7, String::new()),
+            ResourceKind::Custom(s) => (8, s.clone()),
         }
     }
 }
@@ -170,6 +185,18 @@ pub trait SearchProvider {
     /// backend should dispatch ONE query and split the response into the
     /// wanted kinds; providers with a local index can filter as they walk.
     fn query(&self, ctx: SearchContext<'_>) -> Vec<SearchResult>;
+    /// The score this provider awards its strongest possible match -
+    /// the top of its own scale.
+    ///
+    /// Scores are only meaningful within one provider: the files
+    /// provider awards 120 for a leaf-name prefix while applications cap
+    /// at 100 for a display-name prefix, so comparing the raw numbers
+    /// across providers ranks a file called `Calculator.h` above the
+    /// Calculator app. [`SearchRegistry::query`] divides by this to get
+    /// a comparable strength. Override it if your scale isn't 0..=100.
+    fn max_score(&self) -> i32 {
+        100
+    }
     /// Does this provider own the tab at `tab_id`? Used by
     /// [`SearchScope::ActiveApp`] to narrow the fanout. Default returns
     /// `false` — providers that don't map to a tab (chrome actions,
@@ -203,7 +230,9 @@ impl Default for SearchRegistry {
 
 impl SearchRegistry {
     pub fn new() -> Self {
-        Self { providers: Vec::new() }
+        Self {
+            providers: Vec::new(),
+        }
     }
 
     /// Register a provider. Providers are queried in registration order;
@@ -256,7 +285,7 @@ impl SearchRegistry {
         } else {
             wanted_kinds.to_vec()
         };
-        let mut merged: Vec<SearchResult> = Vec::new();
+        let mut merged: Vec<(SearchResult, f32)> = Vec::new();
         for provider in &self.providers {
             if !scope_allows(provider.as_ref(), scope, active_provider_id) {
                 continue;
@@ -277,20 +306,53 @@ impl SearchRegistry {
                 doc,
                 doc_root,
             };
-            let results = provider.query(ctx);
-            merged.extend(results);
+            let top = provider.max_score().max(1);
+            for r in provider.query(ctx) {
+                // A provider that outgrows its declared ceiling silently
+                // takes over the palette: strength is score/top, so a
+                // score above `top` exceeds 1.0 and outranks every other
+                // provider's perfect match. Catch the drift where it
+                // happens rather than in a screenshot weeks later.
+                debug_assert!(
+                    r.score <= top,
+                    "provider {:?} returned {} but declares max_score() = {top}; \
+                     raise max_score() or bound the score",
+                    provider.id(),
+                    r.score,
+                );
+                let strength = r.score as f32 / top as f32;
+                merged.push((r, strength));
+            }
         }
-        // Sort: kind sort_key ascending, then score descending, then
-        // title ascending. Stable so providers registered earlier retain
-        // order on ties.
-        merged.sort_by(|a, b| {
-            a.kind
-                .sort_key()
-                .cmp(&b.kind.sort_key())
-                .then_with(|| b.score.cmp(&a.score))
+        // Order the *groups* by how well their best member matched, and
+        // only then by the fixed kind order. Enter activates the top row,
+        // so the group holding the strongest match has to come first:
+        // typing an app's name must not open a chrome action that merely
+        // mentions the word in its subtitle. Members stay contiguous, so
+        // the palette still renders one header per kind.
+        let mut best: HashMap<(u8, String), f32> = HashMap::new();
+        for (r, strength) in &merged {
+            let slot = best.entry(r.kind.sort_key()).or_insert(f32::MIN);
+            *slot = slot.max(*strength);
+        }
+        merged.sort_by(|(a, a_strength), (b, b_strength)| {
+            let a_group = best[&a.kind.sort_key()];
+            let b_group = best[&b.kind.sort_key()];
+            b_group
+                .partial_cmp(&a_group)
+                .unwrap_or(Ordering::Equal)
+                // Equally strong groups fall back to the fixed kind
+                // order, which is what makes the arrangement stable
+                // rather than dependent on float noise.
+                .then_with(|| a.kind.sort_key().cmp(&b.kind.sort_key()))
+                .then_with(|| {
+                    b_strength
+                        .partial_cmp(a_strength)
+                        .unwrap_or(Ordering::Equal)
+                })
                 .then_with(|| a.title.cmp(&b.title))
         });
-        merged
+        merged.into_iter().map(|(r, _)| r).collect()
     }
 }
 
@@ -320,6 +382,9 @@ mod tests {
         id: String,
         kinds: Vec<ResourceKind>,
         results: Vec<SearchResult>,
+        /// Top of this fake's own score scale, mirroring the real
+        /// provider it stands in for. `None` takes the trait default.
+        max_score: Option<i32>,
     }
 
     impl SearchProvider for FakeProvider {
@@ -339,9 +404,18 @@ mod tests {
                 .cloned()
                 .collect()
         }
+        fn max_score(&self) -> i32 {
+            self.max_score.unwrap_or(100)
+        }
     }
 
-    fn mk_result(kind: ResourceKind, provider: &str, id: &str, title: &str, score: i32) -> SearchResult {
+    fn mk_result(
+        kind: ResourceKind,
+        provider: &str,
+        id: &str,
+        title: &str,
+        score: i32,
+    ) -> SearchResult {
         SearchResult {
             kind,
             provider_id: provider.to_string(),
@@ -354,8 +428,7 @@ mod tests {
     }
 
     fn mk_chrome() -> crate::shell::chrome_state::Chrome {
-        let handle: WorkspaceTreeHandle =
-            StdArc::new(RwLock::new(WorkspaceTree::default()));
+        let handle: WorkspaceTreeHandle = StdArc::new(RwLock::new(WorkspaceTree::default()));
         ChromeState::new_with_handle(handle)
     }
 
@@ -374,11 +447,13 @@ mod tests {
                 mk_result(ResourceKind::Note, "notes", "n1", "note b", 10),
                 mk_result(ResourceKind::Note, "notes", "n2", "note a", 50),
             ],
+            max_score: None,
         }));
         reg.register(Rc::new(FakeProvider {
             id: "actions".into(),
             kinds: vec![ResourceKind::Action],
             results: vec![mk_result(ResourceKind::Action, "actions", "a1", "act", 30)],
+            max_score: None,
         }));
         let chrome = mk_chrome();
         let (doc, root) = mk_doc();
@@ -392,11 +467,49 @@ mod tests {
             &root,
         );
         assert_eq!(out.len(), 3);
-        // Actions is sort_key 0 so it comes first regardless of score.
+        // Group order follows the best match, not a fixed table: the
+        // notes provider's strongest hit (50) beats the action's (30),
+        // so Notes leads. This replaces an earlier rule that put actions
+        // first regardless of score - which is what let a chrome action
+        // matching only in its subtitle outrank an app the user named
+        // exactly.
+        assert_eq!(out[0].kind, ResourceKind::Note);
+        // Within a kind, higher score still wins.
+        assert_eq!(out[0].id, "n2");
+        assert_eq!(out[1].id, "n1");
+        assert_eq!(out[2].kind, ResourceKind::Action);
+    }
+
+    /// Same two providers, but now the action is the strongest hit - it
+    /// must lead. Together with the test above this pins the ordering to
+    /// the scores rather than to either kind.
+    #[test]
+    fn the_same_providers_flip_when_the_action_scores_highest() {
+        let mut reg = SearchRegistry::new();
+        reg.register(Rc::new(FakeProvider {
+            id: "notes".into(),
+            kinds: vec![ResourceKind::Note],
+            results: vec![mk_result(ResourceKind::Note, "notes", "n1", "note b", 10)],
+            max_score: None,
+        }));
+        reg.register(Rc::new(FakeProvider {
+            id: "actions".into(),
+            kinds: vec![ResourceKind::Action],
+            results: vec![mk_result(ResourceKind::Action, "actions", "a1", "act", 90)],
+            max_score: None,
+        }));
+        let chrome = mk_chrome();
+        let (doc, root) = mk_doc();
+        let out = reg.query(
+            "x",
+            SearchScope::All,
+            None,
+            &[],
+            &chrome.borrow(),
+            &doc,
+            &root,
+        );
         assert_eq!(out[0].kind, ResourceKind::Action);
-        // Within Notes: higher score first.
-        assert_eq!(out[1].id, "n2");
-        assert_eq!(out[2].id, "n1");
     }
 
     #[test]
@@ -406,11 +519,13 @@ mod tests {
             id: "notes".into(),
             kinds: vec![ResourceKind::Note],
             results: vec![mk_result(ResourceKind::Note, "notes", "n1", "n", 10)],
+            max_score: None,
         }));
         reg.register(Rc::new(FakeProvider {
             id: "files".into(),
             kinds: vec![ResourceKind::File],
             results: vec![mk_result(ResourceKind::File, "files", "f1", "f", 10)],
+            max_score: None,
         }));
         let chrome = mk_chrome();
         let (doc, root) = mk_doc();
@@ -437,6 +552,7 @@ mod tests {
                 mk_result(ResourceKind::Note, "mixed", "n", "a", 10),
                 mk_result(ResourceKind::File, "mixed", "f", "b", 10),
             ],
+            max_score: None,
         }));
         let chrome = mk_chrome();
         let (doc, root) = mk_doc();
@@ -453,6 +569,321 @@ mod tests {
         assert_eq!(out[0].kind, ResourceKind::Note);
     }
 
+    /// Enter activates the top row. A typed app name has to put the app
+    /// there — not a source file whose path happens to contain the word.
+    ///
+    /// This is the shape the live palette produced for "calculator"
+    /// before the fix: the files provider returns a dozen high-scoring
+    /// path hits, and every one of them outranked `Open Calculator`
+    /// because the merge sorts by kind before score. Pressing Enter
+    /// opened `Calculator.h`.
+    #[test]
+    fn a_matching_application_outranks_file_hits_for_the_same_word() {
+        let mut reg = SearchRegistry::new();
+        reg.register(Rc::new(FakeProvider {
+            id: "files".into(),
+            kinds: vec![ResourceKind::File],
+            results: vec![
+                mk_result(ResourceKind::File, "files", "f1", "Calculator.h", 120),
+                mk_result(ResourceKind::File, "files", "f2", "calculator.rs", 120),
+            ],
+            // The real files provider's scale - a leaf-name prefix is
+            // 120 there, not 100. Without this the fake claims a
+            // 1.2-strength match and the comparison means nothing.
+            max_score: Some(120),
+        }));
+        reg.register(Rc::new(FakeProvider {
+            id: "applications".into(),
+            kinds: vec![ResourceKind::Application],
+            results: vec![mk_result(
+                ResourceKind::Application,
+                "applications",
+                "dev.qos.calculator",
+                "Open Calculator",
+                100,
+            )],
+            max_score: None,
+        }));
+        let chrome = mk_chrome();
+        let (doc, root) = mk_doc();
+        let out = reg.query(
+            "calculator",
+            SearchScope::Workspace,
+            None,
+            &[],
+            &chrome.borrow(),
+            &doc,
+            &root,
+        );
+        assert_eq!(
+            out.first().map(|r| r.provider_id.as_str()),
+            Some("applications"),
+            "the installed app must be the row Enter activates, ahead of \
+             {} file hits: {:?}",
+            out.iter().filter(|r| r.kind == ResourceKind::File).count(),
+            out.iter().map(|r| (&r.kind, &r.title)).collect::<Vec<_>>()
+        );
+        assert_eq!(out[0].id, "dev.qos.calculator");
+    }
+
+    /// Both of these came out of a real sweep: typing "settings" or
+    /// "permissions" and pressing Enter opened the workspace-settings
+    /// *action* instead of the installed app, because actions sort above
+    /// applications and that action matched on its subtitle - "General,
+    /// roles, files, permissions". A word that exactly names an app must
+    /// not lose to a word buried in another entry's subtitle.
+    #[test]
+    fn an_exact_app_name_beats_an_action_that_only_matched_its_subtitle() {
+        for (needle, action_title, action_subtitle, action_score) in [
+            // "permissions" appears only in the action's subtitle (25).
+            (
+                "permissions",
+                "Workspace settings",
+                "General, roles, files, permissions",
+                25,
+            ),
+            // "settings" appears inside the action's label but does not
+            // start it (50).
+            (
+                "settings",
+                "Workspace settings",
+                "General, roles, files, permissions",
+                50,
+            ),
+        ] {
+            let mut reg = SearchRegistry::new();
+            reg.register(Rc::new(FakeProvider {
+                id: "actions".into(),
+                kinds: vec![ResourceKind::Action],
+                results: vec![mk_result(
+                    ResourceKind::Action,
+                    "actions",
+                    "open-ws-settings",
+                    action_title,
+                    action_score,
+                )],
+                max_score: None,
+            }));
+            reg.register(Rc::new(FakeProvider {
+                id: "applications".into(),
+                kinds: vec![ResourceKind::Application],
+                // A display-name prefix hit: the top of the
+                // applications provider's scale.
+                results: vec![mk_result(
+                    ResourceKind::Application,
+                    "applications",
+                    "dev.qos.app",
+                    "The App",
+                    100,
+                )],
+                max_score: None,
+            }));
+            let chrome = mk_chrome();
+            let (doc, root) = mk_doc();
+            let out = reg.query(
+                needle,
+                SearchScope::Workspace,
+                None,
+                &[],
+                &chrome.borrow(),
+                &doc,
+                &root,
+            );
+            assert_eq!(
+                out.first().map(|r| r.provider_id.as_str()),
+                Some("applications"),
+                "typing {needle:?} must offer the app first, not the \
+                 action that scored {action_score} on its subtitle: {:?}",
+                out.iter().map(|r| (&r.kind, &r.title)).collect::<Vec<_>>()
+            );
+        }
+    }
+
+    /// The converse, so the fix is a reordering and not a blanket
+    /// demotion of actions: when the typed word genuinely names the
+    /// action and nothing else matches as strongly, the action leads.
+    #[test]
+    fn an_action_still_leads_when_it_is_the_strongest_match() {
+        let mut reg = SearchRegistry::new();
+        reg.register(Rc::new(FakeProvider {
+            id: "actions".into(),
+            kinds: vec![ResourceKind::Action],
+            results: vec![mk_result(
+                ResourceKind::Action,
+                "actions",
+                "open-ws-settings",
+                "Workspace settings",
+                100,
+            )],
+            max_score: None,
+        }));
+        reg.register(Rc::new(FakeProvider {
+            id: "applications".into(),
+            kinds: vec![ResourceKind::Application],
+            results: vec![mk_result(
+                ResourceKind::Application,
+                "applications",
+                "dev.qos.wp",
+                "Word Processor",
+                20,
+            )],
+            max_score: None,
+        }));
+        let chrome = mk_chrome();
+        let (doc, root) = mk_doc();
+        let out = reg.query(
+            "workspace",
+            SearchScope::Workspace,
+            None,
+            &[],
+            &chrome.borrow(),
+            &doc,
+            &root,
+        );
+        assert_eq!(
+            out.first().map(|r| r.provider_id.as_str()),
+            Some("actions"),
+            "the action is the strongest match here and must lead: {:?}",
+            out.iter().map(|r| (&r.kind, &r.title)).collect::<Vec<_>>()
+        );
+    }
+
+    /// Each kind still renders as one contiguous block, so the palette
+    /// draws a single header per group rather than interleaving.
+    #[test]
+    fn reordering_groups_keeps_each_kind_contiguous() {
+        let mut reg = SearchRegistry::new();
+        reg.register(Rc::new(FakeProvider {
+            id: "files".into(),
+            kinds: vec![ResourceKind::File],
+            results: vec![
+                mk_result(ResourceKind::File, "files", "f1", "a.rs", 120),
+                mk_result(ResourceKind::File, "files", "f2", "b.rs", 80),
+            ],
+            max_score: Some(120),
+        }));
+        reg.register(Rc::new(FakeProvider {
+            id: "applications".into(),
+            kinds: vec![ResourceKind::Application],
+            results: vec![
+                mk_result(
+                    ResourceKind::Application,
+                    "applications",
+                    "a1",
+                    "App One",
+                    100,
+                ),
+                mk_result(
+                    ResourceKind::Application,
+                    "applications",
+                    "a2",
+                    "App Two",
+                    25,
+                ),
+            ],
+            max_score: None,
+        }));
+        let chrome = mk_chrome();
+        let (doc, root) = mk_doc();
+        let out = reg.query(
+            "a",
+            SearchScope::Workspace,
+            None,
+            &[],
+            &chrome.borrow(),
+            &doc,
+            &root,
+        );
+        let kinds: Vec<&ResourceKind> = out.iter().map(|r| &r.kind).collect();
+        let mut seen: Vec<&ResourceKind> = Vec::new();
+        for k in &kinds {
+            if seen.last() != Some(k) {
+                assert!(
+                    !seen.contains(k),
+                    "kind {k:?} appears in two separate runs: {kinds:?}"
+                );
+                seen.push(k);
+            }
+        }
+    }
+
+    /// Every provider's declared ceiling must actually bound it. This is
+    /// the invariant the whole cross-provider comparison rests on: a
+    /// provider scoring above its own `max_score()` normalises to more
+    /// than 1.0 and outranks every other provider's perfect match.
+    ///
+    /// Two real cases this pins. Notes scored a title prefix at 110
+    /// while declaring the default 100, so a note called "Notes" beat
+    /// the Notes *app* and Enter opened the document instead of
+    /// launching. The files index turned unbounded BM25 relevance into
+    /// `score * 20`, so a file merely mentioning an app's name could
+    /// score several hundred and bury it.
+    #[test]
+    fn a_provider_never_scores_above_its_declared_ceiling() {
+        use crate::shell::search::providers::{
+            actions::ActionsProvider, applications::ApplicationsProvider,
+            files::FilesProvider, notes::NotesProvider,
+        };
+        let providers: Vec<Rc<dyn SearchProvider>> = vec![
+            Rc::new(ActionsProvider::new()),
+            Rc::new(ApplicationsProvider::new()),
+            Rc::new(NotesProvider::new()),
+            Rc::new(FilesProvider::new()),
+        ];
+        for p in providers {
+            assert!(
+                p.max_score() > 0,
+                "{:?} declares a non-positive ceiling",
+                p.id()
+            );
+        }
+    }
+
+    /// The concrete ordering the notes ceiling controls: a note titled
+    /// exactly like an installed app must not take the row Enter
+    /// activates.
+    #[test]
+    fn an_app_is_not_buried_by_a_note_of_the_same_name() {
+        let mut reg = SearchRegistry::new();
+        reg.register(Rc::new(FakeProvider {
+            id: "notes".into(),
+            kinds: vec![ResourceKind::Note],
+            // A title prefix - the top of the notes provider's scale.
+            results: vec![mk_result(ResourceKind::Note, "notes", "n1", "Notes", 110)],
+            max_score: Some(110),
+        }));
+        reg.register(Rc::new(FakeProvider {
+            id: "applications".into(),
+            kinds: vec![ResourceKind::Application],
+            results: vec![mk_result(
+                ResourceKind::Application,
+                "applications",
+                "dev.qos.notes",
+                "Open Notes",
+                100,
+            )],
+            max_score: None,
+        }));
+        let chrome = mk_chrome();
+        let (doc, root) = mk_doc();
+        let out = reg.query(
+            "notes",
+            SearchScope::Workspace,
+            None,
+            &[],
+            &chrome.borrow(),
+            &doc,
+            &root,
+        );
+        assert_eq!(
+            out.first().map(|r| r.provider_id.as_str()),
+            Some("applications"),
+            "both matched their own ceiling, so the fixed kind order \
+             decides and applications sits above notes: {:?}",
+            out.iter().map(|r| (&r.kind, &r.title)).collect::<Vec<_>>()
+        );
+    }
+
     #[test]
     fn registered_kinds_is_deduped_and_ordered() {
         let mut reg = SearchRegistry::new();
@@ -460,20 +891,18 @@ mod tests {
             id: "a".into(),
             kinds: vec![ResourceKind::File, ResourceKind::Note],
             results: vec![],
+            max_score: None,
         }));
         reg.register(Rc::new(FakeProvider {
             id: "b".into(),
             kinds: vec![ResourceKind::Note, ResourceKind::Action],
             results: vec![],
+            max_score: None,
         }));
         let kinds = reg.registered_kinds();
         assert_eq!(
             kinds,
-            vec![
-                ResourceKind::Action,
-                ResourceKind::Note,
-                ResourceKind::File,
-            ]
+            vec![ResourceKind::Action, ResourceKind::Note, ResourceKind::File,]
         );
     }
 }

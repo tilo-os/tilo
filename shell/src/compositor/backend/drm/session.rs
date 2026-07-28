@@ -11,8 +11,8 @@
 //! integration with the real `LibSeatSession` lives in
 //! `super::runtime::DrmRuntime` (hardware-only path).
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// What happened on the seat channel. Mirrors `smithay::backend::session
 /// ::Event` so the runtime layer can map them 1:1.
