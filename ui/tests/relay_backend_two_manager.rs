@@ -24,7 +24,7 @@ use ui::collaboration::{CollabEvent, CollabRequest, CollaborationManager, Presen
 use ui::presence::PresenceKey;
 
 use ed25519_dalek::SigningKey;
-use iroh::endpoint::Endpoint;
+use iroh::endpoint::{Endpoint, presets};
 use qos_relay::{
     RelayClient, RelayCoeditSession, RelayConfig, WorkspaceBinding,
     daemon::{Relay, RelayIdentity},
@@ -108,7 +108,7 @@ async fn spawn_host(
 }
 
 async fn client_endpoint() -> Endpoint {
-    Endpoint::builder().bind().await.unwrap()
+    Endpoint::builder(presets::N0).bind().await.unwrap()
 }
 
 async fn join_session(
