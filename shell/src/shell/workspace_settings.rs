@@ -1213,6 +1213,7 @@ pub fn capability_label(cap: &Capability) -> String {
         Capability::Camera { .. } => "Camera access".to_string(),
         Capability::Microphone { .. } => "Microphone access".to_string(),
         Capability::Screencast { .. } => "Screen capture".to_string(),
+        Capability::RemoteDesktop { .. } => "Remote control (pointer + keyboard)".to_string(),
         Capability::Network { hosts, .. } => match hosts {
             Some(h) if !h.is_empty() => format!("Network access to {}", h.join(", ")),
             _ => "Network access".to_string(),
@@ -1230,6 +1231,7 @@ pub fn capability_scope_label(cap: &Capability) -> &'static str {
         Capability::Camera { scope } => scope,
         Capability::Microphone { scope } => scope,
         Capability::Screencast { scope } => scope,
+        Capability::RemoteDesktop { scope } => scope,
         Capability::Network { scope, .. } => scope,
     };
     match scope {

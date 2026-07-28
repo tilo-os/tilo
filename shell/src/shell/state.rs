@@ -443,6 +443,13 @@ pub enum Capability {
     Microphone { scope: GrantScope },
     /// Screen capture via portal `ScreenCast`.
     Screencast { scope: GrantScope },
+    /// Remote control of the seat (pointer + keyboard injection) via portal
+    /// `RemoteDesktop`. Distinct from [`Capability::Screencast`] because
+    /// remote *control* is strictly more invasive than screen *viewing* —
+    /// the consent prompt and the Permissions tab must disclose it
+    /// separately so a user can grant "let them watch" without also
+    /// granting "let them type".
+    RemoteDesktop { scope: GrantScope },
     /// Outbound network access. `hosts: None` = "any host"; `hosts:
     /// Some(allowlist)` = "only these hosts".
     ///
