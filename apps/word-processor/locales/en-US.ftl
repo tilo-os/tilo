@@ -188,3 +188,5 @@ page-indicator = Page { $n }
 # as a fidelity box rather than its content).
 canvas-image-missing = image
 canvas-embedded-content = ⟦ embedded content ⟧
+toolbar-history = History
+a11y-version-history = Version history
