@@ -13,33 +13,33 @@ path = "src/main.rs"
 
 [dependencies]
 ui = { path = "../../ui" }
-automerge = "0.8.0"
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-uuid = { version = "1.23.1", features = ["v4", "serde"] }
-tracing = "0.1"
-tracing-subscriber = "0.3"
-vello = "0.9"
-winit = "0.30.13"
-taffy = "0.10.1"
-anyhow = "1.0"
+automerge.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+vello.workspace = true
+winit.workspace = true
+taffy.workspace = true
+anyhow.workspace = true
 # Real PDF page rasterisation via a dynamically-loaded pdfium; falls back to
 # pure-Rust text extraction when the native library is not present.
 pdfium-render = "0.8.37"
 pdf-extract = "0.7.12"
 # Decode imported images (PNG/JPEG/…) to place them as new PDF pages. Pinned to
 # the same 0.25 line pdfium-render uses so `DynamicImage` unifies to one type.
-image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+image = { workspace = true, features = ["png", "jpeg"] }
 # Host-native file open/save through the XDG Desktop Portal
 # (org.freedesktop.portal.FileChooser). On GNOME the user sees GNOME's file
 # chooser; on qOS the compositor's portal backend renders qOS's picker. The
 # portal call runs off the UI thread on its own small Tokio runtime and the
 # chosen path is delivered back over a channel (see `app::portal`).
-ashpd = { version = "0.9", default-features = false, features = ["tokio"] }
-tokio = { version = "1", features = ["rt", "rt-multi-thread", "net", "time"] }
-url = "2"
+ashpd.workspace = true
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "net", "time"] }
+url.workspace = true
 
 [dev-dependencies]
 # Serialise the tests that touch the shared system clipboard so they never race
 # each other for it (arboard talks to the real Wayland/X11 clipboard).
-serial_test = "3"
+serial_test.workspace = true

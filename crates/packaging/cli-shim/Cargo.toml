@@ -17,6 +17,6 @@ name = "qos-cli-shim"
 path = "src/main.rs"
 
 [dependencies]
-libc  = "0.2"
-serde = { version = "1", features = ["derive"] }
-toml  = "0.8"
+libc.workspace = true
+serde.workspace = true
+toml.workspace = true

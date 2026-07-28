@@ -22,16 +22,16 @@ name = "runtime_bundle"
 path = "src/lib.rs"
 
 [dependencies]
-clap = { version = "4", features = ["derive"] }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-toml = "0.8"
-thiserror = "1"
-blake3 = "1.8"
-dirs = "5"
-hex = "0.4"
-ed25519-dalek = { version = "2", features = ["rand_core"] }
-rand = "0.8"
+clap.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+thiserror.workspace = true
+blake3.workspace = true
+dirs.workspace = true
+hex.workspace = true
+ed25519-dalek = { workspace = true, features = ["rand_core"] }
+rand.workspace = true
 
 [dev-dependencies]
-tempfile = "3"
+tempfile.workspace = true
