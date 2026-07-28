@@ -8,6 +8,7 @@ pub mod headless;
 pub mod history_source;
 pub mod persist;
 pub mod portal;
+pub mod uri;
 pub mod state;
 pub mod widget;
 pub mod text_render;
