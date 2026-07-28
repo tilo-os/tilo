@@ -87,6 +87,11 @@ pub enum Command {
         y_to: f64,
         steps: Option<u32>,
     },
+    /// Per-surface frame counters for every foreign toplevel the
+    /// compositor is tracking. Read-only. Lets a harness distinguish an
+    /// app that painted from one still showing the first-frame
+    /// placeholder without guessing from a screenshot.
+    ForeignFrames,
     /// Inject a single key press + release. `key` is a winit-style
     /// name — `"Enter"`, `"Escape"`, `"Tab"`, `"ArrowLeft"/Up/Right/Down`,
     /// `"Backspace"`, `"Delete"`, `"Home"`, `"End"`, `"PageUp"/Down`,
@@ -168,6 +173,9 @@ pub enum Response {
     /// `serde_json::Value` is `PartialEq` so the variant participates
     /// in the `PartialEq` derive — same as the rest of the response
     /// envelope.
+    /// `foreign_frames` response - one entry per tracked foreign
+    /// surface, opaque `serde_json::Value` so the shape can grow.
+    ForeignFrames { frames: serde_json::Value },
     State {
         workspace_tree: serde_json::Value,
         chrome: serde_json::Value,
@@ -222,6 +230,20 @@ pub trait ControlState {
     /// fixtures that don't exercise `state_dump` stay terse.
     fn chrome_state_json(&self) -> serde_json::Value {
         serde_json::Value::Null
+    }
+    /// Per-surface frame ground truth: what the compositor itself knows
+    /// about whether each foreign toplevel has ever presented.
+    ///
+    /// A harness that wants to say "this app rendered" must not have to
+    /// infer it from pixels. The placeholder tile is the app-id over a
+    /// flat card, which is near-identical between any two apps and, for
+    /// an app that legitimately starts empty, near-identical to a real
+    /// first frame. `frame_seq > 0` is the fact behind that guess.
+    ///
+    /// Default is an empty list so fixtures that don't exercise it stay
+    /// terse.
+    fn foreign_frames_json(&self) -> serde_json::Value {
+        serde_json::Value::Array(Vec::new())
     }
 }
 
@@ -543,6 +565,12 @@ pub fn dispatch_command<S: ControlState>(
                 )
             }
         }
+        Command::ForeignFrames => (
+            Response::ForeignFrames {
+                frames: state.foreign_frames_json(),
+            },
+            Vec::new(),
+        ),
         Command::StateDump => {
             // `state_dump` is read-only: pull both JSON views from the
             // `ControlState` impl and return them verbatim. No

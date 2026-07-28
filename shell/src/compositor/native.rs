@@ -174,6 +174,32 @@ impl<'a> ControlState for FrameBuilderControlState<'a> {
         serde_json::to_value(&*chrome.tree()).unwrap_or(serde_json::Value::Null)
     }
 
+    /// Report the compositor's own frame bookkeeping for every foreign
+    /// toplevel currently in the tree.
+    ///
+    /// `frame_seq` counts frames the compositor has actually taken from
+    /// that client, so `0` means the tile is still the placeholder no
+    /// matter what it looks like. `last_error` carries the reason when a
+    /// capture failed, which is the case a blank tile would otherwise
+    /// hide.
+    fn foreign_frames_json(&self) -> serde_json::Value {
+        let chrome = self.fb.chrome();
+        let store = crate::compositor::foreign::store();
+        let frames: Vec<serde_json::Value> =
+            crate::compositor::foreign::foreign_tabs(&chrome.tree())
+                .into_iter()
+                .map(|tab| {
+                    serde_json::json!({
+                        "surface_id": tab.surface_id,
+                        "app_id": tab.app_id,
+                        "frame_seq": store.frame_seq(tab.surface_id),
+                        "last_error": store.last_error(tab.surface_id),
+                    })
+                })
+                .collect();
+        serde_json::Value::Array(frames)
+    }
+
     /// Build a structured view of [`ChromeState`] for the
     /// `state_dump` response. We construct the object manually rather
     /// than `derive(Serialize)` on `ChromeState` because the chrome
