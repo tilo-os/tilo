@@ -33,6 +33,11 @@ webview-wpe = ["dep:ash"]
 # `media` feature turns on `ui/mpris`). `zbus` is pinned to 4.4 to match the
 # copy `apps/music` + `apps/chat` already resolve, so no second zbus lands.
 mpris = ["dep:zbus", "zbus/tokio"]
+# Host-native file choosing through the XDG Desktop Portal (`portal`). Off by
+# default so apps that never open a chooser — and the hermetic `--shots` /
+# CI builds — need no D-Bus. The pure URI->path mapping in `portal` (which is
+# the file-access security rule) compiles either way and stays under test.
+portal = ["dep:ashpd"]
 
 [dependencies]
 qos-startup-metrics = { path = "../crates/system/qos-startup-metrics" }
@@ -80,6 +85,13 @@ rand = "0.10.1"
 # `webview-wpe`). Version tracks what wgpu-hal 29 resolves so the `vk::*`
 # handles passed through `create_texture_from_hal` are ABI-identical.
 ash = { version = "0.38", optional = true }
+# XDG Desktop Portal client for `portal` (feature `portal`). Version + feature
+# set match every app that used to carry its own copy, so no second ashpd or
+# zbus resolves.
+ashpd = { version = "0.9", default-features = false, features = ["tokio"], optional = true }
+# Parses the portal's returned file URIs. Non-optional: `portal::to_local_path`
+# is the file-access rule and must be testable in every build configuration.
+url = "2"
 taffy = { version = "0.10.1", features = ["content_size"] }
 tokio = { version = "1.52.3", features = ["full"] }
 vello = "0.9"
