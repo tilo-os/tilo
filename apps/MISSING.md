@@ -122,6 +122,29 @@ verified by an offscreen shot (header gone, functional controls intact) + tests:
       the call UI against a simulated local bus. REMAINING: a dedicated MoQ-over-iroh
       framing (the transport is raw iroh QUIC today, not MoQ), and end-to-end proof
       of real frames flowing on a live install (unverifiable headlessly).
+- [x] VOICE CHANNELS you JOIN (Discord-style): join/leave writes the local member
+      into the channel's shared voice membership (CRDT); mute/deafen/audio-only
+      toggle real state and mirror into that membership so peers see it; the
+      expanded overlay is a responsive participant grid (host-first, reflows by
+      count) with per-participant speaking rings, avatars, mic/camera state, and
+      the live P2P-vs-host routing surfaced. Runs fully against the simulated bus
+      in the default/`--shots` build; real mic flows behind `--features live-media`.
+- [x] SCREEN SHARE is a first-class featured stage — REAL: a "Share screen" control
+      requests a source through the `ScreenPortal` seam (real xdg-desktop-portal
+      ScreenCast via ashpd behind `live-media`; honest `None` in the default build,
+      so it never fakes a stream). A granted share flips `call.sharing` and mirrors
+      into the shared voice membership (`voice_set_sharing`), so every peer promotes
+      the overlay to a presentation stage: a large featured screen tile above a
+      single-row participant filmstrip, with a presenter badge on the sharer's tile.
+      Remote screen frames route to a dedicated `remote_screens` slot (separate from
+      camera), and the featured tile shows a real decoded frame when present, an
+      honest drawn-monitor "connecting" placeholder otherwise — never a fabricated
+      picture. Proven by tests: `share_screen_gates_on_the_portal_and_mirrors_into_voice_membership`
+      (inject a fake portal → share + CRDT mirror; system portal declines → honest
+      gating), `a_remote_screen_share_promotes_the_overlay_to_the_presentation_stage`,
+      `share_control_reads_the_live_share_state`, `voice_screen_share_round_trips_through_the_shared_membership`,
+      and the `filmstrip_rects`/stage geometry tests. Visual proof: the `share`
+      `--shots` scenario captures the featured stage + filmstrip + controls.
 - [ ] P2P-by-default + APPOINTED-HOST routing does not exist. User's model: direct
       P2P by default, but route a workspace through an appointed host (e.g. a home
       server also running qOS) when one exists. Foundation exists in the compositor
