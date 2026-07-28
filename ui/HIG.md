@@ -182,6 +182,51 @@ If an app hand-rolls text editing, it will get these wrong — use the shared co
 
 ---
 
+## 7. Visual craft & polish (the bar for *every* app)
+
+Working, honest, and consistent is the floor, not the goal. **Every app ships at
+a "genuinely nice to look at and use" bar** — the same craft whether it is chat,
+the calculator, or a system pane. An app that is functionally complete but looks
+cramped, unbalanced, or unfinished is **not done**. Grade every screen against
+this section the way you grade correctness against the tests.
+
+- **Layout breathes.** Deliberate spacing on the `Theme` scale; content is not
+  jammed edge-to-edge, controls are not scattered. A clear reading order and a
+  single primary action per screen. Groups are separated by space and hierarchy,
+  not by hairlines and boxes-within-boxes.
+- **Real typographic hierarchy.** Size / weight / color establish
+  title → section → body → caption; digits that line up use tabular figures. No
+  wall of same-size text; no illegible low-contrast label on a colored fill
+  (the permissions-pane and camera regressions were exactly this).
+- **Content reflows by size, not just shrinks.** Honor the responsive rule (§1):
+  card grids re-column, participant/media grids re-tile by count, panels become
+  separate screens when they no longer fit — measured against window *area*, and
+  **recomputed on resize**, never laid out once.
+- **State reads at a glance.** Selection, focus, active/live, speaking, syncing,
+  error — each has a *visible form* (an emphasis, a ring, a pill, a severity
+  stripe), not only a text label. Empty states are composed and inviting (a real
+  zero-state, per §4 — never fabricated content), loading and error states are
+  designed, not raw.
+- **Motion is purposeful and quiet.** Transitions clarify a change (a panel
+  sliding in, a value settling); they never gate interaction or spin at idle
+  (§6). Reduced-motion is honored.
+- **Interactive things look interactive** and give feedback: hover, press, focus,
+  and disabled are all distinct; a control that does nothing yet is a defect
+  (§ functionality), and a control that *looks* dead is a craft defect.
+- **Theme-driven, pixel-clean.** Every color and metric comes from the `Theme`
+  (§ toolkit) so light/dark and OS accent both look intentional; no hard-coded
+  colors, no 1px seams from mismatched fills, no clipped glyphs or overlapping
+  text.
+
+The proof is visual, not a green build: `--shots` the primary screens (populated,
+empty, and a mid-interaction state), **open the PNGs and look critically** — if a
+screen would embarrass you next to a best-in-class native app, it is not done.
+When a polish pattern recurs (a media/participant grid, a stat tile, a huddle
+overlay, a segmented control), promote it to a `ui` primitive so the *nice*
+version is the default and no app has to re-earn it.
+
+---
+
 *This document is versioned with the toolkit. When a guideline here becomes a
 `ui` primitive, link the primitive from the relevant section so the rule and its
 enforcement stay together.*
