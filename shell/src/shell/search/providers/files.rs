@@ -204,7 +204,19 @@ impl SearchProvider for FilesProvider {
                         lower,
                         is_dir: false,
                     };
-                    out.push(make_result(&entry, hit.score.max(20), hit.snippet));
+                    // The index reports raw BM25 relevance, which has
+                    // no upper bound - a term repeated through a large
+                    // file scores arbitrarily high. Left unbounded it
+                    // dwarfs every other provider's whole scale, so a
+                    // source file that merely mentions an app outranks
+                    // the app itself.
+                    //
+                    // Clamp it below the weakest *name* hit: having the
+                    // word in the filename is a stronger signal about
+                    // what a file is than having it somewhere in the
+                    // body, however many times.
+                    let content = hit.score.clamp(CONTENT_SCORE_MIN, CONTENT_SCORE_MAX);
+                    out.push(make_result(&entry, content, hit.snippet));
                 }
             }
         }
@@ -249,6 +261,11 @@ fn file_title(path: &Path) -> String {
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_else(|| path.display().to_string())
 }
+
+/// Bounds for a content hit, which ranks below every name-based hit
+/// ([`name_score`]'s weakest is a directory-name prefix at 45).
+const CONTENT_SCORE_MIN: i32 = 20;
+const CONTENT_SCORE_MAX: i32 = 40;
 
 fn name_score(needle_lower: &str, hay_lower: &str) -> Option<i32> {
     if needle_lower.is_empty() {
