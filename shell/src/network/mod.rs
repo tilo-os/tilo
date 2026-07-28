@@ -18,9 +18,9 @@ pub use decoder::{DecodedFrame, DecodedPixels, DecoderError, H264Decoder, VideoD
 pub use encoder::{EncodeError, H264Encoder};
 pub use hub::{Hub, TopicSubscriber};
 pub use identity::{PeerIdentity, PeerIdentityError, PeerIdentityStore};
-pub use invite::{
-    PeerInviteToken, accept_invite_into, make_invite_token, validate_invite_token,
-};
+pub use invite::{PeerInviteToken, accept_invite_into, make_invite_token, validate_invite_token};
 pub use protocol::{NeighbourMsg, PeerId as MsgPeerId, PresenceKey, SurfaceId};
 pub use replica::WorkspaceTreeReplica;
-pub use streaming::{InputEvent, RemoteInputSink, ShareRegistry, StreamingShare, StreamingThrottle};
+pub use streaming::{
+    InputEvent, RemoteInputSink, ShareRegistry, StreamingShare, StreamingThrottle,
+};

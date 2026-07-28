@@ -4,8 +4,8 @@
 //! tile until/unless Servo is revived. Plan 3 Task 14.
 
 use shell::shell::browser_stub::BrowserStubWidget;
-use ui::{AppKind, AppWidget, IconDescriptor};
 use std::sync::{Arc, Mutex};
+use ui::{AppKind, AppWidget, IconDescriptor};
 
 #[test]
 fn browser_stub_advertises_itself_as_browser_app() {

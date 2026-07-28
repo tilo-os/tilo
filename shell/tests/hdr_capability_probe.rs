@@ -12,15 +12,16 @@
 //! plugging that value into `SurfaceConfiguration::format` would
 //! degrade to `Rgba8UnormSrgb`, the SDR path.
 
-use shell::shell::hdr_display::{
-    DisplayCapabilities, preferred_hdr_swapchain_format,
-};
+use shell::shell::hdr_display::{DisplayCapabilities, preferred_hdr_swapchain_format};
 
 #[test]
 fn sdr_default_disallows_pq_output() {
     let caps = DisplayCapabilities::sdr_default();
     assert!(!caps.supports_pq_output, "SDR default must never report PQ");
-    assert!(!caps.supports_hlg_output, "SDR default must never report HLG");
+    assert!(
+        !caps.supports_hlg_output,
+        "SDR default must never report HLG"
+    );
     assert!(!caps.bt2020_gamut, "SDR default must not claim BT.2020");
     assert!(preferred_hdr_swapchain_format(&caps).is_none());
 }
@@ -33,8 +34,7 @@ fn adapter_probe_returns_sensible_capabilities_on_this_host() {
     use pollster::FutureExt;
     use vello::wgpu;
 
-    let instance =
-        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
     // Request any adapter — no surface. The probe function accepts a
     // Surface but we don't need to run the full probe path here; we
     // just verify the adapter probe integrates with the SDR default
@@ -68,7 +68,10 @@ fn adapter_probe_returns_sensible_capabilities_on_this_host() {
         // outcome is fine. Just verify the format-preference path is
         // self-consistent.
         let fmt = preferred_hdr_swapchain_format(&DisplayCapabilities::hdr10_baseline());
-        assert!(fmt.is_some(), "HDR10 baseline must yield a preferred format");
+        assert!(
+            fmt.is_some(),
+            "HDR10 baseline must yield a preferred format"
+        );
     } else {
         // CPU / llvmpipe / non-Vulkan — SDR fallback in all cases.
         assert!(!caps.supports_pq_output, "CPU adapters must never claim PQ");
@@ -86,7 +89,10 @@ fn hdr10_baseline_supports_pq_and_prefers_hdr_format() {
     // compositor picks one based on the swapchain format list.
     use vello::wgpu::TextureFormat;
     assert!(
-        matches!(fmt, TextureFormat::Rgba16Float | TextureFormat::Rgb10a2Unorm),
+        matches!(
+            fmt,
+            TextureFormat::Rgba16Float | TextureFormat::Rgb10a2Unorm
+        ),
         "HDR10 baseline picked unexpected format {fmt:?}"
     );
 }

@@ -78,9 +78,9 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::network::protocol::{PeerId, SurfaceId};
 
@@ -392,10 +392,8 @@ impl SurfaceStreamReceiver {
                     if let Some(prev) = self.last_sequence {
                         let expected = prev.wrapping_add(1);
                         if frame.sequence != expected {
-                            let dropped =
-                                frame.sequence.wrapping_sub(expected);
-                            self.total_dropped_seq =
-                                self.total_dropped_seq.saturating_add(dropped);
+                            let dropped = frame.sequence.wrapping_sub(expected);
+                            self.total_dropped_seq = self.total_dropped_seq.saturating_add(dropped);
                             out.push(ReceiverEvent::SequenceGap {
                                 dropped,
                                 next_sequence: frame.sequence,
@@ -452,13 +450,13 @@ mod tests {
         };
         let bytes = frame.encode();
         // Header alone with truncated payload — not enough.
-        assert!(SurfaceFrame::decode(&bytes[..FRAME_HEADER_LEN + 1])
-            .expect("decode")
-            .is_none());
+        assert!(
+            SurfaceFrame::decode(&bytes[..FRAME_HEADER_LEN + 1])
+                .expect("decode")
+                .is_none()
+        );
         // Header itself truncated — also not enough.
-        assert!(SurfaceFrame::decode(&bytes[..5])
-            .expect("decode")
-            .is_none());
+        assert!(SurfaceFrame::decode(&bytes[..5]).expect("decode").is_none());
     }
 
     #[test]

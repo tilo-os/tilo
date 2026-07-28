@@ -71,7 +71,11 @@ pub fn combined_geometry(outputs: &[Output]) -> (u32, u32) {
 #[derive(Debug)]
 pub enum BackendEvent {
     CloseRequested,
-    OutputResized { id: OutputId, size: (u32, u32), scale: f32 },
+    OutputResized {
+        id: OutputId,
+        size: (u32, u32),
+        scale: f32,
+    },
     /// A pointer / keyboard / wheel event. The full `winit::WindowEvent`
     /// is carried so `compositor::native::run` can hand it to
     /// `FrameBuilder::dispatch_event` — the same dispatch path the

@@ -87,12 +87,8 @@ impl Dispatch<wl_registry::WlRegistry, ()> for ClientAppState {
                         ));
                 }
                 "wp_viewporter" => {
-                    state.viewporter = Some(registry.bind::<WpViewporter, _, _>(
-                        name,
-                        version.min(1),
-                        qh,
-                        (),
-                    ));
+                    state.viewporter =
+                        Some(registry.bind::<WpViewporter, _, _>(name, version.min(1), qh, ()));
                 }
                 _ => {}
             }
@@ -201,8 +197,7 @@ fn pump(
 
 #[test]
 fn compositor_advertises_fractional_scale_and_viewporter_globals() {
-    let event_loop: EventLoop<'static, State> =
-        EventLoop::try_new().expect("calloop event loop");
+    let event_loop: EventLoop<'static, State> = EventLoop::try_new().expect("calloop event loop");
     let mut display: Display<State> = Display::new().expect("wayland display");
     let display_handle = display.handle();
     let mut server_state = State::new(event_loop.handle(), display_handle);
@@ -241,8 +236,7 @@ fn compositor_advertises_fractional_scale_and_viewporter_globals() {
 
 #[test]
 fn surface_receives_fractional_preferred_scale_driven_by_display_scale() {
-    let event_loop: EventLoop<'static, State> =
-        EventLoop::try_new().expect("calloop event loop");
+    let event_loop: EventLoop<'static, State> = EventLoop::try_new().expect("calloop event loop");
     let mut display: Display<State> = Display::new().expect("wayland display");
     let display_handle = display.handle();
     let mut server_state = State::new(event_loop.handle(), display_handle);

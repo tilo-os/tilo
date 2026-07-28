@@ -20,13 +20,13 @@
 use std::sync::Arc;
 
 use automerge::{AutoCommit, ObjId};
-use ui::presence::{PresenceCtx, PresenceKey};
+use taffy::style_helpers::percent;
+use taffy::{NodeId, Style, TaffyTree};
 use ui::permissions::{PermissionContext, PermissionScope};
+use ui::presence::{PresenceCtx, PresenceKey};
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::Widget;
-use taffy::style_helpers::percent;
-use taffy::{NodeId, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Line, Point, Rect, Stroke};
 use vello::peniko::{
@@ -338,11 +338,7 @@ impl Widget for DesktopBackdrop {
 
         if let Some(child) = &mut self.child {
             let child_node = taffy.children(node).unwrap()[0];
-            child.apply_layout(
-                taffy,
-                child_node,
-                Point::new(self.rect.x0, self.rect.y0),
-            );
+            child.apply_layout(taffy, child_node, Point::new(self.rect.x0, self.rect.y0));
         }
     }
 
@@ -371,7 +367,14 @@ impl Widget for DesktopBackdrop {
     ) {
         self.paint_backdrop(scene, transform);
         if let Some(child) = &mut self.child {
-            child.draw_with_presence(scene, transform, text_renderer, theme, presence, permissions);
+            child.draw_with_presence(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                presence,
+                permissions,
+            );
         }
     }
 
@@ -461,7 +464,11 @@ impl Widget for DesktopBackdrop {
     /// pre-first-draw boot path so the very first frame paints.
     fn needs_redraw(&self) -> bool {
         self.cache_rect == Rect::ZERO
-            || self.child.as_ref().map(|c| c.needs_redraw()).unwrap_or(false)
+            || self
+                .child
+                .as_ref()
+                .map(|c| c.needs_redraw())
+                .unwrap_or(false)
     }
 
     /// Forward layout-dirty queries to the child — the backdrop has no
@@ -469,7 +476,10 @@ impl Widget for DesktopBackdrop {
     /// Without this override the default would return `true` every
     /// frame (leaves default to true) and re-trigger taffy.
     fn is_layout_dirty(&self) -> bool {
-        self.child.as_ref().map(|c| c.is_layout_dirty()).unwrap_or(false)
+        self.child
+            .as_ref()
+            .map(|c| c.is_layout_dirty())
+            .unwrap_or(false)
     }
 
     fn mark_drawn(&mut self) {

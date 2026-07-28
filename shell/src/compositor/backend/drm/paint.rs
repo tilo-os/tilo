@@ -45,13 +45,15 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use pollster::FutureExt;
 use vello::peniko::Color;
 use vello::util::RenderContext;
-use vello::{wgpu, AaConfig, AaSupport, RenderParams, Renderer, RendererOptions, Scene};
+use vello::{AaConfig, AaSupport, RenderParams, Renderer, RendererOptions, Scene, wgpu};
 
 /// Errors the bridge can return. Each variant maps to an operator-
 /// visible message; the DRM backend logs and skips the frame.
 #[derive(Debug, thiserror::Error)]
 pub enum BridgeError {
-    #[error("failed to acquire a wgpu adapter for DRM CPU-fallback paint (is llvmpipe installed?): {0}")]
+    #[error(
+        "failed to acquire a wgpu adapter for DRM CPU-fallback paint (is llvmpipe installed?): {0}"
+    )]
     NoAdapter(String),
 
     #[error("failed to construct vello renderer: {0}")]
@@ -106,7 +108,10 @@ impl VelloDrmBridge {
     /// `width` and `height` must both be > 0 (the bridge panics
     /// otherwise; DRM connector enumeration guarantees this).
     pub fn new(width: u32, height: u32) -> Result<Self, BridgeError> {
-        assert!(width > 0 && height > 0, "VelloDrmBridge: width/height must be > 0");
+        assert!(
+            width > 0 && height > 0,
+            "VelloDrmBridge: width/height must be > 0"
+        );
 
         let mut context = RenderContext::new();
         let dev_id = context.device(None).block_on().ok_or_else(|| {
@@ -321,7 +326,10 @@ impl VelloDrmBridge {
     /// buffer to fit the new dimensions; returns `Ok(())` even when
     /// the new size matches the current (no-op).
     pub fn resize(&mut self, width: u32, height: u32) -> Result<(), BridgeError> {
-        assert!(width > 0 && height > 0, "VelloDrmBridge::resize: width/height must be > 0");
+        assert!(
+            width > 0 && height > 0,
+            "VelloDrmBridge::resize: width/height must be > 0"
+        );
         if (width, height) == self.size {
             return Ok(());
         }
@@ -598,9 +606,7 @@ mod tests {
             return;
         };
         // First render at 1600x900.
-        let bytes = bridge
-            .paint(&Scene::new())
-            .expect("paint at initial size");
+        let bytes = bridge.paint(&Scene::new()).expect("paint at initial size");
         assert_eq!(bytes.len(), 1600 * 900 * 4);
 
         // Resize to 1280x720 and verify the next paint returns the
@@ -627,7 +633,9 @@ mod tests {
                 (p[0], p[1], p[2]),
                 (0x12, 0x34, 0x56),
                 "pixel {i} expected base color, got ({:#x}, {:#x}, {:#x})",
-                p[0], p[1], p[2]
+                p[0],
+                p[1],
+                p[2]
             );
         }
     }
@@ -659,7 +667,10 @@ mod tests {
         bridge
             .paint_into_xrgb8888(&scene, &mut dst, pitch)
             .expect("paint_into_xrgb8888");
-        assert_eq!(dst, expected, "fused XRGB output must equal swizzled paint()");
+        assert_eq!(
+            dst, expected,
+            "fused XRGB output must equal swizzled paint()"
+        );
     }
 
     #[test]
@@ -687,7 +698,11 @@ mod tests {
                 );
             }
             // Padding after the row stays the untouched sentinel.
-            assert_eq!(dst[row * pitch + 8 * 4], 0xEE, "row {row} padding untouched");
+            assert_eq!(
+                dst[row * pitch + 8 * 4],
+                0xEE,
+                "row {row} padding untouched"
+            );
         }
     }
 

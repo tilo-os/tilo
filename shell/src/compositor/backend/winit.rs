@@ -25,7 +25,7 @@ use std::time::Duration;
 
 use vello::peniko::Color;
 use vello::util::{RenderContext, RenderSurface};
-use vello::{wgpu, AaConfig, AaSupport, RenderParams, Renderer, RendererOptions, Scene};
+use vello::{AaConfig, AaSupport, RenderParams, Renderer, RendererOptions, Scene, wgpu};
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, EventLoop};
@@ -89,7 +89,11 @@ impl WinitBackend {
     /// only fails if winit can't construct the event loop at all.
     pub fn new() -> Result<Self, Box<dyn std::error::Error>> {
         let event_loop = EventLoop::new()?;
-        let outputs = vec![Output::new(OutputId(0), (INITIAL_WIDTH, INITIAL_HEIGHT), 1.0)];
+        let outputs = vec![Output::new(
+            OutputId(0),
+            (INITIAL_WIDTH, INITIAL_HEIGHT),
+            1.0,
+        )];
         Ok(Self {
             event_loop,
             inner: Inner {
@@ -143,13 +147,11 @@ impl Backend for WinitBackend {
         }
         let surface_texture = match render.surface.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(tex) => tex,
-            wgpu::CurrentSurfaceTexture::Outdated
-            | wgpu::CurrentSurfaceTexture::Suboptimal(_) => {
+            wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Suboptimal(_) => {
                 render.render_cx.configure_surface(&render.surface);
                 return;
             }
-            wgpu::CurrentSurfaceTexture::Occluded
-            | wgpu::CurrentSurfaceTexture::Timeout => return,
+            wgpu::CurrentSurfaceTexture::Occluded | wgpu::CurrentSurfaceTexture::Timeout => return,
             wgpu::CurrentSurfaceTexture::Lost => {
                 eprintln!("nirios compositor: surface lost");
                 return;
@@ -159,11 +161,12 @@ impl Backend for WinitBackend {
                 return;
             }
         };
-        let mut encoder = device_handle
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("nirios compositor blit"),
-            });
+        let mut encoder =
+            device_handle
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("nirios compositor blit"),
+                });
         render.surface.blitter.copy(
             &device_handle.device,
             &mut encoder,
@@ -183,7 +186,9 @@ impl Backend for WinitBackend {
         // compositor climbed ~30 MB/s at idle and OOM'd within minutes.
         // The DRM backend (`drm/paint.rs`) and the offscreen renderer both
         // already wait here; this aligns the winit backend with them.
-        let _ = device_handle.device.poll(wgpu::PollType::wait_indefinitely());
+        let _ = device_handle
+            .device
+            .poll(wgpu::PollType::wait_indefinitely());
     }
 
     fn poll_events(&mut self, callback: &mut dyn FnMut(BackendEvent)) {
@@ -193,9 +198,7 @@ impl Backend for WinitBackend {
                 .pump_app_events(Some(Duration::ZERO), &mut self.inner);
             if let PumpStatus::Exit(_) = status {
                 self.inner.closed = true;
-                self.inner
-                    .event_buffer
-                    .push(BackendEvent::CloseRequested);
+                self.inner.event_buffer.push(BackendEvent::CloseRequested);
             }
         }
         for event in self.inner.event_buffer.drain(..) {
@@ -219,10 +222,7 @@ impl ApplicationHandler for Inner {
         }
         let attrs = WindowAttributes::default()
             .with_title("nirios")
-            .with_inner_size(winit::dpi::PhysicalSize::new(
-                INITIAL_WIDTH,
-                INITIAL_HEIGHT,
-            ));
+            .with_inner_size(winit::dpi::PhysicalSize::new(INITIAL_WIDTH, INITIAL_HEIGHT));
         let window = match event_loop.create_window(attrs) {
             Ok(w) => Arc::new(w),
             Err(e) => {
@@ -296,12 +296,7 @@ impl ApplicationHandler for Inner {
         });
     }
 
-    fn window_event(
-        &mut self,
-        event_loop: &ActiveEventLoop,
-        _id: WindowId,
-        event: WindowEvent,
-    ) {
+    fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
         match event {
             WindowEvent::CloseRequested => {
                 self.event_buffer.push(BackendEvent::CloseRequested);
@@ -351,7 +346,8 @@ impl ApplicationHandler for Inner {
                 self.event_buffer.push(BackendEvent::Input(ev));
             }
             WindowEvent::ModifiersChanged(modifiers) => {
-                self.event_buffer.push(BackendEvent::ModifiersChanged(modifiers));
+                self.event_buffer
+                    .push(BackendEvent::ModifiersChanged(modifiers));
             }
             _ => {}
         }

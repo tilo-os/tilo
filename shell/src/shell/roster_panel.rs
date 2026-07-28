@@ -67,16 +67,10 @@ pub enum RosterUpdate {
     },
     /// Peer recorded activity (moved cursor, sent an op, etc.). Bumps
     /// their last-seen timestamp without changing metadata.
-    Activity {
-        user_id: String,
-        t: Instant,
-    },
+    Activity { user_id: String, t: Instant },
     /// Peer disconnected. Chip goes grey immediately and is pruned
     /// after [`PRUNE_AFTER`].
-    Disconnect {
-        user_id: String,
-        t: Instant,
-    },
+    Disconnect { user_id: String, t: Instant },
 }
 
 #[derive(Clone, Debug)]
@@ -163,12 +157,9 @@ impl RosterModel {
     /// Drop peers whose offline prune window has fully elapsed. Callers
     /// can invoke this on a slow timer.
     pub fn gc(&mut self, now: Instant) {
-        self.peers.retain(|_, r| {
-            match r.disconnected_at {
-                Some(t) => now.saturating_duration_since(t) < PRUNE_AFTER,
-                None => now.saturating_duration_since(r.last_seen)
-                    < OFFLINE_AFTER + PRUNE_AFTER,
-            }
+        self.peers.retain(|_, r| match r.disconnected_at {
+            Some(t) => now.saturating_duration_since(t) < PRUNE_AFTER,
+            None => now.saturating_duration_since(r.last_seen) < OFFLINE_AFTER + PRUNE_AFTER,
         });
     }
 
@@ -252,7 +243,11 @@ fn format_last_seen(age: Duration) -> String {
 /// (uppercased) so the chip is never blank.
 pub fn initials(label: &str, user_id: &str) -> String {
     let l = label.trim();
-    let src: String = if l.is_empty() { user_id.to_string() } else { l.to_string() };
+    let src: String = if l.is_empty() {
+        user_id.to_string()
+    } else {
+        l.to_string()
+    };
     if src.contains(char::is_whitespace) {
         let toks: Vec<&str> = src.split_whitespace().collect();
         let a = toks.first().and_then(|t| t.chars().next()).unwrap_or('?');
@@ -358,7 +353,10 @@ mod tests {
         let mut m = RosterModel::new();
         m.apply(upsert("alice", "Alice", t0));
         // Sitting idle.
-        assert_eq!(m.render(t0 + IDLE_AFTER + Duration::from_secs(1))[0].status, PeerStatus::Idle);
+        assert_eq!(
+            m.render(t0 + IDLE_AFTER + Duration::from_secs(1))[0].status,
+            PeerStatus::Idle
+        );
         // Fresh activity bumps them back to Active.
         m.apply(RosterUpdate::Activity {
             user_id: "alice".into(),

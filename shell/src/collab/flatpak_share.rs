@@ -97,16 +97,14 @@ use crate::collab::encoder::{
     Encoder, EncoderError, EncoderInit, EncoderKind, FrameInput, ProbeOutcome, build, probe,
 };
 use crate::collab::hdr_metadata::Hdr10Metadata;
-use smithay::backend::allocator::Buffer as _;
-use smithay::backend::allocator::dmabuf::Dmabuf;
 use crate::config::{EncoderChoice, FlatpakShareConfig};
 use crate::diagnostics::{CapturePath, PeerSurfaceMetrics};
 use crate::network::encoder::EncodeError;
 use crate::network::protocol::{NeighbourMsg, PeerId, SurfaceId};
-use crate::network::streaming::{
-    InputEvent, ShareRegistry, StreamingShare, StreamingThrottle,
-};
+use crate::network::streaming::{InputEvent, ShareRegistry, StreamingShare, StreamingThrottle};
 use crate::network::surface_stream::SurfaceStreamSender;
+use smithay::backend::allocator::Buffer as _;
+use smithay::backend::allocator::dmabuf::Dmabuf;
 
 /// v1 codec label — kept for tests that still assert on the pre-HDR
 /// wire shape. Runtime `stream_start_msg` derives the label from the
@@ -366,7 +364,15 @@ impl SharedFlatpakSession {
         height: u32,
         config: FlatpakShareConfig,
     ) -> Result<Self, ShareError> {
-        Self::start_with_metrics(host_user_id, app_id, surface_id, width, height, config, None)
+        Self::start_with_metrics(
+            host_user_id,
+            app_id,
+            surface_id,
+            width,
+            height,
+            config,
+            None,
+        )
     }
 
     /// Same as [`Self::start`] but accepts a shared
@@ -426,16 +432,11 @@ impl SharedFlatpakSession {
         // description can still override up or down from here via
         // `set_color_override`, which affects only the stream-start
         // labelling (the underlying encoder cadence stays SDR).
-        let hdr_requested_but_unavailable =
-            config.hdr.is_some() && chosen == EncoderKind::Openh264;
+        let hdr_requested_but_unavailable = config.hdr.is_some() && chosen == EncoderKind::Openh264;
         let init = match (config.hdr, hdr_requested_but_unavailable) {
-            (None, _) | (Some(_), true) => EncoderInit::sdr_h264(
-                width,
-                height,
-                effective_fps,
-                effective_bitrate_kbps,
-                1,
-            ),
+            (None, _) | (Some(_), true) => {
+                EncoderInit::sdr_h264(width, height, effective_fps, effective_bitrate_kbps, 1)
+            }
             (Some(hdr_cfg), false) => EncoderInit::hdr10_hevc(
                 width,
                 height,
@@ -446,9 +447,9 @@ impl SharedFlatpakSession {
             ),
         };
         let encoder = build(chosen, init).map_err(|e| match e {
-            EncoderError::Unavailable { .. } => {
-                ShareError::EncoderUnavailable { choice: config.encoder }
-            }
+            EncoderError::Unavailable { .. } => ShareError::EncoderUnavailable {
+                choice: config.encoder,
+            },
             EncoderError::ConfigFailed { detail, .. } => {
                 ShareError::EncoderConstruction(EncodeError::Backend(detail))
             }
@@ -462,9 +463,7 @@ impl SharedFlatpakSession {
         }
 
         // Throttle interval mirrors the target fps.
-        let interval = std::time::Duration::from_micros(
-            (1_000_000 / effective_fps as u64).max(1),
-        );
+        let interval = std::time::Duration::from_micros((1_000_000 / effective_fps as u64).max(1));
 
         Ok(Self {
             host_user_id,
@@ -500,11 +499,7 @@ impl SharedFlatpakSession {
     /// The override is Arc-shared so a background clone (e.g. the
     /// compositor's per-frame hook) can update it without racing the
     /// session's read path.
-    pub fn set_color_override(
-        &self,
-        colorimetry: Colorimetry,
-        hdr: Option<Hdr10Metadata>,
-    ) {
+    pub fn set_color_override(&self, colorimetry: Colorimetry, hdr: Option<Hdr10Metadata>) {
         if let Ok(mut slot) = self.color_override.lock() {
             *slot = Some((colorimetry, hdr));
         }
@@ -523,9 +518,7 @@ impl SharedFlatpakSession {
 
     /// Currently-active override (a diagnostic hook used by the
     /// override tests).
-    pub fn current_color_override(
-        &self,
-    ) -> Option<(Colorimetry, Option<Hdr10Metadata>)> {
+    pub fn current_color_override(&self) -> Option<(Colorimetry, Option<Hdr10Metadata>)> {
         self.color_override.lock().ok().and_then(|g| g.clone())
     }
 
@@ -598,42 +591,39 @@ impl SharedFlatpakSession {
         // transfers (PQ / HLG) imply 10-bit, everything else 8-bit.
         // The codec label follows: HEVC Main10 for HDR, H.264 for SDR.
         let override_val = self.current_color_override();
-        let (codec_label, colorimetry, hdr_static, bit_depth) = if let Some((
-            client_color,
-            client_hdr,
-        )) = override_val
-        {
-            let is_hdr = client_color.is_hdr();
-            let codec = if is_hdr {
-                super::encoder::Codec::HevcMain10
+        let (codec_label, colorimetry, hdr_static, bit_depth) =
+            if let Some((client_color, client_hdr)) = override_val {
+                let is_hdr = client_color.is_hdr();
+                let codec = if is_hdr {
+                    super::encoder::Codec::HevcMain10
+                } else {
+                    super::encoder::Codec::H264
+                };
+                (
+                    codec.wire_label().to_string(),
+                    Some(client_color),
+                    client_hdr.or(self.config.hdr.map(|c| c.metadata)),
+                    if is_hdr { 10u8 } else { 8u8 },
+                )
             } else {
-                super::encoder::Codec::H264
+                // Honour `hdr_requested_but_unavailable`: the config asked
+                // for HDR but the runtime encoder is SDR, so the wire has to
+                // match the actual bytes going out.
+                match (self.config.hdr, self.hdr_requested_but_unavailable) {
+                    (None, _) | (Some(_), true) => (
+                        super::encoder::Codec::H264.wire_label().to_string(),
+                        Some(crate::collab::colorimetry::Colorimetry::sdr_bt709()),
+                        None,
+                        8u8,
+                    ),
+                    (Some(hdr_cfg), false) => (
+                        super::encoder::Codec::HevcMain10.wire_label().to_string(),
+                        Some(hdr_cfg.colorimetry()),
+                        Some(hdr_cfg.metadata),
+                        10u8,
+                    ),
+                }
             };
-            (
-                codec.wire_label().to_string(),
-                Some(client_color),
-                client_hdr.or(self.config.hdr.map(|c| c.metadata)),
-                if is_hdr { 10u8 } else { 8u8 },
-            )
-        } else {
-            // Honour `hdr_requested_but_unavailable`: the config asked
-            // for HDR but the runtime encoder is SDR, so the wire has to
-            // match the actual bytes going out.
-            match (self.config.hdr, self.hdr_requested_but_unavailable) {
-                (None, _) | (Some(_), true) => (
-                    super::encoder::Codec::H264.wire_label().to_string(),
-                    Some(crate::collab::colorimetry::Colorimetry::sdr_bt709()),
-                    None,
-                    8u8,
-                ),
-                (Some(hdr_cfg), false) => (
-                    super::encoder::Codec::HevcMain10.wire_label().to_string(),
-                    Some(hdr_cfg.colorimetry()),
-                    Some(hdr_cfg.metadata),
-                    10u8,
-                ),
-            }
-        };
         NeighbourMsg::SurfaceStreamStart {
             surface: self.surface_id,
             source_peer: self.host_user_id,
@@ -804,8 +794,8 @@ impl SharedFlatpakSession {
                         m.record_keyframe();
                     }
                     // Rough bitrate sample: bytes-per-frame * fps.
-                    let bytes_per_sec = (stats.bytes as u64)
-                        .saturating_mul(self.config.target_fps as u64);
+                    let bytes_per_sec =
+                        (stats.bytes as u64).saturating_mul(self.config.target_fps as u64);
                     m.record_bitrate(bytes_per_sec);
                 }
                 // Fan out to the dedicated substream first — every
@@ -1068,8 +1058,7 @@ mod tests {
             target_fps: 60,
             ..cfg_openh264()
         };
-        let s = SharedFlatpakSession::start(1, "org.gimp.GIMP", 7, 64, 64, cfg)
-            .expect("start");
+        let s = SharedFlatpakSession::start(1, "org.gimp.GIMP", 7, 64, 64, cfg).expect("start");
         assert_eq!(
             s.snapshot_config().target_fps,
             SOFTWARE_FPS_CEILING,
@@ -1155,8 +1144,7 @@ mod tests {
 
     #[test]
     fn encode_next_frame_none_when_no_staged_frame() {
-        let s = SharedFlatpakSession::start(1, "x", 7, 64, 64, cfg_openh264())
-            .expect("start");
+        let s = SharedFlatpakSession::start(1, "x", 7, 64, 64, cfg_openh264()).expect("start");
         assert!(s.encode_next_frame(Instant::now()).is_none());
     }
 
@@ -1164,8 +1152,7 @@ mod tests {
     fn stop_short_circuits_encode_next_frame() {
         const W: u32 = 64;
         const H: u32 = 64;
-        let s = SharedFlatpakSession::start(1, "x", 7, W, H, cfg_openh264())
-            .expect("start");
+        let s = SharedFlatpakSession::start(1, "x", 7, W, H, cfg_openh264()).expect("start");
         s.deposit_captured_rgba(gradient_frame(W, H));
         // Grab the `active` handle before consuming `s` so we can flip
         // it without needing to keep the session alive for the assertion.
@@ -1176,8 +1163,7 @@ mod tests {
 
     #[test]
     fn viewer_registration_gates_remote_input() {
-        let s = SharedFlatpakSession::start(1, "x", 7, 64, 64, cfg_openh264())
-            .expect("start");
+        let s = SharedFlatpakSession::start(1, "x", 7, 64, 64, cfg_openh264()).expect("start");
         let peer: PeerId = 99;
 
         // Not a viewer → input rejected.
@@ -1198,17 +1184,24 @@ mod tests {
 
     #[test]
     fn route_input_delivers_only_when_accepted() {
-        let s = SharedFlatpakSession::start(1, "x", 7, 64, 64, cfg_openh264())
-            .expect("start");
+        let s = SharedFlatpakSession::start(1, "x", 7, 64, 64, cfg_openh264()).expect("start");
         let peer: PeerId = 42;
         let mut sink = RecordingSink::default();
 
         // Unknown viewer → drops.
-        assert!(!s.route_input(peer, InputEvent::PointerMotion { x: 1.0, y: 2.0 }, &mut sink));
+        assert!(!s.route_input(
+            peer,
+            InputEvent::PointerMotion { x: 1.0, y: 2.0 },
+            &mut sink
+        ));
         assert!(sink.events.is_empty());
 
         s.add_viewer(peer, false);
-        assert!(s.route_input(peer, InputEvent::PointerMotion { x: 3.0, y: 4.0 }, &mut sink));
+        assert!(s.route_input(
+            peer,
+            InputEvent::PointerMotion { x: 3.0, y: 4.0 },
+            &mut sink
+        ));
         assert_eq!(sink.events.len(), 1);
         assert_eq!(sink.events[0].0, peer);
         assert_eq!(sink.events[0].1, 7);
