@@ -14,4 +14,4 @@ path = "src/lib.rs"
 # crate docstring in `src/lib.rs` for the design intent.
 
 [dependencies]
-tracing = "0.1"
+tracing.workspace = true
