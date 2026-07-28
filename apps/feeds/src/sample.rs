@@ -4,7 +4,8 @@
 //! screenshot is driven entirely by this fixture: a realistic multi-folder
 //! subscription set with read/unread/starred articles and fully-rendered
 //! bodies (including a gemtext capsule to exercise the Gemini path). The
-//! live app seeds the same shape on first run, then refreshes over HTTP.
+//! live app never seeds this — it starts empty on the user's persisted
+//! subscriptions and fetches real feeds over HTTP once the user adds one.
 
 use chrono::Utc;
 use uuid::Uuid;
