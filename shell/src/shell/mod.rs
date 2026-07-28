@@ -27,6 +27,7 @@ pub mod collab_broker;
 pub mod collab_broker_capnp;
 pub mod cursor_interp;
 pub mod desktop_backdrop;
+pub mod doc_open;
 pub mod editor_app;
 pub mod hdr_display;
 pub mod hdr_tonemap;

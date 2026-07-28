@@ -1439,13 +1439,38 @@ mod tests {
 
     #[test]
     fn visibility_tracks_the_groups_active_tab() {
+        use crate::compositor::tab_binding::{Placement, adopt_toplevel, adopt_toplevel_at};
+        crate::shell::launcher::clear_pending_placements();
         let mut tree = WorkspaceTree::bootstrap_default();
-        let first = crate::compositor::tab_binding::adopt_toplevel(&mut tree, 11, None);
+        let first = adopt_toplevel(&mut tree, 11, None);
         assert!(is_visible_tab(&tree, 11), "a fresh adoption becomes active");
-        let _second = crate::compositor::tab_binding::adopt_toplevel(&mut tree, 12, None);
-        assert!(!is_visible_tab(&tree, 11), "the first tab is now behind");
+
+        // A second launch opens its own group beside the first, so both
+        // windows are on screen — that is the point of the strip.
+        let _second = adopt_toplevel(&mut tree, 12, None);
+        assert!(
+            is_visible_tab(&tree, 11),
+            "a launch into its own group must not hide the previous window"
+        );
         assert!(is_visible_tab(&tree, 12));
+
+        // Stacking into the *same* group is what puts a window behind
+        // another — the tab dimension, not the strip one.
+        let owner = tree
+            .active_workspace()
+            .unwrap()
+            .strips
+            .iter()
+            .flat_map(|s| s.window_groups.iter())
+            .find(|g| g.tabs.iter().any(|t| t.id == first))
+            .expect("the first window's group")
+            .id;
+        let _third = adopt_toplevel_at(&mut tree, 13, None, Placement::TabIn(owner));
+        assert!(
+            !is_visible_tab(&tree, 11),
+            "a tab added to the same group covers the one that was showing"
+        );
+        assert!(is_visible_tab(&tree, 13));
         assert!(!is_visible_tab(&tree, 999), "unknown surfaces are not visible");
-        let _ = first;
     }
 }
