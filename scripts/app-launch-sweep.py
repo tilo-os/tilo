@@ -253,6 +253,25 @@ class Compositor:
                 return sorted(f"{a}#{s}" for a, s in tiles)
         return None
 
+    def foreign_frames(self):
+        """Per-surface frame counters the compositor is keeping.
+
+        Returns a list of {surface_id, app_id, frame_seq, last_error},
+        or None if the compositor is too old to answer - the caller then
+        has nothing better than the picture to go on, and should say so
+        rather than guess.
+        """
+        try:
+            reply = call(self.sock, {"op": "foreign_frames"})
+        except Exception:  # noqa: BLE001
+            return None
+        if not isinstance(reply, dict):
+            return None
+        body = reply.get("foreign_frames", reply.get("ok", reply))
+        if isinstance(body, dict):
+            body = body.get("frames", body)
+        return body if isinstance(body, list) else None
+
     def snapshot_when_painted(self, out_png: pathlib.Path, hold: float,
                               min_hold: float) -> None:
         """Dismiss the palette, then snapshot repeatedly until the tile's
@@ -304,18 +323,26 @@ def was_launched(logpath: pathlib.Path, package_id: str) -> bool:
 def run_one(args, package_id: str, out: pathlib.Path, env_extra: dict) -> dict:
     logpath = out / f"{package_id}.log"
     short = package_id.rsplit(".", 1)[-1]
-    adopted, shot = None, None
+    adopted, shot, frames = None, None, None
     with Compositor(args.shell, args.launcher, logpath, env_extra,
                     args.startup_timeout) as comp:
         if comp.failure:
             return {"adopted": None, "errors": [comp.failure],
                     "compositor_started": False, "launched": False,
-                    "png": None}
+                    "png": None, "frames": None}
         comp.open_palette_and_launch(short)
         adopted = comp.wait_for_adoption(args.settle)
         if adopted and args.shots:
             shot = out / f"{package_id}.png"
             comp.snapshot_when_painted(shot, args.hold, args.min_hold)
+        if adopted:
+            # Ground truth, straight from the compositor's own frame
+            # bookkeeping: frame_seq counts frames actually taken from
+            # the client, so 0 means the tile is still the first-frame
+            # placeholder however much it may look like an app that
+            # legitimately starts empty. Read it while the compositor is
+            # still up - it dies with the `with` block.
+            frames = comp.foreign_frames()
     reap(f"qos-apps/{package_id}")
 
     launched = was_launched(logpath, package_id)
@@ -331,6 +358,7 @@ def run_one(args, package_id: str, out: pathlib.Path, env_extra: dict) -> dict:
         "compositor_started": True,
         "launched": launched,
         "png": str(shot) if shot and shot.exists() else None,
+        "frames": frames,
     }
 
 
