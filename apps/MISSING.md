@@ -195,6 +195,18 @@ verified by an offscreen shot (header gone, functional controls intact) + tests:
       (org.freedesktop.portal.Location) + transit time picker → fixed (6a9ad41).
       (Location's real coords depend on the host location service + permission —
       wiring is real + unit-tested; live fix unverifiable headlessly.)
+- [x] Real-time traffic layer (product.md's "crowdsourced real-time traffic over
+      OSM"): a togglable congestion overlay in the immersive chrome (a traffic-light
+      control in the floating stack — NO sidebar) that colours road segments green →
+      amber → orange → red by a `Congestion` signal, with a bottom-left legend
+      (per-level counts + provenance). There is no turnkey free real-time-traffic
+      feed to wire, so the model is honest: the LIVE app has no peer reports and
+      shows "No traffic data" (never fabricated congestion); the `--shots` / sample
+      cartography path colours its roads from a deterministic sample set (sub-
+      segmented so congestion varies along a road, class-weighted so arterials run
+      busy) purely to exercise the rendering, labelled "sample data". Verified on
+      the populated 1280px overlay + the empty-state shots; asserted by the
+      `traffic::` model tests + the app toggle / honest-empty / click-target tests.
 
 ## typst_editor
 - [x] Horizontal scroll / keep caret in view → fixed.
