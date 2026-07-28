@@ -71,8 +71,19 @@ fn tree_with_grants(entries: Vec<(&str, Vec<Capability>)>) -> WorkspaceTree {
     let mut tree = WorkspaceTree::default();
     let id = WorkspaceId::from(1);
     let mut ws = Workspace::new(id, "perm-test");
+    // Revoking is an administrator's act, and `Workspace::new` leaves a
+    // room ownerless. Install the identity the chrome will be acting as,
+    // so the click exercises the real authority check rather than an
+    // override.
+    ws.set_owner(shell::shell::state::local_user_id());
     for (app_id, caps) in entries {
-        ws.grants().insert(app_id.to_string(), caps);
+        // Seed through the production granting path. `grants()` is a
+        // *derived* view — it rebuilds the per-app map from
+        // `capabilities` and returns it by value, so inserting into it
+        // writes to a temporary and seeds nothing.
+        for cap in &caps {
+            ws.grant_app(app_id, cap);
+        }
     }
     tree.workspaces.push(ws);
     tree.set_active(id);
@@ -285,8 +296,11 @@ fn revoke_button_disabled_for_non_owner() {
 
     let st = chrome.borrow();
     let tree = st.tree(); let ws = tree.active_workspace().expect("active workspace");
-    let caps = ws
-        .grants()
+    // `grants()` re-derives the per-app map from the workspace's
+    // capabilities and hands it back by value, so it needs a binding to
+    // outlive the borrow taken from it.
+    let grants = ws.grants();
+    let caps = grants
         .get("firefox")
         .expect("non-owner click must NOT remove the grant");
     assert_eq!(
@@ -315,12 +329,7 @@ fn permissions_tab_appears_in_ws_tab_iter() {
     // grants are non-empty.
     let mut empty_ws = Workspace::new(WorkspaceId::default(), "empty");
     assert!(!WsTab::visible(&empty_ws).contains(&WsTab::Permissions));
-    empty_ws.grants().insert(
-        "vscode".into(),
-        vec![Capability::Camera {
-            scope: GRANT_ONCE,
-        }],
-    );
+    empty_ws.grant_app("vscode", &Capability::Camera { scope: GRANT_ONCE });
     assert!(WsTab::visible(&empty_ws).contains(&WsTab::Permissions));
 }
 
@@ -336,12 +345,7 @@ fn revoking_last_grant_clears_workspace_grants_map() {
     // tab from the strip. Verifies the
     // `revoke_grant` ↔ `WsTab::visible` contract end-to-end.
     let mut ws = Workspace::new(WorkspaceId::default(), "single-grant");
-    ws.grants().insert(
-        "vscode".into(),
-        vec![Capability::Camera {
-            scope: GRANT_ONCE,
-        }],
-    );
+    ws.grant_app("vscode", &Capability::Camera { scope: GRANT_ONCE });
     assert!(WsTab::visible(&ws).contains(&WsTab::Permissions));
     workspace_settings::revoke_grant(&mut ws, &"vscode".to_string(), 0);
     assert!(ws.grants().is_empty());
