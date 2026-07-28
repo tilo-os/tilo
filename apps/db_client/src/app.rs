@@ -97,6 +97,8 @@ pub struct DbClientApp {
     run_btn: Rect,
     snippet_btn: Rect,
     new_conn_btn: Rect,
+    /// Call-to-action button in the main-panel empty state (opens the modal).
+    empty_new_conn_btn: Rect,
     tab_rects: Vec<(MainTab, Rect)>,
     conn_rects: Vec<(usize, Rect)>,
     /// Whether the grid bound the current result (avoids rebinding each frame).
@@ -153,6 +155,7 @@ impl DbClientApp {
             cursor: Point::ZERO,
             sidebar_rect: Rect::ZERO,
             main_rect: Rect::ZERO,
+            empty_new_conn_btn: Rect::ZERO,
             flap: FlapState::open_when_docked(),
             last_tick: Instant::now(),
             scrim_rect: Rect::ZERO,
@@ -649,6 +652,13 @@ impl DbClientApp {
             return;
         }
 
+        // Empty-state call to action in the main panel (opens the modal).
+        if self.session.connections.is_empty() && self.empty_new_conn_btn.contains(c) {
+            self.modal.open_new();
+            *handled = true;
+            return;
+        }
+
         // Sidebar widgets only when the sidebar is interactive.
         if self.sidebar_interactive() {
             // "New connection" button.
@@ -973,6 +983,8 @@ impl DbClientApp {
         }
 
         // Empty state: nothing to query until the user adds a connection.
+        // A composed zero-state — a database mark, a clear title + hint, and a
+        // single primary action — rather than two lines of bare text.
         if self.session.connections.is_empty() {
             let body = Rect::new(
                 self.main_rect.x0,
@@ -980,18 +992,83 @@ impl DbClientApp {
                 self.main_rect.x1,
                 self.main_rect.y1,
             );
-            let title = "No connection";
-            let hint = "Add a connection in the sidebar to browse and query a database.";
-            let (tw, _) = tr.measure(title, 18.0, None);
-            let (hw, _) = tr.measure(hint, 12.5, None);
             let cx = body.center().x;
-            let cy = body.center().y;
+            let card_w = 380.0_f64.min(body.width() - 32.0);
+            let card_h = 250.0;
+            let card = Rect::new(
+                cx - card_w / 2.0,
+                body.center().y - card_h / 2.0,
+                cx + card_w / 2.0,
+                body.center().y + card_h / 2.0,
+            );
+            scene.fill(Fill::NonZero, t, theme.bg_primary, None, &card.to_rounded_rect(14.0));
+            scene.stroke(
+                &Stroke::new(1.0),
+                t,
+                theme.border_standard,
+                None,
+                &card.to_rounded_rect(14.0),
+            );
+
+            // Database-cylinder mark, drawn from the accent so it re-tints.
+            let accent = theme.accent_primary;
+            let icx = cx;
+            let icy = card.y0 + 34.0;
+            let rx = 21.0;
+            let ry = 6.5;
+            let bh = 30.0;
+            scene.fill(
+                Fill::NonZero,
+                t,
+                p.selection,
+                None,
+                &Rect::new(icx - rx, icy, icx + rx, icy + bh),
+            );
+            scene.fill(
+                Fill::NonZero,
+                t,
+                p.selection,
+                None,
+                &vello::kurbo::Ellipse::new((icx, icy + bh), (rx, ry), 0.0),
+            );
+            scene.stroke(
+                &Stroke::new(1.3),
+                t,
+                accent,
+                None,
+                &Line::new(Point::new(icx - rx, icy), Point::new(icx - rx, icy + bh)),
+            );
+            scene.stroke(
+                &Stroke::new(1.3),
+                t,
+                accent,
+                None,
+                &Line::new(Point::new(icx + rx, icy), Point::new(icx + rx, icy + bh)),
+            );
+            scene.stroke(
+                &Stroke::new(1.3),
+                t,
+                accent,
+                None,
+                &vello::kurbo::Ellipse::new((icx, icy + bh * 0.5), (rx, ry), 0.0),
+            );
+            scene.fill(
+                Fill::NonZero,
+                t,
+                accent,
+                None,
+                &vello::kurbo::Ellipse::new((icx, icy), (rx, ry), 0.0),
+            );
+
+            let title = "No connection yet";
+            let hint = "Connect to a PostgreSQL, MySQL or SQLite database to browse its schema and run queries.";
+            let (tw, _) = tr.measure(title, 17.0, None);
             tr.draw_text(
                 scene,
                 title,
-                18.0,
+                17.0,
                 theme.text_primary,
-                t * Affine::translate((cx - tw as f64 / 2.0, cy - 18.0)),
+                t * Affine::translate((cx - tw as f64 / 2.0, card.y0 + 92.0)),
                 None,
             );
             tr.draw_text(
@@ -999,7 +1076,33 @@ impl DbClientApp {
                 hint,
                 12.5,
                 theme.text_dim,
-                t * Affine::translate((cx - hw as f64 / 2.0, cy + 6.0)),
+                t * Affine::translate((card.x0 + 26.0, card.y0 + 120.0)),
+                Some((card_w - 52.0) as f32),
+            );
+
+            // Primary action.
+            let btn_w = 188.0;
+            let btn = Rect::new(
+                cx - btn_w / 2.0,
+                card.y1 - 54.0,
+                cx + btn_w / 2.0,
+                card.y1 - 20.0,
+            );
+            self.empty_new_conn_btn = btn;
+            let btn_bg = if btn.contains(self.cursor) {
+                theme.accent_hover
+            } else {
+                theme.accent_primary
+            };
+            scene.fill(Fill::NonZero, t, btn_bg, None, &btn.to_rounded_rect(7.0));
+            let label = "+  New connection";
+            let (lw, _) = tr.measure(label, 13.0, None);
+            tr.draw_text(
+                scene,
+                label,
+                13.0,
+                Color::WHITE,
+                t * Affine::translate((cx - lw as f64 / 2.0, btn.y0 + 9.0)),
                 None,
             );
             return;

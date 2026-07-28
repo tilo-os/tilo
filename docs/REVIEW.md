@@ -157,7 +157,7 @@ desktop installer than a forced step-wizard.
 | contacts | 🟢 | Real disk vCards, empty on live, sample=shots. Minor S5 header. |
 | code_editor | 🔴 | Mock: edits a hardcoded in-memory "ferris-cli", **no open/save of real files** (no portal, no fs). Real highlight/terminal but unusable as an editor. |
 | containers | 🟢 | Real podman/distrobox shell-out; sample only offline/shots. Dup title (S5). |
-| db_client | 🟠 | Real SQLite; **pg/mysql are non-connecting stubs** (no drivers); boots seeded. |
+| db_client | 🟢 | Real SQLite + **real PostgreSQL & MySQL** (sync `postgres`/`mysql` drivers): live connect, catalog introspection, real queries; honest error on refused/failed auth. Empty on live, sample=shots. |
 | diffmerge | 🟠 | Real diff + 3-way merge engine; auto-opens a sample conflict on live. |
 | disks | 🟢 | Real lsblk/smartctl/udisks2; refuses to fabricate; honest empty on failure. |
 | feeds | 🔴 | Real RSS/Atom/**Gemini** worker EXISTS but live boots fake articles (`sample::store()`). Pure S1 — small fix. |
@@ -199,10 +199,10 @@ desktop installer than a forced step-wizard.
 ## Fix plan (prioritized)
 1. **firewall safety (S6)** — read real zones/rules (`firewall-cmd --list`/import) before displaying or applying. Do first.
 2. **The 7 reds → real or honestly-empty:** vpn + remote (real WireGuard/OpenVPN / SSH+VNC, or start empty + mark simulation clearly), video_editor (real media import via portal + real preview/export, or gate honestly), code_editor (real open/save via portal), feeds (delete the live seed — the real RSS/Atom/Gemini worker already exists), chat (real MoQ/collab backend + empty channels).
-3. **S1 live-seed sweep (mechanical, high-ROI):** stop seeding sample data in live constructors — feeds, firewall, remote, video_editor, vpn, snippets, software_store, store, db_client, diffmerge, backups, calendar, ebook, api_tester, chat. Move the seed behind `--shots` (the good apps already do this). Often a 1-line change.
+3. **S1 live-seed sweep (mechanical, high-ROI):** stop seeding sample data in live constructors — feeds, firewall, remote, video_editor, vpn, snippets, software_store, store, diffmerge, backups, calendar, ebook, api_tester, chat. Move the seed behind `--shots` (the good apps already do this). Often a 1-line change.
 4. **Dead controls:** store (search + filter chips), tube (Invidious setting), store detail sheet.
 5. **Chrome:** video-player immersive §1e; strip app-drawn name/logo headers (S5) across ~11 apps; land the shared `ui` sidebar/card unification (Card/CardGrid built) + migrate the bespoke-sidebar offenders (file-explorer 1122 LOC, backups, firewall).
-6. **Feature gaps vs product.md:** db_client real pg/mysql; maps live-tile fix + traffic; portal Open/Save-As where missing (word-processor, typst, code_editor, hex_editor); mail/music/tube `--features live` default-on decision.
+6. **Feature gaps vs product.md:** maps live-tile fix + traffic; portal Open/Save-As where missing (word-processor, typst, code_editor, hex_editor); mail/music/tube `--features live` default-on decision.
 
 <!-- SWEEP IN PROGRESS. 10 apps inspected by hand (above).
 

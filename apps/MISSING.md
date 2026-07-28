@@ -396,6 +396,26 @@ shot-inspected (empty state and demo).
       set (ordered) with a "Loading apps from Flathub…" state; the sample stays
       offline/`--shots` only. (bd2f320c)
 
+## db_client — real PostgreSQL & MySQL drivers (CLEAR)
+
+- [x] pg/mysql were non-connecting stubs (`engine.rs` said the live connection
+      was "unimplemented"; the session gated remote engines behind a fake
+      "network grant"). Wired the sync `postgres` and `mysql` crates behind a
+      `LiveEngine` enum so SQLite, PostgreSQL and MySQL share one session path.
+      Each network engine opens a real TCP connection from a host/port/user/
+      password/database profile, introspects the live catalog
+      (`information_schema` + `pg_catalog` / MySQL `statistics`) for tables,
+      columns, primary/foreign keys, indexes and row counts, and runs real
+      queries returning real rows; a refused socket or a bad password surfaces
+      the driver's own error, never a fabricated success. Password is held in
+      memory only (`#[serde(skip)]`) — never written to the on-disk profile;
+      the connect modal gained a masked password field. Proven with a real
+      CREATE/INSERT/SELECT + introspection round-trip through the production
+      session path against rootless-podman `postgres:16` and `mariadb:11`
+      (unit tests cover connection-string building + row/column mapping for
+      both engines; the live round-trip is env-gated). Empty state recomposed
+      per HIG §7 (database mark + primary "New connection" action).
+
 ## video_editor — real import / decode / export (a real editing engine, now with real media)
 
 The timeline/CRDT editing engine (split/trim/ripple/snap/grade/fade, all
