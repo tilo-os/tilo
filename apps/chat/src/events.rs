@@ -1841,6 +1841,65 @@ mod tests {
     }
 
     #[test]
+    fn an_edit_and_its_history_converge_across_two_participants() {
+        use crate::model::Presence;
+        // The author edits a message; the *new* body AND the archived prior
+        // version both reach the other peer. Drives the real inline-editor path
+        // (begin_edit → insert_text → commit_edit → ChatDoc::edit_message), then
+        // shuttles the incremental delta a peer would receive from the broker.
+        let mut doc_a = AutoCommit::new();
+        ChatDoc::seed_starter(&mut doc_a, "u_alice", "Alice", "AL");
+        let snapshot = doc_a.save();
+        let mut doc_b = AutoCommit::load(&snapshot).unwrap();
+        ChatDoc::ensure_user(&mut doc_b, "u_bob", "Bob", "BO", 1, Presence::Online);
+        exchange(&mut doc_a, &mut doc_b);
+
+        let mut a = peer("u_alice", "Alice", "AL", 0);
+        let mut b = peer("u_bob", "Bob", "BO", 1);
+        a.reload(&doc_a);
+        b.reload(&doc_b);
+
+        // Alice posts, then Bob sees the original body.
+        a.insert_text(&mut doc_a, "shipping friday");
+        a.send_focused(&mut doc_a);
+        exchange(&mut doc_a, &mut doc_b);
+        b.reload(&doc_b);
+        let msg_id = b.messages.iter().find(|m| m.text == "shipping friday").expect("B sees it").id.clone();
+        assert!(b.message(&msg_id).is_some_and(|m| !m.edited), "not edited yet");
+
+        // Alice edits through the real inline editor: load her own message,
+        // append to its working text, and commit.
+        a.begin_edit(msg_id.clone());
+        assert!(a.editing.is_some(), "the author can open the inline editor");
+        a.insert_text(&mut doc_a, " → moved to monday");
+        a.commit_edit(&mut doc_a);
+
+        // The edit — new body + archived prior version — converges to Bob.
+        exchange(&mut doc_a, &mut doc_b);
+        b.reload(&doc_b);
+        let m = b.message(&msg_id).expect("edited message present for B");
+        assert_eq!(m.text, "shipping friday → moved to monday", "B sees the edited body");
+        assert!(m.edited, "B sees the (edited) flag");
+        assert_eq!(m.history.len(), 1, "B sees one archived prior version");
+        assert_eq!(m.history[0].text, "shipping friday", "the prior body is preserved verbatim");
+
+        // A second edit accumulates history without losing the first — proving
+        // the log grows rather than overwriting.
+        a.begin_edit(msg_id.clone());
+        a.insert_text(&mut doc_a, " (confirmed)");
+        a.commit_edit(&mut doc_a);
+        exchange(&mut doc_a, &mut doc_b);
+        b.reload(&doc_b);
+        let m = b.message(&msg_id).unwrap();
+        assert_eq!(m.history.len(), 2, "both prior versions are kept");
+        assert_eq!(m.history[0].text, "shipping friday");
+        assert_eq!(m.history[1].text, "shipping friday → moved to monday");
+        // And a non-author cannot edit someone else's message via the same path.
+        b.begin_edit(msg_id.clone());
+        assert!(b.editing.is_none(), "a non-author can't open the editor on A's message");
+    }
+
+    #[test]
     fn attaching_a_video_posts_an_inline_video_card() {
         let (mut app, mut doc) = app_with_doc();
         let dir = tempfile::tempdir().unwrap();
