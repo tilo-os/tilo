@@ -157,12 +157,7 @@ impl SearchProvider for ApplicationsProvider {
 /// Category ranks below the package id because it is a bucket, not an
 /// identity: "office" should offer every office app, but never above an
 /// app whose own name or id the user actually typed.
-fn match_score(
-    needle: &str,
-    name: &str,
-    package_id: &str,
-    category: Option<&str>,
-) -> Option<i32> {
+fn match_score(needle: &str, name: &str, package_id: &str, category: Option<&str>) -> Option<i32> {
     if needle.is_empty() {
         return Some(0);
     }

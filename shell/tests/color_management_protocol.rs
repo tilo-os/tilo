@@ -176,9 +176,7 @@ impl Dispatch<WpImageDescriptionV1, ()> for ClientAppState {
     }
 }
 
-impl Dispatch<wp_color_management_surface_v1::WpColorManagementSurfaceV1, ()>
-    for ClientAppState
-{
+impl Dispatch<wp_color_management_surface_v1::WpColorManagementSurfaceV1, ()> for ClientAppState {
     fn event(
         _: &mut Self,
         _: &wp_color_management_surface_v1::WpColorManagementSurfaceV1,
@@ -238,8 +236,7 @@ fn pump(
 #[test]
 fn client_negotiation_advertises_bt2020_pq_and_parametric_feature() {
     // Server side: minimal State (compositor + color_manager globals).
-    let event_loop: EventLoop<'static, State> =
-        EventLoop::try_new().expect("calloop event loop");
+    let event_loop: EventLoop<'static, State> = EventLoop::try_new().expect("calloop event loop");
     let mut display: Display<State> = Display::new().expect("wayland display");
     let display_handle = display.handle();
     let mut server_state = State::new(event_loop.handle(), display_handle);
@@ -252,8 +249,7 @@ fn client_negotiation_advertises_bt2020_pq_and_parametric_feature() {
         .expect("insert client");
 
     let conn = Connection::from_socket(client_side).expect("client from socket");
-    let mut event_queue: wayland_client::EventQueue<ClientAppState> =
-        conn.new_event_queue();
+    let mut event_queue: wayland_client::EventQueue<ClientAppState> = conn.new_event_queue();
     let qh = event_queue.handle();
 
     let display_proxy = conn.display();
@@ -279,22 +275,26 @@ fn client_negotiation_advertises_bt2020_pq_and_parametric_feature() {
         app.supported_primaries
     );
     assert!(
-        app.supported_primaries.contains(&(Primaries::Bt2020 as u32)),
+        app.supported_primaries
+            .contains(&(Primaries::Bt2020 as u32)),
         "BT.2020 primaries not advertised: {:?}",
         app.supported_primaries
     );
     assert!(
-        app.supported_transfers.contains(&(TransferFunction::St2084Pq as u32)),
+        app.supported_transfers
+            .contains(&(TransferFunction::St2084Pq as u32)),
         "PQ transfer not advertised: {:?}",
         app.supported_transfers
     );
     assert!(
-        app.supported_transfers.contains(&(TransferFunction::Hlg as u32)),
+        app.supported_transfers
+            .contains(&(TransferFunction::Hlg as u32)),
         "HLG transfer not advertised: {:?}",
         app.supported_transfers
     );
     assert!(
-        app.supported_features.contains(&(Feature::Parametric as u32)),
+        app.supported_features
+            .contains(&(Feature::Parametric as u32)),
         "Parametric feature not advertised: {:?}",
         app.supported_features
     );
@@ -308,8 +308,7 @@ fn client_negotiation_advertises_bt2020_pq_and_parametric_feature() {
 
 #[test]
 fn client_attaches_bt2020_pq_image_description_and_surface_data_records_it() {
-    let event_loop: EventLoop<'static, State> =
-        EventLoop::try_new().expect("calloop event loop");
+    let event_loop: EventLoop<'static, State> = EventLoop::try_new().expect("calloop event loop");
     let mut display: Display<State> = Display::new().expect("wayland display");
     let display_handle = display.handle();
     let mut server_state = State::new(event_loop.handle(), display_handle);
@@ -321,8 +320,7 @@ fn client_attaches_bt2020_pq_image_description_and_surface_data_records_it() {
         .expect("insert client");
 
     let conn = Connection::from_socket(client_side).expect("client from socket");
-    let mut event_queue: wayland_client::EventQueue<ClientAppState> =
-        conn.new_event_queue();
+    let mut event_queue: wayland_client::EventQueue<ClientAppState> = conn.new_event_queue();
     let qh = event_queue.handle();
 
     let _registry = conn.display().get_registry(&qh, ());

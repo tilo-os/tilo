@@ -181,8 +181,7 @@ impl HdrConfig {
     /// matching transfer + BT.2020 non-constant matrix + limited range.
     pub fn colorimetry(self) -> crate::collab::colorimetry::Colorimetry {
         use crate::collab::colorimetry::{
-            ColorPrimaries, ColorRange, Colorimetry, MatrixCoefficients,
-            TransferCharacteristics,
+            ColorPrimaries, ColorRange, Colorimetry, MatrixCoefficients, TransferCharacteristics,
         };
         Colorimetry {
             primaries: ColorPrimaries::Bt2020,
@@ -215,9 +214,15 @@ mod tests {
     fn hdr_config_colorimetry_pairs_correctly() {
         use crate::collab::colorimetry::TransferCharacteristics;
         let pq = HdrConfig::pq_reference();
-        assert_eq!(pq.colorimetry().transfer, TransferCharacteristics::SmpteSt2084);
+        assert_eq!(
+            pq.colorimetry().transfer,
+            TransferCharacteristics::SmpteSt2084
+        );
         let hlg = HdrConfig::hlg_reference();
-        assert_eq!(hlg.colorimetry().transfer, TransferCharacteristics::AribStdB67);
+        assert_eq!(
+            hlg.colorimetry().transfer,
+            TransferCharacteristics::AribStdB67
+        );
     }
 
     #[test]

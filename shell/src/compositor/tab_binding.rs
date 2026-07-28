@@ -91,11 +91,7 @@ impl Default for Placement {
 /// mutating the tree — the foreign surface was then alive at the
 /// protocol layer but invisible to the chrome, leaking buffer + shm-pool
 /// memory until the client tore the toplevel down on its own.
-pub fn adopt_toplevel(
-    tree: &mut WorkspaceTree,
-    surface_id: u64,
-    app_id: Option<String>,
-) -> TabId {
+pub fn adopt_toplevel(tree: &mut WorkspaceTree, surface_id: u64, app_id: Option<String>) -> TabId {
     let placement = app_id
         .as_deref()
         .and_then(|id| crate::shell::launcher::placement_for_toplevel(id, surface_id))
@@ -295,11 +291,7 @@ pub fn close_tab_for_destroyed_surface(
                     // a stale id — the chrome's resolver tolerates that
                     // and picks the first existing tab on next frame).
                     if group.active_tab == removed.id {
-                        group.active_tab = group
-                            .tabs
-                            .last()
-                            .map(|t| t.id)
-                            .unwrap_or(0);
+                        group.active_tab = group.tabs.last().map(|t| t.id).unwrap_or(0);
                     }
                     return true;
                 }
@@ -412,13 +404,15 @@ mod tests {
         // Two more groups after the first, so "beside" and "at the end"
         // are distinguishable positions.
         for _ in 0..2 {
-            tree.workspaces[0].strips[0].window_groups.push(WindowGroup {
-                id: next_id(),
-                tabs: vec![],
-                active_tab: 0,
-                width: WindowWidth::Normal,
-                maximized: false,
-            });
+            tree.workspaces[0].strips[0]
+                .window_groups
+                .push(WindowGroup {
+                    id: next_id(),
+                    tabs: vec![],
+                    active_tab: 0,
+                    width: WindowWidth::Normal,
+                    maximized: false,
+                });
         }
         let focused = tree.workspaces[0].strips[0].window_groups[0].id;
         let last_before = tree.workspaces[0].strips[0].window_groups[2].id;
@@ -429,7 +423,10 @@ mod tests {
 
         let strip = &tree.workspaces[0].strips[0];
         assert_eq!(strip.window_groups.len(), 4);
-        assert_eq!(strip.window_groups[0].id, focused, "focused group stays put");
+        assert_eq!(
+            strip.window_groups[0].id, focused,
+            "focused group stays put"
+        );
         assert_eq!(
             strip.window_groups[1].id,
             group_of(&tree, 5150).id,
@@ -631,7 +628,10 @@ mod tests {
             .flat_map(|s| s.window_groups.iter())
             .flat_map(|g| g.tabs.iter())
             .any(|t| matches!(&t.tile, TileContent::Foreign { surface_id: 42, .. }));
-        assert!(!still_there, "the foreign tab with surface_id=42 must be gone");
+        assert!(
+            !still_there,
+            "the foreign tab with surface_id=42 must be gone"
+        );
     }
 
     #[test]

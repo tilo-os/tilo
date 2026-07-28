@@ -35,10 +35,7 @@ use shell::compositor::state::{ClientState, State};
 use smithay::reexports::calloop::EventLoop;
 use smithay::reexports::wayland_server::Display;
 
-use wayland_client::{
-    Connection, Dispatch, Proxy, QueueHandle,
-    protocol::wl_registry,
-};
+use wayland_client::{Connection, Dispatch, Proxy, QueueHandle, protocol::wl_registry};
 use wayland_protocols::wp::linux_dmabuf::zv1::client::{
     zwp_linux_dmabuf_feedback_v1::{self, ZwpLinuxDmabufFeedbackV1},
     zwp_linux_dmabuf_v1::{self, ZwpLinuxDmabufV1},
@@ -87,12 +84,8 @@ impl Dispatch<wl_registry::WlRegistry, ()> for ClientAppState {
                 // `min(version, 4)` means a v3 compositor still binds
                 // successfully — and then never sends feedback, which
                 // is precisely the failure the assertions below catch.
-                state.dmabuf = Some(registry.bind::<ZwpLinuxDmabufV1, _, _>(
-                    name,
-                    version.min(4),
-                    qh,
-                    (),
-                ));
+                state.dmabuf =
+                    Some(registry.bind::<ZwpLinuxDmabufV1, _, _>(name, version.min(4), qh, ()));
             }
         }
     }
@@ -287,7 +280,8 @@ fn feedback_main_device_is_the_advertised_render_node() {
         .main_device
         .expect("dmabuf_feedback carried no main_device event");
     assert_eq!(
-        got, expected as u64,
+        got,
+        expected as u64,
         "main_device must be st_rdev of {} — clients resolve the GPU from this \
          number and get nothing usable if it is wrong",
         node.display()
@@ -322,12 +316,8 @@ fn every_advertised_format_is_one_the_compositor_can_composite() {
         "the format table is empty; a client has nothing to allocate"
     );
     for entry in &app.formats {
-        let fourcc = Fourcc::try_from(entry.fourcc).unwrap_or_else(|_| {
-            panic!(
-                "advertised an unrecognised FourCC 0x{:08x}",
-                entry.fourcc
-            )
-        });
+        let fourcc = Fourcc::try_from(entry.fourcc)
+            .unwrap_or_else(|_| panic!("advertised an unrecognised FourCC 0x{:08x}", entry.fourcc));
         // Single-plane RGBA under LINEAR is the whole importable set —
         // see `foreign::validate_importable`, which is the gate a real
         // client buffer passes through.

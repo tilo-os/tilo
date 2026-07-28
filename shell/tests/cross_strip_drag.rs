@@ -50,9 +50,9 @@ use shell::shell::state::{
     AppKind, GroupId, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace,
     WorkspaceId, WorkspaceTree,
 };
+use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
 use ui::theme::Theme;
 use ui::widget::Widget;
-use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
 use vello::kurbo::Point;
 use winit::dpi::PhysicalPosition;
 use winit::event::WindowEvent;
@@ -305,10 +305,7 @@ fn dragged_tab_crosses_into_destination_strip_via_shell_dispatch() {
         "strip A lost the dragged tab — total now 1, was 2"
     );
     assert!(
-        !snap_post_a
-            .1
-            .iter()
-            .any(|(_, ts)| ts.contains(&dragged)),
+        !snap_post_a.1.iter().any(|(_, ts)| ts.contains(&dragged)),
         "dragged tab id {dragged} must no longer live on strip A"
     );
 
@@ -418,10 +415,7 @@ fn drag_outside_every_strip_returns_tab_to_source_row() {
         total_tabs, 2,
         "strip A must still hold both tabs after a return-to-source recovery"
     );
-    let dragged_present = strip_a_snap
-        .1
-        .iter()
-        .any(|(_, ts)| ts.contains(&dragged));
+    let dragged_present = strip_a_snap.1.iter().any(|(_, ts)| ts.contains(&dragged));
     assert!(
         dragged_present,
         "dragged tab id {dragged} must remain on strip A on the no-valid-target fallback path"

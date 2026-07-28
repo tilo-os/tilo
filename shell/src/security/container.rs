@@ -1,6 +1,6 @@
-use std::process::{Command, Stdio};
 use std::fs::File;
 use std::path::Path;
+use std::process::{Command, Stdio};
 use uuid::Uuid;
 
 pub struct Container {
@@ -31,18 +31,18 @@ impl Container {
         cmd.arg("--symlink").arg("usr/lib64").arg("/lib64");
         cmd.arg("--symlink").arg("usr/bin").arg("/bin");
         cmd.arg("--symlink").arg("usr/sbin").arg("/sbin");
-        
+
         if Path::new("/usr/share").exists() {
             cmd.arg("--ro-bind").arg("/usr/share").arg("/usr/share");
         }
-        
+
         cmd.arg("--dev").arg("/dev");
         cmd.arg("--proc").arg("/proc");
-        
+
         if Path::new("/sys").exists() {
             cmd.arg("--ro-bind").arg("/sys").arg("/sys");
         }
-        
+
         if Path::new("/dev/dri").exists() {
             cmd.arg("--dev-bind").arg("/dev/dri").arg("/dev/dri");
         }
@@ -61,19 +61,21 @@ impl Container {
         // 5. Wayland Socket
         let host_runtime_dir = std::env::var("XDG_RUNTIME_DIR").unwrap_or("/run/user/1000".into());
         let host_socket_path = format!("{}/{}", host_runtime_dir, wayland_socket);
-        
+
         let sandbox_runtime_dir = "/tmp/runtime";
         cmd.arg("--dir").arg(sandbox_runtime_dir);
-        
+
         if Path::new(&host_socket_path).exists() {
-            cmd.arg("--bind").arg(&host_socket_path).arg(format!("{}/{}", sandbox_runtime_dir, wayland_socket));
+            cmd.arg("--bind")
+                .arg(&host_socket_path)
+                .arg(format!("{}/{}", sandbox_runtime_dir, wayland_socket));
         }
-        
+
         cmd.env("XDG_RUNTIME_DIR", sandbox_runtime_dir);
         cmd.env("WAYLAND_DISPLAY", wayland_socket);
         cmd.env("XDG_SESSION_TYPE", "wayland");
         cmd.env("WAYLAND_DEBUG", "1");
-        
+
         // Robust environment for Wayland apps
         cmd.env("QT_QPA_PLATFORM", "wayland");
         cmd.env("GDK_BACKEND", "wayland");
@@ -95,7 +97,7 @@ impl Container {
              echo '[WRAPPER] Socket: {}'; \
              ls -l {}/{} || echo '[WRAPPER] Socket NOT FOUND'; \
              echo '[WRAPPER] Executing: {}'; \
-             exec {} 2>&1", 
+             exec {} 2>&1",
             wayland_socket, sandbox_runtime_dir, wayland_socket, app_command, app_command
         );
 
@@ -104,7 +106,12 @@ impl Container {
         cmd
     }
 
-    pub fn spawn(&self, app_command: &str, wayland_socket: &str, tab_id: Uuid) -> std::io::Result<std::process::Child> {
+    pub fn spawn(
+        &self,
+        app_command: &str,
+        wayland_socket: &str,
+        tab_id: Uuid,
+    ) -> std::io::Result<std::process::Child> {
         let mut cmd = self.build_command(app_command, wayland_socket);
 
         let log_path = format!("/tmp/quick-desktop-app-{}.log", tab_id);
@@ -112,7 +119,10 @@ impl Container {
         cmd.stdout(Stdio::from(log_file.try_clone()?));
         cmd.stderr(Stdio::from(log_file));
 
-        println!("DEBUG: Spawning Tab {} Log: /tmp/quick-desktop-app-{}.log", tab_id, tab_id);
+        println!(
+            "DEBUG: Spawning Tab {} Log: /tmp/quick-desktop-app-{}.log",
+            tab_id, tab_id
+        );
         cmd.spawn()
     }
 }

@@ -204,10 +204,7 @@ pub fn swizzle_row_to_rgba(
 ///   produce a sane pixel array (stride < width\*4, negative dims, etc.).
 /// - [`ReadbackError::BufferAccess`] — smithay-side SIGBUS / NotManaged
 ///   for non-shm reasons.
-pub fn buffer_to_rgba(
-    buffer: &WlBuffer,
-    out: &mut Vec<u8>,
-) -> Result<(u32, u32), ReadbackError> {
+pub fn buffer_to_rgba(buffer: &WlBuffer, out: &mut Vec<u8>) -> Result<(u32, u32), ReadbackError> {
     let result: Result<(u32, u32), ReadbackError> = with_buffer_contents(
         buffer,
         |ptr, len, data| -> Result<(u32, u32), ReadbackError> {
@@ -217,10 +214,7 @@ pub fn buffer_to_rgba(
             // Reject zero / negative dimensions and strides that don't
             // hold a full row of pixels. Hostile clients could provide a
             // tiny stride to short-read the pool; reject loudly.
-            if width <= 0
-                || height <= 0
-                || stride < width.saturating_mul(4)
-            {
+            if width <= 0 || height <= 0 || stride < width.saturating_mul(4) {
                 return Err(ReadbackError::InvalidDimensions {
                     width,
                     height,
@@ -689,8 +683,7 @@ mod tests {
     fn swizzle_row_argb_to_rgba_swaps_b_and_r() {
         let src = argb_row(4);
         let mut out = Vec::new();
-        swizzle_row_to_rgba(wl_shm::Format::Argb8888, &src, 4, &mut out)
-            .expect("argb swizzle");
+        swizzle_row_to_rgba(wl_shm::Format::Argb8888, &src, 4, &mut out).expect("argb swizzle");
         assert_eq!(out.len(), 16);
         // Pixel 0: B=0, G=0, R=0 -> RGBA = 0,0,0,0xC0
         assert_eq!(&out[0..4], &[0, 0, 0, 0xC0]);
@@ -706,8 +699,7 @@ mod tests {
         // client. We always emit alpha = 0xFF.
         let src = vec![10, 20, 30, 0x00, 40, 50, 60, 0x7F];
         let mut out = Vec::new();
-        swizzle_row_to_rgba(wl_shm::Format::Xrgb8888, &src, 2, &mut out)
-            .expect("xrgb swizzle");
+        swizzle_row_to_rgba(wl_shm::Format::Xrgb8888, &src, 2, &mut out).expect("xrgb swizzle");
         assert_eq!(out, vec![30, 20, 10, 0xFF, 60, 50, 40, 0xFF]);
     }
 
@@ -718,8 +710,7 @@ mod tests {
         // error rather than a wrong-looking frame.
         let src = vec![0u8; 4 * 4];
         let mut out = Vec::new();
-        let err = swizzle_row_to_rgba(wl_shm::Format::Rgb565, &src, 4, &mut out)
-            .unwrap_err();
+        let err = swizzle_row_to_rgba(wl_shm::Format::Rgb565, &src, 4, &mut out).unwrap_err();
         match err {
             ReadbackError::UnsupportedFormat(wl_shm::Format::Rgb565) => {}
             other => panic!("expected UnsupportedFormat(Rgb565), got {other:?}"),
@@ -739,12 +730,7 @@ mod tests {
         // 2 bytes; the fix bails out before writing to `out`.
         let src = [0u8; 10];
         let mut out: Vec<u8> = Vec::new();
-        let result = swizzle_row_to_rgba(
-            wl_shm::Format::Argb8888,
-            &src,
-            2,
-            &mut out,
-        );
+        let result = swizzle_row_to_rgba(wl_shm::Format::Argb8888, &src, 2, &mut out);
         assert!(
             result.is_err(),
             "mismatched src.len() vs width*4 must produce a structured \
@@ -766,8 +752,7 @@ mod tests {
         // accidentally clears inside the row loop breaks loudly.
         let src = argb_row(2);
         let mut out = vec![0xAA, 0xBB]; // pre-existing tail
-        swizzle_row_to_rgba(wl_shm::Format::Argb8888, &src, 2, &mut out)
-            .expect("argb append");
+        swizzle_row_to_rgba(wl_shm::Format::Argb8888, &src, 2, &mut out).expect("argb append");
         assert_eq!(out.len(), 2 + 8);
         assert_eq!(&out[0..2], &[0xAA, 0xBB]);
     }
@@ -866,10 +851,7 @@ mod tests {
             tracker.last_capture_path(1),
             Some(CapturePath::DmabufDirect)
         );
-        assert_eq!(
-            tracker.last_capture_path(2),
-            Some(CapturePath::ShmReadback)
-        );
+        assert_eq!(tracker.last_capture_path(2), Some(CapturePath::ShmReadback));
         assert_eq!(tracker.last_capture_path(999), None);
     }
 

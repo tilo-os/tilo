@@ -67,10 +67,7 @@ fn mixed_dmabuf_and_shm_traffic_counts_independently() {
         tracker.last_capture_path(1),
         Some(CapturePath::DmabufDirect)
     );
-    assert_eq!(
-        tracker.last_capture_path(2),
-        Some(CapturePath::ShmReadback)
-    );
+    assert_eq!(tracker.last_capture_path(2), Some(CapturePath::ShmReadback));
 }
 
 #[test]

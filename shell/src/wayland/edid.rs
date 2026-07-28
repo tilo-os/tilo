@@ -242,21 +242,27 @@ fn parse_hdr_static_metadata_block(body: &[u8], info: &mut HdrDisplayInfo) {
     info.supported_transfers.clear();
     // Bit 0 — traditional gamma SDR (BT.1886 / gamma22 territory).
     if eotf_bits & 0b0000_0001 != 0 {
-        info.supported_transfers.push(TransferCharacteristics::Bt709);
+        info.supported_transfers
+            .push(TransferCharacteristics::Bt709);
     }
     // Bit 1 — traditional HDR (rarely used; group with SDR gamma).
     if eotf_bits & 0b0000_0010 != 0
-        && !info.supported_transfers.contains(&TransferCharacteristics::Bt709)
+        && !info
+            .supported_transfers
+            .contains(&TransferCharacteristics::Bt709)
     {
-        info.supported_transfers.push(TransferCharacteristics::Bt709);
+        info.supported_transfers
+            .push(TransferCharacteristics::Bt709);
     }
     // Bit 2 — SMPTE ST 2084 (PQ).
     if eotf_bits & 0b0000_0100 != 0 {
-        info.supported_transfers.push(TransferCharacteristics::SmpteSt2084);
+        info.supported_transfers
+            .push(TransferCharacteristics::SmpteSt2084);
     }
     // Bit 3 — HLG.
     if eotf_bits & 0b0000_1000 != 0 {
-        info.supported_transfers.push(TransferCharacteristics::AribStdB67);
+        info.supported_transfers
+            .push(TransferCharacteristics::AribStdB67);
     }
 
     // Luminance descriptors. Absent bytes = 0 = unknown; we leave
@@ -270,8 +276,7 @@ fn parse_hdr_static_metadata_block(body: &[u8], info: &mut HdrDisplayInfo) {
     if body.len() >= 4 && body[3] != 0 {
         let code = body[3] as f32;
         let fall_cd_m2 = 50.0 * 2f32.powf(code / 32.0);
-        info.max_frame_average_luminance_cd_m2 =
-            fall_cd_m2.round().min(10_000.0) as u16;
+        info.max_frame_average_luminance_cd_m2 = fall_cd_m2.round().min(10_000.0) as u16;
     }
     if body.len() >= 5 && body[4] != 0 {
         // min is derived from max: min = (max_lum * (code/255)^2) / 100
@@ -356,11 +361,11 @@ mod tests {
         //
         // Extension block (offset 128..256) ---------------------------
         edid[128] = 0x02; // CTA-861 tag
-        edid[129] = 3;    // CTA-861 revision 3
-        edid[130] = 4;    // DTD offset = 4 → no DTD payload block; block
-                          // collection runs bytes 4..(dtd_offset=4). We
-                          // want data blocks, so set the DTD offset just
-                          // past our blocks.
+        edid[129] = 3; // CTA-861 revision 3
+        edid[130] = 4; // DTD offset = 4 → no DTD payload block; block
+        // collection runs bytes 4..(dtd_offset=4). We
+        // want data blocks, so set the DTD offset just
+        // past our blocks.
         //
         // Block 1: Colorimetry Data Block (extended tag 5).
         // Header byte = (tag 7 << 5) | len. len = 3 (extended-tag byte
@@ -444,12 +449,14 @@ mod tests {
     fn advertises_pq_and_hlg_transfers() {
         let edid = hdr_edid_blob();
         let info = parse_hdr_display_info(&edid);
-        assert!(info
-            .supported_transfers
-            .contains(&TransferCharacteristics::SmpteSt2084));
-        assert!(info
-            .supported_transfers
-            .contains(&TransferCharacteristics::AribStdB67));
+        assert!(
+            info.supported_transfers
+                .contains(&TransferCharacteristics::SmpteSt2084)
+        );
+        assert!(
+            info.supported_transfers
+                .contains(&TransferCharacteristics::AribStdB67)
+        );
     }
 
     #[test]
@@ -474,6 +481,9 @@ mod tests {
         // this as BT.2020, but transfer set stays at the SDR default
         // (only Bt709).
         assert_eq!(info.best_named_primaries, ColorPrimaries::Bt2020);
-        assert_eq!(info.supported_transfers, vec![TransferCharacteristics::Bt709]);
+        assert_eq!(
+            info.supported_transfers,
+            vec![TransferCharacteristics::Bt709]
+        );
     }
 }

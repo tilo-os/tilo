@@ -39,10 +39,7 @@ const UNLOCK_PASSWORD: &str = "correct-horse-battery";
 /// Spawn the compositor headless with an injected unlock password + a short
 /// idle-lock, wait for the control socket, and return the child + socket path.
 fn spawn_headless_locking() -> (Child, PathBuf) {
-    let socket_path = PathBuf::from(format!(
-        "/tmp/nirios-lock-e2e-{}.sock",
-        std::process::id()
-    ));
+    let socket_path = PathBuf::from(format!("/tmp/nirios-lock-e2e-{}.sock", std::process::id()));
     let _ = std::fs::remove_file(&socket_path);
 
     let binary = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -165,8 +162,7 @@ fn idle_lock_then_wrong_password_stays_locked_and_correct_unlocks() {
     let (child, socket_path) = spawn_headless_locking();
     let _guard = KillOnDrop(child);
 
-    let mut stream =
-        UnixStream::connect(&socket_path).expect("connect to control socket");
+    let mut stream = UnixStream::connect(&socket_path).expect("connect to control socket");
 
     // Starts unlocked.
     assert!(!is_locked(&mut stream), "session should start unlocked");
@@ -189,7 +185,10 @@ fn idle_lock_then_wrong_password_stays_locked_and_correct_unlocks() {
     );
     // Belt-and-braces: it stays locked over a short window.
     std::thread::sleep(Duration::from_millis(150));
-    assert!(is_locked(&mut stream), "still locked after a rejected attempt");
+    assert!(
+        is_locked(&mut stream),
+        "still locked after a rejected attempt"
+    );
 
     // 3. The CORRECT password unlocks and restores the session.
     let type_correct = format!(r#"{{"op":"type","text":"{UNLOCK_PASSWORD}"}}"#);

@@ -198,11 +198,7 @@ pub fn compile_workspace_seccomp() -> Result<Vec<u8>, SeccompError> {
 ///
 /// Split from [`cache_blob`] so tests can point at a tempdir without
 /// needing root access to `/var/cache/qos-fs`.
-pub fn cache_blob_at(
-    cache_root: &Path,
-    ws_id: u64,
-    bytes: &[u8],
-) -> io::Result<PathBuf> {
+pub fn cache_blob_at(cache_root: &Path, ws_id: u64, bytes: &[u8]) -> io::Result<PathBuf> {
     let dir = cache_root.join(ws_id.to_string());
     std::fs::create_dir_all(&dir)?;
     let path = dir.join("seccomp.bpf");

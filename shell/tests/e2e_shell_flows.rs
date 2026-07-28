@@ -51,9 +51,9 @@ use winit::dpi::PhysicalPosition;
 use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent};
 use winit::keyboard::{Key, KeyLocation, NamedKey, PhysicalKey};
 
+use shell::shell::build_nirios_root_with_chrome;
 use shell::shell::state::WorkspaceTree;
 use shell::shell::topbar_chrome::TopBarChrome;
-use shell::shell::{build_nirios_root_with_chrome};
 
 use ui::presence::PresenceCtx;
 use ui::state::State;
@@ -197,11 +197,17 @@ impl Harness {
     /// tree — that would discard animation state. Writes the rasterised
     /// frame to `path` via the offscreen renderer when present.
     fn draw_to(&mut self, renderer: Option<&mut OffscreenRenderer>, path: &Path) {
-        self.root.apply_layout(&self.taffy, self.root_node, Point::ORIGIN);
+        self.root
+            .apply_layout(&self.taffy, self.root_node, Point::ORIGIN);
         let mut scene = Scene::new();
         let presence = PresenceCtx::default();
-        self.root
-            .draw(&mut scene, Affine::IDENTITY, &mut self.tr, &self.theme, &presence);
+        self.root.draw(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut self.tr,
+            &self.theme,
+            &presence,
+        );
         if let Some(r) = renderer {
             // Opaque slate-950 background so the shell chrome composites
             // over a consistent base across every snapshot.
@@ -358,7 +364,10 @@ fn e2e_open_close_overview() {
             .draw(&mut scene, Affine::IDENTITY, &mut h.tr, &h.theme, &presence);
     }
 
-    h.draw_to(renderer_opt.as_mut(), &out_dir.join("e2e-02-overview-open.png"));
+    h.draw_to(
+        renderer_opt.as_mut(),
+        &out_dir.join("e2e-02-overview-open.png"),
+    );
 
     // Press Escape — the ShellOverlayHost Esc handler closes the overview.
     h.pump(escape_event());
@@ -386,7 +395,10 @@ fn e2e_open_close_overview() {
         h.root
             .draw(&mut scene, Affine::IDENTITY, &mut h.tr, &h.theme, &presence);
     }
-    h.draw_to(renderer_opt.as_mut(), &out_dir.join("e2e-03-overview-closed.png"));
+    h.draw_to(
+        renderer_opt.as_mut(),
+        &out_dir.join("e2e-03-overview-closed.png"),
+    );
 
     // If renderer is available, verify the PNGs actually landed on disk
     // (non-empty + PNG signature). Without a renderer we just assert the
@@ -405,8 +417,11 @@ fn e2e_open_close_overview() {
         // suffices for the flow. The soft-skip above (no GPU → skip
         // PNG assertions entirely) keeps sandboxed CI green.
         let rendered = out_dir.join("e2e-02-overview-open.png");
-        SnapshotAssertion::new(rendered, goldens_dir().join("e2e-open-close-overview-settled.png"))
-            .assert();
+        SnapshotAssertion::new(
+            rendered,
+            goldens_dir().join("e2e-open-close-overview-settled.png"),
+        )
+        .assert();
     } else {
         eprintln!(
             "offscreen: no wgpu adapter — e2e_open_close_overview asserted state transitions only"
@@ -590,17 +605,33 @@ fn e2e_tab_drag_reorder() {
     let modifiers = Modifiers::default();
     let mut focus: Option<NodeId> = None;
 
-    pump(&mut group, &taffy, child, &mut doc, &doc_root, &modifiers, &mut focus,
+    pump(
+        &mut group,
+        &taffy,
+        child,
+        &mut doc,
+        &doc_root,
+        &modifiers,
+        &mut focus,
         WindowEvent::CursorMoved {
             device_id: unsafe { std::mem::zeroed() },
             position: PhysicalPosition::new(from.x, from.y),
-        });
-    pump(&mut group, &taffy, child, &mut doc, &doc_root, &modifiers, &mut focus,
+        },
+    );
+    pump(
+        &mut group,
+        &taffy,
+        child,
+        &mut doc,
+        &doc_root,
+        &modifiers,
+        &mut focus,
         WindowEvent::MouseInput {
             device_id: unsafe { std::mem::zeroed() },
             state: ElementState::Pressed,
             button: MouseButton::Left,
-        });
+        },
+    );
 
     // Move through intermediate positions to cross the DRAG_START threshold
     // (8 px in the bar). Capture one mid-drag snapshot so the drop-zone
@@ -611,11 +642,19 @@ fn e2e_tab_drag_reorder() {
             from.x + (to.x - from.x) * step,
             from.y + (to.y - from.y) * step,
         );
-        pump(&mut group, &taffy, child, &mut doc, &doc_root, &modifiers, &mut focus,
+        pump(
+            &mut group,
+            &taffy,
+            child,
+            &mut doc,
+            &doc_root,
+            &modifiers,
+            &mut focus,
             WindowEvent::CursorMoved {
                 device_id: unsafe { std::mem::zeroed() },
                 position: PhysicalPosition::new(p.x, p.y),
-            });
+            },
+        );
     }
     let _ = midway;
 
@@ -632,12 +671,20 @@ fn e2e_tab_drag_reorder() {
     // Release over Browser pill. The TabBar's `MouseInput::Released`
     // branch reads the cached `last_cursor`, so we make sure we moved
     // to `to` already (the final step above).
-    pump(&mut group, &taffy, child, &mut doc, &doc_root, &modifiers, &mut focus,
+    pump(
+        &mut group,
+        &taffy,
+        child,
+        &mut doc,
+        &doc_root,
+        &modifiers,
+        &mut focus,
         WindowEvent::MouseInput {
             device_id: unsafe { std::mem::zeroed() },
             state: ElementState::Released,
             button: MouseButton::Left,
-        });
+        },
+    );
 
     // WindowGroup drained `bar.take_reorder()` internally and permuted
     // its hosts. `WindowGroup::tabs()` still returns the *descriptor*
@@ -1008,12 +1055,7 @@ fn e2e_maximized_tile_floating_controls() {
         tab_stub(3, "Terminal", AppKind::Terminal, "terminal"),
         tab_stub(4, "Browser", AppKind::Browser, "browser"),
     ];
-    let mut group = WindowGroup::new(
-        200,
-        tabs,
-        /* active_id */ 1,
-        WindowWidth::Normal,
-    );
+    let mut group = WindowGroup::new(200, tabs, /* active_id */ 1, WindowWidth::Normal);
     assert!(!group.maximized, "group starts un-maximized");
 
     let theme = Theme::dark();
@@ -1068,12 +1110,8 @@ fn e2e_maximized_tile_floating_controls() {
     let pill = tab_rects[active_idx];
     // close_w=18, close_inset=4 → close_x0 = pill.x1 - 22
     // max_w=16, 2 px gap → max_x0 = close_x0 - 18 = pill.x1 - 40
-    let max_rect = vello::kurbo::Rect::new(
-        pill.x1 - 40.0,
-        pill.y0 + 4.0,
-        pill.x1 - 24.0,
-        pill.y1 - 4.0,
-    );
+    let max_rect =
+        vello::kurbo::Rect::new(pill.x1 - 40.0, pill.y0 + 4.0, pill.x1 - 24.0, pill.y1 - 4.0);
     let max_center = Point::new(
         (max_rect.x0 + max_rect.x1) / 2.0,
         (max_rect.y0 + max_rect.y1) / 2.0,
@@ -1280,7 +1318,11 @@ fn pump(
 fn assert_png_nonempty(path: &Path) {
     let meta = std::fs::metadata(path)
         .unwrap_or_else(|e| panic!("expected PNG at {}: {e}", path.display()));
-    assert!(meta.len() > 8, "PNG at {} should be non-empty", path.display());
+    assert!(
+        meta.len() > 8,
+        "PNG at {} should be non-empty",
+        path.display()
+    );
     let mut file = std::fs::File::open(path).unwrap();
     let mut sig = [0u8; 8];
     use std::io::Read;
@@ -1368,8 +1410,7 @@ fn e2e_ctrl_k_opens_search_palette_in_live_binary_path() {
     // the live binary) so we exercise the real widget tree, not a
     // hand-rolled stub.
     let tree = WorkspaceTree::bootstrap_default();
-    let (mut host, _chrome) =
-        shell::shell::build_nirios_overlay_host_with_chrome(&tree);
+    let (mut host, _chrome) = shell::shell::build_nirios_overlay_host_with_chrome(&tree);
     assert!(!host.palette_visible(), "palette starts closed");
 
     let mods = Modifiers::from(winit::keyboard::ModifiersState::CONTROL);
@@ -1385,8 +1426,7 @@ fn e2e_ctrl_k_opens_search_palette_in_live_binary_path() {
 fn e2e_escape_closes_search_palette() {
     let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let tree = WorkspaceTree::bootstrap_default();
-    let (mut host, _chrome) =
-        shell::shell::build_nirios_overlay_host_with_chrome(&tree);
+    let (mut host, _chrome) = shell::shell::build_nirios_overlay_host_with_chrome(&tree);
 
     // Open via Ctrl+K first so we're not bypassing the host's own state
     // machine. Asserts above already cover the toggle; re-checking here
@@ -1414,8 +1454,7 @@ fn e2e_escape_closes_search_palette() {
 fn e2e_ctrl_tab_toggles_overview_in_live_binary_path() {
     let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let tree = WorkspaceTree::bootstrap_default();
-    let (mut host, chrome) =
-        shell::shell::build_nirios_overlay_host_with_chrome(&tree);
+    let (mut host, chrome) = shell::shell::build_nirios_overlay_host_with_chrome(&tree);
     assert!(!chrome.borrow().overlays.overview);
 
     let mods = Modifiers::from(winit::keyboard::ModifiersState::CONTROL);
@@ -1607,8 +1646,13 @@ impl UndoHarness {
             .apply_layout(&self.taffy, self.root_node, Point::ORIGIN);
         let presence = PresenceCtx::default();
         let mut scene = Scene::new();
-        self.group
-            .draw(&mut scene, Affine::IDENTITY, &mut self.tr, &theme, &presence);
+        self.group.draw(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut self.tr,
+            &theme,
+            &presence,
+        );
         if let Some(r) = renderer {
             r.render_png(&scene, Color::from_rgb8(0x02, 0x06, 0x14), path);
         }

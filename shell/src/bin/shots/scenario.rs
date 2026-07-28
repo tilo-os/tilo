@@ -31,7 +31,7 @@ use super::driver::ShellDriver;
 /// One step in a scenario.
 #[derive(Debug, Clone)]
 #[allow(dead_code)] // some variants are part of the public Action API but not
-                    // used by every built-in scenario in `catalogue()`.
+// used by every built-in scenario in `catalogue()`.
 pub enum Action {
     /// Click at raw screen coordinates (cursor-move + press + release).
     ClickAt(Point),
@@ -51,7 +51,10 @@ pub enum Action {
     /// The host's wheel handlers gate on `last_cursor`, so the caller
     /// is expected to have dispatched a recent `MoveCursor` to align
     /// the cursor over the target widget first.
-    MouseWheel { dx: f32, dy: f32 },
+    MouseWheel {
+        dx: f32,
+        dy: f32,
+    },
     /// Synthesise a `CursorMoved` without a press/release. Use with
     /// `MousePress`/`MouseRelease` to compose drags that need mid-
     /// gesture snapshots — useful for the new tab-bar `hover_drop_idx`
@@ -167,9 +170,8 @@ pub fn run_with<S: SnapshotSink>(
                         driver.step_frames(advance);
                     }
                     driver.relayout();
-                    let name: &'static str = Box::leak(
-                        format!("{}-frame{:02}", prefix, i).into_boxed_str(),
-                    );
+                    let name: &'static str =
+                        Box::leak(format!("{}-frame{:02}", prefix, i).into_boxed_str());
                     sink.capture(driver, name);
                 }
             }
@@ -210,8 +212,7 @@ fn apply<S: SnapshotSink>(driver: &mut ShellDriver, action: &Action, sink: &mut 
                 // `&'static str` `Snapshot` variant can carry it. The
                 // process exits at the end of `shots`, so the leak is
                 // bounded by scenario length and stays within tens of KB.
-                let name: &'static str =
-                    Box::leak(format!("{}-{:03}", prefix, i).into_boxed_str());
+                let name: &'static str = Box::leak(format!("{}-{:03}", prefix, i).into_boxed_str());
                 sink.capture(driver, name);
             }
         }
@@ -286,11 +287,7 @@ pub fn chrome_state_json(driver: &ShellDriver) -> String {
         .iter()
         .position(|w| w.id == tree.active)
         .unwrap_or(0);
-    let workspace_names: Vec<String> = tree
-        .workspaces
-        .iter()
-        .map(|w| w.name.clone())
-        .collect();
+    let workspace_names: Vec<String> = tree.workspaces.iter().map(|w| w.name.clone()).collect();
     let qs_level = match st.quick_settings.current_level() {
         QsLevel::Root => "root",
         QsLevel::Wifi => "wifi",
@@ -321,7 +318,11 @@ pub fn chrome_state_json(driver: &ShellDriver) -> String {
     out.push(',');
     push_kv_bool(&mut out, "overlay_overview", st.overlays.overview);
     out.push(',');
-    push_kv_bool(&mut out, "overlay_quick_settings", st.overlays.quick_settings);
+    push_kv_bool(
+        &mut out,
+        "overlay_quick_settings",
+        st.overlays.quick_settings,
+    );
     out.push(',');
     push_kv_bool(&mut out, "overlay_ws_settings", st.overlays.ws_settings);
     out.push(',');
@@ -686,8 +687,7 @@ fn workspace_switch_animated() -> Scenario {
 fn wheel_scroll_workspaces() -> Scenario {
     Scenario {
         name: "wheel_scroll_workspaces",
-        description:
-            "Scroll the workspace wheel via MouseWheel; capture every animation frame.",
+        description: "Scroll the workspace wheel via MouseWheel; capture every animation frame.",
         actions: vec![
             // Move cursor over the wheel disc (left edge of viewport).
             Action::MoveCursor(Point::new(80.0, 540.0)),
@@ -720,8 +720,7 @@ fn wheel_scroll_workspaces() -> Scenario {
 fn strip_horizontal_scroll() -> Scenario {
     Scenario {
         name: "strip_horizontal_scroll",
-        description:
-            "Fire a horizontal-dominant wheel over the strip and assert the active \
+        description: "Fire a horizontal-dominant wheel over the strip and assert the active \
              tab cycled (visible in the topbar's pill highlight).",
         actions: vec![
             // Cursor over the active tile / strip area (well below the
@@ -761,8 +760,7 @@ fn strip_horizontal_scroll() -> Scenario {
 fn tab_drag_hover_line_indicator() -> Scenario {
     Scenario {
         name: "tab_drag_hover_line_indicator",
-        description:
-            "Capture the minimalist white-line drop indicator that paints in the tab \
+        description: "Capture the minimalist white-line drop indicator that paints in the tab \
              bar while a drag is in flight over an inter-pill gap. Holds the drag \
              open (no release) so the line is visible in the snapshot.",
         actions: vec![
@@ -892,7 +890,10 @@ mod tests {
                 _ => None,
             })
             .collect();
-        assert!(!ws_waits.is_empty(), "workspace_switch must contain Wait actions");
+        assert!(
+            !ws_waits.is_empty(),
+            "workspace_switch must contain Wait actions"
+        );
         // 16 ms per frame × frames must cover 260 ms slide.
         for n in &ws_waits {
             assert!(
@@ -989,10 +990,7 @@ mod tests {
         let mut d = ShellDriver::new((128, 96));
         let mut sink = NameSink { names: Vec::new() };
         run_with(&mut d, &scenario, &mut sink, None);
-        assert_eq!(
-            sink.names,
-            vec!["first".to_string(), "second".to_string()],
-        );
+        assert_eq!(sink.names, vec!["first".to_string(), "second".to_string()],);
     }
 
     #[test]
