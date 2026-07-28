@@ -113,11 +113,16 @@ pub struct FrameClock {
     interval: Duration,
     /// When the next frame may be presented. Seeded on construction.
     next_deadline: Instant,
-    /// Deadlines skipped because a frame overran them. Surfaced in the
-    /// paint stats: a non-zero and growing count means the compositor
-    /// cannot keep up with the display, which is a different problem from
-    /// pacing to the wrong rate.
-    missed: u64,
+    /// Deadlines the series stepped over without presenting.
+    ///
+    /// This counts *skips*, not failures. A compositor that sat idle for
+    /// a second and then painted skipped every deadline in between, and
+    /// that is correct behaviour — there was nothing to show. The clock
+    /// cannot tell an idle gap from a frame that ran long, so do not read
+    /// this as "the compositor can't keep up"; `PresentPipe::backpressured`
+    /// is the number that means that, because the loop only increments it
+    /// when it had content ready and no room to present it.
+    skipped: u64,
     /// Frames presented through [`Self::note_presented`].
     presented: u64,
 }
@@ -129,7 +134,7 @@ impl FrameClock {
         Self {
             interval: sane(interval),
             next_deadline: now,
-            missed: 0,
+            skipped: 0,
             presented: 0,
         }
     }
@@ -144,8 +149,10 @@ impl FrameClock {
         self.interval
     }
 
-    pub fn missed_deadlines(&self) -> u64 {
-        self.missed
+    /// Deadlines stepped over without presenting. See the field docs:
+    /// this is a skip count, not a failure count.
+    pub fn skipped_deadlines(&self) -> u64 {
+        self.skipped
     }
 
     pub fn presented(&self) -> u64 {
@@ -189,14 +196,15 @@ impl FrameClock {
     /// Advances in whole intervals from the *previous deadline*, so the
     /// series stays phase-locked to the display rather than drifting by
     /// however long each frame happened to take. Deadlines already in the
-    /// past are skipped (and counted) instead of producing a backlog of
-    /// zero-length budgets that would make the loop spin.
+    /// past are stepped over (and counted in [`Self::skipped_deadlines`])
+    /// instead of producing a backlog of zero-length budgets that would
+    /// make the loop spin.
     pub fn note_presented(&mut self, at: Instant) {
         self.presented += 1;
         let mut next = self.next_deadline + self.interval;
         while next <= at {
             next += self.interval;
-            self.missed += 1;
+            self.skipped += 1;
         }
         self.next_deadline = next;
     }
@@ -324,7 +332,7 @@ mod tests {
             t0 + 2 * interval,
             "a late frame must not drag the deadline grid with it"
         );
-        assert_eq!(clock.missed_deadlines(), 0, "one late frame missed no deadline");
+        assert_eq!(clock.skipped_deadlines(), 0, "one late frame missed no deadline");
     }
 
     #[test]
@@ -340,9 +348,9 @@ mod tests {
         let stalled_until = t0 + Duration::from_micros(50_000);
         clock.note_presented(stalled_until);
         assert_eq!(
-            clock.missed_deadlines(),
+            clock.skipped_deadlines(),
             4,
-            "deadlines at +1..+4 intervals were all missed"
+            "deadlines at +1..+4 intervals were all stepped over"
         );
         assert_eq!(
             clock.next_deadline(),
@@ -443,6 +451,6 @@ mod tests {
             "every presentation must be exactly one interval apart; got {:?}…",
             &gaps[..5.min(gaps.len())]
         );
-        assert_eq!(clock.missed_deadlines(), 0);
+        assert_eq!(clock.skipped_deadlines(), 0);
     }
 }
