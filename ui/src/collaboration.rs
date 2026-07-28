@@ -907,6 +907,24 @@ impl CollaborationManager {
 /// passed over here rather than rejected — the next fallback applies
 /// and the flag keeps working.
 fn auto_hello_env() -> (String, Uuid) {
+    // Memoised for the process lifetime. The last-resort app id is a fresh
+    // uuid, so recomputing would hand a second caller a *different* identity
+    // — two managers in one process would announce as two people, and the
+    // undo attribution below would not match the id the broker sees.
+    static RESOLVED: std::sync::OnceLock<(String, Uuid)> = std::sync::OnceLock::new();
+    RESOLVED.get_or_init(auto_hello_env_uncached).clone()
+}
+
+/// The identity this process collaborates as — the same `user_id` the broker
+/// attributes its ops and presence to.
+///
+/// Actions are stamped with this so undo can tell one collaborator's work from
+/// another's: see [`crate::state::State::undo_as`].
+pub fn local_user_id() -> crate::permissions::UserId {
+    crate::permissions::UserId(auto_hello_env().0)
+}
+
+fn auto_hello_env_uncached() -> (String, Uuid) {
     let app_id = non_empty_env("QOS_PACKAGE_ID")
         .or_else(|| non_empty_env("QUICK_APP_ID"))
         .unwrap_or_else(|| Uuid::new_v4().to_string());
