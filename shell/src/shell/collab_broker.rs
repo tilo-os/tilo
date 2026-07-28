@@ -1991,6 +1991,40 @@ mod tests {
         drop(handle);
     }
 
+    /// The nil room addresses nobody, in either direction.
+    ///
+    /// It is not the empty string, so without an explicit rule every
+    /// workspace still carrying the unminted sentinel — on every
+    /// machine at once — would be one enormous shared room. That is the
+    /// exact failure that deriving the cluster from a local counter
+    /// used to cause, and it must not reappear through the migration
+    /// window.
+    #[test]
+    fn the_unminted_room_addresses_nobody() {
+        let unminted =
+            CrdtRoute::app("dev.qos.notes", crate::shell::state::RoomId::nil().to_string());
+        let real = CrdtRoute::app("dev.qos.notes", crate::shell::state::RoomId::new().to_string());
+
+        assert!(
+            !unminted.delivers_to(&unminted),
+            "two workspaces that have not yet been given an identity are not \
+             the same room"
+        );
+        assert!(
+            !unminted.delivers_to(&real),
+            "a sender with no room identity must reach nobody"
+        );
+        assert!(
+            !real.delivers_to(&unminted),
+            "a subscriber with no room identity must receive nothing"
+        );
+        assert!(
+            real.delivers_to(&real.clone()),
+            "and a real room must still deliver to itself, or this rule has \
+             broken delivery outright"
+        );
+    }
+
     #[test]
     #[serial_test::serial(collab_broker)]
     fn silent_client_receives_nothing() {
