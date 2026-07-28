@@ -17,16 +17,16 @@ decode = ["dep:gstreamer", "dep:gstreamer-app", "dep:gstreamer-video"]
 # Transport CRDT. A tiny automerge document carries follow-the-host playback
 # state (playing / position / rate / epoch) between peers so a joiner follows
 # the host with drift correction. Same pin as `ui` so a single copy resolves.
-automerge = "0.8.0"
-tracing = "0.1"
+automerge.workspace = true
+tracing.workspace = true
 
 # The audio graph client reads `pw-dump`'s JSON to enumerate the
 # PipeWire/WirePlumber node graph (devices + per-application streams). Same pin
 # the rest of the workspace resolves, so no second copy links.
-serde_json = "1.0"
+serde_json.workspace = true
 
 # Real decode stack — only linked under `--features decode`. Same pins as
 # `apps/tube` / `apps/camera` so no second gstreamer copy resolves.
-gstreamer = { version = "0.24", optional = true }
-gstreamer-app = { version = "0.24", optional = true }
-gstreamer-video = { version = "0.24", optional = true }
+gstreamer = { workspace = true, optional = true }
+gstreamer-app = { workspace = true, optional = true }
+gstreamer-video = { workspace = true, optional = true }

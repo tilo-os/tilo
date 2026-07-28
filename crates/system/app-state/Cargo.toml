@@ -14,12 +14,12 @@ path = "src/lib.rs"
 # `cli::resolve_workspace_path` falls back to. One resolver, two callers.
 cli = { path = "../../runtime/cli" }
 
-automerge = "0.8.0"
-thiserror = "1"
-tracing = "0.1"
+automerge.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
 # `flock(2)` for the single-writer guard around the actor sidecar.
-libc = "0.2"
+libc.workspace = true
 
 [dev-dependencies]
-tempfile = "3"
-serial_test = "3"
+tempfile.workspace = true
+serial_test.workspace = true

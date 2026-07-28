@@ -121,7 +121,7 @@ fn import_one_note(raw: &str, kind: NoteKind, doc: &mut DocMut) -> Option<String
                 _ => {}
             },
             Event::Text(t) if in_t => {
-                if let Ok(txt) = t.unescape() {
+                if let Ok(txt) = t.xml10_content() {
                     if !txt.is_empty() {
                         append(doc, &cur, &mut cur_len, &txt);
                     }
