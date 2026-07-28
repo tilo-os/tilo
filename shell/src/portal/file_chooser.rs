@@ -351,6 +351,7 @@ mod tests {
             caller_map: CallerMap::new(),
             file_picker: fp,
             screencast_provisioner: sc,
+            remote_input_injector: crate::portal::RemoteInputInjectorHandle::null(),
         };
         let caller = FileChooserBackend::resolve_caller(&ctx, None, "org.example");
         assert_eq!(caller.app_id, "org.example");
@@ -373,6 +374,7 @@ mod tests {
             caller_map: map,
             file_picker: fp,
             screencast_provisioner: sc,
+            remote_input_injector: crate::portal::RemoteInputInjectorHandle::null(),
         };
         let name: OwnedUniqueName = ":1.7".try_into().unwrap();
         let caller = FileChooserBackend::resolve_caller(&ctx, Some(&name), "ignored");
@@ -402,6 +404,7 @@ mod tests {
             caller_map: CallerMap::new(),
             file_picker: fp,
             screencast_provisioner: sc,
+            remote_input_injector: crate::portal::RemoteInputInjectorHandle::null(),
         };
         let backend = FileChooserBackend::new(ctx);
         let caller = PortalCaller::new(ws_id, "org.example");
@@ -444,6 +447,7 @@ mod tests {
             caller_map: CallerMap::new(),
             file_picker: fp,
             screencast_provisioner: sc,
+            remote_input_injector: crate::portal::RemoteInputInjectorHandle::null(),
         };
         let backend = FileChooserBackend::new(ctx);
         let caller = PortalCaller::new(ws_id, "org.example");
@@ -480,6 +484,7 @@ mod tests {
             caller_map: CallerMap::new(),
             file_picker: fp,
             screencast_provisioner: sc,
+            remote_input_injector: crate::portal::RemoteInputInjectorHandle::null(),
         };
         let backend = FileChooserBackend::new(ctx);
         let caller = PortalCaller::new(ws_id, "org.example");

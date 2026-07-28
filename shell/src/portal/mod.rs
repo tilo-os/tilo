@@ -11,13 +11,17 @@
 //! every request to a *backend* implementation that owns the
 //! decision-and-UI side; this is that backend for the Nirios compositor.
 //!
-//! We expose three D-Bus interfaces under the service name
-//! `org.freedesktop.impl.portal.desktop.nirios`:
+//! We expose these D-Bus interfaces under the service name
+//! `org.freedesktop.impl.portal.desktop.qos`:
 //!
 //! - `org.freedesktop.impl.portal.FileChooser` — `OpenFile` / `SaveFile`
 //!   / `SaveFiles`.
 //! - `org.freedesktop.impl.portal.ScreenCast` — `CreateSession` /
-//!   `SelectSources` / `Start`.
+//!   `SelectSources` / `Start` / `OpenPipeWireRemote`, plus the
+//!   `AvailableSourceTypes` / `AvailableCursorModes` / `version`
+//!   properties.
+//! - `org.freedesktop.impl.portal.RemoteDesktop` — `CreateSession` /
+//!   `SelectDevices` / `Start` / `Notify*` seat injection.
 //! - `org.freedesktop.impl.portal.Access` — `AccessDialog`. The host
 //!   portal's `Camera.AccessCamera` call ends up here with
 //!   `app_id="camera"` (this is how `xdg-desktop-portal` does it: the
@@ -45,6 +49,7 @@
 pub mod camera;
 pub mod file_chooser;
 pub mod file_picker_spawner;
+pub mod remote_desktop;
 pub mod screencast;
 pub mod screencast_pipewire;
 
@@ -58,6 +63,10 @@ pub use file_chooser::FileChooserBackend;
 pub use file_picker_spawner::{
     FilePickerRequest, FilePickerSpawner, FilePickerSpawnerHandle, MockFilePickerSpawner,
     NullFilePickerSpawner,
+};
+pub use remote_desktop::{
+    ChannelInjector, RecordingInjector, RemoteDesktopBackend, RemoteInputInjector,
+    RemoteInputInjectorHandle,
 };
 pub use screencast::ScreenCastBackend;
 pub use screencast_pipewire::{
@@ -110,6 +119,7 @@ pub enum CapabilityKind {
     Camera,
     Microphone,
     Screencast,
+    RemoteDesktop,
     Network,
 }
 
@@ -126,6 +136,7 @@ impl CapabilityKind {
             (CapabilityKind::Camera, Capability::Camera { .. }) => true,
             (CapabilityKind::Microphone, Capability::Microphone { .. }) => true,
             (CapabilityKind::Screencast, Capability::Screencast { .. }) => true,
+            (CapabilityKind::RemoteDesktop, Capability::RemoteDesktop { .. }) => true,
             (CapabilityKind::Network, Capability::Network { .. }) => true,
             _ => false,
         }
@@ -275,6 +286,7 @@ fn capability_scope(cap: &Capability) -> GrantScope {
         Capability::Camera { scope } => scope.clone(),
         Capability::Microphone { scope } => scope.clone(),
         Capability::Screencast { scope } => scope.clone(),
+        Capability::RemoteDesktop { scope } => scope.clone(),
         Capability::Network { scope, .. } => scope.clone(),
     }
 }
@@ -442,6 +454,11 @@ pub struct PortalContext {
     /// [`MockScreenCastProvisioner`] which returns a synthetic node id
     /// without touching the system Pipewire daemon.
     pub screencast_provisioner: ScreenCastStreamProvisionerHandle,
+    /// RemoteDesktop seat-injection sink. The RemoteDesktop backend hands
+    /// each granted `Notify*` action here; production wires a
+    /// [`ChannelInjector`] the compositor loop drains into the seat, and
+    /// `--portal-server-only` mode (no live seat) uses the null handle.
+    pub remote_input_injector: RemoteInputInjectorHandle,
 }
 
 impl PortalContext {
@@ -466,6 +483,7 @@ impl PortalContext {
             screencast_provisioner: ScreenCastStreamProvisionerHandle::new(Arc::new(
                 MockScreenCastProvisioner::new_with_node(1, "default"),
             )),
+            remote_input_injector: RemoteInputInjectorHandle::null(),
         }
     }
 }
@@ -572,15 +590,18 @@ pub fn with_scope(cap: Capability, scope: GrantScope) -> Capability {
         Capability::Camera { .. } => Capability::Camera { scope },
         Capability::Microphone { .. } => Capability::Microphone { scope },
         Capability::Screencast { .. } => Capability::Screencast { scope },
+        Capability::RemoteDesktop { .. } => Capability::RemoteDesktop { scope },
         Capability::Network { hosts, .. } => Capability::Network { hosts, scope },
     }
 }
 
 /// Bus name we register under. xdg-desktop-portal expects backends to
-/// own `org.freedesktop.impl.portal.desktop.<vendor>`; vendor-suffix is
-/// matched against the `portals/<vendor>.portal` config file (see
-/// `os/usr-share-xdg-desktop-portal/portals/nirios.portal`).
-pub const BUS_NAME: &str = "org.freedesktop.impl.portal.desktop.nirios";
+/// own `org.freedesktop.impl.portal.desktop.<vendor>`; the vendor suffix
+/// is matched against the `portals/<vendor>.portal` config file (see
+/// `os/usr/share/xdg-desktop-portal/portals/qos.portal`, its D-Bus
+/// activation `.service`, and `shell-portal.service` — all of which name
+/// `...desktop.qos`).
+pub const BUS_NAME: &str = "org.freedesktop.impl.portal.desktop.qos";
 
 /// Object path the portal's frontend dispatches to on each interface.
 /// xdg-desktop-portal hard-codes `/org/freedesktop/portal/desktop`.
@@ -601,13 +622,15 @@ pub async fn serve(
     connection: zbus::Connection,
     ctx: PortalContext,
 ) -> Result<ServerHandle, zbus::Error> {
-    use file_chooser::FileChooserBackend;
-    use screencast::ScreenCastBackend;
     use camera::AccessBackend;
+    use file_chooser::FileChooserBackend;
+    use remote_desktop::RemoteDesktopBackend;
+    use screencast::ScreenCastBackend;
 
     let fc = FileChooserBackend::new(ctx.clone());
     let sc = ScreenCastBackend::new(ctx.clone());
     let ac = AccessBackend::new(ctx.clone());
+    let rd = RemoteDesktopBackend::new(ctx.clone());
 
     connection
         .object_server()
@@ -620,6 +643,10 @@ pub async fn serve(
     connection
         .object_server()
         .at(OBJECT_PATH, ac)
+        .await?;
+    connection
+        .object_server()
+        .at(OBJECT_PATH, rd)
         .await?;
 
     // `request_name` only makes sense on a real bus — p2p test
