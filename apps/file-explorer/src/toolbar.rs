@@ -7,7 +7,7 @@ use crate::command::{push, CommandSink, FileCommand};
 use crate::model::{SortOrder, ViewMode};
 use ui::icons::Icon;
 use ui::widget::toggle_group::Segment;
-use ui::widget::{Button, Row, Spacer, TextInput, ToggleGroup, Widget};
+use ui::widget::{Button, Container, Row, TextInput, ToggleGroup, Widget};
 
 pub struct ToolbarSnapshot<'a> {
     pub search_query: &'a str,
@@ -63,20 +63,29 @@ pub fn build_toolbar(snapshot: ToolbarSnapshot<'_>, sink: &CommandSink) -> Box<d
         SortOrder::Descending => Icon::ChevronDown,
     };
 
+    // No `no_wrap`: on a narrow window the control cluster wraps to a second
+    // line instead of colliding/clipping (the segmented view switch used to
+    // overlap the sort/terminal buttons at phone widths). Wide fits on one row,
+    // so the wrap never triggers there.
     Box::new(
         Row::new()
-            .no_wrap()
             .push(icon_button("files.back", Icon::ArrowLeft, sink, FileCommand::Back, snapshot.can_back))
             .push(icon_button("files.forward", Icon::ArrowRight, sink, FileCommand::Forward, snapshot.can_forward))
             .push(icon_button("files.up", Icon::ArrowUp, sink, FileCommand::Up, snapshot.can_up))
             .push(icon_button("files.refresh", Icon::RotateCw, sink, FileCommand::Refresh, true))
+            // The search field is `percent(1.0)` width; wrapped in a
+            // grow-from-zero container it fills the middle of a wide toolbar on
+            // one line yet lets the trailing controls wrap to a second line only
+            // when the window is genuinely narrow — instead of the field
+            // demanding the whole line and forcing an always-wrapped layout.
             .push(Box::new(
-                TextInput::new(vec![])
-                    .with_id("files.search")
-                    .with_on_change_path("files.search_query")
-                    .with_placeholder("Search"),
+                Container::new().with_no_padding().with_flex_grow().with_child(Box::new(
+                    TextInput::new(vec![])
+                        .with_id("files.search")
+                        .with_on_change_path("files.search_query")
+                        .with_placeholder("Search"),
+                )),
             ))
-            .push(Box::new(Spacer::new()))
             .push(icon_button("files.newfolder", Icon::FolderPlus, sink, FileCommand::NewFolder, true))
             .push(Box::new(view_switch))
             .push(icon_button("files.sort.toggle", sort_icon, sink, FileCommand::ToggleSortOrder, true))
