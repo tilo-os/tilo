@@ -560,12 +560,7 @@ pub fn top_bar(model: &TubeModel, theme: &Theme, bus: &ActionBus, can_back: bool
         })
         .push(menu_button(theme, bus))
         .push_if(can_back, back_button(theme, bus))
-        .push(
-            Flex::row()
-                .gap(8.0)
-                .align(Align::Center)
-                .push(text_c("Tube", 22.0, theme.text_primary)),
-        )
+        // The OS owns the window title/app-name — no "Tube" wordmark here.
         .push(search)
         // Push the status + account avatar hard to the right edge for a
         // balanced bar (search sits centre-left, account is top-right).

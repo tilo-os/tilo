@@ -664,14 +664,15 @@ impl DisksApp {
         } else {
             PAD
         };
-        self.txt(scene, tr, "Disks", 22.0, c.text_primary, title_x, 14.0, None, TextWeight::Bold);
+        // The OS owns the window title/app-name — the header shows only the
+        // contextual drive summary (functional status, not an app wordmark).
         let summary = format!(
             "{} drives · {} total · {} in use",
             self.topo.drives.len(),
             fmt_size(self.topo.total_size()),
             fmt_size(self.topo.total_used()),
         );
-        self.txt(scene, tr, &summary, 13.0, c.text_dim, title_x + 74.0, 21.0, None, TextWeight::Regular);
+        self.txt(scene, tr, &summary, 14.0, c.text_primary, title_x, 18.0, None, TextWeight::Medium);
 
         // Refresh button.
         let r = lay.refresh;

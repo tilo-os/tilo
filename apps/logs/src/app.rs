@@ -515,21 +515,8 @@ impl LogsApp {
         // bottom hairline
         line(scene, t, reg.header.x0, reg.header.y1, reg.header.x1, reg.header.y1, c.border_standard, 1.0);
 
-        let ty = vcenter(reg.header, theme.tokens.typography.scale.xl);
-        text_at(tr, scene, t, "Logs", theme.tokens.typography.scale.xl, theme.text_primary, reg.header.x0 + PAD, ty, TextWeight::Bold, false);
-        let (tw, _) = tr.measure_weighted("Logs", theme.tokens.typography.scale.xl, None, TextWeight::Bold);
-        text_at(
-            tr,
-            scene,
-            t,
-            "systemd journal",
-            theme.tokens.typography.scale.sm,
-            theme.text_dim,
-            reg.header.x0 + PAD + tw as f64 + 10.0,
-            vcenter(reg.header, theme.tokens.typography.scale.sm) + 2.0,
-            TextWeight::Regular,
-            false,
-        );
+        // The OS owns the window title/app-name — the header draws only its
+        // functional controls (the entry counts and the live-tail pill).
 
         // Counts, just left of the live pill.
         let counts = format!(
