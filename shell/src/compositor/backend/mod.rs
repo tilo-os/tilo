@@ -100,6 +100,35 @@ pub trait Backend {
     fn poll_events(&mut self, callback: &mut dyn FnMut(BackendEvent));
     fn outputs(&self) -> &[Output];
 
+    /// The presentation interval of the display this backend drives, if
+    /// it has one. The compositor paces its loop to this rather than to a
+    /// hard-coded 60 Hz (see [`crate::compositor::pacing`]).
+    ///
+    /// Default `None`: a backend with no display — [`HeadlessBackend`] —
+    /// reports nothing and the compositor uses
+    /// [`crate::compositor::pacing::FALLBACK_INTERVAL`]. That keeps the
+    /// display-free path free of any display concept rather than giving
+    /// it a fake refresh rate to pace to.
+    fn refresh_interval(&self) -> Option<std::time::Duration> {
+        None
+    }
+
+    /// Split the presentation half of this backend off so the compositor
+    /// can run it on a dedicated thread (see
+    /// [`crate::compositor::present`]). Called once, before the loop
+    /// starts. After a backend hands its presenter over,
+    /// [`Backend::submit_frame`] is never called on it again — the
+    /// compositor submits through the pipe instead.
+    ///
+    /// Default `None`: the backend keeps presenting inline on the loop
+    /// thread. That is what [`HeadlessBackend`] does, deliberately — its
+    /// rendered bytes are read back synchronously by the test-control
+    /// `snapshot` command, and a harness that has to wait for a frame to
+    /// arrive is a harness with a race in it.
+    fn take_presenter(&mut self) -> Option<Box<dyn crate::compositor::present::Presenter>> {
+        None
+    }
+
     /// Power the physical display(s) on (`true`) or off (`false`) for
     /// idle / session-lock blanking (Track D2).
     ///
