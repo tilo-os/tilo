@@ -113,4 +113,74 @@ mod tests {
              exports the persisted workspaces (C-2 regression)"
         );
     }
+
+    /// A state file written before workspaces had a room identity must
+    /// gain one exactly once. Minting on every load would be worse than
+    /// not minting at all: the workspace's room would change every
+    /// boot, so every peer previously invited to it would be talking to
+    /// a room that no longer exists.
+    #[test]
+    fn a_pre_rooms_state_file_gains_one_room_and_keeps_it() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("state.json");
+        // A state file exactly as the old code wrote it: a workspace
+        // with no `room` key at all.
+        std::fs::write(
+            &path,
+            r#"{
+                "workspaces": [
+                    {
+                        "id": 7,
+                        "name": "Home",
+                        "strips": [],
+                        "roles": [],
+                        "workspace_files": []
+                    }
+                ],
+                "active": 7,
+                "collaborators": []
+            }"#,
+        )
+        .expect("write legacy state");
+
+        let mut first_boot = load_or_default(&path);
+        assert_eq!(
+            first_boot.workspaces.len(),
+            1,
+            "the legacy state file must still load"
+        );
+        assert!(
+            first_boot.workspaces[0].room.is_nil(),
+            "a workspace deserialised from a pre-rooms file has no identity \
+             yet; that is what the boot-time migration is for"
+        );
+
+        first_boot.persist_path = Some(path.clone());
+        let minted = first_boot.adopt_roomless_workspaces();
+        assert_eq!(
+            minted.len(),
+            1,
+            "the migration must mint for the one roomless workspace"
+        );
+        let room = first_boot.workspaces[0].room;
+        assert!(!room.is_nil(), "the minted room must be a real identity");
+
+        // The mint and the write are one operation, so the *next* boot
+        // reads the same value rather than minting again.
+        let mut second_boot = load_or_default(&path);
+        assert_eq!(
+            second_boot.workspaces[0].room, room,
+            "the room minted on first boot must have been written to disk, \
+             so the second boot loads it instead of minting a new one"
+        );
+        second_boot.persist_path = Some(path.clone());
+        assert!(
+            second_boot.adopt_roomless_workspaces().is_empty(),
+            "a second boot must find nothing to migrate"
+        );
+        assert_eq!(
+            second_boot.workspaces[0].room, room,
+            "and must leave the room it loaded alone"
+        );
+    }
 }
