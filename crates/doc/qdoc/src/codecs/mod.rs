@@ -1,5 +1,20 @@
 //! Built-in format providers bundled with `qdoc`, plus a registry preloaded
-//! with them. Third-party apps register additional providers on top (Phase 3).
+//! with them. Third-party apps register additional providers on top.
+//!
+//! # Reading text out of the zip+XML formats
+//!
+//! `.docx`, `.odt`, `.ods`, `.xlsx` and `.odp` are all zip archives of XML 1.0
+//! documents, and every codec here reads them with the one `quick-xml` the
+//! workspace pins. Text content comes out via [`BytesText::xml10_content`],
+//! which unescapes entities *and* applies XML 1.0 end-of-line normalisation
+//! (`\r\n` and lone `\r` become `\n`). That normalisation is what the XML 1.0
+//! spec requires of a conforming parser; neither OOXML nor ODF carries line
+//! breaks as literal CR/LF anyway — those are `<w:br/>` and `<text:line-break/>`
+//! elements — so a raw CR in text content is whitespace, and folding it is
+//! correct. Use `xml11_content` only if a format ever declares XML 1.1, which
+//! none of these do.
+//!
+//! [`BytesText::xml10_content`]: quick_xml::events::BytesText::xml10_content
 
 pub mod docx;
 pub mod html;
