@@ -55,8 +55,15 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let widget = FileExplorerWidget::new();
-    let state = ui::State::new();
-    let app = ui::App::new(state, Box::new(widget));
+    // Headless drive (`--headless-drive '<json>'`): run a list of clicks and
+    // keystrokes against the real widget tree with no display, persisting
+    // through the same store the live app uses.
+    if let Some(spec) = ui::headless::spec_from_args(&args) {
+        std::process::exit(ui::headless::run(spec, Box::new(widget), "dev.qos.file-explorer"));
+    }
+
+    let (state, autosave) = ui::persist::open("dev.qos.file-explorer");
+    let app = ui::App::new(state, Box::new(widget)).with_autosave(autosave);
     app.run();
     Ok(())
 }

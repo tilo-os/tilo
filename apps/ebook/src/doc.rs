@@ -1,7 +1,10 @@
 //! Automerge document layer for Books.
 //!
 //! Everything the user can change lives in the shared CRDT so undo/redo and
-//! live collaboration work for free:
+//! live collaboration work for free — and, since `main` opens that document
+//! through `ui::persist`, so does picking up where you left off: reading
+//! progress and annotations are written back to the app's state document
+//! and reloaded on the next launch.
 //!
 //! ```text
 //! root
