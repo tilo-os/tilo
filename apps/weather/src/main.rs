@@ -44,8 +44,15 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    let state = ui::State::new();
-    let app = ui::App::new(state, weather::app_root());
+    // Headless drive (`--headless-drive '<json>'`): run a list of clicks and
+    // keystrokes against the real widget tree with no display, persisting
+    // through the same store the live app uses.
+    if let Some(spec) = ui::headless::spec_from_args(&args) {
+        std::process::exit(ui::headless::run(spec, weather::app_root(), "dev.qos.weather"));
+    }
+
+    let (state, autosave) = ui::persist::open("dev.qos.weather");
+    let app = ui::App::new(state, weather::app_root()).with_autosave(autosave);
     app.run();
     Ok(())
 }

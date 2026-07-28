@@ -60,8 +60,20 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    let state = ui::State::new();
-    let app = ui::App::new(state, contacts::app_root());
+    // Headless drive (`--headless-drive '<json>'`): run a list of clicks and
+    // keystrokes against the real widget tree with no display, persisting
+    // through the same store the live app uses.
+    if let Some(spec) = ui::headless::spec_from_args(&args) {
+        std::process::exit(ui::headless::run(spec, contacts::app_root(), "dev.qos.contacts"));
+    }
+
+    // Contacts kept its own address-book file before the shared store
+    // existed; import it once so an existing user's book comes across.
+    let (state, autosave) = match contacts::storage::default_path() {
+        Some(legacy) => ui::persist::open_migrating("dev.qos.contacts", &legacy),
+        None => ui::persist::open("dev.qos.contacts"),
+    };
+    let app = ui::App::new(state, contacts::app_root()).with_autosave(autosave);
     app.run();
     Ok(())
 }

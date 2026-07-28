@@ -51,9 +51,16 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    let state = ui::State::new();
+    // Headless drive (`--headless-drive '<json>'`): run a list of clicks and
+    // keystrokes against the real widget tree with no display, persisting
+    // through the same store the live app uses.
+    if let Some(spec) = ui::headless::spec_from_args(&args) {
+        std::process::exit(ui::headless::run(spec, monitor::app_root(), "dev.qos.monitor"));
+    }
+
+    let (state, autosave) = ui::persist::open("dev.qos.monitor");
     #[allow(unused_mut)]
-    let mut app = ui::App::new(state, monitor::app_root());
+    let mut app = ui::App::new(state, monitor::app_root()).with_autosave(autosave);
     // Widget-debug overlays (bounds outline + widget-name labels) are a
     // development aid the toolkit enables from the `QUICK_UI_DEBUG` env var
     // alone. Force them off in release so a var inherited from the launching

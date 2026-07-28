@@ -153,8 +153,13 @@ fn run_always_visible(purpose: Option<InputPurpose>) {
     // is a plain ui::App window. `ui::App::run()` owns the event loop, so the
     // `on_key` callback above is the seam that needs no `ui` change — it fires
     // synchronously as each key is committed.
-    let state = ui::State::new();
-    let app = ui::App::new(state, Box::new(widget));
+    // Deliberately no `--headless-drive` hook. Every key this widget commits
+    // is forwarded to `injector`, which types into whatever application holds
+    // focus in the live session — driving it from a test harness would inject
+    // keystrokes into the user's desktop.
+
+    let (state, autosave) = ui::persist::open("dev.qos.osk");
+    let app = ui::App::new(state, Box::new(widget)).with_autosave(autosave);
     app.run();
 }
 
