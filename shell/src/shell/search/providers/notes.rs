@@ -55,6 +55,11 @@ impl SearchProvider for NotesProvider {
         }
         false
     }
+    /// A title prefix scores 110 - see [`note_match_score`].
+    fn max_score(&self) -> i32 {
+        110
+    }
+
     fn query(&self, ctx: SearchContext<'_>) -> Vec<SearchResult> {
         if !ctx.wanted.contains(&ResourceKind::Note) {
             return Vec::new();
