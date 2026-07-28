@@ -17,36 +17,36 @@ pkg = { path = "../pkg" }
 app-registry = { path = "../app-registry" }
 
 # Cap'n Proto RPC for the control socket, matching format-host.
-capnp = "0.26"
-capnp-rpc = "0.26"
-capnp-futures = "0.26"
+capnp.workspace = true
+capnp-rpc.workspace = true
+capnp-futures.workspace = true
 
 # Async runtime + transport.
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "fs", "signal", "time", "sync", "process"] }
-tokio-util = { version = "0.7", features = ["compat"] }
-futures = "0.3"
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "io-util", "fs", "signal", "time", "sync", "process"] }
+tokio-util.workspace = true
+futures = { workspace = true, default-features = true }
 
 # Daemon plumbing.
-clap = { version = "4", features = ["derive"] }
-serde = { version = "1", features = ["derive"] }
-toml = "0.8"
-dirs = "5"
-parking_lot = "0.12"
-hex = "0.4"
-thiserror = "1"
-anyhow = "1"
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-tar = "0.4"
+clap.workspace = true
+serde.workspace = true
+toml.workspace = true
+dirs.workspace = true
+parking_lot.workspace = true
+hex.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+tar.workspace = true
 
 # systemd notify (sd_notify) — best-effort; we degrade if env vars missing.
-sd-notify = "0.4"
+sd-notify.workspace = true
 
 [build-dependencies]
-capnpc = "0.26"
+capnpc.workspace = true
 
 [dev-dependencies]
-tempfile = "3"
-tokio = { version = "1", features = ["full"] }
-ed25519-dalek = "2"
-rand = "0.8"
+tempfile.workspace = true
+tokio = { workspace = true, features = ["full"] }
+ed25519-dalek.workspace = true
+rand.workspace = true
