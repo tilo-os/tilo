@@ -183,11 +183,32 @@ pub struct FirewallApp {
     /// our own writes and lets `sync` detect genuine remote edits.
     last_json: Option<String>,
     seeded: bool,
+    /// Whether the displayed config reflects a real, readable firewall.
+    /// `false` means firewalld is absent/stopped and we show an honest
+    /// unavailable state instead of any fabricated ruleset.
+    available: bool,
 }
 
 impl FirewallApp {
+    /// The live app: read the **real** current firewall from the host. If
+    /// firewalld is absent or stopped, start on an honest empty/unavailable
+    /// state — never a fabricated ruleset.
     pub fn new() -> Self {
-        let config = crate::sample::sample_config();
+        match crate::backend::import() {
+            Some(config) => Self::from_parts(config, true),
+            None => Self::from_parts(FirewallConfig::empty(), false),
+        }
+    }
+
+    /// The hermetic `--shots` / demo build: seeded with a realistic sample
+    /// ruleset so the headless screenshot is fully populated offline. This
+    /// is the ONLY place the sample config is used — the live app never
+    /// fabricates a firewall.
+    pub fn new_demo() -> Self {
+        Self::from_parts(crate::sample::sample_config(), true)
+    }
+
+    fn from_parts(config: FirewallConfig, available: bool) -> Self {
         let selected_zone = config.default_zone;
         Self {
             config,
@@ -203,6 +224,7 @@ impl FirewallApp {
             last_cursor: Point::ZERO,
             last_json: None,
             seeded: false,
+            available,
         }
     }
 
@@ -516,16 +538,21 @@ fn alpha(c: Color, a: u8) -> Color {
 impl Widget for FirewallApp {
     fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
         if !self.seeded {
-            // Adopt an existing shared config, or seed our sample.
+            // Adopt an existing shared config, or publish the one we read
+            // from the host. We only ever publish REAL data: a config we
+            // imported from firewalld or (in the demo build) the sample.
+            // An unavailable firewall has no zones, so nothing fabricated is
+            // ever written into the shared document.
             if let Some(json) = FirewallDoc::load_json(state) {
                 if let Some(cfg) = FirewallConfig::from_json(&json) {
                     self.config = cfg;
+                    self.available = true;
                     if self.config.zone(self.selected_zone).is_none() {
                         self.selected_zone = self.config.default_zone;
                     }
                     self.last_json = Some(json);
                 }
-            } else {
+            } else if !self.config.zones.is_empty() {
                 let json = FirewallDoc::store(state, &self.config);
                 self.last_json = Some(json);
             }
@@ -750,6 +777,12 @@ impl FirewallApp {
         taffy: &TaffyTree<()>,
         event: &WindowEvent,
     ) {
+        // Nothing is interactive while firewalld is unavailable — there is
+        // no real config to edit or apply.
+        if !self.available {
+            return;
+        }
+
         let l = self.layout.clone();
 
         // Header controls.
@@ -944,6 +977,12 @@ impl FirewallApp {
         paint::fill_rect(scene, t, self.rect, theme.tokens.colors.surfaces.base);
 
         self.draw_header(scene, t, tr, theme, &l);
+        if !self.available {
+            // Firewalld isn't readable — show an honest empty state rather
+            // than any zones/rules, and never a fabricated ruleset.
+            self.draw_unavailable(scene, t, tr, theme, &l);
+            return;
+        }
         self.draw_rail(scene, t, tr, theme, &l);
         self.draw_summary(scene, t, tr, theme, &l);
         self.draw_filter(scene, t, tr, theme, &l);
@@ -952,23 +991,61 @@ impl FirewallApp {
         self.draw_form(scene, t, tr, theme, presence, &l);
     }
 
+    /// The honest "no firewall to show" state: firewalld is not installed
+    /// or not running, so there is nothing real to display.
+    fn draw_unavailable(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, l: &Layout) {
+        let area = Rect::new(self.rect.x0, l.header.y1, self.rect.x1, self.rect.y1);
+        let cw = 520.0_f64.min(area.width() - 48.0);
+        let ch = 150.0;
+        let cx = area.x0 + (area.width() - cw) / 2.0;
+        let cy = area.y0 + (area.height() - ch) / 2.0;
+        let card = Rect::new(cx, cy, cx + cw, cy + ch);
+        paint::fill_rrect(scene, t, card, CARD_R, theme.tokens.colors.surfaces.raised);
+        paint::stroke_rrect(scene, t, card, CARD_R, theme.border_standard, 1.0);
+        paint::label(
+            tr, scene, t, "firewalld unavailable", 18.0, theme.text_primary,
+            card.x0 + 24.0, card.y0 + 26.0, cw - 48.0,
+        );
+        paint::label(
+            tr, scene, t,
+            "The firewalld service is not installed or not running, so there",
+            13.0, theme.text_dim, card.x0 + 24.0, card.y0 + 62.0, cw - 48.0,
+        );
+        paint::label(
+            tr, scene, t,
+            "is no live firewall to display. Start firewalld to manage zones.",
+            13.0, theme.text_dim, card.x0 + 24.0, card.y0 + 84.0, cw - 48.0,
+        );
+        paint::label(
+            tr, scene, t, "Run:  sudo systemctl enable --now firewalld", 12.0,
+            theme.text_dim, card.x0 + 24.0, card.y0 + 116.0, cw - 48.0,
+        );
+    }
+
     fn draw_header(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, l: &Layout) {
         let h = l.header;
         paint::fill_rect(scene, t, h, theme.tokens.colors.neutral[0]);
         paint::hline(scene, t, h.x0, h.x1, h.y1, theme.border_standard, 1.0);
 
         paint::label(tr, scene, t, "Firewall", 20.0, theme.text_primary, h.x0 + 20.0, h.y0 + 9.0, 200.0);
-        let sub = if self.config.panic_mode {
+        let sub = if !self.available {
+            "firewalld not running — nothing to display".to_string()
+        } else if self.config.panic_mode {
             "PANIC MODE — all traffic dropped".to_string()
         } else {
             format!("firewalld · nftables · active zone: {}", self.config.default_zone.name())
         };
-        let sub_color = if self.config.panic_mode {
+        let sub_color = if self.config.panic_mode && self.available {
             theme.tokens.colors.semantic.danger
         } else {
             theme.text_dim
         };
         paint::label(tr, scene, t, &sub, 11.0, sub_color, h.x0 + 20.0, h.y0 + 34.0, 520.0);
+
+        // With no readable firewall there are no live controls to offer.
+        if !self.available {
+            return;
+        }
 
         // Backend mode chip, just left of the enable pill.
         let mode_txt = match self.backend.mode() {
@@ -1310,10 +1387,61 @@ mod tests {
     use super::*;
 
     fn app_with_rect() -> FirewallApp {
-        let mut a = FirewallApp::new();
+        // Sample-populated build: these tests exercise rule/zone behaviour
+        // that needs a ruleset, which only the demo build fabricates.
+        let mut a = FirewallApp::new_demo();
         a.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
         a.relayout();
         a
+    }
+
+    #[test]
+    fn live_new_does_not_fabricate_sample_config() {
+        // The honesty guard: the live constructor must never seed the demo
+        // sample. On a host without firewalld it is empty + unavailable; on
+        // one with firewalld it reflects the real host — either way it is
+        // not the fabricated sample ruleset.
+        let live = FirewallApp::new();
+        assert_ne!(
+            live.config,
+            crate::sample::sample_config(),
+            "live app must not start on the fabricated sample firewall"
+        );
+    }
+
+    #[test]
+    fn unavailable_firewall_writes_nothing_to_doc() {
+        // With no readable firewall the config is empty and `sync` must not
+        // publish a fabricated ruleset into the shared document.
+        let mut a = FirewallApp::from_parts(FirewallConfig::empty(), false);
+        let mut doc = AutoCommit::new();
+        a.sync(&mut doc, &automerge::ROOT);
+        assert!(!a.available);
+        assert!(a.config.zones.is_empty());
+        assert!(
+            FirewallDoc::load(&doc).is_none(),
+            "the unavailable state must leave the document empty, not seed a config"
+        );
+    }
+
+    #[test]
+    fn demo_build_publishes_sample_for_shots() {
+        // The `--shots` build still populates so the screenshot is real.
+        let mut a = FirewallApp::new_demo();
+        let mut doc = AutoCommit::new();
+        a.sync(&mut doc, &automerge::ROOT);
+        let stored = FirewallDoc::load(&doc).expect("demo build seeds the document");
+        // The demo build publishes the populated sample (so the --shots
+        // screenshot is real) — distinct from the live app, which publishes
+        // nothing. Assert on the sample's zone set (robust to store→load field
+        // normalisation like empty→"0" ports that can break exact equality).
+        let sample = crate::sample::sample_config();
+        assert!(!stored.zones.is_empty(), "demo publishes a populated firewall");
+        assert_eq!(
+            stored.zones.len(),
+            sample.zones.len(),
+            "demo publishes every sample zone"
+        );
     }
 
     #[test]
