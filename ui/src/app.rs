@@ -281,6 +281,12 @@ pub struct App {
 
     // Collaboration
     collab_manager: CollaborationManager,
+    /// Who this process acts as. Every committed action is attributed to it,
+    /// and Ctrl+Z only reverts actions carrying it — so in a shared session a
+    /// user's undo walks past their collaborators' work instead of through it.
+    /// Resolved once from the same environment the broker's `Hello` announces,
+    /// so the id here is the id peers see.
+    local_author: crate::permissions::UserId,
     pub presence_ctx: PresenceCtx,
     pub permission_ctx: PermissionContext,
 
@@ -427,6 +433,7 @@ impl App {
             last_stable_focus_idx: None,
             last_stable_metadata: None,
             collab_manager: CollaborationManager::new(),
+            local_author: crate::collaboration::local_user_id(),
             presence_ctx: PresenceCtx::empty(),
             permission_ctx: PermissionContext::permissive(),
             presence_broadcast_scope: None,
@@ -1463,7 +1470,15 @@ impl App {
     }
 
     fn commit_action(&mut self) {
-        self.state.commit_action(self.last_stable_focus_idx, self.last_stable_metadata.clone());
+        // Stamp the action with who performed it. Without this every entry on
+        // the undo stack is anonymous, and `undo_for_author` — the thing that
+        // stops one collaborator reverting another's work — has nothing to
+        // match on.
+        self.state.commit_action_authored(
+            self.last_stable_focus_idx,
+            self.last_stable_metadata.clone(),
+            Some(self.local_author.clone()),
+        );
         self.last_stable_focus_idx = self.focused_node.and_then(|id| self.focusable_order.iter().position(|&x| x == id));
         self.last_stable_metadata = self.focused_node.and_then(|id| {
             self.node_map.get(&id).and_then(|&w_ptr| unsafe { (*w_ptr).get_state() })
@@ -2856,27 +2871,33 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                             // held, so check the modifier directly rather than
                             // relying on the capital-letter cue.
                             "z" | "Z" if shift => {
-                                if let Some(e) =
-                                    app.state.redo(current_focus_idx, current_meta.clone())
-                                {
+                                if let Some(e) = app.state.redo_as(
+                                    Some(&app.local_author),
+                                    current_focus_idx,
+                                    current_meta.clone(),
+                                ) {
                                     app.apply_undo_entry(e);
                                 }
                                 is_undo_redo = true;
                                 handled = true;
                             }
                             "z" | "Z" => {
-                                if let Some(e) =
-                                    app.state.undo(current_focus_idx, current_meta.clone())
-                                {
+                                if let Some(e) = app.state.undo_as(
+                                    Some(&app.local_author),
+                                    current_focus_idx,
+                                    current_meta.clone(),
+                                ) {
                                     app.apply_undo_entry(e);
                                 }
                                 is_undo_redo = true;
                                 handled = true;
                             }
                             "y" | "Y" => {
-                                if let Some(e) =
-                                    app.state.redo(current_focus_idx, current_meta.clone())
-                                {
+                                if let Some(e) = app.state.redo_as(
+                                    Some(&app.local_author),
+                                    current_focus_idx,
+                                    current_meta.clone(),
+                                ) {
                                     app.apply_undo_entry(e);
                                 }
                                 is_undo_redo = true;
