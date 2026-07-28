@@ -26,7 +26,7 @@ streaming = ["dep:reqwest"]
 #                   media controls drive playback (see `src/mpris.rs`);
 #   * `ashpd`/`url` — the native XDG file-chooser portal for picking a
 #                   playlist cover image (see `src/portal.rs`).
-audio = ["dep:gstreamer", "dep:zbus", "dep:ashpd", "dep:tokio"]
+audio = ["dep:gstreamer", "dep:zbus", "dep:tokio", "ui/portal"]
 # Real YouTube-Music streaming via the pure-Rust `rustypipe` InnerTube client:
 # real search (`music_search_tracks`) and real audio-stream resolution
 # (`player`, which returns a directly-playable googlevideo URL). Off by default
@@ -67,13 +67,6 @@ gstreamer = { version = "0.23", optional = true }
 # `p2p` feature backs the hermetic socket-pair round-trip test (serve the real
 # interfaces over a `UnixStream` pair — no session bus needed).
 zbus = { version = "4.4", optional = true, features = ["p2p"] }
-# Native XDG file-chooser portal for the playlist-cover picker (same crate +
-# version as `apps/contacts`/`apps/maps`, so the picker matches the host desktop
-# and hosts the sandbox file-access prompt). `url` maps the returned file URIs.
-ashpd = { version = "0.9", default-features = false, features = ["tokio"], optional = true }
-# `url` maps the portal's returned file URIs; kept non-optional so the pure
-# mapping + its tests build in the default (hermetic) configuration too.
-url = "2"
 iroh = { version = "0.96", optional = true }
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "time"], optional = true }
 # Pure-Rust InnerTube (YouTube / YouTube Music) client: search + stream
