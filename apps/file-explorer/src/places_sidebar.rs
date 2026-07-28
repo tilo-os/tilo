@@ -286,9 +286,13 @@ impl Widget for PlacesSidebar {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        // Fill the pane the responsive shell hands us: docked (wide) the shell
+        // allocates the sidebar width, but as the full-screen master pane
+        // (narrow) the list must span the whole width rather than leaving a
+        // dead strip. So take `percent(1.0)` and let the shell own the width.
         let node = taffy
             .new_leaf(Style {
-                size: Size { width: Dimension::length(SIDEBAR_WIDTH as f32), height: Dimension::percent(1.0) },
+                size: Size { width: Dimension::percent(1.0), height: Dimension::percent(1.0) },
                 ..Default::default()
             })
             .unwrap();

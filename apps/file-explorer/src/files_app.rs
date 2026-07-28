@@ -346,6 +346,11 @@ impl FileExplorerWidget {
             }
         };
         let sp = &theme.tokens.spacing;
+        // In the narrow (push) layout the shell paints a Back chip over the
+        // detail pane's top-left; reserve a strip so the list header + rows
+        // start clear of it instead of under it. Wide docks both panes with no
+        // chip, so no reservation there.
+        let back_chip_reserve = if self.nav.mode() == ShellMode::Narrow { 44.0 } else { 0.0 };
         // A plain (percent-height) column: this pane is the root of `NavShell`'s
         // inner layout, sized to the detail rect, so it must FILL that rect
         // (`percent(1.0)` height). `with_fill_remaining_height` (flex-grow from
@@ -355,6 +360,7 @@ impl FileExplorerWidget {
         // optional error row.
         let mut view_col = Column::new()
             .with_vertical_padding(sp.s1)
+            .with_extra_top_padding(back_chip_reserve)
             .with_horizontal_padding(sp.s3, sp.s3);
         if let Some(err) = self.error.as_deref() {
             // Real error affordance: the message plus a "Try Again" button

@@ -34,6 +34,16 @@ pub struct Container {
     /// Setting this also implies `has_background`. `None` keeps the legacy
     /// `bg_primary` behaviour when [`Container::with_background`] is used.
     fill_color: Option<vello::peniko::Color>,
+    /// When set, the container grows to fill the free space on its flex line
+    /// from a **zero** basis (`flex_grow: 1, flex_basis: 0`), instead of
+    /// claiming `percent(1.0)` of its parent. In a **wrapping** flex row this
+    /// is the difference between a child that fills the leftover width AFTER
+    /// its siblings are placed (correct — the row wraps only when the fixed
+    /// siblings don't fit) and one that demands the whole line up front
+    /// (which forces every sibling onto the next line even when there was
+    /// room). Use it to wrap a `percent(1.0)`-width field (e.g. a search box)
+    /// so it stays inline on wide rows and wraps only when genuinely narrow.
+    flex_grow: bool,
 }
 
 impl Container {
@@ -49,7 +59,17 @@ impl Container {
             fixed_width: None,
             fixed_height: None,
             fill_color: None,
+            flex_grow: false,
         }
+    }
+
+    /// Grow to fill the free space on the flex line from a zero basis
+    /// (`flex_grow: 1, flex_basis: 0`) rather than claiming `percent(1.0)`.
+    /// See the field docs — this is how a full-width field is kept inline on a
+    /// wide wrapping row yet allowed to wrap only when the row is truly narrow.
+    pub fn with_flex_grow(mut self) -> Self {
+        self.flex_grow = true;
+        self
     }
 
     /// Skip the default `padding_standard` on all sides. Used by the
@@ -145,6 +165,10 @@ impl Widget for Container {
         let pad = if self.no_padding { 0.0 } else { theme.padding_standard };
         let width = match self.fixed_width {
             Some(px) => length(px),
+            // A grow-from-zero container takes an `auto` width so its basis is
+            // zero (the wrap decision ignores it); the flex_grow below fills
+            // the leftover line width.
+            None if self.flex_grow => taffy::Dimension::auto(),
             None => percent(1.0),
         };
         let height = match self.fixed_height {
@@ -157,8 +181,14 @@ impl Widget for Container {
             flex_shrink: 0.0, // Prevent vertical squashing
             // A pinned width must not grow to fill a flex parent — keep it
             // exactly `px`. `flex_basis: auto` lets the `size.width` length
-            // resolve the basis.
-            flex_grow: 0.0,
+            // resolve the basis. A `with_flex_grow` container instead grows
+            // from a zero basis to fill the free space on its line.
+            flex_grow: if self.flex_grow { 1.0 } else { 0.0 },
+            flex_basis: if self.flex_grow {
+                length(0.0)
+            } else {
+                taffy::Dimension::auto()
+            },
             padding: taffy::Rect {
                 left: length(pad),
                 right: length(pad),
