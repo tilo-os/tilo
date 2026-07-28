@@ -84,6 +84,7 @@ impl VpnDoc {
         let _ = doc.put(&obj, "tx", c.tx_bytes as i64);
         let _ = doc.put(&obj, "base_down", c.base_down_mbps);
         let _ = doc.put(&obj, "base_up", c.base_up_mbps);
+        let _ = doc.put(&obj, "config_path", c.config_path.clone().unwrap_or_default());
     }
 
     /// Update just the live status of a connection (connect/disconnect).
@@ -152,6 +153,10 @@ impl VpnDoc {
                     tx_bytes: get_int(doc, &obj, "tx").max(0) as u64,
                     base_down_mbps: get_f64(doc, &obj, "base_down"),
                     base_up_mbps: get_f64(doc, &obj, "base_up"),
+                    config_path: {
+                        let p = s("config_path");
+                        if p.is_empty() { None } else { Some(p) }
+                    },
                 });
             }
         }

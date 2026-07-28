@@ -9,6 +9,8 @@
 //!    user in a confirm dialog *before* anything is executed — the
 //!    network is never touched without consent, and never in `--shots`.
 
+use std::path::PathBuf;
+
 use crate::model::{ConnKind, Connection};
 
 /// Parse the textual contents of a config file into a [`Connection`].
@@ -179,22 +181,38 @@ pub enum Backend {
 }
 
 /// Plan the command to bring `conn` up using `backend`.
+///
+/// The bring-up references the tunnel's real, imported config file whenever
+/// one is present: `wg-quick up <config-path>` derives the interface from the
+/// file's basename, and `openvpn --config <config-path>` starts the daemon on
+/// the exact `.ovpn` the user imported. Without an imported config (a
+/// hand-added stub) it falls back to the conventional `/etc/...` location and
+/// the interface name — that command will honestly fail at run time if no such
+/// file exists, rather than pretend to connect.
 pub fn connect_plan(conn: &Connection, backend: Backend) -> CommandPlan {
     match backend {
-        Backend::WgQuick => CommandPlan {
-            program: "wg-quick".into(),
-            args: vec!["up".into(), conn.name.clone()],
-            summary: format!("Bring up WireGuard tunnel '{}'", conn.name),
-        },
-        Backend::OpenVpnCli => CommandPlan {
-            program: "openvpn".into(),
-            args: vec![
-                "--config".into(),
-                format!("/etc/openvpn/{}.ovpn", conn.name),
-                "--daemon".into(),
-            ],
-            summary: format!("Start OpenVPN tunnel '{}'", conn.name),
-        },
+        Backend::WgQuick => {
+            let target = conn
+                .config_path()
+                .map(|p| p.to_string())
+                .unwrap_or_else(|| iface_name(conn));
+            CommandPlan {
+                program: "wg-quick".into(),
+                args: vec!["up".into(), target],
+                summary: format!("Bring up WireGuard tunnel '{}'", conn.name),
+            }
+        }
+        Backend::OpenVpnCli => {
+            let cfg = conn
+                .config_path()
+                .map(|p| p.to_string())
+                .unwrap_or_else(|| format!("/etc/openvpn/{}.ovpn", conn.name));
+            CommandPlan {
+                program: "openvpn".into(),
+                args: vec!["--config".into(), cfg, "--daemon".into()],
+                summary: format!("Start OpenVPN tunnel '{}'", conn.name),
+            }
+        }
         Backend::NetworkManager => CommandPlan {
             program: "nmcli".into(),
             args: vec!["connection".into(), "up".into(), conn.name.clone()],
@@ -206,22 +224,112 @@ pub fn connect_plan(conn: &Connection, backend: Backend) -> CommandPlan {
 /// Plan the command to tear `conn` down using `backend`.
 pub fn disconnect_plan(conn: &Connection, backend: Backend) -> CommandPlan {
     match backend {
-        Backend::WgQuick => CommandPlan {
-            program: "wg-quick".into(),
-            args: vec!["down".into(), conn.name.clone()],
-            summary: format!("Tear down WireGuard tunnel '{}'", conn.name),
-        },
-        Backend::OpenVpnCli => CommandPlan {
-            program: "pkill".into(),
-            args: vec!["-f".into(), format!("openvpn.*{}.ovpn", conn.name)],
-            summary: format!("Stop OpenVPN tunnel '{}'", conn.name),
-        },
+        Backend::WgQuick => {
+            let target = conn
+                .config_path()
+                .map(|p| p.to_string())
+                .unwrap_or_else(|| iface_name(conn));
+            CommandPlan {
+                program: "wg-quick".into(),
+                args: vec!["down".into(), target],
+                summary: format!("Tear down WireGuard tunnel '{}'", conn.name),
+            }
+        }
+        Backend::OpenVpnCli => {
+            // Match the specific config path (or the tunnel name) so we only
+            // kill *this* tunnel's daemon, never every openvpn on the box.
+            let needle = conn
+                .config_path()
+                .map(|p| p.to_string())
+                .unwrap_or_else(|| format!("{}.ovpn", conn.name));
+            CommandPlan {
+                program: "pkill".into(),
+                args: vec!["-f".into(), needle],
+                summary: format!("Stop OpenVPN tunnel '{}'", conn.name),
+            }
+        }
         Backend::NetworkManager => CommandPlan {
             program: "nmcli".into(),
             args: vec!["connection".into(), "down".into(), conn.name.clone()],
             summary: format!("Deactivate '{}' via NetworkManager", conn.name),
         },
     }
+}
+
+/// Derive the Linux interface name for a tunnel. When a config file was
+/// imported its basename *is* the interface `wg-quick` creates, so the two are
+/// kept in lockstep; otherwise the tunnel name is sanitised into a valid,
+/// `IFNAMSIZ`-bounded name.
+pub fn iface_name(conn: &Connection) -> String {
+    if let Some(p) = conn.config_path() {
+        if let Some(stem) = std::path::Path::new(p).file_stem().and_then(|s| s.to_str()) {
+            let s = sanitize_iface(stem);
+            if !s.is_empty() {
+                return s;
+            }
+        }
+    }
+    let s = sanitize_iface(&conn.name);
+    if s.is_empty() {
+        format!("qvpn{}", &conn.id.simple().to_string()[..4])
+    } else {
+        s
+    }
+}
+
+/// Reduce an arbitrary label to a valid Linux interface name: ASCII
+/// alphanumerics / `-` / `_`, runs of anything else collapsed to a single
+/// `-`, lowercased, and clamped to 15 bytes (`IFNAMSIZ - 1`).
+fn sanitize_iface(s: &str) -> String {
+    let cleaned: String = s
+        .trim()
+        .to_ascii_lowercase()
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                ' '
+            }
+        })
+        .collect();
+    let mut joined = cleaned.split_whitespace().collect::<Vec<_>>().join("-");
+    joined.truncate(15);
+    joined.trim_matches('-').to_string()
+}
+
+/// The per-user data directory where imported tunnel configs are persisted so
+/// the real bring-up command can reference them (`$XDG_DATA_HOME/qos-vpn`).
+pub fn data_dir() -> PathBuf {
+    let base = std::env::var_os("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")))
+        .unwrap_or_else(std::env::temp_dir);
+    base.join("qos-vpn")
+}
+
+/// Persist an imported raw config so the real bring-up can reference it. The
+/// filename basename becomes the `wg-quick` interface name; the file is written
+/// `0600` because WireGuard refuses a world-readable config that holds a
+/// private key. Returns the absolute path written.
+pub fn persist_config(iface: &str, kind: ConnKind, raw: &str) -> std::io::Result<PathBuf> {
+    let dir = data_dir();
+    std::fs::create_dir_all(&dir)?;
+    let path = dir.join(format!("{iface}.{}", kind.ext()));
+    std::fs::write(&path, raw)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+    }
+    Ok(path)
+}
+
+/// Whether the user has opted in to real host command execution. Mutating
+/// commands (bring-up / teardown / Tor) never run without this.
+pub fn exec_allowed() -> bool {
+    std::env::var("QOS_VPN_ALLOW_EXEC").as_deref() == Ok("1")
 }
 
 /// Default backend choice for a protocol.
@@ -254,7 +362,7 @@ pub fn tor_plan(enable: bool) -> CommandPlan {
 /// app sets `QOS_VPN_ALLOW_EXEC=1` once the user has acknowledged the
 /// confirm dialog.
 pub fn execute(plan: &CommandPlan) -> Result<String, String> {
-    if std::env::var("QOS_VPN_ALLOW_EXEC").as_deref() != Ok("1") {
+    if !exec_allowed() {
         return Err(format!(
             "execution disabled (set QOS_VPN_ALLOW_EXEC=1): {}",
             plan.display()
@@ -326,18 +434,78 @@ dhcp-option DNS 172.20.4.1
     }
 
     #[test]
-    fn command_plans_are_well_formed() {
-        let mut c = Connection::new("Home", ConnKind::WireGuard);
-        c.name = "Home".into();
+    fn command_plans_use_iface_without_imported_config() {
+        // No imported config → the interface name is the sanitised tunnel
+        // name, and wg-quick resolves it against /etc/wireguard.
+        let c = Connection::new("Home", ConnKind::WireGuard);
+        assert_eq!(iface_name(&c), "home");
         let up = connect_plan(&c, Backend::WgQuick);
-        assert_eq!(up.display(), "wg-quick up Home");
+        assert_eq!(up.display(), "wg-quick up home");
         let down = disconnect_plan(&c, Backend::WgQuick);
-        assert_eq!(down.display(), "wg-quick down Home");
+        assert_eq!(down.display(), "wg-quick down home");
         let nm = connect_plan(&c, Backend::NetworkManager);
         assert_eq!(nm.display(), "nmcli connection up Home");
     }
 
     #[test]
+    fn wireguard_plan_uses_imported_config_path() {
+        // With an imported config, the real bring-up references the exact
+        // file; wg-quick derives the interface from its basename.
+        let mut c = Connection::new("Home", ConnKind::WireGuard);
+        c.config_path = Some("/home/u/.local/share/qos-vpn/home.conf".into());
+        assert_eq!(iface_name(&c), "home");
+        let up = connect_plan(&c, Backend::WgQuick);
+        assert_eq!(up.program, "wg-quick");
+        assert_eq!(up.args, vec!["up", "/home/u/.local/share/qos-vpn/home.conf"]);
+        let down = disconnect_plan(&c, Backend::WgQuick);
+        assert_eq!(down.args, vec!["down", "/home/u/.local/share/qos-vpn/home.conf"]);
+    }
+
+    #[test]
+    fn openvpn_plan_uses_imported_config_path() {
+        let mut c = Connection::new("Work", ConnKind::OpenVpn);
+        c.config_path = Some("/home/u/.local/share/qos-vpn/work.ovpn".into());
+        let up = connect_plan(&c, Backend::OpenVpnCli);
+        assert_eq!(up.program, "openvpn");
+        assert_eq!(
+            up.args,
+            vec!["--config", "/home/u/.local/share/qos-vpn/work.ovpn", "--daemon"]
+        );
+        // Teardown targets *this* tunnel's config, not every openvpn process.
+        let down = disconnect_plan(&c, Backend::OpenVpnCli);
+        assert_eq!(down.program, "pkill");
+        assert_eq!(down.args, vec!["-f", "/home/u/.local/share/qos-vpn/work.ovpn"]);
+    }
+
+    #[test]
+    fn iface_name_is_sanitised_and_bounded() {
+        let mut c = Connection::new("My Work VPN (São Paulo)!!", ConnKind::WireGuard);
+        let n = iface_name(&c);
+        assert!(crate::net::is_valid_iface(&n), "derived name {n:?} must be a valid iface");
+        assert!(n.len() <= 15);
+        // An empty name still yields a valid, unique-ish interface.
+        c.name = "   ".into();
+        let n2 = iface_name(&c);
+        assert!(crate::net::is_valid_iface(&n2), "fallback {n2:?} must be valid");
+    }
+
+    #[test]
+    #[serial_test::serial(vpn_env)]
+    fn persist_config_writes_the_raw_bytes() {
+        // Point the data dir at a scratch location and confirm the exact raw
+        // config is written where the bring-up command will find it.
+        let tmp = std::env::temp_dir().join(format!("qos-vpn-persist-{}", uuid::Uuid::new_v4()));
+        unsafe { std::env::set_var("XDG_DATA_HOME", &tmp) };
+        let path = persist_config("home", ConnKind::WireGuard, WG).expect("persist");
+        assert!(path.ends_with("qos-vpn/home.conf"));
+        let back = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(back, WG);
+        let _ = std::fs::remove_dir_all(&tmp);
+        unsafe { std::env::remove_var("XDG_DATA_HOME") };
+    }
+
+    #[test]
+    #[serial_test::serial(vpn_env)]
     fn execute_is_guarded_off_by_default() {
         // Without the opt-in env var, execution must refuse — proving the
         // confirm gate can never be bypassed in tests/sandboxes.

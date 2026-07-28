@@ -118,6 +118,11 @@ pub struct Connection {
     pub base_down_mbps: f64,
     /// Baseline upstream rate (MB/s) used to shape the live sparkline.
     pub base_up_mbps: f64,
+    /// Absolute path to the real config file this tunnel brings up
+    /// (`wg-quick up <path>` / `openvpn --config <path>`). Populated when a
+    /// `.conf` / `.ovpn` is imported and persisted to the app's data dir.
+    /// `None` for hand-added stubs that have no real config yet.
+    pub config_path: Option<String>,
 }
 
 impl Connection {
@@ -139,7 +144,13 @@ impl Connection {
             tx_bytes: 0,
             base_down_mbps: 3.0,
             base_up_mbps: 0.8,
+            config_path: None,
         }
+    }
+
+    /// The real config file this tunnel would bring up, if one was imported.
+    pub fn config_path(&self) -> Option<&str> {
+        self.config_path.as_deref().filter(|p| !p.is_empty())
     }
 
     pub fn is_connected(&self) -> bool {
