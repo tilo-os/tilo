@@ -6746,17 +6746,34 @@ mod interaction_tests {
 
     #[test]
     #[serial]
-    fn empty_shelf_reload_button_repopulates_via_the_real_load_path() {
-        // Point discovery at an empty directory: load_library() then yields only
-        // the bundled starter, so the reload has an observable effect.
+    fn live_constructor_starts_on_an_empty_shelf() {
+        // With no epubs discoverable, the live app opens onto the empty library
+        // onboarding — never a fabricated starter book.
         let tmp = tempfile::tempdir().unwrap();
         unsafe { std::env::set_var("EBOOK_LIBRARY_DIR", tmp.path()) };
+        let app = BooksApp::new();
+        unsafe { std::env::remove_var("EBOOK_LIBRARY_DIR") };
+        assert!(app.library.is_empty(), "live shelf is empty when no epubs are present");
+        assert_eq!(app.view, View::Library, "empty shelf opens the library view, not a book");
+    }
 
+    #[test]
+    #[serial]
+    fn empty_shelf_reload_button_repopulates_via_the_real_load_path() {
+        // Start on a genuinely empty shelf (discovery finds nothing)…
+        let empty = tempfile::tempdir().unwrap();
+        unsafe { std::env::set_var("EBOOK_LIBRARY_DIR", empty.path()) };
         let mut app = BooksApp::with_library(Vec::new());
         let mut doc = AutoCommit::new();
         frame(&mut app, &mut doc, 900.0, 640.0);
         assert!(app.library.is_empty(), "starts on a genuinely empty shelf");
         assert_eq!(app.view, View::Library);
+
+        // …then place a real epub where discovery looks, so a reload has an
+        // observable effect through the real load path (no fabricated fallback).
+        let full = tempfile::tempdir().unwrap();
+        std::fs::write(full.path().join("book.epub"), crate::content::SAMPLE_EPUB).unwrap();
+        unsafe { std::env::set_var("EBOOK_LIBRARY_DIR", full.path()) };
 
         let reload = find_hit(&app, |a| matches!(a, Action::ReloadLibrary))
             .expect("empty shelf offers a Reload button");
