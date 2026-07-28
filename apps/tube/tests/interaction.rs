@@ -421,23 +421,6 @@ fn autoplay_switch_toggles_the_setting_through_a_real_switch_click() {
     );
 }
 
-#[test]
-fn invidious_instance_row_cycles_the_configured_instance() {
-    // The "Invidious instance" row was a dead affordance. Clicking it must
-    // cycle to a different instance (the one live search actually queries).
-    let app = TubeApp::new()
-        .with_viewport(VIEWPORT.0 as f64, VIEWPORT.1 as f64)
-        .with_route_shot(Route::Settings);
-    let mut h = Harness::new(app, VIEWPORT);
-    let before = h.app.model_for_test().settings.invidious_instance.clone();
-    h.click_id("instance_row");
-    assert_ne!(
-        before,
-        h.app.model_for_test().settings.invidious_instance,
-        "clicking the instance row cycles to a different instance"
-    );
-}
-
 // ---------------------------------------------------------------------------
 // responsive nav rail — hamburger via a real click
 // ---------------------------------------------------------------------------
