@@ -200,6 +200,20 @@ impl PickRequest {
         matches!(self.kind, PickKind::Open { multiple: true })
     }
 
+    /// The filter dropdown labels, in order. Lets an app assert on the chooser
+    /// it configured without opening one.
+    pub fn filter_names(&self) -> Vec<&str> {
+        self.filters.iter().map(|f| f.name()).collect()
+    }
+
+    /// The filename this request seeds a Save dialog with, if it is one.
+    pub fn suggested_name(&self) -> Option<&str> {
+        match &self.kind {
+            PickKind::Save { suggested_name } => Some(suggested_name.as_str()),
+            PickKind::Open { .. } => None,
+        }
+    }
+
     /// Run the chooser on a worker thread and return the receiver the caller
     /// drains each frame. The UI thread is never blocked: the D-Bus round-trip
     /// and the host dialog live entirely on the worker.
