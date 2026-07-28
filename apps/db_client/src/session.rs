@@ -2,11 +2,57 @@
 //! introspected schema, and the most recent query result. This is per-peer
 //! view state (not in the CRDT) — only the editor buffer is collaborative.
 
+use std::path::{Path, PathBuf};
+
 use crate::engine::SqliteEngine;
 use crate::model::{
     ConnectionProfile, DatabaseSchema, Engine, QueryResult, RelationKind, TableInfo,
 };
 use uuid::Uuid;
+
+/// Resolve the directory that holds the user's saved connection profiles.
+/// `$QOS_DB_CLIENT_DIR` overrides it (used by tests); otherwise it is
+/// `$XDG_CONFIG_HOME/qos/db_client` (falling back to `~/.config/...`).
+fn default_data_dir() -> PathBuf {
+    if let Some(dir) = std::env::var_os("QOS_DB_CLIENT_DIR") {
+        return PathBuf::from(dir);
+    }
+    let base = std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
+        .unwrap_or_else(|| PathBuf::from("."));
+    base.join("qos").join("db_client")
+}
+
+/// Load the saved (non-sample) connection profiles from `dir`, or an empty
+/// list if none have been saved yet / the file is unreadable.
+fn load_saved_connections(dir: &Path) -> Vec<ConnectionProfile> {
+    let path = dir.join("connections.json");
+    let Ok(bytes) = std::fs::read(&path) else {
+        return Vec::new();
+    };
+    serde_json::from_slice::<Vec<ConnectionProfile>>(&bytes).unwrap_or_default()
+}
+
+/// Persist the user's connection profiles to `dir`. The in-memory sample is
+/// never written; live connections are reset to disconnected on disk.
+fn save_connections(dir: &Path, connections: &[ConnectionProfile]) {
+    let saved: Vec<ConnectionProfile> = connections
+        .iter()
+        .filter(|c| !c.is_sample)
+        .cloned()
+        .map(|mut c| {
+            c.connected = false;
+            c
+        })
+        .collect();
+    if std::fs::create_dir_all(dir).is_err() {
+        return;
+    }
+    if let Ok(json) = serde_json::to_vec_pretty(&saved) {
+        let _ = std::fs::write(dir.join("connections.json"), json);
+    }
+}
 
 /// Which workspace tab the main panel is showing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -66,9 +112,86 @@ pub struct Session {
     pub data_offset: usize,
     /// Page size for the Data tab.
     pub data_page_size: usize,
+    /// Directory the user's saved connections persist to. `None` for the
+    /// hermetic demo/sample session, which never touches disk.
+    data_dir: Option<PathBuf>,
 }
 
 impl Session {
+    /// The live session: it loads the user's saved connections from disk and
+    /// starts empty on a fresh machine. No sample database and no fabricated
+    /// connection profiles — the sample lives only in [`Session::with_sample`].
+    pub fn new() -> Self {
+        Self::load_from(default_data_dir())
+    }
+
+    /// Live session backed by a specific data directory (kept separate so
+    /// tests can point persistence at a temp dir without touching `$HOME`).
+    pub fn load_from(dir: PathBuf) -> Self {
+        let connections = load_saved_connections(&dir);
+        let mut s = Self {
+            connections,
+            active: 0,
+            engine: None,
+            schema: DatabaseSchema::default(),
+            selected_table: None,
+            query_result: None,
+            data_result: None,
+            tab: MainTab::Query,
+            status: RunStatus::Idle,
+            data_offset: 0,
+            data_page_size: 100,
+            data_dir: Some(dir),
+        };
+        // Open the active connection if it is a real local SQLite file.
+        if !s.connections.is_empty() {
+            s.connect_active();
+        }
+        s
+    }
+
+    /// (Re)open the active connection's engine. Local SQLite files open for
+    /// real; remote engines stay gated behind a sandbox grant.
+    fn connect_active(&mut self) {
+        let Some(profile) = self.connections.get(self.active).cloned() else {
+            self.engine = None;
+            self.schema = DatabaseSchema::default();
+            return;
+        };
+        if profile.is_sample {
+            if let Ok(eng) = SqliteEngine::open_sample() {
+                self.schema = eng.introspect().unwrap_or_default();
+                self.engine = Some(eng);
+            }
+        } else if profile.engine == Engine::Sqlite && !profile.file_path.is_empty() {
+            match SqliteEngine::open_file(&profile.file_path) {
+                Ok(eng) => {
+                    self.schema = eng.introspect().unwrap_or_default();
+                    self.engine = Some(eng);
+                    self.status = RunStatus::Ok(format!("Connected to {}", profile.name));
+                }
+                Err(e) => {
+                    self.engine = None;
+                    self.schema = DatabaseSchema::default();
+                    self.status = RunStatus::Error(e);
+                }
+            }
+        } else {
+            // Remote engines are gated; surface a clear, non-fatal message.
+            self.engine = None;
+            self.schema = DatabaseSchema::default();
+            self.status = RunStatus::Error(format!(
+                "{} connections need a network grant — gated in this build",
+                profile.engine.label()
+            ));
+        }
+        self.selected_table = self
+            .schema
+            .schemas
+            .first()
+            .and_then(|s| s.tables.iter().find(|t| t.kind == RelationKind::Table))
+            .map(|t| t.name.clone());
+    }
     /// Build a session with the bundled sample connection live and its
     /// schema introspected. Falls back to an empty schema on engine error
     /// so the UI always has something to render.
@@ -115,6 +238,7 @@ impl Session {
             status: RunStatus::Idle,
             data_offset: 0,
             data_page_size: 100,
+            data_dir: None,
         };
         // Run the default query once so the results grid is populated on
         // first paint and in `--shots`.
@@ -122,8 +246,10 @@ impl Session {
         s
     }
 
-    pub fn active_connection(&self) -> &ConnectionProfile {
-        &self.connections[self.active]
+    /// The active connection profile, or `None` when there are no saved
+    /// connections yet (a fresh live session).
+    pub fn active_connection(&self) -> Option<&ConnectionProfile> {
+        self.connections.get(self.active)
     }
 
     pub fn selected_table_info(&self) -> Option<&TableInfo> {
@@ -131,39 +257,26 @@ impl Session {
         self.schema.find_table(name)
     }
 
-    /// Switch the active connection. For the sample SQLite engine this is a
-    /// no-op reconnect; remote engines remain gated.
+    /// Switch the active connection and (re)open its engine. Local SQLite
+    /// files connect for real; remote engines remain gated.
     pub fn select_connection(&mut self, idx: usize) {
         if idx >= self.connections.len() || idx == self.active {
             return;
         }
         self.active = idx;
-        let profile = self.connections[idx].clone();
-        if profile.is_sample {
-            // The sample engine is already open; just re-introspect.
-            if let Some(eng) = &self.engine {
-                self.schema = eng.introspect().unwrap_or_default();
-            }
-            self.status = RunStatus::Ok(format!("Connected to {}", profile.name));
-        } else {
-            // Remote engines are gated; surface a clear, non-fatal message.
-            self.status = RunStatus::Error(format!(
-                "{} connections need a network grant — gated in this build",
-                profile.engine.label()
-            ));
-        }
-        self.selected_table = self
-            .schema
-            .schemas
-            .first()
-            .and_then(|s| s.tables.first())
-            .map(|t| t.name.clone());
+        self.connect_active();
     }
 
-    /// Add a new connection profile and select it.
+    /// Add a new connection profile, persist it, select it and (for a local
+    /// SQLite file) open it.
     pub fn add_connection(&mut self, profile: ConnectionProfile) -> Uuid {
         let id = profile.id;
         self.connections.push(profile);
+        self.active = self.connections.len() - 1;
+        self.connect_active();
+        if let Some(dir) = self.data_dir.clone() {
+            save_connections(&dir, &self.connections);
+        }
         id
     }
 
@@ -272,5 +385,44 @@ mod tests {
             RunStatus::Error(m) => assert!(m.contains("grant")),
             _ => panic!("expected gated error"),
         }
+    }
+
+    fn temp_dir(tag: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("db-client-{tag}-{}", Uuid::new_v4()))
+    }
+
+    #[test]
+    fn live_session_starts_empty() {
+        // A fresh live session over an empty data dir fabricates nothing: no
+        // sample database, no connection profiles, no live engine.
+        let s = Session::load_from(temp_dir("empty"));
+        assert!(s.connections.is_empty(), "no fabricated connection profiles");
+        assert!(s.engine.is_none(), "no live engine on a fresh machine");
+        assert!(s.active_connection().is_none(), "nothing active when empty");
+        assert!(s.query_result.is_none(), "no canned query result");
+        assert_eq!(s.schema.table_count(), 0, "no fabricated schema");
+    }
+
+    #[test]
+    fn added_sqlite_connection_opens_persists_and_reloads() {
+        let dir = temp_dir("persist");
+        let db_file = dir.join("app.db");
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let mut s = Session::load_from(dir.clone());
+        let mut profile = ConnectionProfile::new("Local app DB", Engine::Sqlite);
+        profile.file_path = db_file.to_string_lossy().into_owned();
+        s.add_connection(profile);
+
+        // The real local SQLite engine opened (not gated like pg/mysql).
+        assert!(s.engine.is_some(), "a local SQLite file connects for real");
+        assert_eq!(s.connections.len(), 1);
+
+        // A brand-new live session over the same dir loads the saved
+        // connection back from disk and reconnects it.
+        let reloaded = Session::load_from(dir);
+        assert_eq!(reloaded.connections.len(), 1, "saved connection reloads from disk");
+        assert_eq!(reloaded.connections[0].name, "Local app DB");
+        assert!(reloaded.engine.is_some(), "reloaded SQLite connection reopens");
     }
 }
