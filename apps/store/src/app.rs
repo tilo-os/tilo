@@ -26,13 +26,15 @@
 //! or a test can inject a deterministic catalog without spinning
 //! up an HTTP server.
 
+use std::cell::Cell;
 use std::collections::HashMap;
+use std::rc::Rc;
 
-use automerge::{AutoCommit, ObjId, ReadDoc, ScalarValue, Value};
+use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, ScalarValue, Value};
 use automerge::transaction::Transactable;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use ui::widget::toggle_group::Segment;
-use ui::widget::{Column, Container, Row, Spacer, Text, ToggleGroup, Widget};
+use ui::widget::{Column, Container, Row, Spacer, Text, TextInput, ToggleGroup, Widget};
 use ui::{Theme, presence::PresenceCtx, permissions::PermissionContext, text_render::TextRenderer};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -44,9 +46,12 @@ use crate::sources::distinct_categories;
 /// prefixed with `store.` so the toplevel `state.doc` root object
 /// can hold them without colliding with sibling widgets when the
 /// app is hosted inside a tiled shell.
-const FILTER_SELECT_KEY: &str = "store.filter_select";
 const CATEGORY_SELECT_KEY: &str = "store.category_select";
 const REFRESH_KEY: &str = "store.refresh_pressed";
+/// CRDT `Text` object the header search box binds to. `sync` seeds
+/// the object (the toolkit's `TextInput` binds to an existing `Text`
+/// but never lazily creates one) and reads the typed query back out.
+const SEARCH_QUERY_KEY: &str = "store.search_query";
 const ACTION_CLICK_KEY_PREFIX: &str = "store.action_click.";
 /// Secondary "mark installed" (pin) toggle, one per item id.
 const PIN_CLICK_KEY_PREFIX: &str = "store.pin_click.";
@@ -91,6 +96,12 @@ pub struct StoreApp {
     /// needs to execute (download / install / run / pin / remove).
     /// Drained by the host each frame via [`take_pending_actions`].
     pending_actions: Vec<(String, ActionKind)>,
+    /// Segment index the source-filter `ToggleGroup` last committed.
+    /// The `on_change` closure is `'static` and can't borrow `self`,
+    /// so it parks the click here; `sync` reads it back and flips
+    /// [`active_filter`]. Shared (`Rc`) because the closure is rebuilt
+    /// into a fresh `ToggleGroup` every `build_layout`.
+    filter_click: Rc<Cell<Option<usize>>>,
 }
 
 impl Default for StoreApp {
@@ -113,6 +124,7 @@ impl StoreApp {
             rect: Rect::ZERO,
             root: None,
             pending_actions: Vec::new(),
+            filter_click: Rc::new(Cell::new(None)),
         }
     }
 
@@ -250,34 +262,21 @@ impl StoreApp {
     }
 
     fn build_header(&self) -> Box<dyn Widget> {
-        // Search box stub — a Container styled like a text field.
-        // The real `TextInput` needs a CRDT `Text` binding; we
-        // reserve that as a follow-up so the initial cut has a
-        // working layout without dragging in the presence /
-        // authorship plumbing.
-        let query_label = if self.query.is_empty() {
-            "Search apps…".to_string()
-        } else {
-            self.query.clone()
-        };
-        let search_stub = Container::new()
-            .with_background()
-            .with_height(36.0)
-            .with_child(Box::new(
-                Text::new(&query_label)
-                    .with_size(13.0)
-                    .with_color(if self.query.is_empty() {
-                        Theme::dark().text_dim
-                    } else {
-                        Theme::dark().text_primary
-                    }),
-            ));
+        // Live search box: a real `TextInput` bound to a CRDT `Text`
+        // object at `SEARCH_QUERY_KEY`. `sync` seeds the object and
+        // reads the typed value back into `self.query`, which drives
+        // `visible_items`' fuzzy filter.
+        let search = TextInput::new(vec![])
+            .with_id("store.search")
+            .with_on_change_path(SEARCH_QUERY_KEY)
+            .with_placeholder("Search apps…");
         // Refresh button writes REFRESH_KEY; the outer host drives
         // the real refetch when it sees the bit go high.
         let refresh_btn =
             ui::widget::Button::new("store.refresh", "Refresh", Some(REFRESH_KEY));
         let row = Row::new()
-            .push(Box::new(search_stub))
+            .no_wrap()
+            .push(Box::new(search))
             .push(Box::new(Spacer::new()))
             .push(Box::new(refresh_btn));
         Box::new(
@@ -296,20 +295,15 @@ impl StoreApp {
             .iter()
             .position(|f| *f == self.active_filter)
             .unwrap_or(0);
-        let group = ToggleGroup::new(segs, selected).on_change(|idx| {
-            // The ToggleGroup's callback runs in `handle_event`,
-            // before `sync`, so we write a one-shot CRDT key here
-            // and let `sync` translate it to a filter switch.
-            //
-            // (Callback captures a global — we cannot borrow
-            // `self` from inside a `'static` closure. The CRDT
-            // key path keeps the wire narrow.)
-            let _ = idx;
+        // The `on_change` callback runs inside `handle_event` and is
+        // `'static`, so it can't borrow `self`. It parks the clicked
+        // segment index in the shared `filter_click` cell; `sync`
+        // reads it back next frame and flips `active_filter`, which
+        // re-filters the catalog.
+        let sink = self.filter_click.clone();
+        let group = ToggleGroup::new(segs, selected).on_change(move |idx| {
+            sink.set(Some(idx));
         });
-        // Persist the selection into the CRDT via a separate
-        // Button that mirrors each segment; this is a follow-up
-        // — for the initial cut the chip row is a visual reflection
-        // of the active filter.
         Box::new(
             Container::new()
                 .with_background()
@@ -319,22 +313,13 @@ impl StoreApp {
 
     fn build_category_row(&self) -> Box<dyn Widget> {
         let labels = self.category_labels();
-        // Show as inline buttons: one Button per category, the
-        // active one visually highlighted via label suffix.
-        // Real chip visual state is a follow-up.
+        // One Button per category. The active category is tracked in
+        // `active_category`; the button label is the plain category
+        // name (no bracket ornament).
         let mut row = Row::new();
         for label in labels {
-            let is_active = match &self.active_category {
-                Some(c) => c == &label,
-                None => label == "All",
-            };
-            let shown = if is_active {
-                format!("[{label}]")
-            } else {
-                label.clone()
-            };
             let key = format!("{CATEGORY_SELECT_KEY}.{label}");
-            let btn = ui::widget::Button::new(&format!("store.cat.{label}"), &shown, Some(&key));
+            let btn = ui::widget::Button::new(&format!("store.cat.{label}"), &label, Some(&key));
             row = row.push(Box::new(btn));
         }
         Box::new(
@@ -421,15 +406,9 @@ impl StoreApp {
     /// re-render).
     fn drain_click_keys(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
         let mut any = false;
-        // Filter chips.
-        for (idx, f) in SourceFilter::ALL.iter().enumerate() {
-            let key = format!("{}.{}", FILTER_SELECT_KEY, idx);
-            if take_bool_edge(state, path, &key) {
-                self.active_filter = *f;
-                self.structure_dirty = true;
-                any = true;
-            }
-        }
+        // Source-filter chips are wired through the `filter_click`
+        // cell (see `sync`), not a CRDT key, so there is no filter
+        // loop here.
         // Category chips.
         for label in self.category_labels() {
             let key = format!("{}.{}", CATEGORY_SELECT_KEY, label);
@@ -504,6 +483,18 @@ impl StoreApp {
     }
 }
 
+/// Resolve (or lazily create) the `Text` object at `path`.`key`. The
+/// toolkit's `TextInput` binds to an existing `Text` but never creates
+/// one, so the host must seed it before the input syncs.
+fn ensure_text_obj(state: &mut AutoCommit, root: &ObjId, key: &str) -> ObjId {
+    if let Ok(Some((Value::Object(ObjType::Text), id))) = state.get(root, key) {
+        return id;
+    }
+    state
+        .put_object(root, key, ObjType::Text)
+        .expect("put_object Text never fails")
+}
+
 /// Read a `path`.`key` boolean and clear it in one shot. `true`
 /// return means the key was true; the CRDT is left with the key
 /// false so the next frame sees a fresh edge.
@@ -521,9 +512,25 @@ fn take_bool_edge(state: &mut AutoCommit, path: &ObjId, key: &str) -> bool {
 
 impl Widget for StoreApp {
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+        // A source-filter chip parked its segment index in the shared
+        // cell during the last `handle_event`; adopt it now.
+        if let Some(idx) = self.filter_click.take() {
+            if let Some(f) = SourceFilter::ALL.get(idx).copied() {
+                self.set_active_filter(f);
+            }
+        }
+        // Seed the search box's backing `Text` object *before* the
+        // children sync so the `TextInput` resolves a real object to
+        // splice keystrokes into (it binds to an existing `Text` but
+        // never creates one).
+        let search_obj = ensure_text_obj(state, path, SEARCH_QUERY_KEY);
         let _ = self.drain_click_keys(state, path);
         if let Some(root) = self.root.as_mut() {
             root.sync(state, path);
+        }
+        // Pull the typed query back out and re-filter if it changed.
+        if let Ok(text) = state.text(&search_obj) {
+            self.set_query(text);
         }
     }
 
@@ -788,5 +795,53 @@ mod tests {
         assert!(cats.iter().any(|c| c == "Productivity"));
         assert!(cats.iter().any(|c| c == "Games"));
         assert!(cats.iter().any(|c| c == "System"));
+    }
+
+    #[test]
+    fn live_constructor_starts_empty() {
+        // The live app must show a real (empty) catalog until the
+        // refresh worker streams one — never a fabricated one.
+        let app = StoreApp::new();
+        assert!(
+            app.items().is_empty(),
+            "live StoreApp must not fabricate a catalog"
+        );
+        assert_eq!(app.active_filter(), SourceFilter::All);
+        assert!(app.query().is_empty());
+    }
+
+    #[test]
+    fn typed_search_query_filters_through_sync() {
+        use automerge::transaction::Transactable;
+        // Prove the wired search box: a query spliced into the bound
+        // CRDT `Text` object is read back by `sync` and narrows the
+        // visible list.
+        let mut app = seeded_app();
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        // First sync seeds the Text object.
+        app.sync(&mut doc, &root);
+        let obj = ensure_text_obj(&mut doc, &root, SEARCH_QUERY_KEY);
+        doc.splice_text(&obj, 0, 0, "Term").unwrap();
+        app.sync(&mut doc, &root);
+        assert_eq!(app.query(), "Term");
+        let names: Vec<&str> = app.visible_items().iter().map(|i| i.name.as_str()).collect();
+        assert_eq!(names, vec!["Terminal"]);
+    }
+
+    #[test]
+    fn filter_chip_click_flips_active_filter_through_sync() {
+        // Prove the wired filter chips: the `on_change` closure parks
+        // a segment index in `filter_click`; `sync` adopts it and the
+        // catalog re-filters.
+        let mut app = seeded_app();
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        app.filter_click.set(Some(1)); // segment 1 == SourceFilter::Qos
+        app.sync(&mut doc, &root);
+        assert_eq!(app.active_filter(), SourceFilter::Qos);
+        let names: Vec<&str> = app.visible_items().iter().map(|i| i.name.as_str()).collect();
+        assert!(names.contains(&"Notes"));
+        assert!(!names.contains(&"Chess"), "qOS filter hides Flatpak items");
     }
 }

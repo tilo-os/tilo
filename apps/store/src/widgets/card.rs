@@ -71,22 +71,12 @@ pub fn store_card(
         Some(action_click_key),
     );
 
-    let update_hint: Option<Box<dyn Widget>> = if item.installed.update_available() {
-        Some(Box::new(
-            Text::new("update")
-                .with_size(10.0)
-                .with_color(ui::Theme::dark().accent_primary),
-        ))
-    } else {
-        None
-    };
+    // The action button already reads "Update" when an update is
+    // available (see `ActionKind`), so no separate hint label is drawn.
     let mut right_col = Column::new()
         .with_no_padding()
         .with_intrinsic_height();
     right_col = right_col.push(Box::new(action_btn));
-    if let Some(hint) = update_hint {
-        right_col = right_col.push(hint);
-    }
     // Optional secondary controls for a cached qOS app: the "mark
     // installed" (pin) toggle and a small Remove. These are absent
     // until the app has been Opened at least once — there is never a
