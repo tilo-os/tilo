@@ -66,6 +66,10 @@ pub struct DbClientApp {
     node: Option<NodeId>,
     /// Whether the editor buffer in the CRDT has been seeded yet.
     seeded: bool,
+    /// When true this is the hermetic `--shots`/demo build: it seeds the
+    /// bundled sample database and a starter query. The live app leaves this
+    /// false, starts on the user's saved connections and never fabricates.
+    demo: bool,
     /// Last cursor position (logical).
     cursor: Point,
     /// Cached sub-rects, recomputed each `apply_layout`.
@@ -105,7 +109,15 @@ pub struct DbClientApp {
 }
 
 impl DbClientApp {
+    /// The live app: starts on the user's saved connections (empty on a fresh
+    /// machine) and never fabricates a sample database or profiles.
     pub fn new() -> Self {
+        Self::build(Session::new(), false)
+    }
+
+    /// The hermetic `--shots`/demo build: the sole source of the bundled
+    /// sample database and connection profiles.
+    pub fn new_demo() -> Self {
         let mut session = Session::with_sample();
         // Optional startup hooks used by the offscreen screenshot harness to
         // land directly on a given tab/table. Harmless in normal use (the env
@@ -123,8 +135,13 @@ impl DbClientApp {
                 session.load_table_data();
             }
         }
+        Self::build(session, true)
+    }
+
+    fn build(session: Session, demo: bool) -> Self {
         Self {
             session,
+            demo,
             editor: SqlEditor::new(),
             grid: GridView::new(),
             data_grid: GridView::new(),
@@ -276,7 +293,10 @@ impl DbClientApp {
         // "New connection" button (30px) is drawn directly below, with a
         // 16px gap before the schema browser begins.
         let rows = self.session.connections.len() as f64;
-        56.0 + rows * 44.0 + 30.0 + 16.0
+        // When there are no connections the sidebar shows a two-line "No
+        // connections yet" hint (52px) in place of the rows.
+        let empty_hint = if self.session.connections.is_empty() { 52.0 } else { 0.0 };
+        56.0 + rows * 44.0 + empty_hint + 30.0 + 16.0
     }
 
     /// Whether the sidebar pane should be painted this frame. Once the overlay
@@ -301,8 +321,9 @@ impl DbClientApp {
 impl Widget for DbClientApp {
     fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
         if !self.seeded {
-            // Seed the editor buffer into the CRDT if empty.
-            if EditorDoc::read_sql(state).is_empty() {
+            // Only the demo build seeds a starter query; the live editor
+            // opens empty so nothing references a database that isn't there.
+            if self.demo && EditorDoc::read_sql(state).is_empty() {
                 EditorDoc::set_sql(state, crate::sample::DEFAULT_QUERY);
             }
             self.seeded = true;
@@ -847,6 +868,27 @@ impl DbClientApp {
             y += 44.0;
         }
 
+        // Empty state: no saved connections yet.
+        if self.session.connections.is_empty() {
+            tr.draw_text(
+                scene,
+                "No connections yet",
+                12.5,
+                theme.text_primary,
+                t * Affine::translate((r.x0 + 14.0, y + 2.0)),
+                None,
+            );
+            tr.draw_text(
+                scene,
+                "Add one to get started.",
+                11.0,
+                theme.text_dim,
+                t * Affine::translate((r.x0 + 14.0, y + 22.0)),
+                None,
+            );
+            y += 52.0;
+        }
+
         // "New connection" button.
         let btn = Rect::new(r.x0 + 8.0, y, r.x1 - 8.0, y + 30.0);
         self.new_conn_btn = btn;
@@ -928,6 +970,39 @@ impl DbClientApp {
                 t * Affine::translate((bar.x1 - cw as f64 - 14.0, bar.y0 + 12.0)),
                 None,
             );
+        }
+
+        // Empty state: nothing to query until the user adds a connection.
+        if self.session.connections.is_empty() {
+            let body = Rect::new(
+                self.main_rect.x0,
+                bar.y1,
+                self.main_rect.x1,
+                self.main_rect.y1,
+            );
+            let title = "No connection";
+            let hint = "Add a connection in the sidebar to browse and query a database.";
+            let (tw, _) = tr.measure(title, 18.0, None);
+            let (hw, _) = tr.measure(hint, 12.5, None);
+            let cx = body.center().x;
+            let cy = body.center().y;
+            tr.draw_text(
+                scene,
+                title,
+                18.0,
+                theme.text_primary,
+                t * Affine::translate((cx - tw as f64 / 2.0, cy - 18.0)),
+                None,
+            );
+            tr.draw_text(
+                scene,
+                hint,
+                12.5,
+                theme.text_dim,
+                t * Affine::translate((cx - hw as f64 / 2.0, cy + 6.0)),
+                None,
+            );
+            return;
         }
 
         match self.session.tab {
@@ -1170,13 +1245,15 @@ impl DbClientApp {
             &Line::new(Point::new(bar.x0, bar.y0), Point::new(bar.x1, bar.y0)),
         );
 
-        let conn = self.session.active_connection();
-        let left = format!(
-            "{}  ·  {}  ·  {} tables",
-            conn.engine.label(),
-            conn.name,
-            self.session.schema.table_count()
-        );
+        let left = match self.session.active_connection() {
+            Some(conn) => format!(
+                "{}  ·  {}  ·  {} tables",
+                conn.engine.label(),
+                conn.name,
+                self.session.schema.table_count()
+            ),
+            None => "No connection".to_string(),
+        };
         tr.draw_text(
             scene,
             &left,
@@ -1305,5 +1382,35 @@ mod responsive_tests {
         assert_eq!(app.split_layout(), SplitLayout::Docked);
         assert!(app.flap.is_open(SplitLayout::Docked), "widening returns to the docked-open default");
         assert!(app.main_rect.x0 > app.rect.x0 + 1.0, "docked content is inset by the restored sidebar");
+    }
+}
+
+#[cfg(test)]
+mod honesty_tests {
+    use super::*;
+
+    fn temp_dir() -> std::path::PathBuf {
+        std::env::temp_dir().join(format!("db-client-app-{}", uuid::Uuid::new_v4()))
+    }
+
+    #[test]
+    fn live_app_starts_empty() {
+        // The live constructor path fabricates nothing: no connections, no
+        // live engine, no schema.
+        let app = DbClientApp::build(Session::load_from(temp_dir()), false);
+        assert!(!app.demo, "live build is not the demo build");
+        assert!(app.session.connections.is_empty(), "no fabricated connections");
+        assert!(app.session.engine.is_none(), "no live engine on a fresh machine");
+        assert_eq!(app.session.schema.table_count(), 0, "no fabricated schema");
+    }
+
+    #[test]
+    fn demo_app_seeds_the_sample() {
+        // The demo builder is the sole source of the sample database.
+        let app = DbClientApp::new_demo();
+        assert!(app.demo, "demo build is flagged");
+        assert!(!app.session.connections.is_empty(), "demo seeds sample connections");
+        assert!(app.session.engine.is_some(), "demo opens the sample engine");
+        assert!(app.session.schema.table_count() >= 4, "demo has the sample schema");
     }
 }

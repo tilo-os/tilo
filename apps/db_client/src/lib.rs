@@ -39,16 +39,31 @@ pub use app::DbClientApp;
 
 use ui::widget::Widget;
 
-/// Build and return the app's root widget tree.
+/// Build the live app: it opens on the user's saved connections (empty on a
+/// fresh machine) and never fabricates a sample database or profiles.
 pub fn app_root() -> Box<dyn Widget> {
     Box::new(DbClientApp::new())
 }
 
-/// Build the root widget for an offscreen `--shots` frame at a given width,
+/// Build a fully-populated app for the hermetic `--shots`/demo path — the
+/// sole source of the bundled sample database and connection profiles.
+pub fn app_root_demo() -> Box<dyn Widget> {
+    Box::new(DbClientApp::new_demo())
+}
+
+/// Build the demo root for an offscreen `--shots` frame at a given width,
 /// with the responsive sidebar flap pre-snapped to that width's layout
 /// default (wide ⇒ docked+open, narrow ⇒ overlay+collapsed). This makes the
 /// single offscreen frame deterministic without waiting for the eased slide.
 pub fn app_root_for_shot(width: f64) -> Box<dyn Widget> {
+    let mut app = DbClientApp::new_demo();
+    app.snap_flap_for_width(width);
+    Box::new(app)
+}
+
+/// Like [`app_root_for_shot`] but the real live (empty) app, so the first-run
+/// empty state can be screenshotted.
+pub fn app_root_for_shot_empty(width: f64) -> Box<dyn Widget> {
     let mut app = DbClientApp::new();
     app.snap_flap_for_width(width);
     Box::new(app)
