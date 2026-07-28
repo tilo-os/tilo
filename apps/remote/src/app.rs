@@ -183,13 +183,26 @@ pub struct RemoteApp {
 }
 
 impl RemoteApp {
-    /// Build the app pre-populated with a representative connection list
-    /// so the screenshot — and a fresh first launch — reads as lived-in.
+    /// The live app: starts empty. Only the user's real saved connections
+    /// (held in the shared document, persisted across sessions) appear — no
+    /// fabricated machines are ever written into the CRDT.
     pub fn new() -> Self {
+        Self::from_parts(Workspace::new(), Vec::new())
+    }
+
+    /// The hermetic `--shots` / demo build: a representative connection list
+    /// plus a discovered-device roster so the screenshot reads as lived-in.
+    /// This is the ONLY place sample machines come from — the live app never
+    /// fabricates them.
+    pub fn new_demo() -> Self {
         let mut workspace = Workspace::new();
         for c in seed_connections() {
             workspace.upsert(c);
         }
+        Self::from_parts(workspace, seed_qos_devices())
+    }
+
+    fn from_parts(workspace: Workspace, qos_devices: Vec<QosDevice>) -> Self {
         let selected = workspace.filtered("").first().map(|c| c.id);
         Self {
             workspace,
@@ -202,7 +215,7 @@ impl RemoteApp {
             session_for: None,
             scale_to_fit: true,
             fullscreen: false,
-            qos_devices: seed_qos_devices(),
+            qos_devices,
             rect: Rect::ZERO,
             hits: Vec::new(),
             pointer: Point::ZERO,
@@ -380,25 +393,36 @@ impl RemoteApp {
         }
     }
 
-    /// Open the session surface for a connection, building the sample
-    /// terminal transcript when it's an SSH machine.
+    /// Open the session surface for a connection. Without a live transport
+    /// (the default — `REMOTE_LIVE_SESSIONS` unset) this does **not**
+    /// fabricate a terminal/desktop or fake the machine's presence: the
+    /// session screen shows an honest "not connected" state instead. The
+    /// real byte transport (russh for SSH, an RFB client for VNC) is a
+    /// separate, later task.
     fn open_session(&mut self, id: ConnectionId) {
         let Some(c) = self.workspace.get(id).cloned() else {
             return;
         };
         self.session_for = Some(id);
         self.fullscreen = false;
-        self.term = if c.kind.is_terminal() {
-            let host = if c.host.is_empty() { c.name.clone() } else { c.host.clone() };
-            let user = if c.user.is_empty() { "guest".into() } else { c.user.clone() };
-            Some(TerminalSession::sample(&host, &user))
+        if crate::session::live_sessions_enabled() {
+            // Live-transport path (opt-in, developer preview until the real
+            // clients are wired through).
+            self.term = if c.kind.is_terminal() {
+                let host = if c.host.is_empty() { c.name.clone() } else { c.host.clone() };
+                let user = if c.user.is_empty() { "guest".into() } else { c.user.clone() };
+                Some(TerminalSession::sample(&host, &user))
+            } else {
+                None
+            };
+            if let Some(m) = self.workspace.get_mut(id) {
+                m.last_used = "just now".into();
+                m.presence = Presence::Online;
+            }
         } else {
-            None
-        };
-        // Mark "last used" so a re-connect reflects recency.
-        if let Some(m) = self.workspace.get_mut(id) {
-            m.last_used = "just now".into();
-            m.presence = Presence::Online;
+            // No transport: never fabricate a session or claim the machine is
+            // reachable.
+            self.term = None;
         }
         self.screen = Screen::Session { id };
     }
@@ -636,13 +660,15 @@ fn seed_qos_devices() -> Vec<QosDevice> {
 
 impl Widget for RemoteApp {
     fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
-        // Mirror our seeded list into the shared document the first time
-        // we run, then adopt any remote additions. The list is the
-        // collaborative part; view state stays local.
+        // Publish our own connection list into the shared document the first
+        // time we run, then adopt any remote additions. The live app's list
+        // is empty on a fresh machine, so nothing fabricated is ever written
+        // into the CRDT — only the demo build (or the user's real, persisted
+        // connections) has anything to publish here.
         let doc_conns = RemoteDoc::list(state);
         if !self.seeded {
             if doc_conns.is_empty() {
-                // We're the origin — seed the doc from our list.
+                // We're the origin — publish our list (empty when live).
                 for c in self.workspace.connections().to_vec() {
                     RemoteDoc::upsert(state, &c);
                 }
@@ -1866,6 +1892,13 @@ impl RemoteApp {
             return;
         };
 
+        // No live transport: show an honest "not connected" surface rather
+        // than a fabricated terminal or remote desktop.
+        if !crate::session::live_sessions_enabled() {
+            self.draw_unconnected(scene, transform, text_renderer, theme, content, &c);
+            return;
+        }
+
         // Toolbar (hidden in immersive/fullscreen mode).
         let surface = if immersive {
             content
@@ -1929,6 +1962,90 @@ impl RemoteApp {
                     None,
                 );
             }
+        }
+    }
+
+    /// The honest "not connected" surface: SSH/VNC/RDP transport is not
+    /// wired yet, so we never draw a fabricated terminal or remote desktop.
+    /// Shows what would connect and offers a way back to the list.
+    fn draw_unconnected(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        content: Rect,
+        c: &Connection,
+    ) {
+        let tokens = &theme.tokens;
+
+        // Slim toolbar: connection name + a neutral (not "online") status,
+        // and a Back button that returns to the list.
+        let bar = Rect::new(content.x0, content.y0, content.x1, content.y0 + TOOLBAR_H);
+        scene.fill(Fill::NonZero, transform, tokens.colors.neutral[1], None, &bar);
+        let seam = Rect::new(bar.x0, bar.y1 - 1.0, bar.x1, bar.y1);
+        scene.fill(Fill::NonZero, transform, tokens.colors.border_standard, None, &seam);
+        let dot = Point::new(bar.x0 + 18.0, bar.center().y);
+        scene.fill(Fill::NonZero, transform, tokens.colors.neutral[4], None, &Circle::new(dot, 5.0));
+        text_renderer.draw_text_weighted(
+            scene,
+            &c.name,
+            14.0,
+            tokens.colors.text_primary,
+            transform * Affine::translate((bar.x0 + 32.0, bar.center().y - 9.0)),
+            None,
+            TextWeight::Semibold,
+        );
+        let (nw, _) = text_renderer.measure_weighted(&c.name, 14.0, None, TextWeight::Semibold);
+        text_renderer.draw_text(
+            scene,
+            &format!("· {} · not connected", c.address()),
+            12.0,
+            tokens.colors.text_dim,
+            transform * Affine::translate((bar.x0 + 40.0 + nw as f64, bar.center().y - 7.0)),
+            None,
+        );
+        let back = Rect::new(bar.x1 - 12.0 - 100.0, bar.center().y - 16.0, bar.x1 - 12.0, bar.center().y + 16.0);
+        self.draw_button(scene, transform, text_renderer, theme, back, "Back", false);
+        self.push_hit(back, Action::Disconnect);
+
+        // Centered explanation card.
+        let surface = Rect::new(content.x0, bar.y1, content.x1, content.y1);
+        scene.fill(Fill::NonZero, transform, tokens.colors.surfaces.base, None, &surface);
+        let cw = 480.0_f64.min(surface.width() - 48.0);
+        let ch = 168.0;
+        let cx = surface.x0 + (surface.width() - cw) / 2.0;
+        let cy = surface.y0 + (surface.height() - ch) / 2.0;
+        let card = Rect::new(cx, cy, cx + cw, cy + ch);
+        let rr = RoundedRect::from_rect(card, 12.0);
+        scene.fill(Fill::NonZero, transform, tokens.colors.surfaces.raised, None, &rr);
+        scene.stroke(&Stroke::new(1.0), transform, tokens.colors.border_standard, None, &rr);
+        text_renderer.draw_text_weighted(
+            scene,
+            "Not connected",
+            18.0,
+            tokens.colors.text_primary,
+            transform * Affine::translate((card.x0 + 24.0, card.y0 + 22.0)),
+            None,
+            TextWeight::Bold,
+        );
+        for (i, line) in [
+            format!("{} sessions are not wired up yet.", c.kind.label()),
+            "This will open a real session once the SSH and".to_string(),
+            "VNC/RDP transport lands. Nothing is faked here.".to_string(),
+            format!("Target: {}", c.address()),
+        ]
+        .iter()
+        .enumerate()
+        {
+            text_renderer.draw_text(
+                scene,
+                line,
+                13.0,
+                tokens.colors.text_dim,
+                transform * Affine::translate((card.x0 + 24.0, card.y0 + 58.0 + i as f64 * 24.0)),
+                None,
+            );
         }
     }
 
@@ -2287,8 +2404,26 @@ mod tests {
     }
 
     #[test]
-    fn new_app_is_populated_and_on_list() {
-        let app = RemoteApp::new();
+    fn live_new_starts_empty_and_writes_nothing() {
+        // The honesty guard: the live constructor fabricates no machines, and
+        // `sync` on a fresh document must not seed a fake fleet into the CRDT.
+        let mut app = RemoteApp::new();
+        assert!(app.workspace.connections().is_empty(), "live app starts empty");
+        assert!(app.qos_devices.is_empty(), "no fabricated discovered devices");
+        assert!(app.selected.is_none());
+        assert_eq!(app.screen, Screen::List);
+        let mut state = AutoCommit::new();
+        app.sync(&mut state, &automerge::ROOT);
+        assert!(
+            RemoteDoc::list(&state).is_empty(),
+            "an empty live app must not write fabricated machines into the document"
+        );
+    }
+
+    #[test]
+    fn demo_build_is_populated_for_shots() {
+        // `--shots` still needs a lived-in frame.
+        let app = RemoteApp::new_demo();
         assert!(app.workspace.connections().len() >= 6);
         assert_eq!(app.screen, Screen::List);
         assert!(app.selected.is_some());
@@ -2328,7 +2463,7 @@ mod tests {
 
     #[test]
     fn edit_then_save_updates_in_place() {
-        let mut app = RemoteApp::new();
+        let mut app = RemoteApp::new_demo();
         let id = app.workspace.connections()[0].id;
         let count = app.workspace.connections().len();
         app.apply(Action::EditConnection(id), &mut doc());
@@ -2340,7 +2475,7 @@ mod tests {
 
     #[test]
     fn delete_removes_connection() {
-        let mut app = RemoteApp::new();
+        let mut app = RemoteApp::new_demo();
         let id = app.workspace.connections()[0].id;
         let count = app.workspace.connections().len();
         app.apply(Action::Delete(id), &mut doc());
@@ -2349,8 +2484,11 @@ mod tests {
     }
 
     #[test]
-    fn connect_ssh_builds_terminal_session() {
-        let mut app = RemoteApp::new();
+    fn connect_ssh_shows_honest_not_connected_session() {
+        // Default build has no live transport: Connect opens the session
+        // screen but does NOT fabricate a terminal — an honest "not connected"
+        // state, never a faked shell.
+        let mut app = RemoteApp::new_demo();
         let id = app
             .workspace
             .connections()
@@ -2360,12 +2498,15 @@ mod tests {
             .id;
         app.apply(Action::Connect(id), &mut doc());
         assert_eq!(app.screen, Screen::Session { id });
-        assert!(app.term.is_some(), "SSH session must build a terminal");
+        assert!(
+            app.term.is_none(),
+            "no live transport → no fabricated terminal"
+        );
     }
 
     #[test]
     fn connect_vnc_has_no_terminal() {
-        let mut app = RemoteApp::new();
+        let mut app = RemoteApp::new_demo();
         let id = app
             .workspace
             .connections()
@@ -2379,7 +2520,7 @@ mod tests {
 
     #[test]
     fn pick_qos_device_fills_draft() {
-        let mut app = RemoteApp::new();
+        let mut app = RemoteApp::new_demo();
         app.apply(Action::NewConnection, &mut doc());
         app.apply(Action::SetKind(ConnectionKind::Qos), &mut doc());
         app.apply(Action::PickQosDevice(0), &mut doc());
@@ -2432,7 +2573,7 @@ mod tests {
 
     #[test]
     fn toggle_favorite_flips() {
-        let mut app = RemoteApp::new();
+        let mut app = RemoteApp::new_demo();
         let id = app.workspace.connections()[0].id;
         let before = app.workspace.get(id).unwrap().favorite;
         app.apply(Action::ToggleFavorite(id), &mut doc());
@@ -2462,7 +2603,7 @@ mod tests {
             ("session-rdp", ConnectionKind::Rdp),
             ("session-qos", ConnectionKind::Qos),
         ] {
-            let mut app = RemoteApp::new();
+            let mut app = RemoteApp::new_demo();
             app.dev_set_screen(which);
             match app.screen {
                 Screen::Session { id } => {
