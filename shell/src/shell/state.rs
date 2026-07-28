@@ -4125,6 +4125,7 @@ mod active_group_tests {
         };
         let ws = Workspace {
             id: ws_id,
+            room: RoomId::new(),
             name: "Test".into(),
             strips: vec![strip],
             roles: vec![],
@@ -4481,6 +4482,7 @@ mod active_workspace_peer_count_tests {
         let strip_id = StripId::new();
         let ws = Workspace {
             id: ws_id,
+            room: RoomId::new(),
             name: "Active".into(),
             strips: vec![Strip {
                 id: strip_id,
