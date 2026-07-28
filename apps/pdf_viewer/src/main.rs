@@ -36,7 +36,8 @@ struct Args {
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt::init();
 
-    let args = parse_args(&std::env::args().collect::<Vec<_>>());
+    let argv: Vec<String> = std::env::args().collect();
+    let args = parse_args(&argv);
 
     if let Some(out) = &args.shots {
         render_shot_to_png(build_widget(&args), args.viewport, out)?;
@@ -46,7 +47,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Headless drive (`--headless-drive '<json>'`): run a list of clicks and
     // keystrokes against the real widget tree with no display, persisting
     // through the same store the live app uses.
-    if let Some(spec) = ui::headless::spec_from_args(&args) {
+    if let Some(spec) = ui::headless::spec_from_args(&argv) {
         std::process::exit(ui::headless::run(spec, build_widget(&args), "dev.qos.pdf-viewer"));
     }
 
