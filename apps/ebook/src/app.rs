@@ -220,6 +220,8 @@ enum Action {
     /// font's size multiplier) — the value display becomes a small text field.
     BeginEditValue(NumField),
     AddNote,
+    /// Copy the current text selection to the system clipboard.
+    CopySelection,
     /// Finish composing the current on-page note.
     FinishNote,
     JumpTo(Uuid),
@@ -1235,6 +1237,15 @@ impl BooksApp {
                     self.composing = Some(aid);
                 }
             }
+            Action::CopySelection => {
+                // Copy the selected passage to the OS clipboard (arboard, a
+                // silent no-op in a headless/locked-down session). The selection
+                // stays put so the reader can also highlight or note it.
+                let text = self.selection_text();
+                if !text.is_empty() {
+                    ui::clipboard_copy(&text);
+                }
+            }
             Action::FinishNote => {
                 self.edit_note_text(doc, NoteEdit::Done);
             }
@@ -1926,6 +1937,13 @@ impl BooksApp {
     /// The plain text covered by the current selection, across blocks (truncated
     /// for the annotation excerpt).
     fn selection_excerpt(&self) -> String {
+        self.selection_text().chars().take(160).collect()
+    }
+
+    /// The full plain text currently selected, paragraph-joined with a space —
+    /// what "Copy" writes to the clipboard. Unlike [`Self::selection_excerpt`]
+    /// this is not truncated, so a multi-paragraph selection copies in full.
+    fn selection_text(&self) -> String {
         let Some(sel) = self.sel else { return String::new() };
         let (start, end) = sel.ordered();
         let Some(layout) = self.layout.as_ref() else { return String::new() };
@@ -1944,11 +1962,8 @@ impl BooksApp {
                 }
                 out.extend(b.text.chars().skip(lo).take(hi - lo));
             }
-            if out.chars().count() > 160 {
-                break;
-            }
         }
-        out.chars().take(160).collect()
+        out
     }
 
     fn clear_selection(&mut self) {
@@ -2900,6 +2915,10 @@ impl BooksApp {
                         .sel
                         .filter(|s| !s.is_empty())
                         .map(|_| Action::SetColor(self.hi_color)),
+                    "c" | "C" => self
+                        .sel
+                        .filter(|s| !s.is_empty())
+                        .map(|_| Action::CopySelection),
                     "m" | "M" => Some(Action::AddNote),
                     _ => None,
                 };
@@ -4217,7 +4236,10 @@ impl BooksApp {
         let dot_gap = 10.0;
         let hud_h = 42.0;
         let dots_w = HiColor::ALL.len() as f64 * (dot_r * 2.0) + (HiColor::ALL.len() as f64 - 1.0) * dot_gap;
-        // "Note" action pill.
+        // "Copy" + "Note" action pills.
+        let pill_gap = 8.0;
+        let (cw, _) = tr.measure_weighted("Copy", 13.0, None, TextWeight::Medium);
+        let copy_w = cw as f64 + 24.0;
         let (nw, _) = tr.measure_weighted("Note", 13.0, None, TextWeight::Medium);
         let note_w = nw as f64 + 24.0;
         let sep_w = 13.0;
@@ -4226,7 +4248,7 @@ impl BooksApp {
         let del_group = self.selection_highlight_group();
         let trash_s = 24.0;
         let trash_extra = if del_group.is_some() { trash_s + 8.0 } else { 0.0 };
-        let hud_w = pad * 2.0 + dots_w + sep_w + note_w + trash_extra;
+        let hud_w = pad * 2.0 + dots_w + sep_w + copy_w + pill_gap + note_w + trash_extra;
 
         let cx = paper_x + paper_w / 2.0;
         let hud_x = (cx - hud_w / 2.0).clamp(r.x0 + 8.0, r.x1 - 8.0 - hud_w);
@@ -4265,8 +4287,24 @@ impl BooksApp {
         let dots_end = hud_x + pad + dots_w;
         let div_x = dots_end + sep_w / 2.0;
         paint::line(scene, t, Point::new(div_x, cyc - 10.0), Point::new(div_x, cyc + 10.0), c.border_standard, 1.0);
+        // Copy pill — write the selected passage to the system clipboard.
+        let copy_x = dots_end + sep_w;
+        let copy_rect = Rect::new(copy_x, cyc - 14.0, copy_x + copy_w, cyc + 14.0);
+        let copy_hover = self.is_hover(copy_rect);
+        paint::fill_round(scene, t, copy_rect, 14.0, if copy_hover { theme.bg_hover } else { c.surfaces.overlay });
+        tr.draw_text_weighted(
+            scene,
+            "Copy",
+            13.0,
+            c.text_primary,
+            t * Affine::translate((copy_x + 12.0, cyc - 7.0)),
+            None,
+            TextWeight::Medium,
+        );
+        self.push_hit(copy_rect, Action::CopySelection);
+
         // Note pill.
-        let note_x = dots_end + sep_w;
+        let note_x = copy_x + copy_w + pill_gap;
         let note_rect = Rect::new(note_x, cyc - 14.0, note_x + note_w, cyc + 14.0);
         let note_hover = self.is_hover(note_rect);
         paint::fill_round(scene, t, note_rect, 14.0, if note_hover { theme.bg_hover } else { c.surfaces.overlay });
@@ -6473,6 +6511,70 @@ mod interaction_tests {
         // The on-page composer records a Save hit (proving it's drawn on-page).
         frame(&mut app, &mut doc, 1000.0, 700.0);
         assert!(find_hit(&app, |ac| matches!(ac, Action::FinishNote)).is_some(), "on-page composer is drawn");
+    }
+
+    #[test]
+    fn copy_action_copies_the_full_selected_passage() {
+        let mut app = app_with_sample();
+        let mut doc = AutoCommit::new();
+        frame(&mut app, &mut doc, 1000.0, 700.0);
+        // Select a long span: from the first run to the last, across paragraphs.
+        let r0 = app.sel_runs[0];
+        let start = Point::new((r0.x0 + r0.x1) / 2.0, (r0.y0 + r0.y1) / 2.0);
+        let last = *app.sel_runs.last().unwrap();
+        let end = Point::new(last.x1, (last.y0 + last.y1) / 2.0);
+        ptr_move(&mut app, &mut doc, start);
+        ptr_down(&mut app, &mut doc);
+        ptr_move(&mut app, &mut doc, end);
+        ptr_up(&mut app, &mut doc);
+        assert!(app.sel.map_or(false, |s| !s.is_empty()), "a selection exists");
+
+        // The text Copy hands the clipboard is the FULL selected passage — not
+        // the 160-char excerpt used for annotation labels.
+        let full = app.selection_text();
+        assert!(!full.is_empty(), "selection yields text");
+        let excerpt = app.selection_excerpt();
+        assert!(
+            full.chars().count() >= excerpt.chars().count(),
+            "the copied text is at least as long as the annotation excerpt"
+        );
+        if full.chars().count() > 160 {
+            assert_eq!(
+                excerpt.chars().count(),
+                160,
+                "the excerpt caps at 160 chars while Copy is unbounded"
+            );
+        }
+
+        // The floating toolbar exposes a Copy action; clicking it runs the copy
+        // path (the clipboard write is a silent no-op headless) and KEEPS the
+        // selection so the reader can still highlight or note the same passage.
+        frame(&mut app, &mut doc, 1000.0, 700.0);
+        let copy = find_hit(&app, |a| matches!(a, Action::CopySelection)).expect("a Copy action in the HUD");
+        assert!(click(&mut app, &mut doc, copy), "copy handled");
+        assert!(app.sel.map_or(false, |s| !s.is_empty()), "Copy keeps the selection");
+    }
+
+    #[test]
+    fn copy_key_shortcut_targets_the_active_selection() {
+        // A bare `c` copies only when a selection is live (mirroring `h`
+        // highlight / `m` note); with no selection it is not consumed.
+        let mut app = app_with_sample();
+        let mut doc = AutoCommit::new();
+        frame(&mut app, &mut doc, 1000.0, 700.0);
+        assert!(app.sel.is_none(), "no selection at rest");
+        assert!(!key_char(&mut app, &mut doc, "c"), "bare c is inert without a selection");
+
+        // Make a selection, then `c` is consumed (it drives the copy path).
+        let r0 = app.sel_runs[0];
+        let start = Point::new((r0.x0 + r0.x1) / 2.0, (r0.y0 + r0.y1) / 2.0);
+        let end = Point::new(r0.x1, (r0.y0 + r0.y1) / 2.0);
+        ptr_move(&mut app, &mut doc, start);
+        ptr_down(&mut app, &mut doc);
+        ptr_move(&mut app, &mut doc, end);
+        ptr_up(&mut app, &mut doc);
+        assert!(app.sel.map_or(false, |s| !s.is_empty()), "a selection exists");
+        assert!(key_char(&mut app, &mut doc, "c"), "c copies the live selection");
     }
 
     #[test]
