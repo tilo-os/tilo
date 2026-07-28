@@ -113,4 +113,88 @@ mod tests {
              exports the persisted workspaces (C-2 regression)"
         );
     }
+
+    /// A state file written before workspaces had a room identity must
+    /// gain one exactly once. Minting on every load would be worse than
+    /// not minting at all: the workspace's room would change every
+    /// boot, so every peer previously invited to it would be talking to
+    /// a room that no longer exists.
+    #[test]
+    fn a_pre_rooms_state_file_gains_one_room_and_keeps_it() {
+        use crate::shell::state::{Workspace, WorkspaceId, WorkspaceTree};
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("state.json");
+
+        // Write a real state file, then delete the `room` key from every
+        // workspace — which is byte-for-byte what the writer produced
+        // before rooms existed. Deriving the fixture from the live
+        // serialiser rather than hand-rolling the JSON means it stays a
+        // *loadable* file as the struct grows; a hand-written one that
+        // silently stopped parsing would send `load_or_default` down its
+        // bootstrap fallback and the test would be asserting about a
+        // brand-new tree instead of a migrated one.
+        let mut original = WorkspaceTree::default();
+        original
+            .workspaces
+            .push(Workspace::test_default(WorkspaceId(7), "Home"));
+        save_tree_to(&original, &path).expect("save");
+        let mut raw: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).expect("read"))
+                .expect("state file parses");
+        for ws in raw["workspaces"].as_array_mut().expect("workspaces array") {
+            assert!(
+                ws.as_object_mut()
+                    .expect("workspace object")
+                    .remove("room")
+                    .is_some(),
+                "the current writer must emit a room, or this fixture is \
+                 not removing anything"
+            );
+        }
+        std::fs::write(&path, serde_json::to_string_pretty(&raw).expect("re-json"))
+            .expect("write legacy state");
+
+        let mut first_boot = load_or_default(&path);
+        assert_eq!(
+            first_boot.workspaces.len(),
+            1,
+            "the legacy state file must still load — a fallback to \
+             `bootstrap_default` here would make the rest of this test \
+             vacuous"
+        );
+        assert!(
+            first_boot.workspaces[0].room.is_nil(),
+            "a workspace deserialised from a pre-rooms file has no identity \
+             yet; that is what the boot-time migration is for"
+        );
+
+        first_boot.persist_path = Some(path.clone());
+        let minted = first_boot.adopt_roomless_workspaces();
+        assert_eq!(
+            minted.len(),
+            1,
+            "the migration must mint for the one roomless workspace"
+        );
+        let room = first_boot.workspaces[0].room;
+        assert!(!room.is_nil(), "the minted room must be a real identity");
+
+        // The mint and the write are one operation, so the *next* boot
+        // reads the same value rather than minting again.
+        let mut second_boot = load_or_default(&path);
+        assert_eq!(
+            second_boot.workspaces[0].room, room,
+            "the room minted on first boot must have been written to disk, \
+             so the second boot loads it instead of minting a new one"
+        );
+        second_boot.persist_path = Some(path.clone());
+        assert!(
+            second_boot.adopt_roomless_workspaces().is_empty(),
+            "a second boot must find nothing to migrate"
+        );
+        assert_eq!(
+            second_boot.workspaces[0].room, room,
+            "and must leave the room it loaded alone"
+        );
+    }
 }

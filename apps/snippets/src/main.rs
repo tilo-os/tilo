@@ -40,8 +40,15 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    let state = ui::State::new();
-    let app = ui::App::new(state, snippets::app_root());
+    // Headless drive (`--headless-drive '<json>'`): run a list of clicks and
+    // keystrokes against the real widget tree with no display, persisting
+    // through the same store the live app uses.
+    if let Some(spec) = ui::headless::spec_from_args(&args) {
+        std::process::exit(ui::headless::run(spec, snippets::app_root(), "dev.qos.snippets"));
+    }
+
+    let (state, autosave) = ui::persist::open("dev.qos.snippets");
+    let app = ui::App::new(state, snippets::app_root()).with_autosave(autosave);
     app.run();
     Ok(())
 }
