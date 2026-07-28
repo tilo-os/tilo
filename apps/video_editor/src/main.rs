@@ -49,6 +49,25 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         // machine) so the first-run empty state can be screenshotted; every
         // other shot uses the seeded demo build.
         let empty = args.iter().any(|a| a == "--empty");
+        // `--import PATH` seeds a real imported clip (probed for real metadata)
+        // and, under `--features decode`, warms the pipeline so the capture
+        // shows the clip's true decoded frame — not the representative gradient.
+        if let Some(path) = parse_value_arg(&args, "--import") {
+            let mut app = video_editor::VideoEditorApp::new_import(vec![std::path::PathBuf::from(path)]);
+            // Pump `sync` until a decoded frame lands (real decode prerolls
+            // asynchronously) or a short deadline passes.
+            let mut warm = ui::State::new();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(6);
+            loop {
+                app.sync(&mut warm.doc, &warm.root);
+                if app.has_preview_frame() || std::time::Instant::now() >= deadline {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(40));
+            }
+            render_shot_to_png(Box::new(app), DEFAULT_SHOTS_VIEWPORT, &out)?;
+            return Ok(());
+        }
         if empty {
             render_shot_to_png(video_editor::app_root(), DEFAULT_SHOTS_VIEWPORT, &out)?;
         } else if args.iter().any(|a| a == "--narrow") {
@@ -64,7 +83,15 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let state = ui::State::new();
-    let app = ui::App::new(state, video_editor::app_root());
+    // `--import PATH` preloads a real clip on launch (the portal / Import button
+    // add more at runtime).
+    let root: Box<dyn Widget> = match parse_value_arg(&args, "--import") {
+        Some(path) => Box::new(video_editor::VideoEditorApp::new_import(vec![
+            std::path::PathBuf::from(path),
+        ])),
+        None => video_editor::app_root(),
+    };
+    let app = ui::App::new(state, root);
     app.run();
     Ok(())
 }
@@ -77,6 +104,21 @@ fn parse_shots_arg(args: &[String]) -> Option<std::path::PathBuf> {
         }
         if let Some(rest) = arg.strip_prefix("--shots=") {
             return Some(std::path::PathBuf::from(rest));
+        }
+    }
+    None
+}
+
+/// Generic `--flag VALUE` / `--flag=VALUE` reader.
+fn parse_value_arg(args: &[String], flag: &str) -> Option<String> {
+    let mut iter = args.iter().skip(1);
+    let eq = format!("{flag}=");
+    while let Some(arg) = iter.next() {
+        if arg == flag {
+            return iter.next().cloned();
+        }
+        if let Some(rest) = arg.strip_prefix(&eq) {
+            return Some(rest.to_string());
         }
     }
     None
