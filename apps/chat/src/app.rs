@@ -321,6 +321,20 @@ pub struct ChatApp {
     /// until a real decoded frame arrives — it never fabricates a picture.
     pub(crate) remote_frames: HashMap<String, vello::peniko::ImageData>,
 
+    /// Latest decoded RGBA **screen-share** frame per remote peer id, kept
+    /// separate from their camera frame so a peer can share their screen and
+    /// keep their camera on at once — the screen fills the featured stage tile,
+    /// the camera stays in that peer's filmstrip cell. Populated only by the
+    /// live media pump; empty in the default build, where the featured tile
+    /// shows the honest "connecting" placeholder rather than a fabricated feed.
+    pub(crate) remote_screens: HashMap<String, vello::peniko::ImageData>,
+
+    /// The screen-capture source seam. Consulted before a share starts so the
+    /// real xdg-desktop-portal ScreenCast flow (behind `live-media`) can be
+    /// swapped for an injected fake in tests. The default [`SystemPortal`]
+    /// returns `None` in the default build — honest gating, never a faked share.
+    pub(crate) portal: Box<dyn crate::call::ScreenPortal>,
+
     // Live capture/encode/playback pipelines — present only under `live-media`
     // and only while in a call. All `None`/empty until the call opens a device;
     // torn down when the call ends or a device is unavailable (honest silence).
@@ -435,6 +449,8 @@ impl ChatApp {
             shot_starter: false,
             is_live: false,
             remote_frames: HashMap::new(),
+            remote_screens: HashMap::new(),
+            portal: Box::new(crate::call::SystemPortal),
             #[cfg(feature = "live-media")]
             mic: None,
             #[cfg(feature = "live-media")]
@@ -526,6 +542,19 @@ impl ChatApp {
                 self.call.join("c_huddle");
                 self.call.expanded = true;
             }
+            "share" => {
+                // The expanded call while screen-sharing: the featured screen
+                // tile fills the stage above the participant filmstrip, and the
+                // controls bar shows the active "Stop share". Local share is
+                // staged directly (the same `call.sharing` flag the real toggle
+                // sets on a portal grant) so the presentation layout renders
+                // headless without a portal or capture device.
+                self.right_flap.snap(false);
+                self.thread_open = None;
+                self.call.join("c_huddle");
+                self.call.expanded = true;
+                self.call.sharing = true;
+            }
             "attach" => {
                 // Show the workspace file picker with real, decodable
                 // thumbnails (the demo scheme drives the same decode path a
@@ -609,6 +638,7 @@ impl ChatApp {
             self.screen_encoder = None;
             self.remote_decoders.clear();
             self.remote_frames.clear();
+            self.remote_screens.clear();
             return;
         }
         let me = self.me.id.clone();
@@ -708,12 +738,27 @@ impl ChatApp {
                     }
                 }
                 TrackKind::Video | TrackKind::Screen => {
+                    // Camera and screen from one peer are independent H.264
+                    // streams, so each gets its own decoder (keyed by sender +
+                    // track) and its own frame slot — the screen fills the
+                    // featured stage tile, the camera stays in the peer's cell.
+                    let is_screen = o.kind == TrackKind::Screen;
+                    let key = if is_screen {
+                        format!("{}\u{1}screen", o.sender)
+                    } else {
+                        o.sender.clone()
+                    };
                     let frame = {
-                        let dec = self.remote_decoders.entry(o.sender.clone()).or_default();
+                        let dec = self.remote_decoders.entry(key).or_default();
                         dec.decode(&o.payload)
                     };
                     if let Some(frame) = frame {
-                        self.remote_frames.insert(o.sender.clone(), rgba_to_image(&frame));
+                        let img = rgba_to_image(&frame);
+                        if is_screen {
+                            self.remote_screens.insert(o.sender.clone(), img);
+                        } else {
+                            self.remote_frames.insert(o.sender.clone(), img);
+                        }
                     }
                 }
             }
@@ -727,49 +772,44 @@ impl ChatApp {
         s
     }
 
-    /// Begin sharing the screen: ask the xdg-desktop-portal for a ScreenCast
-    /// source (real ashpd flow) and, if the user grants one, open a PipeWire
-    /// capture + H.264 encoder for it. Gated by the `ShareScreen` permission and
-    /// the `live-media` build; a no-op (returns `false`) when the portal is
-    /// unavailable or the user cancels — it never fabricates a share.
-    pub(crate) fn share_screen(&mut self) -> bool {
+    /// Acquire a screen-share source through the portal seam: check the
+    /// `ShareScreen` permission, then ask [`self.portal`](Self) for a source
+    /// (the real xdg-desktop-portal ScreenCast picker behind `live-media`; an
+    /// honest `None` in the default build; an injected fake in tests). On a
+    /// grant, open the PipeWire capture + H.264 encoder and publish the screen
+    /// track (behind `live-media`) and return `true`. Returns `false` — never
+    /// fabricating a share — when permission is denied or the portal grants
+    /// nothing. The caller flips `call.sharing` + the shared voice membership.
+    pub(crate) fn acquire_screen(&mut self) -> bool {
         if !self.call_allows(crate::call::CallAction::ShareScreen) {
             return false;
         }
+        let Some(src) = self.portal.request() else {
+            return false;
+        };
         #[cfg(feature = "live-media")]
         {
-            if let Some(node) = crate::media::request_screencast() {
-                let (w, h) = (crate::video::DEFAULT_W * 2, crate::video::DEFAULT_H * 2);
-                if let Some(scr) = crate::video::ScreenCapture::new(node, w, h) {
-                    self.screen = Some(scr);
-                    self.screen_encoder = crate::video::H264Encoder::new(w, h, crate::video::DEFAULT_FPS);
-                    self.media.transport_mut().publish(crate::media::TrackKind::Screen);
-                    return true;
-                }
+            if let Some(scr) = crate::video::ScreenCapture::new(src.node, src.width, src.height) {
+                self.screen = Some(scr);
+                self.screen_encoder =
+                    crate::video::H264Encoder::new(src.width, src.height, crate::video::DEFAULT_FPS);
+                self.media.transport_mut().publish(crate::media::TrackKind::Screen);
             }
-            false
         }
-        #[cfg(not(feature = "live-media"))]
-        {
-            false
-        }
+        let _ = src;
+        true
     }
 
-    /// Whether this peer is currently sharing its screen. Always `false` in the
-    /// default build (no capture pipeline is compiled in).
+    /// Whether this peer is currently sharing its screen — the shared-truth flag
+    /// the featured tile and the Share/Stop control key off. True only after the
+    /// portal granted a source (see [`Self::acquire_screen`]).
     pub(crate) fn sharing_screen(&self) -> bool {
-        #[cfg(feature = "live-media")]
-        {
-            self.screen.is_some()
-        }
-        #[cfg(not(feature = "live-media"))]
-        {
-            false
-        }
+        self.call.sharing
     }
 
-    /// Stop sharing the screen and stop publishing the screen track.
-    pub(crate) fn stop_screen_share(&mut self) {
+    /// Tear down the local screen capture and stop publishing the screen track.
+    /// The caller clears `call.sharing` + the shared voice membership.
+    pub(crate) fn release_screen(&mut self) {
         #[cfg(feature = "live-media")]
         {
             self.screen = None;
@@ -1364,14 +1404,25 @@ impl Widget for ChatApp {
         // Call layers. The host tile is a real VideoPlayer; with no live
         // capture feeding it (there is no camera here) it paints an honest
         // "camera off" placeholder rather than any fabricated frame.
+        // The host tile's VideoPlayer surface is painted only once a real
+        // capture has fed it a frame; otherwise the honest "camera off"
+        // placeholder (drawn from live geometry) fully covers the host tile. The
+        // guard also avoids the surface node — whose taffy geometry lags a beat
+        // behind `self.rect` on a single headless `--shots` frame — painting a
+        // stray mark at its stale origin before the placeholder lands.
+        let host_has_frame = self.video.latest_frame().is_some();
         if self.call.active && self.call.expanded {
             self.draw_call_overlay_bg(scene, tf, tr, theme, &mut hits);
-            self.video.draw(scene, tf, tr, theme, presence);
+            if host_has_frame {
+                self.video.draw(scene, tf, tr, theme, presence);
+            }
             self.draw_host_camera_off(scene, tf, tr, theme);
             self.draw_call_overlay_fg(scene, tf, tr, theme, &mut hits);
         } else if self.call.active {
             self.draw_huddle_bg(scene, tf, tr, theme, &mut hits);
-            self.video.draw(scene, tf, tr, theme, presence);
+            if host_has_frame {
+                self.video.draw(scene, tf, tr, theme, presence);
+            }
             self.draw_host_camera_off(scene, tf, tr, theme);
             self.draw_huddle_fg(scene, tf, tr, theme, &mut hits);
         }

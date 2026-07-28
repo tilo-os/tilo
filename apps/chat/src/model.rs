@@ -129,6 +129,11 @@ pub struct VoiceMember {
     pub deafened: bool,
     /// Camera off / audio-only participant.
     pub audio_only: bool,
+    /// True while this person is sharing their screen into the call (portal
+    /// ScreenCast → the shared `TrackKind::Screen`). Shared truth in the CRDT so
+    /// every peer reserves the featured screen tile and shows "N is sharing"
+    /// the instant the share begins — before the first decoded frame arrives.
+    pub sharing: bool,
     /// The peer's dialable media ticket (iroh node ticket in the live engine;
     /// a `sim://` placeholder otherwise). Published into the shared voice
     /// membership on join so every other peer can dial it directly — this map
@@ -486,6 +491,7 @@ mod tests {
             muted: false,
             deafened: false,
             audio_only: false,
+            sharing: false,
             ticket: None,
         }
     }
