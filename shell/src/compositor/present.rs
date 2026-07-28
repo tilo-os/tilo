@@ -441,13 +441,23 @@ mod tests {
                 counter.fetch_add(1, Ordering::Release);
             }),
         );
-        // Fill the pipe while the presenter is stuck.
+        // Fill the pipe while the presenter is stuck. Bounded rather than
+        // `while has_capacity()`: a regression that made capacity
+        // unconditional would turn an unbounded fill into a hang, and a
+        // hung test reports nothing.
         let mut accepted = 0;
-        while pipe.has_capacity() {
+        for _ in 0..8 {
+            if !pipe.has_capacity() {
+                break;
+            }
             assert!(pipe.submit(Scene::new(), OutputId(0)));
             accepted += 1;
         }
-        assert_eq!(accepted, QUEUE_DEPTH + 1);
+        assert_eq!(
+            accepted,
+            QUEUE_DEPTH + 1,
+            "the stuck presenter must stop admitting frames after the queue fills"
+        );
         assert_eq!(
             wakeups.load(Ordering::Acquire),
             0,
