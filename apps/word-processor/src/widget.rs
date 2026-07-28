@@ -11196,8 +11196,51 @@ mod tests {
 // restore that writes a forward change into the live document.
 #[cfg(test)]
 mod history_strip_tests {
-    use super::tests::{left_click, pipeline_draw};
+    use super::tests::pipeline_draw;
     use super::*;
+
+    /// A full left click: move, press, release.
+    ///
+    /// The release matters here. Pressing on the scrubber's track latches the
+    /// handle to the pointer, so a helper that only presses leaves the widget
+    /// mid-drag and the *next* cursor move drags the selected version out from
+    /// under the test. Real pointers come back up.
+    fn click(wp: &mut WordProcessorWidget, state: &mut ui::State, pt: Point) {
+        let taffy: TaffyTree<()> = TaffyTree::new();
+        let node = NodeId::new(0);
+        let mods = Modifiers::default();
+        let mut handled = false;
+        let mut focus: Option<NodeId> = None;
+        let mut send = |wp: &mut WordProcessorWidget, ev: WindowEvent| {
+            wp.handle_event(
+                &ev, 1.0, &mods, &mut state.doc, &state.root, &mut handled, &mut focus, node,
+                &taffy,
+            );
+        };
+        send(
+            wp,
+            WindowEvent::CursorMoved {
+                device_id: unsafe { std::mem::zeroed() },
+                position: (pt.x, pt.y).into(),
+            },
+        );
+        send(
+            wp,
+            WindowEvent::MouseInput {
+                device_id: unsafe { std::mem::zeroed() },
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+            },
+        );
+        send(
+            wp,
+            WindowEvent::MouseInput {
+                device_id: unsafe { std::mem::zeroed() },
+                state: ElementState::Released,
+                button: MouseButton::Left,
+            },
+        );
+    }
 
     /// Document text as the reader sees it, joined across blocks.
     fn body(state: &ui::State) -> String {
@@ -11317,11 +11360,11 @@ mod history_strip_tests {
         // production `handle_event`.
         let y = wp.history.track_center_y();
         let tick_pt = Point::new(wp.history.tick_x(target), y);
-        left_click(&mut wp, &mut state, tick_pt);
+        click(&mut wp, &mut state, tick_pt);
         assert_eq!(wp.history.current_tick(), target, "the click moved the handle");
 
         let rb = wp.history.restore_button_rect().center();
-        left_click(&mut wp, &mut state, rb);
+        click(&mut wp, &mut state, rb);
 
         assert!(wp.needs_commit(), "the restore asks the host to commit it");
         // This is what `App::commit_action` does on the next frame.
@@ -11360,9 +11403,9 @@ mod history_strip_tests {
             .expect("alice's edit is on the track");
         let y = wp.history.track_center_y();
         let tick_pt = Point::new(wp.history.tick_x(target), y);
-        left_click(&mut wp, &mut state, tick_pt);
+        click(&mut wp, &mut state, tick_pt);
         let preview_pt = wp.history.preview_button_rect().center();
-        left_click(&mut wp, &mut state, preview_pt);
+        click(&mut wp, &mut state, preview_pt);
 
         assert_eq!(wp.history.preview_text(), Some("first"));
         assert_eq!(body(&state), "first and second", "previewing edits nothing");
@@ -11380,7 +11423,7 @@ mod history_strip_tests {
         let caret_before = wp.model().caret().clone();
         let y = wp.history.track_center_y();
         let tick_pt = Point::new(wp.history.tick_x(0), y);
-        left_click(&mut wp, &mut state, tick_pt);
+        click(&mut wp, &mut state, tick_pt);
         assert_eq!(
             *wp.model().caret(),
             caret_before,
