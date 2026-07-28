@@ -68,6 +68,13 @@ pub struct MinimalManifest {
     /// `[cli].commands` — PATH-visible command names the package
     /// declares. Empty when the package doesn't ship a CLI.
     pub cli_commands: Vec<String>,
+    /// `[providers].ext` — file extensions this package declares it can
+    /// open, lowercased and without the leading dot. This is how the
+    /// desktop learns which installed app owns a document type: the
+    /// format registry knows `.odt` is an editable document, the
+    /// manifest is what says *this* package opens it. Empty for a
+    /// package that opens no files.
+    pub opens_ext: Vec<String>,
 }
 
 impl MinimalManifest {
@@ -94,6 +101,22 @@ struct RawManifest {
     sandbox: Sandbox,
     #[serde(default)]
     cli: Option<CliBlock>,
+    #[serde(default)]
+    providers: Option<ProvidersBlock>,
+}
+
+/// `[providers]` block — the file kinds a package declares it opens.
+/// Mirrors [`pkg::manifest::Providers`]; decoded here so the launcher
+/// stays independent of the full pkg crate.
+#[derive(Debug, Clone, Default, Deserialize)]
+struct ProvidersBlock {
+    #[serde(default)]
+    ext: Vec<String>,
+    /// Accepted so a manifest carrying `mime = [...]` still decodes.
+    /// Nothing routes on MIME yet — extension is the only resolver.
+    #[serde(default)]
+    #[allow(dead_code)]
+    mime: Vec<String>,
 }
 
 /// `[cli]` block — mirrors [`pkg::manifest::Cli`] but decoded
@@ -130,6 +153,18 @@ impl From<RawManifest> for MinimalManifest {
             .or_else(|| raw.package.as_ref().and_then(|p| p.version.clone()))
             .unwrap_or_default();
         let cli_commands = raw.cli.map(|c| c.commands).unwrap_or_default();
+        // Normalised on decode so every consumer compares the same
+        // shape: lowercase, no leading dot, no blanks. A manifest that
+        // writes `".ODT"` and one that writes `"odt"` mean the same
+        // thing and must not resolve differently.
+        let opens_ext = raw
+            .providers
+            .map(|p| p.ext)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|e| e.trim().trim_start_matches('.').to_ascii_lowercase())
+            .filter(|e| !e.is_empty())
+            .collect();
         let runtime = raw.package.as_ref().and_then(|p| p.runtime.clone());
         let name = raw.package.as_ref().and_then(|p| p.name.clone());
         let category = raw.package.as_ref().and_then(|p| p.category.clone());
@@ -142,6 +177,7 @@ impl From<RawManifest> for MinimalManifest {
             entrypoint: raw.entrypoint,
             sandbox: raw.sandbox,
             cli_commands,
+            opens_ext,
         }
     }
 }

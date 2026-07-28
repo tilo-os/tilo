@@ -105,6 +105,26 @@ pub struct InstalledApp {
     /// are installed the same way but have no window to show, so the
     /// applications list hides them.
     pub has_gui: bool,
+    /// The manifest's `[providers].ext` — file extensions this package
+    /// declares it opens, lowercased and without the leading dot.
+    ///
+    /// This is the desktop's only answer to "which app owns `.odt`".
+    /// The document format registry (`qdoc`) knows which extensions are
+    /// editable documents and which codec parses them; it deliberately
+    /// knows nothing about installed packages. Joining the two here —
+    /// rather than in a table inside the compositor — means installing
+    /// an app is what teaches the desktop to open its file types, and
+    /// uninstalling it is what un-teaches that.
+    pub opens_extensions: Vec<String>,
+}
+
+impl InstalledApp {
+    /// Whether this package declares it opens `ext` (case-insensitive,
+    /// leading dot tolerated).
+    pub fn opens_extension(&self, ext: &str) -> bool {
+        let want = ext.trim().trim_start_matches('.').to_ascii_lowercase();
+        !want.is_empty() && self.opens_extensions.iter().any(|e| *e == want)
+    }
 }
 
 /// Why a launch could not be started.
@@ -229,6 +249,18 @@ static LAUNCHED: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new());
 /// default and the correct one: an app launched before anything is
 /// published gets its manifest's sandbox and nothing more.
 static WORKSPACE_CAPABILITIES: Mutex<Vec<CapOverride>> = Mutex::new(Vec::new());
+/// `package_id → where its next window should land`, for launches that
+/// asked for something other than the default.
+///
+/// A launch and the toplevel it eventually maps are two events seconds
+/// apart, on two processes. This is the note the first leaves for the
+/// second; [`take_placement_for_app_id`] consumes it when the window
+/// arrives. One entry per package: a second window from the same app,
+/// or a window we never launched, gets the default placement, because
+/// the only honest correlation we have is the app-id and it does not
+/// distinguish two windows from one client.
+static PENDING_PLACEMENT: Mutex<Vec<(String, crate::compositor::tab_binding::Placement)>> =
+    Mutex::new(Vec::new());
 
 /// Publish the compositor's Wayland socket. Called once by the
 /// compositor after `ListeningSocketSource` binds, with the socket name
@@ -408,6 +440,7 @@ pub fn read_installed_apps() -> Result<Vec<InstalledApp>, LaunchError> {
             manifest_path: entry.manifest_path,
             payload_root: entry.payload_root,
             has_gui: manifest.entrypoint.gui_bin().is_some(),
+            opens_extensions: manifest.opens_ext.clone(),
         });
     }
     Ok(out)
@@ -444,6 +477,24 @@ pub fn gui_apps() -> Vec<InstalledApp> {
     apps.retain(|a| a.has_gui);
     apps.sort_by(|a, b| a.display_name.cmp(&b.display_name));
     apps
+}
+
+/// The installed GUI application that declares it opens `ext`.
+///
+/// Resolution is by manifest declaration only — there is no built-in
+/// table. Two packages claiming the same extension is a real situation
+/// (a viewer and an editor both claiming `.pdf`), and the tie is broken
+/// by display name so the answer is stable across boots rather than
+/// dependent on registry order. A user-visible default-app preference is
+/// the right long-term answer to that tie; this is the deterministic
+/// stand-in, not a design statement about it.
+pub fn app_for_extension(ext: &str) -> Option<InstalledApp> {
+    let mut candidates: Vec<InstalledApp> = gui_apps()
+        .into_iter()
+        .filter(|a| a.opens_extension(ext))
+        .collect();
+    candidates.sort_by(|a, b| a.display_name.cmp(&b.display_name));
+    candidates.into_iter().next()
 }
 
 /// `dev.qos.text-editor` → `Text Editor`.
@@ -554,6 +605,16 @@ pub fn resolve_launcher_bin() -> Result<PathBuf, LaunchError> {
 /// one. `None` (no node resolved on this machine) launches the app
 /// unpinned rather than refusing it: a software-rendered app is still
 /// an app.
+/// `document`, when set, is the file the app was asked to open. It rides
+/// across as `--open <path>` and reaches the app as its `argv[1]`.
+///
+/// Naming a path here grants nothing. The launcher binds what the
+/// manifest declares plus what the capability file allows, and nothing
+/// else — so an app handed a path it has no capability for finds it
+/// absent from its namespace and fails to open it. Passing the path and
+/// granting the path are two separate decisions on purpose, and callers
+/// opening a document on the user's behalf have to make both (see
+/// [`crate::shell::doc_open`]).
 pub fn build_launch_command(
     app: &InstalledApp,
     launcher_bin: &Path,
@@ -561,6 +622,7 @@ pub fn build_launch_command(
     workspace: WorkspaceId,
     capabilities_file: Option<&Path>,
     render_node: Option<&Path>,
+    document: Option<&Path>,
 ) -> LaunchCommand {
     let mut args = vec![
         "run".to_string(),
@@ -585,6 +647,10 @@ pub fn build_launch_command(
     if let Some(node) = render_node {
         args.push("--render-node".to_string());
         args.push(node.display().to_string());
+    }
+    if let Some(path) = document {
+        args.push("--open".to_string());
+        args.push(path.display().to_string());
     }
     // Service sockets (collab, qos-fs, …) are resolved by the launcher
     // against `$XDG_RUNTIME_DIR/qos/services`. Optional ones that are
@@ -614,6 +680,19 @@ pub fn build_launch_command(
 /// `workspace` is the caller's active workspace; it becomes the app's
 /// collaboration room (see [`build_launch_command`]).
 pub fn launch(package_id: &str, workspace: WorkspaceId) -> Result<InstalledApp, LaunchError> {
+    launch_with_document(package_id, workspace, None)
+}
+
+/// [`launch`], additionally asking the app to open `document`.
+///
+/// The path is an argument, not a permission: see
+/// [`build_launch_command`]. Grant it before calling this, or the app
+/// starts and finds nothing at the path it was pointed at.
+pub fn launch_with_document(
+    package_id: &str,
+    workspace: WorkspaceId,
+    document: Option<&Path>,
+) -> Result<InstalledApp, LaunchError> {
     let app = installed_apps()?
         .into_iter()
         .find(|a| a.package_id == package_id)
@@ -653,6 +732,7 @@ pub fn launch(package_id: &str, workspace: WorkspaceId) -> Result<InstalledApp, 
         workspace,
         capabilities_file.as_deref(),
         crate::compositor::render_node::resolved(),
+        document,
     );
     remember_launch(&app);
     spawn_detached(app.clone(), command);
@@ -668,8 +748,23 @@ pub fn launch_in_workspace(
     package_id: &str,
     workspace: &Workspace,
 ) -> Result<InstalledApp, LaunchError> {
+    launch_document_in_workspace(package_id, workspace, None)
+}
+
+/// [`launch_in_workspace`], additionally asking the app to open
+/// `document`.
+///
+/// The workspace's capability list is published first, exactly as for a
+/// plain launch — so a read grant the caller just added to the workspace
+/// for this document is what reaches the sandbox, and the path argument
+/// alone still reaches nothing.
+pub fn launch_document_in_workspace(
+    package_id: &str,
+    workspace: &Workspace,
+    document: Option<&Path>,
+) -> Result<InstalledApp, LaunchError> {
     set_workspace_capabilities(workspace.capabilities.clone());
-    launch(package_id, workspace.id)
+    launch_with_document(package_id, workspace.id, document)
 }
 
 /// Run `command` on a worker thread and report the outcome through
@@ -806,17 +901,61 @@ pub(crate) fn remember_launch(app: &InstalledApp) {
 /// the compositor's client bookkeeping rather than to this module.
 pub fn display_name_for_app_id(app_id: &str) -> Option<String> {
     let launched = LAUNCHED.lock().expect("LAUNCHED poisoned");
+    launched
+        .iter()
+        .find(|(package_id, _)| app_id_matches_package(app_id, package_id))
+        .map(|(_, display_name)| display_name.clone())
+}
+
+/// Whether a client's wayland app-id belongs to `package_id`.
+///
+/// Textual and deterministic: either the app-id *is* the package id, or
+/// it is the package id's trailing component (`dev.qos.hello` ↔
+/// `hello`) — the same reverse-DNS convention the package ids follow.
+/// Nothing here guesses by timing.
+fn app_id_matches_package(app_id: &str, package_id: &str) -> bool {
     let needle = app_id.to_ascii_lowercase();
-    for (package_id, display_name) in launched.iter() {
-        let pid_lower = package_id.to_ascii_lowercase();
-        if pid_lower == needle {
-            return Some(display_name.clone());
-        }
-        if pid_lower.rsplit('.').next() == Some(needle.as_str()) {
-            return Some(display_name.clone());
-        }
+    let pid = package_id.to_ascii_lowercase();
+    pid == needle || pid.rsplit('.').next() == Some(needle.as_str())
+}
+
+/// Record where the window of the launch about to start should land.
+///
+/// Overwrites any unconsumed note for the same package: if two launches
+/// of one app are in flight, the second one's intent is the current one.
+pub fn set_pending_placement(
+    package_id: &str,
+    placement: crate::compositor::tab_binding::Placement,
+) {
+    let mut pending = PENDING_PLACEMENT.lock().expect("PENDING_PLACEMENT poisoned");
+    if let Some(slot) = pending.iter_mut().find(|(id, _)| id == package_id) {
+        slot.1 = placement;
+    } else {
+        pending.push((package_id.to_string(), placement));
     }
-    None
+}
+
+/// Take the placement recorded for whichever package `app_id` belongs
+/// to, consuming it. `None` when this client is not one we launched, or
+/// when its launch asked for nothing special — both of which mean "use
+/// the default".
+pub fn take_placement_for_app_id(
+    app_id: &str,
+) -> Option<crate::compositor::tab_binding::Placement> {
+    let mut pending = PENDING_PLACEMENT.lock().expect("PENDING_PLACEMENT poisoned");
+    let idx = pending
+        .iter()
+        .position(|(package_id, _)| app_id_matches_package(app_id, package_id))?;
+    Some(pending.remove(idx).1)
+}
+
+/// Drop every unconsumed placement note. Used by tests, which share this
+/// process-wide state.
+pub fn clear_pending_placements() {
+    PENDING_PLACEMENT
+        .lock()
+        .expect("PENDING_PLACEMENT poisoned")
+        .clear();
 }
 
 /// Test hook: publish a socket path directly (production goes through
