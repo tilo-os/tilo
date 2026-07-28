@@ -41,7 +41,11 @@ pub fn parse_stream(video_id: &str, url: &str) -> Option<ResolvedStream> {
     };
     let itag: u32 = field("itag").and_then(|v| v.parse().ok()).unwrap_or(0);
     let size_bytes: u64 = field("clen").and_then(|v| v.parse().ok()).unwrap_or(0);
-    let mime = field("mime").map(percent_decode).unwrap_or_else(|| "audio/mp4".to_string());
+    // The `mime` param is a media type, not form data: a `+` in it is literal
+    // (`image/svg+xml`), so this decodes per RFC 3986.
+    let mime = field("mime")
+        .map(|v| ui::uri::decode(v))
+        .unwrap_or_else(|| "audio/mp4".to_string());
     // Sniff codec/container off the (decoded or raw) mime — both carry the words.
     let m = mime.to_ascii_lowercase();
     let (codec, format) = if m.contains("webm") || m.contains("opus") {
@@ -61,28 +65,6 @@ pub fn parse_stream(video_id: &str, url: &str) -> Option<ResolvedStream> {
         duration_ms: 0,
         fallback_url: None,
     })
-}
-
-/// Minimal `%XX` percent-decoding (enough for a googlevideo `mime` param such as
-/// `audio%2Fmp4`). Leaves malformed escapes untouched.
-fn percent_decode(s: &str) -> String {
-    let bytes = s.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'%' && i + 2 < bytes.len() {
-            let hi = (bytes[i + 1] as char).to_digit(16);
-            let lo = (bytes[i + 2] as char).to_digit(16);
-            if let (Some(h), Some(l)) = (hi, lo) {
-                out.push((h * 16 + l) as u8);
-                i += 3;
-                continue;
-            }
-        }
-        out.push(bytes[i]);
-        i += 1;
-    }
-    String::from_utf8_lossy(&out).into_owned()
 }
 
 /// The `yt-dlp` binary to use: the `QOS_MUSIC_YTDLP` override (empty string
@@ -216,10 +198,12 @@ mod tests {
     }
 
     #[test]
-    fn percent_decode_handles_escapes_and_plain() {
-        assert_eq!(percent_decode("audio%2Fmp4"), "audio/mp4");
-        assert_eq!(percent_decode("plain"), "plain");
+    fn the_mime_param_decodes_per_rfc_3986() {
+        assert_eq!(ui::uri::decode("audio%2Fmp4"), "audio/mp4");
+        assert_eq!(ui::uri::decode("plain"), "plain");
         // Malformed trailing escape is left as-is rather than panicking.
-        assert_eq!(percent_decode("a%2"), "a%2");
+        assert_eq!(ui::uri::decode("a%2"), "a%2");
+        // A media type may legitimately contain a plus; it is not a space.
+        assert_eq!(ui::uri::decode("image%2Fsvg+xml"), "image/svg+xml");
     }
 }
