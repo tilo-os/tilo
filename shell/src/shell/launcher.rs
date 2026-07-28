@@ -544,12 +544,23 @@ pub fn resolve_launcher_bin() -> Result<PathBuf, LaunchError> {
 /// The two are independent on purpose: the workspace id says which room
 /// the app collaborates in, the capability file says what it may touch.
 /// Naming a room grants nothing.
+/// `render_node` is the DRM node this compositor renders on. Passing it
+/// down is what makes the compositor's GPU choice authoritative for the
+/// app: `qos-launcher` narrows the sandbox to that device and pins the
+/// app's EGL/Vulkan loaders to the drivers that match it. A client on a
+/// different GPU than its compositor cannot share dma-bufs with it
+/// without a cross-device copy, and on many multi-GPU machines cannot
+/// share them at all — so this is a correctness argument, not a tuning
+/// one. `None` (no node resolved on this machine) launches the app
+/// unpinned rather than refusing it: a software-rendered app is still
+/// an app.
 pub fn build_launch_command(
     app: &InstalledApp,
     launcher_bin: &Path,
     wayland_socket: &Path,
     workspace: WorkspaceId,
     capabilities_file: Option<&Path>,
+    render_node: Option<&Path>,
 ) -> LaunchCommand {
     let mut args = vec![
         "run".to_string(),
@@ -570,6 +581,10 @@ pub fn build_launch_command(
     if let Some(path) = capabilities_file {
         args.push("--capabilities".to_string());
         args.push(path.display().to_string());
+    }
+    if let Some(node) = render_node {
+        args.push("--render-node".to_string());
+        args.push(node.display().to_string());
     }
     // Service sockets (collab, qos-fs, …) are resolved by the launcher
     // against `$XDG_RUNTIME_DIR/qos/services`. Optional ones that are
@@ -637,6 +652,7 @@ pub fn launch(package_id: &str, workspace: WorkspaceId) -> Result<InstalledApp, 
         &socket,
         workspace,
         capabilities_file.as_deref(),
+        crate::compositor::render_node::resolved(),
     );
     remember_launch(&app);
     spawn_detached(app.clone(), command);
@@ -909,6 +925,7 @@ mod tests {
             Path::new("/run/user/1000/wayland-3"),
             WorkspaceId(3),
             None,
+            Some(Path::new("/dev/dri/renderD128")),
         );
         assert_eq!(cmd.program, Path::new("/usr/bin/qos-launcher"));
         assert_eq!(cmd.args[0], "run");
@@ -924,6 +941,40 @@ mod tests {
             cmd.args[pos("--wayland-socket") + 1],
             "/run/user/1000/wayland-3",
             "the app must be pointed at THIS compositor's socket"
+        );
+        assert_eq!(
+            cmd.args[pos("--render-node") + 1],
+            "/dev/dri/renderD128",
+            "the app must be pointed at THIS compositor's GPU"
+        );
+    }
+
+    /// A machine where no render node resolved launches the app with no
+    /// `--render-node` at all — an empty or invented value would pin the
+    /// loaders to nothing, which both loaders read as "no drivers".
+    #[test]
+    fn launch_command_omits_the_render_node_when_none_resolved() {
+        let app = InstalledApp {
+            package_id: "dev.qos.hello".into(),
+            display_name: "Hello".into(),
+            category: None,
+            version: "0.1.0".into(),
+            manifest_path: PathBuf::from("/apps/hello/manifest.toml"),
+            payload_root: PathBuf::from("/apps/hello"),
+            has_gui: true,
+        };
+        let cmd = build_launch_command(
+            &app,
+            Path::new("/usr/bin/qos-launcher"),
+            Path::new("/run/user/1000/wayland-3"),
+            WorkspaceId(3),
+            None,
+            None,
+        );
+        assert!(
+            !cmd.args.iter().any(|a| a == "--render-node"),
+            "no node resolved must mean no flag: {:?}",
+            cmd.args
         );
     }
 
@@ -1066,6 +1117,27 @@ mod tests {
                 .any(|a| a.ends_with("payloads/dev.qos.hello/manifest.toml")),
             "the resolved manifest path is passed through: {argv:?}"
         );
+        // The compositor's GPU choice reaches the launcher through the
+        // real `launch()` path, not just through the pure builder. On a
+        // machine with no render node there is nothing to forward, and
+        // the flag must then be absent rather than empty.
+        match crate::compositor::render_node::resolved() {
+            Some(node) => {
+                let pos = argv
+                    .iter()
+                    .position(|a| *a == "--render-node")
+                    .unwrap_or_else(|| panic!("--render-node missing from {argv:?}"));
+                assert_eq!(
+                    argv[pos + 1],
+                    node.display().to_string(),
+                    "the app must be launched on the compositor's own node"
+                );
+            }
+            None => assert!(
+                !argv.contains(&"--render-node"),
+                "no node resolved must mean no flag: {argv:?}"
+            ),
+        }
     }
 
     /// The launch history is process-global (one session, one history),
@@ -1129,6 +1201,7 @@ mod tests {
             Path::new("/run/user/1000/wayland-3"),
             WorkspaceId(3),
             None,
+            None,
         );
         assert!(
             cmd.args
@@ -1152,6 +1225,7 @@ mod tests {
             Path::new("/run/user/1000/wayland-3"),
             WorkspaceId(3),
             Some(Path::new("/run/user/1000/qos/capabilities/dev.qos.books.json")),
+            None,
         );
         let pos = cmd
             .args
