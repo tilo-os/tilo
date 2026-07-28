@@ -167,6 +167,42 @@ empty state proves nothing. (I violated this by showing pdf_viewer from an empty
 - [x] Advanced options scroll into view → fixed.
 - [x] Vault encrypted at rest → fixed.
 
+## settings — CLEAR (every pane shot + inspected, controls driven against the real stores)
+- [x] Sidebar is HIG §1 correct and stays that way: when it fits it is docked
+      flush-left with the search field pinned on top and NO collapse button; when
+      it doesn't fit (narrow) the list and content become SEPARATE full-screen
+      screens with a top-left back arrow — never an overlay/scrim over content.
+      Verified all 16 panes wide + the narrow list and narrow content screens.
+- [x] Cards sit on one aligned grid in every pane (consistent left/right inset and
+      gap) — no "weird rounded cards that don't line up". Verified across all panes.
+- [x] Wi-Fi signal icon was a tofu box → fixed: the Unicode block-element bars
+      (▁▂▄▆█) have no glyph in the shipped fonts and fell back to a `.notdef`
+      box; replaced with the MDI `wifi-strength-{outline,1,2,3,4}` family the
+      sidebar's own Network icon uses. Verified by re-render (real signal arcs, no
+      tofu) + a unit test pinning the glyph mapping to the MDI range.
+- [x] External Accounts no longer leaks the on-disk store path in the UI (the
+      "Accounts store: ~/.config/qos/accounts/store.json" caption is removed) —
+      HIG §4. Verified by re-render.
+- [x] No fabricated sample data in the live app: Users reads the real /etc/passwd
+      roster (no Ada-Lovelace fallback) and External Accounts starts empty (no
+      illustrative ada@example.com rows) — honest empty states; the sample is kept
+      only for tests/--shots. Verified: the live `new()` path over an empty store
+      renders empty (unit test with a redirected config dir) and the production
+      roster never returns the sample.
+- [x] Every pane reads/writes real state, driven and asserted (no mocks):
+      Appearance / Region & Formats / Power / Display / Mouse & Keyboard / Updates
+      persist to the shared settings.json (prefs_persistence + per-pane sync
+      tests); Network / Bluetooth / Sound / Time & Date drive real nmcli /
+      bluetoothctl / wpctl / timedatectl through os-actions; External Accounts
+      add/remove writes the shared AccountStore + SecretVault (accounts_mail_loop
+      end-to-end); About / Users / Printers / Displays read real /proc, /etc, /sys,
+      and DRM connectors.
+- [ ] Follow-up (not a defect): the committed `apps/settings/shots/*.png` fixtures
+      are stale (predate the search-on-top sidebar) — regenerate in a personal-data
+      -free environment (they must not bake in a real box's Wi-Fi/BT/email).
+- [ ] Follow-up: Permissions & Roles is an honest read-only overview; the embedded
+      role/permission editor is still gated on the permissions service.
+
 ## slides (presentation) — CLEAR (verified, committed 6c2e54b)
 - [x] Thumbnail body-text garble, present counter/hint overlap, overview badge
       overlap → fixed.
