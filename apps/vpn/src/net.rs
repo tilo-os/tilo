@@ -305,4 +305,67 @@ YmF6cXV1eDExMTExMTExMTExMTExMTExMTExMTExMTE=\t500\t250
             None => { /* `ip` binary unavailable on this box — honestly unknown */ }
         }
     }
+
+    /// Run `ip <args>` and report whether it succeeded (used to bring a real
+    /// dummy interface up/down for the end-to-end probe test).
+    fn ip(args: &[&str]) -> bool {
+        Command::new("ip")
+            .args(args)
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    }
+
+    #[test]
+    #[serial_test::serial(vpn_env)]
+    fn bring_up_is_real_or_honestly_gated() {
+        use crate::config::{self, Backend};
+        use crate::model::ConnKind;
+
+        // A WireGuard tunnel with an imported config resolves to iface `qtest0`
+        // and the real bring-up command references that exact file.
+        let mut conn = Connection::new("qtest0", ConnKind::WireGuard);
+        conn.config_path = Some("/tmp/qos-vpn-test/qtest0.conf".into());
+        assert_eq!(config::iface_name(&conn), "qtest0");
+        let plan = config::connect_plan(&conn, Backend::WgQuick);
+        assert_eq!(plan.program, "wg-quick");
+        assert_eq!(plan.args, vec!["up", "/tmp/qos-vpn-test/qtest0.conf"]);
+
+        // REAL end-to-end, but only when the operator has opted in AND the box
+        // can create a network interface (root + iproute2). We stand up a real
+        // dummy interface named like the tunnel, then assert the status and
+        // byte-counter probes read the real kernel state — no fabrication. On
+        // a box without those privileges this branch is honestly skipped; the
+        // gated-refusal assertion below still proves the safety boundary.
+        if config::exec_allowed()
+            && ip(&["link", "add", "qtest0", "type", "dummy"])
+        {
+            assert!(ip(&["link", "set", "qtest0", "up"]), "bring the dummy iface up");
+            // The status probe now sees a real, UP interface.
+            assert_eq!(
+                probe_status(&conn),
+                Some(true),
+                "a real up interface must probe as connected"
+            );
+            // And its real byte counters are readable from sysfs.
+            let xfer = read_transfer(&conn).expect("real interface has kernel counters");
+            let _ = xfer; // values are real; presence is the assertion.
+            // Tear it down and confirm the probe flips to Disconnected.
+            assert!(ip(&["link", "del", "qtest0"]), "delete the dummy iface");
+            assert_eq!(
+                probe_status(&conn),
+                Some(false),
+                "a deleted interface must probe as disconnected"
+            );
+        }
+
+        // Gated-refusal: with execution disabled, the mutating command must be
+        // refused — the UI can never claim connected without a real success.
+        unsafe { std::env::remove_var("QOS_VPN_ALLOW_EXEC") };
+        let refused = config::execute(&plan);
+        assert!(
+            refused.is_err() && refused.unwrap_err().contains("execution disabled"),
+            "bring-up must be refused while execution is gated off"
+        );
+    }
 }
