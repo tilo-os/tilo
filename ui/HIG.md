@@ -74,6 +74,40 @@ list (overview) + the message (detail).
     overview is full-screen and the detail slides over from the right with a back
     button.
 
+### 1e. Immersive / full-bleed apps  (no sidebar at all)
+
+Some apps are **not** content-and-navigation apps — their primary surface *is*
+the window. A **camera** viewfinder, a **video/media player**, **maps**, a
+**game**: the live surface must fill the window edge-to-edge, uninterrupted.
+These apps are a distinct class and **do not get the content-app sidebar** (§1a)
+or the desktop overview/detail split (§1b).
+
+- **Full-bleed surface.** The viewfinder / video / map fills the window to every
+  edge. Do **not** dock a rail, sidebar, or app-title header beside it, and do
+  **not** draw the app's own logo/brand mark — the OS owns window chrome
+  (see "OS owns window chrome").
+- **Controls float over the surface.** Capture/playback controls are translucent
+  glass overlays anchored to the edges (top strip for capture settings,
+  bottom-centre for the primary action + mode switch, corners for
+  secondary actions), kept legible with a soft scrim rather than an opaque panel.
+  When idle they may fade; they never box the surface in.
+- **Secondary screens are pushes or sheets, not rail destinations.** A library /
+  gallery is **pushed** over the surface with a **back button top-left**
+  (§1b push navigation); settings and pickers are **overlay sheets** with a
+  scrim and a close affordance. They are summoned *from* the surface (a
+  thumbnail, a gear) and dismissed back *to* it — they are never persistent
+  navigation chrome.
+- **A mode switch is not a sidebar.** If the app has peer modes (photo / video /
+  scan; play / browse), express them as a compact bottom-centre segmented
+  switcher over the surface — not as a vertical list of destinations.
+
+> How to tell the classes apart: if the window's job is to *show a live/edge-to-
+> edge surface the user acts through*, it is immersive (§1e). If the window's job
+> is to *navigate between and read destinations/content*, it is a content app
+> (§1a/§1b). A camera with a Camera/Gallery/Settings rail down the left is the
+> canonical mistake — it turns an immersive app into a content app and crowds the
+> viewfinder.
+
 ---
 
 ## 2. Expandable rich-field cards
