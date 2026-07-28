@@ -163,7 +163,11 @@ pub fn begin_export(_project: &Project, _settings: &ExportSettings) -> ExportSta
     }
     #[cfg(not(feature = "gst"))]
     {
-        ExportStatus::Rendering { progress: 0.0 }
+        // No encoder is wired into the default build, so be honest rather than
+        // faking a progress bar that never completes.
+        ExportStatus::Failed {
+            reason: "Export isn't available yet".to_string(),
+        }
     }
 }
 
@@ -203,14 +207,19 @@ mod tests {
     }
 
     #[test]
-    fn default_build_stages_a_rendering_status() {
+    fn default_build_reports_export_unavailable() {
         let p = Project::new("t");
         let s = ExportSettings::default();
-        // Without the gst feature, begin_export returns a live progress
-        // state the dialog can animate.
+        // Without the gst feature no encoder is wired in, so begin_export must
+        // be honest — a clear "unavailable" status, never a faked progress bar.
         match begin_export(&p, &s) {
-            ExportStatus::Rendering { progress } => assert_eq!(progress, 0.0),
-            other => panic!("unexpected status {other:?}"),
+            ExportStatus::Failed { reason } => {
+                assert!(
+                    reason.to_lowercase().contains("available"),
+                    "the failure names export as unavailable, got {reason:?}",
+                );
+            }
+            other => panic!("expected an honest unavailable status, got {other:?}"),
         }
     }
 }
