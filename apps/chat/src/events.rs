@@ -338,17 +338,7 @@ impl ChatApp {
                     self.sync_local_voice(doc);
                 }
             }
-            Hit::CallShareScreen => {
-                // Toggle the real portal ScreenCast share (permission-gated
-                // inside `share_screen`). Starting it prompts the user via
-                // xdg-desktop-portal; there is nothing to fabricate when the
-                // portal is unavailable.
-                if self.sharing_screen() {
-                    self.stop_screen_share();
-                } else {
-                    self.share_screen();
-                }
-            }
+            Hit::CallShareScreen => self.toggle_screen_share(doc),
             Hit::CallExpand => {
                 self.call.expanded = !self.call.expanded;
                 self.request_relayout();
@@ -425,6 +415,38 @@ impl ChatApp {
         self.call.leave();
         self.sound.leave();
         self.request_relayout();
+    }
+
+    /// Toggle this peer's screen share. Starting one asks the portal seam for a
+    /// source (real xdg-desktop-portal picker behind `live-media`, honest `None`
+    /// otherwise) via [`ChatApp::acquire_screen`]; only a granted source flips
+    /// `call.sharing` and mirrors it into the shared voice membership, so remote
+    /// peers reserve the featured tile. Stopping tears the capture down and
+    /// clears the shared flag. A relayout follows because the featured stage
+    /// re-slots the participant tiles (and the host video node).
+    fn toggle_screen_share(&mut self, doc: &mut AutoCommit) {
+        if !self.call.active {
+            return;
+        }
+        if self.call.sharing {
+            self.call.sharing = false;
+            self.release_screen();
+            self.sync_local_sharing(doc);
+            self.request_relayout();
+        } else if self.acquire_screen() {
+            self.call.sharing = true;
+            self.sync_local_sharing(doc);
+            self.request_relayout();
+        }
+    }
+
+    /// Mirror this peer's screen-share state into the shared voice membership.
+    fn sync_local_sharing(&mut self, doc: &mut AutoCommit) {
+        if !self.call.active {
+            return;
+        }
+        let ch = self.call.channel.clone();
+        ChatDoc::voice_set_sharing(doc, &ch, &self.me.id, self.call.sharing);
     }
 
     /// Mirror this peer's local mic/deafen/audio-only state into the shared
@@ -1514,6 +1536,110 @@ mod tests {
         app.on_hit(Hit::CallMute, &mut doc);
         assert!(app.call.muted, "local state flipped");
         assert!(me_muted(&doc), "muting is mirrored into the shared voice membership");
+    }
+
+    // --- screen share (portal seam + presentation stage) ----------------
+
+    fn me_sharing(doc: &AutoCommit, channel: &str) -> bool {
+        ChatDoc::list_voice_members(doc, channel)
+            .into_iter()
+            .find(|m| m.user == model::ME)
+            .map(|m| m.sharing)
+            .unwrap_or(false)
+    }
+
+    #[test]
+    fn share_screen_gates_on_the_portal_and_mirrors_into_voice_membership() {
+        let (mut app, mut doc) = app_with_doc();
+        app.on_hit(Hit::Channel("c_huddle".into()), &mut doc); // join the huddle
+        assert!(app.call.active);
+
+        // Honest gating: the default system portal grants nothing headless, so
+        // hitting the control starts no share and records nothing.
+        app.on_hit(Hit::CallShareScreen, &mut doc);
+        assert!(!app.sharing_screen(), "no portal source → no share (honest gating)");
+        assert!(!me_sharing(&doc, "c_huddle"), "nothing is recorded when the portal declines");
+
+        // Inject a portal that grants a source: the whole share flow runs and is
+        // mirrored into the shared voice membership so peers reserve the tile.
+        app.portal = Box::new(crate::call::FakePortal(Some(crate::call::ScreenSource {
+            node: 42,
+            width: 1280,
+            height: 720,
+        })));
+        app.on_hit(Hit::CallShareScreen, &mut doc);
+        assert!(app.sharing_screen(), "a granted portal source starts the share");
+        assert!(me_sharing(&doc, "c_huddle"), "the share is mirrored into the shared voice membership");
+
+        // Toggling again stops the share and clears the shared flag.
+        app.on_hit(Hit::CallShareScreen, &mut doc);
+        assert!(!app.sharing_screen(), "toggling again stops the share");
+        assert!(!me_sharing(&doc, "c_huddle"), "stopping clears the shared flag");
+    }
+
+    #[test]
+    fn a_remote_screen_share_promotes_the_overlay_to_the_presentation_stage() {
+        use crate::render_call::CallStage;
+        use vello::kurbo::Rect;
+        let (mut app, mut doc) = app_with_doc();
+        app.on_hit(Hit::Channel("c_huddle".into()), &mut doc);
+        app.on_hit(Hit::CallExpand, &mut doc);
+        app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+
+        // No one sharing yet → a uniform participant grid.
+        assert!(app.screen_sharer().is_none());
+        assert!(matches!(app.overlay_stage(), CallStage::Grid(_)), "no share is a plain grid");
+
+        // A remote announces a screen share over the shared voice membership.
+        ChatDoc::voice_set_sharing(&mut doc, "c_huddle", "u_aria", true);
+        app.reload(&doc);
+        assert_eq!(app.screen_sharer().as_deref(), Some("u_aria"), "the sharer is read from the CRDT");
+
+        match app.overlay_stage() {
+            CallStage::Share { screen, strip } => {
+                // Host + three remotes ride the filmstrip; the featured screen
+                // dominates it and everything stays inside the content region.
+                assert_eq!(strip.len(), 4, "host + three remotes fill the filmstrip");
+                assert!(screen.height() > strip[0].height(), "the featured screen dominates the stage");
+                let region = app.overlay_content_region();
+                for t in strip.iter().chain(std::iter::once(&screen)) {
+                    assert!(
+                        t.x0 >= region.x0 - 0.5 && t.x1 <= region.x1 + 0.5
+                            && t.y0 >= region.y0 - 0.5 && t.y1 <= region.y1 + 0.5,
+                        "a stage tile escaped the content region"
+                    );
+                }
+            }
+            CallStage::Grid(_) => panic!("a screen share must promote the overlay to the presentation stage"),
+        }
+    }
+
+    #[test]
+    fn share_control_reads_the_live_share_state() {
+        // The expanded controls surface a real Share/Stop toggle whose active
+        // state tracks `sharing_screen()` — driven by the portal grant, not a
+        // fabricated flag.
+        let (mut app, mut doc) = app_with_doc();
+        app.on_hit(Hit::Channel("c_huddle".into()), &mut doc);
+        app.on_hit(Hit::CallExpand, &mut doc);
+        let (_, buttons) = app.overlay_controls_layout();
+        let share = buttons.iter().find(|(_, _, _, h, _)| matches!(h, Hit::CallShareScreen));
+        let (label, active, ..) = share.expect("the expanded controls include a screen-share button");
+        assert_eq!(*label, "Share screen");
+        assert!(!*active, "not sharing → the control reads inactive 'Share screen'");
+        app.portal = Box::new(crate::call::FakePortal(Some(crate::call::ScreenSource {
+            node: 7,
+            width: 800,
+            height: 600,
+        })));
+        app.on_hit(Hit::CallShareScreen, &mut doc);
+        let (_, buttons) = app.overlay_controls_layout();
+        let (label, active, ..) = buttons
+            .iter()
+            .find(|(_, _, _, h, _)| matches!(h, Hit::CallShareScreen))
+            .expect("share button present");
+        assert_eq!(*label, "Stop share", "sharing flips the control to 'Stop share'");
+        assert!(*active, "sharing → the control reads active");
     }
 
     // --- header Call button (was unreachable without a voice channel) ---
