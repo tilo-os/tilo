@@ -58,6 +58,11 @@ pub struct ConnectionProfile {
     pub port: u16,
     pub database: String,
     pub user: String,
+    /// Network engines: password used to authenticate. Held in memory only —
+    /// `#[serde(skip)]` keeps it out of the on-disk profile so plaintext
+    /// secrets are never persisted; the user re-enters it per session.
+    #[serde(skip, default)]
+    pub password: String,
     /// SQLite file path (or `:memory:` for the bundled sample).
     pub file_path: String,
     /// Whether a live handle is currently open for this profile.
@@ -80,6 +85,7 @@ impl ConnectionProfile {
             database: "main".to_string(),
             file_path: ":memory:".to_string(),
             user: String::new(),
+            password: String::new(),
             connected: true,
             is_sample: true,
         }
@@ -94,6 +100,7 @@ impl ConnectionProfile {
             port: engine.default_port(),
             database: String::new(),
             user: String::new(),
+            password: String::new(),
             file_path: String::new(),
             connected: false,
             is_sample: false,
