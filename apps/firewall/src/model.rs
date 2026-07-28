@@ -61,6 +61,14 @@ impl ZoneKind {
         }
     }
 
+    /// Resolve a firewalld zone name back to a [`ZoneKind`]. Returns `None`
+    /// for custom zones the model doesn't represent (only the nine stock
+    /// zones are modelled), so an import skips anything non-standard rather
+    /// than mislabelling it.
+    pub fn from_name(name: &str) -> Option<ZoneKind> {
+        ZoneKind::ALL.iter().copied().find(|z| z.name() == name)
+    }
+
     /// One-line description shown under the zone title in the summary.
     pub fn description(self) -> &'static str {
         match self {
@@ -311,6 +319,18 @@ pub struct FirewallConfig {
 }
 
 impl FirewallConfig {
+    /// An empty configuration — no zones, firewall reported as stopped.
+    /// Used as the honest fallback when firewalld cannot be read, so the
+    /// live app never displays a fabricated ruleset.
+    pub fn empty() -> Self {
+        FirewallConfig {
+            enabled: false,
+            panic_mode: false,
+            default_zone: ZoneKind::Public,
+            zones: Vec::new(),
+        }
+    }
+
     pub fn zone(&self, kind: ZoneKind) -> Option<&Zone> {
         self.zones.iter().find(|z| z.kind == kind)
     }
