@@ -70,7 +70,7 @@ use std::process::{Command, Stdio};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use crate::shell::state::{CapOverride, Subject, Workspace, WorkspaceId};
+use crate::shell::state::{CapOverride, RoomId, Subject, Workspace};
 
 /// How long an enumeration of installed packages is reused before the
 /// registry + manifests are re-read. The palette queries this on every
@@ -521,19 +521,25 @@ pub fn resolve_launcher_bin() -> Result<PathBuf, LaunchError> {
 // ---------------------------------------------------------------------
 
 /// Render the `qos-launcher` invocation for `app`, launched into
-/// `workspace`.
+/// `room`.
 ///
 /// Pure — no I/O, no spawning — so tests can assert on the exact command
 /// the production path builds.
 ///
-/// `workspace` is the room the app is being opened into. It rides in as
-/// `--workspace-id`, which the launcher turns into `QOS_WORKSPACE_ID`
-/// inside the sandbox and the toolkit turns into the collaboration
-/// cluster every CRDT delta is addressed to. Without it an app has no
-/// room, so two apps the user opened side by side would never see each
-/// other's edits — which is why this is a required argument rather than
-/// an option: there is no such thing as launching an app into no
-/// workspace from the compositor.
+/// `room` is the durable identity of the workspace the app is being
+/// opened into, **not** its local [`crate::shell::state::WorkspaceId`].
+/// It rides in as `--workspace-id`, which the launcher turns into
+/// `QOS_WORKSPACE_ID` inside the sandbox and the toolkit turns into the
+/// collaboration cluster every CRDT delta is addressed to. Taking the
+/// room rather than the local handle is what lets a peer's app and ours
+/// land in the same cluster: the local handle differs on every machine,
+/// so an app launched from it could only ever collaborate with apps on
+/// this one.
+///
+/// Without it an app has no room, so two apps the user opened side by
+/// side would never see each other's edits — which is why this is a
+/// required argument rather than an option: there is no such thing as
+/// launching an app into no workspace from the compositor.
 ///
 /// `capabilities_file` is the path [`write_capabilities_file`] produced,
 /// or `None` when the app was granted nothing. `None` emits no
@@ -548,7 +554,7 @@ pub fn build_launch_command(
     app: &InstalledApp,
     launcher_bin: &Path,
     wayland_socket: &Path,
-    workspace: WorkspaceId,
+    room: RoomId,
     capabilities_file: Option<&Path>,
 ) -> LaunchCommand {
     let mut args = vec![
@@ -560,7 +566,7 @@ pub fn build_launch_command(
         "--wayland-socket".to_string(),
         wayland_socket.display().to_string(),
         "--workspace-id".to_string(),
-        workspace.collab_cluster_id().to_string(),
+        room.to_string(),
         // The identity capabilities are addressed to. Always passed, so
         // the launcher checks every capability against this id instead
         // of trusting the file to have been filtered for it.
@@ -589,16 +595,16 @@ pub fn build_launch_command(
     }
 }
 
-/// Resolve `package_id` and start it in `workspace`, with whatever the
+/// Resolve `package_id` and start it in `room`, with whatever the
 /// published workspace granted it.
 ///
 /// Returns as soon as the launch is handed to its worker thread — it
 /// never waits for the app to appear. The `Ok` value is the resolved
 /// app, so callers can name it in their UI without a second lookup.
 ///
-/// `workspace` is the caller's active workspace; it becomes the app's
-/// collaboration room (see [`build_launch_command`]).
-pub fn launch(package_id: &str, workspace: WorkspaceId) -> Result<InstalledApp, LaunchError> {
+/// `room` is the durable identity of the caller's active workspace; it
+/// becomes the app's collaboration room (see [`build_launch_command`]).
+pub fn launch(package_id: &str, room: RoomId) -> Result<InstalledApp, LaunchError> {
     let app = installed_apps()?
         .into_iter()
         .find(|a| a.package_id == package_id)
@@ -635,7 +641,7 @@ pub fn launch(package_id: &str, workspace: WorkspaceId) -> Result<InstalledApp, 
         &app,
         &launcher_bin,
         &socket,
-        workspace,
+        room,
         capabilities_file.as_deref(),
     );
     remember_launch(&app);
@@ -653,7 +659,7 @@ pub fn launch_in_workspace(
     workspace: &Workspace,
 ) -> Result<InstalledApp, LaunchError> {
     set_workspace_capabilities(workspace.capabilities.clone());
-    launch(package_id, workspace.id)
+    launch(package_id, workspace.room)
 }
 
 /// Run `command` on a worker thread and report the outcome through
