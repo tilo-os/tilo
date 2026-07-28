@@ -57,12 +57,7 @@ impl MergeDoc {
     /// CRDT records a minimal edit rather than a full rewrite.
     pub fn set_merged(doc: &mut AutoCommit, text: &str) {
         let id = Self::merged_text_obj(doc);
-        let cur = doc.text(&id).unwrap_or_default();
-        if cur == text {
-            return;
-        }
-        let cur_chars = cur.chars().count() as isize;
-        let _ = doc.splice_text(&id, 0, cur_chars, text);
+        ui::doc::splice_text_diffed(doc, &id, text);
     }
 
     /// Read the loaded session label, if any.
@@ -104,6 +99,35 @@ mod tests {
         assert_eq!(before, doc.get_heads(), "identical set must not commit");
         MergeDoc::set_merged(&mut doc, "a\nB\nc\n");
         assert_eq!(MergeDoc::merged_text(&doc), "a\nB\nc\n");
+    }
+
+    #[test]
+    fn resolving_hunks_does_not_rewrite_the_whole_buffer() {
+        // Re-resolving a hunk hands `set_merged` the entire composed output.
+        // Rewriting it wholesale costs O(len) ops and leaves O(len) tombstones
+        // per resolve; the buffer must grow with the *edited span* instead.
+        let mut doc = AutoCommit::new();
+        let body: String = (0..400).map(|i| format!("line {i}\n")).collect();
+        MergeDoc::set_merged(&mut doc, &body);
+        let baseline = doc.save().len();
+
+        // 40 resolves, each flipping one line in the middle of the buffer.
+        for i in 0..40 {
+            let edited = body.replacen("line 200\n", &format!("line 200 v{i}\n"), 1);
+            MergeDoc::set_merged(&mut doc, &edited);
+        }
+        let grown = doc.save().len() - baseline;
+
+        assert_eq!(
+            MergeDoc::merged_text(&doc),
+            body.replacen("line 200\n", "line 200 v39\n", 1),
+            "the buffer must still hold the last resolution exactly"
+        );
+        assert!(
+            grown < baseline / 4,
+            "40 one-line resolves grew the document by {grown} bytes against a \
+             {baseline}-byte buffer — set_merged is rewriting the whole text"
+        );
     }
 
     #[test]

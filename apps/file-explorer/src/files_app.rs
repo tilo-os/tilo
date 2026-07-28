@@ -1400,8 +1400,7 @@ impl Widget for FileExplorerWidget {
 
         // A just-started rename seeds the field with the entry's current name.
         if self.rename_seed_pending {
-            let cur_len = state.text(&rename_obj).map(|t| t.chars().count()).unwrap_or(0);
-            let _ = state.splice_text(&rename_obj, 0, cur_len as isize, &self.rename_buffer);
+            ui::doc::splice_text_diffed(state, &rename_obj, &self.rename_buffer);
             self.rename_seed_pending = false;
         }
 
@@ -2000,6 +1999,45 @@ mod command_path_tests {
         assert!(!w.is_renaming(), "commit closes the rename bar");
         assert!(d.path().join("new.txt").exists(), "file renamed on disk");
         assert!(!d.path().join("old.txt").exists());
+    }
+
+    #[test]
+    fn reseeding_the_rename_field_splices_only_the_changed_span() {
+        // Every rename re-seeds the *same* backing Text object with the new
+        // entry's name. Clearing and refilling it tombstones the whole name
+        // each time, so a session that renames a few dozen files pays for all
+        // of them forever.
+        let d = tempfile::tempdir().unwrap();
+        for i in 0..40 {
+            std::fs::write(d.path().join(format!("report-{i:03}.txt")), b"x").unwrap();
+        }
+        let mut w = FileExplorerWidget::new();
+        w.navigate(d.path().to_path_buf());
+
+        let mut doc = automerge::AutoCommit::new();
+        let root = automerge::ROOT;
+        // First seed creates the object; measure growth from there.
+        w.set_rename_buffer("report-000.txt".into());
+        w.sync(&mut doc, &root);
+        let baseline = doc.save().len();
+
+        for i in 1..40 {
+            w.set_rename_buffer(format!("report-{i:03}.txt"));
+            w.sync(&mut doc, &root);
+        }
+        let grown = doc.save().len() - baseline;
+
+        let obj = ensure_text_obj(&mut doc, &root, RENAME_QUERY_PATH);
+        assert_eq!(
+            doc.text(&obj).unwrap(),
+            "report-039.txt",
+            "the field must hold the last seeded name"
+        );
+        assert!(
+            grown < 39 * "report-000.txt".len(),
+            "39 rename re-seeds grew the document by {grown} bytes — the seed is \
+             rewriting the whole field instead of splicing the diff"
+        );
     }
 
     #[test]
