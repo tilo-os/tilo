@@ -226,6 +226,18 @@ const MB: u64 = 1024 * 1024;
 const TB: u64 = 1024 * GB;
 
 impl Catalog {
+    /// An empty catalog — no sources, snapshots, or destinations. This is the
+    /// real first-run state: the live app starts here and shows onboarding
+    /// until the user adds a source + destination (a real btrfs/restic backend
+    /// is a later task).
+    pub fn empty() -> Self {
+        Self {
+            sources: Vec::new(),
+            snapshots: Vec::new(),
+            destinations: Vec::new(),
+        }
+    }
+
     /// Synthesise a realistic week of backups across three sources and three
     /// destinations. Deterministic, so the offline screenshot is stable.
     pub fn sample() -> Self {

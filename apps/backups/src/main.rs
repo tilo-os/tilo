@@ -25,7 +25,14 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let args: Vec<String> = std::env::args().collect();
     if let Some(out) = parse_shots_arg(&args) {
-        render_shot_to_png(backups::app_root(), DEFAULT_SHOTS_VIEWPORT, &out)?;
+        // Screenshots render the sample catalog; `--empty` renders the real
+        // live first-run (empty → onboarding) for verification.
+        let root = if args.iter().any(|a| a == "--empty") {
+            backups::app_root()
+        } else {
+            backups::app_root_demo()
+        };
+        render_shot_to_png(root, DEFAULT_SHOTS_VIEWPORT, &out)?;
         return Ok(());
     }
 
