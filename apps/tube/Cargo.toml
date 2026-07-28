@@ -19,27 +19,27 @@ ui = { path = "../../ui" }
 # preview use. Real GStreamer decode is behind this crate's `decode` feature,
 # pulled in by Tube's own `media` feature below.
 media = { path = "../../crates/media" }
-automerge = "0.8.0"
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-uuid = { version = "1.23.1", features = ["v4", "serde"] }
-tracing = "0.1"
-tracing-subscriber = "0.3"
-vello = "0.9"
-winit = "0.30.13"
-taffy = "0.10.1"
-anyhow = "1.0"
+automerge.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+vello.workspace = true
+winit.workspace = true
+taffy.workspace = true
+anyhow.workspace = true
 # Live fetch (Invidious / SponsorBlock / DeArrow). Blocking client driven
 # from a background worker thread; never touched on the `--shots` path.
 # rustls-tls because the distrobox image has no openssl/native-tls.
-reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+reqwest = { workspace = true, features = ["blocking", "json", "rustls-tls"] }
 # H.264 decode for real video playback. Same pin + `source` feature as `ui`'s
 # `VideoPlayer`, so this reuses the already-compiled artifact (no extra build).
 # Tube drives the decoder directly (not through `VideoPlayer`) so it can disable
 # openh264's default flush-after-every-decode — that default flushes a frame per
 # call, prematurely releasing the reference frames P-slices depend on and
 # cascading into dsRefLost errors that drop ~95% of a real stream's frames.
-openh264 = { version = "0.9", features = ["source"] }
+openh264.workspace = true
 
 # --- live YouTube backend (off by default) ---------------------------------
 # rustypipe is a pure-Rust InnerTube client (search/channel/video/streams/
@@ -52,10 +52,10 @@ openh264 = { version = "0.9", features = ["source"] }
 # distrobox build image has no OpenSSL, and it keeps the TLS stack identical to
 # the `reqwest` above (one rustls, no openssl-sys). webpki-roots bundles the
 # Mozilla CA set so YouTube's chain verifies with zero system trust store.
-rustypipe = { version = "0.11", optional = true, default-features = false, features = ["rustls-tls-webpki-roots"] }
+rustypipe = { workspace = true, optional = true, features = ["rustls-tls-webpki-roots"] }
 # `rt-multi-thread` so the live backend's runtime can drive rustypipe's internal
 # `tokio::spawn` (visitor-data prefetch) — a current-thread runtime cannot.
-tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "time"], optional = true }
+tokio = { workspace = true, optional = true, features = ["rt", "rt-multi-thread", "macros", "time"] }
 
 # --- Grayjay device sync (Noise Protocol Framework) — off by default --------
 # Real interop with a phone/desktop running Grayjay's "Sync" feature. The wire
@@ -69,8 +69,8 @@ tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "time"],
 # All three are gated behind `grayjay-sync`: the default build (and every
 # `--shots`/hermetic test run) never pulls in a network/Noise/socket stack.
 snow = { version = "0.9", optional = true }
-flate2 = { version = "1", optional = true }
-base64 = { version = "0.22", optional = true }
+flate2 = { workspace = true, optional = true }
+base64 = { workspace = true, optional = true }
 
 # --- GStreamer decode/playback — off by default -----------------------------
 # Real video playback (VP9 / AV1 / H.264 + audio, adaptive) through GStreamer:
@@ -83,19 +83,19 @@ base64 = { version = "0.22", optional = true }
 # retained behind the `live` path only as a legacy fallback). Gated behind
 # `media` so the default build (and every `--shots`/test run) never links the
 # gstreamer-1.0 dev stack.
-gstreamer = { version = "0.24", optional = true }
-gstreamer-app = { version = "0.24", optional = true }
-gstreamer-video = { version = "0.24", optional = true }
+gstreamer = { workspace = true, optional = true }
+gstreamer-app = { workspace = true, optional = true }
+gstreamer-video = { workspace = true, optional = true }
 
 [dev-dependencies]
 # Encoding-level assertions in the video-surface test: prove a decoded frame
 # actually emits an IMAGE draw command into the scene (mirrors ui's own
 # VideoPlayer paint test). Same version as the `vello` above.
-vello_encoding = "0.9"
+vello_encoding.workspace = true
 # Encode a tiny valid PNG so a test can seed the `ui::ImageStore` with a
 # decodable thumbnail (no network) and prove a search-result row paints the real
 # still. Same crate ui uses for the equivalent image-store test.
-png = "0.17"
+png.workspace = true
 
 [features]
 default = []
