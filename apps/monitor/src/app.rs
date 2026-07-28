@@ -1454,7 +1454,7 @@ impl MonitorApp {
         self.hit.sort_headers.clear();
         let hdr_clip = Rect::new(band.x0, hdr.y0, band.x1, hdr.y1);
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &hdr_clip);
-        for col in columns {
+        for col in &columns {
             let x0 = col_abs(col.x0);
             let active = self.sort_key == col.key;
             let color = if active { c.text_primary } else { c.text_dim };
@@ -1520,10 +1520,16 @@ impl MonitorApp {
                 let x = if col.right { x0 + col.w - sw as f64 - 6.0 } else { x0 + 2.0 };
                 tr.draw_text_weighted(scene, &s, fs, color, t * Affine::translate((x, ty)), None, weight);
             };
-            cell(tr, scene, &p.pid.to_string(), &columns[0], txt, TextWeight::Regular);
+            // Look a column up by key — the set is now width-dependent (USER is
+            // dropped at narrow widths), so cells are addressed by identity, not
+            // a fixed index.
+            let column = |k: SortKey| columns.iter().find(|c| c.key == k);
+            if let Some(col) = column(SortKey::Pid) {
+                cell(tr, scene, &p.pid.to_string(), col, txt, TextWeight::Regular);
+            }
 
             // NAME column: tree indent + twisty + name, all in the NAME band.
-            let name_col = &columns[1];
+            let name_col = column(SortKey::Name).expect("NAME column is always shown");
             let indent = p.depth as f64 * TREE_INDENT;
             let name_x0 = col_abs(name_col.x0) + 2.0 + indent;
             if self.tree_mode && p.has_children {
@@ -1543,15 +1549,23 @@ impl MonitorApp {
             let label = Self::truncate(tr, &p.name, fs, name_avail);
             tr.draw_text_weighted(scene, &label, fs, name_color, t * Affine::translate((text_x0, ty)), None, TextWeight::Medium);
 
-            cell(tr, scene, &p.user, &columns[2], txt, TextWeight::Regular);
+            if let Some(col) = column(SortKey::User) {
+                cell(tr, scene, &p.user, col, txt, TextWeight::Regular);
+            }
             // CPU% coloured by load. A collapsed parent's summed total can
             // exceed 100% (multi-core); colour against a single core's scale
             // but clamp the hue so a hot subtree reads as fully loaded.
             let cpu_frac = (p.cpu / 100.0).clamp(0.0, 1.0);
             let cpu_col = if p.cpu >= 1.0 { charts::load_color(theme, cpu_frac) } else { txt };
-            cell(tr, scene, &format!("{:.1}", p.cpu), &columns[3], cpu_col, TextWeight::Medium);
-            cell(tr, scene, &fmt_bytes(p.mem_bytes), &columns[4], txt, TextWeight::Regular);
-            cell(tr, scene, &p.threads.to_string(), &columns[5], txt, TextWeight::Regular);
+            if let Some(col) = column(SortKey::Cpu) {
+                cell(tr, scene, &format!("{:.1}", p.cpu), col, cpu_col, TextWeight::Medium);
+            }
+            if let Some(col) = column(SortKey::Mem) {
+                cell(tr, scene, &fmt_bytes(p.mem_bytes), col, txt, TextWeight::Regular);
+            }
+            if let Some(col) = column(SortKey::Threads) {
+                cell(tr, scene, &p.threads.to_string(), col, txt, TextWeight::Regular);
+            }
 
             self.hit.rows.push((p.pid, row));
         }
@@ -3208,7 +3222,8 @@ mod tests {
     fn narrow_table_has_horizontal_scroll_range() {
         // The content area inside the card, minus padding, is what the
         // renderer hands to `process_columns`. A ~360px content width can't
-        // seat all six minimum columns.
+        // seat even the five essential columns (USER is already dropped), so
+        // the table still overflows and scrolls.
         let avail = 360.0 - 2.0 * layout::TABLE_PAD;
         let cols = layout::process_columns(avail);
         let total = layout::process_columns_total_w(&cols);
@@ -3285,10 +3300,17 @@ mod tests {
     fn h_scroll_reaches_the_last_column() {
         let mut a = app();
         // Simulate a narrow table the renderer would record: content wider
-        // than the padded columns viewport.
-        a.table_content_w = 528.0; // sum of the six min columns
+        // than the padded columns viewport. Derive the content width from the
+        // real column solver at this band width (300px is below the essential
+        // minimum, so the columns overflow) rather than hard-coding a total.
         a.table_cols_w = 300.0; // padded band (narrow window)
-        let max_x = (a.table_content_w - a.table_cols_w).max(0.0) as f32; // 228
+        a.table_content_w =
+            layout::process_columns_total_w(&layout::process_columns(a.table_cols_w));
+        assert!(
+            a.table_content_w > a.table_cols_w,
+            "columns must overflow at 300px so there is a scroll range"
+        );
+        let max_x = (a.table_content_w - a.table_cols_w).max(0.0) as f32;
         // The OLD (buggy) clamp used the un-padded viewport width, which is
         // 2·TABLE_PAD wider, leaving the last 24px unreachable. Prove the new
         // max exceeds that buggy bound by exactly 2·TABLE_PAD.
@@ -3318,8 +3340,12 @@ mod tests {
     #[test]
     fn h_scroll_drive_reaches_last_column_end_to_end() {
         let mut a = app();
-        // Narrow enough that the columns overflow the table card.
-        draw_at(&mut a, 520.0, 700.0);
+        // Narrow enough that even the five essential columns overflow the table
+        // card (below the essential minimum, once USER is already dropped) — so
+        // the h-scroll path is genuinely exercised. Wider windows now fit the
+        // essentials (THR reads without scrolling), which is the whole point of
+        // the column-priority fix; this test targets the still-overflowing tail.
+        draw_at(&mut a, 430.0, 700.0);
         assert!(
             a.table_content_w > a.table_cols_w + 1.0,
             "columns must overflow at this width ({} vs {})",
@@ -4271,7 +4297,11 @@ mod tests {
     #[test]
     fn dragging_column_scrollbar_thumb_scrolls_columns() {
         let mut a = app();
-        draw_at(&mut a, 520.0, 700.0);
+        // Below the essential-column minimum (USER already dropped) so the five
+        // essentials still overflow and the horizontal scrollbar appears. Wider
+        // windows now fit the essentials — THR reads without scrolling — which
+        // is the column-priority fix; this test targets the overflowing tail.
+        draw_at(&mut a, 430.0, 700.0);
         let sb = a.hit.h_scrollbar.expect("horizontal scrollbar present when columns overflow");
         dispatch_ev(&mut a, &synth_cursor(sb.thumb.center().x, sb.thumb.center().y));
         dispatch_ev(&mut a, &synth_press());

@@ -393,13 +393,24 @@ verified by an offscreen shot (header gone, functional controls intact) + tests:
       ashpd/tokio/url deps.
 
 ## monitor — remaining (overlap + responsive strip already fixed)
-- [ ] "Copy PID" context-menu action is a no-op stub — reports "PID N copied" but
-      writes to NO system clipboard. Wire a real clipboard write (or remove the lie).
-- [ ] Narrow (≤680px) Processes detail push-pane wastes ~70% vertical height: the
-      96px-strip draw_detail is handed a full-height rect (name/PID top, chips+Kill
-      bottom, huge void between). Give it a proper full-height narrow layout.
-- [ ] Narrow 560 THR column header clipped to "T" (needs h-scroll to read) — a core
-      column; widen/prioritise it at narrow.
+- [x] "Copy PID" context-menu action writes the real PID to the OS clipboard via
+      `ui::clipboard_copy` (arboard, wayland-data-control) — the toast reads "PID N
+      copied to clipboard" and mirrors a genuine clipboard write (silent no-op only
+      in a headless/locked-down session). Verified in `apply_action` + the context
+      menu shot; asserted by `context_menu_copy_pid_records_pid` /
+      `copy_pid_records_and_shows_expiring_toast`.
+- [x] Narrow Processes detail push-pane fills the full height: the pushed pane
+      renders the command line, an identity line, a large live CPU sparkline and a
+      six-cell stat grid (Memory/Virtual/Threads/Open files/Status/Running-for) with
+      Stop + Kill pinned to a reserved bottom bar — no void. Verified on the 560px
+      `--scenario detail` shot.
+- [x] Narrow THR column reads without a horizontal scroll: PID/NAME/CPU%/MEM/THR are
+      the essential columns and USER (the droppable text column) is hidden once the
+      table can't seat all six — so THR, a core numeric column, is never pushed off
+      the right edge. Below even the five essentials the table still overflows and
+      scrolls (honest fallback). Verified on the 560px table shot; asserted by
+      `narrow_hides_user_so_threads_reads_without_hscroll` / `wide_shows_user_column`
+      / `very_narrow_table_overflows_so_it_must_scroll_not_overlap`.
 
 ## chat — remaining (call-overlay void + first-run flash already fixed)
 - [ ] Floating call-huddle title ("Design Huddle") overlaps the presence dot +
