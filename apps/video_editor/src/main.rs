@@ -45,13 +45,19 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         //   --scenario split     timeline just after a split at the playhead
         //   (none)               the full live editor
         let scenario = parse_scenario_arg(&args);
-        if args.iter().any(|a| a == "--narrow") {
+        // `--empty` renders the real live app (a blank project on a fresh
+        // machine) so the first-run empty state can be screenshotted; every
+        // other shot uses the seeded demo build.
+        let empty = args.iter().any(|a| a == "--empty");
+        if empty {
+            render_shot_to_png(video_editor::app_root(), DEFAULT_SHOTS_VIEWPORT, &out)?;
+        } else if args.iter().any(|a| a == "--narrow") {
             render_shot_to_png(video_editor::app_root_narrow(), NARROW_SHOTS_VIEWPORT, &out)?;
         } else {
             match scenario.as_deref() {
                 Some("filters") => render_shot_to_png(video_editor::app_root_filters(), DEFAULT_SHOTS_VIEWPORT, &out)?,
                 Some("split") => render_shot_to_png(video_editor::app_root_split(), DEFAULT_SHOTS_VIEWPORT, &out)?,
-                _ => render_shot_to_png(video_editor::app_root(), DEFAULT_SHOTS_VIEWPORT, &out)?,
+                _ => render_shot_to_png(video_editor::app_root_demo(), DEFAULT_SHOTS_VIEWPORT, &out)?,
             }
         }
         return Ok(());
