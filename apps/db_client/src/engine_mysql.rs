@@ -6,6 +6,7 @@
 
 use std::time::{Duration, Instant};
 
+use mysql::consts::ColumnType;
 use mysql::prelude::Queryable;
 use mysql::{Conn, Opts, OptsBuilder, Value};
 
@@ -197,12 +198,17 @@ impl MySqlEngine {
         let start = Instant::now();
 
         let mut result = self.conn.query_iter(trimmed).map_err(|e| e.to_string())?;
-        let columns: Vec<String> = result
+        // Capture the column names + server types. The text protocol returns
+        // every value as raw bytes, so the type is what lets an integer column
+        // land as a typed numeric cell (and right-align in the grid) rather
+        // than as a text string.
+        let col_meta: Vec<(String, ColumnType)> = result
             .columns()
             .as_ref()
             .iter()
-            .map(|c| c.name_str().to_string())
+            .map(|c| (c.name_str().to_string(), c.column_type()))
             .collect();
+        let columns: Vec<String> = col_meta.iter().map(|(n, _)| n.clone()).collect();
 
         if columns.is_empty() {
             let affected = result.affected_rows() as i64;
@@ -220,7 +226,12 @@ impl MySqlEngine {
         for row_res in result.by_ref() {
             let row = row_res.map_err(|e| e.to_string())?;
             let values: Vec<Value> = row.unwrap();
-            rows_out.push(values.into_iter().map(mysql_value_to_cell).collect());
+            let cells = values
+                .into_iter()
+                .enumerate()
+                .map(|(i, v)| cell_from_value(v, col_meta.get(i).map(|(_, ct)| *ct)))
+                .collect();
+            rows_out.push(cells);
         }
         drop(result);
 
@@ -236,6 +247,50 @@ impl MySqlEngine {
 
 fn elapsed_ms(start: Instant) -> f64 {
     start.elapsed().as_secs_f64() * 1000.0
+}
+
+/// Map a text-protocol value to a [`Cell`], using the column's server type to
+/// recover typed numerics. `query_iter` returns every value as raw bytes, so
+/// an integer/float column arrives as `Value::Bytes`; parsing it back to a
+/// typed cell keeps the grid's numeric right-alignment honest. Non-numeric
+/// columns and binary-protocol values fall through to [`mysql_value_to_cell`].
+pub(crate) fn cell_from_value(v: Value, col_type: Option<ColumnType>) -> Cell {
+    let Value::Bytes(bytes) = v else {
+        return mysql_value_to_cell(v);
+    };
+    let s = match String::from_utf8(bytes) {
+        Ok(s) => s,
+        Err(e) => return Cell::Blob(e.into_bytes().len()),
+    };
+    match col_type {
+        Some(ct) if is_integer_type(ct) => s
+            .parse::<i64>()
+            .map(Cell::Integer)
+            .unwrap_or(Cell::Text(s)),
+        Some(ct) if is_float_type(ct) => {
+            s.parse::<f64>().map(Cell::Real).unwrap_or(Cell::Text(s))
+        }
+        _ => Cell::Text(s),
+    }
+}
+
+fn is_integer_type(ct: ColumnType) -> bool {
+    matches!(
+        ct,
+        ColumnType::MYSQL_TYPE_TINY
+            | ColumnType::MYSQL_TYPE_SHORT
+            | ColumnType::MYSQL_TYPE_LONG
+            | ColumnType::MYSQL_TYPE_LONGLONG
+            | ColumnType::MYSQL_TYPE_INT24
+            | ColumnType::MYSQL_TYPE_YEAR
+    )
+}
+
+fn is_float_type(ct: ColumnType) -> bool {
+    matches!(
+        ct,
+        ColumnType::MYSQL_TYPE_FLOAT | ColumnType::MYSQL_TYPE_DOUBLE
+    )
 }
 
 /// Map a driver [`Value`] to a [`Cell`]. Integers/floats keep their type;
@@ -324,6 +379,31 @@ mod tests {
         assert_eq!(
             mysql_value_to_cell(Value::Date(2026, 7, 28, 9, 30, 0, 0)),
             Cell::Text("2026-07-28 09:30:00".into())
+        );
+    }
+
+    #[test]
+    fn text_protocol_bytes_coerce_to_typed_numerics() {
+        // The text protocol hands back integer/float columns as raw bytes; the
+        // column type recovers a typed numeric cell so the grid right-aligns.
+        assert_eq!(
+            cell_from_value(Value::Bytes(b"42".to_vec()), Some(ColumnType::MYSQL_TYPE_LONG)),
+            Cell::Integer(42)
+        );
+        assert_eq!(
+            cell_from_value(Value::Bytes(b"1.5".to_vec()), Some(ColumnType::MYSQL_TYPE_DOUBLE)),
+            Cell::Real(1.5)
+        );
+        // A text column stays text even when the bytes look numeric.
+        assert_eq!(
+            cell_from_value(Value::Bytes(b"42".to_vec()), Some(ColumnType::MYSQL_TYPE_VAR_STRING)),
+            Cell::Text("42".into())
+        );
+        // NULL and already-typed binary-protocol values pass straight through.
+        assert_eq!(cell_from_value(Value::NULL, Some(ColumnType::MYSQL_TYPE_LONG)), Cell::Null);
+        assert_eq!(
+            cell_from_value(Value::Int(7), Some(ColumnType::MYSQL_TYPE_LONG)),
+            Cell::Integer(7)
         );
     }
 }
