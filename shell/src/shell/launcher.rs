@@ -1057,6 +1057,7 @@ mod tests {
             manifest_path: PathBuf::from("/apps/hello/manifest.toml"),
             payload_root: PathBuf::from("/apps/hello"),
             has_gui: true,
+            opens_extensions: Vec::new(),
         };
         let cmd = build_launch_command(
             &app,
@@ -1065,6 +1066,7 @@ mod tests {
             WorkspaceId(3),
             None,
             Some(Path::new("/dev/dri/renderD128")),
+            None,
         );
         assert_eq!(cmd.program, Path::new("/usr/bin/qos-launcher"));
         assert_eq!(cmd.args[0], "run");
@@ -1101,12 +1103,14 @@ mod tests {
             manifest_path: PathBuf::from("/apps/hello/manifest.toml"),
             payload_root: PathBuf::from("/apps/hello"),
             has_gui: true,
+            opens_extensions: Vec::new(),
         };
         let cmd = build_launch_command(
             &app,
             Path::new("/usr/bin/qos-launcher"),
             Path::new("/run/user/1000/wayland-3"),
             WorkspaceId(3),
+            None,
             None,
             None,
         );
@@ -1292,6 +1296,7 @@ mod tests {
             manifest_path: PathBuf::new(),
             payload_root: PathBuf::new(),
             has_gui: true,
+            opens_extensions: Vec::new(),
         });
         // Full package id, trailing component, and case-insensitivity.
         assert_eq!(
@@ -1325,6 +1330,7 @@ mod tests {
             manifest_path: PathBuf::from("/apps/x/manifest.toml"),
             payload_root: PathBuf::from("/apps/x"),
             has_gui: true,
+            opens_extensions: Vec::new(),
         }
     }
 
@@ -1339,6 +1345,7 @@ mod tests {
             Path::new("/usr/bin/qos-launcher"),
             Path::new("/run/user/1000/wayland-3"),
             WorkspaceId(3),
+            None,
             None,
             None,
         );
@@ -1364,6 +1371,7 @@ mod tests {
             Path::new("/run/user/1000/wayland-3"),
             WorkspaceId(3),
             Some(Path::new("/run/user/1000/qos/capabilities/dev.qos.books.json")),
+            None,
             None,
         );
         let pos = cmd
