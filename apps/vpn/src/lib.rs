@@ -6,13 +6,15 @@
 //! pane (status / config / logs) with an animated throughput chart, and
 //! add/import + confirm modals.
 //!
-//! `app_root()` is the single integration point used by both the live
-//! event loop and the `--shots` offscreen renderer.
+//! `app_root()` is the live integration point (starts empty — only the
+//! user's real, persisted tunnels); `app_root_demo()` is the sample-seeded
+//! build used by the `--shots` renderer so the screenshot is populated.
 
 pub mod app;
 pub mod config;
 pub mod doc;
 pub mod model;
+pub mod portal;
 pub mod throughput;
 
 pub use app::VpnApp;
@@ -23,7 +25,14 @@ pub use ui::theme::Theme;
 
 use ui::widget::Widget;
 
-/// Build and return the app's root widget tree.
+/// Build the live app: it starts empty and shows only the user's real saved
+/// tunnels. It never fabricates a fleet.
 pub fn app_root() -> Box<dyn Widget> {
     Box::new(VpnApp::new())
+}
+
+/// Build the sample-seeded app for the hermetic `--shots` / demo path. This
+/// is the ONLY entry point that fabricates tunnels.
+pub fn app_root_demo() -> Box<dyn Widget> {
+    Box::new(VpnApp::new_demo())
 }

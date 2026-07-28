@@ -8,7 +8,6 @@
 //! ephemeral, time-driven animation layered on top.
 
 use std::collections::HashMap;
-use std::time::Instant;
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -28,7 +27,8 @@ use crate::doc::VpnDoc;
 use crate::model::{
     human_ago, human_bytes, sample_vault, ConnId, ConnKind, ConnStatus, Connection, Vault,
 };
-use crate::throughput::{self, ThroughputModel};
+use crate::portal::{self, ImportOutcome};
+use crate::throughput;
 
 const HEADER_H: f64 = 72.0;
 const FOOTER_H: f64 = 56.0;
@@ -82,9 +82,6 @@ pub struct VpnApp {
     rect: Rect,
     node: Option<NodeId>,
     seeded: bool,
-    started: Instant,
-    /// (download, upload) waveform generators, per connection.
-    meters: HashMap<ConnId, (ThroughputModel, ThroughputModel)>,
     detail_tab: DetailTab,
     modal: Modal,
     add_kind: ConnKind,
@@ -92,8 +89,15 @@ pub struct VpnApp {
     add_endpoint: String,
     add_focus: AddField,
     pending: Option<Pending>,
-    /// Most recent action results, newest last (demo activity log).
+    /// Most recent action results, newest last. Starts empty — populated
+    /// only by real user actions (imports, connect attempts).
     activity: Vec<String>,
+    /// In-flight XDG-portal file import, drained once per frame. `None` when
+    /// idle.
+    import_rx: Option<portal::ImportChannel>,
+    /// Which protocol the pending import was requested for (seeds the parser
+    /// when the chosen file has an ambiguous extension).
+    import_hint: ConnKind,
     last_mouse: Point,
     hovered_row: Option<ConnId>,
     is_focused: bool,
@@ -106,14 +110,25 @@ impl Default for VpnApp {
 }
 
 impl VpnApp {
+    /// The live app: starts empty. Only the user's real, persisted tunnels
+    /// (held in the shared document) appear — no fabricated fleet.
     pub fn new() -> Self {
+        Self::build(Vault::default())
+    }
+
+    /// The hermetic `--shots` / demo build: seeded with a sample fleet so the
+    /// screenshot is populated offline. This is the ONLY place sample tunnels
+    /// come from — the live app never fabricates connections.
+    pub fn new_demo() -> Self {
+        Self::build(sample_vault())
+    }
+
+    fn build(vault: Vault) -> Self {
         VpnApp {
-            vault: Vault::default(),
+            vault,
             rect: Rect::ZERO,
             node: None,
             seeded: false,
-            started: Instant::now(),
-            meters: HashMap::new(),
             detail_tab: DetailTab::Status,
             modal: Modal::None,
             add_kind: ConnKind::WireGuard,
@@ -121,32 +136,22 @@ impl VpnApp {
             add_endpoint: String::new(),
             add_focus: AddField::Name,
             pending: None,
-            activity: vec![
-                "vpn: ready".to_string(),
-                "wg: interface wg-home up — handshake ok".to_string(),
-            ],
+            activity: Vec::new(),
+            import_rx: None,
+            import_hint: ConnKind::WireGuard,
             last_mouse: Point::ZERO,
             hovered_row: None,
             is_focused: false,
         }
     }
 
-    fn now_secs(&self) -> f64 {
-        self.started.elapsed().as_secs_f64()
-    }
-
-    fn ensure_meter(meters: &mut HashMap<ConnId, (ThroughputModel, ThroughputModel)>, c: &Connection) {
-        meters.entry(c.id).or_insert_with(|| {
-            let salt = id_salt(c.id);
-            (ThroughputModel::new(salt), ThroughputModel::new(salt + 7.0))
-        });
-    }
-
-    /// Pull the vault from the CRDT, seeding the demo fleet on first run.
+    /// Pull the vault from the CRDT. On first run, publish the connections we
+    /// were built with — the user's real saved tunnels, or (demo build) the
+    /// sample. An empty live vault publishes nothing, so the app stays honest.
     fn refresh(&mut self, doc: &mut AutoCommit) {
         if !self.seeded {
-            if VpnDoc::is_empty(doc) {
-                VpnDoc::write_vault(doc, &sample_vault());
+            if VpnDoc::is_empty(doc) && !self.vault.connections.is_empty() {
+                VpnDoc::write_vault(doc, &self.vault);
             }
             self.seeded = true;
         }
@@ -156,10 +161,6 @@ impl VpnApp {
                 self.vault.selected = Some(first);
                 VpnDoc::set_selected(doc, Some(first));
             }
-        }
-        let conns = self.vault.connections.clone();
-        for c in &conns {
-            Self::ensure_meter(&mut self.meters, c);
         }
     }
 
@@ -208,37 +209,113 @@ impl VpnApp {
         self.modal = Modal::Confirm;
     }
 
-    /// Apply the pending action (after the user confirms). The network
-    /// command is attempted but the UI updates optimistically so the app
-    /// stays responsive without elevated privileges.
+    /// Apply the pending action (after the user confirms). State is changed
+    /// **only if the real command actually succeeded** — the UI never claims
+    /// a tunnel is connected on the strength of an optimistic guess. With
+    /// execution disabled (the default, no `QOS_VPN_ALLOW_EXEC=1`) the command
+    /// is refused, the tunnel stays in its real state, and the activity log
+    /// says so honestly.
     fn confirm_pending(&mut self, doc: &mut AutoCommit) {
         let Some(p) = self.pending.take() else { return };
         match p {
-            Pending::Connect(id, plan) => {
-                VpnDoc::set_status(doc, id, ConnStatus::Connected);
-                self.run_and_log(&plan);
-            }
-            Pending::Disconnect(id, plan) => {
-                VpnDoc::set_status(doc, id, ConnStatus::Disconnected);
-                self.run_and_log(&plan);
-            }
-            Pending::TorGlobal(on, plan) => {
-                VpnDoc::set_tor_global(doc, on);
-                self.run_and_log(&plan);
-            }
+            Pending::Connect(id, plan) => match config::execute(&plan) {
+                Ok(out) => {
+                    VpnDoc::set_status(doc, id, ConnStatus::Connected);
+                    self.log(format!("$ {}  → ok {}", plan.display(), out));
+                }
+                Err(e) => {
+                    // Stay disconnected — we did NOT connect.
+                    self.log(format!("$ {}  → not connected: {}", plan.display(), e));
+                }
+            },
+            Pending::Disconnect(id, plan) => match config::execute(&plan) {
+                Ok(out) => {
+                    VpnDoc::set_status(doc, id, ConnStatus::Disconnected);
+                    self.log(format!("$ {}  → ok {}", plan.display(), out));
+                }
+                Err(e) => self.log(format!("$ {}  → failed: {}", plan.display(), e)),
+            },
+            Pending::TorGlobal(on, plan) => match config::execute(&plan) {
+                Ok(out) => {
+                    VpnDoc::set_tor_global(doc, on);
+                    self.log(format!("$ {}  → ok {}", plan.display(), out));
+                }
+                Err(e) => self.log(format!("$ {}  → failed: {}", plan.display(), e)),
+            },
         }
         self.modal = Modal::None;
         self.refresh(doc);
     }
 
-    fn run_and_log(&mut self, plan: &CommandPlan) {
-        match config::execute(plan) {
-            Ok(out) => self.activity.push(format!("$ {}  → ok {}", plan.display(), out)),
-            Err(e) => self.activity.push(format!("$ {}  → {}", plan.display(), e)),
-        }
+    fn log(&mut self, line: String) {
+        self.activity.push(line);
         if self.activity.len() > 50 {
             let drop = self.activity.len() - 50;
             self.activity.drain(0..drop);
+        }
+    }
+
+    // ---- import (XDG portal) -----------------------------------------
+
+    /// Ask the host desktop portal to pick a `.conf` / `.ovpn`. Non-blocking:
+    /// the D-Bus round-trip + host dialog run on a worker thread; the chosen
+    /// path arrives over a channel drained by [`Self::drain_import`]. An
+    /// in-flight request is not re-opened.
+    fn request_import(&mut self, kind: ConnKind) {
+        if self.import_rx.is_some() {
+            return;
+        }
+        self.import_hint = kind;
+        self.import_rx = Some(portal::request_import(kind));
+        self.log(format!("choose a .{} file to import…", kind.ext()));
+    }
+
+    /// Drain an in-flight import. When the user picked a file we read it,
+    /// parse the real WireGuard/OpenVPN config into a [`Connection`], and add
+    /// it to the vault. Returns true if anything changed.
+    fn drain_import(&mut self, doc: &mut AutoCommit) -> bool {
+        let Some(rx) = &self.import_rx else {
+            return false;
+        };
+        let outcome = match rx.try_recv() {
+            Ok(o) => o,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return false,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.import_rx = None;
+                return false;
+            }
+        };
+        self.import_rx = None;
+        match outcome {
+            ImportOutcome::Opened(path) => match std::fs::read_to_string(&path) {
+                Ok(text) => {
+                    let stem = path
+                        .file_stem()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("Imported")
+                        .to_string();
+                    let kind = config::kind_from_filename(
+                        &path.file_name().and_then(|s| s.to_str()).unwrap_or("").to_string(),
+                    )
+                    .unwrap_or(self.import_hint);
+                    let conn = config::parse_config(&stem, kind, &text);
+                    let id = conn.id;
+                    VpnDoc::write_connection(doc, &conn);
+                    self.refresh(doc);
+                    self.select(doc, id);
+                    self.log(format!("imported {} '{}'", kind.badge(), stem));
+                    true
+                }
+                Err(e) => {
+                    self.log(format!("import failed: {e}"));
+                    true
+                }
+            },
+            ImportOutcome::Cancelled => false,
+            ImportOutcome::Failed(reason) => {
+                self.log(format!("import failed: {reason}"));
+                true
+            }
         }
     }
 
@@ -382,15 +459,6 @@ fn kv_tor_rect(content: Rect) -> Rect {
     let kv_top = content.y0 + 72.0 + 16.0 + 176.0 + 16.0;
     let row_y = kv_top + 4.0 * 30.0;
     Rect::new(content.x1 - 84.0, row_y + 2.0, content.x1 - 84.0 + 64.0, row_y + 26.0)
-}
-
-fn id_salt(id: ConnId) -> f64 {
-    let b = id.as_bytes();
-    let mut acc: u64 = 0;
-    for &x in b {
-        acc = acc.wrapping_mul(31).wrapping_add(x as u64);
-    }
-    (acc % 1000) as f64 / 50.0
 }
 
 fn point_in(r: Rect, p: Point) -> bool {
@@ -671,26 +739,24 @@ impl VpnApp {
 
     fn draw_status_tab(&self, scene: &mut Scene, tr: &mut TextRenderer, t: Affine, theme: &Theme, lay: &LayoutRects, c: &Connection) {
         let content = lay.content;
-        let now = self.now_secs();
-        let (down_m, up_m) = self.meters.get(&c.id).copied().unwrap_or((ThroughputModel::new(1.0), ThroughputModel::new(8.0)));
-        let cur_down = if c.is_connected() { down_m.current(c.base_down_mbps, now) } else { 0.0 };
-        let cur_up = if c.is_connected() { up_m.current(c.base_up_mbps, now) } else { 0.0 };
 
-        // Stat tiles (4 across).
+        // Stat tiles (4 across). We do not have a live byte-counter source
+        // wired, so throughput is never fabricated: DOWN/UP read "—". The
+        // handshake reflects the real last-handshake age when connected.
         let tiles_h = 72.0;
         let gap = 12.0;
         let tw = (content.width() - gap * 3.0) / 4.0;
         let tile_vals = [
-            ("ASSIGNED IP", c.address.clone()),
+            ("ASSIGNED IP", if c.address.is_empty() { "—".to_string() } else { c.address.clone() }),
             (
                 "HANDSHAKE",
                 match c.last_handshake_secs {
-                    Some(s) if c.is_connected() => human_ago(s + (now as u64 % 5)),
+                    Some(s) if c.is_connected() => human_ago(s),
                     _ => "—".to_string(),
                 },
             ),
-            ("DOWN", if c.is_connected() { throughput::rate_label(cur_down) } else { "—".to_string() }),
-            ("UP", if c.is_connected() { throughput::rate_label(cur_up) } else { "—".to_string() }),
+            ("DOWN", "—".to_string()),
+            ("UP", "—".to_string()),
         ];
         for (i, (label, val)) in tile_vals.iter().enumerate() {
             let x = content.x0 + i as f64 * (tw + gap);
@@ -698,28 +764,21 @@ impl VpnApp {
             fill_round(scene, t, r, theme.tokens.radii.lg as f64, theme.tokens.colors.surfaces.raised);
             stroke_round(scene, t, r, theme.tokens.radii.lg as f64, theme.tokens.colors.border_white_10, 1.0);
             text_w(tr, scene, t, label, 10.0, theme.text_dim, r.x0 + 14.0, r.y0 + 14.0, TextWeight::Bold);
-            let vcol = match *label {
-                "DOWN" => theme.tokens.colors.semantic.info,
-                "UP" => theme.tokens.colors.semantic.success,
-                _ => theme.text_primary,
-            };
-            text_w(tr, scene, t, &ellipsize(val, 16), 17.0, vcol, r.x0 + 14.0, r.y0 + 36.0, TextWeight::Semibold);
+            text_w(tr, scene, t, &ellipsize(val, 16), 17.0, theme.text_primary, r.x0 + 14.0, r.y0 + 36.0, TextWeight::Semibold);
         }
 
-        // Throughput chart.
+        // Throughput panel — an empty plot with an honest "no live data"
+        // note. The app renders real metering or nothing; it never draws a
+        // synthesized waveform.
         let chart = Rect::new(content.x0, content.y0 + tiles_h + 16.0, content.x1, content.y0 + tiles_h + 16.0 + 176.0);
-        let down = down_m.series(c.base_down_mbps, now);
-        let up = up_m.series(c.base_up_mbps, now);
-        throughput::draw_chart(scene, t, chart, theme, &down, &up, c.is_connected());
-        // Chart title + legend.
+        throughput::draw_chart(scene, t, chart, theme, &[], &[], false);
         text_w(tr, scene, t, "Throughput", 12.0, theme.text_dim, chart.x0 + 12.0, chart.y0 + 10.0, TextWeight::Bold);
-        let legend_y = chart.y0 + 10.0;
-        let lx = chart.x1 - 220.0;
-        scene.fill(Fill::NonZero, t, theme.tokens.colors.semantic.info, None, &Circle::new(Point::new(lx, legend_y + 6.0), 4.0));
-        text_w(tr, scene, t, &format!("↓ {}", throughput::rate_label(cur_down)), 11.0, theme.text_primary, lx + 10.0, legend_y, TextWeight::Semibold);
-        let lx2 = lx + 110.0;
-        scene.fill(Fill::NonZero, t, theme.tokens.colors.semantic.success, None, &Circle::new(Point::new(lx2, legend_y + 6.0), 4.0));
-        text_w(tr, scene, t, &format!("↑ {}", throughput::rate_label(cur_up)), 11.0, theme.text_primary, lx2 + 10.0, legend_y, TextWeight::Semibold);
+        let note = "Live throughput metering not wired yet";
+        let (nw, _) = tr.measure_weighted(note, 12.0, None, TextWeight::Regular);
+        text_w(
+            tr, scene, t, note, 12.0, theme.text_dim,
+            chart.center().x - nw as f64 / 2.0, chart.center().y - 8.0, TextWeight::Regular,
+        );
 
         // Key/value table.
         let kv_top = chart.y1 + 16.0;
@@ -1007,6 +1066,8 @@ fn synth_logs(c: &Connection, activity: &[String]) -> Vec<String> {
 
 impl Widget for VpnApp {
     fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
+        // Fold in a completed portal import (if any), then read the vault.
+        self.drain_import(state);
         self.refresh(state);
     }
 
@@ -1114,11 +1175,11 @@ impl Widget for VpnApp {
                     return;
                 }
                 if point_in(lay.imp_conf, p) {
-                    self.open_add(ConnKind::WireGuard);
+                    self.request_import(ConnKind::WireGuard);
                     return;
                 }
                 if point_in(lay.imp_ovpn, p) {
-                    self.open_add(ConnKind::OpenVpn);
+                    self.request_import(ConnKind::OpenVpn);
                     return;
                 }
                 // Detail tabs + connect button + per-tunnel tor.
@@ -1225,7 +1286,7 @@ impl Widget for VpnApp {
                     Key::Character(c) => {
                         match c.as_str() {
                             "a" => { self.open_add(ConnKind::WireGuard); *handled = true; }
-                            "i" => { self.open_add(ConnKind::OpenVpn); *handled = true; }
+                            "i" => { self.request_import(ConnKind::WireGuard); *handled = true; }
                             "t" => { self.request_tor_global(); *handled = true; }
                             "1" => { self.detail_tab = DetailTab::Status; *handled = true; }
                             "2" => { self.detail_tab = DetailTab::Config; *handled = true; }
@@ -1263,9 +1324,10 @@ impl Widget for VpnApp {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        // Keep redrawing while a tunnel is connected so the throughput
-        // sparkline animates in the live loop.
-        self.vault.active_count() > 0
+        // Keep the frame loop (and thus `sync`) pumping while a portal import
+        // is in flight so its result drains promptly. No throughput animation:
+        // the app never fabricates transfer rates.
+        self.import_rx.is_some()
     }
 
     fn draw_with_presence(
@@ -1285,24 +1347,40 @@ impl Widget for VpnApp {
 mod tests {
     use super::*;
 
-    fn app_with_doc() -> (VpnApp, AutoCommit) {
-        let mut app = VpnApp::new();
+    /// The demo build populated + read back — used by the tests that need a
+    /// fleet to operate on. The live app never fabricates this.
+    fn demo_with_doc() -> (VpnApp, AutoCommit) {
+        let mut app = VpnApp::new_demo();
         let mut doc = AutoCommit::new();
         app.refresh(&mut doc);
         (app, doc)
     }
 
     #[test]
-    fn seeds_and_reads_back_fleet() {
-        let (app, _doc) = app_with_doc();
+    fn live_new_starts_empty_and_writes_nothing() {
+        // The honesty guard: the live constructor fabricates no tunnels, and
+        // `refresh` on an empty document must not seed a fleet.
+        let mut app = VpnApp::new();
+        let mut doc = AutoCommit::new();
+        app.refresh(&mut doc);
+        assert!(app.vault.connections.is_empty(), "live app starts empty");
+        assert!(
+            VpnDoc::read_vault(&doc).connections.is_empty(),
+            "an empty live app must not seed the shared document"
+        );
+    }
+
+    #[test]
+    fn demo_seeds_fleet_for_shots() {
+        // `--shots` still needs a populated frame.
+        let (app, _doc) = demo_with_doc();
         assert_eq!(app.vault.connections.len(), 4);
         assert!(app.vault.selected.is_some());
-        assert_eq!(app.vault.active_count(), 1);
     }
 
     #[test]
     fn select_offset_wraps() {
-        let (mut app, mut doc) = app_with_doc();
+        let (mut app, mut doc) = demo_with_doc();
         let first = app.vault.selected.unwrap();
         app.select_offset(&mut doc, -1);
         let last = app.vault.selected.unwrap();
@@ -1312,20 +1390,55 @@ mod tests {
     }
 
     #[test]
-    fn confirm_connect_flips_status_in_doc() {
-        let (mut app, mut doc) = app_with_doc();
+    fn confirm_connect_without_exec_stays_disconnected() {
+        // Honesty: with execution disabled (the default) confirming a connect
+        // must NOT claim the tunnel is connected — the real command never ran.
+        unsafe { std::env::remove_var("QOS_VPN_ALLOW_EXEC") };
+        let (mut app, mut doc) = demo_with_doc();
         let work = app.vault.connections.iter().find(|c| c.name == "Work").unwrap().id;
+        assert!(!app.vault.get(work).unwrap().is_connected());
         app.select(&mut doc, work);
         app.request_toggle(work);
         assert_eq!(app.modal, Modal::Confirm);
         app.confirm_pending(&mut doc);
         let back = VpnDoc::read_vault(&doc);
-        assert!(back.connections.iter().find(|c| c.id == work).unwrap().is_connected());
+        assert!(
+            !back.connections.iter().find(|c| c.id == work).unwrap().is_connected(),
+            "a refused command must never show as Connected"
+        );
+    }
+
+    #[test]
+    fn import_adds_real_parsed_connection() {
+        // The real import path: a chosen .conf is read + parsed into a tunnel
+        // and added to the vault (no blank form).
+        let (mut app, mut doc) = demo_with_doc();
+        let before = app.vault.connections.len();
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("qos-vpn-test-{}.conf", uuid::Uuid::new_v4()));
+        std::fs::write(
+            &path,
+            "[Interface]\nAddress = 10.9.0.2/32\nDNS = 9.9.9.9\n\n[Peer]\nPublicKey = abc=\nEndpoint = imported.example:51820\nAllowedIPs = 0.0.0.0/0\n",
+        )
+        .unwrap();
+        app.import_rx = Some(portal::inject_for_test(ImportOutcome::Opened(path.clone())));
+        assert!(app.drain_import(&mut doc), "a delivered import applies");
+        assert!(app.import_rx.is_none(), "draining clears the request");
+        assert_eq!(app.vault.connections.len(), before + 1);
+        let imported = app
+            .vault
+            .connections
+            .iter()
+            .find(|c| c.endpoint == "imported.example:51820")
+            .expect("imported tunnel present with parsed endpoint");
+        assert_eq!(imported.kind, ConnKind::WireGuard);
+        assert_eq!(imported.dns, "9.9.9.9");
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
     fn add_modal_commits_new_connection() {
-        let (mut app, mut doc) = app_with_doc();
+        let (mut app, mut doc) = demo_with_doc();
         let before = app.vault.connections.len();
         app.open_add(ConnKind::OpenVpn);
         app.add_name = "Travel".into();
