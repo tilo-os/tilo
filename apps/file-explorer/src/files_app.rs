@@ -17,7 +17,10 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 use ui::widget::context_menu::{ContextMenu, MenuItem};
-use ui::widget::{Column, Container, Row, ScrollAxis, Scrollable, Spacer, Text, TextInput, Widget};
+use ui::widget::{
+    Column, Container, NavShell, Row, ScrollAxis, Scrollable, ShellMode, Spacer, Text, TextInput,
+    Widget,
+};
 use ui::{AppKind, AppWidget, IconDescriptor, SelectionModel};
 use vello::kurbo::Point;
 
@@ -30,6 +33,12 @@ const SEARCH_QUERY_PATH: &str = "files.search_query";
 /// the current name when a rename begins; the rename bar's `TextInput` edits
 /// it and `commit_rename` reads the chosen name back out.
 const RENAME_QUERY_PATH: &str = "files.rename_query";
+
+/// Width (logical px) at/above which the body docks the places list beside the
+/// file view; below it the body becomes a single-pane push (places ↔ file view
+/// with a Back arrow). Chosen so a comfortably-wide window keeps the sidebar
+/// docked while a phone-portrait / half-tiled window collapses to one pane.
+const BODY_BREAKPOINT_PX: f64 = 640.0;
 
 /// Ensure a `Text` object exists at `key` on `root`, returning its id. The
 /// toolkit's `TextInput` binds to (and writes into) an existing `Text`
@@ -83,7 +92,20 @@ pub struct FileExplorerWidget {
     /// input reads it back.
     rename_seed_pending: bool,
     rect: vello::kurbo::Rect,
-    composed: Option<Box<dyn Widget>>,
+    /// The responsive body: `[ places | file view ]`. Held persistently (NOT
+    /// rebuilt inside `build_layout`) so its docked/push state and eased
+    /// reveal survive the per-structure-change rebuild of the panes — the two
+    /// panes are swapped in via `NavShell::set_overview` / `set_detail` each
+    /// rebuild. Wide docks the places list beside the file view; narrow shows
+    /// one at a time (places → tap a place → the file view pushes in with a
+    /// Back arrow). See the module note on live child swap in `ui::NavShell`.
+    nav: NavShell,
+    /// Chrome above the body (toolbar + breadcrumb), rebuilt each structure
+    /// change; spans the full width in every layout.
+    chrome_above: Option<Box<dyn Widget>>,
+    /// Chrome below the body (rename bar + footer), rebuilt each structure
+    /// change; spans the full width.
+    chrome_below: Option<Box<dyn Widget>>,
     /// Command queue the interactive children push into.
     cmds: CommandSink,
     /// Set when applying a command changed structure; consumed by
@@ -194,7 +216,16 @@ impl FileExplorerWidget {
             rename_buffer: String::new(),
             rename_seed_pending: false,
             rect: vello::kurbo::Rect::ZERO,
-            composed: None,
+            // Placeholder panes; the real places list + file view are swapped
+            // in on the first `build_layout`. Overview width matches the
+            // historical fixed sidebar so the docked (wide) layout is
+            // pixel-stable; below the breakpoint the body switches to a
+            // single-pane push (places ↔ file view + Back).
+            nav: NavShell::new(Box::new(Text::new("")), Box::new(Text::new("")))
+                .with_overview_width(places_sidebar::SIDEBAR_WIDTH)
+                .with_breakpoint(BODY_BREAKPOINT_PX),
+            chrome_above: None,
+            chrome_below: None,
             cmds: new_sink(),
             structure_dirty: false,
             context_menu: ContextMenu::new(),
@@ -238,12 +269,27 @@ impl FileExplorerWidget {
         }
     }
 
-    /// Build the full composed widget tree, wiring every interactive child
-    /// to the command sink.
-    fn build_composition(&self, theme: &ui::Theme) -> Box<dyn Widget> {
-        let displayed = self.displayed_entries();
+    /// Wrap `child` in a full-width chrome band with a consistent horizontal
+    /// inset from the spacing scale (so toolbar / breadcrumb / footer content
+    /// lines up across bands while the panels below still reach the window
+    /// edges). `vpad` sets the band's vertical breathing room.
+    fn band(theme: &ui::Theme, child: Box<dyn Widget>, vpad: f32) -> Box<dyn Widget> {
+        let sp = &theme.tokens.spacing;
+        Box::new(
+            Column::new()
+                .with_intrinsic_height()
+                .with_horizontal_padding(sp.s3, sp.s3)
+                .with_vertical_padding(vpad)
+                .push(child),
+        )
+    }
 
-        // Toolbar (nav + view + sort + search + terminal).
+    /// The chrome above the responsive body: the toolbar (nav + view + sort +
+    /// search + terminal) and the clickable breadcrumb trail. Spans the full
+    /// width in every layout, so the file-browsing controls stay put whether
+    /// the body is showing the places list or the file view.
+    fn build_chrome_above(&self, theme: &ui::Theme) -> Box<dyn Widget> {
+        let sp = &theme.tokens.spacing;
         let toolbar = crate::toolbar::build_toolbar(
             crate::toolbar::ToolbarSnapshot {
                 search_query: &self.search_query,
@@ -255,25 +301,36 @@ impl FileExplorerWidget {
             },
             &self.cmds,
         );
-
-        // Breadcrumb — a compact, clickable path trail directly under the
-        // toolbar (leading vector icon + text segments + chevrons).
         let crumbs = crate::breadcrumbs::breadcrumb_components(
             &self.current_path,
             self.home_path.as_deref(),
         );
         let breadcrumb = crate::breadcrumb_bar::BreadcrumbBar::new(crumbs, self.cmds.clone());
+        Box::new(
+            Column::new()
+                .with_intrinsic_height()
+                .with_no_padding()
+                .with_gap(sp.s0)
+                .push(Self::band(theme, toolbar, sp.s2))
+                .push(Self::band(theme, Box::new(breadcrumb), sp.s0)),
+        )
+    }
 
-        // Sidebar — the modern Favourites / Places list. A single widget that
-        // owns drag-to-reorder for the favourites (via the shared, persistent
-        // FavStore) so a reorder survives the per-frame rebuild.
-        let sidebar: Box<dyn Widget> = Box::new(
+    /// The **places** pane (the responsive body's master / overview): the
+    /// modern Favourites / Places list. A single widget that owns
+    /// drag-to-reorder for the favourites (via the shared, persistent
+    /// `FavStore`) so a reorder survives the per-frame rebuild.
+    fn build_places_pane(&self) -> Box<dyn Widget> {
+        Box::new(
             PlacesSidebar::new(self.favs.clone(), self.current_path.clone(), self.cmds.clone())
                 .with_workspaces(self.workspace_roots.clone()),
-        );
+        )
+    }
 
-        // Main view: list or grid, bound to the displayed entries + selection,
-        // sized by the current zoom level.
+    /// The **content** pane (the responsive body's detail): the file list or
+    /// grid (plus any error affordance), scrolling under a symmetric gutter.
+    fn build_content_pane(&self, theme: &ui::Theme) -> Box<dyn Widget> {
+        let displayed = self.displayed_entries();
         let scale = self.zoom_scale();
         let view_child: Box<dyn Widget> = match self.view_mode {
             ViewMode::List => crate::views::list_view::build_list(
@@ -288,30 +345,15 @@ impl FileExplorerWidget {
                 crate::views::grid_view::build_grid(&displayed, &self.selection, &self.cmds, scale)
             }
         };
-        // One shared spacing rhythm: every inset / gap below is pulled from the
-        // theme's spacing scale so the whole app reads as evenly spaced.
         let sp = &theme.tokens.spacing;
-
-        // A full-width chrome band (toolbar / breadcrumb / footer) with a
-        // consistent horizontal inset from the spacing scale, so its content
-        // lines up with the sidebar's own inset while the panels below still
-        // reach the window edges. `vpad` sets the band's vertical breathing
-        // room.
-        let band = |child: Box<dyn Widget>, vpad: f32| -> Box<dyn Widget> {
-            Box::new(
-                Column::new()
-                    .with_intrinsic_height()
-                    .with_horizontal_padding(sp.s3, sp.s3)
-                    .with_vertical_padding(vpad)
-                    .push(child),
-            )
-        };
-
-        // Content pane: the file list (plus any error affordance), filling the
-        // space to the right of the sidebar with one symmetric gutter from the
-        // spacing scale — no awkward variable margin.
+        // A plain (percent-height) column: this pane is the root of `NavShell`'s
+        // inner layout, sized to the detail rect, so it must FILL that rect
+        // (`percent(1.0)` height). `with_fill_remaining_height` (flex-grow from
+        // zero) needs a flex parent to distribute space and would collapse to
+        // its content height here — leaving the `Scrollable` zero-height. Inside
+        // this bounded column the `Scrollable` grows to take the space under the
+        // optional error row.
         let mut view_col = Column::new()
-            .with_fill_remaining_height()
             .with_vertical_padding(sp.s1)
             .with_horizontal_padding(sp.s3, sp.s3);
         if let Some(err) = self.error.as_deref() {
@@ -329,30 +371,22 @@ impl FileExplorerWidget {
         }
         // The list/grid scrolls: pin the scroll viewport to the *remaining*
         // height of the content column (grow-from-zero) rather than letting it
-        // claim `percent(1.0)`. The surrounding chrome columns/rows use
-        // `flex_shrink: 0`, so a `percent(1.0)` viewport would resolve against
-        // an effectively unconstrained height and expand to the full content
-        // extent — viewport == content, nothing to scroll. `fill_parent_height`
-        // takes exactly the space left under the toolbar/breadcrumb (and the
-        // optional error row) so a long directory overflows the viewport and
-        // the wheel + scrollbar thumb move the list. The header/toolbar stay
-        // fixed above it; only this pane scrolls.
+        // claim `percent(1.0)`. `fill_parent_height` takes exactly the space
+        // left under the optional error row so a long directory overflows the
+        // viewport and the wheel + scrollbar thumb move the list.
         view_col = view_col.push(Box::new(
             Scrollable::new(ScrollAxis::Vertical)
                 .fill_parent_height()
                 .with_persisted_offset(self.scroll_offset.clone())
                 .with_child(view_child),
         ));
+        Box::new(view_col)
+    }
 
-        // Body: a full-height sidebar hugging the window's left edge (it owns
-        // its own background, so letting it reach x=0 removes the dead strip a
-        // padded root column used to leave to its left) + the content pane
-        // filling the rest.
-        let body = Row::new()
-            .with_fill_remaining_height()
-            .push(sidebar)
-            .push(Box::new(view_col));
-
+    /// The chrome below the responsive body: the inline-rename bar (only while
+    /// a rename is active) and the footer. Spans the full width.
+    fn build_chrome_below(&self, theme: &ui::Theme) -> Box<dyn Widget> {
+        let sp = &theme.tokens.spacing;
         // Footer: status (if any) else item count + path summary (dimmed).
         let (count, path_str) = self.footer_text();
         let left = self
@@ -364,23 +398,12 @@ impl FileExplorerWidget {
             .push(Box::new(Spacer::new()))
             .push(Box::new(Text::new(&path_str).with_size(12.0).with_color(theme.tokens.colors.text_dim)));
 
-        // Root: a tight, edge-to-edge banded stack. No default gutter (so the
-        // sidebar reaches the window's left/top edges) and no inter-band gap
-        // (so the sidebar sits flush under the breadcrumb divider); each chrome
-        // band owns its own inset, pulled from the spacing scale.
-        let mut root_col = Column::new()
-            .with_no_padding()
-            .with_gap(sp.s0)
-            .push(band(toolbar, sp.s2))
-            .push(band(Box::new(breadcrumb), sp.s0))
-            .push(Box::new(body));
-        // Inline-rename bar sits just above the footer while a rename is
-        // active; its TextInput edits the RENAME_QUERY_PATH Text object.
+        let mut col = Column::new().with_intrinsic_height().with_no_padding().with_gap(sp.s0);
         if self.renaming.is_some() {
-            root_col = root_col.push(band(self.build_rename_bar(), sp.s1));
+            col = col.push(Self::band(theme, self.build_rename_bar(), sp.s1));
         }
-        root_col = root_col.push(band(Box::new(footer), sp.s2));
-        Box::new(root_col)
+        col = col.push(Self::band(theme, Box::new(footer), sp.s2));
+        Box::new(col)
     }
 
     /// The inline-rename editor row: a label, a CRDT-bound name field, and
@@ -851,6 +874,30 @@ impl FileExplorerWidget {
         crate::places_sidebar::debug_begin_drag(&self.favs, from, to)
     }
 
+    /// Push the file view in over the places list (the narrow / single-pane
+    /// master→detail transition), settled deterministically for a headless
+    /// screenshot. In the wide layout both panes are already shown, so this is
+    /// a no-op there.
+    #[doc(hidden)]
+    pub fn debug_show_detail(&mut self) {
+        self.nav.show_detail();
+        self.nav.snap();
+    }
+
+    /// The responsive body's current mode (docked-wide vs push-narrow) — for
+    /// tests asserting the sidebar reflows with the window width.
+    #[doc(hidden)]
+    pub fn debug_body_mode(&self) -> ShellMode {
+        self.nav.mode()
+    }
+
+    /// Whether the narrow body is currently showing the pushed-in file view
+    /// (vs the places list). For tests of the master→detail push.
+    #[doc(hidden)]
+    pub fn debug_detail_shown(&self) -> bool {
+        self.nav.is_detail_shown()
+    }
+
     /// Select the given displayed-entry indices (headless shots demo).
     #[doc(hidden)]
     pub fn debug_select(&mut self, indices: &[usize]) {
@@ -1000,17 +1047,16 @@ impl FileExplorerWidget {
             None,
             &self.rect,
         );
-        // `self.composed` is normally built inside `build_layout`. When this
-        // widget is hosted inside a shell's TabBar (e.g. the Files tab on a
-        // qOS shell that boots Notes-active), `build_layout` doesn't run for
-        // inactive tabs — so switching to Files later produces a widget with
-        // `composed = None` and nothing visible renders even though
-        // `self.rect` is correct. Lazy-build here so the first paint after tab
-        // activation populates a tree we can hand to taffy on the NEXT layout
-        // pass, flagging structure-dirty so the host rebuilds taffy with the
-        // composition included on the next frame.
-        if self.composed.is_none() && self.rect.width() > 0.0 && self.rect.height() > 0.0 {
-            self.composed = Some(self.build_composition(theme));
+        // The chrome + body panes are normally built inside `build_layout`.
+        // When this widget is hosted inside a shell's TabBar (e.g. the Files
+        // tab on a qOS shell that boots Notes-active), `build_layout` doesn't
+        // run for inactive tabs — so switching to Files later produces a widget
+        // with no chrome built and nothing visible renders even though
+        // `self.rect` is correct. Flag structure-dirty here so the host runs a
+        // full rebuild (which populates the chrome + swaps the real panes into
+        // the persistent `nav`) on the next frame.
+        let _ = theme;
+        if self.chrome_above.is_none() && self.rect.width() > 0.0 && self.rect.height() > 0.0 {
             self.structure_dirty = true;
         }
     }
@@ -1315,6 +1361,52 @@ impl FileExplorerWidget {
         dirty
     }
 
+    /// Forward an event to the three body children in visual order — chrome
+    /// above, the responsive `nav` body, chrome below — stopping at the first
+    /// that consumes it. `node_id`'s taffy children are `[above, nav, below]`
+    /// (see `build_layout`).
+    #[allow(clippy::too_many_arguments)]
+    fn forward_to_body(
+        &mut self,
+        event: &winit::event::WindowEvent,
+        scale_factor: f64,
+        modifiers: &winit::event::Modifiers,
+        state: &mut automerge::AutoCommit,
+        path: &automerge::ObjId,
+        handled: &mut bool,
+        focus_target: &mut Option<taffy::NodeId>,
+        node_id: taffy::NodeId,
+        taffy: &taffy::TaffyTree<()>,
+    ) {
+        let Ok(children) = taffy.children(node_id) else { return };
+        let (Some(&above_n), Some(&nav_n), Some(&below_n)) =
+            (children.first(), children.get(1), children.get(2))
+        else {
+            return;
+        };
+        if !*handled {
+            if let Some(c) = &mut self.chrome_above {
+                c.handle_event(
+                    event, scale_factor, modifiers, state, path, handled, focus_target, above_n,
+                    taffy,
+                );
+            }
+        }
+        if !*handled {
+            self.nav.handle_event(
+                event, scale_factor, modifiers, state, path, handled, focus_target, nav_n, taffy,
+            );
+        }
+        if !*handled {
+            if let Some(c) = &mut self.chrome_below {
+                c.handle_event(
+                    event, scale_factor, modifiers, state, path, handled, focus_target, below_n,
+                    taffy,
+                );
+            }
+        }
+    }
+
     /// App-level keyboard navigation, applied when a key isn't consumed by
     /// a focused child (search field, etc.). Returns whether it acted.
     fn handle_app_key(&mut self, ke: &winit::event::KeyEvent, modifiers: &winit::event::Modifiers) -> bool {
@@ -1405,7 +1497,11 @@ impl Widget for FileExplorerWidget {
             self.rename_seed_pending = false;
         }
 
-        if let Some(c) = &mut self.composed {
+        if let Some(c) = &mut self.chrome_above {
+            c.sync(state, path);
+        }
+        self.nav.sync(state, path);
+        if let Some(c) = &mut self.chrome_below {
             c.sync(state, path);
         }
 
@@ -1433,9 +1529,46 @@ impl Widget for FileExplorerWidget {
         theme: &ui::Theme,
         node_map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn Widget>,
     ) -> taffy::NodeId {
-        let mut composed = self.build_composition(theme);
-        let child_node = composed.build_layout(taffy, theme, node_map);
-        self.composed = Some(composed);
+        // Rebuild the spanning chrome + swap the freshly-built body panes into
+        // the persistent `nav`. `nav` keeps its docked/push state across the
+        // swap (see `NavShell::set_overview`/`set_detail`), so a rebuild
+        // triggered by navigation/sort/search doesn't snap the body back to the
+        // places list mid-interaction.
+        let mut above = self.build_chrome_above(theme);
+        let mut below = self.build_chrome_below(theme);
+        self.nav.set_overview(self.build_places_pane());
+        self.nav.set_detail(self.build_content_pane(theme));
+
+        let above_node = above.build_layout(taffy, theme, node_map);
+        let nav_node = self.nav.build_layout(taffy, theme, node_map);
+        let below_node = below.build_layout(taffy, theme, node_map);
+        self.chrome_above = Some(above);
+        self.chrome_below = Some(below);
+
+        // The body fills the height left between the intrinsic-height chrome
+        // bands (which `build_*_chrome` size with `with_intrinsic_height`).
+        // `NavShell::build_layout` hard-codes a `percent(1.0)` height leaf; in
+        // a column of three that would claim the full height, so override it to
+        // grow into the remaining space instead.
+        taffy
+            .set_style(
+                nav_node,
+                taffy::Style {
+                    flex_grow: 1.0,
+                    flex_shrink: 1.0,
+                    flex_basis: taffy::Dimension::length(0.0),
+                    size: taffy::Size {
+                        width: taffy::Dimension::percent(1.0),
+                        height: taffy::Dimension::auto(),
+                    },
+                    min_size: taffy::Size {
+                        width: taffy::Dimension::auto(),
+                        height: taffy::Dimension::length(0.0),
+                    },
+                    ..Default::default()
+                },
+            )
+            .unwrap();
 
         let style = taffy::Style {
             display: taffy::Display::Flex,
@@ -1446,7 +1579,9 @@ impl Widget for FileExplorerWidget {
             },
             ..Default::default()
         };
-        let node = taffy.new_with_children(style, &[child_node]).unwrap();
+        let node = taffy
+            .new_with_children(style, &[above_node, nav_node, below_node])
+            .unwrap();
         node_map.insert(node, self as *mut dyn Widget);
         node
     }
@@ -1464,10 +1599,17 @@ impl Widget for FileExplorerWidget {
             origin.x + l.location.x as f64 + l.size.width as f64,
             origin.y + l.location.y as f64 + l.size.height as f64,
         );
-        if let Some(c) = &mut self.composed {
-            if let Ok(children) = taffy.children(node) {
-                if let Some(&child_node) = children.first() {
-                    c.apply_layout(taffy, child_node, vello::kurbo::Point::new(self.rect.x0, self.rect.y0));
+        let base = vello::kurbo::Point::new(self.rect.x0, self.rect.y0);
+        if let Ok(children) = taffy.children(node) {
+            if let (Some(&above_n), Some(&nav_n), Some(&below_n)) =
+                (children.first(), children.get(1), children.get(2))
+            {
+                if let Some(c) = &mut self.chrome_above {
+                    c.apply_layout(taffy, above_n, base);
+                }
+                self.nav.apply_layout(taffy, nav_n, base);
+                if let Some(c) = &mut self.chrome_below {
+                    c.apply_layout(taffy, below_n, base);
                 }
             }
         }
@@ -1482,7 +1624,11 @@ impl Widget for FileExplorerWidget {
         presence: &ui::presence::PresenceCtx,
     ) {
         self.paint_background(scene, transform, theme);
-        if let Some(c) = &mut self.composed {
+        if let Some(c) = &mut self.chrome_above {
+            c.draw(scene, transform, text_renderer, theme, presence);
+        }
+        self.nav.draw(scene, transform, text_renderer, theme, presence);
+        if let Some(c) = &mut self.chrome_below {
             c.draw(scene, transform, text_renderer, theme, presence);
         }
     }
@@ -1502,7 +1648,12 @@ impl Widget for FileExplorerWidget {
         // rows outside it. The default trait impl would call our own `draw`,
         // which breaks that chain — a long directory would then emit every
         // row's glyphs every frame regardless of what's visible.
-        if let Some(c) = &mut self.composed {
+        if let Some(c) = &mut self.chrome_above {
+            c.draw_with_presence(scene, transform, text_renderer, theme, presence, permissions);
+        }
+        self.nav
+            .draw_with_presence(scene, transform, text_renderer, theme, presence, permissions);
+        if let Some(c) = &mut self.chrome_below {
             c.draw_with_presence(scene, transform, text_renderer, theme, presence, permissions);
         }
     }
@@ -1515,9 +1666,13 @@ impl Widget for FileExplorerWidget {
         theme: &ui::Theme,
         presence: &ui::presence::PresenceCtx,
     ) {
-        // Composed overlays (dropdowns/popovers) first, then our top-layer
+        // Child overlays (dropdowns/popovers) first, then our top-layer
         // context menu (and its flyout) so they composite above everything.
-        if let Some(c) = &mut self.composed {
+        if let Some(c) = &mut self.chrome_above {
+            c.draw_overlay(scene, transform, text_renderer, theme, presence);
+        }
+        self.nav.draw_overlay(scene, transform, text_renderer, theme, presence);
+        if let Some(c) = &mut self.chrome_below {
             c.draw_overlay(scene, transform, text_renderer, theme, presence);
         }
         if self.context_menu.is_open() {
@@ -1574,22 +1729,16 @@ impl Widget for FileExplorerWidget {
         }
 
         // Right-click opens the context menu. First deliver the press to the
-        // composed tree so the content pane selects the row under the cursor
-        // (it pushes `ContextSelect`); draining that before building the menu
-        // is what makes the menu's actions target what was actually clicked
-        // rather than a stale selection from an earlier click.
+        // body so the content pane selects the row under the cursor (it pushes
+        // `ContextSelect`); draining that before building the menu is what makes
+        // the menu's actions target what was actually clicked rather than a
+        // stale selection from an earlier click.
         if let WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Right, .. } = event {
-            if let Some(c) = &mut self.composed {
-                if let Ok(children) = taffy.children(node_id) {
-                    if let Some(&child_node) = children.first() {
-                        let mut child_handled = false;
-                        c.handle_event(
-                            event, scale_factor, modifiers, state, path,
-                            &mut child_handled, focus_target, child_node, taffy,
-                        );
-                    }
-                }
-            }
+            let mut child_handled = false;
+            self.forward_to_body(
+                event, scale_factor, modifiers, state, path, &mut child_handled, focus_target,
+                node_id, taffy,
+            );
             self.drain_commands();
             self.open_context_menu(self.last_cursor);
             *handled = true;
@@ -1652,14 +1801,15 @@ impl Widget for FileExplorerWidget {
             }
         }
 
-        // Deliver to the composed tree first (buttons, views, search field).
-        if let Some(c) = &mut self.composed {
-            if let Ok(children) = taffy.children(node_id) {
-                if let Some(&child_node) = children.first() {
-                    c.handle_event(event, scale_factor, modifiers, state, path, handled, focus_target, child_node, taffy);
-                }
-            }
-        }
+        // Remember where we are so a place-navigation this event can push the
+        // file view in (narrow / push layout).
+        let path_before = self.current_path.clone();
+
+        // Deliver to the body first (toolbar/breadcrumb, places list, file
+        // view), stopping at the first that consumes it.
+        self.forward_to_body(
+            event, scale_factor, modifiers, state, path, handled, focus_target, node_id, taffy,
+        );
 
         // App-level keyboard nav for keys the children didn't consume.
         if !*handled {
@@ -1675,22 +1825,80 @@ impl Widget for FileExplorerWidget {
         if self.drain_commands() {
             self.structure_dirty = true;
         }
+
+        // In the single-pane (narrow) layout, navigating to a new location
+        // pushes the file view in over the places list, with a Back arrow to
+        // return — the HIG master→detail flow. Wide keeps both panes abreast,
+        // so `show_detail` is a harmless no-op there.
+        if self.current_path != path_before && self.nav.mode() == ShellMode::Narrow {
+            self.nav.show_detail();
+        }
     }
 
     fn take_structure_dirty(&mut self) -> bool {
         let mut d = std::mem::take(&mut self.structure_dirty);
-        if let Some(c) = &mut self.composed {
+        if let Some(c) = &mut self.chrome_above {
+            d |= c.take_structure_dirty();
+        }
+        d |= self.nav.take_structure_dirty();
+        if let Some(c) = &mut self.chrome_below {
             d |= c.take_structure_dirty();
         }
         d
     }
 
+    fn needs_animation_frame(&self) -> bool {
+        // The body's docked→push / reveal slide must keep the host pumping
+        // frames while it settles.
+        self.nav.needs_animation_frame()
+            || self
+                .chrome_above
+                .as_ref()
+                .map(|c| c.needs_animation_frame())
+                .unwrap_or(false)
+            || self
+                .chrome_below
+                .as_ref()
+                .map(|c| c.needs_animation_frame())
+                .unwrap_or(false)
+    }
+
+    fn needs_idle_sync(&self) -> bool {
+        self.nav.needs_idle_sync()
+            || self
+                .chrome_above
+                .as_ref()
+                .map(|c| c.needs_idle_sync())
+                .unwrap_or(false)
+            || self
+                .chrome_below
+                .as_ref()
+                .map(|c| c.needs_idle_sync())
+                .unwrap_or(false)
+    }
+
     fn children(&self) -> Vec<&dyn Widget> {
-        self.composed.as_ref().map(|c| c.as_ref() as &dyn Widget).into_iter().collect()
+        let mut v: Vec<&dyn Widget> = Vec::new();
+        if let Some(c) = &self.chrome_above {
+            v.push(c.as_ref());
+        }
+        v.push(&self.nav);
+        if let Some(c) = &self.chrome_below {
+            v.push(c.as_ref());
+        }
+        v
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        self.composed.as_mut().map(|c| c.as_mut() as &mut (dyn Widget + '_)).into_iter().collect()
+        let mut v: Vec<&mut (dyn Widget + '_)> = Vec::new();
+        if let Some(c) = &mut self.chrome_above {
+            v.push(c.as_mut());
+        }
+        v.push(&mut self.nav);
+        if let Some(c) = &mut self.chrome_below {
+            v.push(c.as_mut());
+        }
+        v
     }
 
     fn name(&self) -> &str {
@@ -1942,21 +2150,24 @@ mod command_path_tests {
         use taffy::{NodeId, TaffyTree};
         use ui::theme::Theme;
 
+        // Build the real content pane (the file-view detail, where the retry
+        // affordance lives) and count its buttons. The error flag is the only
+        // structural difference, so the delta is precisely the "Try Again"
+        // button `build_content_pane` adds.
         fn button_count(err: bool) -> usize {
             let mut w = FileExplorerWidget::new();
             if err {
                 w.error = Some("could not read directory".into());
             }
-            let mut taffy: TaffyTree<()> = TaffyTree::new();
             let theme = Theme::dark();
+            let mut pane = w.build_content_pane(&theme);
+            let mut taffy: TaffyTree<()> = TaffyTree::new();
             let mut nm: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-            w.build_layout(&mut taffy, &theme, &mut nm);
+            pane.build_layout(&mut taffy, &theme, &mut nm);
             nm.values()
                 .filter(|&&p| unsafe { (*p).name() } == "Button")
                 .count()
         }
-        // The only structural difference is the error flag, so the delta is
-        // precisely the "Try Again" button the error view now builds.
         assert_eq!(
             button_count(true),
             button_count(false) + 1,
@@ -2361,5 +2572,179 @@ mod command_path_tests {
         let two = w.context_menu_spec(&[PathBuf::from("Doc.md"), PathBuf::from("Sheet.csv")]);
         assert!(has_new_file(&two), "templates present → New File entry shown");
         assert!(has_new_folder(&two));
+    }
+}
+
+
+#[cfg(test)]
+mod responsive_body_tests {
+    //! The places list + file view are unified onto the shared responsive
+    //! `NavShell`: a comfortably-wide window docks them side by side; a narrow
+    //! window collapses to a single pane (places → tap a place → the file view
+    //! pushes in with a Back arrow). Drives the real production path
+    //! (`build_layout` → `apply_layout` at a size, then `handle_event`).
+    use super::*;
+    use std::collections::HashMap;
+    use taffy::prelude::*;
+    use ui::theme::Theme;
+
+    struct H {
+        w: FileExplorerWidget,
+        taffy: TaffyTree<()>,
+        node: NodeId,
+        state: ui::State,
+        tr: ui::text_render::TextRenderer,
+    }
+
+    impl H {
+        fn new(dir: Option<&std::path::Path>, width: f32, height: f32) -> Self {
+            let mut w = FileExplorerWidget::with_persistence(None, None);
+            if let Some(d) = dir {
+                w.navigate(d.to_path_buf());
+            }
+            let mut h = H {
+                w,
+                taffy: TaffyTree::new(),
+                node: NodeId::new(0),
+                state: ui::State::new(),
+                tr: ui::text_render::TextRenderer::new(),
+            };
+            h.lay_out(width, height);
+            h
+        }
+
+        fn lay_out(&mut self, width: f32, height: f32) {
+            let theme = Theme::dark();
+            let mut taffy: TaffyTree<()> = TaffyTree::new();
+            let mut nm: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+            self.w.sync(&mut self.state.doc, &self.state.root);
+            let node = self.w.build_layout(&mut taffy, &theme, &mut nm);
+            let measure_map = nm.clone();
+            let trm = &mut self.tr;
+            taffy
+                .compute_layout_with_measure(
+                    node,
+                    Size {
+                        width: AvailableSpace::Definite(width),
+                        height: AvailableSpace::Definite(height),
+                    },
+                    |k, a, id, _, _| {
+                        if let Some(&p) = measure_map.get(&id) {
+                            unsafe { (*p).measure(k, a, trm) }
+                        } else {
+                            Size::ZERO
+                        }
+                    },
+                )
+                .unwrap();
+            self.w.apply_layout(&taffy, node, Point::ORIGIN);
+            self.taffy = taffy;
+            self.node = node;
+        }
+
+        fn dispatch(&mut self, ev: &winit::event::WindowEvent) {
+            let mut handled = false;
+            let mut focus = None;
+            self.w.handle_event(
+                ev,
+                1.0,
+                &winit::event::Modifiers::default(),
+                &mut self.state.doc,
+                &self.state.root,
+                &mut handled,
+                &mut focus,
+                self.node,
+                &self.taffy,
+            );
+        }
+
+        fn cursor(&mut self, x: f64, y: f64) {
+            self.dispatch(&winit::event::WindowEvent::CursorMoved {
+                device_id: unsafe { std::mem::zeroed() },
+                position: winit::dpi::PhysicalPosition::new(x, y),
+            });
+        }
+
+        fn escape(&mut self) {
+            let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
+            ev.logical_key = winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape);
+            ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
+                winit::keyboard::NativeKeyCode::Unidentified,
+            );
+            ev.location = winit::keyboard::KeyLocation::Standard;
+            ev.state = winit::event::ElementState::Pressed;
+            ev.repeat = false;
+            ev.text = None;
+            self.dispatch(&winit::event::WindowEvent::KeyboardInput {
+                device_id: unsafe { std::mem::zeroed() },
+                event: ev,
+                is_synthetic: false,
+            });
+        }
+    }
+
+    #[test]
+    fn body_docks_wide_and_reflows_to_push_when_narrowed() {
+        let mut h = H::new(None, 1200.0, 720.0);
+        assert_eq!(
+            h.w.debug_body_mode(),
+            ShellMode::Wide,
+            "a wide window docks the places list beside the file view"
+        );
+        // Resize DOWN on the same instance (a real window resize re-runs
+        // apply_layout) — the body must reflow to a single pane, not freeze.
+        h.lay_out(520.0, 720.0);
+        assert_eq!(
+            h.w.debug_body_mode(),
+            ShellMode::Narrow,
+            "a narrow window collapses the body to a single pane"
+        );
+        // ...and back up again proves it isn't one-way.
+        h.lay_out(1200.0, 720.0);
+        assert_eq!(h.w.debug_body_mode(), ShellMode::Wide);
+    }
+
+    #[test]
+    fn narrow_navigation_pushes_the_file_view_then_escape_returns() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("sub")).unwrap();
+        let mut h = H::new(Some(dir.path()), 520.0, 720.0);
+        assert_eq!(h.w.debug_body_mode(), ShellMode::Narrow);
+        assert!(!h.w.debug_detail_shown(), "narrow starts on the places list");
+
+        // A place-navigation (what tapping a place in the list emits) must push
+        // the file view in. Inject the command the places list pushes, then
+        // pump an event so `handle_event` drains it + applies the push wiring.
+        crate::command::push(&h.w.cmds, FileCommand::Navigate(dir.path().join("sub")));
+        h.cursor(10.0, 10.0);
+        assert_eq!(h.w.current_path(), dir.path().join("sub"), "the navigation applied");
+        assert!(
+            h.w.debug_detail_shown(),
+            "narrow navigation pushes the file view in over the places list"
+        );
+
+        // Escape pops back to the places list (NavShell self-routes it).
+        h.escape();
+        assert!(
+            !h.w.debug_detail_shown(),
+            "Escape returns from the file view to the places list"
+        );
+    }
+
+    #[test]
+    fn wide_navigation_keeps_both_panes_abreast() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("sub")).unwrap();
+        let mut h = H::new(Some(dir.path()), 1200.0, 720.0);
+        assert_eq!(h.w.debug_body_mode(), ShellMode::Wide);
+
+        crate::command::push(&h.w.cmds, FileCommand::Navigate(dir.path().join("sub")));
+        h.cursor(10.0, 10.0);
+        // Wide keeps both panes shown; there is no separate pushed screen, so
+        // the detail is not treated as a pushed pane.
+        assert!(
+            !h.w.debug_detail_shown(),
+            "the wide layout shows both panes; navigation does not push a separate screen"
+        );
     }
 }
