@@ -35,7 +35,11 @@
 pub mod app;
 pub mod doc;
 pub mod model;
+pub mod rfb;
 pub mod session;
+pub mod ssh;
+pub mod vnc;
+pub mod vt;
 mod theme_ext;
 
 use ui::widget::Widget;

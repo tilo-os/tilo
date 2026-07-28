@@ -23,3 +23,28 @@ vello = "0.9"
 winit = "0.30.13"
 taffy = "0.10.1"
 anyhow = "1.0"
+
+# Real transports (compiled always; a live connection is still gated at
+# runtime behind REMOTE_LIVE_SESSIONS so the default session surface stays
+# the honest "not connected" card).
+#
+#   russh  — a pure-Rust SSH client. Drives the interactive PTY channel that
+#            feeds the terminal grid. The `aws-lc-rs` crypto backend is the
+#            crate default and is already compiled elsewhere in the
+#            workspace (rustls/iroh), so it adds no new heavy build.
+#   tokio  — russh is async; the SSH session runs on a small current-thread
+#            runtime on its own OS thread and talks to the UI over channels.
+#   vte    — VT/ANSI parser; turns the remote PTY byte stream into the cell
+#            grid the session surface renders.
+#   des    — legacy single-DES, the cipher VNC "VNC Authentication" uses to
+#            answer the server's 16-byte challenge.
+russh = "0.54"
+tokio = { version = "1.52", features = ["rt", "net", "io-util", "sync", "time", "macros"] }
+vte = "0.15.0"
+des = "0.8"
+
+[dev-dependencies]
+# The SSH round-trip test stands up a real russh *server* on a loopback
+# socket and connects the client to it; the server side needs a host key
+# and the multi-thread runtime to accept while the client drives.
+tokio = { version = "1.52", features = ["rt-multi-thread", "net", "io-util", "sync", "time", "macros"] }
