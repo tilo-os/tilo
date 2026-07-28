@@ -1045,12 +1045,11 @@ impl MonitorApp {
         let seg_h = 30.0;
         let cy = inner.y0 + (inner.height() - seg_h) / 2.0;
 
-        // The header lays out three groups left→right: brand, centred tabs,
-        // and the clock/interval block — and they must never overlap, however
-        // narrow the window. We measure each group, then shrink the least
-        // essential parts (the subtitle, the uptime caption, finally the tab
-        // labels → icon-only pills) until they fit. The brand glyph, the tab
-        // control and the clock+interval are always present.
+        // The header lays out two groups: centred tabs and the clock/interval
+        // block — and they must never overlap, however narrow the window. We
+        // measure each, then shrink the least essential parts (the uptime
+        // caption, finally the tab labels → icon-only pills) until they fit. The
+        // tab control and the clock+interval are always present.
         let header_narrow = inner.width() < 560.0;
 
         // ---- right block: clock (top) + uptime caption (bottom) + pill ----
@@ -1068,44 +1067,10 @@ impl MonitorApp {
         let pill_x1 = right_block_x0 - 16.0;
         let pill_x0 = pill_x1 - iw;
 
-        // ---- brand: glyph + title (+ subtitle when there's room) ----------
-        let glyph = Rect::new(inner.x0, inner.y0 + 2.0, inner.x0 + 26.0, inner.y0 + 28.0);
-        icons::draw_icon(scene, t, glyph, Icon::Monitor, c.accent[5], 1.8);
-        // The "Monitor" wordmark is the first thing to drop as the header
-        // narrows: the brand glyph already identifies the app, so hiding the
-        // label frees width for the tab control (which stays comfortable rather
-        // than collapsing to icon-only) and prevents the brand from crowding the
-        // tabs. Below this width only the glyph carries the brand.
-        let show_title = inner.width() >= 470.0;
-        let (titw, _) = tr.measure_weighted("Monitor", theme.tokens.typography.scale.xl, None, TextWeight::Bold);
-        if show_title {
-            tr.draw_text_weighted(
-                scene,
-                "Monitor",
-                theme.tokens.typography.scale.xl,
-                c.text_primary,
-                t * Affine::translate((glyph.x1 + 10.0, inner.y0 - 1.0)),
-                None,
-                TextWeight::Bold,
-            );
-        }
-        // The subtitle needs both room and the title above it, so it only shows
-        // on a roomy header (never when the title itself is hidden).
-        if !header_narrow && show_title {
-            tr.draw_text(
-                scene,
-                "System Activity",
-                xs,
-                c.text_dim,
-                t * Affine::translate((glyph.x1 + 11.0, inner.y0 + 20.0)),
-                None,
-            );
-        }
-        let brand_right = if show_title {
-            glyph.x1 + 10.0 + titw as f64
-        } else {
-            glyph.x1 + 6.0
-        };
+        // The OS owns window chrome (app-name/logo/subtitle) — the header draws
+        // only its functional controls (tabs, clock, interval pill), so the tab
+        // control gets the full width from the left edge.
+        let brand_right = inner.x0;
 
         // ---- centre tab segmented control ---------------------------------
         // Tabs want a comfortable width; clamp them into the gap between the

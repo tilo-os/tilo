@@ -39,9 +39,6 @@ pub struct CalculatorApp {
     seg_rects: [Rect; 3],
     rad_rect: Rect,
     deg_rect: Rect,
-    /// Whether the topbar has room for the "Calculator" wordmark this frame.
-    /// Re-derived from the current width every `relayout`, never cached.
-    show_title: bool,
     /// Whether the mode segments are too narrow for full labels and must use
     /// the short forms ("Calc" / "2D" / "3D"). Re-derived every `relayout`.
     seg_short: bool,
@@ -106,7 +103,6 @@ impl CalculatorApp {
             seg_rects: [Rect::ZERO; 3],
             rad_rect: Rect::ZERO,
             deg_rect: Rect::ZERO,
-            show_title: true,
             seg_short: false,
             mouse: Point::ZERO,
             dragging: false,
@@ -135,9 +131,9 @@ impl CalculatorApp {
         let seg_h = 36.0;
         let y0 = self.area.y0 + (TOPBAR_H - seg_h) / 2.0;
 
-        // The wordmark needs room; drop it before anything else gets cramped.
-        self.show_title = w >= 680.0;
-        let brand_right = self.area.x0 + if self.show_title { 190.0 } else { 50.0 };
+        // The OS draws the window title/app-name — the toolbar reserves only a
+        // small left margin, then hands the rest to the functional controls.
+        let brand_right = self.area.x0 + 12.0;
 
         // RAD/DEG anchored to the right edge; compact form when tight.
         let compact_toggle = w < 620.0;
@@ -209,14 +205,8 @@ impl CalculatorApp {
             1.0,
         );
 
-        // brand
-        let dot = Rect::new(self.area.x0 + 24.0, self.topbar.center().y - 9.0, self.area.x0 + 42.0, self.topbar.center().y + 9.0);
-        draw::fill_rrect(scene, t, dot, 5.0, c.accent[5]);
-        draw::text_in(scene, tr, t, dot, "=", 16.0, Color::WHITE, Align::Center, TextWeight::Bold);
-        if self.show_title {
-            let title = Rect::new(self.area.x0 + 52.0, self.topbar.y0, self.area.x0 + 190.0, self.topbar.y1);
-            draw::text_in(scene, tr, t, title, "Calculator", 19.0, c.text_primary, Align::Left, TextWeight::Bold);
-        }
+        // The OS owns window chrome (title/app-name/logo) — the app draws only
+        // its functional toolbar controls here.
 
         // segmented mode control
         let outer = Rect::new(self.seg_rects[0].x0 - 4.0, self.seg_rects[0].y0 - 4.0, self.seg_rects[2].x1 + 4.0, self.seg_rects[2].y1 + 4.0);
@@ -1034,19 +1024,18 @@ mod tests {
     #[test]
     fn topbar_reflows_on_resize_between_breakpoints() {
         // Re-derive the layout from the CURRENT width every relayout: shrinking a
-        // laid-out instance must switch to condensed labels + drop the wordmark,
-        // and re-widening must restore them (not freeze at the first frame).
+        // laid-out instance must switch to condensed mode labels, and
+        // re-widening must restore them (not freeze at the first frame).
         let mut app = CalculatorApp::seeded();
         app.area = Rect::new(0.0, 0.0, 1280.0, 720.0);
         app.relayout();
-        assert!(app.show_title && !app.seg_short, "wide: full wordmark + labels");
+        assert!(!app.seg_short, "wide: full mode labels");
         app.area = Rect::new(0.0, 0.0, 430.0, 720.0);
         app.relayout();
-        assert!(!app.show_title, "narrow: wordmark dropped");
         assert!(app.seg_short, "narrow: condensed mode labels");
         app.area = Rect::new(0.0, 0.0, 1280.0, 720.0);
         app.relayout();
-        assert!(app.show_title && !app.seg_short, "re-widening must restore the full layout");
+        assert!(!app.seg_short, "re-widening must restore the full labels");
     }
 
     #[test]
