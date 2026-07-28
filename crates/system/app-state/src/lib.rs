@@ -179,6 +179,26 @@ impl DocStore {
         Self::open_for(&cli::package_id())
     }
 
+    /// Open the store, using `manifest_id` when the launcher has not set
+    /// `QOS_PACKAGE_ID`.
+    ///
+    /// The env var always wins, so this cannot be used to escape the
+    /// launcher's decision — it only supplies an answer for a run that has
+    /// no launcher at all (a developer running the binary straight out of
+    /// `target/debug`, or a test harness). Without it every such run would
+    /// land in the shared `qos-standalone` directory and 44 apps would
+    /// scribble over one document.
+    ///
+    /// `manifest_id` is the app's own `[package] id` from its
+    /// `qos-app.toml`.
+    pub fn open_with_manifest_id(manifest_id: &str) -> Result<Self, StoreError> {
+        let id = std::env::var("QOS_PACKAGE_ID")
+            .ok()
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| manifest_id.to_string());
+        Self::open_for(&id)
+    }
+
     /// Open the store for an explicit package id.
     ///
     /// For tests and for migration tools that legitimately need to address a
