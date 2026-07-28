@@ -46,6 +46,7 @@ use crate::compositor::idle::{IdleConfig, SessionManager, SessionTransition};
 use crate::compositor::lock_auth;
 use crate::compositor::lock_controller::{LockController, LockKey, UnlockOutcome};
 use crate::compositor::lock_screen::{self, LockView};
+use crate::compositor::metrics;
 use crate::compositor::state::{ClientState, State};
 use crate::compositor::test_control::{
     self, ControlState, KeyTag, NamedKeyTag, PlannedAction, parse_command, serialise_response,
@@ -1166,12 +1167,26 @@ pub fn run() -> ! {
     // main-thread stall (e.g. a synchronous drop/detach handler) shows up
     // as an actual measurement instead of a guess.
     let loop_timing = std::env::var("QOS_LOOP_TIMING").is_ok();
+    // Frame-loop instrumentation (`QOS_FRAME_TRACE` / `QOS_FRAME_SUMMARY`).
+    // Disabled — and free — when neither env var is set. See
+    // `compositor::metrics`.
+    let mut metrics = metrics::FrameRecorder::from_env();
+    metrics.set_target_period(frame_period);
+    // Bench hook: shut the loop down cleanly after N seconds so the
+    // frame trace and summary are flushed by the normal exit path rather
+    // than lost to a SIGKILL. Unset in production, where the loop runs
+    // until the session ends.
+    let run_deadline = metrics::run_seconds_from_env().map(|d| {
+        eprintln!("nirios compositor: {}={:?}; will exit cleanly after that", metrics::RUN_SECONDS_ENV, d);
+        Instant::now() + d
+    });
     let mut stats_since = Instant::now();
     let (mut frames_total, mut frames_painted) = (0u32, 0u32);
     let (mut cause_events, mut cause_revision, mut cause_anim) = (0u32, 0u32, 0u32);
     let (mut cause_session, mut cause_keepalive) = (0u32, 0u32);
     while !close_requested {
         let iter_t0 = Instant::now();
+        metrics.begin_tick(iter_t0);
         backend.poll_events(&mut |event| pending_events.push(event));
         let had_backend_events = !pending_events.is_empty();
         let mut session_changed = false;
@@ -1193,6 +1208,10 @@ pub fn run() -> ! {
                     }
                 }
                 BackendEvent::Input(wev) => {
+                    // Instrumentation: the clock starts when the loop takes
+                    // the event off the backend. The first painted frame
+                    // after this closes the input-to-present measurement.
+                    metrics.note_input(Instant::now());
                     // Track D2: any input is activity — reset the idle
                     // timer and wake the display if it was blanked.
                     for t in session.note_activity(Instant::now()) {
@@ -1289,6 +1308,7 @@ pub fn run() -> ! {
             }
         }
         let t_input_done = iter_t0.elapsed();
+        metrics.mark_input(t_input_done);
 
         // Track D2: advance the idle timers and apply any timeout-driven
         // transitions (blank, auto-lock, suspend) for this tick.
@@ -1440,6 +1460,7 @@ pub fn run() -> ! {
         let revision_changed = revision != last_revision;
         let animating = frame_builder.needs_animation_frame();
         let keepalive_due = last_paint.elapsed() >= keepalive;
+        metrics.mark_pump(iter_t0.elapsed() - t_input_done);
         let should_paint = force_first_paint
             || had_backend_events
             || session_changed
@@ -1495,7 +1516,11 @@ pub fn run() -> ! {
             // Lay out only when we're about to paint. Any structural change
             // (spliced group, tab switch, resize) is applied here, right
             // before the scene is built.
+            let t_layout_start = Instant::now();
             frame_builder.relayout();
+            let layout_took = t_layout_start.elapsed();
+            metrics.mark_layout(layout_took);
+            let t_scene_start = Instant::now();
             // When locked, paint the compositor-owned lock overlay instead
             // of the chrome — app content is never submitted while locked.
             let scene = if session.is_locked() {
@@ -1524,7 +1549,15 @@ pub fn run() -> ! {
             } else {
                 frame_builder.paint()
             };
+            metrics.mark_scene(t_scene_start.elapsed());
+            let t_submit_start = Instant::now();
             backend.submit_frame(&scene, OutputId(0));
+            let submit_done = Instant::now();
+            metrics.mark_submit(
+                submit_done.saturating_duration_since(t_submit_start),
+                false,
+                submit_done,
+            );
             last_paint = Instant::now();
             // Re-read after `relayout`: its `resync_strips_from_tree` pass
             // can bump the revision, and we must capture that post-paint
@@ -1590,6 +1623,7 @@ pub fn run() -> ! {
             test_control_conns.retain(|c| !c.closed);
         }
         let t_testctl_done = iter_t0.elapsed();
+        metrics.mark_testctl(t_testctl_done - t_paint_done);
 
         // Phase 7 fix: drain wayland client traffic + push pending
         // protocol updates back out. `dispatch_clients` advances each
@@ -1606,6 +1640,7 @@ pub fn run() -> ! {
             break;
         }
         let t_work_done = iter_t0.elapsed();
+        metrics.mark_clients(t_work_done - t_testctl_done);
         if loop_timing && t_work_done > Duration::from_millis(100) {
             eprintln!(
                 "SLOW-ITER total_work={:?} | input={:?} paint=+{:?} testctl=+{:?} dispatch_clients=+{:?}",
@@ -1621,9 +1656,17 @@ pub fn run() -> ! {
         // included) and sleep up to one frame. The calloop loop itself
         // dispatches sources on each iteration; this is what lets
         // newly-accepted connections fan out into `insert_client` calls.
+        let t_sleep_start = Instant::now();
         if let Err(err) = event_loop.dispatch(frame_period, &mut state) {
             eprintln!("nirios compositor: event loop dispatch error: {err}");
             break;
+        }
+        metrics.mark_sleep(t_sleep_start.elapsed());
+        metrics.end_tick();
+        if let Some(deadline) = run_deadline {
+            if Instant::now() >= deadline {
+                close_requested = true;
+            }
         }
         let _ = &state.display_handle;
 
@@ -1645,6 +1688,10 @@ pub fn run() -> ! {
             }
         }
     }
+
+    // Flush the frame trace / write the summary before `process::exit`
+    // skips destructors. A no-op unless instrumentation was enabled.
+    metrics.finish();
 
     // `event_loop.run` only returns when the loop is asked to stop; we never
     // do that today, but keep an explicit exit so the function's `!` return
