@@ -222,25 +222,16 @@ class Compositor:
             pass
         return False
 
-    def palette_input_rect(self):
-        reply = call(self.sock, {"op": "list_targets"})
-        targets = reply.get("targets") or reply.get("ok", {}).get("targets", [])
-        for t in targets:
-            if t["name"] == "command_palette_input":
-                return t["rect"]
-        return None
-
     def open_palette_and_launch(self, short_name: str) -> None:
-        """Ctrl+K, widen the scope to All, restrict the kind to
-        Applications, type the app's name, activate the top row.
+        """Ctrl+K, type the app's name, activate the top row.
 
-        The scope pill defaults to the focused document ("Notes"), which
-        never consults the Applications provider — so without widening it
-        the palette offers nothing and Enter does nothing at all. The
-        pill and the chip are drawn above the palette's own rect and
-        carry no `test_id`, so they are clicked at offsets from the
-        input's rect rather than at absolute coordinates: that survives a
-        different window size, which hardcoded pixels would not.
+        Exactly what a person does, with nothing in between. This used to
+        need two chip clicks first, because Ctrl+K seeded the scope to
+        the focused document and that scope never consults the
+        Applications provider — the palette offered nothing and Enter did
+        nothing. A harness needing a workaround to launch an installed
+        app is a harness reporting a product bug; the workaround is gone
+        because the bug is.
         """
         call(self.sock, {"op": "modifiers", "ctrl": True, "shift": False,
                          "alt": False, "logo": False})
@@ -248,13 +239,6 @@ class Compositor:
         call(self.sock, {"op": "modifiers", "ctrl": False, "shift": False,
                          "alt": False, "logo": False})
         time.sleep(0.4)
-        rect = self.palette_input_rect()
-        if rect is not None:
-            x0 = rect[0]
-            call(self.sock, {"op": "click_at", "x": x0 + 401.0, "y": 55.0})
-            time.sleep(0.3)
-            call(self.sock, {"op": "click_at", "x": x0 + 274.0, "y": 84.0})
-            time.sleep(0.3)
         call(self.sock, {"op": "type", "text": short_name})
         time.sleep(0.8)   # let the providers score and the list settle
         call(self.sock, {"op": "key", "key": "Enter"})
