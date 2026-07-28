@@ -766,7 +766,7 @@ impl State {
             // xkb keycodes start at 8 (evdev 0 == xkb 8); 8..=255 covers a
             // standard keyboard's key range.
             for raw in 8u32..=255 {
-                let kc = Keycode::new(raw);
+                let kc: Keycode = raw.into();
                 if xkb
                     .raw_syms_for_key_in_layout(kc, layout)
                     .iter()
