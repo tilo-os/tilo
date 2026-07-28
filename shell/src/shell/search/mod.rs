@@ -48,6 +48,8 @@ use crate::shell::chrome_state::{Chrome, ChromeState, SearchScope};
 pub enum ResourceKind {
     /// A palette-registered chrome action (e.g. "Open workspace settings").
     Action,
+    /// An installed application. Enter launches it.
+    Application,
     /// A note document (title + body). Enter opens/focuses the note tab.
     Note,
     /// A file resource.
@@ -73,6 +75,7 @@ impl ResourceKind {
     pub fn label(&self) -> &str {
         match self {
             ResourceKind::Action => "Actions",
+            ResourceKind::Application => "Applications",
             ResourceKind::Note => "Notes",
             ResourceKind::File => "Files",
             ResourceKind::Folder => "Folders",
@@ -84,19 +87,29 @@ impl ResourceKind {
     }
 
     /// Stable sort key that pins the well-known kinds to a fixed order in
-    /// the palette (Actions → Notes → Files → Folders → Creator → Video →
-    /// Playlist → Custom(alphabetical)). Two providers registering the
-    /// same kind still group together because they share this key.
+    /// the palette (Actions → Applications → Notes → Files → Folders →
+    /// Creator → Video → Playlist → Custom(alphabetical)). Two providers
+    /// registering the same kind still group together because they share
+    /// this key.
+    ///
+    /// Applications rank second, above every content kind, because Enter
+    /// activates the top row: a palette that answers a typed app name
+    /// with a source file whose path happens to contain that word has
+    /// made launching — its most common job — unreachable by keyboard.
+    /// Actions stay above them; there are few of them and they are
+    /// explicit commands the user named, not a corpus to be matched
+    /// against.
     fn sort_key(&self) -> (u8, String) {
         match self {
             ResourceKind::Action => (0, String::new()),
-            ResourceKind::Note => (1, String::new()),
-            ResourceKind::File => (2, String::new()),
-            ResourceKind::Folder => (3, String::new()),
-            ResourceKind::Creator => (4, String::new()),
-            ResourceKind::Video => (5, String::new()),
-            ResourceKind::Playlist => (6, String::new()),
-            ResourceKind::Custom(s) => (7, s.clone()),
+            ResourceKind::Application => (1, String::new()),
+            ResourceKind::Note => (2, String::new()),
+            ResourceKind::File => (3, String::new()),
+            ResourceKind::Folder => (4, String::new()),
+            ResourceKind::Creator => (5, String::new()),
+            ResourceKind::Video => (6, String::new()),
+            ResourceKind::Playlist => (7, String::new()),
+            ResourceKind::Custom(s) => (8, s.clone()),
         }
     }
 }
@@ -451,6 +464,58 @@ mod tests {
         );
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].kind, ResourceKind::Note);
+    }
+
+    /// Enter activates the top row. A typed app name has to put the app
+    /// there — not a source file whose path happens to contain the word.
+    ///
+    /// This is the shape the live palette produced for "calculator"
+    /// before the fix: the files provider returns a dozen high-scoring
+    /// path hits, and every one of them outranked `Open Calculator`
+    /// because the merge sorts by kind before score. Pressing Enter
+    /// opened `Calculator.h`.
+    #[test]
+    fn a_matching_application_outranks_file_hits_for_the_same_word() {
+        let mut reg = SearchRegistry::new();
+        reg.register(Rc::new(FakeProvider {
+            id: "files".into(),
+            kinds: vec![ResourceKind::File],
+            results: vec![
+                mk_result(ResourceKind::File, "files", "f1", "Calculator.h", 120),
+                mk_result(ResourceKind::File, "files", "f2", "calculator.rs", 120),
+            ],
+        }));
+        reg.register(Rc::new(FakeProvider {
+            id: "applications".into(),
+            kinds: vec![ResourceKind::Application],
+            results: vec![mk_result(
+                ResourceKind::Application,
+                "applications",
+                "dev.qos.calculator",
+                "Open Calculator",
+                100,
+            )],
+        }));
+        let chrome = mk_chrome();
+        let (doc, root) = mk_doc();
+        let out = reg.query(
+            "calculator",
+            SearchScope::Workspace,
+            None,
+            &[],
+            &chrome.borrow(),
+            &doc,
+            &root,
+        );
+        assert_eq!(
+            out.first().map(|r| r.provider_id.as_str()),
+            Some("applications"),
+            "the installed app must be the row Enter activates, ahead of \
+             {} file hits: {:?}",
+            out.iter().filter(|r| r.kind == ResourceKind::File).count(),
+            out.iter().map(|r| (&r.kind, &r.title)).collect::<Vec<_>>()
+        );
+        assert_eq!(out[0].id, "dev.qos.calculator");
     }
 
     #[test]
