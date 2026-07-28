@@ -112,28 +112,37 @@ verified by an offscreen shot (header gone, functional controls intact) + tests:
 - [x] Emoji reactions — REAL (model + Automerge CRDT + UI, cross-peer convergence
       tested). Image attachments — REAL (ui::ImageStore + real FUSE fs.read; the
       synthesized `qos-demo://` images are shots-only). No action.
-- [ ] CALLING IS UI-ONLY (not real): the overlay is view-state + a join/leave beep.
-      NO camera/mic capture, NO opus/H.264 codec, NO transport — IrohTransport
-      never binds an endpoint (media.rs:232), connect()=false, send() loops back
-      in-process, so no peer ever receives a frame. request_screencast() is a None
-      stub (media.rs:189). To make it real: (a) capture via portal ScreenCast +
-      a pipewire/GStreamer mic source; (b) opus (audio) + H.264 (video) codec;
-      (c) transport — EITHER reuse the compositor's REAL H.264 pipeline
-      (shell/src/network/encoder.rs + peer_view.rs over gossipsub, already has
-      host-wins arbitration + signed invite tokens) OR bind the iroh QUIC seam —
-      pick ONE and wire it end-to-end.
+- [~] CALLING media pipeline is REAL behind `--features live-media`: GStreamer
+      mic → Opus and camera/screen → H.264 (in-tree openh264 source), shipped over
+      a bound iroh-QUIC transport; the ScreenCast portal (ashpd) is wired; remote
+      NALUs decode into per-peer tiles. Join publishes each peer's dialable ticket
+      into the shared voice-membership map (the signalling channel, riding the same
+      collab transport as the messages), so peers dial each other with no extra
+      round-trip. The default/`--shots` build carries none of that stack and runs
+      the call UI against a simulated local bus. REMAINING: a dedicated MoQ-over-iroh
+      framing (the transport is raw iroh QUIC today, not MoQ), and end-to-end proof
+      of real frames flowing on a live install (unverifiable headlessly).
 - [ ] P2P-by-default + APPOINTED-HOST routing does not exist. User's model: direct
       P2P by default, but route a workspace through an appointed host (e.g. a home
       server also running qOS) when one exists. Foundation exists in the compositor
       (session-host designation + "host always wins" for surface sharing); needs a
       persistent self-hosted workspace-host / relay concept built on top.
-- [ ] Message EDITING has no user entry point: the CRDT writer `edit_message` +
-      the read-only "(edited) · view history" popover exist, but nothing calls
-      edit_message outside tests/seed (doc.rs:1143). Add a context-menu "Edit" /
-      ArrowUp-to-edit-last-message that calls ChatDoc::edit_message (doc.rs:593).
-- [ ] VIDEO attachments ABSENT: Attachment is only Image|File (model.rs:140); a
-      shared video renders as a plain file chip — no poster, no inline playback.
-      Add a Video variant + inline player (depends on the ui video core below).
+- [x] Message EDITING now has a user entry point — REAL: right-click your own
+      message → "Edit message", or ArrowUp from an empty composer, opens an inline
+      editor; commit writes through `ChatDoc::edit_message`, which archives the
+      prior body into the message's history list and flags it `edited`. Only your
+      own messages are editable. Covered by `edit_via_menu_writes_through_edit_message`,
+      `arrow_up_in_empty_composer_edits_last_own_message`, `edit_escape_discards_without_writing`,
+      `cannot_edit_another_authors_message`, and a two-peer convergence test
+      (`an_edit_and_its_history_converge_across_two_participants`) that proves the
+      edited body AND its archived history reach the other peer over the incremental
+      delta the broker ships.
+- [x] VIDEO attachments — REAL: `Attachment::Video { name, path, w, h, size }` is
+      shared by reference (the FUSE path, never the bytes) and renders as an inline
+      poster/play card with the real resolution + size. Full frame decode still
+      needs the `live-media` media engine, but the share, persistence, and CRDT
+      round-trip are real (`video_attachment_round_trips_through_the_crdt`,
+      `attaching_a_video_posts_an_inline_video_card`).
 
 ## video playback (ui layer) — REAL but SILOED (audit 2026-07-04)
 - [ ] The working decode (NoFlush single persistent decoder) lives ONLY in tube
