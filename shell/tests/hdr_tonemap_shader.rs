@@ -18,9 +18,7 @@
 use shell::collab::colorimetry::{
     ColorPrimaries, ColorRange, Colorimetry, MatrixCoefficients, TransferCharacteristics,
 };
-use shell::shell::hdr_tonemap::{
-    HdrTonemapConfig, SHADER_SOURCE, tonemap_p010_to_rgba8,
-};
+use shell::shell::hdr_tonemap::{HdrTonemapConfig, SHADER_SOURCE, tonemap_p010_to_rgba8};
 
 /// Encode a `code_value` (0..1023) as the top-10-bit P010 sample.
 fn p010(code: u16) -> u16 {
@@ -60,10 +58,12 @@ fn cpu_tonemap_mid_gray_pq_produces_plausible_sdr_gray() {
     };
 
     let rgba = tonemap_p010_to_rgba8(
-        &y, &uv,
-        width,        // y_stride in u16 units
-        width,        // uv_stride in u16 units (interleaved: 2 samples per uv pair per column)
-        width, height,
+        &y,
+        &uv,
+        width, // y_stride in u16 units
+        width, // uv_stride in u16 units (interleaved: 2 samples per uv pair per column)
+        width,
+        height,
         colorimetry,
         cfg,
     );
@@ -108,8 +108,12 @@ fn cpu_tonemap_black_stays_black() {
         range: ColorRange::Limited,
     };
     let rgba = tonemap_p010_to_rgba8(
-        &y, &uv,
-        width, width, width, height,
+        &y,
+        &uv,
+        width,
+        width,
+        width,
+        height,
         colorimetry,
         HdrTonemapConfig::default(),
     );
@@ -134,8 +138,12 @@ fn cpu_tonemap_peak_saturates_toward_white() {
         range: ColorRange::Limited,
     };
     let rgba = tonemap_p010_to_rgba8(
-        &y, &uv,
-        width, width, width, height,
+        &y,
+        &uv,
+        width,
+        width,
+        width,
+        height,
         colorimetry,
         HdrTonemapConfig {
             source_peak_nits: 1000.0,
@@ -153,8 +161,7 @@ fn wgsl_shader_parses_and_validates() {
     // Parse the shader source and validate it — catches syntax /
     // type errors at test time so a shader edit doesn't break
     // production silently.
-    let module = naga::front::wgsl::parse_str(SHADER_SOURCE)
-        .expect("WGSL shader parses");
+    let module = naga::front::wgsl::parse_str(SHADER_SOURCE).expect("WGSL shader parses");
 
     // Full validation catches variable / binding / type errors that
     // parsing alone doesn't. Use the default validator config
@@ -163,15 +170,12 @@ fn wgsl_shader_parses_and_validates() {
         naga::valid::ValidationFlags::all(),
         naga::valid::Capabilities::default(),
     );
-    validator
-        .validate(&module)
-        .expect("WGSL shader validates");
+    validator.validate(&module).expect("WGSL shader validates");
 }
 
 #[test]
 fn wgsl_shader_contains_expected_entry_point() {
-    let module = naga::front::wgsl::parse_str(SHADER_SOURCE)
-        .expect("WGSL shader parses");
+    let module = naga::front::wgsl::parse_str(SHADER_SOURCE).expect("WGSL shader parses");
     // The compute entry point drives PeerView's compute dispatch.
     let has_entry = module
         .entry_points

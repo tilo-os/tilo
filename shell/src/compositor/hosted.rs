@@ -310,8 +310,7 @@ pub fn run_with_full_options(opts: HostedOptions) {
         // `doc_insert_grant` mirrors the change into the automerge doc
         // so peer-sync ships it on the next tick.
         let grants = crate::portal::GrantStoreHandle::new(tree_handle.clone());
-        let prompts =
-            crate::portal::PromptQueueHandle::new(crate::portal::PromptResolver::Channel);
+        let prompts = crate::portal::PromptQueueHandle::new(crate::portal::PromptResolver::Channel);
         let ctx = crate::portal::PortalContext::new_with_null_spawners(
             grants,
             prompts,
@@ -364,8 +363,8 @@ pub fn run_with_full_options(opts: HostedOptions) {
             // `collab-bridge` translator. Both transports share
             // fanout: an event delivered on one lands on subscribers
             // of the other.
-            let capnp_socket_path = std::env::var_os("QUICK_COLLAB_CAPNP_SOCK")
-                .map(std::path::PathBuf::from);
+            let capnp_socket_path =
+                std::env::var_os("QUICK_COLLAB_CAPNP_SOCK").map(std::path::PathBuf::from);
             match crate::shell::collab_broker::spawn_full(
                 socket_path.clone(),
                 capnp_socket_path.clone(),

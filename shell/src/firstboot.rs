@@ -295,8 +295,7 @@ mod tests {
     #[test]
     fn run_with_home_falls_back_to_dot_config() {
         let tmp = TmpDir::new("home");
-        run_with_env(None, Some(OsString::from(tmp.path())))
-            .expect("firstboot succeeds via HOME");
+        run_with_env(None, Some(OsString::from(tmp.path()))).expect("firstboot succeeds via HOME");
         let expected = tmp.path().join(".config").join("quick-desktop");
         assert!(
             expected.exists() && expected.is_dir(),

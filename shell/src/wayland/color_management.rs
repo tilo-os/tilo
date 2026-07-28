@@ -64,9 +64,7 @@ use wayland_protocols::wp::color_management::v1::server::{
 use crate::collab::colorimetry::{
     ColorPrimaries, ColorRange, Colorimetry, MatrixCoefficients, TransferCharacteristics,
 };
-use crate::collab::hdr_metadata::{
-    ContentLightLevel, Hdr10Metadata, MasteringDisplayColorVolume,
-};
+use crate::collab::hdr_metadata::{ContentLightLevel, Hdr10Metadata, MasteringDisplayColorVolume};
 
 /// The maximum protocol version we support. Bump on staging churn.
 const MAX_VERSION: u32 = 1;
@@ -265,10 +263,7 @@ impl ParametricBuilder {
                         (chrom_micro_to_st2086(m.g.0), chrom_micro_to_st2086(m.g.1)),
                         (chrom_micro_to_st2086(m.b.0), chrom_micro_to_st2086(m.b.1)),
                     ],
-                    white_point: (
-                        chrom_micro_to_st2086(m.w.0),
-                        chrom_micro_to_st2086(m.w.1),
-                    ),
+                    white_point: (chrom_micro_to_st2086(m.w.0), chrom_micro_to_st2086(m.w.1)),
                     max_display_mastering_luminance: inner
                         .mastering_luminance
                         .map(|(_, max)| max.saturating_mul(10_000))
@@ -363,8 +358,7 @@ fn chrom_micro_to_st2086(micro: i32) -> u16 {
 
 /// Monotonic image-description identity counter. Never recycled per
 /// the protocol's requirement.
-static NEXT_IDENTITY: std::sync::atomic::AtomicU64 =
-    std::sync::atomic::AtomicU64::new(1);
+static NEXT_IDENTITY: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 fn mint_identity() -> u64 {
     NEXT_IDENTITY.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
@@ -701,8 +695,7 @@ where
     }
 }
 
-impl<D> Dispatch<WpImageDescriptionCreatorParamsV1, Arc<ParametricBuilder>, D>
-    for ColorManagerState
+impl<D> Dispatch<WpImageDescriptionCreatorParamsV1, Arc<ParametricBuilder>, D> for ColorManagerState
 where
     D: Dispatch<WpImageDescriptionCreatorParamsV1, Arc<ParametricBuilder>>
         + Dispatch<WpImageDescriptionV1, ImageDescriptionData>
@@ -755,8 +748,7 @@ where
                         // Advertise the modern `ready2` identity + the
                         // legacy `ready` identity so v1 clients also
                         // observe the object as usable.
-                        let _ =
-                            obj.ready2((identity >> 32) as u32, identity as u32);
+                        let _ = obj.ready2((identity >> 32) as u32, identity as u32);
                         builder.mark_consumed();
                     }
                     None => {
@@ -783,9 +775,7 @@ where
             wp_image_description_creator_params_v1::Request::SetTfPower { eexp } => {
                 set_once!(tf_power_eexp = eexp, "transfer function already set");
             }
-            wp_image_description_creator_params_v1::Request::SetPrimariesNamed {
-                primaries,
-            } => {
+            wp_image_description_creator_params_v1::Request::SetPrimariesNamed { primaries } => {
                 let primaries = match primaries.into_result() {
                     Ok(v) => v,
                     Err(_) => {
@@ -940,8 +930,7 @@ where
                 render_intent,
             } => {
                 let _ = render_intent;
-                let Some(desc) = image_description.data::<ImageDescriptionData>().cloned()
-                else {
+                let Some(desc) = image_description.data::<ImageDescriptionData>().cloned() else {
                     obj.post_error(
                         wp_color_management_surface_v1::Error::ImageDescription,
                         "image description is not ready",
@@ -952,18 +941,14 @@ where
                     states
                         .data_map
                         .insert_if_missing_threadsafe(ColorManagementSurfaceData::default);
-                    if let Some(d) =
-                        states.data_map.get::<ColorManagementSurfaceData>()
-                    {
+                    if let Some(d) = states.data_map.get::<ColorManagementSurfaceData>() {
                         d.set_current(desc);
                     }
                 });
             }
             wp_color_management_surface_v1::Request::UnsetImageDescription => {
                 wl_compositor::with_states(&data.surface, |states| {
-                    if let Some(d) =
-                        states.data_map.get::<ColorManagementSurfaceData>()
-                    {
+                    if let Some(d) = states.data_map.get::<ColorManagementSurfaceData>() {
                         d.clear_current();
                     }
                 });
@@ -971,9 +956,7 @@ where
             wp_color_management_surface_v1::Request::Destroy => {
                 // Per spec: destroy behaves like unset.
                 wl_compositor::with_states(&data.surface, |states| {
-                    if let Some(d) =
-                        states.data_map.get::<ColorManagementSurfaceData>()
-                    {
+                    if let Some(d) = states.data_map.get::<ColorManagementSurfaceData>() {
                         d.clear_current();
                         if let Ok(mut inner) = d.inner.lock() {
                             inner.manager_attached = false;
@@ -1003,8 +986,7 @@ where
     }
 }
 
-impl<D>
-    Dispatch<WpColorManagementSurfaceFeedbackV1, ColorManagementSurfaceFeedbackData, D>
+impl<D> Dispatch<WpColorManagementSurfaceFeedbackV1, ColorManagementSurfaceFeedbackData, D>
     for ColorManagerState
 where
     D: Dispatch<WpColorManagementSurfaceFeedbackV1, ColorManagementSurfaceFeedbackData>
@@ -1043,8 +1025,7 @@ where
     }
 }
 
-impl<D> Dispatch<WpColorManagementOutputV1, ColorManagementOutputData, D>
-    for ColorManagerState
+impl<D> Dispatch<WpColorManagementOutputV1, ColorManagementOutputData, D> for ColorManagerState
 where
     D: Dispatch<WpColorManagementOutputV1, ColorManagementOutputData>
         + Dispatch<WpImageDescriptionV1, ImageDescriptionData>
@@ -1061,9 +1042,7 @@ where
     ) {
         match request {
             wp_color_management_output_v1::Request::Destroy => {}
-            wp_color_management_output_v1::Request::GetImageDescription {
-                image_description,
-            } => {
+            wp_color_management_output_v1::Request::GetImageDescription { image_description } => {
                 let desc = data.snapshot();
                 let identity_hi = desc.identity_hi();
                 let identity_lo = desc.identity_lo();
@@ -1164,12 +1143,27 @@ mod tests {
     #[test]
     fn advertised_capabilities_include_bt2020_and_pq() {
         let cfg = ColorManagerState::default();
-        assert!(cfg.supported_primaries.contains(&(Primaries::Bt2020 as u32)));
+        assert!(
+            cfg.supported_primaries
+                .contains(&(Primaries::Bt2020 as u32))
+        );
         assert!(cfg.supported_primaries.contains(&(Primaries::Srgb as u32)));
-        assert!(cfg.supported_transfers.contains(&(TransferFunction::St2084Pq as u32)));
-        assert!(cfg.supported_transfers.contains(&(TransferFunction::Hlg as u32)));
-        assert!(cfg.supported_features.contains(&(Feature::Parametric as u32)));
-        assert!(cfg.supported_features.contains(&(Feature::SetPrimaries as u32)));
+        assert!(
+            cfg.supported_transfers
+                .contains(&(TransferFunction::St2084Pq as u32))
+        );
+        assert!(
+            cfg.supported_transfers
+                .contains(&(TransferFunction::Hlg as u32))
+        );
+        assert!(
+            cfg.supported_features
+                .contains(&(Feature::Parametric as u32))
+        );
+        assert!(
+            cfg.supported_features
+                .contains(&(Feature::SetPrimaries as u32))
+        );
     }
 
     #[test]
@@ -1182,7 +1176,10 @@ mod tests {
         }
         let desc = b.build().expect("builder produces description");
         assert_eq!(desc.colorimetry.primaries, ColorPrimaries::Bt2020);
-        assert_eq!(desc.colorimetry.transfer, TransferCharacteristics::SmpteSt2084);
+        assert_eq!(
+            desc.colorimetry.transfer,
+            TransferCharacteristics::SmpteSt2084
+        );
         assert!(desc.hdr.is_some());
     }
 

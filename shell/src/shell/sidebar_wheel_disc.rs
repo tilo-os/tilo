@@ -550,12 +550,7 @@ impl Widget for SidebarWheelDisc {
         let inset_v = h_raw * SLOT_VERTICAL_INSET_FRAC;
         let y0 = y0_raw + inset_v;
         let y1 = y0_raw + h_raw - inset_v;
-        self.rect = Rect::new(
-            x0,
-            y0,
-            x0 + l.size.width as f64,
-            y1,
-        );
+        self.rect = Rect::new(x0, y0, x0 + l.size.width as f64, y1);
         // Keep the disc's curvature locked to the live rect width — the
         // host (overlay_host) overrides the sidebar slot to a viewport-
         // driven width, so the visible-arc width changes on resize. We
@@ -802,7 +797,9 @@ impl Widget for SidebarWheelDisc {
                 // marker's angle. Keeps them attached visually without
                 // being eclipsed by the marker itself.
                 if let Some(ws_id) = spoke.workspace_id {
-                    let key = PresenceKey::Workspace { id: format!("{}", ws_id) };
+                    let key = PresenceKey::Workspace {
+                        id: format!("{}", ws_id),
+                    };
                     let peers = presence.peers_on(&key);
                     if !peers.is_empty() {
                         let peer_count = peers.len().min(3);
@@ -1090,8 +1087,7 @@ impl Widget for SidebarWheelDisc {
                 if n > 1 {
                     while self.wheel_accumulator.abs() >= WHEEL_DETENT_PX {
                         let dir: i32 = if self.wheel_accumulator < 0.0 { 1 } else { -1 };
-                        let target =
-                            ((self.active_idx as i32 + dir).rem_euclid(n as i32)) as usize;
+                        let target = ((self.active_idx as i32 + dir).rem_euclid(n as i32)) as usize;
                         self.click_to_spoke(target);
                         self.wheel_accumulator -= dir as f32 * WHEEL_DETENT_PX;
                     }
@@ -1313,8 +1309,12 @@ impl SidebarWheelDisc {
     pub fn presence_dot_hit_count(&self, ctx: &PresenceCtx) -> usize {
         let mut total = 0usize;
         for spoke in &self.spokes {
-            let Some(ws_id) = spoke.workspace_id else { continue };
-            let key = PresenceKey::Workspace { id: format!("{}", ws_id) };
+            let Some(ws_id) = spoke.workspace_id else {
+                continue;
+            };
+            let key = PresenceKey::Workspace {
+                id: format!("{}", ws_id),
+            };
             let peers = ctx.peers_on(&key);
             if peers.is_empty() {
                 continue;
@@ -1357,7 +1357,10 @@ mod tests {
     fn labels(names: &[&str]) -> Vec<SpokeLabel> {
         names
             .iter()
-            .map(|n| SpokeLabel { text: (*n).to_string(), workspace_id: None })
+            .map(|n| SpokeLabel {
+                text: (*n).to_string(),
+                workspace_id: None,
+            })
             .collect()
     }
 
@@ -1806,8 +1809,8 @@ mod tests {
         let arc_half = (1.0 - VISIBLE_RADIUS_FRACTION).acos();
         let slot_radius = 14.0_f64;
         let slot_cx = (d.rect.x0 + d.rect.x1) / 2.0;
-        let slot_cy = (cy + radius * arc_half.sin() + slot_radius + 8.0)
-            .min(d.rect.y1 - slot_radius - 4.0);
+        let slot_cy =
+            (cy + radius * arc_half.sin() + slot_radius + 8.0).min(d.rect.y1 - slot_radius - 4.0);
         d.plus_rect = Rect::new(
             slot_cx - slot_radius,
             slot_cy - slot_radius,
@@ -1819,7 +1822,10 @@ mod tests {
         // it up — the press handler consults that cache (not the event,
         // which has no position field) to hit-test the plus slot.
         pump(&mut d, cursor_event(slot_cx, slot_cy));
-        assert!(pump(&mut d, press_event()), "press on plus slot must be handled");
+        assert!(
+            pump(&mut d, press_event()),
+            "press on plus slot must be handled"
+        );
 
         let state = chrome.borrow();
         assert_eq!(
@@ -1828,7 +1834,8 @@ mod tests {
             "plus-press must grow the workspace count by exactly 1"
         );
         assert_ne!(
-            state.tree().active, initial_active,
+            state.tree().active,
+            initial_active,
             "plus-press must activate the newly-created workspace"
         );
         // Drag must not start from a plus-slot press — the press path
@@ -1852,7 +1859,9 @@ mod tests {
         use ui::presence::{PresenceCtx, PresenceKey};
 
         let mut ctx = PresenceCtx::empty();
-        let key = PresenceKey::Workspace { id: "77".to_string() };
+        let key = PresenceKey::Workspace {
+            id: "77".to_string(),
+        };
         ctx.register_presence(&key, UserId("alice".to_string()));
         ctx.register_presence(&key, UserId("bob".to_string()));
 
@@ -2010,7 +2019,9 @@ mod tests {
         use ui::presence::{PresenceCtx, PresenceKey};
 
         let mut ctx = PresenceCtx::empty();
-        let key = PresenceKey::Workspace { id: "77".to_string() };
+        let key = PresenceKey::Workspace {
+            id: "77".to_string(),
+        };
         for name in ["alice", "bob", "charlie", "dave", "eve"] {
             ctx.register_presence(&key, UserId(name.to_string()));
         }

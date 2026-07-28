@@ -3,9 +3,7 @@
 
 use std::time::{Duration, Instant};
 
-use shell::shell::typing_indicator::{
-    EmitDebouncer, SILENCE_TIMEOUT, TypingTracker,
-};
+use shell::shell::typing_indicator::{EmitDebouncer, SILENCE_TIMEOUT, TypingTracker};
 
 #[test]
 fn hundred_emits_within_window_is_one_indicator() {

@@ -26,13 +26,12 @@ use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime};
 
-use ed25519_dalek::SigningKey;
 use collab_types::{
     ArtifactId, ArtifactKind, Attestation, AttestationId, ChannelId, ChannelState,
-    CompactionCheckpoint, Ed25519PublicKey, OpClass, Role, RoleAttestation, Signature,
-    SignedOp, encode_compaction_payload, generate_keypair, hash_op_prefix, sign_event,
-    sign_op,
+    CompactionCheckpoint, Ed25519PublicKey, OpClass, Role, RoleAttestation, Signature, SignedOp,
+    encode_compaction_payload, generate_keypair, hash_op_prefix, sign_event, sign_op,
 };
+use ed25519_dalek::SigningKey;
 use shell::shell::collab_broker;
 use ui::collaboration::{CollabEvent, CollabRequest};
 
@@ -46,9 +45,7 @@ fn write_frame<T: serde::Serialize>(stream: &mut UnixStream, v: &T) {
 }
 
 fn read_event(stream: &mut UnixStream, timeout: Duration) -> Option<CollabEvent> {
-    stream
-        .set_read_timeout(Some(timeout))
-        .expect("set timeout");
+    stream.set_read_timeout(Some(timeout)).expect("set timeout");
     let mut len_buf = [0u8; 4];
     stream.read_exact(&mut len_buf).ok()?;
     let len = u32::from_le_bytes(len_buf) as usize;
@@ -267,7 +264,11 @@ fn peer_can_fetch_recent_scrollback() {
     let event = read_event(&mut observer, Duration::from_millis(500))
         .expect("observer must receive ScrollbackBatch");
     match event {
-        CollabEvent::ScrollbackBatch { artifact: art, ops, exhausted } => {
+        CollabEvent::ScrollbackBatch {
+            artifact: art,
+            ops,
+            exhausted,
+        } => {
             assert_eq!(art, artifact);
             assert_eq!(ops.len(), 5, "all 5 ops returned");
             let seqs: Vec<u64> = ops.iter().map(|o| o.seq).collect();
@@ -387,8 +388,7 @@ fn scrollback_paging_respects_max() {
             max: 3,
         },
     );
-    let event = read_event(&mut observer, Duration::from_millis(500))
-        .expect("ScrollbackBatch");
+    let event = read_event(&mut observer, Duration::from_millis(500)).expect("ScrollbackBatch");
     match event {
         CollabEvent::ScrollbackBatch { ops, exhausted, .. } => {
             let seqs: Vec<u64> = ops.iter().map(|o| o.seq).collect();
@@ -493,8 +493,7 @@ fn compaction_evicts_log_then_scrollback_returns_exhausted() {
             max: 10,
         },
     );
-    let event = read_event(&mut observer, Duration::from_millis(500))
-        .expect("ScrollbackBatch");
+    let event = read_event(&mut observer, Duration::from_millis(500)).expect("ScrollbackBatch");
     match event {
         CollabEvent::ScrollbackBatch { ops, exhausted, .. } => {
             assert!(
@@ -516,8 +515,7 @@ fn compaction_evicts_log_then_scrollback_returns_exhausted() {
             max: 10,
         },
     );
-    let event = read_event(&mut observer, Duration::from_millis(500))
-        .expect("ScrollbackBatch");
+    let event = read_event(&mut observer, Duration::from_millis(500)).expect("ScrollbackBatch");
     match event {
         CollabEvent::ScrollbackBatch { ops, .. } => {
             let seqs: Vec<u64> = ops.iter().map(|o| o.seq).collect();
@@ -625,8 +623,8 @@ fn cooperative_scrollback_round_trip() {
     // The contract we assert: after a synthetic response arrives,
     // broker A's local app receives a follow-up ScrollbackBatch
     // with the responder's ops.
-    use shell::shell::state::WorkspaceTree;
     use shell::shell::network::ShellNetwork;
+    use shell::shell::state::WorkspaceTree;
     use std::sync::Arc;
 
     let socket = unique_socket("coop");
@@ -716,7 +714,11 @@ fn cooperative_scrollback_round_trip() {
     }
     let event = got.expect("follow-up ScrollbackBatch from cooperative path");
     match event {
-        CollabEvent::ScrollbackBatch { artifact: art, ops, exhausted } => {
+        CollabEvent::ScrollbackBatch {
+            artifact: art,
+            ops,
+            exhausted,
+        } => {
             assert_eq!(art, artifact);
             assert_eq!(ops.len(), 2);
             assert!(exhausted);
@@ -749,8 +751,8 @@ fn cooperative_request_published_when_local_empty() {
     // ran the publish call without crashing is the contract; the
     // protocol's wire-level round-trip is independently tested in
     // `network/protocol.rs::scrollback_request_round_trips_*`.
-    use shell::shell::state::WorkspaceTree;
     use shell::shell::network::ShellNetwork;
+    use shell::shell::state::WorkspaceTree;
     use std::sync::Arc;
 
     let socket = unique_socket("coop-empty");
@@ -811,8 +813,8 @@ fn cooperative_responder_answers_when_log_has_match() {
     // observe the publish directly. The drain thread lives inside
     // the broker, so we drop in the broker-internal queues by reaching
     // through the ShellNetwork's accessors.
-    use shell::shell::state::WorkspaceTree;
     use shell::shell::network::ShellNetwork;
+    use shell::shell::state::WorkspaceTree;
     use std::sync::Arc;
 
     let socket = unique_socket("coop-responder");

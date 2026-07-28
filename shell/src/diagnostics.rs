@@ -335,10 +335,7 @@ impl PeerSurfaceMetrics {
     /// alongside the latency histogram so a huge offset (drifted NTP,
     /// unsync'd hosts) is visible.
     pub fn clock_offset_ns(&self) -> Option<i128> {
-        self.inner
-            .lock()
-            .expect("metrics mutex")
-            .clock_offset_ns
+        self.inner.lock().expect("metrics mutex").clock_offset_ns
     }
 
     /// Snapshot the counters for a read-only consumer.
@@ -517,8 +514,7 @@ mod tests {
         // 1M (0 + 0.2 * (1M - 0) = 200k; 200k + 0.2 * 800k = 360k;
         // 360k + 0.2 * 640k = 488k).
         assert!(
-            s.bitrate_bytes_per_sec_ewma > 400_000
-                && s.bitrate_bytes_per_sec_ewma < 600_000,
+            s.bitrate_bytes_per_sec_ewma > 400_000 && s.bitrate_bytes_per_sec_ewma < 600_000,
             "EWMA converged to unexpected value: {}",
             s.bitrate_bytes_per_sec_ewma
         );

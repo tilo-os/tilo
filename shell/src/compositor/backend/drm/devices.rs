@@ -131,7 +131,10 @@ mod tests {
         let kept = filter_kms_nodes(paths);
         assert_eq!(
             kept,
-            vec![PathBuf::from("/dev/dri/card0"), PathBuf::from("/dev/dri/card1")]
+            vec![
+                PathBuf::from("/dev/dri/card0"),
+                PathBuf::from("/dev/dri/card1")
+            ]
         );
     }
 

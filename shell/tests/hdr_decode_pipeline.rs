@@ -22,11 +22,7 @@ use shell::network::decoder::{DecodedPixels, HevcDecoder};
 /// U + V half-resolution planes), each sample stored in the LOWER
 /// 10 bits of a u16 native LE encoding.
 fn gradient_frame_yuv420p10(width: u32, height: u32) -> ffmpeg::frame::Video {
-    let mut frame = ffmpeg::frame::Video::new(
-        ffmpeg::format::Pixel::YUV420P10LE,
-        width,
-        height,
-    );
+    let mut frame = ffmpeg::frame::Video::new(ffmpeg::format::Pixel::YUV420P10LE, width, height);
 
     // Y plane — diagonal gradient covering the full 10-bit range so
     // the round-trip has non-uniform content to preserve.
@@ -81,11 +77,7 @@ fn gradient_frame_yuv420p10(width: u32, height: u32) -> ffmpeg::frame::Video {
 /// `libx265` encoder. Returns the concatenated Annex-B NALU stream.
 /// Returns `None` if the libavcodec on this host wasn't built with
 /// libx265 support — the test self-skips in that case.
-fn encode_hevc_main10_frames(
-    width: u32,
-    height: u32,
-    num_frames: u32,
-) -> Option<Vec<u8>> {
+fn encode_hevc_main10_frames(width: u32, height: u32, num_frames: u32) -> Option<Vec<u8>> {
     let _ = ffmpeg::init();
     // Look up libx265 by name — the encoder-registry name matches the
     // FFmpeg CLI's `-c:v libx265`. If the build is missing libx265,
@@ -225,7 +217,10 @@ fn hevc_main10_round_trip_preserves_10_bit_precision() {
         }
         eprintln!("retry {retry}: no frame yet");
     }
-    assert!(got_frame, "HEVC decoder never produced a frame from encoded NALUs");
+    assert!(
+        got_frame,
+        "HEVC decoder never produced a frame from encoded NALUs"
+    );
 }
 
 #[test]

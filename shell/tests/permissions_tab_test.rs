@@ -93,9 +93,7 @@ fn tree_with_grants(entries: Vec<(&str, Vec<Capability>)>) -> WorkspaceTree {
 /// Render the host once with the chrome configured for the
 /// Permissions tab. Returns the produced Scene + the host so the
 /// caller can read back hit rects and dispatch synthesized events.
-fn render_at_permissions_tab(
-    tree: &WorkspaceTree,
-) -> (ShellOverlayHost, Chrome, Scene) {
+fn render_at_permissions_tab(tree: &WorkspaceTree) -> (ShellOverlayHost, Chrome, Scene) {
     let (mut host, chrome) = build_nirios_overlay_host_with_chrome(tree);
     {
         let mut st = chrome.borrow_mut();
@@ -248,7 +246,8 @@ fn revoke_click_removes_capability_from_grants() {
     dispatch_to_host(&mut host, &left_press());
 
     let st = chrome.borrow();
-    let tree = st.tree(); let ws = tree.active_workspace().expect("active workspace");
+    let tree = st.tree();
+    let ws = tree.active_workspace().expect("active workspace");
     // After revoking one of two grants, the app entry still exists
     // with one capability remaining.
     let view = ws.grants();
@@ -295,7 +294,8 @@ fn revoke_button_disabled_for_non_owner() {
     dispatch_to_host(&mut host, &left_press());
 
     let st = chrome.borrow();
-    let tree = st.tree(); let ws = tree.active_workspace().expect("active workspace");
+    let tree = st.tree();
+    let ws = tree.active_workspace().expect("active workspace");
     // `grants()` re-derives the per-app map from the workspace's
     // capabilities and hands it back by value, so it needs a binding to
     // outlive the borrow taken from it.

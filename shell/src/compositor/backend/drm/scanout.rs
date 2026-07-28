@@ -55,13 +55,13 @@ use smithay::backend::session::Session;
 use smithay::reexports::drm as drm_re;
 use smithay::reexports::rustix::fs::OFlags;
 
+use drm_re::Device as BasicDevice;
 use drm_re::buffer::{Buffer as _, DrmFourcc};
 use drm_re::control::dumbbuffer::DumbBuffer;
 use drm_re::control::{
-    connector, crtc, framebuffer, ClipRect, Device as ControlDevice, Event, Mode, ModeTypeFlags,
-    PageFlipFlags,
+    ClipRect, Device as ControlDevice, Event, Mode, ModeTypeFlags, PageFlipFlags, connector, crtc,
+    framebuffer,
 };
-use drm_re::Device as BasicDevice;
 
 /// Cursor plane dimensions. 64×64 is the universally-supported legacy
 /// cursor size (virtio-gpu, i915, amdgpu all advertise it); querying
@@ -362,7 +362,11 @@ impl DrmScanout {
         card.set_crtc(crtc, Some(fb0), (0, 0), &[connector], Some(mode))
             .map_err(|e| format!("set_crtc (modeset): {e}"))?;
 
-        tracing::info!(width, height, "DRM scanout: modeset complete — display is live");
+        tracing::info!(
+            width,
+            height,
+            "DRM scanout: modeset complete — display is live"
+        );
 
         // Hardware cursor. Best-effort: a failure leaves
         // `hw_cursor_active = false` and the software cursor takes over.
@@ -376,7 +380,9 @@ impl DrmScanout {
                 (Some(buf), true)
             }
             Err(e) => {
-                tracing::warn!("DRM scanout: hardware cursor unavailable ({e}); using software cursor");
+                tracing::warn!(
+                    "DRM scanout: hardware cursor unavailable ({e}); using software cursor"
+                );
                 (None, false)
             }
         };
@@ -443,7 +449,9 @@ impl DrmScanout {
                 crtc: self.crtc,
             }),
             Err(e) => {
-                tracing::warn!("DRM scanout: cursor fd dup failed ({e}); cursor moves via paint path");
+                tracing::warn!(
+                    "DRM scanout: cursor fd dup failed ({e}); cursor moves via paint path"
+                );
                 None
             }
         }
@@ -782,7 +790,10 @@ pub fn open_all_scanouts<S: Session>(
             continue;
         }
         let Some(mode) = pick_mode(info.modes()) else {
-            tracing::warn!(?ch, "DRM scanout: connected connector advertises no usable mode; skipping");
+            tracing::warn!(
+                ?ch,
+                "DRM scanout: connected connector advertises no usable mode; skipping"
+            );
             continue;
         };
         let Some(crtc) = pick_crtc(&card, &res, &info, &used_crtcs) else {
@@ -807,7 +818,10 @@ pub fn open_all_scanouts<S: Session>(
                 });
             }
             Err(e) => {
-                tracing::warn!(?ch, "DRM scanout: modeset failed for connector: {e}; skipping");
+                tracing::warn!(
+                    ?ch,
+                    "DRM scanout: modeset failed for connector: {e}; skipping"
+                );
             }
         }
     }
@@ -986,7 +1000,11 @@ mod tests {
 
         // A blank area (far bottom-right) stays fully transparent.
         let o = 60 * pitch + 60 * 4;
-        assert_eq!(&buf[o..o + 4], &[0, 0, 0, 0], "blank cursor area is transparent");
+        assert_eq!(
+            &buf[o..o + 4],
+            &[0, 0, 0, 0],
+            "blank cursor area is transparent"
+        );
 
         // There is at least one white fill pixel somewhere.
         let any_white = buf

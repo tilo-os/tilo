@@ -132,23 +132,22 @@ pub fn tonemap_p010_to_rgba8(
             let v_norm = unpack_p010_sample(v_raw, is_limited, false);
 
             // BT.2020 non-constant luminance → R'G'B'.
-            let (r_prime, g_prime, b_prime) =
-                bt2020_ycbcr_to_rgb(y_norm, u_norm, v_norm);
+            let (r_prime, g_prime, b_prime) = bt2020_ycbcr_to_rgb(y_norm, u_norm, v_norm);
 
             // PQ EOTF → linear cd/m².
-            let (r_lin, g_lin, b_lin) = if colorimetry.transfer == TransferCharacteristics::SmpteSt2084
-            {
-                (pq_eotf(r_prime), pq_eotf(g_prime), pq_eotf(b_prime))
-            } else if colorimetry.transfer == TransferCharacteristics::AribStdB67 {
-                // HLG's OETF-inverse — combined with gamma per the
-                // ITU-R BT.2100 system function.
-                (hlg_eotf(r_prime), hlg_eotf(g_prime), hlg_eotf(b_prime))
-            } else {
-                // Non-HDR transfer — treat as already linear-ish
-                // BT.709 gamma. This branch shouldn't fire for HEVC
-                // Main10 in practice; keeps the function defensive.
-                (r_prime, g_prime, b_prime)
-            };
+            let (r_lin, g_lin, b_lin) =
+                if colorimetry.transfer == TransferCharacteristics::SmpteSt2084 {
+                    (pq_eotf(r_prime), pq_eotf(g_prime), pq_eotf(b_prime))
+                } else if colorimetry.transfer == TransferCharacteristics::AribStdB67 {
+                    // HLG's OETF-inverse — combined with gamma per the
+                    // ITU-R BT.2100 system function.
+                    (hlg_eotf(r_prime), hlg_eotf(g_prime), hlg_eotf(b_prime))
+                } else {
+                    // Non-HDR transfer — treat as already linear-ish
+                    // BT.709 gamma. This branch shouldn't fire for HEVC
+                    // Main10 in practice; keeps the function defensive.
+                    (r_prime, g_prime, b_prime)
+                };
 
             // BT.2020 → BT.709 gamut mapping (matrix, clip negatives).
             let (r709, g709, b709) = if is_hdr {
@@ -326,10 +325,7 @@ mod tests {
         let neutral_chroma = 512;
 
         let y = vec![p010(luma_code); (width * height) as usize];
-        let uv = vec![
-            p010(neutral_chroma);
-            (width / 2 * height / 2) as usize * 2
-        ];
+        let uv = vec![p010(neutral_chroma); (width / 2 * height / 2) as usize * 2];
 
         let colorimetry = Colorimetry {
             primaries: ColorPrimaries::Bt2020,

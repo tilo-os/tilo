@@ -120,11 +120,9 @@ impl std::fmt::Display for ProbeError {
                 }
                 write!(f, ")")
             }
-            ProbeError::OverrideUnusable { path, reason } => write!(
-                f,
-                "{DEVICE_ENV}={} is unusable: {reason}",
-                path.display()
-            ),
+            ProbeError::OverrideUnusable { path, reason } => {
+                write!(f, "{DEVICE_ENV}={} is unusable: {reason}", path.display())
+            }
         }
     }
 }
@@ -166,7 +164,10 @@ fn dev_of(path: &Path) -> std::io::Result<libc::dev_t> {
 /// `render` group), and advertising it would strand the client exactly
 /// the way no feedback at all does.
 fn opens(path: &Path) -> std::io::Result<()> {
-    std::fs::OpenOptions::new().read(true).write(true).open(path)?;
+    std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)?;
     Ok(())
 }
 

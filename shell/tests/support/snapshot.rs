@@ -119,8 +119,7 @@ impl SnapshotAssertion {
 /// Copy `src` over `dst`, creating parent directories as needed.
 fn copy_over(src: &Path, dst: &Path) {
     if let Some(parent) = dst.parent() {
-        fs::create_dir_all(parent)
-            .unwrap_or_else(|e| panic!("mkdir {}: {e}", parent.display()));
+        fs::create_dir_all(parent).unwrap_or_else(|e| panic!("mkdir {}: {e}", parent.display()));
     }
     fs::copy(src, dst)
         .unwrap_or_else(|e| panic!("copy {} -> {}: {e}", src.display(), dst.display()));
@@ -134,8 +133,8 @@ struct DecodedPng {
 }
 
 fn decode_png(path: &Path) -> DecodedPng {
-    let file = fs::File::open(path)
-        .unwrap_or_else(|e| panic!("snapshot: open {}: {e}", path.display()));
+    let file =
+        fs::File::open(path).unwrap_or_else(|e| panic!("snapshot: open {}: {e}", path.display()));
     let decoder = png::Decoder::new(std::io::BufReader::new(file));
     let mut reader = decoder
         .read_info()
@@ -326,10 +325,7 @@ mod tests {
         let golden = dir.join("golden.png");
         // 2×2 image, one pixel differs by 20 > tolerance (4 default).
         let mut rendered_px = vec![
-            10, 20, 30, 255,
-            10, 20, 30, 255,
-            10, 20, 30, 255,
-            10, 20, 30, 255,
+            10, 20, 30, 255, 10, 20, 30, 255, 10, 20, 30, 255, 10, 20, 30, 255,
         ];
         let mut golden_px = rendered_px.clone();
         rendered_px[0] = 30; // red channel of pixel 0: 30 vs 10 → delta 20
@@ -352,10 +348,7 @@ mod tests {
         let golden = dir.join("golden.png");
         // Delta = 3, below the default tolerance of 4.
         let mut rendered_px = vec![
-            10, 20, 30, 255,
-            10, 20, 30, 255,
-            10, 20, 30, 255,
-            10, 20, 30, 255,
+            10, 20, 30, 255, 10, 20, 30, 255, 10, 20, 30, 255, 10, 20, 30, 255,
         ];
         let golden_px = rendered_px.clone();
         rendered_px[0] = 13;
@@ -407,6 +400,9 @@ mod tests {
 
         SnapshotAssertion::new(&rendered, &golden).assert();
 
-        assert!(golden.exists(), "golden should have been seeded on first run");
+        assert!(
+            golden.exists(),
+            "golden should have been seeded on first run"
+        );
     }
 }
