@@ -223,6 +223,7 @@ mod tests {
             manifest_path: PathBuf::from("/apps/x/manifest.toml"),
             payload_root: PathBuf::from("/apps/x"),
             has_gui: true,
+            opens_extensions: Vec::new(),
         }
     }
 

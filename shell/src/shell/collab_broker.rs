@@ -2091,6 +2091,7 @@ mod tests {
             manifest_path,
             payload_root: dir.join("payload"),
             has_gui: true,
+            opens_extensions: Vec::new(),
         }
     }
 
@@ -2124,6 +2125,7 @@ mod tests {
             Path::new("/usr/libexec/qos-launcher"),
             Path::new("/run/user/1000/wayland-1"),
             workspace,
+            None,
             None,
             None,
         );
