@@ -77,8 +77,8 @@ fn hdr_edid_blob() -> [u8; 256] {
     edid[138] = 0b0000_1101; // SDR + PQ + HLG
     edid[139] = 0x01;
     edid[140] = 138; // max ≈ 1000 cd/m²
-    edid[141] = 96;  // FALL ≈ 400 cd/m²
-    edid[142] = 18;  // min ≈ 0.05 cd/m²
+    edid[141] = 96; // FALL ≈ 400 cd/m²
+    edid[142] = 18; // min ≈ 0.05 cd/m²
     edid
 }
 
@@ -120,12 +120,14 @@ fn hdr_display_edid_extracts_peak_luminance() {
 fn hdr_display_edid_advertises_pq_and_hlg() {
     let edid = hdr_edid_blob();
     let info = parse_hdr_display_info(&edid);
-    assert!(info
-        .supported_transfers
-        .contains(&TransferCharacteristics::SmpteSt2084));
-    assert!(info
-        .supported_transfers
-        .contains(&TransferCharacteristics::AribStdB67));
+    assert!(
+        info.supported_transfers
+            .contains(&TransferCharacteristics::SmpteSt2084)
+    );
+    assert!(
+        info.supported_transfers
+            .contains(&TransferCharacteristics::AribStdB67)
+    );
 }
 
 #[test]

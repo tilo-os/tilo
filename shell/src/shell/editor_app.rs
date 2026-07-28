@@ -21,15 +21,12 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use automerge::{
-    AutoCommit, ObjId, ObjType, ReadDoc, Value,
-    transaction::Transactable,
-};
+use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, Value, transaction::Transactable};
+use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use ui::presence::{PathSegment, PresenceCtx, PresenceKey};
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::{AppKind, AppWidget, IconDescriptor, Widget};
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::{Color, Fill};
@@ -113,7 +110,9 @@ impl EditorApp {
     }
 
     fn insert_text(&mut self, state: &mut AutoCommit, root: &ObjId, s: &str) {
-        let Some(body) = self.resolve_body(state, root) else { return };
+        let Some(body) = self.resolve_body(state, root) else {
+            return;
+        };
         let char_idx = self.text[..self.cursor_pos].chars().count();
         self.text.insert_str(self.cursor_pos, s);
         let _ = state.splice_text(&body, char_idx, 0, s);
@@ -125,7 +124,9 @@ impl EditorApp {
         if self.cursor_pos == 0 {
             return;
         }
-        let Some(body) = self.resolve_body(state, root) else { return };
+        let Some(body) = self.resolve_body(state, root) else {
+            return;
+        };
         let mut prev = self.cursor_pos - 1;
         while prev > 0 && !self.text.is_char_boundary(prev) {
             prev -= 1;
@@ -207,13 +208,57 @@ enum TokClass {
 /// advance the pen without a second pass.
 fn tokenize(line: &str) -> Vec<(usize, usize, TokClass)> {
     const KEYWORDS: &[&str] = &[
-        "import", "export", "from", "default", "const", "let", "var", "function",
-        "return", "if", "else", "for", "while", "do", "break", "continue",
-        "switch", "case", "class", "extends", "implements", "interface", "type",
-        "enum", "try", "catch", "finally", "throw", "new", "this", "super",
-        "async", "await", "yield", "true", "false", "null", "undefined",
-        "pub", "fn", "struct", "impl", "mod", "use", "crate", "self", "Self",
-        "mut", "match", "where", "trait",
+        "import",
+        "export",
+        "from",
+        "default",
+        "const",
+        "let",
+        "var",
+        "function",
+        "return",
+        "if",
+        "else",
+        "for",
+        "while",
+        "do",
+        "break",
+        "continue",
+        "switch",
+        "case",
+        "class",
+        "extends",
+        "implements",
+        "interface",
+        "type",
+        "enum",
+        "try",
+        "catch",
+        "finally",
+        "throw",
+        "new",
+        "this",
+        "super",
+        "async",
+        "await",
+        "yield",
+        "true",
+        "false",
+        "null",
+        "undefined",
+        "pub",
+        "fn",
+        "struct",
+        "impl",
+        "mod",
+        "use",
+        "crate",
+        "self",
+        "Self",
+        "mut",
+        "match",
+        "where",
+        "trait",
     ];
     let bytes = line.as_bytes();
     let mut out: Vec<(usize, usize, TokClass)> = Vec::new();
@@ -261,7 +306,11 @@ fn tokenize(line: &str) -> Vec<(usize, usize, TokClass)> {
                 let c = bytes[i];
                 if c.is_ascii_digit() {
                     i += 1;
-                } else if c == b'.' && !saw_dot && i + 1 < bytes.len() && bytes[i + 1].is_ascii_digit() {
+                } else if c == b'.'
+                    && !saw_dot
+                    && i + 1 < bytes.len()
+                    && bytes[i + 1].is_ascii_digit()
+                {
                     saw_dot = true;
                     i += 1;
                 } else {
@@ -817,9 +866,9 @@ mod tests {
     fn tokenize_separates_keyword_string_number() {
         let toks = tokenize("const count = 0; return 'hi';");
         // "const" at offset 0 is a Keyword
-        let has_keyword = toks
-            .iter()
-            .any(|(s, e, c)| *c == TokClass::Keyword && "const" == &"const count = 0; return 'hi';"[*s..*e]);
+        let has_keyword = toks.iter().any(|(s, e, c)| {
+            *c == TokClass::Keyword && "const" == &"const count = 0; return 'hi';"[*s..*e]
+        });
         assert!(has_keyword, "expected `const` to tokenize as Keyword");
         let has_string = toks.iter().any(|(_, _, c)| *c == TokClass::StringLit);
         assert!(has_string, "expected `'hi'` to tokenize as StringLit");

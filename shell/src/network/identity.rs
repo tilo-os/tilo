@@ -142,10 +142,7 @@ impl PeerIdentityStore {
         now_ns: u64,
     ) -> Result<PeerIdentity, DeviceCertError> {
         let identity = PeerIdentity::from_cert(cert, now_ns)?;
-        let mut inner = self
-            .inner
-            .write()
-            .expect("PeerIdentityStore lock poisoned");
+        let mut inner = self.inner.write().expect("PeerIdentityStore lock poisoned");
         inner.by_peer.insert(peer_id, identity.clone());
         Ok(identity)
     }
@@ -154,10 +151,7 @@ impl PeerIdentityStore {
     /// disconnects. Idempotent: removing a missing peer is a
     /// no-op.
     pub fn remove(&self, peer_id: PeerId) {
-        let mut inner = self
-            .inner
-            .write()
-            .expect("PeerIdentityStore lock poisoned");
+        let mut inner = self.inner.write().expect("PeerIdentityStore lock poisoned");
         inner.by_peer.remove(&peer_id);
     }
 
@@ -171,10 +165,7 @@ impl PeerIdentityStore {
     /// only overwrite older entries with earlier `revoked_at_ns`
     /// timestamps (see [`RevocationList::insert`]).
     pub fn set_revocations(&self, user_pubkey: [u8; 32], list: RevocationList) {
-        let mut inner = self
-            .inner
-            .write()
-            .expect("PeerIdentityStore lock poisoned");
+        let mut inner = self.inner.write().expect("PeerIdentityStore lock poisoned");
         inner.revocations.insert(user_pubkey, list);
     }
 
@@ -267,9 +258,7 @@ mod tests {
     use qos_user_identity::{DeviceIdentity, UserIdentity, sign_device_cert};
 
     /// Build a fresh (user root sk, device sk, cert) for tests.
-    fn fresh_identity(
-        caps: DeviceCapabilities,
-    ) -> (SigningKey, SigningKey, DeviceCert) {
+    fn fresh_identity(caps: DeviceCapabilities) -> (SigningKey, SigningKey, DeviceCert) {
         let (root_sk, user) = UserIdentity::generate("Alice", 100);
         let (dev_sk, dev) = DeviceIdentity::generate("Framework 16", 200);
         let mut cert = DeviceCert {
@@ -335,9 +324,7 @@ mod tests {
 
         let msg = b"hello world";
         let sig = dev_sk.sign(msg).to_bytes();
-        let identity = store
-            .verify_signature_from(1, msg, &sig, 600, 700)
-            .unwrap();
+        let identity = store.verify_signature_from(1, msg, &sig, 600, 700).unwrap();
         assert!(identity.capabilities.can_own_workspaces);
     }
 
@@ -386,9 +373,7 @@ mod tests {
         // Sig BEFORE the revocation cut-off — accepted.
         let msg = b"before";
         let sig = dev_sk.sign(msg).to_bytes();
-        store
-            .verify_signature_from(1, msg, &sig, 400, 500)
-            .unwrap();
+        store.verify_signature_from(1, msg, &sig, 400, 500).unwrap();
 
         // Publish a revocation at t=600.
         let mut rev = RevocationEntry {
@@ -417,9 +402,7 @@ mod tests {
         // for legitimately-authored history.
         let msg = b"still-old";
         let sig = dev_sk.sign(msg).to_bytes();
-        store
-            .verify_signature_from(1, msg, &sig, 500, 700)
-            .unwrap();
+        store.verify_signature_from(1, msg, &sig, 500, 700).unwrap();
     }
 
     #[test]

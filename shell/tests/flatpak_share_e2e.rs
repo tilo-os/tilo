@@ -210,8 +210,7 @@ fn session_delivers_30_frames_in_3_seconds_at_bounded_latency() {
                     // motion-to-photon delta.
                     let now_ns = origin.elapsed().as_nanos() as u64;
                     let latency_ns = now_ns.saturating_sub(ts);
-                    let outcome =
-                        view.push_encoded_with_latency(&encoded_h264, Some(latency_ns));
+                    let outcome = view.push_encoded_with_latency(&encoded_h264, Some(latency_ns));
                     assert!(
                         matches!(outcome, PushOutcome::Decoded | PushOutcome::DroppedOldest),
                         "decode failed on frame {sent}",
@@ -353,7 +352,9 @@ fn backpressure_drops_frames_but_input_stream_still_delivers() {
     );
     eprintln!(
         "backpressure: {} received, {} dropped, {} input events survived",
-        snap.frames_received, snap.frames_dropped, input_sink.events.len(),
+        snap.frames_received,
+        snap.frames_dropped,
+        input_sink.events.len(),
     );
 
     // Stop.

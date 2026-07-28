@@ -115,8 +115,14 @@ impl PeerToastQueue {
     /// Force-flush every pending event (e.g. on shutdown).
     pub fn flush(&mut self) -> Vec<ReadyToast> {
         let all: Vec<_> = self.pending.drain(..).collect();
-        let joins: Vec<_> = all.iter().filter(|e| e.kind == PeerEventKind::Joined).collect();
-        let leaves: Vec<_> = all.iter().filter(|e| e.kind == PeerEventKind::Left).collect();
+        let joins: Vec<_> = all
+            .iter()
+            .filter(|e| e.kind == PeerEventKind::Joined)
+            .collect();
+        let leaves: Vec<_> = all
+            .iter()
+            .filter(|e| e.kind == PeerEventKind::Left)
+            .collect();
         let mut out = Vec::new();
         if !joins.is_empty() {
             out.push(format_batch(PeerEventKind::Joined, &joins));
@@ -183,8 +189,16 @@ mod tests {
         let mut q = PeerToastQueue::new();
         let t0 = Instant::now();
         q.push(PeerEventKind::Joined, "alice", t0);
-        q.push(PeerEventKind::Joined, "bob", t0 + Duration::from_millis(100));
-        q.push(PeerEventKind::Joined, "charlie", t0 + Duration::from_millis(300));
+        q.push(
+            PeerEventKind::Joined,
+            "bob",
+            t0 + Duration::from_millis(100),
+        );
+        q.push(
+            PeerEventKind::Joined,
+            "charlie",
+            t0 + Duration::from_millis(300),
+        );
         let ready = q.drain_ready(t0 + BATCH_WINDOW + Duration::from_millis(1));
         assert_eq!(ready.len(), 1);
         assert_eq!(ready[0].title, "3 peers joined");
@@ -226,7 +240,11 @@ mod tests {
         let mut q = PeerToastQueue::new();
         let t0 = Instant::now();
         q.push(PeerEventKind::Joined, "alice", t0);
-        q.push(PeerEventKind::Joined, "alice", t0 + Duration::from_millis(500));
+        q.push(
+            PeerEventKind::Joined,
+            "alice",
+            t0 + Duration::from_millis(500),
+        );
         let ready = q.drain_ready(t0 + BATCH_WINDOW + Duration::from_millis(1));
         assert_eq!(ready.len(), 1);
         assert_eq!(ready[0].title, "alice joined");

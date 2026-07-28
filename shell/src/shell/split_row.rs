@@ -101,16 +101,10 @@ impl Widget for SplitRow {
             origin.y + l.location.y as f64 + l.size.height as f64,
         );
         let children = taffy.children(node).unwrap();
-        self.left.apply_layout(
-            taffy,
-            children[0],
-            Point::new(self.rect.x0, self.rect.y0),
-        );
-        self.right.apply_layout(
-            taffy,
-            children[1],
-            Point::new(self.rect.x0, self.rect.y0),
-        );
+        self.left
+            .apply_layout(taffy, children[0], Point::new(self.rect.x0, self.rect.y0));
+        self.right
+            .apply_layout(taffy, children[1], Point::new(self.rect.x0, self.rect.y0));
     }
 
     fn draw(
@@ -121,8 +115,10 @@ impl Widget for SplitRow {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        self.left.draw(scene, transform, text_renderer, theme, presence);
-        self.right.draw(scene, transform, text_renderer, theme, presence);
+        self.left
+            .draw(scene, transform, text_renderer, theme, presence);
+        self.right
+            .draw(scene, transform, text_renderer, theme, presence);
     }
 
     fn handle_event(

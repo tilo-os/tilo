@@ -26,8 +26,8 @@ use shell::shell::quick_settings::QsLevel;
 use shell::shell::state::WorkspaceTree;
 use ui::Widget;
 
-use ui::theme::Theme;
 use taffy::prelude::NodeId;
+use ui::theme::Theme;
 
 /// Synthetic frame duration for `step_frames` — matches a 60 Hz monitor.
 /// Used only as the unit for the spin-wait loop; animations themselves
@@ -228,10 +228,7 @@ impl ShellDriver {
         let n = steps.max(1) as f64;
         for s in 1..=steps.max(1) {
             let t = s as f64 / n;
-            let p = Point::new(
-                from.x + (to.x - from.x) * t,
-                from.y + (to.y - from.y) * t,
-            );
+            let p = Point::new(from.x + (to.x - from.x) * t, from.y + (to.y - from.y) * t);
             self.dispatch(WindowEvent::CursorMoved {
                 device_id: unsafe { std::mem::zeroed() },
                 position: PhysicalPosition::new(p.x, p.y),
@@ -259,9 +256,8 @@ impl ShellDriver {
             if c.is_control() {
                 continue;
             }
-            let event = key_press_event(Key::Character(
-                winit::keyboard::SmolStr::new(c.to_string()),
-            ));
+            let event =
+                key_press_event(Key::Character(winit::keyboard::SmolStr::new(c.to_string())));
             self.dispatch(event);
         }
     }
@@ -275,9 +271,7 @@ impl ShellDriver {
             std::thread::sleep(Duration::from_millis(FRAME_MS));
             // Drive the per-frame update + redraw so animation state
             // advances. `update` runs the per-tick reconciler too.
-            self.fb
-                .host_mut()
-                .update(&mut self.state, &self.root_obj);
+            self.fb.host_mut().update(&mut self.state, &self.root_obj);
             // Re-draw into a throwaway scene so tick functions inside
             // `draw` (overview crossfade tick, etc.) see elapsed time.
             let _ = self.fb.paint();
@@ -394,31 +388,22 @@ impl ShellDriver {
                     // windows so the still-image scene captures the
                     // stack fully visible.
                     st.push_notification_full(
-                        Notification::new(
-                            "Switched to workspace Research",
-                            "Active tab: Notes",
-                        )
-                        .with_severity(NotificationSeverity::Info)
-                        .with_dismiss_after(Duration::from_secs(60))
-                        .with_created_at(settled_at),
+                        Notification::new("Switched to workspace Research", "Active tab: Notes")
+                            .with_severity(NotificationSeverity::Info)
+                            .with_dismiss_after(Duration::from_secs(60))
+                            .with_created_at(settled_at),
                     );
                     st.push_notification_full(
-                        Notification::new(
-                            "Slow network",
-                            "Peer sync delayed; retrying",
-                        )
-                        .with_severity(NotificationSeverity::Warning)
-                        .with_dismiss_after(Duration::from_secs(60))
-                        .with_created_at(settled_at),
+                        Notification::new("Slow network", "Peer sync delayed; retrying")
+                            .with_severity(NotificationSeverity::Warning)
+                            .with_dismiss_after(Duration::from_secs(60))
+                            .with_created_at(settled_at),
                     );
                     st.push_notification_full(
-                        Notification::new(
-                            "Permission denied",
-                            "Files cannot access /etc/shadow",
-                        )
-                        .with_severity(NotificationSeverity::Error)
-                        .with_dismiss_after(Duration::from_secs(60))
-                        .with_created_at(settled_at),
+                        Notification::new("Permission denied", "Files cannot access /etc/shadow")
+                            .with_severity(NotificationSeverity::Error)
+                            .with_dismiss_after(Duration::from_secs(60))
+                            .with_created_at(settled_at),
                     );
                 });
             }
@@ -427,13 +412,10 @@ impl ShellDriver {
                 let settled_at = Instant::now() - Duration::from_secs(1);
                 self.with_chrome(|st| {
                     st.push_notification_full(
-                        Notification::new(
-                            "Build finished",
-                            "All 524 tests passed",
-                        )
-                        .with_severity(NotificationSeverity::Info)
-                        .with_dismiss_after(Duration::from_secs(60))
-                        .with_created_at(settled_at),
+                        Notification::new("Build finished", "All 524 tests passed")
+                            .with_severity(NotificationSeverity::Info)
+                            .with_dismiss_after(Duration::from_secs(60))
+                            .with_created_at(settled_at),
                     );
                 });
             }
@@ -444,13 +426,10 @@ impl ShellDriver {
                     // One banner posted *before* DND is engaged stays on
                     // screen (DND only gates new posts).
                     st.push_notification_full(
-                        Notification::new(
-                            "Meeting in 10 minutes",
-                            "Standup — Research workspace",
-                        )
-                        .with_severity(NotificationSeverity::Info)
-                        .with_dismiss_after(Duration::from_secs(60))
-                        .with_created_at(settled_at),
+                        Notification::new("Meeting in 10 minutes", "Standup — Research workspace")
+                            .with_severity(NotificationSeverity::Info)
+                            .with_dismiss_after(Duration::from_secs(60))
+                            .with_created_at(settled_at),
                     );
                     // Engage Do-Not-Disturb, then post two more — these are
                     // suppressed from the banner surface and held in
@@ -473,7 +452,7 @@ impl ShellDriver {
                 // that exercises the inter-group chrome (resize handles,
                 // active-group outlines, gap drop-zones) — every other
                 // scene operates on the single-group bootstrap.
-                use shell::shell::state::{WindowGroup, Tab, TileContent, WindowWidth};
+                use shell::shell::state::{Tab, TileContent, WindowGroup, WindowWidth};
                 self.with_chrome(|st| {
                     let mut tree = st.tree_mut();
                     if let Some(ws) = tree.active_workspace_mut() {
@@ -483,10 +462,9 @@ impl ShellDriver {
                             // bootstrap range so they don't collide with
                             // anything the persistence layer might
                             // produce.
-                            for (gid, tid, label) in [
-                                (9001u64, 9101u64, "Stub-A"),
-                                (9002u64, 9102u64, "Stub-B"),
-                            ] {
+                            for (gid, tid, label) in
+                                [(9001u64, 9101u64, "Stub-A"), (9002u64, 9102u64, "Stub-B")]
+                            {
                                 let stub_tab = Tab {
                                     id: tid,
                                     title: label.to_string(),
@@ -629,8 +607,7 @@ impl ShellDriver {
 pub fn key_press_event(key: Key) -> WindowEvent {
     let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
     ev.logical_key = key.clone();
-    ev.physical_key =
-        PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
+    ev.physical_key = PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
     ev.location = KeyLocation::Standard;
     ev.state = ElementState::Pressed;
     ev.repeat = false;

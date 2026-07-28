@@ -70,8 +70,8 @@
 //!   contract end-to-end.
 
 use std::net::UdpSocket;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -122,10 +122,7 @@ struct HostInputRecorder {
 impl RemoteInputSink for HostInputRecorder {
     fn apply(&mut self, _peer: PeerId, _surface: SurfaceId, _event: InputEvent) {
         let ts_ns = self.origin.elapsed().as_nanos() as u64;
-        self.received_ns
-            .lock()
-            .expect("host input log")
-            .push(ts_ns);
+        self.received_ns.lock().expect("host input log").push(ts_ns);
     }
 }
 
@@ -145,13 +142,9 @@ fn in_process_udp_pipeline_sustains_10_fps_and_bounded_latency() {
     // 1. Bind two UDP sockets on the loopback interface. The kernel
     //    picks free ports; the host & viewer exchange them via
     //    the socket addresses returned from `local_addr`.
-    let video_sock_viewer = UdpSocket::bind("127.0.0.1:0")
-        .expect("bind viewer's video-in socket");
-    let input_sock_host = UdpSocket::bind("127.0.0.1:0")
-        .expect("bind host's input-in socket");
-    let video_addr = video_sock_viewer
-        .local_addr()
-        .expect("video addr");
+    let video_sock_viewer = UdpSocket::bind("127.0.0.1:0").expect("bind viewer's video-in socket");
+    let input_sock_host = UdpSocket::bind("127.0.0.1:0").expect("bind host's input-in socket");
+    let video_addr = video_sock_viewer.local_addr().expect("video addr");
     let input_addr = input_sock_host.local_addr().expect("input addr");
 
     // 2. Start the share session on the host thread.
@@ -178,8 +171,7 @@ fn in_process_udp_pipeline_sustains_10_fps_and_bounded_latency() {
     let host_input_ts_c = host_input_ts.clone();
     let host_thread = thread::spawn(move || {
         // Video sender socket: sends frame packets to viewer's addr.
-        let video_send = UdpSocket::bind("127.0.0.1:0")
-            .expect("host video-send socket");
+        let video_send = UdpSocket::bind("127.0.0.1:0").expect("host video-send socket");
         video_send
             .set_nonblocking(true)
             .expect("nonblocking video-send");
@@ -200,8 +192,7 @@ fn in_process_udp_pipeline_sustains_10_fps_and_bounded_latency() {
             let now = Instant::now();
             let _ = host_session.encode_next_frame(now);
             // Drain the sender's per-subscriber queue onto the wire.
-            while let Some(frame) = host_session.poll_stream_frame(VIEWER_PEER)
-            {
+            while let Some(frame) = host_session.poll_stream_frame(VIEWER_PEER) {
                 let bytes = frame.encode();
                 // UDP is bounded per packet — fragment into chunks
                 // that fit inside a common MTU (1400 bytes to avoid
@@ -218,16 +209,10 @@ fn in_process_udp_pipeline_sustains_10_fps_and_bounded_latency() {
             // Drain any inbound input packets (viewer echoing).
             let mut buf = [0u8; 512];
             while let Ok((n, _from)) = input_sock_host.recv_from(&mut buf) {
-                if let Ok(ev) =
-                    serde_json::from_slice::<InputEvent>(&buf[..n])
-                {
+                if let Ok(ev) = serde_json::from_slice::<InputEvent>(&buf[..n]) {
                     // Route through the session so the read-only gate
                     // and origin-tagging match production.
-                    let _ = host_session.route_input(
-                        VIEWER_PEER,
-                        ev,
-                        &mut recorder,
-                    );
+                    let _ = host_session.route_input(VIEWER_PEER, ev, &mut recorder);
                 }
             }
 
@@ -253,8 +238,7 @@ fn in_process_udp_pipeline_sustains_10_fps_and_bounded_latency() {
         // doesn't authenticate the source, but bidirectional traffic
         // on a fixed pair is closer to real-world QUIC substream
         // semantics.
-        let input_send = UdpSocket::bind("127.0.0.1:0")
-            .expect("viewer input-send socket");
+        let input_send = UdpSocket::bind("127.0.0.1:0").expect("viewer input-send socket");
         let origin = session_for_origin.origin();
 
         let mut rx = SurfaceStreamReceiver::new();
@@ -267,9 +251,7 @@ fn in_process_udp_pipeline_sustains_10_fps_and_bounded_latency() {
 
         while !viewer_stop.load(Ordering::Acquire) {
             // Read raw bytes off the wire and feed the framer.
-            while let Ok((n, _from)) =
-                video_sock_viewer.recv_from(&mut recv_buf)
-            {
+            while let Ok((n, _from)) = video_sock_viewer.recv_from(&mut recv_buf) {
                 rx.push_bytes(&recv_buf[..n]);
             }
 
@@ -441,9 +423,10 @@ fn netns_viewer_process() {
     }
 
     let video_in = UdpSocket::bind(&video_addr).expect("video-in bind");
-    video_in.set_nonblocking(true).expect("nonblocking video-in");
-    let input_send =
-        UdpSocket::bind("0.0.0.0:0").expect("input-send bind");
+    video_in
+        .set_nonblocking(true)
+        .expect("nonblocking video-in");
+    let input_send = UdpSocket::bind("0.0.0.0:0").expect("input-send bind");
 
     let mut rx = SurfaceStreamReceiver::new();
     let mut decoder = H264Decoder::new();
@@ -496,15 +479,8 @@ fn udp_smoke_frame_round_trips_via_framer_and_decoder() {
     let addr = viewer_sock.local_addr().expect("addr");
     let sender_sock = UdpSocket::bind("127.0.0.1:0").expect("sender sock");
 
-    let session = SharedFlatpakSession::start(
-        HOST_PEER,
-        "app",
-        SURFACE,
-        FRAME_W,
-        FRAME_H,
-        cfg(),
-    )
-    .expect("session");
+    let session = SharedFlatpakSession::start(HOST_PEER, "app", SURFACE, FRAME_W, FRAME_H, cfg())
+        .expect("session");
     session.add_viewer(VIEWER_PEER, false);
     session.deposit_captured_rgba(gradient());
     let _ = session.encode_next_frame(Instant::now());
@@ -514,9 +490,7 @@ fn udp_smoke_frame_round_trips_via_framer_and_decoder() {
 
     let bytes = frame.encode();
     for chunk in bytes.chunks(1400) {
-        sender_sock
-            .send_to(chunk, addr)
-            .expect("udp send");
+        sender_sock.send_to(chunk, addr).expect("udp send");
     }
 
     viewer_sock

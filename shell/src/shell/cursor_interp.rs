@@ -161,8 +161,7 @@ fn interpolated_at(uid: &str, state: &PeerState, now: Instant) -> Option<Interpo
         if age <= FADE_AFTER {
             1.0
         } else {
-            let fade_progress =
-                (age - FADE_AFTER).as_secs_f32() / FADE_DURATION.as_secs_f32();
+            let fade_progress = (age - FADE_AFTER).as_secs_f32() / FADE_DURATION.as_secs_f32();
             if fade_progress >= 1.0 {
                 return None;
             }
@@ -201,7 +200,12 @@ fn interpolated_at(uid: &str, state: &PeerState, now: Instant) -> Option<Interpo
     Some(InterpolatedCursor {
         user_id: uid.to_string(),
         position,
-        color: [state.color[0], state.color[1], state.color[2], alpha * state.color[3]],
+        color: [
+            state.color[0],
+            state.color[1],
+            state.color[2],
+            alpha * state.color[3],
+        ],
         alpha,
         label: state.label.clone(),
     })
@@ -329,7 +333,13 @@ mod tests {
         let t0 = Instant::now();
         let mut i = CursorInterpolator::new();
         i.push_sample("alice", &key(1), "Alice", [10.0, 10.0], t0);
-        i.push_sample("bob", &key(2), "Bob", [20.0, 20.0], t0 + Duration::from_secs(1));
+        i.push_sample(
+            "bob",
+            &key(2),
+            "Bob",
+            [20.0, 20.0],
+            t0 + Duration::from_secs(1),
+        );
         assert_eq!(i.len(), 2);
         // Well past both peers' fade windows.
         i.gc(t0 + Duration::from_secs(1) + FADE_AFTER + FADE_DURATION * 2);

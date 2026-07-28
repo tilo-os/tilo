@@ -291,7 +291,10 @@ mod tests {
         let second = r.populate(&connectors);
         assert_eq!(first.len(), 1);
         assert_eq!(second.len(), 1);
-        assert_eq!(first[0].0, second[0].0, "OutputId must be stable across re-enumeration");
+        assert_eq!(
+            first[0].0, second[0].0,
+            "OutputId must be stable across re-enumeration"
+        );
         assert_eq!(r.len(), 1, "no extra entries on re-enumeration");
     }
 }

@@ -24,20 +24,17 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use automerge::{
-    AutoCommit, ObjId, ObjType, ReadDoc, Value,
-    transaction::Transactable,
-};
+use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, Value, transaction::Transactable};
+use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use ui::ColorCompat;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::text_selection::{
-    Selection, clipboard_copy, clipboard_paste, line_boundaries,
-    next_word_boundary, prev_word_boundary, word_boundaries,
+    Selection, clipboard_copy, clipboard_paste, line_boundaries, next_word_boundary,
+    prev_word_boundary, word_boundaries,
 };
 use ui::theme::Theme;
 use ui::widget::{AppKind, AppWidget, IconDescriptor, Widget};
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::Fill;
@@ -149,7 +146,9 @@ impl NotesApp {
         if self.selection.is_collapsed() {
             return;
         }
-        let Some(body) = self.resolve_body(state, root) else { return };
+        let Some(body) = self.resolve_body(state, root) else {
+            return;
+        };
         let start = self.selection.min();
         let end = self.selection.max();
         let char_start = self.text[..start].chars().count();
@@ -163,7 +162,9 @@ impl NotesApp {
     /// Insert `s` at the caret, replacing the current selection if any.
     /// Used by every typing path (printable chars, Enter, Tab, paste).
     fn insert_str(&mut self, state: &mut AutoCommit, root: &ObjId, s: &str) {
-        let Some(body) = self.resolve_body(state, root) else { return };
+        let Some(body) = self.resolve_body(state, root) else {
+            return;
+        };
         if !self.selection.is_collapsed() {
             let start = self.selection.min();
             let end = self.selection.max();
@@ -188,7 +189,9 @@ impl NotesApp {
         if self.selection.cursor == 0 {
             return;
         }
-        let Some(body) = self.resolve_body(state, root) else { return };
+        let Some(body) = self.resolve_body(state, root) else {
+            return;
+        };
         let cur = self.selection.cursor;
         let mut prev = cur - 1;
         while prev > 0 && !self.text.is_char_boundary(prev) {
@@ -207,7 +210,9 @@ impl NotesApp {
         if self.selection.cursor >= self.text.len() {
             return;
         }
-        let Some(body) = self.resolve_body(state, root) else { return };
+        let Some(body) = self.resolve_body(state, root) else {
+            return;
+        };
         let cur = self.selection.cursor;
         let mut next = cur + 1;
         while next < self.text.len() && !self.text.is_char_boundary(next) {
@@ -812,7 +817,10 @@ impl Widget for NotesApp {
 
     fn get_state(&self) -> Option<String> {
         // Encode "anchor:cursor" so undo/redo restores selection state.
-        Some(format!("{}:{}", self.selection.anchor, self.selection.cursor))
+        Some(format!(
+            "{}:{}",
+            self.selection.anchor, self.selection.cursor
+        ))
     }
 
     fn set_state(&mut self, s: &str) {
@@ -1088,7 +1096,10 @@ mod tests {
         app.selection.anchor = 6;
         app.selection.cursor = 11;
         // Ctrl+C path.
-        let copied = app.selected_str().map(|s| s.to_string()).unwrap_or_default();
+        let copied = app
+            .selected_str()
+            .map(|s| s.to_string())
+            .unwrap_or_default();
         clipboard_copy(&copied);
         // Collapse and move to end.
         app.selection = Selection::collapsed(app.text.len());

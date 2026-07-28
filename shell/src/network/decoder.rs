@@ -145,8 +145,9 @@ impl VideoDecoder {
                 {
                     Err(DecoderError::FeatureDisabled {
                         codec: codec.to_string(),
-                        reason: "`hdr-decode` feature not enabled — libavcodec HEVC decoder unavailable"
-                            .to_string(),
+                        reason:
+                            "`hdr-decode` feature not enabled — libavcodec HEVC decoder unavailable"
+                                .to_string(),
                     })
                 }
             }
@@ -198,11 +199,9 @@ pub struct H264Decoder {
 impl H264Decoder {
     /// Build a new decoder with default openh264 settings.
     pub fn new() -> Self {
-        let inner = Decoder::with_api_config(
-            openh264::OpenH264API::from_source(),
-            DecoderConfig::new(),
-        )
-        .expect("openh264 decoder construction is infallible with the bundled lib");
+        let inner =
+            Decoder::with_api_config(openh264::OpenH264API::from_source(), DecoderConfig::new())
+                .expect("openh264 decoder construction is infallible with the bundled lib");
         Self {
             inner,
             rgba_scratch: Vec::new(),
@@ -364,12 +363,7 @@ impl HevcDecoder {
                     *sample <<= 6;
                 }
                 let uv_stride_u16 = (uv_width * 2) as u32;
-                (
-                    y_shifted,
-                    uv,
-                    (y_stride_bytes / 2) as u32,
-                    uv_stride_u16,
-                )
+                (y_shifted, uv, (y_stride_bytes / 2) as u32, uv_stride_u16)
             }
             _other => {
                 // Unexpected pixel format — drop the frame rather

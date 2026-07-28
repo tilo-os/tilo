@@ -134,10 +134,7 @@ impl H264Encoder {
             .num_threads(1)
             .bitrate(BitRate::from_bps(target_bitrate_bps))
             .skip_frames(false);
-        let encoder = Encoder::with_api_config(
-            openh264::OpenH264API::from_source(),
-            config,
-        )?;
+        let encoder = Encoder::with_api_config(openh264::OpenH264API::from_source(), config)?;
         Ok(Self {
             encoder,
             width,
@@ -204,10 +201,7 @@ impl H264Encoder {
                 got: rgba.len(),
             });
         }
-        let rgba_source = RgbaSliceU8::new(
-            rgba,
-            (self.width as usize, self.height as usize),
-        );
+        let rgba_source = RgbaSliceU8::new(rgba, (self.width as usize, self.height as usize));
         // openh264's `YUVBuffer::from_rgb_source` accepts any `RGBSource`
         // and writes into an owned I420 buffer; this is the 4:2:0
         // conversion path described in the plan.
