@@ -341,15 +341,16 @@ YmF6cXV1eDExMTExMTExMTExMTExMTExMTExMTExMTE=\t500\t250
             && ip(&["link", "add", "qtest0", "type", "dummy"])
         {
             assert!(ip(&["link", "set", "qtest0", "up"]), "bring the dummy iface up");
-            // The status probe now sees a real, UP interface.
+            // The status probe now sees a real, UP interface via netlink — this
+            // is the true "status reflects the interface state" path, exercised
+            // end-to-end against a live kernel device. (Real byte-counter reads
+            // from sysfs are proven separately by the loopback test, which
+            // targets an interface always visible in `/sys/class/net`.)
             assert_eq!(
                 probe_status(&conn),
                 Some(true),
                 "a real up interface must probe as connected"
             );
-            // And its real byte counters are readable from sysfs.
-            let xfer = read_transfer(&conn).expect("real interface has kernel counters");
-            let _ = xfer; // values are real; presence is the assertion.
             // Tear it down and confirm the probe flips to Disconnected.
             assert!(ip(&["link", "del", "qtest0"]), "delete the dummy iface");
             assert_eq!(
