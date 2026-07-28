@@ -164,13 +164,32 @@ impl Hits {
 
 impl ApiTesterApp {
     /// Build the default workspace and wire up the send worker channel.
+    /// The live app: no fabricated saved collections/history and NO canned
+    /// response — the response pane is empty until a real Send. It opens on a
+    /// single blank starter request.
     pub fn new() -> Self {
+        Self::build(false)
+    }
+
+    /// The hermetic `--shots` / demo build: a sample collection, environments,
+    /// history and a rendered example response so the screenshot is populated.
+    pub fn new_demo() -> Self {
+        Self::build(true)
+    }
+
+    fn build(demo: bool) -> Self {
         let (tx, rx) = std::sync::mpsc::channel();
-        let collections = crate::seed::collections();
-        let environments = crate::seed::environments();
+        let collections = if demo { crate::seed::collections() } else { Vec::new() };
+        let environments = if demo { crate::seed::environments() } else { Vec::new() };
         let active_env = environments.first().map(|e| e.id);
-        let request = crate::seed::active_request();
-        let history = crate::seed::history();
+        // A blank starter request either way (the sample fills the URL/body only
+        // in the demo); a real Send is what produces a response.
+        let request = if demo {
+            crate::seed::active_request()
+        } else {
+            crate::seed::blank_request()
+        };
+        let history = if demo { crate::seed::history() } else { Vec::new() };
 
         let mut url_input = TextInput::local();
         url_input.set_plain_chrome(true);
@@ -185,7 +204,7 @@ impl ApiTesterApp {
             active_env,
             request,
             history,
-            response: Some(http::sample_response()),
+            response: if demo { Some(http::sample_response()) } else { None },
             sending: false,
             error: None,
             active_tab: RequestTab::Params,
@@ -194,7 +213,7 @@ impl ApiTesterApp {
             method_open: false,
             env_open: false,
             body_scroll: 0.0,
-            selected: Some((0, 0)),
+            selected: if demo { Some((0, 0)) } else { None },
             url_input,
             body_input,
             tx,
@@ -2166,17 +2185,31 @@ impl ApiTesterApp {
 mod tests {
     use super::*;
 
+    /// Tests that exercise saved collections / environments / a request use the
+    /// demo build (the live app starts empty; see `live_app_starts_empty`).
     fn app() -> ApiTesterApp {
-        ApiTesterApp::new()
+        ApiTesterApp::new_demo()
     }
 
     #[test]
-    fn new_app_has_seeded_workspace() {
-        let a = app();
+    fn demo_app_has_seeded_workspace() {
+        let a = ApiTesterApp::new_demo();
         assert!(!a.collections.is_empty());
         assert!(!a.environments.is_empty());
         assert!(a.active_env.is_some());
         assert!(a.response.is_some());
+    }
+
+    #[test]
+    fn live_app_starts_empty() {
+        // The live app fabricates nothing: no saved collections/environments/
+        // history and NO canned response — the response pane is empty until a
+        // real Send.
+        let a = ApiTesterApp::new();
+        assert!(a.collections.is_empty(), "no fabricated collections");
+        assert!(a.environments.is_empty(), "no fabricated environments");
+        assert!(a.history.is_empty(), "no fabricated history");
+        assert!(a.response.is_none(), "no canned response before a real Send");
     }
 
     #[test]
