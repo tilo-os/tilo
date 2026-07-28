@@ -1514,19 +1514,12 @@ impl VideoEditorApp {
         // Top bar.
         fill_rect(scene, tf, c.surfaces.raised, r.topbar);
         stroke_line(scene, tf, c.border_standard, r.topbar.x0, r.topbar.y1, r.topbar.x1, r.topbar.y1, 1.0);
-        // Leading slot: the accent app glyph when the bin is docked, or a
-        // hamburger toggle when the bin is collapsed to an overlay flap.
-        let title_x = if r.bin_overlay {
+        // Leading slot: a hamburger toggle when the bin is collapsed to an
+        // overlay flap. The OS owns the window title/app-name/logo, so the app
+        // draws no glyph or wordmark here.
+        if r.bin_overlay {
             self.draw_hamburger(scene, tf, theme, r.menu_btn);
-            r.menu_btn.x1 + 12.0
-        } else {
-            let glyph = RoundedRect::new(r.topbar.x0 + 14.0, r.topbar.y0 + 12.0, r.topbar.x0 + 38.0, r.topbar.y0 + 36.0, 6.0);
-            scene.fill(Fill::NonZero, tf, c.accent[5], None, &glyph);
-            let tri = triangle(r.topbar.x0 + 21.0, r.topbar.y0 + 18.0, 12.0);
-            scene.fill(Fill::NonZero, tf, Color::WHITE, None, &tri);
-            r.topbar.x0 + 48.0
-        };
-        text_w(scene, tr, tf, "Video Editor", 16.0, c.text_primary, title_x, r.topbar.y0 + 15.0, TextWeight::Semibold);
+        }
         // Project meta, centered-ish.
         let meta = format!(
             "{}   ·   {}×{}   ·   {:.0} fps   ·   {}",
