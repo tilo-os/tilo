@@ -293,8 +293,18 @@ impl Backend for WinitBackend {
     /// compositor falls back rather than inventing one.
     fn refresh_interval(&self) -> Option<std::time::Duration> {
         let window = self.inner.window.as_ref()?;
-        let monitor = window.current_monitor().or_else(|| window.primary_monitor())?;
-        crate::compositor::pacing::interval_from_millihertz(monitor.refresh_rate_millihertz()?)
+        // Ask the monitor the window is on, then the primary, then any
+        // monitor that publishes a rate. Parents differ in which of these
+        // they populate — a nested headless `cage` publishes none of them,
+        // which is why a nested run falls back rather than pacing to a
+        // real panel.
+        window
+            .current_monitor()
+            .into_iter()
+            .chain(window.primary_monitor())
+            .chain(window.available_monitors())
+            .find_map(|m| m.refresh_rate_millihertz())
+            .and_then(crate::compositor::pacing::interval_from_millihertz)
     }
 
     fn take_presenter(&mut self) -> Option<Box<dyn Presenter>> {
