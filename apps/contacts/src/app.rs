@@ -4046,6 +4046,7 @@ impl ContactsApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use automerge::ReadDoc;
     use automerge::ROOT;
     use taffy::{AvailableSpace, Dimension, Size, Style};
     use vello::kurbo::Point;
