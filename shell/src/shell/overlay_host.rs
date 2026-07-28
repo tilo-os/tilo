@@ -2562,22 +2562,34 @@ impl ShellOverlayHost {
     /// (e.g. `Notes`), truncated to `MAX_APP_PILL_CHARS` so a very long
     /// title can't push the sibling pills off the banner. Static labels
     /// fall through to [`SearchScope::label`].
-    fn search_scope_pill_label(&self, scope: crate::shell::chrome_state::SearchScope) -> String {
+    ///
+    /// The app pill is prefixed with `Only ` rather than showing the
+    /// bare title. A pill reading `Notes` next to `Workspace` and `All`
+    /// looks like a label for what you are in; `Only Notes` says what it
+    /// does, which is the difference between an empty result list that
+    /// explains itself and one that looks like the search is broken.
+    pub(crate) fn search_scope_pill_label(
+        &self,
+        scope: crate::shell::chrome_state::SearchScope,
+    ) -> String {
         use crate::shell::chrome_state::SearchScope;
         const MAX_APP_PILL_CHARS: usize = 14;
         match scope {
             SearchScope::ActiveApp => {
-                let raw = self
+                let Some(raw) = self
                     .chrome
                     .as_ref()
                     .and_then(|c| c.borrow().active_app_title())
-                    .unwrap_or_else(|| SearchScope::ActiveApp.label().to_string());
-                if raw.chars().count() > MAX_APP_PILL_CHARS {
+                else {
+                    return SearchScope::ActiveApp.label().to_string();
+                };
+                let title = if raw.chars().count() > MAX_APP_PILL_CHARS {
                     let head: String = raw.chars().take(MAX_APP_PILL_CHARS).collect();
                     format!("{head}…")
                 } else {
                     raw
-                }
+                };
+                format!("Only {title}")
             }
             other => other.label().to_string(),
         }
@@ -3690,12 +3702,24 @@ impl Widget for ShellOverlayHost {
                 if let Key::Character(s) = logical_key {
                     if s.as_str().eq_ignore_ascii_case("k") {
                         use crate::shell::chrome_state::SearchScope;
-                        // Ctrl+K (without Super) → this-app scope.
-                        // Super+K (with or without Ctrl) → global.
+                        // Super+K (with or without Ctrl) → every
+                        // workspace. Ctrl+K → this workspace, but still
+                        // every provider.
+                        //
+                        // Neither chord narrows to the focused app.
+                        // `ActiveApp` drops every provider that doesn't
+                        // own the focused tab, so seeding it here meant
+                        // Ctrl+K → "terminal" → Enter launched nothing
+                        // whenever any app tab had focus: the
+                        // Applications provider was never asked. A scope
+                        // that can empty the result set is something the
+                        // user narrows to on purpose (the group's search
+                        // affordance, or the scope pill), never
+                        // something a chord assumes for them.
                         let scope = if super_down {
                             SearchScope::All
                         } else {
-                            SearchScope::ActiveApp
+                            SearchScope::Workspace
                         };
                         self.open_palette_with_scope(scope);
                         // Fire an initial refresh so the palette lands
@@ -8614,6 +8638,129 @@ mod tests {
              {:?} should have been wiped",
             h.host.palette.query()
         );
+    }
+
+    /// Write a registry + manifest pair under `dir` so the real
+    /// `launcher::gui_apps()` — and therefore the real
+    /// `ApplicationsProvider` — enumerates one installed GUI package.
+    fn install_gui_fixture(dir: &std::path::Path, package_id: &str, name: &str) {
+        let payload = dir.join("payloads").join(package_id);
+        std::fs::create_dir_all(payload.join("bin")).unwrap();
+        let manifest_path = payload.join("manifest.toml");
+        std::fs::write(
+            &manifest_path,
+            format!(
+                "[package]\nid = \"{package_id}\"\nname = \"{name}\"\n\
+                 version = \"1.2.3\"\n[entrypoint]\nbin = \"bin/app\"\ntype = \"gui\"\n"
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("registry.toml"),
+            format!(
+                "[[entry]]\nid = '{package_id}'\npayload_root = {:?}\nmanifest_path = {:?}\n",
+                payload.display().to_string(),
+                manifest_path.display().to_string()
+            ),
+        )
+        .unwrap();
+    }
+
+    /// Ctrl+K, type an installed app's name, and the Applications
+    /// provider must answer — *while an app tab holds focus*, which is
+    /// every moment after the first launch.
+    ///
+    /// `bootstrap_default`'s active tab is Notes, which `NotesProvider`
+    /// claims via `owns_tab`. Seeding `SearchScope::ActiveApp` from the
+    /// chord therefore narrowed the fanout to the notes provider alone
+    /// and the palette offered nothing for "Terminal" — Enter launched
+    /// nothing, with no visible reason. This drives the whole production
+    /// chain: `handle_event` → `open_palette_with_scope` →
+    /// `refresh_search_results` → `SearchRegistry::query` →
+    /// `ApplicationsProvider` → `launcher::gui_apps`.
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn ctrl_k_still_finds_installed_apps_when_an_app_tab_has_focus() {
+        use crate::shell::chrome_state::SearchScope;
+
+        let tmp = tempfile::tempdir().unwrap();
+        install_gui_fixture(tmp.path(), "dev.qos.zzyzx", "Zzyzx");
+        // SAFETY: guarded by the `process_env` serial group.
+        unsafe { std::env::set_var("QOS_APPS_DATA_DIR", tmp.path()) };
+        crate::shell::launcher::invalidate_app_cache();
+
+        let mut h = build_harness();
+        // Precondition: the focused tab really is one a provider owns,
+        // so `ActiveApp` would genuinely exclude the applications
+        // provider. Without this the test would pass vacuously.
+        let owner = {
+            let st = h.chrome.borrow();
+            active_tab_provider_id(&st, &h.host.search_registry)
+        };
+        assert_eq!(
+            owner.as_deref(),
+            Some("notes"),
+            "fixture precondition: the focused tab must be owned by a \
+             provider, otherwise ActiveApp scope excludes nothing"
+        );
+
+        let mods = Modifiers::from(ModifiersState::CONTROL);
+        assert!(pump(&mut h, &key_press(Key::Character("k".into())), &mods));
+
+        assert_ne!(
+            h.chrome.borrow().search_scope,
+            SearchScope::ActiveApp,
+            "a keyboard chord must not narrow the palette to one app"
+        );
+
+        h.host.palette.set_query("zzyzx");
+        let doc = AutoCommit::new();
+        h.host.refresh_search_results(&doc, &automerge::ROOT);
+
+        let hit = h
+            .host
+            .search_results
+            .iter()
+            .find(|r| r.provider_id == "applications");
+        let hit = hit.unwrap_or_else(|| {
+            panic!(
+                "typing an installed app's name must offer a row to launch \
+                 it; got {:?}",
+                h.host
+                    .search_results
+                    .iter()
+                    .map(|r| (&r.provider_id, &r.title))
+                    .collect::<Vec<_>>()
+            )
+        });
+        assert_eq!(hit.id, "dev.qos.zzyzx");
+        assert_eq!(hit.title, "Open Zzyzx");
+
+        // SAFETY: guarded by the `process_env` serial group.
+        unsafe { std::env::remove_var("QOS_APPS_DATA_DIR") };
+        crate::shell::launcher::invalidate_app_cache();
+    }
+
+    /// A scope that can empty the result list has to say so. The app
+    /// pill reads `Only <App>`, not the bare tab title — a pill reading
+    /// `Notes` beside `Workspace` and `All` looks like a caption, and an
+    /// empty result set under it reads as a broken search.
+    #[test]
+    fn narrowing_scope_pill_says_it_narrows() {
+        use crate::shell::chrome_state::SearchScope;
+        let h = build_harness();
+        assert_eq!(
+            h.chrome.borrow().active_app_title().as_deref(),
+            Some("Notes"),
+            "fixture precondition: a tab is focused"
+        );
+        assert_eq!(
+            h.host.search_scope_pill_label(SearchScope::ActiveApp),
+            "Only Notes"
+        );
+        assert!(SearchScope::ActiveApp.narrows_results());
+        assert!(!SearchScope::Workspace.narrows_results());
+        assert!(!SearchScope::All.narrows_results());
     }
 
     /// Click the Files pill in the WS-settings tab strip and assert
