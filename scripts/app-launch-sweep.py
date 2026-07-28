@@ -320,6 +320,76 @@ def was_launched(logpath: pathlib.Path, package_id: str) -> bool:
     return f"shell: launched {package_id}" in text
 
 
+def load_previous(out: pathlib.Path) -> dict:
+    """Records a previous run in this directory left behind.
+
+    A partial `results.json` is normal now that it is written after every
+    package, and a corrupt one (killed mid-write) must not abort the
+    resume - the worst case is redoing work, which is what would have
+    happened anyway.
+    """
+    path = out / "results.json"
+    if not path.exists():
+        return {}
+    try:
+        prior = json.loads(path.read_text())
+    except (json.JSONDecodeError, OSError) as e:
+        print(f"note: ignoring unreadable {path} ({e}); starting fresh",
+              file=sys.stderr)
+        return {}
+    return prior if isinstance(prior, dict) else {}
+
+
+def adopt_orphan_capture(png: pathlib.Path) -> dict:
+    """A record for a capture found on disk with no results.json entry.
+
+    `frames` is None, not a guess: the compositor that could have
+    answered for it is long gone, so anything downstream has to fall
+    back to reading the picture and say that it did.
+    """
+    return {
+        "adopted": ["(recovered from an earlier run)"],
+        "gui": True,
+        "compositor_started": True,
+        "launched": True,
+        "errors": [],
+        "png": str(png),
+        "frames": None,
+        "recovered": True,
+    }
+
+
+def is_complete(record: dict, want_shots: bool) -> bool:
+    """Is this record finished enough that redoing it would prove nothing?
+
+    A package with no GUI entrypoint is settled. Otherwise the run has to
+    have got as far as adopting a window - a previous NO-TAB is worth
+    retrying, since that is usually what the caller just fixed. With
+    --shots the capture must also still be on disk.
+    """
+    if record.get("gui") is False:
+        return True
+    if not record.get("adopted"):
+        return False
+    if want_shots:
+        png = record.get("png")
+        return bool(png) and pathlib.Path(png).exists()
+    return True
+
+
+def write_results(out: pathlib.Path, results: dict) -> None:
+    """Write `results.json` so an interrupted run leaves a usable file.
+
+    Via a temporary file and an atomic rename: a kill during the write
+    would otherwise truncate the record of every package that already
+    ran, which is exactly the loss this is here to prevent.
+    """
+    path = out / "results.json"
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(results, indent=2))
+    tmp.replace(path)
+
+
 def run_one(args, package_id: str, out: pathlib.Path, env_extra: dict) -> dict:
     logpath = out / f"{package_id}.log"
     short = package_id.rsplit(".", 1)[-1]
@@ -385,6 +455,9 @@ def main() -> int:
                         "unchanging picture is accepted as the app's own "
                         "(the first-frame placeholder is static, so it looks "
                         "stable immediately)")
+    p.add_argument("--force-recapture", action="store_true",
+                   help="re-run packages that already have a capture in "
+                        "--out instead of resuming past them")
     p.add_argument("--startup-timeout", type=float, default=45.0,
                    help="seconds to wait for the control socket (default: 45)")
     p.add_argument("--data-dir", type=pathlib.Path,
@@ -410,10 +483,34 @@ def main() -> int:
 
     env_extra = dict(PIN_ENV) if args.pin else {}
     print(f"packages: {len(packages)}   manual-ICD-pin: {args.pin}   "
-          f"settle: {args.settle:.0f}s\n", flush=True)
+          f"settle: {args.settle:.0f}s", flush=True)
+    if results:
+        print(f"resuming: {len(results)} prior record(s) in {args.out}",
+              flush=True)
+    print(flush=True)
 
-    results = {}
+    # A run costs upwards of an hour, so an interruption must not throw
+    # away what it already proved. Records from a previous run in this
+    # directory are adopted, and packages that already have a capture are
+    # skipped unless the caller explicitly asks for a redo.
+    results = load_previous(args.out)
+    resumed = 0
     for package_id in packages:
+        if not args.force_recapture:
+            prior = results.get(package_id)
+            if prior is None and args.shots:
+                # A capture on disk with no record: what an older run
+                # left behind, since it only wrote results.json at the
+                # end. The PNG is the evidence; reconstruct enough of a
+                # record to keep it, rather than spending an hour
+                # redoing work that plainly succeeded.
+                png = args.out / f"{package_id}.png"
+                if png.exists():
+                    prior = adopt_orphan_capture(png)
+                    results[package_id] = prior
+            if prior is not None and is_complete(prior, args.shots):
+                resumed += 1
+                continue
         gui = has_gui_entrypoint(args.data_dir, package_id)
         if not gui:
             results[package_id] = {
@@ -426,6 +523,7 @@ def main() -> int:
             }
             print(f"NO-GUI   {package_id:<32} no graphical entrypoint — not launched",
                   flush=True)
+            write_results(args.out, results)
             continue
         r = run_one(args, package_id, args.out, env_extra)
         r["gui"] = True
@@ -437,12 +535,20 @@ def main() -> int:
             status = "NO-TAB "
             detail = r["errors"][-1][:130] if r["errors"] else "(no output)"
         print(f"{status}  {package_id:<32} {detail}", flush=True)
+        # Persist after every package, not once at the end: a killed run
+        # then leaves a record that is usable and resumable rather than
+        # nothing at all.
+        write_results(args.out, results)
 
-    gui_pkgs = [k for k, v in results.items() if v["gui"]]
-    adopted = [k for k, v in results.items() if v["adopted"]]
-    no_gui = [k for k, v in results.items() if not v["gui"]]
+    if resumed:
+        print(f"\nresumed past {resumed} package(s) already captured in "
+              f"{args.out} (--force-recapture to redo them)", flush=True)
+
+    gui_pkgs = [k for k, v in results.items() if v.get("gui")]
+    adopted = [k for k, v in results.items() if v.get("adopted")]
+    no_gui = [k for k, v in results.items() if not v.get("gui")]
     stillborn = [k for k, v in results.items()
-                 if v["gui"] and v["compositor_started"] is False]
+                 if v.get("gui") and v.get("compositor_started") is False]
 
     print()
     print(f"adopted a toplevel: {len(adopted)}/{len(results)} installed "
@@ -455,7 +561,7 @@ def main() -> int:
     failed = [k for k in gui_pkgs if k not in adopted]
     if failed:
         print("failed: " + ", ".join(sorted(failed)))
-    (args.out / "results.json").write_text(json.dumps(results, indent=2))
+    write_results(args.out, results)
     print(f"\nper-app logs + results.json in {args.out}")
     return 0
 
