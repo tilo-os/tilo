@@ -4,6 +4,8 @@ pub mod screen_reader;
 pub mod app;
 pub mod color_compat;
 pub mod doc;
+pub mod headless;
+pub mod persist;
 pub mod state;
 pub mod widget;
 pub mod text_render;

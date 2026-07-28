@@ -82,15 +82,11 @@ fn two_strip_two_group_tree() -> (
         window_groups: vec![mk_group(b0, "B0"), mk_group(b1, "B1")],
     };
     let ws = Workspace {
-        id: ws_id,
-        name: "Test".into(),
         strips: vec![strip0, strip1],
-        roles: vec![],
-        workspace_files: vec![],
-        collaborators: vec![],
-        owner: None,
-        capabilities: Vec::new(),
-        shared_surfaces: HashMap::new(),
+        // Everything else — including the workspace's durable
+        // collaboration room — comes from the builder, so a field added
+        // to `Workspace` does not break this fixture.
+        ..Workspace::test_default(ws_id, "Test")
     };
 
     let mut active_strip = HashMap::new();
