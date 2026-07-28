@@ -144,6 +144,28 @@ impl HistoryScrubber {
         &mut self.entries
     }
 
+    /// Read the entries currently backing the track.
+    pub fn entries(&self) -> &[HistoryEntry] {
+        &self.entries
+    }
+
+    /// Place the scrubber by hand, for a host that reserves a band out of its
+    /// own layout rather than putting the widget in a taffy tree — an editor
+    /// that opens a history strip under its canvas, or a compositor pane. The
+    /// `Widget::apply_layout` path is unchanged; this is the same assignment it
+    /// makes.
+    pub fn set_rect(&mut self, rect: Rect) {
+        if self.rect != rect {
+            self.rect = rect;
+            self.dirty = true;
+        }
+    }
+
+    /// The rect the scrubber currently occupies.
+    pub fn rect(&self) -> Rect {
+        self.rect
+    }
+
     /// Builder: install a preview callback.
     pub fn on_preview<F: FnMut(&HistoryEntryId) + 'static>(mut self, f: F) -> Self {
         self.on_preview = Some(Box::new(f));

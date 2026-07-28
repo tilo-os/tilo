@@ -106,82 +106,7 @@ impl State {
     /// local action itself changed.
     fn apply_inverse(&mut self, entry: &UndoEntry) -> (Vec<ChangeHash>, Vec<ChangeHash>) {
         let inverse_before = self.doc.get_heads();
-        // Patches describing how to get from the post-action state back to the
-        // pre-action state — i.e. the inverse of the local action.
-        let patches = self.doc.diff(&entry.after, &entry.before);
-        // Recreated objects get a fresh ExId; map the patch's (old) ObjId to it
-        // so nested child patches target the new object.
-        let mut remap: HashMap<ObjId, ObjId> = HashMap::new();
-        for patch in patches {
-            let target = remap.get(&patch.obj).cloned().unwrap_or(patch.obj.clone());
-            match patch.action {
-                PatchAction::PutMap { key, value, .. } => match value.0 {
-                    Value::Scalar(s) => {
-                        let _ = self.doc.put(&target, key, s.into_owned());
-                    }
-                    Value::Object(ot) => {
-                        if let Ok(new_id) = self.doc.put_object(&target, key, ot) {
-                            remap.insert(value.1, new_id);
-                        }
-                    }
-                },
-                PatchAction::PutSeq { index, value, .. } => {
-                    // The element still exists post-action; anchor at `after`.
-                    let li = self.live_index_at(&target, index, &entry.after);
-                    match value.0 {
-                        Value::Scalar(s) => {
-                            let _ = self.doc.put(&target, li, s.into_owned());
-                        }
-                        Value::Object(ot) => {
-                            if let Ok(new_id) = self.doc.put_object(&target, li, ot) {
-                                remap.insert(value.1, new_id);
-                            }
-                        }
-                    }
-                }
-                PatchAction::Insert { index, values } => {
-                    // Re-inserting elements the local action deleted; the
-                    // boundary is expressed in `before` coordinates.
-                    let mut li = self.live_insert_boundary(&target, index, &entry.before);
-                    for (val, old_id, _) in values.into_iter() {
-                        match val {
-                            Value::Scalar(s) => {
-                                let _ = self.doc.insert(&target, li, s.clone().into_owned());
-                            }
-                            Value::Object(ot) => {
-                                if let Ok(new_id) = self.doc.insert_object(&target, li, *ot) {
-                                    remap.insert(old_id.clone(), new_id);
-                                }
-                            }
-                        }
-                        li += 1;
-                    }
-                }
-                PatchAction::SpliceText { index, value, .. } => {
-                    // Re-inserting text the local action deleted.
-                    let li = self.live_insert_boundary(&target, index, &entry.before);
-                    let _ = self.doc.splice_text(&target, li, 0, &value.make_string());
-                }
-                PatchAction::Increment { prop, value } => {
-                    let _ = self.doc.increment(&target, prop, value);
-                }
-                PatchAction::DeleteMap { key } => {
-                    let _ = self.doc.delete(&target, key);
-                }
-                PatchAction::DeleteSeq { index, length } => {
-                    // Removing elements the local action inserted; they exist
-                    // post-action, so each position is anchored at `after`.
-                    for _ in 0..length {
-                        let li = self.live_index_at(&target, index, &entry.after);
-                        let _ = self.doc.delete(&target, li);
-                    }
-                }
-                // A conflict marker carries no content to revert, and marks
-                // (text formatting spans) are not produced by the editor's
-                // undo-tracked actions; both are safely ignored.
-                PatchAction::Conflict { .. } | PatchAction::Mark { .. } => {}
-            }
-        }
+        write_revert_patches(&mut self.doc, &entry.after, &entry.before);
         let _ = qdoc::history::commit_stamped(&mut self.doc);
         let inverse_after = self.doc.get_heads();
         self.last_heads = inverse_after.clone();
@@ -245,45 +170,11 @@ impl State {
 
     /// Translate a sequence index expressed as-of `anchor_heads` into its
     /// position in the live document, so concurrent inserts/deletes shift it
-    /// correctly. Used when the referenced element still exists.
-    fn live_index_at(
-        &self,
-        obj: &ObjId,
-        index: usize,
-        anchor_heads: &[ChangeHash],
-    ) -> usize {
-        match self.doc.get_cursor(obj, index, Some(anchor_heads)) {
-            Ok(cursor) => self
-                .doc
-                .get_cursor_position(obj, &cursor, None)
-                .unwrap_or(index),
-            Err(_) => index,
-        }
-    }
 
     /// Translate an *insertion boundary* expressed as-of `anchor_heads` into the
     /// live document. The element originally at `index` may itself have been
     /// deleted by the action we're reverting (which would trip an automerge
     /// fast/slow cursor-seek consistency check), so we anchor on the surviving
-    /// element just before the boundary and insert after it.
-    fn live_insert_boundary(
-        &self,
-        obj: &ObjId,
-        index: usize,
-        anchor_heads: &[ChangeHash],
-    ) -> usize {
-        if index == 0 {
-            return 0;
-        }
-        match self.doc.get_cursor(obj, index - 1, Some(anchor_heads)) {
-            Ok(cursor) => self
-                .doc
-                .get_cursor_position(obj, &cursor, None)
-                .map(|p| p + 1)
-                .unwrap_or(index),
-            Err(_) => index,
-        }
-    }
 
     /// Undo the most recent action by writing its inverse as a new forward
     /// change (preserving concurrent remote edits). Callers pass the *current*
@@ -476,6 +367,142 @@ impl State {
     /// CRDT sync.
     pub fn save_incremental(&mut self) -> Vec<u8> {
         self.doc.save_incremental()
+    }
+}
+
+/// Write the delta that leads from `from_heads` to `to_heads` into `doc`'s open
+/// transaction, without committing.
+///
+/// This is the one primitive behind both undo and restore-from-history: rather
+/// than replacing the document with an old state (which would silently drop
+/// every concurrently-merged remote op), it re-derives exactly the properties
+/// and elements that differ and *writes them forward*. History is therefore
+/// only ever appended to.
+///
+/// The caller commits. That is deliberate: a `ui` app signals `needs_commit()`
+/// and lets `App::commit_action` do the commit, so a restore performed from
+/// inside a widget lands on the undo stack with the right author and timestamp
+/// exactly like any other edit. [`State::restore_to_heads`] is the equivalent
+/// for a host that owns a whole [`State`].
+pub fn write_revert_patches(
+    doc: &mut AutoCommit,
+    from_heads: &[ChangeHash],
+    to_heads: &[ChangeHash],
+) {
+    // Patches describing how to get from `from_heads` back to `to_heads`.
+    let patches = doc.diff(from_heads, to_heads);
+    let entry_after = from_heads;
+    let entry_before = to_heads;
+        // Recreated objects get a fresh ExId; map the patch's (old) ObjId to it
+        // so nested child patches target the new object.
+        let mut remap: HashMap<ObjId, ObjId> = HashMap::new();
+        for patch in patches {
+            let target = remap.get(&patch.obj).cloned().unwrap_or(patch.obj.clone());
+            match patch.action {
+                PatchAction::PutMap { key, value, .. } => match value.0 {
+                    Value::Scalar(s) => {
+                        let _ = doc.put(&target, key, s.into_owned());
+                    }
+                    Value::Object(ot) => {
+                        if let Ok(new_id) = doc.put_object(&target, key, ot) {
+                            remap.insert(value.1, new_id);
+                        }
+                    }
+                },
+                PatchAction::PutSeq { index, value, .. } => {
+                    // The element still exists post-action; anchor at `after`.
+                    let li = live_index_at(doc, &target, index, entry_after);
+                    match value.0 {
+                        Value::Scalar(s) => {
+                            let _ = doc.put(&target, li, s.into_owned());
+                        }
+                        Value::Object(ot) => {
+                            if let Ok(new_id) = doc.put_object(&target, li, ot) {
+                                remap.insert(value.1, new_id);
+                            }
+                        }
+                    }
+                }
+                PatchAction::Insert { index, values } => {
+                    // Re-inserting elements the local action deleted; the
+                    // boundary is expressed in `before` coordinates.
+                    let mut li = live_insert_boundary(doc, &target, index, entry_before);
+                    for (val, old_id, _) in values.into_iter() {
+                        match val {
+                            Value::Scalar(s) => {
+                                let _ = doc.insert(&target, li, s.clone().into_owned());
+                            }
+                            Value::Object(ot) => {
+                                if let Ok(new_id) = doc.insert_object(&target, li, *ot) {
+                                    remap.insert(old_id.clone(), new_id);
+                                }
+                            }
+                        }
+                        li += 1;
+                    }
+                }
+                PatchAction::SpliceText { index, value, .. } => {
+                    // Re-inserting text the local action deleted.
+                    let li = live_insert_boundary(doc, &target, index, entry_before);
+                    let _ = doc.splice_text(&target, li, 0, &value.make_string());
+                }
+                PatchAction::Increment { prop, value } => {
+                    let _ = doc.increment(&target, prop, value);
+                }
+                PatchAction::DeleteMap { key } => {
+                    let _ = doc.delete(&target, key);
+                }
+                PatchAction::DeleteSeq { index, length } => {
+                    // Removing elements the local action inserted; they exist
+                    // post-action, so each position is anchored at `after`.
+                    for _ in 0..length {
+                        let li = live_index_at(doc, &target, index, entry_after);
+                        let _ = doc.delete(&target, li);
+                    }
+                }
+                // A conflict marker carries no content to revert, and marks
+                // (text formatting spans) are not produced by the editor's
+                // undo-tracked actions; both are safely ignored.
+                PatchAction::Conflict { .. } | PatchAction::Mark { .. } => {}
+            }
+        }
+}
+
+/// Translate a sequence index expressed as-of `anchor_heads` into its position
+/// in the live document, so concurrent inserts/deletes shift it correctly. Used
+/// when the referenced element still exists.
+fn live_index_at(
+    doc: &AutoCommit,
+    obj: &ObjId,
+    index: usize,
+    anchor_heads: &[ChangeHash],
+) -> usize {
+    match doc.get_cursor(obj, index, Some(anchor_heads)) {
+        Ok(cursor) => doc.get_cursor_position(obj, &cursor, None).unwrap_or(index),
+        Err(_) => index,
+    }
+}
+
+/// Translate an *insertion boundary* expressed as-of `anchor_heads` into the
+/// live document. The element originally at `index` may itself have been
+/// deleted by the action we are reverting (which would trip an automerge
+/// fast/slow cursor-seek consistency check), so anchor on the surviving element
+/// just before the boundary and insert after it.
+fn live_insert_boundary(
+    doc: &AutoCommit,
+    obj: &ObjId,
+    index: usize,
+    anchor_heads: &[ChangeHash],
+) -> usize {
+    if index == 0 {
+        return 0;
+    }
+    match doc.get_cursor(obj, index - 1, Some(anchor_heads)) {
+        Ok(cursor) => doc
+            .get_cursor_position(obj, &cursor, None)
+            .map(|p| p + 1)
+            .unwrap_or(index),
+        Err(_) => index,
     }
 }
 
