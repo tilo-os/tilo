@@ -24,15 +24,15 @@ path = "src/lib.rs"
 # stack (runtime-portal, runtime-collab, runtime-fs all sit on tokio).
 # `default-features = false` drops the async-std default; the `tokio`
 # feature swaps zbus's executor over.
-ashpd = { version = "0.9", default-features = false, features = ["tokio"] }
+ashpd.workspace = true
 # tokio: a small `current_thread` runtime is what we block_on inside
 # the sync wrapper. Apps that already own a tokio runtime should call
 # the `*_async` variants and drive the future themselves.
-tokio = { version = "1", features = ["rt", "net", "macros", "sync"] }
-thiserror = "1"
-tracing = "0.1"
+tokio = { workspace = true, features = ["rt", "net", "macros", "sync"] }
+thiserror.workspace = true
+tracing.workspace = true
 # For the URL type in `OpenUri::open`.
-url = "2"
+url.workspace = true
 
 [dev-dependencies]
-tempfile = "3"
+tempfile.workspace = true
