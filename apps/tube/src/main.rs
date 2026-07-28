@@ -171,11 +171,18 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    let state = ui::State::new();
+    // Headless drive (`--headless-drive '<json>'`): run a list of clicks and
+    // keystrokes against the real widget tree with no display, persisting
+    // through the same store the live app uses.
+    if let Some(spec) = ui::headless::spec_from_args(&args) {
+        std::process::exit(ui::headless::run(spec, Box::new(tube::TubeApp::new().online()), "dev.qos.tube"));
+    }
+
+    let (state, autosave) = ui::persist::open("dev.qos.tube");
     // The live binary is `online()`: it reaches out to the real backend and
     // auto-falls-back to the sample if the network is down. (`app_root()`, used
     // by `--shots`, stays offline for hermetic screenshots.)
-    let app = ui::App::new(state, Box::new(tube::TubeApp::new().online()));
+    let app = ui::App::new(state, Box::new(tube::TubeApp::new().online())).with_autosave(autosave);
     app.run();
     Ok(())
 }

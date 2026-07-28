@@ -36,8 +36,15 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     unsafe {
         std::env::set_var("IMAGER_LIVE", "1");
     }
-    let state = ui::State::new();
-    let app = ui::App::new(state, imager::app_root());
+    // Headless drive (`--headless-drive '<json>'`): run a list of clicks and
+    // keystrokes against the real widget tree with no display, persisting
+    // through the same store the live app uses.
+    if let Some(spec) = ui::headless::spec_from_args(&args) {
+        std::process::exit(ui::headless::run(spec, imager::app_root(), "dev.qos.imager"));
+    }
+
+    let (state, autosave) = ui::persist::open("dev.qos.imager");
+    let app = ui::App::new(state, imager::app_root()).with_autosave(autosave);
     app.run();
     Ok(())
 }

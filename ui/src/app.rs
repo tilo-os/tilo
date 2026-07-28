@@ -1914,7 +1914,7 @@ impl App {
     /// previous session left behind plus the writer for it:
     ///
     /// ```ignore
-    /// let (state, autosave) = ui::persist::open();
+    /// let (state, autosave) = ui::persist::open("dev.qos.my-app");
     /// ui::App::new(state, my_app::app_root())
     ///     .with_autosave(autosave)
     ///     .run();

@@ -20,7 +20,7 @@
 //!
 //! ```ignore
 //! if let Some(spec) = ui::headless::spec_from_args(&args) {
-//!     return ui::headless::run(spec, my_app::app_root());
+//!     std::process::exit(ui::headless::run(spec, my_app::app_root(), "dev.qos.my-app"));
 //! }
 //! ```
 //!
@@ -479,8 +479,8 @@ pub fn parse_spec(raw: &str) -> Result<Spec, String> {
 /// action succeeded, `1` when one did not (with the reason on stderr) and
 /// `3` when persistence itself was unavailable, which a sweep must not
 /// mistake for "nothing changed".
-pub fn run(spec: Spec, root: Box<dyn Widget>) -> i32 {
-    let (state, mut autosave) = crate::persist::open();
+pub fn run(spec: Spec, root: Box<dyn Widget>, manifest_id: &str) -> i32 {
+    let (state, mut autosave) = crate::persist::open(manifest_id);
     if !autosave.is_enabled() {
         eprintln!(
             "headless: persistence unavailable: {}",

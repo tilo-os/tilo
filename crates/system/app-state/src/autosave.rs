@@ -43,7 +43,9 @@ enum Msg {
 /// app that keeps the `Autosave` alive for the length of `main` cannot exit
 /// with an unwritten edit.
 pub struct Autosave {
-    tx: Sender<Msg>,
+    /// `None` for a [`Autosave::disabled`] handle — there is no worker to
+    /// talk to and every `request` is a no-op.
+    tx: Option<Sender<Msg>>,
     join: Option<thread::JoinHandle<()>>,
     document: PathBuf,
     package_id: String,
@@ -75,7 +77,7 @@ impl Autosave {
             .spawn(move || writer_loop(rx, store, debounce, errs))
             .expect("spawn app-state writer thread");
         Self {
-            tx,
+            tx: Some(tx),
             join: Some(join),
             document,
             package_id,
@@ -86,6 +88,30 @@ impl Autosave {
             appends: 0,
             last_error,
         }
+    }
+
+    /// A handle that persists nothing, carrying `reason` as its permanent
+    /// error. Used when the state directory cannot be opened at all: the app
+    /// still runs, and `is_enabled` / `last_error` make the degraded state
+    /// visible instead of silently pretending writes are landing.
+    pub fn disabled(reason: impl Into<String>) -> Self {
+        Self {
+            tx: None,
+            join: None,
+            document: PathBuf::new(),
+            package_id: String::new(),
+            sent: Vec::new(),
+            appended: 0,
+            base: 0,
+            full_writes: 0,
+            appends: 0,
+            last_error: Arc::new(Mutex::new(Some(reason.into()))),
+        }
+    }
+
+    /// Whether this handle is backed by a real store.
+    pub fn is_enabled(&self) -> bool {
+        self.tx.is_some()
     }
 
     /// The file the writer targets.
@@ -101,6 +127,9 @@ impl Autosave {
     /// Adopt `heads` as already on disk. Call this right after loading, so
     /// the first `request` only ships what the user has changed since.
     pub fn seed(&mut self, doc: &mut AutoCommit) {
+        if self.tx.is_none() {
+            return;
+        }
         self.sent = doc.get_heads();
         self.base = std::fs::metadata(&self.document)
             .map(|m| m.len() as usize)
@@ -114,6 +143,9 @@ impl Autosave {
     /// call this compares two head vectors and returns. Safe to call every
     /// frame.
     pub fn request(&mut self, doc: &mut AutoCommit) {
+        let Some(tx) = self.tx.as_ref() else {
+            return;
+        };
         let heads = doc.get_heads();
         if heads == self.sent {
             return;
@@ -124,13 +156,13 @@ impl Autosave {
             self.base = bytes.len();
             self.appended = 0;
             self.full_writes += 1;
-            let _ = self.tx.send(Msg::Full(bytes));
+            let _ = tx.send(Msg::Full(bytes));
         } else {
             let delta = doc.save_after(&self.sent);
             if !delta.is_empty() {
                 self.appended += delta.len();
                 self.appends += 1;
-                let _ = self.tx.send(Msg::Append(delta));
+                let _ = tx.send(Msg::Append(delta));
             }
         }
         self.sent = heads;
@@ -140,8 +172,11 @@ impl Autosave {
     ///
     /// Used on exit and by tests; a plain `request` is fire-and-forget.
     pub fn flush(&self) {
+        let Some(tx) = self.tx.as_ref() else {
+            return;
+        };
         let (ack, done) = mpsc::channel();
-        if self.tx.send(Msg::Flush(ack)).is_ok() {
+        if tx.send(Msg::Flush(ack)).is_ok() {
             let _ = done.recv();
         }
     }
@@ -167,7 +202,9 @@ impl Autosave {
 impl Drop for Autosave {
     fn drop(&mut self) {
         self.flush();
-        let _ = self.tx.send(Msg::Stop);
+        if let Some(tx) = self.tx.take() {
+            let _ = tx.send(Msg::Stop);
+        }
         if let Some(j) = self.join.take() {
             let _ = j.join();
         }

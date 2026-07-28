@@ -7,9 +7,11 @@
 //!     "qOS main" registry, with a placeholder owner pubkey the user
 //!     replaces on bootstrap (a signed registry index — the first
 //!     entry.updated_at_unix > 0 index sig — pins the owner key).
-//!   * `config.toml` — persistent UI settings (currently: which filter
-//!     chip was active last, and the last search string, so the store
-//!     opens in the state the user left it).
+//!   * `config.toml` — a UI-settings file that nothing in the app reads
+//!     or writes. It was never wired up, and the UI state it describes
+//!     now lives in the app's Automerge document, which `ui::persist`
+//!     saves and restores. [`load_config`] / [`save_config`] remain only
+//!     so an existing file can still be read by whoever wants it.
 //!
 //! Everything here is best-effort I/O: a missing / malformed file is
 //! never fatal — the UI falls back to defaults and keeps rendering.

@@ -61,8 +61,15 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     // polling at ~60 Hz: grab the handle before moving the widget into the App,
     // then store the loop's proxy once it exists.
     let waker = widget.waker_handle();
-    let state = ui::State::new();
-    let app = ui::App::new(state, Box::new(widget));
+    // Headless drive (`--headless-drive '<json>'`): run a list of clicks and
+    // keystrokes against the real widget tree with no display, persisting
+    // through the same store the live app uses.
+    if let Some(spec) = ui::headless::spec_from_args(&args) {
+        std::process::exit(ui::headless::run(spec, Box::new(widget), "dev.qos.terminal"));
+    }
+
+    let (state, autosave) = ui::persist::open("dev.qos.terminal");
+    let app = ui::App::new(state, Box::new(widget)).with_autosave(autosave);
     app.run_with_setup(move |proxy| {
         if let Ok(mut g) = waker.lock() {
             *g = Some(proxy);
