@@ -8,6 +8,7 @@
 //! ephemeral, time-driven animation layered on top.
 
 use std::collections::HashMap;
+use std::time::Instant;
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -27,8 +28,74 @@ use crate::doc::VpnDoc;
 use crate::model::{
     human_ago, human_bytes, sample_vault, ConnId, ConnKind, ConnStatus, Connection, Vault,
 };
+use crate::net::{self, Transfer};
 use crate::portal::{self, ImportOutcome};
 use crate::throughput;
+
+/// One real byte-counter reading of a connected tunnel, timestamped so a
+/// rate can be derived from consecutive samples. Ephemeral live telemetry —
+/// never persisted to the CRDT, never fabricated.
+#[derive(Clone, Copy, Debug)]
+struct RateSample {
+    at: Instant,
+    xfer: Transfer,
+}
+
+/// Rolling window of real transfer readings for one tunnel.
+#[derive(Default)]
+struct TransferHistory {
+    samples: Vec<RateSample>,
+}
+
+impl TransferHistory {
+    /// Minimum spacing between kept samples (throttles the per-frame poll).
+    const MIN_DT: f64 = 0.5;
+
+    fn push(&mut self, xfer: Transfer) {
+        let now = Instant::now();
+        if let Some(last) = self.samples.last() {
+            if now.duration_since(last.at).as_secs_f64() < Self::MIN_DT {
+                return;
+            }
+        }
+        self.samples.push(RateSample { at: now, xfer });
+        // Keep enough points to fill the chart, plus one for the leading edge.
+        let cap = throughput::SAMPLES + 1;
+        if self.samples.len() > cap {
+            let drop = self.samples.len() - cap;
+            self.samples.drain(0..drop);
+        }
+    }
+
+    /// Per-interval download/upload rate series in bytes/sec, one point per
+    /// consecutive pair of readings. Empty until at least two real samples
+    /// exist — we never invent a curve.
+    fn rate_series(&self) -> (Vec<f64>, Vec<f64>) {
+        let mut down = Vec::new();
+        let mut up = Vec::new();
+        for w in self.samples.windows(2) {
+            let dt = w[1].at.duration_since(w[0].at).as_secs_f64();
+            if dt <= 0.0 {
+                continue;
+            }
+            // Counters are monotonic; guard a reset (new tunnel) as zero.
+            let d = w[1].xfer.rx.saturating_sub(w[0].xfer.rx) as f64 / dt;
+            let u = w[1].xfer.tx.saturating_sub(w[0].xfer.tx) as f64 / dt;
+            down.push(d);
+            up.push(u);
+        }
+        (down, up)
+    }
+
+    /// Latest cumulative counters, if any real reading has been taken.
+    fn latest(&self) -> Option<Transfer> {
+        self.samples.last().map(|s| s.xfer)
+    }
+
+    fn has_rate(&self) -> bool {
+        self.samples.len() >= 2
+    }
+}
 
 const HEADER_H: f64 = 72.0;
 const FOOTER_H: f64 = 56.0;
@@ -101,6 +168,13 @@ pub struct VpnApp {
     last_mouse: Point,
     hovered_row: Option<ConnId>,
     is_focused: bool,
+    /// Real, ephemeral throughput readings per connected tunnel (never in the
+    /// CRDT). Populated only from live kernel counters when execution is
+    /// allowed and the tunnel is actually up.
+    throughput: HashMap<ConnId, TransferHistory>,
+    /// Last time the real interface state was reconciled, to throttle the
+    /// per-frame `ip link` / `pgrep` probes to ~1 Hz.
+    last_reconcile: Option<Instant>,
 }
 
 impl Default for VpnApp {
@@ -142,6 +216,8 @@ impl VpnApp {
             last_mouse: Point::ZERO,
             hovered_row: None,
             is_focused: false,
+            throughput: HashMap::new(),
+            last_reconcile: None,
         }
     }
 
@@ -156,10 +232,76 @@ impl VpnApp {
             self.seeded = true;
         }
         self.vault = VpnDoc::read_vault(doc);
+        self.reconcile_real_status(doc);
         if self.vault.selected.is_none() {
             if let Some(first) = self.vault.connections.first().map(|c| c.id) {
                 self.vault.selected = Some(first);
                 VpnDoc::set_selected(doc, Some(first));
+            }
+        }
+    }
+
+    /// Reconcile each tunnel's stored status against the REAL kernel/process
+    /// state (`ip link` for WireGuard, `pgrep` for OpenVPN). The stored toggle
+    /// never overrides reality: a tunnel that dropped out-of-band flips back to
+    /// Disconnected, and one brought up elsewhere shows Connected. Gated on
+    /// `QOS_VPN_ALLOW_EXEC` (so hermetic tests spawn no probes) and throttled
+    /// to ~1 Hz. `Connecting` is left alone — that transient is owned by the
+    /// in-flight command.
+    fn reconcile_real_status(&mut self, doc: &mut AutoCommit) {
+        if !config::exec_allowed() {
+            return;
+        }
+        let now = Instant::now();
+        if let Some(prev) = self.last_reconcile {
+            if now.duration_since(prev).as_secs_f64() < 1.0 {
+                return;
+            }
+        }
+        self.last_reconcile = Some(now);
+
+        let mut changes: Vec<(ConnId, ConnStatus)> = Vec::new();
+        for c in &self.vault.connections {
+            if c.status == ConnStatus::Connecting {
+                continue;
+            }
+            if let Some(up) = net::probe_status(c) {
+                let real = if up { ConnStatus::Connected } else { ConnStatus::Disconnected };
+                if c.status != real {
+                    changes.push((c.id, real));
+                }
+            }
+        }
+        if !changes.is_empty() {
+            for (id, status) in changes {
+                VpnDoc::set_status(doc, id, status);
+            }
+            self.vault = VpnDoc::read_vault(doc);
+        }
+    }
+
+    /// Poll REAL byte counters for every connected tunnel and fold them into
+    /// the ephemeral throughput history. No sample is ever synthesized: if the
+    /// kernel has no counter for the interface, nothing is recorded. Gated on
+    /// `QOS_VPN_ALLOW_EXEC` and only runs for tunnels reporting Connected.
+    fn sample_throughput(&mut self) {
+        if !config::exec_allowed() {
+            return;
+        }
+        let connected: Vec<ConnId> = self
+            .vault
+            .connections
+            .iter()
+            .filter(|c| c.is_connected())
+            .map(|c| c.id)
+            .collect();
+        // Forget history for tunnels that are no longer up.
+        self.throughput.retain(|id, _| connected.contains(id));
+        for id in connected {
+            if let Some(c) = self.vault.get(id) {
+                if let Some(xfer) = net::read_transfer(c) {
+                    self.throughput.entry(id).or_default().push(xfer);
+                }
             }
         }
     }
@@ -220,8 +362,24 @@ impl VpnApp {
         match p {
             Pending::Connect(id, plan) => match config::execute(&plan) {
                 Ok(out) => {
-                    VpnDoc::set_status(doc, id, ConnStatus::Connected);
-                    self.log(format!("$ {}  → ok {}", plan.display(), out));
+                    // The command returned success — now confirm the tunnel is
+                    // REALLY up via the kernel before claiming Connected. If
+                    // the probe can't tell (tool missing) we trust the exit
+                    // status; if it says down, we stay honest.
+                    let real_up = self
+                        .vault
+                        .get(id)
+                        .and_then(net::probe_status)
+                        .unwrap_or(true);
+                    if real_up {
+                        VpnDoc::set_status(doc, id, ConnStatus::Connected);
+                        self.log(format!("$ {}  → up {}", plan.display(), out));
+                    } else {
+                        self.log(format!(
+                            "$ {}  → command ok but interface not up",
+                            plan.display()
+                        ));
+                    }
                 }
                 Err(e) => {
                     // Stay disconnected — we did NOT connect.
@@ -298,12 +456,37 @@ impl VpnApp {
                         &path.file_name().and_then(|s| s.to_str()).unwrap_or("").to_string(),
                     )
                     .unwrap_or(self.import_hint);
-                    let conn = config::parse_config(&stem, kind, &text);
+                    let mut conn = config::parse_config(&stem, kind, &text);
+                    // Persist the RAW config into the app's data dir so the
+                    // real bring-up (`wg-quick up <path>` / `openvpn --config
+                    // <path>`) references the exact file — private key, DNS,
+                    // routes and all — not a lossy re-render of the parsed
+                    // fields. The stored basename becomes the interface name.
+                    let iface = config::iface_name(&conn);
+                    match config::persist_config(&iface, kind, &text) {
+                        Ok(saved) => {
+                            conn.config_path = Some(saved.to_string_lossy().into_owned());
+                            self.log(format!(
+                                "imported {} '{}' → {}",
+                                kind.badge(),
+                                stem,
+                                saved.display()
+                            ));
+                        }
+                        Err(e) => {
+                            // Still add the parsed tunnel, but be honest that
+                            // it has no runnable config yet.
+                            self.log(format!(
+                                "imported {} '{}' (metadata only — could not save config: {e})",
+                                kind.badge(),
+                                stem
+                            ));
+                        }
+                    }
                     let id = conn.id;
                     VpnDoc::write_connection(doc, &conn);
                     self.refresh(doc);
                     self.select(doc, id);
-                    self.log(format!("imported {} '{}'", kind.badge(), stem));
                     true
                 }
                 Err(e) => {
@@ -740,12 +923,26 @@ impl VpnApp {
     fn draw_status_tab(&self, scene: &mut Scene, tr: &mut TextRenderer, t: Affine, theme: &Theme, lay: &LayoutRects, c: &Connection) {
         let content = lay.content;
 
-        // Stat tiles (4 across). We do not have a live byte-counter source
-        // wired, so throughput is never fabricated: DOWN/UP read "—". The
-        // handshake reflects the real last-handshake age when connected.
+        // Real throughput, read from the kernel (`wg show transfer` / sysfs)
+        // for this tunnel. `None`/empty until at least two real samples exist;
+        // no value is ever synthesized.
+        let hist = self.throughput.get(&c.id);
+        let (down_series, up_series) = hist.map(|h| h.rate_series()).unwrap_or_default();
+        let has_rate = hist.map(|h| h.has_rate()).unwrap_or(false) && c.is_connected();
+        let latest = hist.and_then(|h| h.latest());
+        let down_now = down_series.last().copied();
+        let up_now = up_series.last().copied();
+
+        // Stat tiles (4 across). DOWN/UP show the measured current rate when we
+        // have real samples, otherwise "—". Handshake reflects the real
+        // last-handshake age when connected.
         let tiles_h = 72.0;
         let gap = 12.0;
         let tw = (content.width() - gap * 3.0) / 4.0;
+        let rate_or_dash = |v: Option<f64>| match v {
+            Some(bps) if has_rate => throughput::rate_label(bps),
+            _ => "—".to_string(),
+        };
         let tile_vals = [
             ("ASSIGNED IP", if c.address.is_empty() { "—".to_string() } else { c.address.clone() }),
             (
@@ -755,8 +952,8 @@ impl VpnApp {
                     _ => "—".to_string(),
                 },
             ),
-            ("DOWN", "—".to_string()),
-            ("UP", "—".to_string()),
+            ("DOWN", rate_or_dash(down_now)),
+            ("UP", rate_or_dash(up_now)),
         ];
         for (i, (label, val)) in tile_vals.iter().enumerate() {
             let x = content.x0 + i as f64 * (tw + gap);
@@ -767,18 +964,38 @@ impl VpnApp {
             text_w(tr, scene, t, &ellipsize(val, 16), 17.0, theme.text_primary, r.x0 + 14.0, r.y0 + 36.0, TextWeight::Semibold);
         }
 
-        // Throughput panel — an empty plot with an honest "no live data"
-        // note. The app renders real metering or nothing; it never draws a
-        // synthesized waveform.
+        // Throughput panel — plots the REAL measured rate series. When there
+        // is no live data yet the plot stays empty with an honest note; the
+        // app never draws a synthesized waveform.
         let chart = Rect::new(content.x0, content.y0 + tiles_h + 16.0, content.x1, content.y0 + tiles_h + 16.0 + 176.0);
-        throughput::draw_chart(scene, t, chart, theme, &[], &[], false);
+        throughput::draw_chart(scene, t, chart, theme, &down_series, &up_series, has_rate);
         text_w(tr, scene, t, "Throughput", 12.0, theme.text_dim, chart.x0 + 12.0, chart.y0 + 10.0, TextWeight::Bold);
-        let note = "Live throughput metering not wired yet";
-        let (nw, _) = tr.measure_weighted(note, 12.0, None, TextWeight::Regular);
-        text_w(
-            tr, scene, t, note, 12.0, theme.text_dim,
-            chart.center().x - nw as f64 / 2.0, chart.center().y - 8.0, TextWeight::Regular,
-        );
+        if let Some(x) = latest {
+            // Real cumulative counters straight from the kernel.
+            let legend = format!(
+                "recv {} · sent {}",
+                human_bytes(x.rx),
+                human_bytes(x.tx)
+            );
+            let (lw, _) = tr.measure_weighted(&legend, 11.0, None, TextWeight::Regular);
+            text_w(tr, scene, t, &legend, 11.0, theme.text_dim, chart.x1 - 12.0 - lw as f64, chart.y0 + 10.0, TextWeight::Regular);
+        }
+        if !has_rate {
+            let note = if !c.is_connected() {
+                "Connect to read live throughput"
+            } else if !config::exec_allowed() {
+                "Live metering needs QOS_VPN_ALLOW_EXEC=1"
+            } else if latest.is_some() {
+                "Measuring…"
+            } else {
+                "No kernel counters for this interface"
+            };
+            let (nw, _) = tr.measure_weighted(note, 12.0, None, TextWeight::Regular);
+            text_w(
+                tr, scene, t, note, 12.0, theme.text_dim,
+                chart.center().x - nw as f64 / 2.0, chart.center().y - 8.0, TextWeight::Regular,
+            );
+        }
 
         // Key/value table.
         let kv_top = chart.y1 + 16.0;
@@ -834,7 +1051,8 @@ impl VpnApp {
         let card = Rect::new(content.x0, content.y0, content.x1, content.y1.min(content.y0 + 360.0));
         fill_round(scene, t, card, theme.tokens.radii.lg as f64, theme.tokens.colors.neutral[0]);
         stroke_round(scene, t, card, theme.tokens.radii.lg as f64, theme.tokens.colors.border_white_10, 1.0);
-        let lines = synth_logs(c, &self.activity);
+        let xfer = self.throughput.get(&c.id).and_then(|h| h.latest());
+        let lines = synth_logs(c, &self.activity, xfer);
         let mut y = card.y0 + 14.0;
         for line in &lines {
             let col = if line.contains("error") || line.contains("denied") || line.contains("disabled") {
@@ -1038,27 +1256,30 @@ fn render_config_text(c: &Connection) -> String {
     }
 }
 
-fn synth_logs(c: &Connection, activity: &[String]) -> Vec<String> {
+/// Build the log view from REAL derived state: the true interface name, the
+/// real up/down status, and the real kernel byte counters (`xfer`) when a live
+/// reading exists. Byte lines are omitted rather than fabricated when no
+/// counter has been read. The activity log below records real command results.
+fn synth_logs(c: &Connection, activity: &[String], xfer: Option<Transfer>) -> Vec<String> {
     let mut out = Vec::new();
-    let iface = match c.kind {
-        ConnKind::WireGuard => format!("wg-{}", c.name.to_lowercase().replace(' ', "")),
-        ConnKind::OpenVpn => "tun0".to_string(),
-    };
+    let iface = config::iface_name(c);
     if c.is_connected() {
-        out.push(format!("[{}] handshake completed with {}", iface, c.endpoint));
         out.push(format!("[{}] interface up — assigned {}", iface, c.address));
-        out.push(format!("[{}] route add {} dev {}", iface, c.allowed_ips, iface));
-        out.push(format!("[{}] received {} this session", iface, human_bytes(c.rx_bytes)));
-        out.push(format!("[{}] sent {} this session", iface, human_bytes(c.tx_bytes)));
+        if !c.allowed_ips.is_empty() {
+            out.push(format!("[{}] routing {} via {}", iface, c.allowed_ips, iface));
+        }
+        if let Some(x) = xfer {
+            out.push(format!("[{}] received {} (kernel counter)", iface, human_bytes(x.rx)));
+            out.push(format!("[{}] sent {} (kernel counter)", iface, human_bytes(x.tx)));
+        }
         if c.tor {
             out.push(format!("[{}] traffic chained over Tor SOCKS 127.0.0.1:9050", iface));
         }
     } else {
         out.push(format!("[{}] interface down", iface));
-        out.push(format!("[{}] last session ended ({})", iface, c.last_used));
     }
     // append global activity newest-last
-    for a in activity.iter().rev().take(6) {
+    for a in activity.iter().rev().take(8) {
         out.push(a.clone());
     }
     out
@@ -1066,9 +1287,11 @@ fn synth_logs(c: &Connection, activity: &[String]) -> Vec<String> {
 
 impl Widget for VpnApp {
     fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
-        // Fold in a completed portal import (if any), then read the vault.
+        // Fold in a completed portal import (if any), then read the vault and
+        // reconcile real interface state, then poll real throughput counters.
         self.drain_import(state);
         self.refresh(state);
+        self.sample_throughput();
     }
 
     fn build_layout(
@@ -1325,9 +1548,11 @@ impl Widget for VpnApp {
 
     fn needs_animation_frame(&self) -> bool {
         // Keep the frame loop (and thus `sync`) pumping while a portal import
-        // is in flight so its result drains promptly. No throughput animation:
-        // the app never fabricates transfer rates.
+        // is in flight, and while a real tunnel is up so its live kernel
+        // counters keep refreshing. The rates shown are measured, never
+        // fabricated — with execution disabled nothing polls at all.
         self.import_rx.is_some()
+            || (config::exec_allowed() && self.vault.connections.iter().any(|c| c.is_connected()))
     }
 
     fn draw_with_presence(
@@ -1390,6 +1615,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(vpn_env)]
     fn confirm_connect_without_exec_stays_disconnected() {
         // Honesty: with execution disabled (the default) confirming a connect
         // must NOT claim the tunnel is connected — the real command never ran.
@@ -1409,31 +1635,49 @@ mod tests {
     }
 
     #[test]
-    fn import_adds_real_parsed_connection() {
-        // The real import path: a chosen .conf is read + parsed into a tunnel
-        // and added to the vault (no blank form).
+    #[serial_test::serial(vpn_env)]
+    fn import_persists_config_and_wires_real_bring_up() {
+        // The real import path end-to-end: a chosen .conf is read, parsed into
+        // a tunnel, AND its raw bytes persisted so the real bring-up command
+        // references the exact file. Redirect the data dir to a scratch space.
+        let scratch =
+            std::env::temp_dir().join(format!("qos-vpn-import-{}", uuid::Uuid::new_v4()));
+        unsafe { std::env::set_var("XDG_DATA_HOME", &scratch) };
+
         let (mut app, mut doc) = demo_with_doc();
         let before = app.vault.connections.len();
-        let dir = std::env::temp_dir();
-        let path = dir.join(format!("qos-vpn-test-{}.conf", uuid::Uuid::new_v4()));
-        std::fs::write(
-            &path,
-            "[Interface]\nAddress = 10.9.0.2/32\nDNS = 9.9.9.9\n\n[Peer]\nPublicKey = abc=\nEndpoint = imported.example:51820\nAllowedIPs = 0.0.0.0/0\n",
-        )
-        .unwrap();
+        let raw = "[Interface]\nPrivateKey = c2VjcmV0\nAddress = 10.9.0.2/32\nDNS = 9.9.9.9\n\n[Peer]\nPublicKey = abc=\nEndpoint = imported.example:51820\nAllowedIPs = 0.0.0.0/0\n";
+        let path = std::env::temp_dir().join(format!("home-{}.conf", uuid::Uuid::new_v4()));
+        std::fs::write(&path, raw).unwrap();
+
         app.import_rx = Some(portal::inject_for_test(ImportOutcome::Opened(path.clone())));
         assert!(app.drain_import(&mut doc), "a delivered import applies");
         assert!(app.import_rx.is_none(), "draining clears the request");
         assert_eq!(app.vault.connections.len(), before + 1);
+
         let imported = app
             .vault
             .connections
             .iter()
             .find(|c| c.endpoint == "imported.example:51820")
-            .expect("imported tunnel present with parsed endpoint");
+            .expect("imported tunnel present with parsed endpoint")
+            .clone();
         assert_eq!(imported.kind, ConnKind::WireGuard);
         assert_eq!(imported.dns, "9.9.9.9");
+
+        // The raw config was persisted and wired as the bring-up target.
+        let cfg = imported.config_path().expect("import persists a runnable config");
+        assert!(cfg.starts_with(scratch.to_str().unwrap()), "config saved under data dir: {cfg}");
+        assert_eq!(std::fs::read_to_string(cfg).unwrap(), raw, "exact bytes preserved");
+
+        // The REAL connect command references that persisted file.
+        let plan = config::connect_plan(&imported, config::default_backend(imported.kind));
+        assert_eq!(plan.program, "wg-quick");
+        assert_eq!(plan.args, vec!["up".to_string(), cfg.to_string()]);
+
         let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_dir_all(&scratch);
+        unsafe { std::env::remove_var("XDG_DATA_HOME") };
     }
 
     #[test]
