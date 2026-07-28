@@ -395,3 +395,51 @@ shot-inspected (empty state and demo).
       starts with an empty catalog and Browse renders the real Flathub popular
       set (ordered) with a "Loading apps from Flathub…" state; the sample stays
       offline/`--shots` only. (bd2f320c)
+
+## video_editor — real import / decode / export (a real editing engine, now with real media)
+
+The timeline/CRDT editing engine (split/trim/ripple/snap/grade/fade, all
+tested) was real, but it could not import real media, never showed real video,
+and could not export. Those three seams are now real; each headless-gated part
+is honestly gated and proven.
+
+- [x] Real media import — added an "Import…" action (topbar + empty-bin button
+      + Ctrl+O) that opens the XDG FileChooser portal (`ashpd`, `portal`
+      feature) and brings picked video/audio/image files into the bin as real
+      clips. A dependency-free container probe (`src/probe.rs`) reads **real**
+      metadata with no decoder — ISOBMFF duration/dimensions/codec/fps (`mvhd`
+      /`tkhd`/`stsd`/`stsz`/`hdlr`), WAV channels/rate/duration, PNG/JPEG dims —
+      so the default build gets real numbers, not placeholders. Files under the
+      `/var/workspace` FUSE mount store a workspace-relative reference (they
+      replicate to peers); a local import stores an absolute path. `media::
+      resolve` now handles absolute paths. Tests: crafted-byte probe tests
+      (mp4/wav/png/jpeg + honest-degrade), and an app test that drives a real
+      PNG through `sync` → a real `MediaItem` in the bin with real dims/duration,
+      replicated into the CRDT. The old "Media import isn't wired up yet" leak
+      is gone.
+- [x] Real preview decode — replaced the always-synthesized gradient (and the
+      broken openh264-fed-raw-bytes stub) with a `PreviewDecoder` on the shared
+      `media::MediaEngine`: it seeks the clip's source time, plays a frame to
+      the sink, and pauses to hold it. Behind `--features decode` (→
+      `media/decode`) the engine is a real GStreamer `playbin`; the canvas blits
+      the true frame (green "LIVE" badge) and falls back to the representative
+      frame for an un-hydrated reference. Proven: a hermetic synth-backed seam
+      test (top-clip → resolve → hydration-gate → seek/poll → frame), and — with
+      `decode`+`gst` — a real round-trip that encodes an H.264 clip in-process
+      and decodes a true 192×108 frame back. Visually verified: `--import` a real
+      SMPTE clip and the preview shows the real colour bars, not a gradient.
+- [x] Real export — `export.rs`'s `gst` path returned "not yet wired". It now
+      builds a real `appsrc → videoconvert → encoder → mux → filesink` pipeline
+      (`--features gst`), pushing the composited timeline frames (the same
+      grade/fade math the preview shows) and writing a real file: MP4/MOV via
+      `openh264enc`, WebM via `vp8enc`. It never reports success unless a
+      non-empty file exists. The default build stays honest — a "needs the
+      GStreamer build" status, no fake progress. Tests: pipeline-construction +
+      even-aspect output dims (default build), and a real export that writes a
+      valid `ftyp` MP4 (`gst` feature).
+- Honesty: capabilities that are feature-gated say so plainly (the import
+      notice, the "needs the GStreamer build" export status); nothing fabricates
+      progress or a written file. Real gst dep: `gstreamer1-devel` +
+      `-plugins-base-devel` + `-plugins-good` + `-plugin-openh264` +
+      `-plugin-libav` (dev headers + codec/mux plugins) — installed in
+      `my-distrobox`; the default build needs none of it.

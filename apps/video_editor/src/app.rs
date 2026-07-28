@@ -158,6 +158,11 @@ pub struct VideoEditorApp {
     /// A file queued to import on the next `sync` (deterministic `--shots` /
     /// tests seed a real clip here instead of opening the portal).
     pending_imports: Vec<PathBuf>,
+    /// When set, a queued import is also dropped onto the timeline (creating a
+    /// track if the blank project has none) and the playhead parked inside it —
+    /// so a `--shots` capture / preload shows the clip in the preview, not just
+    /// the bin. Off for a plain portal import (which lands in the bin only).
+    auto_place_imports: bool,
     /// Real preview decoder. Only driven under `--features decode`, where it
     /// decodes the true frame of the clip under the playhead through GStreamer.
     #[cfg(feature = "decode")]
@@ -226,6 +231,7 @@ impl VideoEditorApp {
             import_rx: None,
             import_notice: None,
             pending_imports: Vec::new(),
+            auto_place_imports: false,
             #[cfg(feature = "decode")]
             preview_decoder: preview::PreviewDecoder::new(),
             drag: None,
@@ -272,6 +278,16 @@ impl VideoEditorApp {
     pub fn new_import(paths: Vec<PathBuf>) -> Self {
         let mut app = Self::new();
         app.pending_imports = paths;
+        app
+    }
+
+    /// Like [`Self::new_import`] but also drops the first imported clip onto the
+    /// timeline (creating a track if needed) and parks the playhead inside it,
+    /// so the preview has real content to decode/composite for a `--shots`
+    /// capture or a `--import` preload.
+    pub fn new_import_placed(paths: Vec<PathBuf>) -> Self {
+        let mut app = Self::new_import(paths);
+        app.auto_place_imports = true;
         app
     }
 
@@ -708,6 +724,11 @@ impl VideoEditorApp {
             let paths = std::mem::take(&mut self.pending_imports);
             let n = self.import_files(doc, &paths);
             self.import_notice = Some(import_summary(n, paths.len()));
+            if self.auto_place_imports {
+                if let Some(mid) = self.selected_media {
+                    self.ensure_track_and_place(doc, mid);
+                }
+            }
         }
         let mut clear = false;
         let mut outcome = None;
@@ -774,6 +795,35 @@ impl VideoEditorApp {
         self.selected_media = Some(id);
         self.needs_commit = true;
         true
+    }
+
+    /// Drop `media_id` onto the timeline (creating a track of the right kind if
+    /// the blank project has none) and park the playhead inside the new clip.
+    /// Used by the `--shots`/preload placed-import path so the preview shows the
+    /// clip; a normal portal import lands in the bin only.
+    fn ensure_track_and_place(&mut self, doc: &mut AutoCommit, media_id: MediaId) {
+        let Some(m) = self.project.media(media_id).cloned() else { return };
+        let kind = if m.kind.is_visual() { TrackKind::Video } else { TrackKind::Audio };
+        if !self.project.tracks.iter().any(|t| t.kind == kind) {
+            let track = crate::model::Track {
+                id: Uuid::new_v4(),
+                name: if kind == TrackKind::Video { "V1" } else { "A1" }.into(),
+                kind,
+                index: 1,
+                muted: false,
+                locked: false,
+            };
+            VideoDoc::upsert_track(doc, &track);
+            self.project.tracks.push(track);
+        }
+        self.add_media_to_timeline(doc, media_id);
+        // Park the playhead inside the placed clip so the preview has content.
+        if let Some(cid) = self.selected {
+            if let Some(c) = self.project.clip(cid) {
+                let inside = c.start + (c.duration() * 0.4);
+                self.playhead = inside.clamp(c.start, (c.end() - 0.05).max(c.start));
+            }
+        }
     }
 
     /// The clickable "Import media" button drawn in the empty-bin state, if the
@@ -2554,6 +2604,76 @@ mod tests {
         app.sync(&mut doc, &automerge::ROOT);
         assert!(!app.project.clips.is_empty(), "demo build seeds sample clips");
         assert!(!app.project.media.is_empty(), "demo build seeds sample media");
+    }
+
+    /// Write a real PNG (crafted header, known dimensions) to a temp file so a
+    /// probe/import test operates on real bytes, not a mock.
+    fn write_real_png(w: u32, h: u32) -> std::path::PathBuf {
+        let mut png = Vec::new();
+        png.extend_from_slice(b"\x89PNG\r\n\x1a\n");
+        png.extend_from_slice(&13u32.to_be_bytes());
+        png.extend_from_slice(b"IHDR");
+        png.extend_from_slice(&w.to_be_bytes());
+        png.extend_from_slice(&h.to_be_bytes());
+        png.extend_from_slice(&[8, 2, 0, 0, 0]);
+        let f = std::env::temp_dir()
+            .join(format!("qos-ve-import-app-{}-{}.png", std::process::id(), w));
+        std::fs::write(&f, &png).unwrap();
+        f
+    }
+
+    #[test]
+    fn importing_a_picked_file_adds_a_real_clip_to_the_bin() {
+        // A real file on disk (not a mock) becomes a real MediaItem with real,
+        // probed metadata, replicated into the CRDT.
+        let f = write_real_png(320, 240);
+        let mut app = VideoEditorApp::new_import(vec![f.clone()]);
+        app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        let mut doc = AutoCommit::new();
+        app.sync(&mut doc, &automerge::ROOT);
+
+        assert_eq!(app.project.media.len(), 1, "the picked file is now in the bin");
+        let m = &app.project.media[0];
+        assert_eq!(m.name, f.file_name().unwrap().to_string_lossy());
+        assert_eq!(m.kind, MediaKind::Image);
+        assert_eq!((m.width, m.height), (320, 240), "real probed dimensions");
+        assert!(
+            (m.duration - crate::probe::DEFAULT_IMAGE_DURATION).abs() < 1e-9,
+            "a still gets the default timeline duration",
+        );
+        assert!(m.hydration.is_local(), "the imported bytes are local/decodable");
+        // It replicated through the document (a peer would load it).
+        let reloaded = VideoDoc::load_project(&doc);
+        assert_eq!(reloaded.media.len(), 1);
+        assert_eq!(reloaded.media[0].width, 320);
+        std::fs::remove_file(&f).ok();
+    }
+
+    #[test]
+    fn placed_import_puts_the_clip_on_the_timeline_under_the_playhead() {
+        // The `--shots`/preload placed import also lands the clip on a freshly
+        // created track with the playhead inside it, so the preview has content.
+        let f = write_real_png(640, 360);
+        let mut app = VideoEditorApp::new_import_placed(vec![f.clone()]);
+        app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        let mut doc = AutoCommit::new();
+        app.sync(&mut doc, &automerge::ROOT);
+
+        assert_eq!(app.project.media.len(), 1);
+        assert_eq!(app.project.tracks.len(), 1, "a track was created for the clip");
+        assert_eq!(app.project.clips.len(), 1, "the clip is on the timeline");
+        let clip = &app.project.clips[0];
+        assert!(
+            app.playhead > clip.start && app.playhead < clip.end(),
+            "playhead {} parked inside the clip [{}, {}]",
+            app.playhead, clip.start, clip.end(),
+        );
+        // The preview composites the placed clip (not Empty) at the playhead.
+        assert!(
+            matches!(preview::composite(&app.project, app.playhead), CompositedFrame::Clip { .. }),
+            "the preview has a clip to render",
+        );
+        std::fs::remove_file(&f).ok();
     }
 
     #[test]
