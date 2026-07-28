@@ -205,8 +205,24 @@ def print_compare(a: dict, b: dict, na: str, nb: str) -> None:
     row("work/tick p99", a["work"]["p99"], b["work"]["p99"])
     row("submit p50", a["submit"]["p50"], b["submit"]["p50"])
     row("submit p99", a["submit"]["p99"], b["submit"]["p99"])
-    row("input latency p50", a["input_latency"]["p50"], b["input_latency"]["p50"])
-    row("input latency p99", a["input_latency"]["p99"], b["input_latency"]["p99"])
+    # A percentage change against a series with no samples is not a
+    # result, it is a division by zero dressed up as one. Say which side
+    # is missing instead.
+    la, lb = a["input_latency"], b["input_latency"]
+    if la["count"] and lb["count"]:
+        row("input latency p50", la["p50"], lb["p50"])
+        row("input latency p99", la["p99"], lb["p99"])
+    elif lb["count"]:
+        print(
+            f"  {'input latency':<24}       n/a  -> "
+            f"{lb['p50'] / 1000:9.2f}ms p50 (no samples in {na}; "
+            f"not a delta)"
+        )
+    elif la["count"]:
+        print(
+            f"  {'input latency':<24} {la['p50'] / 1000:9.2f}ms p50 ->       n/a "
+            f"(no samples in {nb}; not a delta)"
+        )
     print(
         f"  {'on-cadence':<24} {a['on_cadence_ratio'] * 100:9.1f}%  -> "
         f"{b['on_cadence_ratio'] * 100:9.1f}%"
