@@ -39,10 +39,13 @@
 use std::collections::HashMap;
 
 use taffy::prelude::*;
-use vello::kurbo::{Point, Rect};
+use vello::Scene;
+use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
+use crate::permissions::PermissionContext;
+use crate::presence::PresenceCtx;
 use crate::state::State;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
@@ -90,6 +93,11 @@ pub struct Driver {
     child_node: NodeId,
     text: TextRenderer,
     theme: Theme,
+    /// Scratch scene for the draw pass. Never rasterised — see
+    /// [`Driver::relayout`] for why it is drawn at all.
+    scene: Scene,
+    presence: PresenceCtx,
+    permissions: PermissionContext,
     modifiers: winit::event::Modifiers,
     viewport: (u32, u32),
 }
@@ -106,6 +114,9 @@ impl Driver {
             child_node: NodeId::from(0usize),
             text: TextRenderer::new(),
             theme: Theme::dark(),
+            scene: Scene::new(),
+            presence: PresenceCtx::empty(),
+            permissions: PermissionContext::permissive(),
             modifiers: winit::event::Modifiers::default(),
             viewport,
         };
@@ -113,9 +124,17 @@ impl Driver {
         d
     }
 
-    /// Re-run the app's frame passes short of `draw`: pull state from the
-    /// CRDT, rebuild the Taffy tree, compute and apply layout. Called after
-    /// every action so the next one sees where things actually moved to.
+    /// Re-run the app's frame: pull state from the CRDT, rebuild the Taffy
+    /// tree, compute and apply layout, and draw. Called after every action so
+    /// the next one sees where things actually moved to.
+    ///
+    /// The draw pass is not decoration. Many widgets record the rectangles
+    /// they hit-test pointer input against *while drawing* — a click is
+    /// resolved against where the widget last painted itself. Skipping the
+    /// draw leaves those rects empty and every click silently misses, which
+    /// is exactly the kind of quietly-passing test this harness must not
+    /// produce. Nothing is rasterised: the `Scene` is encoded on the CPU and
+    /// thrown away, so no GPU or display is involved.
     pub fn relayout(&mut self) {
         self.root.sync(&mut self.state.doc, &self.state.root);
         self.taffy = TaffyTree::new();
@@ -162,6 +181,16 @@ impl Driver {
         self.root.apply_layout(&self.taffy, child, Point::ORIGIN);
         self.root_node = root_node;
         self.child_node = child;
+
+        self.scene.reset();
+        self.root.draw_with_presence(
+            &mut self.scene,
+            Affine::IDENTITY,
+            &mut self.text,
+            &self.theme,
+            &self.presence,
+            &self.permissions,
+        );
     }
 
     /// Every widget the driver can address, by `test_id` or path, with the
@@ -207,16 +236,16 @@ impl Driver {
     /// three events a real click produces, in order.
     pub fn click_at(&mut self, x: f64, y: f64) {
         self.send(WindowEvent::CursorMoved {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             position: winit::dpi::PhysicalPosition::new(x, y),
         });
         self.send(WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             state: ElementState::Pressed,
             button: MouseButton::Left,
         });
         self.send(WindowEvent::MouseInput {
-            device_id: unsafe { std::mem::zeroed() },
+            device_id: winit::event::DeviceId::dummy(),
             state: ElementState::Released,
             button: MouseButton::Left,
         });
@@ -359,7 +388,7 @@ fn key_event(key: Key, state: ElementState) -> WindowEvent {
         _ => None,
     };
     WindowEvent::KeyboardInput {
-        device_id: unsafe { std::mem::zeroed() },
+        device_id: winit::event::DeviceId::dummy(),
         event: ev,
         is_synthetic: false,
     }
