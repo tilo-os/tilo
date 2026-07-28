@@ -157,6 +157,14 @@ impl SearchProvider for ApplicationsProvider {
 /// Category ranks below the package id because it is a bucket, not an
 /// identity: "office" should offer every office app, but never above an
 /// app whose own name or id the user actually typed.
+///
+/// Package ids are scored by how completely they were named, not as one
+/// flat "contains". `dev.qos.hex-editor` typed as `hex-editor` is the
+/// app's identity spelled out in full and has to score like a name
+/// match: the display name is "Hex Editor", so the hyphenated id is
+/// often the only exact handle a user - or a script - has for it.
+/// Scoring that the same 25 as an incidental substring let a file called
+/// `hex-editor.rs` outrank the app itself.
 fn match_score(needle: &str, name: &str, package_id: &str, category: Option<&str>) -> Option<i32> {
     if needle.is_empty() {
         return Some(0);
@@ -164,8 +172,16 @@ fn match_score(needle: &str, name: &str, package_id: &str, category: Option<&str
     if name.starts_with(needle) {
         return Some(100);
     }
+    // The id in full, or its last segment - `dev.qos.hex-editor` named
+    // either as itself or as `hex-editor`. Both identify exactly one app.
+    if package_id == needle || package_id.rsplit('.').next() == Some(needle) {
+        return Some(100);
+    }
     if name.contains(needle) {
         return Some(50);
+    }
+    if package_id.starts_with(needle) {
+        return Some(60);
     }
     if package_id.contains(needle) {
         return Some(25);
@@ -286,7 +302,44 @@ mod tests {
             vec![app("dev.qos.hello", "Hello"), app("org.x.zed", "Zed")],
         );
         assert_eq!(out.len(), 1, "only the matching package: {out:?}");
-        assert_eq!(out[0].score, 25);
+        // A shared id *prefix* names a publisher, not an app, so it
+        // stays below a name match. It is no longer lumped in with an
+        // incidental substring, hence 60 rather than the old flat 25.
+        assert_eq!(out[0].score, 60);
+        let by_name = p.results_for("hello", vec![app("dev.qos.hello", "Hello")]);
+        assert!(
+            by_name[0].score > out[0].score,
+            "naming the app must still beat naming its publisher"
+        );
+    }
+
+    /// `hex-editor` is the whole identity of `dev.qos.hex-editor`, and
+    /// the only exact handle for it - the display name is "Hex Editor",
+    /// which no amount of typing the id will prefix-match.
+    ///
+    /// This came out of a sweep: the app scored 25 on a bare `contains`
+    /// while a source file called `hex-editor.rs` scored the top of the
+    /// files provider's scale, so Enter opened the file and the app
+    /// never launched.
+    #[test]
+    fn the_id_last_segment_is_an_identity_match() {
+        let p = ApplicationsProvider::new();
+        let out = p.results_for(
+            "hex-editor",
+            vec![app("dev.qos.hex-editor", "Hex Editor")],
+        );
+        assert_eq!(out.len(), 1, "the app must match at all: {out:?}");
+        assert_eq!(
+            out[0].score, 100,
+            "naming an app's id segment identifies it as exactly as \
+             naming the app does"
+        );
+        // And the full id, spelled out.
+        let full = p.results_for(
+            "dev.qos.hex-editor",
+            vec![app("dev.qos.hex-editor", "Hex Editor")],
+        );
+        assert_eq!(full[0].score, 100);
     }
 
     #[test]
