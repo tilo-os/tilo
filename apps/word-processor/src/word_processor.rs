@@ -411,6 +411,42 @@ impl WordProcessor {
         true
     }
 
+    /// Replace the whole body with `bytes` decoded as `format` (`.docx`/`.odt`/
+    /// `.md`/`.html`/`.rtf`), the in-place **Open** path. Mirrors
+    /// [`Self::replace_with_markdown`] but routes through the format-aware codec
+    /// so any supported document type can be opened into the running editor.
+    /// Returns whether the document was replaced (a decode failure leaves the
+    /// removed blocks in the still-open transaction for the host's undo to
+    /// revert, and reports `false`).
+    pub fn replace_with_format(
+        &mut self,
+        state: &mut AutoCommit,
+        bytes: &[u8],
+        format: crate::WpFormat,
+    ) -> bool {
+        let Some(containers) = self.containers.clone() else {
+            return false;
+        };
+        let existing = qdoc::model::blocks_in_order(state, &containers);
+        let Some(ids) = self.ids.as_mut() else {
+            return false;
+        };
+        let mut dm = DocMut { doc: state, c: &containers, ids };
+        for id in &existing {
+            dm.remove_block(id);
+        }
+        if format.import(bytes, &mut dm).is_err() {
+            return false;
+        }
+        let blocks = qdoc::model::blocks_in_order(state, &containers);
+        match blocks.first() {
+            Some(first) => self.caret = Caret { block: first.clone(), offset: 0 },
+            None => self.caret = Caret::default(),
+        }
+        self.clear_anchor();
+        true
+    }
+
     /// Load the document's stylesheet from the **CRDT styles container** (the
     /// field-level-mergeable, ODF-round-trippable source of truth). For documents
     /// authored before the container was populated, fall back to the legacy
