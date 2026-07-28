@@ -153,8 +153,15 @@ fn run_always_visible(purpose: Option<InputPurpose>) {
     // is a plain ui::App window. `ui::App::run()` owns the event loop, so the
     // `on_key` callback above is the seam that needs no `ui` change — it fires
     // synchronously as each key is committed.
-    let state = ui::State::new();
-    let app = ui::App::new(state, Box::new(widget));
+    // Headless drive (`--headless-drive '<json>'`): run a list of clicks and
+    // keystrokes against the real widget tree with no display, persisting
+    // through the same store the live app uses.
+    if let Some(spec) = ui::headless::spec_from_args(&args) {
+        std::process::exit(ui::headless::run(spec, Box::new(widget), "dev.qos.osk"));
+    }
+
+    let (state, autosave) = ui::persist::open("dev.qos.osk");
+    let app = ui::App::new(state, Box::new(widget)).with_autosave(autosave);
     app.run();
 }
 
