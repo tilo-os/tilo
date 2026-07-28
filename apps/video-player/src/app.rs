@@ -1,16 +1,20 @@
-//! The local video-player app: minimal chrome (title + Open) above a reusable
+//! The local video-player app: an edge-to-edge reusable
 //! [`ui::widget::VideoPlayer`] driven by a shared [`media::MediaEngine`].
 //!
-//! `PlayerApp` is the root widget. It owns the player, paints a slim top chrome
-//! bar, opens files through the XDG FileChooser portal (or `--open PATH`), and —
-//! when a collab session is attached — keeps playback in sync across peers via
-//! the shared [`media`] transport.
+//! `PlayerApp` is the root widget. The video fills the whole surface — there is
+//! **no persistent app chrome bar** (the OS owns window chrome; HIG §1e wants
+//! video immersive). The media title and the Open action float in a top overlay
+//! that appears with the player's controls and auto-hides during playback, so
+//! immersive video is truly edge-to-edge. It opens files through the XDG
+//! FileChooser portal (or `--open PATH`), and — when a collab session is
+//! attached — keeps playback in sync across peers via the shared [`media`]
+//! transport.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use automerge::{AutoCommit, ObjId};
-use taffy::style_helpers::{length, percent};
+use taffy::style_helpers::percent;
 use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
@@ -25,8 +29,13 @@ use ui::widget::{VideoPlayer, Widget};
 use crate::collab::{CollabPlayback, Role};
 use crate::portal::{self, OpenChannel, OpenOutcome};
 
-/// Height of the top chrome bar.
-const CHROME_HEIGHT: f32 = 48.0;
+/// Inset (logical px) of the floating top overlay (media title + Open) from the
+/// video edges.
+const OVERLAY_MARGIN: f64 = 14.0;
+/// Height (logical px) of the floating Open pill.
+const OPEN_BTN_H: f64 = 32.0;
+/// Width (logical px) of the floating Open pill.
+const OPEN_BTN_W: f64 = 84.0;
 
 /// Build a [`media::Source`] for a filesystem path: a path under the FUSE
 /// workspace mount becomes a [`media::Source::Workspace`] (read-through,
@@ -44,7 +53,8 @@ pub struct PlayerApp {
     player: VideoPlayer,
     title: String,
     rect: Rect,
-    chrome_rect: Rect,
+    /// The floating Open pill's hit rect (top-right of the video). Only live
+    /// while the overlay is shown.
     open_button_rect: Rect,
     last_cursor: Point,
     /// A file-open portal request in flight, drained each `sync`.
@@ -67,7 +77,6 @@ impl PlayerApp {
             player,
             title: "No media".to_string(),
             rect: Rect::ZERO,
-            chrome_rect: Rect::ZERO,
             open_button_rect: Rect::ZERO,
             last_cursor: Point::ZERO,
             portal_rx: None,
@@ -241,7 +250,19 @@ impl PlayerApp {
         }
     }
 
-    fn paint_chrome(
+    /// Whether the floating overlay (media title + Open pill) should show this
+    /// frame. It rides the player's own controls visibility, so it auto-hides
+    /// during immersive playback — and it stays up in the empty state (no frame
+    /// decoded yet) so there is always a way to open a file.
+    fn overlay_visible(&self) -> bool {
+        self.player.controls_visible() || self.player.latest_frame().is_none()
+    }
+
+    /// Paint the floating top overlay: the media title (left) over a soft scrim
+    /// and the Open pill (right). Drawn on top of the video, only when
+    /// [`Self::overlay_visible`]. There is no persistent chrome bar — the video
+    /// is edge-to-edge (HIG §1e).
+    fn paint_overlay(
         &self,
         scene: &mut Scene,
         transform: Affine,
@@ -249,33 +270,36 @@ impl PlayerApp {
         theme: &Theme,
     ) {
         let colors = &theme.tokens.colors;
+        // A soft translucent scrim behind the title so it stays legible over
+        // bright frames, without a hard opaque bar.
+        let scrim_h = 44.0;
+        let scrim = Rect::new(self.rect.x0, self.rect.y0, self.rect.x1, self.rect.y0 + scrim_h);
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
-            colors.surfaces.raised,
+            vello::peniko::Color::from_rgba8(0, 0, 0, 90),
             None,
-            &self.chrome_rect,
+            &scrim,
         );
-        let pad = theme.tokens.spacing.s3 as f64;
-        // Title (left).
+        // Title (left), vertically centred in the scrim.
         let title_size = 15.0f32;
-        let ty = self.chrome_rect.y0 + (self.chrome_rect.height() - title_size as f64) * 0.5;
+        let ty = self.rect.y0 + (scrim_h - title_size as f64) * 0.5;
         text_renderer.draw_text(
             scene,
             &self.title,
             title_size,
             colors.text_primary,
-            transform * Affine::translate((self.chrome_rect.x0 + pad, ty)),
+            transform * Affine::translate((self.rect.x0 + OVERLAY_MARGIN, ty)),
             None,
         );
-        // Open button (right).
+        // Open pill (right), a floating rounded accent button.
         if self.open_button_rect.width() > 0.0 {
             scene.fill(
                 vello::peniko::Fill::NonZero,
                 transform,
                 colors.accent[ui::tokens::colors::ACCENT_PRIMARY_IDX],
                 None,
-                &RoundedRect::from_rect(self.open_button_rect, 6.0),
+                &RoundedRect::from_rect(self.open_button_rect, OPEN_BTN_H / 2.0),
             );
             let label = "Open";
             let lsize = 14.0f32;
@@ -313,14 +337,9 @@ impl Widget for PlayerApp {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        // Chrome bar: a fixed-height full-width leaf we paint ourselves.
-        let chrome = taffy
-            .new_leaf(Style {
-                size: Size { width: percent(1.0), height: length(CHROME_HEIGHT) },
-                flex_shrink: 0.0,
-                ..Default::default()
-            })
-            .unwrap();
+        // Edge-to-edge: the player fills the whole surface. The app keeps itself
+        // in the node map (so it can intercept the floating Open pill) by owning
+        // a single-child root that stretches the player to 100%×100%.
         let player_node = self.player.build_layout(taffy, theme, node_map);
         let root = taffy
             .new_with_children(
@@ -330,7 +349,7 @@ impl Widget for PlayerApp {
                     size: Size { width: percent(1.0), height: percent(1.0) },
                     ..Default::default()
                 },
-                &[chrome, player_node],
+                &[player_node],
             )
             .unwrap();
         node_map.insert(root, self as *mut dyn Widget);
@@ -347,21 +366,13 @@ impl Widget for PlayerApp {
         );
         let new_origin = Point::new(self.rect.x0, self.rect.y0);
         let children = taffy.children(node).unwrap();
-        // children[0] = chrome, children[1] = player.
-        let chrome_layout = taffy.layout(children[0]).unwrap();
-        self.chrome_rect = Rect::new(
-            new_origin.x + chrome_layout.location.x as f64,
-            new_origin.y + chrome_layout.location.y as f64,
-            new_origin.x + chrome_layout.location.x as f64 + chrome_layout.size.width as f64,
-            new_origin.y + chrome_layout.location.y as f64 + chrome_layout.size.height as f64,
-        );
-        // Open button pinned to the right of the chrome bar.
-        let bw = 76.0;
-        let bh = 30.0;
-        let by = self.chrome_rect.y0 + (self.chrome_rect.height() - bh) * 0.5;
-        let bx1 = self.chrome_rect.x1 - 12.0;
-        self.open_button_rect = Rect::new((bx1 - bw).max(self.chrome_rect.x0), by, bx1, by + bh);
-        self.player.apply_layout(taffy, children[1], new_origin);
+        // children[0] = player, filling the whole surface (edge-to-edge).
+        self.player.apply_layout(taffy, children[0], new_origin);
+        // Floating Open pill: top-right corner, over the video.
+        let by0 = self.rect.y0 + OVERLAY_MARGIN;
+        let bx1 = self.rect.x1 - OVERLAY_MARGIN;
+        let bx0 = (bx1 - OPEN_BTN_W).max(self.rect.x0);
+        self.open_button_rect = Rect::new(bx0, by0, bx1, by0 + OPEN_BTN_H);
     }
 
     fn draw(
@@ -373,7 +384,9 @@ impl Widget for PlayerApp {
         presence: &PresenceCtx,
     ) {
         self.player.draw(scene, transform, text_renderer, theme, presence);
-        self.paint_chrome(scene, transform, text_renderer, theme);
+        if self.overlay_visible() {
+            self.paint_overlay(scene, transform, text_renderer, theme);
+        }
     }
 
     fn handle_event(
@@ -397,7 +410,9 @@ impl Widget for PlayerApp {
             ..
         } = event
         {
-            if self.open_button_rect.contains(self.last_cursor) {
+            // Only intercept the Open pill while the overlay is actually shown;
+            // during immersive playback that corner is just video.
+            if self.overlay_visible() && self.open_button_rect.contains(self.last_cursor) {
                 self.trigger_open();
                 self.dirty = true;
                 *handled = true;
@@ -406,7 +421,7 @@ impl Widget for PlayerApp {
         }
         // Forward everything else to the player (its controls + shortcuts).
         let children = taffy.children(node_id).unwrap();
-        if let Some(&player_node) = children.get(1) {
+        if let Some(&player_node) = children.first() {
             self.player.handle_event(
                 event, scale_factor, modifiers, state, path, handled, focus_target, player_node,
                 taffy,
