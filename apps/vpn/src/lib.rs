@@ -14,6 +14,7 @@ pub mod app;
 pub mod config;
 pub mod doc;
 pub mod model;
+pub mod net;
 pub mod portal;
 pub mod throughput;
 
