@@ -213,17 +213,7 @@ mod tests {
     use std::sync::Arc;
 
     fn empty_ws(id: u64) -> Workspace {
-        Workspace {
-            id: WorkspaceId(id),
-            name: "sc".into(),
-            strips: vec![],
-            roles: vec![],
-            workspace_files: vec![],
-            collaborators: vec![],
-            owner: None,
-            capabilities: Vec::new(),
-            shared_surfaces: HashMap::new(),
-        }
+        Workspace::test_default(WorkspaceId(id), "sc")
     }
 
     #[test]

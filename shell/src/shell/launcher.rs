@@ -913,7 +913,7 @@ mod tests {
             &app,
             Path::new("/usr/bin/qos-launcher"),
             Path::new("/run/user/1000/wayland-3"),
-            WorkspaceId(3),
+            RoomId::new(),
             None,
         );
         assert_eq!(cmd.program, Path::new("/usr/bin/qos-launcher"));
@@ -940,7 +940,7 @@ mod tests {
         // SAFETY: guarded by ENV_LOCK.
         unsafe { std::env::set_var("QOS_APPS_DATA_DIR", tmp.path()) };
         invalidate_app_cache();
-        let err = launch("dev.qos.nope", WorkspaceId(1)).unwrap_err();
+        let err = launch("dev.qos.nope", RoomId::new()).unwrap_err();
         unsafe { std::env::remove_var("QOS_APPS_DATA_DIR") };
         invalidate_app_cache();
         assert_eq!(
@@ -960,7 +960,7 @@ mod tests {
         // SAFETY: guarded by ENV_LOCK.
         unsafe { std::env::set_var("QOS_APPS_DATA_DIR", tmp.path()) };
         invalidate_app_cache();
-        let err = launch("dev.qos.notes-cli", WorkspaceId(1)).unwrap_err();
+        let err = launch("dev.qos.notes-cli", RoomId::new()).unwrap_err();
         unsafe { std::env::remove_var("QOS_APPS_DATA_DIR") };
         invalidate_app_cache();
         assert_eq!(
@@ -980,7 +980,7 @@ mod tests {
         unsafe { std::env::set_var("QOS_APPS_DATA_DIR", tmp.path()) };
         invalidate_app_cache();
         set_wayland_socket_path(None);
-        let err = launch("dev.qos.hello", WorkspaceId(1)).unwrap_err();
+        let err = launch("dev.qos.hello", RoomId::new()).unwrap_err();
         unsafe { std::env::remove_var("QOS_APPS_DATA_DIR") };
         invalidate_app_cache();
         assert_eq!(err, LaunchError::NoDisplay);
@@ -1019,7 +1019,7 @@ mod tests {
         set_wayland_socket_path(Some(PathBuf::from("/run/user/1000/wayland-7")));
         let _ = drain_events();
 
-        let app = launch("dev.qos.hello", WorkspaceId(1)).expect("launch accepted");
+        let app = launch("dev.qos.hello", RoomId::new()).expect("launch accepted");
         assert_eq!(app.display_name, "Hello");
 
         // Wait for the worker to report the child's exit.
@@ -1133,7 +1133,7 @@ mod tests {
             &test_app("dev.qos.books"),
             Path::new("/usr/bin/qos-launcher"),
             Path::new("/run/user/1000/wayland-3"),
-            WorkspaceId(3),
+            RoomId::new(),
             None,
         );
         assert!(
@@ -1156,7 +1156,7 @@ mod tests {
             &test_app("dev.qos.books"),
             Path::new("/usr/bin/qos-launcher"),
             Path::new("/run/user/1000/wayland-3"),
-            WorkspaceId(3),
+            RoomId::new(),
             Some(Path::new("/run/user/1000/qos/capabilities/dev.qos.books.json")),
         );
         let pos = cmd
