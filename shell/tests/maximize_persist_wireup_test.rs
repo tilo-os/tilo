@@ -136,15 +136,11 @@ fn single_group_tree() -> (WorkspaceTree, StripId, GroupId) {
         window_groups: vec![group],
     };
     let ws = Workspace {
-        id: ws_id,
-        name: "Test".into(),
         strips: vec![strip],
-        roles: vec![],
-        workspace_files: vec![],
-        collaborators: vec![],
-        owner: None,
-        capabilities: Vec::new(),
-        shared_surfaces: HashMap::new(),
+        // Everything else — including the workspace's durable
+        // collaboration room — comes from the builder, so a field added
+        // to `Workspace` does not break this fixture.
+        ..Workspace::test_default(ws_id, "Test")
     };
 
     let mut active_strip = HashMap::new();

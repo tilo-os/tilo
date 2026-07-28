@@ -70,7 +70,7 @@ use std::process::{Command, Stdio};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use crate::shell::state::{CapOverride, Subject, Workspace, WorkspaceId};
+use crate::shell::state::{CapOverride, RoomId, Subject, Workspace};
 
 /// How long an enumeration of installed packages is reused before the
 /// registry + manifests are re-read. The palette queries this on every
@@ -521,19 +521,25 @@ pub fn resolve_launcher_bin() -> Result<PathBuf, LaunchError> {
 // ---------------------------------------------------------------------
 
 /// Render the `qos-launcher` invocation for `app`, launched into
-/// `workspace`.
+/// `room`.
 ///
 /// Pure — no I/O, no spawning — so tests can assert on the exact command
 /// the production path builds.
 ///
-/// `workspace` is the room the app is being opened into. It rides in as
-/// `--workspace-id`, which the launcher turns into `QOS_WORKSPACE_ID`
-/// inside the sandbox and the toolkit turns into the collaboration
-/// cluster every CRDT delta is addressed to. Without it an app has no
-/// room, so two apps the user opened side by side would never see each
-/// other's edits — which is why this is a required argument rather than
-/// an option: there is no such thing as launching an app into no
-/// workspace from the compositor.
+/// `room` is the durable identity of the workspace the app is being
+/// opened into, **not** its local [`crate::shell::state::WorkspaceId`].
+/// It rides in as `--workspace-id`, which the launcher turns into
+/// `QOS_WORKSPACE_ID` inside the sandbox and the toolkit turns into the
+/// collaboration cluster every CRDT delta is addressed to. Taking the
+/// room rather than the local handle is what lets a peer's app and ours
+/// land in the same cluster: the local handle differs on every machine,
+/// so an app launched from it could only ever collaborate with apps on
+/// this one.
+///
+/// Without it an app has no room, so two apps the user opened side by
+/// side would never see each other's edits — which is why this is a
+/// required argument rather than an option: there is no such thing as
+/// launching an app into no workspace from the compositor.
 ///
 /// `capabilities_file` is the path [`write_capabilities_file`] produced,
 /// or `None` when the app was granted nothing. `None` emits no
@@ -558,7 +564,7 @@ pub fn build_launch_command(
     app: &InstalledApp,
     launcher_bin: &Path,
     wayland_socket: &Path,
-    workspace: WorkspaceId,
+    room: RoomId,
     capabilities_file: Option<&Path>,
     render_node: Option<&Path>,
 ) -> LaunchCommand {
@@ -571,7 +577,7 @@ pub fn build_launch_command(
         "--wayland-socket".to_string(),
         wayland_socket.display().to_string(),
         "--workspace-id".to_string(),
-        workspace.collab_cluster_id().to_string(),
+        room.to_string(),
         // The identity capabilities are addressed to. Always passed, so
         // the launcher checks every capability against this id instead
         // of trusting the file to have been filtered for it.
@@ -604,16 +610,16 @@ pub fn build_launch_command(
     }
 }
 
-/// Resolve `package_id` and start it in `workspace`, with whatever the
+/// Resolve `package_id` and start it in `room`, with whatever the
 /// published workspace granted it.
 ///
 /// Returns as soon as the launch is handed to its worker thread — it
 /// never waits for the app to appear. The `Ok` value is the resolved
 /// app, so callers can name it in their UI without a second lookup.
 ///
-/// `workspace` is the caller's active workspace; it becomes the app's
-/// collaboration room (see [`build_launch_command`]).
-pub fn launch(package_id: &str, workspace: WorkspaceId) -> Result<InstalledApp, LaunchError> {
+/// `room` is the durable identity of the caller's active workspace; it
+/// becomes the app's collaboration room (see [`build_launch_command`]).
+pub fn launch(package_id: &str, room: RoomId) -> Result<InstalledApp, LaunchError> {
     let app = installed_apps()?
         .into_iter()
         .find(|a| a.package_id == package_id)
@@ -650,7 +656,7 @@ pub fn launch(package_id: &str, workspace: WorkspaceId) -> Result<InstalledApp, 
         &app,
         &launcher_bin,
         &socket,
-        workspace,
+        room,
         capabilities_file.as_deref(),
         crate::compositor::render_node::resolved(),
     );
@@ -669,7 +675,7 @@ pub fn launch_in_workspace(
     workspace: &Workspace,
 ) -> Result<InstalledApp, LaunchError> {
     set_workspace_capabilities(workspace.capabilities.clone());
-    launch(package_id, workspace.id)
+    launch(package_id, workspace.room)
 }
 
 /// Run `command` on a worker thread and report the outcome through
@@ -923,7 +929,7 @@ mod tests {
             &app,
             Path::new("/usr/bin/qos-launcher"),
             Path::new("/run/user/1000/wayland-3"),
-            WorkspaceId(3),
+            RoomId::new(),
             None,
             Some(Path::new("/dev/dri/renderD128")),
         );
@@ -967,7 +973,7 @@ mod tests {
             &app,
             Path::new("/usr/bin/qos-launcher"),
             Path::new("/run/user/1000/wayland-3"),
-            WorkspaceId(3),
+            RoomId::new(),
             None,
             None,
         );
@@ -985,7 +991,7 @@ mod tests {
         // SAFETY: guarded by ENV_LOCK.
         unsafe { std::env::set_var("QOS_APPS_DATA_DIR", tmp.path()) };
         invalidate_app_cache();
-        let err = launch("dev.qos.nope", WorkspaceId(1)).unwrap_err();
+        let err = launch("dev.qos.nope", RoomId::new()).unwrap_err();
         unsafe { std::env::remove_var("QOS_APPS_DATA_DIR") };
         invalidate_app_cache();
         assert_eq!(
@@ -1005,7 +1011,7 @@ mod tests {
         // SAFETY: guarded by ENV_LOCK.
         unsafe { std::env::set_var("QOS_APPS_DATA_DIR", tmp.path()) };
         invalidate_app_cache();
-        let err = launch("dev.qos.notes-cli", WorkspaceId(1)).unwrap_err();
+        let err = launch("dev.qos.notes-cli", RoomId::new()).unwrap_err();
         unsafe { std::env::remove_var("QOS_APPS_DATA_DIR") };
         invalidate_app_cache();
         assert_eq!(
@@ -1025,7 +1031,7 @@ mod tests {
         unsafe { std::env::set_var("QOS_APPS_DATA_DIR", tmp.path()) };
         invalidate_app_cache();
         set_wayland_socket_path(None);
-        let err = launch("dev.qos.hello", WorkspaceId(1)).unwrap_err();
+        let err = launch("dev.qos.hello", RoomId::new()).unwrap_err();
         unsafe { std::env::remove_var("QOS_APPS_DATA_DIR") };
         invalidate_app_cache();
         assert_eq!(err, LaunchError::NoDisplay);
@@ -1064,7 +1070,7 @@ mod tests {
         set_wayland_socket_path(Some(PathBuf::from("/run/user/1000/wayland-7")));
         let _ = drain_events();
 
-        let app = launch("dev.qos.hello", WorkspaceId(1)).expect("launch accepted");
+        let app = launch("dev.qos.hello", RoomId::new()).expect("launch accepted");
         assert_eq!(app.display_name, "Hello");
 
         // Wait for the worker to report the child's exit.
@@ -1199,7 +1205,7 @@ mod tests {
             &test_app("dev.qos.books"),
             Path::new("/usr/bin/qos-launcher"),
             Path::new("/run/user/1000/wayland-3"),
-            WorkspaceId(3),
+            RoomId::new(),
             None,
             None,
         );
@@ -1223,7 +1229,7 @@ mod tests {
             &test_app("dev.qos.books"),
             Path::new("/usr/bin/qos-launcher"),
             Path::new("/run/user/1000/wayland-3"),
-            WorkspaceId(3),
+            RoomId::new(),
             Some(Path::new("/run/user/1000/qos/capabilities/dev.qos.books.json")),
             None,
         );
