@@ -907,12 +907,7 @@ impl CollaborationManager {
 /// passed over here rather than rejected — the next fallback applies
 /// and the flag keeps working.
 fn auto_hello_env() -> (String, Uuid) {
-    // Memoised for the process lifetime. The last-resort app id is a fresh
-    // uuid, so recomputing would hand a second caller a *different* identity
-    // — two managers in one process would announce as two people, and the
-    // undo attribution below would not match the id the broker sees.
-    static RESOLVED: std::sync::OnceLock<(String, Uuid)> = std::sync::OnceLock::new();
-    RESOLVED.get_or_init(auto_hello_env_uncached).clone()
+    auto_hello_env_uncached()
 }
 
 /// The identity this process collaborates as — the same `user_id` the broker
@@ -925,9 +920,28 @@ pub fn local_user_id() -> crate::permissions::UserId {
 }
 
 fn auto_hello_env_uncached() -> (String, Uuid) {
+    // Only the last-resort random id is remembered, and only because a
+    // *fresh* uuid per call would hand a second manager in the same
+    // process a different identity — it would announce as two people,
+    // and undo attribution would not match the id the broker sees.
+    //
+    // The environment itself is re-read every time and is never
+    // memoised. It is the routing truth: which room an app belongs to
+    // is a property of the launch, not of the process image, and
+    // freezing the first answer puts every later reader in the first
+    // one's room. That is a room-isolation failure, not a caching
+    // detail — and it is exactly what a process hosting more than one
+    // identity (every collaboration test, and any future in-process
+    // multi-session host) does.
+    static FALLBACK_APP_ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
     let app_id = non_empty_env("QOS_PACKAGE_ID")
         .or_else(|| non_empty_env("QUICK_APP_ID"))
-        .unwrap_or_else(|| Uuid::new_v4().to_string());
+        .unwrap_or_else(|| {
+            FALLBACK_APP_ID
+                .get_or_init(|| Uuid::new_v4().to_string())
+                .clone()
+        });
 
     let cluster_id = non_empty_env("QOS_WORKSPACE_ID")
         .and_then(|s| match Uuid::parse_str(&s) {
