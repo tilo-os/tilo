@@ -87,28 +87,44 @@ pub struct DiffMergeApp {
 }
 
 impl DiffMergeApp {
+    /// The live app: starts EMPTY (blank panes + the "Open files" / "Load
+    /// sample" toolbar actions), never a fabricated diff.
     pub fn new() -> Self {
+        Self::build(false)
+    }
+
+    /// The hermetic `--shots` / demo build: seeded with a sample diff + a
+    /// three-way merge conflict so the headless screenshot is populated. This
+    /// is the ONLY place the sample content is used on construction.
+    pub fn new_demo() -> Self {
+        Self::build(true)
+    }
+
+    fn build(demo: bool) -> Self {
         let mut diff = DiffView::new();
-        let (l, r) = samples::diff_pair();
-        diff.set_inputs(&l.label, &l.text, &r.label, &r.text);
-
         let mut merge = MergeView::new();
-        let (base, ours, theirs) = samples::merge_triple();
-        merge.set_inputs(
-            &base.label,
-            &base.text,
-            &ours.label,
-            &ours.text,
-            &theirs.label,
-            &theirs.text,
-        );
+        if demo {
+            let (l, r) = samples::diff_pair();
+            diff.set_inputs(&l.label, &l.text, &r.label, &r.text);
+            let (base, ours, theirs) = samples::merge_triple();
+            merge.set_inputs(
+                &base.label,
+                &base.text,
+                &ours.label,
+                &ours.text,
+                &theirs.label,
+                &theirs.text,
+            );
+        }
 
-        // The app opens on the three-way merge so a fresh launch immediately
-        // shows a conflict to resolve. `DIFFMERGE_MODE=diff` flips the initial
-        // view to the side-by-side diff (handy for demos/screenshots).
+        // The demo opens on the three-way merge to immediately show a conflict;
+        // the live app opens on the side-by-side diff (empty "open files"
+        // state). `DIFFMERGE_MODE` overrides either way.
         let mode = match std::env::var("DIFFMERGE_MODE").ok().as_deref() {
             Some("diff") => Mode::Diff,
-            _ => Mode::Merge,
+            Some("merge") => Mode::Merge,
+            _ if demo => Mode::Merge,
+            _ => Mode::Diff,
         };
 
         Self {
