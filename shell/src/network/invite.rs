@@ -295,30 +295,58 @@ mod tests {
     use super::*;
     use libp2p::identity::Keypair;
 
+    /// A workspace to issue invites to, with a real minted room.
+    fn workspace(id: u64) -> Workspace {
+        Workspace::test_default(WorkspaceId(id), format!("ws-{id}"))
+    }
+
     /// Pin the canonical payload format. A drift here silently invalidates
     /// every already-issued token, so call out the change with a test
     /// update + plan update rather than letting it sneak in.
+    ///
+    /// `room_id` sits between `workspace_id` and `owner_peer_id`: it is
+    /// signed, so a token whose room was rewritten in transit fails
+    /// verification rather than quietly redirecting the invitee.
     #[test]
     fn canonical_payload_is_stable() {
-        let p = canonical_payload(99, "PEER", "PK", "/ip4/127.0.0.1/tcp/1234", 1_700_000_000);
-        assert_eq!(p, "99|PEER|PK|/ip4/127.0.0.1/tcp/1234|1700000000");
+        let p = canonical_payload(
+            99,
+            "3f2b1c00-0000-4000-8000-000000000001",
+            "PEER",
+            "PK",
+            "/ip4/127.0.0.1/tcp/1234",
+            1_700_000_000,
+        );
+        assert_eq!(
+            p,
+            "99|3f2b1c00-0000-4000-8000-000000000001|PEER|PK|\
+             /ip4/127.0.0.1/tcp/1234|1700000000"
+        );
     }
 
     #[test]
     fn round_trip_token_via_make_and_validate() {
         let kp = Keypair::generate_ed25519();
-        let token_str = make_invite_token(&kp, 99, "/ip4/127.0.0.1/tcp/1234", 3600)
+        let ws = workspace(99);
+        let token_str = make_invite_token(&kp, &ws, "/ip4/127.0.0.1/tcp/1234", 3600)
             .expect("make");
         let parsed = validate_invite_token(&token_str).expect("valid");
         assert_eq!(parsed.workspace_id, 99);
         assert_eq!(parsed.owner_addr, "/ip4/127.0.0.1/tcp/1234");
         assert_eq!(parsed.owner_peer_id, kp.public().to_peer_id().to_base58());
+        // The point of the token: it names the inviter's room, so the
+        // receiver can join it instead of minting one of its own.
+        assert_eq!(
+            parsed.room_id,
+            ws.room.to_string(),
+            "the invite must carry the inviting workspace's room identity"
+        );
     }
 
     #[test]
     fn tampered_workspace_id_fails_signature_check() {
         let kp = Keypair::generate_ed25519();
-        let token_str = make_invite_token(&kp, 99, "/ip4/127.0.0.1/tcp/1234", 3600)
+        let token_str = make_invite_token(&kp, &workspace(99), "/ip4/127.0.0.1/tcp/1234", 3600)
             .expect("make");
         let bytes = B64.decode(&token_str).expect("b64");
         let mut token: PeerInviteToken = serde_json::from_slice(&bytes).expect("json");
@@ -328,10 +356,29 @@ mod tests {
         assert!(err.contains("signature"), "expected signature error, got {err:?}");
     }
 
+    /// Rewriting the room in transit is the attack the signature has to
+    /// cover: it would move the invitee into a room of the attacker's
+    /// choosing while every other field still checked out.
+    #[test]
+    fn tampered_room_id_fails_signature_check() {
+        let kp = Keypair::generate_ed25519();
+        let token_str = make_invite_token(&kp, &workspace(99), "/ip4/127.0.0.1/tcp/1234", 3600)
+            .expect("make");
+        let bytes = B64.decode(&token_str).expect("b64");
+        let mut token: PeerInviteToken = serde_json::from_slice(&bytes).expect("json");
+        token.room_id = RoomId::new().to_string();
+        let bad = B64.encode(serde_json::to_vec(&token).expect("re-json"));
+        let err = validate_invite_token(&bad).expect_err("must fail");
+        assert!(
+            err.contains("signature"),
+            "an invite whose room was swapped must fail verification, got {err:?}"
+        );
+    }
+
     #[test]
     fn tampered_addr_fails_signature_check() {
         let kp = Keypair::generate_ed25519();
-        let token_str = make_invite_token(&kp, 7, "/ip4/127.0.0.1/tcp/1234", 3600)
+        let token_str = make_invite_token(&kp, &workspace(7), "/ip4/127.0.0.1/tcp/1234", 3600)
             .expect("make");
         let bytes = B64.decode(&token_str).expect("b64");
         let mut token: PeerInviteToken = serde_json::from_slice(&bytes).expect("json");
@@ -343,20 +390,28 @@ mod tests {
     #[test]
     fn substituted_public_key_is_rejected() {
         // Forge attempt: keep the legitimate peer-id but swap in an
-        // attacker key + sign with it. Step 4 of `validate_invite_token`
-        // catches this even though the signature itself would verify.
+        // attacker key + sign with it. The peer-id cross-check catches
+        // this even though the signature itself would verify.
         let victim = Keypair::generate_ed25519();
         let attacker = Keypair::generate_ed25519();
 
         let victim_peer_id = victim.public().to_peer_id().to_base58();
         let attacker_pk_b64 = B64.encode(attacker.public().encode_protobuf());
         let expiry = now_unix_seconds() + 3600;
-        let payload =
-            canonical_payload(1, &victim_peer_id, &attacker_pk_b64, "/ip4/1.2.3.4/tcp/1", expiry);
+        let room_id = RoomId::new().to_string();
+        let payload = canonical_payload(
+            1,
+            &room_id,
+            &victim_peer_id,
+            &attacker_pk_b64,
+            "/ip4/1.2.3.4/tcp/1",
+            expiry,
+        );
         let signature = attacker.sign(payload.as_bytes()).unwrap();
 
         let token = PeerInviteToken {
             workspace_id: 1,
+            room_id,
             owner_peer_id: victim_peer_id,
             owner_public_key: attacker_pk_b64,
             owner_addr: "/ip4/1.2.3.4/tcp/1".into(),
@@ -375,11 +430,102 @@ mod tests {
         // future" expiry latches the current second, so by the time the
         // sleep returns `now` is strictly greater.
         let kp = Keypair::generate_ed25519();
-        let token_str = make_invite_token(&kp, 99, "/ip4/127.0.0.1/tcp/1234", 0)
+        let token_str = make_invite_token(&kp, &workspace(99), "/ip4/127.0.0.1/tcp/1234", 0)
             .expect("make");
         std::thread::sleep(std::time::Duration::from_secs(1));
         let err = validate_invite_token(&token_str).expect_err("must fail");
         assert!(err.contains("expired"), "expected expiry error, got {err:?}");
+    }
+
+    /// A workspace whose room has not been minted has nothing to invite
+    /// anyone into. Issuing anyway would hand out an address that
+    /// reaches nobody, and the invitee would have no way to tell.
+    #[test]
+    fn a_workspace_with_no_room_cannot_issue_an_invite() {
+        let kp = Keypair::generate_ed25519();
+        let mut ws = workspace(4);
+        ws.room = RoomId::nil();
+        let err = make_invite_token(&kp, &ws, "/ip4/127.0.0.1/tcp/1234", 3600)
+            .expect_err("an unminted workspace must not issue invites");
+        assert!(
+            err.to_string().contains("room"),
+            "expected a room-identity error, got {err:?}"
+        );
+    }
+
+    /// Accepting an invite is what puts the invitee in the inviter's
+    /// room. Asserted through the production entry point, against a
+    /// real tree, so it covers the validation + lookup + mutation
+    /// chain rather than just the field copy.
+    #[test]
+    fn accepting_an_invite_moves_the_local_workspace_into_the_inviters_room() {
+        let kp = Keypair::generate_ed25519();
+        let host = workspace(11);
+        let token = make_invite_token(&kp, &host, "/ip4/127.0.0.1/tcp/1234", 3600)
+            .expect("make");
+
+        // The invitee's tree: its own workspace, its own local id, its
+        // own freshly-minted room.
+        let mut guest_tree = WorkspaceTree::default();
+        let guest_id = WorkspaceId(4242);
+        guest_tree
+            .workspaces
+            .push(Workspace::test_default(guest_id, "guest"));
+        let before = guest_tree.room_of(guest_id).expect("guest workspace");
+        assert_ne!(
+            before, host.room,
+            "the two hosts must start in different rooms, or the test \
+             would pass without the invite doing anything"
+        );
+
+        let adopted = accept_invite_into(&mut guest_tree, guest_id, &token)
+            .expect("a valid invite must be accepted");
+        assert_eq!(adopted, host.room);
+        assert_eq!(
+            guest_tree.room_of(guest_id),
+            Some(host.room),
+            "after accepting, the invitee's workspace must address the \
+             inviter's room"
+        );
+        // The local handle is untouched: it indexes the invitee's own
+        // tree and means nothing to the inviter.
+        assert_eq!(
+            guest_tree.workspaces[0].id, guest_id,
+            "accepting an invite must not renumber the local workspace"
+        );
+    }
+
+    /// A tampered token must not move anybody anywhere. Without the
+    /// validate-first ordering in `accept_invite_into`, a forged room
+    /// would be adopted before the signature was ever checked.
+    #[test]
+    fn a_forged_invite_does_not_move_the_local_workspace() {
+        let kp = Keypair::generate_ed25519();
+        let host = workspace(11);
+        let token = make_invite_token(&kp, &host, "/ip4/127.0.0.1/tcp/1234", 3600)
+            .expect("make");
+        let bytes = B64.decode(&token).expect("b64");
+        let mut parsed: PeerInviteToken = serde_json::from_slice(&bytes).expect("json");
+        let attacker_room = RoomId::new();
+        parsed.room_id = attacker_room.to_string();
+        let forged = B64.encode(serde_json::to_vec(&parsed).expect("re-json"));
+
+        let mut guest_tree = WorkspaceTree::default();
+        let guest_id = WorkspaceId(4242);
+        guest_tree
+            .workspaces
+            .push(Workspace::test_default(guest_id, "guest"));
+        let before = guest_tree.room_of(guest_id).expect("guest workspace");
+
+        let err = accept_invite_into(&mut guest_tree, guest_id, &forged)
+            .expect_err("a forged invite must be refused");
+        assert!(err.contains("signature"), "expected signature error, got {err:?}");
+        assert_eq!(
+            guest_tree.room_of(guest_id),
+            Some(before),
+            "a refused invite must leave the local room exactly as it was; \
+             it must not have been moved to the attacker's room {attacker_room}"
+        );
     }
 
     #[test]
