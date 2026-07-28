@@ -26,7 +26,7 @@
 
 use std::sync::Arc;
 
-use smithay::input::pointer::{ButtonEvent, MotionEvent};
+use smithay::input::pointer::{AxisFrame, ButtonEvent, MotionEvent, RelativeMotionEvent};
 use smithay::input::{Seat, SeatHandler, SeatState};
 use smithay::reexports::calloop::LoopHandle;
 use smithay::reexports::wayland_server::Resource;
@@ -73,7 +73,7 @@ use crate::compositor::surface_readback::SurfaceTracker;
 use crate::compositor::tab_binding;
 use crate::network::protocol::{PeerId as MsgPeerId, SurfaceId};
 use crate::wayland::color_management::ColorManagerState;
-use crate::network::streaming::{InputEvent, RemoteInputSink, ShareRegistry};
+use crate::network::streaming::{InputEvent, RemoteAction, RemoteInputSink, ShareRegistry};
 use crate::shell::state::WorkspaceTree;
 use smithay::backend::input::KeyState;
 use std::collections::HashMap;
@@ -577,6 +577,206 @@ impl State {
         }
         RemoteInputSink::apply(self, peer, surface, event);
         true
+    }
+
+    /// Inject a single `org.freedesktop.impl.portal.RemoteDesktop`
+    /// [`RemoteAction`] into the real seat, targeting whatever surface
+    /// currently holds seat focus.
+    ///
+    /// This is the *local-app* counterpart to [`Self::apply_remote_input`]
+    /// (which serves *peer-sync* and is gated by the share registry).
+    /// RemoteDesktop consent is mediated by the portal grant + the started
+    /// session's device selection — enforced in the portal backend — so by
+    /// the time an action reaches here it has already cleared consent, and
+    /// this path drives the seat directly. In production the compositor's
+    /// event loop drains a
+    /// [`RemoteInputInjector`](crate::portal::RemoteInputInjector) channel
+    /// and calls this per action.
+    ///
+    /// Returns `true` when the action reached a live seat device, `false`
+    /// when the relevant device is absent (headless without a seat) or a
+    /// keysym couldn't be resolved to a keycode in the active layout.
+    pub fn apply_remote_desktop_action(&mut self, action: RemoteAction) -> bool {
+        let time = self.start_time.elapsed().as_millis() as u32;
+        let serial = self.next_serial();
+        match action {
+            RemoteAction::PointerMotionAbsolute { x, y, .. } => {
+                let Some(pointer) = self.seat.get_pointer() else {
+                    return false;
+                };
+                pointer.motion(
+                    self,
+                    None,
+                    &MotionEvent {
+                        location: (x, y).into(),
+                        serial,
+                        time,
+                    },
+                );
+                pointer.frame(self);
+                true
+            }
+            RemoteAction::PointerMotionRelative { dx, dy } => {
+                let Some(pointer) = self.seat.get_pointer() else {
+                    return false;
+                };
+                let loc = pointer.current_location();
+                pointer.motion(
+                    self,
+                    None,
+                    &MotionEvent {
+                        location: (loc.x + dx, loc.y + dy).into(),
+                        serial,
+                        time,
+                    },
+                );
+                // Also surface the raw delta for clients that consume
+                // `wp_relative_pointer` (games, pointer-locked apps).
+                pointer.relative_motion(
+                    self,
+                    None,
+                    &RelativeMotionEvent {
+                        delta: (dx, dy).into(),
+                        delta_unaccel: (dx, dy).into(),
+                        utime: (time as u64) * 1000,
+                    },
+                );
+                pointer.frame(self);
+                true
+            }
+            RemoteAction::PointerButton { button, pressed } => {
+                let Some(pointer) = self.seat.get_pointer() else {
+                    return false;
+                };
+                let state = if pressed {
+                    smithay::backend::input::ButtonState::Pressed
+                } else {
+                    smithay::backend::input::ButtonState::Released
+                };
+                pointer.button(
+                    self,
+                    &ButtonEvent {
+                        button: button as u32,
+                        state,
+                        serial,
+                        time,
+                    },
+                );
+                pointer.frame(self);
+                true
+            }
+            RemoteAction::PointerAxis { dx, dy } => {
+                let Some(pointer) = self.seat.get_pointer() else {
+                    return false;
+                };
+                let mut frame = AxisFrame::new(time)
+                    .source(smithay::backend::input::AxisSource::Continuous);
+                if dx != 0.0 {
+                    frame = frame.value(smithay::backend::input::Axis::Horizontal, dx);
+                }
+                if dy != 0.0 {
+                    frame = frame.value(smithay::backend::input::Axis::Vertical, dy);
+                }
+                pointer.axis(self, frame);
+                pointer.frame(self);
+                true
+            }
+            RemoteAction::PointerAxisDiscrete { axis, steps } => {
+                let Some(pointer) = self.seat.get_pointer() else {
+                    return false;
+                };
+                let ax = if axis == 1 {
+                    smithay::backend::input::Axis::Horizontal
+                } else {
+                    smithay::backend::input::Axis::Vertical
+                };
+                // One wheel detent == 120 in the high-resolution `v120`
+                // convention; the legacy `value` carries a 15px-per-step
+                // fallback for clients that don't understand v120.
+                let frame = AxisFrame::new(time)
+                    .source(smithay::backend::input::AxisSource::Wheel)
+                    .v120(ax, steps * 120)
+                    .value(ax, (steps as f64) * 15.0);
+                pointer.axis(self, frame);
+                pointer.frame(self);
+                true
+            }
+            RemoteAction::KeyboardKeycode { keycode, pressed } => {
+                self.inject_seat_key(keycode as u32, pressed, serial, time)
+            }
+            RemoteAction::KeyboardKeysym { keysym, pressed } => {
+                match self.keysym_to_keycode(keysym as u32) {
+                    Some(kc) => self.inject_seat_key(kc, pressed, serial, time),
+                    None => {
+                        tracing::debug!(
+                            keysym,
+                            "RemoteDesktop: keysym has no keycode in the active layout; dropped"
+                        );
+                        false
+                    }
+                }
+            }
+        }
+    }
+
+    /// Deliver a raw keycode press/release to the seat keyboard. Shared by
+    /// the RemoteDesktop keycode + keysym paths. The keycode is passed
+    /// straight through to smithay's `KeyboardHandle::input` — the same
+    /// convention `network::wayland::WaylandServer::handle_input` and
+    /// [`Self::apply_remote_input`]'s `Key` arm use.
+    fn inject_seat_key(
+        &mut self,
+        keycode: u32,
+        pressed: bool,
+        serial: Serial,
+        time: u32,
+    ) -> bool {
+        let Some(keyboard) = self.seat.get_keyboard() else {
+            return false;
+        };
+        let key_state = if pressed {
+            KeyState::Pressed
+        } else {
+            KeyState::Released
+        };
+        let _: Option<()> = keyboard.input(
+            self,
+            keycode.into(),
+            key_state,
+            serial,
+            time,
+            |_, _, _| smithay::input::keyboard::FilterResult::<()>::Forward,
+        );
+        true
+    }
+
+    /// Reverse-lookup a keysym to a keycode in the seat keyboard's active
+    /// layout, so `NotifyKeyboardKeysym` can be delivered even though
+    /// smithay's injection API is keycode-oriented. Scans the evdev/xkb
+    /// keycode range for a key whose level-0 symbol matches. Returns `None`
+    /// when the active layout can't produce the keysym (the portal caller
+    /// should fall back to `NotifyKeyboardKeycode`).
+    fn keysym_to_keycode(&mut self, target: u32) -> Option<u32> {
+        use smithay::input::keyboard::{Keycode, Keysym};
+        let keyboard = self.seat.get_keyboard()?;
+        let target = Keysym::new(target);
+        keyboard.with_xkb_state(self, |ctx| {
+            let xkb = ctx.xkb().lock().ok()?;
+            let layout = xkb.active_layout();
+            // xkb keycodes start at 8 (evdev 0 == xkb 8); 8..=255 covers a
+            // standard keyboard's key range.
+            for raw in 8u32..=255 {
+                let kc = Keycode::new(raw);
+                if xkb
+                    .raw_syms_for_key_in_layout(kc, layout)
+                    .iter()
+                    .any(|s| *s == target)
+                {
+                    return Some(raw);
+                }
+            }
+            None
+        })
     }
 }
 
