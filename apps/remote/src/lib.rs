@@ -67,6 +67,9 @@ pub fn app_root_for_shot(scenario: &str) -> Box<dyn Widget> {
 /// screenshot gallery so a populated frame is captured.
 pub fn app_root_for_shot_demo(scenario: &str) -> Box<dyn Widget> {
     let mut app = app::RemoteApp::new_demo();
+    // Responsive-rail scenarios and screen scenarios are both dispatched by
+    // name; each ignores a name it doesn't recognise.
     app.dev_shot_scenario(scenario);
+    app.dev_set_screen(scenario);
     Box::new(app)
 }
