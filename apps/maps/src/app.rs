@@ -37,6 +37,7 @@ use crate::model::{
 use crate::net::{self, NetMsg};
 use crate::sample::{self, Basemap};
 use crate::tiles::{GeoBounds, TileLayer};
+use crate::traffic::{Congestion, TrafficData};
 
 /// Which Directions endpoint field (From / To) currently has keyboard focus for
 /// typed geocoding. `None` when neither is being edited.
@@ -127,6 +128,8 @@ enum Hit {
     /// Reset the Transit time anchor to "leave now".
     TransitTimeNow,
     Journey(usize),
+    /// Toggle the real-time traffic overlay on/off.
+    ToggleTraffic,
     /// Open the offline-download / manage-cache overlay.
     OfflineOpen,
     /// Close the overlay.
@@ -229,6 +232,12 @@ pub struct MapsApp {
     /// expand/collapse toggle, not a tab). Only meaningful in the docked
     /// layout; the narrow layout hides/shows the whole drawer instead.
     panel_collapsed: bool,
+
+    /// Whether the real-time traffic overlay is toggled on.
+    traffic_on: bool,
+    /// The current traffic-congestion picture. Empty until real peer reports
+    /// arrive — the honest live state (see [`crate::traffic`]).
+    traffic: TrafficData,
 }
 
 impl Default for MapsApp {
@@ -304,6 +313,8 @@ impl MapsApp {
             poi_fetched_bounds: None,
             poi_generation: 0,
             panel_collapsed: false,
+            traffic_on: false,
+            traffic: TrafficData::default(),
         }
     }
 
@@ -544,6 +555,10 @@ impl MapsApp {
         let r = self.locate_rect();
         Rect::new(r.x0, r.y1 + GAP, r.x1, r.y1 + GAP + CTRL_SIZE)
     }
+    fn traffic_rect(&self) -> Rect {
+        let r = self.download_rect();
+        Rect::new(r.x0, r.y1 + GAP, r.x1, r.y1 + GAP + CTRL_SIZE)
+    }
 
     /// The geographic bounds currently visible in the map viewport.
     fn viewport_bounds(&self) -> GeoBounds {
@@ -556,6 +571,42 @@ impl MapsApp {
     // --- actions -----------------------------------------------------------
     fn mark_dirty(&mut self) {
         self.dirty = true;
+    }
+
+    /// Toggle the traffic overlay. Turning it on triggers a refresh so the
+    /// current congestion picture is loaded (or the honest empty state is set).
+    fn set_traffic(&mut self, on: bool) {
+        self.traffic_on = on;
+        if on {
+            self.refresh_traffic();
+        }
+        self.mark_dirty();
+    }
+
+    /// Populate the traffic overlay.
+    ///
+    /// qOS traffic is a crowdsourced, peer-shared layer (see `plan/product.md`);
+    /// no such live feed is wired yet, so the LIVE app has no reports and the
+    /// overlay stays empty — the map then shows "No traffic data" rather than
+    /// inventing congestion. When the bundled offline cartography is loaded
+    /// (the `--shots` / sample path, distinguished by a non-empty vector
+    /// basemap), we colour its arterials from the sample congestion set so the
+    /// overlay is demonstrable — the same sample-only gating every other piece
+    /// of this app's offline data already uses. Nothing is fabricated on the
+    /// live path.
+    fn refresh_traffic(&mut self) {
+        if !self.basemap.is_empty() {
+            self.traffic = TrafficData::sample(&self.basemap);
+        } else {
+            self.traffic = TrafficData::default();
+        }
+    }
+
+    /// Screenshot-only hook: turn the traffic overlay on so the coloured
+    /// congestion segments (or, with `--empty`, the honest "No traffic data"
+    /// state) can be captured headlessly.
+    pub fn set_demo_traffic(&mut self) {
+        self.set_traffic(true);
     }
 
     fn select_place(&mut self, id: &str) {
@@ -1610,6 +1661,7 @@ impl MapsApp {
                 // unavailable — we never invent a location.
                 self.use_my_location();
             }
+            Hit::ToggleTraffic => self.set_traffic(!self.traffic_on),
             Hit::ToggleNav => {
                 self.nav_open = !self.nav_open;
                 self.mark_dirty();
@@ -1762,6 +1814,13 @@ impl MapsApp {
                 canvas::draw_basemap(scene, t, clip, &proj, &self.basemap, &pal);
             }
         }
+        // Traffic overlay: coloured congestion over the roads, under the active
+        // route + markers so navigation stays legible. Empty data draws
+        // nothing here — the honest "No traffic data" pill is drawn with the
+        // chrome below.
+        if self.traffic_on {
+            canvas::draw_traffic(scene, t, &proj, &self.traffic, &pal);
+        }
         if let Some(route) = &self.model.route {
             canvas::draw_route(scene, t, &proj, route, &pal);
         }
@@ -1812,6 +1871,7 @@ impl MapsApp {
 
         // Chrome on top of the scrim so it stays bright and usable.
         self.draw_controls(scene, t, tr, theme);
+        self.draw_traffic_status(scene, t, tr, theme);
         self.draw_menu(scene, t, tr, theme);
         self.draw_search(scene, t, tr, theme);
         self.draw_status(scene, t, tr, theme);
@@ -2157,6 +2217,91 @@ impl MapsApp {
             draw::stroke_circle(scene, t, Point::new(dl.x1 - 7.0, dl.y0 + 7.0), 4.0, 2.0, theme.accent_primary);
         }
         self.click_targets.push((dl, Hit::OfflineOpen));
+
+        // Traffic overlay toggle: a traffic-light glyph (three stacked signal
+        // dots). Accent border + full-colour dots when on; dimmed when off, so
+        // the button's state is visible at a glance.
+        let tf = self.traffic_rect();
+        let tf_border = if self.traffic_on { theme.accent_primary } else { c.border_standard };
+        draw::card(scene, t, tf, 10.0, c.surfaces.raised, tf_border);
+        let tc = tf.center();
+        let dot = |col: Color| {
+            if self.traffic_on {
+                col
+            } else {
+                draw::mix(col, c.surfaces.raised, 0.55)
+            }
+        };
+        draw::fill_circle(scene, t, Point::new(tc.x, tc.y - 8.0), 3.2, dot(c.semantic.danger));
+        draw::fill_circle(scene, t, Point::new(tc.x, tc.y), 3.2, dot(c.semantic.warning));
+        draw::fill_circle(scene, t, Point::new(tc.x, tc.y + 8.0), 3.2, dot(c.semantic.success));
+        self.click_targets.push((tf, Hit::ToggleTraffic));
+    }
+
+    /// The traffic legend / status, bottom-left of the map area (clear of the
+    /// docked panel and the bottom-right scale bar). With data it's a colour
+    /// key with per-level counts + provenance; with none it's the honest
+    /// "No traffic data" pill. Draws nothing when the overlay is off.
+    fn draw_traffic_status(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
+        if !self.traffic_on {
+            return;
+        }
+        // While the narrow drawer is open the map is dimmed and the drawer is
+        // the focus — don't stack a legend over it.
+        if self.overlay_mode() && self.nav_open {
+            return;
+        }
+        let c = &theme.tokens.colors;
+        let pal = MapPalette::from_theme(theme);
+        let map_left = if self.panel_docked_expanded() {
+            self.panel_rect().x1 + GAP
+        } else {
+            self.rect.x0 + MARGIN
+        };
+        let bottom = self.rect.y1 - MARGIN;
+
+        if self.traffic.is_empty() {
+            // Honest empty state — no fabricated congestion.
+            let label = "No traffic data";
+            let fs = 12.0;
+            let h = 32.0;
+            let w = draw::measure_w(tr, label, fs) + 40.0;
+            let pill = Rect::new(map_left, bottom - h, map_left + w, bottom);
+            draw::card(scene, t, pill, h / 2.0, draw::alpha(c.surfaces.raised, 0.96), c.border_standard);
+            draw::fill_circle(scene, t, Point::new(pill.x0 + 16.0, pill.center().y), 3.6, c.text_dim);
+            draw::text(scene, tr, t, label, pill.x0 + 27.0, vmid(pill.y0, h, fs), fs, c.text_primary);
+            return;
+        }
+
+        // Populated legend: a compact vertical colour key.
+        let counts = self.traffic.counts();
+        let title_fs = 12.0;
+        let row_fs = 11.0;
+        let row_h = 19.0;
+        let pad = 12.0;
+        let header_h = 22.0;
+        let w = 180.0_f64;
+        let h = pad + header_h + Congestion::ALL.len() as f64 * row_h + pad - 4.0;
+        let card = Rect::new(map_left, bottom - h, map_left + w, bottom);
+        draw::card(scene, t, card, 12.0, draw::alpha(c.surfaces.raised, 0.96), c.border_standard);
+
+        let x = card.x0 + pad;
+        let mut y = card.y0 + pad;
+        draw::text_w(scene, tr, t, "Traffic", x, y, title_fs, c.text_primary, TextWeight::Semibold);
+        if let Some(src) = &self.traffic.source {
+            let tw = draw::measure_w(tr, "Traffic", title_fs) + 8.0;
+            draw::text_clip(scene, tr, t, &format!("· {src}"), x + tw, y, 10.0, c.text_dim, card.x1 - pad - (x + tw));
+        }
+        y += header_h;
+        for level in Congestion::ALL {
+            let sw = Rect::new(x, y + 3.0, x + 18.0, y + 3.0 + 6.0);
+            draw::fill_rrect(scene, t, sw, 3.0, canvas::traffic_color(&pal, level));
+            draw::text(scene, tr, t, level.label(), x + 26.0, y, row_fs, c.text_primary);
+            let n = counts[level as usize].to_string();
+            let nw = draw::measure_w(tr, &n, row_fs);
+            draw::text(scene, tr, t, &n, card.x1 - pad - nw, y, row_fs, c.text_dim);
+            y += row_h;
+        }
     }
 
     /// The offline-download + manage-cache overlay: a centred card with a
@@ -3451,6 +3596,69 @@ mod tests {
         let before = a.model.center;
         a.pan_by(120.0, 0.0);
         assert!((a.model.center.lon - before.lon).abs() > 1e-6);
+    }
+
+    #[test]
+    fn traffic_toggle_populates_from_sample_cartography() {
+        // The offline app carries the sample vector basemap, so toggling traffic
+        // on colours its arterials — the demonstrable overlay.
+        let mut a = app_at(1280.0, 800.0);
+        assert!(!a.traffic_on && a.traffic.is_empty(), "off + empty at start");
+        a.dispatch(&Hit::ToggleTraffic);
+        assert!(a.traffic_on, "the control toggles the overlay on");
+        assert!(!a.traffic.is_empty(), "sample cartography yields congestion segments");
+        assert_eq!(a.traffic.source.as_deref(), Some("sample data"), "provenance is honest");
+        // Toggling again turns it off.
+        a.dispatch(&Hit::ToggleTraffic);
+        assert!(!a.traffic_on, "the control toggles the overlay back off");
+    }
+
+    #[test]
+    fn traffic_on_a_live_empty_basemap_stays_honestly_empty() {
+        // An empty vector basemap is the LIVE state (real tiles, no bundled
+        // cartography). With no peer reports and no provider, turning traffic on
+        // must NOT fabricate congestion — the overlay stays empty and the UI
+        // shows "No traffic data".
+        let mut a = MapsApp::offline_empty();
+        a.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        assert!(a.basemap.is_empty(), "live/empty cartography");
+        a.set_traffic(true);
+        assert!(a.traffic_on, "overlay is on");
+        assert!(a.traffic.is_empty(), "no data is invented on the live path");
+        assert!(a.traffic.source.is_none(), "no provenance when there is nothing to show");
+    }
+
+    #[test]
+    fn traffic_control_button_is_a_real_click_target() {
+        // The traffic toggle is wired on the production draw → hit-test path:
+        // the drawn control registers a ToggleTraffic target at its rect.
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let mut a = app_at(1280.0, 800.0);
+        let mut scene = Scene::new();
+        a.draw_app(&mut scene, Affine::IDENTITY, &mut tr, &theme);
+        let hit = a
+            .click_targets
+            .iter()
+            .find(|(_, h)| matches!(h, Hit::ToggleTraffic))
+            .map(|(r, _)| *r);
+        assert_eq!(hit, Some(a.traffic_rect()), "the traffic control targets its own rect");
+    }
+
+    #[test]
+    fn traffic_legend_only_draws_when_the_overlay_is_on() {
+        // With the overlay off the legend/empty pill is absent; turning it on
+        // (with sample data) draws the colour key — a visible affordance.
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let mut a = app_at(1280.0, 800.0);
+        let mut scene = Scene::new();
+        a.draw_app(&mut scene, Affine::IDENTITY, &mut tr, &theme);
+        // (No panic; the status pass is a no-op when off.)
+        a.set_traffic(true);
+        let mut scene2 = Scene::new();
+        a.draw_app(&mut scene2, Affine::IDENTITY, &mut tr, &theme);
+        assert!(a.traffic_on && !a.traffic.is_empty(), "overlay on with data → legend drawn");
     }
 
     #[test]
