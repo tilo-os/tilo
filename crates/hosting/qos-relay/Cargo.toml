@@ -39,7 +39,7 @@ path = "src/admin.rs"
 #   iroh endpoint so the integration tests spin up two relays + N
 #   peers without any external service.
 [dependencies]
-# Iroh 0.96.x — pinned to the same versions the `fs/` crate uses so
+# Iroh 1.0.x — pinned to the same versions the `fs/` crate uses so
 # they share a single build of the transport across the workspace.
 # iroh gives us stable node ids + NAT hole punching + n0-hosted relay
 # fallback out of the box, so the relay is reachable from any device
