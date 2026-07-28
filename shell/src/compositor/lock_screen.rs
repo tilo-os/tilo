@@ -66,7 +66,13 @@ pub fn draw_lock_scene(
     //    behind it. Use the app background so the lock screen reads as
     //    part of the same desktop.
     let backdrop = Rect::new(0.0, 0.0, w, h);
-    scene.fill(Fill::NonZero, Affine::IDENTITY, theme.bg_app, None, &backdrop);
+    scene.fill(
+        Fill::NonZero,
+        Affine::IDENTITY,
+        theme.bg_app,
+        None,
+        &backdrop,
+    );
 
     let cx = w / 2.0;
     let cy = h / 2.0;
@@ -127,7 +133,13 @@ pub fn draw_lock_scene(
     // 5. Keyhole — a small dot punched into the body in the backdrop
     //    colour so the glyph reads as a padlock.
     let keyhole = Circle::new(Point::new(cx, body_y + bh / 2.0), 6.0);
-    scene.fill(Fill::NonZero, Affine::IDENTITY, theme.bg_app, None, &keyhole);
+    scene.fill(
+        Fill::NonZero,
+        Affine::IDENTITY,
+        theme.bg_app,
+        None,
+        &keyhole,
+    );
 
     // 6. "Locked" title.
     let title = "Locked";

@@ -26,7 +26,7 @@ use shell::shell::state::{
     WorkspaceId, WorkspaceTree,
 };
 use taffy::prelude::TaffyMaxContent;
-use taffy::{NodeId, Size, TaffyTree, AvailableSpace};
+use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
 use ui::theme::Theme;
 use ui::widget::Widget;
 use vello::kurbo::Point;
@@ -59,9 +59,7 @@ impl QsActions for RecordingDispatcher {
         Ok(())
     }
     fn set_wifi(&self, enabled: bool) -> Result<(), String> {
-        self.calls
-            .borrow_mut()
-            .push(format!("set_wifi({enabled})"));
+        self.calls.borrow_mut().push(format!("set_wifi({enabled})"));
         Ok(())
     }
     fn set_bluetooth(&self, enabled: bool) -> Result<(), String> {
@@ -165,9 +163,7 @@ fn minimal_tree() -> WorkspaceTree {
 /// host's `self.rect` is set as a side-effect of `apply_layout`, so
 /// geometry helpers like `quick_settings_slider_geometry` can be
 /// called after this returns.
-fn layout_host(
-    host: &mut shell::shell::overlay_host::ShellOverlayHost,
-) -> (TaffyTree<()>, NodeId) {
+fn layout_host(host: &mut shell::shell::overlay_host::ShellOverlayHost) -> (TaffyTree<()>, NodeId) {
     use taffy::{Dimension, Style};
     let theme = Theme::dark();
     let mut taffy: TaffyTree<()> = TaffyTree::new();

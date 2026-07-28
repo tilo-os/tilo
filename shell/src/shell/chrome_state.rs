@@ -636,11 +636,7 @@ impl ChromeState {
             let Some(strip) = ws.strips.iter_mut().find(|s| s.id == strip_id) else {
                 return false;
             };
-            let Some(group) = strip
-                .window_groups
-                .iter_mut()
-                .find(|g| g.id == group_id)
-            else {
+            let Some(group) = strip.window_groups.iter_mut().find(|g| g.id == group_id) else {
                 return false;
             };
             if group.tabs.len() < 2 {
@@ -682,10 +678,7 @@ impl ChromeState {
                 .active_workspace()
                 .map(|ws| ws.name.clone())
                 .unwrap_or_else(|| "(unnamed)".to_string());
-            self.push_notification(
-                format!("Switched to workspace {new_name}"),
-                String::new(),
-            );
+            self.push_notification(format!("Switched to workspace {new_name}"), String::new());
             self.bump();
         }
         changed
@@ -703,11 +696,7 @@ impl ChromeState {
     /// body. Returns the freshly assigned id so callers can dismiss
     /// it later via [`Self::dismiss_notification`]. Bumps the chrome
     /// revision so widgets re-sync on the next frame.
-    pub fn push_notification(
-        &mut self,
-        title: impl Into<String>,
-        body: impl Into<String>,
-    ) -> u64 {
+    pub fn push_notification(&mut self, title: impl Into<String>, body: impl Into<String>) -> u64 {
         self.push_notification_full(Notification::new(title, body))
     }
 
@@ -803,8 +792,7 @@ impl ChromeState {
             return false;
         };
         let removed = self.notifications.remove(pos);
-        if let (Some(bridge), Some(dbus_id)) =
-            (self.notification_bridge.as_ref(), removed.dbus_id)
+        if let (Some(bridge), Some(dbus_id)) = (self.notification_bridge.as_ref(), removed.dbus_id)
         {
             if let Some(key) = removed.default_action_key() {
                 bridge.note_action(dbus_id, key);
@@ -973,8 +961,7 @@ impl ChromeState {
     /// Emit a `NotificationClosed` for a removed toast iff it originated
     /// from D-Bus and the bridge is installed.
     fn emit_closed(&self, removed: &Notification, reason: CloseReason) {
-        if let (Some(bridge), Some(dbus_id)) =
-            (self.notification_bridge.as_ref(), removed.dbus_id)
+        if let (Some(bridge), Some(dbus_id)) = (self.notification_bridge.as_ref(), removed.dbus_id)
         {
             bridge.note_closed(dbus_id, reason);
         }

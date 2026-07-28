@@ -162,16 +162,13 @@ impl LaunchError {
                 format!("{package_id} has no graphical entrypoint")
             }
             LaunchError::LauncherBinaryMissing { searched } => {
-                let list: Vec<String> =
-                    searched.iter().map(|p| p.display().to_string()).collect();
+                let list: Vec<String> = searched.iter().map(|p| p.display().to_string()).collect();
                 format!("qos-launcher not found (looked in {})", list.join(", "))
             }
             LaunchError::NoDisplay => {
                 "the compositor has not published a Wayland socket yet".to_string()
             }
-            LaunchError::NoWorkspace => {
-                "there is no active workspace to open it in".to_string()
-            }
+            LaunchError::NoWorkspace => "there is no active workspace to open it in".to_string(),
             LaunchError::RegistryUnreadable { detail } => {
                 format!("the app registry could not be read: {detail}")
             }
@@ -424,11 +421,10 @@ fn runtime_dir() -> PathBuf {
 
 /// Every installed package, GUI or not, freshly read from the registry.
 pub fn read_installed_apps() -> Result<Vec<InstalledApp>, LaunchError> {
-    let entries = launcher::registry::list_installed().map_err(|e| {
-        LaunchError::RegistryUnreadable {
+    let entries =
+        launcher::registry::list_installed().map_err(|e| LaunchError::RegistryUnreadable {
             detail: e.to_string(),
-        }
-    })?;
+        })?;
     let mut out = Vec::with_capacity(entries.len());
     for entry in entries {
         // A registry row whose manifest has gone missing (payload
@@ -948,7 +944,9 @@ pub fn set_pending_placement(
     package_id: &str,
     placement: crate::compositor::tab_binding::Placement,
 ) {
-    let mut pending = PENDING_PLACEMENT.lock().expect("PENDING_PLACEMENT poisoned");
+    let mut pending = PENDING_PLACEMENT
+        .lock()
+        .expect("PENDING_PLACEMENT poisoned");
     pending.retain(|p| p.package_id != package_id);
     pending.push(PendingPlacement {
         package_id: package_id.to_string(),
@@ -972,7 +970,9 @@ pub fn placement_for_toplevel(
     app_id: &str,
     surface_id: u64,
 ) -> Option<crate::compositor::tab_binding::Placement> {
-    let mut pending = PENDING_PLACEMENT.lock().expect("PENDING_PLACEMENT poisoned");
+    let mut pending = PENDING_PLACEMENT
+        .lock()
+        .expect("PENDING_PLACEMENT poisoned");
     let idx = pending
         .iter()
         .position(|p| app_id_matches_package(app_id, &p.package_id))?;
@@ -1412,7 +1412,9 @@ mod tests {
             Path::new("/usr/bin/qos-launcher"),
             Path::new("/run/user/1000/wayland-3"),
             RoomId::new(),
-            Some(Path::new("/run/user/1000/qos/capabilities/dev.qos.books.json")),
+            Some(Path::new(
+                "/run/user/1000/qos/capabilities/dev.qos.books.json",
+            )),
             None,
             None,
         );
@@ -1520,7 +1522,11 @@ mod tests {
         // SAFETY: guarded by ENV_LOCK.
         unsafe { std::env::set_var("XDG_RUNTIME_DIR", tmp.path()) };
 
-        let granted = vec![fs_grant("dev.qos.books", "/var/workspace/books", Verb::Read)];
+        let granted = vec![fs_grant(
+            "dev.qos.books",
+            "/var/workspace/books",
+            Verb::Read,
+        )];
         let path = write_capabilities_file("dev.qos.books", &granted)
             .unwrap()
             .expect("file written while granted");

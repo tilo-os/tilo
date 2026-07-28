@@ -275,10 +275,7 @@ impl FrameBuilder {
     /// On-screen rectangle of the tile currently painting the foreign
     /// wayland surface `surface_id`, or `None` when no visible tile hosts
     /// it. See [`ShellOverlayHost::foreign_surface_rect`].
-    pub fn foreign_surface_rect(
-        &mut self,
-        surface_id: u64,
-    ) -> Option<vello::kurbo::Rect> {
+    pub fn foreign_surface_rect(&mut self, surface_id: u64) -> Option<vello::kurbo::Rect> {
         self.host.foreign_surface_rect(surface_id)
     }
 
@@ -380,11 +377,15 @@ impl FrameBuilder {
             if prior_focus != Some(new_id) {
                 if let Some(old_id) = prior_focus {
                     if let Some(&w_ptr) = self.node_map.get(&old_id) {
-                        unsafe { (*w_ptr).set_focus(false); }
+                        unsafe {
+                            (*w_ptr).set_focus(false);
+                        }
                     }
                 }
                 if let Some(&w_ptr) = self.node_map.get(&new_id) {
-                    unsafe { (*w_ptr).set_focus(true); }
+                    unsafe {
+                        (*w_ptr).set_focus(true);
+                    }
                 }
                 *focus = Some(new_id);
             }
@@ -504,10 +505,7 @@ mod tests {
     /// The widgets asserted on here (top bar, the single active strip row) are
     /// unique in the rendered tree, so the first match is deterministic.
     #[cfg(test)]
-    fn rect_named(
-        reg: &HashMap<String, vello::kurbo::Rect>,
-        name: &str,
-    ) -> vello::kurbo::Rect {
+    fn rect_named(reg: &HashMap<String, vello::kurbo::Rect>, name: &str) -> vello::kurbo::Rect {
         reg.iter()
             .find(|(k, _)| {
                 let seg = k.rsplit('/').next().unwrap_or(k);
@@ -551,7 +549,10 @@ mod tests {
         let before = fb.widget_registry();
         let topbar_before = rect_named(&before, "TopBarChrome");
         let row_before = rect_named(&before, "GroupRow");
-        assert!(topbar_before.height() > 10.0, "top bar visible before fullscreen");
+        assert!(
+            topbar_before.height() > 10.0,
+            "top bar visible before fullscreen"
+        );
 
         // Enter fullscreen on that group.
         fb.set_fullscreen(Some(gid));

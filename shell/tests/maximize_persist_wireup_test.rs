@@ -53,8 +53,8 @@ fn pump_no_op_event(
     event: &winit::event::WindowEvent,
 ) {
     use std::collections::HashMap;
-    use taffy::{NodeId, Style, TaffyTree, Size, AvailableSpace};
     use taffy::prelude::TaffyMaxContent;
+    use taffy::{AvailableSpace, NodeId, Size, Style, TaffyTree};
 
     let g = host
         .group_at_for_tests(strip_id, 0)

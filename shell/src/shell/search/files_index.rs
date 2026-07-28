@@ -41,7 +41,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use tantivy::collector::TopDocs;
 use tantivy::query::QueryParser;
-use tantivy::schema::{Field, Schema, Value, FAST, INDEXED, STORED, STRING, TEXT};
+use tantivy::schema::{FAST, Field, INDEXED, STORED, STRING, Schema, TEXT, Value};
 use tantivy::{Index, IndexReader, IndexWriter, ReloadPolicy, TantivyDocument, Term};
 use walkdir::WalkDir;
 
@@ -68,15 +68,11 @@ const SKIP_DIRS: &[&str] = &[
 
 /// File extensions we skip outright — binaries with no useful body text.
 const BINARY_EXTS: &[&str] = &[
-    "png", "jpg", "jpeg", "gif", "bmp", "webp", "ico", "svg", "avif",
-    "mp3", "flac", "ogg", "wav", "opus", "aac", "m4a",
-    "mp4", "mkv", "webm", "avi", "mov", "m4v",
-    "zip", "tar", "gz", "xz", "zst", "bz2", "7z", "rar", "iso", "dmg",
-    "exe", "dll", "so", "dylib", "o", "a", "lib", "class", "jar",
-    "pyc", "pyo", "wasm",
-    "pdf", "epub", "mobi",
-    "ttf", "otf", "woff", "woff2",
-    "sqlite", "sqlite3", "db",
+    "png", "jpg", "jpeg", "gif", "bmp", "webp", "ico", "svg", "avif", "mp3", "flac", "ogg", "wav",
+    "opus", "aac", "m4a", "mp4", "mkv", "webm", "avi", "mov", "m4v", "zip", "tar", "gz", "xz",
+    "zst", "bz2", "7z", "rar", "iso", "dmg", "exe", "dll", "so", "dylib", "o", "a", "lib", "class",
+    "jar", "pyc", "pyo", "wasm", "pdf", "epub", "mobi", "ttf", "otf", "woff", "woff2", "sqlite",
+    "sqlite3", "db",
 ];
 
 const MAX_DEPTH: usize = 8;
@@ -140,7 +136,10 @@ struct QueryCache {
 
 impl QueryCache {
     fn new(capacity: usize) -> Self {
-        Self { entries: VecDeque::new(), capacity }
+        Self {
+            entries: VecDeque::new(),
+            capacity,
+        }
     }
     fn get(&self, needle: &str, limit: usize) -> Option<Vec<ContentHit>> {
         self.entries.iter().find_map(|(n, l, v)| {
@@ -152,7 +151,8 @@ impl QueryCache {
         })
     }
     fn put(&mut self, needle: String, limit: usize, hits: Vec<ContentHit>) {
-        self.entries.retain(|(n, l, _)| !(n == &needle && *l == limit));
+        self.entries
+            .retain(|(n, l, _)| !(n == &needle && *l == limit));
         if self.entries.len() >= self.capacity {
             self.entries.pop_front();
         }
@@ -196,13 +196,13 @@ impl FilesIndex {
             body: schema.get_field("body")?,
             mtime: schema.get_field("mtime")?,
         };
-        let index = Index::open_in_dir(&dir).or_else(|_| Index::create_in_dir(&dir, schema.clone()))?;
+        let index =
+            Index::open_in_dir(&dir).or_else(|_| Index::create_in_dir(&dir, schema.clone()))?;
         let reader = index
             .reader_builder()
             .reload_policy(ReloadPolicy::OnCommitWithDelay)
             .try_into()?;
-        let query_parser =
-            QueryParser::for_index(&index, vec![fields.stem, fields.body]);
+        let query_parser = QueryParser::for_index(&index, vec![fields.stem, fields.body]);
         let cache = Arc::new(Mutex::new(QueryCache::new(QUERY_CACHE_CAPACITY)));
 
         // Background walker thread. Owns the writer for its lifetime so
@@ -239,7 +239,12 @@ impl FilesIndex {
                         &home,
                         &existing,
                         &mut writer,
-                        Fields { path, stem, body, mtime },
+                        Fields {
+                            path,
+                            stem,
+                            body,
+                            mtime,
+                        },
                     );
                     let _ = writer.commit();
                     if let Ok(mut c) = cache.lock() {
@@ -285,9 +290,7 @@ impl FilesIndex {
             let mut should_reload = true;
             if let Ok(mut slot) = self.last_reload.lock() {
                 if let Some(prev) = *slot {
-                    if now.duration_since(prev)
-                        < Duration::from_millis(READER_RELOAD_INTERVAL_MS)
-                    {
+                    if now.duration_since(prev) < Duration::from_millis(READER_RELOAD_INTERVAL_MS) {
                         should_reload = false;
                     }
                 }
@@ -457,10 +460,7 @@ fn walk_and_index(
             .and_then(|s| s.to_str())
             .unwrap_or_default()
             .to_string();
-        writer.delete_term(Term::from_field_text(
-            fields.path,
-            &path.to_string_lossy(),
-        ));
+        writer.delete_term(Term::from_field_text(fields.path, &path.to_string_lossy()));
         let mut doc = TantivyDocument::default();
         doc.add_text(fields.path, path.to_string_lossy());
         doc.add_text(fields.stem, stem);
@@ -471,11 +471,7 @@ fn walk_and_index(
         count += 1;
         since_commit += 1;
         if since_commit >= COMMIT_BATCH
-            || last_commit
-                .elapsed()
-                .map(|d| d.as_secs())
-                .unwrap_or(0)
-                >= COMMIT_INTERVAL_SECS
+            || last_commit.elapsed().map(|d| d.as_secs()).unwrap_or(0) >= COMMIT_INTERVAL_SECS
         {
             writer.commit().ok();
             since_commit = 0;
@@ -541,10 +537,7 @@ mod tests {
         // walker. `read_head` must never return more than `cap` bytes even
         // when the file is far larger — and even when `known_len` lies
         // (understates the real size, e.g. a file that grew after `stat`).
-        let dir = std::env::temp_dir().join(format!(
-            "qos-read-head-test-{}",
-            std::process::id()
-        ));
+        let dir = std::env::temp_dir().join(format!("qos-read-head-test-{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
         let path = dir.join("big.log");
         // 5 MiB file; cap at 16 KiB.
@@ -561,7 +554,11 @@ mod tests {
         // Even if the caller under-reports the length (0), the read is
         // still capped — proves the bound comes from `take`, not `known_len`.
         let out2 = read_head(&path, 0, cap).unwrap();
-        assert_eq!(out2.len(), cap as usize, "cap holds even when known_len lies");
+        assert_eq!(
+            out2.len(),
+            cap as usize,
+            "cap holds even when known_len lies"
+        );
 
         // A small file returns its whole content, not the cap.
         let small = dir.join("small.txt");
@@ -821,6 +818,9 @@ mod content_index_integration {
             || !idx.query("alpha", 10).is_empty(),
             Duration::from_secs(15),
         );
-        assert!(ready, "second-pass reader must see previously-committed docs");
+        assert!(
+            ready,
+            "second-pass reader must see previously-committed docs"
+        );
     }
 }

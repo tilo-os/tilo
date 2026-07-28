@@ -23,8 +23,8 @@
 //!   affects the paint target.
 
 use ui::offscreen::OffscreenRenderer;
-use vello::peniko::Color;
 use vello::Scene;
+use vello::peniko::Color;
 
 use super::{Backend, BackendEvent, Output, OutputId};
 
@@ -83,7 +83,7 @@ impl HeadlessBackend {
                     "HeadlessBackend::new: OffscreenRenderer init failed at {width}x{height} \
                      (no suitable wgpu adapter — is llvmpipe installed?)"
                 )
-                .into())
+                .into());
             }
         };
         let outputs = vec![Output::new(OutputId(0), (width, height), 1.0)];
@@ -195,7 +195,11 @@ mod tests {
         let backend = HeadlessBackend::new(DEFAULT_WIDTH, DEFAULT_HEIGHT)
             .expect("HeadlessBackend::new at default size");
         let outs = backend.outputs();
-        assert_eq!(outs.len(), 1, "headless backend exposes one synthetic output");
+        assert_eq!(
+            outs.len(),
+            1,
+            "headless backend exposes one synthetic output"
+        );
         assert_eq!(outs[0].size, (DEFAULT_WIDTH, DEFAULT_HEIGHT));
         assert_eq!(outs[0].id, OutputId(0));
     }
@@ -255,7 +259,11 @@ mod tests {
         // drives paint unconditionally; the Redraw exists purely so
         // anything downstream that watches for "did the backend wake"
         // sees a heartbeat.
-        assert_eq!(seen.len(), 1, "poll_events emits exactly one event per tick");
+        assert_eq!(
+            seen.len(),
+            1,
+            "poll_events emits exactly one event per tick"
+        );
         assert!(
             matches!(seen[0], BackendEvent::Redraw),
             "headless poll_events emits Redraw to keep the loop warm; got {:?}",

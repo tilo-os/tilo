@@ -13,8 +13,17 @@ fn workspace_tree_default_has_three_workspaces_each_with_one_strip() {
     let t = WorkspaceTree::bootstrap_default();
     assert_eq!(t.workspaces.len(), 3);
     for ws in &t.workspaces {
-        assert_eq!(ws.strips.len(), 1, "workspace {:?} should have 1 strip", ws.name);
-        assert!(t.active_strip.get(&ws.id).is_some(), "missing active_strip for {:?}", ws.name);
+        assert_eq!(
+            ws.strips.len(),
+            1,
+            "workspace {:?} should have 1 strip",
+            ws.name
+        );
+        assert!(
+            t.active_strip.get(&ws.id).is_some(),
+            "missing active_strip for {:?}",
+            ws.name
+        );
     }
 }
 
@@ -48,7 +57,7 @@ fn _type_refs() {
 
 #[test]
 fn persistence_roundtrip_atomic() {
-    use shell::shell::persist::{save_tree_to, load_tree_from};
+    use shell::shell::persist::{load_tree_from, save_tree_to};
     use shell::shell::state::WorkspaceTree;
     let tmp = std::env::temp_dir().join(format!("qd-test-{}.json", std::process::id()));
     let t = WorkspaceTree::bootstrap_default();

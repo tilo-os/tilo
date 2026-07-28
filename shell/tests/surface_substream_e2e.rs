@@ -56,13 +56,17 @@ fn gradient(width: u32, height: u32) -> Vec<u8> {
 fn substream_carries_frames_gossipsub_carries_announcements() {
     const W: u32 = 128;
     const H: u32 = 128;
-    let session = SharedFlatpakSession::start(HOST, "org.gimp.GIMP", SURFACE, W, H, cfg())
-        .expect("session");
+    let session =
+        SharedFlatpakSession::start(HOST, "org.gimp.GIMP", SURFACE, W, H, cfg()).expect("session");
     session.add_viewer(VIEWER_A, false);
 
     // Gossipsub still carries the announcement bracket.
     match session.stream_start_msg() {
-        NeighbourMsg::SurfaceStreamStart { surface, source_peer, .. } => {
+        NeighbourMsg::SurfaceStreamStart {
+            surface,
+            source_peer,
+            ..
+        } => {
             assert_eq!(surface, SURFACE);
             assert_eq!(source_peer, HOST);
         }
@@ -109,7 +113,11 @@ fn substream_carries_frames_gossipsub_carries_announcements() {
 
     // End-of-stream announcement is still on gossipsub.
     match session.stream_end_msg() {
-        NeighbourMsg::SurfaceStreamEnd { surface, source_peer, .. } => {
+        NeighbourMsg::SurfaceStreamEnd {
+            surface,
+            source_peer,
+            ..
+        } => {
             assert_eq!(surface, SURFACE);
             assert_eq!(source_peer, HOST);
         }
@@ -123,8 +131,8 @@ fn substream_carries_frames_gossipsub_carries_announcements() {
 fn stalled_viewer_drops_old_frames_via_bounded_queue() {
     const W: u32 = 64;
     const H: u32 = 64;
-    let session = SharedFlatpakSession::start(HOST, "org.gimp.GIMP", SURFACE, W, H, cfg())
-        .expect("session");
+    let session =
+        SharedFlatpakSession::start(HOST, "org.gimp.GIMP", SURFACE, W, H, cfg()).expect("session");
     session.add_viewer(VIEWER_A, false);
 
     // Deposit + encode 6 frames without polling — the substream's
@@ -156,8 +164,8 @@ fn stalled_viewer_drops_old_frames_via_bounded_queue() {
 fn per_subscriber_independent_backpressure() {
     const W: u32 = 64;
     const H: u32 = 64;
-    let session = SharedFlatpakSession::start(HOST, "org.gimp.GIMP", SURFACE, W, H, cfg())
-        .expect("session");
+    let session =
+        SharedFlatpakSession::start(HOST, "org.gimp.GIMP", SURFACE, W, H, cfg()).expect("session");
     session.add_viewer(VIEWER_A, false);
     session.add_viewer(VIEWER_B, false);
 
@@ -187,8 +195,7 @@ fn per_subscriber_independent_backpressure() {
 fn drop_viewer_closes_substream_subscription() {
     const W: u32 = 32;
     const H: u32 = 32;
-    let session = SharedFlatpakSession::start(HOST, "x", SURFACE, W, H, cfg())
-        .expect("session");
+    let session = SharedFlatpakSession::start(HOST, "x", SURFACE, W, H, cfg()).expect("session");
     session.add_viewer(VIEWER_A, false);
     session.deposit_captured_rgba(gradient(W, H));
     session.encode_next_frame(Instant::now());
@@ -199,8 +206,6 @@ fn drop_viewer_closes_substream_subscription() {
     assert_eq!(session.stream_pending_for(VIEWER_A), 0);
     // Frame published post-drop lands on nobody — total_drops still 0.
     session.deposit_captured_rgba(gradient(W, H));
-    session.encode_next_frame(
-        Instant::now() + std::time::Duration::from_millis(200),
-    );
+    session.encode_next_frame(Instant::now() + std::time::Duration::from_millis(200));
     assert_eq!(session.stream_total_drops(), 0);
 }

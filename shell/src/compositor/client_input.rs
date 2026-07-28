@@ -140,10 +140,8 @@ impl ClientInput {
         app_id: Option<String>,
     ) {
         self.surfaces.insert(surface_id, surface);
-        self.pending_adoptions.push(PendingAdoption {
-            surface_id,
-            app_id,
-        });
+        self.pending_adoptions
+            .push(PendingAdoption { surface_id, app_id });
     }
 
     /// Record a destroyed foreign toplevel. Drops the surface handle
@@ -163,7 +161,8 @@ impl ClientInput {
 
     pub fn unregister_toplevel(&mut self, surface_id: u64) {
         self.surfaces.remove(&surface_id);
-        self.pending_adoptions.retain(|p| p.surface_id != surface_id);
+        self.pending_adoptions
+            .retain(|p| p.surface_id != surface_id);
         self.pending_removals.push(surface_id);
         if self.keyboard_focus == Some(surface_id) {
             self.keyboard_focus = None;
@@ -813,11 +812,9 @@ pub fn sync_foreign_tabs(state: &mut State, fb: &mut FrameBuilder) -> bool {
         {
             let mut tree = chrome.tree_mut();
             for adoption in &adoptions {
-                if let Some((strip, group)) = insert_foreign_group(
-                    &mut tree,
-                    adoption.surface_id,
-                    adoption.app_id.as_deref(),
-                ) {
+                if let Some((strip, group)) =
+                    insert_foreign_group(&mut tree, adoption.surface_id, adoption.app_id.as_deref())
+                {
                     placements.push((adoption.surface_id, strip, group));
                     changed = true;
                 }
@@ -839,7 +836,10 @@ pub fn sync_foreign_tabs(state: &mut State, fb: &mut FrameBuilder) -> bool {
     });
 
     for (surface_id, strip, group) in placements {
-        state.client_input.placements.insert(surface_id, (strip, group));
+        state
+            .client_input
+            .placements
+            .insert(surface_id, (strip, group));
     }
     for surface_id in &removals {
         state.client_input.placements.remove(surface_id);
@@ -1050,8 +1050,7 @@ pub fn route_input(
                 }
                 state.client_input.buttons_down += 1;
             } else {
-                state.client_input.buttons_down =
-                    state.client_input.buttons_down.saturating_sub(1);
+                state.client_input.buttons_down = state.client_input.buttons_down.saturating_sub(1);
             }
             let to_client = matches!(state.client_input.grab, Some(PointerOwner::Client(_)))
                 && state.client_input.pointer_focus.is_some();
@@ -1089,8 +1088,7 @@ pub fn route_input(
             let overlay_open = fb.host().palette_visible();
             let shell_owns = captured || is_shell_chord(event, modifiers, overlay_open);
             let forward = if pressed {
-                let forward =
-                    !shell_owns && state.client_input.keyboard_focus.is_some();
+                let forward = !shell_owns && state.client_input.keyboard_focus.is_some();
                 if forward {
                     state.client_input.forwarded_keys.insert(code);
                 }
@@ -1111,11 +1109,7 @@ pub fn route_input(
 
 /// Where the pointer should be focused right now: the foreign tile under
 /// the cursor, or the implicit grab's owner while a button is held.
-fn current_pointer_target(
-    state: &State,
-    fb: &FrameBuilder,
-    captured: bool,
-) -> Option<TileHit> {
+fn current_pointer_target(state: &State, fb: &FrameBuilder, captured: bool) -> Option<TileHit> {
     match state.client_input.grab {
         // A grab owned by the chrome keeps the client out of the loop even
         // when the cursor wanders across a tile mid-drag.
@@ -1385,16 +1379,37 @@ mod tests {
     fn evdev_keycodes_match_the_kernel_table() {
         // Values from linux/input-event-codes.h — the codes
         // `wl_keyboard.key` carries on the wire.
-        assert_eq!(evdev_from_logical(&Key::Character(SmolStr::new("a"))), Some(30));
-        assert_eq!(evdev_from_logical(&Key::Character(SmolStr::new("A"))), Some(30));
-        assert_eq!(evdev_from_logical(&Key::Character(SmolStr::new("q"))), Some(16));
-        assert_eq!(evdev_from_logical(&Key::Character(SmolStr::new("1"))), Some(2));
-        assert_eq!(evdev_from_logical(&Key::Character(SmolStr::new("0"))), Some(11));
+        assert_eq!(
+            evdev_from_logical(&Key::Character(SmolStr::new("a"))),
+            Some(30)
+        );
+        assert_eq!(
+            evdev_from_logical(&Key::Character(SmolStr::new("A"))),
+            Some(30)
+        );
+        assert_eq!(
+            evdev_from_logical(&Key::Character(SmolStr::new("q"))),
+            Some(16)
+        );
+        assert_eq!(
+            evdev_from_logical(&Key::Character(SmolStr::new("1"))),
+            Some(2)
+        );
+        assert_eq!(
+            evdev_from_logical(&Key::Character(SmolStr::new("0"))),
+            Some(11)
+        );
         assert_eq!(evdev_from_logical(&Key::Named(NamedKey::Enter)), Some(28));
         assert_eq!(evdev_from_logical(&Key::Named(NamedKey::Escape)), Some(1));
         assert_eq!(evdev_from_logical(&Key::Named(NamedKey::Space)), Some(57));
-        assert_eq!(evdev_from_logical(&Key::Named(NamedKey::Backspace)), Some(14));
-        assert_eq!(evdev_from_logical(&Key::Named(NamedKey::ArrowLeft)), Some(105));
+        assert_eq!(
+            evdev_from_logical(&Key::Named(NamedKey::Backspace)),
+            Some(14)
+        );
+        assert_eq!(
+            evdev_from_logical(&Key::Named(NamedKey::ArrowLeft)),
+            Some(105)
+        );
         assert_eq!(evdev_from_logical(&Key::Named(NamedKey::Shift)), Some(42));
     }
 
@@ -1614,7 +1629,10 @@ mod tests {
         );
         // An app-id for an already-mirrored surface queues a rename.
         ci.note_app_id(6, "org.example.other".into());
-        assert_eq!(ci.pending_renames, vec![(6, "org.example.other".to_string())]);
+        assert_eq!(
+            ci.pending_renames,
+            vec![(6, "org.example.other".to_string())]
+        );
         // Destroy clears focus + grab bookkeeping.
         ci.keyboard_focus = Some(5);
         ci.pointer_focus = Some(5);

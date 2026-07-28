@@ -22,9 +22,9 @@ use std::sync::{Arc, Mutex};
 
 use crate::network::hub::TopicSubscriber;
 use crate::network::protocol::NeighbourMsg;
-use crate::shell::state::WorkspaceTreeHandle;
 #[cfg(test)]
 use crate::shell::state::WorkspaceTree;
+use crate::shell::state::WorkspaceTreeHandle;
 
 /// Replica-side glue: owns a (shared) [`WorkspaceTree`] **handle**, a
 /// peer id, and a FIFO queue of messages to be broadcast on its behalf.
@@ -188,14 +188,8 @@ mod tests {
         assert!(heads_b_before.is_empty(), "B starts empty");
         assert_ne!(heads_a_before, heads_b_before);
 
-        let rep_a = Arc::new(Mutex::new(WorkspaceTreeReplica::new(
-            1,
-            tree_a.clone(),
-        )));
-        let rep_b = Arc::new(Mutex::new(WorkspaceTreeReplica::new(
-            2,
-            tree_b.clone(),
-        )));
+        let rep_a = Arc::new(Mutex::new(WorkspaceTreeReplica::new(1, tree_a.clone())));
+        let rep_b = Arc::new(Mutex::new(WorkspaceTreeReplica::new(2, tree_b.clone())));
 
         // Keep handles to inspect outgoing queues + pump the hub.
         let outgoing_a = rep_a.lock().unwrap().pending_outgoing.clone();
@@ -213,7 +207,11 @@ mod tests {
         // handle so we don't have to re-acquire the replica lock the
         // hub is about to take.
         let drained: Vec<NeighbourMsg> = std::mem::take(&mut *outgoing_b.lock().unwrap());
-        assert_eq!(drained.len(), 1, "request_sync produces exactly one SyncReq");
+        assert_eq!(
+            drained.len(),
+            1,
+            "request_sync produces exactly one SyncReq"
+        );
         for msg in drained {
             hub.broadcast(2, msg);
         }
@@ -223,7 +221,10 @@ mod tests {
         assert_eq!(drained_a.len(), 1, "A replies with exactly one SyncResp");
         match &drained_a[0] {
             NeighbourMsg::SyncResp { changes } => {
-                assert!(!changes.is_empty(), "A's response must carry the demo change");
+                assert!(
+                    !changes.is_empty(),
+                    "A's response must carry the demo change"
+                );
             }
             other => panic!("expected SyncResp, got {:?}", other),
         }
@@ -272,7 +273,10 @@ mod tests {
             NeighbourMsg::SyncReq { since } => assert_eq!(since, &vec![2]),
             other => panic!("expected SyncReq, got {:?}", other),
         }
-        assert!(rep.drain_outgoing().is_empty(), "drain must clear the queue");
+        assert!(
+            rep.drain_outgoing().is_empty(),
+            "drain must clear the queue"
+        );
     }
 
     /// D-8 regression: `request_sync` serialises the local heads via

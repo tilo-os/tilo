@@ -81,9 +81,7 @@ use automerge::{AutoCommit, ObjId};
 use taffy::{NodeId, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
-use vello::peniko::{
-    Blob, Extend, Fill, ImageAlphaType, ImageBrush, ImageData, ImageFormat,
-};
+use vello::peniko::{Blob, Extend, Fill, ImageAlphaType, ImageBrush, ImageData, ImageFormat};
 use winit::event::{Modifiers, WindowEvent};
 
 use crate::compositor::surface_readback::{ReadbackError, buffer_to_rgba};
@@ -119,7 +117,11 @@ pub enum DmabufImportError {
     /// FourCC we don't know how to swizzle.
     UnsupportedFormat(Fourcc),
     /// Degenerate width / height / stride.
-    InvalidDimensions { width: u32, height: u32, stride: u32 },
+    InvalidDimensions {
+        width: u32,
+        height: u32,
+        stride: u32,
+    },
     /// `mmap` failed (errno attached).
     MapFailed(i32),
 }
@@ -131,7 +133,10 @@ impl std::fmt::Display for DmabufImportError {
                 write!(f, "dmabuf modifier 0x{m:x} is not linear")
             }
             DmabufImportError::MultiPlanar(n) => {
-                write!(f, "dmabuf has {n} planes; only single-plane RGBA is imported")
+                write!(
+                    f,
+                    "dmabuf has {n} planes; only single-plane RGBA is imported"
+                )
             }
             DmabufImportError::UnsupportedFormat(c) => {
                 write!(f, "dmabuf fourcc {c:?} is not an RGBA-family format")
@@ -250,8 +255,7 @@ pub fn validate_importable(dmabuf: &Dmabuf) -> Result<(), DmabufImportError> {
     if planes != 1 {
         return Err(DmabufImportError::MultiPlanar(planes));
     }
-    PixelOrder::for_fourcc(format.code)
-        .ok_or(DmabufImportError::UnsupportedFormat(format.code))?;
+    PixelOrder::for_fourcc(format.code).ok_or(DmabufImportError::UnsupportedFormat(format.code))?;
     Ok(())
 }
 
@@ -323,7 +327,12 @@ pub fn import_dmabuf_rgba(
     let mapped: &[u8] = unsafe { std::slice::from_raw_parts(ptr as *const u8, map_len) };
     for row in 0..height as usize {
         let start = offset as usize + row * stride as usize;
-        swizzle_row(order, &mapped[start..start + row_bytes], width as usize, out);
+        swizzle_row(
+            order,
+            &mapped[start..start + row_bytes],
+            width as usize,
+            out,
+        );
     }
 
     sync_dmabuf(raw_fd, DMA_BUF_SYNC_END | DMA_BUF_SYNC_READ);
@@ -1088,7 +1097,10 @@ pub fn reconcile_foreign_tabs(source: &WorkspaceTree, rendered: &mut WorkspaceTr
     // Remove foreign tabs the protocol side no longer has.
     let wanted_ids: std::collections::HashSet<SurfaceId> =
         wanted.iter().map(|t| t.surface_id).collect();
-    for gone in present.iter().filter(|t| !wanted_ids.contains(&t.surface_id)) {
+    for gone in present
+        .iter()
+        .filter(|t| !wanted_ids.contains(&t.surface_id))
+    {
         if crate::compositor::tab_binding::close_tab_for_destroyed_surface(
             rendered,
             gone.surface_id,
@@ -1101,9 +1113,14 @@ pub fn reconcile_foreign_tabs(source: &WorkspaceTree, rendered: &mut WorkspaceTr
     // the same production splice the protocol side uses, so placement
     // rules (empty-workspace bootstrap, first strip / first group) stay in
     // exactly one place.
-    let present_ids: std::collections::HashSet<SurfaceId> =
-        foreign_tabs(rendered).iter().map(|t| t.surface_id).collect();
-    for add in wanted.iter().filter(|t| !present_ids.contains(&t.surface_id)) {
+    let present_ids: std::collections::HashSet<SurfaceId> = foreign_tabs(rendered)
+        .iter()
+        .map(|t| t.surface_id)
+        .collect();
+    for add in wanted
+        .iter()
+        .filter(|t| !present_ids.contains(&t.surface_id))
+    {
         crate::compositor::tab_binding::adopt_toplevel(
             rendered,
             add.surface_id,
@@ -1366,7 +1383,10 @@ mod tests {
             "no frames yet: nothing to repaint for"
         );
         store().publish_rgba(id, &[255, 0, 0, 255], 1, 1);
-        assert!(w.needs_animation_frame(), "a fresh frame requests a repaint");
+        assert!(
+            w.needs_animation_frame(),
+            "a fresh frame requests a repaint"
+        );
         assert!(w.refresh_cache(), "cache picks up the new frame");
         assert!(
             !w.needs_animation_frame(),
@@ -1471,6 +1491,9 @@ mod tests {
             "a tab added to the same group covers the one that was showing"
         );
         assert!(is_visible_tab(&tree, 13));
-        assert!(!is_visible_tab(&tree, 999), "unknown surfaces are not visible");
+        assert!(
+            !is_visible_tab(&tree, 999),
+            "unknown surfaces are not visible"
+        );
     }
 }

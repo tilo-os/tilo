@@ -447,9 +447,7 @@ mod tests {
     /// need to verify — only the framing has to survive a
     /// serialise/deserialise cycle.
     fn dummy_envelope() -> Box<collab_types::SignedOp> {
-        use collab_types::{
-            ArtifactId, AttestationId, Ed25519PublicKey, OpClass, SignedOp,
-        };
+        use collab_types::{ArtifactId, AttestationId, Ed25519PublicKey, OpClass, SignedOp};
         use std::time::SystemTime;
         Box::new(SignedOp::new_unsigned(
             vec![0xDE, 0xAD, 0xBE, 0xEF],
