@@ -19,8 +19,8 @@ use std::sync::Arc;
 use shell::portal::{
     self, CallerMap, CapabilityKind, FilePickerSpawnerHandle, GrantStoreHandle,
     MockFilePickerSpawner, MockScreenCastProvisioner, NullFilePickerSpawner,
-    PortalCaller, PortalContext, PromptQueueHandle, PromptResolver,
-    ScreenCastStreamProvisionerHandle, BUS_NAME, OBJECT_PATH,
+    PortalCaller, PortalContext, PromptQueueHandle, PromptResolver, RecordingInjector,
+    RemoteInputInjectorHandle, ScreenCastStreamProvisionerHandle, BUS_NAME, OBJECT_PATH,
 };
 use shell::shell::state::{
     Capability, FsMode, GrantScope, Workspace, WorkspaceId,
@@ -66,6 +66,7 @@ async fn bring_up_pair(
         ScreenCastStreamProvisionerHandle::new(Arc::new(
             MockScreenCastProvisioner::new_with_node(1, "test"),
         )),
+        RemoteInputInjectorHandle::null(),
     )
     .await
 }
@@ -76,6 +77,7 @@ async fn bring_up_pair_with_spawners(
     caller_map: CallerMap,
     file_picker: FilePickerSpawnerHandle,
     screencast_provisioner: ScreenCastStreamProvisionerHandle,
+    remote_input_injector: RemoteInputInjectorHandle,
 ) -> (Connection, Connection, PortalContext) {
     let (server_sock, client_sock) = UnixStream::pair().expect("socket pair");
 
@@ -85,6 +87,7 @@ async fn bring_up_pair_with_spawners(
         caller_map,
         file_picker,
         screencast_provisioner,
+        remote_input_injector,
     };
     let ctx_clone = ctx.clone();
 
@@ -94,10 +97,11 @@ async fn bring_up_pair_with_spawners(
     // pair so both ends of the socket negotiate auth concurrently —
     // serial `await` calls deadlock because the server-side handshake
     // wants bytes the client hasn't sent yet.
-    use shell::portal::{AccessBackend, FileChooserBackend, ScreenCastBackend};
+    use shell::portal::{AccessBackend, FileChooserBackend, RemoteDesktopBackend, ScreenCastBackend};
     let fc = FileChooserBackend::new(ctx.clone());
     let sc = ScreenCastBackend::new(ctx.clone());
     let ac = AccessBackend::new(ctx.clone());
+    let rd = RemoteDesktopBackend::new(ctx.clone());
 
     let server_builder = Builder::unix_stream(server_sock)
         .server(TEST_GUID)
@@ -108,7 +112,9 @@ async fn bring_up_pair_with_spawners(
         .serve_at(OBJECT_PATH, sc)
         .expect("serve_at sc")
         .serve_at(OBJECT_PATH, ac)
-        .expect("serve_at ac");
+        .expect("serve_at ac")
+        .serve_at(OBJECT_PATH, rd)
+        .expect("serve_at rd");
     let client_builder = Builder::unix_stream(client_sock).p2p();
 
     let (server_conn, client_conn) =
@@ -162,6 +168,7 @@ async fn file_chooser_open_file_round_trips_auto_allow() {
         caller_map,
         fp_handle,
         sc_handle,
+        RemoteInputInjectorHandle::null(),
     )
     .await;
 
@@ -409,7 +416,9 @@ async fn session_outcome_persists_into_grant_store() {
 /// keeping the assertion here makes the contract obvious.
 #[test]
 fn bus_name_matches_freedesktop_portal_convention() {
-    assert_eq!(BUS_NAME, "org.freedesktop.impl.portal.desktop.nirios");
+    // Must match the shipped `os/.../portals/qos.portal` `DBusName`, its
+    // D-Bus activation `.service`, and `shell-portal.service`.
+    assert_eq!(BUS_NAME, "org.freedesktop.impl.portal.desktop.qos");
     assert_eq!(OBJECT_PATH, "/org/freedesktop/portal/desktop");
 }
 
@@ -450,6 +459,7 @@ async fn screencast_start_provisions_pipewire_stream() {
         caller_map,
         fp_handle,
         sc_handle,
+        RemoteInputInjectorHandle::null(),
     )
     .await;
 
@@ -511,5 +521,358 @@ fn capability_kind_round_trips_through_grant_store() {
     assert_eq!(
         store.lookup(&caller, CapabilityKind::FilesystemRead),
         Some(GrantScope::Once)
+    );
+}
+
+// ---------------------------------------------------------------------------
+// ScreenCast: standards coverage — source types, cursor modes, `multiple`,
+// restore_token round-trip, OpenPipeWireRemote, and the interface properties.
+// ---------------------------------------------------------------------------
+
+/// A workspace pre-seeded with an `Always` Screencast grant + a forced caller,
+/// so the handshake fast-paths past the prompt in a hermetic test.
+fn screencast_always(
+    ws_num: u64,
+    app: &str,
+) -> (GrantStoreHandle, CallerMap, WorkspaceId) {
+    let mut ws = empty_workspace(ws_num, "ws");
+    ws.grants.insert(
+        app.into(),
+        vec![Capability::Screencast {
+            scope: GrantScope::Always,
+        }],
+    );
+    let (store, ws_id) = GrantStoreHandle::test_with_workspace(ws);
+    let map = CallerMap::new();
+    map.force_caller_for_tests(PortalCaller::new(ws_id, app));
+    (store, map, ws_id)
+}
+
+fn u32_prop(dict: &HashMap<String, OwnedValue>, key: &str) -> u32 {
+    u32::try_from(dict.get(key).unwrap().try_clone().unwrap()).unwrap()
+}
+
+fn streams_of(results: &HashMap<String, OwnedValue>) -> Vec<(u32, HashMap<String, OwnedValue>)> {
+    Vec::try_from(results.get("streams").unwrap().try_clone().unwrap()).unwrap()
+}
+
+async fn sc_call(
+    proxy: &Proxy<'_>,
+    method: &str,
+    body: &(impl serde::Serialize + zbus::zvariant::DynamicType),
+) -> (u32, HashMap<String, OwnedValue>) {
+    proxy
+        .call_method(method, body)
+        .await
+        .expect("call")
+        .body()
+        .deserialize()
+        .expect("deserialize")
+}
+
+#[tokio::test]
+async fn screencast_start_honors_selected_source_type_and_cursor_mode() {
+    let app = "org.example.win";
+    let (store, map, _ws) = screencast_always(201, app);
+    let provisioner = Arc::new(MockScreenCastProvisioner::new_with_node(50, "t"));
+    let (_s, client, _ctx) = bring_up_pair_with_spawners(
+        store,
+        PromptQueueHandle::new(PromptResolver::Channel),
+        map,
+        FilePickerSpawnerHandle::new(Arc::new(NullFilePickerSpawner::cancel())),
+        ScreenCastStreamProvisionerHandle::new(provisioner.clone()),
+        RemoteInputInjectorHandle::null(),
+    )
+    .await;
+    let proxy = portal_proxy(&client, "org.freedesktop.impl.portal.ScreenCast").await;
+    let h: ObjectPath<'_> = "/h/a".try_into().unwrap();
+    let session: ObjectPath<'_> = "/sc/win".try_into().unwrap();
+    let empty: HashMap<&str, OwnedValue> = HashMap::new();
+    let _ = sc_call(&proxy, "CreateSession", &(&h, &session, app, &empty)).await;
+
+    let mut opts: HashMap<&str, OwnedValue> = HashMap::new();
+    opts.insert("types", OwnedValue::try_from(Value::U32(2)).unwrap()); // window
+    opts.insert("cursor_mode", OwnedValue::try_from(Value::U32(1)).unwrap()); // hidden
+    let (r, _) = sc_call(&proxy, "SelectSources", &(&h, &session, app, &opts)).await;
+    assert_eq!(r, 0);
+
+    let (r2, results) =
+        sc_call(&proxy, "Start", &(&h, &session, app, "", &empty)).await;
+    assert_eq!(r2, 0);
+    let streams = streams_of(&results);
+    assert_eq!(streams.len(), 1);
+    assert_eq!(
+        u32_prop(&streams[0].1, "source_type"),
+        2,
+        "window source type round-trips through the stream props"
+    );
+    let seen = provisioner.requests();
+    assert_eq!(seen[0].source_type, 2);
+    assert_eq!(seen[0].cursor_mode, 1, "hidden cursor mode forwarded");
+}
+
+#[tokio::test]
+async fn screencast_multiple_yields_one_stream_per_source() {
+    let app = "org.example.multi";
+    let (store, map, _ws) = screencast_always(202, app);
+    let (_s, client, _ctx) = bring_up_pair_with_spawners(
+        store,
+        PromptQueueHandle::new(PromptResolver::Channel),
+        map,
+        FilePickerSpawnerHandle::new(Arc::new(NullFilePickerSpawner::cancel())),
+        ScreenCastStreamProvisionerHandle::new(Arc::new(
+            MockScreenCastProvisioner::new_with_node(80, "t"),
+        )),
+        RemoteInputInjectorHandle::null(),
+    )
+    .await;
+    let proxy = portal_proxy(&client, "org.freedesktop.impl.portal.ScreenCast").await;
+    let h: ObjectPath<'_> = "/h/m".try_into().unwrap();
+    let session: ObjectPath<'_> = "/sc/m".try_into().unwrap();
+    let empty: HashMap<&str, OwnedValue> = HashMap::new();
+    let _ = sc_call(&proxy, "CreateSession", &(&h, &session, app, &empty)).await;
+    let mut opts: HashMap<&str, OwnedValue> = HashMap::new();
+    opts.insert("types", OwnedValue::try_from(Value::U32(1 | 2)).unwrap()); // monitor+window
+    opts.insert("multiple", OwnedValue::try_from(Value::Bool(true)).unwrap());
+    let (r, _) = sc_call(&proxy, "SelectSources", &(&h, &session, app, &opts)).await;
+    assert_eq!(r, 0);
+    let (_r2, results) = sc_call(&proxy, "Start", &(&h, &session, app, "", &empty)).await;
+    let streams = streams_of(&results);
+    assert_eq!(streams.len(), 2, "multiple=true yields a stream per source");
+}
+
+#[tokio::test]
+async fn screencast_restore_token_skips_reprompt() {
+    let app = "org.example.persist";
+    let (store, map, ws_id) = screencast_always(203, app);
+    let queue = PromptQueueHandle::new(PromptResolver::Channel);
+    let (_s, client, ctx) = bring_up_pair_with_spawners(
+        store,
+        queue.clone(),
+        map,
+        FilePickerSpawnerHandle::new(Arc::new(NullFilePickerSpawner::cancel())),
+        ScreenCastStreamProvisionerHandle::new(Arc::new(
+            MockScreenCastProvisioner::new_with_node(90, "t"),
+        )),
+        RemoteInputInjectorHandle::null(),
+    )
+    .await;
+    let proxy = portal_proxy(&client, "org.freedesktop.impl.portal.ScreenCast").await;
+    let h: ObjectPath<'_> = "/h/p".try_into().unwrap();
+    let empty: HashMap<&str, OwnedValue> = HashMap::new();
+
+    // Phase 1 — issue a token (fast-path via the Always grant).
+    let s1: ObjectPath<'_> = "/sc/p1".try_into().unwrap();
+    let _ = sc_call(&proxy, "CreateSession", &(&h, &s1, app, &empty)).await;
+    let mut opts1: HashMap<&str, OwnedValue> = HashMap::new();
+    opts1.insert("types", OwnedValue::try_from(Value::U32(2)).unwrap()); // window
+    opts1.insert("persist_mode", OwnedValue::try_from(Value::U32(2)).unwrap());
+    let (r, _) = sc_call(&proxy, "SelectSources", &(&h, &s1, app, &opts1)).await;
+    assert_eq!(r, 0);
+    let (rs, results) = sc_call(&proxy, "Start", &(&h, &s1, app, "", &empty)).await;
+    assert_eq!(rs, 0);
+    let token: String =
+        String::try_from(results.get("restore_token").expect("token").try_clone().unwrap())
+            .unwrap();
+    assert!(!token.is_empty());
+    assert_eq!(queue.queued_len(), 0, "fast path: no prompt queued");
+
+    // Remove the Always grant so ONLY the token can authorize phase 2.
+    {
+        let handle = ctx.grants.tree_handle();
+        let mut t = handle.write();
+        if let Some(ws) = t.workspaces.iter_mut().find(|w| w.id == ws_id) {
+            ws.grants.clear();
+        }
+    }
+
+    // Phase 2 — present the restore token. Under the Channel resolver (which
+    // never fulfils a queued prompt), an un-restored path would enqueue and
+    // hang; a valid token must skip the prompt.
+    let s2: ObjectPath<'_> = "/sc/p2".try_into().unwrap();
+    let _ = sc_call(&proxy, "CreateSession", &(&h, &s2, app, &empty)).await;
+    let mut opts2: HashMap<&str, OwnedValue> = HashMap::new();
+    opts2.insert(
+        "restore_token",
+        OwnedValue::try_from(Value::new(token.clone())).unwrap(),
+    );
+    let sel2 = timeout(
+        Duration::from_secs(10),
+        proxy.call_method("SelectSources", &(&h, &s2, app, &opts2)),
+    )
+    .await
+    .expect("restore token must skip the prompt (would hang otherwise)")
+    .expect("SelectSources");
+    let (r2, _): (u32, HashMap<String, OwnedValue>) =
+        sel2.body().deserialize().unwrap();
+    assert_eq!(r2, 0, "valid restore token authorizes without a prompt");
+    assert_eq!(queue.queued_len(), 0, "no prompt should have been queued");
+
+    let start2 = timeout(
+        Duration::from_secs(10),
+        proxy.call_method("Start", &(&h, &s2, app, "", &empty)),
+    )
+    .await
+    .expect("restored Start must not prompt")
+    .expect("Start");
+    let (rs2, results2): (u32, HashMap<String, OwnedValue>) =
+        start2.body().deserialize().unwrap();
+    assert_eq!(rs2, 0);
+    let streams2 = streams_of(&results2);
+    assert_eq!(
+        u32_prop(&streams2[0].1, "source_type"),
+        2,
+        "restored session recovers the WINDOW selection"
+    );
+}
+
+#[tokio::test]
+async fn screencast_open_pipewire_remote_returns_real_fd() {
+    use std::os::fd::{AsFd, AsRawFd};
+    let app = "org.example.fd";
+    let (store, map, _ws) = screencast_always(204, app);
+    let (_s, client, _ctx) = bring_up_pair_with_spawners(
+        store,
+        PromptQueueHandle::new(PromptResolver::Channel),
+        map,
+        FilePickerSpawnerHandle::new(Arc::new(NullFilePickerSpawner::cancel())),
+        ScreenCastStreamProvisionerHandle::new(Arc::new(
+            MockScreenCastProvisioner::new_with_node(1, "t"),
+        )),
+        RemoteInputInjectorHandle::null(),
+    )
+    .await;
+    let proxy = portal_proxy(&client, "org.freedesktop.impl.portal.ScreenCast").await;
+    let h: ObjectPath<'_> = "/h/fd".try_into().unwrap();
+    let session: ObjectPath<'_> = "/sc/fd".try_into().unwrap();
+    let empty: HashMap<&str, OwnedValue> = HashMap::new();
+    let _ = sc_call(&proxy, "CreateSession", &(&h, &session, app, &empty)).await;
+    let fd: zbus::zvariant::OwnedFd = proxy
+        .call_method("OpenPipeWireRemote", &(&session, app, &empty))
+        .await
+        .expect("OpenPipeWireRemote")
+        .body()
+        .deserialize()
+        .expect("fd");
+    assert!(
+        fd.as_fd().as_raw_fd() >= 0,
+        "app must receive a real PipeWire remote fd over D-Bus"
+    );
+}
+
+#[tokio::test]
+async fn screencast_properties_advertise_capabilities() {
+    let (store, _ws) = GrantStoreHandle::test_with_workspace(empty_workspace(205, "ws"));
+    let (_s, client, _ctx) =
+        bring_up_pair(store, PromptQueueHandle::new(PromptResolver::AutoAllow), CallerMap::new())
+            .await;
+    let proxy = portal_proxy(&client, "org.freedesktop.impl.portal.ScreenCast").await;
+    let types: u32 = proxy.get_property("AvailableSourceTypes").await.expect("types");
+    let modes: u32 = proxy.get_property("AvailableCursorModes").await.expect("modes");
+    let version: u32 = proxy.get_property("version").await.expect("version");
+    assert_eq!(types, 1 | 2 | 4, "monitor|window|virtual");
+    assert_eq!(modes, 1 | 2 | 4, "hidden|embedded|metadata");
+    assert!(version >= 4, "restore_token support requires v4+");
+}
+
+// ---------------------------------------------------------------------------
+// RemoteDesktop: consent → Start → Notify* seat injection.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn remote_desktop_notify_injects_after_consent() {
+    let app = "org.example.remote";
+    let (store, ws_id) = GrantStoreHandle::test_with_workspace(empty_workspace(210, "ws"));
+    let map = CallerMap::new();
+    map.force_caller_for_tests(PortalCaller::new(ws_id, app));
+    let rec = Arc::new(RecordingInjector::new());
+    let (_s, client, _ctx) = bring_up_pair_with_spawners(
+        store,
+        PromptQueueHandle::new(PromptResolver::AutoAllow),
+        map,
+        FilePickerSpawnerHandle::new(Arc::new(NullFilePickerSpawner::cancel())),
+        ScreenCastStreamProvisionerHandle::new(Arc::new(
+            MockScreenCastProvisioner::new_with_node(1, "t"),
+        )),
+        RemoteInputInjectorHandle::new(rec.clone()),
+    )
+    .await;
+    let proxy = portal_proxy(&client, "org.freedesktop.impl.portal.RemoteDesktop").await;
+    let h: ObjectPath<'_> = "/h/rd".try_into().unwrap();
+    let session: ObjectPath<'_> = "/rd/1".try_into().unwrap();
+    let empty: HashMap<&str, OwnedValue> = HashMap::new();
+    let _ = sc_call(&proxy, "CreateSession", &(&h, &session, app, &empty)).await;
+
+    let mut dev: HashMap<&str, OwnedValue> = HashMap::new();
+    dev.insert("types", OwnedValue::try_from(Value::U32(1 | 2)).unwrap()); // keyboard+pointer
+    let (sel, _) = sc_call(&proxy, "SelectDevices", &(&h, &session, app, &dev)).await;
+    assert_eq!(sel, 0);
+    let (started, res) = sc_call(&proxy, "Start", &(&h, &session, app, "", &empty)).await;
+    assert_eq!(started, 0);
+    assert_eq!(u32_prop(&res, "devices"), 1 | 2, "granted devices returned");
+
+    // Fire pointer + keyboard events; the recorder captures the decoded actions.
+    proxy
+        .call_method("NotifyPointerButton", &(&session, &empty, 272i32, 1u32))
+        .await
+        .expect("NotifyPointerButton");
+    proxy
+        .call_method("NotifyKeyboardKeycode", &(&session, &empty, 30i32, 1u32))
+        .await
+        .expect("NotifyKeyboardKeycode");
+
+    let actions = rec.actions();
+    assert_eq!(actions.len(), 2, "both Notify* injected after consent+Start");
+    assert!(matches!(
+        actions[0],
+        shell::network::RemoteAction::PointerButton {
+            button: 272,
+            pressed: true
+        }
+    ));
+    assert!(matches!(
+        actions[1],
+        shell::network::RemoteAction::KeyboardKeycode {
+            keycode: 30,
+            pressed: true
+        }
+    ));
+}
+
+#[tokio::test]
+async fn remote_desktop_denial_blocks_injection() {
+    let app = "org.example.denied.rd";
+    let (store, ws_id) = GrantStoreHandle::test_with_workspace(empty_workspace(211, "ws"));
+    let map = CallerMap::new();
+    map.force_caller_for_tests(PortalCaller::new(ws_id, app));
+    let rec = Arc::new(RecordingInjector::new());
+    let (_s, client, _ctx) = bring_up_pair_with_spawners(
+        store,
+        PromptQueueHandle::new(PromptResolver::AutoDeny),
+        map,
+        FilePickerSpawnerHandle::new(Arc::new(NullFilePickerSpawner::cancel())),
+        ScreenCastStreamProvisionerHandle::new(Arc::new(
+            MockScreenCastProvisioner::new_with_node(1, "t"),
+        )),
+        RemoteInputInjectorHandle::new(rec.clone()),
+    )
+    .await;
+    let proxy = portal_proxy(&client, "org.freedesktop.impl.portal.RemoteDesktop").await;
+    let h: ObjectPath<'_> = "/h/rdd".try_into().unwrap();
+    let session: ObjectPath<'_> = "/rd/deny".try_into().unwrap();
+    let empty: HashMap<&str, OwnedValue> = HashMap::new();
+    let _ = sc_call(&proxy, "CreateSession", &(&h, &session, app, &empty)).await;
+    let mut dev: HashMap<&str, OwnedValue> = HashMap::new();
+    dev.insert("types", OwnedValue::try_from(Value::U32(2)).unwrap());
+    let (sel, _) = sc_call(&proxy, "SelectDevices", &(&h, &session, app, &dev)).await;
+    assert_eq!(sel, 1, "denied consent returns response=1");
+    // The session never started; Notify* must be dropped.
+    proxy
+        .call_method("NotifyPointerButton", &(&session, &empty, 272i32, 1u32))
+        .await
+        .expect("NotifyPointerButton");
+    assert!(
+        rec.actions().is_empty(),
+        "a denied RemoteDesktop session must not inject input"
     );
 }
