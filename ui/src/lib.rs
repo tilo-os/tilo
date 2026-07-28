@@ -5,6 +5,7 @@ pub mod app;
 pub mod color_compat;
 pub mod doc;
 pub mod headless;
+pub mod history_source;
 pub mod persist;
 pub mod state;
 pub mod widget;
@@ -72,6 +73,11 @@ pub use widget::history::{
     format_relative_time, hue_to_rgb, op_class_glyph, op_class_is_revertible,
 };
 pub use widget::history_scrubber::HistoryScrubber;
+// The producer that turns a live CRDT document into the rows those two
+// widgets render, plus the actor-id → person directory that gives each row
+// an author. Re-exported here so an app reaches the whole history stack
+// through `ui::` without knowing the module layout.
+pub use history_source::{AuthorDirectory, HistorySource, heads_for_entry, version_index_for_entry};
 // Phase 5 (Channel browser) — see `widget/channel_browser.rs` module
 // doc-comment for the design intent. Source-agnostic; consumes
 // `Vec<ChannelEntry>` from chrome state.
