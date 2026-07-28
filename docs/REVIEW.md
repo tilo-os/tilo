@@ -20,6 +20,23 @@ content that doesn't exist yet** (chat messages, calendar events, camera photos,
 backup history, api collections) mostly **faked it** instead of showing empty states.
 The fix effort concentrates on the second group: start empty + wire the real backend.
 
+### S1a — the precise tell: **does the LIVE constructor seed sample data?**
+Code-tracing all apps revealed the exact fault line. Apps that confine sample data to
+`--shots`/tests and read the real backend in their live constructor are genuinely real
+(containers→podman, disks→lsblk/udisks2, logs→journalctl, git_client→git2,
+mail→AccountStore-empty, contacts→disk vCards). The offenders **seed sample content in
+their live constructor** (`feeds` `sample::store()`, `firewall` `sample_config()`,
+`code_editor` `sample_project::build()`, `db_client` `with_sample()`, `diffmerge`
+`samples::*`). Fix is often small + mechanical: don't seed in the live path; start
+empty on the real backend that ALREADY EXISTS.
+
+### S6 — 🔴 SAFETY: firewall shows fake state but writes real
+`firewall` never reads the system's actual zones/rules (no `firewall-cmd --list`/`nft
+list` anywhere) — it displays a fabricated ruleset, yet `apply()` runs real
+`firewall-cmd` in Live mode. So you'd be realizing a made-up ruleset on the host from a
+security tool. Must read/import real current state before it can display or apply.
+Treat as high priority.
+
 ### S1 — 🔴 Pervasive fake/demo data in content apps (the biggest issue)
 Multiple apps ship **hardcoded sample content** instead of starting empty on real
 data. Confirmed by inspection: **chat** (fake workspace "Acme Design", fake people
@@ -122,9 +139,82 @@ shares annotation primitives with PDF/word-processor. But ships a fake book ("Th
 Lantern-Keeper's Almanac" / Wren Halloway) + demo annotations (S1) — live app should
 open to an empty library and real EPUBs. Draws its own title header (S5).
 
-<!-- SWEEP IN PROGRESS. 9 apps inspected by hand (above). S1 (fake demo data) is
-confirmed pervasive — nearly every content/data app is seeded with hardcoded sample
-content and must be reworked to start empty on a real backend. Remaining ~34 apps are
-being swept with a driving pass (click Send / open a real file / hit a real endpoint)
-to separate "real backend behind a demo seed" from "pure mockup", plus per-app UI
-bugs and functionality gaps vs docs/product.md. Findings appended as they land. -->
+### imager (Install Media) — 🟢 comprehensive, verify real detection
+Matches the "ISO/installation creator" vision closely: Write-ISO / Install-qOS,
+Live-stick / Persistent / To-disk modes, user creation (hostname/user/pass/locale/
+keyboard/tz), disk layout (Whole/Sep-home/Btrfs), LUKS + auto-login toggles, SAVED
+PROFILES + "Export unattended install config", and a "type the device name to
+confirm" safety gate. Target drives shown look real (SanDisk USB + the host's actual
+Samsung NVMe w/ EFI+fedora partitions). MUST drive-verify: real block-device
+enumeration (lsblk) + real ISO listing vs seed. App-drawn header (S5). The pending
+"wizard flow" rework is debatable — the dense single-screen is arguably better for a
+desktop installer than a forced step-wizard.
+
+## Full-sweep verdict table (driven + code-traced)
+
+| App | Grade | Verdict |
+|---|---|---|
+| contacts | 🟢 | Real disk vCards, empty on live, sample=shots. Minor S5 header. |
+| code_editor | 🔴 | Mock: edits a hardcoded in-memory "ferris-cli", **no open/save of real files** (no portal, no fs). Real highlight/terminal but unusable as an editor. |
+| containers | 🟢 | Real podman/distrobox shell-out; sample only offline/shots. Dup title (S5). |
+| db_client | 🟠 | Real SQLite; **pg/mysql are non-connecting stubs** (no drivers); boots seeded. |
+| diffmerge | 🟠 | Real diff + 3-way merge engine; auto-opens a sample conflict on live. |
+| disks | 🟢 | Real lsblk/smartctl/udisks2; refuses to fabricate; honest empty on failure. |
+| feeds | 🔴 | Real RSS/Atom/**Gemini** worker EXISTS but live boots fake articles (`sample::store()`). Pure S1 — small fix. |
+| firewall | 🔴 | **S6 safety**: shows a fabricated ruleset it never read; Apply writes it to real firewall-cmd. |
+| git_client | 🟢 | Real git2 on the actual repo; honest empty state. |
+| hex_editor | 🟢 | Real file bytes + inspector; gap: no in-app Open (CLI path only). |
+| logs | 🟢 | Real journalctl JSON reader + live-tail; sample only if journald empty. |
+| mail | 🟢 | Empty on real AccountStore, real MIME; IMAP/SMTP behind `--features live` (off default). |
+| maps | 🟠 | Real OSM/OSRM/Overpass/Nominatim; immersive chrome CORRECT. Live tiles broken (rustls bug); no traffic layer. |
+| monitor | 🟢 | Real sysinfo; genuine host processes. Copy-PID no-op; minor layout. S5 header. |
+| music | 🟢 | Live starts EMPTY (test-enforced); real YT-Music behind `--features live`. |
+| notes | 🟢 | Real Automerge block editor, empty on live. Good base for calendar reuse. |
+| osk | 🟢 | Real `zwp_virtual_keyboard` injection + FUTO swipe; clean render. |
+| pdf_viewer | 🟢 | Real pdfium; drove real doc — render/search/annotate/comment/sign. Needs pdfium native lib. |
+| permissions | 🟢 | Real capability model, empty authored set on live; wired to OS registry. |
+| remote | 🔴 | **Worst**: seeds 8 fake machines into the CRDT on live launch; SSH/VNC transport stubbed (fakes terminal + desktop). |
+| sheets | 🟢 | Real formula engine + real `.xlsx`/`.ods` codecs (calamine); empty on live. |
+| slides | 🟢 | Real deck editor, one blank slide on live; sample=shots. |
+| snippets | 🟠 | Real store but seeds a 14-item starter library on live (borderline — presets vs content). |
+| software_store | 🟠 | Real flatpak/Flathub backend, but a hardcoded sample catalog w/ **fake ratings** is the live storefront. |
+
+| store | 🟠 | Real registry+Flathub backend + real install, but shopfront half-wired: **dead search box + dead filter chips**, placeholder icons, no scroll, `"[All]"` literal, stray "update" debug label. |
+| terminal | 🟢 | Fully real PTY (`$SHELL`), selection, SGR, OSC52. Title→OS chrome. No issues. |
+| themes | 🟢 | Real theme apply (writes shared settings.json compositor reads). Nits: app-drawn header (S5), idle redraw. |
+| totp | 🟢 | Real RFC-6238 + XChaCha20 vault + portal QR import; starts empty. Nit: header (S5). |
+| tube | 🟠 | Real YT backend (`--features live`), empty default, no fake fallback. But **dead "Invidious instance" control** (comment lies it works); app header (S5). |
+| typst_editor | 🟢 | Real Typst compiler end-to-end (math renders, PDF export). Clean chrome. |
+| video_editor | 🔴 | Real timeline/CRDT engine but mock shell: fake project seeded LIVE, **no media import at all**, preview never real video, **export is a stub w/ dev-TODO text in the dialog**. |
+| video-player | 🟠 | Real GStreamer playback + honest test-pattern, but **wrong chrome**: persistent top bar (not immersive §1e) even in fullscreen. |
+| vpn | 🔴 | Simulation dressed as real: fake tunnels seeded live, **fake Connect toggle**, simulated throughput, **dead Import buttons**, no portal, real exec off. |
+| weather | 🟢 | Real Open-Meteo, HIG §1b correct, units from Settings. Ships 4 real default cities. |
+| word-processor | 🟢 | Real `.docx`/`.odt` round-trip (qdoc), drove real files, starts blank. Nit: Save-As no portal. |
+
+## Tally (45 apps)
+- 🟢 **~24 genuinely good** — real backends, empty-on-live, samples gated to `--shots`.
+- 🟠 **~14 real defects** — mostly S1 (live-seeded) or dead controls / minor chrome.
+- 🔴 **7 major** (+ camera, now fixed): chat, code_editor, feeds, firewall, remote, video_editor, vpn.
+
+## Fix plan (prioritized)
+1. **firewall safety (S6)** — read real zones/rules (`firewall-cmd --list`/import) before displaying or applying. Do first.
+2. **The 7 reds → real or honestly-empty:** vpn + remote (real WireGuard/OpenVPN / SSH+VNC, or start empty + mark simulation clearly), video_editor (real media import via portal + real preview/export, or gate honestly), code_editor (real open/save via portal), feeds (delete the live seed — the real RSS/Atom/Gemini worker already exists), chat (real MoQ/collab backend + empty channels).
+3. **S1 live-seed sweep (mechanical, high-ROI):** stop seeding sample data in live constructors — feeds, firewall, remote, video_editor, vpn, snippets, software_store, store, db_client, diffmerge, backups, calendar, ebook, api_tester, chat. Move the seed behind `--shots` (the good apps already do this). Often a 1-line change.
+4. **Dead controls:** store (search + filter chips), tube (Invidious setting), store detail sheet.
+5. **Chrome:** video-player immersive §1e; strip app-drawn name/logo headers (S5) across ~11 apps; land the shared `ui` sidebar/card unification (Card/CardGrid built) + migrate the bespoke-sidebar offenders (file-explorer 1122 LOC, backups, firewall).
+6. **Feature gaps vs product.md:** db_client real pg/mysql; maps live-tile fix + traffic; portal Open/Save-As where missing (word-processor, typst, code_editor, hex_editor); mail/music/tube `--features live` default-on decision.
+
+<!-- SWEEP IN PROGRESS. 10 apps inspected by hand (above).
+
+<!-- SWEEP COMPLETE (45 apps): 10 inspected by hand (detailed above), 35 driven +
+code-traced by the review fleet (verdict table above). The two worst safety/mock
+findings (firewall, remote) were re-verified by hand in source. -->
+
+---
+
+## Methodology note
+Every app was built and shot headless; each shot was opened and graded; content apps
+were code-traced to answer "does the LIVE constructor seed fake data, or is the seed
+gated to `--shots`?" and driven where a static shot proves nothing (opened real PDFs/
+docx/odt, ran a real shell, hit real journald/lsblk/podman/git). Grades reflect the
+LIVE path, not the hermetic `--shots` render.
