@@ -73,7 +73,11 @@ impl State {
         author: Option<UserId>,
     ) {
         let before = self.last_heads.clone();
-        if self.doc.commit().is_some() {
+        // Stamp the change with wall-clock time. `AutoCommit::commit` leaves
+        // automerge's advisory timestamp at zero, which is why a history pane
+        // built over a document committed that way can show authorship but not
+        // *when* — and why a date-range filter over it matches nothing.
+        if qdoc::history::commit_stamped(&mut self.doc).is_some() {
             let after = self.doc.get_heads();
             self.undo_stack.push(UndoEntry {
                 before,
@@ -178,10 +182,65 @@ impl State {
                 PatchAction::Conflict { .. } | PatchAction::Mark { .. } => {}
             }
         }
-        let _ = self.doc.commit();
+        let _ = qdoc::history::commit_stamped(&mut self.doc);
         let inverse_after = self.doc.get_heads();
         self.last_heads = inverse_after.clone();
         (inverse_before, inverse_after)
+    }
+
+    /// Rewrite the document to the content it had at `target_heads`, as a NEW
+    /// forward change.
+    ///
+    /// This is "restore to this version" from the history scrubber. It takes
+    /// exactly the same route as undo — derive the patches that lead from the
+    /// current state to the target state, then *write them* — so history is
+    /// appended to, never rewritten. Three consequences the surrounding
+    /// features depend on:
+    ///
+    /// * The restore shows up in the timeline as its own new entry, authored by
+    ///   whoever performed it. The versions it rolled past are still there.
+    /// * Remote edits merged in while the user was scrubbing survive, because
+    ///   only the properties and elements that actually differ are rewritten.
+    /// * The restore is itself undoable — it lands on the undo stack like any
+    ///   other action.
+    ///
+    /// Returns `true` when something changed. A restore to the state the
+    /// document is already in is a no-op and returns `false`.
+    pub fn restore_to_heads(
+        &mut self,
+        target_heads: &[ChangeHash],
+        focused_node_idx: Option<usize>,
+        metadata: Option<String>,
+        author: Option<UserId>,
+    ) -> bool {
+        let current = self.doc.get_heads();
+        if current == target_heads {
+            return false;
+        }
+        // `apply_inverse` writes the delta that leads from `after` back to
+        // `before`; naming the live state as `after` and the historical state
+        // as `before` is what turns "undo one action" into "travel to this
+        // version".
+        let entry = UndoEntry {
+            before: target_heads.to_vec(),
+            after: current,
+            focused_node_idx,
+            widget_metadata: metadata.clone(),
+            author: author.clone(),
+        };
+        let (inv_before, inv_after) = self.apply_inverse(&entry);
+        if inv_before == inv_after {
+            return false;
+        }
+        self.undo_stack.push(UndoEntry {
+            before: inv_before,
+            after: inv_after,
+            focused_node_idx,
+            widget_metadata: metadata,
+            author,
+        });
+        self.redo_stack.clear();
+        true
     }
 
     /// Translate a sequence index expressed as-of `anchor_heads` into its
