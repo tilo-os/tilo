@@ -1,0 +1,25 @@
+[package]
+name = "app-state"
+version = "0.1.0"
+edition = "2024"
+description = "Canonical per-package persistence for a qOS app's Automerge document."
+
+[lib]
+name = "app_state"
+path = "src/lib.rs"
+
+[dependencies]
+# Path resolution is NOT re-invented here: `package_id` and
+# `standalone_state_dir` come from the CLI SDK, which is also what
+# `cli::resolve_workspace_path` falls back to. One resolver, two callers.
+cli = { path = "../../runtime/cli" }
+
+automerge = "0.8.0"
+thiserror = "1"
+tracing = "0.1"
+# `flock(2)` for the single-writer guard around the actor sidecar.
+libc = "0.2"
+
+[dev-dependencies]
+tempfile = "3"
+serial_test = "3"
