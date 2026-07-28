@@ -187,19 +187,19 @@ desktop installer than a forced step-wizard.
 | typst_editor | 🟢 | Real Typst compiler end-to-end (math renders, PDF export). Clean chrome. |
 | video_editor | 🔴 | Real timeline/CRDT engine but mock shell: fake project seeded LIVE, **no media import at all**, preview never real video, **export is a stub w/ dev-TODO text in the dialog**. |
 | video-player | 🟠 | Real GStreamer playback + honest test-pattern, but **wrong chrome**: persistent top bar (not immersive §1e) even in fullscreen. |
-| vpn | 🔴 | Simulation dressed as real: fake tunnels seeded live, **fake Connect toggle**, simulated throughput, **dead Import buttons**, no portal, real exec off. |
+| vpn | 🟢 | Real transport: portal import persists the raw `.conf`/`.ovpn` and Connect runs `wg-quick up`/`openvpn --config` on it; status from real `ip link`/`pgrep`, throughput from real `wg show transfer`/sysfs. Starts empty; exec gated on `QOS_VPN_ALLOW_EXEC`, UI never claims Connected without a real success. |
 | weather | 🟢 | Real Open-Meteo, HIG §1b correct, units from Settings. Ships 4 real default cities. |
 | word-processor | 🟢 | Real `.docx`/`.odt` round-trip (qdoc), drove real files, starts blank. Nit: Save-As no portal. |
 
 ## Tally (45 apps)
-- 🟢 **~24 genuinely good** — real backends, empty-on-live, samples gated to `--shots`.
+- 🟢 **~25 genuinely good** — real backends, empty-on-live, samples gated to `--shots`.
 - 🟠 **~14 real defects** — mostly S1 (live-seeded) or dead controls / minor chrome.
-- 🔴 **7 major** (+ camera, now fixed): chat, code_editor, feeds, firewall, remote, video_editor, vpn.
+- 🔴 **6 major** (+ camera and vpn, now fixed): chat, code_editor, feeds, firewall, remote, video_editor.
 
 ## Fix plan (prioritized)
 1. **firewall safety (S6)** — read real zones/rules (`firewall-cmd --list`/import) before displaying or applying. Do first.
-2. **The 7 reds → real or honestly-empty:** vpn + remote (real WireGuard/OpenVPN / SSH+VNC, or start empty + mark simulation clearly), video_editor (real media import via portal + real preview/export, or gate honestly), code_editor (real open/save via portal), feeds (delete the live seed — the real RSS/Atom/Gemini worker already exists), chat (real MoQ/collab backend + empty channels).
-3. **S1 live-seed sweep (mechanical, high-ROI):** stop seeding sample data in live constructors — feeds, firewall, remote, video_editor, vpn, snippets, software_store, store, db_client, diffmerge, backups, calendar, ebook, api_tester, chat. Move the seed behind `--shots` (the good apps already do this). Often a 1-line change.
+2. **The reds → real or honestly-empty:** vpn done (real WireGuard/OpenVPN bring-up + live status/throughput, exec-gated); remote (real SSH+VNC, or start empty + mark simulation clearly), video_editor (real media import via portal + real preview/export, or gate honestly), code_editor (real open/save via portal), feeds (delete the live seed — the real RSS/Atom/Gemini worker already exists), chat (real MoQ/collab backend + empty channels).
+3. **S1 live-seed sweep (mechanical, high-ROI):** stop seeding sample data in live constructors — feeds, firewall, remote, video_editor, snippets, software_store, store, db_client, diffmerge, backups, calendar, ebook, api_tester, chat. Move the seed behind `--shots` (the good apps already do this). Often a 1-line change.
 4. **Dead controls:** store (search + filter chips), tube (Invidious setting), store detail sheet.
 5. **Chrome:** video-player immersive §1e; strip app-drawn name/logo headers (S5) across ~11 apps; land the shared `ui` sidebar/card unification (Card/CardGrid built) + migrate the bespoke-sidebar offenders (file-explorer 1122 LOC, backups, firewall).
 6. **Feature gaps vs product.md:** db_client real pg/mysql; maps live-tile fix + traffic; portal Open/Save-As where missing (word-processor, typst, code_editor, hex_editor); mail/music/tube `--features live` default-on decision.
