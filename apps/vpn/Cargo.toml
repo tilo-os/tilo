@@ -23,3 +23,12 @@ vello = "0.9"
 winit = "0.30.13"
 taffy = "0.10.1"
 anyhow = "1.0"
+
+# org.freedesktop.portal.FileChooser (via ashpd) — an app never draws its own
+# file picker; importing a .conf/.ovpn goes through the host portal so the
+# compositor's picker + per-cluster sandbox prompt is the security boundary.
+# The D-Bus round-trip runs off the UI thread on its own small Tokio runtime
+# and the chosen path is handed back over a channel.
+ashpd = { version = "0.9", default-features = false, features = ["tokio"] }
+tokio = { version = "1", features = ["rt", "rt-multi-thread"] }
+url = "2"
