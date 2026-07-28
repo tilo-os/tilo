@@ -3,8 +3,10 @@
 //! `ui` application, the same way the terminal and file-explorer apps do.
 //!
 //! Usage:
-//!   word-processor [FILE]            run interactively (FILE optional)
+//!   word-processor [FILE]              run interactively (FILE optional)
 //!   word-processor --shots OUT [FILE]  render one headless frame to OUT.png
+//!   word-processor --shots OUT --history [FILE]
+//!                                      ...with the version-history strip open
 //!
 //! Collaboration: set `QUICK_COLLAB_SOCK` to a running `collab-broker` socket
 //! and `QUICK_APP_ID` to a per-instance identity, and two instances share one
@@ -37,6 +39,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let mut shots: Option<String> = None;
     let mut file: Option<PathBuf> = None;
+    let mut history = false;
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
@@ -44,12 +47,27 @@ fn main() -> Result<(), Box<dyn Error>> {
                 shots = args.get(i + 1).cloned();
                 i += 2;
             }
+            "--history" => {
+                history = true;
+                i += 1;
+            }
             a if a.starts_with("--") => i += 1,
             a => {
                 file = Some(PathBuf::from(a));
                 i += 1;
             }
         }
+    }
+
+    if let (Some(out), true) = (shots.as_deref(), history) {
+        // The strip renders the document's own change graph, so a shot of it is
+        // only worth anything over a document that has one. Give the document a
+        // few authored revisions first, through the same editing path a user
+        // takes, then open the strip.
+        let (mut state, mut wp) = build_concrete(file.as_deref())?;
+        seed_revisions(&mut state, &mut wp);
+        render_shot(state, Box::new(wp), (1000, 700), Path::new(out))?;
+        return Ok(());
     }
 
     let (mut state, widget) = build(file.as_deref())?;
@@ -87,6 +105,67 @@ fn main() -> Result<(), Box<dyn Error>> {
         app.run();
     }
     Ok(())
+}
+
+/// Give `widget`'s document a short authored history, so `--shots --history`
+/// has something real to draw.
+///
+/// Every revision goes through the editor's own model and is committed the way
+/// `App::commit_action` commits, and the middle one is authored by a second
+/// identity the way a peer's edit arrives — forked, edited under its own actor,
+/// merged back. Nothing here seeds the history *pane*: it seeds the
+/// **document**, and the pane derives its rows from the resulting change graph
+/// exactly as it does for a document a user typed.
+fn seed_revisions(state: &mut State, wp: &mut WordProcessorWidget) {
+    state
+        .doc
+        .set_actor(automerge::ActorId::from("alice".as_bytes()));
+    wp.sync(&mut state.doc, &state.root);
+    state.commit_action(None, None);
+
+    wp.model_mut()
+        .insert_str(&mut state.doc, "Quarterly report");
+    wp.model_mut()
+        .set_paragraph_style(&mut state.doc, "heading", Some(1), None);
+    wp.model_mut().enter(&mut state.doc);
+    wp.model_mut()
+        .set_paragraph_style(&mut state.doc, "paragraph", None, None);
+    wp.model_mut()
+        .insert_str(&mut state.doc, "Revenue held steady through the quarter.");
+    state.commit_action(None, None);
+
+    // A collaborator's revision, merged the way a peer's sync arrives.
+    let mut peer = state.doc.fork();
+    peer.set_actor(automerge::ActorId::from("bob".as_bytes()));
+    {
+        let c = qdoc::model::open(&peer, &state.root).expect("qdoc schema");
+        let blocks = qdoc::model::materialize(&peer, &c).blocks;
+        let last = blocks.last().expect("a paragraph to append to");
+        let at = last.text.chars().count();
+        let mut ids = qdoc::IdGen::new(peer.get_actor().to_hex_string());
+        let mut dm = qdoc::DocMut { doc: &mut peer, c: &c, ids: &mut ids };
+        dm.splice_text(&last.id, at, 0, " Costs fell by four percent.");
+    }
+    qdoc::history::commit_stamped(&mut peer);
+    state.doc.merge(&mut peer).expect("peers merge");
+
+    wp.sync(&mut state.doc, &state.root);
+    wp.model_mut()
+        .insert_str(&mut state.doc, " Headcount is unchanged.");
+    state.commit_action(None, None);
+    wp.toggle_history(&mut state.doc);
+    wp.sync(&mut state.doc, &state.root);
+}
+
+/// Like [`build`] but keeps the concrete widget type.
+fn build_concrete(file: Option<&Path>) -> Result<(State, WordProcessorWidget), Box<dyn Error>> {
+    match file {
+        Some(p) => {
+            let (state, widget, _fmt) = open_document(p)?;
+            Ok((state, widget))
+        }
+        None => Ok((State::new(), WordProcessorWidget::new())),
+    }
 }
 
 /// Build the document state + widget: open `file` if given, else a blank doc.
