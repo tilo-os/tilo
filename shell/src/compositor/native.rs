@@ -1595,7 +1595,15 @@ pub fn run() -> ! {
                 eprintln!(
                     "paint-stats: {frames_painted}/{frames_total} painted | \
                      events={cause_events} revision={cause_revision} anim={cause_anim} \
-                     session={cause_session} keepalive={cause_keepalive}"
+                     session={cause_session} keepalive={cause_keepalive} | \
+                     {:.3} Hz target, missed={} | present={} backpressure={}",
+                    1.0 / frame_clock.interval().as_secs_f64(),
+                    frame_clock.missed_deadlines(),
+                    present_pipe
+                        .as_ref()
+                        .map(|p| p.presented().to_string())
+                        .unwrap_or_else(|| "inline".to_string()),
+                    present_pipe.as_ref().map(|p| p.backpressured()).unwrap_or(0),
                 );
                 frames_total = 0;
                 frames_painted = 0;
@@ -1740,6 +1748,7 @@ pub fn run() -> ! {
                     &mut session,
                     &mut lock,
                     backend.as_mut(),
+                    present_pipe.as_ref(),
                     &mut state,
                 );
                 if injected {
@@ -1789,8 +1798,25 @@ pub fn run() -> ! {
         // included) and sleep up to one frame. The calloop loop itself
         // dispatches sources on each iteration; this is what lets
         // newly-accepted connections fan out into `insert_client` calls.
+        // Park until the next presentation deadline — the *remainder* of
+        // the interval, not a fresh one. This is the half of the pacing
+        // fix that lives in the loop: `budget` is measured from the
+        // deadline the clock advanced when the frame was submitted, so a
+        // tick that spent 6 ms working parks 10.7 ms and the next tick
+        // starts one interval after this one did.
+        //
+        // A tick that presented nothing has a stale deadline and would
+        // get a zero budget, which would spin the loop at 100% CPU. There
+        // is nothing to show, so park a whole interval instead: the loop
+        // still wakes at display rate to poll input and protocol traffic,
+        // it just doesn't render.
+        let park = if should_paint {
+            frame_clock.budget(Instant::now())
+        } else {
+            frame_clock.interval()
+        };
         let t_sleep_start = Instant::now();
-        if let Err(err) = event_loop.dispatch(frame_period, &mut state) {
+        if let Err(err) = event_loop.dispatch(park, &mut state) {
             eprintln!("nirios compositor: event loop dispatch error: {err}");
             break;
         }
@@ -1820,6 +1846,13 @@ pub fn run() -> ! {
                 }
             }
         }
+    }
+
+    // Stop the render thread and wait for the frame in flight, so a
+    // half-presented frame can't outlive the device it was rendering
+    // into. `process::exit` below skips destructors, so this is explicit.
+    if let Some(mut pipe) = present_pipe.take() {
+        pipe.shutdown();
     }
 
     // Flush the frame trace / write the summary before `process::exit`
