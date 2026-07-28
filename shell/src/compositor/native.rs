@@ -47,6 +47,8 @@ use crate::compositor::lock_auth;
 use crate::compositor::lock_controller::{LockController, LockKey, UnlockOutcome};
 use crate::compositor::lock_screen::{self, LockView};
 use crate::compositor::metrics;
+use crate::compositor::pacing;
+use crate::compositor::present;
 use crate::compositor::state::{ClientState, State};
 use crate::compositor::test_control::{
     self, ControlState, KeyTag, NamedKeyTag, PlannedAction, parse_command, serialise_response,
@@ -677,14 +679,21 @@ fn pump_test_control_conn(
     session: &mut SessionManager,
     lock: &mut LockController,
     backend: &mut dyn Backend,
+    pipe: Option<&present::PresentPipe>,
     state: &mut State,
-) {
+) -> bool {
+    // Whether any command on this connection produced a `PlannedAction`
+    // — i.e. synthesised input the next painted frame has to reflect.
+    // The frame-loop instrumentation uses it to start an input-latency
+    // measurement, so a socket-driven harness measures the same
+    // input-to-present path a physical keystroke takes.
+    let mut injected_input = false;
     loop {
         let mut line = String::new();
         match read_bounded_line(&mut conn.reader, &mut line, TEST_CONTROL_MAX_LINE_BYTES) {
             Ok(None) => {
                 conn.closed = true;
-                return;
+                return injected_input;
             }
             Ok(Some(())) => {
                 let (resp, actions) = match parse_command(&line) {
@@ -701,7 +710,7 @@ fn pump_test_control_conn(
                         // to the password field, never to the hidden chrome.
                         if execute_locked_action(action, lock) == UnlockOutcome::Unlocked {
                             for t in session.request_unlock(Instant::now()) {
-                                apply_session_transition(t, backend);
+                                apply_session_transition(t, backend, pipe);
                             }
                         }
                     } else {
@@ -715,6 +724,7 @@ fn pump_test_control_conn(
                 // next command sees stale rects from the previous
                 // frame.
                 if !actions.is_empty() {
+                    injected_input = true;
                     frame_builder.relayout();
                 }
                 let mut out = serialise_response(&resp);
@@ -722,21 +732,21 @@ fn pump_test_control_conn(
                 if let Err(e) = conn.reader.get_mut().write_all(out.as_bytes()) {
                     eprintln!("nirios compositor: test_control write: {e}");
                     conn.closed = true;
-                    return;
+                    return injected_input;
                 }
             }
             Err(ReadLineError::TooLarge) => {
                 tracing::warn!("test_control: client sent oversized line; dropping connection");
                 conn.closed = true;
-                return;
+                return injected_input;
             }
             Err(ReadLineError::Io(e)) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                return;
+                return injected_input;
             }
             Err(ReadLineError::Io(e)) => {
                 eprintln!("nirios compositor: test_control read: {e}");
                 conn.closed = true;
-                return;
+                return injected_input;
             }
         }
     }
@@ -747,10 +757,31 @@ fn pump_test_control_conn(
 /// `Blanked` / `Woke` drive the backend's DPMS (no-op on winit /
 /// headless); `Locked` / `Unlocked` are pure state the paint path reads
 /// via `SessionManager::is_locked`, so they need no backend call here.
-fn apply_session_transition(transition: SessionTransition, backend: &mut dyn Backend) {
+/// When presentation has been split onto a render thread, the display
+/// hardware went with it, so `pipe` is where the DPMS change has to land.
+/// It is sent on the same channel as frames, so a blank can never
+/// overtake a frame already queued — the panel cannot light up showing
+/// content the session believes it suppressed. The backend call is kept
+/// for the inline path (and for the parts of a split backend that stayed
+/// behind).
+fn apply_session_transition(
+    transition: SessionTransition,
+    backend: &mut dyn Backend,
+    pipe: Option<&present::PresentPipe>,
+) {
     match transition {
-        SessionTransition::Blanked => backend.set_dpms(false),
-        SessionTransition::Woke => backend.set_dpms(true),
+        SessionTransition::Blanked => {
+            backend.set_dpms(false);
+            if let Some(p) = pipe {
+                p.set_dpms(false);
+            }
+        }
+        SessionTransition::Woke => {
+            backend.set_dpms(true);
+            if let Some(p) = pipe {
+                p.set_dpms(true);
+            }
+        }
         // Lock/Unlock are reflected via `SessionManager::is_locked`;
         // Suspend is gated by the inhibitor registry + issued through the
         // power service at the call site, never here.
@@ -1138,7 +1169,42 @@ pub fn run() -> ! {
     }
 
     let mut close_requested = false;
-    let frame_period = Duration::from_millis(16);
+
+    // Presentation cadence. The loop used to park a hard-coded 16 ms
+    // *after* each tick's work, so the real period was `work + 16 ms`
+    // (measured: 21.9 ms, i.e. 45.6 Hz) and no display's actual rate ever
+    // entered into it. `FrameClock` replaces both halves: the interval
+    // comes from the backend's display, and the park is the remainder of
+    // the interval rather than a fresh one. See `compositor::pacing`.
+    let mut frame_clock = match backend.refresh_interval() {
+        Some(interval) => {
+            eprintln!(
+                "nirios compositor: pacing to {:.3} Hz from the display",
+                1.0 / interval.as_secs_f64()
+            );
+            pacing::FrameClock::new(interval, Instant::now())
+        }
+        None => {
+            // No display to follow — the headless backend, or a host that
+            // won't say. Fall back rather than invent a rate.
+            eprintln!(
+                "nirios compositor: backend reports no refresh rate; pacing to {:.3} Hz",
+                1.0 / pacing::FALLBACK_INTERVAL.as_secs_f64()
+            );
+            pacing::FrameClock::fallback(Instant::now())
+        }
+    };
+    let frame_period = frame_clock.interval();
+
+    // Move presentation onto its own thread where the backend supports
+    // it (winit, drm). The headless backend deliberately declines — its
+    // rendered bytes are read back synchronously by the test-control
+    // `snapshot` command — and then `backend.submit_frame` keeps running
+    // inline exactly as before. See `compositor::present`.
+    let mut present_pipe = backend.take_presenter().map(|p| {
+        eprintln!("nirios compositor: presenting on a dedicated render thread");
+        present::PresentPipe::spawn(p)
+    });
     // Reused per-iteration scratch so backend events can be processed
     // *after* `poll_events` returns — the input arm needs `&mut backend`
     // (for `set_dpms`) which can't be borrowed inside the poll closure.
@@ -1205,6 +1271,14 @@ pub fn run() -> ! {
                         // Keep the size used for fullscreen configures in sync
                         // so a fullscreened client fills the current output.
                         state.output_size = (size.0 as i32, size.1 as i32);
+                        // The swap chain lives on the render thread now, so
+                        // the reconfigure travels with the frames rather
+                        // than happening inline in the backend's event
+                        // handler — that keeps it ordered against any frame
+                        // already queued at the old size.
+                        if let Some(pipe) = present_pipe.as_ref() {
+                            pipe.resize(size);
+                        }
                     }
                 }
                 BackendEvent::Input(wev) => {
@@ -1215,7 +1289,7 @@ pub fn run() -> ! {
                     // Track D2: any input is activity — reset the idle
                     // timer and wake the display if it was blanked.
                     for t in session.note_activity(Instant::now()) {
-                        apply_session_transition(t, backend.as_mut());
+                        apply_session_transition(t, backend.as_mut(), present_pipe.as_ref());
                     }
 
                     if session.is_locked() {
@@ -1229,7 +1303,7 @@ pub fn run() -> ! {
                         let key = winit_event_to_lock_key(&wev);
                         if lock.handle_key(key) == UnlockOutcome::Unlocked {
                             for t in session.request_unlock(Instant::now()) {
-                                apply_session_transition(t, backend.as_mut());
+                                apply_session_transition(t, backend.as_mut(), present_pipe.as_ref());
                             }
                         }
                         // Any keystroke changes the masked field / error, so
@@ -1247,7 +1321,7 @@ pub fn run() -> ! {
                             }
                             Some(qos_power_mgmt::PowerAction::Lock) => {
                                 for t in session.request_lock(Instant::now()) {
-                                    apply_session_transition(t, backend.as_mut());
+                                    apply_session_transition(t, backend.as_mut(), present_pipe.as_ref());
                                 }
                             }
                             Some(qos_power_mgmt::PowerAction::Ignore) | None => {}
@@ -1255,7 +1329,7 @@ pub fn run() -> ! {
                     } else if is_lock_chord(&wev, &test_control_ctx.modifiers) {
                         // Super+L locks immediately.
                         for t in session.request_lock(Instant::now()) {
-                            apply_session_transition(t, backend.as_mut());
+                            apply_session_transition(t, backend.as_mut(), present_pipe.as_ref());
                         }
                     } else {
                         // Backends that don't pair a `ModifiersChanged`
@@ -1331,7 +1405,7 @@ pub fn run() -> ! {
                     power_bridge.request_suspend();
                 }
             } else {
-                apply_session_transition(t, backend.as_mut());
+                apply_session_transition(t, backend.as_mut(), present_pipe.as_ref());
             }
             // Any session transition (blank / lock / suspend) changes what
             // should be on screen, so force this tick to repaint.
@@ -1346,14 +1420,14 @@ pub fn run() -> ! {
             match sig {
                 qos_power_mgmt::PowerSignal::Lock => {
                     for t in session.request_lock(Instant::now()) {
-                        apply_session_transition(t, backend.as_mut());
+                        apply_session_transition(t, backend.as_mut(), present_pipe.as_ref());
                     }
                 }
                 qos_power_mgmt::PowerSignal::ResumedFromSleep => {
                     // Reset the idle timer so a stale pre-sleep timestamp does
                     // not immediately re-blank/re-suspend on resume.
                     for t in session.note_activity(Instant::now()) {
-                        apply_session_transition(t, backend.as_mut());
+                        apply_session_transition(t, backend.as_mut(), present_pipe.as_ref());
                     }
                 }
                 qos_power_mgmt::PowerSignal::Notify(n) => {
@@ -1374,13 +1448,13 @@ pub fn run() -> ! {
         if state.session_lock.take_lock_requested() {
             session_changed = true;
             for t in session.request_lock(Instant::now()) {
-                apply_session_transition(t, backend.as_mut());
+                apply_session_transition(t, backend.as_mut(), present_pipe.as_ref());
             }
         }
         if state.session_lock.take_unlock_requested() {
             session_changed = true;
             for t in session.request_unlock(Instant::now()) {
-                apply_session_transition(t, backend.as_mut());
+                apply_session_transition(t, backend.as_mut(), present_pipe.as_ref());
             }
         }
 
@@ -1461,13 +1535,35 @@ pub fn run() -> ! {
         let animating = frame_builder.needs_animation_frame();
         let keepalive_due = last_paint.elapsed() >= keepalive;
         metrics.mark_pump(iter_t0.elapsed() - t_input_done);
-        let should_paint = force_first_paint
+        // Is there anything new to show? This is the redraw gating that
+        // lets a static desktop idle at near-zero CPU; it is orthogonal
+        // to *when* a frame may be shown, which is the clock's job below.
+        let content_changed = force_first_paint
             || had_backend_events
             || session_changed
             || revision_changed
             || animating
             || apps_changed
             || keepalive_due;
+        // May a frame be shown yet? Protocol traffic, test-control
+        // commands and input all wake the loop off-cadence; presenting
+        // on those wakeups would submit frames inside a refresh interval
+        // that the display simply discards — and, with a render thread,
+        // would fill the queue with them. The first frame is exempt so
+        // startup isn't delayed by an interval.
+        let cadence_due = force_first_paint || frame_clock.due(iter_t0);
+        // Is there room in the pipe? When presentation runs on its own
+        // thread and the GPU is behind, building another scene would only
+        // grow the queue — and with it the input-to-photon path. Declining
+        // here caps that at `QUEUE_DEPTH + 1` frames; the tick still
+        // services input and clients, it just doesn't render.
+        let pipe_ready = present_pipe.as_ref().is_none_or(|p| p.has_capacity());
+        if content_changed && cadence_due && !pipe_ready {
+            if let Some(p) = present_pipe.as_mut() {
+                p.note_backpressure();
+            }
+        }
+        let should_paint = content_changed && cadence_due && pipe_ready;
 
         // Diagnostic: `QOS_PAINT_STATS=1` logs, every ~2 s, how many
         // frames painted vs idled and which condition forced the repaints.
@@ -1551,13 +1647,40 @@ pub fn run() -> ! {
             };
             metrics.mark_scene(t_scene_start.elapsed());
             let t_submit_start = Instant::now();
-            backend.submit_frame(&scene, OutputId(0));
+            let mut render_thread_lost = false;
+            let async_present = match present_pipe.as_mut() {
+                Some(pipe) => {
+                    render_thread_lost = !pipe.submit(scene, OutputId(0));
+                    true
+                }
+                None => {
+                    backend.submit_frame(&scene, OutputId(0));
+                    false
+                }
+            };
+            if render_thread_lost {
+                // Presentation is dead but the session isn't: clients stay
+                // served and the compositor keeps its protocol state, which
+                // is a far better failure mode than tearing the seat down.
+                eprintln!(
+                    "nirios compositor: render thread gone; presentation stopped \
+                     (clients keep running)"
+                );
+                present_pipe = None;
+            }
             let submit_done = Instant::now();
             metrics.mark_submit(
                 submit_done.saturating_duration_since(t_submit_start),
-                false,
+                async_present,
                 submit_done,
             );
+            // Advance the deadline series off the moment the frame was
+            // handed to the display. On the inline path that is the
+            // present itself; on the threaded path it is the hand-off,
+            // which is the last instant the logic thread can observe —
+            // the clock's job is to pace *production*, and the render
+            // thread's own vsync wait paces consumption behind it.
+            frame_clock.note_presented(submit_done);
             last_paint = Instant::now();
             // Re-read after `relayout`: its `resync_strips_from_tree` pass
             // can bump the revision, and we must capture that post-paint
@@ -1610,7 +1733,7 @@ pub fn run() -> ! {
                 }
             }
             for conn in test_control_conns.iter_mut() {
-                pump_test_control_conn(
+                let injected = pump_test_control_conn(
                     conn,
                     &mut frame_builder,
                     &mut test_control_ctx,
@@ -1619,6 +1742,16 @@ pub fn run() -> ! {
                     backend.as_mut(),
                     &mut state,
                 );
+                if injected {
+                    // Socket-driven input starts the same latency clock a
+                    // hardware event does, so a headless harness measures
+                    // the real input-to-present path. The socket is
+                    // serviced *after* this tick's paint gate, so the
+                    // frame reflecting it is the next one — which is
+                    // exactly the latency a caller experiences, and is
+                    // what the measurement should report.
+                    metrics.note_input(Instant::now());
+                }
             }
             test_control_conns.retain(|c| !c.closed);
         }
@@ -2251,10 +2384,10 @@ mod tests {
         }
 
         let mut backend = SpyBackend::default();
-        apply_session_transition(SessionTransition::Blanked, &mut backend);
-        apply_session_transition(SessionTransition::Woke, &mut backend);
-        apply_session_transition(SessionTransition::Locked, &mut backend);
-        apply_session_transition(SessionTransition::Unlocked, &mut backend);
+        apply_session_transition(SessionTransition::Blanked, &mut backend, None);
+        apply_session_transition(SessionTransition::Woke, &mut backend, None);
+        apply_session_transition(SessionTransition::Locked, &mut backend, None);
+        apply_session_transition(SessionTransition::Unlocked, &mut backend, None);
         // Blanked → set_dpms(false), Woke → set_dpms(true); Locked /
         // Unlocked produce no backend calls.
         assert_eq!(backend.dpms_calls, vec![false, true]);
