@@ -37,7 +37,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
     if let Some(out) = parse_shots_arg(&args) {
         let viewport = parse_viewport(&args).unwrap_or(DEFAULT_SHOTS_VIEWPORT);
-        let mut app = ApiTesterApp::new();
+        let mut app = ApiTesterApp::new_demo();
         // Snap the rail to a settled state so the single frame is
         // deterministic: open it for the narrow overlay capture, otherwise
         // leave the docked default (open) alone.
