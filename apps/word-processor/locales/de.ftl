@@ -172,3 +172,5 @@ layout-spacing-readout = Abstand für { $name }  { $px } px   ·   Griff ziehen 
 page-indicator = Seite { $n }
 canvas-image-missing = Bild
 canvas-embedded-content = ⟦ eingebetteter Inhalt ⟧
+toolbar-history = Verlauf
+a11y-version-history = Versionsverlauf
