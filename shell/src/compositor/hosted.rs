@@ -287,7 +287,7 @@ pub fn run_with_full_options(opts: HostedOptions) {
         match serve_result {
             Ok(h) => {
                 tracing::info!(
-                    "portal: serving FileChooser+ScreenCast+Access on {}",
+                    "portal: serving FileChooser+ScreenCast+RemoteDesktop+Access on {}",
                     crate::portal::BUS_NAME
                 );
                 _portal_handle = Some(h);

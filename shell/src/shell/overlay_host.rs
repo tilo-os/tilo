@@ -4679,6 +4679,7 @@ fn capability_label(cap: &Capability) -> String {
         Capability::Camera { .. } => "Camera access".to_string(),
         Capability::Microphone { .. } => "Microphone access".to_string(),
         Capability::Screencast { .. } => "Screen capture".to_string(),
+        Capability::RemoteDesktop { .. } => "Remote control (pointer + keyboard)".to_string(),
         Capability::Network { hosts, .. } => match hosts {
             Some(h) if !h.is_empty() => format!("Network access to {}", h.join(", ")),
             _ => "Network access".to_string(),
@@ -4696,6 +4697,7 @@ fn with_grant_scope(cap: Capability, scope: GrantScope) -> Capability {
         Capability::Camera { .. } => Capability::Camera { scope },
         Capability::Microphone { .. } => Capability::Microphone { scope },
         Capability::Screencast { .. } => Capability::Screencast { scope },
+        Capability::RemoteDesktop { .. } => Capability::RemoteDesktop { scope },
         Capability::Network { hosts, .. } => Capability::Network { hosts, scope },
     }
 }

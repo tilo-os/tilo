@@ -44,6 +44,7 @@ EXPECTED_BUS_NAME="org.freedesktop.impl.portal.desktop.qos"
 EXPECTED_INTERFACES=(
     "org.freedesktop.impl.portal.FileChooser"
     "org.freedesktop.impl.portal.ScreenCast"
+    "org.freedesktop.impl.portal.RemoteDesktop"
     "org.freedesktop.impl.portal.Access"
 )
 

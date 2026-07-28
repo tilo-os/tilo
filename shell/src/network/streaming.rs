@@ -909,4 +909,116 @@ mod tests {
         // throttle blocked `take_latest` from running.
         assert!(!tracker.is_empty_for(SURFACE));
     }
+
+    /// A RemoteDesktop `NotifyPointerMotionAbsolute` decoded into a
+    /// [`RemoteAction`] must reach the real smithay seat — proven by the
+    /// pointer's logical location, the same observable
+    /// `apply_remote_input_pointer_motion_reaches_seat` uses. This is the
+    /// portal `RemoteDesktop` counterpart of that peer-sync test.
+    #[test]
+    fn apply_remote_desktop_absolute_motion_reaches_seat() {
+        use crate::compositor::state::State;
+        use crate::network::streaming::RemoteAction;
+        use smithay::reexports::calloop::EventLoop;
+        use smithay::reexports::wayland_server::Display;
+
+        let event_loop: EventLoop<'static, State> =
+            EventLoop::try_new().expect("calloop event loop");
+        let display: Display<State> = Display::new().expect("wayland display");
+        let mut state = State::new(event_loop.handle(), display.handle());
+
+        let applied = state.apply_remote_desktop_action(
+            RemoteAction::PointerMotionAbsolute {
+                stream: 1,
+                x: 200.0,
+                y: 150.0,
+            },
+        );
+        assert!(applied, "absolute motion must reach the seat pointer");
+        let loc = state.seat.get_pointer().unwrap().current_location();
+        assert_eq!((loc.x, loc.y), (200.0, 150.0));
+
+        // Relative motion accumulates on top of the current location.
+        let _ = state.apply_remote_desktop_action(RemoteAction::PointerMotionRelative {
+            dx: -50.0,
+            dy: 25.0,
+        });
+        let loc2 = state.seat.get_pointer().unwrap().current_location();
+        assert_eq!((loc2.x, loc2.y), (150.0, 175.0));
+    }
+
+    /// A RemoteDesktop `NotifyKeyboardKeycode` reaches the seat keyboard —
+    /// the keycode appears in `pressed_keys()` after a press and clears on
+    /// release.
+    #[test]
+    fn apply_remote_desktop_keycode_reaches_keyboard() {
+        use crate::compositor::state::State;
+        use crate::network::streaming::RemoteAction;
+        use smithay::reexports::calloop::EventLoop;
+        use smithay::reexports::wayland_server::Display;
+
+        let event_loop: EventLoop<'static, State> =
+            EventLoop::try_new().expect("calloop event loop");
+        let display: Display<State> = Display::new().expect("wayland display");
+        let mut state = State::new(event_loop.handle(), display.handle());
+
+        let kc: i32 = 30; // 'a' keycode
+        assert!(state.apply_remote_desktop_action(RemoteAction::KeyboardKeycode {
+            keycode: kc,
+            pressed: true,
+        }));
+        {
+            let kb = state.seat.get_keyboard().expect("keyboard on seat");
+            assert!(
+                kb.pressed_keys().iter().any(|k| u32::from(*k) == kc as u32),
+                "keycode did not reach the seat keyboard",
+            );
+        }
+        let _ = state.apply_remote_desktop_action(RemoteAction::KeyboardKeycode {
+            keycode: kc,
+            pressed: false,
+        });
+        let kb = state.seat.get_keyboard().expect("keyboard on seat");
+        assert!(
+            !kb.pressed_keys().iter().any(|k| u32::from(*k) == kc as u32),
+            "release must clear the pressed key",
+        );
+    }
+
+    /// End-to-end production path: a [`ChannelInjector`] carries a decoded
+    /// action to the compositor loop, which drains it into
+    /// `apply_remote_desktop_action` and drives the real seat. This is the
+    /// wiring `serve()` uses for RemoteDesktop in the hosted compositor.
+    #[test]
+    fn remote_desktop_channel_injector_drives_the_seat() {
+        use crate::compositor::state::State;
+        use crate::network::streaming::RemoteAction;
+        use crate::portal::{ChannelInjector, RemoteInputInjector};
+        use smithay::reexports::calloop::EventLoop;
+        use smithay::reexports::wayland_server::Display;
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let injector = ChannelInjector::new(tx);
+        // The portal `Notify*` handler side: forward the decoded action.
+        assert!(injector.inject(RemoteAction::PointerMotionAbsolute {
+            stream: 1,
+            x: 77.0,
+            y: 88.0,
+        }));
+
+        // The compositor-loop side: drain + apply to the live seat.
+        let event_loop: EventLoop<'static, State> =
+            EventLoop::try_new().expect("calloop event loop");
+        let display: Display<State> = Display::new().expect("wayland display");
+        let mut state = State::new(event_loop.handle(), display.handle());
+        while let Ok(action) = rx.try_recv() {
+            state.apply_remote_desktop_action(action);
+        }
+        let loc = state.seat.get_pointer().unwrap().current_location();
+        assert_eq!(
+            (loc.x, loc.y),
+            (77.0, 88.0),
+            "channel injector → loop drain → seat must move the pointer"
+        );
+    }
 }
