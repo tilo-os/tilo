@@ -13,30 +13,30 @@ pkg = { path = "../pkg" }
 
 # Content-addressed blob transport — the SAME stack the FUSE filesystem
 # uses, so a qpkg blob is downloaded once and deduped across every app.
-iroh = "0.96.1"
-iroh-base = "0.96.1"
-iroh-blobs = "0.98.0"
+iroh.workspace = true
+iroh-base.workspace = true
+iroh-blobs.workspace = true
 
 # The index document is fetched over HTTPS (static/self-hostable); the
 # blob is fetched over iroh. Both async.
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs", "io-util", "time", "sync"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "fs", "io-util", "time", "sync"] }
 # rustls-tls only (no openssl / native-tls) to match the rest of the tree.
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+reqwest = { workspace = true, features = ["rustls-tls"] }
 
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-toml = "0.8"
-dirs = "5"
-hex = "0.4"
-blake3 = "1.8.5"
-bytes = "1"
-tar = "0.4"
-ed25519-dalek = { version = "2", features = ["rand_core"] }
-semver = "1"
-thiserror = "1"
-anyhow = "1"
-tracing = "0.1"
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+dirs.workspace = true
+hex.workspace = true
+blake3.workspace = true
+bytes.workspace = true
+tar.workspace = true
+ed25519-dalek = { workspace = true, features = ["rand_core"] }
+semver.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
 
 [dev-dependencies]
-tempfile = "3"
-tokio = { version = "1", features = ["full"] }
+tempfile.workspace = true
+tokio = { workspace = true, features = ["full"] }

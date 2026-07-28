@@ -21,19 +21,19 @@ name = "launcher"
 path = "src/lib.rs"
 
 [dependencies]
-clap = { version = "4", features = ["derive"] }
-serde = { version = "1", features = ["derive"] }
+clap.workspace = true
+serde.workspace = true
 # Also how `gpu.rs` reads an EGL vendor / Vulkan ICD manifest's
 # `library_path` to match an installed driver to the compositor's
 # chosen render node.
-serde_json = "1"
-toml = "0.8"
-thiserror = "1"
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-libc = "0.2"
-seccompiler = "0.5"
-landlock = "0.4"
+serde_json.workspace = true
+toml.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+libc.workspace = true
+seccompiler.workspace = true
+landlock.workspace = true
 runtime-bundle = { path = "../runtime-bundle" }
 # The canonical manifest schema. The launcher still carries its own
 # `MinimalManifest` decoder, but security-relevant enums that both
@@ -47,8 +47,8 @@ pkg = { path = "../pkg" }
 collab-types = { path = "../../collab/collab-types" }
 
 [dev-dependencies]
-tempfile = "3"
+tempfile.workspace = true
 # `HOME` / `XDG_CONFIG_HOME` are process-wide, so the tests that set them
 # have to be serialised against each other across modules. Same pattern
 # (and same crate) the shell uses for its static-state tests.
-serial_test = "3"
+serial_test.workspace = true
