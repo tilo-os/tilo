@@ -108,9 +108,7 @@ impl OpenError {
                 }
             }
             OpenError::Launch(e) => e.user_message(),
-            OpenError::NoWorkspace => {
-                "there is no active workspace to open it in".to_string()
-            }
+            OpenError::NoWorkspace => "there is no active workspace to open it in".to_string(),
         }
     }
 }
@@ -202,9 +200,8 @@ pub fn open_in_workspace(path: &Path, chrome: &Chrome) -> Result<InstalledApp, O
     let launched = {
         let st = chrome.borrow();
         let tree = st.tree();
-        tree.active_workspace().map(|ws| {
-            launcher::launch_document_in_workspace(&app.package_id, ws, Some(path))
-        })
+        tree.active_workspace()
+            .map(|ws| launcher::launch_document_in_workspace(&app.package_id, ws, Some(path)))
     };
     match launched {
         Some(Ok(app)) => Ok(app),
@@ -226,14 +223,13 @@ fn focused_group(chrome: &Chrome) -> Option<crate::shell::state::GroupId> {
         .get(&ws.id)
         .copied()
         .or_else(|| ws.strips.first().map(|s| s.id))?;
-    tree.active_group_for(strip_id)
-        .or_else(|| {
-            ws.strips
-                .iter()
-                .find(|s| s.id == strip_id)
-                .and_then(|s| s.window_groups.first())
-                .map(|g| g.id)
-        })
+    tree.active_group_for(strip_id).or_else(|| {
+        ws.strips
+            .iter()
+            .find(|s| s.id == strip_id)
+            .and_then(|s| s.window_groups.first())
+            .map(|g| g.id)
+    })
 }
 
 /// Record "this app may read this file" in the active workspace.
@@ -241,11 +237,7 @@ fn focused_group(chrome: &Chrome) -> Option<crate::shell::state::GroupId> {
 /// Read-only and session-scoped, the same shape a file drop records.
 /// Skipped when a live grant already covers the path — reopening the
 /// same document must not pile up duplicate capabilities.
-fn grant_read_for_open(
-    package_id: &str,
-    path: &Path,
-    chrome: &Chrome,
-) -> Result<(), OpenError> {
+fn grant_read_for_open(package_id: &str, path: &Path, chrome: &Chrome) -> Result<(), OpenError> {
     use crate::shell::state::{Capability, FsMode, GRANT_SESSION};
 
     let ws_id = {
@@ -316,8 +308,7 @@ mod tests {
     }
 
     fn chrome_with_workspace() -> Chrome {
-        let handle: WorkspaceTreeHandle =
-            Arc::new(RwLock::new(WorkspaceTree::bootstrap_default()));
+        let handle: WorkspaceTreeHandle = Arc::new(RwLock::new(WorkspaceTree::bootstrap_default()));
         ChromeState::new_with_handle(handle)
     }
 
@@ -328,7 +319,12 @@ mod tests {
     #[serial_test::serial(process_env)]
     fn declared_extension_resolves_to_the_declaring_package() {
         let tmp = tempfile::tempdir().unwrap();
-        install(tmp.path(), "dev.qos.word-processor", "Word Processor", &["odt", "md"]);
+        install(
+            tmp.path(),
+            "dev.qos.word-processor",
+            "Word Processor",
+            &["odt", "md"],
+        );
         // SAFETY: guarded by the `process_env` serial group.
         unsafe { std::env::set_var("QOS_APPS_DATA_DIR", tmp.path()) };
         launcher::invalidate_app_cache();
@@ -401,7 +397,12 @@ mod tests {
         use crate::shell::state::{Effect, Scope, Subject};
 
         let tmp = tempfile::tempdir().unwrap();
-        install(tmp.path(), "dev.qos.word-processor", "Word Processor", &["odt"]);
+        install(
+            tmp.path(),
+            "dev.qos.word-processor",
+            "Word Processor",
+            &["odt"],
+        );
         // SAFETY: guarded by the `process_env` serial group.
         unsafe { std::env::set_var("QOS_APPS_DATA_DIR", tmp.path()) };
         launcher::invalidate_app_cache();
@@ -463,8 +464,8 @@ mod tests {
         launcher::invalidate_app_cache();
 
         let chrome = chrome_with_workspace();
-        let err = open_in_workspace(Path::new("/w/thing.zzz"), &chrome)
-            .expect_err("nothing claims .zzz");
+        let err =
+            open_in_workspace(Path::new("/w/thing.zzz"), &chrome).expect_err("nothing claims .zzz");
         assert_eq!(
             err,
             OpenError::NoHandler {

@@ -42,7 +42,6 @@ use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime};
 
-use ed25519_dalek::SigningKey;
 use collab_types::{
     ArtifactId, ArtifactKind, Attestation, AttestationId, ChannelId, ChannelState,
     CompactionCheckpoint, Ed25519PublicKey, EncryptionMetadata, OpClass, OpId, RedactRequest,
@@ -50,6 +49,7 @@ use collab_types::{
     encode_compaction_payload, encode_redact_payload, generate_keypair, hash_op_prefix,
     hash_target_op, parse_redact_payload, sign_event, sign_op,
 };
+use ed25519_dalek::SigningKey;
 use shell::shell::collab_broker;
 use ui::collaboration::{CollabEvent, CollabRequest};
 
@@ -63,9 +63,7 @@ fn write_frame<T: serde::Serialize>(stream: &mut UnixStream, v: &T) {
 }
 
 fn read_event(stream: &mut UnixStream, timeout: Duration) -> Option<CollabEvent> {
-    stream
-        .set_read_timeout(Some(timeout))
-        .expect("set timeout");
+    stream.set_read_timeout(Some(timeout)).expect("set timeout");
     let mut len_buf = [0u8; 4];
     stream.read_exact(&mut len_buf).ok()?;
     let len = u32::from_le_bytes(len_buf) as usize;
@@ -367,8 +365,7 @@ fn owner_can_redact_a_recent_op() {
             max: 10,
         },
     );
-    let event = read_event(&mut observer, Duration::from_millis(500))
-        .expect("ScrollbackBatch");
+    let event = read_event(&mut observer, Duration::from_millis(500)).expect("ScrollbackBatch");
     match event {
         CollabEvent::ScrollbackBatch { ops, .. } => {
             for op in ops {
@@ -538,13 +535,7 @@ fn redaction_persists_through_audit_log_across_compaction() {
 
     // Owner redacts op #2 (the middle one).
     let redact = build_redact_op(
-        &owner_sk,
-        owner_pk,
-        artifact,
-        owner_att,
-        &ops[1],
-        "policy",
-        10,
+        &owner_sk, owner_pk, artifact, owner_att, &ops[1], "policy", 10,
     );
     write_frame(
         &mut owner,
@@ -562,7 +553,11 @@ fn redaction_persists_through_audit_log_across_compaction() {
     // Owner now emits a Compaction covering ops 1..=3. The prefix
     // hash must be computed over the **original** envelope bytes
     // (design doc §4), not the post-redaction marker bytes.
-    let prefix = ops.iter().filter(|o| o.seq <= 3).cloned().collect::<Vec<_>>();
+    let prefix = ops
+        .iter()
+        .filter(|o| o.seq <= 3)
+        .cloned()
+        .collect::<Vec<_>>();
     let cp = CompactionCheckpoint {
         artifact,
         up_to_seq: 3,
@@ -677,8 +672,7 @@ fn redacted_op_is_filtered_from_scrollback() {
             max: 10,
         },
     );
-    let event = read_event(&mut observer, Duration::from_millis(500))
-        .expect("ScrollbackBatch");
+    let event = read_event(&mut observer, Duration::from_millis(500)).expect("ScrollbackBatch");
     match event {
         CollabEvent::ScrollbackBatch { ops, .. } => {
             let target_seq_op = ops
@@ -795,10 +789,9 @@ fn late_arriving_op_with_already_redacted_id_is_dropped() {
     // The audit log records OpAlreadyRedacted.
     let audit = handle.audit_for(artifact);
     assert!(
-        audit.iter().any(|e| matches!(
-            e.rejection,
-            Some(ValidationError::OpAlreadyRedacted { .. })
-        )),
+        audit
+            .iter()
+            .any(|e| matches!(e.rejection, Some(ValidationError::OpAlreadyRedacted { .. }))),
         "audit must record OpAlreadyRedacted, got {:?}",
         audit.iter().map(|e| &e.rejection).collect::<Vec<_>>(),
     );
@@ -947,13 +940,7 @@ fn recursive_redaction_is_rejected() {
 
     // 2) Owner redacts the Splice. This Redact lands in the op log.
     let first_redact = build_redact_op(
-        &owner_sk,
-        owner_pk,
-        artifact,
-        owner_att,
-        &target,
-        "first",
-        10,
+        &owner_sk, owner_pk, artifact, owner_att, &target, "first", 10,
     );
     write_frame(
         &mut owner,
@@ -1070,13 +1057,7 @@ fn audit_entry_carries_reason_and_redactor_pk() {
 
     let reason = "ACME-2026-04-17 — GDPR right-to-be-forgotten";
     let redact = build_redact_op(
-        &owner_sk,
-        owner_pk,
-        artifact,
-        owner_att,
-        &target,
-        reason,
-        99,
+        &owner_sk, owner_pk, artifact, owner_att, &target, reason, 99,
     );
     let redact_op_for_assert = redact.clone();
     write_frame(

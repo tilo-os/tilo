@@ -619,8 +619,7 @@ mod tests {
         // startup, minus the winit/drm backend.
         let event_loop: EventLoop<'static, State> =
             EventLoop::try_new().expect("calloop event loop");
-        let display: Display<State> =
-            Display::new().expect("wayland display");
+        let display: Display<State> = Display::new().expect("wayland display");
         let display_handle = display.handle();
         let mut state = State::new(event_loop.handle(), display_handle);
 
@@ -653,10 +652,7 @@ mod tests {
         let routed = state.apply_remote_input(
             peer,
             surface,
-            InputEvent::PointerMotion {
-                x: 123.0,
-                y: 456.0,
-            },
+            InputEvent::PointerMotion { x: 123.0, y: 456.0 },
         );
         assert!(routed, "share is read/write, motion must route");
 
@@ -679,11 +675,8 @@ mod tests {
 
         // A second motion shifts the pointer again — the seat is
         // mutating, not pinned at the first value.
-        let _ = state.apply_remote_input(
-            peer,
-            surface,
-            InputEvent::PointerMotion { x: 5.0, y: 6.0 },
-        );
+        let _ =
+            state.apply_remote_input(peer, surface, InputEvent::PointerMotion { x: 5.0, y: 6.0 });
         let after2 = state.seat.get_pointer().unwrap().current_location();
         assert_eq!((after2.x, after2.y), (5.0, 6.0));
     }
@@ -708,8 +701,7 @@ mod tests {
 
         let event_loop: EventLoop<'static, State> =
             EventLoop::try_new().expect("calloop event loop");
-        let display: Display<State> =
-            Display::new().expect("wayland display");
+        let display: Display<State> = Display::new().expect("wayland display");
         let display_handle = display.handle();
         let mut state = State::new(event_loop.handle(), display_handle);
 
@@ -793,8 +785,7 @@ mod tests {
 
         let event_loop: EventLoop<'static, State> =
             EventLoop::try_new().expect("calloop event loop");
-        let display: Display<State> =
-            Display::new().expect("wayland display");
+        let display: Display<State> = Display::new().expect("wayland display");
         let display_handle = display.handle();
         let mut state = State::new(event_loop.handle(), display_handle);
 
@@ -808,11 +799,7 @@ mod tests {
         assert!(state.remote_seats.seat(peer).is_none());
 
         // Enter grabs focus.
-        let routed = state.apply_remote_input(
-            peer,
-            surface,
-            InputEvent::PointerEnter { surface },
-        );
+        let routed = state.apply_remote_input(peer, surface, InputEvent::PointerEnter { surface });
         assert!(routed);
         let seat = state
             .remote_seats
@@ -821,11 +808,7 @@ mod tests {
         assert_eq!(seat.focused_surface, Some(surface));
 
         // Leave releases.
-        let _ = state.apply_remote_input(
-            peer,
-            surface,
-            InputEvent::PointerLeave { surface },
-        );
+        let _ = state.apply_remote_input(peer, surface, InputEvent::PointerLeave { surface });
         let seat = state
             .remote_seats
             .seat(peer)

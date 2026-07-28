@@ -32,7 +32,7 @@ mod scenario;
 use std::path::PathBuf;
 
 use driver::ShellDriver;
-use scenario::{catalogue, lookup, Scenario};
+use scenario::{Scenario, catalogue, lookup};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Mode {
@@ -47,8 +47,7 @@ enum Mode {
 /// Default sweep set used when `--sweep` is passed without an explicit
 /// list. Covers the four most common 16:9-ish target sizes; `800x600`
 /// surfaces the worst-case narrow viewport for sidebar overflow tests.
-const DEFAULT_SWEEP: &[(u32, u32)] =
-    &[(800, 600), (1280, 720), (1600, 900), (1920, 1080)];
+const DEFAULT_SWEEP: &[(u32, u32)] = &[(800, 600), (1280, 720), (1600, 900), (1920, 1080)];
 
 #[derive(Debug)]
 struct Args {
@@ -138,10 +137,12 @@ impl Args {
                         "offscreen" => Mode::Offscreen,
                         "headless" => Mode::Headless,
                         "recording" => Mode::Recording,
-                        other => return Err(format!(
-                            "--mode: unknown value '{other}' \
+                        other => {
+                            return Err(format!(
+                                "--mode: unknown value '{other}' \
                              (expected window|offscreen|headless|recording)"
-                        )),
+                            ));
+                        }
                     };
                 }
                 "--scenario" => {
@@ -311,9 +312,7 @@ impl Args {
             }
         }
         if mode == Mode::Window && (sweep.is_some() || per_frame.is_some()) {
-            return Err(
-                "--sweep / --per-frame are not supported in window mode".into(),
-            );
+            return Err("--sweep / --per-frame are not supported in window mode".into());
         }
         Ok(Args {
             mode,
@@ -457,7 +456,12 @@ fn main() {
     // for the rationale.
     let want_vello = std::env::var("QOS_STARTUP_WARM_VELLO")
         .ok()
-        .is_some_and(|v| !matches!(v.trim().to_ascii_lowercase().as_str(), "" | "0" | "off" | "false" | "no"));
+        .is_some_and(|v| {
+            !matches!(
+                v.trim().to_ascii_lowercase().as_str(),
+                "" | "0" | "off" | "false" | "no"
+            )
+        });
     let _warmup_handle = ui::warmup::spawn_warmup(!want_vello);
 
     let args = match Args::parse() {
@@ -510,12 +514,7 @@ fn run_capture_one(args: &Args, viewport: (u32, u32), out: &std::path::Path) {
             Some(name) => {
                 let scenario = require_scenario(name);
                 let mut driver = ShellDriver::new(viewport);
-                mode::offscreen::run_scenario(
-                    &mut driver,
-                    &scenario,
-                    out,
-                    args.per_frame,
-                );
+                mode::offscreen::run_scenario(&mut driver, &scenario, out, args.per_frame);
             }
             None => mode::offscreen::run_scenes(&args.scenes, out, viewport),
         },
@@ -592,19 +591,11 @@ fn run_check(args: &Args, baseline: &std::path::Path) -> i32 {
                         // expected steady state.
                         if px <= args.max_diff_pixels {
                             ok_count += 1;
-                            println!(
-                                "OK   {} ({} px within tolerance)",
-                                entry.path.display(),
-                                px,
-                            );
+                            println!("OK   {} ({} px within tolerance)", entry.path.display(), px,);
                         } else {
                             any_diff = true;
                             diff_count += 1;
-                            println!(
-                                "DIFF {} {} pixels differ",
-                                entry.path.display(),
-                                px,
-                            );
+                            println!("DIFF {} {} pixels differ", entry.path.display(), px,);
                         }
                     }
                     diff::DiffKind::Missing => {
@@ -631,16 +622,8 @@ fn run_check(args: &Args, baseline: &std::path::Path) -> i32 {
                     }
                 }
             }
-            println!(
-                "shots check: {} OK, {} diff(s)",
-                ok_count,
-                diff_count,
-            );
-            if any_diff {
-                1
-            } else {
-                0
-            }
+            println!("shots check: {} OK, {} diff(s)", ok_count, diff_count,);
+            if any_diff { 1 } else { 0 }
         }
         Err(e) => {
             eprintln!("shots check: {e}");
@@ -651,9 +634,7 @@ fn run_check(args: &Args, baseline: &std::path::Path) -> i32 {
 
 fn require_scenario(name: &str) -> Scenario {
     lookup(name).unwrap_or_else(|| {
-        eprintln!(
-            "shots: unknown scenario '{name}'. Try --list-scenarios to see the catalogue."
-        );
+        eprintln!("shots: unknown scenario '{name}'. Try --list-scenarios to see the catalogue.");
         std::process::exit(2);
     })
 }

@@ -25,18 +25,16 @@
 use std::collections::HashMap;
 
 use zbus::interface;
-use zbus::object_server::SignalContext;
 use zbus::names::OwnedUniqueName;
+use zbus::object_server::SignalContext;
 use zbus::zvariant::{ObjectPath, OwnedValue, Value};
 
 use crate::shell::state::{Capability, GRANT_ALWAYS, GRANT_ONCE, GRANT_SESSION};
 
-use super::screencast_pipewire::{PipewireStreamInfo, PipewireStreamRequest};
-use super::{
-    flow, file_chooser::FileChooserBackend, CapabilityKind, PortalCaller, PortalContext,
-};
 #[cfg(test)]
 use super::PromptOutcome;
+use super::screencast_pipewire::{PipewireStreamInfo, PipewireStreamRequest};
+use super::{CapabilityKind, PortalCaller, PortalContext, file_chooser::FileChooserBackend, flow};
 
 pub struct ScreenCastBackend {
     ctx: PortalContext,
@@ -79,16 +77,9 @@ impl ScreenCastBackend {
         tracing::debug!("ScreenCast.SelectSources: app={app_id}");
         let sender = hdr.sender().cloned().map(OwnedUniqueName::from);
         let caller = FileChooserBackend::resolve_caller(&self.ctx, sender.as_ref(), &app_id);
-        let cap_template = Capability::Screencast {
-            scope: GRANT_ONCE,
-        };
-        let outcome = flow::resolve(
-            &self.ctx,
-            caller,
-            CapabilityKind::Screencast,
-            cap_template,
-        )
-        .await;
+        let cap_template = Capability::Screencast { scope: GRANT_ONCE };
+        let outcome =
+            flow::resolve(&self.ctx, caller, CapabilityKind::Screencast, cap_template).await;
         let code = if outcome.is_allowed() { 0 } else { 1 };
         (code, HashMap::new())
     }
@@ -112,9 +103,7 @@ impl ScreenCastBackend {
         tracing::debug!("ScreenCast.Start: app={app_id}");
         let sender = hdr.sender().cloned().map(OwnedUniqueName::from);
         let caller = FileChooserBackend::resolve_caller(&self.ctx, sender.as_ref(), &app_id);
-        let cap_template = Capability::Screencast {
-            scope: GRANT_ONCE,
-        };
+        let cap_template = Capability::Screencast { scope: GRANT_ONCE };
         let outcome = flow::resolve(
             &self.ctx,
             caller.clone(),
@@ -168,9 +157,7 @@ fn build_stream_request(
 /// `(node_id, properties)`. v1 returns exactly one stream — the
 /// owner's composed scene — which is the same shape Phase 4 v1 used
 /// for peer-sync. Multi-surface composition lands in v2.
-fn start_response_with_stream(
-    info: PipewireStreamInfo,
-) -> (u32, HashMap<String, OwnedValue>) {
+fn start_response_with_stream(info: PipewireStreamInfo) -> (u32, HashMap<String, OwnedValue>) {
     let mut results: HashMap<String, OwnedValue> = HashMap::new();
     let streams: Vec<(u32, HashMap<String, OwnedValue>)> = vec![info.into_stream_tuple()];
     let v = Value::new(streams);
@@ -218,8 +205,7 @@ mod tests {
 
     #[test]
     fn start_allow_returns_response_zero_with_streams_key() {
-        let (code, results) =
-            outcome_to_start_response_for_tests(PromptOutcome::AllowOnce);
+        let (code, results) = outcome_to_start_response_for_tests(PromptOutcome::AllowOnce);
         assert_eq!(code, 0);
         assert!(results.contains_key("streams"));
     }
@@ -248,8 +234,7 @@ mod tests {
         let streams_v = results.get("streams").expect("streams");
         let cloned: OwnedValue = streams_v.try_clone().expect("clone");
         let streams: Vec<(u32, HashMap<String, OwnedValue>)> =
-            Vec::<(u32, HashMap<String, OwnedValue>)>::try_from(cloned)
-                .expect("Vec<(u32, dict)>");
+            Vec::<(u32, HashMap<String, OwnedValue>)>::try_from(cloned).expect("Vec<(u32, dict)>");
         assert_eq!(streams.len(), 1, "must emit exactly one stream");
         assert_eq!(streams[0].0, 99, "node id must round-trip");
         // The dict must carry `size`, `source_type`, `id`.
@@ -298,9 +283,7 @@ mod tests {
             grants: store,
             prompts: queue,
             caller_map: map,
-            file_picker: FilePickerSpawnerHandle::new(Arc::new(
-                NullFilePickerSpawner::cancel(),
-            )),
+            file_picker: FilePickerSpawnerHandle::new(Arc::new(NullFilePickerSpawner::cancel())),
             screencast_provisioner: sc_handle,
         };
         // Drive provisioning via the public flow rather than through

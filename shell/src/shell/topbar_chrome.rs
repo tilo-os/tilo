@@ -308,9 +308,7 @@ impl TopBarChrome {
         // collaborators whose name has no starting char and take at most
         // 3 — the rest flows into `collaborator_overflow`.
         let roster: &[crate::shell::state::Collaborator] = match active_ws {
-            Some(ws) if ws.collaborators.iter().any(|c| c.id != "me") => {
-                &ws.collaborators
-            }
+            Some(ws) if ws.collaborators.iter().any(|c| c.id != "me") => &ws.collaborators,
             _ => &tree.collaborators,
         };
         self.collaborator_initials.clear();
@@ -320,7 +318,9 @@ impl TopBarChrome {
         // agree (audit B-10).
         let peer_count = crate::shell::state::active_workspace_peer_count(tree);
         for c in roster.iter().filter(|c| c.id != "me").take(3) {
-            let Some(ch) = c.name.chars().next() else { continue };
+            let Some(ch) = c.name.chars().next() else {
+                continue;
+            };
             self.collaborator_initials.push(ch.to_ascii_uppercase());
             let (r, g, b) = c
                 .cursor_color
@@ -541,7 +541,11 @@ impl Widget for TopBarChrome {
             .is_some_and(|c| c.borrow().is_fullscreen());
         let node = taffy
             .new_leaf(Style {
-                display: if fullscreen { Display::None } else { Display::Flex },
+                display: if fullscreen {
+                    Display::None
+                } else {
+                    Display::Flex
+                },
                 size: Size {
                     width: Dimension::percent(1.0),
                     height: if fullscreen {
@@ -620,15 +624,22 @@ impl Widget for TopBarChrome {
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
 
-        scene.fill(Fill::NonZero, transform, colors.surfaces.overlay, None, &self.rect);
-
-        let border_rect = Rect::new(
-            self.rect.x0,
-            self.rect.y1 - 1.0,
-            self.rect.x1,
-            self.rect.y1,
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            colors.surfaces.overlay,
+            None,
+            &self.rect,
         );
-        scene.fill(Fill::NonZero, transform, colors.border_standard, None, &border_rect);
+
+        let border_rect = Rect::new(self.rect.x0, self.rect.y1 - 1.0, self.rect.x1, self.rect.y1);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            colors.border_standard,
+            None,
+            &border_rect,
+        );
 
         // Soft bottom shadow — masks the abrupt translucent-topbar →
         // exposed-backdrop transition that read as "noisy pixels"
@@ -705,7 +716,13 @@ impl Widget for TopBarChrome {
 
         // Vertical divider
         let divider = Rect::new(x, center_y - 8.0, x + 1.0, center_y + 8.0);
-        scene.fill(Fill::NonZero, transform, colors.border_standard, None, &divider);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            colors.border_standard,
+            None,
+            &divider,
+        );
         x += 1.0 + tokens.spacing.s2 as f64;
 
         // Up-chevron: lucide `ChevronUp` (gap #5). Drawn through
@@ -720,18 +737,17 @@ impl Widget for TopBarChrome {
             x + chev + 4.0,
             center_y + chev * 0.35 + 6.0,
         );
-        let up_icon_rect = Rect::new(
-            x,
-            center_y - chev / 2.0,
-            x + chev,
-            center_y + chev / 2.0,
-        );
+        let up_icon_rect = Rect::new(x, center_y - chev / 2.0, x + chev, center_y + chev / 2.0);
         ui::icons::draw_icon(
             scene,
             transform,
             up_icon_rect,
             ui::icons::Icon::ChevronUp,
-            if self.workspace_index == 0 { colors.border_standard } else { colors.text_dim },
+            if self.workspace_index == 0 {
+                colors.border_standard
+            } else {
+                colors.text_dim
+            },
             ui::icons::LUCIDE_DEFAULT_STROKE_PX,
         );
         x += chev + tokens.spacing.s2 as f64;
@@ -744,12 +760,7 @@ impl Widget for TopBarChrome {
             x + chev + 4.0,
             center_y + chev * 0.35 + 6.0,
         );
-        let dn_icon_rect = Rect::new(
-            x,
-            center_y - chev / 2.0,
-            x + chev,
-            center_y + chev / 2.0,
-        );
+        let dn_icon_rect = Rect::new(x, center_y - chev / 2.0, x + chev, center_y + chev / 2.0);
         ui::icons::draw_icon(
             scene,
             transform,
@@ -768,7 +779,9 @@ impl Widget for TopBarChrome {
         let ws_text_size = tokens.typography.scale.sm;
         let ws_label = format!(
             "{}  {}/{}",
-            self.workspace_name, self.workspace_index + 1, self.workspace_total
+            self.workspace_name,
+            self.workspace_index + 1,
+            self.workspace_total
         );
         // Concept §2.1: workspace-name label is `font-semibold`. Measure with
         // the same weight so the pill width tracks the glyph advance at
@@ -785,7 +798,13 @@ impl Widget for TopBarChrome {
         );
         self.ws_pill_rect = ws_pill_outer;
         let pill = RoundedRect::from_rect(ws_pill_outer, tokens.radii.sm as f64);
-        scene.fill(Fill::NonZero, transform, colors.surfaces.raised, None, &pill);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            colors.surfaces.raised,
+            None,
+            &pill,
+        );
         text_renderer.draw_text_weighted(
             scene,
             &ws_label,
@@ -799,12 +818,7 @@ impl Widget for TopBarChrome {
         // Gear glyph: lucide `Settings2` (gap #5). The ad-hoc ring+dot
         // placeholder read as generic rather than "open settings"; the
         // lucide sliders+knobs glyph matches the concept's affordance.
-        let gear_rect = Rect::new(
-            gear_x - 2.0,
-            center_y - 6.0,
-            gear_x + 10.0,
-            center_y + 6.0,
-        );
+        let gear_rect = Rect::new(gear_x - 2.0, center_y - 6.0, gear_x + 10.0, center_y + 6.0);
         ui::icons::draw_icon(
             scene,
             transform,
@@ -827,7 +841,13 @@ impl Widget for TopBarChrome {
         self.center_rect = band;
         // Subtle pill backdrop so the band reads as a scroll surface.
         let band_rr = RoundedRect::from_rect(band, tokens.radii.sm as f64);
-        scene.fill(Fill::NonZero, transform, colors.surfaces.raised, None, &band_rr);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            colors.surfaces.raised,
+            None,
+            &band_rr,
+        );
 
         // Three-dot indicator on the left of the band (vertical stack).
         let dot_x = band.x0 + 12.0;
@@ -854,12 +874,7 @@ impl Widget for TopBarChrome {
                 colors.neutral[7]
             };
             // Store dot hit region (generous 10 px square for clickability).
-            self.center_dot_rects[i] = Rect::new(
-                dot_x - 10.0,
-                cy - 10.0,
-                dot_x + 10.0,
-                cy + 10.0,
-            );
+            self.center_dot_rects[i] = Rect::new(dot_x - 10.0, cy - 10.0, dot_x + 10.0, cy + 10.0);
             let c = vello::kurbo::Circle::new(Point::new(dot_x, cy), r);
             scene.fill(Fill::NonZero, transform, color, None, &c);
         }
@@ -1022,7 +1037,12 @@ impl Widget for TopBarChrome {
                 let time_weight = TextWeight::Medium;
                 let (pw, ph) = text_renderer.measure_weighted(prefix, size, None, prefix_weight);
                 let (ew, _) = text_renderer.measure_weighted(event, size, None, event_weight);
-                let (tw, _) = text_renderer.measure_weighted(time, tokens.typography.scale.xs, None, time_weight);
+                let (tw, _) = text_renderer.measure_weighted(
+                    time,
+                    tokens.typography.scale.xs,
+                    None,
+                    time_weight,
+                );
                 let gap = 8.0;
                 let total = pw as f64 + gap + ew as f64 + gap + tw as f64;
                 let mut tx = content_cx - total / 2.0;
@@ -1078,7 +1098,13 @@ impl Widget for TopBarChrome {
             center_y + tray_h / 2.0,
             tray_h / 2.0,
         );
-        scene.fill(Fill::NonZero, transform, colors.surfaces.raised, None, &tray);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            colors.surfaces.raised,
+            None,
+            &tray,
+        );
         // Tray glyphs: lucide Wifi / Monitor / Battery (gap #5). The
         // earlier three-filled-dots lockup was generic ornament; the
         // real lucide trio tells the user what the pill is for at a
@@ -1146,13 +1172,19 @@ impl Widget for TopBarChrome {
             );
             let s = initial.to_string();
             let initial_weight = TextWeight::Bold;
-            let (tw, th) = text_renderer.measure_weighted(&s, tokens.typography.scale.sm, None, initial_weight);
+            let (tw, th) = text_renderer.measure_weighted(
+                &s,
+                tokens.typography.scale.sm,
+                None,
+                initial_weight,
+            );
             text_renderer.draw_text_weighted(
                 scene,
                 &s,
                 tokens.typography.scale.sm,
                 colors.text_primary,
-                transform * Affine::translate((center.x - tw as f64 / 2.0, center.y - th as f64 / 2.0)),
+                transform
+                    * Affine::translate((center.x - tw as f64 / 2.0, center.y - th as f64 / 2.0)),
                 None,
                 initial_weight,
             );
@@ -1181,13 +1213,19 @@ impl Widget for TopBarChrome {
             );
             let s = format!("+{}", self.collaborator_overflow);
             let overflow_weight = TextWeight::Semibold;
-            let (tw, th) = text_renderer.measure_weighted(&s, tokens.typography.scale.xs, None, overflow_weight);
+            let (tw, th) = text_renderer.measure_weighted(
+                &s,
+                tokens.typography.scale.xs,
+                None,
+                overflow_weight,
+            );
             text_renderer.draw_text_weighted(
                 scene,
                 &s,
                 tokens.typography.scale.xs,
                 colors.text_dim,
-                transform * Affine::translate((center.x - tw as f64 / 2.0, center.y - th as f64 / 2.0)),
+                transform
+                    * Affine::translate((center.x - tw as f64 / 2.0, center.y - th as f64 / 2.0)),
                 None,
                 overflow_weight,
             );
@@ -1196,20 +1234,16 @@ impl Widget for TopBarChrome {
         // Avatar stack click target. Spans from the left-most circle to the
         // right of the stack (rx before drawing). Empty collaborators still
         // get a zero-sized rect so the click handler short-circuits.
-        let slot_count = self.collaborator_initials.len()
-            + if self.collaborator_overflow > 0 { 1 } else { 0 };
+        let slot_count =
+            self.collaborator_initials.len() + if self.collaborator_overflow > 0 { 1 } else { 0 };
         if slot_count > 0 {
             // Stack grows leftward from `stack_right_x`; each circle is 18 px
             // wide with 4 px overlap, so step = 14 px.
             let step = 14.0_f64;
             let leftmost_cx = stack_right_x - (slot_count as f64 - 1.0) * step;
             let y_mid = center_y;
-            self.avatar_stack_rect = Rect::new(
-                leftmost_cx - 9.0,
-                y_mid - 11.0,
-                stack_right_x,
-                y_mid + 11.0,
-            );
+            self.avatar_stack_rect =
+                Rect::new(leftmost_cx - 9.0, y_mid - 11.0, stack_right_x, y_mid + 11.0);
         } else {
             self.avatar_stack_rect = Rect::ZERO;
         }

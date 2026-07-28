@@ -21,9 +21,9 @@ use crate::network::behaviour::{NiriosBehaviour, load_or_create_keypair};
 use crate::network::hub::TopicSubscriber;
 use crate::network::protocol::NeighbourMsg;
 use crate::network::replica::WorkspaceTreeReplica;
-use crate::shell::state::WorkspaceTreeHandle;
 #[cfg(test)]
 use crate::shell::state::WorkspaceTree;
+use crate::shell::state::WorkspaceTreeHandle;
 
 /// Default workspace topic id that v1 publishes/subscribes on. Per-
 /// workspace routing is a Phase 3 follow-up — every shell currently
@@ -234,9 +234,7 @@ impl ShellNetwork {
                 libp2p::yamux::Config::default,
             )
             .map_err(|e| std::io::Error::other(format!("tcp: {e:?}")))?
-            .with_behaviour(|kp| {
-                NiriosBehaviour::new(kp).expect("behaviour construction")
-            })
+            .with_behaviour(|kp| NiriosBehaviour::new(kp).expect("behaviour construction"))
             .map_err(|e| std::io::Error::other(format!("behaviour wrap: {e:?}")))?
             .build();
 
@@ -325,15 +323,14 @@ impl ShellNetwork {
     /// Public so integration tests (and a future test-only handle in
     /// the loopback harness) can inject presence updates without going
     /// through gossipsub.
-    pub fn handle_presence_message(
-        &self,
-        peer: u64,
-        key: String,
-        point: (f64, f64),
-        ts: u64,
-    ) {
+    pub fn handle_presence_message(&self, peer: u64, key: String, point: (f64, f64), ts: u64) {
         if let Ok(mut buf) = self.inbound_presence.lock() {
-            buf.push(InboundPresence { peer, key, point, ts });
+            buf.push(InboundPresence {
+                peer,
+                key,
+                point,
+                ts,
+            });
         }
     }
 
@@ -353,12 +350,7 @@ impl ShellNetwork {
     /// swallowed — CRDT updates are idempotent and the next
     /// `SyncIncremental` will republish, so a brief actor backlog
     /// is recoverable.
-    pub fn publish_app_crdt_incremental(
-        &self,
-        app_id: String,
-        cluster_id: String,
-        data: Vec<u8>,
-    ) {
+    pub fn publish_app_crdt_incremental(&self, app_id: String, cluster_id: String, data: Vec<u8>) {
         let msg = NeighbourMsg::AppCrdtIncremental {
             peer: self.local_peer_id_hash(),
             app_id,
@@ -396,9 +388,7 @@ impl ShellNetwork {
     /// signed-envelope path. The broker drainer pulls envelopes off
     /// this buffer, validates them, and fans the payload out as
     /// `CollabEvent::SignedCRDTIncremental`.
-    pub fn inbound_app_crdt_signed_handle(
-        &self,
-    ) -> Arc<Mutex<Vec<InboundAppCrdtSigned>>> {
+    pub fn inbound_app_crdt_signed_handle(&self) -> Arc<Mutex<Vec<InboundAppCrdtSigned>>> {
         Arc::clone(&self.inbound_app_crdt_signed)
     }
 
@@ -450,16 +440,12 @@ impl ShellNetwork {
     /// Shared handle to the cooperative-scrollback request buffer.
     /// The broker's drainer reads it on each tick and answers any
     /// request for an artifact whose log it holds.
-    pub fn inbound_scrollback_request_handle(
-        &self,
-    ) -> Arc<Mutex<Vec<InboundScrollbackRequest>>> {
+    pub fn inbound_scrollback_request_handle(&self) -> Arc<Mutex<Vec<InboundScrollbackRequest>>> {
         Arc::clone(&self.inbound_scrollback_request)
     }
 
     /// Shared handle to the cooperative-scrollback response buffer.
-    pub fn inbound_scrollback_response_handle(
-        &self,
-    ) -> Arc<Mutex<Vec<InboundScrollbackResponse>>> {
+    pub fn inbound_scrollback_response_handle(&self) -> Arc<Mutex<Vec<InboundScrollbackResponse>>> {
         Arc::clone(&self.inbound_scrollback_response)
     }
 
@@ -647,10 +633,7 @@ impl ShellNetwork {
                 {
                     if requester != self.local_peer_hash {
                         self.handle_scrollback_request_message(
-                            requester,
-                            artifact,
-                            before_seq,
-                            max,
+                            requester, artifact, before_seq, max,
                         );
                     }
                     continue;
@@ -662,11 +645,7 @@ impl ShellNetwork {
                 } = msg
                 {
                     if responder != self.local_peer_hash {
-                        self.handle_scrollback_response_message(
-                            responder,
-                            artifact,
-                            ops.clone(),
-                        );
+                        self.handle_scrollback_response_message(responder, artifact, ops.clone());
                     }
                     continue;
                 }
@@ -781,7 +760,12 @@ mod tests {
             NetCmd::Publish { ws, msg } => {
                 assert_eq!(ws, DEFAULT_WS_TOPIC);
                 match msg {
-                    NeighbourMsg::PresenceMoved { peer, key, point, ts: _ } => {
+                    NeighbourMsg::PresenceMoved {
+                        peer,
+                        key,
+                        point,
+                        ts: _,
+                    } => {
                         assert_eq!(peer, 0xABCDu64);
                         assert_eq!(key, "local-cursor");
                         assert_eq!(point, (100.0, 200.0));
@@ -832,7 +816,12 @@ mod tests {
             NetCmd::Publish { ws, msg } => {
                 assert_eq!(ws, DEFAULT_WS_TOPIC);
                 match msg {
-                    NeighbourMsg::AppCrdtIncremental { peer, app_id, cluster_id, data } => {
+                    NeighbourMsg::AppCrdtIncremental {
+                        peer,
+                        app_id,
+                        cluster_id,
+                        data,
+                    } => {
                         assert_eq!(peer, 0xCAFEu64);
                         assert_eq!(app_id, "terminal");
                         assert_eq!(cluster_id, "00000000-0000-0000-0000-000000000000");
@@ -891,9 +880,7 @@ mod tests {
     /// harness supports app-level CRDT injection. The two unit
     /// tests above are the contract for now.
     fn make_envelope(seq: u64) -> collab_types::SignedOp {
-        use collab_types::{
-            ArtifactId, AttestationId, Ed25519PublicKey, OpClass, SignedOp,
-        };
+        use collab_types::{ArtifactId, AttestationId, Ed25519PublicKey, OpClass, SignedOp};
         use std::time::SystemTime;
         SignedOp::new_unsigned(
             vec![0xAA, 0xBB],
@@ -942,9 +929,7 @@ mod tests {
                         assert_eq!(cluster_id, "cluster-7");
                         assert_eq!(*got, envelope);
                     }
-                    other => panic!(
-                        "expected AppCrdtIncrementalSigned, got {other:?}"
-                    ),
+                    other => panic!("expected AppCrdtIncrementalSigned, got {other:?}"),
                 }
             }
             other => panic!("expected NetCmd::Publish, got {other:?}"),

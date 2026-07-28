@@ -159,8 +159,7 @@ fn auto_probe_picks_vaapi_when_hardware_present() {
         // Self-skip if the underlying probe reports unavailable — some
         // hosts have a render node but no H.264 encode entrypoint
         // (older iGPUs, discrete GPUs without an encode block, etc.).
-        let (chosen_by_probe, _outcomes) =
-            encoder_probe(Codec::H264, Some(EncoderChoice::Vaapi));
+        let (chosen_by_probe, _outcomes) = encoder_probe(Codec::H264, Some(EncoderChoice::Vaapi));
         if chosen_by_probe != EncoderKind::VaApi {
             eprintln!(
                 "skipping vaapi hardware assertion — probe reports \

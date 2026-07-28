@@ -82,9 +82,7 @@ fn tree_with_grants(entries: Vec<(&str, Vec<Capability>)>) -> WorkspaceTree {
 /// Render the host once with the chrome configured for the
 /// Permissions tab. Returns the produced Scene + the host so the
 /// caller can read back hit rects and dispatch synthesized events.
-fn render_at_permissions_tab(
-    tree: &WorkspaceTree,
-) -> (ShellOverlayHost, Chrome, Scene) {
+fn render_at_permissions_tab(tree: &WorkspaceTree) -> (ShellOverlayHost, Chrome, Scene) {
     let (mut host, chrome) = build_nirios_overlay_host_with_chrome(tree);
     {
         let mut st = chrome.borrow_mut();
@@ -237,7 +235,8 @@ fn revoke_click_removes_capability_from_grants() {
     dispatch_to_host(&mut host, &left_press());
 
     let st = chrome.borrow();
-    let tree = st.tree(); let ws = tree.active_workspace().expect("active workspace");
+    let tree = st.tree();
+    let ws = tree.active_workspace().expect("active workspace");
     // After revoking one of two grants, the app entry still exists
     // with one capability remaining.
     let view = ws.grants();
@@ -284,7 +283,8 @@ fn revoke_button_disabled_for_non_owner() {
     dispatch_to_host(&mut host, &left_press());
 
     let st = chrome.borrow();
-    let tree = st.tree(); let ws = tree.active_workspace().expect("active workspace");
+    let tree = st.tree();
+    let ws = tree.active_workspace().expect("active workspace");
     let caps = ws
         .grants()
         .get("firefox")
@@ -317,9 +317,7 @@ fn permissions_tab_appears_in_ws_tab_iter() {
     assert!(!WsTab::visible(&empty_ws).contains(&WsTab::Permissions));
     empty_ws.grants().insert(
         "vscode".into(),
-        vec![Capability::Camera {
-            scope: GRANT_ONCE,
-        }],
+        vec![Capability::Camera { scope: GRANT_ONCE }],
     );
     assert!(WsTab::visible(&empty_ws).contains(&WsTab::Permissions));
 }
@@ -338,9 +336,7 @@ fn revoking_last_grant_clears_workspace_grants_map() {
     let mut ws = Workspace::new(WorkspaceId::default(), "single-grant");
     ws.grants().insert(
         "vscode".into(),
-        vec![Capability::Camera {
-            scope: GRANT_ONCE,
-        }],
+        vec![Capability::Camera { scope: GRANT_ONCE }],
     );
     assert!(WsTab::visible(&ws).contains(&WsTab::Permissions));
     workspace_settings::revoke_grant(&mut ws, &"vscode".to_string(), 0);

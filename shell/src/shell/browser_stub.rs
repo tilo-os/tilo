@@ -12,10 +12,10 @@
 //! metadata and runner wiring.
 
 use ui::ColorCompat;
+use ui::Theme;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::widget::{AppKind, AppWidget, IconDescriptor, Widget};
-use ui::Theme;
 
 use automerge::{AutoCommit, ObjId};
 use std::collections::HashMap;

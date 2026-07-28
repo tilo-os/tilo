@@ -178,11 +178,9 @@ pub mod recording {
         let (w, h) = driver.viewport();
         let (w, h) = (w as u32, h as u32);
         let mut renderer = OffscreenRenderer::new(w, h);
-        let mut encoder =
-            H264Encoder::new(w, h, fps).expect("H264Encoder::new for recording mode");
+        let mut encoder = H264Encoder::new(w, h, fps).expect("H264Encoder::new for recording mode");
         let mut file = File::create(out).expect("create recording output file");
-        let frames_per_step =
-            ((fps as f32) * step_duration_secs).round().max(1.0) as u32;
+        let frames_per_step = ((fps as f32) * step_duration_secs).round().max(1.0) as u32;
         println!(
             "shots: recording scenario '{}' at {}x{} {}fps, {} frame(s)/step → {}",
             scenario.name,

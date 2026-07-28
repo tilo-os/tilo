@@ -213,8 +213,8 @@ pub fn validate_invite_token(token_str: &str) -> Result<PeerInviteToken, String>
     let json = B64
         .decode(token_str)
         .map_err(|e| format!("base64 decode: {e}"))?;
-    let token: PeerInviteToken = serde_json::from_slice(&json)
-        .map_err(|e| format!("json parse: {e}"))?;
+    let token: PeerInviteToken =
+        serde_json::from_slice(&json).map_err(|e| format!("json parse: {e}"))?;
 
     let now = now_unix_seconds();
     if token.expiry_unix_seconds < now {
@@ -328,8 +328,7 @@ mod tests {
     fn round_trip_token_via_make_and_validate() {
         let kp = Keypair::generate_ed25519();
         let ws = workspace(99);
-        let token_str = make_invite_token(&kp, &ws, "/ip4/127.0.0.1/tcp/1234", 3600)
-            .expect("make");
+        let token_str = make_invite_token(&kp, &ws, "/ip4/127.0.0.1/tcp/1234", 3600).expect("make");
         let parsed = validate_invite_token(&token_str).expect("valid");
         assert_eq!(parsed.workspace_id, 99);
         assert_eq!(parsed.owner_addr, "/ip4/127.0.0.1/tcp/1234");
@@ -346,14 +345,17 @@ mod tests {
     #[test]
     fn tampered_workspace_id_fails_signature_check() {
         let kp = Keypair::generate_ed25519();
-        let token_str = make_invite_token(&kp, &workspace(99), "/ip4/127.0.0.1/tcp/1234", 3600)
-            .expect("make");
+        let token_str =
+            make_invite_token(&kp, &workspace(99), "/ip4/127.0.0.1/tcp/1234", 3600).expect("make");
         let bytes = B64.decode(&token_str).expect("b64");
         let mut token: PeerInviteToken = serde_json::from_slice(&bytes).expect("json");
         token.workspace_id = 100;
         let bad = B64.encode(serde_json::to_vec(&token).expect("re-json"));
         let err = validate_invite_token(&bad).expect_err("must fail");
-        assert!(err.contains("signature"), "expected signature error, got {err:?}");
+        assert!(
+            err.contains("signature"),
+            "expected signature error, got {err:?}"
+        );
     }
 
     /// Rewriting the room in transit is the attack the signature has to
@@ -362,8 +364,8 @@ mod tests {
     #[test]
     fn tampered_room_id_fails_signature_check() {
         let kp = Keypair::generate_ed25519();
-        let token_str = make_invite_token(&kp, &workspace(99), "/ip4/127.0.0.1/tcp/1234", 3600)
-            .expect("make");
+        let token_str =
+            make_invite_token(&kp, &workspace(99), "/ip4/127.0.0.1/tcp/1234", 3600).expect("make");
         let bytes = B64.decode(&token_str).expect("b64");
         let mut token: PeerInviteToken = serde_json::from_slice(&bytes).expect("json");
         token.room_id = RoomId::new().to_string();
@@ -378,8 +380,8 @@ mod tests {
     #[test]
     fn tampered_addr_fails_signature_check() {
         let kp = Keypair::generate_ed25519();
-        let token_str = make_invite_token(&kp, &workspace(7), "/ip4/127.0.0.1/tcp/1234", 3600)
-            .expect("make");
+        let token_str =
+            make_invite_token(&kp, &workspace(7), "/ip4/127.0.0.1/tcp/1234", 3600).expect("make");
         let bytes = B64.decode(&token_str).expect("b64");
         let mut token: PeerInviteToken = serde_json::from_slice(&bytes).expect("json");
         token.owner_addr = "/ip4/10.0.0.1/tcp/9999".into();
@@ -420,7 +422,10 @@ mod tests {
         };
         let token_str = B64.encode(serde_json::to_vec(&token).unwrap());
         let err = validate_invite_token(&token_str).expect_err("forge must fail");
-        assert!(err.contains("peer-id"), "expected peer-id mismatch, got {err:?}");
+        assert!(
+            err.contains("peer-id"),
+            "expected peer-id mismatch, got {err:?}"
+        );
     }
 
     #[test]
@@ -430,11 +435,14 @@ mod tests {
         // future" expiry latches the current second, so by the time the
         // sleep returns `now` is strictly greater.
         let kp = Keypair::generate_ed25519();
-        let token_str = make_invite_token(&kp, &workspace(99), "/ip4/127.0.0.1/tcp/1234", 0)
-            .expect("make");
+        let token_str =
+            make_invite_token(&kp, &workspace(99), "/ip4/127.0.0.1/tcp/1234", 0).expect("make");
         std::thread::sleep(std::time::Duration::from_secs(1));
         let err = validate_invite_token(&token_str).expect_err("must fail");
-        assert!(err.contains("expired"), "expected expiry error, got {err:?}");
+        assert!(
+            err.contains("expired"),
+            "expected expiry error, got {err:?}"
+        );
     }
 
     /// A workspace whose room has not been minted has nothing to invite
@@ -461,8 +469,7 @@ mod tests {
     fn accepting_an_invite_moves_the_local_workspace_into_the_inviters_room() {
         let kp = Keypair::generate_ed25519();
         let host = workspace(11);
-        let token = make_invite_token(&kp, &host, "/ip4/127.0.0.1/tcp/1234", 3600)
-            .expect("make");
+        let token = make_invite_token(&kp, &host, "/ip4/127.0.0.1/tcp/1234", 3600).expect("make");
 
         // The invitee's tree: its own workspace, its own local id, its
         // own freshly-minted room.
@@ -502,8 +509,7 @@ mod tests {
     fn a_forged_invite_does_not_move_the_local_workspace() {
         let kp = Keypair::generate_ed25519();
         let host = workspace(11);
-        let token = make_invite_token(&kp, &host, "/ip4/127.0.0.1/tcp/1234", 3600)
-            .expect("make");
+        let token = make_invite_token(&kp, &host, "/ip4/127.0.0.1/tcp/1234", 3600).expect("make");
         let bytes = B64.decode(&token).expect("b64");
         let mut parsed: PeerInviteToken = serde_json::from_slice(&bytes).expect("json");
         let attacker_room = RoomId::new();
@@ -519,7 +525,10 @@ mod tests {
 
         let err = accept_invite_into(&mut guest_tree, guest_id, &forged)
             .expect_err("a forged invite must be refused");
-        assert!(err.contains("signature"), "expected signature error, got {err:?}");
+        assert!(
+            err.contains("signature"),
+            "expected signature error, got {err:?}"
+        );
         assert_eq!(
             guest_tree.room_of(guest_id),
             Some(before),

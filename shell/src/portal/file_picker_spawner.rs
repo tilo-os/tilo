@@ -174,9 +174,9 @@ mod tests {
 
     #[tokio::test]
     async fn mock_spawner_returns_baked_paths() {
-        let h = FilePickerSpawnerHandle::new(Arc::new(MockFilePickerSpawner::returning(
-            vec![PathBuf::from("/tmp/a.txt")],
-        )));
+        let h = FilePickerSpawnerHandle::new(Arc::new(MockFilePickerSpawner::returning(vec![
+            PathBuf::from("/tmp/a.txt"),
+        ])));
         let caller = PortalCaller::new(WorkspaceId(2), "app");
         let rx = h.request(caller, "Open", false);
         let out = rx.await.expect("oneshot");
@@ -185,9 +185,7 @@ mod tests {
 
     #[tokio::test]
     async fn mock_spawner_records_requests() {
-        let mock = Arc::new(MockFilePickerSpawner::returning(vec![PathBuf::from(
-            "/x",
-        )]));
+        let mock = Arc::new(MockFilePickerSpawner::returning(vec![PathBuf::from("/x")]));
         let h = FilePickerSpawnerHandle::new(mock.clone());
         let caller = PortalCaller::new(WorkspaceId(3), "org.example");
         let _ = h.request(caller.clone(), "Open file", false).await;
@@ -202,8 +200,7 @@ mod tests {
 
     #[tokio::test]
     async fn mock_always_cancel_returns_none() {
-        let h =
-            FilePickerSpawnerHandle::new(Arc::new(MockFilePickerSpawner::always_cancel()));
+        let h = FilePickerSpawnerHandle::new(Arc::new(MockFilePickerSpawner::always_cancel()));
         let caller = PortalCaller::new(WorkspaceId(4), "app");
         let rx = h.request(caller, "Open", false);
         assert!(rx.await.expect("oneshot").is_none());

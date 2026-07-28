@@ -35,7 +35,10 @@ fn room_owned_by(owner: &str) -> (WorkspaceTree, WorkspaceId) {
 }
 
 fn ws_of(tree: &WorkspaceTree, id: WorkspaceId) -> &Workspace {
-    tree.workspaces.iter().find(|w| w.id == id).expect("workspace")
+    tree.workspaces
+        .iter()
+        .find(|w| w.id == id)
+        .expect("workspace")
 }
 
 // =====================================================================
@@ -129,7 +132,10 @@ fn a_non_owner_cannot_grant_or_revoke() {
         "a non-administrator must not be able to revoke"
     );
     assert!(
-        ws_of(&tree, id).capabilities.iter().any(|c| c.id == carol_cap),
+        ws_of(&tree, id)
+            .capabilities
+            .iter()
+            .any(|c| c.id == carol_cap),
         "and the capability must still be there"
     );
 }
@@ -264,7 +270,8 @@ fn a_revoked_capability_stops_working_on_a_peer() {
         "a revoke must produce replicable changes — a revoke that only mutates the \
          local cache is invisible to every peer"
     );
-    peer.apply_changes(&revoke_changes).expect("peer applies revoke");
+    peer.apply_changes(&revoke_changes)
+        .expect("peer applies revoke");
 
     let peer_ws = ws_of(&peer, id);
     assert!(
@@ -297,11 +304,13 @@ fn a_peers_grant_replicates_to_the_host() {
     // capability a co-owner issued.
     let (mut host, id) = room_owned_by(ALICE);
     let mut peer = WorkspaceTree::default();
-    peer.apply_changes(&host.export_changes_since(&[])).expect("hydrate");
+    peer.apply_changes(&host.export_changes_since(&[]))
+        .expect("hydrate");
 
     // Peer is a delegated administrator.
     tree_grant_admin(&mut host, id, "bob-admin");
-    peer.apply_changes(&host.export_changes_since(&[])).expect("sync");
+    peer.apply_changes(&host.export_changes_since(&[]))
+        .expect("sync");
 
     let heads = peer.current_heads();
     peer.grant_in_workspace(
@@ -319,7 +328,10 @@ fn a_peers_grant_replicates_to_the_host() {
     host.apply_changes(&out).expect("host applies");
 
     assert!(
-        ws_of(&host, id).capabilities.iter().any(|c| c.id == "carol-read"),
+        ws_of(&host, id)
+            .capabilities
+            .iter()
+            .any(|c| c.id == "carol-read"),
         "the host must converge on the capability the co-owner issued"
     );
 }
@@ -450,9 +462,7 @@ fn the_filesystem_capability_export_carries_exactly_the_path_capabilities() {
         "room membership is not a filesystem fact and must not be exported"
     );
     assert!(
-        exported
-            .iter()
-            .all(|c| matches!(c.scope, Scope::FsPath(_))),
+        exported.iter().all(|c| matches!(c.scope, Scope::FsPath(_))),
         "only path-scoped capabilities belong in the filesystem's list"
     );
 
@@ -477,7 +487,12 @@ fn re_granting_never_shortens_an_existing_grant() {
     let (mut tree, id) = room_owned_by(ALICE);
     let ws = tree.workspaces.iter_mut().find(|w| w.id == id).unwrap();
 
-    ws.grant_app("org.qos.Meet", &Capability::Camera { scope: GRANT_ALWAYS });
+    ws.grant_app(
+        "org.qos.Meet",
+        &Capability::Camera {
+            scope: GRANT_ALWAYS,
+        },
+    );
     ws.grant_app("org.qos.Meet", &Capability::Camera { scope: GRANT_ONCE });
     ws.grant_app(
         "org.qos.Meet",
@@ -646,7 +661,11 @@ fn a_network_allowlist_is_actually_a_list() {
         "the allowlisted host is reachable"
     );
     assert!(
-        !ws.allows(&app, &ResourceRef::NetHost("evil.example".into()), Verb::Write),
+        !ws.allows(
+            &app,
+            &ResourceRef::NetHost("evil.example".into()),
+            Verb::Write
+        ),
         "a host NOT on the allowlist must be denied — recording an allowlist and then \
          behaving as though it said `any host` is the bug this replaces"
     );
@@ -683,7 +702,10 @@ fn sharing_one_file_never_puts_a_person_in_the_roster() {
     let roster: Vec<String> = ws.roster().into_iter().map(|(u, _)| u).collect();
 
     assert!(roster.contains(&ALICE.to_string()), "the owner is a member");
-    assert!(roster.contains(&BOB.to_string()), "an admitted peer is a member");
+    assert!(
+        roster.contains(&BOB.to_string()),
+        "an admitted peer is a member"
+    );
     assert!(
         !roster.contains(&"carol".to_string()),
         "a person given one file must NEVER appear in the room roster — presenting an \
@@ -824,8 +846,8 @@ fn a_bearer_token_carries_exactly_its_own_authority() {
     .expect("owner mints a share link");
 
     let ws = ws_of(&tree, id);
-    let holder = shell::shell::state::Actor::default()
-        .with_principal(Principal::Token("inv-7f3a".into()));
+    let holder =
+        shell::shell::state::Actor::default().with_principal(Principal::Token("inv-7f3a".into()));
     let path = ResourceRef::FsPath("/var/workspace/design/logo.svg".into());
 
     assert!(ws.allows(&holder, &path, Verb::Read));
@@ -838,8 +860,8 @@ fn a_bearer_token_carries_exactly_its_own_authority() {
         "a share link grants no standing in the room"
     );
 
-    let wrong = shell::shell::state::Actor::default()
-        .with_principal(Principal::Token("inv-0000".into()));
+    let wrong =
+        shell::shell::state::Actor::default().with_principal(Principal::Token("inv-0000".into()));
     assert!(
         !ws.allows(&wrong, &path, Verb::Read),
         "a different token grants nothing"
