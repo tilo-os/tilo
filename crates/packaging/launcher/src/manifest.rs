@@ -429,6 +429,62 @@ pub fn expand_path(raw: &str) -> PathBuf {
 mod tests {
     use super::*;
 
+    /// The shipped manifests are the source of truth for which app opens
+    /// which file type, so the parse has to survive a *real* one — the
+    /// full `qos-app.toml` shape with `[publisher]`, `[[trust.*]]`,
+    /// `[sandbox.*]` and the rest — not just a hand-written minimum.
+    #[test]
+    fn a_shipped_manifest_yields_its_declared_extensions() {
+        let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .ancestors()
+            .nth(3)
+            .expect("workspace root above crates/packaging/launcher");
+        let path = repo.join("apps/word-processor/qos-app.toml");
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("reading {}: {e}", path.display()));
+        let m: MinimalManifest = toml::from_str(&text)
+            .unwrap_or_else(|e| panic!("parsing {}: {e}", path.display()));
+        assert_eq!(m.package_id, "dev.qos.word-processor");
+        for ext in ["odt", "docx", "md", "rtf"] {
+            assert!(
+                m.opens_ext.iter().any(|e| e == ext),
+                "the word processor declares .{ext}; parsed {:?}",
+                m.opens_ext
+            );
+        }
+        assert!(
+            m.opens_ext.iter().all(|e| !e.starts_with('.')
+                && e.chars().all(|c| !c.is_ascii_uppercase())),
+            "extensions are normalised on decode: {:?}",
+            m.opens_ext
+        );
+    }
+
+    /// A package that opens nothing must say so as an empty list, not as
+    /// a parse failure — most manifests have no `[providers]` block at
+    /// all, and every one of them still has to load.
+    #[test]
+    fn a_manifest_without_a_providers_block_opens_nothing() {
+        let m: MinimalManifest = toml::from_str(
+            "package_id = \"com.example.x\"\nversion = \"1\"\n\
+             [entrypoint]\nbin = \"bin/x\"\n",
+        )
+        .expect("a manifest with no [providers] block still parses");
+        assert!(m.opens_ext.is_empty());
+    }
+
+    /// Case and a leading dot are packaging noise, not meaning.
+    #[test]
+    fn declared_extensions_are_normalised() {
+        let m: MinimalManifest = toml::from_str(
+            "package_id = \"com.example.x\"\nversion = \"1\"\n\
+             [entrypoint]\nbin = \"bin/x\"\n\
+             [providers]\next = [\".ODT\", \" Md \", \"\"]\n",
+        )
+        .expect("parses");
+        assert_eq!(m.opens_ext, vec!["odt".to_string(), "md".to_string()]);
+    }
+
     #[test]
     fn parses_a_minimal_manifest() {
         let toml_text = r#"
