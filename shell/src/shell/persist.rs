@@ -121,33 +121,47 @@ mod tests {
     /// a room that no longer exists.
     #[test]
     fn a_pre_rooms_state_file_gains_one_room_and_keeps_it() {
+        use crate::shell::state::{Workspace, WorkspaceId, WorkspaceTree};
+
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("state.json");
-        // A state file exactly as the old code wrote it: a workspace
-        // with no `room` key at all.
-        std::fs::write(
-            &path,
-            r#"{
-                "workspaces": [
-                    {
-                        "id": 7,
-                        "name": "Home",
-                        "strips": [],
-                        "roles": [],
-                        "workspace_files": []
-                    }
-                ],
-                "active": 7,
-                "collaborators": []
-            }"#,
-        )
-        .expect("write legacy state");
+
+        // Write a real state file, then delete the `room` key from every
+        // workspace — which is byte-for-byte what the writer produced
+        // before rooms existed. Deriving the fixture from the live
+        // serialiser rather than hand-rolling the JSON means it stays a
+        // *loadable* file as the struct grows; a hand-written one that
+        // silently stopped parsing would send `load_or_default` down its
+        // bootstrap fallback and the test would be asserting about a
+        // brand-new tree instead of a migrated one.
+        let mut original = WorkspaceTree::default();
+        original
+            .workspaces
+            .push(Workspace::test_default(WorkspaceId(7), "Home"));
+        save_tree_to(&original, &path).expect("save");
+        let mut raw: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).expect("read"))
+                .expect("state file parses");
+        for ws in raw["workspaces"].as_array_mut().expect("workspaces array") {
+            assert!(
+                ws.as_object_mut()
+                    .expect("workspace object")
+                    .remove("room")
+                    .is_some(),
+                "the current writer must emit a room, or this fixture is \
+                 not removing anything"
+            );
+        }
+        std::fs::write(&path, serde_json::to_string_pretty(&raw).expect("re-json"))
+            .expect("write legacy state");
 
         let mut first_boot = load_or_default(&path);
         assert_eq!(
             first_boot.workspaces.len(),
             1,
-            "the legacy state file must still load"
+            "the legacy state file must still load — a fallback to \
+             `bootstrap_default` here would make the rest of this test \
+             vacuous"
         );
         assert!(
             first_boot.workspaces[0].room.is_nil(),
