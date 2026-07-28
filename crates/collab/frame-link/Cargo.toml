@@ -18,7 +18,7 @@ path = "src/bin/flatpak-share-demo.rs"
 # machinery. The demo binary sits in the same crate but pulls in the real
 # shell types (encoder/decoder/SharedFlatpakSession) + a font rasteriser
 # so the "wired against production types" contract holds.
-tracing = "0.1"
+tracing.workspace = true
 
 # Demo-only dependencies. Kept in `[dependencies]` (not gated behind a
 # feature) because the whole crate lives in the qOS workspace: `shell` is
@@ -28,7 +28,7 @@ tracing = "0.1"
 # nothing outside this workspace will pull it.
 shell = { path = "../../../shell", default-features = false }
 ab_glyph = "0.2"
-tracing-subscriber = { version = "0.3", features = ["registry", "fmt", "env-filter"] }
+tracing-subscriber = { workspace = true, features = ["registry", "fmt", "env-filter"] }
 
 [dev-dependencies]
-proptest = "1"
+proptest.workspace = true

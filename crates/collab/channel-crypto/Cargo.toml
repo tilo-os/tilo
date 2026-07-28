@@ -40,7 +40,7 @@ openmls_traits = "0.5"
 # the wire as TLS-serialised opaque blobs.
 tls_codec = "0.4"
 
-thiserror = "1"
+thiserror.workspace = true
 
 [dev-dependencies]
 # Used in the integration test that wraps a ciphertext inside a
@@ -48,4 +48,4 @@ thiserror = "1"
 collab-types = { path = "../collab-types" }
 # Outer-signature path in the SignedOp test needs a concrete
 # `SigningKey` type. Same major version qos-collab-types is on.
-ed25519-dalek = { version = "2", features = ["serde"] }
+ed25519-dalek = { workspace = true, features = ["serde"] }
