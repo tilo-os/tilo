@@ -33,8 +33,13 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
             .unwrap_or(DEFAULT_SHOTS_VIEWPORT);
         // Pre-snap the sidebar flap to the viewport width's layout default so
         // the single offscreen frame is deterministic (wide ⇒ docked sidebar,
-        // narrow ⇒ collapsed overlay).
-        let root = db_client::app_root_for_shot(viewport.0 as f64);
+        // narrow ⇒ collapsed overlay). `--empty` captures the real live app
+        // (no saved connections) instead of the seeded demo.
+        let root = if args.iter().any(|a| a == "--empty") {
+            db_client::app_root_for_shot_empty(viewport.0 as f64)
+        } else {
+            db_client::app_root_for_shot(viewport.0 as f64)
+        };
         render_shot_to_png(root, viewport, &out)?;
         return Ok(());
     }
