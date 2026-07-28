@@ -2,7 +2,6 @@
 os/output/
 os/quick-desktop
 **/target/
-Cargo.lock
 
 # BranchBox
 .branchbox/registry.json
