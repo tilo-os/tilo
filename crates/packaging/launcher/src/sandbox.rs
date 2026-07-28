@@ -206,6 +206,98 @@ pub fn push_workspace_id(argv: &mut Vec<String>, workspace_id: &str) {
     argv.push(workspace_id.to_string());
 }
 
+/// The DRM device directory. An app's GPU grants are expressed against
+/// this directory (`sandbox.fs.write = ["/dev/dri"]`), which on a
+/// multi-GPU host exposes *every* GPU — including ones the compositor
+/// is not rendering on.
+const DRM_DIR: &str = "/dev/dri";
+
+/// Splice the compositor's GPU choice into an argv built by
+/// [`build_bwrap_argv`].
+///
+/// Three things happen here, and all three are needed for the app to
+/// land on the same GPU as the compositor:
+///
+/// 1. **Only the chosen render node is visible.** A tmpfs over
+///    `/dev/dri` hides whatever the manifest's `/dev/dri` grant exposed,
+///    and the one node is bound back on top. Device enumeration is how
+///    Mesa's EGL picks a GPU — there is no environment variable for it —
+///    so removing the other nodes is the only way to stop a client
+///    opening a GPU the compositor cannot import buffers from. It is
+///    also a strict narrowing of the manifest's grant, never a widening.
+/// 2. **The loader manifests are readable.** `__EGL_VENDOR_LIBRARY_FILENAMES`
+///    and `VK_DRIVER_FILES` name files; a manifest that grants
+///    `/usr/share/vulkan` as a directory usually covers them, but an app
+///    that grants neither would get variables pointing at nothing —
+///    which both loaders read as "no drivers at all".
+/// 3. **The variables are set.** Explicitly, rather than inherited from
+///    the launcher's environment: what the compositor resolved is a
+///    decision, and decisions belong in the argv where they can be
+///    asserted on.
+///
+/// Callers must splice this in *before* the trailing entrypoint token.
+/// `grants_drm` says whether the manifest gave this app the DRM device
+/// directory at all — an app with no GPU grant gets neither the tmpfs
+/// nor the node, because narrowing nothing is nothing and creating an
+/// empty `/dev/dri` would be a new (if useless) mount it never asked
+/// for.
+pub fn push_gpu_selection(
+    argv: &mut Vec<String>,
+    selection: &crate::gpu::GpuSelection,
+    grants_drm: bool,
+) {
+    if grants_drm {
+        // Order matters: the tmpfs must land on top of the manifest's
+        // own `/dev/dri` bind, and the node must land on top of the
+        // tmpfs.
+        argv.push("--tmpfs".to_string());
+        argv.push(DRM_DIR.to_string());
+        argv.push("--dev-bind-try".to_string());
+        argv.push(selection.node.display().to_string());
+        argv.push(selection.node.display().to_string());
+    }
+    for file in selection.manifest_files() {
+        push_bind(argv, "--ro-bind-try", &file, &file);
+    }
+    for (key, value) in selection.env() {
+        argv.push("--setenv".to_string());
+        argv.push(key.to_string());
+        argv.push(value);
+    }
+}
+
+/// Whether this launch exposes the DRM device directory at all — from
+/// the manifest, from the user's capabilities, or from both.
+///
+/// Both sources have to be consulted, because either one alone can put
+/// a GPU in the namespace: the manifest is the packager's request and
+/// the capability plan is the user's grant, and
+/// [`push_gpu_selection`]'s narrowing has to land on whichever of them
+/// actually mounted something.
+///
+/// A grant *of* `/dev/dri` and a grant of a node *inside* it both
+/// count: an app that names only `/dev/dri/renderD128` still has its
+/// device view narrowed to the compositor's node.
+pub fn grants_drm(manifest: &MinimalManifest, capabilities: &CapabilityPlan) -> bool {
+    let from_manifest = manifest
+        .sandbox
+        .fs
+        .read
+        .iter()
+        .chain(manifest.sandbox.fs.write.iter())
+        .any(|entry| is_drm_path(&expand_path(entry)));
+    let from_capabilities = capabilities
+        .ro_paths
+        .iter()
+        .chain(capabilities.rw_paths.iter())
+        .any(|p| is_drm_path(p));
+    from_manifest || from_capabilities
+}
+
+fn is_drm_path(p: &Path) -> bool {
+    p == Path::new(DRM_DIR) || p.starts_with(DRM_DIR)
+}
+
 /// In-sandbox path the launcher ro-binds the host identity JSON at.
 ///
 /// Deliberately outside `~/.config` so the launcher doesn't need to
@@ -931,6 +1023,137 @@ mod tests {
         assert!(
             !argv.iter().any(|a| a == SANDBOX_IDENTITY_PATH),
             "identity path must not appear without a host path: {argv:?}"
+        );
+    }
+
+    /// A selection with both loaders resolved must (a) hide every GPU
+    /// except the compositor's, (b) bind the manifests its variables
+    /// name, and (c) set those variables.
+    #[test]
+    fn gpu_selection_narrows_the_device_and_pins_the_loaders() {
+        let sel = crate::gpu::GpuSelection {
+            node: PathBuf::from("/dev/dri/renderD128"),
+            driver: Some("amdgpu".to_string()),
+            egl_vendor_json: Some(PathBuf::from("/usr/share/glvnd/egl_vendor.d/50_mesa.json")),
+            vulkan_icd_json: Some(PathBuf::from("/usr/share/vulkan/icd.d/radeon_icd.x86_64.json")),
+            notes: Vec::new(),
+        };
+        let mut argv = Vec::new();
+        push_gpu_selection(&mut argv, &sel, true);
+
+        // The tmpfs must come before the node re-bind, or the bind is
+        // the thing that gets hidden.
+        let tmpfs = argv
+            .windows(2)
+            .position(|w| w[0] == "--tmpfs" && w[1] == "/dev/dri")
+            .expect("device dir must be emptied: {argv:?}");
+        let node = argv
+            .windows(3)
+            .position(|w| {
+                w[0] == "--dev-bind-try"
+                    && w[1] == "/dev/dri/renderD128"
+                    && w[2] == "/dev/dri/renderD128"
+            })
+            .expect("the chosen node must be bound back");
+        assert!(
+            tmpfs < node,
+            "the tmpfs must precede the node bind: {argv:?}"
+        );
+        assert!(
+            !argv.iter().any(|a| a == "/dev/dri/renderD129"),
+            "no other GPU may be re-exposed: {argv:?}"
+        );
+
+        for (var, file) in [
+            (
+                "__EGL_VENDOR_LIBRARY_FILENAMES",
+                "/usr/share/glvnd/egl_vendor.d/50_mesa.json",
+            ),
+            (
+                "VK_DRIVER_FILES",
+                "/usr/share/vulkan/icd.d/radeon_icd.x86_64.json",
+            ),
+            (
+                "VK_ICD_FILENAMES",
+                "/usr/share/vulkan/icd.d/radeon_icd.x86_64.json",
+            ),
+        ] {
+            assert!(
+                argv.windows(3)
+                    .any(|w| w[0] == "--setenv" && w[1] == var && w[2] == file),
+                "{var} setenv missing: {argv:?}"
+            );
+            assert!(
+                argv.windows(3)
+                    .any(|w| w[0] == "--ro-bind-try" && w[1] == file && w[2] == file),
+                "{var} points at {file}, which is never bound into the sandbox: {argv:?}"
+            );
+        }
+    }
+
+    /// An app the manifest gave no DRM access to gets no device mount —
+    /// the GPU plumbing must not hand out access nobody asked for.
+    #[test]
+    fn gpu_selection_does_not_mount_a_device_the_manifest_withheld() {
+        let sel = crate::gpu::GpuSelection {
+            node: PathBuf::from("/dev/dri/renderD128"),
+            driver: Some("amdgpu".to_string()),
+            egl_vendor_json: Some(PathBuf::from("/usr/share/glvnd/egl_vendor.d/50_mesa.json")),
+            vulkan_icd_json: None,
+            notes: Vec::new(),
+        };
+        let mut argv = Vec::new();
+        push_gpu_selection(&mut argv, &sel, false);
+        assert!(
+            !argv.iter().any(|a| a.starts_with("/dev/dri")),
+            "no device path may appear for an app with no DRM grant: {argv:?}"
+        );
+        // An underived loader stays underived — no empty variable.
+        assert!(
+            !argv.iter().any(|a| a == "VK_DRIVER_FILES"),
+            "an unmatched Vulkan ICD must not be pinned to nothing: {argv:?}"
+        );
+        assert!(
+            argv.iter().any(|a| a == "__EGL_VENDOR_LIBRARY_FILENAMES"),
+            "the loader that did resolve must still be pinned: {argv:?}"
+        );
+    }
+
+    /// The DRM-grant test reads both sources the same way the bind
+    /// loops do, so an app that declares a single node counts as much
+    /// as one that declares the whole directory — and a device the
+    /// *user* granted counts as much as one the packager asked for.
+    #[test]
+    fn drm_grant_detection_matches_directory_node_and_capability_grants() {
+        let mut m = mk_manifest("off");
+        let none = CapabilityPlan::empty();
+        assert!(
+            !grants_drm(&m, &none),
+            "the baseline fixture declares no GPU"
+        );
+
+        m.sandbox.fs.write.push("/dev/dri".to_string());
+        assert!(grants_drm(&m, &none));
+
+        let mut node_only = mk_manifest("off");
+        node_only
+            .sandbox
+            .fs
+            .read
+            .push("/dev/dri/renderD128".to_string());
+        assert!(
+            grants_drm(&node_only, &none),
+            "a single-node grant is still a GPU grant"
+        );
+
+        // A capability the user granted mounts a device just as much as
+        // a manifest entry does. Missing this would leave every other
+        // GPU visible to an app whose GPU access came from the user.
+        let mut granted = CapabilityPlan::empty();
+        granted.rw_paths.push(PathBuf::from("/dev/dri"));
+        assert!(
+            grants_drm(&mk_manifest("off"), &granted),
+            "a user-granted device must be narrowed too"
         );
     }
 

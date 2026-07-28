@@ -84,6 +84,21 @@ fn main() {
     let _startup_dump = qos_startup_metrics::ScopedDumper;
     qos_startup_metrics::mark("main-start");
 
+    // Decide which GPU this session runs on before anything opens one.
+    //
+    // The warmup thread below builds a wgpu context, which asks the
+    // Vulkan loader and GLVND for adapters; on a multi-GPU box they
+    // answer with whatever driver they rank first, which need not be
+    // the node the compositor will advertise to its clients — and on a
+    // machine with a half-installed vendor stack, probing it can block
+    // the process outright. Pinning here, while `main` is still
+    // single-threaded, makes the compositor and every app it launches
+    // agree on one device.
+    //
+    // Logged after `tracing_subscriber::init` below; the subscriber
+    // does not exist yet at this point in `main`.
+    let gpu_pin = compositor::render_node::pin_process();
+
     // Kick off cold-start warmup on a background thread as early as
     // possible. Two things dominate the compositor's time-to-first-paint
     // on a cold process: cosmic-text's FontSystem::new (mmaps every
@@ -126,6 +141,28 @@ fn main() {
 
     tracing_subscriber::fmt::init();
     install_crash_log_hook();
+
+    // Replay the GPU decision taken before the subscriber existed.
+    if let Some(pin) = &gpu_pin {
+        tracing::info!(
+            target: "shell::compositor::gpu",
+            node = %pin.node.display(),
+            driver = pin.driver.as_deref().unwrap_or("<unknown>"),
+            "session pinned to render node: {}",
+            if pin.applied.is_empty() {
+                "no loader variables derived".to_string()
+            } else {
+                pin.applied
+                    .iter()
+                    .map(|(k, v)| format!("{k}={v}"))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            }
+        );
+        for note in &pin.notes {
+            tracing::warn!(target: "shell::compositor::gpu", "{note}");
+        }
+    }
 
     let portal_only = compositor::parse_portal_server_only_from_args();
     let firstboot_requested = compositor::parse_firstboot_from_args();
