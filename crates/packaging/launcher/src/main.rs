@@ -345,6 +345,10 @@ fn run_installed(
         capabilities_path: None,
         app_id: Some(package.to_string()),
         render_node: None,
+        // A CLI invocation's arguments are the user's own, forwarded
+        // through `LaunchMode::Cli`. There is no document to open on
+        // its behalf.
+        open_document: None,
     };
     match launcher::run::run_with(&manifest, &entry.payload_root, &opts) {
         Ok(status) => {
