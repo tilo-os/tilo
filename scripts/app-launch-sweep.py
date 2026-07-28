@@ -253,21 +253,31 @@ class Compositor:
                 return sorted(f"{a}#{s}" for a, s in tiles)
         return None
 
-    def snapshot_when_painted(self, out_png: pathlib.Path, hold: float) -> None:
+    def snapshot_when_painted(self, out_png: pathlib.Path, hold: float,
+                              min_hold: float) -> None:
         """Dismiss the palette, then snapshot repeatedly until the tile's
         content stops changing — i.e. the app's own first frame has
-        landed and settled, rather than the placeholder."""
+        landed and settled, rather than the placeholder.
+
+        Stability alone is not enough to stop. The compositor's
+        "waiting for first frame" placeholder is a static picture, so it
+        is *perfectly* stable from the moment it appears — a run that
+        returned on two equal sizes would capture the placeholder for
+        every app whose shaders are still compiling and report it as the
+        app. In a debug build that compile is 10-40s. So `min_hold` has
+        to elapse before stability is allowed to end the wait; only
+        after that does an unchanging picture mean "this is what the app
+        looks like".
+        """
         call(self.sock, {"op": "key", "key": "Escape"})
-        end = time.time() + hold
+        start = time.time()
+        end = start + hold
         last = -1
         while time.time() < end:
             time.sleep(5)
             call(self.sock, {"op": "snapshot", "path": str(out_png)})
             size = out_png.stat().st_size
-            # A still-placeholder tile renders identically frame to
-            # frame; equal encoded sizes twice running means the content
-            # has stopped moving.
-            if size == last:
+            if size == last and time.time() - start >= min_hold:
                 return
             last = size
         call(self.sock, {"op": "snapshot", "path": str(out_png)})
@@ -305,7 +315,7 @@ def run_one(args, package_id: str, out: pathlib.Path, env_extra: dict) -> dict:
         adopted = comp.wait_for_adoption(args.settle)
         if adopted and args.shots:
             shot = out / f"{package_id}.png"
-            comp.snapshot_when_painted(shot, args.hold)
+            comp.snapshot_when_painted(shot, args.hold, args.min_hold)
     reap(f"qos-apps/{package_id}")
 
     launched = was_launched(logpath, package_id)
@@ -342,6 +352,11 @@ def main() -> int:
                    help="seconds to wait for a toplevel (default: 60)")
     p.add_argument("--hold", type=float, default=60.0,
                    help="seconds to wait for the first frame with --shots")
+    p.add_argument("--min-hold", type=float, default=45.0,
+                   help="seconds a --shots capture must wait before an "
+                        "unchanging picture is accepted as the app's own "
+                        "(the first-frame placeholder is static, so it looks "
+                        "stable immediately)")
     p.add_argument("--startup-timeout", type=float, default=45.0,
                    help="seconds to wait for the control socket (default: 45)")
     p.add_argument("--data-dir", type=pathlib.Path,
