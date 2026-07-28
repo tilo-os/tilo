@@ -973,7 +973,7 @@ mod tests {
             &app,
             Path::new("/usr/bin/qos-launcher"),
             Path::new("/run/user/1000/wayland-3"),
-            WorkspaceId(3),
+            RoomId::new(),
             None,
             None,
         );
