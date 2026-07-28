@@ -18,23 +18,7 @@
 //! This is a file/format contract, not a crate dependency — the string values
 //! match the Settings app's `Measurement` enum reprs byte-for-byte.
 
-use std::path::PathBuf;
-
 use crate::units::Units;
-
-/// The per-user qOS config root: `$XDG_CONFIG_HOME/qos` or `~/.config/qos`.
-fn config_root() -> Option<PathBuf> {
-    let base = std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .filter(|p| !p.as_os_str().is_empty())
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))?;
-    Some(base.join("qos"))
-}
-
-/// Absolute path of the shared settings document.
-fn store_path() -> Option<PathBuf> {
-    config_root().map(|r| r.join("settings.json"))
-}
 
 /// Map a `locale.measurement` string to unit preferences. `"Imperial"` →
 /// °F + mph; anything else (including `"Metric"` and unknown) → °C + km/h.
@@ -62,13 +46,10 @@ pub fn units_from_settings_json(text: &str) -> Units {
 /// Load the user's measurement preference from the shared store. Returns
 /// metric when the file is absent or unreadable — never fails, never panics.
 pub fn load_units() -> Units {
-    let Some(path) = store_path() else {
-        return Units::METRIC;
-    };
-    match std::fs::read_to_string(&path) {
-        Ok(text) => units_from_settings_json(&text),
-        Err(_) => Units::METRIC,
-    }
+    let doc = settings_store::load();
+    units_from_measurement(
+        settings_store::str_at(&doc, "locale", "measurement").unwrap_or("Metric"),
+    )
 }
 
 #[cfg(test)]
