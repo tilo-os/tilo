@@ -25,7 +25,9 @@ pub mod doc;
 pub mod export;
 pub mod media;
 pub mod model;
+pub mod portal;
 pub mod preview;
+pub mod probe;
 pub mod timecode;
 
 pub use app::VideoEditorApp;
