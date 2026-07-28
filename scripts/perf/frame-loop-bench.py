@@ -124,7 +124,16 @@ def summarize(rows: list[dict], warmup_us: int, target_us: int) -> dict:
         "on_cadence_ratio": on_cadence,
         "tick_period": block(periods),
         "paint_period": block(paint_gaps),
-        "work": block([r["period_us"] - r["sleep_us"] for r in rows if r["period_us"]]),
+        # `period_us` spans the previous tick's start to this one's, so
+        # the park inside it is the *previous* sample's. Mirrors
+        # `metrics::FrameSample::work_us`.
+        "work": block(
+            [
+                max(0, b["period_us"] - a["sleep_us"])
+                for a, b in zip(rows, rows[1:])
+                if b["period_us"]
+            ]
+        ),
         "input": block([r["input_us"] for r in rows]),
         "pump": block([r["pump_us"] for r in rows]),
         "layout": block([r["layout_us"] for r in painted]),
@@ -454,7 +463,27 @@ def main() -> None:
         metavar="STATS_JSON",
         help="print an existing *.stats.json and exit",
     )
+    p.add_argument(
+        "--resummarize",
+        metavar="TRACE_CSV",
+        help="recompute (and rewrite) the stats for an existing trace and exit; "
+        "lets a run be re-sliced with a different --warmup-ms / --target-us, "
+        "or re-read after a fix to the summariser, without re-running the "
+        "compositor",
+    )
     args = p.parse_args()
+
+    if args.resummarize:
+        trace = Path(args.resummarize)
+        _, rows = read_trace(trace)
+        stats = summarize(rows, args.warmup_ms * 1000, args.target_us)
+        stats["label"] = args.label or trace.stem
+        stats["trace"] = str(trace)
+        out = trace.with_suffix("").with_suffix(".stats.json")
+        out.write_text(json.dumps(stats, indent=2))
+        print_summary(stats, stats["label"])
+        print(f"\n[bench] stats: {out}")
+        return
 
     if args.compare:
         a = json.loads(Path(args.compare[0]).read_text())
