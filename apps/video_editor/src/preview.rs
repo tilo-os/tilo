@@ -171,6 +171,11 @@ pub struct PreviewDecoder {
     engine: ::media::MediaEngine,
     open_path: Option<std::path::PathBuf>,
     last_seek_ms: Option<u64>,
+    last_seek_at: std::time::Instant,
+    /// True once a frame for the current seek target has landed and the engine
+    /// has been paused to hold it (so the preview is a static frame at the
+    /// playhead, not free-running playback).
+    settled: bool,
     frame: Option<DecodedFrame>,
     frame_media: Option<MediaId>,
 }
@@ -191,7 +196,15 @@ impl PreviewDecoder {
     }
 
     fn from_engine(engine: ::media::MediaEngine) -> Self {
-        Self { engine, open_path: None, last_seek_ms: None, frame: None, frame_media: None }
+        Self {
+            engine,
+            open_path: None,
+            last_seek_ms: None,
+            last_seek_at: std::time::Instant::now(),
+            settled: false,
+            frame: None,
+            frame_media: None,
+        }
     }
 
     /// Whether the engine is decoding through a real GStreamer pipeline.
@@ -239,17 +252,35 @@ impl PreviewDecoder {
             self.engine.open(crate::media::engine_source(&abs));
             self.open_path = Some(abs);
             self.last_seek_ms = None;
+            self.settled = false;
             self.frame = None;
         }
         let target_ms = (source_time_for(&clip, playhead) * 1000.0).max(0.0) as u64;
-        if self.last_seek_ms != Some(target_ms) {
+        // Drive the frame at the playhead by seeking, then briefly *playing* so
+        // the decoder pushes the frame at the seek target to the sink, then
+        // pausing to hold it static (the editor's own clock owns the playhead;
+        // the pipeline must not free-run). Seek on a genuine target change, with
+        // a rate-limited retry because a freshly-opened pipeline reaches its
+        // ready state asynchronously and an early seek can be dropped.
+        let target_changed = self.last_seek_ms != Some(target_ms);
+        let stale_retry = !self.settled
+            && self.last_seek_at.elapsed() > std::time::Duration::from_millis(150);
+        if target_changed || stale_retry {
             self.engine.seek_ms(target_ms);
+            self.engine.play();
             self.last_seek_ms = Some(target_ms);
+            self.last_seek_at = std::time::Instant::now();
+            self.settled = false;
         }
         self.engine.poll();
         if let Some(f) = self.engine.latest_frame() {
             self.frame = Some(f.clone());
             self.frame_media = Some(clip.media);
+            if !self.settled {
+                // Hold the frame: stop the pipeline advancing past the playhead.
+                self.engine.pause();
+                self.settled = true;
+            }
         }
         self.frame_media == Some(clip.media) && self.frame.is_some()
     }
@@ -513,43 +544,49 @@ mod tests {
         assert!(any_colour, "the graded clip renders visible colour");
     }
 
-    // Real GStreamer decode of a genuinely-encoded clip. Only compiled under
-    // `--features decode`; generates a real H.264 MP4 with `gst-launch-1.0` and
-    // asserts the engine extracts a true decoded frame at the playhead.
-    #[cfg(feature = "decode")]
+    // Real GStreamer round-trip: encode a genuine H.264 MP4 in-process, then
+    // decode it back through the real pipeline and assert a true frame is
+    // extracted at the playhead. Compiled only with both `decode` (the real
+    // MediaEngine backend) and `gst` (so this crate links GStreamer to build
+    // the sample clip programmatically — no external `gst-launch`, no PATH or
+    // registry fragility).
+    #[cfg(all(feature = "decode", feature = "gst"))]
     #[test]
     fn real_decode_extracts_a_true_frame() {
+        use gstreamer as gst;
+        use gstreamer::prelude::*;
+
+        gst::init().expect("gstreamer init");
         let dir = std::env::temp_dir();
         let f = dir.join(format!("qos-ve-realdec-{}.mp4", std::process::id()));
-        let ok = std::process::Command::new("gst-launch-1.0")
-            .args([
-                "-q",
-                "videotestsrc",
-                "pattern=smpte",
-                "num-buffers=60",
-                "!",
-                "video/x-raw,width=192,height=108,framerate=30/1",
-                "!",
-                "videoconvert",
-                "!",
-                "openh264enc",
-                "!",
-                "h264parse",
-                "!",
-                "mp4mux",
-                "!",
-            ])
-            .arg(format!("filesink location={}", f.display()))
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false);
-        assert!(ok && f.exists(), "gst-launch produced a real sample clip");
+        let desc = format!(
+            "videotestsrc pattern=smpte num-buffers=60 ! \
+             video/x-raw,width=192,height=108,framerate=30/1 ! videoconvert ! \
+             openh264enc ! h264parse ! mp4mux ! filesink location={}",
+            f.display()
+        );
+        let pipeline = gst::parse::launch(&desc)
+            .expect("build sample-clip pipeline")
+            .downcast::<gst::Pipeline>()
+            .expect("pipeline");
+        pipeline.set_state(gst::State::Playing).expect("play sample pipeline");
+        let bus = pipeline.bus().expect("bus");
+        for msg in bus.iter_timed(gst::ClockTime::from_seconds(30)) {
+            use gst::MessageView;
+            match msg.view() {
+                MessageView::Eos(_) => break,
+                MessageView::Error(e) => panic!("sample encode error: {}", e.error()),
+                _ => {}
+            }
+        }
+        let _ = pipeline.set_state(gst::State::Null);
+        assert!(f.exists() && std::fs::metadata(&f).unwrap().len() > 512, "a real sample clip was encoded");
 
         let (project, _mid) = project_referencing(&f);
         let mut dec = PreviewDecoder::new();
         assert!(dec.is_real_decode(), "the decode feature must use the real pipeline");
         // Preroll is async: pump until a frame lands or a short deadline.
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         let mut got = false;
         while std::time::Instant::now() < deadline {
             if dec.update(&project, 1.0) {

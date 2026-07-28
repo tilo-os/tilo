@@ -53,30 +53,30 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         // and, under `--features decode`, warms the pipeline so the capture
         // shows the clip's true decoded frame — not the representative gradient.
         if let Some(path) = parse_value_arg(&args, "--import") {
-            let mut app = video_editor::VideoEditorApp::new_import(vec![std::path::PathBuf::from(path)]);
-            // Pump `sync` until a decoded frame lands (real decode prerolls
-            // asynchronously) or a short deadline passes.
-            let mut warm = ui::State::new();
+            let mut app = video_editor::VideoEditorApp::new_import_placed(vec![std::path::PathBuf::from(path)]);
+            // Warm up on ONE state so the import + the async-prerolled decoded
+            // frame persist into the same document the render then draws from.
+            let mut state = ui::State::new();
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(6);
             loop {
-                app.sync(&mut warm.doc, &warm.root);
+                app.sync(&mut state.doc, &state.root);
                 if app.has_preview_frame() || std::time::Instant::now() >= deadline {
                     break;
                 }
                 std::thread::sleep(std::time::Duration::from_millis(40));
             }
-            render_shot_to_png(Box::new(app), DEFAULT_SHOTS_VIEWPORT, &out)?;
+            render_shot_to_png(Box::new(app), DEFAULT_SHOTS_VIEWPORT, &out, state)?;
             return Ok(());
         }
         if empty {
-            render_shot_to_png(video_editor::app_root(), DEFAULT_SHOTS_VIEWPORT, &out)?;
+            render_shot_to_png(video_editor::app_root(), DEFAULT_SHOTS_VIEWPORT, &out, ui::State::new())?;
         } else if args.iter().any(|a| a == "--narrow") {
-            render_shot_to_png(video_editor::app_root_narrow(), NARROW_SHOTS_VIEWPORT, &out)?;
+            render_shot_to_png(video_editor::app_root_narrow(), NARROW_SHOTS_VIEWPORT, &out, ui::State::new())?;
         } else {
             match scenario.as_deref() {
-                Some("filters") => render_shot_to_png(video_editor::app_root_filters(), DEFAULT_SHOTS_VIEWPORT, &out)?,
-                Some("split") => render_shot_to_png(video_editor::app_root_split(), DEFAULT_SHOTS_VIEWPORT, &out)?,
-                _ => render_shot_to_png(video_editor::app_root_demo(), DEFAULT_SHOTS_VIEWPORT, &out)?,
+                Some("filters") => render_shot_to_png(video_editor::app_root_filters(), DEFAULT_SHOTS_VIEWPORT, &out, ui::State::new())?,
+                Some("split") => render_shot_to_png(video_editor::app_root_split(), DEFAULT_SHOTS_VIEWPORT, &out, ui::State::new())?,
+                _ => render_shot_to_png(video_editor::app_root_demo(), DEFAULT_SHOTS_VIEWPORT, &out, ui::State::new())?,
             }
         }
         return Ok(());
@@ -86,7 +86,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     // `--import PATH` preloads a real clip on launch (the portal / Import button
     // add more at runtime).
     let root: Box<dyn Widget> = match parse_value_arg(&args, "--import") {
-        Some(path) => Box::new(video_editor::VideoEditorApp::new_import(vec![
+        Some(path) => Box::new(video_editor::VideoEditorApp::new_import_placed(vec![
             std::path::PathBuf::from(path),
         ])),
         None => video_editor::app_root(),
@@ -141,10 +141,16 @@ fn parse_scenario_arg(args: &[String]) -> Option<String> {
 
 /// Run one offscreen frame against `widget` and write RGBA to `out` as PNG.
 /// Mirrors `ui::App`'s cycle: sync → build_layout → compute_layout → apply_layout → draw.
+///
+/// `state` carries the document: a fresh one for the seeded/demo scenarios, or
+/// a **warmed** one (already synced through the import + decode warm-up) so the
+/// imported media persists into the rendered frame instead of being wiped by a
+/// fresh empty sync.
 fn render_shot_to_png(
     mut widget: Box<dyn Widget>,
     viewport: (u32, u32),
     out: &std::path::Path,
+    mut state: ui::State,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (w, h) = viewport;
     let theme = Theme::dark();
@@ -154,7 +160,6 @@ fn render_shot_to_png(
     let mut taffy: TaffyTree<()> = TaffyTree::new();
     let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
 
-    let mut state = ui::State::new();
     widget.sync(&mut state.doc, &state.root);
 
     let child = widget.build_layout(&mut taffy, &theme, &mut node_map);
