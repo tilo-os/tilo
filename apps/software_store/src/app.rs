@@ -1073,15 +1073,16 @@ impl SoftwareStore {
         );
 
         let cy = header.center().y;
-        let mut x = header.x0 + BODY_PAD_X;
+        let x = header.x0 + BODY_PAD_X;
         let narrow = self.is_narrow();
 
         // Narrow: a hamburger summons the navigation drawer in place of the
         // inline tabs. The Back chevron, when in detail, takes precedence —
         // detail is the single-pane "push" view, so its Back affordance leads.
+        // (Toggle and Back are mutually exclusive on `detail`, so both anchor at
+        // the same left origin.)
         if narrow && self.detail.is_none() {
             self.draw_nav_toggle(scene, t, theme, targets);
-            x = self.nav_toggle_rect().x1 + 14.0;
         }
 
         // Back chevron when in detail view.
@@ -1091,15 +1092,9 @@ impl SoftwareStore {
             draw::fill_round(scene, t, back_rect, 8.0, if hov { c.surface_white_10 } else { c.surfaces.raised });
             draw::text_w(scene, tr, t, "‹  Back", theme.tokens.typography.scale.sm, TextWeight::Medium, c.text_primary, x + 12.0, cy - 8.0, None);
             targets.push(HitTarget { rect: back_rect, action: Action::Back });
-            x = back_rect.x1 + 14.0;
         }
 
-        // Wordmark: an accent app-tile + "Software".
-        let tile = Rect::new(x, cy - 14.0, x + 28.0, cy + 14.0);
-        draw::fill_round(scene, t, tile, 8.0, c.accent[5]);
-        draw::text_w(scene, tr, t, "◍", 16.0, TextWeight::Bold, Color::WHITE, tile.center().x - 6.0, tile.center().y - 9.0, None);
-        let name_x = tile.x1 + 10.0;
-        draw::text_w(scene, tr, t, "Software", theme.tokens.typography.scale.lg, TextWeight::Bold, c.text_primary, name_x, cy - 11.0, None);
+        // The OS owns the window title/app-name/logo — no wordmark drawn here.
 
         // Right cluster: nav tabs (wide only), then search pill.
         let pad_r = header.x1 - BODY_PAD_X;
@@ -1166,10 +1161,11 @@ impl SoftwareStore {
             origin
         };
 
-        // Search pill, to the left of the tabs.
+        // Search pill, to the left of the tabs. Draw it only while it clears the
+        // left cluster (nav toggle / Back chevron) rather than the old wordmark.
         let search_w = 280.0_f64;
         let search_r = Rect::new(tabs_origin - GAP - search_w, cy - 16.0, tabs_origin - GAP, cy + 16.0);
-        if search_r.x0 > name_x + 120.0 {
+        if search_r.x0 > self.rect.x0 + BODY_PAD_X + 80.0 {
             self.draw_search_bar(scene, tr, t, theme, targets, search_r);
         }
     }

@@ -1027,7 +1027,8 @@ impl FirewallApp {
         paint::fill_rect(scene, t, h, theme.tokens.colors.neutral[0]);
         paint::hline(scene, t, h.x0, h.x1, h.y1, theme.border_standard, 1.0);
 
-        paint::label(tr, scene, t, "Firewall", 20.0, theme.text_primary, h.x0 + 20.0, h.y0 + 9.0, 200.0);
+        // The OS owns the window title/app-name — the header shows only the
+        // contextual firewall status (functional, not an app wordmark).
         let sub = if !self.available {
             "firewalld not running — nothing to display".to_string()
         } else if self.config.panic_mode {
@@ -1038,9 +1039,9 @@ impl FirewallApp {
         let sub_color = if self.config.panic_mode && self.available {
             theme.tokens.colors.semantic.danger
         } else {
-            theme.text_dim
+            theme.text_primary
         };
-        paint::label(tr, scene, t, &sub, 11.0, sub_color, h.x0 + 20.0, h.y0 + 34.0, 520.0);
+        paint::label(tr, scene, t, &sub, 13.0, sub_color, h.x0 + 20.0, h.y0 + 18.0, 520.0);
 
         // With no readable firewall there are no live controls to offer.
         if !self.available {
