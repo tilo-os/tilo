@@ -301,8 +301,8 @@ tar = "0.4"
 # 0.6 — and `rand` 0.8 is the only release that hands out a 0.6-shaped `OsRng`.
 # That is why `rand` is pinned to 0.8 rather than the current 0.10: bumping it
 # would not typecheck against `SigningKey::generate`. iroh drags in a *second*
-# Ed25519 implementation (ed25519-dalek 3.0.0-pre) for its own node identity;
-# that pre-release is iroh's business and must not become ours.
+# Ed25519 implementation (ed25519-dalek 3.x) for its own node identity; that is
+# iroh's business and must not become ours.
 # ---------------------------------------------------------------------------
 ed25519-dalek = "2"
 rand = "0.8"
