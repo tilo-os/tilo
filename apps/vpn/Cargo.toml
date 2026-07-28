@@ -32,3 +32,9 @@ anyhow = "1.0"
 ashpd = { version = "0.9", default-features = false, features = ["tokio"] }
 tokio = { version = "1", features = ["rt", "rt-multi-thread"] }
 url = "2"
+
+[dev-dependencies]
+# Serialise the handful of tests that mutate process-global env vars
+# (QOS_VPN_ALLOW_EXEC / XDG_DATA_HOME) so they never race under the default
+# parallel test runner.
+serial_test = "3"
