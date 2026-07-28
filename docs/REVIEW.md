@@ -173,7 +173,7 @@ desktop installer than a forced step-wizard.
 | osk | 🟢 | Real `zwp_virtual_keyboard` injection + FUTO swipe; clean render. |
 | pdf_viewer | 🟢 | Real pdfium; drove real doc — render/search/annotate/comment/sign. Needs pdfium native lib. |
 | permissions | 🟢 | Real capability model, empty authored set on live; wired to OS registry. |
-| remote | 🔴 | **Worst**: seeds 8 fake machines into the CRDT on live launch; SSH/VNC transport stubbed (fakes terminal + desktop). |
+| remote | 🟢 | Real transport: SSH via `russh` (real connect + password/key auth + PTY channel feeding the terminal grid) and VNC via a real RFB client (real framebuffer decode into the scene). Gated behind `REMOTE_LIVE_SESSIONS`; starts empty, and Connect shows honest connecting/error surfaces — never a fabricated terminal or desktop. |
 | sheets | 🟢 | Real formula engine + real `.xlsx`/`.ods` codecs (calamine); empty on live. |
 | slides | 🟢 | Real deck editor, one blank slide on live; sample=shots. |
 | snippets | 🟠 | Real store but seeds a 14-item starter library on live (borderline — presets vs content). |
@@ -194,12 +194,12 @@ desktop installer than a forced step-wizard.
 ## Tally (45 apps)
 - 🟢 **~25 genuinely good** — real backends, empty-on-live, samples gated to `--shots`.
 - 🟠 **~14 real defects** — mostly S1 (live-seeded) or dead controls / minor chrome.
-- 🔴 **6 major** (+ camera and vpn, now fixed): chat, code_editor, feeds, firewall, remote, video_editor.
+- 🔴 **5 major** (+ camera, vpn, and remote, now fixed): chat, code_editor, feeds, firewall, video_editor.
 
 ## Fix plan (prioritized)
 1. **firewall safety (S6)** — read real zones/rules (`firewall-cmd --list`/import) before displaying or applying. Do first.
-2. **The reds → real or honestly-empty:** vpn done (real WireGuard/OpenVPN bring-up + live status/throughput, exec-gated); remote (real SSH+VNC, or start empty + mark simulation clearly), video_editor (real media import via portal + real preview/export, or gate honestly), code_editor (real open/save via portal), feeds (delete the live seed — the real RSS/Atom/Gemini worker already exists), chat (real MoQ/collab backend + empty channels).
-3. **S1 live-seed sweep (mechanical, high-ROI):** stop seeding sample data in live constructors — feeds, firewall, remote, video_editor, snippets, software_store, store, db_client, diffmerge, backups, calendar, ebook, api_tester, chat. Move the seed behind `--shots` (the good apps already do this). Often a 1-line change.
+2. **The reds → real or honestly-empty:** video_editor (real media import via portal + real preview/export, or gate honestly), code_editor (real open/save via portal), feeds (delete the live seed — the real RSS/Atom/Gemini worker already exists), chat (real MoQ/collab backend + empty channels). Done: vpn (real WireGuard/OpenVPN bring-up + live status/throughput, exec-gated); remote (real SSH via `russh` + VNC via RFB, gated behind `REMOTE_LIVE_SESSIONS`).
+3. **S1 live-seed sweep (mechanical, high-ROI):** stop seeding sample data in live constructors — feeds, firewall, video_editor, snippets, software_store, store, db_client, diffmerge, backups, calendar, ebook, api_tester, chat. Move the seed behind `--shots` (the good apps already do this). Often a 1-line change.
 4. **Dead controls:** store (search + filter chips), tube (Invidious setting), store detail sheet.
 5. **Chrome:** video-player immersive §1e; strip app-drawn name/logo headers (S5) across ~11 apps; land the shared `ui` sidebar/card unification (Card/CardGrid built) + migrate the bespoke-sidebar offenders (file-explorer 1122 LOC, backups, firewall).
 6. **Feature gaps vs product.md:** db_client real pg/mysql; maps live-tile fix + traffic; portal Open/Save-As where missing (word-processor, typst, code_editor, hex_editor); mail/music/tube `--features live` default-on decision.

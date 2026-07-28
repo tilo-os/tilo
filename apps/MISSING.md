@@ -484,3 +484,37 @@ Connected unless a real command succeeded and the kernel confirms the interface.
       lacks the privilege/tools. (bbf44657, 335c9933, 078358e6)
 - [ ] OpenVPN throughput is best-effort (kernel-assigned tun device); Tor
       chaining and a live management-socket status remain later work.
+
+## remote — real SSH + VNC transport (Connect actually connects)
+
+The honesty pass already made the live app start empty and show an honest "not
+connected" card. The transport itself is now **real** — Connect opens a genuine
+session, and on failure shows the real error, never a fabricated terminal or
+desktop. A live connection stays gated behind `REMOTE_LIVE_SESSIONS`; the
+default build never touches the network and keeps the honest surface.
+
+- [x] Real SSH — `src/ssh.rs` drives a `russh` client on a background tokio
+      runtime: real TCP connect, real key exchange, real auth (password via
+      `REMOTE_SSH_PASSWORD`, or a private key via `REMOTE_SSH_KEY` /
+      `~/.ssh/id_*`), and a real interactive PTY channel. Output is parsed by a
+      compact VT/ANSI emulator (`src/vt.rs`, over `vte`) into the terminal grid
+      the surface renders; keystrokes flow back into the PTY. Proven by a real
+      round-trip test that stands up a `russh` **server** on a loopback socket
+      and drives the production client through it (connect → password auth →
+      shell banner into the grid → an upstream keystroke echoed back).
+- [x] Real VNC — `src/rfb.rs` is a from-scratch RFB (RFC 6143) codec:
+      version + security negotiation, `None` and `VNC Authentication` (single
+      DES, cross-checked against openssl/pyDes), true-colour pixel formats, and
+      the `Raw`/`CopyRect`/`RRE` encodings — decoders take any `Read`, so the
+      same path runs on fixtures and on the live socket. `src/vnc.rs` drives it
+      over TCP on a background thread into a shared RGBA framebuffer the surface
+      paints, with pointer/keyboard injected back. Proven by a real round-trip
+      against a loopback RFB server (handshake → decode a known 4×2 framebuffer,
+      pixel-exact) plus an honest-failure test (refused connection → `Failed`).
+- Honesty: connecting/failed/closed states each render the real status; the old
+      fabricated sample transcript + synthetic desktop are deleted. Secrets are
+      read from the environment at connect time and never stored in the CRDT.
+      Deps (`russh`, `tokio`, `vte`, `des`) build in the default profile; a live
+      session still requires the runtime opt-in. Cross-host verification against
+      a system `sshd` / external VNC server is the remaining nice-to-have (the
+      loopback round-trips already exercise the full real transport).
