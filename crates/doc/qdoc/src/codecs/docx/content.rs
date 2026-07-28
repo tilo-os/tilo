@@ -600,7 +600,7 @@ pub(crate) fn parse_body(
             Event::Text(t) => {
                 if in_t {
                     if let Some(b) = cur.as_ref() {
-                        let txt = t.unescape().map_err(|e| CodecError::Parse(format!("text: {e}")))?;
+                        let txt = t.xml10_content().map_err(|e| CodecError::Parse(format!("text: {e}")))?;
                         if !txt.is_empty() {
                             doc.splice_text(b, cur_len, 0, &txt);
                             cur_len += txt.chars().count();
