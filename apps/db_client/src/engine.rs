@@ -242,6 +242,35 @@ fn value_ref_to_cell(v: ValueRef<'_>) -> Cell {
     }
 }
 
+/// A live connection to any supported engine. The session holds one of these
+/// and dispatches introspection + query execution uniformly, so SQLite (local,
+/// bundled) and the real network engines share one code path.
+pub enum LiveEngine {
+    Sqlite(SqliteEngine),
+    Postgres(crate::engine_pg::PostgresEngine),
+    MySql(crate::engine_mysql::MySqlEngine),
+}
+
+impl LiveEngine {
+    /// Introspect the full schema for whichever engine backs this handle.
+    pub fn introspect(&mut self) -> Result<DatabaseSchema, String> {
+        match self {
+            LiveEngine::Sqlite(e) => e.introspect(),
+            LiveEngine::Postgres(e) => e.introspect(),
+            LiveEngine::MySql(e) => e.introspect(),
+        }
+    }
+
+    /// Run a single SQL statement against whichever engine backs this handle.
+    pub fn run(&mut self, sql: &str) -> Result<QueryResult, String> {
+        match self {
+            LiveEngine::Sqlite(e) => e.run(sql),
+            LiveEngine::Postgres(e) => e.run(sql),
+            LiveEngine::MySql(e) => e.run(sql),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

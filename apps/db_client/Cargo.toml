@@ -24,3 +24,11 @@ winit = "0.30.13"
 taffy = "0.10.1"
 anyhow = "1.0"
 rusqlite = { version = "0.37.0", features = ["bundled"] }
+# Real network drivers. Both are synchronous, matching the sync `rusqlite`
+# path so the whole engine layer stays blocking (the `postgres` crate wraps
+# `tokio-postgres` behind a private runtime; `mysql` is natively sync). TLS
+# is left off here (localhost / trusted-network connections) to keep the
+# dependency surface — and compile time — small; a future grant-gated build
+# can enable `rustls-tls` on both.
+postgres = "0.19"
+mysql = { version = "25", default-features = false, features = ["minimal"] }

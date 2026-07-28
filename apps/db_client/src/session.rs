@@ -4,7 +4,9 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::engine::SqliteEngine;
+use crate::engine::{LiveEngine, SqliteEngine};
+use crate::engine_mysql::MySqlEngine;
+use crate::engine_pg::PostgresEngine;
 use crate::model::{
     ConnectionProfile, DatabaseSchema, Engine, QueryResult, RelationKind, TableInfo,
 };
@@ -93,9 +95,9 @@ pub struct Session {
     pub connections: Vec<ConnectionProfile>,
     /// Index into `connections` of the active connection.
     pub active: usize,
-    /// Live SQLite handle for the active connection (None for remote
-    /// engines that have not been granted an outbound socket).
-    pub engine: Option<SqliteEngine>,
+    /// Live handle for the active connection (SQLite, Postgres or MySQL), or
+    /// `None` when nothing is connected or the last connect attempt failed.
+    pub engine: Option<LiveEngine>,
     /// Introspected schema for the active connection.
     pub schema: DatabaseSchema,
     /// The table currently selected in the schema tree, by name.
@@ -150,47 +152,67 @@ impl Session {
         s
     }
 
-    /// (Re)open the active connection's engine. Local SQLite files open for
-    /// real; remote engines stay gated behind a sandbox grant.
+    /// (Re)open the active connection's engine. Every engine connects for
+    /// real: SQLite opens the bundled sample or an on-disk file; Postgres and
+    /// MySQL open real TCP sockets. A failed connect leaves the engine `None`
+    /// and reports the driver's own error — never a fabricated success.
     fn connect_active(&mut self) {
         let Some(profile) = self.connections.get(self.active).cloned() else {
-            self.engine = None;
-            self.schema = DatabaseSchema::default();
+            self.set_engine(None, DatabaseSchema::default());
             return;
         };
-        if profile.is_sample {
-            if let Ok(eng) = SqliteEngine::open_sample() {
-                self.schema = eng.introspect().unwrap_or_default();
-                self.engine = Some(eng);
+
+        // Open the engine for this profile, mapping success/failure onto a
+        // single (engine, schema, status) outcome.
+        let outcome: Result<LiveEngine, String> = if profile.is_sample {
+            SqliteEngine::open_sample().map(LiveEngine::Sqlite)
+        } else {
+            match profile.engine {
+                Engine::Sqlite if profile.file_path.is_empty() => {
+                    Err("SQLite connection has no file path".to_string())
+                }
+                Engine::Sqlite => SqliteEngine::open_file(&profile.file_path).map(LiveEngine::Sqlite),
+                Engine::Postgres => PostgresEngine::connect(&profile).map(LiveEngine::Postgres),
+                Engine::MySql => MySqlEngine::connect(&profile).map(LiveEngine::MySql),
             }
-        } else if profile.engine == Engine::Sqlite && !profile.file_path.is_empty() {
-            match SqliteEngine::open_file(&profile.file_path) {
-                Ok(eng) => {
-                    self.schema = eng.introspect().unwrap_or_default();
-                    self.engine = Some(eng);
+        };
+
+        match outcome {
+            Ok(mut eng) => {
+                let schema = eng.introspect().unwrap_or_default();
+                self.set_engine(Some(eng), schema);
+                self.mark_connected(true);
+                if !profile.is_sample {
                     self.status = RunStatus::Ok(format!("Connected to {}", profile.name));
                 }
-                Err(e) => {
-                    self.engine = None;
-                    self.schema = DatabaseSchema::default();
-                    self.status = RunStatus::Error(e);
-                }
             }
-        } else {
-            // Remote engines are gated; surface a clear, non-fatal message.
-            self.engine = None;
-            self.schema = DatabaseSchema::default();
-            self.status = RunStatus::Error(format!(
-                "{} connections need a network grant — gated in this build",
-                profile.engine.label()
-            ));
+            Err(e) => {
+                self.set_engine(None, DatabaseSchema::default());
+                self.mark_connected(false);
+                self.status = RunStatus::Error(e);
+            }
         }
+    }
+
+    /// Replace the live engine + schema and reset the selected table to the
+    /// first real table in the freshly-introspected schema.
+    fn set_engine(&mut self, engine: Option<LiveEngine>, schema: DatabaseSchema) {
+        self.engine = engine;
+        self.schema = schema;
         self.selected_table = self
             .schema
             .schemas
             .first()
             .and_then(|s| s.tables.iter().find(|t| t.kind == RelationKind::Table))
             .map(|t| t.name.clone());
+    }
+
+    /// Reflect the live-handle state on the active profile so the sidebar
+    /// status dot is honest about whether a socket is actually open.
+    fn mark_connected(&mut self, connected: bool) {
+        if let Some(p) = self.connections.get_mut(self.active) {
+            p.connected = connected;
+        }
     }
     /// Build a session with the bundled sample connection live and its
     /// schema introspected. Falls back to an empty schema on engine error
@@ -200,7 +222,7 @@ impl Session {
         let (engine, schema) = match SqliteEngine::open_sample() {
             Ok(eng) => {
                 let schema = eng.introspect().unwrap_or_default();
-                (Some(eng), schema)
+                (Some(LiveEngine::Sqlite(eng)), schema)
             }
             Err(_) => (None, DatabaseSchema::default()),
         };
@@ -290,16 +312,19 @@ impl Session {
     /// Run the SQL in the editor against the active engine, storing the
     /// result and updating the status banner.
     pub fn run_query(&mut self, sql: &str) {
-        let Some(engine) = &self.engine else {
-            self.status = RunStatus::Error("No live connection".into());
-            return;
+        let outcome = {
+            let Some(engine) = self.engine.as_mut() else {
+                self.status = RunStatus::Error("No live connection".into());
+                return;
+            };
+            engine.run(sql)
         };
-        match engine.run(sql) {
+        match outcome {
             Ok(result) => {
                 self.status = RunStatus::Ok(result.message());
                 self.query_result = Some(result);
                 // A DDL/DML statement may have changed the schema.
-                if let Some(eng) = &self.engine {
+                if let Some(eng) = self.engine.as_mut() {
                     self.schema = eng.introspect().unwrap_or_default();
                 }
             }
@@ -315,14 +340,19 @@ impl Session {
         let Some(table) = self.selected_table.clone() else {
             return;
         };
-        let Some(engine) = &self.engine else { return };
         let sql = format!(
             "SELECT * FROM \"{}\" LIMIT {} OFFSET {}",
             table.replace('"', "\"\""),
             self.data_page_size,
             self.data_offset
         );
-        match engine.run(&sql) {
+        let outcome = {
+            let Some(engine) = self.engine.as_mut() else {
+                return;
+            };
+            engine.run(&sql)
+        };
+        match outcome {
             Ok(result) => self.data_result = Some(result),
             Err(e) => self.status = RunStatus::Error(e),
         }
@@ -377,13 +407,27 @@ mod tests {
     }
 
     #[test]
-    fn remote_connection_is_gated() {
-        let mut s = Session::with_sample();
-        // index 1 is the seeded Postgres profile.
-        s.select_connection(1);
+    fn remote_connection_to_unreachable_server_errors_honestly() {
+        // A real Postgres connect to a closed port fails through the driver:
+        // no live engine, no fabricated schema, and an honest error banner —
+        // never a faked "connected" state.
+        let mut s = Session::load_from(temp_dir("pg-unreachable"));
+        let mut pg = ConnectionProfile::new("Unreachable pg", Engine::Postgres);
+        pg.host = "127.0.0.1".into();
+        pg.port = 1; // reserved/closed — connection is refused immediately.
+        pg.database = "nope".into();
+        pg.user = "nobody".into();
+        s.add_connection(pg);
+
+        assert!(s.engine.is_none(), "no live engine when the server is unreachable");
+        assert_eq!(s.schema.table_count(), 0, "no fabricated schema on failure");
+        assert!(
+            !s.connections[s.active].connected,
+            "profile is not marked connected on failure"
+        );
         match &s.status {
-            RunStatus::Error(m) => assert!(m.contains("grant")),
-            _ => panic!("expected gated error"),
+            RunStatus::Error(_) => {}
+            other => panic!("expected an honest connection error, got {other:?}"),
         }
     }
 
