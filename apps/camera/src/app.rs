@@ -1547,8 +1547,10 @@ impl CameraApp {
 
         let target_w = 156.0;
         let gap = 12.0;
-        let cols = (((grid.width() + gap) / (target_w + gap)).floor() as usize).max(1);
-        let cell_w = (grid.width() - gap * (cols - 1) as f64) / cols as f64;
+        // Shared reflow math so this grid lines up exactly like every other
+        // card grid in the OS (one canonical formula, not a per-app copy).
+        let cols = ui::widget::card_columns(grid.width(), target_w, gap);
+        let cell_w = ui::widget::card_column_width(grid.width(), cols, gap);
         let card_h = (cell_w * 0.72).clamp(94.0, 150.0);
         p::push_clip_rect(scene, t, grid);
         for (i, cap) in photos.iter().enumerate() {
@@ -1740,11 +1742,12 @@ impl CameraApp {
         let detail_gap = if detail_w > 0.0 { 18.0 } else { 0.0 };
         let grid = Rect::new(content.x0 + pad, content.y0 + 64.0, content.x1 - pad - detail_w - detail_gap, content.y1 - pad);
 
-        // Grid layout.
+        // Grid layout. Shared reflow math (one canonical formula) so this roll
+        // aligns exactly like every other card grid in the OS.
         let target_w = 196.0;
         let gap = 14.0;
-        let cols = (((grid.width() + gap) / (target_w + gap)).floor() as usize).max(1);
-        let cell_w = (grid.width() - gap * (cols - 1) as f64) / cols as f64;
+        let cols = ui::widget::card_columns(grid.width(), target_w, gap);
+        let cell_w = ui::widget::card_column_width(grid.width(), cols, gap);
         let card_h = (cell_w * 0.76).clamp(120.0, 168.0);
 
         // Vertical scroll over the full roll — clamped to the content extent
