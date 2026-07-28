@@ -14,7 +14,9 @@ use crate::shell::launcher::{self, InstalledApp};
 use crate::shell::notification::{Notification, NotificationSeverity};
 use crate::shell::search::{ResourceKind, SearchContext, SearchProvider, SearchResult};
 
-/// Chip label / group header for launchable apps.
+/// Chip label / group header for launchable apps. Mirrors
+/// [`ResourceKind::Application`]'s label; kept as a constant because
+/// the provider's `name()` is the group header too.
 pub const APPLICATIONS_KIND: &str = "Applications";
 
 pub struct ApplicationsProvider {
@@ -24,7 +26,7 @@ pub struct ApplicationsProvider {
 impl ApplicationsProvider {
     pub fn new() -> Self {
         Self {
-            kinds: vec![ResourceKind::Custom(APPLICATIONS_KIND.to_string())],
+            kinds: vec![ResourceKind::Application],
         }
     }
 
@@ -37,7 +39,7 @@ impl ApplicationsProvider {
 
     fn results_for(&self, needle: &str, apps: Vec<InstalledApp>) -> Vec<SearchResult> {
         let needle_lower = needle.to_lowercase();
-        let kind = ResourceKind::Custom(APPLICATIONS_KIND.to_string());
+        let kind = ResourceKind::Application;
         let mut out = Vec::new();
         for app in apps {
             let name_lower = app.display_name.to_lowercase();
@@ -138,7 +140,7 @@ impl SearchProvider for ApplicationsProvider {
         if !ctx
             .wanted
             .iter()
-            .any(|k| matches!(k, ResourceKind::Custom(s) if s == APPLICATIONS_KIND))
+            .any(|k| matches!(k, ResourceKind::Application))
         {
             return Vec::new();
         }
