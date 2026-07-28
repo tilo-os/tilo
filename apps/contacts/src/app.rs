@@ -5600,6 +5600,79 @@ mod tests {
         assert_eq!(loaded.phones[0].value, "+1 555 0100");
     }
 
+    /// The property the old save path destroyed, asserted in the app that
+    /// had the bug.
+    ///
+    /// `storage::save` rebuilt a fresh `AutoCommit` from the contact list on
+    /// every write. The document it produced shared no history — and no
+    /// object identity — with the one it came from, so merging it with a
+    /// replica that had diverged produced two unrelated `contacts` objects
+    /// and every record twice. Round-tripping through the store instead must
+    /// leave the two sides mergeable: one shared object, each side's edit
+    /// present exactly once.
+    #[test]
+    #[serial_test::serial]
+    fn a_saved_book_still_merges_with_a_replica_that_diverged_before_the_save() {
+        let home = tempfile::tempdir().unwrap();
+        unsafe {
+            std::env::set_var("XDG_DATA_HOME", home.path());
+            std::env::remove_var("QOS_PACKAGE_ID");
+        }
+        let mut store = ui::persist::DocStore::open_for("dev.qos.contacts").unwrap();
+        let mut doc = store.new_document();
+
+        // A shared ancestor: one contact both sides know about.
+        let mut shared = Contact::new();
+        shared.first = "Ada".into();
+        shared.last = "Lovelace".into();
+        let shared_id = shared.id;
+        ContactsDoc::upsert_contact(&mut doc, &shared);
+        store.save(&mut doc).unwrap();
+
+        // A peer forks here and adds a contact of its own.
+        let mut peer = doc.fork();
+        let mut theirs = Contact::new();
+        theirs.first = "Grace".into();
+        theirs.last = "Hopper".into();
+        let their_id = theirs.id;
+        ContactsDoc::upsert_contact(&mut peer, &theirs);
+
+        // Meanwhile this app adds one and the session ends.
+        let mut mine = Contact::new();
+        mine.first = "Alan".into();
+        mine.last = "Turing".into();
+        let my_id = mine.id;
+        ContactsDoc::upsert_contact(&mut doc, &mine);
+        store.save(&mut doc).unwrap();
+        drop((store, doc));
+
+        // Restart, then merge the peer that diverged before the save.
+        let mut store2 = ui::persist::DocStore::open_for("dev.qos.contacts").unwrap();
+        let mut restored = store2.load().unwrap().expect("the saved document");
+        restored.merge(&mut peer).expect("a stored book merges with a peer");
+
+        let book = ContactsDoc::list_contacts(&restored);
+        assert_eq!(
+            book.len(),
+            3,
+            "each side's contact appears exactly once, not duplicated: {:?}",
+            book.iter().map(|c| c.first.clone()).collect::<Vec<_>>()
+        );
+        for (id, name) in [(shared_id, "Ada"), (my_id, "Alan"), (their_id, "Grace")] {
+            let found = book.iter().filter(|c| c.id == id).count();
+            assert_eq!(found, 1, "{name} must be present exactly once, found {found}");
+        }
+        // The decisive check: both sides edited the *same* contacts object.
+        // A rebuilt-from-scratch save would have made two, and the merge
+        // would leave a conflict at the key.
+        assert_eq!(
+            restored.get_all(&ROOT, "contacts").unwrap().len(),
+            1,
+            "history was preserved, so the merge reconciled one object rather \
+             than colliding two unrelated ones"
+        );
+    }
+
     /// An address book written by the release that kept its own file must
     /// come across on the first launch after the upgrade.
     #[test]
