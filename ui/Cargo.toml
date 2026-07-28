@@ -33,8 +33,21 @@ webview-wpe = ["dep:ash"]
 # `media` feature turns on `ui/mpris`). `zbus` is pinned to 4.4 to match the
 # copy `apps/music` + `apps/chat` already resolve, so no second zbus lands.
 mpris = ["dep:zbus", "zbus/tokio"]
+# Host-native file open/save through the XDG Desktop Portal (`ui::portal`).
+# Pulls `ashpd` (D-Bus / FileChooser) only when an app actually needs to open or
+# save files — an app opts in with `ui = { …, features = ["portal"] }`. The pure
+# parts (`PortalOutcome`, the `FileDialog` builder, `map_uris`, `inject_for_test`)
+# always compile, so headless tests drive the exact per-frame drain path with no
+# portal and a feature-less build degrades to a clean `PortalOutcome::Failed`
+# rather than failing to link. `ashpd` 0.9 tracks the copy the fleet resolves.
+portal = ["dep:ashpd"]
 
 [dependencies]
+# XDG Desktop Portal FileChooser client for `ui::portal` (feature `portal`).
+ashpd = { version = "0.9", default-features = false, features = ["tokio"], optional = true }
+# `url` parses the `file://` URIs the portal returns; used by `ui::portal`'s
+# pure `map_uris` (compiled even without the `portal` feature so its tests run).
+url = "2"
 qos-startup-metrics = { path = "../crates/system/qos-startup-metrics" }
 # Filter-list compiler for the WebView's built-in ad blocking (feature
 # `webview-adblock`). The `content-blocking` feature provides the
