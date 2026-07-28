@@ -100,6 +100,23 @@ verified by an offscreen shot (header gone, functional controls intact) + tests:
       workflow's verify agent crashed on an API drop, so I rendered + checked the
       shots myself).
 
+## file-explorer — CLEAR (sidebar unified onto ui::NavShell, §7-graded)
+- [x] Was a hand-rolled fixed-width `[ places | file view ]` split with **no**
+      width reactivity + 2 dead sidebar modules. Now the split is the shared
+      **ui::NavShell**: wide docks the places list beside the file view; narrow
+      (<640 px) collapses to one pane — places list full-screen → tap a place →
+      the file view pushes in with a ‹ Back arrow (Esc/Back returns). The
+      `PlacesSidebar` (drag-reorder favourites + workspace mounts) is kept as the
+      overview pane. Deleted dead `sidebar_row.rs` (348 LOC). Verified with
+      `--shots` at wide (populated + empty) and narrow (places list + pushed
+      detail), opened + graded against HIG §7: docked sidebar, one-line toolbar
+      with a wide search, tabular size/date columns; narrow wraps the toolbar to
+      two rows, full-width places list, and reserves the Back chip. `-p ui --lib`
+      1333 green + file-explorer suite green.
+- [ ] Empty-folder content area is a bare header + blank (a §7 zero-state is
+      missing) — pre-existing to the list view (`views/list_view`), not the
+      sidebar; worth a composed empty state.
+
 ## chat — UI defects CLEAR; deeper FEATURE gaps below (audit 2026-07-04)
 - [x] Call-overlay tiles packed into a bounded region (grid picks the column count
       that fits N; partial last row centred) — no right-edge overflow at any width
