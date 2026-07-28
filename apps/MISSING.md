@@ -329,3 +329,50 @@ empty state proves nothing. (I violated this by showing pdf_viewer from an empty
 - [ ] Minor perf: ChatApp::needs_redraw() returns true unconditionally → a full
       re-render on every CursorMoved even when no hover/selection changed. Gate it
       on actual state change (not an idle spin, but wasteful under pointer motion).
+
+---
+
+## honesty pass — live path starts real/empty, samples gated to `--shots`
+
+Live launches must show real (or honestly empty) data; fabricated sample
+content is reserved for `--shots`/demo builders. Each item build + tested +
+shot-inspected (empty state and demo).
+
+- [x] store — the shopfront search box was a dead styled `Container` and the
+      source-filter chips were an inert `ToggleGroup` (`on_change` no-op). The
+      search box is now a real `TextInput` bound to a CRDT `Text` that filters
+      the catalog; the chips are wired through a shared cell that `sync` adopts
+      into `active_filter`. Removed the `[All]` bracket rendering on category
+      chips and the stray tiny "update" label under cards. Tests drive both the
+      typed query and a chip click through the real `sync`. (322a44f5)
+- [x] tube — removed the dead "Invidious instance" control: the selected
+      instance was discarded in `Request::Search` (real search runs through the
+      yt-dlp/InnerTube backend; media resolution uses its own instance list).
+      Dropped the row + its "a real control, not a dead ornament" comment, the
+      cycle action, the `INSTANCES` table, the Settings "Source" card + field,
+      the "sample data" wording on the offline label, and "across your instance"
+      copy. Live already starts empty. (818ff6cc)
+- [x] chat — live already seeds an honest minimal starter (My Workspace +
+      #general + Lounge, local user only), never the fabricated "Acme Design"
+      demo. Fixed the guardrail test to pin `QOS_CHAT_DATA` at a temp dir so it
+      exercises the fresh first-run seed instead of adopting (or overwriting) an
+      on-disk store. (7ab4fc18)
+- [x] backups — the constructor loaded `Catalog::sample()` unconditionally
+      (58 GB / Seagate / Backblaze / a week of snapshots on live launch). Live
+      now starts on an empty catalog with a "No backups configured yet"
+      onboarding; the sample moved behind `new_demo()`/`app_root_demo()` for
+      `--shots`. Real btrfs/restic backend still a later task. (834b9f49)
+- [x] calendar — live already starts empty on the real persisted store
+      (`Model::default()`, `demo`-gated seed); the "Design review / Team standup"
+      + Work/Personal/Health sample is `new_demo()`/`--shots` only. Verified the
+      empty onboarding ("No events yet") renders. (no code change)
+- [x] ebook — `load_library()` no longer falls back to the bundled sample book
+      ("The Lantern-Keeper's Almanac") when the reader has no epubs; a fresh
+      shelf is empty and lands on the existing "No books yet" onboarding. The
+      bundled EPUB + multi-book sample stay in the `--shots`/test path. (e73ca2d8)
+- [x] software_store — the constructor always loaded `sample_catalog()`
+      (GIMP/Blender with fabricated star ratings), shown live, while the real
+      popular-collection fetch landed unused in `live_apps`. A live worker now
+      starts with an empty catalog and Browse renders the real Flathub popular
+      set (ordered) with a "Loading apps from Flathub…" state; the sample stays
+      offline/`--shots` only. (bd2f320c)
