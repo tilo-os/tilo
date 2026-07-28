@@ -2138,14 +2138,14 @@ mod tests {
     fn sandbox_env_for_launch(
         dir: &Path,
         package_id: &str,
-        workspace: crate::shell::state::WorkspaceId,
+        room: crate::shell::state::RoomId,
     ) -> Vec<(String, String)> {
         let app = staged_app(dir, package_id);
         let launch = crate::shell::launcher::build_launch_command(
             &app,
             Path::new("/usr/libexec/qos-launcher"),
             Path::new("/run/user/1000/wayland-1"),
-            workspace,
+            room,
             None,
         );
 
@@ -2183,8 +2183,14 @@ mod tests {
         env
     }
 
-    /// Connect a manager under the env a real launch into `workspace`
+    /// Connect a manager under the env a real launch into `room`
     /// would have given the app.
+    ///
+    /// `room` is the workspace's durable identity, which is what the
+    /// launch chain actually carries — the local `WorkspaceId` never
+    /// reaches the sandbox. Tests read it off a real
+    /// `Workspace`/`WorkspaceTree` rather than inventing one, so what
+    /// they exercise is the value production would have used.
     ///
     /// `instance` goes to `QUICK_APP_ID` — the standalone-dev
     /// per-instance identity, deliberately *different* for every peer
@@ -2194,10 +2200,10 @@ mod tests {
         sock: &PathBuf,
         dir: &Path,
         package_id: &str,
-        workspace: crate::shell::state::WorkspaceId,
+        room: crate::shell::state::RoomId,
         instance: &str,
     ) -> CollaborationManager {
-        let env = sandbox_env_for_launch(dir, package_id, workspace);
+        let env = sandbox_env_for_launch(dir, package_id, room);
         // SAFETY: every test in this module is serialised on the
         // `collab_broker` key, so nothing else reads these between the
         // writes and the `new()` that consumes them.
@@ -2251,13 +2257,16 @@ mod tests {
         let socket_path = temp_sock("same-workspace");
         let handle = spawn(socket_path.clone()).expect("broker should bind");
 
-        let workspace = crate::shell::state::WorkspaceId(7);
+        let workspace = crate::shell::state::Workspace::test_default(
+            crate::shell::state::WorkspaceId(7),
+            "here",
+        );
         // Two windows of one app, opened into the same workspace. Their
         // per-instance dev ids differ; that must not matter.
         let mut first =
-            connect_as_launched_app(&socket_path, &dir, "dev.qos.notes", workspace, "alice");
+            connect_as_launched_app(&socket_path, &dir, "dev.qos.notes", workspace.room, "alice");
         let mut second =
-            connect_as_launched_app(&socket_path, &dir, "dev.qos.notes", workspace, "bob");
+            connect_as_launched_app(&socket_path, &dir, "dev.qos.notes", workspace.room, "bob");
 
         wait_for_announced(&handle, 2, Duration::from_millis(2000));
         let _ = first.poll();
@@ -2294,18 +2303,24 @@ mod tests {
         let socket_path = temp_sock("diff-workspace");
         let handle = spawn(socket_path.clone()).expect("broker should bind");
 
-        let here = crate::shell::state::WorkspaceId(7);
-        let elsewhere = crate::shell::state::WorkspaceId(8);
+        let here = crate::shell::state::Workspace::test_default(
+            crate::shell::state::WorkspaceId(7),
+            "here",
+        );
+        let elsewhere = crate::shell::state::Workspace::test_default(
+            crate::shell::state::WorkspaceId(8),
+            "elsewhere",
+        );
 
         // Two peers in `here` — the second is the control. Without it,
         // "the other workspace heard nothing" could just mean the delta
         // never left the sender.
         let mut sender =
-            connect_as_launched_app(&socket_path, &dir, "dev.qos.notes", here, "alice");
+            connect_as_launched_app(&socket_path, &dir, "dev.qos.notes", here.room, "alice");
         let mut same_workspace =
-            connect_as_launched_app(&socket_path, &dir, "dev.qos.notes", here, "bob");
+            connect_as_launched_app(&socket_path, &dir, "dev.qos.notes", here.room, "bob");
         let mut other_workspace =
-            connect_as_launched_app(&socket_path, &dir, "dev.qos.notes", elsewhere, "carol");
+            connect_as_launched_app(&socket_path, &dir, "dev.qos.notes", elsewhere.room, "carol");
 
         wait_for_announced(&handle, 3, Duration::from_millis(2000));
         let _ = sender.poll();
@@ -2332,8 +2347,8 @@ mod tests {
             crdt_payloads(&leaked).is_empty(),
             "an app opened in workspace {} must receive no CRDT payload \
              from the same app opened in workspace {}; it received {:?}",
-            elsewhere.raw(),
-            here.raw(),
+            elsewhere.id.raw(),
+            here.id.raw(),
             crdt_payloads(&leaked),
         );
 
@@ -2351,8 +2366,11 @@ mod tests {
         // produces: under a session the package id and the workspace
         // are both present, so they win over the dev-only override.
         let dir = scratch_dir("env");
-        let workspace = crate::shell::state::WorkspaceId(7);
-        let env = sandbox_env_for_launch(&dir, "dev.qos.notes", workspace);
+        let workspace = crate::shell::state::Workspace::test_default(
+            crate::shell::state::WorkspaceId(7),
+            "here",
+        );
+        let env = sandbox_env_for_launch(&dir, "dev.qos.notes", workspace.room);
         let lookup = |key: &str| {
             env.iter()
                 .find(|(k, _)| k == key)
@@ -2370,11 +2388,48 @@ mod tests {
             workspace.collab_cluster_id().to_string(),
             "the launcher must tell the app which workspace it was opened into"
         );
-        // Two workspaces are two rooms, not one.
+        // And it must be the workspace's *durable* identity, not
+        // anything derived from the local handle. Pinned against the
+        // stored room verbatim: if `collab_cluster_id` ever goes back
+        // to deriving from `id`, the two differ and this fails.
+        assert_eq!(
+            lookup("QOS_WORKSPACE_ID"),
+            workspace.room.to_string(),
+            "the cluster the app is launched into must be the workspace's \
+             stored room id, which is the only value a peer on another \
+             machine can also hold"
+        );
+        // Two workspaces are two rooms, not one — even when their local
+        // handles are adjacent counter values.
         assert_ne!(
-            crate::shell::state::WorkspaceId(7).collab_cluster_id(),
-            crate::shell::state::WorkspaceId(8).collab_cluster_id(),
-            "distinct workspaces must derive distinct cluster ids"
+            crate::shell::state::Workspace::test_default(
+                crate::shell::state::WorkspaceId(7),
+                "a",
+            )
+            .collab_cluster_id(),
+            crate::shell::state::Workspace::test_default(
+                crate::shell::state::WorkspaceId(8),
+                "b",
+            )
+            .collab_cluster_id(),
+            "distinct workspaces must have distinct cluster ids"
+        );
+        // The half a local-id derivation could never give us: two
+        // workspaces that share a local handle — "workspace 7" on two
+        // different machines — are still two different rooms.
+        assert_ne!(
+            crate::shell::state::Workspace::test_default(
+                crate::shell::state::WorkspaceId(7),
+                "mine",
+            )
+            .collab_cluster_id(),
+            crate::shell::state::Workspace::test_default(
+                crate::shell::state::WorkspaceId(7),
+                "theirs",
+            )
+            .collab_cluster_id(),
+            "two unrelated workspaces that happen to share a local id must \
+             not be the same collaboration room"
         );
 
         let _ = std::fs::remove_dir_all(&dir);
