@@ -2125,6 +2125,7 @@ mod tests {
             Path::new("/run/user/1000/wayland-1"),
             workspace,
             None,
+            None,
         );
 
         let manifest_path = PathBuf::from(flag_value(&launch.args, "--manifest"));
