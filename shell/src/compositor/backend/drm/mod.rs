@@ -75,6 +75,15 @@ pub struct DrmBackend {
     /// no present) until [`Backend::set_dpms`] turns it back on. Avoids
     /// racing a frame against the disabled CRTC.
     blanked: bool,
+    /// Presentation interval of the fastest connected mode, computed at
+    /// construction.
+    ///
+    /// Cached rather than derived on demand because
+    /// [`Backend::take_presenter`] moves the scanouts to the render
+    /// thread — a `refresh_interval` that read them would start returning
+    /// `None` the moment the split happened, silently dropping the
+    /// compositor back to the 60 Hz fallback on a 144 Hz panel.
+    refresh: Option<std::time::Duration>,
 }
 
 impl DrmBackend {
@@ -86,11 +95,31 @@ impl DrmBackend {
     pub fn new() -> Result<Self, Box<dyn std::error::Error>> {
         let inner = runtime::DrmRuntime::new()?;
         let outputs = Self::refresh_outputs(&inner);
+        // Pace to the *fastest* connected mode: the compositor paints one
+        // scene across the combined geometry, so there is a single cadence
+        // to pick, and a slower output showing every Nth frame beats
+        // throttling the fast panel to the slow one's rate.
+        let refresh = inner
+            .scanouts
+            .iter()
+            .filter_map(|e| e.scanout.refresh_interval())
+            .min();
+        match refresh {
+            Some(d) => tracing::info!(
+                hz = 1.0 / d.as_secs_f64(),
+                "DRM backend: pacing to the connector's mode timing"
+            ),
+            None => tracing::warn!(
+                "DRM backend: no connector reported a usable mode refresh; \
+                 the compositor will fall back to its default cadence"
+            ),
+        }
         Ok(Self {
             inner,
             outputs,
             paint: None,
             blanked: false,
+            refresh,
         })
     }
 
@@ -381,11 +410,7 @@ impl Backend for DrmBackend {
     /// to the slow one's rate. Per-output cadence needs per-output scene
     /// submission, which the single-combined-scene model does not have.
     fn refresh_interval(&self) -> Option<std::time::Duration> {
-        self.inner
-            .scanouts
-            .iter()
-            .filter_map(|e| e.scanout.refresh_interval())
-            .min()
+        self.refresh
     }
 
     fn take_presenter(&mut self) -> Option<Box<dyn Presenter>> {

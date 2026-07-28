@@ -330,6 +330,8 @@ def run_once(args: argparse.Namespace, out_dir: Path) -> dict:
     env["QOS_RUN_SECONDS"] = str(args.seconds)
     env["QOS_TEST_CONTROL"] = str(ctl_path)
     env["NIRIOS_HEADLESS_SIZE"] = f"{args.width}x{args.height}"
+    if args.refresh_hz:
+        env["QOS_REFRESH_HZ"] = str(args.refresh_hz)
     env["RUST_BACKTRACE"] = "1"
     if args.backend == "headless":
         # A headless run must not pick up the operator's session.
@@ -456,8 +458,16 @@ def main() -> None:
     p.add_argument(
         "--target-us",
         type=int,
-        default=16667,
-        help="refresh interval the loop should be hitting (default 60 Hz)",
+        default=0,
+        help="refresh interval the loop should be hitting, microseconds "
+        "(default: derived from --refresh-hz, else 60 Hz)",
+    )
+    p.add_argument(
+        "--refresh-hz",
+        type=float,
+        help="force the compositor's presentation rate via QOS_REFRESH_HZ, "
+        "and score the run against it. The only way to measure a non-60 Hz "
+        "cadence on a machine whose backend reports no display rate.",
     )
     p.add_argument("--label", help="name for the output files")
     p.add_argument("--out", default="target/frame-bench", help="output directory")
@@ -488,6 +498,12 @@ def main() -> None:
         "compositor",
     )
     args = p.parse_args()
+
+    # A run is scored against the rate the compositor was actually told to
+    # hit; scoring a forced 144 Hz run against 60 Hz would report 0% on
+    # cadence for a loop doing exactly what it was asked.
+    if not args.target_us:
+        args.target_us = int(round(1e6 / args.refresh_hz)) if args.refresh_hz else 16667
 
     if args.resummarize:
         trace = Path(args.resummarize)
