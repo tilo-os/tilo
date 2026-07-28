@@ -136,6 +136,12 @@ open.workspace = true
 # `CollabRequest::SignedSyncIncremental` /
 # `CollabEvent::SignedCRDTIncremental`.
 collab-types = { path = "../crates/collab/collab-types" }
+# The canonical document model. `history_source` reads a live document's
+# change graph through `qdoc::history` (`versions` / `materialize_at`) and
+# turns it into the `HistoryEntry` rows the timeline + scrubber render, and
+# uses `qdoc`'s structural snapshot diff to write each row's summary. Pure
+# model code — no renderer, no I/O — so this stays a cheap dep.
+qdoc = { path = "../crates/doc/qdoc" }
 # Direct dep on the Ed25519 implementation `qos-collab-types` uses so
 # the toolkit can name `SigningKey` in `collaboration::SigningIdentity`
 # without reaching into the qos-collab-types private module path. Pinned

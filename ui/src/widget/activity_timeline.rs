@@ -219,6 +219,27 @@ impl ActivityTimeline {
         self.rebuild();
     }
 
+    /// Read the entries backing the pane, unfiltered.
+    pub fn entries(&self) -> &[HistoryEntry] {
+        &self.entries
+    }
+
+    /// Place the pane by hand, for a host that reserves a rect out of its own
+    /// layout rather than putting the widget in a taffy tree — the compositor
+    /// draws its chrome that way. The `Widget::apply_layout` path is unchanged;
+    /// this is the same assignment it makes.
+    pub fn set_rect(&mut self, rect: Rect) {
+        if self.rect != rect {
+            self.rect = rect;
+            self.dirty = true;
+        }
+    }
+
+    /// The rect the pane currently occupies.
+    pub fn rect(&self) -> Rect {
+        self.rect
+    }
+
     /// Install / replace the active filter. Author-typeahead +
     /// chip state are kept in the widget; everything else (time
     /// range, explicit author list) is what this method controls.

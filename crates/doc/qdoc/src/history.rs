@@ -1,13 +1,15 @@
 //! Version history derived from the automerge change graph: who/when per
 //! change + time-travel (`materialize_at`). The *durable* change-blob chain and
-//! the retention coarsening live in the FS layer (Phase 2); this is the read
-//! model over a live document.
+//! the retention coarsening live in the FS layer; this is the read model over a
+//! live document.
 
 use crate::document::DocError;
 use crate::model::{materialize, open};
 use crate::snapshot::DocSnapshot;
-use automerge::AutoCommit;
+use automerge::transaction::CommitOptions;
+use automerge::{AutoCommit, ChangeHash};
 use serde::{Deserialize, Serialize};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 /// One entry on the timeline.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -15,10 +17,42 @@ pub struct VersionMeta {
     pub index: usize,
     /// Hex of the authoring automerge actor (bound to the keypair identity).
     pub actor_hex: String,
-    /// Change timestamp in ms (0 until wall-clock stamping is wired in the FS
-    /// layer; authorship is always present).
+    /// Wall-clock time of the change, in milliseconds since the Unix epoch.
+    ///
+    /// Automerge stores a change's advisory timestamp in *seconds* and leaves
+    /// it at `0` unless the committer supplies one, so this is
+    /// `Change::timestamp() * 1000` and `0` means "this change carries no
+    /// recorded wall clock". Commit through [`commit_stamped`] to get a real
+    /// one; a change authored by a peer that does not stamp stays at `0`, and
+    /// consumers must render that as "time unknown" rather than as 1970.
     pub time_ms: i64,
     pub change_hash: String,
+}
+
+/// Commit the open transaction with a wall-clock timestamp attached.
+///
+/// `AutoCommit::commit()` leaves the change's advisory `time` field at `0`,
+/// which is why every version in a document built with it reads as "no
+/// recorded time". Routing commits through here is what makes
+/// [`VersionMeta::time_ms`] — and therefore any date-range filter over the
+/// history — mean something. Returns `None` when there was nothing to commit,
+/// exactly like `AutoCommit::commit`.
+pub fn commit_stamped(doc: &mut AutoCommit) -> Option<ChangeHash> {
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    commit_stamped_at(doc, secs)
+}
+
+/// As [`commit_stamped`], but with a caller-supplied Unix time in **seconds**
+/// — automerge's own unit for a change's advisory timestamp.
+///
+/// Hosts that own a clock (the FS layer replaying a durable change chain, a
+/// test that needs versions spread across a day) use this so the recorded time
+/// is the time the edit happened rather than the time it was written down.
+pub fn commit_stamped_at(doc: &mut AutoCommit, unix_secs: i64) -> Option<ChangeHash> {
+    doc.commit_with(CommitOptions::default().with_time(unix_secs))
 }
 
 /// Enumerate the document's history in causal order (oldest first).
@@ -29,9 +63,33 @@ pub fn versions(doc: &mut AutoCommit) -> Vec<VersionMeta> {
         .map(|(i, ch)| VersionMeta {
             index: i,
             actor_hex: ch.actor_id().to_hex_string(),
-            time_ms: ch.timestamp(),
+            time_ms: ch.timestamp().saturating_mul(1000),
             change_hash: ch.hash().to_string(),
         })
+        .collect()
+}
+
+/// Heads of the document as of the first `upto + 1` changes in causal order.
+///
+/// `get_changes(&[])` yields a dependency-closed causal order, so any prefix is
+/// a valid document state — but with two collaborators that prefix can have
+/// several concurrent frontiers, so "the heads" is a set, not the last hash.
+/// A change is a head of the prefix iff no other change *in the prefix* names
+/// it as a dependency.
+///
+/// This is what lets a caller address a historical version with
+/// `AutoCommit::diff` (and hence replay it forward) instead of only with
+/// `materialize_at`.
+pub fn prefix_heads(doc: &mut AutoCommit, upto: usize) -> Vec<ChangeHash> {
+    let changes = doc.get_changes(&[]);
+    let take = (upto + 1).min(changes.len());
+    let prefix = &changes[..take];
+    let depended_on: std::collections::HashSet<ChangeHash> =
+        prefix.iter().flat_map(|c| c.deps().iter().copied()).collect();
+    prefix
+        .iter()
+        .map(|c| c.hash())
+        .filter(|h| !depended_on.contains(h))
         .collect()
 }
 
