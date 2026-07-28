@@ -151,6 +151,10 @@ pub struct VideoEditorApp {
     hover_media: Option<MediaId>,
     last_click_media: Option<(MediaId, Instant)>,
     seeded: bool,
+    /// When true this is the hermetic `--shots`/demo build: the first sync
+    /// seeds the bundled sample project into an empty document. The live app
+    /// leaves this false and never fabricates a project — it opens blank.
+    seed_demo: bool,
     initialised_selection: bool,
     last_tick: Instant,
     rect: Rect,
@@ -208,6 +212,7 @@ impl VideoEditorApp {
             hover_media: None,
             last_click_media: None,
             seeded: false,
+            seed_demo: false,
             initialised_selection: false,
             last_tick: Instant::now(),
             rect: Rect::ZERO,
@@ -220,11 +225,20 @@ impl VideoEditorApp {
         }
     }
 
+    /// The hermetic `--shots`/demo build: seeds the bundled sample project on
+    /// the first sync. This is the sole source of sample media/clips — the
+    /// live app never fabricates a project.
+    pub fn new_demo() -> Self {
+        let mut app = Self::new();
+        app.seed_demo = true;
+        app
+    }
+
     /// Construct the editor pre-arranged for a deterministic `--shots`
     /// capture scenario (see [`ShotScenario`]). The scenario is applied once
     /// during the first `sync`, after the sample project loads.
     pub fn new_for_shot(scenario: ShotScenario) -> Self {
-        let mut app = Self::new();
+        let mut app = Self::new_demo();
         app.shot_scenario = scenario;
         app
     }
@@ -233,7 +247,7 @@ impl VideoEditorApp {
     /// a deterministic narrow-window `--shots` capture that shows the overlay
     /// sidebar revealed in a single frame.
     pub fn new_with_bin_open() -> Self {
-        let mut app = Self::new();
+        let mut app = Self::new_demo();
         app.bin_flap.snap(true);
         // Pre-settled: the explicit open snap is authoritative, so the first
         // laid-out frame must not re-snap it to the width's default.
@@ -801,7 +815,9 @@ struct ExportLayout {
 impl Widget for VideoEditorApp {
     fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
         if !self.seeded {
-            if VideoDoc::is_empty(state) {
+            // The live app opens on a blank project; only the hermetic demo
+            // build seeds the bundled sample project into a fresh document.
+            if self.seed_demo && VideoDoc::is_empty(state) {
                 VideoDoc::seed_sample(state);
             }
             self.seeded = true;
@@ -824,9 +840,10 @@ impl Widget for VideoEditorApp {
     }
 
     fn needs_idle_sync(&self) -> bool {
-        // Keep syncing until the sample/shared project is loaded so a
-        // freshly-spawned, input-free instance still seeds + paints.
-        !self.seeded || self.project.clips.is_empty()
+        // Keep syncing until the demo/shared project is loaded so a
+        // freshly-spawned, input-free instance still seeds + paints. The live
+        // app opens blank, so once seeded it must not idle-sync forever.
+        !self.seeded || (self.seed_demo && self.project.clips.is_empty())
     }
 
     fn needs_animation_frame(&self) -> bool {
@@ -1563,6 +1580,18 @@ impl VideoEditorApp {
 
         // Clip bin content so a long list can't bleed over the timeline.
         scene.push_layer(Fill::NonZero, vello::peniko::BlendMode::default(), 1.0, tf, &Rect::new(r.bin.x0, r.bin.y0 + 30.0, r.bin.x1, r.bin.y1));
+        if self.project.media.is_empty() {
+            // Honest empty state: there is no media, and importing it isn't
+            // wired up yet — say so rather than showing a fake affordance.
+            let cx = r.bin.center().x;
+            let cy = r.bin.y0 + 120.0;
+            let line1 = "No media yet";
+            let (w1, _) = tr.measure(line1, 14.0, None);
+            text(scene, tr, tf, line1, 14.0, c.text_primary, cx - w1 as f64 / 2.0, cy);
+            let line2 = "Media import isn't wired up yet";
+            let (w2, _) = tr.measure(line2, 11.0, None);
+            text(scene, tr, tf, line2, 11.0, c.text_dim, cx - w2 as f64 / 2.0, cy + 22.0);
+        }
         for (mid, rect) in self.bin_item_rects(r) {
             let Some(m) = self.project.media(mid) else { continue };
             let selected = self.selected_media == Some(mid);
@@ -2047,20 +2076,20 @@ impl VideoEditorApp {
                 fill_rrect(scene, tf, c.neutral[3], bar, 4.0);
                 let f = Rect::new(bar.x0, bar.y0, bar.x0 + bar.width() * progress.max(0.04), bar.y1);
                 fill_rrect(scene, tf, c.accent[5], f, 4.0);
-                text(scene, tr, tf, "Rendering… (pipeline gated — see export.rs TODO)", 10.5, c.semantic.warning, x0, card.y1 - 62.0);
+                text(scene, tr, tf, "Rendering…", 10.5, c.text_dim, x0, card.y1 - 62.0);
             }
             ExportStatus::Done { path } => {
                 text(scene, tr, tf, &format!("Done: {path}"), 11.0, c.semantic.success, x0, card.y1 - 68.0);
             }
             ExportStatus::Failed { reason } => {
-                text(scene, tr, tf, &format!("Export gated: {reason}"), 10.5, c.text_dim, x0, card.y1 - 68.0);
+                text(scene, tr, tf, reason, 10.5, c.semantic.warning, x0, card.y1 - 68.0);
             }
             ExportStatus::Idle => {
-                text(scene, tr, tf, "GStreamer encode runs behind the `gst` build feature.", 10.5, c.text_dim, x0, card.y1 - 68.0);
+                text(scene, tr, tf, "Export isn't available yet — video encoding is coming soon.", 10.5, c.text_dim, x0, card.y1 - 68.0);
             }
         }
-        draw_button(scene, tf, tr, theme, l.cancel, "Cancel", false);
-        draw_button(scene, tf, tr, theme, l.confirm, "Start Export", true);
+        draw_button(scene, tf, tr, theme, l.cancel, "Close", false);
+        draw_button(scene, tf, tr, theme, l.confirm, "Export", true);
     }
 }
 
@@ -2255,6 +2284,30 @@ mod tests {
         let app = app_with_sample();
         assert_eq!(app.project.clips.len(), 7);
         assert!(app.selected.is_some(), "a clip should be auto-selected");
+    }
+
+    #[test]
+    fn live_new_over_fresh_doc_stays_empty() {
+        // The live constructor must not fabricate a project: synced against a
+        // fresh (empty) document it opens blank — no media, no clips.
+        let mut app = VideoEditorApp::new();
+        app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        let mut doc = AutoCommit::new();
+        app.sync(&mut doc, &automerge::ROOT);
+        assert!(app.project.clips.is_empty(), "no fabricated clips on the live path");
+        assert!(app.project.media.is_empty(), "no fabricated media on the live path");
+        assert!(app.selected.is_none(), "nothing selected in a blank project");
+    }
+
+    #[test]
+    fn demo_build_seeds_a_project() {
+        // The demo builder is the sole source of the sample project.
+        let mut app = VideoEditorApp::new_demo();
+        app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        let mut doc = AutoCommit::new();
+        app.sync(&mut doc, &automerge::ROOT);
+        assert!(!app.project.clips.is_empty(), "demo build seeds sample clips");
+        assert!(!app.project.media.is_empty(), "demo build seeds sample media");
     }
 
     #[test]
