@@ -174,7 +174,7 @@ fn parse_shared_strings(xml: &[u8]) -> Vec<String> {
                 _ => {}
             },
             Event::Text(t) if in_t => {
-                if let Ok(txt) = t.unescape() {
+                if let Ok(txt) = t.xml10_content() {
                     cur.push_str(&txt);
                 }
             }
@@ -241,7 +241,7 @@ fn parse_worksheet(xml: &[u8], sst: &[String], wb: &mut Workbook, sheet_id: &str
                 _ => {}
             },
             Event::Text(t) => {
-                let txt = t.unescape().map_err(|e| CodecError::Parse(format!("cell text: {e}")))?;
+                let txt = t.xml10_content().map_err(|e| CodecError::Parse(format!("cell text: {e}")))?;
                 if in_f {
                     formula.push_str(&txt);
                 } else if in_v || in_is_t {
@@ -310,7 +310,7 @@ fn import_core_props(xml: &[u8], wb: &mut Workbook) {
             }
             Event::Text(t) => {
                 if cur.is_some() {
-                    if let Ok(txt) = t.unescape() {
+                    if let Ok(txt) = t.xml10_content() {
                         buf.push_str(&txt);
                     }
                 }

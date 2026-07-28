@@ -22,30 +22,30 @@ wasmtime = { version = "46", default-features = false, features = [
     "wat",
 ] }
 wasmtime-wasi = { version = "46" }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "fs", "signal", "time", "sync", "process"] }
-tokio-util = { version = "0.7", features = ["compat"] }
-futures = "0.3"
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "io-util", "fs", "signal", "time", "sync", "process"] }
+tokio-util.workspace = true
+futures = { workspace = true, default-features = true }
 
 # Cap'n Proto RPC for the on-disk router socket. capnp 0.26 is the latest
 # stable release as of mid-2026, matching capnp-rpc 0.26.
-capnp = "0.26"
-capnp-rpc = "0.26"
-capnp-futures = "0.26"
+capnp.workspace = true
+capnp-rpc.workspace = true
+capnp-futures.workspace = true
 
-serde = { version = "1", features = ["derive"] }
-toml = "0.8"
-dirs = "5"
-parking_lot = "0.12"
-notify = "6"
-anyhow = "1"
-thiserror = "1"
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+serde.workspace = true
+toml.workspace = true
+dirs.workspace = true
+parking_lot.workspace = true
+notify = { workspace = true, default-features = true }
+anyhow.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
 
 [build-dependencies]
-capnpc = "0.26"
+capnpc.workspace = true
 
 [dev-dependencies]
-tempfile = "3"
-tokio = { version = "1", features = ["full"] }
+tempfile.workspace = true
+tokio = { workspace = true, features = ["full"] }
 wat = "1"

@@ -73,7 +73,11 @@ impl State {
         author: Option<UserId>,
     ) {
         let before = self.last_heads.clone();
-        if self.doc.commit().is_some() {
+        // Stamp the change with wall-clock time. `AutoCommit::commit` leaves
+        // automerge's advisory timestamp at zero, which is why a history pane
+        // built over a document committed that way can show authorship but not
+        // *when* — and why a date-range filter over it matches nothing.
+        if qdoc::history::commit_stamped(&mut self.doc).is_some() {
             let after = self.doc.get_heads();
             self.undo_stack.push(UndoEntry {
                 before,
@@ -102,129 +106,75 @@ impl State {
     /// local action itself changed.
     fn apply_inverse(&mut self, entry: &UndoEntry) -> (Vec<ChangeHash>, Vec<ChangeHash>) {
         let inverse_before = self.doc.get_heads();
-        // Patches describing how to get from the post-action state back to the
-        // pre-action state — i.e. the inverse of the local action.
-        let patches = self.doc.diff(&entry.after, &entry.before);
-        // Recreated objects get a fresh ExId; map the patch's (old) ObjId to it
-        // so nested child patches target the new object.
-        let mut remap: HashMap<ObjId, ObjId> = HashMap::new();
-        for patch in patches {
-            let target = remap.get(&patch.obj).cloned().unwrap_or(patch.obj.clone());
-            match patch.action {
-                PatchAction::PutMap { key, value, .. } => match value.0 {
-                    Value::Scalar(s) => {
-                        let _ = self.doc.put(&target, key, s.into_owned());
-                    }
-                    Value::Object(ot) => {
-                        if let Ok(new_id) = self.doc.put_object(&target, key, ot) {
-                            remap.insert(value.1, new_id);
-                        }
-                    }
-                },
-                PatchAction::PutSeq { index, value, .. } => {
-                    // The element still exists post-action; anchor at `after`.
-                    let li = self.live_index_at(&target, index, &entry.after);
-                    match value.0 {
-                        Value::Scalar(s) => {
-                            let _ = self.doc.put(&target, li, s.into_owned());
-                        }
-                        Value::Object(ot) => {
-                            if let Ok(new_id) = self.doc.put_object(&target, li, ot) {
-                                remap.insert(value.1, new_id);
-                            }
-                        }
-                    }
-                }
-                PatchAction::Insert { index, values } => {
-                    // Re-inserting elements the local action deleted; the
-                    // boundary is expressed in `before` coordinates.
-                    let mut li = self.live_insert_boundary(&target, index, &entry.before);
-                    for (val, old_id, _) in values.into_iter() {
-                        match val {
-                            Value::Scalar(s) => {
-                                let _ = self.doc.insert(&target, li, s.clone().into_owned());
-                            }
-                            Value::Object(ot) => {
-                                if let Ok(new_id) = self.doc.insert_object(&target, li, *ot) {
-                                    remap.insert(old_id.clone(), new_id);
-                                }
-                            }
-                        }
-                        li += 1;
-                    }
-                }
-                PatchAction::SpliceText { index, value, .. } => {
-                    // Re-inserting text the local action deleted.
-                    let li = self.live_insert_boundary(&target, index, &entry.before);
-                    let _ = self.doc.splice_text(&target, li, 0, &value.make_string());
-                }
-                PatchAction::Increment { prop, value } => {
-                    let _ = self.doc.increment(&target, prop, value);
-                }
-                PatchAction::DeleteMap { key } => {
-                    let _ = self.doc.delete(&target, key);
-                }
-                PatchAction::DeleteSeq { index, length } => {
-                    // Removing elements the local action inserted; they exist
-                    // post-action, so each position is anchored at `after`.
-                    for _ in 0..length {
-                        let li = self.live_index_at(&target, index, &entry.after);
-                        let _ = self.doc.delete(&target, li);
-                    }
-                }
-                // A conflict marker carries no content to revert, and marks
-                // (text formatting spans) are not produced by the editor's
-                // undo-tracked actions; both are safely ignored.
-                PatchAction::Conflict { .. } | PatchAction::Mark { .. } => {}
-            }
-        }
-        let _ = self.doc.commit();
+        write_revert_patches(&mut self.doc, &entry.after, &entry.before);
+        let _ = qdoc::history::commit_stamped(&mut self.doc);
         let inverse_after = self.doc.get_heads();
         self.last_heads = inverse_after.clone();
         (inverse_before, inverse_after)
     }
 
+    /// Rewrite the document to the content it had at `target_heads`, as a NEW
+    /// forward change.
+    ///
+    /// This is "restore to this version" from the history scrubber. It takes
+    /// exactly the same route as undo — derive the patches that lead from the
+    /// current state to the target state, then *write them* — so history is
+    /// appended to, never rewritten. Three consequences the surrounding
+    /// features depend on:
+    ///
+    /// * The restore shows up in the timeline as its own new entry, authored by
+    ///   whoever performed it. The versions it rolled past are still there.
+    /// * Remote edits merged in while the user was scrubbing survive, because
+    ///   only the properties and elements that actually differ are rewritten.
+    /// * The restore is itself undoable — it lands on the undo stack like any
+    ///   other action.
+    ///
+    /// Returns `true` when something changed. A restore to the state the
+    /// document is already in is a no-op and returns `false`.
+    pub fn restore_to_heads(
+        &mut self,
+        target_heads: &[ChangeHash],
+        focused_node_idx: Option<usize>,
+        metadata: Option<String>,
+        author: Option<UserId>,
+    ) -> bool {
+        let current = self.doc.get_heads();
+        if current == target_heads {
+            return false;
+        }
+        // `apply_inverse` writes the delta that leads from `after` back to
+        // `before`; naming the live state as `after` and the historical state
+        // as `before` is what turns "undo one action" into "travel to this
+        // version".
+        let entry = UndoEntry {
+            before: target_heads.to_vec(),
+            after: current,
+            focused_node_idx,
+            widget_metadata: metadata.clone(),
+            author: author.clone(),
+        };
+        let (inv_before, inv_after) = self.apply_inverse(&entry);
+        if inv_before == inv_after {
+            return false;
+        }
+        self.undo_stack.push(UndoEntry {
+            before: inv_before,
+            after: inv_after,
+            focused_node_idx,
+            widget_metadata: metadata,
+            author,
+        });
+        self.redo_stack.clear();
+        true
+    }
+
     /// Translate a sequence index expressed as-of `anchor_heads` into its
     /// position in the live document, so concurrent inserts/deletes shift it
-    /// correctly. Used when the referenced element still exists.
-    fn live_index_at(
-        &self,
-        obj: &ObjId,
-        index: usize,
-        anchor_heads: &[ChangeHash],
-    ) -> usize {
-        match self.doc.get_cursor(obj, index, Some(anchor_heads)) {
-            Ok(cursor) => self
-                .doc
-                .get_cursor_position(obj, &cursor, None)
-                .unwrap_or(index),
-            Err(_) => index,
-        }
-    }
 
     /// Translate an *insertion boundary* expressed as-of `anchor_heads` into the
     /// live document. The element originally at `index` may itself have been
     /// deleted by the action we're reverting (which would trip an automerge
     /// fast/slow cursor-seek consistency check), so we anchor on the surviving
-    /// element just before the boundary and insert after it.
-    fn live_insert_boundary(
-        &self,
-        obj: &ObjId,
-        index: usize,
-        anchor_heads: &[ChangeHash],
-    ) -> usize {
-        if index == 0 {
-            return 0;
-        }
-        match self.doc.get_cursor(obj, index - 1, Some(anchor_heads)) {
-            Ok(cursor) => self
-                .doc
-                .get_cursor_position(obj, &cursor, None)
-                .map(|p| p + 1)
-                .unwrap_or(index),
-            Err(_) => index,
-        }
-    }
 
     /// Undo the most recent action by writing its inverse as a new forward
     /// change (preserving concurrent remote edits). Callers pass the *current*
@@ -271,6 +221,53 @@ impl State {
         let entry = self.undo_stack.remove(idx);
         let (inv_before, inv_after) = self.apply_inverse(&entry);
         self.redo_stack.push(UndoEntry {
+            before: inv_before,
+            after: inv_after,
+            focused_node_idx: current_focused_idx,
+            widget_metadata: current_metadata,
+            author: entry.author.clone(),
+        });
+        Some(entry)
+    }
+
+    /// Undo on behalf of `author`.
+    ///
+    /// This is the entry point every interactive Ctrl+Z takes, and the reason
+    /// it exists rather than callers picking between [`Self::undo`] and
+    /// [`Self::undo_for_author`] themselves: with an author, undo must skip
+    /// past other people's actions, and a call site that forgets is a session
+    /// in which one collaborator silently reverts another's work. `None` — an
+    /// app running with no identity at all — keeps the plain LIFO behaviour.
+    pub fn undo_as(
+        &mut self,
+        author: Option<&UserId>,
+        current_focused_idx: Option<usize>,
+        current_metadata: Option<String>,
+    ) -> Option<UndoEntry> {
+        match author {
+            Some(a) => self.undo_for_author(a, current_focused_idx, current_metadata),
+            None => self.undo(current_focused_idx, current_metadata),
+        }
+    }
+
+    /// Redo on behalf of `author` — the mirror of [`Self::undo_as`], so a
+    /// redo cannot re-apply an action the local user never undid.
+    pub fn redo_as(
+        &mut self,
+        author: Option<&UserId>,
+        current_focused_idx: Option<usize>,
+        current_metadata: Option<String>,
+    ) -> Option<UndoEntry> {
+        let Some(a) = author else {
+            return self.redo(current_focused_idx, current_metadata);
+        };
+        let idx = self
+            .redo_stack
+            .iter()
+            .rposition(|e| matches!(&e.author, Some(x) if x == a))?;
+        let entry = self.redo_stack.remove(idx);
+        let (inv_before, inv_after) = self.apply_inverse(&entry);
+        self.undo_stack.push(UndoEntry {
             before: inv_before,
             after: inv_after,
             focused_node_idx: current_focused_idx,
@@ -370,6 +367,142 @@ impl State {
     /// CRDT sync.
     pub fn save_incremental(&mut self) -> Vec<u8> {
         self.doc.save_incremental()
+    }
+}
+
+/// Write the delta that leads from `from_heads` to `to_heads` into `doc`'s open
+/// transaction, without committing.
+///
+/// This is the one primitive behind both undo and restore-from-history: rather
+/// than replacing the document with an old state (which would silently drop
+/// every concurrently-merged remote op), it re-derives exactly the properties
+/// and elements that differ and *writes them forward*. History is therefore
+/// only ever appended to.
+///
+/// The caller commits. That is deliberate: a `ui` app signals `needs_commit()`
+/// and lets `App::commit_action` do the commit, so a restore performed from
+/// inside a widget lands on the undo stack with the right author and timestamp
+/// exactly like any other edit. [`State::restore_to_heads`] is the equivalent
+/// for a host that owns a whole [`State`].
+pub fn write_revert_patches(
+    doc: &mut AutoCommit,
+    from_heads: &[ChangeHash],
+    to_heads: &[ChangeHash],
+) {
+    // Patches describing how to get from `from_heads` back to `to_heads`.
+    let patches = doc.diff(from_heads, to_heads);
+    let entry_after = from_heads;
+    let entry_before = to_heads;
+        // Recreated objects get a fresh ExId; map the patch's (old) ObjId to it
+        // so nested child patches target the new object.
+        let mut remap: HashMap<ObjId, ObjId> = HashMap::new();
+        for patch in patches {
+            let target = remap.get(&patch.obj).cloned().unwrap_or(patch.obj.clone());
+            match patch.action {
+                PatchAction::PutMap { key, value, .. } => match value.0 {
+                    Value::Scalar(s) => {
+                        let _ = doc.put(&target, key, s.into_owned());
+                    }
+                    Value::Object(ot) => {
+                        if let Ok(new_id) = doc.put_object(&target, key, ot) {
+                            remap.insert(value.1, new_id);
+                        }
+                    }
+                },
+                PatchAction::PutSeq { index, value, .. } => {
+                    // The element still exists post-action; anchor at `after`.
+                    let li = live_index_at(doc, &target, index, entry_after);
+                    match value.0 {
+                        Value::Scalar(s) => {
+                            let _ = doc.put(&target, li, s.into_owned());
+                        }
+                        Value::Object(ot) => {
+                            if let Ok(new_id) = doc.put_object(&target, li, ot) {
+                                remap.insert(value.1, new_id);
+                            }
+                        }
+                    }
+                }
+                PatchAction::Insert { index, values } => {
+                    // Re-inserting elements the local action deleted; the
+                    // boundary is expressed in `before` coordinates.
+                    let mut li = live_insert_boundary(doc, &target, index, entry_before);
+                    for (val, old_id, _) in values.into_iter() {
+                        match val {
+                            Value::Scalar(s) => {
+                                let _ = doc.insert(&target, li, s.clone().into_owned());
+                            }
+                            Value::Object(ot) => {
+                                if let Ok(new_id) = doc.insert_object(&target, li, *ot) {
+                                    remap.insert(old_id.clone(), new_id);
+                                }
+                            }
+                        }
+                        li += 1;
+                    }
+                }
+                PatchAction::SpliceText { index, value, .. } => {
+                    // Re-inserting text the local action deleted.
+                    let li = live_insert_boundary(doc, &target, index, entry_before);
+                    let _ = doc.splice_text(&target, li, 0, &value.make_string());
+                }
+                PatchAction::Increment { prop, value } => {
+                    let _ = doc.increment(&target, prop, value);
+                }
+                PatchAction::DeleteMap { key } => {
+                    let _ = doc.delete(&target, key);
+                }
+                PatchAction::DeleteSeq { index, length } => {
+                    // Removing elements the local action inserted; they exist
+                    // post-action, so each position is anchored at `after`.
+                    for _ in 0..length {
+                        let li = live_index_at(doc, &target, index, entry_after);
+                        let _ = doc.delete(&target, li);
+                    }
+                }
+                // A conflict marker carries no content to revert, and marks
+                // (text formatting spans) are not produced by the editor's
+                // undo-tracked actions; both are safely ignored.
+                PatchAction::Conflict { .. } | PatchAction::Mark { .. } => {}
+            }
+        }
+}
+
+/// Translate a sequence index expressed as-of `anchor_heads` into its position
+/// in the live document, so concurrent inserts/deletes shift it correctly. Used
+/// when the referenced element still exists.
+fn live_index_at(
+    doc: &AutoCommit,
+    obj: &ObjId,
+    index: usize,
+    anchor_heads: &[ChangeHash],
+) -> usize {
+    match doc.get_cursor(obj, index, Some(anchor_heads)) {
+        Ok(cursor) => doc.get_cursor_position(obj, &cursor, None).unwrap_or(index),
+        Err(_) => index,
+    }
+}
+
+/// Translate an *insertion boundary* expressed as-of `anchor_heads` into the
+/// live document. The element originally at `index` may itself have been
+/// deleted by the action we are reverting (which would trip an automerge
+/// fast/slow cursor-seek consistency check), so anchor on the surviving element
+/// just before the boundary and insert after it.
+fn live_insert_boundary(
+    doc: &AutoCommit,
+    obj: &ObjId,
+    index: usize,
+    anchor_heads: &[ChangeHash],
+) -> usize {
+    if index == 0 {
+        return 0;
+    }
+    match doc.get_cursor(obj, index - 1, Some(anchor_heads)) {
+        Ok(cursor) => doc
+            .get_cursor_position(obj, &cursor, None)
+            .map(|p| p + 1)
+            .unwrap_or(index),
+        Err(_) => index,
     }
 }
 
@@ -570,6 +703,85 @@ mod tests {
             state.doc.get(&ROOT, "b").unwrap().is_some(),
             "bob's change survives in the live doc, not just on the stack"
         );
+    }
+
+    /// `undo_as` is the entry point `App`'s Ctrl+Z takes. With an author it
+    /// must behave like `undo_for_author` — walk past a collaborator's action
+    /// to the local user's own — not like plain LIFO undo. Before the author
+    /// was threaded through, this scenario reverted Bob's edit when Alice hit
+    /// Ctrl+Z.
+    #[test]
+    fn undo_as_an_author_skips_a_collaborators_action() {
+        let mut state = State::new();
+        let alice = UserId("alice".into());
+        let bob = UserId("bob".into());
+
+        state.doc.put(&ROOT, "a", 1).unwrap();
+        state.commit_action_authored(None, None, Some(alice.clone()));
+        state.doc.put(&ROOT, "b", 1).unwrap();
+        state.commit_action_authored(None, None, Some(bob.clone()));
+
+        // Alice hits Ctrl+Z. The newest entry is Bob's.
+        let popped = state
+            .undo_as(Some(&alice), None, None)
+            .expect("alice has an action to undo");
+        assert_eq!(popped.author, Some(alice.clone()), "alice undid her own action");
+        assert!(
+            state.doc.get(&ROOT, "a").unwrap().is_none(),
+            "alice's own change is reverted"
+        );
+        assert!(
+            state.doc.get(&ROOT, "b").unwrap().is_some(),
+            "bob's change survives alice's undo"
+        );
+    }
+
+    /// With no identity at all — an app running outside any session — `undo_as`
+    /// degrades to plain LIFO rather than refusing to undo.
+    #[test]
+    fn undo_as_without_an_author_is_plain_lifo() {
+        let mut state = State::new();
+        state.doc.put(&ROOT, "a", 1).unwrap();
+        state.commit_action(None, None);
+        state.doc.put(&ROOT, "b", 1).unwrap();
+        state.commit_action(None, None);
+
+        state.undo_as(None, None, None).expect("undo pops the newest");
+        assert!(state.doc.get(&ROOT, "b").unwrap().is_none());
+        assert!(state.doc.get(&ROOT, "a").unwrap().is_some());
+    }
+
+    /// Redo is the mirror: Bob's undone action must not be re-applied by
+    /// Alice's Ctrl+Y.
+    #[test]
+    fn redo_as_an_author_only_reapplies_that_authors_undo() {
+        let mut state = State::new();
+        let alice = UserId("alice".into());
+        let bob = UserId("bob".into());
+
+        state.doc.put(&ROOT, "a", 1).unwrap();
+        state.commit_action_authored(None, None, Some(alice.clone()));
+        state.doc.put(&ROOT, "b", 1).unwrap();
+        state.commit_action_authored(None, None, Some(bob.clone()));
+
+        // Bob undoes his own action, putting it on the redo stack.
+        state.undo_as(Some(&bob), None, None).unwrap();
+        assert!(state.doc.get(&ROOT, "b").unwrap().is_none());
+
+        // Alice hits Ctrl+Y. There is nothing of hers to redo, and Bob's
+        // undone action must stay undone.
+        assert!(
+            state.redo_as(Some(&alice), None, None).is_none(),
+            "alice has nothing to redo"
+        );
+        assert!(
+            state.doc.get(&ROOT, "b").unwrap().is_none(),
+            "alice's redo must not resurrect bob's undone action"
+        );
+
+        // Bob's own redo works.
+        state.redo_as(Some(&bob), None, None).expect("bob redoes his own");
+        assert!(state.doc.get(&ROOT, "b").unwrap().is_some());
     }
 
     /// A local text *deletion* undone after a concurrent remote prepend must

@@ -77,7 +77,7 @@ pub(super) fn import_annotation(raw: &str, doc: &mut DocMut) -> Option<(Option<S
                 _ => {}
             },
             Event::Text(t) if in_meta == 0 && cur.is_some() => {
-                if let Ok(txt) = t.unescape() {
+                if let Ok(txt) = t.xml10_content() {
                     // Skip pretty-printer indentation between structural elements.
                     if !txt.is_empty() && !(txt.chars().all(|c| c.is_whitespace()) && txt.contains(['\n', '\r'])) {
                         append(doc, &cur, &mut cur_len, &txt);
@@ -131,7 +131,7 @@ fn annotation_meta(raw: &str) -> (String, String) {
                 _ => {}
             },
             Ok(Event::Text(t)) => {
-                if let (Some(is_author), Ok(txt)) = (collecting, t.unescape()) {
+                if let (Some(is_author), Ok(txt)) = (collecting, t.xml10_content()) {
                     if is_author {
                         author.push_str(&txt);
                     } else {

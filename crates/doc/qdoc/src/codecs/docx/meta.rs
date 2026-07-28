@@ -52,7 +52,7 @@ fn import_elements(xml: &[u8], doc: &mut DocMut, prop_of: impl Fn(&[u8]) -> Opti
             }
             Ok(Event::Text(t)) => {
                 if current.is_some() {
-                    if let Ok(s) = t.unescape() {
+                    if let Ok(s) = t.xml10_content() {
                         text.push_str(&s);
                     }
                 }

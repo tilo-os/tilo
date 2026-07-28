@@ -13,19 +13,19 @@ path = "src/main.rs"
 
 [dependencies]
 ui = { path = "../../ui" }
-automerge = "0.8.0"
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-uuid = { version = "1.23.1", features = ["v4", "serde"] }
-tracing = "0.1"
-tracing-subscriber = "0.3"
-vello = "0.9"
-winit = "0.30.13"
-taffy = "0.10.1"
-anyhow = "1.0"
+automerge.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+vello.workspace = true
+winit.workspace = true
+taffy.workspace = true
+anyhow.workspace = true
 # Networking — used ONLY by the live event loop (see api.rs). The
 # `--shots` offscreen path never touches the network; it renders bundled
 # sample data so a screenshot is fully populated offline.
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "blocking"] }
-tokio = { version = "1", features = ["rt", "rt-multi-thread", "time", "macros"] }
-chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
+reqwest = { workspace = true, features = ["json", "rustls-tls", "blocking"] }
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "time", "macros"] }
+chrono = { workspace = true, features = ["std", "clock"] }
