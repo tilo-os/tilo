@@ -41,12 +41,18 @@ chat (3 grids), ebook, software_store, weather. `StatTile`/`IconGrid` exist but
   so **immediate-mode** apps (camera, store, chat) share one aligned formula
   instead of re-deriving it.
 
-**Proof migrations.**
+**Proof migrations (landed).**
 - **settings** `widgets.rs`: `card` / `card_with_action` / `hero` now delegate to
   `ui::widget::Card`; the bespoke `Container::with_background()` + title
-  scaffolding and the "known ui gaps" workaround note are deleted.
-- **camera**: the two divergent inline reflow formulas in `draw_gallery` /
-  `draw_scanner_offline` collapse onto `card_columns` / `card_column_width`.
+  scaffolding and the "known ui gaps" workaround note are deleted. Verified: the
+  hero, `card_with_action` (Email + Add + Connected badge) and plain cards render
+  identically via the shared surface.
+- **camera**: the two divergent inline reflow formulas in the gallery /
+  offline-scanner grids collapse onto `card_columns` / `card_column_width`.
+
+**Remaining sweep:** more bespoke-card offenders (software_store featured/app
+cards, backups, store, weather) can adopt `Card` / `CardGrid` — see the offender
+list above.
 
 ### 2. `ui::portal` — host-native file open/save  ✅ BUILT (secondary)
 **Problem.** 9 apps each carried a near-identical ~160-line `portal.rs`
@@ -69,13 +75,45 @@ drive the exact per-frame drain path.
 **Proof migration.** **feeds** deleted its 158-line `portal.rs` and its `ashpd`
 + `url` deps; its portal-drain tests pass against `ui::portal::inject_for_test`.
 **Remaining sweep:** migrate the other 8 apps onto `ui::portal` and delete their
-copies (~1600 LOC).
+copies (~1600 LOC). (video-player still carries its own `portal.rs` — a candidate
+for this sweep.)
+
+### 3. Chrome consistency — the OS owns window chrome (HIG §"OS owns window chrome" + §1e)  ✅ DONE
+**Problem.** The compositor draws the window title / app-name / logo, yet many
+apps *also* painted their own app-name/logo strip at the top of their content —
+a duplicated, inconsistent title bar the HIG forbids. Separately, `video-player`
+painted a **persistent** 48px top chrome bar (media title + Open) that stayed on
+screen even in fullscreen, breaking immersive playback (§1e).
+
+**Executed.**
+- Stripped the app-drawn name/logo header from **10 apps** (calculator, monitor,
+  software_store, themes, video_editor, tube, disks, firewall, logs, totp),
+  keeping every functional toolbar (tabs, search, filters, actions, contextual
+  status) and reflowing the remaining controls into the reclaimed space. Where a
+  header carried real status (drive summary, firewall state, account count) that
+  line was promoted to primary rather than dropped.
+- **video-player** is now edge-to-edge: the persistent bar is replaced by a
+  floating top overlay (title + Open) that rides the player's controls and
+  auto-hides during playback, so immersive video is truly full-bleed. Added
+  `VideoPlayer::controls_visible()` so an app can float its own affordance in
+  lockstep with the controls.
+
+**Verified** by offscreen shot per app (header gone, controls intact) + each app's
+test suite green.
+
+**Not app-name headers (left as-is, correctly):** music/chat (contextual
+view/channel titles), camera (viewfinder control pills), and the PARTIAL cases —
+containers/remote/ebook draw a per-view *section* title (e.g. "Library"), which
+is legitimate content chrome, not an app wordmark. A follow-up could still route
+each app's title into OS chrome via `AppWidget::app_title` — blocked today because
+the standalone `ui::App` runner doesn't consume `app_title` (only the compositor
+does) and none of these apps implement `AppWidget` yet.
 
 ---
 
 ## Ranked backlog (not yet built)
 
-### 3. Sidebar / NavSplit adoption sweep  — HIGH leverage, LOW risk
+### 4. Sidebar / NavSplit adoption sweep  — HIGH leverage, LOW risk
 `ui` already has the right primitives — `NavShell` (§1a sidebar + §1b
 master/detail), `AppShell` (flush sidebar + content + search; narrow = two
 screens with a back arrow), `NavSplit` (single responsive split),
@@ -103,13 +141,13 @@ screens when narrow) currently encode two different narrow-sidebar rules; a
 follow-up should reconcile them so "genuine sidebar" apps get one consistent
 behaviour.
 
-### 4. StatTile / IconGrid adoption (dashboards)  — MEDIUM leverage
+### 5. StatTile / IconGrid adoption (dashboards)  — MEDIUM leverage
 `StatTile` (metric card) and `IconGrid` (reflow icon grid) exist but **no app
 imports them**. monitor, firewall, containers, disks, vpn each hand-draw
 caption/value tiles. Migrate them onto `StatTile` (or a `CardGrid` of
 `StatTile`s for the reflow case).
 
-### 5. CardColumn / Section (vertical card stack with correct gaps)  — MEDIUM
+### 6. CardColumn / Section (vertical card stack with correct gaps)  — MEDIUM
 An intrinsic-height `Column` lays out as a CSS **block** stack, which **ignores
 the taffy `gap`** — so every card-stacking app injects manual fixed-height
 spacer boxes (settings `vgap`/`cards`/`rows`, etc.) to get uniform spacing. A
@@ -117,14 +155,14 @@ spacer boxes (settings `vgap`/`cards`/`rows`, etc.) to get uniform spacing. A
 (via the same internal-spacer technique, once) removes those hacks fleet-wide
 and guarantees one consistent vertical rhythm. Complements item 1.
 
-### 6. Shared caret/selection core adoption (HIG §3)  — MEDIUM, per-app risk
+### 7. Shared caret/selection core adoption (HIG §3)  — MEDIUM, per-app risk
 `text_input`, `block_editor`, `rich_text_line`, `editable_label`, and
 `text_selection` already provide CRDT-backed caret/selection. The gap is
 **adoption** by fields that still hand-roll editing — the calculator math field
 and the sheets formula bar (both 2-D/structured fields, so migration is
 app-specific and higher-risk). Not a new build.
 
-### 7. Draggable scrollbars (cross-app)  — MEDIUM
+### 8. Draggable scrollbars (cross-app)  — MEDIUM
 Scrollbar thumb/track don't respond to click/drag (seen in monitor's DataTable).
 Make the shared `ui` scrollbar fully interactive (thumb drag + track paging) so
 every app that uses `Scrollable`/`DataTable` gets it.
