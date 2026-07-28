@@ -443,3 +443,35 @@ is honestly gated and proven.
       `-plugins-base-devel` + `-plugins-good` + `-plugin-openh264` +
       `-plugin-libav` (dev headers + codec/mux plugins) — installed in
       `my-distrobox`; the default build needs none of it.
+
+## vpn — real WireGuard/OpenVPN transport (connect, status, throughput)
+
+The app already started empty with real `.conf`/`.ovpn` parsers and a portal
+import, but Connect was a gated no-op, status was a stored toggle, and the
+throughput chart was a synthesized waveform. The transport is now real; the
+mutating path stays behind `QOS_VPN_ALLOW_EXEC` and the UI never claims
+Connected unless a real command succeeded and the kernel confirms the interface.
+
+- [x] Real bring-up / teardown: importing a `.conf`/`.ovpn` persists the raw
+      file (`0600`) into the app data dir and wires it as the run target, so
+      Connect runs `wg-quick up <config>` / `openvpn --config <config> --daemon`
+      on the exact user config and Disconnect runs the matching teardown. Connect
+      only shows Connected after the command exits 0 AND the interface probes up.
+- [x] Real status: each frame reconciles the stored status against the true
+      interface/process state — `ip link show <iface>` (UP flag) for WireGuard,
+      `pgrep -f <config>` for the OpenVPN daemon — throttled to ~1 Hz and gated
+      on the exec opt-in, so a tunnel that drops out-of-band flips back to
+      Disconnected on its own.
+- [x] Real throughput: connected tunnels poll real kernel byte counters
+      (`wg show <iface> transfer`, falling back to
+      `/sys/class/net/<iface>/statistics/`) and the chart plots rates differenced
+      from consecutive real samples. Removed the fabricated waveform generator;
+      with no live data the chart is empty with an honest note (never a curve).
+- [x] Proven: unit tests for the wg-quick/openvpn argv from a profile, the
+      import→persist→bring-up wiring, `wg show transfer` / `ip link` / sysfs
+      parsing on real command-output fixtures, real reads against the loopback
+      interface, and a real dummy-interface bring-up (netlink status Connected →
+      teardown → Disconnected) gated on the exec env var and honest when the box
+      lacks the privilege/tools. (bbf44657, 335c9933, 078358e6)
+- [ ] OpenVPN throughput is best-effort (kernel-assigned tun device); Tor
+      chaining and a live management-socket status remain later work.
