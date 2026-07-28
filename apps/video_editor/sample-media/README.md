@@ -19,13 +19,26 @@ repo.
 
 The default build's preview shows a **representative composited frame**
 (graded gradient), so the stand-ins don't need to be real video. With
-`--features decode` the preview feeds the resolved bytes to
-`ui::VideoPlayer` (openh264); real footage dropped in here under the same
-names would then decode.
+`--features decode` the preview seeks a real `media::MediaEngine` (GStreamer
+`playbin`) to the clip's source time and blits the true decoded frame; real
+footage dropped in here under the same names would then decode.
 
-## Why not real footage?
+## Real decode / import / export
 
-Real H.264 sources are megabytes each and the headless CI box has no GPU
-decode path enabled by default. The seam is what matters: these prove the
-*reference → resolved-source → hydration-status* contract end to end while
-keeping the repo small.
+* **Import** — the editor's "Import…" action opens the XDG file portal
+  (`--features portal`) and probes each picked file for **real** metadata
+  (duration / dimensions / codec / fps) via `src/probe.rs`, with no decoder.
+  A picked file becomes a real clip in the bin. `--import PATH` seeds one
+  deterministically for `--shots`/tests.
+* **Real decode / export** run through GStreamer and are proven against
+  genuinely-encoded clips: the `decode` and `gst` tests **generate** a real
+  H.264 clip at test time with `gst-launch-1.0 videotestsrc … ! openh264enc !
+  … ! filesink`, so no megabyte binaries live in the repo. These stand-ins
+  stay tiny and exercise the *reference → resolved-source → hydration-status*
+  contract for the default (no-decode) build.
+
+## Why not real footage in-tree?
+
+Real H.264 sources are megabytes each. The seam is what matters: the tests
+produce real bytes on demand, and these stand-ins keep the repo small while
+proving the resolution contract end to end.
