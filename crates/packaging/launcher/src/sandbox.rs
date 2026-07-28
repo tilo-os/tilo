@@ -669,6 +669,7 @@ mod tests {
                 portals: BTreeMap::new(),
             },
             cli_commands: Vec::new(),
+            opens_ext: Vec::new(),
         }
     }
 
