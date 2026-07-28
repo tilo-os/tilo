@@ -353,12 +353,12 @@ impl ChatDoc {
                 NewMessage {
                     author: "u_sora".into(),
                     ts: m(41),
-                    text: "Reworked the spec to say screenshare is just 'share the workspace' — peers follow you spatially instead of watching a video of your screen.".into(),
+                    text: "Wired the screen-share stage — whoever presents gets a big featured tile and everyone else drops to the filmstrip beneath it. Reads really cleanly.".into(),
                     edited: true,
                     history: vec![
                         EditRecord {
                             ts: m(43),
-                            text: "Reworked the spec — no screenshare, peers just follow you around the workspace.".into(),
+                            text: "Wired up screen-share — the presenter gets a featured tile, everyone else goes to a filmstrip.".into(),
                         },
                     ],
                     reactions: vec![
@@ -970,6 +970,7 @@ impl ChatDoc {
             let _ = doc.put(&m, "muted", false);
             let _ = doc.put(&m, "deafened", false);
             let _ = doc.put(&m, "audio_only", false);
+            let _ = doc.put(&m, "sharing", false);
         }
     }
 
@@ -1003,6 +1004,18 @@ impl ChatDoc {
         let ch = Self::voice_channel_map(doc, channel);
         let m = get_or_map(doc, &ch, user);
         let _ = doc.put(&m, field, value);
+    }
+
+    /// Publish whether `user` is currently sharing their screen into the call.
+    /// This is the shared truth the featured screen tile keys off — every peer
+    /// learns a share started (or stopped) over the same collab transport as the
+    /// mic/deafen flags. Guarded so a redundant write doesn't churn the doc.
+    pub fn voice_set_sharing(doc: &mut AutoCommit, channel: &str, user: &str, sharing: bool) {
+        let ch = Self::voice_channel_map(doc, channel);
+        let m = get_or_map(doc, &ch, user);
+        if get_bool(doc, &m, "sharing") != sharing {
+            let _ = doc.put(&m, "sharing", sharing);
+        }
     }
 
     /// Publish `user`'s dialable media ticket into the shared voice membership.
@@ -1055,6 +1068,7 @@ impl ChatDoc {
                     muted: get_bool(doc, &m, "muted"),
                     deafened: get_bool(doc, &m, "deafened"),
                     audio_only: get_bool(doc, &m, "audio_only"),
+                    sharing: get_bool(doc, &m, "sharing"),
                     ticket: if ticket.is_empty() { None } else { Some(ticket) },
                 })
             })
@@ -1414,6 +1428,24 @@ mod tests {
         assert!(me.muted);
         ChatDoc::voice_leave(&mut doc, "c_huddle", "u_me");
         assert_eq!(ChatDoc::voice_count(&doc, "c_huddle"), 3);
+    }
+
+    #[test]
+    fn voice_screen_share_round_trips_through_the_shared_membership() {
+        let mut doc = seeded();
+        ChatDoc::voice_join(&mut doc, "c_huddle", "u_me");
+        let sharing = |doc: &AutoCommit| {
+            ChatDoc::list_voice_members(doc, "c_huddle")
+                .into_iter()
+                .find(|m| m.user == "u_me")
+                .map(|m| m.sharing)
+                .unwrap_or(false)
+        };
+        assert!(!sharing(&doc), "a fresh member is not sharing");
+        ChatDoc::voice_set_sharing(&mut doc, "c_huddle", "u_me", true);
+        assert!(sharing(&doc), "a started share is visible to every peer");
+        ChatDoc::voice_set_sharing(&mut doc, "c_huddle", "u_me", false);
+        assert!(!sharing(&doc), "a stopped share clears the shared flag");
     }
 
     #[test]
