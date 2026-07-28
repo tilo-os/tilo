@@ -3823,6 +3823,86 @@ mod automerge_foundation_tests {
         );
     }
 
+    /// A peer that hydrates a workspace out of another peer's doc must
+    /// end up in *that peer's* room. Minting a local one instead would
+    /// leave it holding a workspace it can see but cannot collaborate
+    /// in — the same room-of-one failure the invite path exists to
+    /// prevent, arriving by the other route.
+    #[test]
+    fn a_workspaces_room_propagates_via_apply_changes() {
+        let mut tree_a = WorkspaceTree::bootstrap_default();
+        let new_id = tree_a.append_empty_workspace("Project X");
+        let room = tree_a.room_of(new_id).expect("the append mints a room");
+        assert!(!room.is_nil());
+
+        let changes = tree_a.export_changes_since(&[]);
+        let mut tree_b = WorkspaceTree::default();
+        tree_b.apply_changes(&changes).expect("apply changes");
+
+        let hydrated = tree_b
+            .workspaces
+            .iter()
+            .find(|w| w.name == "Project X")
+            .expect("peer B should observe the appended workspace");
+        assert_eq!(
+            hydrated.room, room,
+            "peer B must adopt the room peer A named, not mint one of its \
+             own — otherwise the two hold the same workspace and address \
+             different clusters"
+        );
+        assert_eq!(
+            hydrated.collab_cluster_id(),
+            tree_a
+                .workspaces
+                .iter()
+                .find(|w| w.id == new_id)
+                .expect("peer A's workspace")
+                .collab_cluster_id(),
+            "and the cluster their apps are launched into must match"
+        );
+    }
+
+    /// `set_room` is the mutation an accepted invite performs. It has to
+    /// reach the doc as well as the cache, or the invitee's peers learn
+    /// about a room change that never replicates.
+    #[test]
+    fn set_room_propagates_via_apply_changes() {
+        let mut tree_a = WorkspaceTree::bootstrap_default();
+        let id = tree_a.workspaces[0].id;
+        let inviters_room = RoomId::new();
+        assert!(tree_a.set_room(id, inviters_room), "set_room must apply");
+
+        let changes = tree_a.export_changes_since(&[]);
+        let mut tree_b = WorkspaceTree::default();
+        tree_b.apply_changes(&changes).expect("apply changes");
+
+        assert_eq!(
+            tree_b.room_of(id),
+            Some(inviters_room),
+            "a workspace moved into a new room must carry that room to its \
+             peers"
+        );
+    }
+
+    /// "Join the unminted room" is never a meaningful request, and
+    /// honouring it would drop a workspace out of collaboration with no
+    /// signal at all.
+    #[test]
+    fn set_room_refuses_the_nil_room() {
+        let mut tree = WorkspaceTree::bootstrap_default();
+        let id = tree.workspaces[0].id;
+        let before = tree.room_of(id).expect("bootstrap mints a room");
+        assert!(
+            !tree.set_room(id, RoomId::nil()),
+            "setting the nil room must be refused"
+        );
+        assert_eq!(
+            tree.room_of(id),
+            Some(before),
+            "and must leave the workspace's real room in place"
+        );
+    }
+
     #[test]
     fn set_active_propagates_via_apply_changes() {
         // Unit-B convergence: peer A flips the active pointer; a fresh
