@@ -4,6 +4,9 @@
 //! in `main.rs` is just argv parsing + orchestration.
 //!
 //! - [`sandbox`]      — bubblewrap argv construction.
+//! - [`gpu`]          — which GPU (and therefore which EGL/Vulkan ICD)
+//!   a launched app renders on. The compositor decides; this resolves
+//!   its decision into loader manifests and a device to expose.
 //! - [`landlock`]     — FS access plan + in-process restriction.
 //! - [`seccomp`]      — baseline BPF policy.
 //! - [`services`]     — well-known service socket resolution.
@@ -18,6 +21,7 @@
 
 pub mod capabilities;
 pub mod dbus_proxy;
+pub mod gpu;
 pub mod landlock;
 pub mod landlock_shim;
 pub mod manifest;

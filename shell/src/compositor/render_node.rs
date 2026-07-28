@@ -137,11 +137,13 @@ impl std::error::Error for ProbeError {}
 /// symlink basename. Returns `None` when the node isn't a `renderD*`
 /// name or sysfs has no such link (e.g. inside a container that bind-
 /// mounted `/dev/dri` without `/sys`).
+///
+/// Delegates to [`launcher::gpu::driver_for`]: the launcher answers the
+/// same question when it pins an app's ICDs, and two copies of this
+/// lookup could disagree about which driver a node has — which is
+/// exactly how a client ends up on a different GPU than the compositor.
 pub fn driver_for(path: &Path) -> Option<String> {
-    let name = path.file_name()?.to_str()?;
-    let link = Path::new("/sys/class/drm").join(name).join("device/driver");
-    let target = std::fs::read_link(link).ok()?;
-    Some(target.file_name()?.to_str()?.to_string())
+    launcher::gpu::driver_for(path)
 }
 
 /// Whether `driver` is known to support CPU-mapping its exported
@@ -269,6 +271,105 @@ pub fn set_advertised(path: PathBuf) {
 /// advertised at all.
 pub fn advertised() -> Option<&'static Path> {
     ADVERTISED.get().map(PathBuf::as_path)
+}
+
+/// The node [`pin_process`] resolved at startup, before anything in
+/// this process touched a GPU.
+static PINNED: OnceLock<PathBuf> = OnceLock::new();
+
+/// The render node this compositor settled on, whatever stage of boot
+/// the caller is at.
+///
+/// [`advertised`] is the authoritative answer once the dmabuf global
+/// exists, but it is only set when `dmabuf_feedback` could be built —
+/// and a compositor that fell back to `wl_shm` still renders on a GPU,
+/// which its clients still have to match. [`pin_process`] runs before
+/// either, so it is the fallback.
+///
+/// This is the value the app launcher passes to `qos-launcher
+/// --render-node`: the apps follow the compositor's actual choice
+/// rather than re-deriving one of their own.
+pub fn resolved() -> Option<&'static Path> {
+    advertised().or_else(|| PINNED.get().map(PathBuf::as_path))
+}
+
+/// What [`pin_process`] did, for the boot log.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProcessPin {
+    /// The node this process (and everything it launches) is on.
+    pub node: PathBuf,
+    /// Kernel driver bound to it.
+    pub driver: Option<String>,
+    /// `(variable, value)` pairs actually written into the environment.
+    pub applied: Vec<(String, String)>,
+    /// Lines explaining anything that was *not* applied: a loader with
+    /// no matching manifest, or a variable the operator had already set.
+    pub notes: Vec<String>,
+}
+
+/// Point this process's EGL and Vulkan loaders at the GPU the
+/// compositor is going to render on, before either loader has run.
+///
+/// The compositor picks its render node from the DRM device list (see
+/// [`probe`]), but its *own* renderer goes through wgpu, which asks the
+/// Vulkan loader and GLVND — neither of which knows about that choice.
+/// On a hybrid machine they answer with whatever driver they rank
+/// first, so the compositor can end up initialising on one GPU while
+/// telling its clients to allocate on another, or blocking in a
+/// half-installed vendor driver it was never going to use.
+///
+/// Setting the selection variables here fixes both: the loaders see one
+/// driver, and it is the one that matches the node.
+///
+/// # Ordering
+///
+/// Must be called from `main` before any thread is spawned and before
+/// anything creates a wgpu instance — `set_var` is only sound while the
+/// process is single-threaded, and the loaders read these variables
+/// once, at first use.
+///
+/// # Operator override
+///
+/// A variable the caller's environment already carries is left alone
+/// and recorded in [`ProcessPin::notes`]. Someone who exported
+/// `VK_DRIVER_FILES` by hand outranks a derivation, and combined with
+/// [`DEVICE_ENV`] (which chooses the node itself) that gives a complete
+/// manual escape hatch.
+pub fn pin_process() -> Option<ProcessPin> {
+    let node = match probe() {
+        Ok(node) => node,
+        Err(e) => {
+            // Nothing to pin to. Not fatal: `State::new` logs the same
+            // rejection in prose and the compositor falls back to shm.
+            tracing::debug!(target: "shell::compositor::gpu", "no render node to pin to: {e}");
+            return None;
+        }
+    };
+    let _ = PINNED.set(node.path.clone());
+    let selection =
+        launcher::gpu::select_for_node(&node.path, &launcher::gpu::IcdSearch::default());
+    let mut applied = Vec::new();
+    let mut notes = selection.notes.clone();
+    for (key, value) in selection.env() {
+        if let Some(existing) = std::env::var_os(key) {
+            notes.push(format!(
+                "{key} already set to {:?} in the environment; leaving the operator's \
+                 choice in place",
+                existing.to_string_lossy()
+            ));
+            continue;
+        }
+        // SAFETY: called from `main` before any thread is spawned, so
+        // no other thread can be reading the environment concurrently.
+        unsafe { std::env::set_var(key, &value) };
+        applied.push((key.to_string(), value));
+    }
+    Some(ProcessPin {
+        node: node.path,
+        driver: node.driver,
+        applied,
+        notes,
+    })
 }
 
 #[cfg(test)]
