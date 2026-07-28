@@ -143,6 +143,23 @@ pub struct RunOptions {
     /// `$WAYLAND_DISPLAY`, because "whatever display the launcher
     /// happened to inherit" is not a security decision anyone made.
     pub wayland_socket: Option<PathBuf>,
+    /// The DRM render node the compositor resolved for itself, e.g.
+    /// `/dev/dri/renderD128`.
+    ///
+    /// A Wayland client has to render on the *same* GPU as the
+    /// compositor: buffers allocated on a different device either cost
+    /// a cross-device copy on every frame or cannot be imported at all,
+    /// and the tile shows an import error instead of the app. The
+    /// compositor already made this decision (it advertises the node as
+    /// `zwp_linux_dmabuf_v1`'s `main_device`) and passes it down here
+    /// rather than letting the launcher re-derive it — two independent
+    /// probes can disagree, and a client on the wrong GPU is exactly
+    /// the failure this plumbing exists to prevent.
+    ///
+    /// `None` means no compositor told us anything: the app's loaders
+    /// keep their own defaults, which is right for a CLI launch and for
+    /// a GUI launch from a context with no compositor.
+    pub render_node: Option<PathBuf>,
     /// Explicit host path to the user identity JSON. When `None`,
     /// the launcher resolves the default location from the process's
     /// `$XDG_CONFIG_HOME` / `$HOME` env vars and uses it only if the
@@ -352,6 +369,39 @@ pub fn resolve_identity_host_path(opts: &RunOptions) -> Option<PathBuf> {
         }
     }
     None
+}
+
+/// Derive the GPU pinning for this launch, or `None` when there is
+/// nothing to pin.
+///
+/// `None` in two distinct situations, both correct:
+/// - the caller passed no `render_node` (a CLI launch, or a GUI launch
+///   with no compositor), so nobody has decided which GPU is right;
+/// - the manifest grants the app no DRM access *and* nothing could be
+///   derived, so there is no loader to steer.
+///
+/// Everything the derivation declined to pin is logged. "The app quietly
+/// came up on the other GPU" is precisely the failure this is here to
+/// stop, so it must never happen silently.
+pub fn resolve_gpu_selection(
+    manifest: &crate::manifest::MinimalManifest,
+    opts: &RunOptions,
+) -> Option<crate::gpu::GpuSelection> {
+    let node = opts.render_node.as_ref()?;
+    let selection = crate::gpu::select_for_node(node, &crate::gpu::IcdSearch::default());
+    for note in &selection.notes {
+        tracing::warn!(target: "qos_launcher::gpu", package = %manifest.package_id, "{note}");
+    }
+    tracing::info!(
+        target: "qos_launcher::gpu",
+        package = %manifest.package_id,
+        node = %selection.node.display(),
+        driver = selection.driver.as_deref().unwrap_or("<unknown>"),
+        egl = selection.egl_vendor_json.as_ref().map(|p| p.display().to_string()).unwrap_or_else(|| "<loader default>".into()),
+        vulkan = selection.vulkan_icd_json.as_ref().map(|p| p.display().to_string()).unwrap_or_else(|| "<loader default>".into()),
+        "pinning the app to the compositor's render node",
+    );
+    Some(selection)
 }
 
 pub fn resolve_runtime(
@@ -676,6 +726,21 @@ pub fn run_with(
         argv.push(entry);
     }
 
+    // GPU. The compositor's render node decides which EGL vendor and
+    // which Vulkan ICD the app is allowed to load, and which device
+    // node it can see at all. Spliced in after the manifest's own
+    // `/dev/dri` grant so the narrowing lands on top of it.
+    let gpu = resolve_gpu_selection(manifest, opts);
+    if let Some(sel) = &gpu {
+        let entry = argv.pop().expect("argv non-empty after build_bwrap_argv");
+        crate::sandbox::push_gpu_selection(
+            &mut argv,
+            sel,
+            crate::sandbox::grants_drm(manifest, &capabilities),
+        );
+        argv.push(entry);
+    }
+
     // Landlock shim wiring. Bind this launcher binary into the sandbox
     // and rewrite the trailing entrypoint token into
     //   <shim-in-sandbox> __sandbox-exec --ro <p>* --rw <p>* [--net-restricted] -- <entry>
@@ -756,6 +821,19 @@ pub fn run_with(
         if let Some(bind) = &wayland_bind {
             argv.push("--rw".to_string());
             argv.push(bind.sandbox_socket.display().to_string());
+        }
+        // The GPU selection is only real if Landlock agrees with it.
+        // The loader manifests need read; the render node needs
+        // read+write, because a GPU context is opened `O_RDWR` and a
+        // read-only rule surfaces as EACCES at device open — which
+        // looks exactly like "no GPU present" from inside the app.
+        if let Some(sel) = &gpu {
+            for file in sel.manifest_files() {
+                argv.push("--ro".to_string());
+                argv.push(file.display().to_string());
+            }
+            argv.push("--rw".to_string());
+            argv.push(sel.node.display().to_string());
         }
         for path in &manifest.sandbox.fs.write {
             let expanded = crate::manifest::expand_path(path);
