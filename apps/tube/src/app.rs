@@ -39,14 +39,6 @@ const STATE_KEY: &str = "tube_state";
 const SEARCH_KEY: &str = "search_query";
 const PALETTE_KEY: &str = "palette_query";
 pub(crate) const QUALITIES: [&str; 4] = ["1080p", "720p", "480p", "auto"];
-/// Known public Invidious instances the "Source" setting cycles through. The
-/// selected one is what [`Action::SubmitSearch`] actually queries.
-const INSTANCES: [&str; 4] = [
-    "https://invidious.fdn.fr",
-    "https://yewtu.be",
-    "https://vid.puffyan.us",
-    "https://invidious.snopyta.org",
-];
 
 /// Below this allocated width (logical px) the navigation rail stops sitting
 /// beside the content and collapses into an overlay flap summoned by the
@@ -1038,24 +1030,17 @@ impl TubeApp {
                 let idx = QUALITIES.iter().position(|q| *q == cur).unwrap_or(0);
                 self.model.settings.preferred_quality = QUALITIES[(idx + 1) % QUALITIES.len()].to_string();
             }
-            Action::CycleInstance => {
-                let cur = self.model.settings.invidious_instance.clone();
-                let idx = INSTANCES.iter().position(|i| *i == cur).unwrap_or(0);
-                self.model.settings.invidious_instance =
-                    INSTANCES[(idx + 1) % INSTANCES.len()].to_string();
-            }
             Action::SubmitSearch => {
                 let q = self.read_search(state, root);
                 self.model.search_query = q.clone();
                 self.navigate_to(Route::Search(q.clone()));
                 if !q.is_empty() {
-                    let instance = self.model.settings.invidious_instance.clone();
                     // Show the results skeleton while the live fetch is in flight
                     // (online only — the hermetic path resolves locally at once).
                     if self.online {
                         self.model.search_loading = true;
                     }
-                    self.request(Request::Search { instance, query: q });
+                    self.request(Request::Search { query: q });
                 }
             }
             Action::ToggleLike(id) => {
@@ -2066,15 +2051,6 @@ mod tests {
             app.model.notices.iter().any(|n| n.contains("vid_donut")),
             "Share records the copied link as a notice"
         );
-    }
-
-    #[test]
-    fn cycle_instance_moves_to_a_different_source() {
-        let (mut app, mut doc) = fresh();
-        let r = automerge::ROOT;
-        let before = app.model.settings.invidious_instance.clone();
-        app.apply(Action::CycleInstance, &mut doc, &r);
-        assert_ne!(before, app.model.settings.invidious_instance);
     }
 
     #[test]

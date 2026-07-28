@@ -36,7 +36,7 @@ pub enum Request {
     /// Fetch SponsorBlock + DeArrow data for a video being opened.
     Branding(String),
     /// Run a search through the data-source backend.
-    Search { instance: String, query: String },
+    Search { query: String },
     /// Fetch the home / trending catalogue. Only a *live* backend answers this
     /// — the offline "feed" is just the sample already on screen, so a failed
     /// or absent live backend leaves the bundled catalogue untouched.
@@ -384,7 +384,7 @@ impl Worker {
                     label: if live.is_some() {
                         "connecting…".into()
                     } else {
-                        "offline — sample data".into()
+                        "offline".into()
                     },
                 });
                 while let Ok(req) = req_rx.recv() {
@@ -419,7 +419,7 @@ impl Worker {
                                 }
                             }
                         }
-                        Request::Search { query, .. } => {
+                        Request::Search { query } => {
                             // Live only — NEVER fall back to the bundled sample:
                             // presenting fabricated videos as real search results
                             // is exactly what the "no fake content" rule forbids.

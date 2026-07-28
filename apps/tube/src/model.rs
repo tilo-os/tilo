@@ -387,7 +387,6 @@ pub struct Settings {
     pub autoplay: bool,
     pub show_comments: bool,
     pub preferred_quality: String,
-    pub invidious_instance: String,
 }
 
 /// serde default helper (a `#[serde(default)]` bool defaults to `false`; several
@@ -419,7 +418,6 @@ impl Default for Settings {
             autoplay: true,
             show_comments: true,
             preferred_quality: "1080p".to_string(),
-            invidious_instance: "https://invidious.fdn.fr".to_string(),
         }
     }
 }

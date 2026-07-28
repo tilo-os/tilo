@@ -47,9 +47,6 @@ pub enum Action {
     ToggleLike(VideoId),
     /// Copy a shareable link to the given video to the system clipboard.
     Share(VideoId),
-    /// Cycle the configured Invidious instance to the next known one (the
-    /// instance the live search actually queries).
-    CycleInstance,
     /// Flip the navigation sidebar (the hamburger toggle). Only has a visible
     /// effect on a narrow window, where the rail is an overlay flap.
     ToggleSidebar,
