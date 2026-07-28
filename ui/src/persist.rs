@@ -17,7 +17,7 @@
 //! an app writes
 //!
 //! ```ignore
-//! let (state, autosave) = ui::persist::open();
+//! let (state, autosave) = ui::persist::open("dev.qos.my-app");
 //! ui::App::new(state, my_app::app_root()).with_autosave(autosave).run();
 //! ```
 //!
@@ -25,6 +25,11 @@
 //! `sync`, every subsequent change written back atomically and debounced,
 //! and a flush on exit. Where the bytes live, and why an app has no say in
 //! it, is documented on [`app_state`].
+//!
+//! The string is the app's own `[package] id` from its `qos-app.toml`. It is
+//! only a fallback: `QOS_PACKAGE_ID`, which the launcher sets on every
+//! sandboxed launch, always wins. Without it a binary run straight out of
+//! `target/debug` would share one document with every other app.
 //!
 //! Apps that also carry state an older release wrote somewhere else call
 //! [`open_migrating`] once with that legacy path; the old document is
@@ -44,8 +49,8 @@ use crate::state::State;
 /// home, missing `HOME`, a corrupt document) the error is logged and the app
 /// comes up on an empty document, exactly as it did before persistence
 /// existed. An app that would rather know can call [`try_open`].
-pub fn open() -> (State, Autosave) {
-    try_open().unwrap_or_else(|e| {
+pub fn open(manifest_id: &str) -> (State, Autosave) {
+    try_open(manifest_id).unwrap_or_else(|e| {
         tracing::error!(error = %e, "app state unavailable; running without persistence");
         in_memory_fallback()
     })
@@ -58,9 +63,9 @@ pub fn open() -> (State, Autosave) {
 /// preserved and running the migration twice is a no-op. The old file is
 /// left on disk; deleting it is a decision for whoever knows whether
 /// anything else still reads it.
-pub fn open_migrating(legacy: &Path) -> (State, Autosave) {
+pub fn open_migrating(manifest_id: &str, legacy: &Path) -> (State, Autosave) {
     let attempt = || -> Result<(State, Autosave), StoreError> {
-        let mut store = DocStore::open()?;
+        let mut store = DocStore::open_with_manifest_id(manifest_id)?;
         match store.migrate_from(legacy) {
             Ok(true) => tracing::info!(
                 from = %legacy.display(),
@@ -79,8 +84,8 @@ pub fn open_migrating(legacy: &Path) -> (State, Autosave) {
 }
 
 /// [`open`] without the swallow-and-log fallback.
-pub fn try_open() -> Result<(State, Autosave), StoreError> {
-    finish(DocStore::open()?)
+pub fn try_open(manifest_id: &str) -> Result<(State, Autosave), StoreError> {
+    finish(DocStore::open_with_manifest_id(manifest_id)?)
 }
 
 fn finish(mut store: DocStore) -> Result<(State, Autosave), StoreError> {

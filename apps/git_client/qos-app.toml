@@ -85,6 +85,9 @@ read = [
     "/sbin",
 ]
 write = [
+    # This app's own state document (`app-state`); the path is derived
+    # from the package id, so it is the same one the store computes.
+    "~/.local/share/dev.qos.git-client",
     "~/.cache/mesa_shader_cache",
     "~/.cache/mesa_shader_cache_db",
     "~/.cache/radv_builtin_shaders",

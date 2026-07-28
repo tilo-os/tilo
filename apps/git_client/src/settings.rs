@@ -4,7 +4,9 @@
 //! ephemeral and per-instance), but durable preferences — which diff
 //! layout the user prefers, whether whitespace is shown, the default
 //! history author filter — belong in the CRDT so they survive restarts
-//! and replicate to collaborators. This module is the typed accessor in
+//! and replicate to collaborators. The restart half of that comes from
+//! `main`, which opens the document through `ui::persist` and installs the
+//! writer with `App::with_autosave`. This module is the typed accessor in
 //! front of the raw `root.settings` map.
 
 use automerge::transaction::Transactable;
