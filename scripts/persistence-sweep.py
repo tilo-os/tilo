@@ -43,24 +43,31 @@ REPO = pathlib.Path(__file__).resolve().parent.parent
 APPS = REPO / "apps"
 SCENARIOS = pathlib.Path(__file__).resolve().parent / "persistence-scenarios.json"
 
-# Widgets whose names suggest an irreversible or system-level action. The
-# sweep runs against a scratch data directory, but several apps front real
-# devices and package managers, so these are never clicked.
-DANGEROUS = re.compile(
-    r"delete|remove|erase|format|wipe|flash|destroy|shutdown|reboot|poweroff"
-    r"|uninstall|revoke|reset|kill|terminate|disconnect|unmount|eject|quit|exit",
-    re.I,
-)
+# Apps a blind input sweep must not drive. Typing into the terminal runs
+# shell commands; the on-screen keyboard injects into the live session; the
+# rest front block devices, firewall rules, package installs or remote
+# sessions. These need a curated scenario in persistence-scenarios.json, and
+# are reported as unswept rather than clicked at random.
+NEEDS_CURATION = {
+    "terminal", "osk", "disks", "imager", "firewall", "vpn", "containers",
+    "software_store", "store", "remote", "backups", "camera",
+}
 
-# Widget kinds worth clicking when no scenario names anything specific.
-INTERESTING = re.compile(
-    r"Button|Toggle|Switch|Checkbox|Radio|Chip|Tab|Segmented|Row|Item|Card"
-    r"|Slider|Stepper|Menu|Option|Star|Favorite|Pin",
-    re.I,
-)
+# The generic scenario. Keystrokes first, because app-level key handling
+# needs no focus and is the most reliable way to reach an app's document;
+# then a coarse pointer sweep to open panes, toggle controls and focus
+# inputs; then keystrokes again now that something may hold focus.
+def generic_actions(viewport=(1280, 800)):
+    w, h = viewport
+    acts = [{"type": "qos"}, {"key": "Enter"}]
+    for y in range(40, h, 80):
+        for x in range(40, w, 120):
+            acts.append({"click_at": [x, y]})
+    acts += [{"type": "qos"}, {"key": "Enter"}, {"key": "Space"}]
+    return acts
 
-MAX_GENERIC_CLICKS = 10
-RUN_TIMEOUT_S = 90
+
+RUN_TIMEOUT_S = 300
 
 
 def app_dirs(names):
@@ -111,28 +118,12 @@ def run_app(binary, data_home, pkg, spec, log):
     return p
 
 
-def pick_actions(targets_path, scenario):
+def pick_actions(app_name, scenario):
     if scenario is not None:
         return scenario, "scenario"
-    try:
-        targets = json.loads(targets_path.read_text())
-    except Exception:
-        return [], "no-targets"
-    names = []
-    for name, rect in targets:
-        if rect[2] <= 1 or rect[3] <= 1:
-            continue
-        if DANGEROUS.search(name):
-            continue
-        if not INTERESTING.search(name):
-            continue
-        # Prefer the indexed form: the bare name is ambiguous once a second
-        # sibling appears mid-run.
-        if not name.endswith("]"):
-            continue
-        names.append(name)
-    names.sort()
-    return [{"click_named": n} for n in names[:MAX_GENERIC_CLICKS]], "generic"
+    if app_name in NEEDS_CURATION:
+        return None, "needs-curation"
+    return generic_actions(), "generic"
 
 
 def sweep_app(d, workdir, scenarios, target_dir):
@@ -142,6 +133,17 @@ def sweep_app(d, workdir, scenarios, target_dir):
     if not binary.exists():
         result["errors"].append(f"binary not built: {binary}")
         return result
+
+    actions, source = pick_actions(d.name, scenarios.get(d.name))
+    result["action_source"] = source
+    if actions is None:
+        result["status"] = "needs-curation"
+        result["errors"].append(
+            "blind input would drive a destructive control; add a scenario to "
+            "scripts/persistence-scenarios.json"
+        )
+        return result
+    result["action_count"] = len(actions)
 
     scratch = workdir / d.name
     if scratch.exists():
@@ -161,17 +163,6 @@ def sweep_app(d, workdir, scenarios, target_dir):
         result["status"] = "launch-failed"
         return result
 
-    actions, source = pick_actions(targets_json, scenarios.get(d.name))
-    result["action_source"] = source
-    result["actions"] = actions
-    if not actions:
-        result["status"] = "no-actions"
-        result["errors"].append(
-            "no addressable widget to drive; needs a scenario in "
-            "persistence-scenarios.json"
-        )
-        return result
-
     # 2. Hot: drive the app, then let it exit and flush.
     if run_app(binary, live_home, pkg,
                {"actions": actions, "dump": str(hot_json)},
@@ -182,7 +173,11 @@ def sweep_app(d, workdir, scenarios, target_dir):
     doc = live_home / pkg / "state.automerge"
     result["state_file"] = str(doc)
     if not doc.exists():
-        result["errors"].append(f"no state document written at {doc}")
+        result["status"] = "nothing-written"
+        result["errors"].append(
+            f"the app exited without writing {doc} — either nothing it does "
+            f"reaches its CRDT, or the store never got the document"
+        )
         return result
     result["state_bytes"] = doc.stat().st_size
 
@@ -260,7 +255,7 @@ def main():
         detail = ""
         if r["status"] == "ok":
             detail = (
-                f'{len(r["actions"])} actions ({r["action_source"]}), '
+                f'{r["action_count"]} actions ({r["action_source"]}), '
                 f'{r["state_bytes"]} bytes on disk'
             )
         else:
@@ -268,13 +263,17 @@ def main():
         print(f"{mark:<16} {r['app']:<18} {detail}", flush=True)
 
     passed = sum(1 for r in results if r["status"] == "ok")
-    print(f"\n{passed}/{len(results)} apps verified persisting across a restart")
+    swept = sum(1 for r in results if r["status"] != "needs-curation")
+    print(
+        f"\n{passed}/{swept} swept apps verified persisting across a restart "
+        f"({len(results) - swept} need a curated scenario)"
+    )
     for r in results:
         if r["status"] != "ok":
             print(f"  {r['app']}: {r['status']} — {'; '.join(r['errors'])[:400]}")
     if args.json:
         args.json.write_text(json.dumps(results, indent=2))
-    return 0 if passed == len(results) else 1
+    return 0 if passed == swept else 1
 
 
 if __name__ == "__main__":
