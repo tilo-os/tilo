@@ -680,7 +680,7 @@ pub fn trending(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Imgs) -
             .fill_w()
             .pad(24.0)
             .gap(18.0)
-            .push(section_header(theme, IconKind::Fire, "Trending", "Most-watched across your instance"))
+            .push(section_header(theme, IconKind::Fire, "Trending", "Most-watched right now"))
             .push(grid(cards)),
     )
 }
@@ -1624,25 +1624,6 @@ pub fn settings(model: &TubeModel, theme: &Theme, bus: &ActionBus) -> Scrollable
         ],
     );
 
-    let privacy = settings_card(
-        theme,
-        "Source",
-        vec![
-            // Clicking the row cycles to the next known Invidious instance —
-            // the one live search actually queries — so the chevron is a real
-            // control, not a dead ornament.
-            setting_row(theme, "Invidious instance", &s.invidious_instance, icon(IconKind::Chevron, 16.0, theme.text_dim))
-                .id("instance_row")
-                .pad_xy(8.0, 8.0)
-                .hover_surface(Surface {
-                    fill: Some(hover_fill(theme)),
-                    radius: theme.tokens.radii.md as f64,
-                    border: None,
-                })
-                .on_click(bus, Action::CycleInstance),
-        ],
-    );
-
     // Explicit spacers between sections: the scroll wrapper lays out as a block,
     // which ignores flex `gap`, so without these the cards would touch.
     scroll(
@@ -1657,8 +1638,6 @@ pub fn settings(model: &TubeModel, theme: &Theme, bus: &ActionBus) -> Scrollable
             .push(sponsorblock)
             .push(vspace(16.0))
             .push(dearrow)
-            .push(vspace(16.0))
-            .push(privacy)
             .push(vspace(24.0)),
     )
 }
