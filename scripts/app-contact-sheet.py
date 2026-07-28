@@ -1,9 +1,17 @@
 #!/usr/bin/env python3
 """Compose the per-app sweep PNGs into one labelled contact sheet, and
-classify each cell as real app content or the compositor's placeholder.
+report which apps actually painted.
 
-Placeholder detection is evidential, not a guess at "how busy does this
-look". When an app has not produced a frame, the compositor paints the
+Whether an app rendered is taken from the compositor's own per-surface
+frame counters, recorded by the sweep (`frames` in results.json).
+`frame_seq > 0` means the compositor took a frame from that client.
+
+Pixel clustering below is only a cross-check for rows with no counters,
+because it cannot be trusted on its own: apps here start empty by
+design, so a real first frame can look like the placeholder - and like
+every other empty app.
+
+The clustering rationale, for those fallback rows: When an app has not produced a frame, the compositor paints the
 tile with two centred text lines (the app-id and "waiting for first
 frame") over the flat card. Every such shot is therefore near-identical
 to every other such shot — they differ only in the app-id glyphs, a few
@@ -149,7 +157,36 @@ def main() -> int:
                 shots[pkg] = cand
 
     print(f"packages in results.json: {len(results)}   with a PNG: {len(shots)}")
-    real_map, clusters, unreadable = classify(shots)
+    cluster_map, clusters, unreadable = classify(shots)
+
+    # Ground truth first. `frame_seq` counts frames the compositor
+    # actually took from the client, so it settles what a screenshot can
+    # only suggest: an app that legitimately starts empty renders a
+    # near-blank tile that looks like the placeholder, and two such apps
+    # look like each other. Clustering is kept only as a cross-check.
+    real_map: dict[str, bool] = {}
+    painted_errors: dict[str, str] = {}
+    unverified: set[str] = set()
+    for pkg in shots:
+        frames = (results.get(pkg) or {}).get("frames")
+        if isinstance(frames, list) and frames:
+            real_map[pkg] = any((f or {}).get("frame_seq", 0) > 0 for f in frames)
+            for f in frames:
+                if (f or {}).get("last_error"):
+                    painted_errors[pkg] = str(f["last_error"])
+        else:
+            # No answer from the compositor - fall back to the picture
+            # and say the number is weaker for this row.
+            real_map[pkg] = cluster_map.get(pkg, False)
+            unverified.add(pkg)
+
+    disagreements = [
+        pkg
+        for pkg in shots
+        if pkg not in unverified
+        and pkg not in unreadable
+        and cluster_map.get(pkg, False) != real_map.get(pkg, False)
+    ]
 
     # Every package gets a cell, including the ones with no shot at all —
     # a sheet that quietly drops failures would overstate the fleet.
@@ -172,6 +209,7 @@ def main() -> int:
     )
     n_unreadable = len(unreadable)
     n_noshot = len(cells) - len(shots)
+    n_unverified = len(unverified)
 
     draw.text((PAD + 4, 14), "qOS applications - launched through the compositor",
               font=f_title, fill=FG)
@@ -179,7 +217,8 @@ def main() -> int:
               f"{len(cells)} installed · {n_real} rendered real content · "
               f"{n_placeholder} still on the first-frame placeholder · "
               f"{n_noshot} never adopted a window"
-              + (f" · {n_unreadable} unreadable capture" if n_unreadable else ""),
+              + (f" · {n_unreadable} unreadable capture" if n_unreadable else "")
+              + (f" · {n_unverified} unverified" if n_unverified else ""),
               font=f_small, fill=DIM)
 
     for i, pkg in enumerate(cells):
@@ -206,8 +245,12 @@ def main() -> int:
         if pkg in unreadable:
             tag, colour = "unreadable", (210, 170, 90)
         elif path:
-            tag = "live" if real else "placeholder"
-            colour = (120, 200, 140) if real else PLACEHOLDER_TINT
+            if real:
+                tag = "live" if pkg not in unverified else "live?"
+                colour = (120, 200, 140)
+            else:
+                tag = "placeholder" if pkg not in unverified else "placeholder?"
+                colour = PLACEHOLDER_TINT
         else:
             tag, colour = "no window", DIM
         tw = draw.textlength(tag, font=f_small)
@@ -223,6 +266,16 @@ def main() -> int:
     print(f"no window    : {n_noshot}")
     if n_unreadable:
         print(f"unreadable   : {n_unreadable}")
+    if n_unverified:
+        print(f"unverified   : {n_unverified} (no frame counters; picture only)")
+    if painted_errors:
+        print("\ncapture errors the compositor reported:")
+        for pkg, err in sorted(painted_errors.items()):
+            print(f"  {short(pkg)}: {err}")
+    if disagreements:
+        print("\nclustering disagreed with the frame counters for:")
+        for pkg in disagreements:
+            print(f"  {short(pkg)} (counters win)")
     print("\nnear-identical clusters (>=2 members are placeholders):")
     for g in clusters:
         if len(g) >= 2:
