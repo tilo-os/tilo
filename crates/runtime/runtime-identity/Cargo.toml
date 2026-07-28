@@ -22,11 +22,11 @@ path = "src/lib.rs"
 
 [dependencies]
 runtime-portal = { path = "../runtime-portal" }
-serde = { version = "1", features = ["derive"] }
-serde_bytes = "0.11"
-serde_json = "1"
-ed25519-dalek = { version = "2", features = ["serde"] }
-thiserror = "1"
+serde.workspace = true
+serde_bytes.workspace = true
+serde_json.workspace = true
+ed25519-dalek = { workspace = true, features = ["serde"] }
+thiserror.workspace = true
 
 [dev-dependencies]
-tempfile = "3"
+tempfile.workspace = true
