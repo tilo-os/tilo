@@ -594,10 +594,7 @@ mod tests {
     impl StaticState {
         fn new(entries: &[(&str, Rect)]) -> Self {
             Self {
-                registry: entries
-                    .iter()
-                    .map(|(k, v)| (k.to_string(), *v))
-                    .collect(),
+                registry: entries.iter().map(|(k, v)| (k.to_string(), *v)).collect(),
             }
         }
     }
@@ -686,8 +683,7 @@ mod tests {
     #[test]
     fn click_at_emits_motion_press_release_in_order() {
         let state = StaticState::new(&[]);
-        let (resp, actions) =
-            dispatch_command(&Command::ClickAt { x: 42.0, y: 7.0 }, &state);
+        let (resp, actions) = dispatch_command(&Command::ClickAt { x: 42.0, y: 7.0 }, &state);
         assert!(matches!(resp, Response::Ok { .. }));
         assert_eq!(
             actions,
@@ -716,7 +712,10 @@ mod tests {
         );
         assert!(matches!(resp, Response::Ok { .. }));
         // Centre of (100, 200, 40, 20) is (120, 210).
-        assert_eq!(actions[0], PlannedAction::CursorMoved { x: 120.0, y: 210.0 });
+        assert_eq!(
+            actions[0],
+            PlannedAction::CursorMoved { x: 120.0, y: 210.0 }
+        );
     }
 
     #[test]
@@ -810,7 +809,10 @@ mod tests {
         assert_eq!(actions.len(), 7);
         assert_eq!(actions[0], PlannedAction::CursorMoved { x: 0.0, y: 0.0 });
         assert_eq!(actions[1], PlannedAction::MouseLeftButton { pressed: true });
-        assert_eq!(actions[6], PlannedAction::MouseLeftButton { pressed: false });
+        assert_eq!(
+            actions[6],
+            PlannedAction::MouseLeftButton { pressed: false }
+        );
         // Interpolated motions, t = 0/3, 1/3, 2/3, 3/3.
         let expected_ts = [0.0_f64, 1.0 / 3.0, 2.0 / 3.0, 1.0];
         for (idx, t) in expected_ts.iter().enumerate() {
@@ -1101,8 +1103,7 @@ mod tests {
     /// field name visible to clients.
     #[test]
     fn parse_snapshot_command_round_trips() {
-        let cmd =
-            parse_command(r#"{"op":"snapshot","path":"/tmp/round.png"}"#).unwrap();
+        let cmd = parse_command(r#"{"op":"snapshot","path":"/tmp/round.png"}"#).unwrap();
         assert_eq!(
             cmd,
             Command::Snapshot {
@@ -1163,7 +1164,11 @@ mod tests {
         };
         let (resp, actions) = dispatch_command(&Command::StateDump, &state);
         assert!(actions.is_empty(), "state_dump must have no side effects");
-        let Response::State { workspace_tree, chrome } = resp else {
+        let Response::State {
+            workspace_tree,
+            chrome,
+        } = resp
+        else {
             panic!("expected Response::State, got something else");
         };
         // The workspace tree round-trips exactly as the mock returned
@@ -1193,7 +1198,11 @@ mod tests {
         let state = StaticState::new(&[]);
         let (resp, actions) = dispatch_command(&Command::StateDump, &state);
         assert!(actions.is_empty());
-        let Response::State { workspace_tree, chrome } = resp else {
+        let Response::State {
+            workspace_tree,
+            chrome,
+        } = resp
+        else {
             panic!("expected Response::State");
         };
         assert!(workspace_tree.is_null());
@@ -1211,7 +1220,10 @@ mod tests {
             chrome: serde_json::json!({ "overlays": {} }),
         };
         let out = serialise_response(&resp);
-        assert!(out.contains("\"state\""), "tag should be `state`; got {out}");
+        assert!(
+            out.contains("\"state\""),
+            "tag should be `state`; got {out}"
+        );
         assert!(out.contains("\"workspace_tree\""), "got {out}");
         assert!(out.contains("\"chrome\""), "got {out}");
     }

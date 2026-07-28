@@ -72,12 +72,9 @@ impl SearchProvider for NotesProvider {
                         let title_lower = t.title.to_lowercase();
                         let body = read_note_body(ctx.doc, ctx.doc_root, t.id);
                         let body_lower = body.to_lowercase();
-                        let Some((score, snippet)) = note_match_score(
-                            &needle_lower,
-                            &title_lower,
-                            &body_lower,
-                            &body,
-                        ) else {
+                        let Some((score, snippet)) =
+                            note_match_score(&needle_lower, &title_lower, &body_lower, &body)
+                        else {
                             continue;
                         };
                         let workspace_id = w.id;
@@ -93,13 +90,7 @@ impl SearchProvider for NotesProvider {
                             subtitle: snippet,
                             score,
                             on_open: Rc::new(move |_doc, _root, chrome: &Chrome| {
-                                focus_note_tab(
-                                    chrome,
-                                    workspace_id,
-                                    strip_id,
-                                    group_id,
-                                    tab_id,
-                                );
+                                focus_note_tab(chrome, workspace_id, strip_id, group_id, tab_id);
                             }),
                         });
                     }
@@ -225,8 +216,7 @@ mod tests {
     use crate::shell::notes_app::BODY_KEY;
     use crate::shell::state::{
         AppKind, GroupId, Strip, StripId, Tab, TileContent, WindowGroup as StateGroup,
-        WindowWidth as StateWidth, Workspace, WorkspaceId, WorkspaceTree,
-        WorkspaceTreeHandle,
+        WindowWidth as StateWidth, Workspace, WorkspaceId, WorkspaceTree, WorkspaceTreeHandle,
     };
     use automerge::AutoCommit;
     use automerge::transaction::Transactable;
@@ -321,7 +311,13 @@ mod tests {
             doc_root: &automerge::ROOT,
         });
         assert_eq!(out.len(), 1);
-        assert!(out[0].subtitle.as_deref().unwrap_or("").contains("quick brown"));
+        assert!(
+            out[0]
+                .subtitle
+                .as_deref()
+                .unwrap_or("")
+                .contains("quick brown")
+        );
     }
 
     #[test]

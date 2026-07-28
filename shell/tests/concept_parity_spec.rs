@@ -84,9 +84,7 @@ use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::Widget;
 use ui::widget::command_palette::{CommandEntry, CommandPalette};
-use ui::widget::{
-    AppKind, TabDescriptor, TileContent, WindowGroup, WindowWidth,
-};
+use ui::widget::{AppKind, TabDescriptor, TileContent, WindowGroup, WindowWidth};
 
 mod support;
 
@@ -186,15 +184,9 @@ fn collect_solid_colors(scene: &Scene) -> Vec<(u8, u8, u8, u8)> {
 
 /// Return true if `colors` contains any tuple within `tol` per channel
 /// of `target` (rgb only — alpha tolerated independently of nominal).
-fn contains_color_close(
-    colors: &[(u8, u8, u8, u8)],
-    target: (u8, u8, u8),
-    tol: u8,
-) -> bool {
+fn contains_color_close(colors: &[(u8, u8, u8, u8)], target: (u8, u8, u8), tol: u8) -> bool {
     colors.iter().any(|&(r, g, b, _a)| {
-        r.abs_diff(target.0) <= tol
-            && g.abs_diff(target.1) <= tol
-            && b.abs_diff(target.2) <= tol
+        r.abs_diff(target.0) <= tol && g.abs_diff(target.1) <= tol && b.abs_diff(target.2) <= tol
     })
 }
 
@@ -295,7 +287,13 @@ fn workspace_settings_renders_general_tab_with_invite_link() {
     host2.apply_layout(&taffy, child, Point::ORIGIN);
     let mut open_scene = Scene::new();
     let presence = PresenceCtx::default();
-    host2.draw(&mut open_scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+    host2.draw(
+        &mut open_scene,
+        Affine::IDENTITY,
+        &mut tr,
+        &theme,
+        &presence,
+    );
     let open_indigo = collect_solid_colors(&open_scene)
         .iter()
         .filter(|&&(r, g, b, _)| {
@@ -1441,8 +1439,8 @@ fn maximized_chrome_hides_when_cursor_below_y_80() {
     // Second render: drive the cursor to y=200 (well below the y≤80
     // reveal band). Even after observing the cursor, concept hides
     // chrome.
-    use winit::event::{Modifiers, WindowEvent};
     use winit::dpi::PhysicalPosition;
+    use winit::event::{Modifiers, WindowEvent};
     let cursor_event = WindowEvent::CursorMoved {
         device_id: unsafe { std::mem::zeroed() },
         position: PhysicalPosition::new(480.0, 200.0),
@@ -1465,7 +1463,13 @@ fn maximized_chrome_hides_when_cursor_below_y_80() {
     );
 
     let mut scene_below = Scene::new();
-    group.draw(&mut scene_below, Affine::IDENTITY, &mut tr, &theme, &presence);
+    group.draw(
+        &mut scene_below,
+        Affine::IDENTITY,
+        &mut tr,
+        &theme,
+        &presence,
+    );
     let fills_below = collect_solid_colors(&scene_below).len();
 
     // Expected concept behaviour: cursor below y=80 → chrome hidden →
@@ -1556,8 +1560,7 @@ fn topbar_system_monitor_sparkline_is_emerald_500_not_indigo() {
     // emerald-500 = #10b981 = (16, 185, 129). The 30%-alpha variant
     // would have premul rgb of (5, 56, 39); we accept either nominal
     // or premul as evidence the concept colour was used.
-    let has_emerald_500_full =
-        contains_color_close(&fills, (16, 185, 129), 4);
+    let has_emerald_500_full = contains_color_close(&fills, (16, 185, 129), 4);
     let has_emerald_500_30pct = contains_color_close(&fills, (5, 56, 39), 4);
 
     assert!(
@@ -1828,10 +1831,16 @@ mod overview_add_workspace {
     fn overview_add_workspace_click_appends_workspace() {
         let mut h = build_settled_overview();
         let rect = h.host.add_workspace_rect_for_tests();
-        assert!(rect.area() > 0.0, "add-workspace rect must be populated before clicking");
+        assert!(
+            rect.area() > 0.0,
+            "add-workspace rect must be populated before clicking"
+        );
 
         let initial_count = h.chrome.borrow().tree().workspaces.len();
-        assert!(initial_count >= 1, "bootstrap_default seeds at least one workspace");
+        assert!(
+            initial_count >= 1,
+            "bootstrap_default seeds at least one workspace"
+        );
         let initial_active = h.chrome.borrow().tree().active;
 
         // Simulate the cursor-then-press sequence the real shell sees
@@ -1882,7 +1891,8 @@ mod overview_add_workspace {
              new workspace via chrome.add_workspace()"
         );
         assert_ne!(
-            st.tree().active, initial_active,
+            st.tree().active,
+            initial_active,
             "the newly-appended workspace must be activated, mirroring \
              the wheel-disc plus slot's create-and-switch semantics"
         );

@@ -103,10 +103,13 @@ impl Encoder for OpenH264Backend {
             }
         };
         let start = Instant::now();
-        let bytes = self.inner.encode(rgba).map_err(|e| EncoderError::EncodeFailed {
-            kind: EncoderKind::Openh264,
-            detail: format!("{e:?}"),
-        })?;
+        let bytes = self
+            .inner
+            .encode(rgba)
+            .map_err(|e| EncoderError::EncodeFailed {
+                kind: EncoderKind::Openh264,
+                detail: format!("{e:?}"),
+            })?;
         let elapsed = start.elapsed();
         let is_keyframe = self.frames_encoded == 0;
         self.frames_encoded = self.frames_encoded.saturating_add(1);
@@ -148,7 +151,10 @@ mod tests {
         let stats = backend
             .encode(FrameInput::Rgba(&frame), &mut out)
             .expect("encode");
-        assert!(!out.is_empty(), "openh264 backend produced empty NAL stream");
+        assert!(
+            !out.is_empty(),
+            "openh264 backend produced empty NAL stream"
+        );
         assert_eq!(stats.bytes, out.len());
         assert!(stats.keyframe, "first frame must be reported as keyframe");
         assert!(stats.encode_wallclock.as_nanos() > 0);

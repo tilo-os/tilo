@@ -14,10 +14,10 @@
 
 // Re-export the free shell-out helpers.
 pub use os_actions::{
-    connect_wifi, get_bluetooth, get_brightness, get_power_profile, get_volume, get_wifi,
-    list_bt_devices, list_wifi_networks, log_get, log_result, set_bluetooth, set_brightness,
-    set_mute, set_power_profile, set_volume, set_wifi, toggle_mute, BtDeviceInfo, PowerProfile,
-    WifiNetworkInfo, DEFAULT_TIMEOUT,
+    BtDeviceInfo, DEFAULT_TIMEOUT, PowerProfile, WifiNetworkInfo, connect_wifi, get_bluetooth,
+    get_brightness, get_power_profile, get_volume, get_wifi, list_bt_devices, list_wifi_networks,
+    log_get, log_result, set_bluetooth, set_brightness, set_mute, set_power_profile, set_volume,
+    set_wifi, toggle_mute,
 };
 
 // The trait carries the historical `QsActions` name in the shell crate

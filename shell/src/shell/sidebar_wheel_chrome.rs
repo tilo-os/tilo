@@ -242,7 +242,10 @@ impl SidebarWheelChrome {
 }
 
 fn workspace_initial(name: &str) -> String {
-    name.chars().next().map(|c| c.to_ascii_uppercase().to_string()).unwrap_or_else(|| "·".to_string())
+    name.chars()
+        .next()
+        .map(|c| c.to_ascii_uppercase().to_string())
+        .unwrap_or_else(|| "·".to_string())
 }
 
 impl Widget for SidebarWheelChrome {
@@ -426,7 +429,13 @@ impl Widget for SidebarWheelChrome {
             let rim = Circle::new((cx, cy), 600.0);
             // Clip the rim to the sidebar bounds so the large circle doesn't
             // bleed out into the desktop behind/beside the wheel.
-            scene.push_layer(vello::peniko::Fill::NonZero, BlendMode::default(), eased, transform, &self.rect);
+            scene.push_layer(
+                vello::peniko::Fill::NonZero,
+                BlendMode::default(),
+                eased,
+                transform,
+                &self.rect,
+            );
             scene.stroke(
                 &Stroke::new(1.0),
                 transform,
@@ -519,7 +528,11 @@ impl Widget for SidebarWheelChrome {
             let (gw, gh) = text_renderer.measure(&card.label, glyph_size, None);
             let cx = (card.rect.x0 + card.rect.x1) / 2.0 - gw as f64 / 2.0;
             let cy = card.rect.y0 + card.rect.height() * 0.30 - gh as f64 / 2.0;
-            let glyph_color = if is_active { colors.text_primary } else { colors.text_primary };
+            let glyph_color = if is_active {
+                colors.text_primary
+            } else {
+                colors.text_primary
+            };
             text_renderer.draw_text(
                 scene,
                 &card.label,
@@ -567,7 +580,8 @@ impl Widget for SidebarWheelChrome {
                 let overflow = card_count.saturating_sub(3);
                 let dot_r = 3.0_f64;
                 let gap = 3.0_f64;
-                let row_w = shown as f64 * (dot_r * 2.0) + (shown as f64 - 1.0).max(0.0) * gap
+                let row_w = shown as f64 * (dot_r * 2.0)
+                    + (shown as f64 - 1.0).max(0.0) * gap
                     + if overflow > 0 { 14.0 } else { 0.0 };
                 let base_x = (card.rect.x0 + card.rect.x1) / 2.0 - row_w / 2.0;
                 let dot_y = card.rect.y1 - 10.0;
@@ -590,8 +604,7 @@ impl Widget for SidebarWheelChrome {
                         &s,
                         tokens.typography.scale.xs,
                         dot_color,
-                        card_xform
-                            * Affine::translate((chip_x, dot_y - th as f64 / 2.0)),
+                        card_xform * Affine::translate((chip_x, dot_y - th as f64 / 2.0)),
                         None,
                     );
                     let _ = tw; // silence unused: we just want ascent-based y alignment
@@ -600,7 +613,11 @@ impl Widget for SidebarWheelChrome {
         }
 
         // Trailing "+" card — dashed outline so it reads as a hint.
-        let plus_fill = if self.hover_plus { colors.surfaces.raised } else { colors.neutral[0] };
+        let plus_fill = if self.hover_plus {
+            colors.surfaces.raised
+        } else {
+            colors.neutral[0]
+        };
         let plus_pill = RoundedRect::from_rect(self.plus_rect, tokens.radii.md as f64);
         scene.fill(Fill::NonZero, transform, plus_fill, None, &plus_pill);
         scene.stroke(
@@ -659,9 +676,7 @@ impl Widget for SidebarWheelChrome {
                     // tolerance; the release branch uses this to skip the
                     // click-activate behaviour so a drag doesn't spuriously
                     // jump to whatever card the cursor happened to finish on.
-                    if !self.drag_moved
-                        && (p.y - _start).abs() > DRAG_CLICK_TOLERANCE_PX
-                    {
+                    if !self.drag_moved && (p.y - _start).abs() > DRAG_CLICK_TOLERANCE_PX {
                         self.drag_moved = true;
                     }
                     if self.drag_moved {
@@ -830,7 +845,9 @@ mod drag_rotate_tests {
     use crate::shell::chrome_state::ChromeState;
     use crate::shell::state::WorkspaceTree;
 
-    fn sidebar_with_workspaces(n: usize) -> (SidebarWheelChrome, crate::shell::chrome_state::Chrome) {
+    fn sidebar_with_workspaces(
+        n: usize,
+    ) -> (SidebarWheelChrome, crate::shell::chrome_state::Chrome) {
         let mut tree = WorkspaceTree::bootstrap_default();
         for i in 1..n {
             tree.append_empty_workspace(&format!("WS-{}", i));
@@ -856,7 +873,7 @@ mod drag_rotate_tests {
         s.drag_moved = false;
 
         // Feed a CursorMoved event one card-stride below the anchor.
-        use winit::event::{MouseButton, ElementState};
+        use winit::event::{ElementState, MouseButton};
         let _ = (MouseButton::Left, ElementState::Pressed); // smoke
         // Drive the CursorMoved branch directly — the event loop path ends up
         // mutating the same fields.

@@ -216,7 +216,10 @@ mod tests {
         std::fs::File::create(&upstream).unwrap();
 
         let bridge = BridgeSocket::bind(42, runtime.path(), &upstream).unwrap();
-        assert!(bridge.path().exists(), "bridge socket file should exist after bind");
+        assert!(
+            bridge.path().exists(),
+            "bridge socket file should exist after bind"
+        );
         let path = bridge.path().to_path_buf();
         drop(bridge);
         assert!(!path.exists(), "bridge cleans up its socket on drop");

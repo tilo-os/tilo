@@ -36,7 +36,6 @@ use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime};
 
-use ed25519_dalek::SigningKey;
 use channel_crypto::{ChannelGroup, MemberKey};
 use collab_types::{
     ArtifactId, ArtifactKind, Attestation, AttestationId, ChannelId, ChannelState,
@@ -44,13 +43,14 @@ use collab_types::{
     Signature, SignedOp, encode_compaction_payload, generate_keypair, hash_op_prefix, sign_event,
     sign_op,
 };
+use ed25519_dalek::SigningKey;
+use rand_08::SeedableRng;
+use rand_chacha::ChaCha20Rng;
+use shell::shell::collab_broker;
 use threshold_identity::{
     EnrolmentRound2, ThresholdIdentity, signing::SigningRound1, signing::SigningRound1Commitment,
     signing::SigningRound2Partial,
 };
-use rand_08::SeedableRng;
-use rand_chacha::ChaCha20Rng;
-use shell::shell::collab_broker;
 use ui::collaboration::{CollabEvent, CollabRequest};
 
 // ---- wire framing (matches broker exactly) ----
@@ -216,7 +216,8 @@ fn threshold_signed_mls_encrypted_op_traverses_broker_then_compaction_evicts() {
 
     // === 4. Olga mints Editor attestations for Alice's threshold key
     //         and Bob's plain key. ===
-    let alice_att = make_role_attestation(&olga_sk, olga_pk, alice_group_pk, channel_id, Role::Editor);
+    let alice_att =
+        make_role_attestation(&olga_sk, olga_pk, alice_group_pk, channel_id, Role::Editor);
     let bob_att = make_role_attestation(&olga_sk, olga_pk, bob_pk, channel_id, Role::Editor);
     let alice_att_id = alice_att.attestation.id;
     let bob_att_id = bob_att.attestation.id;
@@ -301,7 +302,13 @@ fn threshold_signed_mls_encrypted_op_traverses_broker_then_compaction_evicts() {
         );
         // Threshold sign across both Alice devices.
         let canon = op.signing_bytes().unwrap();
-        op.signature = threshold_sign(&alice_laptop, &alice_phone, &canon, 40 + i as u8, 60 + i as u8);
+        op.signature = threshold_sign(
+            &alice_laptop,
+            &alice_phone,
+            &canon,
+            40 + i as u8,
+            60 + i as u8,
+        );
 
         write_frame(
             &mut alice_app,
@@ -360,12 +367,11 @@ fn threshold_signed_mls_encrypted_op_traverses_broker_then_compaction_evicts() {
             max: 10,
         },
     );
-    let prefix_ops = match read_event(&mut olga_app, Duration::from_millis(500))
-        .expect("scrollback returns")
-    {
-        CollabEvent::ScrollbackBatch { ops, .. } => ops,
-        other => panic!("expected ScrollbackBatch, got {other:?}"),
-    };
+    let prefix_ops =
+        match read_event(&mut olga_app, Duration::from_millis(500)).expect("scrollback returns") {
+            CollabEvent::ScrollbackBatch { ops, .. } => ops,
+            other => panic!("expected ScrollbackBatch, got {other:?}"),
+        };
     assert_eq!(
         prefix_ops.len(),
         2,
@@ -429,7 +435,9 @@ fn threshold_signed_mls_encrypted_op_traverses_broker_then_compaction_evicts() {
     let event = read_event(&mut bob_app, Duration::from_millis(500))
         .expect("scrollback returns after compaction");
     match event {
-        CollabEvent::ScrollbackBatch { ops, exhausted: _, .. } => {
+        CollabEvent::ScrollbackBatch {
+            ops, exhausted: _, ..
+        } => {
             if !ops.is_empty() {
                 let audit = handle.audit_for(artifact);
                 panic!(
@@ -437,7 +445,8 @@ fn threshold_signed_mls_encrypted_op_traverses_broker_then_compaction_evicts() {
                      found {} stragglers (seqs {:?}). audit rejections: {:?}",
                     ops.len(),
                     ops.iter().map(|o| o.seq).collect::<Vec<_>>(),
-                    audit.iter()
+                    audit
+                        .iter()
                         .filter(|e| e.rejection.is_some())
                         .map(|e| (&e.envelope.op_class, &e.rejection))
                         .collect::<Vec<_>>(),
@@ -458,8 +467,8 @@ fn threshold_signed_mls_encrypted_op_traverses_broker_then_compaction_evicts() {
             max: 10,
         },
     );
-    let event = read_event(&mut bob_app, Duration::from_millis(500))
-        .expect("scrollback returns for tail");
+    let event =
+        read_event(&mut bob_app, Duration::from_millis(500)).expect("scrollback returns for tail");
     match event {
         CollabEvent::ScrollbackBatch { ops, .. } => {
             // After compaction the log retains alice's op #3 (seq=3

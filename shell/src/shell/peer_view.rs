@@ -187,20 +187,17 @@ impl PeerView {
         codec: &str,
         metrics: PeerSurfaceMetrics,
         display_caps: &crate::shell::hdr_display::DisplayCapabilities,
-        hdr_static_metadata: Option<
-            crate::collab::hdr_metadata::Hdr10Metadata,
-        >,
+        hdr_static_metadata: Option<crate::collab::hdr_metadata::Hdr10Metadata>,
     ) -> Self {
-        let decoder = VideoDecoder::for_wire_codec(codec)
-            .unwrap_or_else(|e| {
-                tracing::warn!(
-                    surface = surface_id,
-                    codec = codec,
-                    error = %e,
-                    "peer view falling back to H264 SDR decoder"
-                );
-                VideoDecoder::H264(crate::network::decoder::H264Decoder::new())
-            });
+        let decoder = VideoDecoder::for_wire_codec(codec).unwrap_or_else(|e| {
+            tracing::warn!(
+                surface = surface_id,
+                codec = codec,
+                error = %e,
+                "peer view falling back to H264 SDR decoder"
+            );
+            VideoDecoder::H264(crate::network::decoder::H264Decoder::new())
+        });
         // HDR tone-map only applies when the stream is HEVC-Main10
         // AND the display can't do PQ passthrough. `HdrTonemapConfig`
         // captures the decision + the mastering luminance to size
@@ -340,8 +337,7 @@ impl PeerView {
     /// Record a pointer motion event the shell should ship to the owner
     /// on the next tick. Coordinates are surface-local logical pixels.
     pub fn record_pointer_motion(&mut self, x: f64, y: f64) {
-        self.pending_inputs
-            .push(InputEvent::PointerMotion { x, y });
+        self.pending_inputs.push(InputEvent::PointerMotion { x, y });
     }
 
     /// Record a pointer button transition.
@@ -359,8 +355,11 @@ impl PeerView {
     /// still delivers the key correctly as long as the peer sends the
     /// modifier-key press/release events in order.
     pub fn record_key(&mut self, keysym: u32, pressed: bool, modifiers: u32) {
-        self.pending_inputs
-            .push(InputEvent::Key { keysym, pressed, modifiers });
+        self.pending_inputs.push(InputEvent::Key {
+            keysym,
+            pressed,
+            modifiers,
+        });
     }
 
     /// Compat shim: record a key without modifier metadata (defaults to
@@ -406,11 +405,7 @@ impl PeerView {
                         y_stride,
                         uv_stride,
                     } => {
-                        let cfg = self
-                            .hdr_tonemap
-                            .as_ref()
-                            .copied()
-                            .unwrap_or_default();
+                        let cfg = self.hdr_tonemap.as_ref().copied().unwrap_or_default();
                         tonemap_p010_to_rgba8(
                             y,
                             uv,
@@ -507,8 +502,8 @@ impl Widget for PeerView {
             if img_w > 0.0 && img_h > 0.0 {
                 let sx = rect.width() / img_w;
                 let sy = rect.height() / img_h;
-                let placement = Affine::translate((rect.x0, rect.y0))
-                    * Affine::scale_non_uniform(sx, sy);
+                let placement =
+                    Affine::translate((rect.x0, rect.y0)) * Affine::scale_non_uniform(sx, sy);
                 scene.draw_image(image, transform * placement);
             }
         } else {
@@ -758,7 +753,10 @@ mod tests {
             PushOutcome::Decoded,
         );
         let snap = metrics.snapshot();
-        assert_eq!(snap.frames_dropped, 1, "no additional drops after mark_drawn");
+        assert_eq!(
+            snap.frames_dropped, 1,
+            "no additional drops after mark_drawn"
+        );
     }
 
     /// The metrics handle is [`Clone`]-shared — an OSD overlay can

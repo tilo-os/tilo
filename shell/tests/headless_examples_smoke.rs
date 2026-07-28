@@ -36,7 +36,10 @@ fn repo_root() -> PathBuf {
 }
 
 fn assert_binary_exists() {
-    let bin = repo_root().join("target").join("debug").join("quick-desktop");
+    let bin = repo_root()
+        .join("target")
+        .join("debug")
+        .join("quick-desktop");
     assert!(
         bin.exists(),
         "expected compositor binary at {bin:?} — run \

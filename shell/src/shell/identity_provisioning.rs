@@ -105,7 +105,9 @@ impl IdentityStore for DiskIdentityStore {
         fs::write(&tmp, &bytes).map_err(IdentityFlowError::Io)?;
         #[cfg(unix)]
         {
-            let mut perm = fs::metadata(&tmp).map_err(IdentityFlowError::Io)?.permissions();
+            let mut perm = fs::metadata(&tmp)
+                .map_err(IdentityFlowError::Io)?
+                .permissions();
             perm.set_mode(0o600);
             fs::set_permissions(&tmp, perm).map_err(IdentityFlowError::Io)?;
         }
@@ -146,9 +148,7 @@ pub fn needs_first_run_flow(store: &impl IdentityStore) -> bool {
         Ok(None) => true,
         Ok(Some(_)) => false,
         Err(e) => {
-            tracing::warn!(
-                "identity store load failed; treating as no identity present: {e}"
-            );
+            tracing::warn!("identity store load failed; treating as no identity present: {e}");
             true
         }
     }
@@ -181,9 +181,9 @@ pub fn new_pairing_channel() -> SharedPairingChannel {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use threshold_identity::ThresholdIdentity;
     use rand_core::OsRng;
     use std::time::SystemTime;
+    use threshold_identity::ThresholdIdentity;
     use ui::widget::identity_flow::MemoryIdentityStore;
 
     struct TmpDir(PathBuf);

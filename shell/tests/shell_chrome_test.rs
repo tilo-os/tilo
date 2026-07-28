@@ -10,7 +10,13 @@ fn visual_smoke_checklist_is_documented() {
         src.contains("# Visual smoke checklist"),
         "visual smoke checklist missing"
     );
-    for marker in ["Cmd+K", "Cmd+Tab", "overscroll", "QuickSettings", "remote cursor"] {
+    for marker in [
+        "Cmd+K",
+        "Cmd+Tab",
+        "overscroll",
+        "QuickSettings",
+        "remote cursor",
+    ] {
         assert!(src.contains(marker), "missing smoke item: {marker}");
     }
 }
@@ -54,7 +60,12 @@ fn global_search_seeds_commands_and_filters() {
     let mut s = GlobalSearch::new();
     s.seed_default_commands(); // "Create Workspace", "Rename Workspace", "Open Settings", ...
     s.palette_mut().set_query("create");
-    assert!(s.palette().visible_entries().iter().any(|e| e.label.contains("Create")));
+    assert!(
+        s.palette()
+            .visible_entries()
+            .iter()
+            .any(|e| e.label.contains("Create"))
+    );
 }
 
 #[test]
@@ -62,8 +73,17 @@ fn global_search_context_filter_narrows_results() {
     let mut s = GlobalSearch::new();
     s.seed_default_commands();
     s.set_context_kind(shell::shell::search::SearchContext::Files);
-    let labels: Vec<String> = s.palette().visible_entries().iter().map(|e| e.label.clone()).collect();
-    assert!(labels.iter().all(|l| l.to_lowercase().contains("file") || l.to_lowercase().contains("open")));
+    let labels: Vec<String> = s
+        .palette()
+        .visible_entries()
+        .iter()
+        .map(|e| e.label.clone())
+        .collect();
+    assert!(
+        labels
+            .iter()
+            .all(|l| l.to_lowercase().contains("file") || l.to_lowercase().contains("open"))
+    );
 }
 
 #[test]
@@ -82,7 +102,7 @@ fn quick_settings_brightness_and_volume_clamp_and_mutate() {
 
 #[test]
 fn quick_settings_drill_in_and_back() {
-    use shell::shell::quick_settings::{QuickSettings, QsLevel};
+    use shell::shell::quick_settings::{QsLevel, QuickSettings};
     let mut q = QuickSettings::new();
     assert_eq!(q.current_level(), &QsLevel::Root);
     q.push_level(QsLevel::Wifi);
@@ -142,8 +162,8 @@ fn workspace_settings_roles_tab_edits_app_permissions() {
 
 #[test]
 fn workspace_settings_roles_tab_builds_apps_table_with_columns() {
-    use shell::shell::workspace_settings::WorkspaceSettings;
     use shell::shell::state::WorkspaceId;
+    use shell::shell::workspace_settings::WorkspaceSettings;
     let modal = WorkspaceSettings::new(WorkspaceId::new());
     // Apps table should expose two columns: the app name (flex) and the
     // permission picker (fixed width). Keys are stable so callers can hook
@@ -203,13 +223,16 @@ fn workspace_settings_files_tab_builds_files_table_with_columns() {
         .iter()
         .map(|c| c.key.clone())
         .collect();
-    assert_eq!(files_cols, vec!["file".to_string(), "permission".to_string()]);
+    assert_eq!(
+        files_cols,
+        vec!["file".to_string(), "permission".to_string()]
+    );
 }
 
 #[test]
 fn topbar_leftnav_navigates_workspaces() {
+    use shell::shell::state::{Workspace, WorkspaceId, WorkspaceTree};
     use shell::shell::topbar::{TopBar, TopBarEvent};
-    use shell::shell::state::{WorkspaceTree, Workspace, WorkspaceId};
     let mut tree = WorkspaceTree {
         workspaces: vec![],
         active: WorkspaceId::from(0),
@@ -245,8 +268,8 @@ fn topbar_workspace_name_button_emits_settings_request() {
 
 #[test]
 fn topbar_right_tray_renders_collaborators_and_opens_quick_settings() {
+    use shell::shell::state::{Collaborator, Workspace, WorkspaceId, WorkspaceTree};
     use shell::shell::topbar::{TopBar, TopBarOutput};
-    use shell::shell::state::{WorkspaceTree, Collaborator, Workspace, WorkspaceId};
     let mut tree = WorkspaceTree {
         workspaces: vec![],
         active: WorkspaceId::from(0),
@@ -273,8 +296,8 @@ fn topbar_right_tray_renders_collaborators_and_opens_quick_settings() {
 
 #[test]
 fn topbar_chrome_maps_two_peers_to_two_distinct_avatar_hues() {
+    use shell::shell::state::{Collaborator, Workspace, WorkspaceId, WorkspaceTree};
     use shell::shell::topbar_chrome::TopBarChrome;
-    use shell::shell::state::{WorkspaceTree, Collaborator, Workspace, WorkspaceId};
     let mut tree = WorkspaceTree {
         workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
         active: WorkspaceId::from(0),
@@ -402,7 +425,7 @@ fn topbar_chrome_active_center_dot_is_larger_than_inactive() {
 #[test]
 fn sidebar_wheel_switches_active_strip() {
     use shell::shell::sidebar_wheel::SidebarWheel;
-    use shell::shell::state::{WorkspaceTree, Workspace, WorkspaceId, Strip, StripId};
+    use shell::shell::state::{Strip, StripId, Workspace, WorkspaceId, WorkspaceTree};
     let mut ws = Workspace::new(WorkspaceId::new(), "A");
     ws.strips = vec![
         Strip::new(StripId::new(), "s1"),
@@ -420,7 +443,8 @@ fn sidebar_wheel_switches_active_strip() {
     let ws_id = ws.id;
     tree.workspaces = vec![ws];
     tree.active = ws_id;
-    tree.active_strip.insert(ws_id, tree.workspaces[0].strips[0].id);
+    tree.active_strip
+        .insert(ws_id, tree.workspaces[0].strips[0].id);
 
     let mut w = SidebarWheel::new();
     w.on_wheel(1, &mut tree);
@@ -500,7 +524,7 @@ fn sidebar_wheel_overscroll_below_threshold_snaps_back() {
 #[test]
 fn sidebar_wheel_management_button_creates_workspace() {
     use shell::shell::sidebar_wheel::SidebarWheel;
-    use shell::shell::state::{WorkspaceTree, Workspace, WorkspaceId};
+    use shell::shell::state::{Workspace, WorkspaceId, WorkspaceTree};
     let mut tree = WorkspaceTree {
         workspaces: vec![],
         active: WorkspaceId::from(0),
@@ -519,7 +543,7 @@ fn sidebar_wheel_management_button_creates_workspace() {
 
 #[test]
 fn topbar_center_widget_cycles_with_wheel_cooldown() {
-    use shell::shell::topbar::{TopBar, CenterWidget};
+    use shell::shell::topbar::{CenterWidget, TopBar};
     use std::time::Duration;
     let mut tb = TopBar::new();
     assert_eq!(tb.center_widget(), CenterWidget::Clock);
@@ -559,7 +583,7 @@ fn shell_root_wires_all_chrome() {
 #[test]
 fn cmd_k_opens_and_escape_closes_search() {
     use shell::shell::Shell;
-    use shell::shell::test_support::{key_press, Mods};
+    use shell::shell::test_support::{Mods, key_press};
     let mut shell = Shell::new_for_test();
     shell.dispatch_key(key_press("K", Mods::CMD));
     assert!(shell.search_visible());
@@ -570,7 +594,7 @@ fn cmd_k_opens_and_escape_closes_search() {
 #[test]
 fn cmd_tab_toggles_overview() {
     use shell::shell::Shell;
-    use shell::shell::test_support::{key_press, Mods};
+    use shell::shell::test_support::{Mods, key_press};
     let mut shell = Shell::new_for_test();
     shell.dispatch_key(key_press("Tab", Mods::CMD));
     assert!(shell.overview_visible());
@@ -679,8 +703,7 @@ fn overview_header_font_size_is_at_least_32px() {
     use shell::shell::state::WorkspaceTree;
     use ui::theme::Theme;
     let tree = WorkspaceTree::bootstrap_default();
-    let (host, _chrome) =
-        shell::shell::build_nirios_overlay_host_with_chrome(&tree);
+    let (host, _chrome) = shell::shell::build_nirios_overlay_host_with_chrome(&tree);
     let theme = Theme::dark();
     let size = host.overview_header_font_size(&theme);
     assert!(

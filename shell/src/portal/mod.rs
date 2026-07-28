@@ -61,8 +61,8 @@ pub use file_picker_spawner::{
 };
 pub use screencast::ScreenCastBackend;
 pub use screencast_pipewire::{
-    ScreenCastStreamProvisioner, ScreenCastStreamProvisionerHandle,
-    MockScreenCastProvisioner, PipewireStreamInfo, ProvisioningError,
+    MockScreenCastProvisioner, PipewireStreamInfo, ProvisioningError, ScreenCastStreamProvisioner,
+    ScreenCastStreamProvisionerHandle,
 };
 
 use std::collections::HashMap;
@@ -72,8 +72,7 @@ use tokio::sync::oneshot;
 
 use crate::shell::state::{
     AppId, CapOverride, Capability, Expiry, FsMode, GRANT_ALWAYS, GRANT_ONCE, GRANT_SESSION,
-    GrantScope, ResourceRef, Verb, Workspace, WorkspaceId, WorkspaceTree,
-    WorkspaceTreeHandle,
+    GrantScope, ResourceRef, Verb, Workspace, WorkspaceId, WorkspaceTree, WorkspaceTreeHandle,
 };
 
 /// Identity of the sandboxed app that issued a portal request.
@@ -256,17 +255,9 @@ impl GrantStoreHandle {
     /// Acquires a read lock for the lookup; returns `false` if the
     /// workspace or the app has no grants (default-deny, so the caller
     /// records the grant).
-    pub fn filesystem_path_granted(
-        &self,
-        caller: &PortalCaller,
-        path: &std::path::Path,
-    ) -> bool {
+    pub fn filesystem_path_granted(&self, caller: &PortalCaller, path: &std::path::Path) -> bool {
         let tree = self.tree.read();
-        let Some(ws) = tree
-            .workspaces
-            .iter()
-            .find(|w| w.id == caller.workspace_id)
-        else {
+        let Some(ws) = tree.workspaces.iter().find(|w| w.id == caller.workspace_id) else {
             return false;
         };
         // Asks the capability model rather than re-deriving prefix
@@ -441,8 +432,7 @@ impl PromptQueueHandle {
     #[cfg(any(test, debug_assertions))]
     pub fn front_for_tests(&self) -> Option<(PortalCaller, Capability)> {
         let q = self.pending.lock().ok()?;
-        q.first()
-            .map(|p| (p.caller.clone(), p.capability.clone()))
+        q.first().map(|p| (p.caller.clone(), p.capability.clone()))
     }
 }
 
@@ -490,9 +480,7 @@ impl PortalContext {
             grants,
             prompts,
             caller_map,
-            file_picker: FilePickerSpawnerHandle::new(Arc::new(
-                NullFilePickerSpawner::cancel(),
-            )),
+            file_picker: FilePickerSpawnerHandle::new(Arc::new(NullFilePickerSpawner::cancel())),
             screencast_provisioner: ScreenCastStreamProvisionerHandle::new(Arc::new(
                 MockScreenCastProvisioner::new_with_node(1, "default"),
             )),
@@ -565,10 +553,7 @@ pub mod flow {
         cap_template: Capability,
     ) -> PromptOutcome {
         // 1. Fast path — `Always`-scoped grant already present.
-        if matches!(
-            ctx.grants.lookup(&caller, kind),
-            Some(GRANT_ALWAYS)
-        ) {
+        if matches!(ctx.grants.lookup(&caller, kind), Some(GRANT_ALWAYS)) {
             return PromptOutcome::AllowAlways;
         }
         // 2. Slow path — enqueue + await user choice.
@@ -631,26 +616,17 @@ pub async fn serve(
     connection: zbus::Connection,
     ctx: PortalContext,
 ) -> Result<ServerHandle, zbus::Error> {
+    use camera::AccessBackend;
     use file_chooser::FileChooserBackend;
     use screencast::ScreenCastBackend;
-    use camera::AccessBackend;
 
     let fc = FileChooserBackend::new(ctx.clone());
     let sc = ScreenCastBackend::new(ctx.clone());
     let ac = AccessBackend::new(ctx.clone());
 
-    connection
-        .object_server()
-        .at(OBJECT_PATH, fc)
-        .await?;
-    connection
-        .object_server()
-        .at(OBJECT_PATH, sc)
-        .await?;
-    connection
-        .object_server()
-        .at(OBJECT_PATH, ac)
-        .await?;
+    connection.object_server().at(OBJECT_PATH, fc).await?;
+    connection.object_server().at(OBJECT_PATH, sc).await?;
+    connection.object_server().at(OBJECT_PATH, ac).await?;
 
     // `request_name` only makes sense on a real bus — p2p test
     // connections have no broker. Try it but downgrade name-acquisition
@@ -726,12 +702,16 @@ mod tests {
         let caller = PortalCaller::new(ws_id, "Editor");
         // Exact match and any descendant are covered.
         assert!(store.filesystem_path_granted(&caller, std::path::Path::new("/home/u/proj")));
-        assert!(store.filesystem_path_granted(&caller, std::path::Path::new("/home/u/proj/main.ts")));
+        assert!(
+            store.filesystem_path_granted(&caller, std::path::Path::new("/home/u/proj/main.ts"))
+        );
         // A sibling path outside the granted subtree is NOT covered.
         assert!(!store.filesystem_path_granted(&caller, std::path::Path::new("/home/u/other.ts")));
         // A different app id has no grants → not covered.
         let other = PortalCaller::new(ws_id, "Files");
-        assert!(!store.filesystem_path_granted(&other, std::path::Path::new("/home/u/proj/main.ts")));
+        assert!(
+            !store.filesystem_path_granted(&other, std::path::Path::new("/home/u/proj/main.ts"))
+        );
     }
 
     #[test]
@@ -739,11 +719,7 @@ mod tests {
         let ws = empty_ws(12);
         let (store, ws_id) = GrantStoreHandle::test_with_workspace(ws);
         let caller = PortalCaller::new(ws_id, "no.such.app");
-        assert!(
-            store
-                .lookup(&caller, CapabilityKind::Camera)
-                .is_none()
-        );
+        assert!(store.lookup(&caller, CapabilityKind::Camera).is_none());
     }
 
     #[test]
@@ -808,9 +784,7 @@ mod tests {
         // `shell::workspace_settings::permissions_pane_rows`).
         let st = chrome.borrow();
         let tree = st.tree();
-        let ws = tree
-            .active_workspace()
-            .expect("active workspace exists");
+        let ws = tree.active_workspace().expect("active workspace exists");
         assert!(
             ws.grants().contains_key("camera-app"),
             "portal-side grant insert must be visible to the shell chrome \
@@ -822,12 +796,7 @@ mod tests {
     fn prompt_queue_auto_allow_resolves_immediately() {
         let q = PromptQueueHandle::new(PromptResolver::AutoAllow);
         let caller = PortalCaller::new(WorkspaceId(1), "app");
-        let rx = q.enqueue(
-            caller,
-            Capability::Screencast {
-                scope: GRANT_ONCE,
-            },
-        );
+        let rx = q.enqueue(caller, Capability::Screencast { scope: GRANT_ONCE });
         // No `.await` needed — AutoAllow fills the oneshot synchronously
         // *before* `enqueue` returns, so the receiver is already ready.
         let outcome = rx.blocking_recv().expect("oneshot");
@@ -840,12 +809,7 @@ mod tests {
     fn prompt_queue_channel_buffers_for_drain() {
         let q = PromptQueueHandle::new(PromptResolver::Channel);
         let caller = PortalCaller::new(WorkspaceId(2), "app");
-        let _rx = q.enqueue(
-            caller.clone(),
-            Capability::Camera {
-                scope: GRANT_ONCE,
-            },
-        );
+        let _rx = q.enqueue(caller.clone(), Capability::Camera { scope: GRANT_ONCE });
         assert_eq!(q.queued_len(), 1);
         let drained = q.drain();
         assert_eq!(drained.len(), 1);
@@ -860,15 +824,16 @@ mod tests {
         // any enqueued request — by asserting the queue stays empty,
         // we prove the fast-path bypassed it.
         let mut ws = empty_ws(21);
-        ws.grant_app("app", &Capability::Camera { scope: GRANT_ALWAYS });
+        ws.grant_app(
+            "app",
+            &Capability::Camera {
+                scope: GRANT_ALWAYS,
+            },
+        );
         let (store, ws_id) = GrantStoreHandle::test_with_workspace(ws);
         let queue = PromptQueueHandle::new(PromptResolver::Channel);
         let caller = PortalCaller::new(ws_id, "app");
-        let ctx = PortalContext::new_with_null_spawners(
-            store,
-            queue.clone(),
-            CallerMap::new(),
-        );
+        let ctx = PortalContext::new_with_null_spawners(store, queue.clone(), CallerMap::new());
 
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -878,9 +843,7 @@ mod tests {
             &ctx,
             caller,
             CapabilityKind::Camera,
-            Capability::Camera {
-                scope: GRANT_ONCE,
-            },
+            Capability::Camera { scope: GRANT_ONCE },
         ));
         assert_eq!(outcome, PromptOutcome::AllowAlways);
         assert_eq!(queue.queued_len(), 0, "fast path must skip enqueue");
@@ -890,15 +853,10 @@ mod tests {
     fn flow_resolve_session_outcome_persists_grant() {
         let ws = empty_ws(22);
         let (store, ws_id) = GrantStoreHandle::test_with_workspace(ws);
-        let queue = PromptQueueHandle::new(PromptResolver::AutoOutcome(
-            PromptOutcome::AllowSession,
-        ));
+        let queue =
+            PromptQueueHandle::new(PromptResolver::AutoOutcome(PromptOutcome::AllowSession));
         let caller = PortalCaller::new(ws_id, "app");
-        let ctx = PortalContext::new_with_null_spawners(
-            store.clone(),
-            queue,
-            CallerMap::new(),
-        );
+        let ctx = PortalContext::new_with_null_spawners(store.clone(), queue, CallerMap::new());
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -907,9 +865,7 @@ mod tests {
             &ctx,
             caller.clone(),
             CapabilityKind::Microphone,
-            Capability::Microphone {
-                scope: GRANT_ONCE,
-            },
+            Capability::Microphone { scope: GRANT_ONCE },
         ));
         assert_eq!(outcome, PromptOutcome::AllowSession);
         // The Session-scoped grant should now be persisted.
@@ -925,11 +881,7 @@ mod tests {
         let (store, ws_id) = GrantStoreHandle::test_with_workspace(ws);
         let queue = PromptQueueHandle::new(PromptResolver::AutoAllow);
         let caller = PortalCaller::new(ws_id, "app");
-        let ctx = PortalContext::new_with_null_spawners(
-            store.clone(),
-            queue,
-            CallerMap::new(),
-        );
+        let ctx = PortalContext::new_with_null_spawners(store.clone(), queue, CallerMap::new());
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -938,15 +890,11 @@ mod tests {
             &ctx,
             caller.clone(),
             CapabilityKind::Camera,
-            Capability::Camera {
-                scope: GRANT_ONCE,
-            },
+            Capability::Camera { scope: GRANT_ONCE },
         ));
         assert_eq!(outcome, PromptOutcome::AllowOnce);
         assert!(
-            store
-                .lookup(&caller, CapabilityKind::Camera)
-                .is_none(),
+            store.lookup(&caller, CapabilityKind::Camera).is_none(),
             "Once outcomes must not persist"
         );
     }
@@ -957,11 +905,7 @@ mod tests {
         let (store, ws_id) = GrantStoreHandle::test_with_workspace(ws);
         let queue = PromptQueueHandle::new(PromptResolver::AutoDeny);
         let caller = PortalCaller::new(ws_id, "app");
-        let ctx = PortalContext::new_with_null_spawners(
-            store.clone(),
-            queue,
-            CallerMap::new(),
-        );
+        let ctx = PortalContext::new_with_null_spawners(store.clone(), queue, CallerMap::new());
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -976,11 +920,7 @@ mod tests {
             },
         ));
         assert_eq!(outcome, PromptOutcome::Deny);
-        assert!(
-            store
-                .lookup(&caller, CapabilityKind::Network)
-                .is_none()
-        );
+        assert!(store.lookup(&caller, CapabilityKind::Network).is_none());
     }
 
     #[test]

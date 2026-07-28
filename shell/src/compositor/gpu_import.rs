@@ -147,10 +147,7 @@ impl GpuImporter {
             .into_iter()
             .find(|d| device_matches(d, want))
             .ok_or_else(|| {
-                GpuImportError::Unavailable(format!(
-                    "no EGL device is bound to {}",
-                    node.display()
-                ))
+                GpuImportError::Unavailable(format!("no EGL device is bound to {}", node.display()))
             })?;
 
         // SAFETY: `device` is a live `EGLDeviceEXT` we just enumerated,

@@ -379,8 +379,7 @@ fn exec_real_command(command: &[String]) -> ! {
     };
 
     // Build the NULL-terminated argv pointer array.
-    let mut argv_ptrs: Vec<*const libc::c_char> =
-        cargs.iter().map(|c| c.as_ptr()).collect();
+    let mut argv_ptrs: Vec<*const libc::c_char> = cargs.iter().map(|c| c.as_ptr()).collect();
     argv_ptrs.push(std::ptr::null());
 
     // SAFETY: `cprogram` and `cargs` outlive the call; `argv_ptrs` is
@@ -490,7 +489,10 @@ mod tests {
         assert_eq!(plan.len(), 2);
 
         // ro rule: read access set, must NOT include WriteFile.
-        let ro_rule = plan.iter().find(|r| r.path == PathBuf::from("/usr")).unwrap();
+        let ro_rule = plan
+            .iter()
+            .find(|r| r.path == PathBuf::from("/usr"))
+            .unwrap();
         assert_eq!(ro_rule.access, AccessFs::from_read(abi));
         assert!(
             !ro_rule.access.contains(AccessFs::WriteFile),
@@ -661,15 +663,9 @@ mod tests {
             unsafe { libc::close(rfd) };
 
             // (b) Creating/writing a NEW file in the ro dir must fail.
-            let write_path =
-                CString::new(ro_dir.join("nope.txt").as_os_str().as_bytes()).unwrap();
-            let wfd = unsafe {
-                libc::open(
-                    write_path.as_ptr(),
-                    libc::O_WRONLY | libc::O_CREAT,
-                    0o600,
-                )
-            };
+            let write_path = CString::new(ro_dir.join("nope.txt").as_os_str().as_bytes()).unwrap();
+            let wfd =
+                unsafe { libc::open(write_path.as_ptr(), libc::O_WRONLY | libc::O_CREAT, 0o600) };
             if wfd >= 0 {
                 unsafe { libc::close(wfd) };
                 unsafe { libc::_exit(11) }; // write should have been denied!

@@ -418,8 +418,7 @@ pub fn spawn_signal_emitter(
         loop {
             interval.tick().await;
             for (id, reason) in bridge.drain_closed_events() {
-                let _ =
-                    NotificationService::notification_closed(&ctxt, id, reason.code()).await;
+                let _ = NotificationService::notification_closed(&ctxt, id, reason.code()).await;
             }
             for (id, key) in bridge.drain_action_events() {
                 let _ = NotificationService::action_invoked(&ctxt, id, key).await;

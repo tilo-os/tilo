@@ -470,7 +470,10 @@ mod tests {
         let mut s = SessionManager::new(cfg_s(Some(300), None, Some(900)), t0);
 
         // Blank fires first, no suspend yet.
-        assert_eq!(s.tick(t0 + Duration::from_secs(300)), vec![SessionTransition::Blanked]);
+        assert_eq!(
+            s.tick(t0 + Duration::from_secs(300)),
+            vec![SessionTransition::Blanked]
+        );
         assert!(!s.is_suspend_pending());
 
         // Just under the suspend threshold: nothing new.
@@ -478,7 +481,10 @@ mod tests {
         assert!(!s.is_suspend_pending());
 
         // At the threshold: suspend once.
-        assert_eq!(s.tick(t0 + Duration::from_secs(900)), vec![SessionTransition::Suspend]);
+        assert_eq!(
+            s.tick(t0 + Duration::from_secs(900)),
+            vec![SessionTransition::Suspend]
+        );
         assert!(s.is_suspend_pending());
 
         // Latched: subsequent ticks emit nothing.
@@ -499,14 +505,20 @@ mod tests {
     fn activity_after_suspend_rearms_for_the_next_episode() {
         let t0 = Instant::now();
         let mut s = SessionManager::new(cfg_s(None, None, Some(600)), t0);
-        assert_eq!(s.tick(t0 + Duration::from_secs(600)), vec![SessionTransition::Suspend]);
+        assert_eq!(
+            s.tick(t0 + Duration::from_secs(600)),
+            vec![SessionTransition::Suspend]
+        );
         assert!(s.is_suspend_pending());
         // Resume: input arrives, clears the latch and resets the timer.
         let _ = s.note_activity(t0 + Duration::from_secs(605));
         assert!(!s.is_suspend_pending());
         // Idle again for the full period → suspends afresh.
         assert!(s.tick(t0 + Duration::from_secs(1200)).is_empty());
-        assert_eq!(s.tick(t0 + Duration::from_secs(1205)), vec![SessionTransition::Suspend]);
+        assert_eq!(
+            s.tick(t0 + Duration::from_secs(1205)),
+            vec![SessionTransition::Suspend]
+        );
     }
 
     #[test]
@@ -517,12 +529,18 @@ mod tests {
         // without waiting for fresh activity.
         let t0 = Instant::now();
         let mut s = SessionManager::new(cfg_s(None, None, Some(600)), t0);
-        assert_eq!(s.tick(t0 + Duration::from_secs(600)), vec![SessionTransition::Suspend]);
+        assert_eq!(
+            s.tick(t0 + Duration::from_secs(600)),
+            vec![SessionTransition::Suspend]
+        );
         // Caller decided not to suspend (inhibited).
         s.cancel_suspend();
         assert!(!s.is_suspend_pending());
         // Still idle → re-emits immediately (timer was NOT reset).
-        assert_eq!(s.tick(t0 + Duration::from_secs(601)), vec![SessionTransition::Suspend]);
+        assert_eq!(
+            s.tick(t0 + Duration::from_secs(601)),
+            vec![SessionTransition::Suspend]
+        );
     }
 
     // ---- manual lock / unlock ----------------------------------------

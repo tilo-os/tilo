@@ -26,6 +26,9 @@
 
 use std::sync::Arc;
 
+use smithay::backend::allocator::Fourcc;
+use smithay::backend::allocator::dmabuf::Dmabuf;
+use smithay::backend::allocator::{Buffer, Format, Modifier};
 use smithay::input::pointer::{ButtonEvent, MotionEvent};
 use smithay::input::{Seat, SeatHandler, SeatState};
 use smithay::reexports::calloop::LoopHandle;
@@ -36,9 +39,6 @@ use smithay::reexports::wayland_server::protocol::wl_seat::WlSeat;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::reexports::wayland_server::{Client, DisplayHandle};
 use smithay::utils::Serial;
-use smithay::backend::allocator::Fourcc;
-use smithay::backend::allocator::dmabuf::Dmabuf;
-use smithay::backend::allocator::{Buffer, Format, Modifier};
 use smithay::wayland::buffer::BufferHandler;
 use smithay::wayland::compositor::{
     self as wl_compositor, CompositorClientState, CompositorHandler, CompositorState,
@@ -50,16 +50,16 @@ use smithay::wayland::fractional_scale::{
     self, FractionalScaleHandler, FractionalScaleManagerState,
 };
 use smithay::wayland::output::{OutputHandler, OutputManagerState};
-use smithay::wayland::viewporter::ViewporterState;
 use smithay::wayland::pointer_gestures::PointerGesturesState;
+use smithay::wayland::session_lock::{
+    LockSurface, SessionLockHandler, SessionLockManagerState, SessionLocker,
+};
 use smithay::wayland::shell::xdg::{
     PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState,
     XdgToplevelSurfaceData,
 };
-use smithay::wayland::session_lock::{
-    LockSurface, SessionLockHandler, SessionLockManagerState, SessionLocker,
-};
 use smithay::wayland::shm::{ShmHandler, ShmState};
+use smithay::wayland::viewporter::ViewporterState;
 use smithay::wayland::virtual_keyboard::VirtualKeyboardManagerState;
 use smithay::{
     delegate_compositor, delegate_dmabuf, delegate_fractional_scale, delegate_output,
@@ -73,9 +73,9 @@ use crate::compositor::render_node::{ProbeError, RenderNode};
 use crate::compositor::surface_readback::SurfaceTracker;
 use crate::compositor::tab_binding;
 use crate::network::protocol::{PeerId as MsgPeerId, SurfaceId};
-use crate::wayland::color_management::ColorManagerState;
 use crate::network::streaming::{InputEvent, RemoteInputSink, ShareRegistry};
 use crate::shell::state::WorkspaceTree;
+use crate::wayland::color_management::ColorManagerState;
 use smithay::backend::input::KeyState;
 use std::collections::HashMap;
 
@@ -98,7 +98,11 @@ fn load_display_scale() -> f64 {
     let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) else {
         return 1.0;
     };
-    match json.get("display").and_then(|d| d.get("scale")).and_then(|s| s.as_f64()) {
+    match json
+        .get("display")
+        .and_then(|d| d.get("scale"))
+        .and_then(|s| s.as_f64())
+    {
         // Clamp to the range the Settings control offers (100 %–200 %),
         // with a small margin, so an out-of-band value can't wedge the UI.
         Some(scale) if (0.5..=3.0).contains(&scale) => scale,
@@ -380,8 +384,7 @@ impl State {
         let xdg_shell_state = XdgShellState::new::<Self>(&display_handle);
         let shm_state = ShmState::new::<Self>(&display_handle, vec![]);
         let mut seat_state = SeatState::new();
-        let output_manager_state =
-            OutputManagerState::new_with_xdg_output::<Self>(&display_handle);
+        let output_manager_state = OutputManagerState::new_with_xdg_output::<Self>(&display_handle);
 
         // `zwp_linux_dmabuf_v1`. Two things have to be right for a GPU
         // client to boot against us, and only one of them is the format
@@ -417,39 +420,41 @@ impl State {
         let mut dmabuf_state = DmabufState::new();
         let dmabuf_device = crate::compositor::render_node::probe();
         let dmabuf_global = match &dmabuf_device {
-            Ok(node) => match DmabufFeedbackBuilder::new(node.dev, dmabuf_formats.clone()).build() {
-                Ok(feedback) => {
-                    // Publish the decision for the import side: the
-                    // buffers clients hand us were allocated on this
-                    // GPU, so that is the GPU that must read them back.
-                    crate::compositor::render_node::set_advertised(node.path.clone());
-                    tracing::info!(
-                        target: "shell::compositor::dmabuf",
-                        device = %node.path.display(),
-                        driver = node.driver.as_deref().unwrap_or("<unknown>"),
-                        dev = node.dev,
-                        formats = dmabuf_formats.len(),
-                        "advertising zwp_linux_dmabuf_v1 with feedback"
-                    );
-                    Some(dmabuf_state.create_global_with_default_feedback::<Self>(
-                        &display_handle,
-                        &feedback,
-                    ))
+            Ok(node) => {
+                match DmabufFeedbackBuilder::new(node.dev, dmabuf_formats.clone()).build() {
+                    Ok(feedback) => {
+                        // Publish the decision for the import side: the
+                        // buffers clients hand us were allocated on this
+                        // GPU, so that is the GPU that must read them back.
+                        crate::compositor::render_node::set_advertised(node.path.clone());
+                        tracing::info!(
+                            target: "shell::compositor::dmabuf",
+                            device = %node.path.display(),
+                            driver = node.driver.as_deref().unwrap_or("<unknown>"),
+                            dev = node.dev,
+                            formats = dmabuf_formats.len(),
+                            "advertising zwp_linux_dmabuf_v1 with feedback"
+                        );
+                        Some(dmabuf_state.create_global_with_default_feedback::<Self>(
+                            &display_handle,
+                            &feedback,
+                        ))
+                    }
+                    Err(e) => {
+                        // The format table lives in a sealed memfd; if we
+                        // can't create it we cannot send correct feedback,
+                        // and a feedback-less global is the broken state
+                        // this whole block exists to avoid.
+                        tracing::error!(
+                            target: "shell::compositor::dmabuf",
+                            error = %e,
+                            "could not build dmabuf feedback; not advertising dmabuf — \
+                             GPU clients will fall back to wl_shm"
+                        );
+                        None
+                    }
                 }
-                Err(e) => {
-                    // The format table lives in a sealed memfd; if we
-                    // can't create it we cannot send correct feedback,
-                    // and a feedback-less global is the broken state
-                    // this whole block exists to avoid.
-                    tracing::error!(
-                        target: "shell::compositor::dmabuf",
-                        error = %e,
-                        "could not build dmabuf feedback; not advertising dmabuf — \
-                         GPU clients will fall back to wl_shm"
-                    );
-                    None
-                }
-            },
+            }
             Err(e) => {
                 tracing::warn!(
                     target: "shell::compositor::dmabuf",
@@ -569,7 +574,9 @@ impl State {
     fn capture_foreign_surface(&mut self, surface: &WlSurface, surface_id: u64) {
         use crate::compositor::foreign::{CaptureOutcome, store};
         wl_compositor::with_states(surface, |states| {
-            let mut attrs = states.cached_state.get::<wl_compositor::SurfaceAttributes>();
+            let mut attrs = states
+                .cached_state
+                .get::<wl_compositor::SurfaceAttributes>();
             match &attrs.current().buffer {
                 Some(wl_compositor::BufferAssignment::NewBuffer(buffer)) => {
                     if let CaptureOutcome::Failed(reason) =
@@ -828,16 +835,10 @@ impl RemoteInputSink for State {
                     // is the value passed straight through. See the
                     // wayland.rs sibling's `handle_input` for the
                     // production shape we mirror here.
-                    let _: Option<()> = keyboard.input(
-                        self,
-                        keysym.into(),
-                        key_state,
-                        serial,
-                        time,
-                        |_, _, _| {
+                    let _: Option<()> =
+                        keyboard.input(self, keysym.into(), key_state, serial, time, |_, _, _| {
                             smithay::input::keyboard::FilterResult::<()>::Forward
-                        },
-                    );
+                        });
                 }
             }
         }
@@ -937,7 +938,9 @@ impl CompositorHandler for State {
         // freshly-attached `wl_buffer`; `Removed` means the client
         // detached and we should drop the tracker slot.
         wl_compositor::with_states(surface, |states| {
-            let mut attrs = states.cached_state.get::<wl_compositor::SurfaceAttributes>();
+            let mut attrs = states
+                .cached_state
+                .get::<wl_compositor::SurfaceAttributes>();
             match &attrs.current().buffer {
                 Some(wl_compositor::BufferAssignment::NewBuffer(buffer)) => {
                     // Route through path detection — DMABUF buffers
@@ -945,11 +948,14 @@ impl CompositorHandler for State {
                     // capture-path counter; encoder pulls the fd from
                     // the wl_buffer). SHM buffers fall through to the
                     // readback + swizzle path.
-                    let (path, result) =
-                        self.surface_tracker.on_commit_with_path_detection(surface_id, buffer);
+                    let (path, result) = self
+                        .surface_tracker
+                        .on_commit_with_path_detection(surface_id, buffer);
                     match result {
                         Ok(_) => {}
-                        Err(crate::compositor::surface_readback::ReadbackError::DmaBufUnsupported) => {
+                        Err(
+                            crate::compositor::surface_readback::ReadbackError::DmaBufUnsupported,
+                        ) => {
                             // The tentative path is `DmabufDirect`.
                             // Pull the Dmabuf off the wl_buffer via
                             // smithay's dmabuf-role lookup and stash
@@ -969,10 +975,8 @@ impl CompositorHandler for State {
                             // buffer at all").
                             match smithay::wayland::dmabuf::get_dmabuf(buffer) {
                                 Ok(dmabuf) => {
-                                    self.surface_tracker.note_dmabuf_committed(
-                                        surface_id,
-                                        dmabuf.clone(),
-                                    );
+                                    self.surface_tracker
+                                        .note_dmabuf_committed(surface_id, dmabuf.clone());
                                 }
                                 Err(_) => {
                                     tracing::warn!(
@@ -1127,11 +1131,8 @@ impl XdgShellHandler for State {
         // pointer events can be delivered to it once it is focused. The
         // matching chrome-side tab is spliced in by
         // `client_input::sync_foreign_tabs` on the next run-loop tick.
-        self.client_input.register_toplevel(
-            surface_id,
-            surface.wl_surface().clone(),
-            app_id,
-        );
+        self.client_input
+            .register_toplevel(surface_id, surface.wl_surface().clone(), app_id);
 
         // Send a default configure so the client can map. Phase 4 will pick a
         // real size/position from the cluster layout; Phase 2 just needs the
@@ -1151,10 +1152,7 @@ impl XdgShellHandler for State {
         {
             self.fullscreen_group = None;
         }
-        let _ = tab_binding::close_tab_for_destroyed_surface(
-            &mut self.workspace_tree,
-            surface_id,
-        );
+        let _ = tab_binding::close_tab_for_destroyed_surface(&mut self.workspace_tree, surface_id);
         // C-7 fix: drop the tracker's per-surface buffer slot. The
         // commit path's `BufferAssignment::Removed` branch already
         // forgets the slot when a client `attach(NULL)`s before
@@ -1229,14 +1227,9 @@ impl XdgShellHandler for State {
     /// combined scene across all outputs, so fullscreen always targets the
     /// single presentation surface (see the multi-output note in
     /// `plan/compositor.md`).
-    fn fullscreen_request(
-        &mut self,
-        surface: ToplevelSurface,
-        _wl_output: Option<WlOutput>,
-    ) {
+    fn fullscreen_request(&mut self, surface: ToplevelSurface, _wl_output: Option<WlOutput>) {
         let surface_id = surface.wl_surface().id().protocol_id() as u64;
-        self.fullscreen_group =
-            tab_binding::group_id_for_surface(&self.workspace_tree, surface_id);
+        self.fullscreen_group = tab_binding::group_id_for_surface(&self.workspace_tree, surface_id);
         let (w, h) = self.output_size;
         surface.with_pending_state(|state| {
             state.states.set(
@@ -1395,10 +1388,8 @@ mod tick_hook_tests {
     use smithay::reexports::wayland_server::Display;
 
     fn make_state() -> State {
-        let event_loop: EventLoop<'static, State> =
-            EventLoop::try_new().expect("calloop");
-        let display: Display<State> =
-            Display::new().expect("display");
+        let event_loop: EventLoop<'static, State> = EventLoop::try_new().expect("calloop");
+        let display: Display<State> = Display::new().expect("display");
         State::new(event_loop.handle(), display.handle())
     }
 
@@ -1437,8 +1428,7 @@ mod tick_hook_tests {
         const SURFACE: SurfaceId = 42;
 
         let session = Arc::new(
-            SharedFlatpakSession::start(HOST, "app", SURFACE, W, H, cfg())
-                .expect("session"),
+            SharedFlatpakSession::start(HOST, "app", SURFACE, W, H, cfg()).expect("session"),
         );
         session.add_viewer(VIEWER, false);
 
@@ -1501,8 +1491,7 @@ mod tick_hook_tests {
         const SURFACE: SurfaceId = 55;
 
         let session = Arc::new(
-            SharedFlatpakSession::start(HOST, "app", SURFACE, 32, 32, cfg())
-                .expect("session"),
+            SharedFlatpakSession::start(HOST, "app", SURFACE, 32, 32, cfg()).expect("session"),
         );
         let mut state = make_state();
         state.register_share_session(session);
@@ -1517,8 +1506,7 @@ mod tick_hook_tests {
         const SURFACE: SurfaceId = 77;
 
         let session = Arc::new(
-            SharedFlatpakSession::start(HOST, "app", SURFACE, 32, 32, cfg())
-                .expect("session"),
+            SharedFlatpakSession::start(HOST, "app", SURFACE, 32, 32, cfg()).expect("session"),
         );
         let mut state = make_state();
         state.register_share_session(session);
@@ -1548,7 +1536,10 @@ mod tick_hook_tests {
         h.lock_requested = true;
         h.unlock_requested = true;
         assert!(h.take_lock_requested());
-        assert!(!h.take_lock_requested(), "lock edge is consumed exactly once");
+        assert!(
+            !h.take_lock_requested(),
+            "lock edge is consumed exactly once"
+        );
         assert!(h.take_unlock_requested());
         assert!(!h.take_unlock_requested(), "unlock edge is consumed once");
     }

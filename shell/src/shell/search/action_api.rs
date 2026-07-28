@@ -57,7 +57,10 @@ pub struct ResourceRef {
 
 impl ResourceRef {
     pub fn new(provider: impl Into<String>, id: impl Into<String>) -> Self {
-        Self { provider: provider.into(), id: id.into() }
+        Self {
+            provider: provider.into(),
+            id: id.into(),
+        }
     }
 }
 
@@ -157,21 +160,11 @@ impl ActionCatalog {
     ) -> Self {
         // Empty `wanted_kinds` ⇒ "any kind"; the action API never filters
         // by chip, it surveys the whole exported surface.
-        let results = registry.query(
-            query,
-            scope,
-            active_provider_id,
-            &[],
-            chrome,
-            doc,
-            doc_root,
-        );
+        let results = registry.query(query, scope, active_provider_id, &[], chrome, doc, doc_root);
         let visible = results
             .iter()
             .enumerate()
-            .filter(|(_, r)| {
-                visibility.can_see(&ResourceRef::new(&r.provider_id, &r.id), &r.kind)
-            })
+            .filter(|(_, r)| visibility.can_see(&ResourceRef::new(&r.provider_id, &r.id), &r.kind))
             .map(|(i, _)| i)
             .collect();
         Self { results, visible }
@@ -303,7 +296,10 @@ mod tests {
             &AllVisible,
         );
         let actions = catalog.enumerate();
-        assert!(!actions.is_empty(), "enumeration surfaces the exported actions");
+        assert!(
+            !actions.is_empty(),
+            "enumeration surfaces the exported actions"
+        );
         let target = ResourceRef::new("actions", "settings.open");
         let listed = actions
             .iter()

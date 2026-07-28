@@ -55,10 +55,8 @@ impl NiriosBehaviour {
             gossipsub::MessageAuthenticity::Signed(local_key.clone()),
             cfg,
         )?;
-        let mdns = mdns::tokio::Behaviour::new(
-            mdns::Config::default(),
-            local_key.public().to_peer_id(),
-        )?;
+        let mdns =
+            mdns::tokio::Behaviour::new(mdns::Config::default(), local_key.public().to_peer_id())?;
         Ok(Self { gossipsub, mdns })
     }
 }
@@ -131,9 +129,7 @@ pub fn load_or_create_keypair(
         let _ = std::fs::create_dir_all(parent);
     }
     let kp = libp2p::identity::Keypair::generate_ed25519();
-    let bytes = kp
-        .to_protobuf_encoding()
-        .map_err(std::io::Error::other)?;
+    let bytes = kp.to_protobuf_encoding().map_err(std::io::Error::other)?;
     std::fs::write(path, bytes)?;
     // C-8 (security): the ed25519 private key impersonates this peer
     // in the libp2p mesh. Default `std::fs::write` honours the

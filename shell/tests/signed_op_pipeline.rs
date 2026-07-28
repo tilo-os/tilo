@@ -18,12 +18,12 @@ use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime};
 
-use ed25519_dalek::SigningKey;
 use collab_types::{
-    ArtifactId, ArtifactKind, Attestation, AttestationId, ChannelId, ChannelState, Ed25519PublicKey,
-    OpClass, Role, RoleAttestation, Signature, SignedOp, ValidationError, generate_keypair,
-    sign_event, sign_op,
+    ArtifactId, ArtifactKind, Attestation, AttestationId, ChannelId, ChannelState,
+    Ed25519PublicKey, OpClass, Role, RoleAttestation, Signature, SignedOp, ValidationError,
+    generate_keypair, sign_event, sign_op,
 };
+use ed25519_dalek::SigningKey;
 use shell::shell::collab_broker;
 use ui::collaboration::{CollabEvent, CollabRequest};
 
@@ -36,9 +36,7 @@ fn write_frame<T: serde::Serialize>(stream: &mut UnixStream, v: &T) {
 }
 
 fn read_event(stream: &mut UnixStream, timeout: Duration) -> Option<CollabEvent> {
-    stream
-        .set_read_timeout(Some(timeout))
-        .expect("set timeout");
+    stream.set_read_timeout(Some(timeout)).expect("set timeout");
     let mut len_buf = [0u8; 4];
     stream.read_exact(&mut len_buf).ok()?;
     let len = u32::from_le_bytes(len_buf) as usize;

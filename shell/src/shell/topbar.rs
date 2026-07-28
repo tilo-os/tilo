@@ -203,8 +203,11 @@ impl TopBar {
         if !allowed {
             return;
         }
-        const VARIANTS: [CenterWidget; 3] =
-            [CenterWidget::Clock, CenterWidget::SystemMonitor, CenterWidget::Calendar];
+        const VARIANTS: [CenterWidget; 3] = [
+            CenterWidget::Clock,
+            CenterWidget::SystemMonitor,
+            CenterWidget::Calendar,
+        ];
         let cur = VARIANTS.iter().position(|v| *v == self.center).unwrap_or(0) as i32;
         let len = VARIANTS.len() as i32;
         // Euclidean rem so negative `cur + step` wraps to the positive side.

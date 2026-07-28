@@ -31,10 +31,7 @@ pub enum TileContent {
     /// A static placeholder rendered as a card — used both for "coming
     /// soon" apps (e.g. the browser) and as a fallback when an
     /// `AppWidget::new`/`spawn_default` call fails (spec §9a).
-    Stub {
-        kind: UiAppKind,
-        label: String,
-    },
+    Stub { kind: UiAppKind, label: String },
 }
 
 impl TileContent {

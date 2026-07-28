@@ -1,6 +1,6 @@
-use std::path::{Path, PathBuf};
-use std::io::Write;
 use crate::shell::state::WorkspaceTree;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 
 pub fn state_json_path() -> PathBuf {
     dirs::config_dir()
@@ -33,13 +33,16 @@ pub fn fs_capability_export_path() -> PathBuf {
 /// out": persisting a session grant would quietly promote it to a
 /// permanent one, which is the worse failure of the two.
 pub fn save_tree_to(tree: &WorkspaceTree, path: &Path) -> std::io::Result<()> {
-    if let Some(parent) = path.parent() { std::fs::create_dir_all(parent)?; }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
     let tmp = path.with_extension("json.tmp");
     let mut durable = tree.clone();
     for ws in &mut durable.workspaces {
         ws.capabilities.retain(|c| c.persists_across_restart());
     }
-    let json = serde_json::to_string_pretty(&durable).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    let json = serde_json::to_string_pretty(&durable)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
     {
         let mut f = std::fs::File::create(&tmp)?;
         f.write_all(json.as_bytes())?;
