@@ -2,8 +2,9 @@
 #
 # Scans a fixed library set at startup — `~/Books`, `~/Documents`,
 # `~/Downloads` and `/var/workspace[/Books]`, two levels deep
-# (override `EBOOK_LIBRARY_DIR`). Read-only: annotations live in the
-# CRDT, never on disk.
+# (override `EBOOK_LIBRARY_DIR`). The library itself is read-only; reading
+# progress and annotations are written to this package's own state
+# document under `~/.local/share/dev.qos.ebook`.
 #
 # Pack and install:
 #
@@ -75,6 +76,9 @@ read = [
     "/var/workspace",
 ]
 write = [
+    # This app's own state document (`app-state`); the path is derived
+    # from the package id, so it is the same one the store computes.
+    "~/.local/share/dev.qos.ebook",
     "~/.cache/mesa_shader_cache",
     "~/.cache/mesa_shader_cache_db",
     "~/.cache/radv_builtin_shaders",

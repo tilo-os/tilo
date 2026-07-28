@@ -1,11 +1,16 @@
-//! On-disk persistence for the address book.
+//! Reading the address book an older release of this app left on disk.
 //!
-//! The working [`ContactStore`](crate::model::ContactStore) is mirrored into
-//! an Automerge document (see [`crate::doc`]); its raw `save()` bytes are what
-//! we persist. Storing the Automerge save — not a lossy vCard projection —
-//! keeps everything a contact carries intact across restarts: its stable id,
-//! the favorite flag, and every per-field type label. It also means a future
-//! peer can merge directly against the file.
+//! This used to be where Contacts persisted. It saved by replaying the
+//! working [`ContactStore`](crate::model::ContactStore) into a **brand-new**
+//! `AutoCommit` on every write, which threw away the document's history and
+//! actor identity — so despite storing Automerge bytes, the file could never
+//! merge with a peer that had diverged, and each save produced a document
+//! unrelated to the last. It was using Automerge as a serialisation format.
+//!
+//! The address book now lives in the shared `ui::State` document, which
+//! `ui::persist` saves whole. What is left here is the reader for the old
+//! file, so `ui::persist::open_migrating` can import an existing user's book
+//! exactly once.
 //!
 //! Location (first match wins):
 //!   * `$QOS_CONTACTS_DATA` — explicit override.
@@ -61,8 +66,12 @@ pub fn load(path: &Path) -> Vec<Contact> {
     ContactsDoc::list_contacts(&doc)
 }
 
-/// Atomically persist `contacts` to `path` (temp file + fsync + rename) so a
-/// crash mid-write can't leave a half-written or corrupt book behind.
+/// Write a file in the shape the old release produced.
+///
+/// Test-only, and deliberately still wrong in the way the old code was wrong
+/// — a fresh `AutoCommit` per call — because its only job now is to produce
+/// the artefact the migration has to be able to read.
+#[cfg(test)]
 pub fn save(path: &Path, contacts: &[Contact]) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -95,8 +104,10 @@ mod tests {
         ))
     }
 
+    /// The migration reader must recover every field an old file carried,
+    /// or upgrading would silently drop half of each contact.
     #[test]
-    fn save_then_load_round_trips_every_field() {
+    fn the_legacy_reader_recovers_every_field() {
         let dir = scratch_dir();
         let path = dir.join("addressbook.automerge");
         let book = sample_contacts();
