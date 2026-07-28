@@ -1176,10 +1176,15 @@ pub fn run() -> ! {
     // entered into it. `FrameClock` replaces both halves: the interval
     // comes from the backend's display, and the park is the remainder of
     // the interval rather than a fresh one. See `compositor::pacing`.
-    let mut frame_clock = match backend.refresh_interval() {
+    // `QOS_REFRESH_HZ` overrides the display's rate. Diagnostic only —
+    // it is what makes "does the loop hold a 144 Hz cadence" measurable
+    // on a machine with no 144 Hz panel attached.
+    let mut frame_clock = match pacing::refresh_override_from_env().or_else(|| {
+        backend.refresh_interval()
+    }) {
         Some(interval) => {
             eprintln!(
-                "nirios compositor: pacing to {:.3} Hz from the display",
+                "nirios compositor: pacing to {:.3} Hz",
                 1.0 / interval.as_secs_f64()
             );
             pacing::FrameClock::new(interval, Instant::now())

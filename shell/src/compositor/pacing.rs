@@ -107,6 +107,54 @@ pub fn interval_from_mode_timing(clock_khz: u32, htotal: u32, vtotal: u32) -> Op
     interval_from_millihertz(u32::try_from(mhz).ok()?)
 }
 
+/// Env var forcing a refresh rate, in hertz, regardless of what the
+/// backend reports.
+///
+/// Exists because the rate the compositor paces to is otherwise only
+/// observable on hardware: the headless backend has no display, a nested
+/// parent may publish no mode, and a DRM run needs a free TTY. Without an
+/// override, "does the loop actually hold a 144 Hz cadence" can only be
+/// asserted, never measured. With it, `QOS_REFRESH_HZ=144` plus the frame
+/// trace answers the question on any machine.
+///
+/// Values outside the supported range are ignored (with a warning) rather
+/// than obeyed — this is a diagnostic knob, not a way to wedge the
+/// compositor.
+pub const REFRESH_HZ_ENV: &str = "QOS_REFRESH_HZ";
+
+/// Parse [`REFRESH_HZ_ENV`]. Pure so the acceptance rules are testable
+/// without touching the process environment. Accepts fractional rates so
+/// a 59.94 Hz panel can be simulated.
+pub fn parse_refresh_override(raw: Option<&str>) -> Option<Duration> {
+    let hz: f64 = raw?.trim().parse().ok()?;
+    if !hz.is_finite() || hz <= 0.0 {
+        return None;
+    }
+    let mhz = (hz * 1000.0).round();
+    if mhz < 0.0 || mhz > u32::MAX as f64 {
+        return None;
+    }
+    interval_from_millihertz(mhz as u32)
+}
+
+/// [`parse_refresh_override`] against the process environment, warning
+/// when a value was set but rejected — a silently-ignored override would
+/// make a bench run report the fallback rate as if it were the requested
+/// one.
+pub fn refresh_override_from_env() -> Option<Duration> {
+    let raw = std::env::var(REFRESH_HZ_ENV).ok()?;
+    match parse_refresh_override(Some(&raw)) {
+        Some(d) => Some(d),
+        None => {
+            eprintln!(
+                "nirios compositor: ignoring {REFRESH_HZ_ENV}={raw:?} \
+                 (supported range is {MIN_REFRESH_HZ}..={MAX_REFRESH_HZ} Hz)"
+            );
+            None
+        }
+    }
+}
+
 /// Deadline series for presentation.
 #[derive(Debug, Clone)]
 pub struct FrameClock {
@@ -423,6 +471,28 @@ mod tests {
             Duration::from_nanos(1_000_000_000 / MIN_REFRESH_HZ as u64),
             "an absurd interval must clamp to the slowest supported rate"
         );
+    }
+
+    #[test]
+    fn refresh_override_accepts_real_rates_and_rejects_the_rest() {
+        assert_eq!(
+            parse_refresh_override(Some("144")),
+            Some(Duration::from_nanos(6_944_444))
+        );
+        assert_eq!(
+            parse_refresh_override(Some("59.94")),
+            Some(Duration::from_nanos(16_683_350)),
+            "fractional rates must be accepted so a 59.94 Hz panel can be simulated"
+        );
+        assert_eq!(parse_refresh_override(Some(" 30 ")), interval_from_hz(30));
+        // Rejected: the override must never be able to wedge the loop.
+        for bad in [None, Some(""), Some("0"), Some("-60"), Some("2000"), Some("nan"), Some("abc")] {
+            assert_eq!(
+                parse_refresh_override(bad),
+                None,
+                "{bad:?} must be rejected, not obeyed"
+            );
+        }
     }
 
     #[test]
