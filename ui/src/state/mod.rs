@@ -339,6 +339,53 @@ impl State {
         Some(entry)
     }
 
+    /// Undo on behalf of `author`.
+    ///
+    /// This is the entry point every interactive Ctrl+Z takes, and the reason
+    /// it exists rather than callers picking between [`Self::undo`] and
+    /// [`Self::undo_for_author`] themselves: with an author, undo must skip
+    /// past other people's actions, and a call site that forgets is a session
+    /// in which one collaborator silently reverts another's work. `None` — an
+    /// app running with no identity at all — keeps the plain LIFO behaviour.
+    pub fn undo_as(
+        &mut self,
+        author: Option<&UserId>,
+        current_focused_idx: Option<usize>,
+        current_metadata: Option<String>,
+    ) -> Option<UndoEntry> {
+        match author {
+            Some(a) => self.undo_for_author(a, current_focused_idx, current_metadata),
+            None => self.undo(current_focused_idx, current_metadata),
+        }
+    }
+
+    /// Redo on behalf of `author` — the mirror of [`Self::undo_as`], so a
+    /// redo cannot re-apply an action the local user never undid.
+    pub fn redo_as(
+        &mut self,
+        author: Option<&UserId>,
+        current_focused_idx: Option<usize>,
+        current_metadata: Option<String>,
+    ) -> Option<UndoEntry> {
+        let Some(a) = author else {
+            return self.redo(current_focused_idx, current_metadata);
+        };
+        let idx = self
+            .redo_stack
+            .iter()
+            .rposition(|e| matches!(&e.author, Some(x) if x == a))?;
+        let entry = self.redo_stack.remove(idx);
+        let (inv_before, inv_after) = self.apply_inverse(&entry);
+        self.undo_stack.push(UndoEntry {
+            before: inv_before,
+            after: inv_after,
+            focused_node_idx: current_focused_idx,
+            widget_metadata: current_metadata,
+            author: entry.author.clone(),
+        });
+        Some(entry)
+    }
+
     /// Redo the most recently undone action by inverting the inverse change
     /// (re-applying the original action's delta as a new forward change).
     /// `current_focused_idx` / `current_metadata` are captured on the undo
@@ -629,6 +676,85 @@ mod tests {
             state.doc.get(&ROOT, "b").unwrap().is_some(),
             "bob's change survives in the live doc, not just on the stack"
         );
+    }
+
+    /// `undo_as` is the entry point `App`'s Ctrl+Z takes. With an author it
+    /// must behave like `undo_for_author` — walk past a collaborator's action
+    /// to the local user's own — not like plain LIFO undo. Before the author
+    /// was threaded through, this scenario reverted Bob's edit when Alice hit
+    /// Ctrl+Z.
+    #[test]
+    fn undo_as_an_author_skips_a_collaborators_action() {
+        let mut state = State::new();
+        let alice = UserId("alice".into());
+        let bob = UserId("bob".into());
+
+        state.doc.put(&ROOT, "a", 1).unwrap();
+        state.commit_action_authored(None, None, Some(alice.clone()));
+        state.doc.put(&ROOT, "b", 1).unwrap();
+        state.commit_action_authored(None, None, Some(bob.clone()));
+
+        // Alice hits Ctrl+Z. The newest entry is Bob's.
+        let popped = state
+            .undo_as(Some(&alice), None, None)
+            .expect("alice has an action to undo");
+        assert_eq!(popped.author, Some(alice.clone()), "alice undid her own action");
+        assert!(
+            state.doc.get(&ROOT, "a").unwrap().is_none(),
+            "alice's own change is reverted"
+        );
+        assert!(
+            state.doc.get(&ROOT, "b").unwrap().is_some(),
+            "bob's change survives alice's undo"
+        );
+    }
+
+    /// With no identity at all — an app running outside any session — `undo_as`
+    /// degrades to plain LIFO rather than refusing to undo.
+    #[test]
+    fn undo_as_without_an_author_is_plain_lifo() {
+        let mut state = State::new();
+        state.doc.put(&ROOT, "a", 1).unwrap();
+        state.commit_action(None, None);
+        state.doc.put(&ROOT, "b", 1).unwrap();
+        state.commit_action(None, None);
+
+        state.undo_as(None, None, None).expect("undo pops the newest");
+        assert!(state.doc.get(&ROOT, "b").unwrap().is_none());
+        assert!(state.doc.get(&ROOT, "a").unwrap().is_some());
+    }
+
+    /// Redo is the mirror: Bob's undone action must not be re-applied by
+    /// Alice's Ctrl+Y.
+    #[test]
+    fn redo_as_an_author_only_reapplies_that_authors_undo() {
+        let mut state = State::new();
+        let alice = UserId("alice".into());
+        let bob = UserId("bob".into());
+
+        state.doc.put(&ROOT, "a", 1).unwrap();
+        state.commit_action_authored(None, None, Some(alice.clone()));
+        state.doc.put(&ROOT, "b", 1).unwrap();
+        state.commit_action_authored(None, None, Some(bob.clone()));
+
+        // Bob undoes his own action, putting it on the redo stack.
+        state.undo_as(Some(&bob), None, None).unwrap();
+        assert!(state.doc.get(&ROOT, "b").unwrap().is_none());
+
+        // Alice hits Ctrl+Y. There is nothing of hers to redo, and Bob's
+        // undone action must stay undone.
+        assert!(
+            state.redo_as(Some(&alice), None, None).is_none(),
+            "alice has nothing to redo"
+        );
+        assert!(
+            state.doc.get(&ROOT, "b").unwrap().is_none(),
+            "alice's redo must not resurrect bob's undone action"
+        );
+
+        // Bob's own redo works.
+        state.redo_as(Some(&bob), None, None).expect("bob redoes his own");
+        assert!(state.doc.get(&ROOT, "b").unwrap().is_some());
     }
 
     /// A local text *deletion* undone after a concurrent remote prepend must
