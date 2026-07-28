@@ -23,10 +23,68 @@ pub trait Backend {
     fn submit_frame(&mut self, scene: &vello::Scene, output: OutputId);
     fn poll_events(&mut self, callback: impl FnMut(BackendEvent));
     fn outputs(&self) -> &[Output];
+    fn set_dpms(&mut self, on: bool) {}
+    /// The display's presentation interval — what the loop paces to.
+    fn refresh_interval(&self) -> Option<Duration> { None }
+    /// Hand the presentation half over to a dedicated render thread.
+    fn take_presenter(&mut self) -> Option<Box<dyn Presenter>> { None }
 }
 ```
 
 `drm` Phase 5.3 (vello → DMA-BUF direct interop, zero-copy GPU scanout) is deferred — see the compositor plan's Phase 5 notes. The current DRM path renders via wgpu's GL fallback into a GBM buffer.
+
+## Presentation: cadence and threading
+
+Two modules own the presentation path's timing.
+
+**`compositor::pacing`** — the presentation clock. The loop paces to the
+display's real interval, taken from `Backend::refresh_interval`:
+
+- `drm` derives it from the connector's raw mode timing (pixel clock over
+  htotal×vtotal), so a 59.94 Hz panel is paced at 59.94 rather than a
+  rounded 60. Multi-output paces to the fastest connected mode, because
+  the compositor paints one scene across the combined geometry and there
+  is only one cadence to pick.
+- `winit` reports the host monitor's rate — what a nested client can
+  actually present at.
+- `headless` reports `None`. It has no display, so it falls back to 60 Hz
+  rather than acquiring a fake one; this is the same decoupling that lets
+  the Wayland state run without a GPU.
+
+`FrameClock::due` gates the paint (protocol traffic and input wake the
+loop off-cadence; presenting then submits frames inside a refresh
+interval that the display discards) and `FrameClock::budget` is the event
+loop's dispatch timeout — the *remainder* of the interval, so a tick that
+worked for 6 ms parks for the other 10.7. Deadlines advance in whole
+intervals from the previous deadline, so a late frame doesn't drag the
+grid, and a frame that overruns several intervals skips them rather than
+queueing a burst.
+
+**`compositor::present`** — presentation off the input thread. Backends
+that can be split hand a `Presenter` (their render state) to a
+`PresentPipe`, which owns a `qos-present` thread. The seam is the
+finished `vello::Scene`: an owned encoding that borrows nothing from the
+Automerge document, the widget tree or the text renderer, so the logic
+thread keeps sole ownership of the CRDT and `ui`'s "widgets mutate the
+document in `handle_event`" model is untouched.
+
+- `winit` and `drm` split. For DRM only the scanouts and the vello bridge
+  move; libseat/udev/libinput and the hardware cursor plane stay on the
+  loop thread (the cursor owns its own dup of the card fd, so pointer
+  motion is now genuinely decoupled from paint).
+- `headless` deliberately does not: the test-control `snapshot` command
+  reads its rendered bytes back immediately after the submit, and an
+  asynchronous present would make every headless harness racy.
+
+The pipe admits one frame beyond the one being presented. When it is full
+the paint gate declines to build — capping input-to-photon at two frame
+intervals — rather than growing a queue the display can never drain.
+Resize and DPMS travel the same channel as frames, so a blank cannot
+overtake a frame already queued.
+
+`shell/src/compositor/metrics.rs` instruments all of it
+(`QOS_FRAME_TRACE`, `QOS_FRAME_SUMMARY`); `scripts/perf/frame-loop-bench.py`
+drives a measured run and diffs two of them.
 
 ## Event loop + state
 
@@ -54,7 +112,21 @@ The frame builder (`shell/src/compositor/frame.rs`) produces one `vello::Scene` 
 
 1. Drive the shell-chrome widget tree (`ShellOverlayHost`) into the scene — top bar, wheel disc, palette, modals.
 2. For each foreign Wayland surface visible in the active workspace, look up its committed buffer (stored on the surface user-data in `CompositorHandler::commit`) and draw it into the scene at the tab's content-area rect. SHM buffers are converted ARGB8888 → RGBA8888 and rendered as `peniko::Image`. dmabuf foreign buffers are also supported via wgpu native textures.
-3. Submit the scene to the backend; the backend either presents into a winit window (winit backend) or schedules a page flip on the DRM output (drm backend).
+3. Hand the scene to the presenter — the render thread where the backend
+   supports one, inline otherwise. It either presents into a winit window
+   (winit backend) or schedules a page flip on the DRM output (drm backend).
+
+A fullscreen client still pays the full composition cost: its buffer is
+imported to bytes, drawn into the scene as a full-viewport image, and the
+whole scene is rendered and presented. The short route — putting the
+client's buffer on the display directly — is **not implemented**. Real
+direct scanout needs the DRM backend to import a client dmabuf as a KMS
+framebuffer (`drmModeAddFB2WithModifiers`), negotiate format and modifier
+against the primary plane, and hold the buffer until the flip retires;
+today that backend only ever allocates its own dumb buffers. Until that
+exists there is no fast path to gate, so no fullscreen qualification
+logic is wired in either — the decision and the route have to land
+together or the compositor carries a switch with nothing behind it.
 
 The same `FrameBuilder` is used by `cargo run --bin shots -- --mode offscreen|recording` — that's how scenario screenshots and recordings stay byte-identical to the live binary. See `plan/architecture.md` for the e2e infrastructure overview.
 
