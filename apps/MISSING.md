@@ -473,6 +473,17 @@ shot-inspected (empty state and demo).
       ("The Lantern-Keeper's Almanac") when the reader has no epubs; a fresh
       shelf is empty and lands on the existing "No books yet" onboarding. The
       bundled EPUB + multi-book sample stay in the `--shots`/test path. (e73ca2d8)
+- [x] ebook — the floating text-selection HUD (already had highlight swatches +
+      Note) now has a **Copy** action: it writes the FULL selected passage to the
+      OS clipboard via `ui::clipboard_copy` (same primitive pdf_viewer uses), not
+      the 160-char annotation excerpt. A bare `c` copies the live selection too
+      (mirroring `h`=highlight / `m`=note), and Copy keeps the selection so the
+      reader can still highlight/note it. Verified on the wide + narrow selection
+      shots; asserted by `copy_action_copies_the_full_selected_passage` /
+      `copy_key_shortcut_targets_the_active_selection`. (Text selection / drag-
+      select / highlight / annotate / comments already existed; continuous-scroll
+      and two-up spread remain — a large refactor of the single-page reader draw,
+      deferred.)
 - [x] software_store — the constructor always loaded `sample_catalog()`
       (GIMP/Blender with fabricated star ratings), shown live, while the real
       popular-collection fetch landed unused in `live_apps`. A live worker now
