@@ -267,7 +267,7 @@ pub(crate) fn parse_body(content_xml: &[u8], reg: &StyleRegistry, container: &Od
                 }
                 Event::Text(t) => {
                     if let Some(is_title) = fr.collecting {
-                        let txt = t.unescape().map_err(|e| CodecError::Parse(format!("text: {e}")))?;
+                        let txt = t.xml10_content().map_err(|e| CodecError::Parse(format!("text: {e}")))?;
                         if is_title {
                             fr.title.push_str(&txt);
                         } else {
@@ -738,7 +738,7 @@ pub(crate) fn parse_body(content_xml: &[u8], reg: &StyleRegistry, container: &Od
             },
             Event::Text(t) => {
                 if let Some(b) = cur.as_ref() {
-                    let txt = t.unescape().map_err(|e| CodecError::Parse(format!("text: {e}")))?;
+                    let txt = t.xml10_content().map_err(|e| CodecError::Parse(format!("text: {e}")))?;
                     // Skip pretty-printer indentation between structural elements
                     // (e.g. the newlines LibreOffice/pandoc insert around nested
                     // `text:list-item`s) — otherwise list items / headings import

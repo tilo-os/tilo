@@ -13,26 +13,26 @@ path = "src/main.rs"
 
 [dependencies]
 ui = { path = "../../ui" }
-automerge = "0.8.0"
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-uuid = { version = "1.23.1", features = ["v4", "serde"] }
-tracing = "0.1"
-tracing-subscriber = "0.3"
-vello = "0.9"
-image = "0.25"
-winit = "0.30.13"
-taffy = "0.10.1"
-anyhow = "1.0"
+automerge.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+vello.workspace = true
+image = { workspace = true, default-features = true }
+winit.workspace = true
+taffy.workspace = true
+anyhow.workspace = true
 # LibreOffice .odp read/write: an ODF package is a ZIP of XML parts. Versions
 # match the `qdoc` document codecs so the workspace resolves one copy of each.
-zip = { version = "2", default-features = false, features = ["deflate"] }
-quick-xml = "0.36"
+zip.workspace = true
+quick-xml.workspace = true
 # Host-native image open through the XDG Desktop Portal
 # (org.freedesktop.portal.FileChooser). On GNOME the user sees GNOME's file
 # chooser; on qOS the compositor's portal backend renders qOS's picker. The
 # portal call runs off the UI thread on its own small Tokio runtime and the
 # chosen path is delivered back over a channel (see `portal`).
-ashpd = { version = "0.9", default-features = false, features = ["tokio"] }
-tokio = { version = "1", features = ["rt", "rt-multi-thread", "net", "time"] }
-url = "2"
+ashpd.workspace = true
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "net", "time"] }
+url.workspace = true

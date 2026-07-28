@@ -12,15 +12,15 @@ name = "runtime_fs"
 path = "src/lib.rs"
 
 [build-dependencies]
-capnpc = "0.26"
+capnpc.workspace = true
 
 [dependencies]
 runtime-portal = { path = "../runtime-portal" }
-capnp = "0.26"
-capnp-rpc = "0.26"
-tokio = { version = "1", features = ["rt", "net", "io-util", "macros", "sync"] }
-tokio-util = { version = "0.7", features = ["compat"] }
-thiserror = "1"
+capnp.workspace = true
+capnp-rpc.workspace = true
+tokio = { workspace = true, features = ["rt", "net", "io-util", "macros", "sync"] }
+tokio-util.workspace = true
+thiserror.workspace = true
 
 [dev-dependencies]
-tokio = { version = "1", features = ["rt", "rt-multi-thread", "net", "io-util", "macros", "sync", "time"] }
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "net", "io-util", "macros", "sync", "time"] }
