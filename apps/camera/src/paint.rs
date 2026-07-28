@@ -302,6 +302,14 @@ pub fn icon(scene: &mut Scene, t: Affine, name: &str, rect: Rect, color: Color, 
             p.line_to((cx - h * 0.3, cy + h * 0.6));
             scene.stroke(&stroke, t, color, None, &p);
         }
+        "back" => {
+            // Left-pointing chevron — the universal "go back" affordance.
+            let mut p = BezPath::new();
+            p.move_to((cx + h * 0.35, cy - h * 0.6));
+            p.line_to((cx - h * 0.35, cy));
+            p.line_to((cx + h * 0.35, cy + h * 0.6));
+            scene.stroke(&stroke, t, color, None, &p);
+        }
         "close" => {
             line(scene, t, cx - h * 0.6, cy - h * 0.6, cx + h * 0.6, cy + h * 0.6, color, w);
             line(scene, t, cx + h * 0.6, cy - h * 0.6, cx - h * 0.6, cy + h * 0.6, color, w);

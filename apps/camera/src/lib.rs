@@ -1,8 +1,9 @@
 //! Camera — qOS native app (CRDT-native, built on the `ui` toolkit).
 //!
 //! A real camera app: a live viewfinder (sample frames when headless), a
-//! photo/video shutter, a camera selector, a populated gallery, and a
-//! QR / barcode scanner that decodes codes for real (via [`rqrr`]) and
+//! photo/video shutter, a camera selector, an on-disk gallery (empty until
+//! you capture), and a QR / barcode scanner that decodes codes for real
+//! (via [`rqrr`]) and
 //! offers contextual actions (open URL, copy, connect Wi-Fi, add contact).
 //! Settings and gallery metadata live in the Automerge CRDT.
 //!

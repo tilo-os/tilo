@@ -186,6 +186,35 @@ empty state proves nothing. (I violated this by showing pdf_viewer from an empty
       1 Hz tick; correct per "not every vsync").
 - [x] Crate stays named `slides`.
 
+## camera
+- [x] Killed the left desktop nav rail (Camera/Scan/Gallery/Settings + app
+      aperture logo). The camera is now an immersive, full-bleed app: the
+      viewfinder fills the window edge-to-edge and every control floats over it —
+      capture-setting pills (MP/HDR/Timer/grid) top-left, a settings gear
+      top-right, a Photo/Video/Scan switcher bottom-centre, the shutter, a
+      last-shot thumbnail bottom-left (tap → Gallery), and a lens flip
+      bottom-right. Gallery is a push with a ‹ back button; Settings is an
+      overlay sheet — neither is persistent rail chrome. Verified on the camera,
+      scanner, gallery and settings shots (1280×800).
+- [x] No fake content in the live path: the disk-backed library starts EMPTY
+      ("No photos yet — Take a photo and it'll show up here"); the 9 sample
+      photos exist only behind `--shots`/`--emit-photos` (Storage::Sample).
+      Verified: live empty-dir gallery shot shows the empty state, hermetic shot
+      shows the grid + detail laying out. (`disk_source_starts_empty_and_seeds_no_content`.)
+- [x] Settings is a proper centred overlay sheet (scrim + close + Escape),
+      full-width grouped rows (Capture / Composition / Privacy & camera) on a
+      base-surface sheet with raised cards — no longer a narrow centred column
+      stranded in an empty pane. Scrolls on short windows (verified 900×560).
+- [x] Live v4l2 capture unchanged: `capture.rs` untouched; the
+      `#[cfg(feature = "live-capture")]` poll/enumerate/lens-selector path in
+      `app.rs` references only stable APIs and was not modified. (Could not
+      compile-check the `live-capture` feature in this box — gstreamer/glib
+      devel not provisioned — but the code path is byte-for-byte unchanged.)
+- [x] Codified the lesson in `ui/HIG.md` §1e: an immersive / full-bleed app
+      class (camera, video player, maps, games) that does NOT get the content-app
+      sidebar — edge-to-edge surface, floating/overlay controls, sheet-based
+      secondary screens.
+
 ---
 
 ## toolkit (ui) — enablers

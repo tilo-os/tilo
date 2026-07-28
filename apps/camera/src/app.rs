@@ -37,16 +37,12 @@ use crate::library;
 use crate::model::*;
 use crate::paint as p;
 
-/// Floating navigation rail geometry. The rail is a rounded glass panel that
-/// floats over the content with a uniform margin — on the Camera/Scanner
-/// screens it overlays the edge-to-edge viewfinder; on Gallery/Settings it
-/// floats over the base surface. Content screens inset past it by
-/// [`RAIL_INSET`].
-const RAIL_W: f64 = 68.0;
-const RAIL_MARGIN: f64 = 14.0;
-const CONTENT_GAP: f64 = 16.0;
-/// Left inset for content screens: margin + rail + gap.
-const RAIL_INSET: f64 = RAIL_MARGIN + RAIL_W + CONTENT_GAP;
+/// Uniform inset for floating controls from the window edge. The camera is an
+/// immersive, full-bleed app: the viewfinder fills the window edge-to-edge and
+/// every control floats over it at this margin — there is no navigation rail
+/// or sidebar (the OS owns window chrome). Gallery and Settings are reached
+/// from the viewfinder as a push and an overlay sheet, not as rail items.
+const EDGE: f64 = 18.0;
 /// Payload composited into the sample scanner poster (hermetic path only).
 const SCAN_PAYLOAD: &str = "WIFI:T:WPA2;S:qOS Lounge;P:welcome-aboard;H:false;;";
 /// Single decoded-size budget for gallery thumbnails/previews (one decode
@@ -82,6 +78,9 @@ struct RecState {
 #[derive(Clone, Debug)]
 enum Action {
     Nav(Screen),
+    /// Dismiss an overlay screen (Gallery / Settings) back to the viewfinder
+    /// it was opened from.
+    Back,
     Shutter,
     SetMode(CaptureMode),
     CycleFacing,
@@ -127,6 +126,9 @@ pub struct CameraApp {
     lib_dirty: bool,
 
     // ephemeral UI state
+    /// The viewfinder screen an overlay (Gallery / Settings) was opened from,
+    /// so its back button returns there rather than always to Camera.
+    return_to: Screen,
     filter: GalleryFilter,
     selected_capture: Option<String>,
     scan_dismissed: bool,
@@ -169,9 +171,10 @@ impl Default for CameraApp {
 }
 
 impl CameraApp {
-    /// The live app: library backed by real files on disk.
+    /// The live app: library backed by real files on disk. Opens on the
+    /// viewfinder — the camera's home — with the gallery a tap away.
     pub fn disk() -> Self {
-        Self::with(Storage::Disk(library::resolve_dir()), Screen::Gallery)
+        Self::with(Storage::Disk(library::resolve_dir()), Screen::Camera)
     }
 
     /// The hermetic app used by `--shots` and tests: self-contained sample
@@ -194,6 +197,7 @@ impl CameraApp {
             scans: Vec::new(),
             captures: Vec::new(),
             lib_dirty: true,
+            return_to: Screen::Camera,
             filter: GalleryFilter::All,
             selected_capture: None,
             scan_dismissed: false,
@@ -330,8 +334,19 @@ impl CameraApp {
         self.toast = None;
         match action {
             Action::Nav(s) => {
+                // Remember which viewfinder an overlay was summoned from so its
+                // back button returns there.
+                if matches!(s, Screen::Gallery | Screen::Settings)
+                    && matches!(self.screen, Screen::Camera | Screen::Scanner)
+                {
+                    self.return_to = self.screen;
+                }
                 self.screen = s;
                 doc::write_screen(doc, root, s);
+            }
+            Action::Back => {
+                self.screen = self.return_to;
+                doc::write_screen(doc, root, self.return_to);
             }
             Action::Shutter => match self.mode {
                 CaptureMode::Photo => self.capture(doc, root),
@@ -348,6 +363,12 @@ impl CameraApp {
                 if !self.is_recording() {
                     self.mode = m;
                     doc::write_mode(doc, root, m);
+                    // Photo/Video also bring the viewfinder forward when chosen
+                    // from the scanner's shared switcher.
+                    if self.screen != Screen::Camera {
+                        self.screen = Screen::Camera;
+                        doc::write_screen(doc, root, Screen::Camera);
+                    }
                 }
             }
             Action::CycleFacing => {
@@ -811,20 +832,18 @@ impl Widget for CameraApp {
     fn draw(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, _presence: &PresenceCtx) {
         self.regions.clear();
         p::fill_rect(scene, t, self.rect, theme.tokens.colors.surfaces.base);
-        // Viewfinder screens are edge-to-edge (the rail floats over them);
-        // content screens inset past the rail.
+        // An immersive camera: every screen is full-bleed. The viewfinder
+        // (Camera/Scanner) and the gallery fill the window edge-to-edge with
+        // controls floating over them; Settings is an overlay sheet. There is
+        // no navigation rail — secondary screens are reached from the
+        // viewfinder and dismissed back to it.
         let full = self.rect;
-        let content = self.content_rect();
         match self.screen {
             Screen::Camera => self.draw_camera(scene, t, tr, theme, full),
             Screen::Scanner => self.draw_scanner(scene, t, tr, theme, full),
-            Screen::Gallery => self.draw_gallery(scene, t, tr, theme, content),
-            Screen::Settings => self.draw_settings(scene, t, tr, theme, content),
+            Screen::Gallery => self.draw_gallery(scene, t, tr, theme, full),
+            Screen::Settings => self.draw_settings(scene, t, tr, theme, full),
         }
-        // The rail is painted last so it floats above the viewfinder; its hit
-        // regions are pushed last too, so they win the reverse-order hit test
-        // where they overlap the screen's own controls.
-        self.draw_nav(scene, t, tr, theme);
         self.draw_toast(scene, t, tr, theme);
     }
 
@@ -886,6 +905,7 @@ impl Widget for CameraApp {
                     Key::Named(NamedKey::Space) if matches!(self.screen, Screen::Camera) => Some(Action::Shutter),
                     Key::Named(NamedKey::Escape) if matches!(self.screen, Screen::Scanner) => Some(Action::DismissScan),
                     Key::Named(NamedKey::Escape) if matches!(self.screen, Screen::Gallery) => Some(Action::CloseDetail),
+                    Key::Named(NamedKey::Escape) if matches!(self.screen, Screen::Settings) => Some(Action::Back),
                     _ => None,
                 };
                 if let Some(a) = act {
@@ -933,67 +953,40 @@ impl Widget for CameraApp {
 // ====================================================================
 
 impl CameraApp {
-    /// The floating navigation rail's rectangle.
-    fn rail_rect(&self) -> Rect {
-        Rect::new(
-            self.rect.x0 + RAIL_MARGIN,
-            self.rect.y0 + RAIL_MARGIN,
-            self.rect.x0 + RAIL_MARGIN + RAIL_W,
-            self.rect.y1 - RAIL_MARGIN,
-        )
-    }
-
-    /// The area content screens (Gallery/Settings) draw into, inset past the
-    /// floating rail.
-    fn content_rect(&self) -> Rect {
-        Rect::new(self.rect.x0 + RAIL_INSET, self.rect.y0, self.rect.x1, self.rect.y1)
-    }
-
-    /// Horizontal centre of the stage to the right of the rail — capture
-    /// controls and toasts centre here so the rail never crowds them.
+    /// Horizontal centre of the window — the shutter, mode switcher, toasts and
+    /// recording badge all centre here.
     fn stage_center_x(&self) -> f64 {
-        (self.rect.x0 + RAIL_INSET + self.rect.x1) / 2.0
+        self.rect.center().x
     }
 
-    fn draw_nav(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
+    /// A round floating glass button (used for the settings gear, the lens
+    /// switch and back buttons over the viewfinder). Returns its hit rect.
+    fn glass_button(&mut self, scene: &mut Scene, t: Affine, theme: &Theme, cx: f64, cy: f64, r: f64, icon: &str, action: Action) -> Rect {
         let c = &theme.tokens.colors;
-        let rail = self.rail_rect();
-        let r = 26.0;
-        // Floating dark-glass panel: reads as a translucent overlay on the
-        // viewfinder and as a softly-recessed rail on the content surfaces.
-        p::fill_round(scene, t, rail, r, p::alpha(c.neutral[0], 0.62));
-        p::stroke_round(scene, t, rail, r, c.border_white_10, 1.0);
+        p::circle(scene, t, cx, cy, r, p::alpha(c.neutral[0], 0.5));
+        p::circle_stroke(scene, t, cx, cy, r, c.border_white_10, 1.0);
+        let ir = r * 0.52;
+        p::icon(scene, t, icon, Rect::new(cx - ir, cy - ir, cx + ir, cy + ir), white(), 1.9);
+        let hit = Rect::new(cx - r, cy - r, cx + r, cy + r);
+        self.push_region(hit, action);
+        hit
+    }
 
-        // Brand aperture mark up top.
-        let bx = rail.center().x;
-        let by = rail.y0 + 30.0;
-        p::icon(scene, t, "aperture", Rect::new(bx - 13.0, by - 13.0, bx + 13.0, by + 13.0), theme.accent_primary, 2.0);
-
-        let items = [
-            (Screen::Camera, "camera"),
-            (Screen::Scanner, "scan"),
-            (Screen::Gallery, "gallery"),
-            (Screen::Settings, "settings"),
+    /// The Photo / Video / Scan mode switcher that floats near the bottom of
+    /// the viewfinder on both the Camera and Scanner screens. Photo and Video
+    /// are capture sub-modes on the Camera screen; Scan switches to the
+    /// scanner. This is how the viewfinder screens navigate between each other
+    /// now that there is no rail.
+    fn draw_mode_switcher(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, center_x: f64, top_y: f64) {
+        let seg_w = 240.0;
+        let seg = Rect::new(center_x - seg_w / 2.0, top_y, center_x + seg_w / 2.0, top_y + 34.0);
+        let on_cam = matches!(self.screen, Screen::Camera);
+        let items: Vec<(String, bool, Action)> = vec![
+            ("Photo".to_string(), on_cam && self.mode == CaptureMode::Photo, Action::SetMode(CaptureMode::Photo)),
+            ("Video".to_string(), on_cam && self.mode == CaptureMode::Video, Action::SetMode(CaptureMode::Video)),
+            ("Scan".to_string(), matches!(self.screen, Screen::Scanner), Action::Nav(Screen::Scanner)),
         ];
-        // Centre the button stack in the space below the brand mark.
-        let slot = 62.0;
-        let stack_h = slot * items.len() as f64;
-        let top = (rail.y0 + 56.0 + rail.y1 - stack_h) / 2.0;
-        for (i, (s, icon)) in items.into_iter().enumerate() {
-            let cy = top + slot * i as f64 + slot / 2.0;
-            let btn = Rect::new(rail.center().x - 22.0, cy - 22.0, rail.center().x + 22.0, cy + 22.0);
-            let active = self.screen == s;
-            if active {
-                p::fill_round(scene, t, btn, 15.0, theme.accent_primary);
-            }
-            let col = if active { white() } else { p::alpha(c.text_primary, 0.60) };
-            let ic = Rect::new(btn.center().x - 13.0, btn.center().y - 15.0, btn.center().x + 13.0, btn.center().y + 11.0);
-            p::icon(scene, t, icon, ic, col, 1.9);
-            let lbl_col = if active { p::alpha(white(), 0.95) } else { p::alpha(c.text_primary, 0.5) };
-            p::text_center(scene, tr, btn.center().x, btn.y1 - 12.0, s.label(), 9.0, lbl_col);
-            // A slightly taller hit target than the visual button.
-            self.push_region(Rect::new(rail.x0 + 4.0, cy - slot / 2.0, rail.x1 - 4.0, cy + slot / 2.0), Action::Nav(s));
-        }
+        self.segmented(scene, t, tr, theme, seg, items);
     }
 
     fn segmented(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, rect: Rect, items: Vec<(String, bool, Action)>) {
@@ -1090,9 +1083,8 @@ impl CameraApp {
     fn draw_no_feed(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, rect: Rect, subtitle: &str) {
         let c = &theme.tokens.colors;
         p::fill_rect(scene, t, rect, c.neutral[0]);
-        // Centre within the stage to the right of the floating rail.
-        let area = Rect::new(rect.x0 + RAIL_INSET, rect.y0, rect.x1, rect.y1);
-        let ic = self.draw_empty_state(scene, t, tr, theme, area, "camera", "No camera connected", Some(subtitle), true);
+        // Centre the message in the whole window — the viewfinder is full-bleed.
+        let ic = self.draw_empty_state(scene, t, tr, theme, rect, "camera", "No camera connected", Some(subtitle), true);
         // Slash across the icon to read as "no camera".
         p::line(scene, t, ic.x0 + 3.0, ic.y0 + 3.0, ic.x1 - 3.0, ic.y1 - 3.0, p::alpha(white(), 0.5), 2.2);
     }
@@ -1177,6 +1169,10 @@ impl CameraApp {
             self.draw_no_feed(scene, t, tr, theme, full, "Connect a camera to start the viewfinder");
         }
 
+        // Settings gear, top-right — opens Settings as an overlay sheet. Drawn
+        // whether or not a feed is present so Settings is always reachable.
+        self.glass_button(scene, t, theme, full.x1 - EDGE - 16.0, full.y0 + 35.0, 16.0, "settings", Action::Nav(Screen::Settings));
+
         // 2. Bottom capture cluster (always drawn; disabled without a feed).
         self.draw_capture_cluster(scene, t, tr, theme, full, has_feed, recording);
     }
@@ -1236,7 +1232,7 @@ impl CameraApp {
     /// resolution, HDR, self-timer and grid — each tappable, so the settings
     /// most-used while shooting are one tap away rather than buried.
     fn draw_camera_top_controls(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, full: Rect) {
-        let mut x = self.rail_rect().x1 + 18.0;
+        let mut x = full.x0 + EDGE;
         let y = full.y0 + 20.0;
         let gap = 9.0;
 
@@ -1260,32 +1256,23 @@ impl CameraApp {
 
     /// The bottom capture cluster floating over the viewfinder: a gallery
     /// thumbnail peek, the shutter, a lens switch, and — when idle — the
-    /// Photo/Video mode toggle above the shutter.
+    /// Photo/Video/Scan mode switcher above the shutter.
     fn draw_capture_cluster(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, full: Rect, has_feed: bool, recording: bool) {
         let c = &theme.tokens.colors;
         let scx = self.stage_center_x();
         let cy = full.y1 - 64.0;
-        let rail = self.rail_rect();
         let danger = c.semantic.danger;
 
-        // Photo / Video toggle above the shutter — hidden while recording
-        // (mode is locked; the stop-square shutter + REC badge carry the state).
+        // Photo / Video / Scan switcher above the shutter — hidden while
+        // recording (mode is locked; the stop-square shutter + REC badge carry
+        // the state).
         if !recording {
-            let seg_w = 172.0;
-            let seg = Rect::new(scx - seg_w / 2.0, full.y1 - 132.0, scx + seg_w / 2.0, full.y1 - 98.0);
-            let items: Vec<(String, bool, Action)> = [CaptureMode::Photo, CaptureMode::Video]
-                .into_iter()
-                .map(|m| {
-                    let lbl = if matches!(m, CaptureMode::Photo) { "Photo" } else { "Video" };
-                    (lbl.to_string(), m == self.mode, Action::SetMode(m))
-                })
-                .collect();
-            self.segmented(scene, t, tr, theme, seg, items);
+            self.draw_mode_switcher(scene, t, tr, theme, scx, full.y1 - 132.0);
         }
 
-        // Gallery thumbnail peek, bottom-left (clear of the rail).
+        // Gallery thumbnail peek, bottom-left. Tap → Gallery.
         let ts = 30.0;
-        let thumb = Rect::new(rail.x1 + 24.0, cy - ts, rail.x1 + 24.0 + ts * 2.0, cy + ts);
+        let thumb = Rect::new(full.x0 + EDGE + 8.0, cy - ts, full.x0 + EDGE + 8.0 + ts * 2.0, cy + ts);
         if let Some(cap) = self.captures.first().cloned() {
             self.ensure_thumb(&cap);
             p::push_clip_round(scene, t, thumb, 14.0);
@@ -1375,13 +1362,12 @@ impl CameraApp {
 impl CameraApp {
     fn draw_scanner(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, full: Rect) {
         let live = self.feed_active();
-        let rail = self.rail_rect();
-        let wide = (full.width() - RAIL_INSET) >= WIDE_MIN;
+        let wide = full.width() >= WIDE_MIN;
         let panel_w = if wide { 300.0 } else { 0.0 };
         let panel_gap = if wide { 14.0 } else { 0.0 };
-        // The scan stage: the space between the rail and the optional recent
-        // panel. Controls (window, result card) centre here.
-        let stage = Rect::new(rail.x1 + 10.0, full.y0, full.x1 - RAIL_MARGIN - panel_w - panel_gap, full.y1);
+        // The scan stage: the full width minus the optional recent-scans panel.
+        // The scan window + result card centre here.
+        let stage = Rect::new(full.x0, full.y0, full.x1 - EDGE - panel_w - panel_gap, full.y1);
 
         if live {
             self.draw_scanner_feed(scene, t, tr, theme, full, stage);
@@ -1396,13 +1382,23 @@ impl CameraApp {
         } else {
             "No camera — pick a saved photo to scan a code from it"
         };
-        self.draw_glass_header(scene, t, tr, theme, rail.x1 + 18.0, full.y0 + 18.0, title, subtitle);
+        self.draw_glass_header(scene, t, tr, theme, full.x0 + EDGE, full.y0 + 18.0, title, subtitle);
 
-        // Recent scans, floating glass panel (wide only).
+        // Settings gear, top-right.
+        self.glass_button(scene, t, theme, full.x1 - EDGE - 16.0, full.y0 + 34.0, 16.0, "settings", Action::Nav(Screen::Settings));
+
+        // Recent scans, floating glass panel (wide only) — below the gear and
+        // clear of the bottom mode switcher.
         if wide {
-            let panel = Rect::new(full.x1 - RAIL_MARGIN - panel_w, full.y0 + RAIL_MARGIN, full.x1 - RAIL_MARGIN, full.y1 - RAIL_MARGIN);
+            let panel = Rect::new(full.x1 - EDGE - panel_w, full.y0 + 62.0, full.x1 - EDGE, full.y1 - 74.0);
             self.draw_scan_panel(scene, t, tr, theme, panel);
         }
+
+        // Bottom-centre mode switcher: the scanner is a peer of Photo/Video, so
+        // you switch back to the camera the same way you got here. Centred on
+        // the feed (clear of the recent-scans panel) to align with the scan
+        // window and result card.
+        self.draw_mode_switcher(scene, t, tr, theme, full.center().x, full.y1 - 56.0);
     }
 
     /// A compact floating glass header (title + subtitle) used as an overlay
@@ -1465,6 +1461,9 @@ impl CameraApp {
         // subject — and the hermetic sample QR — actually is). Sized to sit
         // clear of the rail and the recent-scans panel.
         let side = (stage.width().min(stage.height()) * 0.62).clamp(180.0, 460.0);
+        // Frame the subject at the centre of the feed. The window side is
+        // clamped to the (panel-excluded) stage, so it stays clear of the
+        // recent-scans panel on wide layouts.
         let wc = Point::new(full.center().x, full.center().y);
         let win = Rect::new(wc.x - side / 2.0, wc.y - side / 2.0, wc.x + side / 2.0, wc.y + side / 2.0);
         let dark = p::alpha(Color::from_rgb8(0, 0, 0), 0.5);
@@ -1534,7 +1533,7 @@ impl CameraApp {
             .cloned()
             .collect();
 
-        let grid = Rect::new(stage.x0 + 8.0, full.y0 + 86.0, stage.x1 - 8.0, full.y1 - 20.0);
+        let grid = Rect::new(stage.x0 + EDGE, full.y0 + 86.0, stage.x1 - 8.0, full.y1 - 76.0);
 
         if photos.is_empty() {
             let cx = grid.center().x;
@@ -1583,7 +1582,9 @@ impl CameraApp {
         let c = &theme.tokens.colors;
         let cw = stage.width().min(560.0) - 36.0;
         let ch = 122.0;
-        let card = Rect::new(stage.center().x - cw / 2.0, stage.y1 - ch - 20.0, stage.center().x + cw / 2.0, stage.y1 - 20.0);
+        // Sit above the bottom mode switcher rather than under it.
+        let bottom = stage.y1 - 76.0;
+        let card = Rect::new(stage.center().x - cw / 2.0, bottom - ch, stage.center().x + cw / 2.0, bottom);
         p::fill_round(scene, t, card, 18.0, p::alpha(c.neutral[0], 0.92));
         p::stroke_round(scene, t, card, 18.0, c.border_white_10, 1.0);
 
@@ -1683,14 +1684,24 @@ impl CameraApp {
         let now = now_secs();
         let wide = content.width() >= WIDE_MIN;
 
-        // Header.
-        p::text(scene, tr, content.x0 + pad, content.y0 + 16.0, "Library", 20.0, c.text_primary);
+        // Back button, top-left — returns to the viewfinder the gallery was
+        // opened from (there is no rail to navigate from).
+        let bb_cx = content.x0 + pad + 16.0;
+        let bb_cy = content.y0 + 30.0;
+        p::circle(scene, t, bb_cx, bb_cy, 16.0, c.surfaces.raised);
+        p::circle_stroke(scene, t, bb_cx, bb_cy, 16.0, p::alpha(c.border_standard, 0.5), 1.0);
+        p::icon(scene, t, "back", Rect::new(bb_cx - 8.0, bb_cy - 8.0, bb_cx + 8.0, bb_cy + 8.0), c.text_primary, 1.9);
+        self.push_region(Rect::new(bb_cx - 16.0, bb_cy - 16.0, bb_cx + 16.0, bb_cy + 16.0), Action::Back);
+
+        // Header, beside the back button.
+        let hx = bb_cx + 16.0 + 16.0;
+        p::text(scene, tr, hx, content.y0 + 16.0, "Library", 20.0, c.text_primary);
         let count = match self.captures.len() {
             0 => "Empty".to_string(),
             1 => "1 item".to_string(),
             n => format!("{n} items"),
         };
-        p::text(scene, tr, content.x0 + pad, content.y0 + 44.0, &count, 12.5, c.text_dim);
+        p::text(scene, tr, hx, content.y0 + 44.0, &count, 12.5, c.text_dim);
 
         let seg_w = 320.0_f64.min(content.width() - 2.0 * pad - 120.0).max(200.0);
         let seg = Rect::new(content.x1 - pad - seg_w, content.y0 + 16.0, content.x1 - pad, content.y0 + 48.0);
@@ -1712,7 +1723,7 @@ impl CameraApp {
                 GalleryFilter::Videos => "No videos",
                 GalleryFilter::Favorites => "No favorites yet",
             };
-            let sub = matches!(self.filter, GalleryFilter::All).then_some("Captures you take appear here");
+            let sub = matches!(self.filter, GalleryFilter::All).then_some("Take a photo and it'll show up here");
             self.draw_empty_state(scene, t, tr, theme, area, "gallery", msg, sub, false);
             return;
         }
@@ -1910,20 +1921,42 @@ fn human_size(bytes: u64) -> String {
 // ====================================================================
 
 impl CameraApp {
-    fn draw_settings(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, content: Rect) {
+    fn draw_settings(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, full: Rect) {
         let c = &theme.tokens.colors;
-        let colw = 660.0_f64.min(content.width() - 48.0);
-        let x0 = content.x0 + (content.width() - colw) / 2.0;
+
+        // Camera settings are an overlay sheet, not a full desktop pane. A
+        // dim scrim backs it; tapping the scrim dismisses back to the
+        // viewfinder.
+        p::fill_rect(scene, t, full, p::alpha(Color::from_rgb8(0, 0, 0), 0.45));
+        self.push_region(full, Action::Back);
+
+        // Centred sheet — wide enough that grouped rows use the full width and
+        // stay aligned, capped so it reads as a sheet rather than a stranded
+        // narrow column in an empty window.
+        let total = Self::settings_total_height();
+        let sw = 620.0_f64.min(full.width() - 96.0);
+        let sh = (total + 24.0).min(full.height() - 72.0);
+        let sx = full.center().x - sw / 2.0;
+        let sy = full.center().y - sh / 2.0;
+        let sheet = Rect::new(sx, sy, sx + sw, sy + sh);
+        // Base-surface sheet so the raised grouped cards read distinctly on it.
+        p::fill_round(scene, t, sheet, 22.0, c.surfaces.base);
+        p::stroke_round(scene, t, sheet, 22.0, p::alpha(c.border_standard, 0.6), 1.0);
+        // Absorb taps on the sheet's own padding so only the scrim dismisses.
+        self.push_region(sheet, Action::Nav(Screen::Settings));
+
+        let inner = 22.0;
+        let x0 = sheet.x0 + inner;
+        let colw = sheet.width() - inner * 2.0;
         let top_gap = 22.0;
 
-        // Full painted height stays reachable via scroll on short windows.
-        let total = Self::settings_total_height();
-        let max_scroll = (total - content.height()).max(0.0);
+        // Full painted height stays reachable via scroll on short sheets.
+        let max_scroll = (total - sh).max(0.0);
         self.settings_scroll = self.settings_scroll.clamp(0.0, max_scroll);
         let off = self.settings_scroll;
 
-        p::push_clip_rect(scene, t, content);
-        let mut y = content.y0 + top_gap - off;
+        p::push_clip_round(scene, t, sheet, 22.0);
+        let mut y = sheet.y0 + top_gap - off;
         p::text(scene, tr, x0, y, "Settings", 22.0, c.text_primary);
         y += 44.0;
 
@@ -1966,8 +1999,15 @@ impl CameraApp {
         let _ = self.value_row(scene, t, tr, theme, x0, ry, colw, "Default camera", self.settings.default_facing.label(), Action::CycleDefaultFacing);
 
         p::pop(scene);
+
+        // Close button, top-right of the sheet — fixed above the scroll.
+        let xr = Rect::new(sheet.x1 - 44.0, sheet.y0 + 14.0, sheet.x1 - 16.0, sheet.y0 + 42.0);
+        p::fill_round(scene, t, xr, 12.0, p::alpha(c.neutral[2], 0.9));
+        p::icon(scene, t, "close", shrink(xr, 8.0), c.text_primary, 1.8);
+        self.push_region(xr, Action::Back);
+
         if max_scroll > 0.0 {
-            self.draw_scrollbar(scene, t, theme, content, off, max_scroll, content.height(), total);
+            self.draw_scrollbar(scene, t, theme, sheet, off, max_scroll, sh, total);
         }
     }
 
