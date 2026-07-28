@@ -281,8 +281,7 @@ impl Dropdown {
             _ => state.put_object(root, self.value_path.as_str(), ObjType::Text).ok(),
         };
         if let Some(obj) = obj {
-            let cur = state.text(&obj).unwrap_or_default();
-            let _ = state.splice_text(&obj, 0, cur.chars().count() as isize, value);
+            crate::doc::splice_text_diffed(state, &obj, value);
         } else {
             // Last resort: store as a scalar string (still readable).
             let _ = state.put(root, self.value_path.as_str(), value);
@@ -918,6 +917,58 @@ mod tests {
         assert_eq!(
             Dropdown::read_value(&doc, &root, "tz").as_deref(),
             Some("Europe/Amsterdam")
+        );
+    }
+
+    #[test]
+    fn repeated_selection_splices_the_diff_not_the_whole_value() {
+        // Long option labels (paths, timezone names, font families) are common.
+        // Committing one by deleting the old value and reinserting the new one
+        // leaves a tombstone per character per selection, so a settings pane
+        // that is toggled back and forth bloats its document without bound.
+        let long: Vec<String> = (0..4)
+            .map(|i| format!("Europe/Amsterdam/very/long/option/label/number/{i}"))
+            .collect();
+        let mut dd = Dropdown::new(long.clone(), "tz");
+        let (mut doc, root) = doc_with_tz(&long[0]);
+        dd.sync(&mut doc, &root);
+        let baseline = doc.save().len();
+
+        // Alternate between two options that share a 46-char prefix.
+        for i in 0..60 {
+            dd.commit_value(&long[i % 2], &mut doc, &root);
+        }
+        let grown = doc.save().len() - baseline;
+
+        assert_eq!(
+            Dropdown::read_value(&doc, &root, "tz").as_deref(),
+            Some(long[1].as_str()),
+            "the last committed option must be what the document holds"
+        );
+        assert!(
+            grown < 8 * long[0].len(),
+            "60 selections grew the document by {grown} bytes for a {}-char label \
+             — commit_value is rewriting the whole value",
+            long[0].len()
+        );
+    }
+
+    #[test]
+    fn recommitting_the_current_value_is_free() {
+        let mut dd = Dropdown::new(opts(), "tz");
+        let (mut doc, root) = doc_with_tz("Asia/Tokyo");
+        dd.sync(&mut doc, &root);
+        let before = doc.save().len();
+
+        for _ in 0..25 {
+            dd.commit_value("Asia/Tokyo", &mut doc, &root);
+        }
+
+        assert_eq!(Dropdown::read_value(&doc, &root, "tz").as_deref(), Some("Asia/Tokyo"));
+        assert_eq!(
+            doc.save().len(),
+            before,
+            "re-selecting the already-selected option must not grow the document"
         );
     }
 
