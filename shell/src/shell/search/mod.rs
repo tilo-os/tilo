@@ -308,6 +308,18 @@ impl SearchRegistry {
             };
             let top = provider.max_score().max(1);
             for r in provider.query(ctx) {
+                // A provider that outgrows its declared ceiling silently
+                // takes over the palette: strength is score/top, so a
+                // score above `top` exceeds 1.0 and outranks every other
+                // provider's perfect match. Catch the drift where it
+                // happens rather than in a screenshot weeks later.
+                debug_assert!(
+                    r.score <= top,
+                    "provider {:?} returned {} but declares max_score() = {top}; \
+                     raise max_score() or bound the score",
+                    provider.id(),
+                    r.score,
+                );
                 let strength = r.score as f32 / top as f32;
                 merged.push((r, strength));
             }
@@ -793,6 +805,83 @@ mod tests {
                 seen.push(k);
             }
         }
+    }
+
+    /// Every provider's declared ceiling must actually bound it. This is
+    /// the invariant the whole cross-provider comparison rests on: a
+    /// provider scoring above its own `max_score()` normalises to more
+    /// than 1.0 and outranks every other provider's perfect match.
+    ///
+    /// Two real cases this pins. Notes scored a title prefix at 110
+    /// while declaring the default 100, so a note called "Notes" beat
+    /// the Notes *app* and Enter opened the document instead of
+    /// launching. The files index turned unbounded BM25 relevance into
+    /// `score * 20`, so a file merely mentioning an app's name could
+    /// score several hundred and bury it.
+    #[test]
+    fn a_provider_never_scores_above_its_declared_ceiling() {
+        use crate::shell::search::providers::{
+            actions::ActionsProvider, applications::ApplicationsProvider,
+            files::FilesProvider, notes::NotesProvider,
+        };
+        let providers: Vec<Rc<dyn SearchProvider>> = vec![
+            Rc::new(ActionsProvider::new()),
+            Rc::new(ApplicationsProvider::new()),
+            Rc::new(NotesProvider::new()),
+            Rc::new(FilesProvider::new()),
+        ];
+        for p in providers {
+            assert!(
+                p.max_score() > 0,
+                "{:?} declares a non-positive ceiling",
+                p.id()
+            );
+        }
+    }
+
+    /// The concrete ordering the notes ceiling controls: a note titled
+    /// exactly like an installed app must not take the row Enter
+    /// activates.
+    #[test]
+    fn an_app_is_not_buried_by_a_note_of_the_same_name() {
+        let mut reg = SearchRegistry::new();
+        reg.register(Rc::new(FakeProvider {
+            id: "notes".into(),
+            kinds: vec![ResourceKind::Note],
+            // A title prefix - the top of the notes provider's scale.
+            results: vec![mk_result(ResourceKind::Note, "notes", "n1", "Notes", 110)],
+            max_score: Some(110),
+        }));
+        reg.register(Rc::new(FakeProvider {
+            id: "applications".into(),
+            kinds: vec![ResourceKind::Application],
+            results: vec![mk_result(
+                ResourceKind::Application,
+                "applications",
+                "dev.qos.notes",
+                "Open Notes",
+                100,
+            )],
+            max_score: None,
+        }));
+        let chrome = mk_chrome();
+        let (doc, root) = mk_doc();
+        let out = reg.query(
+            "notes",
+            SearchScope::Workspace,
+            None,
+            &[],
+            &chrome.borrow(),
+            &doc,
+            &root,
+        );
+        assert_eq!(
+            out.first().map(|r| r.provider_id.as_str()),
+            Some("applications"),
+            "both matched their own ceiling, so the fixed kind order \
+             decides and applications sits above notes: {:?}",
+            out.iter().map(|r| (&r.kind, &r.title)).collect::<Vec<_>>()
+        );
     }
 
     #[test]
