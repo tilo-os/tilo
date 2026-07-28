@@ -189,7 +189,15 @@ After all three layers, your `main()` sees:
   Apps opened into the same workspace exchange CRDT deltas; apps in
   different workspaces are different rooms and never see each other's
   traffic. It names a room, not a permission — see `--capabilities` for
-  what an app is actually allowed to touch. Because `is_qos_native()` now
+  what an app is actually allowed to touch.
+
+  The value is the workspace's durable **room id**: a random v4 uuid minted
+  once when the workspace is created, stored with it, and unchanged across
+  restarts. It is deliberately not derived from the compositor's local
+  workspace number, which means something different on every machine — a
+  peer invited to the workspace adopts this same uuid, so their apps and
+  yours address one cluster and your edits reach each other. Because
+  `is_qos_native()` now
   answers `true` inside a GUI launch, `cli::workspace_root()` resolves to
   `/var/workspace` there instead of the standalone
   `~/.local/share/<pkg-id>/` fallback; an app that writes through it needs
