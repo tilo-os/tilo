@@ -14,10 +14,11 @@
 //!     frame is synthesised from clip *metadata* (palette + grade), so the
 //!     preview is deterministic and needs no media pipeline. This is what
 //!     the headless CI box and screenshots use.
-//!   * **Real decode (`--features decode`)** — [`decode_frame`] resolves the
+//!   * **Real decode (`--features decode`)** — [`PreviewDecoder`] resolves the
 //!     clip's bytes through the [`crate::media`] FUSE seam and, when they're
-//!     hydrated, feeds the nearest segment to a `ui::VideoPlayer` (openh264)
-//!     to produce a true RGBA picture. If the bytes aren't hydrated yet (a
+//!     hydrated, seeks a shared [`media::MediaEngine`] (a real GStreamer
+//!     `playbin` pipeline under the feature) to the clip's *source time* and
+//!     pulls the true decoded RGBA frame. If the bytes aren't hydrated yet (a
 //!     projected reference on a fresh collaborator) it falls back to the
 //!     representative frame — the editor never blocks on hydration.
 //!
@@ -145,44 +146,182 @@ pub fn palette_rgb(palette: u8) -> Rgb {
     }
 }
 
-/// Real-decode entry point. Behind the `decode` feature it resolves the
-/// clip's bytes through the FUSE seam and decodes the nearest frame; without
-/// the feature it is a no-op that returns the representative frame unchanged.
-///
-/// Always falls back gracefully: an un-hydrated (projected) reference or a
-/// decode failure yields the representative frame, so the preview is never
-/// blank or blocking.
-#[cfg(feature = "decode")]
-pub fn decode_frame(
-    project: &Project,
-    playhead: f64,
-    player: &mut ui::widget::VideoPlayer,
-) -> CompositedFrame {
-    let frame = composite(project, playhead);
-    let CompositedFrame::Clip { media, base, envelope, flash, .. } = frame else {
-        return frame;
-    };
-    let Some(item) = project.media(media) else { return frame };
-    let source = item.source();
-    if !source.is_decodable() {
-        // Projected reference: bytes not hydrated yet — representative frame.
-        return CompositedFrame::Clip { media, base, envelope, flash, decoded: false };
-    }
-    // Hydrated: read the source and feed it to the openh264-backed player.
-    // (A production build seeks to the keyframe at the playhead; this slice
-    // feeds the leading bytes, which is enough to prove the seam end-to-end.)
-    let decoded = match std::fs::read(&source.abs_path) {
-        Ok(bytes) => player.feed_frame(&bytes),
-        Err(_) => false,
-    };
-    CompositedFrame::Clip { media, base, envelope, flash, decoded }
+/// The source time (seconds into the media) the preview must decode for the
+/// clip under the playhead: the clip's in-point plus how far the playhead has
+/// travelled into the clip on the timeline.
+pub fn source_time_for(clip: &Clip, playhead: f64) -> f64 {
+    (clip.in_point + (playhead - clip.start)).max(0.0)
 }
 
-/// Without the decode feature, the preview is always the representative
-/// frame — kept as a same-named fn so the call site is feature-agnostic.
-#[cfg(not(feature = "decode"))]
-pub fn decode_frame(project: &Project, playhead: f64) -> CompositedFrame {
-    composite(project, playhead)
+/// A decoded RGBA picture ready to blit onto the preview canvas.
+pub type DecodedFrame = ::media::VideoFrame;
+
+/// Stateful preview decoder: owns a shared [`media::MediaEngine`] and, for the
+/// clip under the playhead, seeks to the clip's source time and pulls the real
+/// decoded frame. The engine's synthesized fallback needs no gstreamer, so this
+/// type compiles on every build; with `--features decode` (which turns on
+/// `media/decode`) the engine is a real GStreamer `playbin` pipeline and the
+/// frame is the clip's true picture.
+///
+/// The extraction seam ([`Self::update`]) — top-clip selection, FUSE resolution,
+/// the hydration gate, engine open/seek/poll, and frame caching — is exercised
+/// hermetically by the synthesized backend in tests, and drives the real
+/// pipeline unchanged under the decode feature.
+pub struct PreviewDecoder {
+    engine: ::media::MediaEngine,
+    open_path: Option<std::path::PathBuf>,
+    last_seek_ms: Option<u64>,
+    frame: Option<DecodedFrame>,
+    frame_media: Option<MediaId>,
+}
+
+impl PreviewDecoder {
+    /// Build a decoder. Under `--features decode` this stands up a real
+    /// GStreamer pipeline; otherwise the engine's synthesized fallback (which
+    /// this preview never blits — the widget shows the representative frame when
+    /// decode is off).
+    pub fn new() -> Self {
+        Self::from_engine(::media::MediaEngine::new())
+    }
+
+    /// Force the synthesized backend regardless of build features — the seam
+    /// test drives this so extraction is exercised without a real decode.
+    pub fn new_synthesized() -> Self {
+        Self::from_engine(::media::MediaEngine::new_synthesized())
+    }
+
+    fn from_engine(engine: ::media::MediaEngine) -> Self {
+        Self { engine, open_path: None, last_seek_ms: None, frame: None, frame_media: None }
+    }
+
+    /// Whether the engine is decoding through a real GStreamer pipeline.
+    pub fn is_real_decode(&self) -> bool {
+        self.engine.is_real_decode()
+    }
+
+    /// The last decoded frame, if one is cached for the current clip.
+    pub fn frame(&self) -> Option<&DecodedFrame> {
+        self.frame.as_ref()
+    }
+
+    /// Which media the cached frame belongs to.
+    pub fn frame_media(&self) -> Option<MediaId> {
+        self.frame_media
+    }
+
+    /// Point the decoder at the clip under `playhead` and pump one step,
+    /// returning `true` when a decoded frame for that clip is available.
+    ///
+    /// Gracefully yields `false` (and the widget falls back to the
+    /// representative frame) when there is no clip, the reference is not
+    /// hydrated yet, or the pipeline has not prerolled a frame — the editor
+    /// never blocks on decode.
+    pub fn update(&mut self, project: &Project, playhead: f64) -> bool {
+        let Some(clip) = project.top_video_clip_at(playhead).cloned() else {
+            self.frame = None;
+            self.frame_media = None;
+            return false;
+        };
+        let Some(item) = project.media(clip.media) else {
+            self.frame = None;
+            self.frame_media = None;
+            return false;
+        };
+        let source = item.source();
+        if !source.is_decodable() {
+            // Projected reference: bytes not hydrated yet — no real frame.
+            self.frame = None;
+            self.frame_media = None;
+            return false;
+        }
+        let abs = source.abs_path.clone();
+        if self.open_path.as_deref() != Some(abs.as_path()) {
+            self.engine.open(crate::media::engine_source(&abs));
+            self.open_path = Some(abs);
+            self.last_seek_ms = None;
+            self.frame = None;
+        }
+        let target_ms = (source_time_for(&clip, playhead) * 1000.0).max(0.0) as u64;
+        if self.last_seek_ms != Some(target_ms) {
+            self.engine.seek_ms(target_ms);
+            self.last_seek_ms = Some(target_ms);
+        }
+        self.engine.poll();
+        if let Some(f) = self.engine.latest_frame() {
+            self.frame = Some(f.clone());
+            self.frame_media = Some(clip.media);
+        }
+        self.frame_media == Some(clip.media) && self.frame.is_some()
+    }
+}
+
+impl Default for PreviewDecoder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Rasterize the composited representative frame at `playhead` into a tightly
+/// packed `width*height*4` RGBA buffer — the **same** grade / fade / transition
+/// math the preview canvas shows, so a `gst` export encodes exactly what the
+/// timeline previews. Pure, so the export pipeline can push these straight into
+/// an `appsrc`.
+pub fn render_rgba(project: &Project, playhead: f64, width: u32, height: u32) -> Vec<u8> {
+    let w = width.max(1) as usize;
+    let h = height.max(1) as usize;
+    let mut buf = vec![0u8; w * h * 4];
+
+    let (bands, env, flash) = match composite(project, playhead) {
+        CompositedFrame::Empty => (None, 1.0, None),
+        CompositedFrame::Clip { base, envelope, flash, .. } => (Some(base), envelope, flash),
+    };
+
+    let black = Rgb::new(0.0, 0.0, 0.0);
+    for y in 0..h {
+        let yf = y as f64 / h as f64;
+        for x in 0..w {
+            let mut px = match bands {
+                None => black,
+                Some(base) => {
+                    // Mirror draw_preview: darkened base, a lighter upper band,
+                    // and a darker mid band.
+                    let mut c = mix(base, black, 0.18);
+                    if yf < 0.5 {
+                        c = mix(c, mix(base, Rgb::new(1.0, 1.0, 1.0), 0.18), 0.55);
+                    }
+                    if (0.62..0.72).contains(&yf) {
+                        c = mix(c, mix(base, black, 0.15), 0.6);
+                    }
+                    c
+                }
+            };
+            // Fade/opacity envelope dims toward black.
+            if env < 0.999 {
+                px = mix(px, black, 1.0 - env);
+            }
+            // Transition flash.
+            if let Some(f) = flash {
+                let target = if f.white { Rgb::new(1.0, 1.0, 1.0) } else { black };
+                px = mix(px, target, f.alpha);
+            }
+            let i = (y * w + x) * 4;
+            buf[i] = (px.r * 255.0).round().clamp(0.0, 255.0) as u8;
+            buf[i + 1] = (px.g * 255.0).round().clamp(0.0, 255.0) as u8;
+            buf[i + 2] = (px.b * 255.0).round().clamp(0.0, 255.0) as u8;
+            buf[i + 3] = 255;
+        }
+    }
+    buf
+}
+
+/// Per-channel linear interpolation between two colours.
+fn mix(a: Rgb, b: Rgb, t: f64) -> Rgb {
+    let t = t.clamp(0.0, 1.0);
+    Rgb::new(
+        a.r + (b.r - a.r) * t,
+        a.g + (b.g - a.g) * t,
+        a.b + (b.b - a.b) * t,
+    )
 }
 
 #[cfg(test)]
@@ -253,5 +392,177 @@ mod tests {
             panic!()
         };
         assert!(late.is_none(), "flash gone well past the cut");
+    }
+
+    #[test]
+    fn source_time_maps_playhead_into_the_clip_window() {
+        use crate::model::{MediaKind, Project, Track, TrackKind};
+        use uuid::Uuid;
+        let mut p = Project::new("t");
+        let mid = Uuid::new_v4();
+        p.media.push(crate::model::MediaItem {
+            id: mid,
+            name: "s".into(),
+            kind: MediaKind::Video,
+            duration: 20.0,
+            width: 16,
+            height: 9,
+            fps: 30.0,
+            palette: 0,
+            path: crate::media::workspace_path("s.mp4"),
+            hydration: crate::media::Hydration::Projected,
+        });
+        let tid = Uuid::new_v4();
+        p.tracks.push(Track { id: tid, name: "V1".into(), kind: TrackKind::Video, index: 1, muted: false, locked: false });
+        // Clip placed at timeline 5s, sourcing in_point=3s.
+        let cid = p.add_clip(tid, mid, 5.0).unwrap();
+        p.clip_mut(cid).unwrap().in_point = 3.0;
+        p.clip_mut(cid).unwrap().out_point = 13.0;
+        let clip = p.clip(cid).unwrap();
+        // Playhead 5s (clip head) → source 3s; playhead 9s → source 7s.
+        assert!((source_time_for(clip, 5.0) - 3.0).abs() < 1e-9);
+        assert!((source_time_for(clip, 9.0) - 7.0).abs() < 1e-9);
+    }
+
+    // Build a one-clip project whose media points at a real file on disk, so
+    // the decoder's hydration gate reports it decodable.
+    fn project_referencing(path: &std::path::Path) -> (crate::model::Project, crate::model::MediaId) {
+        use crate::model::{MediaKind, Project, Track, TrackKind};
+        use uuid::Uuid;
+        let mut p = Project::new("t");
+        let mid = Uuid::new_v4();
+        p.media.push(crate::model::MediaItem {
+            id: mid,
+            name: "clip".into(),
+            kind: MediaKind::Video,
+            duration: 30.0,
+            width: 16,
+            height: 9,
+            fps: 30.0,
+            palette: 0,
+            path: path.to_string_lossy().into_owned(),
+            hydration: crate::media::Hydration::Local,
+        });
+        let tid = Uuid::new_v4();
+        p.tracks.push(Track { id: tid, name: "V1".into(), kind: TrackKind::Video, index: 1, muted: false, locked: false });
+        let cid = p.add_clip(tid, mid, 0.0).unwrap();
+        p.clip_mut(cid).unwrap().out_point = 20.0;
+        (p, mid)
+    }
+
+    #[test]
+    fn decoder_extracts_a_frame_through_the_engine_seam() {
+        // Hermetic proof of the extraction seam on the synthesized backend: a
+        // real file on disk (so the hydration gate passes), a real seek + poll,
+        // and a real RGBA frame keyed to the right clip. The gst backend runs
+        // the identical `update` path under `--features decode`.
+        let dir = std::env::temp_dir();
+        let f = dir.join(format!("qos-ve-dec-{}.mp4", std::process::id()));
+        std::fs::write(&f, b"pretend-bytes").unwrap();
+        let (project, mid) = project_referencing(&f);
+
+        let mut dec = PreviewDecoder::new_synthesized();
+        let got = dec.update(&project, 2.0);
+        assert!(got, "a frame is produced for the clip under the playhead");
+        assert_eq!(dec.frame_media(), Some(mid), "frame is keyed to the clip's media");
+        let frame = dec.frame().expect("cached frame");
+        assert_eq!(frame.rgba.len(), frame.width as usize * frame.height as usize * 4);
+        assert!(frame.width > 0 && frame.height > 0, "a real, sized picture");
+
+        std::fs::remove_file(&f).ok();
+    }
+
+    #[test]
+    fn decoder_yields_nothing_for_an_unhydrated_reference() {
+        // A projected reference (bytes not local) must not fabricate a frame —
+        // the widget then shows the representative frame, never blocks.
+        use crate::model::{MediaKind, Project, Track, TrackKind};
+        use uuid::Uuid;
+        let mut p = Project::new("t");
+        let mid = Uuid::new_v4();
+        p.media.push(crate::model::MediaItem {
+            id: mid,
+            name: "ghost".into(),
+            kind: MediaKind::Video,
+            duration: 10.0,
+            width: 16,
+            height: 9,
+            fps: 30.0,
+            palette: 0,
+            // Absolute path that does not exist → resolve reports Projected.
+            path: "/definitely/not/here-preview.mp4".into(),
+            hydration: crate::media::Hydration::Projected,
+        });
+        let tid = Uuid::new_v4();
+        p.tracks.push(Track { id: tid, name: "V1".into(), kind: TrackKind::Video, index: 1, muted: false, locked: false });
+        p.add_clip(tid, mid, 0.0);
+        let mut dec = PreviewDecoder::new_synthesized();
+        assert!(!dec.update(&p, 1.0), "no frame for an un-hydrated reference");
+        assert!(dec.frame().is_none());
+    }
+
+    #[test]
+    fn render_rgba_produces_a_sized_opaque_buffer_reflecting_the_grade() {
+        let p = sample_project();
+        // Inside the graded drone open (brighter than a neutral clip elsewhere).
+        let buf = render_rgba(&p, 5.0, 32, 18);
+        assert_eq!(buf.len(), 32 * 18 * 4);
+        assert!(buf.chunks(4).all(|px| px[3] == 255), "every pixel is opaque");
+        // Not a uniform black frame — the composited clip contributes colour.
+        let any_colour = buf.chunks(4).any(|px| px[0] > 8 || px[1] > 8 || px[2] > 8);
+        assert!(any_colour, "the graded clip renders visible colour");
+    }
+
+    // Real GStreamer decode of a genuinely-encoded clip. Only compiled under
+    // `--features decode`; generates a real H.264 MP4 with `gst-launch-1.0` and
+    // asserts the engine extracts a true decoded frame at the playhead.
+    #[cfg(feature = "decode")]
+    #[test]
+    fn real_decode_extracts_a_true_frame() {
+        let dir = std::env::temp_dir();
+        let f = dir.join(format!("qos-ve-realdec-{}.mp4", std::process::id()));
+        let ok = std::process::Command::new("gst-launch-1.0")
+            .args([
+                "-q",
+                "videotestsrc",
+                "pattern=smpte",
+                "num-buffers=60",
+                "!",
+                "video/x-raw,width=192,height=108,framerate=30/1",
+                "!",
+                "videoconvert",
+                "!",
+                "openh264enc",
+                "!",
+                "h264parse",
+                "!",
+                "mp4mux",
+                "!",
+            ])
+            .arg(format!("filesink location={}", f.display()))
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        assert!(ok && f.exists(), "gst-launch produced a real sample clip");
+
+        let (project, _mid) = project_referencing(&f);
+        let mut dec = PreviewDecoder::new();
+        assert!(dec.is_real_decode(), "the decode feature must use the real pipeline");
+        // Preroll is async: pump until a frame lands or a short deadline.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
+        let mut got = false;
+        while std::time::Instant::now() < deadline {
+            if dec.update(&project, 1.0) {
+                got = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        assert!(got, "the real pipeline decoded a frame of the clip");
+        let frame = dec.frame().expect("decoded frame");
+        assert_eq!(frame.width, 192);
+        assert_eq!(frame.height, 108);
+        assert_eq!(frame.rgba.len(), 192 * 108 * 4);
+        std::fs::remove_file(&f).ok();
     }
 }
