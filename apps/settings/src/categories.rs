@@ -58,6 +58,8 @@ pub enum Category {
     Printers,
     Power,
     Appearance,
+    Accessibility,
+    Notifications,
     ExternalAccounts,
     RegionFormats,
     Permissions,
@@ -79,6 +81,8 @@ impl Category {
         Category::Printers,
         // System
         Category::Appearance,
+        Category::Accessibility,
+        Category::Notifications,
         Category::Power,
         Category::TimeDate,
         Category::Users,
@@ -104,6 +108,8 @@ impl Category {
             | Category::KeyboardShortcuts
             | Category::Printers => Section::Devices,
             Category::Appearance
+            | Category::Accessibility
+            | Category::Notifications
             | Category::Power
             | Category::TimeDate
             | Category::Users
@@ -136,6 +142,8 @@ impl Category {
             Category::Printers => "Printers",
             Category::Power => "Power",
             Category::Appearance => "Appearance",
+            Category::Accessibility => "Accessibility",
+            Category::Notifications => "Notifications",
             Category::ExternalAccounts => "External Accounts",
             Category::RegionFormats => "Region & Formats",
             Category::Permissions => "Permissions & Roles",
@@ -158,6 +166,8 @@ impl Category {
             Category::Printers => "Printers, queues, and recent jobs",
             Category::Power => "Battery, power profile, and automatic suspend",
             Category::Appearance => "Theme, contrast, motion, and text size",
+            Category::Accessibility => "Vision, pointer, typing, and hearing assists",
+            Category::Notifications => "Banners, previews, sounds, and Do Not Disturb",
             Category::ExternalAccounts => "Email, calendars, file sync, and Nextcloud",
             Category::RegionFormats => "Currency, date, time, and measurement units",
             Category::Permissions => "Roles and per-action permissions for this workspace",
@@ -180,6 +190,8 @@ impl Category {
             Category::Printers => "\u{f042a}",         // printer
             Category::Power => "\u{f0079}",            // battery
             Category::Appearance => "\u{f0779}",       // palette
+            Category::Accessibility => "\u{f0004}",    // human (universal access)
+            Category::Notifications => "\u{f009a}",     // bell
             Category::ExternalAccounts => "\u{f16e1}", // cloud
             Category::RegionFormats => "\u{f0ac0}",    // earth
             Category::Permissions => "\u{f0498}",      // shield-account
@@ -203,7 +215,9 @@ impl Category {
             Category::TimeDate => &["clock", "timezone", "time zone", "ntp", "24-hour", "automatic time", "calendar"],
             Category::Users => &["accounts", "people", "administrator", "admin", "login", "roles"],
             Category::Printers => &["cups", "print", "queue", "job", "paper", "scanner"],
-            Category::Appearance => &["theme", "dark mode", "light mode", "contrast", "high contrast", "reduce motion", "text size", "font", "accessibility", "wallpaper", "color"],
+            Category::Appearance => &["theme", "dark mode", "light mode", "contrast", "high contrast", "reduce motion", "text size", "font", "wallpaper", "color"],
+            Category::Accessibility => &["a11y", "accessibility", "universal access", "screen reader", "orca", "on-screen keyboard", "osk", "cursor size", "large cursor", "pointer size", "sticky keys", "slow keys", "visual alerts", "high contrast", "reduce motion", "text size", "zoom"],
+            Category::Notifications => &["notification", "notify", "banner", "alert", "do not disturb", "dnd", "focus", "quiet", "sounds", "lock screen", "previews", "badge"],
             Category::ExternalAccounts => &["email", "mail", "imap", "smtp", "calendar", "caldav", "webdav", "nextcloud", "sync", "cloud"],
             Category::RegionFormats => &["locale", "language", "currency", "date format", "time format", "units", "measurement", "metric", "imperial"],
             Category::Permissions => &["roles", "access", "sandbox", "grants", "file access", "collaboration", "security"],
@@ -245,6 +259,8 @@ impl Category {
             Category::Printers => "printers",
             Category::Power => "power",
             Category::Appearance => "appearance",
+            Category::Accessibility => "accessibility",
+            Category::Notifications => "notifications",
             Category::ExternalAccounts => "external_accounts",
             Category::RegionFormats => "region_formats",
             Category::Permissions => "permissions",
