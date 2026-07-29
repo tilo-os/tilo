@@ -26,7 +26,7 @@ use ui::widget::Widget;
 use crate::config::{self, Backend, CommandPlan};
 use crate::doc::VpnDoc;
 use crate::model::{
-    human_ago, human_bytes, sample_vault, ConnId, ConnKind, ConnStatus, Connection, Vault,
+    human_ago, sample_vault, ConnId, ConnKind, ConnStatus, Connection, Vault,
 };
 use crate::net::{self, Transfer};
 use crate::portal::{self, ImportOutcome};
@@ -974,8 +974,8 @@ impl VpnApp {
             // Real cumulative counters straight from the kernel.
             let legend = format!(
                 "recv {} · sent {}",
-                human_bytes(x.rx),
-                human_bytes(x.tx)
+                ui::format::bytes(x.rx),
+                ui::format::bytes(x.tx)
             );
             let (lw, _) = tr.measure_weighted(&legend, 11.0, None, TextWeight::Regular);
             text_w(tr, scene, t, &legend, 11.0, theme.text_dim, chart.x1 - 12.0 - lw as f64, chart.y0 + 10.0, TextWeight::Regular);
@@ -1269,8 +1269,8 @@ fn synth_logs(c: &Connection, activity: &[String], xfer: Option<Transfer>) -> Ve
             out.push(format!("[{}] routing {} via {}", iface, c.allowed_ips, iface));
         }
         if let Some(x) = xfer {
-            out.push(format!("[{}] received {} (kernel counter)", iface, human_bytes(x.rx)));
-            out.push(format!("[{}] sent {} (kernel counter)", iface, human_bytes(x.tx)));
+            out.push(format!("[{}] received {} (kernel counter)", iface, ui::format::bytes(x.rx)));
+            out.push(format!("[{}] sent {} (kernel counter)", iface, ui::format::bytes(x.tx)));
         }
         if c.tor {
             out.push(format!("[{}] traffic chained over Tor SOCKS 127.0.0.1:9050", iface));

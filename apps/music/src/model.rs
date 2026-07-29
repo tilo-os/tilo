@@ -379,18 +379,6 @@ impl SearchResults {
     }
 }
 
-/// Format a duration in seconds as `m:ss` or `h:mm:ss`.
-pub fn fmt_duration(total_s: u64) -> String {
-    let h = total_s / 3600;
-    let m = (total_s % 3600) / 60;
-    let s = total_s % 60;
-    if h > 0 {
-        format!("{h}:{m:02}:{s:02}")
-    } else {
-        format!("{m}:{s:02}")
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -432,12 +420,5 @@ mod tests {
         assert_eq!(RepeatMode::Off.next(), RepeatMode::All);
         assert_eq!(RepeatMode::All.next(), RepeatMode::One);
         assert_eq!(RepeatMode::One.next(), RepeatMode::Off);
-    }
-
-    #[test]
-    fn fmt_duration_formats() {
-        assert_eq!(fmt_duration(5), "0:05");
-        assert_eq!(fmt_duration(65), "1:05");
-        assert_eq!(fmt_duration(3725), "1:02:05");
     }
 }

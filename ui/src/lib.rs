@@ -66,6 +66,7 @@ pub mod warmup;
 pub mod webview;
 pub mod fullscreen;
 pub mod mpris;
+pub mod format;
 pub mod nav_stack;
 pub mod reader_hud;
 pub mod search;
