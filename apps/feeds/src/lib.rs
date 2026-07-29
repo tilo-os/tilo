@@ -77,6 +77,9 @@ pub fn app_root_for_shot(scenario: &str) -> Box<dyn Widget> {
         // The subscriptions list after an OPML import folds new folders + feeds
         // into the sidebar.
         "post-import" => app.stage_post_import(),
+        // The Add-subscription dialog open over the reader, with a URL typed
+        // into the real TextInput (shared caret / clipboard core).
+        "add-subscription" => app.stage_add_subscription("https://blog.rust-lang.org/feed.xml"),
         _ => {}
     }
     Box::new(app)
