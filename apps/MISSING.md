@@ -54,13 +54,29 @@ verified by an offscreen shot (header gone, functional controls intact) + tests:
 - [x] Excel-style multi-range selection → confirmed live (ctrl-selected B2:B7 +
       E2:E7 = 11 cells, status bar shows Sum $14,750 · Avg $1,340.91 · Count 11).
 
-## weather — CLEAR (verified, committed b0fe3e2)
+## weather — CLEAR (verified, committed b0fe3e2; honesty + §7 empty-state pass)
 - [x] Units (°C/°F, km/h/mph) removed from the app; read from the shared Settings
       store (locale.measurement) → fixed.
 - [x] HIG §1b content panels via ui::NavShell: contentful city list + forecast
       side-by-side on desktop; narrow = full-screen list → tap city → forecast
       pushes in with a ‹ Back button (never an X). Old overlay-flap removed →
       fixed (verified wide + narrow-pushed-detail). Real Open-Meteo data.
+- [x] Live path is real, verified end-to-end: the geocoding + forecast endpoints
+      return live data matching the parser (Berlin 29.8 °C / code 0), the net
+      worker fetches on its own tokio+reqwest thread, and parse/URL building are
+      unit-tested. `--shots` renders bundled sample data offline (never the net).
+- [x] Honesty: `live()` no longer seeds a curated set of world cities (SF / Tokyo
+      / Reykjavík / Cairo …) into the user's doc on first run — it starts with the
+      user's OWN saved places only (empty on a fresh vault), and the bundled
+      sample cities/readings are `new()`/`--shots`-only. Errors surface on the
+      status line; a place-less start shows no phantom "Loading…" spinner.
+      (`live_starts_empty_with_no_fabricated_places_or_readings`.)
+- [x] §7 empty state: the detail pane's bare "No place selected" on a big empty
+      gradient is replaced by a composed, centred zero-state — a partly-cloudy
+      weather glyph + "No cities yet" + "Search for a city to see its current
+      conditions and 7-day forecast." (an existing roster with nothing selected
+      reads "Pick a city"). Verified on the `onboarding` shot; the populated wide
+      view is byte-unchanged.
 
 ## monitor (system monitor) — CLEAR (verified, committed 1571bc5)
 - [x] Re-architected: Processes view = a compact CPU/Memory/Network/Disk summary
