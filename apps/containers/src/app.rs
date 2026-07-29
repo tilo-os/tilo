@@ -22,7 +22,9 @@ use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::command_palette::{CommandEntry, CommandPalette};
-use ui::widget::{FlapState, SearchField, SplitLayout, Widget};
+use ui::widget::{FlapState, ModalDialog, PromptBody, SearchField, SplitLayout, Text, Widget};
+use std::cell::Cell;
+use std::rc::Rc;
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::{Color, Fill};
 use vello::Scene;
@@ -73,8 +75,6 @@ pub(crate) enum Hit {
     DistroCreate,
     DetailTab(DetailTab),
     CloseDetail,
-    ConfirmOk,
-    ConfirmCancel,
     CreateField(CreateField),
     CreateSubmit,
     CreateCancel,
@@ -84,8 +84,7 @@ pub(crate) enum Hit {
     ComboPick(usize),
     /// Collapse / expand the navigation sidebar.
     ToggleSidebar,
-    /// A simple text-prompt dialog OK / Cancel (volume create, image tag).
-    PromptOk,
+    /// Dismiss hit reused by the pull overlay's Close button.
     PromptCancel,
 }
 
@@ -100,6 +99,23 @@ pub(crate) enum ConfirmTarget {
     Container { id: String, action: Action },
     Image { reference: String },
     Volume { name: String },
+}
+
+/// The live destructive-confirm dialog: the shared [`ModalDialog`] plus the
+/// `confirm` / `cancel` cells its action callbacks flip (drained by the host).
+struct ConfirmDlg {
+    dialog: ModalDialog<Text>,
+    confirm: Rc<Cell<bool>>,
+    cancel: Rc<Cell<bool>>,
+}
+
+/// The live text-prompt dialog: the shared [`ModalDialog`] hosting a real
+/// [`PromptBody`] (a genuine [`ui::widget::TextInput`], so caret / selection /
+/// clipboard work), plus the submit / cancel cells its buttons flip.
+struct PromptDlg {
+    dialog: ModalDialog<PromptBody>,
+    submit: Rc<Cell<bool>>,
+    cancel: Rc<Cell<bool>>,
 }
 
 /// A transient confirm dialog for a destructive action.
@@ -164,10 +180,16 @@ pub struct ContainersApp {
     /// Per-section scroll offsets (list scroll).
     pub(crate) list_scroll: f64,
     pub(crate) detail_scroll: f64,
-    /// Active confirm dialog, if any.
+    /// Active confirm dialog metadata, if any (name / verb / target).
     pub(crate) confirm: Option<Confirm>,
-    /// Active text-prompt dialog, if any (new volume / image tag).
+    /// The live confirm dialog (shared [`ModalDialog`]), built lazily from
+    /// `confirm` and torn down when it resolves.
+    confirm_dialog: Option<ConfirmDlg>,
+    /// Active text-prompt metadata, if any (new volume / image tag / pull).
     pub(crate) prompt: Option<Prompt>,
+    /// The live prompt dialog (shared [`ModalDialog`] hosting a real
+    /// [`PromptBody`]/[`TextInput`]), built lazily from `prompt`.
+    prompt_dialog: Option<PromptDlg>,
     /// Whether the create-container modal is open.
     pub(crate) create_open: bool,
     /// Which create field has keyboard focus (index into CreateField::ALL).
@@ -233,7 +255,9 @@ impl ContainersApp {
             list_scroll: 0.0,
             detail_scroll: 0.0,
             confirm: None,
+            confirm_dialog: None,
             prompt: None,
+            prompt_dialog: None,
             create_open: false,
             create_focus: 0,
             combo: ComboState::default(),
@@ -635,6 +659,259 @@ impl ContainersApp {
 }
 
 // =====================================================================
+// Shared-modal dialog wiring (destructive confirm + text prompt)
+// =====================================================================
+
+impl ContainersApp {
+    /// Build the destructive-confirm dialog from the current `confirm`
+    /// metadata. The affirmative button is destructive (danger-coloured).
+    fn build_confirm_dialog(&self) -> Option<ConfirmDlg> {
+        let confirm = self.confirm.as_ref()?;
+        let title = format!("{}?", confirm.verb);
+        let body = format!(
+            "This permanently removes \u{201c}{}\u{201d}. This cannot be undone.",
+            confirm.name
+        );
+        let ok = Rc::new(Cell::new(false));
+        let cancel = Rc::new(Cell::new(false));
+        let dialog = ModalDialog::new(title, Text::new(&body).with_size(13.5))
+            .open(true)
+            .with_max_size(420.0, 190.0)
+            .with_destructive(true)
+            .primary_action("Remove", {
+                let c = ok.clone();
+                move || c.set(true)
+            })
+            .secondary_action("Cancel", {
+                let c = cancel.clone();
+                move || c.set(true)
+            })
+            .on_dismiss({
+                let c = cancel.clone();
+                move || c.set(true)
+            });
+        Some(ConfirmDlg { dialog, confirm: ok, cancel })
+    }
+
+    /// Build the text-prompt dialog from the current `prompt` metadata. The
+    /// field is a real [`PromptBody`]/[`TextInput`], seeded with any staged
+    /// value.
+    fn build_prompt_dialog(&self) -> Option<PromptDlg> {
+        let prompt = self.prompt.as_ref()?;
+        let primary = match prompt.kind {
+            PromptKind::NewVolume if prompt.context == "__pull__" => "Pull",
+            PromptKind::NewVolume => "Create",
+            PromptKind::TagImage => "Tag",
+        };
+        let body = PromptBody::new("", &prompt.placeholder).with_initial(&prompt.value);
+        let submit = Rc::new(Cell::new(false));
+        let cancel = Rc::new(Cell::new(false));
+        let dialog = ModalDialog::new(prompt.title.clone(), body)
+            .open(true)
+            .with_max_size(440.0, 200.0)
+            .primary_action(primary, {
+                let s = submit.clone();
+                move || s.set(true)
+            })
+            .secondary_action("Cancel", {
+                let c = cancel.clone();
+                move || c.set(true)
+            })
+            .on_dismiss({
+                let c = cancel.clone();
+                move || c.set(true)
+            });
+        Some(PromptDlg { dialog, submit, cancel })
+    }
+
+    fn ensure_confirm_dialog(&mut self) {
+        if self.confirm_dialog.is_none() {
+            self.confirm_dialog = self.build_confirm_dialog();
+        }
+    }
+
+    fn ensure_prompt_dialog(&mut self) {
+        if self.prompt_dialog.is_none() {
+            self.prompt_dialog = self.build_prompt_dialog();
+        }
+    }
+
+    /// Lay a shared dialog out against the app rect so its box + footer
+    /// buttons resolve. Generic over which dialog slot is active.
+    fn layout_confirm_dialog(&mut self) {
+        if self.rect.width() <= 0.0 || self.rect.height() <= 0.0 {
+            return;
+        }
+        let rect = self.rect;
+        if let Some(cd) = self.confirm_dialog.as_mut() {
+            layout_dialog(&mut cd.dialog, rect);
+        }
+    }
+
+    fn layout_prompt_dialog(&mut self) {
+        if self.rect.width() <= 0.0 || self.rect.height() <= 0.0 {
+            return;
+        }
+        let rect = self.rect;
+        if let Some(pd) = self.prompt_dialog.as_mut() {
+            layout_dialog(&mut pd.dialog, rect);
+        }
+    }
+
+    /// Route an event into the open confirm dialog, then apply the flags its
+    /// callbacks set (Enter is a submit convenience).
+    fn route_confirm_event(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: &winit::event::Modifiers,
+        doc: &mut AutoCommit,
+        handled: &mut bool,
+    ) {
+        if enter_pressed(event) {
+            self.apply_confirm(doc);
+            *handled = true;
+            return;
+        }
+        self.ensure_confirm_dialog();
+        self.layout_confirm_dialog();
+        let (ok, cancel) = {
+            let Some(cd) = self.confirm_dialog.as_mut() else { return };
+            route_event_into(&mut cd.dialog, event, scale_factor, modifiers, doc, handled);
+            (cd.confirm.replace(false), cd.cancel.replace(false))
+        };
+        if ok {
+            self.apply_confirm(doc);
+        } else if cancel {
+            self.confirm = None;
+            self.confirm_dialog = None;
+        }
+        *handled = true;
+    }
+
+    /// Route an event into the open prompt dialog, then apply the flags its
+    /// callbacks set (Enter is a submit convenience). Reads the committed text
+    /// from the embedded real field.
+    fn route_prompt_event(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: &winit::event::Modifiers,
+        doc: &mut AutoCommit,
+        handled: &mut bool,
+    ) {
+        if enter_pressed(event) {
+            self.submit_prompt(doc);
+            *handled = true;
+            return;
+        }
+        self.ensure_prompt_dialog();
+        self.layout_prompt_dialog();
+        let (submit, cancel) = {
+            let Some(pd) = self.prompt_dialog.as_mut() else { return };
+            route_event_into(&mut pd.dialog, event, scale_factor, modifiers, doc, handled);
+            (pd.submit.replace(false), pd.cancel.replace(false))
+        };
+        if submit {
+            self.submit_prompt(doc);
+        } else if cancel {
+            self.prompt = None;
+            self.prompt_dialog = None;
+        }
+        *handled = true;
+    }
+
+    /// Apply the pending destructive confirm against the real engine/document.
+    fn apply_confirm(&mut self, doc: &mut AutoCommit) {
+        if let Some(confirm) = self.confirm.take() {
+            match confirm.target {
+                ConfirmTarget::Container { id, action } => {
+                    self.apply_action(action, &id);
+                    if ViewDoc::selected(doc).as_deref() == Some(id.as_str()) {
+                        ViewDoc::set_selected(doc, None);
+                    }
+                }
+                ConfirmTarget::Image { reference } => self.remove_image(&reference),
+                ConfirmTarget::Volume { name } => self.remove_volume(&name),
+            }
+        }
+        self.confirm_dialog = None;
+        self.refresh_view(doc);
+    }
+
+    /// Read the prompt's typed value out of the embedded field and commit it.
+    fn submit_prompt(&mut self, doc: &mut AutoCommit) {
+        let value = self
+            .prompt_dialog
+            .as_ref()
+            .map(|pd| pd.dialog.content().value().to_string())
+            .unwrap_or_default();
+        self.commit_prompt(value.trim());
+        self.prompt_dialog = None;
+        self.refresh_view(doc);
+    }
+}
+
+/// Lay a shared [`ModalDialog`] out inside `rect` via a throwaway taffy pass so
+/// its box + footer button rects resolve for hit-testing and paint.
+fn layout_dialog<C: Widget + 'static>(dialog: &mut ModalDialog<C>, rect: Rect) {
+    let theme = Theme::dark();
+    let mut taffy: TaffyTree<()> = TaffyTree::new();
+    let mut node_map: std::collections::HashMap<NodeId, *mut dyn Widget> =
+        std::collections::HashMap::new();
+    let node = dialog.build_layout(&mut taffy, &theme, &mut node_map);
+    let root = taffy
+        .new_with_children(
+            Style {
+                size: Size {
+                    width: Dimension::length(rect.width() as f32),
+                    height: Dimension::length(rect.height() as f32),
+                },
+                ..Default::default()
+            },
+            &[node],
+        )
+        .unwrap();
+    let _ = taffy.compute_layout(
+        root,
+        Size {
+            width: taffy::AvailableSpace::Definite(rect.width() as f32),
+            height: taffy::AvailableSpace::Definite(rect.height() as f32),
+        },
+    );
+    dialog.apply_layout(&taffy, node, Point::new(rect.x0, rect.y0));
+}
+
+/// Route one event into a shared dialog with a throwaway node (the dialog
+/// drives its own retained content tree, so the node/taffy are ignored).
+fn route_event_into<C: Widget + 'static>(
+    dialog: &mut ModalDialog<C>,
+    event: &WindowEvent,
+    scale_factor: f64,
+    modifiers: &winit::event::Modifiers,
+    doc: &mut AutoCommit,
+    handled: &mut bool,
+) {
+    let mut taffy: TaffyTree<()> = TaffyTree::new();
+    let node = taffy.new_leaf(Style::default()).unwrap();
+    let mut focus_target = None;
+    let root = automerge::ROOT;
+    dialog.handle_event(
+        event, scale_factor, modifiers, doc, &root, handled, &mut focus_target, node, &taffy,
+    );
+}
+
+/// Whether `event` is a key-press of Enter (the modal submit convenience).
+fn enter_pressed(event: &WindowEvent) -> bool {
+    matches!(
+        event,
+        WindowEvent::KeyboardInput { event: ke, .. }
+            if ke.state == ElementState::Pressed
+                && matches!(ke.logical_key, Key::Named(winit::keyboard::NamedKey::Enter))
+    )
+}
+
+// =====================================================================
 // Widget impl
 // =====================================================================
 
@@ -822,10 +1099,22 @@ impl Widget for ContainersApp {
             self.draw_pull_overlay(scene, tr, theme, r);
         }
         if self.prompt.is_some() {
-            self.draw_prompt(scene, tr, theme, r);
+            self.ensure_prompt_dialog();
+            self.layout_prompt_dialog();
+            if let Some(pd) = self.prompt_dialog.as_mut() {
+                pd.dialog.draw(scene, transform, tr, theme, presence);
+            }
+        } else {
+            self.prompt_dialog = None;
         }
-        if let Some(confirm) = &self.confirm {
-            Self::draw_confirm(scene, tr, theme, r, confirm, &mut self.hits);
+        if self.confirm.is_some() {
+            self.ensure_confirm_dialog();
+            self.layout_confirm_dialog();
+            if let Some(cd) = self.confirm_dialog.as_mut() {
+                cd.dialog.draw(scene, transform, tr, theme, presence);
+            }
+        } else {
+            self.confirm_dialog = None;
         }
         if let Some(toast) = &self.toast {
             Self::draw_toast(scene, tr, theme, r, toast);
@@ -896,6 +1185,20 @@ impl Widget for ContainersApp {
                 self.refresh_view(doc);
                 return;
             }
+        }
+
+        // A destructive-confirm or text-prompt dialog is modal: while it's up
+        // the shared ModalDialog captures every event (typing, clicks, Esc)
+        // and nothing leaks to the app behind the scrim.
+        if self.confirm.is_some() {
+            self.route_confirm_event(event, scale_factor, modifiers, doc, handled);
+            self.refresh_view(doc);
+            return;
+        }
+        if self.prompt.is_some() {
+            self.route_prompt_event(event, scale_factor, modifiers, doc, handled);
+            self.refresh_view(doc);
+            return;
         }
 
         match event {
@@ -1157,6 +1460,122 @@ mod palette_launcher_tests {
             ViewDoc::selected(&mut doc).as_deref(),
             Some(expected.as_str()),
             "activating a palette row selects that container"
+        );
+    }
+
+    // --- shared-ModalDialog confirm / prompt routing --------------------
+
+    fn cursor_at(p: Point) -> WindowEvent {
+        WindowEvent::CursorMoved {
+            device_id: unsafe { std::mem::zeroed() },
+            position: winit::dpi::PhysicalPosition::new(p.x, p.y),
+        }
+    }
+    fn left_press() -> WindowEvent {
+        WindowEvent::MouseInput {
+            device_id: unsafe { std::mem::zeroed() },
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+        }
+    }
+    fn char_press(ch: &str) -> WindowEvent {
+        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
+        ev.logical_key = Key::Character(ch.into());
+        ev.physical_key =
+            PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
+        ev.location = KeyLocation::Standard;
+        ev.state = ElementState::Pressed;
+        ev.repeat = false;
+        ev.text = Some(ch.into());
+        WindowEvent::KeyboardInput {
+            device_id: unsafe { std::mem::zeroed() },
+            event: ev,
+            is_synthetic: false,
+        }
+    }
+    fn dispatch(app: &mut ContainersApp, doc: &mut AutoCommit, root: &ObjId, ev: &WindowEvent) {
+        let (taffy, node) = dummy_layout();
+        let mut handled = false;
+        let mut focus = None;
+        app.handle_event(
+            ev, 1.0, &winit::event::Modifiers::default(), doc, root, &mut handled, &mut focus,
+            node, &taffy,
+        );
+    }
+
+    /// The destructive confirm routes through the shared `ModalDialog`: a click
+    /// on its danger primary performs the real removal and closes; Escape on a
+    /// fresh one cancels without touching the engine.
+    #[test]
+    fn confirm_dialog_primary_removes_image_and_escape_cancels() {
+        let mut app = ContainersApp::new(false);
+        app.rect = Rect::new(0.0, 0.0, 900.0, 700.0);
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        let reference = app.engine.images[0].reference();
+        let before = app.engine.images.len();
+        app.confirm = Some(Confirm {
+            name: reference.clone(),
+            verb: "Remove image".into(),
+            target: ConfirmTarget::Image { reference: reference.clone() },
+        });
+        // A cursor move builds + lays out the dialog so its primary rect resolves.
+        dispatch(&mut app, &mut doc, &root, &cursor_at(Point::new(10.0, 10.0)));
+        let primary = app.confirm_dialog.as_ref().unwrap().dialog.primary_rect();
+        dispatch(&mut app, &mut doc, &root, &cursor_at(primary.center()));
+        dispatch(&mut app, &mut doc, &root, &left_press());
+        assert!(app.confirm.is_none(), "confirm closed after the primary click");
+        assert!(app.confirm_dialog.is_none());
+        assert_eq!(app.engine.images.len(), before - 1, "the image was removed on confirm");
+
+        let mut b = ContainersApp::new(false);
+        b.rect = Rect::new(0.0, 0.0, 900.0, 700.0);
+        let refb = b.engine.images[0].reference();
+        let beforeb = b.engine.images.len();
+        b.confirm = Some(Confirm {
+            name: refb.clone(),
+            verb: "Remove image".into(),
+            target: ConfirmTarget::Image { reference: refb },
+        });
+        dispatch(&mut b, &mut doc, &root, &key_press(Key::Named(NamedKey::Escape)));
+        assert!(b.confirm.is_none(), "Escape cancelled the confirm");
+        assert_eq!(b.engine.images.len(), beforeb, "Escape removed nothing");
+    }
+
+    /// The text prompt routes through the shared `ModalDialog` hosting a real
+    /// `TextInput`: characters typed land in the field, and the primary button
+    /// commits that value (creating a volume named from the typed text).
+    #[test]
+    fn prompt_dialog_creates_volume_from_typed_field() {
+        let mut app = ContainersApp::new(false);
+        app.rect = Rect::new(0.0, 0.0, 900.0, 700.0);
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        let before = app.engine.volumes.len();
+        app.prompt = Some(Prompt {
+            kind: PromptKind::NewVolume,
+            title: "New volume".into(),
+            placeholder: "my-volume".into(),
+            value: String::new(),
+            context: String::new(),
+        });
+        dispatch(&mut app, &mut doc, &root, &cursor_at(Point::new(10.0, 10.0)));
+        for ch in ["d", "a", "t", "a"] {
+            dispatch(&mut app, &mut doc, &root, &char_press(ch));
+        }
+        assert_eq!(
+            app.prompt_dialog.as_ref().unwrap().dialog.content().value(),
+            "data",
+            "keystrokes land in the embedded real TextInput",
+        );
+        let primary = app.prompt_dialog.as_ref().unwrap().dialog.primary_rect();
+        dispatch(&mut app, &mut doc, &root, &cursor_at(primary.center()));
+        dispatch(&mut app, &mut doc, &root, &left_press());
+        assert!(app.prompt.is_none(), "prompt closed after submit");
+        assert_eq!(app.engine.volumes.len(), before + 1, "a volume was created");
+        assert!(
+            app.engine.volumes.iter().any(|v| v.name == "data"),
+            "the volume is named from the typed field value",
         );
     }
 }
