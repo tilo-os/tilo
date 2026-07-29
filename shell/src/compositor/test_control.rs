@@ -144,6 +144,43 @@ pub enum Command {
     /// `serde_json::from_value` to a typed mirror without the
     /// dispatcher locking the wire schema to a per-field snapshot.
     StateDump,
+    /// Grant a capability on the active workspace, on behalf of the
+    /// user sitting at this session, through `Workspace::grant_as`.
+    ///
+    /// The authority check is the production one: `grant_as` refuses a
+    /// grantor who neither owns the room nor holds `Admin` over it, and
+    /// this op reports that refusal rather than working around it.
+    ///
+    /// `subject` is `person:<id>` / `app:<id>` / `agent:<id>`; `scope`
+    /// is `workspace`, `room`, `app:<id>` or `action:<app>/<action>`;
+    /// `verb` is one of read / comment / write / invite / admin.
+    Grant {
+        subject: String,
+        scope: String,
+        verb: String,
+        /// Stable capability id, so a later `revoke` can name it. One
+        /// is minted when omitted.
+        #[serde(default)]
+        id: Option<String>,
+    },
+    /// Revoke the capability `id` on the active workspace, through
+    /// `Workspace::revoke_as` — same authority check as `grant`.
+    Revoke { id: String },
+    /// Ask the in-app action gate (`shell::actions::check_action`)
+    /// whether `actor` may invoke `app`'s `action`.
+    ///
+    /// The action's declaration comes from the request because that is
+    /// where it comes from in production too: an app declares the verb
+    /// its action needs, and the capability model answers about that
+    /// verb. The answer is read out of the live workspace.
+    CheckAction {
+        actor: String,
+        app: String,
+        action: String,
+        verb: String,
+        #[serde(default)]
+        destructive: bool,
+    },
 }
 
 /// Top-level response envelope. Either an `ok` payload (per-command
@@ -180,6 +217,10 @@ pub enum Response {
         workspace_tree: serde_json::Value,
         chrome: serde_json::Value,
     },
+    /// Answer to a capability query or administration command
+    /// (`grant`, `revoke`, `check_action`). Opaque JSON so the shape
+    /// can grow without a wire break.
+    Answer(serde_json::Value),
 }
 
 /// One entry in a `list_targets` response. `rect` is `(x, y, w, h)` in
@@ -244,6 +285,40 @@ pub trait ControlState {
     /// terse.
     fn foreign_frames_json(&self) -> serde_json::Value {
         serde_json::Value::Array(Vec::new())
+    }
+
+    /// Grant a capability on the active workspace on behalf of the
+    /// local user, via `Workspace::grant_as`.
+    ///
+    /// Default impl refuses: a `ControlState` that has no live tree has
+    /// no room to administer, and answering anything else would make a
+    /// harness think it had proved something about authority.
+    fn grant_capability(
+        &self,
+        _subject: &str,
+        _scope: &str,
+        _verb: &str,
+        _id: Option<&str>,
+    ) -> Result<serde_json::Value, String> {
+        Err("no live workspace on this control state".to_string())
+    }
+
+    /// Revoke a capability by id on the active workspace, via
+    /// `Workspace::revoke_as`.
+    fn revoke_capability(&self, _id: &str) -> Result<serde_json::Value, String> {
+        Err("no live workspace on this control state".to_string())
+    }
+
+    /// Run `shell::actions::check_action` against the active workspace.
+    fn check_action(
+        &self,
+        _actor: &str,
+        _app: &str,
+        _action: &str,
+        _verb: &str,
+        _destructive: bool,
+    ) -> Result<serde_json::Value, String> {
+        Err("no live workspace on this control state".to_string())
     }
 }
 
@@ -585,6 +660,111 @@ pub fn dispatch_command<S: ControlState>(
                 Vec::new(),
             )
         }
+        Command::Grant {
+            subject,
+            scope,
+            verb,
+            id,
+        } => (
+            answer_or_err(
+                state.grant_capability(subject, scope, verb, id.as_deref()),
+                "grant_refused",
+            ),
+            Vec::new(),
+        ),
+        Command::Revoke { id } => (
+            answer_or_err(state.revoke_capability(id), "revoke_refused"),
+            Vec::new(),
+        ),
+        Command::CheckAction {
+            actor,
+            app,
+            action,
+            verb,
+            destructive,
+        } => (
+            answer_or_err(
+                state.check_action(actor, app, action, verb, *destructive),
+                "check_failed",
+            ),
+            Vec::new(),
+        ),
+    }
+}
+
+/// Wrap a capability-op result in the wire envelope.
+///
+/// A refusal is an [`Response::Err`], not an `Answer` carrying
+/// `allowed: false`: "you are not allowed to administer this room" and
+/// "the thing you asked about is denied" are different answers, and a
+/// harness that conflated them would read a refused *grant* as a
+/// successful one that happened to deny.
+fn answer_or_err(result: Result<serde_json::Value, String>, code: &str) -> Response {
+    match result {
+        Ok(value) => Response::Answer(value),
+        Err(message) => Response::Err {
+            code: code.to_string(),
+            message,
+        },
+    }
+}
+
+/// Parse a `person:` / `app:` / `agent:` subject string.
+pub fn parse_subject(s: &str) -> Result<crate::shell::state::Subject, String> {
+    use crate::shell::state::Subject;
+    match s.split_once(':') {
+        Some(("person", id)) => Ok(Subject::person(id)),
+        Some(("app", id)) => Ok(Subject::app(id)),
+        Some(("agent", id)) => Ok(Subject::agent(id)),
+        _ => Err(format!(
+            "subject must be person:<id>, app:<id> or agent:<id>, got `{s}`"
+        )),
+    }
+}
+
+/// Parse a scope string against the room `room_key` stands for.
+///
+/// `room_key` is the workspace's own id as a string — the same key
+/// `Workspace::set_owner` and `Workspace::role_of` use for
+/// `Scope::Room`, so a scope written here matches the ones the
+/// compositor writes itself.
+pub fn parse_scope(s: &str, room_key: &str) -> Result<crate::shell::state::Scope, String> {
+    use crate::shell::state::Scope;
+    match s {
+        "workspace" => return Ok(Scope::Workspace),
+        "room" => return Ok(Scope::Room(room_key.to_string())),
+        _ => {}
+    }
+    match s.split_once(':') {
+        Some(("app", id)) => Ok(Scope::App(id.to_string())),
+        Some(("fs", path)) => Ok(Scope::FsPath(path.to_string())),
+        Some(("device", d)) => Ok(Scope::Device(d.to_string())),
+        Some(("action", rest)) => match rest.split_once('/') {
+            Some((app, action)) => Ok(Scope::Action {
+                app: app.to_string(),
+                action: action.to_string(),
+            }),
+            None => Err(format!("action scope must be action:<app>/<action>, got `{s}`")),
+        },
+        _ => Err(format!(
+            "scope must be workspace, room, app:<id>, fs:<path>, device:<id> \
+             or action:<app>/<action>, got `{s}`"
+        )),
+    }
+}
+
+/// Parse a verb name.
+pub fn parse_verb(s: &str) -> Result<crate::shell::state::Verb, String> {
+    use crate::shell::state::Verb;
+    match s {
+        "read" => Ok(Verb::Read),
+        "comment" => Ok(Verb::Comment),
+        "write" => Ok(Verb::Write),
+        "invite" => Ok(Verb::Invite),
+        "admin" => Ok(Verb::Admin),
+        _ => Err(format!(
+            "verb must be read / comment / write / invite / admin, got `{s}`"
+        )),
     }
 }
 
