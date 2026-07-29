@@ -25,7 +25,7 @@ use std::ffi::CString;
 use std::path::PathBuf;
 
 use landlock::{
-    ABI, Access, AccessFs, AccessNet, PathBeneath, PathFd, RestrictionStatus, Ruleset,
+    ABI, Access, AccessFs, AccessNet, NetPort, PathBeneath, PathFd, RestrictionStatus, Ruleset,
     RulesetAttr, RulesetCreatedAttr, RulesetError, RulesetStatus,
 };
 
@@ -35,7 +35,7 @@ use crate::landlock::{FsRule, LandlockOutcome, TARGET_ABI};
 pub const SANDBOX_EXEC_SUBCOMMAND: &str = "__sandbox-exec";
 
 /// Parsed form of the shim argv.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ShimArgs {
     /// Read-only paths (read + exec) — sandbox-side.
     pub ro: Vec<PathBuf>,
@@ -43,6 +43,17 @@ pub struct ShimArgs {
     pub rw: Vec<PathBuf>,
     /// Deny all TCP bind/connect (ABI ≥ 4).
     pub net_restricted: bool,
+    /// Egress gate socket, sandbox-side. When set, the shim starts the
+    /// loopback relay before restricting itself.
+    pub net_gate: Option<PathBuf>,
+    /// Loopback port the relay listens on, and the only TCP port the
+    /// app is permitted to connect to.
+    pub net_gate_port: Option<u16>,
+    /// Skip Landlock entirely. Used when the shim is in the argv only
+    /// to host the relay — a ruleset with no rules denies everything,
+    /// so "no FS policy" has to be said explicitly rather than being
+    /// spelled as an empty rule list.
+    pub no_landlock: bool,
     /// The real app argv to `execvp` after restricting.
     pub command: Vec<String>,
 }
@@ -68,33 +79,44 @@ impl std::error::Error for ShimParseError {}
 
 impl ShimArgs {
     /// Parse the slice AFTER the `__sandbox-exec` token.
-    /// Grammar: `[--ro <p>]* [--rw <p>]* [--net-restricted] -- <cmd> [args]`.
+    ///
+    /// Grammar:
+    /// `[--ro <p>]* [--rw <p>]* [--net-restricted] [--no-landlock]
+    ///  [--net-gate <sock> --net-gate-port <n>] -- <cmd> [args]`.
+    ///
     /// Unknown flags before `--` are silently skipped (forward-compat).
     pub fn parse(args: &[String]) -> Result<ShimArgs, ShimParseError> {
-        let mut ro = Vec::new();
-        let mut rw = Vec::new();
-        let mut net_restricted = false;
+        let mut parsed = ShimArgs::default();
         let mut i = 0;
         let mut saw_separator = false;
-        let mut command = Vec::new();
 
         while i < args.len() {
             let arg = &args[i];
             match arg.as_str() {
                 "--" => {
                     saw_separator = true;
-                    command.extend_from_slice(&args[i + 1..]);
+                    parsed.command.extend_from_slice(&args[i + 1..]);
                     break;
                 }
-                "--net-restricted" => net_restricted = true,
-                "--ro" | "--rw" => {
+                "--net-restricted" => parsed.net_restricted = true,
+                "--no-landlock" => parsed.no_landlock = true,
+                "--ro" | "--rw" | "--net-gate" | "--net-gate-port" => {
                     let value = args
                         .get(i + 1)
                         .ok_or_else(|| ShimParseError::DanglingValue(arg.clone()))?;
-                    if arg == "--ro" {
-                        ro.push(PathBuf::from(value));
-                    } else {
-                        rw.push(PathBuf::from(value));
+                    match arg.as_str() {
+                        "--ro" => parsed.ro.push(PathBuf::from(value)),
+                        "--rw" => parsed.rw.push(PathBuf::from(value)),
+                        "--net-gate" => parsed.net_gate = Some(PathBuf::from(value)),
+                        // A port we can't parse must not silently become
+                        // "no port", which would leave the app pinned by
+                        // Landlock to nothing and unable to reach the
+                        // relay at all.
+                        _ => {
+                            parsed.net_gate_port = Some(value.parse().map_err(|_| {
+                                ShimParseError::DanglingValue(arg.clone())
+                            })?)
+                        }
                     }
                     i += 1;
                 }
@@ -106,15 +128,10 @@ impl ShimArgs {
         if !saw_separator {
             return Err(ShimParseError::MissingSeparator);
         }
-        if command.is_empty() {
+        if parsed.command.is_empty() {
             return Err(ShimParseError::EmptyCommand);
         }
-        Ok(ShimArgs {
-            ro,
-            rw,
-            net_restricted,
-            command,
-        })
+        Ok(parsed)
     }
 }
 
@@ -152,11 +169,27 @@ fn build_and_restrict(args: &ShimArgs) -> Result<RestrictionStatus, RulesetError
     let abi = TARGET_ABI;
 
     let mut ruleset = Ruleset::default().handle_access(AccessFs::from_all(abi))?;
-    if args.net_restricted {
+    // Two shapes of network restriction, and they are mutually
+    // exclusive:
+    //
+    // - `net_restricted`: no network was granted. Deny every TCP
+    //   bind and connect. Belt and braces over an already-empty
+    //   namespace.
+    // - `net_gate_port`: specific hosts were granted, and the app
+    //   reaches them through the relay on loopback. Deny every TCP
+    //   bind and every connect *except* that one port. So even if a
+    //   future change accidentally gave this namespace a route, the
+    //   app still cannot open a socket to anywhere but the gate.
+    let gate_port = args.net_gate_port.filter(|_| args.net_gate.is_some());
+    if args.net_restricted || gate_port.is_some() {
         ruleset = ruleset.handle_access(AccessNet::from_all(abi))?;
     }
 
     let mut created = ruleset.create()?;
+
+    if let Some(port) = gate_port {
+        created = created.add_rule(NetPort::new(port, AccessNet::ConnectTcp))?;
+    }
 
     for rule in access_plan(&args.ro, &args.rw, abi) {
         match PathFd::new(&rule.path) {
@@ -176,11 +209,58 @@ fn build_and_restrict(args: &ShimArgs) -> Result<RestrictionStatus, RulesetError
 }
 
 pub fn apply(args: &ShimArgs) -> LandlockOutcome {
+    if args.no_landlock {
+        // Not "apply an empty policy" — an empty ruleset denies
+        // everything. The shim is in this argv only to host the egress
+        // relay.
+        return LandlockOutcome::NotEnforced;
+    }
     match build_and_restrict(args) {
         Ok(status) => outcome_from_status(status.ruleset),
         Err(e) => {
             eprintln!("qos-sandbox-exec: failed to build/apply ruleset: {e}");
             LandlockOutcome::Errored
+        }
+    }
+}
+
+/// Start the in-sandbox half of the egress gate, in a child process.
+///
+/// Forked *before* `restrict_self`, so the relay is not subject to the
+/// app's Landlock policy — it needs to open the gate socket and bind a
+/// loopback port, both of which the app itself is denied.
+///
+/// That the relay is unrestricted inside the sandbox costs nothing:
+/// it lives in the same namespaces as the app, so anything it can do
+/// the app could do by talking to the gate socket directly. It is a
+/// convenience for unmodified HTTP clients, not a privilege boundary —
+/// the boundary is the far end of the unix socket, in the launcher.
+///
+/// The child dies with the sandbox: `--unshare-all` includes a PID
+/// namespace, so when the app (PID 1 in that namespace) exits the
+/// kernel tears the namespace down and takes the relay with it.
+fn spawn_relay(gate: &std::path::Path, port: u16) {
+    // SAFETY: `fork` in a single-threaded process. The shim has not
+    // started any threads at this point — it is straight-line argv
+    // parsing — so the child inherits a consistent address space.
+    let pid = unsafe { libc::fork() };
+    match pid {
+        -1 => {
+            let err = std::io::Error::last_os_error();
+            eprintln!("qos-sandbox-exec: could not fork the egress relay: {err}");
+        }
+        0 => {
+            // Child: serve until the sandbox goes away.
+            if let Err(e) = crate::netgate::run_relay(gate, port) {
+                eprintln!("qos-sandbox-exec: egress relay stopped: {e}");
+            }
+            std::process::exit(0);
+        }
+        _ => {
+            eprintln!(
+                "qos-sandbox-exec: egress relay on 127.0.0.1:{port} → {}",
+                gate.display()
+            );
         }
     }
 }
@@ -198,13 +278,20 @@ pub fn run_sandbox_exec(args: &[String]) -> ! {
         }
     };
 
+    // Before Landlock: the relay needs accesses the app is about to be
+    // denied, and it must exist before the app's first connect.
+    if let (Some(gate), Some(port)) = (parsed.net_gate.as_deref(), parsed.net_gate_port) {
+        spawn_relay(gate, port);
+    }
+
     let outcome = apply(&parsed);
     eprintln!(
-        "qos-sandbox-exec: {} ({} ro, {} rw, net_restricted={})",
+        "qos-sandbox-exec: {} ({} ro, {} rw, net_restricted={}, gate_port={:?})",
         outcome.describe(),
         parsed.ro.len(),
         parsed.rw.len(),
-        parsed.net_restricted
+        parsed.net_restricted,
+        parsed.net_gate_port,
     );
 
     exec_real_command(&parsed.command)

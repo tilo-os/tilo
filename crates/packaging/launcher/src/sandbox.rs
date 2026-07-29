@@ -388,12 +388,17 @@ pub fn build_bwrap_argv_for_entry(
 ) -> Vec<String> {
     let mut argv: Vec<String> = Vec::new();
 
-    // Namespace + lifetime defaults. The network namespace is shared
-    // when *either* the manifest declares network or the user granted a
-    // network capability; with neither, the sandbox keeps the empty
-    // namespace `--unshare-all` gave it and no packet can leave.
+    // Namespace + lifetime defaults.
+    //
+    // The network namespace is shared ONLY for unrestricted access —
+    // the manifest asking for the host network with nothing narrowing
+    // it, or a grant that literally says `*`. Anything more specific
+    // keeps the empty namespace `--unshare-all` gave it and reaches the
+    // network through the egress gate instead, because `--share-net` is
+    // all-or-nothing and sharing it for a grant naming one host would
+    // be applying that grant as "everything".
     argv.push("--unshare-all".to_string());
-    if manifest.sandbox.net.mode != "off" || capabilities.allow_network {
+    if egress_decision(manifest, capabilities).shares_host_network() {
         argv.push("--share-net".to_string());
     }
     argv.push("--die-with-parent".to_string());
@@ -550,6 +555,66 @@ pub fn build_bwrap_argv_for_entry(
     argv.push(entry_abs.display().to_string());
 
     argv
+}
+
+/// The outbound access this launch resolves to, from the packager's
+/// manifest and the user's grants.
+///
+/// One function so the argv layer, the Landlock layer and the gate
+/// spawn cannot reach different conclusions about the same launch —
+/// the failure mode that would produce a sandbox with an empty
+/// namespace and no gate (a silently offline app) or a gate plus
+/// `--share-net` (a filter with a hole beside it).
+pub fn egress_decision(
+    manifest: &MinimalManifest,
+    capabilities: &CapabilityPlan,
+) -> crate::netgate::EgressDecision {
+    crate::netgate::EgressDecision::resolve(
+        &manifest.sandbox.net.mode,
+        &manifest.sandbox.net.hosts,
+        &capabilities.net_hosts,
+    )
+}
+
+/// Where the egress gate socket is on each side of the sandbox
+/// boundary, and the loopback port the in-sandbox relay serves.
+#[derive(Debug, Clone)]
+pub struct NetGateBind {
+    /// Host-side socket the launcher's gate listens on.
+    pub host_socket: PathBuf,
+    /// In-sandbox path it is bind-mounted at.
+    pub sandbox_socket: PathBuf,
+    /// Loopback port the relay listens on inside the sandbox.
+    pub port: u16,
+}
+
+/// Wire the egress gate into the sandbox: the socket, and the
+/// environment that points an ordinary HTTP client at it.
+///
+/// `--bind`, not `--ro-bind`: `connect(2)` on a pathname socket is a
+/// write-flavoured access and a read-only bind surfaces as `EACCES` at
+/// connect time.
+///
+/// `ALL_PROXY` in both spellings is what curl, reqwest and most of the
+/// ecosystem read. `socks5h` (rather than `socks5`) is load-bearing: it
+/// is the form that sends the **hostname** to the proxy instead of
+/// resolving locally first. Since the sandbox cannot resolve at all,
+/// `socks5` would simply fail — but naming the right scheme means the
+/// failure never comes up.
+pub fn push_net_gate(argv: &mut Vec<String>, bind: &NetGateBind) {
+    push_bind(argv, "--bind", &bind.host_socket, &bind.sandbox_socket);
+    let url = format!("socks5h://127.0.0.1:{}", bind.port);
+    for var in ["ALL_PROXY", "all_proxy"] {
+        argv.push("--setenv".to_string());
+        argv.push(var.to_string());
+        argv.push(url.clone());
+    }
+    // For an app that would rather speak to the gate directly than go
+    // through the loopback relay. The relay is a convenience for
+    // unmodified clients, not a required hop.
+    argv.push("--setenv".to_string());
+    argv.push("QOS_NET_GATE".to_string());
+    argv.push(bind.sandbox_socket.display().to_string());
 }
 
 /// One service-socket triple resolved by the launcher.
