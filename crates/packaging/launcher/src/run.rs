@@ -57,6 +57,17 @@ pub enum RunError {
          bundle with a trusted publisher or pass --allow-unsigned-runtime."
     )]
     RuntimeBundleSignature { path: PathBuf, reason: String },
+    #[error(
+        "refusing to launch: this app was granted access to {hosts:?} and that can only be \
+         enforced by brokering its traffic, but the egress gate could not start ({source}). \
+         Launching anyway would mean giving it unrestricted outbound access, which is not \
+         what was granted. Set QOS_LAUNCHER_NET_GATE=off to do that deliberately."
+    )]
+    EgressGate {
+        hosts: Vec<String>,
+        #[source]
+        source: crate::netgate::GateError,
+    },
 }
 
 impl RunError {
@@ -591,6 +602,93 @@ pub enum LaunchMode {
 
 /// `run` variant taking a pre-parsed manifest. Useful for tests that
 /// want to build a manifest in-memory.
+/// Env override that turns the egress gate off, downgrading a
+/// host-scoped grant to unrestricted access.
+///
+/// Deliberately an explicit operator action rather than a default: the
+/// point of the gate is that a grant naming a host is not silently
+/// applied as "every host".
+pub const NET_GATE_ENV: &str = "QOS_LAUNCHER_NET_GATE";
+
+/// Start the egress gate if this launch needs one.
+///
+/// Returns the bind description to splice into the bwrap argv, and the
+/// guard that keeps the gate alive. Both are `None` for a launch with
+/// nothing to filter.
+///
+/// ## Degradation
+///
+/// **This mechanism needs no privilege and no kernel feature that
+/// `bwrap` does not already require.** That is why it was chosen over
+/// an `nftables`-in-a-netns design, which needs either `CAP_NET_ADMIN`
+/// in the *host* namespace to make a `veth` pair, or a userspace TCP/IP
+/// stack (`pasta` / `slirp4netns`) as a hard dependency. Here the
+/// pieces are: an unshared network namespace, which every app already
+/// gets from `--unshare-all`; one bind-mounted `AF_UNIX` socket, the
+/// same primitive that already carries Wayland and D-Bus; and an
+/// ordinary process binding an ordinary socket under
+/// `$XDG_RUNTIME_DIR`.
+///
+/// So "the kernel does not support this" cannot arise on its own — a
+/// kernel that cannot do it cannot run `bwrap`, and the launch has
+/// already failed earlier for a clearer reason. And "we lack the
+/// privilege" cannot arise at all, because no step is privileged.
+///
+/// What *can* fail is binding the socket: a missing, full or unwritable
+/// runtime directory. That is a broken environment rather than an
+/// unsupported one.
+///
+/// **On that failure we refuse the launch.** A network grant is a
+/// statement about *which* hosts; falling back to `--share-net` would
+/// apply "this host" as "every host" and reduce the difference to a log
+/// line nobody reads, which is the exact false assurance this code
+/// exists to remove. The cost is real and worth naming: an app with a
+/// host allowlist will not start on a host whose runtime directory is
+/// broken. It is bounded — only a *narrowing* grant needs the gate, so
+/// apps granted `*`, and apps whose manifest says `host` with no grant
+/// narrowing them, are unaffected. `QOS_LAUNCHER_NET_GATE=off` takes
+/// the unfiltered path deliberately, and logs the old warning when it
+/// does, so the downgrade is an operator's decision on the record.
+///
+/// Landlock is the one kernel-dependent piece and it is deliberately
+/// *not* held to this standard: it is defence in depth behind the gate,
+/// not the boundary. On a kernel without ABI 4 the port pin silently
+/// does nothing and enforcement is unaffected, because the namespace is
+/// still empty and the gate still holds the policy.
+fn start_egress_gate(
+    egress: &crate::netgate::EgressDecision,
+) -> Result<(Option<crate::sandbox::NetGateBind>, Option<crate::netgate::NetGate>), RunError> {
+    let Some(policy) = egress.policy() else {
+        return Ok((None, None));
+    };
+
+    if std::env::var(NET_GATE_ENV).is_ok_and(|v| v == "off") {
+        tracing::warn!(
+            hosts = ?policy.hosts(),
+            "{NET_GATE_ENV}=off: launching with UNRESTRICTED outbound network access even \
+             though this app was granted specific hosts. Per-host filtering is NOT enforced \
+             for this launch."
+        );
+        return Ok((None, None));
+    }
+
+    let host_socket = crate::netgate::gate_socket_path(current_uid(), std::process::id());
+    match crate::netgate::NetGate::start(&host_socket, policy.clone()) {
+        Ok(gate) => {
+            let bind = crate::sandbox::NetGateBind {
+                host_socket,
+                sandbox_socket: PathBuf::from(crate::netgate::SANDBOX_GATE_PATH),
+                port: crate::netgate::RELAY_PORT,
+            };
+            Ok((Some(bind), Some(gate)))
+        }
+        Err(source) => Err(RunError::EgressGate {
+            hosts: policy.hosts().to_vec(),
+            source,
+        }),
+    }
+}
+
 pub fn run_with(
     manifest: &MinimalManifest,
     payload_root: &Path,
@@ -640,6 +738,16 @@ pub fn run_with(
     // without one is confined to its manifest, which is the same
     // sandbox it had before capabilities existed.
     let capabilities = resolve_capabilities(manifest, opts);
+
+    // Egress. A grant naming specific hosts leaves the namespace empty
+    // and runs a gate the app's traffic is brokered through; `*` and a
+    // bare `net.mode = "host"` share the host network as before, and
+    // neither needs a gate because neither has an allowlist to enforce.
+    //
+    // The guard must outlive the child, so it is bound here and not in
+    // the `if let`.
+    let egress = crate::sandbox::egress_decision(manifest, &capabilities);
+    let (net_gate, _gate_guard) = start_egress_gate(&egress)?;
 
     // Pick the entrypoint bin per launch mode. GUI uses the default
     // `bin`; CLI uses `cli_bin()` if set (falling back to `bin`) and
