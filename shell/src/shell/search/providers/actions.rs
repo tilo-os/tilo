@@ -54,6 +54,17 @@ impl Action {
             },
         },
         Action {
+            id: "room.activity.open",
+            label: "Show room activity",
+            subtitle: "History of this workspace: changes, permissions, who did what and when",
+            apply: |st| {
+                st.overlays.room_activity = true;
+                // The sheet covers the dropdown that can also open it; leaving
+                // both up would put a menu on top of the surface it opened.
+                st.overlays.collaborators = false;
+            },
+        },
+        Action {
             id: "notifications.dnd.toggle",
             label: "Toggle Do Not Disturb",
             subtitle: "Silence notification banners; held notifications go to history",

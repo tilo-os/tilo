@@ -218,6 +218,7 @@ impl<'a> ControlState for FrameBuilderControlState<'a> {
                 "quick_settings": overlays.quick_settings,
                 "ws_settings": overlays.ws_settings,
                 "collaborators": overlays.collaborators,
+                "room_activity": overlays.room_activity,
             },
             "search_scope": format!("{:?}", chrome.search_scope),
             "ws_settings_tab": format!("{:?}", chrome.ws_settings_tab),
