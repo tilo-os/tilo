@@ -6793,7 +6793,6 @@ impl ShellOverlayHost {
         text_renderer: &mut TextRenderer,
         theme: &Theme,
     ) {
-        use crate::shell::chrome_state::SearchScope;
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
         let banner = self.search_banner_rect();
