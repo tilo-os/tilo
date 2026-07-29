@@ -380,7 +380,23 @@ impl ContainersApp {
             y += crate::app::ROW_HEIGHT;
         }
         if rows.is_empty() {
-            self.draw_empty(scene, tr, theme, rows_area, "No containers match your search.");
+            if self.engine.containers.is_empty() {
+                if self.engine.live {
+                    self.draw_empty_state(
+                        scene, tr, theme, rows_area,
+                        "No containers yet",
+                        "Pull an image and create a container to get started.",
+                    );
+                } else {
+                    self.draw_empty_state(
+                        scene, tr, theme, rows_area,
+                        "No container engine",
+                        "Start rootless podman to manage containers, images and volumes here.",
+                    );
+                }
+            } else {
+                self.draw_empty(scene, tr, theme, rows_area, "No containers match your search.");
+            }
         }
         self.draw_scrollbar(scene, theme, rows_area, self.list_scroll, content_h);
 
@@ -1407,6 +1423,34 @@ impl ContainersApp {
         let p = Point::new(area.center().x - w as f64 / 2.0, area.center().y - 8.0);
         draw::text(scene, tr, msg, theme.tokens.typography.scale.base, c.text_dim, p, TextWeight::Regular);
         let _ = scene;
+    }
+
+    /// A composed zero-state: a semibold title over a dim explanatory line,
+    /// centred in `area`. Used for the section-level empty states (no engine,
+    /// no containers) where a single grey sentence would read as unfinished.
+    fn draw_empty_state(
+        &self,
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        area: Rect,
+        title: &str,
+        subtitle: &str,
+    ) {
+        let c = &theme.tokens.colors;
+        let scale = &theme.tokens.typography.scale;
+        let cx = area.center().x;
+        let cy = area.center().y;
+        let (tw, _) = tr.measure_weighted(title, scale.lg, None, TextWeight::Semibold);
+        draw::text(
+            scene, tr, title, scale.lg, c.text_primary,
+            Point::new(cx - tw as f64 / 2.0, cy - 22.0), TextWeight::Semibold,
+        );
+        let (sw, _) = tr.measure(subtitle, scale.sm, None);
+        draw::text(
+            scene, tr, subtitle, scale.sm, c.text_dim,
+            Point::new(cx - sw as f64 / 2.0, cy + 4.0), TextWeight::Regular,
+        );
     }
 
     fn draw_scrollbar(&self, scene: &mut Scene, theme: &Theme, area: Rect, scroll: f64, content_h: f64) {
