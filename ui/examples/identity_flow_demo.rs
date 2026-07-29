@@ -95,15 +95,10 @@ impl IdentityStore for DemoFileStore {
     }
     fn save(&self, record: &IdentityRecord) -> Result<(), IdentityFlowError> {
         let bytes = record.to_json_bytes()?;
-        let tmp = self.path.with_extension("json.tmp");
-        fs::write(&tmp, &bytes).map_err(IdentityFlowError::Io)?;
-        #[cfg(unix)]
-        {
-            let mut perm = fs::metadata(&tmp).map_err(IdentityFlowError::Io)?.permissions();
-            perm.set_mode(0o600);
-            fs::set_permissions(&tmp, perm).map_err(IdentityFlowError::Io)?;
-        }
-        fs::rename(&tmp, &self.path).map_err(IdentityFlowError::Io)?;
+        // 0600 lands on the temp file, so the record is never readable by
+        // anyone else at its final path.
+        atomic_file::write_with_mode(&self.path, &bytes, 0o600)
+            .map_err(IdentityFlowError::Io)?;
         *self.cached.lock().unwrap() = Some(record.clone());
         eprintln!(
             "identity_flow_demo: wrote identity to {} (0600)",
