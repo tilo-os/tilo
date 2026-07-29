@@ -71,7 +71,7 @@ const FULL_BLEED_UNDER: f64 = 720.0;
 /// Inset from the viewport edges.
 const SHEET_INSET: f64 = 16.0;
 /// Height of the pane's own header (title + subtitle).
-const HEADER_H: f64 = 52.0;
+const HEADER_H: f64 = 58.0;
 /// Height of one row of the shell-owned filter chips.
 const CHIP_ROW_H: f64 = 30.0;
 
@@ -426,14 +426,15 @@ impl RoomActivityPane {
             None,
         );
         let sub_size = (tokens.typography.scale.sm - 1.0).max(10.0);
-        let subtitle = if self.room_name.is_empty() {
-            format!("{} changes to this room", self.total_entries)
+        let room = if self.room_name.is_empty() {
+            "this room"
         } else {
-            format!(
-                "{} changes to {} \u{00b7} workspace, membership and permissions",
-                self.total_entries, self.room_name
-            )
+            self.room_name.as_str()
         };
+        let subtitle = format!(
+            "{room} \u{00b7} {} changes to the workspace, its people and its permissions",
+            self.total_entries
+        );
         tr.draw_text(
             scene,
             &subtitle,
