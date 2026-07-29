@@ -1,7 +1,7 @@
 //! Notes — a minimal CRDT-backed plaintext editor hosted as an `AppWidget`.
 //!
 //! The whole body lives in a single Automerge `Text` object under the tile's
-//! root at [`BODY_KEY`]. Edits go through `splice_text` so they merge cleanly
+//! root at [`BODY_KEY`]. Edits go through [`CrdtTextBody`] so they merge cleanly
 //! with peer edits via the existing `CollabRequest::Apply` path. The widget
 //! therefore gets "fully collaborative by default" for free — no per-app
 //! presence wiring beyond what every widget already does.
@@ -24,15 +24,16 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, Value, transaction::Transactable};
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use automerge::{AutoCommit, ObjId};
+use taffy::{NodeId, TaffyTree};
 use ui::ColorCompat;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::text_selection::{
-    Selection, clipboard_copy, clipboard_paste, line_boundaries, next_word_boundary,
-    prev_word_boundary, word_boundaries,
+    Selection, clipboard_copy, clipboard_paste, line_boundaries, word_boundaries,
 };
+
+use crate::shell::crdt_text::{CrdtTextBody, full_bleed_leaf, full_bleed_rect};
 use ui::theme::Theme;
 use ui::widget::{AppKind, AppWidget, IconDescriptor, Widget};
 use vello::Scene;
@@ -47,7 +48,6 @@ pub const BODY_KEY: &str = "notes_body";
 const PADDING: f64 = 28.0;
 const TEXT_SIZE: f32 = 15.0;
 const LINE_HEIGHT: f32 = TEXT_SIZE * 1.4;
-const COMMIT_DEBOUNCE: Duration = Duration::from_millis(800);
 /// Maximum gap between two mouse-clicks that still counts as a
 /// double / triple click. 400 ms matches the GTK / Qt default.
 const MULTI_CLICK_INTERVAL: Duration = Duration::from_millis(400);
@@ -59,12 +59,12 @@ pub struct NotesApp {
     rect: Rect,
     hovered: bool,
     focused: bool,
-    text: String,
+    /// CRDT-backed body plus the caret arithmetic over it.
+    body: CrdtTextBody,
     /// Caret + selection anchor pair. `selection.cursor` is the live
-    /// caret byte offset into `text`. `selection.anchor == cursor`
+    /// caret byte offset into `body.text`. `selection.anchor == cursor`
     /// means no selection is active.
     selection: Selection,
-    last_edit: Option<Instant>,
     last_mouse: Point,
     /// True while the user is dragging the mouse to extend a selection
     /// (between MouseInput::Pressed and MouseInput::Released).
@@ -88,9 +88,8 @@ impl NotesApp {
             rect: Rect::ZERO,
             hovered: false,
             focused: false,
-            text: String::new(),
+            body: CrdtTextBody::new(BODY_KEY),
             selection: Selection::default(),
-            last_edit: None,
             last_mouse: Point::ZERO,
             is_dragging: false,
             last_click_time: None,
@@ -106,123 +105,59 @@ impl NotesApp {
     /// first sync so repeated boots don't keep appending.
     pub fn with_seed(text: impl Into<String>) -> Self {
         let mut app = Self::new();
-        app.text = text.into();
-        let end = app.text.len();
+        app.body = CrdtTextBody::with_seed(BODY_KEY, text);
+        let end = app.body.text.len();
         app.selection = Selection::collapsed(end);
         app
     }
 
-    /// Resolve (or create) the Text object that backs the note body. Returns
-    /// `None` only if the Automerge store rejects both the read and the
-    /// create — which would indicate a corrupt doc, so callers treat it as
-    /// a skip.
-    fn resolve_body(&self, state: &mut AutoCommit, root: &ObjId) -> Option<ObjId> {
-        if let Ok(Some((Value::Object(ObjType::Text), id))) = state.get(root, BODY_KEY) {
-            return Some(id);
-        }
-        state.put_object(root, BODY_KEY, ObjType::Text).ok()
-    }
-
     fn clamp_cursor(&mut self) {
-        let len = self.text.len();
-        if self.selection.cursor > len {
-            self.selection.cursor = len;
-        }
-        while self.selection.cursor > 0 && !self.text.is_char_boundary(self.selection.cursor) {
-            self.selection.cursor -= 1;
-        }
-        if self.selection.anchor > len {
-            self.selection.anchor = len;
-        }
-        while self.selection.anchor > 0 && !self.text.is_char_boundary(self.selection.anchor) {
-            self.selection.anchor -= 1;
-        }
+        self.selection.cursor = self.body.clamp(self.selection.cursor);
+        self.selection.anchor = self.body.clamp(self.selection.anchor);
     }
 
-    /// Delete the current selection from both `self.text` and the CRDT,
+    /// Delete the current selection from both `self.body.text` and the CRDT,
     /// then collapse the selection to the deletion point. No-op if the
     /// selection is collapsed.
     fn delete_selection(&mut self, state: &mut AutoCommit, root: &ObjId) {
         if self.selection.is_collapsed() {
             return;
         }
-        let Some(body) = self.resolve_body(state, root) else {
-            return;
-        };
-        let start = self.selection.min();
-        let end = self.selection.max();
-        let char_start = self.text[..start].chars().count();
-        let char_count = self.text[start..end].chars().count();
-        self.text.replace_range(start..end, "");
-        self.selection.move_to(start);
-        let _ = state.splice_text(&body, char_start, char_count as isize, "");
-        self.last_edit = Some(Instant::now());
+        let range = self.selection.min()..self.selection.max();
+        let caret = self.body.splice(state, root, range, "");
+        self.selection.move_to(caret);
     }
 
     /// Insert `s` at the caret, replacing the current selection if any.
     /// Used by every typing path (printable chars, Enter, Tab, paste).
     fn insert_str(&mut self, state: &mut AutoCommit, root: &ObjId, s: &str) {
-        let Some(body) = self.resolve_body(state, root) else {
-            return;
-        };
-        if !self.selection.is_collapsed() {
-            let start = self.selection.min();
-            let end = self.selection.max();
-            let char_start = self.text[..start].chars().count();
-            let char_count = self.text[start..end].chars().count();
-            self.text.replace_range(start..end, s);
-            self.selection.move_to(start + s.len());
-            let _ = state.splice_text(&body, char_start, char_count as isize, s);
-        } else {
-            let cur = self.selection.cursor;
-            let char_idx = self.text[..cur].chars().count();
-            self.text.insert_str(cur, s);
-            let _ = state.splice_text(&body, char_idx, 0, s);
-            self.selection.move_to(cur + s.len());
-        }
-        self.last_edit = Some(Instant::now());
+        // A collapsed selection makes this an insert; an open one makes it
+        // a replace. `splice` covers both — the range is just empty.
+        let range = self.selection.min()..self.selection.max();
+        let caret = self.body.splice(state, root, range, s);
+        self.selection.move_to(caret);
     }
 
     /// Original single-char backspace path (used when the selection is
     /// collapsed). Selection-aware paths route through `delete_selection`.
     fn delete_before(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        if self.selection.cursor == 0 {
-            return;
-        }
-        let Some(body) = self.resolve_body(state, root) else {
-            return;
-        };
         let cur = self.selection.cursor;
-        let mut prev = cur - 1;
-        while prev > 0 && !self.text.is_char_boundary(prev) {
-            prev -= 1;
+        if cur == 0 {
+            return;
         }
-        let removed_chars = self.text[prev..cur].chars().count();
-        let char_idx = self.text[..prev].chars().count();
-        self.text.drain(prev..cur);
-        self.selection.move_to(prev);
-        let _ = state.splice_text(&body, char_idx, removed_chars as isize, "");
-        self.last_edit = Some(Instant::now());
+        let prev = self.body.prev_boundary(cur);
+        let caret = self.body.splice(state, root, prev..cur, "");
+        self.selection.move_to(caret);
     }
 
     /// Single-char delete-forward path for when the selection is collapsed.
     fn delete_after(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        if self.selection.cursor >= self.text.len() {
-            return;
-        }
-        let Some(body) = self.resolve_body(state, root) else {
-            return;
-        };
         let cur = self.selection.cursor;
-        let mut next = cur + 1;
-        while next < self.text.len() && !self.text.is_char_boundary(next) {
-            next += 1;
+        if cur >= self.body.text.len() {
+            return;
         }
-        let removed_chars = self.text[cur..next].chars().count();
-        let char_idx = self.text[..cur].chars().count();
-        self.text.drain(cur..next);
-        let _ = state.splice_text(&body, char_idx, removed_chars as isize, "");
-        self.last_edit = Some(Instant::now());
+        let next = self.body.next_boundary(cur);
+        self.body.splice(state, root, cur..next, "");
     }
 
     /// All currently-selected text (or `None` if collapsed).
@@ -230,7 +165,7 @@ impl NotesApp {
         if self.selection.is_collapsed() {
             None
         } else {
-            Some(&self.text[self.selection.range()])
+            Some(&self.body.text[self.selection.range()])
         }
     }
 }
@@ -243,23 +178,7 @@ impl Default for NotesApp {
 
 impl Widget for NotesApp {
     fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        // First sync: if no body exists yet, seed it with whatever the
-        // widget was constructed with (via `with_seed`). After that the
-        // CRDT is the source of truth.
-        match state.get(root, BODY_KEY) {
-            Ok(Some((Value::Object(ObjType::Text), id))) => {
-                if let Ok(t) = state.text(&id) {
-                    self.text = t;
-                }
-            }
-            _ => {
-                if let Ok(id) = state.put_object(root, BODY_KEY, ObjType::Text) {
-                    if !self.text.is_empty() {
-                        let _ = state.splice_text(&id, 0, 0, &self.text);
-                    }
-                }
-            }
-        }
+        self.body.sync(state, root);
         self.clamp_cursor();
     }
 
@@ -269,27 +188,11 @@ impl Widget for NotesApp {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let node = taffy
-            .new_leaf(Style {
-                size: Size {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::percent(1.0),
-                },
-                ..Default::default()
-            })
-            .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
-        node
+        full_bleed_leaf(taffy, node_map, self as *mut dyn Widget)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).unwrap();
-        self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
-        );
+        self.rect = full_bleed_rect(taffy, node, origin);
     }
 
     fn draw(
@@ -350,7 +253,7 @@ impl Widget for NotesApp {
         let body_top = content_y + title_size as f64 + 20.0;
         self.body_origin = Point::new(content_x, body_top);
 
-        if self.text.is_empty() && !self.focused {
+        if self.body.text.is_empty() && !self.focused {
             tr.draw_text(
                 scene,
                 "Jot anything here — shared live with collaborators in the workspace.",
@@ -371,7 +274,7 @@ impl Widget for NotesApp {
             let mut row = 0usize;
             // Iterate logical lines (split on '\n'). For each, compute
             // the byte range and intersect with selection.
-            let chunks = self.text.split('\n');
+            let chunks = self.body.text.split('\n');
             for line_text in chunks {
                 let line_end = line_start + line_text.len();
                 let lo = sel_lo.max(line_start);
@@ -412,7 +315,7 @@ impl Widget for NotesApp {
         // Body text with soft wrap.
         tr.draw_text(
             scene,
-            &self.text,
+            &self.body.text,
             TEXT_SIZE,
             text_color,
             transform * Affine::translate((content_x, body_top)),
@@ -426,7 +329,7 @@ impl Widget for NotesApp {
             // single wrap-unit so the caret stays close-enough to the glyph
             // position without a glyph-by-glyph layout round-trip.
             let cur = self.selection.cursor;
-            let prefix = &self.text[..cur];
+            let prefix = &self.body.text[..cur];
             let nl_count = prefix.matches('\n').count();
             let last_line_prefix = prefix.rsplit('\n').next().unwrap_or("");
             let (prefix_w, _) = tr.measure(last_line_prefix, TEXT_SIZE, Some(wrap_w));
@@ -520,12 +423,12 @@ impl Widget for NotesApp {
                             }
                         }
                         2 => {
-                            let (s, e) = word_boundaries(&self.text, pos);
+                            let (s, e) = word_boundaries(&self.body.text, pos);
                             self.selection.anchor = s;
                             self.selection.cursor = e;
                         }
                         _ => {
-                            let (s, e) = line_boundaries(&self.text, pos);
+                            let (s, e) = line_boundaries(&self.body.text, pos);
                             self.selection.anchor = s;
                             self.selection.cursor = e;
                         }
@@ -564,9 +467,9 @@ impl Widget for NotesApp {
                         let lc = c.to_lowercase();
                         match lc.as_str() {
                             "a" => {
-                                if !self.text.is_empty() {
+                                if !self.body.text.is_empty() {
                                     self.selection.anchor = 0;
-                                    self.selection.cursor = self.text.len();
+                                    self.selection.cursor = self.body.text.len();
                                 }
                                 *handled = true;
                                 return;
@@ -652,7 +555,7 @@ impl Widget for NotesApp {
                             let mut p = self.selection.cursor;
                             if p > 0 {
                                 p -= 1;
-                                while p > 0 && !self.text.is_char_boundary(p) {
+                                while p > 0 && !self.body.text.is_char_boundary(p) {
                                     p -= 1;
                                 }
                             }
@@ -669,9 +572,9 @@ impl Widget for NotesApp {
                             self.selection.move_to(self.selection.max());
                         } else {
                             let mut p = self.selection.cursor;
-                            if p < self.text.len() {
+                            if p < self.body.text.len() {
                                 p += 1;
-                                while p < self.text.len() && !self.text.is_char_boundary(p) {
+                                while p < self.body.text.len() && !self.body.text.is_char_boundary(p) {
                                     p += 1;
                                 }
                             }
@@ -685,13 +588,13 @@ impl Widget for NotesApp {
                     }
                     Key::Named(NamedKey::ArrowUp) => {
                         let cur = self.selection.cursor;
-                        let line_start = self.text[..cur].rfind('\n').map(|i| i + 1).unwrap_or(0);
+                        let line_start = self.body.text[..cur].rfind('\n').map(|i| i + 1).unwrap_or(0);
                         let col = cur - line_start;
                         // Previous line (or stay if at row 0).
                         let new_pos = if line_start == 0 {
                             0
                         } else {
-                            let prev_nl = self.text[..line_start - 1]
+                            let prev_nl = self.body.text[..line_start - 1]
                                 .rfind('\n')
                                 .map(|i| i + 1)
                                 .unwrap_or(0);
@@ -699,7 +602,7 @@ impl Widget for NotesApp {
                             let prev_line_len = prev_line_end - prev_nl;
                             let want_col = col.min(prev_line_len);
                             let mut p = prev_nl + want_col;
-                            while p > prev_nl && !self.text.is_char_boundary(p) {
+                            while p > prev_nl && !self.body.text.is_char_boundary(p) {
                                 p -= 1;
                             }
                             p
@@ -713,24 +616,24 @@ impl Widget for NotesApp {
                     }
                     Key::Named(NamedKey::ArrowDown) => {
                         let cur = self.selection.cursor;
-                        let line_start = self.text[..cur].rfind('\n').map(|i| i + 1).unwrap_or(0);
+                        let line_start = self.body.text[..cur].rfind('\n').map(|i| i + 1).unwrap_or(0);
                         let col = cur - line_start;
-                        let line_end = self.text[cur..]
+                        let line_end = self.body.text[cur..]
                             .find('\n')
                             .map(|i| cur + i)
-                            .unwrap_or(self.text.len());
-                        let new_pos = if line_end == self.text.len() {
-                            self.text.len()
+                            .unwrap_or(self.body.text.len());
+                        let new_pos = if line_end == self.body.text.len() {
+                            self.body.text.len()
                         } else {
                             let next_line_start = line_end + 1;
-                            let next_line_end = self.text[next_line_start..]
+                            let next_line_end = self.body.text[next_line_start..]
                                 .find('\n')
                                 .map(|i| next_line_start + i)
-                                .unwrap_or(self.text.len());
+                                .unwrap_or(self.body.text.len());
                             let next_line_len = next_line_end - next_line_start;
                             let want_col = col.min(next_line_len);
                             let mut p = next_line_start + want_col;
-                            while p < self.text.len() && !self.text.is_char_boundary(p) {
+                            while p < self.body.text.len() && !self.body.text.is_char_boundary(p) {
                                 p += 1;
                             }
                             p
@@ -743,7 +646,7 @@ impl Widget for NotesApp {
                         *handled = true;
                     }
                     Key::Named(NamedKey::Home) => {
-                        let line_start = self.text[..self.selection.cursor]
+                        let line_start = self.body.text[..self.selection.cursor]
                             .rfind('\n')
                             .map(|i| i + 1)
                             .unwrap_or(0);
@@ -755,10 +658,10 @@ impl Widget for NotesApp {
                         *handled = true;
                     }
                     Key::Named(NamedKey::End) => {
-                        let line_end = self.text[self.selection.cursor..]
+                        let line_end = self.body.text[self.selection.cursor..]
                             .find('\n')
                             .map(|i| self.selection.cursor + i)
-                            .unwrap_or(self.text.len());
+                            .unwrap_or(self.body.text.len());
                         if shift {
                             self.selection.extend_to(line_end);
                         } else {
@@ -806,13 +709,11 @@ impl Widget for NotesApp {
     }
 
     fn needs_commit(&self) -> bool {
-        self.last_edit
-            .map(|t| t.elapsed() >= COMMIT_DEBOUNCE)
-            .unwrap_or(false)
+        self.body.needs_commit()
     }
 
     fn on_commit(&mut self) {
-        self.last_edit = None;
+        self.body.on_commit();
     }
 
     fn get_state(&self) -> Option<String> {
@@ -848,7 +749,7 @@ impl NotesApp {
     /// roughly the right text" UX; the visual selection rect is drawn
     /// against true glyph metrics in `draw`.
     fn approximate_hit(&self, point: Point) -> usize {
-        if self.text.is_empty() {
+        if self.body.text.is_empty() {
             return 0;
         }
         let rel_x = (point.x - self.body_origin.x).max(0.0);
@@ -861,7 +762,7 @@ impl NotesApp {
         const APPROX_ADVANCE_PX: f64 = 7.2;
 
         let mut line_starts: Vec<usize> = std::iter::once(0)
-            .chain(self.text.match_indices('\n').map(|(i, _)| i + 1))
+            .chain(self.body.text.match_indices('\n').map(|(i, _)| i + 1))
             .collect();
         if line_starts.is_empty() {
             line_starts.push(0);
@@ -872,11 +773,11 @@ impl NotesApp {
         let line_end = if row + 1 < line_count {
             line_starts[row + 1] - 1
         } else {
-            self.text.len()
+            self.body.text.len()
         };
 
         let chars_at = (rel_x / APPROX_ADVANCE_PX).round().max(0.0) as usize;
-        let line_text = &self.text[line_start..line_end];
+        let line_text = &self.body.text[line_start..line_end];
         for (i, (b, _)) in line_text.char_indices().enumerate() {
             if i >= chars_at {
                 return line_start + b;
@@ -885,18 +786,6 @@ impl NotesApp {
         line_end
     }
 
-    /// Ctrl+Left moves to the previous word boundary (exposed for tests
-    /// and future keybindings; not currently used directly by the event
-    /// loop since `notes_app` doesn't yet rebind Ctrl+arrow).
-    #[allow(dead_code)]
-    fn prev_word(&self) -> usize {
-        prev_word_boundary(&self.text, self.selection.cursor)
-    }
-
-    #[allow(dead_code)]
-    fn next_word(&self) -> usize {
-        next_word_boundary(&self.text, self.selection.cursor)
-    }
 }
 
 impl AppWidget for NotesApp {
@@ -917,7 +806,7 @@ impl AppWidget for NotesApp {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use automerge::transaction::Transactable;
+    use automerge::{ObjType, ReadDoc, Value, transaction::Transactable};
 
     fn bind() -> (AutoCommit, ObjId) {
         let mut doc = AutoCommit::new();
@@ -933,7 +822,7 @@ mod tests {
         let (mut doc, tile) = bind();
         let mut app = NotesApp::with_seed("hi");
         app.sync(&mut doc, &tile);
-        assert_eq!(app.text, "hi");
+        assert_eq!(app.body.text, "hi");
         assert!(matches!(
             doc.get(&tile, BODY_KEY),
             Ok(Some((Value::Object(ObjType::Text), _)))
@@ -946,10 +835,10 @@ mod tests {
         let mut app = NotesApp::new();
         app.sync(&mut doc, &tile);
         app.insert_str(&mut doc, &tile, "abc");
-        assert_eq!(app.text, "abc");
+        assert_eq!(app.body.text, "abc");
         assert_eq!(app.selection.cursor, 3);
         app.delete_before(&mut doc, &tile);
-        assert_eq!(app.text, "ab");
+        assert_eq!(app.body.text, "ab");
     }
 
     #[test]
@@ -958,9 +847,9 @@ mod tests {
         let mut app = NotesApp::new();
         app.sync(&mut doc, &tile);
         app.insert_str(&mut doc, &tile, "ab\n");
-        assert_eq!(app.text, "ab\n");
+        assert_eq!(app.body.text, "ab\n");
         app.insert_str(&mut doc, &tile, "c");
-        assert_eq!(app.text, "ab\nc");
+        assert_eq!(app.body.text, "ab\nc");
         assert_eq!(app.selection.cursor, 4);
     }
 
@@ -976,23 +865,23 @@ mod tests {
         app.selection.extend_to(p);
         assert_eq!(app.selection.anchor, 0);
         assert_eq!(app.selection.cursor, 1);
-        assert_eq!(&app.text[app.selection.range()], "h");
+        assert_eq!(&app.body.text[app.selection.range()], "h");
 
         // Step 2: extend by another two chars (cumulative).
         app.selection.extend_to(3);
         assert_eq!(app.selection.anchor, 0);
         assert_eq!(app.selection.cursor, 3);
-        assert_eq!(&app.text[app.selection.range()], "hel");
+        assert_eq!(&app.body.text[app.selection.range()], "hel");
     }
 
     /// Double-click selects the word containing the byte position.
     #[test]
     fn double_click_selects_word() {
         let app = NotesApp::with_seed("hello world quick");
-        let (s, e) = word_boundaries(&app.text, 8);
+        let (s, e) = word_boundaries(&app.body.text, 8);
         assert_eq!(s, 6);
         assert_eq!(e, 11);
-        assert_eq!(&app.text[s..e], "world");
+        assert_eq!(&app.body.text[s..e], "world");
     }
 
     /// Ctrl+A behavior: anchor=0, cursor=len.
@@ -1001,11 +890,11 @@ mod tests {
         let mut app = NotesApp::with_seed("alpha\nbeta\ngamma");
         // Simulate Ctrl+A.
         app.selection.anchor = 0;
-        app.selection.cursor = app.text.len();
+        app.selection.cursor = app.body.text.len();
         assert!(!app.selection.is_collapsed());
         assert_eq!(app.selection.min(), 0);
-        assert_eq!(app.selection.max(), app.text.len());
-        assert_eq!(&app.text[app.selection.range()], "alpha\nbeta\ngamma");
+        assert_eq!(app.selection.max(), app.body.text.len());
+        assert_eq!(&app.body.text[app.selection.range()], "alpha\nbeta\ngamma");
     }
 
     /// Backspace with an active selection deletes the range and collapses,
@@ -1020,7 +909,7 @@ mod tests {
         // delete_selection is the path the Backspace arm takes when a
         // selection is live.
         app.delete_selection(&mut doc, &tile);
-        assert_eq!(app.text, "hello ");
+        assert_eq!(app.body.text, "hello ");
         assert!(app.selection.is_collapsed());
         assert_eq!(app.selection.cursor, 6);
     }
@@ -1035,7 +924,7 @@ mod tests {
         app.selection.anchor = 6;
         app.selection.cursor = 11;
         app.insert_str(&mut doc, &tile, "there");
-        assert_eq!(app.text, "hello there");
+        assert_eq!(app.body.text, "hello there");
         assert!(app.selection.is_collapsed());
         assert_eq!(app.selection.cursor, "hello there".len());
     }
@@ -1044,11 +933,11 @@ mod tests {
     #[test]
     fn triple_click_selects_line() {
         let app = NotesApp::with_seed("alpha\nbeta\ngamma");
-        let (s, e) = line_boundaries(&app.text, 8);
+        let (s, e) = line_boundaries(&app.body.text, 8);
         // Byte 8 sits inside "beta" (starts at 6, ends at 10 — the \n).
         assert_eq!(s, 6);
         assert_eq!(e, 10);
-        assert_eq!(&app.text[s..e], "beta");
+        assert_eq!(&app.body.text[s..e], "beta");
     }
 
     /// State serialization round-trips anchor + cursor across undo.
@@ -1102,12 +991,12 @@ mod tests {
             .unwrap_or_default();
         clipboard_copy(&copied);
         // Collapse and move to end.
-        app.selection = Selection::collapsed(app.text.len());
+        app.selection = Selection::collapsed(app.body.text.len());
         // Ctrl+V path.
         let pasted = clipboard_paste();
         if let Some(p) = pasted {
             app.insert_str(&mut doc, &tile, &p);
-            assert!(app.text.ends_with("world"));
+            assert!(app.body.text.ends_with("world"));
         }
         // (No hard assertion when clipboard returns None — that just
         // means the test runner couldn't reach the system clipboard,
