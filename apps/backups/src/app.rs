@@ -307,52 +307,45 @@ impl BackupsApp {
         paint::fill_rect(scene, t, bar, c.neutral[0]);
         paint::hline(scene, t, bar.x0, bar.x1, bar.y1, c.border_white_10, 1.0);
 
-        // Brand: shield glyph + title.
         let cy = bar.y0 + BAR_H / 2.0;
-        let ix = bar.x0 + PAD;
-        self.draw_shield(scene, t, Point::new(ix + 9.0, cy), 11.0, theme.accent_primary);
-        paint::text_bold(scene, tr, t, "Backups", 18.0, c.text_primary, ix + 28.0, cy - 9.0);
-        let sub = format!(
-            "{} sources · {} destinations",
-            self.catalog.sources.len(),
-            self.catalog.destinations.len()
-        );
-        paint::text(scene, tr, t, &sub, 11.5, c.text_dim, ix + 28.0, cy + 9.0);
+        let narrow = self.rect.width() < NARROW_BREAKPOINT;
+        let compact = self.rect.width() < 1000.0;
 
-        // Centred segmented tab control.
-        let total = TAB_W * View::ALL.len() as f64;
-        let seg = Rect::new(
-            (bar.x0 + bar.x1) / 2.0 - total / 2.0,
-            cy - TAB_H / 2.0,
-            (bar.x0 + bar.x1) / 2.0 + total / 2.0,
-            cy + TAB_H / 2.0,
-        );
-        paint::fill_rrect(scene, t, seg, 9.0, c.surfaces.raised);
-        paint::stroke_rrect(scene, t, seg, 9.0, c.border_white_10, 1.0);
-        for (i, v) in View::ALL.iter().enumerate() {
-            let tab = Rect::new(
-                seg.x0 + i as f64 * TAB_W,
-                seg.y0,
-                seg.x0 + (i as f64 + 1.0) * TAB_W,
-                seg.y1,
-            );
-            let active = self.ui.view == *v;
-            let hovered = self.hover == Some(Hit::Tab(*v));
-            if active {
-                let inner = tab.inset(-0.0);
-                let pill = Rect::new(inner.x0 + 4.0, inner.y0 + 4.0, inner.x1 - 4.0, inner.y1 - 4.0);
-                paint::fill_rrect(scene, t, pill, 7.0, theme.accent_primary);
-            } else if hovered {
-                let pill = Rect::new(tab.x0 + 4.0, tab.y0 + 4.0, tab.x1 - 4.0, tab.y1 - 4.0);
-                paint::fill_rrect(scene, t, pill, 7.0, c.surface_white_5);
-            }
-            let fg = if active { c.text_primary } else { c.text_dim };
-            paint::text_center(scene, tr, t, v.title(), 13.5, fg, tab.x0, tab.x1, tab.y0 + (TAB_H - 13.5) / 2.0);
-            self.hits.push((tab, Hit::Tab(*v)));
+        // Left cluster. A hamburger leads it whenever the Timeline rail isn't
+        // fully docked-open (overlay, or a collapsed dock), so the source rail
+        // is always reachable.
+        let mut lx = bar.x0 + PAD;
+        let show_hamburger = self.ui.view == View::Timeline
+            && !self.is_empty()
+            && !(self.drawer.is_docked() && self.drawer.is_open());
+        if show_hamburger {
+            let hb = Rect::new(lx, cy - 17.0, lx + 34.0, cy + 17.0);
+            let hov = hb.contains(self.last_mouse);
+            self.drawer.draw_toggle(scene, t, theme, hb, hov);
+            self.hits.push((hb, Hit::ToggleRail));
+            lx = hb.x1 + 12.0;
         }
+        // Brand: shield + title (+ subtitle when there's room). The wordmark is
+        // dropped entirely at narrow so the tabs + primary action fit.
+        self.draw_shield(scene, t, Point::new(lx + 9.0, cy), 11.0, theme.accent_primary);
+        lx += 20.0;
+        if !narrow {
+            paint::text_bold(scene, tr, t, "Backups", 18.0, c.text_primary, lx + 8.0, cy - 9.0);
+            if !compact {
+                let sub = format!(
+                    "{} sources · {} destinations",
+                    self.catalog.sources.len(),
+                    self.catalog.destinations.len()
+                );
+                paint::text(scene, tr, t, &sub, 11.5, c.text_dim, lx + 8.0, cy + 9.0);
+            }
+            let (tw, _) = tr.measure("Backups", 18.0, None);
+            lx += 8.0 + tw as f64;
+        }
+        let brand_right = lx;
 
-        // Right: "Back up now" button.
-        let bw = 152.0;
+        // Right: "Back up now" — icon-only at narrow so it never crowds the tabs.
+        let bw = if narrow { 40.0 } else { 152.0 };
         let btn = Rect::new(bar.x1 - PAD - bw, cy - 18.0, bar.x1 - PAD, cy + 18.0);
         let running = self.job.is_some();
         let hovered = self.hover == Some(Hit::BackupNow);
@@ -369,15 +362,55 @@ impl BackupsApp {
             let pr = Rect::new(btn.x0 + 3.0, btn.y1 - 6.0, btn.x0 + 3.0 + (btn.width() - 6.0) * p, btn.y1 - 3.0);
             paint::fill_rrect(scene, t, pr, 1.5, theme.accent_primary);
         }
-        let label = if running { "Backing up…" } else { "Back up now" };
-        // Small "+" / activity glyph.
-        let gx = btn.x0 + 16.0;
-        if !running {
-            paint::poly(scene, t, &[(gx - 5.0, cy), (gx + 5.0, cy)], c.text_primary, 2.0, false);
-            paint::poly(scene, t, &[(gx, cy - 5.0), (gx, cy + 5.0)], c.text_primary, 2.0, false);
+        if narrow {
+            // Just the "+" glyph, centred.
+            let gc = btn.center();
+            if !running {
+                paint::poly(scene, t, &[(gc.x - 5.0, gc.y), (gc.x + 5.0, gc.y)], c.text_primary, 2.0, false);
+                paint::poly(scene, t, &[(gc.x, gc.y - 5.0), (gc.x, gc.y + 5.0)], c.text_primary, 2.0, false);
+            }
+        } else {
+            let label = if running { "Backing up…" } else { "Back up now" };
+            let gx = btn.x0 + 16.0;
+            if !running {
+                paint::poly(scene, t, &[(gx - 5.0, cy), (gx + 5.0, cy)], c.text_primary, 2.0, false);
+                paint::poly(scene, t, &[(gx, cy - 5.0), (gx, cy + 5.0)], c.text_primary, 2.0, false);
+            }
+            paint::text_center(scene, tr, t, label, 13.5, c.text_primary, btn.x0 + 16.0, btn.x1 - 6.0, cy - 7.0);
         }
-        paint::text_center(scene, tr, t, label, 13.5, c.text_primary, btn.x0 + 16.0, btn.x1 - 6.0, cy - 7.0);
         self.hits.push((btn, Hit::BackupNow));
+
+        // Segmented tab control, centred in the gap between the brand and the
+        // button, with the per-tab width clamped so four tabs always fit.
+        let band_x0 = brand_right + 14.0;
+        let band_x1 = btn.x0 - 14.0;
+        let n = View::ALL.len() as f64;
+        let tab_w = ((band_x1 - band_x0) / n).clamp(58.0, TAB_W);
+        let seg_total = tab_w * n;
+        let seg_x0 = (band_x0 + ((band_x1 - band_x0) - seg_total) / 2.0).max(band_x0);
+        let seg = Rect::new(seg_x0, cy - TAB_H / 2.0, seg_x0 + seg_total, cy + TAB_H / 2.0);
+        paint::fill_rrect(scene, t, seg, 9.0, c.surfaces.raised);
+        paint::stroke_rrect(scene, t, seg, 9.0, c.border_white_10, 1.0);
+        for (i, v) in View::ALL.iter().enumerate() {
+            let tab = Rect::new(
+                seg.x0 + i as f64 * tab_w,
+                seg.y0,
+                seg.x0 + (i as f64 + 1.0) * tab_w,
+                seg.y1,
+            );
+            let active = self.ui.view == *v;
+            let hovered = self.hover == Some(Hit::Tab(*v));
+            if active {
+                let pill = Rect::new(tab.x0 + 4.0, tab.y0 + 4.0, tab.x1 - 4.0, tab.y1 - 4.0);
+                paint::fill_rrect(scene, t, pill, 7.0, theme.accent_primary);
+            } else if hovered {
+                let pill = Rect::new(tab.x0 + 4.0, tab.y0 + 4.0, tab.x1 - 4.0, tab.y1 - 4.0);
+                paint::fill_rrect(scene, t, pill, 7.0, c.surface_white_5);
+            }
+            let fg = if active { c.text_primary } else { c.text_dim };
+            paint::text_center(scene, tr, t, v.title(), 13.5, fg, tab.x0, tab.x1, tab.y0 + (TAB_H - 13.5) / 2.0);
+            self.hits.push((tab, Hit::Tab(*v)));
+        }
     }
 
     fn draw_status_bar(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
@@ -461,10 +494,28 @@ impl BackupsApp {
 
     fn draw_rail(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, rail: Rect) {
         let c = &theme.tokens.colors;
-        paint::card(scene, t, rail, 14.0, c.surfaces.raised.with_alpha_factor(0.45), c.border_white_10);
+        // Clip every rail pixel so a sliding overlay reveal never spills rows
+        // over the snapshot list beside it.
+        scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &rail);
+        // A translucent card when docked (matches the panel), a solid surface
+        // when the drawer floats over content in overlay mode.
+        if self.drawer.is_overlay() {
+            paint::card(scene, t, rail, 14.0, c.surfaces.raised, c.border_white_20);
+        } else {
+            paint::card(scene, t, rail, 14.0, c.surfaces.raised.with_alpha_factor(0.45), c.border_white_10);
+        }
         let pad = 14.0;
         let mut y = rail.y0 + 14.0;
         paint::text(scene, tr, t, "SOURCES", 10.5, c.text_dim, rail.x0 + pad, y);
+        // Docked-collapse affordance: a small toggle at the header's right edge
+        // when the rail is docked-open (the top-bar hamburger only reappears
+        // once it's collapsed).
+        if self.drawer.is_docked() && self.drawer.is_open() {
+            let cb = Rect::new(rail.x1 - pad - 30.0, rail.y0 + 10.0, rail.x1 - pad, rail.y0 + 40.0);
+            let hov = cb.contains(self.last_mouse);
+            self.drawer.draw_toggle(scene, t, theme, cb, hov);
+            self.hits.push((cb, Hit::ToggleRail));
+        }
         y += 20.0;
 
         // "All sources" pseudo-row + each source.
@@ -485,6 +536,7 @@ impl BackupsApp {
             let d = self.catalog.destinations[i].clone();
             self.draw_dest_compact(scene, t, tr, theme, rail, &mut y, &d);
         }
+        scene.pop_layer();
     }
 
     /// Shared row highlight (selected / hovered) used by the rail rows.
@@ -743,8 +795,11 @@ impl BackupsApp {
         paint::text_bold(scene, tr, t, "Backup sources", 16.0, c.text_primary, content.x0, content.y0);
         paint::text(scene, tr, t, "Folders captured on a schedule into your destinations.", 12.5, c.text_dim, content.x0, content.y0 + 24.0);
 
+        // At narrow widths the three inline stat columns collapse to one line
+        // beneath the path, so nothing is crushed against the toggle.
+        let narrow = content.width() < 620.0;
         let mut y = content.y0 + 50.0;
-        let card_h = 96.0;
+        let card_h = if narrow { 104.0 } else { 96.0 };
         for i in 0..self.catalog.sources.len() {
             let src = self.catalog.sources[i].clone();
             let card = Rect::new(content.x0, y, content.x1, y + card_h);
@@ -762,17 +817,28 @@ impl BackupsApp {
             };
             paint::text(scene, tr, t, kind, 12.0, c.text_dim, ix + 28.0, card.y0 + 40.0);
 
-            // Stat columns.
-            let stat = |sc: &mut Scene, tr: &mut TextRenderer, x: f64, label: &str, value: &str, col: Color| {
-                paint::text(sc, tr, t, label, 10.5, c.text_dim, x, card.y0 + 16.0);
-                paint::text_bold(sc, tr, t, value, 15.0, col, x, card.y0 + 32.0);
-            };
-            let col0 = card.x0 + card.width() * 0.46;
-            let col1 = card.x0 + card.width() * 0.62;
-            let col2 = card.x0 + card.width() * 0.78;
-            stat(scene, tr, col0, "CADENCE", src.cadence.label(), c.text_primary);
-            stat(scene, tr, col1, "SNAPSHOTS", &format!("{}", self.catalog.count_for(&src.id)), c.semantic.info);
-            stat(scene, tr, col2, "PROTECTED", &human_bytes(self.catalog.protected_bytes(&src.id)), theme.accent_primary);
+            if narrow {
+                // Single compact stats line.
+                let stats = format!(
+                    "{} · {} snapshots · {}",
+                    src.cadence.label(),
+                    self.catalog.count_for(&src.id),
+                    human_bytes(self.catalog.protected_bytes(&src.id)),
+                );
+                paint::text(scene, tr, t, &stats, 12.0, c.text_dim, ix + 28.0, card.y0 + 60.0);
+            } else {
+                // Stat columns.
+                let stat = |sc: &mut Scene, tr: &mut TextRenderer, x: f64, label: &str, value: &str, col: Color| {
+                    paint::text(sc, tr, t, label, 10.5, c.text_dim, x, card.y0 + 16.0);
+                    paint::text_bold(sc, tr, t, value, 15.0, col, x, card.y0 + 32.0);
+                };
+                let col0 = card.x0 + card.width() * 0.46;
+                let col1 = card.x0 + card.width() * 0.62;
+                let col2 = card.x0 + card.width() * 0.78;
+                stat(scene, tr, col0, "CADENCE", src.cadence.label(), c.text_primary);
+                stat(scene, tr, col1, "SNAPSHOTS", &format!("{}", self.catalog.count_for(&src.id)), c.semantic.info);
+                stat(scene, tr, col2, "PROTECTED", &human_bytes(self.catalog.protected_bytes(&src.id)), theme.accent_primary);
+            }
 
             // Health + next-run + enable toggle.
             paint::dot(scene, t, Point::new(card.x0 + 16.0, card.y0 + card_h - 18.0), 3.5, Self::health_color(theme, src.health));
@@ -841,52 +907,39 @@ impl BackupsApp {
         paint::text_bold(scene, tr, t, "Destinations", 16.0, c.text_primary, content.x0, content.y0);
         paint::text(scene, tr, t, "Where snapshots are stored. Capacity is shown per repository.", 12.5, c.text_dim, content.x0, content.y0 + 24.0);
 
-        let n = self.catalog.destinations.len() as f64;
+        // Reflow the repository cards into an aligned grid — tall gauge cards
+        // when several fit abreast, compact horizontal cards in a single column
+        // when the window is too narrow for the ring layout.
+        let n = self.catalog.destinations.len();
         let gap = 16.0;
-        let cw = (content.width() - gap * (n - 1.0)) / n;
+        let cols = card_columns(content.width(), 240.0, gap).clamp(1, n.max(1));
+        let cw = card_column_width(content.width(), cols, gap);
         let top = content.y0 + 52.0;
-        let ch = 250.0;
-        for i in 0..self.catalog.destinations.len() {
+        let compact = cols == 1;
+        let ch = if compact { 116.0 } else { 250.0 };
+        let row_gap = 16.0;
+        let mut rows_used = 1usize;
+        for i in 0..n {
             let d = self.catalog.destinations[i].clone();
-            let x0 = content.x0 + i as f64 * (cw + gap);
-            let card = Rect::new(x0, top, x0 + cw, top + ch);
+            let col = i % cols;
+            let row = i / cols;
+            rows_used = row + 1;
+            let x0 = content.x0 + col as f64 * (cw + gap);
+            let y0 = top + row as f64 * (ch + row_gap);
+            let card = Rect::new(x0, y0, x0 + cw, y0 + ch);
             let sel = self.ui.sel_dest.as_deref() == Some(d.id.as_str());
-            let border = if sel { theme.accent_primary.with_alpha_factor(0.6) } else { c.border_white_10 };
-            paint::card(scene, t, card, 16.0, c.surfaces.raised, border);
-
-            self.draw_dest_icon(scene, t, d.kind, Point::new(card.x0 + 24.0, card.y0 + 26.0), 9.0, Self::health_color(theme, d.health));
-            paint::text_bold(scene, tr, t, &d.name, 16.0, c.text_primary, card.x0 + 40.0, card.y0 + 18.0);
-            paint::text(scene, tr, t, d.kind.label(), 11.5, c.text_dim, card.x0 + 24.0, card.y0 + 44.0);
-
-            // Capacity ring.
-            let frac = d.used_bytes as f64 / d.total_bytes as f64;
-            let center = Point::new(card.center().x, card.y0 + 120.0);
-            let ringcol = if frac > 0.85 { c.semantic.warning } else { theme.accent_primary };
-            paint::ring(scene, t, center, 44.0, 11.0, frac, ringcol, c.neutral[2]);
-            paint::text_center(scene, tr, t, &format!("{:.0}%", frac * 100.0), 20.0, c.text_primary, center.x - 40.0, center.x + 40.0, center.y - 16.0);
-            paint::text_center(scene, tr, t, "used", 10.5, c.text_dim, center.x - 40.0, center.x + 40.0, center.y + 8.0);
-
-            // Used / free figures.
-            let fy = card.y0 + 184.0;
-            paint::text(scene, tr, t, "Used", 11.0, c.text_dim, card.x0 + 24.0, fy);
-            paint::text_right(scene, tr, t, &human_bytes(d.used_bytes), 12.5, c.text_primary, card.x1 - 24.0, fy);
-            paint::text(scene, tr, t, "Free", 11.0, c.text_dim, card.x0 + 24.0, fy + 18.0);
-            paint::text_right(scene, tr, t, &human_bytes(d.total_bytes - d.used_bytes), 12.5, c.semantic.success, card.x1 - 24.0, fy + 18.0);
-
-            // Footer chips: encryption + last sync.
-            let mut chx = card.x0 + 24.0;
-            if d.encrypted {
-                chx += paint::tag_pill(scene, tr, t, chx, card.y1 - 20.0, "encrypted", 10.0, c.semantic.success) + 6.0;
+            if compact {
+                self.draw_dest_card_compact(scene, t, tr, theme, card, &d, sel);
+            } else {
+                self.draw_dest_card_tall(scene, t, tr, theme, card, &d, sel);
             }
-            paint::tag_pill(scene, tr, t, chx, card.y1 - 20.0, &format!("sync {}", d.last_sync), 10.0, c.semantic.info);
-
             self.hits.push((card, Hit::Dest(d.id.clone())));
         }
 
         // Aggregate bar across the bottom.
         let used: u64 = self.catalog.destinations.iter().map(|d| d.used_bytes).sum();
         let total: u64 = self.catalog.destinations.iter().map(|d| d.total_bytes).sum();
-        let ay = top + ch + 26.0;
+        let ay = top + rows_used as f64 * (ch + row_gap) + 10.0;
         paint::text_bold(scene, tr, t, "Total capacity", 13.5, c.text_primary, content.x0, ay);
         let bar = Rect::new(content.x0, ay + 24.0, content.x1, ay + 38.0);
         paint::bar(scene, t, bar, used as f64 / total as f64, theme.accent_primary, c.neutral[2]);
@@ -903,6 +956,74 @@ impl BackupsApp {
             "usb" => c.semantic.info,
             "b2" => c.semantic.success,
             _ => c.neutral[5],
+        }
+    }
+
+    /// The full repository card: a big capacity ring plus used/free figures.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_dest_card_tall(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, card: Rect, d: &Destination, sel: bool) {
+        let c = &theme.tokens.colors;
+        let border = if sel { theme.accent_primary.with_alpha_factor(0.6) } else { c.border_white_10 };
+        paint::card(scene, t, card, 16.0, c.surfaces.raised, border);
+
+        self.draw_dest_icon(scene, t, d.kind, Point::new(card.x0 + 24.0, card.y0 + 26.0), 9.0, Self::health_color(theme, d.health));
+        paint::text_bold(scene, tr, t, &d.name, 16.0, c.text_primary, card.x0 + 40.0, card.y0 + 18.0);
+        paint::text(scene, tr, t, d.kind.label(), 11.5, c.text_dim, card.x0 + 24.0, card.y0 + 44.0);
+
+        // Capacity ring.
+        let frac = d.used_bytes as f64 / d.total_bytes as f64;
+        let center = Point::new(card.center().x, card.y0 + 120.0);
+        let ringcol = if frac > 0.85 { c.semantic.warning } else { theme.accent_primary };
+        paint::ring(scene, t, center, 44.0, 11.0, frac, ringcol, c.neutral[2]);
+        paint::text_center(scene, tr, t, &format!("{:.0}%", frac * 100.0), 20.0, c.text_primary, center.x - 40.0, center.x + 40.0, center.y - 16.0);
+        paint::text_center(scene, tr, t, "used", 10.5, c.text_dim, center.x - 40.0, center.x + 40.0, center.y + 8.0);
+
+        // Used / free figures.
+        let fy = card.y0 + 184.0;
+        paint::text(scene, tr, t, "Used", 11.0, c.text_dim, card.x0 + 24.0, fy);
+        paint::text_right(scene, tr, t, &human_bytes(d.used_bytes), 12.5, c.text_primary, card.x1 - 24.0, fy);
+        paint::text(scene, tr, t, "Free", 11.0, c.text_dim, card.x0 + 24.0, fy + 18.0);
+        paint::text_right(scene, tr, t, &human_bytes(d.total_bytes - d.used_bytes), 12.5, c.semantic.success, card.x1 - 24.0, fy + 18.0);
+
+        // Footer chips: encryption + last sync.
+        let mut chx = card.x0 + 24.0;
+        if d.encrypted {
+            chx += paint::tag_pill(scene, tr, t, chx, card.y1 - 20.0, "encrypted", 10.0, c.semantic.success) + 6.0;
+        }
+        paint::tag_pill(scene, tr, t, chx, card.y1 - 20.0, &format!("sync {}", d.last_sync), 10.0, c.semantic.info);
+    }
+
+    /// The compact repository card for a single-column (narrow) layout: name +
+    /// percent on top, a capacity bar and figures beneath — no crushed ring.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_dest_card_compact(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, card: Rect, d: &Destination, sel: bool) {
+        let c = &theme.tokens.colors;
+        let border = if sel { theme.accent_primary.with_alpha_factor(0.6) } else { c.border_white_10 };
+        paint::card(scene, t, card, 14.0, c.surfaces.raised, border);
+
+        self.draw_dest_icon(scene, t, d.kind, Point::new(card.x0 + 22.0, card.y0 + 24.0), 9.0, Self::health_color(theme, d.health));
+        paint::text_bold(scene, tr, t, &d.name, 15.0, c.text_primary, card.x0 + 40.0, card.y0 + 14.0);
+        paint::text(scene, tr, t, d.kind.label(), 11.0, c.text_dim, card.x0 + 40.0, card.y0 + 34.0);
+
+        let frac = d.used_bytes as f64 / d.total_bytes as f64;
+        let pctcol = if frac > 0.85 { c.semantic.warning } else { theme.accent_primary };
+        paint::text_right(scene, tr, t, &format!("{:.0}%", frac * 100.0), 20.0, pctcol, card.x1 - 20.0, card.y0 + 18.0);
+
+        // Capacity bar + used/free figures.
+        let bar = Rect::new(card.x0 + 22.0, card.y0 + 60.0, card.x1 - 22.0, card.y0 + 70.0);
+        let barcol = if frac > 0.85 { c.semantic.warning } else { theme.accent_primary };
+        paint::bar(scene, t, bar, frac, barcol, c.neutral[2]);
+        paint::text(scene, tr, t, &format!("{} of {}", human_bytes(d.used_bytes), human_bytes(d.total_bytes)), 11.5, c.text_dim, card.x0 + 22.0, card.y0 + 80.0);
+        let mut chx = card.x1 - 22.0;
+        // Trailing chips, laid right-to-left.
+        let sync = format!("sync {}", d.last_sync);
+        let (sw, _) = tr.measure(&sync, 10.0, None);
+        chx -= sw as f64 + 20.0;
+        paint::tag_pill(scene, tr, t, chx, card.y0 + 86.0, &sync, 10.0, c.semantic.info);
+        if d.encrypted {
+            let (ew, _) = tr.measure("encrypted", 10.0, None);
+            chx -= ew as f64 + 26.0;
+            paint::tag_pill(scene, tr, t, chx, card.y0 + 86.0, "encrypted", 10.0, c.semantic.success);
         }
     }
 
@@ -949,10 +1070,18 @@ impl BackupsApp {
 
     fn draw_schedules_view(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, content: Rect) {
         let c = &theme.tokens.colors;
+        // Below this the editor + summary stack vertically instead of a 60/40 split.
+        let stacked = content.width() < 660.0;
         paint::text_bold(scene, tr, t, "Retention policy", 16.0, c.text_primary, content.x0, content.y0);
-        paint::text(scene, tr, t, "How many snapshots to keep in each class before pruning. Applies to every source.", 12.5, c.text_dim, content.x0, content.y0 + 24.0);
+        let desc = if stacked {
+            "Snapshots kept per class before pruning."
+        } else {
+            "How many snapshots to keep in each class before pruning. Applies to every source."
+        };
+        paint::text(scene, tr, t, desc, 12.5, c.text_dim, content.x0, content.y0 + 24.0);
 
-        let panel = Rect::new(content.x0, content.y0 + 52.0, content.x0 + content.width() * 0.6, content.y0 + 52.0 + 4.0 * 64.0 + 16.0);
+        let panel_w = if stacked { content.width() } else { content.width() * 0.6 };
+        let panel = Rect::new(content.x0, content.y0 + 52.0, content.x0 + panel_w, content.y0 + 52.0 + 4.0 * 64.0 + 16.0);
         paint::card(scene, t, panel, 16.0, c.surfaces.raised, c.border_white_10);
 
         let p = self.ui.policy;
@@ -985,8 +1114,13 @@ impl BackupsApp {
             paint::text_center(scene, tr, t, &format!("{}", vals[i]), 20.0, c.text_primary, valx0 - 8.0, plus.x0, cy - 12.0);
         }
 
-        // Summary of effective retention on the right.
-        let side = Rect::new(panel.x1 + 18.0, content.y0 + 52.0, content.x1, panel.y1);
+        // Summary of effective retention — beside the editor when wide, stacked
+        // beneath it when narrow.
+        let side = if stacked {
+            Rect::new(content.x0, panel.y1 + 16.0, content.x1, panel.y1 + 16.0 + 210.0)
+        } else {
+            Rect::new(panel.x1 + 18.0, content.y0 + 52.0, content.x1, panel.y1)
+        };
         paint::card(scene, t, side, 16.0, c.surfaces.raised.with_alpha_factor(0.5), c.border_white_10);
         paint::text_bold(scene, tr, t, "Effective window", 13.5, c.text_primary, side.x0 + 16.0, side.y0 + 14.0);
         let total = p.hourly + p.daily + p.weekly + p.monthly;
@@ -1003,8 +1137,10 @@ impl BackupsApp {
         paint::text(scene, tr, t, "Snapshots retained", 11.5, c.text_dim, side.x0 + 16.0, side.y0 + 162.0);
         paint::text_bold(scene, tr, t, &format!("up to {total}"), 20.0, theme.accent_primary, side.x0 + 16.0, side.y0 + 180.0);
 
-        // Retention ruler — one lane per class, dots = snapshots kept.
-        let ruler = Rect::new(content.x0, panel.y1 + 22.0, content.x1, panel.y1 + 22.0 + 200.0);
+        // Retention ruler — one lane per class, dots = snapshots kept. Sits
+        // below whichever of {editor, stacked summary} is lowest.
+        let ruler_top = if stacked { side.y1 } else { panel.y1 } + 22.0;
+        let ruler = Rect::new(content.x0, ruler_top, content.x1, ruler_top + 200.0);
         if ruler.y1 < content.y1 {
             self.draw_retention_ruler(scene, t, tr, theme, ruler, p);
         }
@@ -1066,8 +1202,9 @@ impl BackupsApp {
         let snap = self.ui.sel_snapshot.as_ref().and_then(|id| self.catalog.snapshot(id)).cloned();
         let Some(snap) = snap else { return };
         let src = self.catalog.source(&snap.source_id);
-        let mw = 760.0;
-        let mh = 460.0;
+        // Clamp the modal to the window so it never overflows a small screen.
+        let mw = 760.0_f64.min(self.rect.width() - 40.0).max(300.0);
+        let mh = 460.0_f64.min(self.rect.height() - 40.0).max(300.0);
         let m = Rect::new(
             self.rect.center().x - mw / 2.0,
             self.rect.center().y - mh / 2.0,
@@ -1085,10 +1222,24 @@ impl BackupsApp {
         paint::text_bold(scene, tr, t, &title, 17.0, c.text_primary, m.x0 + 24.0, m.y0 + 20.0);
         paint::text(scene, tr, t, "Choose files to recover, then confirm. Restores never overwrite without asking.", 12.0, c.text_dim, m.x0 + 24.0, m.y0 + 46.0);
 
-        // Two columns: file browser (left) + options (right).
+        // File browser + options: side by side when wide, stacked (tree over
+        // options) when the modal is too narrow for two readable columns.
         let body_y = m.y0 + 74.0;
-        let split = m.x0 + mw * 0.58;
-        let tree = Rect::new(m.x0 + 24.0, body_y, split - 12.0, m.y1 - 76.0);
+        let body_bottom = m.y1 - 76.0;
+        let narrow_modal = mw < 620.0;
+        let (tree, opt) = if narrow_modal {
+            let mid = body_y + (body_bottom - body_y) * 0.56;
+            (
+                Rect::new(m.x0 + 24.0, body_y, m.x1 - 24.0, mid - 8.0),
+                Rect::new(m.x0 + 24.0, mid + 10.0, m.x1 - 24.0, body_bottom),
+            )
+        } else {
+            let split = m.x0 + mw * 0.58;
+            (
+                Rect::new(m.x0 + 24.0, body_y, split - 12.0, body_bottom),
+                Rect::new(split + 12.0, body_y, m.x1 - 24.0, body_bottom),
+            )
+        };
         paint::card(scene, t, tree, 12.0, c.neutral[0].with_alpha_factor(0.5), c.border_white_10);
         paint::text(scene, tr, t, "Snapshot contents", 11.0, c.text_dim, tree.x0 + 14.0, tree.y0 + 10.0);
 
@@ -1106,6 +1257,10 @@ impl BackupsApp {
         let ty0 = tree.y0 + 30.0;
         for (i, (depth, name, size, is_dir)) in files.iter().enumerate() {
             let ry = ty0 + i as f64 * row_h;
+            // Don't spill rows past the (possibly shortened) tree card.
+            if ry + row_h > tree.y1 - 4.0 {
+                break;
+            }
             let row = Rect::new(tree.x0 + 6.0, ry, tree.x1 - 6.0, ry + row_h - 2.0);
             let sel = self.file_sel == i;
             if sel {
@@ -1130,8 +1285,7 @@ impl BackupsApp {
             self.hits.push((row, Hit::FileRow(i)));
         }
 
-        // Options column.
-        let opt = Rect::new(split + 12.0, body_y, m.x1 - 24.0, m.y1 - 76.0);
+        // Options column (laid out above).
         paint::text_bold(scene, tr, t, "Restore options", 13.5, c.text_primary, opt.x0, opt.y0 + 8.0);
         let opts = [
             ("Restore to original location", true),
@@ -1270,6 +1424,10 @@ impl BackupsApp {
                 BackupsDoc::set_selected_snapshot(doc, root, None);
                 BackupsDoc::set_view(doc, root, View::Timeline);
                 self.timeline_scroll = 0.0;
+                // Picking a source from an overlay rail dismisses the drawer.
+                if self.drawer.is_overlay() {
+                    self.drawer.close();
+                }
             }
             Hit::Snap(id) => {
                 let toggle = self.ui.sel_snapshot.as_deref() == Some(id.as_str());
@@ -1298,12 +1456,19 @@ impl BackupsApp {
             Hit::Dest(id) => {
                 BackupsDoc::set_selected_dest(doc, root, &id);
                 BackupsDoc::set_view(doc, root, View::Destinations);
+                if self.drawer.is_overlay() {
+                    self.drawer.close();
+                }
             }
             Hit::Policy(field, delta) => {
                 BackupsDoc::bump_policy(doc, root, field, delta);
                 self.policy_focus = PolicyField::ALL.iter().position(|f| *f == field).unwrap_or(0);
             }
             Hit::FileRow(i) => self.file_sel = i,
+            // The Timeline source-rail collapse / summon toggle.
+            Hit::ToggleRail => self.drawer.toggle(),
+            // A tap on the scrim behind an open overlay rail dismisses it.
+            Hit::CloseRail => self.drawer.close(),
         }
         self.load_cache(doc, root);
     }
@@ -1524,7 +1689,7 @@ impl Widget for BackupsApp {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        self.job.is_some() || self.toast.is_some()
+        self.job.is_some() || self.toast.is_some() || self.drawer.is_animating()
     }
 }
 
