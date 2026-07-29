@@ -54,13 +54,29 @@ verified by an offscreen shot (header gone, functional controls intact) + tests:
 - [x] Excel-style multi-range selection → confirmed live (ctrl-selected B2:B7 +
       E2:E7 = 11 cells, status bar shows Sum $14,750 · Avg $1,340.91 · Count 11).
 
-## weather — CLEAR (verified, committed b0fe3e2)
+## weather — CLEAR (verified, committed b0fe3e2; honesty + §7 empty-state pass)
 - [x] Units (°C/°F, km/h/mph) removed from the app; read from the shared Settings
       store (locale.measurement) → fixed.
 - [x] HIG §1b content panels via ui::NavShell: contentful city list + forecast
       side-by-side on desktop; narrow = full-screen list → tap city → forecast
       pushes in with a ‹ Back button (never an X). Old overlay-flap removed →
       fixed (verified wide + narrow-pushed-detail). Real Open-Meteo data.
+- [x] Live path is real, verified end-to-end: the geocoding + forecast endpoints
+      return live data matching the parser (Berlin 29.8 °C / code 0), the net
+      worker fetches on its own tokio+reqwest thread, and parse/URL building are
+      unit-tested. `--shots` renders bundled sample data offline (never the net).
+- [x] Honesty: `live()` no longer seeds a curated set of world cities (SF / Tokyo
+      / Reykjavík / Cairo …) into the user's doc on first run — it starts with the
+      user's OWN saved places only (empty on a fresh vault), and the bundled
+      sample cities/readings are `new()`/`--shots`-only. Errors surface on the
+      status line; a place-less start shows no phantom "Loading…" spinner.
+      (`live_starts_empty_with_no_fabricated_places_or_readings`.)
+- [x] §7 empty state: the detail pane's bare "No place selected" on a big empty
+      gradient is replaced by a composed, centred zero-state — a partly-cloudy
+      weather glyph + "No cities yet" + "Search for a city to see its current
+      conditions and 7-day forecast." (an existing roster with nothing selected
+      reads "Pick a city"). Verified on the `onboarding` shot; the populated wide
+      view is byte-unchanged.
 
 ## monitor (system monitor) — CLEAR (verified, committed 1571bc5)
 - [x] Re-architected: Processes view = a compact CPU/Memory/Network/Disk summary
@@ -178,13 +194,40 @@ verified by an offscreen shot (header gone, functional controls intact) + tests:
       Annex-B NALUs), no fetch, no audio, placeholder 60s scrub with the thumb
       pinned to start (video_player.rs:118,336,462). Needs a media-length setter +
       a playhead clock for real seek.
-- [ ] No general video-player app; no inline video in chat or file-explorer preview.
-      Tube's watch page is the only video UI and it's `--features live`-gated +
-      network-dependent (offline/hermetic build shows posters only —
-      OfflineBackend::resolve_video_stream errors, backend/mod.rs:166).
+- [x] There is now a general `video-player` app on the shared `media::MediaEngine`
+      (real GStreamer `playbin`→`appsink` under `--features decode`). It opens a
+      real local/`/var/workspace` file via the XDG portal (or `--open`), demuxes
+      the container, decodes, and plays with real play/pause/seek/volume/mute and
+      a real duration+playhead. Proven: `--features decode` decodes a synthesized
+      real file with advancing PTS and lands a frame on the app's surface
+      (`real_decode.rs`, ran green — not skipped — against GStreamer 1.26), and a
+      `--open realclip.ogv` capture shows genuine decoded SMPTE bars, not the
+      synth gradient. (Inline video in chat / file-explorer preview: still open.)
 - [ ] No AUDIO anywhere in the video stack (tube is video-only by design) — a real
       player needs an audio track + A/V sync. No hardware decode (openh264/CPU only;
       OK for a 144p probe, insufficient for real playback resolutions).
+      (Note: the `media` crate now carries an `audio` module + PipeWire device
+      enumeration; end-to-end A/V-synced playback in the app is still unproven.)
+
+## video-player (local) — CLEAR (real GStreamer decode proven, immersive §1e)
+- [x] Plays a REAL local file: `media::MediaEngine` demuxes + decodes through a
+      GStreamer `playbin`→`appsink` (`--features decode`); the hermetic default
+      build uses a deterministic synthesized backend so `--shots`/tests stay
+      offline. Verified NOT skipped on GStreamer 1.26: `engine_decodes_a_real_
+      file_and_the_pts_advances` + `player_app_pulls_a_real_decoded_frame_onto_
+      its_surface` both bite (real RGBA frames, advancing PTS, 160×120 at the
+      encoded size); a `--open realclip.ogv` capture renders genuine SMPTE bars
+      with a real "0:00 / 0:02" duration — a real decoded frame, not a gradient.
+- [x] Immersive (§1e): edge-to-edge surface, NO persistent chrome bar; the media
+      title + Open pill float over a soft scrim and auto-hide with the controls.
+      Real glass control bar: play/pause, seek scrubber, time, volume + mute,
+      priority setting icons + a gear menu, fullscreen. Open goes through the XDG
+      FileChooser portal (HIG §5), never an app-drawn picker.
+- [x] Honest empty state: the LIVE path (`app_root(None)`) starts on "No media"
+      with no frame — the demo clip is `--shots`/`for_shot` only (unit test
+      `fresh_player_shows_a_clean_empty_state_with_no_frame`). Real controls
+      driven + asserted: seek holds mid-play, volume/mute reach the engine, Space
+      toggles playback through the app's own event path.
 
 ## maps
 - [x] Unbounded failed-tile refetch loop → fixed.
@@ -208,7 +251,7 @@ verified by an offscreen shot (header gone, functional controls intact) + tests:
       the populated 1280px overlay + the empty-state shots; asserted by the
       `traffic::` model tests + the app toggle / honest-empty / click-target tests.
 
-## typst_editor
+## typst_editor — CLEAR (re-verified: every interaction driven + shot-graded)
 - [x] Horizontal scroll / keep caret in view → fixed.
 - [x] Idle spin while editor focused → fixed.
 - [x] Source-editor cut/copy/paste used an app-local buffer, so text couldn't
@@ -219,16 +262,118 @@ verified by an offscreen shot (header gone, functional controls intact) + tests:
 - [x] A failed recompile blanked the preview and lost the reader's place →
       the last successful render stays on screen under a "showing last
       successful render" banner until the next clean compile.
+- [x] Preview zoom / pan / scroll / selection all drive the real shared
+      viewport kernel (Ctrl+wheel zooms toward the cursor, ± and Fit, drag-pan
+      when zoomed past fit, plain/tilt wheel scroll, glyph-precise text select +
+      Ctrl+C copy) — verified by shots (100%/190% zoom, horizontal-scroll caret,
+      heading selection) and the preview::/app:: interaction tests.
+- [x] Compiler diagnostics UX is real: red/orange squiggles under the offending
+      spans, gutter dots, a Problems panel listing `line:col` + severity swatch,
+      and clicking a row jumps the editor caret to that diagnostic
+      (`diagnostic_click_jumps_editor_for_both_severities` on the production
+      `goto_line` path). Failed compile shows an honest "Compilation failed"
+      preview instead of blanking.
+- [x] PDF export is REAL (the earlier "no export" gap is closed): the toolbar
+      "Export PDF" writes a real `.pdf` next to the source via `typst_pdf::pdf`
+      over the same `World` the preview uses (`export_pdf_writes_a_real_pdf_file`
+      asserts the file opens with the `%PDF` magic).
+
+## git_client — CLEAR (real git2 end-to-end: rendered + mutated a live repo)
+- [x] Every surface reads a real repository, not stubs: opened a prepared temp
+      repo via `GIT_CLIENT_REPO` and the Changes/History/Branches views rendered
+      its actual state — staged/unstaged/untracked with real M/A/R/D badges and
+      `+/-` counts, the real commit graph (HEAD/main/branch refs, real hashes),
+      the real branch/tag/remote/stash lists, and the author read from the repo
+      config. Honest empty state ("No repository open" + an Open-path input) when
+      no repo is reachable — never a fabricated repo.
+- [x] Mutating operations are real `git2`, driven end-to-end: `--stage-commit`
+      staged all four pending changes (new/deleted/modified) and wrote a real
+      commit to the temp repo (working tree went clean). The 26-test `repo_ops`
+      integration suite drives stage/unstage (file + hunk), commit (rejects empty
+      message / missing identity), branch create/checkout/delete (refuses HEAD),
+      discard file/hunk, stash save+apply, and fetch/pull against a local remote —
+      all through the production actions the UI buttons invoke. Push is real
+      `git2` (credentials + refspec).
+- [x] Dead-label fix (HIG §7): the top-right diff option toggled syntax
+      highlighting but was labelled with the cryptic fragment "Syn" — replaced
+      with the universal `</>` code glyph, centred in the pill.
+
+## disks — CLEAR (reads real block devices; mutations real + honestly gated)
+- [x] Reads REAL storage, never fabricated: `--live` probes this machine via
+      lsblk/sysfs and rendered its actual drives (both NVMe SSDs, the real
+      partition label, zram devices, real capacities/usage); SMART shows an
+      honest "Unknown — needs administrator access" rather than inventing values.
+      The offline sample topology is used only for `--shots`/tests and is labelled
+      as such (`probe_returns_none_or_real_devices_never_fabricates`,
+      `drives_real_probed_topology_end_to_end`).
+- [x] Mount / unmount / format / eject / benchmark are real and correctly gated:
+      the live binary runs udisks2 over D-Bus (feature `live`) → `udisksctl` →
+      raw `mount`/`umount`/`mkfs.<fs>` fallback, plus a genuine read/seek
+      benchmark; every executing path is runtime-gated on `DISKS_LIVE` so
+      `--shots`/tests stay inert and state only what *would* run. Destructive
+      Format is behind a type-the-device-name confirm gate.
+- [x] Honesty fix: the Format confirm body unconditionally claimed
+      "(Demo build — no changes are written to disk.)" — but the shipping live
+      binary sets `DISKS_LIVE` and really erases the device, so the reassurance
+      was false and dangerous there. Now the clause appears ONLY in the hermetic
+      demo build; the live confirm just warns the erase is permanent
+      (`format_confirm_body_is_honest_about_live_vs_demo`).
+- [ ] Follow-up (pre-existing, fleet-wide, not a defect): two taffy
+      `percent()` deprecation warnings (rust #154024) in the lib — swept when the
+      toolkit's taffy usage is normalised across apps.
 
 ## contacts
 - [x] Toasts auto-dismiss → fixed.
 - [x] Detail-pane name no longer truncates at 800px → fixed.
 
-## totp
-- [x] QR-image import wired to a real picker → fixed. (Follow-up: it must go
-      through the XDG portal per HIG §5 — audit in the picker sweep.)
+## osk (on-screen keyboard) — verified real; §7 tofu fix
+- [x] Real key output: taps/swipes emit `KeyAction`s that a real
+      `virtual-keyboard-v1` injector types into the focused surface (synthetic
+      XKB keymap over a memfd), or commit via `input-method-v2` in auto-show
+      mode. Verified: the generated keymap compiles with libxkbcommon and each
+      keycode resolves to the intended keysym; pointer tap → 'q' typed; shift /
+      caps / symbols / backspace / space all drive the real text path (not a
+      dead grid). Injection degrades to a null recorder only when no compositor
+      protocol is present.
+- [x] Real FUTO swipe: the geometric SHARK² decoder ships as the default and a
+      real `FutoSwipeModel` (ExecuTorch over the `swipe` crate FFI) is used
+      automatically when its libs + models are present — same `SwipeModel`
+      seam, honest fallback. Next-word + completion suggestions are a real
+      offline n-gram predictor (the bar shows cold-start "the/of/and/to").
+- [x] §7 key grid: the ⇧ / ⌫ / ⏎ modifier keys rendered as `.notdef` tofu boxes
+      (their Unicode symbols have no glyph in the shipped UI font). Replaced
+      with vector lucide icons (`arrow-big-up` / `delete` / `corner-down-left`,
+      added to `ui::icons`); the Shift icon fills solid while Caps-Lock is
+      latched so a sticky upper-case reads differently from a one-shot shift.
+      Verified on the QWERTY/phone/pin shots (icons crisp, no tofu); asserted by
+      `modifier_and_edit_keys_carry_icons` on the production layout data.
+
+## totp — CLEAR (verified real RFC 6238 + real vault + §7 token list)
+- [x] QR-image import wired to a real picker → fixed. QR scan + paste-otpauth
+      cards both go through the XDG FileChooser portal (HIG §5) — asserted by
+      `clicking_the_scan_qr_card_emits_pick_image` +
+      `portal_chosen_qr_image_fills_the_add_panel_via_frame_drain`.
 - [x] Advanced options scroll into view → fixed.
-- [x] Vault encrypted at rest → fixed.
+- [x] Vault encrypted at rest → fixed. Real persistence verified:
+      `save_then_load_round_trips_the_vault` + `plaintext_vault_is_migrated_and_
+      removed` (XChaCha20-Poly1305), and `doc::sync_vault_removes_deleted_accounts`.
+- [x] Real RFC 6238 codes from real stored secrets: HOTP dynamic truncation on
+      RustCrypto HMAC + SHA1/256/512, RFC 4648 base32 decode, key zeroized after
+      derivation. Proven by the RFC 6238 Appendix B test vectors
+      (`rfc6238_sha1_vectors`: 94287082 / 07081804 / 89005924 / 69279037) and
+      `code_is_stable_within_a_period_and_rotates_after`. Invalid secrets show a
+      masked •••••• row, never a fabricated code.
+- [x] Add / remove / copy / reorder driven on the production path (not seeded
+      shots): `adding_an_account_through_the_panel_grows_the_vault`,
+      `delete_event_removes_account`, `mouse_click_in_the_copy_zone_emits_a_copy_
+      event`, `mouse_clicks_in_the_action_column_emit_reorder_and_delete`. Ctrl+N
+      opens Add. Live path loads the persisted vault only — never fabricates
+      accounts (sample is `--shots`/demo).
+- [x] §7 token list: per-account colour monogram, name + username hierarchy, the
+      grouped code in tabular figures, and a live per-row countdown ring
+      (seconds-remaining + colour arc) — state reads at a glance. Empty state is a
+      centred "No accounts yet — press + or Ctrl+N". Verified on the list / empty /
+      add / add-advanced shots.
 
 ## settings — CLEAR (every pane shot + inspected, controls driven against the real stores)
 - [x] Sidebar is HIG §1 correct and stays that way: when it fits it is docked
@@ -263,8 +408,23 @@ verified by an offscreen shot (header gone, functional controls intact) + tests:
 - [ ] Follow-up (not a defect): the committed `apps/settings/shots/*.png` fixtures
       are stale (predate the search-on-top sidebar) — regenerate in a personal-data
       -free environment (they must not bake in a real box's Wi-Fi/BT/email).
-- [ ] Follow-up: Permissions & Roles is an honest read-only overview; the embedded
-      role/permission editor is still gated on the permissions service.
+- [x] Permissions & Roles now renders the **real** per-workspace app grants the
+      compositor persists to `~/.config/qos/state.json`, not a hand-mirrored
+      description. The pane depends on the shareable `collab-types` types crate
+      (NOT the compositor) to deserialise each workspace's `capabilities`
+      (`CapOverride`) and groups them per workspace → app → capability, with a
+      meaning-carrying tinted pill per kind (Files/Camera/Microphone/Screen
+      sharing/Remote control/Network) and a trailing lifetime chip
+      (Always / Until log out / Once / Temporary). Read-only by design (granting
+      is the compositor's consent prompt; revoking is done in the owning
+      workspace) so it still ships zero dead buttons. Honest empty state when no
+      app holds an out-of-sandbox grant (or the compositor hasn't written its
+      state file yet) — never a fabricated permission. Verified on populated +
+      empty shots; asserted by the projection/render tests (real `CapOverride`
+      fixtures, `no dead buttons`, `a pill per grant`, `honest empty`).
+- [ ] Follow-up (unchanged): in-pane granting/revoking is still deferred — that
+      needs a write path back to the compositor's grant model, out of scope for a
+      read-only Settings pane.
 
 ## slides (presentation) — CLEAR (verified, committed 6c2e54b)
 - [x] Thumbnail body-text garble, present counter/hint overlap, overview badge
@@ -453,6 +613,55 @@ verified by an offscreen shot (header gone, functional controls intact) + tests:
       on actual state change (not an idle spin, but wasteful under pointer motion).
 
 ---
+
+## snippets — real CRDT snippet manager; live now starts empty (§7 CLEAR)
+- [x] Live launch was fabricating a 15-snippet starter library in
+      `SnippetsApp::new()` and mirroring it into the real persisted CRDT store
+      (`ui::persist::open("dev.qos.snippets")`) — a fresh install wrote sample
+      content it kept. Fixed: `new()` starts on an **empty** library; the starter
+      set moved behind `new_demo()` (used by `for_shot`/`app_root_for_shot`), and
+      `sync_library` now writes nothing into the shared doc when local is empty.
+      Asserted by `live_app_starts_empty` + `empty_live_app_does_not_seed_the_shared_doc`;
+      the seeding path is proven by `demo_seeds_and_opens_a_snippet` /
+      `sync_seeds_into_empty_doc` on `new_demo()`.
+- [x] Composed honest empty state: a genuinely empty library renders an inviting
+      onboarding (glyph tile, "No snippets yet", a primary **New snippet** CTA, and
+      a search-grammar tip) instead of the bare "No snippets match." line; a
+      filtered-empty result gets a "No snippets match" note with a Clear-search
+      button. Detail pane reads "Your snippets will appear here." when empty.
+- [x] §7: fixed the top-left toggle overlapping the title in the narrow layouts —
+      the overlay sidebar's "Snippets" title and the push-detail's snippet title
+      now indent past the close-X / Back chevron so glyphs never collide.
+- Everything else was already real and strong: three-pane search/list/editor,
+      syntax-aware highlighted body with a line gutter, language sigil badges +
+      per-language tints, favorites/most-used smart folders, `language:`/`tag:`
+      search, `${placeholder}` fill-and-copy expand flow, real copy-to-clipboard
+      (bumps usage), duplicate/delete/star, diff-spliced Text CRDT persistence
+      (bounded-churn tests), and a shared responsive flap sidebar. Verified on
+      populated + empty + narrow-overlay + push-detail shots.
+
+## themes — real OS theme studio that actually applies (§7 CLEAR)
+- [x] Apply is real: it persists the selected `ThemeSpec` into the shared
+      `~/.config/qos/settings.json` `appearance` section — the same file the
+      compositor and every system app read at session start — via a
+      non-destructive merge that preserves foreign sections. Proven end-to-end
+      by `apply_command_writes_the_active_theme_to_the_shared_store` (drives
+      Apply through the real sync, then reads the id + full spec back off disk).
+- [x] Honesty: the live catalog no longer seeds a fabricated "Sunset (custom)"
+      user theme. `default_catalog()` is now the built-in **presets only** (the
+      OS's shipped themes — real product content, not user content); the editable
+      custom theme moved to `demo_catalog()` used by `--shots`/tests. Live focuses
+      the first preset (read-only customizer, "Duplicate to edit"); the user
+      authors their own via New/Duplicate and they persist in the CRDT. Asserted
+      by `live_seed_is_presets_only_and_selects_a_preset` +
+      `live_default_catalog_is_presets_only_no_fabricated_custom`.
+- Everything else was already strong and stayed: a live preview pane rendering
+      real widgets (typography specimen, buttons, controls, presence list,
+      badges, charts) under the selected theme; a two-way-reconciled customizer
+      (accent hue/RGB picker, radius/spacing sliders, font family) editing real
+      tokens with bounded-churn CRDT persistence; New/Duplicate/Delete/Reset/
+      Export JSON; the shared responsive flap gallery. Verified on live (8
+      presets), demo (editable custom), font, and sidebar-menu shots.
 
 ## honesty pass — live path starts real/empty, samples gated to `--shots`
 
@@ -670,3 +879,59 @@ card grids that crushed at narrow widths.
 - [x] Verified by offscreen shots of Timeline / Sources / Destinations /
       Schedules / Restore at wide + narrow (+ the empty onboarding + the overlay
       rail open); 12 tests green.
+
+## containers — real zero-state + §7 CLEAR (verified list/images/empty shots, live drive)
+
+Reviewed this cycle. The manager already drives real rootless podman (containers,
+images, volumes, distroboxes via `podman ps/images/volume ls/stats` + real
+start/stop/restart/pause/rm, `rmi`/tag/inspect, streaming pull, `exec` attach).
+One real defect fixed; the rest verified fine.
+
+- [x] No fabricated state: `podman::probe()` fell back to the bundled
+      `sample_engine()` whenever podman was unreachable, so the *live* app showed
+      seven fake containers you could "stop". It now returns an empty engine
+      flagged not-live; the sample is reserved for `--shots`.
+- [x] Honest, composed zero-state: the container list shows "No container engine"
+      (podman absent) or "No containers yet" (engine up, none created) — a title
+      over an explanatory line, not a lone grey sentence.
+- [x] Verified: list + images + volumes populated shots read genuinely nice
+      (status pills, inline lifecycle actions, tabbed detail, live logs); the
+      empty-engine shot is honest; a live headless drive stands the app up against
+      the real backend and a section switch persists. Real `podman ps --all
+      --format json` confirmed returning real containers. 35 tests green.
+
+## logs — real zero-state + §7 CLEAR (verified stream/empty shots, live journal drive)
+
+Reviewed this cycle. The viewer already parses real `journalctl -o json` (severity
+colouring, unit/boot/priority filters, free-text search, live-tail, a full-field
+detail pane). One real defect fixed.
+
+- [x] No fabricated logs: the live app fell back to the bundled `sample_entries()`
+      whenever the journal read came back empty/unreadable, surfacing invented log
+      lines. It now shows the real journal only; empty/unreadable renders an honest
+      "No journal entries" zero-state (title + explanation). Sample stays behind
+      `--shots`.
+- [x] Verified: the populated stream reads nicely (tabular time, severity dots +
+      tags, detail grid, legend); the empty shot is honest; a live headless drive
+      against **real journalctl** loaded real entries and a typed search filter
+      persisted to the CRDT (`search: "shell"`). 12 tests green.
+
+## hex_editor — real open/save + honest empty + width-fit grid (verified shots + e2e)
+
+Reviewed this cycle. Had real byte editing into the CRDT but three gaps: it opened
+onto a fabricated sample buffer by default, had no in-app Open (only a CLI path)
+and **no Save to disk at all**, and stranded 16 columns in a band of dead space.
+
+- [x] Real file lifecycle: Open (Ctrl+O / empty-state button) and Save (Ctrl+S)
+      go through the host XDG file portal (`ui::portal`); Ctrl+S on a path-backed
+      buffer writes straight back and clears the dirty markers, with a status flash.
+- [x] Honest empty state: with no file the live app shows a composed zero-state
+      (title, one-line explanation, a single Open action) — never a fake buffer;
+      an unreadable path yields the same. Sample buffer reserved for `--shots`.
+- [x] §7 grid: the byte columns auto-fit the viewport width (24/row at 1280) and
+      the data inspector sits directly beside the ASCII column, so the surface
+      fills the window instead of stranding a fixed 16 columns.
+- [x] Proven end-to-end (`tests/open_save.rs`): a real file opens through the
+      portal drain path, and an edit saved with Ctrl+S lands on disk (dirty
+      cleared). Verified shots: sample (width-fit), a real ELF opened live, and
+      the empty state. 45 tests green.

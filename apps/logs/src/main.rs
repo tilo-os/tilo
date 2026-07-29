@@ -32,7 +32,13 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         // a narrow frame opens to the list, as a fresh window would).
         let viewport = parse_viewport_arg(&args).unwrap_or(DEFAULT_SHOTS_VIEWPORT);
         let show_detail = args.iter().any(|a| a == "--detail");
-        let mut app = logs::LogsApp::new(logs::journal::sample_entries(), false);
+        // A shots-only hook to capture the honest empty state deterministically.
+        let entries = if std::env::var("QOS_LOGS_EMPTY").is_ok() {
+            Vec::new()
+        } else {
+            logs::journal::sample_entries()
+        };
+        let mut app = logs::LogsApp::new(entries, false);
         if show_detail {
             app.shots_show_detail();
         }

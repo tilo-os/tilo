@@ -681,6 +681,15 @@ impl Widget for ContainersApp {
                     });
                 }
                 "collapsed" => self.sidebar_flap.snap(false),
+                // Capture the honest "no engine" zero-state (what the live app
+                // shows when rootless podman is not reachable).
+                "empty" => {
+                    self.engine = Engine {
+                        connection: "No container engine — is podman installed?".into(),
+                        live: false,
+                        ..Engine::default()
+                    };
+                }
                 // Open the shared Ctrl+K palette (seeded with the sample
                 // containers) so `--shots` can capture the search surface.
                 "palette" => self.open_container_palette(),
