@@ -248,6 +248,21 @@ pub struct ShellOverlayHost {
     /// `peer_sync_enabled` is false because the entries aren't
     /// registered in the palette.
     peer_sync_actions: Vec<PeerSyncAction>,
+    /// What actually performs a peer-sync request.
+    ///
+    /// The palette records an intent; something has to carry it out.
+    /// The compositor installs a closure here that reaches its
+    /// `ShellNetwork` handle, so the libp2p work stays on the runtime
+    /// thread and the widget layer keeps knowing nothing about
+    /// transports. `None` in tests and in a session booted without
+    /// peer-sync, where `/invite` and `/connect` report that rather
+    /// than silently doing nothing.
+    peer_sync_bridge: Option<std::rc::Rc<dyn Fn(PeerSyncRequest) -> Result<String, String>>>,
+    /// Hit rects of the connect prompt's buttons, published by
+    /// [`Self::draw_peer_sync`] and consumed by the click path. Empty
+    /// when the prompt is not painted, so a click cannot reach a button
+    /// that is not on screen.
+    peer_sync_prompt_rects: Vec<(PeerSyncPromptButton, Rect)>,
     /// Top-right notification stack. Painted above the desktop content
     /// but below the permission prompt and modal overlays so a
     /// permission prompt always wins focus. `None` until
@@ -298,11 +313,36 @@ pub enum PeerSyncAction {
     /// `ShellNetwork::issue_invite(active_ws, listening_addr)` and
     /// drop the resulting token onto the system clipboard.
     IssueInvite,
-    /// User invoked `/connect` (no token-input UI yet — the palette
-    /// records the intent and the compositor surfaces a follow-up
-    /// prompt). The compositor should pop a small text-input modal
-    /// asking for the token, then call `ShellNetwork::accept_invite`.
+    /// User invoked `/connect`. Opens the token-input prompt
+    /// ([`ShellOverlayHost::draw_peer_sync`]); submitting it sends a
+    /// [`PeerSyncRequest::AcceptInvite`] through the bridge.
     PromptConnect,
+}
+
+/// A peer-sync operation the widget layer wants performed, handed to
+/// the closure installed by
+/// [`ShellOverlayHost::with_peer_sync_bridge`].
+///
+/// Deliberately not the same type as [`PeerSyncAction`]: an action is
+/// what the user picked in the palette, a request is what the network
+/// has to be asked. `/connect` is one action and produces no request
+/// until a token has actually been typed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PeerSyncRequest {
+    /// Mint a signed invite to the active workspace. `Ok` carries the
+    /// token.
+    IssueInvite,
+    /// Join the room a token names. `Ok` carries the room id.
+    AcceptInvite(String),
+}
+
+/// A button on the connect prompt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PeerSyncPromptButton {
+    /// Submit whatever has been typed as an invite token.
+    Join,
+    /// Abandon the prompt.
+    Cancel,
 }
 
 /// Total duration of the desktop ↔ overview crossfade. The concept wraps
@@ -338,6 +378,46 @@ fn icon_for_kind(kind: &crate::shell::search::ResourceKind) -> ui::icons::Icon {
 
 /// Gap between a segmented control's outer track and its segments.
 const SEGMENT_INSET_PX: f64 = 2.0;
+
+/// Break `text` into at most `max_lines` lines that each fit `width`.
+///
+/// An invite token is a few hundred opaque base64 characters with no
+/// spaces to break on, so this splits on width rather than on word
+/// boundaries. The last line is truncated with an ellipsis when the
+/// budget runs out — the reader needs to see that there is more, not to
+/// be shown a token that looks complete and is not.
+fn wrap_monospace_ish(
+    text_renderer: &mut TextRenderer,
+    text: &str,
+    size: f32,
+    width: f32,
+    max_lines: usize,
+) -> Vec<String> {
+    if text.is_empty() || width <= 0.0 || max_lines == 0 {
+        return Vec::new();
+    }
+    // Measure once and divide: every glyph in a base64 alphabet is
+    // close enough in width that per-character measurement would cost
+    // far more than it buys.
+    let (probe_w, _) = text_renderer.measure("MMMMMMMMMM", size, None);
+    let per_char = (probe_w as f64 / 10.0).max(1.0);
+    let per_line = ((width as f64 / per_char).floor() as usize).max(1);
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = Vec::new();
+    for chunk in chars.chunks(per_line) {
+        if out.len() == max_lines {
+            // Mark the truncation on the line already emitted.
+            if let Some(last) = out.last_mut() {
+                let last: &mut String = last;
+                last.pop();
+                last.push('…');
+            }
+            break;
+        }
+        out.push(chunk.iter().collect::<String>());
+    }
+    out
+}
 
 /// One pill in the search card's filter band. Shared by the kind chips
 /// and the "All" reset chip so they cannot drift apart.
@@ -552,6 +632,8 @@ impl ShellOverlayHost {
             permission_prompt: None,
             peer_sync_enabled: false,
             peer_sync_actions: Vec::new(),
+            peer_sync_bridge: None,
+            peer_sync_prompt_rects: Vec::new(),
             notification_stack: None,
             last_chrome_revision: u64::MAX,
             qs_actions: Box::new(crate::shell::qs_actions::RealQsActions),
@@ -718,6 +800,205 @@ impl ShellOverlayHost {
     /// coalescing.
     pub fn take_peer_sync_actions(&mut self) -> Vec<PeerSyncAction> {
         std::mem::take(&mut self.peer_sync_actions)
+    }
+
+    /// Install the closure that carries out [`PeerSyncRequest`]s.
+    ///
+    /// Without one, `/invite` and `/connect` have nowhere to go — which
+    /// is what they had before: the palette pushed an action onto a
+    /// queue no production code drained, so both commands were inert in
+    /// a running session however the flag was set.
+    pub fn with_peer_sync_bridge(
+        mut self,
+        bridge: std::rc::Rc<dyn Fn(PeerSyncRequest) -> Result<String, String>>,
+    ) -> Self {
+        self.peer_sync_bridge = Some(bridge);
+        self
+    }
+
+    /// Run one peer-sync request through the installed bridge.
+    fn peer_sync_call(&self, req: PeerSyncRequest) -> Result<String, String> {
+        match self.peer_sync_bridge.as_ref() {
+            Some(bridge) => bridge(req),
+            None => Err("peer-sync is not running in this session".to_string()),
+        }
+    }
+
+    /// Drain the palette's peer-sync intents and act on them.
+    ///
+    /// Called once per frame from [`Widget::update`]. `/invite` mints a
+    /// token and parks it where the user can read it; `/connect` opens
+    /// the token prompt. Both write their outcome into chrome so the
+    /// result is on screen rather than only in a log.
+    fn pump_peer_sync(&mut self) {
+        let actions = std::mem::take(&mut self.peer_sync_actions);
+        if actions.is_empty() {
+            return;
+        }
+        for action in actions {
+            match action {
+                PeerSyncAction::IssueInvite => {
+                    let outcome = self.peer_sync_call(PeerSyncRequest::IssueInvite);
+                    if let Some(chrome) = self.chrome.clone() {
+                        let mut st = chrome.borrow_mut();
+                        match outcome {
+                            Ok(token) => {
+                                st.peer_sync_status =
+                                    Some("Invite ready — share this token".to_string());
+                                st.peer_sync_invite_token = Some(token);
+                            }
+                            Err(e) => {
+                                st.peer_sync_invite_token = None;
+                                st.peer_sync_status = Some(format!("Invite failed: {e}"));
+                            }
+                        }
+                        st.bump();
+                    }
+                }
+                PeerSyncAction::PromptConnect => {
+                    if let Some(chrome) = self.chrome.clone() {
+                        let mut st = chrome.borrow_mut();
+                        st.peer_sync_connect_input = Some(String::new());
+                        st.peer_sync_status = Some("Paste or type the invite token".to_string());
+                        st.bump();
+                    }
+                }
+            }
+        }
+    }
+
+    /// Submit whatever is in the connect prompt as an invite token.
+    ///
+    /// Closes the prompt on success and leaves it open on failure with
+    /// the reason underneath, so a mistyped token can be corrected
+    /// rather than retyped from scratch.
+    fn submit_connect_prompt(&mut self) {
+        let token = match self.chrome.as_ref() {
+            Some(chrome) => match chrome.borrow().peer_sync_connect_input.clone() {
+                Some(t) => t,
+                None => return,
+            },
+            None => return,
+        };
+        let outcome = self.peer_sync_call(PeerSyncRequest::AcceptInvite(token.trim().to_string()));
+        if let Some(chrome) = self.chrome.clone() {
+            let mut st = chrome.borrow_mut();
+            match outcome {
+                Ok(room) => {
+                    st.peer_sync_connect_input = None;
+                    st.peer_sync_status = Some(format!("Joined room {room}"));
+                }
+                Err(e) => {
+                    st.peer_sync_status = Some(format!("Refused: {e}"));
+                }
+            }
+            st.bump();
+        }
+    }
+
+    /// Route one event to the peer-sync card. Returns whether the card
+    /// consumed it.
+    ///
+    /// While the token prompt is open every key belongs to it: a base64
+    /// token contains the same characters the chrome reads as chords,
+    /// so anything that leaked past would both corrupt the token and
+    /// fire a shell action.
+    fn handle_peer_sync_event(&mut self, event: &WindowEvent) -> bool {
+        let prompt_open = self.connect_prompt_open();
+        match event {
+            WindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
+                        logical_key,
+                        state: ElementState::Pressed,
+                        ..
+                    },
+                ..
+            } => {
+                match logical_key {
+                    Key::Named(NamedKey::Escape) => {
+                        if let Some(chrome) = self.chrome.clone() {
+                            let mut st = chrome.borrow_mut();
+                            st.peer_sync_connect_input = None;
+                            st.peer_sync_invite_token = None;
+                            st.peer_sync_status = None;
+                            st.bump();
+                        }
+                        return true;
+                    }
+                    Key::Named(NamedKey::Enter) if prompt_open => {
+                        self.submit_connect_prompt();
+                        return true;
+                    }
+                    Key::Named(NamedKey::Backspace) if prompt_open => {
+                        if let Some(chrome) = self.chrome.clone() {
+                            let mut st = chrome.borrow_mut();
+                            if let Some(buf) = st.peer_sync_connect_input.as_mut() {
+                                buf.pop();
+                            }
+                            st.bump();
+                        }
+                        return true;
+                    }
+                    Key::Character(s) if prompt_open => {
+                        if let Some(chrome) = self.chrome.clone() {
+                            let mut st = chrome.borrow_mut();
+                            if let Some(buf) = st.peer_sync_connect_input.as_mut() {
+                                buf.push_str(s.as_str());
+                            }
+                            st.bump();
+                        }
+                        return true;
+                    }
+                    _ => {}
+                }
+                // Swallow anything else while the prompt is up so a
+                // stray chord cannot act on the desktop behind it.
+                prompt_open
+            }
+            WindowEvent::KeyboardInput { .. } => prompt_open,
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: winit::event::MouseButton::Left,
+                ..
+            } => {
+                let Some(p) = self.last_cursor else {
+                    return false;
+                };
+                for (which, rect) in self.peer_sync_prompt_rects.clone() {
+                    if rect.area() > 0.0 && rect.contains(p) {
+                        match which {
+                            PeerSyncPromptButton::Join => self.submit_connect_prompt(),
+                            PeerSyncPromptButton::Cancel => {
+                                if let Some(chrome) = self.chrome.clone() {
+                                    let mut st = chrome.borrow_mut();
+                                    st.peer_sync_connect_input = None;
+                                    st.peer_sync_status = None;
+                                    st.bump();
+                                }
+                            }
+                        }
+                        return true;
+                    }
+                }
+                self.peer_sync_rect().contains(p)
+            }
+            WindowEvent::CursorMoved { .. }
+            | WindowEvent::MouseWheel { .. }
+            | WindowEvent::MouseInput { .. } => self
+                .last_cursor
+                .map(|p| self.peer_sync_rect().contains(p))
+                .unwrap_or(false),
+            _ => false,
+        }
+    }
+
+    /// Is the connect token prompt on screen?
+    fn connect_prompt_open(&self) -> bool {
+        self.chrome
+            .as_ref()
+            .map(|c| c.borrow().peer_sync_connect_input.is_some())
+            .unwrap_or(false)
     }
 
     /// Register the floating sidebar wheel. The wheel is laid out as an
@@ -2001,11 +2282,13 @@ impl ShellOverlayHost {
             }
         }
 
-        // Peer-sync entries are grafted here so they always land next to
-        // the current search hits rather than sitting statically at the
-        // bottom of the seeded list. Filtered by current query so a
-        // typed `qs` still shows them at score 0.
-        if self.peer_sync_enabled && current_query.is_empty() {
+        // Peer-sync entries are grafted here so they land next to the
+        // current search hits rather than sitting statically at the
+        // bottom of the seeded list. Offered whatever the query is: the
+        // palette runs its own fuzzy filter over the entries it is
+        // given, so gating them on an empty query only meant that
+        // typing "invite" hid the invite command.
+        if self.peer_sync_enabled {
             entries.push(
                 CommandEntry::new("peer:invite", "Invite peer to workspace")
                     .description("Peer-sync"),
@@ -2948,6 +3231,10 @@ impl Widget for ShellOverlayHost {
     }
 
     fn update(&mut self, s: &mut AutoCommit, p: &ObjId) -> bool {
+        // Carry out anything the palette's peer-sync rows asked for.
+        // First, so the invite token or the token prompt is in chrome
+        // before this frame's draw reads it.
+        self.pump_peer_sync();
         // Diff the live tree against each `GroupRow`'s current
         // children. Closes #263 — every structural mutation in the
         // persisted `WorkspaceTree` bumps `chrome.revision`; if our
@@ -3706,6 +3993,10 @@ impl Widget for ShellOverlayHost {
                 scene.pop_layer();
             }
         }
+
+        // Peer-sync card last: while it is up it owns the keyboard, so
+        // it has to sit above the palette that opened it.
+        self.draw_peer_sync(scene, transform, text_renderer, theme);
     }
 
     fn handle_event(
@@ -3727,6 +4018,15 @@ impl Widget for ShellOverlayHost {
                 position.x / scale_factor,
                 position.y / scale_factor,
             ));
+        }
+
+        // Peer-sync card. Runs before every other overlay because while
+        // the token prompt is up it owns the keyboard outright — a
+        // token contains characters (`k`, `/`) that would otherwise be
+        // read as chords by the chrome underneath.
+        if self.peer_sync_card_visible() && self.handle_peer_sync_event(event) {
+            *handled = true;
+            return;
         }
 
         // Quick-settings slider drag: while the user holds a slider,
@@ -6929,6 +7229,199 @@ impl ShellOverlayHost {
     /// ([`ui::widget::command_palette::CommandPalette::filter_strip_rect`]),
     /// which is why the alignment holds without the shell re-deriving
     /// any insets.
+    /// Geometry of the peer-sync card — the token prompt and the
+    /// issued-invite readout share one surface, so one rect owns both
+    /// the paint and the hit-test.
+    fn peer_sync_rect(&self) -> Rect {
+        let w = (self.rect.width() * 0.62).clamp(420.0, 860.0);
+        let h = 260.0_f64;
+        let cx = (self.rect.x0 + self.rect.x1) / 2.0;
+        let cy = (self.rect.y0 + self.rect.y1) / 2.0;
+        Rect::new(cx - w / 2.0, cy - h / 2.0, cx + w / 2.0, cy + h / 2.0)
+    }
+
+    /// Should the peer-sync card be painted at all?
+    fn peer_sync_card_visible(&self) -> bool {
+        self.chrome
+            .as_ref()
+            .map(|c| {
+                let st = c.borrow();
+                st.peer_sync_connect_input.is_some() || st.peer_sync_invite_token.is_some()
+            })
+            .unwrap_or(false)
+    }
+
+    /// Paint the peer-sync card: the token the local user just minted,
+    /// or the prompt asking for one.
+    ///
+    /// The invite token is shown in full rather than only copied to the
+    /// clipboard. A token the user cannot see is a token they cannot
+    /// pass on from a session without a clipboard, and it is the one
+    /// piece of the invite flow that has to physically travel between
+    /// two machines.
+    fn draw_peer_sync(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        self.peer_sync_prompt_rects.clear();
+        let Some(chrome) = self.chrome.clone() else {
+            return;
+        };
+        let (input, token, status) = {
+            let st = chrome.borrow();
+            (
+                st.peer_sync_connect_input.clone(),
+                st.peer_sync_invite_token.clone(),
+                st.peer_sync_status.clone(),
+            )
+        };
+        if input.is_none() && token.is_none() {
+            return;
+        }
+        let tokens = &theme.tokens;
+        let colors = &tokens.colors;
+        let rect = self.peer_sync_rect();
+        let card = RoundedRect::from_rect(rect, tokens.radii.lg as f64);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            slate_900_tint(theme, MODAL_SURFACE_ALPHA),
+            None,
+            &card,
+        );
+        scene.stroke(
+            &vello::kurbo::Stroke::new(1.0),
+            transform,
+            colors.border_standard,
+            None,
+            &card,
+        );
+
+        let pad = 20.0_f64;
+        let mut y = rect.y0 + pad;
+        let title_size = (tokens.typography.scale.base).max(14.0);
+        let body_size = (tokens.typography.scale.xs).max(10.0);
+        let title = if input.is_some() {
+            "Join a workspace"
+        } else {
+            "Workspace invite"
+        };
+        text_renderer.draw_text(
+            scene,
+            title,
+            title_size,
+            colors.text_primary,
+            transform * Affine::translate((rect.x0 + pad, y)),
+            None,
+        );
+        y += title_size as f64 + 12.0;
+
+        // The token body: whichever of the two this card is showing.
+        let body = input.clone().or_else(|| token.clone()).unwrap_or_default();
+        let avail = rect.width() - pad * 2.0;
+        let lines = wrap_monospace_ish(text_renderer, &body, body_size, avail as f32, 6);
+        let field_h = (lines.len().max(1) as f64) * (body_size as f64 + 3.0) + 12.0;
+        let field = Rect::new(rect.x0 + pad, y, rect.x1 - pad, y + field_h);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            colors.surface_white_5,
+            None,
+            &RoundedRect::from_rect(field, tokens.radii.sm as f64),
+        );
+        let mut ty = field.y0 + 6.0;
+        for line in &lines {
+            text_renderer.draw_text(
+                scene,
+                line,
+                body_size,
+                colors.text_primary,
+                transform * Affine::translate((field.x0 + 8.0, ty)),
+                None,
+            );
+            ty += body_size as f64 + 3.0;
+        }
+        if lines.is_empty() {
+            text_renderer.draw_text(
+                scene,
+                "(paste the token, then press Enter)",
+                body_size,
+                colors.text_dim,
+                transform * Affine::translate((field.x0 + 8.0, field.y0 + 6.0)),
+                None,
+            );
+        }
+        y = field.y1 + 12.0;
+
+        if let Some(status) = status.as_deref() {
+            let status = text_renderer.elide_to_width(status, body_size, avail as f32);
+            text_renderer.draw_text(
+                scene,
+                &status,
+                body_size,
+                colors.text_dim,
+                transform * Affine::translate((rect.x0 + pad, y)),
+                None,
+            );
+            y += body_size as f64 + 10.0;
+        }
+
+        // Buttons only exist while the prompt is open — a card that is
+        // just reporting a minted token has nothing to submit.
+        if input.is_some() {
+            let bh = 30.0_f64;
+            let by = rect.y1 - pad - bh;
+            let mut bx = rect.x1 - pad;
+            for (label, which) in [
+                ("Join", PeerSyncPromptButton::Join),
+                ("Cancel", PeerSyncPromptButton::Cancel),
+            ] {
+                let (tw, th) = text_renderer.measure(label, body_size, None);
+                let bw = tw as f64 + 26.0;
+                let brect = Rect::new(bx - bw, by, bx, by + bh);
+                let is_primary = which == PeerSyncPromptButton::Join;
+                scene.fill(
+                    Fill::NonZero,
+                    transform,
+                    if is_primary {
+                        colors.accent[5]
+                    } else {
+                        colors.surface_white_5
+                    },
+                    None,
+                    &RoundedRect::from_rect(brect, bh / 2.0),
+                );
+                text_renderer.draw_text(
+                    scene,
+                    label,
+                    body_size,
+                    colors.text_primary,
+                    transform
+                        * Affine::translate((
+                            (brect.x0 + brect.x1) / 2.0 - tw as f64 / 2.0,
+                            (brect.y0 + brect.y1) / 2.0 - th as f64 / 2.0,
+                        )),
+                    None,
+                );
+                self.peer_sync_prompt_rects.push((which, brect));
+                bx = brect.x0 - 8.0;
+            }
+        } else {
+            let hint = "Press Escape to dismiss";
+            text_renderer.draw_text(
+                scene,
+                hint,
+                body_size,
+                colors.text_dim,
+                transform * Affine::translate((rect.x0 + pad, y.min(rect.y1 - pad - 12.0))),
+                None,
+            );
+        }
+    }
+
     fn draw_search_banner(
         &mut self,
         scene: &mut Scene,
