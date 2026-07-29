@@ -369,7 +369,6 @@ fn simulate_job(req: &WriteRequest, tx: &Sender<Progress>) {
 mod tests {
     use super::*;
     use crate::model::{sample_source, sample_targets};
-    use std::io::Write as _;
 
     fn req() -> WriteRequest {
         WriteRequest {
