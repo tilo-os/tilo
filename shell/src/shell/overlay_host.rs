@@ -8759,6 +8759,100 @@ mod overlay_event_absorb_tests {
         handled
     }
 
+    fn left_button_pressed() -> WindowEvent {
+        WindowEvent::MouseInput {
+            device_id: unsafe { std::mem::zeroed() },
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+        }
+    }
+
+    /// Paint once so the chip / scope rects the click router reads are
+    /// the ones that were actually drawn, then click a point.
+    fn paint_then_click(h: &mut AbsorbHarness, point_of: impl Fn(&ShellOverlayHost) -> Point) {
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let mut scene = vello::Scene::new();
+        let presence = ui::presence::PresenceCtx::default();
+        h.host
+            .draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+        let p = point_of(&h.host);
+        pump(h, &cursor_moved_at(p));
+        pump(h, &left_button_pressed());
+    }
+
+    /// The kind chips and the scope switch moved inside the palette
+    /// card. Clicking one must still filter — and must not be taken for
+    /// a click outside the card, which is the dismissal gesture.
+    ///
+    /// Drives the production `handle_event` router against the rects the
+    /// production `draw` just cached, so the two cannot drift apart.
+    #[test]
+    fn clicking_a_kind_chip_filters_without_dismissing_the_palette() {
+        let mut h = build_harness();
+        h.host.set_palette_visible(true);
+        h.host.force_palette_settled();
+
+        assert!(
+            h.host.active_kind_filter.is_empty(),
+            "the palette starts unfiltered"
+        );
+        paint_then_click(&mut h, |host| {
+            host.search_chip_rects
+                .first()
+                .copied()
+                .expect("the chip strip must have painted at least one chip")
+                .center()
+        });
+
+        assert!(
+            h.host.palette_visible(),
+            "a click on a chip inside the card must not dismiss the palette"
+        );
+        assert_eq!(
+            h.host.active_kind_filter.len(),
+            1,
+            "the first chip must have toggled a kind on: {:?}",
+            h.host.active_kind_filter
+        );
+
+        // …and the "All" chip clears it again.
+        paint_then_click(&mut h, |host| host.search_all_chip_rect.center());
+        assert!(
+            h.host.palette_visible(),
+            "the All chip must not dismiss the palette either"
+        );
+        assert!(
+            h.host.active_kind_filter.is_empty(),
+            "All must clear the kind filter, got {:?}",
+            h.host.active_kind_filter
+        );
+    }
+
+    /// Same for the scope switch, which shares the band.
+    #[test]
+    fn clicking_a_scope_segment_switches_scope_without_dismissing() {
+        use crate::shell::chrome_state::SearchScope;
+        let mut h = build_harness();
+        h.host.set_palette_visible(true);
+        h.host.force_palette_settled();
+        h.chrome.borrow_mut().search_scope = SearchScope::Workspace;
+
+        // The last segment is All (the scope list is
+        // [ActiveApp?, Workspace, All]).
+        paint_then_click(&mut h, |host| {
+            let last = host.search_scope_list().len() - 1;
+            host.search_scope_pill_rect(last).center()
+        });
+
+        assert!(h.host.palette_visible(), "the palette must stay open");
+        assert_eq!(
+            h.chrome.borrow().search_scope,
+            SearchScope::All,
+            "clicking the trailing segment must select the All scope"
+        );
+    }
+
     #[test]
     fn overlay_absorbs_cursor_moved_when_palette_open() {
         let mut h = build_harness();
