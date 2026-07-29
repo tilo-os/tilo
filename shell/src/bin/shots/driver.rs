@@ -333,6 +333,11 @@ impl ShellDriver {
             }
             "palette" => {
                 self.fb.host_mut().set_palette_visible(true);
+                // Production opens the palette focused (see
+                // `open_palette_with_scope`); a scene that skipped this
+                // rendered the field's idle border and hid the focus ring
+                // from every screenshot review.
+                self.fb.host_mut().set_palette_focus(true);
                 // Settle the rising-edge open animation so a single-frame
                 // paint shows the fully-opened modal instead of frame 0
                 // (`alpha == 0` → indistinguishable from bare desktop).
@@ -346,8 +351,22 @@ impl ShellDriver {
                     .host_mut()
                     .refresh_search_results_for_shots(&mut self.state, &root);
             }
+            // The query that exposed the palette's ranking: an installed
+            // app's name that also appears in dozens of source paths.
+            // Enter activates the top row, so the app has to be it.
+            "palette_app_query" => {
+                self.fb.host_mut().set_palette_visible(true);
+                self.fb.host_mut().force_palette_settled();
+                self.fb.host_mut().set_palette_focus(true);
+                self.fb.host_mut().set_palette_query("calculator");
+                let root = self.root_obj.clone();
+                self.fb
+                    .host_mut()
+                    .refresh_search_results_for_shots(&mut self.state, &root);
+            }
             "palette_typed" => {
                 self.fb.host_mut().set_palette_visible(true);
+                self.fb.host_mut().set_palette_focus(true);
                 self.fb.host_mut().force_palette_settled();
                 self.fb.host_mut().set_palette_query("open");
                 let root = self.root_obj.clone();
@@ -635,6 +654,7 @@ impl ShellDriver {
         "overview",
         "palette",
         "palette_typed",
+        "palette_app_query",
         "quick-settings",
         "qs-wifi-drillin",
         "qs-bt-drillin",
