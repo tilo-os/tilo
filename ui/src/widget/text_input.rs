@@ -3161,4 +3161,210 @@ mod tests {
         let (_h, misses, _ns) = tr.take_shape_stats();
         assert_eq!(misses, 1, "sans is a separate shape from the named family");
     }
+
+    // ---- multiline mode -----------------------------------------------------
+    //
+    // Every behaviour is driven through the real `handle_event` / `draw`
+    // path — the visual-line layout the caret/nav math reads is the same one
+    // `draw` builds and paints, so a regression in either is caught.
+
+    /// A focused, laid-out multiline input drawn once so its wrapped
+    /// visual-line layout (`lines`) is populated for the nav/selection math.
+    fn ml_input(text: &str, w: f64, h: f64) -> TextInput {
+        let mut ti = TextInput::local().multiline(true).with_initial_value(text);
+        ti.set_focus(true);
+        ti.apply_layout_external(Rect::new(0.0, 0.0, w, h));
+        draw_to_populate(&mut ti);
+        ti
+    }
+
+    /// Enter inserts a real newline in multiline mode, splitting at the caret.
+    #[test]
+    fn multiline_enter_inserts_newline() {
+        let mut ti = ml_input("ab", 300.0, 120.0);
+        ti.set_cursor_pos(1); // between 'a' and 'b'
+        let mut doc = AutoCommit::new();
+        assert!(drive(&mut ti, &mut doc, &named_key_event(NamedKey::Enter), &mods(false, false)));
+        assert_eq!(ti.value(), "a\nb", "Enter inserted a newline at the caret");
+        assert_eq!(ti.cursor_pos(), 2, "caret sits just after the inserted newline");
+    }
+
+    /// A single-line field with `enter_submits` fires a one-shot submit signal
+    /// and inserts nothing; a multiline field with `enter_submits` still
+    /// inserts a newline on Shift+Enter (the chat-composer split).
+    #[test]
+    fn enter_submits_signals_without_inserting_and_shift_enter_still_splits() {
+        let mut ti = TextInput::local().with_enter_submits(true).with_initial_value("hi");
+        ti.set_focus(true);
+        let mut doc = AutoCommit::new();
+        assert!(drive(&mut ti, &mut doc, &named_key_event(NamedKey::Enter), &mods(false, false)));
+        assert_eq!(ti.value(), "hi", "Enter must not insert a newline in submit mode");
+        assert!(ti.take_submit(), "Enter fired the submit signal");
+        assert!(!ti.take_submit(), "submit is one-shot — cleared on read");
+
+        let mut ml = TextInput::local()
+            .multiline(true)
+            .with_enter_submits(true)
+            .with_initial_value("hi");
+        ml.set_focus(true);
+        ml.set_cursor_pos(2);
+        drive(&mut ml, &mut doc, &named_key_event(NamedKey::Enter), &mods(false, true)); // Shift+Enter
+        assert_eq!(ml.value(), "hi\n", "Shift+Enter inserts a newline in multiline submit mode");
+        assert!(!ml.take_submit(), "Shift+Enter must not submit");
+    }
+
+    /// Up / Down move the caret between visual lines (here, hard newlines).
+    #[test]
+    fn multiline_up_down_moves_between_visual_lines() {
+        let mut ti = ml_input("hello\nworld\nfoo", 400.0, 200.0);
+        let mut doc = AutoCommit::new();
+        ti.set_cursor_pos(8); // inside "world" (row 1)
+        assert_eq!(ti.locate_ml(ti.cursor_pos()).0, 1, "precondition: caret on row 1");
+
+        drive(&mut ti, &mut doc, &named_key_event(NamedKey::ArrowUp), &mods(false, false));
+        assert_eq!(ti.locate_ml(ti.cursor_pos()).0, 0, "Up moved to the first visual line");
+
+        drive(&mut ti, &mut doc, &named_key_event(NamedKey::ArrowDown), &mods(false, false));
+        assert_eq!(ti.locate_ml(ti.cursor_pos()).0, 1, "Down returned to row 1");
+        drive(&mut ti, &mut doc, &named_key_event(NamedKey::ArrowDown), &mods(false, false));
+        assert_eq!(ti.locate_ml(ti.cursor_pos()).0, 2, "Down reached the last visual line");
+    }
+
+    /// The vertical goal column survives a run of Up/Down over a short line:
+    /// stepping Down through a 1-char middle line and onto a long third line
+    /// lands the caret back near the original column, not at the short line's
+    /// end.
+    #[test]
+    fn multiline_vertical_motion_preserves_goal_column() {
+        let mut ti = ml_input("abcdefgh\nx\nabcdefgh", 500.0, 200.0);
+        let mut doc = AutoCommit::new();
+        ti.set_cursor_pos(8); // end of the first "abcdefgh" (row 0, high column)
+
+        drive(&mut ti, &mut doc, &named_key_event(NamedKey::ArrowDown), &mods(false, false));
+        assert_eq!(ti.locate_ml(ti.cursor_pos()).0, 1, "Down landed on the short middle row");
+
+        drive(&mut ti, &mut doc, &named_key_event(NamedKey::ArrowDown), &mods(false, false));
+        let (row, _) = ti.locate_ml(ti.cursor_pos());
+        assert_eq!(row, 2, "Down reached the third row");
+        assert!(
+            ti.cursor_pos() >= 17,
+            "goal column preserved across the short line — caret is near row 3's end, got {}",
+            ti.cursor_pos()
+        );
+    }
+
+    /// A selection dragged across a newline covers both lines, and the string a
+    /// copy would emit (the selected slice) includes the newline.
+    #[test]
+    fn multiline_selection_spans_lines_and_copy_includes_newline() {
+        let mut ti = ml_input("hello\nworld", 400.0, 200.0);
+        let mut doc = AutoCommit::new();
+        ti.set_cursor_pos(3); // inside "hello"
+        drive(&mut ti, &mut doc, &named_key_event(NamedKey::ArrowDown), &mods(false, true)); // Shift+Down
+        let (s, e) = ti.selection_range_public().expect("a cross-line selection is active");
+        assert!(s <= 5 && e > 6, "selection crosses the newline at byte 5, got ({s},{e})");
+        let selected = ti.selected_str().expect("selected slice");
+        assert!(selected.contains('\n'), "copy would emit the newline: {selected:?}");
+    }
+
+    /// A long paragraph soft-wraps into multiple visual rows at word
+    /// boundaries (the first row ends on a space, not mid-word), and Down
+    /// steps into the wrapped continuation.
+    #[test]
+    fn multiline_soft_wraps_at_word_boundaries() {
+        let text = "the quick brown fox jumps over the lazy dog again and again";
+        let mut ti = ml_input(text, 170.0, 220.0); // narrow → must wrap
+        assert!(ti.lines.len() > 1, "long paragraph wrapped into {} rows", ti.lines.len());
+        let first_end = ti.lines[0].end;
+        assert!(
+            ti.value()[..first_end].ends_with(' '),
+            "wrap happened at a word boundary (row ends on a space): {:?}",
+            &ti.value()[..first_end]
+        );
+
+        let mut doc = AutoCommit::new();
+        ti.set_cursor_pos(0);
+        drive(&mut ti, &mut doc, &named_key_event(NamedKey::ArrowDown), &mods(false, false));
+        assert_eq!(ti.locate_ml(ti.cursor_pos()).0, 1, "Down entered the wrapped continuation");
+        assert!(ti.cursor_pos() > 0, "caret advanced into the second visual row");
+    }
+
+    /// Home / End act on the current *visual* line in multiline mode.
+    #[test]
+    fn multiline_home_end_are_per_visual_line() {
+        let mut ti = ml_input("hello\nworld", 400.0, 200.0);
+        let mut doc = AutoCommit::new();
+        ti.set_cursor_pos(8); // "wo|rld" on row 1
+        drive(&mut ti, &mut doc, &named_key_event(NamedKey::Home), &mods(false, false));
+        assert_eq!(ti.cursor_pos(), 6, "Home went to the start of the second line, not the field");
+        drive(&mut ti, &mut doc, &named_key_event(NamedKey::End), &mods(false, false));
+        assert_eq!(ti.cursor_pos(), 11, "End went to the end of the second line");
+    }
+
+    /// A multiline input reports `AccessState::multiline`; a single-line one
+    /// does not.
+    #[test]
+    fn multiline_sets_accessibility_flag() {
+        let ml = TextInput::local().multiline(true);
+        assert!(Widget::accessibility(&ml).unwrap().state.multiline, "multiline flagged in a11y");
+        let single = TextInput::local();
+        assert!(!Widget::accessibility(&single).unwrap().state.multiline);
+    }
+
+    /// Backspace at the start of a wrapped-by-newline line merges it with the
+    /// previous one (the newline is just a byte, so the shared delete path
+    /// handles it) — proves multiline editing composes with the core.
+    #[test]
+    fn multiline_backspace_at_line_start_merges_lines() {
+        let mut ti = ml_input("hello\nworld", 400.0, 200.0);
+        let mut doc = AutoCommit::new();
+        ti.set_cursor_pos(6); // start of "world", just after the newline
+        drive(&mut ti, &mut doc, &named_key_event(NamedKey::Backspace), &mods(false, false));
+        assert_eq!(ti.value(), "helloworld", "Backspace removed the newline, merging the lines");
+        assert_eq!(ti.cursor_pos(), 5);
+    }
+
+    // ---- secret / masked mode ----------------------------------------------
+
+    /// The reveal toggle shows the real glyphs on screen, but the plaintext is
+    /// still kept out of the a11y tree (value `None`, `protected`) even when
+    /// revealed.
+    #[test]
+    fn secret_reveal_toggle_shows_glyphs_but_never_leaks_to_a11y() {
+        let mut ti = TextInput::new(Vec::new()).with_secret(true);
+        ti.text = "hunter2".to_string();
+        assert_eq!(ti.display_text(), "•••••••", "masked by default");
+
+        ti.toggle_reveal();
+        assert!(ti.is_revealed());
+        assert_eq!(ti.display_text(), "hunter2", "revealed shows the real glyphs");
+        let node = Widget::accessibility(&ti).unwrap();
+        assert_eq!(node.value, None, "revealed value still must not reach the a11y tree");
+        assert!(node.state.protected, "still marked protected while revealed");
+
+        ti.toggle_reveal();
+        assert_eq!(ti.display_text(), "•••••••", "toggles back to masked");
+    }
+
+    /// A secret field masks the render but the model holds the real value, so
+    /// copy emits the real secret and cut/caret still operate on real bytes.
+    #[test]
+    fn secret_masks_render_but_clipboard_and_caret_use_the_real_value() {
+        let mut ti = TextInput::local().with_secret(true).with_initial_value("s3cr3t");
+        ti.set_focus(true);
+        let mut doc = AutoCommit::new();
+
+        // Caret navigation walks the real characters (not the bullet run).
+        ti.set_cursor_pos(0);
+        drive(&mut ti, &mut doc, &named_key_event(NamedKey::ArrowRight), &mods(false, false));
+        assert_eq!(ti.cursor_pos(), 1, "Right moved one real char boundary");
+
+        // Ctrl+A → the slice a copy would send is the real secret, not bullets.
+        drive(&mut ti, &mut doc, &char_key_event("a"), &mods(true, false));
+        assert_eq!(ti.selected_str(), Some("s3cr3t"), "copy sends the real value, never the mask");
+
+        // Ctrl+X cuts the real selection.
+        drive(&mut ti, &mut doc, &char_key_event("x"), &mods(true, false));
+        assert_eq!(ti.value(), "", "Ctrl+X cut the real selection");
+    }
 }
