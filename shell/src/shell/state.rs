@@ -2154,14 +2154,7 @@ impl WorkspaceTree {
         let Ok(json) = serde_json::to_vec_pretty(&caps) else {
             return;
         };
-        let tmp = path.with_extension("json.tmp");
-        if let Some(parent) = path.parent()
-            && let Err(e) = std::fs::create_dir_all(parent)
-        {
-            tracing::warn!("filesystem capability export failed: {e}");
-            return;
-        }
-        if let Err(e) = std::fs::write(&tmp, &json).and_then(|()| std::fs::rename(&tmp, path)) {
+        if let Err(e) = atomic_file::write_creating_parent(path, &json) {
             tracing::warn!("filesystem capability export failed: {e}");
         }
     }

@@ -227,17 +227,9 @@ pub fn ensure_primary_identity(identity_dir: &Path) -> Result<ProvisionOutcome, 
     let bytes = serde_json::to_vec_pretty(&record)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
 
-    // Atomic write: tmp → chmod → rename. Matches DiskIdentityStore's
-    // torn-write mitigation.
-    let tmp = path.with_extension("json.tmp");
-    fs::write(&tmp, &bytes)?;
-    #[cfg(unix)]
-    {
-        let mut perm = fs::metadata(&tmp)?.permissions();
-        perm.set_mode(0o600);
-        fs::set_permissions(&tmp, perm)?;
-    }
-    fs::rename(&tmp, &path)?;
+    // The 0600 is applied to the temp file before the rename, so the record
+    // is never readable by anyone else at its final path.
+    atomic_file::write_with_mode(&path, &bytes, 0o600)?;
     Ok(ProvisionOutcome::Created { pubkey_hex })
 }
 

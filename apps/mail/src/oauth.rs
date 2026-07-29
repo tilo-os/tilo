@@ -445,10 +445,10 @@ pub fn parse_redirect_line(line: &str) -> Option<RedirectResult> {
     let mut code = None;
     let mut state = String::new();
     let mut error = None;
-    for pair in query.split('&') {
-        let (k, v) = pair.split_once('=').unwrap_or((pair, ""));
-        let v = percent_decode(v);
-        match k {
+    // The provider redirects a browser here, so the query is
+    // `application/x-www-form-urlencoded` — a bare `+` is an encoded space.
+    for (k, v) in ui::uri::parse_form_query(query) {
+        match k.as_str() {
             "code" => code = Some(v),
             "state" => state = v,
             "error" => error = Some(v),
@@ -461,37 +461,6 @@ pub fn parse_redirect_line(line: &str) -> Option<RedirectResult> {
     code.map(|code| RedirectResult::Code { code, state })
 }
 
-/// Minimal percent-decode for query values (`%XX` + `+`→space). Enough for the
-/// OAuth `code`/`state`/`error` values a provider round-trips.
-fn percent_decode(s: &str) -> String {
-    let bytes = s.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        match bytes[i] {
-            b'%' if i + 2 < bytes.len() => {
-                let hi = (bytes[i + 1] as char).to_digit(16);
-                let lo = (bytes[i + 2] as char).to_digit(16);
-                if let (Some(h), Some(l)) = (hi, lo) {
-                    out.push((h * 16 + l) as u8);
-                    i += 3;
-                    continue;
-                }
-                out.push(bytes[i]);
-                i += 1;
-            }
-            b'+' => {
-                out.push(b' ');
-                i += 1;
-            }
-            b => {
-                out.push(b);
-                i += 1;
-            }
-        }
-    }
-    String::from_utf8_lossy(&out).into_owned()
-}
 
 /// Refresh an expired access token using its refresh token. Network path —
 /// compiled only under `live`. The provider may omit a new refresh token in

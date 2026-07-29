@@ -4,6 +4,8 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+# Crash-safe file replacement (temp + fsync + rename + dir fsync).
+atomic-file = { path = "../crates/system/atomic-file" }
 anyhow.workspace = true
 bytes.workspace = true
 clap.workspace = true

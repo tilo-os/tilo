@@ -273,6 +273,9 @@ pub struct MusicApp {
     /// A playlist-cover file-portal pick in flight: the receiver the frame loop
     /// drains, plus the playlist it targets. `None` when no picker is open.
     cover_pick: Option<portal::CoverChannel>,
+    /// Which playlist an in-flight cover pick belongs to. The portal only ever
+    /// answers "which file", so the app remembers "for what".
+    cover_pick_for: Option<String>,
 
     seeded: bool,
     /// When `true`, a first `sync` onto an empty document writes the bundled
@@ -518,6 +521,7 @@ impl MusicApp {
             mpris: MprisHandle::disabled(),
             mpris_last: None,
             cover_pick: None,
+            cover_pick_for: None,
             seeded: false,
             seed_samples: false,
             playback_loaded: false,
@@ -933,12 +937,15 @@ impl MusicApp {
             Err(std::sync::mpsc::TryRecvError::Empty) => return,
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                 self.cover_pick = None;
+                self.cover_pick_for = None;
                 return;
             }
         };
         self.cover_pick = None;
+        let playlist_id = self.cover_pick_for.take();
         match outcome {
-            CoverOutcome::Chosen { playlist_id, path } => {
+            CoverOutcome::Opened(path) => {
+                let Some(playlist_id) = playlist_id else { return };
                 // Store as a `file://` URL so the image cache (shared with http
                 // covers) can fetch it off disk.
                 let url = format!("file://{}", path.display());
@@ -1419,7 +1426,8 @@ impl MusicApp {
                 // Route through the host's XDG file-chooser portal (never an
                 // in-app picker). The pick is async; the frame loop drains the
                 // outcome and applies the cover.
-                self.cover_pick = Some(portal::request_cover(playlist_id));
+                self.cover_pick_for = Some(playlist_id);
+                self.cover_pick = Some(portal::request_cover());
                 self.toast = Some(("Choose a cover image\u{2026}".to_string(), Instant::now()));
             }
             Action::AddToQueue(id) => {

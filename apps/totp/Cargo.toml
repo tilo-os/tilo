@@ -12,7 +12,9 @@ name = "totp"
 path = "src/main.rs"
 
 [dependencies]
-ui = { path = "../../ui" }
+# Crash-safe file replacement (temp + fsync + rename + dir fsync).
+atomic-file = { path = "../../crates/system/atomic-file" }
+ui = { path = "../../ui", features = ["portal"] }
 automerge.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -59,9 +61,6 @@ image = { workspace = true, features = ["png", "jpeg"] }
 # its own small Tokio runtime and the chosen path comes back over a channel
 # (see `app::portal`). All three are already resolved in the shared workspace
 # lockfile, so this adds no registry fetch and keeps the fleet build green.
-ashpd.workspace = true
-tokio = { workspace = true, features = ["rt", "rt-multi-thread", "net", "time"] }
-url.workspace = true
 
 # --- Encryption-at-rest for the vault ---------------------------------
 # TOTP secrets are long-lived bearer credentials, so the vault is sealed

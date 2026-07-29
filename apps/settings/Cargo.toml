@@ -12,6 +12,8 @@ name = "settings"
 path = "src/main.rs"
 
 [dependencies]
+# One owner for ~/.config/qos/settings.json.
+settings-store = { path = "../../crates/system/settings-store" }
 ui = { path = "../../ui" }
 # Shared shell-out helpers for the interactive panes (display, audio,
 # network, bluetooth). The crate lives at the workspace root so both

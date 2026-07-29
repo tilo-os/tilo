@@ -619,13 +619,10 @@ fn caldav_store_from_shared(shared: &accounts::AccountStore) -> DavStore {
 
 /// The per-user qOS config root: `$XDG_CONFIG_HOME/qos` or `~/.config/qos`.
 /// Shared by every account store and the region store so they all resolve
-/// the same directory.
+/// the same directory — and, through [`settings_store`], the same directory
+/// the compositor and every other app resolve.
 pub fn config_root() -> Option<PathBuf> {
-    let base = std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .filter(|p| !p.as_os_str().is_empty())
-        .or_else(|| dirs::home_dir().map(|h| h.join(".config")))?;
-    Some(base.join("qos"))
+    settings_store::config_root()
 }
 
 /// A deterministic, populated directory for `--shots` and tests so the

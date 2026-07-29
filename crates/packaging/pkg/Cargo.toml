@@ -14,6 +14,8 @@ path = "src/lib.rs"
 # by both the native loader and the Flatpak packager.
 
 [dependencies]
+# Crash-safe file replacement (temp + fsync + rename + dir fsync).
+atomic-file = { path = "../../../crates/system/atomic-file" }
 # Threshold-shared Ed25519 identity. Signing goes through the
 # identity's group key; verify is a regular Ed25519 verify against
 # the group public key, so callers only need the verifying-key

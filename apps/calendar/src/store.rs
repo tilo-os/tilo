@@ -41,10 +41,7 @@ pub fn save(path: &Path, doc: &mut AutoCommit) -> io::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let bytes = doc.save();
-    let tmp = path.with_extension("automerge.tmp");
-    std::fs::write(&tmp, &bytes)?;
-    std::fs::rename(&tmp, path)
+    atomic_file::write(path, &doc.save())
 }
 
 /// Directory the import/export actions read from and write to. A real
