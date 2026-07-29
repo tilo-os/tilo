@@ -122,7 +122,7 @@ pub fn take_command(doc: &mut AutoCommit, root: &ObjId) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::default_catalog;
+    use crate::model::{default_catalog, demo_catalog};
     use automerge::ROOT;
 
     #[test]
@@ -164,7 +164,9 @@ mod tests {
     fn catalog_round_trips_through_crdt() {
         let mut doc = AutoCommit::new();
         let root = ROOT;
-        let cat = default_catalog();
+        // Use the demo catalog so the round-trip exercises a mix of built-in
+        // presets and an editable custom theme.
+        let cat = demo_catalog();
         save_catalog(&mut doc, &root, &cat);
         let back = load_catalog(&doc, &root).unwrap();
         assert_eq!(back.len(), cat.len());

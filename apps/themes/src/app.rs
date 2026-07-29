@@ -37,7 +37,7 @@ use crate::customizer::{self, Customizer};
 use crate::doc;
 use crate::draw;
 use crate::gallery::Gallery;
-use crate::model::{self, default_catalog, presets, ThemeSpec, TokenId, FONTS};
+use crate::model::{self, default_catalog, demo_catalog, presets, ThemeSpec, TokenId, FONTS};
 use crate::preview::PreviewPane;
 use crate::store;
 use crate::widgets::{Btn, BtnVariant};
@@ -118,6 +118,10 @@ pub struct ThemesApp {
     shot_menu: bool,
     /// Scroll the narrow stack partway so the shot proves it scrolls.
     shot_scroll: bool,
+    /// When set, first-run seeding uses the demo catalog (presets + one
+    /// editable custom theme) instead of the live presets-only default — for
+    /// `--shots` and "try it" walkthroughs, never the live path.
+    seed_demo: bool,
 }
 
 impl ThemesApp {
@@ -160,7 +164,19 @@ impl ThemesApp {
             shot_select: None,
             shot_menu: false,
             shot_scroll: false,
+            seed_demo: false,
         }
+    }
+
+    /// Like [`Self::new`] but seeds the demo catalog (presets + one editable
+    /// custom theme) on first run — for `--shots` and demo walkthroughs so a
+    /// capture shows the customizer editing a real custom theme. Never the live
+    /// first-run path.
+    pub fn new_demo() -> Self {
+        let mut app = Self::new();
+        app.seed_demo = true;
+        app.catalog = demo_catalog();
+        app
     }
 
     /// Seed the responsive state for a deterministic headless screenshot.
@@ -407,11 +423,19 @@ impl ThemesApp {
 
 impl Widget for ThemesApp {
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
-        // 1. Seed the document on first run.
+        // 1. Seed the document on first run. Live seeds the presets-only
+        // default (the OS's shipped themes, never a fabricated "your theme"); a
+        // demo/`--shots` app seeds the demo catalog with its editable custom
+        // theme. The demo focuses its editable custom theme (so a capture shows
+        // real editing); the live install focuses the first preset.
         if doc::load_catalog(state, path).is_none() {
-            let cat = default_catalog();
+            let cat = if self.seed_demo { demo_catalog() } else { default_catalog() };
             doc::save_catalog(state, path, &cat);
-            let sel = cat.last().map(|s| s.id.clone()).unwrap_or_default();
+            let sel = if self.seed_demo {
+                cat.last().map(|s| s.id.clone()).unwrap_or_default()
+            } else {
+                cat.first().map(|s| s.id.clone()).unwrap_or_default()
+            };
             doc::put_str(state, path, doc::KEY_SELECTED, &sel);
             doc::put_str(state, path, doc::KEY_EDIT_TOKEN, "accent");
             if let Some(s) = cat.iter().find(|s| s.id == sel) {
@@ -1018,10 +1042,21 @@ mod tests {
         });
     }
 
-    /// A freshly-seeded app + its CRDT state (first-run seed done).
+    /// A freshly-seeded **live** app + its CRDT state (first-run seed done).
+    /// Live = presets only, no fabricated custom theme.
     fn seeded() -> (ThemesApp, ui::State) {
         isolate_config();
         let mut app = ThemesApp::new();
+        let mut st = ui::State::new();
+        app.sync(&mut st.doc, &st.root);
+        (app, st)
+    }
+
+    /// A freshly-seeded **demo** app (presets + the editable custom "sunset"),
+    /// for the tests that exercise editing / deleting a custom theme.
+    fn seeded_demo() -> (ThemesApp, ui::State) {
+        isolate_config();
+        let mut app = ThemesApp::new_demo();
         let mut st = ui::State::new();
         app.sync(&mut st.doc, &st.root);
         (app, st)
@@ -1051,8 +1086,20 @@ mod tests {
     }
 
     #[test]
+    fn live_seed_is_presets_only_and_selects_a_preset() {
+        // Honest live default: only built-in presets, and the focused theme is
+        // one of them — no fabricated "your custom theme".
+        let (_app, st) = seeded();
+        let cat = catalog(&st);
+        assert!(cat.iter().all(|s| s.builtin), "live catalog is presets only");
+        let sel = selected(&st);
+        assert!(cat.iter().find(|s| s.id == sel).map(|s| s.builtin).unwrap_or(false));
+        assert!(!cat.iter().any(|s| s.id == "sunset"), "no seeded custom theme on the live path");
+    }
+
+    #[test]
     fn delete_command_removes_a_custom_theme_and_reselects() {
-        let (mut app, mut st) = seeded();
+        let (mut app, mut st) = seeded_demo();
         assert!(catalog(&st).iter().any(|s| s.id == "sunset"), "seeded custom present");
         run(&mut app, &mut st, "delete:sunset");
         assert!(!catalog(&st).iter().any(|s| s.id == "sunset"), "custom theme removed");
@@ -1070,8 +1117,8 @@ mod tests {
 
     #[test]
     fn inline_name_edit_persists_into_the_selected_custom_theme() {
-        let (mut app, mut st) = seeded();
-        // The seeded custom "sunset" is selected out of the box.
+        let (mut app, mut st) = seeded_demo();
+        // The demo's editable custom "sunset" is selected out of the box.
         assert_eq!(selected(&st), "sunset");
         // The sidebar's inline TextInput writes the edited name to KEY_ED_NAME;
         // the next sync reconciles it into the catalog (persisted in the CRDT).
