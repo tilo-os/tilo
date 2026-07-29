@@ -35,9 +35,10 @@ use ui::widget::Widget;
 ///
 /// When invoked under `--shots` we deliberately render the bundled sample
 /// journal so the screenshot is deterministic and populated even with no
-/// journald access. Otherwise we try the live journal and fall back to
-/// the sample if it is unavailable or empty (e.g. missing permissions),
-/// so the viewer is never blank.
+/// journald access. Otherwise we read the *real* journal: if it has entries
+/// the viewer shows them with live-tail enabled; if it is empty or
+/// unreadable the viewer shows an honest zero-state, never the sample — a
+/// system log app must not fabricate log lines.
 pub fn app_root() -> Box<dyn Widget> {
     let shots_mode = std::env::args()
         .any(|a| a == "--shots" || a.starts_with("--shots="));
@@ -47,12 +48,7 @@ pub fn app_root() -> Box<dyn Widget> {
     }
 
     let live = journal::load_live(2000);
-    if live.is_empty() {
-        // No journald (or no access) — show the sample so the UI has
-        // something to render, but don't enable live tail against a
-        // source we couldn't read.
-        Box::new(LogsApp::new(journal::sample_entries(), false))
-    } else {
-        Box::new(LogsApp::new(live, true))
-    }
+    // Live-tail only makes sense against a journal we could actually read.
+    let allow_live = !live.is_empty();
+    Box::new(LogsApp::new(live, allow_live))
 }
