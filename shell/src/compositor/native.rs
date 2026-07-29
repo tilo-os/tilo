@@ -1179,9 +1179,8 @@ pub fn run() -> ! {
     // `QOS_REFRESH_HZ` overrides the display's rate. Diagnostic only —
     // it is what makes "does the loop hold a 144 Hz cadence" measurable
     // on a machine with no 144 Hz panel attached.
-    let mut frame_clock = match pacing::refresh_override_from_env().or_else(|| {
-        backend.refresh_interval()
-    }) {
+    let refresh_override = pacing::refresh_override_from_env();
+    let mut frame_clock = match refresh_override.or_else(|| backend.refresh_interval()) {
         Some(interval) => {
             eprintln!(
                 "nirios compositor: pacing to {:.3} Hz",
@@ -1298,6 +1297,25 @@ pub fn run() -> ! {
                         // already queued at the old size.
                         if let Some(pipe) = present_pipe.as_ref() {
                             pipe.resize(size);
+                        }
+                        // A resize is also how the compositor learns the
+                        // window moved to a different monitor, or that a
+                        // mode changed. Re-ask the backend what it is
+                        // presenting to and retarget the clock, so
+                        // "pace to the display" keeps being true after
+                        // startup rather than only at it. The env
+                        // override still wins — it exists precisely to
+                        // pin a rate the hardware isn't offering.
+                        if refresh_override.is_none() {
+                            if let Some(interval) = backend.refresh_interval() {
+                                if frame_clock.set_interval(interval) {
+                                    eprintln!(
+                                        "nirios compositor: display changed; now pacing to {:.3} Hz",
+                                        1.0 / interval.as_secs_f64()
+                                    );
+                                    metrics.set_target_period(interval);
+                                }
+                            }
                         }
                     }
                 }
