@@ -374,17 +374,40 @@ fn a_background_foreign_tab_neither_paints_nor_wakes_the_paint_loop() {
     store().forget(front);
     store().forget(back);
 
-    let mut protocol = WorkspaceTree::bootstrap_default();
-    tab_binding::adopt_toplevel(&mut protocol, back, Some("org.example.back".into()));
-    tab_binding::adopt_toplevel(&mut protocol, front, Some("org.example.front".into()));
-    assert!(foreign::is_visible_tab(&protocol, front));
-    assert!(!foreign::is_visible_tab(&protocol, back));
-
     let mut fb = FrameBuilder::new((W, H));
+    // Two clients as two tabs of ONE group, `front` the active one.
+    //
+    // Both go in through the production splice; the second names the
+    // group the first landed in, which is the placement a document
+    // opened from another app asks for. Adopting twice with the default
+    // placement would *not* build this case: a launch is a new task, so
+    // it gets its own window group beside the focused one, and each
+    // client would then be the active tab of a group of its own with
+    // nothing in the background at all.
     {
         let chrome = fb.chrome();
         let mut rendered = chrome.tree_mut();
-        assert!(foreign::reconcile_foreign_tabs(&protocol, &mut rendered));
+        tab_binding::adopt_toplevel(&mut rendered, back, Some("org.example.back".into()));
+        let group = rendered
+            .active_strip
+            .get(&rendered.active)
+            .copied()
+            .and_then(|strip| rendered.active_group_for(strip))
+            .expect("the first adoption focuses the group it landed in");
+        tab_binding::adopt_toplevel_at(
+            &mut rendered,
+            front,
+            Some("org.example.front".into()),
+            tab_binding::Placement::TabIn(group),
+        );
+        assert!(
+            foreign::is_visible_tab(&rendered, front),
+            "the tab adopted last is the group's active one"
+        );
+        assert!(
+            !foreign::is_visible_tab(&rendered, back),
+            "the tab it was adopted beside is now in the background"
+        );
     }
     fb.with_chrome(|st| st.bump());
     settle(&mut fb);
