@@ -107,11 +107,13 @@ fn text_len(doc: &AutoCommit, root: &automerge::ObjId) -> usize {
         .unwrap_or(0)
 }
 
-/// A document where every run is one change long: three people each typed once.
+/// A document three people took turns editing, so most runs are one change long.
 ///
 /// This is the band-of-one case. A group of one unnamed change is rendered as a
-/// plain row, so this document must produce no bands at all — which is also what
-/// makes a structureless history read exactly as the old flat list did.
+/// plain row, so the alternating changes here are rows rather than bands —
+/// which is what makes a history with no structure read exactly as the old flat
+/// list did. The two consecutive changes at the start are by the same author, so
+/// they are one band: the case is "mostly rows", not "no bands at all".
 fn singleton_bands_doc() -> AutoCommit {
     let mut doc = AutoCommit::new();
     doc.set_actor(automerge::ActorId::from("alice".as_bytes()));
@@ -276,6 +278,11 @@ fn main() {
     let mut t = timeline(520.0, 640.0, entries.clone(), named.clone());
     shot.paint("bands-default", 520, 640, &mut t);
 
+    // Every band shut. This is what the pane looks like once a history is long
+    // enough that nothing auto-expands, so it is the shape most readers see.
+    t.set_all_expanded(false);
+    shot.paint("bands-collapsed", 520, 640, &mut t);
+
     t.set_all_expanded(true);
     shot.paint("bands-expanded", 520, 640, &mut t);
 
@@ -351,6 +358,18 @@ fn main() {
         (0..t.row_count()).filter(|i| t.group_at_row(*i).is_some()).count()
     );
     shot.paint("bands-of-one", 520, 300, &mut t);
+
+    // Exactly one change. Not a band, not an empty state — one row, and every
+    // affordance that hangs off a band has to be absent rather than stubbed.
+    let mut one = single_entries.clone();
+    one.truncate(1);
+    let mut t = timeline(520.0, 300.0, one.clone(), Vec::new());
+    println!(
+        "  (one-change case: {} lines, {} bands)",
+        t.row_count(),
+        (0..t.row_count()).filter(|i| t.group_at_row(*i).is_some()).count()
+    );
+    shot.paint("one-change", 520, 300, &mut t);
 
     // No history at all.
     let mut blank = AutoCommit::new();
