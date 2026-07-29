@@ -754,6 +754,7 @@ impl ShellOverlayHost {
         // corner each frame via `set_viewport`; it doesn't participate
         // in Taffy because its position is purely absolute.
         self.notification_stack = Some(NotificationStack::new(chrome.clone()));
+        chrome.borrow_mut().peer_sync_enabled = self.peer_sync_enabled;
         self.chrome = Some(chrome);
         self
     }
@@ -771,11 +772,13 @@ impl ShellOverlayHost {
     /// once. The rows can't be removed once added — toggling back to
     /// `false` is not a supported transition.
     pub fn with_peer_sync_enabled(mut self, enabled: bool) -> Self {
-        // The palette entries themselves are appended in
-        // `refresh_search_results` (see the peer-sync branch there) so
-        // the peer rows always land next to the current search hits
-        // rather than sitting statically at the bottom.
+        // The palette rows come from `ActionsProvider`, which reads the
+        // flag off chrome — so the flag has to reach chrome, not only
+        // this struct.
         self.peer_sync_enabled = enabled;
+        if let Some(chrome) = self.chrome.as_ref() {
+            chrome.borrow_mut().peer_sync_enabled = enabled;
+        }
         self
     }
 
@@ -812,8 +815,18 @@ impl ShellOverlayHost {
         mut self,
         bridge: std::rc::Rc<dyn Fn(PeerSyncRequest) -> Result<String, String>>,
     ) -> Self {
-        self.peer_sync_bridge = Some(bridge);
+        self.set_peer_sync_bridge(bridge);
         self
+    }
+
+    /// [`Self::with_peer_sync_bridge`] for a host that is already
+    /// built — the native compositor constructs its host inside a
+    /// `FrameBuilder` before it has a network handle to bridge to.
+    pub fn set_peer_sync_bridge(
+        &mut self,
+        bridge: std::rc::Rc<dyn Fn(PeerSyncRequest) -> Result<String, String>>,
+    ) {
+        self.peer_sync_bridge = Some(bridge);
     }
 
     /// Run one peer-sync request through the installed bridge.
@@ -831,7 +844,10 @@ impl ShellOverlayHost {
     /// the token prompt. Both write their outcome into chrome so the
     /// result is on screen rather than only in a log.
     fn pump_peer_sync(&mut self) {
-        let actions = std::mem::take(&mut self.peer_sync_actions);
+        let mut actions = std::mem::take(&mut self.peer_sync_actions);
+        if let Some(chrome) = self.chrome.clone() {
+            actions.extend(chrome.borrow_mut().take_peer_sync_requests());
+        }
         if actions.is_empty() {
             return;
         }
@@ -2161,6 +2177,43 @@ impl ShellOverlayHost {
     /// — used by `permissions_tab_test.rs` to synthesize Revoke
     /// clicks. Returns an empty slice whenever the modal is closed or
     /// a non-Permissions tab is active.
+    /// The workspace-settings name field's rect, for harnesses that
+    /// click it by name. Zero-area while the modal is closed.
+    pub fn ws_settings_name_rect_for_tests(&self) -> Rect {
+        if self.overlay_flags().ws_settings {
+            self.ws_settings_name_rect()
+        } else {
+            Rect::ZERO
+        }
+    }
+
+    /// One rect per workspace card in the overview, in tree order.
+    /// Empty while the overview is closed.
+    pub fn overview_row_rects_for_tests(&self) -> Vec<Rect> {
+        if !self.overlay_flags().overview {
+            return Vec::new();
+        }
+        let Some(chrome) = self.chrome.as_ref() else {
+            return Vec::new();
+        };
+        let count = chrome.borrow().tree().workspaces.len();
+        (0..count).map(|i| self.overview_row_rect(i)).collect()
+    }
+
+    /// The connect prompt's buttons, named `join` / `cancel`.
+    pub fn peer_sync_prompt_rects_for_tests(&self) -> Vec<(&'static str, Rect)> {
+        self.peer_sync_prompt_rects
+            .iter()
+            .map(|(which, rect)| {
+                let name = match which {
+                    PeerSyncPromptButton::Join => "join",
+                    PeerSyncPromptButton::Cancel => "cancel",
+                };
+                (name, *rect)
+            })
+            .collect()
+    }
+
     pub fn permissions_revoke_rects(&self) -> &[(crate::shell::state::AppId, usize, Rect)] {
         &self.permissions_revoke_rects
     }
@@ -2282,23 +2335,11 @@ impl ShellOverlayHost {
             }
         }
 
-        // Peer-sync entries are grafted here so they land next to the
-        // current search hits rather than sitting statically at the
-        // bottom of the seeded list. Offered whatever the query is: the
-        // palette runs its own fuzzy filter over the entries it is
-        // given, so gating them on an empty query only meant that
-        // typing "invite" hid the invite command.
-        if self.peer_sync_enabled {
-            entries.push(
-                CommandEntry::new("peer:invite", "Invite peer to workspace")
-                    .description("Peer-sync"),
-            );
-            entries.push(
-                CommandEntry::new("peer:connect", "Connect to peer workspace")
-                    .description("Peer-sync"),
-            );
-        }
-
+        // The peer-sync rows are not grafted on here. They are ordinary
+        // action results from `ActionsProvider`, so they are ranked
+        // against everything else the query matched — which is the
+        // whole point: appended rows sort below every search hit, and
+        // typing "invite" selected a file whose name contains the word.
         self.palette.set_entries(entries);
         self.search_results = results;
         // New entry count → new desired_size → new palette node height.
@@ -2507,6 +2548,28 @@ impl ShellOverlayHost {
     /// hotkey path — the flag itself stays internal to this module.
     pub fn palette_visible(&self) -> bool {
         self.palette_visible
+    }
+
+    /// What the palette currently is: its query, the id Enter would
+    /// activate, and the rows on offer.
+    ///
+    /// A harness driving the palette by keystroke is otherwise blind to
+    /// the one thing that decides what happens next — which row is
+    /// selected. Without this, "press Enter and see what changed" is
+    /// the only available diagnosis, and a palette that offered a
+    /// different row than expected looks identical to one that ignored
+    /// the key.
+    pub fn palette_snapshot(&self) -> (bool, String, Option<String>, Vec<(String, String)>) {
+        (
+            self.palette_visible,
+            self.palette.query().to_string(),
+            self.palette.selected_id().map(|s| s.to_string()),
+            self.palette
+                .visible_entries()
+                .into_iter()
+                .map(|e| (e.id.clone(), e.label.clone()))
+                .collect(),
+        )
     }
 
     /// Focus the palette's query field. The live open path
