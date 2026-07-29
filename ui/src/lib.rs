@@ -125,8 +125,11 @@ pub use widget::history_scrubber::HistoryScrubber;
 // Grouping: what turns a flood of individual changes into a small number of
 // bands a person can name, collapse, and restore to.
 pub use widget::history_group::{
-    group_entries, GroupingConfig, HistoryGroup, NamedRange, OpFamily, MAX_GROUP_DEPTH,
+    group_entries, GroupNameRequest, GroupingConfig, HistoryGroup, NamedRange, OpFamily,
+    MAX_GROUP_DEPTH,
 };
+// The one-line in-place field both history surfaces name things with.
+pub use widget::name_field::{NameField, NameFieldOutcome};
 // The producer that turns a live CRDT document into the rows those two
 // widgets render, plus the actor-id → person directory that gives each row
 // an author. Re-exported here so an app reaches the whole history stack

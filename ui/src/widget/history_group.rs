@@ -85,6 +85,29 @@ pub struct NamedRange {
     pub created: SystemTime,
 }
 
+/// What a host must write when a user names, renames, or un-names a run of
+/// changes.
+///
+/// Both history surfaces emit this — the activity pane from a band header or a
+/// row selection, the version strip from its own button — so it belongs with the
+/// model rather than inside either widget. Neither widget writes it: they have
+/// no document, and the host does.
+///
+/// An empty `label` is a request to **remove** the name. Clearing the field and
+/// pressing Enter is how a user takes a name back off, and the host maps that
+/// onto `ui::history_source::groups::clear_name`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct GroupNameRequest {
+    /// The naming record being replaced, when one already exists.
+    pub record_id: Option<String>,
+    /// First change covered.
+    pub start: HistoryEntryId,
+    /// Last change covered.
+    pub end: HistoryEntryId,
+    /// What the user typed, trimmed.
+    pub label: String,
+}
+
 /// Knobs for the automatic grouping. The defaults are the documented rules.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct GroupingConfig {
