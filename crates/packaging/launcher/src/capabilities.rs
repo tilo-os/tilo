@@ -25,21 +25,31 @@
 //! | [`Scope::Device`] `"camera"` | any | the host's `/dev/video*` nodes are bound |
 //! | [`Scope::Device`] `"microphone"` | any | the PipeWire socket + `/dev/snd` are bound |
 //! | [`Scope::Device`] `"screencast"` | any | nothing — brokered by the portal, not a bind |
-//! | [`Scope::NetHost`] | any | the network namespace is shared instead of isolated |
+//! | [`Scope::NetHost`] `"*"` | any | the network namespace is shared instead of isolated |
+//! | [`Scope::NetHost`] a host | any | the namespace stays isolated and egress is brokered through [`crate::netgate`] |
 //!
 //! Everything not in that table produces no bind at all. **Absence of a
 //! capability is enforced by absence of the mount**: with no camera
 //! capability there is no `/dev/video0` inside the namespace, so the
 //! app cannot open one however it asks.
 //!
-//! ## Honest gap: per-host network filtering
+//! ## Per-host network access
 //!
-//! A [`Scope::NetHost`] capability naming a specific host is recorded
-//! faithfully and then applied as *unrestricted* outbound network
-//! access, because the only mechanism in play is the network namespace
-//! and a namespace is all-or-nothing. There is no packet filter here.
-//! [`CapabilityPlan::for_app`] logs a warning every time it applies one
-//! so the gap is visible in the journal rather than only in a comment.
+//! A [`Scope::NetHost`] capability naming a specific host used to be
+//! recorded faithfully and then applied as *unrestricted* outbound
+//! access, because the only mechanism in play was the network namespace
+//! and a namespace is all-or-nothing.
+//!
+//! It now reaches a mechanism. The namespace stays empty and the app's
+//! only route out is a socket the launcher holds, speaking SOCKS5 —
+//! so the allowlist is matched against the **name** the app asks for,
+//! before that name is resolved. [`crate::netgate`] carries the design,
+//! including why an address literal never satisfies a hostname grant
+//! and why the app has no resolver of its own.
+//!
+//! [`CapabilityPlan::net_hosts`] is the hostname list, unfiltered by
+//! the manifest; `crate::sandbox::egress_decision` combines it with the
+//! packager's declaration to produce the policy actually enforced.
 //!
 //! ## Deny by default
 //!
@@ -73,11 +83,14 @@ pub struct CapabilityPlan {
     /// `"screencast"`). Kept for logging and for tests; the paths they
     /// imply are already in [`Self::rw_paths`].
     pub devices: Vec<String>,
-    /// Whether any network capability was granted. When false the
-    /// sandbox keeps the unshared (empty) network namespace.
+    /// Whether any network capability was granted at all. Says nothing
+    /// about *which* hosts — a grant for one host and a grant for `*`
+    /// both set it. [`Self::net_hosts`] is what carries the difference,
+    /// and `crate::sandbox::egress_decision` is what acts on it.
     pub allow_network: bool,
-    /// The host patterns the network capabilities named. Advisory
-    /// only — see the module docs' "honest gap".
+    /// The host patterns the network capabilities named. Enforced: a
+    /// list that is not exactly `["*"]` leaves the namespace isolated
+    /// and becomes the allowlist [`crate::netgate`] filters on.
     pub net_hosts: Vec<String>,
 }
 
@@ -174,16 +187,6 @@ impl CapabilityPlan {
                 Scope::NetHost(host) => {
                     if !allows(&actor, &ResourceRef::NetHost(host.clone()), Verb::Read, caps, now) {
                         continue;
-                    }
-                    if host != "*" {
-                        tracing::warn!(
-                            app = %app_id,
-                            host = %host,
-                            "network capability names a specific host, but the sandbox can only \
-                             share or unshare the whole network namespace: this grant is applied \
-                             as UNRESTRICTED outbound network access. Per-host filtering is not \
-                             enforced."
-                        );
                     }
                     if !net_hosts.iter().any(|h| h == host) {
                         net_hosts.push(host.clone());
