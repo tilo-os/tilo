@@ -57,6 +57,17 @@ pub enum RunError {
          bundle with a trusted publisher or pass --allow-unsigned-runtime."
     )]
     RuntimeBundleSignature { path: PathBuf, reason: String },
+    #[error(
+        "refusing to launch: this app was granted access to {hosts:?} and that can only be \
+         enforced by brokering its traffic, but the egress gate could not start ({source}). \
+         Launching anyway would mean giving it unrestricted outbound access, which is not \
+         what was granted. Set QOS_LAUNCHER_NET_GATE=off to do that deliberately."
+    )]
+    EgressGate {
+        hosts: Vec<String>,
+        #[source]
+        source: crate::netgate::GateError,
+    },
 }
 
 impl RunError {
@@ -591,6 +602,88 @@ pub enum LaunchMode {
 
 /// `run` variant taking a pre-parsed manifest. Useful for tests that
 /// want to build a manifest in-memory.
+/// Env override that turns the egress gate off, downgrading a
+/// host-scoped grant to unrestricted access.
+///
+/// Deliberately an explicit operator action rather than a default: the
+/// point of the gate is that a grant naming a host is not silently
+/// applied as "every host".
+pub const NET_GATE_ENV: &str = "QOS_LAUNCHER_NET_GATE";
+
+/// Start the egress gate if this launch needs one.
+///
+/// Returns the bind description to splice into the bwrap argv, and the
+/// guard that keeps the gate alive. Both are `None` for a launch with
+/// nothing to filter.
+///
+/// ## Degradation
+///
+/// **This mechanism needs no privilege and no kernel feature that
+/// `bwrap` does not already require.** That is why it was chosen over
+/// an `nftables`-in-a-netns design, which needs either `CAP_NET_ADMIN`
+/// in the *host* namespace to make a `veth` pair, or a userspace TCP/IP
+/// stack (`pasta` / `slirp4netns`) as a hard dependency. Here the
+/// pieces are: an unshared network namespace, which every app already
+/// gets from `--unshare-all`; one bind-mounted `AF_UNIX` socket, the
+/// same primitive that already carries Wayland and D-Bus; and an
+/// ordinary process binding an ordinary socket under
+/// `$XDG_RUNTIME_DIR`.
+///
+/// So "the kernel does not support this" cannot arise on its own — a
+/// kernel that cannot do it cannot run `bwrap`, and the launch has
+/// already failed earlier for a clearer reason. And "we lack the
+/// privilege" cannot arise at all, because no step is privileged.
+///
+/// What *can* fail is binding the socket: a missing, full or unwritable
+/// runtime directory. That is a broken environment rather than an
+/// unsupported one.
+///
+/// **On that failure we refuse the launch.** A network grant is a
+/// statement about *which* hosts; falling back to `--share-net` would
+/// apply "this host" as "every host" and reduce the difference to a log
+/// line nobody reads, which is the exact false assurance this code
+/// exists to remove. The cost is real and worth naming: an app with a
+/// host allowlist will not start on a host whose runtime directory is
+/// broken. It is bounded — only a *narrowing* grant needs the gate, so
+/// apps granted `*`, and apps whose manifest says `host` with no grant
+/// narrowing them, are unaffected. `QOS_LAUNCHER_NET_GATE=off` takes
+/// the unfiltered path deliberately, and logs the old warning when it
+/// does, so the downgrade is an operator's decision on the record.
+///
+/// Landlock is the one kernel-dependent piece and it is deliberately
+/// *not* held to this standard: it is defence in depth behind the gate,
+/// not the boundary. On a kernel without ABI 4 the port pin silently
+/// does nothing and enforcement is unaffected, because the namespace is
+/// still empty and the gate still holds the policy.
+fn start_egress_gate(
+    egress: &crate::netgate::EgressDecision,
+) -> Result<(Option<crate::sandbox::NetGateBind>, Option<crate::netgate::NetGate>), RunError> {
+    // `Filtered` is the only decision that needs a gate. The
+    // `QOS_LAUNCHER_NET_GATE=off` escape hatch is not handled here: it
+    // is applied in `crate::sandbox::egress_decision`, so that turning
+    // the gate off also shares the network instead of leaving the app
+    // sealed in an empty namespace with nothing to reach.
+    let Some(policy) = egress.policy() else {
+        return Ok((None, None));
+    };
+
+    let host_socket = crate::netgate::gate_socket_path(current_uid(), std::process::id());
+    match crate::netgate::NetGate::start(&host_socket, policy.clone()) {
+        Ok(gate) => {
+            let bind = crate::sandbox::NetGateBind {
+                host_socket,
+                sandbox_socket: PathBuf::from(crate::netgate::SANDBOX_GATE_PATH),
+                port: crate::netgate::RELAY_PORT,
+            };
+            Ok((Some(bind), Some(gate)))
+        }
+        Err(source) => Err(RunError::EgressGate {
+            hosts: policy.hosts().to_vec(),
+            source,
+        }),
+    }
+}
+
 pub fn run_with(
     manifest: &MinimalManifest,
     payload_root: &Path,
@@ -640,6 +733,16 @@ pub fn run_with(
     // without one is confined to its manifest, which is the same
     // sandbox it had before capabilities existed.
     let capabilities = resolve_capabilities(manifest, opts);
+
+    // Egress. A grant naming specific hosts leaves the namespace empty
+    // and runs a gate the app's traffic is brokered through; `*` and a
+    // bare `net.mode = "host"` share the host network as before, and
+    // neither needs a gate because neither has an allowlist to enforce.
+    //
+    // The guard must outlive the child, so it is bound here and not in
+    // the `if let`.
+    let egress = crate::sandbox::egress_decision(manifest, &capabilities);
+    let (net_gate, _gate_guard) = start_egress_gate(&egress)?;
 
     // Pick the entrypoint bin per launch mode. GUI uses the default
     // `bin`; CLI uses `cli_bin()` if set (falling back to `bin`) and
@@ -747,6 +850,15 @@ pub fn run_with(
         argv.push(entry);
     }
 
+    // Egress gate socket. Spliced like the Wayland socket, and for the
+    // same reason — it is the app's only route out of an otherwise
+    // empty network namespace.
+    if let Some(bind) = &net_gate {
+        let entry = argv.pop().expect("argv non-empty after build_bwrap_argv");
+        crate::sandbox::push_net_gate(&mut argv, bind);
+        argv.push(entry);
+    }
+
     // GPU. The compositor's render node decides which EGL vendor and
     // which Vulkan ICD the app is allowed to load, and which device
     // node it can see at all. Spliced in after the manifest's own
@@ -762,11 +874,18 @@ pub fn run_with(
         argv.push(entry);
     }
 
-    // Landlock shim wiring. Bind this launcher binary into the sandbox
-    // and rewrite the trailing entrypoint token into
-    //   <shim-in-sandbox> __sandbox-exec --ro <p>* --rw <p>* [--net-restricted] -- <entry>
-    // so Landlock is applied AFTER bwrap sets up the mount namespace.
-    if opts.landlock_enforce {
+    // In-sandbox shim. Bind this launcher binary into the sandbox and
+    // rewrite the trailing entrypoint token into
+    //   <shim-in-sandbox> __sandbox-exec [rules…] -- <entry>
+    //
+    // Two jobs, either of which is reason enough to be here: apply
+    // Landlock *after* bwrap has set up the mount namespace, and start
+    // the egress relay before the app's first connect. A launch with
+    // the gate but without Landlock enforcement still needs the shim,
+    // and says `--no-landlock` so the shim does not read an empty rule
+    // list as "deny everything".
+    let need_shim = opts.landlock_enforce || net_gate.is_some();
+    if need_shim {
         let entry = argv.pop().expect("argv non-empty after build_bwrap_argv");
         let launcher = std::env::current_exe()
             .map_err(|e| RunError::Io(std::io::Error::new(std::io::ErrorKind::Other, format!("current_exe: {e}"))))?;
@@ -775,6 +894,17 @@ pub fn run_with(
         argv.push(SHIM_MOUNT_PATH.to_string());
         argv.push(SHIM_MOUNT_PATH.to_string());
         argv.push(crate::landlock_shim::SANDBOX_EXEC_SUBCOMMAND.to_string());
+        if !opts.landlock_enforce {
+            argv.push("--no-landlock".to_string());
+        }
+        // The relay's endpoints. Passed whenever a gate is running, so
+        // an unmodified HTTP client honouring ALL_PROXY reaches it.
+        if let Some(bind) = &net_gate {
+            argv.push("--net-gate".to_string());
+            argv.push(bind.sandbox_socket.display().to_string());
+            argv.push("--net-gate-port".to_string());
+            argv.push(bind.port.to_string());
+        }
         // Sandbox-side ro paths for Landlock. The payload mount, the
         // runtime mount (if any), the minimal-libs binds, and the
         // manifest's declared read paths.
@@ -875,10 +1005,21 @@ pub fn run_with(
             argv.push("--rw".to_string());
             argv.push(path.display().to_string());
         }
+        // The gate socket is reached with connect(2), which is a
+        // write-flavoured access on a pathname socket — a read-only
+        // rule surfaces as EACCES at connect time, exactly like the
+        // Wayland socket above.
+        if let Some(bind) = &net_gate {
+            argv.push("--rw".to_string());
+            argv.push(bind.sandbox_socket.display().to_string());
+        }
         // Landlock's network restriction mirrors the namespace decision
-        // above: an app the user granted network keeps TCP, everything
-        // else is denied bind/connect on top of an already-empty netns.
-        if manifest.sandbox.net.mode == "off" && !capabilities.allow_network {
+        // above. Blocked: deny every TCP bind and connect, on top of an
+        // already-empty netns. Filtered: the shim pins the app to the
+        // relay port instead (it derives that from --net-gate-port), so
+        // a blanket ban here would lock it out of its own gate.
+        // Unrestricted: nothing to say.
+        if matches!(egress, crate::netgate::EgressDecision::Blocked) {
             argv.push("--net-restricted".to_string());
         }
         argv.push("--".to_string());
@@ -934,7 +1075,7 @@ pub fn run_with(
             .map(|s| crate::manifest::expand_path(s))
             .collect::<Vec<_>>(),
     );
-    let net_restricted = manifest.sandbox.net.mode == "off" && !capabilities.allow_network;
+    let net_restricted = matches!(egress, crate::netgate::EgressDecision::Blocked);
     // The shim now IS wired via opts.landlock_enforce (see argv splice
     // above). Log intent from the parent for observability; the shim's
     // own "landlock: {fully,partially} enforced" line surfaces the real
@@ -945,6 +1086,13 @@ pub fn run_with(
         net_restricted,
         enforce = opts.landlock_enforce,
         "landlock plan derived",
+    );
+    tracing::info!(
+        target: "qos_launcher::netgate",
+        gated = net_gate.is_some(),
+        hosts = ?egress.policy().map(|p| p.hosts()),
+        shares_host_network = egress.shares_host_network(),
+        "egress resolved",
     );
     let _ = landlock_plan;
 
@@ -1012,6 +1160,16 @@ pub fn run_with_captured(
     let identity_host = resolve_identity_host_path(opts);
     let identity_arg = identity_host.as_deref();
     let capabilities = resolve_capabilities(manifest, opts);
+    // Same egress decision as `run_with`, and for the same reason: an
+    // app whose grant names hosts gets an empty namespace, so without
+    // the gate spliced in here too it would be silently offline rather
+    // than filtered. The guard has to outlive the child.
+    //
+    // No shim runs on this path, so there is no loopback relay — the
+    // gate is reachable at `QOS_NET_GATE` but the `ALL_PROXY` endpoint
+    // has nothing listening behind it.
+    let egress = crate::sandbox::egress_decision(manifest, &capabilities);
+    let (net_gate, _gate_guard) = start_egress_gate(&egress)?;
     let mut argv = build_bwrap_argv(
         manifest,
         payload_root,
@@ -1021,6 +1179,11 @@ pub fn run_with_captured(
         identity_arg,
         &capabilities,
     );
+    if let Some(bind) = &net_gate {
+        let entry = argv.pop().expect("argv non-empty after build_bwrap_argv");
+        crate::sandbox::push_net_gate(&mut argv, bind);
+        argv.push(entry);
+    }
     if let Some(workspace_id) = opts.workspace_id.as_deref() {
         let entry = argv.pop().expect("argv non-empty after build_bwrap_argv");
         crate::sandbox::push_workspace_id(&mut argv, workspace_id);

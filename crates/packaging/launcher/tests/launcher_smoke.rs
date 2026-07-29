@@ -87,6 +87,7 @@ fn hello_manifest(payload_root: &Path, services: BTreeMap<String, String>) -> Mi
         sandbox: Sandbox {
             net: Net {
                 mode: "off".to_string(),
+                ..Net::default()
             },
             fs: Fs::default(),
             services,
@@ -404,7 +405,7 @@ fn runtime_bundle_wins_over_minimal_libs_in_argv() {
             cli_bin: None,
         },
         sandbox: Sandbox {
-            net: Net { mode: "off".to_string() },
+            net: Net { mode: "off".to_string(), ..Net::default() },
             fs: Fs::default(),
             services: BTreeMap::new(),
             portals: BTreeMap::new(),
@@ -532,7 +533,7 @@ fn thin_app_bundle_exposes_shared_libs_on_ld_library_path() {
             cli_bin: None,
         },
         sandbox: Sandbox {
-            net: Net { mode: "off".to_string() },
+            net: Net { mode: "off".to_string(), ..Net::default() },
             fs: Fs::default(),
             services: BTreeMap::new(),
             portals: BTreeMap::new(),
