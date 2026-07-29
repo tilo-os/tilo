@@ -112,15 +112,18 @@ async fn two_actors_exchange_a_workspace_append_change() {
     // Brief settle so the first publish is delivered reliably.
     tokio::time::sleep(Duration::from_millis(500)).await;
 
-    // A constructs a tree, appends a fresh workspace through the
-    // doc-mirroring mutator, and exports the change blobs.
-    // `append_empty_workspace` is public + already mirrors into the
-    // automerge doc (Unit B), so we don't need the private
-    // `seed_doc_from_cache` helper to drive a peer-visible change.
+    // A constructs a tree with a workspace, which mints that workspace's
+    // room, and exports that room's document. Replication is per room:
+    // what crosses the wire is one room's own state, so what A ships is
+    // addressed by A's room id rather than by A's local workspace handle
+    // (which means nothing on B).
     let mut tree_a = WorkspaceTree::default();
-    let target_id = tree_a.append_empty_workspace("Renamed");
-    let changes = tree_a.export_changes_since(&[]);
-    assert!(!changes.is_empty(), "append must produce a change blob");
+    let local_a = tree_a.append_empty_workspace("Renamed");
+    let room = tree_a.room_of(local_a).expect("a fresh workspace has a room");
+    let changes = tree_a
+        .export_room_changes_since(room, &[])
+        .expect("A is in the room it is exporting");
+    assert!(!changes.is_empty(), "the room must produce a change blob");
 
     // A publishes a SyncResp with the change blobs.
     cmd_a
@@ -128,21 +131,22 @@ async fn two_actors_exchange_a_workspace_append_change() {
             ws: WS,
             msg: NeighbourMsg::SyncResp {
                 changes: changes.clone(),
+                room: room.to_string(),
             },
         })
         .await
         .expect("publish");
 
-    // B should observe the SyncResp. Phase 6's reconnect-sync path also
-    // emits an empty `SyncReq { since: vec![] }` on PeerJoined, so the
-    // loop drains until it sees the SyncResp variant we care about.
+    // B should observe the SyncResp. The reconnect-sync path also emits a
+    // roomless `SyncReq` on PeerJoined, so the loop drains until it sees
+    // the SyncResp variant we care about.
     let received = timeout(Duration::from_secs(10), async {
         loop {
             match ev_rx_b.recv().await {
                 Some(NetEvent::Msg {
-                    msg: NeighbourMsg::SyncResp { changes },
+                    msg: NeighbourMsg::SyncResp { changes, room },
                     ..
-                }) => return Some(changes),
+                }) => return Some((changes, room)),
                 Some(_) => continue,
                 None => return None,
             }
@@ -151,17 +155,31 @@ async fn two_actors_exchange_a_workspace_append_change() {
     .await
     .expect("SyncResp within 10 s")
     .expect("event channel still open");
+    let (received_changes, received_room) = received;
+    assert_eq!(
+        received_room,
+        room.to_string(),
+        "the response must name the room it carries"
+    );
 
-    // Apply the changes to a fresh tree B and assert convergence.
+    // B is in the same room — its own workspace, its own local id, joined
+    // to A's room the way accepting an invite joins it. Apply and assert
+    // convergence on the room's state.
     let mut tree_b = WorkspaceTree::default();
-    tree_b.apply_changes(&received).expect("apply");
+    let local_b = tree_b.append_empty_workspace("Placeholder");
+    assert!(tree_b.set_room(local_b, room), "B joins A's room");
+    let merged = tree_b
+        .apply_room_changes(room, &received_changes)
+        .expect("apply");
+    assert!(merged, "the round must change B's copy of the room");
 
-    let appended = tree_b
+    let synced = tree_b
         .workspaces
         .iter()
-        .find(|w| w.id == target_id)
-        .expect("workspace present after sync");
-    assert_eq!(appended.name, "Renamed");
+        .find(|w| w.id == local_b)
+        .expect("B keeps its own workspace handle");
+    assert_eq!(synced.name, "Renamed");
+    assert_eq!(synced.room, room);
 
     // Drain so the actors shut down cleanly when we exit the test.
     let _ = ev_rx_a.try_recv();
