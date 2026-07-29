@@ -350,10 +350,112 @@ impl SearchRegistry {
                         .partial_cmp(a_strength)
                         .unwrap_or(Ordering::Equal)
                 })
-                .then_with(|| a.title.cmp(&b.title))
+            // No further tiebreak: `sort_by` is stable, so equally
+            // strong results keep the order their provider emitted them
+            // in. That order is the provider's own ranking — the files
+            // provider, for one, has already broken its ties by path
+            // depth. Re-sorting equal scores by title threw that away
+            // and replaced it with the alphabet, which is what produced
+            // a palette answering "open" with `admin_cat_open.js`,
+            // `admin_dash_intro_review_open.js`,
+            // `admin_dash_intro_submissions_open.js`, … — a whole card
+            // of one directory's files, in dictionary order, because
+            // they all matched exactly as well as each other.
         });
         merged.into_iter().map(|(r, _)| r).collect()
     }
+
+    /// [`Self::query`], arranged into contiguous per-kind groups and
+    /// trimmed to a `row_budget` shared round-robin between the groups.
+    ///
+    /// Ranking alone does not make the right answer reachable. The
+    /// palette paints on the order of ten rows; the files provider
+    /// answers a common word with forty. Whenever the strongest file
+    /// legitimately outscored the strongest app — typing `editor`, where
+    /// `editor.rs` is a leaf-name prefix at the top of the files scale
+    /// while `Hex Editor` only matches as a substring — every one of
+    /// those forty paths sorted ahead of the app and pushed it off the
+    /// bottom of the card. The app was ranked correctly and still
+    /// unreachable.
+    ///
+    /// Splitting the budget evenly between the matching kinds fixes
+    /// that directly: no kind can take enough rows to push the next
+    /// kind's header off the card. A lone group is exempt — narrowing to
+    /// one kind is the gesture that means "show me all of these", and
+    /// it is the escape hatch the split creates the need for.
+    /// [`KindGroup::total`] keeps the uncapped count so the palette can
+    /// say what a section is holding back.
+    pub fn query_grouped(
+        &self,
+        needle: &str,
+        scope: SearchScope,
+        active_provider_id: Option<&str>,
+        wanted_kinds: &[ResourceKind],
+        chrome: &ChromeState,
+        doc: &AutoCommit,
+        doc_root: &ObjId,
+        row_budget: usize,
+    ) -> Vec<KindGroup> {
+        let ranked = self.query(
+            needle,
+            scope,
+            active_provider_id,
+            wanted_kinds,
+            chrome,
+            doc,
+            doc_root,
+        );
+        let mut groups: Vec<KindGroup> = Vec::new();
+        for r in ranked {
+            match groups.last_mut() {
+                Some(g) if g.kind == r.kind => {
+                    g.total += 1;
+                    g.results.push(r);
+                }
+                _ => groups.push(KindGroup {
+                    kind: r.kind.clone(),
+                    total: 1,
+                    results: vec![r],
+                }),
+            }
+        }
+        if row_budget == 0
+            || groups.len() < 2
+            || groups.iter().map(|g| g.total).sum::<usize>() <= row_budget
+        {
+            return groups;
+        }
+        // Fair share, front to back: each group takes an equal cut of
+        // whatever budget is still unspent, and whatever it cannot fill
+        // rolls forward to the groups behind it.
+        //
+        // The direction matters. Surplus must never flow *backwards*: a
+        // row handed to an earlier group pushes every later group's
+        // header further down the card, which is the exact failure this
+        // is here to prevent. Rolling it forward costs nothing — those
+        // rows are already below everything else.
+        let n = groups.len();
+        let mut remaining = row_budget;
+        for (i, g) in groups.iter_mut().enumerate() {
+            let groups_left = n - i;
+            let share = (remaining / groups_left).max(1);
+            let keep = share.min(g.total);
+            g.results.truncate(keep);
+            remaining = remaining.saturating_sub(keep);
+        }
+        groups
+    }
+}
+
+/// One contiguous run of same-kind results, as
+/// [`SearchRegistry::query_grouped`] arranges them.
+#[derive(Debug)]
+pub struct KindGroup {
+    pub kind: ResourceKind,
+    /// The rows to render — at most the cap the caller asked for.
+    pub results: Vec<SearchResult>,
+    /// How many results this kind actually had, before the cap.
+    pub total: usize,
 }
 
 fn scope_allows(
@@ -882,6 +984,262 @@ mod tests {
              decides and applications sits above notes: {:?}",
             out.iter().map(|r| (&r.kind, &r.title)).collect::<Vec<_>>()
         );
+    }
+
+    /// The headline promise, driven through the **real**
+    /// [`ApplicationsProvider`](providers::applications::ApplicationsProvider)
+    /// against a real installed-app registry on disk: typing an
+    /// installed app's name offers that app first, ahead of files that
+    /// merely mention the word.
+    ///
+    /// The fakes above pin the merge arithmetic; this pins the thing a
+    /// user can see. It stands in for the live case that shipped
+    /// broken — typing `calculator` returned ten paths and never the
+    /// Calculator app.
+    #[test]
+    #[serial_test::serial]
+    fn typing_an_installed_apps_name_offers_the_app_first() {
+        use crate::shell::search::providers::applications::ApplicationsProvider;
+        let tmp = tempfile::tempdir().expect("temp app registry");
+        install_fake_app(tmp.path(), "dev.qos.calculator", "Calculator");
+        install_fake_app(tmp.path(), "dev.qos.notes", "Notes");
+        // SAFETY: `serial_test::serial` keeps the other tests that
+        // repoint this variable from running concurrently.
+        unsafe { std::env::set_var("QOS_APPS_DATA_DIR", tmp.path()) };
+        crate::shell::launcher::invalidate_app_cache();
+
+        let mut reg = SearchRegistry::new();
+        // Registered after files, so winning cannot be an artefact of
+        // registration order.
+        reg.register(Rc::new(FakeProvider {
+            id: "files".into(),
+            kinds: vec![ResourceKind::File],
+            results: (0..30)
+                .map(|i| {
+                    mk_result(
+                        ResourceKind::File,
+                        "files",
+                        &format!("f{i}"),
+                        &format!("calculator_{i}.rs"),
+                        // A leaf-name prefix: the top of the real files
+                        // provider's scale, i.e. as strong as a file hit
+                        // can possibly be.
+                        120,
+                    )
+                })
+                .collect(),
+            max_score: Some(120),
+        }));
+        reg.register(Rc::new(ApplicationsProvider::new()));
+
+        let chrome = mk_chrome();
+        let (doc, root) = mk_doc();
+        for scope in [
+            SearchScope::All,
+            SearchScope::Workspace,
+            SearchScope::ActiveApp,
+        ] {
+            let out = reg.query(
+                "calculator",
+                scope,
+                None,
+                &[],
+                &chrome.borrow(),
+                &doc,
+                &root,
+            );
+            let first = out.first().expect("some result in {scope:?}");
+            assert_eq!(
+                first.provider_id, "applications",
+                "in {scope:?} the row Enter activates must be the installed \
+                 app, not one of the {} file hits: {:?}",
+                out.iter().filter(|r| r.kind == ResourceKind::File).count(),
+                out.iter().take(3).map(|r| &r.title).collect::<Vec<_>>()
+            );
+            assert_eq!(first.id, "dev.qos.calculator");
+        }
+        unsafe { std::env::remove_var("QOS_APPS_DATA_DIR") };
+        crate::shell::launcher::invalidate_app_cache();
+    }
+
+    /// …and it stays first once the palette caps the sections: the app
+    /// group must survive the trim that keeps a forty-hit file group
+    /// from filling the card.
+    #[test]
+    #[serial_test::serial]
+    fn a_capped_palette_still_leads_with_the_app() {
+        use crate::shell::search::providers::applications::ApplicationsProvider;
+        let tmp = tempfile::tempdir().expect("temp app registry");
+        install_fake_app(tmp.path(), "dev.qos.hex-editor", "Hex Editor");
+        unsafe { std::env::set_var("QOS_APPS_DATA_DIR", tmp.path()) };
+        crate::shell::launcher::invalidate_app_cache();
+
+        let mut reg = SearchRegistry::new();
+        reg.register(Rc::new(FakeProvider {
+            id: "files".into(),
+            kinds: vec![ResourceKind::File],
+            results: (0..40)
+                .map(|i| {
+                    mk_result(
+                        ResourceKind::File,
+                        "files",
+                        &format!("f{i}"),
+                        &format!("editor_{i:02}.rs"),
+                        120,
+                    )
+                })
+                .collect(),
+            max_score: Some(120),
+        }));
+        reg.register(Rc::new(ApplicationsProvider::new()));
+
+        let chrome = mk_chrome();
+        let (doc, root) = mk_doc();
+        // "editor" is the case ranking alone cannot fix: it is a
+        // leaf-name prefix for every one of those forty files (the top
+        // of the files scale) but only a substring of "Hex Editor", so
+        // Files legitimately outranks Applications.
+        let groups = reg.query_grouped(
+            "editor",
+            SearchScope::Workspace,
+            None,
+            &[],
+            &chrome.borrow(),
+            &doc,
+            &root,
+            12,
+        );
+        let files = groups
+            .iter()
+            .find(|g| g.kind == ResourceKind::File)
+            .expect("a files group");
+        assert_eq!(files.total, 40, "the count must report the untrimmed truth");
+        assert!(
+            files.results.len() < files.total,
+            "the files group must be trimmed, not shown whole"
+        );
+        let apps = groups
+            .iter()
+            .find(|g| g.kind == ResourceKind::Application)
+            .expect("the app must still be in the result set at all");
+        assert_eq!(apps.results.len(), 1);
+
+        // And it must be reachable, not merely present: flattened in
+        // group order, the app has to land within the rows the palette
+        // paints.
+        let flat: Vec<&SearchResult> =
+            groups.iter().flat_map(|g| g.results.iter()).collect();
+        let app_row = flat
+            .iter()
+            .position(|r| r.kind == ResourceKind::Application)
+            .expect("the app is in the flattened list");
+        assert!(
+            app_row < 8,
+            "the app landed at row {app_row}, past the visible list: {:?}",
+            flat.iter().take(10).map(|r| &r.title).collect::<Vec<_>>()
+        );
+        unsafe { std::env::remove_var("QOS_APPS_DATA_DIR") };
+        crate::shell::launcher::invalidate_app_cache();
+    }
+
+    /// Equally-strong results keep their provider's ordering. The
+    /// registry used to re-sort them by title, which turned "every hit
+    /// matched exactly as well" into "show them in dictionary order" —
+    /// the palette answered `open` with a run of one directory's files
+    /// purely because `admin_cat_open.js` sorts before everything else.
+    #[test]
+    fn equally_strong_results_keep_the_providers_order() {
+        let mut reg = SearchRegistry::new();
+        reg.register(Rc::new(FakeProvider {
+            id: "files".into(),
+            kinds: vec![ResourceKind::File],
+            // Emitted worst-alphabetical-first on purpose: a title sort
+            // would reverse this exactly.
+            results: vec![
+                mk_result(ResourceKind::File, "files", "f1", "zebra.rs", 80),
+                mk_result(ResourceKind::File, "files", "f2", "middle.rs", 80),
+                mk_result(ResourceKind::File, "files", "f3", "alpha.rs", 80),
+            ],
+            max_score: Some(120),
+        }));
+        let chrome = mk_chrome();
+        let (doc, root) = mk_doc();
+        let out = reg.query(
+            "rs",
+            SearchScope::Workspace,
+            None,
+            &[],
+            &chrome.borrow(),
+            &doc,
+            &root,
+        );
+        assert_eq!(
+            out.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(),
+            vec!["f1", "f2", "f3"],
+            "the provider ranked these; the registry must not re-alphabetise them"
+        );
+    }
+
+    /// Narrowing to a single kind is the gesture that means "show me all
+    /// of these", so it must not be trimmed.
+    #[test]
+    fn a_lone_group_is_never_trimmed() {
+        let mut reg = SearchRegistry::new();
+        reg.register(Rc::new(FakeProvider {
+            id: "files".into(),
+            kinds: vec![ResourceKind::File],
+            results: (0..30)
+                .map(|i| {
+                    mk_result(ResourceKind::File, "files", &format!("f{i}"), "x.rs", 80)
+                })
+                .collect(),
+            max_score: Some(120),
+        }));
+        let chrome = mk_chrome();
+        let (doc, root) = mk_doc();
+        let groups = reg.query_grouped(
+            "x",
+            SearchScope::Workspace,
+            None,
+            &[ResourceKind::File],
+            &chrome.borrow(),
+            &doc,
+            &root,
+            12,
+        );
+        assert_eq!(groups.len(), 1);
+        assert_eq!(
+            groups[0].results.len(),
+            30,
+            "one kind on its own gets the whole budget"
+        );
+    }
+
+    /// Write the on-disk shape `launcher::gui_apps` reads, so the
+    /// applications provider under test is the real one enumerating a
+    /// real registry.
+    fn install_fake_app(root: &std::path::Path, package_id: &str, display_name: &str) {
+        let payload = root.join("payloads").join(package_id);
+        std::fs::create_dir_all(payload.join("bin")).expect("payload dir");
+        let manifest_path = payload.join("manifest.toml");
+        std::fs::write(
+            &manifest_path,
+            format!(
+                "[package]\nid = \"{package_id}\"\nname = \"{display_name}\"\n\
+                 version = \"1.2.3\"\ncategory = \"Utility\"\n\
+                 [entrypoint]\nbin = \"bin/app\"\ntype = \"gui\"\n"
+            ),
+        )
+        .expect("manifest");
+        let registry = root.join("registry.toml");
+        let mut existing = std::fs::read_to_string(&registry).unwrap_or_default();
+        existing.push_str(&format!(
+            "[[entry]]\nid = '{package_id}'\npayload_root = {:?}\nmanifest_path = {:?}\n",
+            payload.display().to_string(),
+            manifest_path.display().to_string()
+        ));
+        std::fs::write(&registry, existing).expect("registry");
+        crate::shell::launcher::invalidate_app_cache();
     }
 
     #[test]

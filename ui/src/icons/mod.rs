@@ -116,6 +116,11 @@ pub enum Icon {
     Calendar,
     Ban,
     Download,
+    // --- Quick-settings set ---
+    /// Brightness. Lucide `sun`.
+    Sun,
+    /// Volume. Lucide `volume-2`.
+    Volume2,
 }
 
 /// Lucide's fixed viewBox. Every stored path assumes this coordinate
@@ -392,6 +397,29 @@ pub(crate) fn icon_subpaths(icon: Icon) -> Vec<BezPath> {
         Icon::Star => vec![path_from_d(
             "M11.525 2.295a.53.53 0 0 1 .95 0l2.31 4.679a2.123 2.123 0 0 0 1.595 1.16l5.166.756a.53.53 0 0 1 .294.904l-3.736 3.638a2.123 2.123 0 0 0-.611 1.878l.882 5.14a.53.53 0 0 1-.771.56l-4.618-2.428a2.122 2.122 0 0 0-1.973 0L6.396 21.85a.53.53 0 0 1-.77-.56l.881-5.139a2.122 2.122 0 0 0-.611-1.879L2.16 10.633a.53.53 0 0 1 .294-.904l5.165-.755a2.122 2.122 0 0 0 1.597-1.16z",
         )],
+        // Sun: centre disc plus eight rays. From lucide's `sun.js`.
+        Icon::Sun => vec![
+            path_from_d(
+                "M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8z",
+            ),
+            path_from_d("M12 2v2"),
+            path_from_d("M12 20v2"),
+            path_from_d("m4.93 4.93 1.41 1.41"),
+            path_from_d("m17.66 17.66 1.41 1.41"),
+            path_from_d("M2 12h2"),
+            path_from_d("M20 12h2"),
+            path_from_d("m6.34 17.66-1.41 1.41"),
+            path_from_d("m19.07 4.93-1.41 1.41"),
+        ],
+        // Volume2: speaker cone plus two arcs. From lucide's
+        // `volume-2.js`.
+        Icon::Volume2 => vec![
+            path_from_d(
+                "M11 4.702a.705.705 0 0 0-1.203-.498L6.413 7.587A1.4 1.4 0 0 1 5.416 8H3a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2.416a1.4 1.4 0 0 1 .997.413l3.383 3.384A.705.705 0 0 0 11 19.298z",
+            ),
+            path_from_d("M16 9a5 5 0 0 1 0 6"),
+            path_from_d("M19.364 18.364a9 9 0 0 0 0-12.728"),
+        ],
         // Bell: dome body + the clapper arc at the base. Transcribed
         // from lucide's `bell.js` (v0.546.0).
         Icon::Bell => vec![
