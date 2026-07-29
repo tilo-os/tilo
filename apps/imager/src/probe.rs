@@ -7,11 +7,12 @@
 //! exercised in the live binary; `--shots` never calls it, so the
 //! screenshot stays deterministic offline.
 
+use std::path::Path;
 use std::process::Command;
 
 use serde_json::Value;
 
-use crate::model::{TargetDrive, TargetKind, TargetPartition};
+use crate::model::{Source, SourceKind, TargetDrive, TargetKind, TargetPartition};
 
 /// Enumerate candidate write targets. Returns `None` when `lsblk` is
 /// unavailable or produced no usable disks.
@@ -106,6 +107,83 @@ fn collect_parts(children: &[Value], out: &mut Vec<TargetPartition>, is_system: 
     }
 }
 
+// ---------------------------------------------------------------------------
+// Source inspection — turn a picked file path into a populated `Source`.
+// ---------------------------------------------------------------------------
+
+/// Inspect a local image file the user picked (via the portal) and build a
+/// [`Source`] from real metadata: the on-disk size (via `stat`) and, for an
+/// ISO, the ISO-9660 volume label read straight from the file. Returns `None`
+/// if the path does not exist or cannot be read.
+pub fn inspect_source(path: &Path) -> Option<Source> {
+    let meta = std::fs::metadata(path).ok()?;
+    if !meta.is_file() {
+        return None;
+    }
+    let size = meta.len();
+    let name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("image")
+        .to_string();
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+
+    // A real volume label beats the file name when we can read one.
+    let label = read_iso_label(path)
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| {
+            path.file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("image")
+                .to_string()
+        });
+
+    // A qOS image (by name or volume label) can drive a full pre-configured
+    // install; anything else is written as-is.
+    let hay = format!("{} {}", name.to_ascii_lowercase(), label.to_ascii_lowercase());
+    let is_qos = hay.contains("qos");
+    let kind = if is_qos { SourceKind::QosImage } else { SourceKind::IsoFile };
+
+    // Only bless real disk-image extensions; a stray `.txt` is not an image.
+    let looks_like_image = matches!(ext.as_str(), "iso" | "img" | "raw" | "bin" | "dd") || is_qos;
+    if !looks_like_image {
+        return None;
+    }
+
+    Some(Source {
+        kind,
+        path: path.to_string_lossy().to_string(),
+        name,
+        size,
+        label,
+        installable: is_qos,
+    })
+}
+
+/// Read the ISO-9660 Primary Volume Descriptor's volume identifier. The PVD
+/// lives at byte 0x8000 (logical sector 16); its 5-byte standard identifier is
+/// `CD001` at offset 1, and the 32-byte, space-padded volume id sits at offset
+/// 40 (file offset 0x8028). Best-effort: any short/mismatched file yields
+/// `None` and the caller falls back to the file name.
+pub fn read_iso_label(path: &Path) -> Option<String> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut f = std::fs::File::open(path).ok()?;
+    f.seek(SeekFrom::Start(0x8000)).ok()?;
+    let mut hdr = [0u8; 72];
+    f.read_exact(&mut hdr).ok()?;
+    // Bytes 1..6 must be the "CD001" magic for a valid PVD.
+    if &hdr[1..6] != b"CD001" {
+        return None;
+    }
+    let raw = &hdr[40..72];
+    let label = String::from_utf8_lossy(raw).trim().trim_matches('\0').trim().to_string();
+    if label.is_empty() { None } else { Some(label) }
+}
+
 fn str_field(v: &Value, key: &str) -> Option<String> {
     v.get(key)
         .and_then(|x| x.as_str())
@@ -178,6 +256,61 @@ mod tests {
         )
         .unwrap();
         assert!(parse_lsblk(&json).is_none());
+    }
+
+    /// Build a file whose ISO-9660 PVD carries `label`, so the real reader
+    /// parses a real (if minimal) volume descriptor — no external ISO needed.
+    fn iso_with_label(label: &str) -> tempfile::NamedTempFile {
+        use std::io::{Seek, SeekFrom, Write};
+        let mut f = tempfile::Builder::new().suffix(".iso").tempfile().unwrap();
+        // Pad up to the PVD sector, then write: type(1) + "CD001" + version(1)
+        // + 32 bytes system id + 32 bytes volume id (space-padded).
+        f.seek(SeekFrom::Start(0x8000)).unwrap();
+        let mut pvd = vec![0x01u8];
+        pvd.extend_from_slice(b"CD001");
+        pvd.push(0x01);
+        pvd.extend_from_slice(&[b' '; 32]); // system identifier
+        let mut vol = [b' '; 32];
+        let b = label.as_bytes();
+        vol[..b.len()].copy_from_slice(b);
+        pvd.extend_from_slice(&vol);
+        f.write_all(&pvd).unwrap();
+        f.flush().unwrap();
+        f
+    }
+
+    #[test]
+    fn reads_real_iso9660_volume_label() {
+        let iso = iso_with_label("QOS_1_0_X86_64");
+        assert_eq!(read_iso_label(iso.path()).as_deref(), Some("QOS_1_0_X86_64"));
+    }
+
+    #[test]
+    fn inspect_source_uses_volume_label_and_marks_qos_installable() {
+        let iso = iso_with_label("QOS_1_0");
+        let src = inspect_source(iso.path()).expect("inspect");
+        assert_eq!(src.kind, SourceKind::QosImage);
+        assert!(src.installable, "a qOS image can be pre-configured");
+        assert_eq!(src.label, "QOS_1_0");
+        assert!(src.size > 0);
+        assert!(src.name.ends_with(".iso"));
+    }
+
+    #[test]
+    fn inspect_source_treats_foreign_iso_as_write_only() {
+        // No CD001 magic, but a `.iso` extension → still a valid image source,
+        // just not installable, and it falls back to the file stem for a label.
+        let f = tempfile::Builder::new().suffix(".iso").tempfile().unwrap();
+        let src = inspect_source(f.path()).expect("inspect");
+        assert_eq!(src.kind, SourceKind::IsoFile);
+        assert!(!src.installable);
+    }
+
+    #[test]
+    fn inspect_source_rejects_non_image_files() {
+        let f = tempfile::Builder::new().suffix(".txt").tempfile().unwrap();
+        assert!(inspect_source(f.path()).is_none());
+        assert!(inspect_source(std::path::Path::new("/no/such/file.iso")).is_none());
     }
 
     #[test]

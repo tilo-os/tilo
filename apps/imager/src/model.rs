@@ -259,6 +259,80 @@ impl Action {
 }
 
 // ---------------------------------------------------------------------------
+// Wizard flow — the ordered steps the app walks the user through.
+// ---------------------------------------------------------------------------
+
+/// One step of the guided flow. The app is a linear wizard: pick a source
+/// image, pick a target drive, optionally pre-configure the image, then write
+/// (which streams and then verifies). Verify is a phase *within* the Write
+/// step, not a separate destination, so the breadcrumb stays short.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Step {
+    Source,
+    Drive,
+    Customize,
+    Write,
+}
+
+impl Step {
+    pub fn all() -> [Step; 4] {
+        [Step::Source, Step::Drive, Step::Customize, Step::Write]
+    }
+    pub fn key(&self) -> &'static str {
+        match self {
+            Step::Source => "source",
+            Step::Drive => "drive",
+            Step::Customize => "customize",
+            Step::Write => "write",
+        }
+    }
+    pub fn from_key(k: &str) -> Step {
+        match k {
+            "drive" => Step::Drive,
+            "customize" => Step::Customize,
+            "write" => Step::Write,
+            _ => Step::Source,
+        }
+    }
+    /// Zero-based order used for the breadcrumb + "is this step done" logic.
+    pub fn index(&self) -> usize {
+        match self {
+            Step::Source => 0,
+            Step::Drive => 1,
+            Step::Customize => 2,
+            Step::Write => 3,
+        }
+    }
+    /// Short breadcrumb title.
+    pub fn title(&self) -> &'static str {
+        match self {
+            Step::Source => "Source",
+            Step::Drive => "Drive",
+            Step::Customize => "Customize",
+            Step::Write => "Write",
+        }
+    }
+    /// The next step in the flow (saturates at the last step).
+    pub fn next(&self) -> Step {
+        match self {
+            Step::Source => Step::Drive,
+            Step::Drive => Step::Customize,
+            Step::Customize => Step::Write,
+            Step::Write => Step::Write,
+        }
+    }
+    /// The previous step (saturates at the first step).
+    pub fn prev(&self) -> Step {
+        match self {
+            Step::Source => Step::Source,
+            Step::Drive => Step::Source,
+            Step::Customize => Step::Drive,
+            Step::Write => Step::Customize,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Install options — the structured config that ALSO serialises to a
 // headless / unattended install file.
 // ---------------------------------------------------------------------------
@@ -558,6 +632,40 @@ impl Default for Progress {
     }
 }
 
+impl Progress {
+    /// Overall fraction across both phases (write counts for the first 85%,
+    /// verify the last 15% — the read-back is quicker than the write).
+    pub fn overall(&self) -> f64 {
+        match self.phase {
+            JobPhase::Idle => 0.0,
+            JobPhase::Writing => self.write_frac * 0.85,
+            JobPhase::Verifying => 0.85 + self.verify_frac * 0.15,
+            JobPhase::Success => 1.0,
+            JobPhase::Failed => self.write_frac * 0.85,
+        }
+    }
+
+    /// Rough ETA in seconds for the active phase given `total` image bytes and
+    /// the reported rate. `None` when idle, finished, or the rate is unknown.
+    pub fn eta_secs(&self, total: u64) -> Option<u64> {
+        if self.rate_bps == 0 || !self.phase.is_active() {
+            return None;
+        }
+        let frac = if self.phase == JobPhase::Verifying { self.verify_frac } else { self.write_frac };
+        let remaining = (total as f64 * (1.0 - frac)).max(0.0);
+        Some((remaining / self.rate_bps as f64).round() as u64)
+    }
+}
+
+/// Format a duration in seconds as a short `m:ss` / `Ns` string for the ETA.
+pub fn fmt_eta(secs: u64) -> String {
+    if secs >= 60 {
+        format!("{}:{:02}", secs / 60, secs % 60)
+    } else {
+        format!("{secs}s")
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Sample data — fully populated, used by `--shots` and as the instant-on
 // seed so the screenshot is deterministic offline.
@@ -760,6 +868,31 @@ mod tests {
         assert_eq!(back.hostname, prof.hostname);
         assert_eq!(back.encrypt, prof.encrypt);
         assert_eq!(back.layout, prof.layout);
+    }
+
+    #[test]
+    fn step_flow_advances_and_retreats_and_saturates() {
+        assert_eq!(Step::Source.next(), Step::Drive);
+        assert_eq!(Step::Drive.next(), Step::Customize);
+        assert_eq!(Step::Customize.next(), Step::Write);
+        assert_eq!(Step::Write.next(), Step::Write, "last step saturates");
+        assert_eq!(Step::Write.prev(), Step::Customize);
+        assert_eq!(Step::Source.prev(), Step::Source, "first step saturates");
+        assert_eq!(Step::all().len(), 4);
+        assert_eq!(Step::from_key(Step::Customize.key()), Step::Customize);
+    }
+
+    #[test]
+    fn progress_overall_and_eta_track_phase() {
+        let idle = Progress::default();
+        assert_eq!(idle.overall(), 0.0);
+        assert_eq!(idle.eta_secs(1_000_000), None);
+        let writing = Progress { phase: JobPhase::Writing, write_frac: 0.5, verify_frac: 0.0, rate_bps: 100 };
+        assert!((writing.overall() - 0.425).abs() < 1e-9);
+        // Half of a 1000-byte image left at 100 B/s → ~5s.
+        assert_eq!(writing.eta_secs(1000), Some(5));
+        let done = Progress { phase: JobPhase::Success, write_frac: 1.0, verify_frac: 1.0, rate_bps: 0 };
+        assert_eq!(done.overall(), 1.0);
     }
 
     #[test]
