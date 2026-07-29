@@ -480,8 +480,11 @@ pub fn presets() -> Vec<ThemeSpec> {
         .collect()
 }
 
-/// One editable theme seeded alongside the presets so the customizer is
-/// live out of the box (and the screenshot shows real editing).
+/// One editable theme for the demo catalog so a `--shots` capture shows the
+/// customizer editing a real custom theme. **Never** seeded into the live
+/// catalog: a fresh install ships the built-in presets (the product's themes)
+/// and no fabricated "your custom theme" — the user authors their own with New
+/// / Duplicate.
 pub fn seed_custom() -> ThemeSpec {
     ThemeSpec {
         id: "sunset".to_string(),
@@ -506,8 +509,18 @@ pub fn seed_custom() -> ThemeSpec {
     }
 }
 
-/// The default catalog: presets followed by the seeded custom theme.
+/// The live default catalog: the built-in presets only. These are the OS's
+/// shipped themes (the product), not fabricated user content — an empty theme
+/// picker would be wrong. A fresh install seeds exactly this; the user's own
+/// themes are added by New / Duplicate and persist alongside.
 pub fn default_catalog() -> Vec<ThemeSpec> {
+    presets()
+}
+
+/// The demo catalog for `--shots` and tests: the presets plus one editable
+/// custom theme, so a capture can show the customizer editing a real custom
+/// theme. Never the live first-run path.
+pub fn demo_catalog() -> Vec<ThemeSpec> {
     let mut v = presets();
     v.push(seed_custom());
     v
@@ -564,10 +577,19 @@ mod tests {
     }
 
     #[test]
-    fn default_catalog_has_presets_plus_custom() {
+    fn live_default_catalog_is_presets_only_no_fabricated_custom() {
+        // Honest live default: the shipped presets, and NOT a pre-authored
+        // "your custom theme" the user never made.
         let cat = default_catalog();
+        assert!(cat.len() >= 7);
+        assert!(cat.iter().all(|t| t.builtin), "every live default theme is a built-in preset");
+    }
+
+    #[test]
+    fn demo_catalog_has_presets_plus_an_editable_custom() {
+        let cat = demo_catalog();
         assert!(cat.len() >= 8);
-        assert!(cat.iter().any(|t| !t.builtin));
+        assert!(cat.iter().any(|t| !t.builtin), "demo carries one editable custom theme");
         assert!(cat.iter().filter(|t| t.builtin).count() >= 7);
     }
 
