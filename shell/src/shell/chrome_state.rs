@@ -43,6 +43,11 @@ pub struct OverlayFlags {
     /// session handoff have a visible surface; pure UI state — the roster
     /// itself lives on `WorkspaceTree::collaborators`.
     pub collaborators: bool,
+    /// Room-activity sheet — the workspace's own change history, by everyone.
+    /// Opened from the command palette or from the foot of the collaborator
+    /// dropdown. Pure UI state; the history it shows is derived from
+    /// `WorkspaceTree::doc`, which is shared and replicated.
+    pub room_activity: bool,
 }
 
 /// Global-search scope. Mirrors the concept's "context banner" scope
