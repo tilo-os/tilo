@@ -49,15 +49,35 @@ cargo build -p file-explorer
 cargo build -p browser
 ```
 
-### Build environment — distrobox
+### Build environment — just run `cargo`
 
-**The host does NOT have all build deps.** Every `cargo` invocation must go through `distrobox enter my-distrobox`:
+**Run plain `cargo`.** `~/.local/bin/cargo` is a shim: it reads `.build-container` at the repo
+root, routes the build into `my-distrobox`, enables sccache, and selects the sccache server in
+that container's namespace. This works from the main tree and from every worktree with no
+per-worktree setup.
 
 ```bash
-distrobox enter my-distrobox -- bash -c 'cd /home/user/Development/quickdesktop && cargo <cmd>'
+cargo test -p shell
 ```
 
-System deps the `my-distrobox` container needs (install via `sudo dnf install` inside the container if it's been rebuilt):
+**Do not set** `RUSTC_WRAPPER`, `SCCACHE_DIR`, `SCCACHE_SERVER_PORT`, `SCCACHE_CACHE_SIZE`,
+`CARGO_TARGET_DIR` or `CARGO_BUILD_JOBS` — the shim handles them and overriding can break the
+build. `jobs = 4` lives in `.cargo/config.toml`. There is no build semaphore; memory is bounded
+by systemd cgroups, so builds do not need serialising. Do not reintroduce a concurrency cap — it
+throttled the machine even when idle.
+
+`QCARGO_DEBUG=1 cargo …` prints the routing decision; `QCARGO_BYPASS=1` skips the shim.
+
+**Never share a target dir or `build.build-dir` between worktrees.** Cargo's artifact key does not
+include the package path, and worktrees of one repo share a name and version, so they collide —
+you silently get another worktree's binary and cargo reports `Fresh`. Per-worktree targets plus
+sccache give the dedup safely: a second worktree building the same deps takes cache hits.
+
+The host is image-based (Bazzite/Silverblue, `/usr` read-only) and has **none** of the native
+development libraries — not just capnp. Adding them would mean `rpm-ostree` layering plus a
+reboot, re-layered after every base update, with a build environment that drifts as the host
+image moves. The container is also what pins the build environment for everyone. Deps it needs
+(install via `sudo dnf install` inside `distrobox enter my-distrobox` if it's been rebuilt):
 
 ```
 xkbcommon-devel          # smithay-client-toolkit (every build)
@@ -76,17 +96,18 @@ Missing one of these surfaces as a `pkg-config exited with status code 1` error 
 
 ### Running tests
 
-**Prefer targeted tests over workspace-wide runs.** Workspace-wide `cargo test` can take a long time and blocks the shared build lock across worktrees. Run tests for the crate you're changing:
+**Prefer targeted tests over workspace-wide runs** — the `shell` suite alone is ~950 tests and
+the compile dominates. Scope to the crate, or to the test names you are proving:
 
 ```bash
-distrobox enter my-distrobox -- bash -c 'cd /home/user/Development/quickdesktop && cargo test -p fs'
-distrobox enter my-distrobox -- bash -c 'cd /home/user/Development/quickdesktop && cargo test -p ui'
+cargo test -p fs
+cargo test -p shell --lib room_activity      # just the ones you're working on
 ```
 
 `shell --lib` runs cleanly under **default parallel** as of 2026-05-23. The previous SIGSEGV (wgpu Vulkan instance contention from many OffscreenRenderer-using tests creating Instances in parallel) was fixed by a process-wide shared `Arc<Mutex<RenderContext>>` in `ui/src/offscreen.rs`. The `apply_grants_dev_scan_is_memoised` memo-flake (D-6 static state) was fixed via `serial_test::serial` on the 8 `apply_grants`-touching tests.
 
 ```bash
-distrobox enter my-distrobox -- bash -c 'cd /home/user/Development/quickdesktop && cargo test -p shell --lib'
+cargo test -p shell --lib
 ```
 
 If a future change reintroduces a parallel-test crash, the historical bisect threshold was 4-threads OK / 8-threads SIGSEGV — restart by running `--test-threads 4` and bisect upward.
@@ -162,6 +183,28 @@ Key implications when writing or modifying widgets:
 All components (`ui`, `shell`, `fs`, `apps/*`, `os`, and the top-level crates)
 live in this **single repository** — commit normally, no submodule pointer dance.
 Prefer explicit paths over `git add -A` so you only stage what you intend.
+
+### Build output is the disk budget
+
+One worktree's `target/` reaches 150+ GB, and targets cannot be shared between worktrees (see
+above). Debug profiles are pinned to `debug = "line-tables-only"` in the workspace `Cargo.toml`
+for that reason — full DWARF across ~200 test binaries was the bulk of it.
+
+Two things to know when the disk gets tight:
+
+- `target/debug/incremental` is pure cache (~45 GB per worktree). Delete it freely; it costs one
+  slower rebuild.
+- **After merging a branch, delete its worktree's `target/`**, and prune the worktree once the
+  branch has landed. A finished worktree holding 300 GB is the usual cause of a full disk here.
+
+If builds *hang* rather than run slowly — uninterruptible sleep, no progress at all — that is
+btrfs metadata exhaustion, not memory, and **deleting files will not help**: freed space returns
+inside existing chunks, so `df` moves while `unallocated` stays at 2 MiB and metadata cannot grow.
+A daily timer balances automatically; to force it:
+
+```bash
+sudo btrfs balance start -dusage=30 -dlimit=40 /var/home
+```
 
 ### Cargo.lock is committed — do not regenerate it casually
 
