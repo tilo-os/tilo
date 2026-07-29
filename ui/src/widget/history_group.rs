@@ -261,7 +261,9 @@ impl HistoryGroup {
         if let Some((ins, del)) = self.text_delta
             && (ins > 0 || del > 0)
         {
-            parts.push(format!("+{ins} \u{2212}{del} chars"));
+            // Same spelling as a row's own summary: a group that wrote its
+            // counts with a different minus sign reads as a different unit.
+            parts.push(format!("+{ins} -{del} chars"));
         } else if self.name.is_none()
             && self.len() > 1
             && let Some(first) = entries.get(self.start)
@@ -688,7 +690,7 @@ mod tests {
         assert_eq!(groups.len(), 1, "got {:?}", groups.iter().map(ids).collect::<Vec<_>>());
         assert_eq!(groups[0].len(), 10);
         assert_eq!(groups[0].title(&entries), "10 edits");
-        assert_eq!(groups[0].subtitle(&entries), "Alice \u{00b7} +30 \u{2212}0 chars");
+        assert_eq!(groups[0].subtitle(&entries), "Alice \u{00b7} +30 -0 chars");
     }
 
     #[test]
