@@ -1277,75 +1277,6 @@ impl ContainersApp {
         }
     }
 
-    pub(crate) fn draw_confirm(
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        full: Rect,
-        confirm: &crate::app::Confirm,
-        hits: &mut Vec<HitRegion>,
-    ) {
-        let c = &theme.tokens.colors;
-        scene.fill(Fill::NonZero, Affine::IDENTITY, c.surfaces.overlay, None, &full);
-        let modal = Rect::from_center_size(full.center(), (400.0, 188.0));
-        draw::fill_round(scene, modal, theme.tokens.radii.lg as f64, c.surfaces.raised);
-        draw::stroke_round(scene, modal, theme.tokens.radii.lg as f64, 1.0, c.border_standard);
-        draw::icon(scene, Icon::Trash, Rect::new(modal.x0 + 24.0, modal.y0 + 22.0, modal.x0 + 48.0, modal.y0 + 46.0), c.semantic.danger, 1.8);
-        draw::text(scene, tr, &format!("{}?", confirm.verb), theme.tokens.typography.scale.lg, c.text_primary, Point::new(modal.x0 + 58.0, modal.y0 + 24.0), TextWeight::Bold);
-        let msg = format!("This permanently removes \"{}\". This cannot be undone.", confirm.name);
-        draw::text_clip(scene, tr, &msg, theme.tokens.typography.scale.sm, c.text_dim, Point::new(modal.x0 + 24.0, modal.y0 + 64.0), modal.width() - 48.0, TextWeight::Regular);
-
-        let cancel = Rect::new(modal.x1 - 24.0 - 196.0, modal.y1 - 52.0, modal.x1 - 24.0 - 104.0, modal.y1 - 16.0);
-        let ok = Rect::new(modal.x1 - 24.0 - 92.0, modal.y1 - 52.0, modal.x1 - 24.0, modal.y1 - 16.0);
-        draw::fill_round(scene, cancel, theme.tokens.radii.md as f64, c.surface_white_5);
-        draw::text(scene, tr, "Cancel", theme.tokens.typography.scale.sm, c.text_primary, Point::new(cancel.center().x - 22.0, cancel.center().y - 7.0), TextWeight::Medium);
-        draw::fill_round(scene, ok, theme.tokens.radii.md as f64, c.semantic.danger);
-        draw::text(scene, tr, "Remove", theme.tokens.typography.scale.sm, Color::WHITE, Point::new(ok.center().x - 22.0, ok.center().y - 7.0), TextWeight::Semibold);
-        hits.push(HitRegion { rect: cancel, hit: Hit::ConfirmCancel });
-        hits.push(HitRegion { rect: ok, hit: Hit::ConfirmOk });
-    }
-
-    /// A single-line text prompt (new volume name / image tag). Reads its
-    /// value from the live `Prompt` so typing reflects immediately.
-    pub(crate) fn draw_prompt(
-        &mut self,
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        full: Rect,
-    ) {
-        let Some(prompt) = &self.prompt else { return };
-        let c = &theme.tokens.colors;
-        scene.fill(Fill::NonZero, Affine::IDENTITY, c.surfaces.overlay, None, &full);
-        let modal = Rect::from_center_size(full.center(), (420.0, 184.0));
-        draw::fill_round(scene, modal, theme.tokens.radii.lg as f64, c.surfaces.raised);
-        draw::stroke_round(scene, modal, theme.tokens.radii.lg as f64, 1.0, c.border_standard);
-        draw::text(scene, tr, &prompt.title, theme.tokens.typography.scale.lg, c.text_primary, Point::new(modal.x0 + 24.0, modal.y0 + 20.0), TextWeight::Bold);
-
-        let input = Rect::new(modal.x0 + 24.0, modal.y0 + 56.0, modal.x1 - 24.0, modal.y0 + 90.0);
-        draw::fill_round(scene, input, theme.tokens.radii.md as f64, c.surfaces.base);
-        draw::stroke_round(scene, input, theme.tokens.radii.md as f64, 2.0, c.border_focus);
-        if prompt.value.is_empty() {
-            draw::text(scene, tr, &prompt.placeholder, theme.tokens.typography.scale.sm, draw::with_alpha(c.text_dim, 150), Point::new(input.x0 + 12.0, input.center().y - 7.0), TextWeight::Regular);
-        } else {
-            draw::text_clip(scene, tr, &prompt.value, theme.tokens.typography.scale.sm, c.text_primary, Point::new(input.x0 + 12.0, input.center().y - 7.0), input.width() - 24.0, TextWeight::Regular);
-            let (vw, _) = tr.measure(&prompt.value, theme.tokens.typography.scale.sm, None);
-            let cx = (input.x0 + 12.0 + vw as f64).min(input.x1 - 14.0);
-            let caret = Rect::new(cx, input.center().y - 8.0, cx + 1.5, input.center().y + 8.0);
-            scene.fill(Fill::NonZero, Affine::IDENTITY, c.accent[5], None, &caret);
-        }
-
-        let cancel = Rect::new(modal.x1 - 24.0 - 196.0, modal.y1 - 52.0, modal.x1 - 24.0 - 104.0, modal.y1 - 16.0);
-        let ok = Rect::new(modal.x1 - 24.0 - 92.0, modal.y1 - 52.0, modal.x1 - 24.0, modal.y1 - 16.0);
-        draw::fill_round(scene, cancel, theme.tokens.radii.md as f64, c.surface_white_5);
-        draw::text(scene, tr, "Cancel", theme.tokens.typography.scale.sm, c.text_primary, Point::new(cancel.center().x - 22.0, cancel.center().y - 7.0), TextWeight::Medium);
-        draw::fill_round(scene, ok, theme.tokens.radii.md as f64, c.accent[5]);
-        let ok_label = match prompt.kind { PromptKind::NewVolume => "Create", PromptKind::TagImage => "Tag" };
-        draw::text(scene, tr, ok_label, theme.tokens.typography.scale.sm, Color::WHITE, Point::new(ok.center().x - 18.0, ok.center().y - 7.0), TextWeight::Semibold);
-        self.push_hit(cancel, Hit::PromptCancel);
-        self.push_hit(ok, Hit::PromptOk);
-    }
-
     /// A live `podman pull` progress overlay — a console of streamed lines
     /// with a header and a Close button that appears once the pull settles.
     pub(crate) fn draw_pull_overlay(
@@ -1490,11 +1421,10 @@ impl ContainersApp {
     // =================================================================
 
     pub(crate) fn on_click(&mut self, doc: &mut AutoCommit, handled: &mut bool) {
-        // Modal layers consume clicks even outside their controls.
-        let modal_active = self.confirm.is_some()
-            || self.prompt.is_some()
-            || self.pull.is_some()
-            || self.create_open;
+        // Modal layers consume clicks even outside their controls. (The confirm
+        // and prompt dialogs are modal and captured upstream in `handle_event`,
+        // so they are never active here.)
+        let modal_active = self.pull.is_some() || self.create_open;
         // Resolve top-most hit (later draws are on top), so scan in reverse.
         let hit = self
             .hits
@@ -1507,9 +1437,7 @@ impl ContainersApp {
         let Some(hit) = hit else {
             if modal_active {
                 // click on the scrim: dismiss the top-most overlay only.
-                if self.confirm.take().is_some() {
-                } else if self.prompt.take().is_some() {
-                } else if self.pull.take().is_some() {
+                if self.pull.take().is_some() {
                 } else if self.combo.open {
                     // First click outside the dropdown only closes it.
                     self.combo.close();
@@ -1640,23 +1568,6 @@ impl ContainersApp {
             Hit::CloseDetail => {
                 ViewDoc::set_selected(doc, None);
             }
-            Hit::ConfirmOk => {
-                if let Some(confirm) = self.confirm.take() {
-                    match confirm.target {
-                        ConfirmTarget::Container { id, action } => {
-                            self.apply_action(action, &id);
-                            if ViewDoc::selected(doc).as_deref() == Some(id.as_str()) {
-                                ViewDoc::set_selected(doc, None);
-                            }
-                        }
-                        ConfirmTarget::Image { reference } => self.remove_image(&reference),
-                        ConfirmTarget::Volume { name } => self.remove_volume(&name),
-                    }
-                }
-            }
-            Hit::ConfirmCancel => {
-                self.confirm = None;
-            }
             Hit::CreateField(field) => {
                 self.create_focus = field.index();
                 // Focusing a non-image field closes the suggestion dropdown.
@@ -1687,13 +1598,8 @@ impl ContainersApp {
                 self.create_open = false;
                 self.combo.close();
             }
-            Hit::PromptOk => {
-                self.commit_prompt(doc);
-            }
             Hit::PromptCancel => {
-                // Shared dismiss for the prompt AND the pull overlay (the
-                // pull's Close button reuses this hit).
-                self.prompt = None;
+                // The pull overlay's Close button reuses this dismiss hit.
                 self.pull = None;
             }
         }
@@ -1701,17 +1607,18 @@ impl ContainersApp {
     }
 
     /// Apply a committed text prompt (new volume / image tag / image pull).
-    fn commit_prompt(&mut self, _doc: &mut AutoCommit) {
+    /// `value` is the (already-trimmed) text read from the dialog's real field.
+    pub(crate) fn commit_prompt(&mut self, value: &str) {
         let Some(prompt) = self.prompt.take() else { return };
         match prompt.kind {
             PromptKind::NewVolume if prompt.context == "__pull__" => {
-                self.start_pull(prompt.value.trim());
+                self.start_pull(value);
             }
             PromptKind::NewVolume => {
-                self.create_volume(prompt.value.trim());
+                self.create_volume(value);
             }
             PromptKind::TagImage => {
-                self.tag_image(&prompt.context, prompt.value.trim());
+                self.tag_image(&prompt.context, value);
             }
         }
     }
@@ -1740,11 +1647,11 @@ impl ContainersApp {
             return;
         }
 
-        // Escape closes the top-most overlay / clears focus.
+        // Escape closes the top-most overlay / clears focus. (The confirm and
+        // prompt dialogs are modal and handle their own Escape upstream in
+        // `handle_event`, so they never reach here.)
         if let Key::Named(NamedKey::Escape) = key.logical_key {
-            if self.confirm.take().is_some() {
-            } else if self.prompt.take().is_some() {
-            } else if self.pull.take().is_some() {
+            if self.pull.take().is_some() {
             } else if self.combo.open {
                 self.combo.close();
             } else if self.create_open {
@@ -1753,13 +1660,6 @@ impl ContainersApp {
                 ViewDoc::set_selected(doc, None);
             }
             *handled = true;
-            self.refresh_view(doc);
-            return;
-        }
-
-        // A text-prompt dialog owns the keyboard while open.
-        if self.prompt.is_some() {
-            self.prompt_key(doc, key, handled);
             self.refresh_view(doc);
             return;
         }
@@ -1873,29 +1773,6 @@ impl ContainersApp {
         let typed = ViewDoc::create_field(doc, CreateField::Image);
         let options = self.engine.image_references();
         combobox::filter_options(&options, &typed).len()
-    }
-
-    fn prompt_key(&mut self, _doc: &mut AutoCommit, key: &KeyEvent, handled: &mut bool) {
-        let Some(prompt) = &mut self.prompt else { return };
-        match &key.logical_key {
-            Key::Named(NamedKey::Enter) => {
-                *handled = true;
-                self.commit_prompt(_doc);
-            }
-            Key::Named(NamedKey::Backspace) => {
-                prompt.value.pop();
-                *handled = true;
-            }
-            Key::Named(NamedKey::Space) => {
-                prompt.value.push(' ');
-                *handled = true;
-            }
-            Key::Character(ch) => {
-                prompt.value.push_str(ch);
-                *handled = true;
-            }
-            _ => {}
-        }
     }
 }
 
