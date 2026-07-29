@@ -138,13 +138,44 @@ enum Action {
 }
 
 impl SnippetsApp {
-    /// Build the app with the starter library seeded locally. The library
-    /// is pushed into the shared CRDT on the first `sync`.
+    /// Build the live app on an **empty** library. A fresh install has no
+    /// snippets — the user saves their own, or a peer's shared library is
+    /// adopted on the first `sync`. The starter set is demo/`--shots` only
+    /// (see [`Self::new_demo`]): a real install must never fabricate
+    /// snippets it would then persist to the user's store.
     pub fn new() -> Self {
+        Self::with_library(Library::new())
+    }
+
+    /// Like [`Self::new`] but pre-seeded with the starter library and an
+    /// opened specimen — used by `--shots` and any "try it" walkthrough so a
+    /// capture shows the manager doing real work. Never the live first-run
+    /// path.
+    pub fn new_demo() -> Self {
         let mut library = Library::new();
         for s in seed::starter_library() {
             library.insert(s);
         }
+        let mut app = Self::with_library(library);
+        // Open a substantial, templated snippet so the detail pane shows
+        // off the highlighter, line gutter and variable affordance. Prefer
+        // the visible snippet with the most body lines that also carries
+        // placeholders.
+        app.open = app
+            .visible
+            .iter()
+            .copied()
+            .max_by_key(|id| {
+                let s = app.library.get(*id);
+                let lines = s.map(|s| s.body.lines().count()).unwrap_or(0);
+                let templated = s.map(|s| s.has_placeholders()).unwrap_or(false) as usize;
+                (templated, lines)
+            })
+            .or_else(|| app.visible.first().copied());
+        app
+    }
+
+    fn with_library(library: Library) -> Self {
         let mut app = Self {
             library,
             selection: Selection::default(),
@@ -165,28 +196,12 @@ impl SnippetsApp {
             settled_layout: false,
         };
         app.recompute_visible();
-        // Open a substantial, templated snippet so the detail pane shows
-        // off the highlighter, line gutter and variable affordance on
-        // first launch. Prefer the visible snippet with the most body
-        // lines that also carries placeholders.
-        app.open = app
-            .visible
-            .iter()
-            .copied()
-            .max_by_key(|id| {
-                let s = app.library.get(*id);
-                let lines = s.map(|s| s.body.lines().count()).unwrap_or(0);
-                let templated = s.map(|s| s.has_placeholders()).unwrap_or(false) as usize;
-                (templated, lines)
-            })
-            .or_else(|| app.visible.first().copied());
         app
     }
 
-    /// Empty constructor for the screenshot harness — identical to
-    /// [`Self::new`] since the starter library is the realistic default.
+    /// Seeded constructor for the screenshot harness.
     pub fn for_shot() -> Self {
-        Self::new()
+        Self::new_demo()
     }
 
     fn recompute_visible(&mut self) {
@@ -1016,13 +1031,20 @@ impl SnippetsApp {
         let pad = 16.0;
         let mut y = area.y0 + 18.0;
 
-        // App title.
+        // App title. When the sidebar is an overlay flap the top-left toggle
+        // (close-X) floats over this same corner, so indent the title past it
+        // to avoid the glyphs colliding.
+        let title_x = if self.sidebar_layout() == SplitLayout::Overlay {
+            area.x0 + pad + TOGGLE_SIZE + 6.0
+        } else {
+            area.x0 + pad
+        };
         draw::text(
             scene,
             tr,
             t,
             "Snippets",
-            area.x0 + pad,
+            title_x,
             y,
             20.0,
             c.text_primary,
@@ -1232,17 +1254,94 @@ impl SnippetsApp {
         }
 
         if self.visible.is_empty() {
+            self.draw_list_empty(scene, t, tr, theme, area, list_top);
+        }
+    }
+
+    /// The list pane's zero-state. A genuinely empty library gets a composed,
+    /// inviting onboarding with a primary "New snippet" call to action; a
+    /// non-empty library filtered down to nothing gets a "no match" note with
+    /// a Clear-search affordance. Never fabricated rows — an honest empty.
+    fn draw_list_empty(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        area: Rect,
+        list_top: f64,
+    ) {
+        let c = &theme.tokens.colors;
+        let cx = area.x0 + area.width() / 2.0;
+        let top = list_top + (area.y1 - list_top).min(360.0) * 0.16;
+
+        // A soft rounded tile carrying a glyph — a real, composed anchor.
+        let tile = 56.0;
+        let tile_rect = Rect::new(cx - tile / 2.0, top, cx + tile / 2.0, top + tile);
+        draw::fill_round(scene, t, tile_rect, theme.radii_md() + 4.0, c.surfaces.raised);
+        draw::stroke_round(scene, t, tile_rect, theme.radii_md() + 4.0, 1.0, c.border_standard);
+        let glyph = "{ }";
+        let gw = tr.measure(glyph, 22.0, None).0 as f64;
+        draw::text(
+            scene, tr, t, glyph,
+            cx - gw / 2.0, top + 15.0, 22.0, c.accent[6], TextWeight::Bold,
+        );
+        let mut y = tile_rect.y1 + 20.0;
+
+        let library_empty = self.library.snippets.is_empty();
+        let (headline, sub) = if library_empty {
+            (
+                "No snippets yet",
+                "Save a command, query, or block of code once — reuse it anywhere.",
+            )
+        } else {
+            ("No snippets match", "Try a different search, or clear the filter.")
+        };
+        let hw = tr.measure(headline, 17.0, None).0 as f64;
+        draw::text(
+            scene, tr, t, headline,
+            cx - hw / 2.0, y, 17.0, c.text_primary, TextWeight::Bold,
+        );
+        y += 26.0;
+        // Sub-copy, wrapped to the available width so it never clips.
+        for line in wrap_center(sub, tr, 13.0, area.width() - 48.0) {
+            let lw = tr.measure(&line, 13.0, None).0 as f64;
+            draw::text(scene, tr, t, &line, cx - lw / 2.0, y, 13.0, c.text_dim, TextWeight::Regular);
+            y += 19.0;
+        }
+        y += 12.0;
+
+        if library_empty {
+            // Primary call to action, centred.
+            let label = "New snippet";
+            let lw = tr.measure(label, 13.5, None).0 as f64;
+            let bw = lw + 34.0;
+            let btn = Rect::new(cx - bw / 2.0, y, cx + bw / 2.0, y + 36.0);
+            let hovered = btn.contains(self.last_mouse);
+            draw::fill_round(scene, t, btn, theme.radii_md(), if hovered { c.accent[4] } else { c.accent[5] });
             draw::text(
-                scene,
-                tr,
-                t,
-                "No snippets match.",
-                area.x0 + pad,
-                list_top + 8.0,
-                14.0,
-                c.text_dim,
-                TextWeight::Regular,
+                scene, tr, t, label,
+                btn.x0 + 17.0, btn.y0 + (36.0 - 14.0) / 2.0, 13.5, c.text_primary, TextWeight::Semibold,
             );
+            self.record(btn, Action::NewSnippet);
+            // A quiet hint at the search grammar.
+            y = btn.y1 + 22.0;
+            let hint = "Tip: filter with  language:rust  or  tag:k8s";
+            let hw2 = tr.measure(hint, 11.5, None).0 as f64;
+            draw::text(scene, tr, t, hint, cx - hw2 / 2.0, y, 11.5, c.text_dim, TextWeight::Regular);
+        } else {
+            let label = "Clear search";
+            let lw = tr.measure(label, 13.0, None).0 as f64;
+            let bw = lw + 30.0;
+            let btn = Rect::new(cx - bw / 2.0, y, cx + bw / 2.0, y + 34.0);
+            let hovered = btn.contains(self.last_mouse);
+            draw::fill_round(scene, t, btn, theme.radii_md(), if hovered { c.surfaces.raised } else { c.neutral[2] });
+            draw::stroke_round(scene, t, btn, theme.radii_md(), 1.0, c.border_standard);
+            draw::text(
+                scene, tr, t, label,
+                btn.x0 + 15.0, btn.y0 + (34.0 - 14.0) / 2.0, 13.0, c.text_primary, TextWeight::Semibold,
+            );
+            self.record(btn, Action::ClearSearch);
         }
     }
 
@@ -1343,13 +1442,19 @@ impl SnippetsApp {
         let c = &theme.tokens.colors;
         draw::fill_rect(scene, t, area, c.surfaces.base);
         let Some(open) = self.open else {
+            let msg = if self.library.snippets.is_empty() {
+                "Your snippets will appear here."
+            } else {
+                "Select a snippet to preview it."
+            };
+            let mw = tr.measure(msg, 15.0, None).0 as f64;
             draw::text(
                 scene,
                 tr,
                 t,
-                "Select a snippet, or press + New",
-                area.x0 + 32.0,
-                area.y0 + 40.0,
+                msg,
+                area.x0 + (area.width() - mw) / 2.0,
+                area.y0 + area.height() * 0.4,
                 15.0,
                 c.text_dim,
                 TextWeight::Regular,
@@ -1360,8 +1465,11 @@ impl SnippetsApp {
         let pad = 28.0;
         let mut y = area.y0 + 24.0;
 
-        // Title.
-        draw::text(scene, tr, t, &s.title, area.x0 + pad, y, 24.0, c.text_primary, TextWeight::Bold);
+        // Title. In single-pane push showing the detail, the top-left Back
+        // chevron floats over this corner, so indent the title past it.
+        let back_shown = self.is_push_layout() && self.push.reveal() > 0.5;
+        let title_x = if back_shown { area.x0 + pad + TOGGLE_SIZE } else { area.x0 + pad };
+        draw::text(scene, tr, t, &s.title, title_x, y, 24.0, c.text_primary, TextWeight::Bold);
         y += 36.0;
 
         // Meta row: language pill + folder + tags.
@@ -1603,6 +1711,28 @@ fn draw_toast(
     );
 }
 
+/// Greedy word-wrap `s` into lines no wider than `max_w` at font `size`,
+/// for centred multi-line zero-state copy. Falls back to the whole string
+/// when a single word already exceeds the width (it will clip rather than
+/// loop).
+fn wrap_center(s: &str, tr: &mut TextRenderer, size: f32, max_w: f64) -> Vec<String> {
+    let mut lines: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    for word in s.split_whitespace() {
+        let trial = if cur.is_empty() { word.to_string() } else { format!("{cur} {word}") };
+        if tr.measure(&trial, size, None).0 as f64 > max_w && !cur.is_empty() {
+            lines.push(std::mem::take(&mut cur));
+            cur.push_str(word);
+        } else {
+            cur = trial;
+        }
+    }
+    if !cur.is_empty() {
+        lines.push(cur);
+    }
+    lines
+}
+
 fn clip(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
         s.to_string()
@@ -1628,16 +1758,39 @@ mod tests {
     use super::*;
 
     #[test]
-    fn new_app_seeds_and_opens_a_snippet() {
+    fn live_app_starts_empty() {
+        // Honest empty: a fresh install fabricates no snippets and persists
+        // none. The starter set is demo/`--shots` only.
         let app = SnippetsApp::new();
+        assert_eq!(app.library_len_for_test(), 0, "live library starts empty");
+        assert!(app.open_id_for_test().is_none(), "nothing is opened on an empty library");
+        assert_eq!(app.visible_count_for_test(), 0);
+    }
+
+    #[test]
+    fn demo_seeds_and_opens_a_snippet() {
+        let app = SnippetsApp::new_demo();
         assert!(app.library_len_for_test() >= 10);
         assert!(app.open_id_for_test().is_some());
         assert!(app.visible_count_for_test() >= 10);
     }
 
     #[test]
-    fn search_narrows_results() {
+    fn empty_live_app_does_not_seed_the_shared_doc() {
+        use ui::widget::Widget;
         let mut app = SnippetsApp::new();
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        app.sync(&mut doc, &root);
+        assert!(
+            SnippetsDoc::list(&doc).is_empty(),
+            "an empty live library must write no snippets into the shared store"
+        );
+    }
+
+    #[test]
+    fn search_narrows_results() {
+        let mut app = SnippetsApp::new_demo();
         let before = app.visible_count_for_test();
         app.set_search_for_test("language:rust");
         let after = app.visible_count_for_test();
@@ -1647,7 +1800,7 @@ mod tests {
 
     #[test]
     fn copying_a_plain_snippet_bumps_uses() {
-        let mut app = SnippetsApp::new();
+        let mut app = SnippetsApp::new_demo();
         // Find a snippet without placeholders.
         let id = app
             .library
@@ -1664,7 +1817,7 @@ mod tests {
 
     #[test]
     fn copying_a_templated_snippet_opens_expand() {
-        let mut app = SnippetsApp::new();
+        let mut app = SnippetsApp::new_demo();
         let id = app
             .library
             .snippets
@@ -1694,7 +1847,7 @@ mod tests {
     #[test]
     fn sync_seeds_into_empty_doc() {
         use ui::widget::Widget;
-        let mut app = SnippetsApp::new();
+        let mut app = SnippetsApp::new_demo();
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
         app.sync(&mut doc, &root);
@@ -1747,7 +1900,7 @@ mod tests {
 
     #[test]
     fn opening_a_snippet_pushes_the_detail_when_very_narrow() {
-        let mut app = SnippetsApp::new();
+        let mut app = SnippetsApp::new_demo();
         app.layout_at_width_for_test(480.0);
         assert!(!app.push_showing_detail_for_test());
         app.open_first_for_test();
@@ -1759,7 +1912,7 @@ mod tests {
 
     #[test]
     fn opening_a_snippet_does_not_push_when_wide() {
-        let mut app = SnippetsApp::new();
+        let mut app = SnippetsApp::new_demo();
         app.layout_at_width_for_test(1280.0);
         app.open_first_for_test();
         assert!(
