@@ -32,6 +32,7 @@ live-media = [
     "dep:tokio",
     "dep:openh264",
     "dep:ashpd",
+    "dep:qos-callstream",
 ]
 
 [dependencies]
@@ -71,6 +72,12 @@ iroh = { version = "0.96", optional = true }
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "time"], optional = true }
 openh264 = { version = "0.9", features = ["source"], optional = true }
 ashpd = { version = "0.9", optional = true }
+# The reusable qOS video-streaming stack — the same H.264 encode/decode +
+# per-share frame transport substrate the compositor's collab surface
+# streaming uses. The screen-share (and camera) path routes its encode +
+# framing + decode through this crate instead of a second in-app codec.
+# Live-media-only: the default/`--shots` build carries no video codec.
+qos-callstream = { path = "../../crates/collab/qos-callstream", optional = true }
 
 [dev-dependencies]
 tempfile = "3"
