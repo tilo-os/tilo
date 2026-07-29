@@ -544,16 +544,9 @@ enum TranslatedAction {
     /// local channel state has already been mutated by the time this
     /// variant is returned.
     ///
-    /// `evicted` is the number of ops removed from the local op log;
-    /// it's surfaced on the variant for future telemetry / a
-    /// "Compaction applied (N ops collapsed)" toast even though the
-    /// current reader loop only reads `event`. Marked `allow(dead_code)`
-    /// so the contract stays explicit without a compiler warning.
     CompactionApplied {
         event: CollabEvent,
         route: CrdtRoute,
-        #[allow(dead_code)]
-        evicted: usize,
     },
 }
 
@@ -792,11 +785,10 @@ fn translate(
                         envelope,
                         from_user_id: format!("peer-{src_id}"),
                     };
-                    if let Some(evicted) = compaction_evicted {
+                    if compaction_evicted.is_some() {
                         TranslatedAction::CompactionApplied {
                             event,
                             route,
-                            evicted,
                         }
                     } else {
                         TranslatedAction::Fanout { event, route }
@@ -1019,7 +1011,6 @@ fn reader_loop(
             TranslatedAction::CompactionApplied {
                 event,
                 route,
-                evicted: _,
             } => {
                 // The local compaction has already been applied
                 // inside `translate`. Fan the envelope out so peers

@@ -340,30 +340,6 @@ impl ColorPicker {
         self.set_rgb(r, g, b);
     }
 
-    /// Rebuild `self.color` from a new saturation, preserving hue and value.
-    /// Public helper exposed per the widget-expansion plan even though the
-    /// SV square currently sets s and v together via `apply_drag` —
-    /// keyboard step bindings (future work) will route through this.
-    #[allow(dead_code)]
-    fn set_saturation(&mut self, s: f32) {
-        let (h, _, v) = self.current_hsv();
-        let v = if v < 0.05 { 1.0 } else { v };
-        let (r, g, b) = Self::hsv_to_rgb(h, s, v);
-        self.set_rgb(r, g, b);
-    }
-
-    /// Rebuild `self.color` from a new value, preserving hue and saturation.
-    /// Public helper exposed per the widget-expansion plan even though the
-    /// SV square currently sets s and v together via `apply_drag` —
-    /// keyboard step bindings (future work) will route through this.
-    #[allow(dead_code)]
-    fn set_value(&mut self, v: f32) {
-        let (h, s, _) = self.current_hsv();
-        let s = if s < 0.05 { 1.0 } else { s };
-        let (r, g, b) = Self::hsv_to_rgb(h, s, v);
-        self.set_rgb(r, g, b);
-    }
-
     /// Internal setter — central choke point so every mutation fires the
     /// `on_change` callback (when one is registered) and refreshes the
     /// colour atomically.

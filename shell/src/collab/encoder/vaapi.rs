@@ -631,7 +631,6 @@ impl VaApiBackend {
     }
 
     /// Diagnostic: which render node backs this encoder's device.
-    #[allow(dead_code)]
     pub fn render_node(&self) -> &Path {
         &self.render_node
     }
