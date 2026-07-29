@@ -1228,7 +1228,29 @@ impl Core {
         let accent = self.accent(theme);
 
         let Some(loc) = self.model.selected_location().cloned() else {
-            text_left(scene, tr, "No place selected", mx, rect.y0 + top_pad, 18.0, TextWeight::Medium, c.text_dim);
+            // Composed zero-state: a friendly weather glyph over an inviting
+            // prompt, centred in the detail pane — never a bare label on a big
+            // empty gradient (HIG §7). The copy differs by whether the user has
+            // any saved places: a fresh vault points at the search; an existing
+            // roster asks them to pick a city.
+            let cx = rect.center().x;
+            let anchor = rect.y0 + rect.height() * 0.34;
+            let glyph = 92.0;
+            icon::draw_icon(
+                scene,
+                t,
+                Sky::PartlyCloudy,
+                true,
+                Rect::new(cx - glyph / 2.0, anchor, cx + glyph / 2.0, anchor + glyph),
+                theme,
+            );
+            let (headline, sub) = if self.model.locations.is_empty() {
+                ("No cities yet", "Search for a city to see its current conditions and 7-day forecast.")
+            } else {
+                ("Pick a city", "Choose a saved place on the left to see its forecast.")
+            };
+            text_center(scene, tr, headline, cx, anchor + glyph + 20.0, 22.0, TextWeight::Bold, c.text_primary);
+            text_center(scene, tr, sub, cx, anchor + glyph + 54.0, 14.0, TextWeight::Regular, c.text_dim);
             self.refresh_btn = Rect::ZERO;
             self.max_scroll = 0.0;
             return;
