@@ -81,6 +81,10 @@ const HANDLE_HIT_RADIUS: f64 = 14.0;
 const PREVIEW_W: f64 = 96.0;
 const RESTORE_W: f64 = 160.0;
 const BUTTON_H: f64 = 28.0;
+/// Width the in-place name field asks for. A version name is a label, so the
+/// field is sized like one: stretching it across a 1000 px button row would be
+/// a metre of empty box for three words.
+const NAME_FIELD_W: f64 = 300.0;
 /// Vertical offset of the action button row from the track.
 const BUTTON_Y_OFFSET: f64 = 24.0;
 /// Popover dimensions.
@@ -477,6 +481,18 @@ impl HistoryScrubber {
         Point::new(self.tick_x(self.current_tick), self.track_rect().center().y)
     }
 
+    /// Centre of the dot marking where the live state is, so the user can find
+    /// "now" after scrubbing back.
+    ///
+    /// **Below** the track. Above it are the segment band and the popover, and a
+    /// marker drawn on top of either of those is a marker nobody can see.
+    pub fn live_state_dot_center(&self) -> Point {
+        Point::new(
+            self.tick_x(self.entries.len().saturating_sub(1)),
+            self.track_rect().center().y + 12.0,
+        )
+    }
+
     /// Rect of the popover above the handle.
     pub fn popover_rect(&self) -> Rect {
         let centre = self.handle_center();
@@ -599,6 +615,32 @@ impl HistoryScrubber {
     /// Rect of the `[Start a version]` / `[Finish version]` button.
     pub fn version_button_rect(&self) -> Rect {
         self.button_rect(ScrubButton::Version).unwrap_or(Rect::ZERO)
+    }
+
+    /// Rect of the in-place name field, or `Rect::ZERO` when none is up.
+    ///
+    /// The field grows in the button row, so it sits **on top of** the buttons.
+    /// Paint and hit-test both read this one rect: a field that was drawn over
+    /// `[Restore to this version]` while the button underneath still took the
+    /// click would turn "click in the box to fix a typo" into a document
+    /// rewrite.
+    pub fn name_field_rect(&self) -> Rect {
+        if self.naming.is_none() {
+            return Rect::ZERO;
+        }
+        let layout = self.button_layout();
+        if layout.is_empty() {
+            return Rect::ZERO;
+        }
+        let first = layout.iter().map(|(_, r, _)| r.x0).fold(f64::MAX, f64::min);
+        let last = layout.iter().map(|(_, r, _)| r.x1).fold(0.0_f64, f64::max);
+        let y = layout[0].1.y0;
+        Rect::new(
+            first,
+            y,
+            first + (last - first).min(NAME_FIELD_W),
+            y + BUTTON_H,
+        )
     }
 
     /// Current "now" for relative-time rendering.
@@ -829,27 +871,35 @@ impl HistoryScrubber {
             let shape = RoundedRect::from_rect(seg, 3.0);
             scene.fill(vello::peniko::Fill::NonZero, transform, fill, None, &shape);
 
-            // The label only goes in when it genuinely fits: a two-character
-            // stub of a version name is worse than the block on its own, which
-            // at least reads as structure.
-            if let Some(label) = &g.label {
-                let budget = seg.width() - 8.0;
-                let shown = fit(tr, label, size, budget);
-                let (lw, lh) = tr.measure(&shown, size, None);
-                if !shown.is_empty() && lw as f64 <= budget && shown.chars().count() > 2 {
-                    tr.draw_text(
-                        scene,
-                        &shown,
-                        size,
-                        colors.text_primary,
-                        transform
-                            * Affine::translate((
-                                seg.x0 + (seg.width() - lw as f64) / 2.0,
-                                seg.center().y - lh as f64 / 2.0,
-                            )),
-                        None,
-                    );
-                }
+            // Every segment says what it is. A block nobody named still knows
+            // ("8 edits over 2 min"), and it goes in the dim ink so a name still
+            // reads as a decision somebody made — where a *blank* grey block
+            // beside two labelled ones reads as a gap in the history rather than
+            // as a version.
+            //
+            // The label only goes in when it genuinely fits: a two-character stub
+            // is worse than the block on its own, which at least reads as
+            // structure.
+            let (label, ink) = match &g.label {
+                Some(l) => (l.as_str(), colors.text_primary),
+                None => (g.derived.as_str(), colors.text_dim),
+            };
+            let budget = seg.width() - 8.0;
+            let shown = fit(tr, label, size, budget);
+            let (lw, lh) = tr.measure(&shown, size, None);
+            if !shown.is_empty() && lw as f64 <= budget && shown.chars().count() > 2 {
+                tr.draw_text(
+                    scene,
+                    &shown,
+                    size,
+                    ink,
+                    transform
+                        * Affine::translate((
+                            seg.x0 + (seg.width() - lw as f64) / 2.0,
+                            seg.center().y - lh as f64 / 2.0,
+                        )),
+                    None,
+                );
             }
 
             // Boundary mark, joining the band to the track so a segment's end and
@@ -1054,8 +1104,11 @@ impl Widget for HistoryScrubber {
 
         // "Current" indicator — a small dot at the rightmost tick so users can
         // spot where the live state lives even when the handle has scrubbed back.
-        let current_x = self.tick_x(self.entries.len() - 1);
-        let live_dot = Circle::new(Point::new(current_x, track.center().y - 18.0), 3.0);
+        //
+        // Below the track, not above it: above is where the segment band and the
+        // popover live, and the dot spent both of those sitting invisibly on top
+        // of something else. Below there is only the gap before the button row.
+        let live_dot = Circle::new(self.live_state_dot_center(), 3.0);
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
@@ -1114,12 +1167,18 @@ impl Widget for HistoryScrubber {
                 entry.author.name,
                 format_relative_time(entry.timestamp, now)
             );
-            let group_line = self.current_group().map(|g| {
+            // An unnamed segment of one change derives its title *from* that
+            // change, so a two-line popover would print the same words twice —
+            // once as the version and once as the change. Say it once.
+            let group_line = self.current_group().and_then(|g| {
                 let mut s = g.title().to_string();
+                if g.label.is_none() && !g.open && s == entry.summary {
+                    return None;
+                }
                 if g.open {
                     s.push_str(" \u{00b7} still open");
                 }
-                s
+                Some(s)
             });
             let budget = pop.width() - 12.0;
             match group_line {
@@ -1194,12 +1253,30 @@ impl Widget for HistoryScrubber {
             .current_entry()
             .is_some_and(|e| e.redaction.is_some());
         if let Some((_, field)) = self.naming.as_ref() {
-            let first = layout.iter().map(|(_, r, _)| r.x0).fold(f64::MAX, f64::min);
             let last = layout.iter().map(|(_, r, _)| r.x1).fold(0.0_f64, f64::max);
-            let y = layout.first().map(|(_, r, _)| r.y0).unwrap_or(self.rect.y0);
-            let box_rect = Rect::new(first, y, last, y + BUTTON_H);
+            let box_rect = self.name_field_rect();
             let size = theme.tokens.typography.scale.sm;
             field.draw(scene, transform, text_renderer, theme, box_rect, size);
+            // The field replaced the buttons, so nothing on screen says how to
+            // finish. Enter and Escape are the only two things it does; say so
+            // where the buttons were, when there is room left over.
+            let hint = "Enter to save \u{00b7} Esc to cancel";
+            let hint_size = (size - 2.0).max(9.0);
+            let (hw, hh) = text_renderer.measure(hint, hint_size, None);
+            if box_rect.x1 + 10.0 + hw as f64 <= last {
+                text_renderer.draw_text(
+                    scene,
+                    hint,
+                    hint_size,
+                    theme.tokens.colors.text_dim,
+                    transform
+                        * Affine::translate((
+                            box_rect.x1 + 10.0,
+                            box_rect.center().y - hh as f64 / 2.0,
+                        )),
+                    None,
+                );
+            }
         } else {
             for (kind, rect, label) in &layout {
                 // Restore is the primary action; and it is not offered at all
@@ -1309,6 +1386,25 @@ impl Widget for HistoryScrubber {
                 ..
             } => {
                 if *element_state == ElementState::Pressed {
+                    // A name field is up, and it is drawn over the button row.
+                    // The buttons under it do not get the click: pressing in the
+                    // field does nothing (there is no caret to place), pressing
+                    // elsewhere on the strip abandons the name the same way
+                    // Escape does. A press outside the strip abandons it too but
+                    // is left for whatever the user actually clicked on.
+                    if self.naming.is_some() {
+                        let field = self.name_field_rect();
+                        if field.contains(self.last_cursor) {
+                            *handled = true;
+                            return;
+                        }
+                        self.cancel_naming();
+                        if self.rect.contains(self.last_cursor) {
+                            *handled = true;
+                            return;
+                        }
+                        return;
+                    }
                     // Press on a button → do its thing.
                     if let Some((kind, _, _)) = self
                         .button_layout()
@@ -2126,6 +2222,191 @@ mod version_tests {
         // The block would be zero-wide at the same tick; the draw path widens it.
         assert_eq!(s.tick_x(7), s.tick_x(g.end));
         assert_eq!(s.snap_targets(), vec![0, 7]);
+    }
+
+    /// Render the strip and report how many pixels inside `r` differ from the
+    /// pixel in its top-left corner. A flat fill scores 0; ink drawn on top of it
+    /// scores. Used to assert that a label reached the scene, rather than that a
+    /// helper returned a string the paint path might not use.
+    fn ink_in(s: &mut HistoryScrubber, r: Rect) -> usize {
+        let (w, h) = (s.rect().width() as u32, s.rect().height() as u32);
+        let theme = Theme::dark();
+        let mut scene = Scene::new();
+        let mut tr = TextRenderer::new();
+        s.draw(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut tr,
+            &theme,
+            &PresenceCtx::empty(),
+        );
+        let rgba = crate::offscreen::OffscreenRenderer::new(w, h)
+            .render(&scene, theme.tokens.colors.surfaces.base);
+        let base = crate::offscreen::OffscreenRenderer::sample(&rgba, w, r.x0 as u32, r.y0 as u32);
+        let mut n = 0;
+        for y in (r.y0 as u32)..(r.y1 as u32).min(h) {
+            for x in (r.x0 as u32)..(r.x1 as u32).min(w) {
+                if crate::offscreen::OffscreenRenderer::sample(&rgba, w, x, y) != base {
+                    n += 1;
+                }
+            }
+        }
+        n
+    }
+
+    /// The interior of segment `i`'s block, inset clear of the boundary strokes
+    /// on either edge.
+    fn segment_interior(s: &HistoryScrubber, i: usize) -> Rect {
+        let band = s.band_rect();
+        let x0 = if i == 0 {
+            band.x0
+        } else {
+            s.tick_x(s.groups()[i - 1].end)
+        };
+        let x1 = if i + 1 == s.groups().len() {
+            band.x1
+        } else {
+            s.tick_x(s.groups()[i].end)
+        };
+        Rect::new(x0 + 5.0, band.y0 + 3.0, x1 - 5.0, band.y1 - 3.0)
+    }
+
+    #[test]
+    fn a_version_nobody_named_still_says_what_it_is() {
+        // A grey block with nothing written in it reads as a gap in the history
+        // rather than as a run of changes. The derived description is what that
+        // block is, so it goes in — dimmer than a name, but there.
+        let mut s = with_versions(900.0);
+        let unnamed = segment_interior(&s, 1); // the 5..=9 run, which nobody named
+        assert!(unnamed.width() > 60.0, "the fixture's block has room: {unnamed:?}");
+        assert!(
+            ink_in(&mut s, unnamed) > 0,
+            "the unnamed block is blank grey"
+        );
+
+        // And it is genuinely the segment's own text: blank the description and
+        // the same block goes back to being a flat fill.
+        let mut groups = s.groups().to_vec();
+        groups[1].derived = String::new();
+        s.set_groups(groups);
+        assert_eq!(
+            ink_in(&mut s, unnamed),
+            0,
+            "something other than `derived` is being drawn in there"
+        );
+    }
+
+    #[test]
+    fn escape_abandons_a_name_and_leaves_the_version_alone() {
+        let names: Rc<RefCell<usize>> = Rc::new(RefCell::new(0));
+        let n = names.clone();
+        let mut s = with_versions(900.0);
+        s.on_name = Some(Box::new(move |_| *n.borrow_mut() += 1));
+        s.set_current_tick(12); // inside "Intro rewrite"
+
+        let at = s.name_button_rect().center();
+        click(&mut s, at);
+        type_str(&mut s, "half typed");
+        assert_eq!(s.naming_buffer(), Some("Intro rewritehalf typed"));
+
+        dispatch(&mut s, &key(winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape)));
+        assert!(!s.wants_keyboard(), "the field is gone");
+        assert_eq!(*names.borrow(), 0, "and nothing was written");
+        assert_eq!(
+            s.current_group().and_then(|g| g.label.as_deref()),
+            Some("Intro rewrite"),
+            "the name it started from is untouched"
+        );
+    }
+
+    #[test]
+    fn a_click_in_the_name_field_cannot_reach_the_button_underneath_it() {
+        // The field is drawn over the button row. `[Restore to this version]`
+        // writes the document, so a click that lands in the box the user is
+        // typing into must not reach it — nor must the buttons the field covers
+        // re-open a different field and throw away what was typed.
+        let restores: Rc<RefCell<usize>> = Rc::new(RefCell::new(0));
+        let versions: Rc<RefCell<usize>> = Rc::new(RefCell::new(0));
+        let r = restores.clone();
+        let v = versions.clone();
+        let mut s = with_versions(900.0);
+        s.on_restore = Some(Box::new(move |_| *r.borrow_mut() += 1));
+        s.on_version = Some(Box::new(move |_| *v.borrow_mut() += 1));
+        s.set_current_tick(12);
+
+        let at = s.name_button_rect().center();
+        click(&mut s, at);
+        type_str(&mut s, "Intro");
+        let field = s.name_field_rect();
+        assert!(field.area() > 0.0, "the field has a rect while it is up");
+
+        // Every button the field covers, clicked through the field.
+        for btn in [
+            s.preview_button_rect(),
+            s.name_button_rect(),
+            s.version_button_rect(),
+        ] {
+            if btn.area() > 0.0 && field.contains(btn.center()) {
+                click(&mut s, btn.center());
+                assert!(s.wants_keyboard(), "the field was dismissed by a click inside it");
+                assert_eq!(
+                    s.naming_buffer(),
+                    Some("Intro rewriteIntro"),
+                    "a button under the field restarted the name"
+                );
+            }
+        }
+        assert_eq!(*versions.borrow(), 0, "no version was opened");
+
+        // Restore sits outside the field, so clicking it is a click away from the
+        // field: it abandons the name and does *not* also rewrite the document.
+        let restore = s.restore_button_rect();
+        assert!(!field.contains(restore.center()));
+        click(&mut s, restore.center());
+        assert!(!s.wants_keyboard(), "clicking off the field abandons it");
+        assert_eq!(
+            *restores.borrow(),
+            0,
+            "the click that dismissed the field must not also restore"
+        );
+
+        // And now that the field is gone, the button works again.
+        let at = s.restore_button_rect().center();
+        click(&mut s, at);
+        assert_eq!(*restores.borrow(), 1);
+    }
+
+    #[test]
+    fn the_name_field_is_a_label_box_not_the_whole_button_row() {
+        // A field stretched across a 1000 px strip is a metre of empty box for
+        // three words, and it swallows the row it is drawn in.
+        let mut s = with_versions(1000.0);
+        s.set_current_tick(12);
+        let at = s.name_button_rect().center();
+        click(&mut s, at);
+        let field = s.name_field_rect();
+        assert!(field.width() <= NAME_FIELD_W, "got {}", field.width());
+        assert!(
+            field.x1 < s.restore_button_rect().x0,
+            "the field must not reach the destructive button: {field:?}"
+        );
+    }
+
+    #[test]
+    fn the_live_state_dot_does_not_hide_under_the_band_or_the_popover() {
+        // Both of those live above the track, and the dot spent its life drawn
+        // invisibly on top of one of them.
+        let s = with_versions(900.0);
+        let dot_y = s.live_state_dot_center().y;
+        assert!(dot_y > s.band_rect().y1, "the dot is inside the segment band");
+        assert!(
+            dot_y > s.popover_rect().y1,
+            "the dot is behind the popover"
+        );
+        assert!(
+            dot_y < s.restore_button_rect().y0,
+            "the dot collides with the button row"
+        );
     }
 
     #[test]
