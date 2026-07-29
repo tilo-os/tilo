@@ -2283,4 +2283,297 @@ mod tests {
             "history was appended to, not rewritten"
         );
     }
+
+    // -----------------------------------------------------------------
+    // Naming, driven the way a person drives it
+    // -----------------------------------------------------------------
+    //
+    // Everything above calls `apply_name` directly, which proves the write but
+    // not the chain that reaches it. These drive real `WindowEvent`s into
+    // `handle_event` — move the pointer, press, type, press Enter — and then
+    // read the result out of the **room document**, not out of the widget.
+
+    fn cursor_moved(x: f64, y: f64) -> WindowEvent {
+        WindowEvent::CursorMoved {
+            device_id: unsafe { std::mem::zeroed() },
+            position: winit::dpi::PhysicalPosition::new(x, y),
+        }
+    }
+
+    fn mouse_press() -> WindowEvent {
+        WindowEvent::MouseInput {
+            device_id: unsafe { std::mem::zeroed() },
+            state: winit::event::ElementState::Pressed,
+            button: winit::event::MouseButton::Left,
+        }
+    }
+
+    fn key_press(logical_key: winit::keyboard::Key) -> WindowEvent {
+        // SAFETY: as in `ui`'s own widget tests — every pub field of `KeyEvent`
+        // tolerates the all-zero bit pattern, and winit 0.30 keeps
+        // `KeyEventExtra` crate-private so a struct literal is unavailable.
+        let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
+        ev.logical_key = logical_key;
+        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
+            winit::keyboard::NativeKeyCode::Unidentified,
+        );
+        ev.location = winit::keyboard::KeyLocation::Standard;
+        ev.state = winit::event::ElementState::Pressed;
+        ev.repeat = false;
+        ev.text = None;
+        WindowEvent::KeyboardInput {
+            device_id: unsafe { std::mem::zeroed() },
+            event: ev,
+            is_synthetic: false,
+        }
+    }
+
+    /// Paint the sheet so the rects the click handler reads off the last frame
+    /// are populated exactly as they are live.
+    fn paint(pane: &mut RoomActivityPane) {
+        let mut scene = Scene::new();
+        let mut tr = TextRenderer::new();
+        pane.draw(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut tr,
+            &Theme::dark(),
+            &PresenceCtx::empty(),
+        );
+    }
+
+    /// Click at `p`: move there first so the hover latches, the way a pointer
+    /// does.
+    fn click_at(
+        pane: &mut RoomActivityPane,
+        tree: &mut WorkspaceTree,
+        p: Point,
+    ) -> RoomActivityOutcome {
+        let m = Modifiers::default();
+        pane.handle_event(&cursor_moved(p.x, p.y), 1.0, &m, Some(p), tree);
+        pane.handle_event(&mouse_press(), 1.0, &m, Some(p), tree)
+    }
+
+    fn type_into(pane: &mut RoomActivityPane, tree: &mut WorkspaceTree, text: &str) {
+        let m = Modifiers::default();
+        for ch in text.chars() {
+            let ev = if ch == ' ' {
+                key_press(winit::keyboard::Key::Named(winit::keyboard::NamedKey::Space))
+            } else {
+                key_press(winit::keyboard::Key::Character(ch.to_string().into()))
+            };
+            pane.handle_event(&ev, 1.0, &m, None, tree);
+        }
+    }
+
+    /// The first line of the pane that is a band header.
+    fn first_band(pane: &RoomActivityPane) -> usize {
+        (0..pane.timeline().row_count())
+            .find(|i| pane.timeline().group_at_row(*i).is_some())
+            .expect("the room's history produces at least one band")
+    }
+
+    #[test]
+    fn clicking_name_typing_and_pressing_enter_puts_the_name_in_the_room_document() {
+        let (mut tree, _, _) = busy_room();
+        let mut pane = pane_over(&mut tree);
+        paint(&mut pane);
+
+        let band = first_band(&pane);
+        let (name_chip, _) = pane
+            .timeline()
+            .group_chip_rects(band)
+            .expect("a band header carries a [Name] chip");
+        let entries = pane.entries().to_vec();
+        // What the band under the pointer covers, read before the gesture so the
+        // assertion is against the range the user pointed at rather than whatever
+        // came back. Rows are in display order and groups in causal order, so the
+        // band is found by the key the row carries, not by position.
+        let (first, last) = {
+            let key = pane.timeline().group_at_row(band).unwrap().0.to_string();
+            let mut flat: Vec<&ui::HistoryGroup> = Vec::new();
+            for g in pane.timeline().groups() {
+                g.walk(&mut flat);
+            }
+            let g = flat
+                .iter()
+                .find(|g| g.key == key)
+                .expect("the band the header belongs to");
+            (g.first_entry, g.last_entry)
+        };
+
+        let out = click_at(&mut pane, &mut tree, name_chip.center());
+        assert!(out.handled, "the chip took the click");
+        assert!(
+            pane.wants_keyboard(),
+            "the field is up and owns the keyboard, so the sheet's Escape does not close it"
+        );
+        assert_eq!(pane.timeline().naming_buffer(), Some(""));
+
+        type_into(&mut pane, &mut tree, "Set up the room");
+        assert_eq!(pane.timeline().naming_buffer(), Some("Set up the room"));
+
+        let out = pane.handle_event(
+            &key_press(winit::keyboard::Key::Named(winit::keyboard::NamedKey::Enter)),
+            1.0,
+            &Modifiers::default(),
+            None,
+            &mut tree,
+        );
+        assert!(out.named, "the pane reports a document write");
+        assert!(!pane.wants_keyboard(), "the field is gone");
+
+        // The name is in the room document, over the range the band covered.
+        let ranges = ui::history_groups::read_named_ranges(&tree.doc, &AuthorDirectory::new());
+        assert_eq!(ranges.len(), 1, "one name, from one gesture: {ranges:?}");
+        assert_eq!(ranges[0].label, "Set up the room");
+        assert_eq!(ranges[0].start, first);
+        assert_eq!(ranges[0].end, Some(last));
+        assert!(
+            entries.iter().any(|e| e.id == first),
+            "the range addresses changes this room actually has"
+        );
+
+        // And it is the document's, not the widget's: a pane that never saw the
+        // gesture reads the same band off the same tree.
+        let mut fresh = RoomActivityPane::new();
+        fresh.layout(Rect::new(0.0, 0.0, 1600.0, 900.0));
+        fresh.refresh(&mut tree);
+        let titles: Vec<&str> = (0..fresh.timeline().row_count())
+            .filter_map(|i| fresh.timeline().group_title_at_row(i))
+            .collect();
+        assert!(
+            titles.contains(&"Set up the room"),
+            "the band is not on screen for the next person to open the pane: {titles:?}"
+        );
+    }
+
+    #[test]
+    fn escape_in_the_name_field_writes_nothing_to_the_room_document() {
+        let (mut tree, _, _) = busy_room();
+        let mut pane = pane_over(&mut tree);
+        paint(&mut pane);
+        let heads_before = tree.doc.get_heads();
+
+        let band = first_band(&pane);
+        let (name_chip, _) = pane.timeline().group_chip_rects(band).unwrap();
+        click_at(&mut pane, &mut tree, name_chip.center());
+        type_into(&mut pane, &mut tree, "never mind");
+        assert!(pane.wants_keyboard());
+
+        let out = pane.handle_event(
+            &key_press(winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape)),
+            1.0,
+            &Modifiers::default(),
+            None,
+            &mut tree,
+        );
+        assert!(!out.named);
+        assert!(!pane.wants_keyboard(), "the field is gone");
+        assert!(
+            ui::history_groups::read_named_ranges(&tree.doc, &AuthorDirectory::new()).is_empty(),
+            "Escape wrote a name anyway"
+        );
+        assert_eq!(
+            tree.doc.get_heads(),
+            heads_before,
+            "abandoning a name must not commit anything at all"
+        );
+    }
+
+    #[test]
+    fn clicking_a_band_header_collapses_and_expands_it() {
+        // The disclosure is a click on the header itself, and it must not be
+        // confused with the chips that sit on the same row.
+        let (mut tree, _, _) = busy_room();
+        let mut pane = pane_over(&mut tree);
+        paint(&mut pane);
+
+        let band = first_band(&pane);
+        let (key, expanded) = {
+            let (k, e) = pane.timeline().group_at_row(band).unwrap();
+            (k.to_string(), e)
+        };
+        let header = pane.timeline().row_rect(band).expect("the header lays out");
+        let (name_chip, _) = pane.timeline().group_chip_rects(band).unwrap();
+        // Somewhere on the header that is not a chip: next to the disclosure
+        // triangle.
+        let on_header = Point::new(header.x0 + 60.0, header.center().y);
+        assert!(!name_chip.contains(on_header), "the fixture aims off the chips");
+
+        let lines_before = pane.timeline().row_count();
+        let out = click_at(&mut pane, &mut tree, on_header);
+        assert!(out.handled);
+        assert!(!out.named, "toggling a band is not a document write");
+        assert_eq!(
+            pane.timeline().group_at_row(band).map(|(_, e)| e),
+            Some(!expanded),
+            "the click did not toggle the band"
+        );
+        let lines_after = pane.timeline().row_count();
+        assert_ne!(
+            lines_before, lines_after,
+            "the band's changes neither appeared nor went away"
+        );
+
+        // And back, addressing the same band by the same key.
+        click_at(&mut pane, &mut tree, on_header);
+        assert_eq!(pane.timeline().group_at_row(band).map(|(_, e)| e), Some(expanded));
+        assert_eq!(pane.timeline().row_count(), lines_before);
+        assert_eq!(
+            pane.timeline().group_at_row(band).map(|(k, _)| k),
+            Some(key.as_str()),
+            "the band moved under the toggle"
+        );
+    }
+
+    #[test]
+    fn renaming_through_the_chip_replaces_the_name_rather_than_adding_a_band() {
+        let (mut tree, _, _) = busy_room();
+        let mut pane = pane_over(&mut tree);
+        paint(&mut pane);
+
+        // Name it once, through the gesture.
+        let band = first_band(&pane);
+        let (chip, _) = pane.timeline().group_chip_rects(band).unwrap();
+        click_at(&mut pane, &mut tree, chip.center());
+        type_into(&mut pane, &mut tree, "First try");
+        pane.handle_event(
+            &key_press(winit::keyboard::Key::Named(winit::keyboard::NamedKey::Enter)),
+            1.0,
+            &Modifiers::default(),
+            None,
+            &mut tree,
+        );
+        let record = ui::history_groups::read_named_ranges(&tree.doc, &AuthorDirectory::new())[0]
+            .id
+            .clone();
+
+        // Now rename it. The field seeds from the existing name, and the write
+        // has to land on the record that already exists.
+        paint(&mut pane);
+        let band = (0..pane.timeline().row_count())
+            .find(|i| pane.timeline().group_title_at_row(*i) == Some("First try"))
+            .expect("the named band is on screen");
+        let (chip, _) = pane.timeline().group_chip_rects(band).unwrap();
+        click_at(&mut pane, &mut tree, chip.center());
+        assert_eq!(
+            pane.timeline().naming_buffer(),
+            Some("First try"),
+            "a rename starts from the name that is there"
+        );
+        type_into(&mut pane, &mut tree, " again");
+        pane.handle_event(
+            &key_press(winit::keyboard::Key::Named(winit::keyboard::NamedKey::Enter)),
+            1.0,
+            &Modifiers::default(),
+            None,
+            &mut tree,
+        );
+
+        let ranges = ui::history_groups::read_named_ranges(&tree.doc, &AuthorDirectory::new());
+        assert_eq!(ranges.len(), 1, "a rename must not leave two bands: {ranges:?}");
+        assert_eq!(ranges[0].id, record, "it addressed the record it already had");
+        assert_eq!(ranges[0].label, "First try again");
+    }
 }
