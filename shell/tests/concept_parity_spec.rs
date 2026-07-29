@@ -644,7 +644,16 @@ fn tree_with_seeded_roster() -> WorkspaceTree {
     tree.adopt_ownerless_workspaces(&owner);
     if let Some(ws) = tree.active_workspace_mut() {
         let room = ws.id.raw().to_string();
-        for (person, verb) in [("ada", Verb::Write), ("bo", Verb::Read)] {
+        // Five people, matching the fixture size the tab this replaced
+        // was measured against: its app grid was five hard-coded rows,
+        // and this pane paints one row per member.
+        for (person, verb) in [
+            ("ada", Verb::Write),
+            ("bo", Verb::Read),
+            ("cy", Verb::Comment),
+            ("dee", Verb::Read),
+            ("eli", Verb::Write),
+        ] {
             ws.grant_as(
                 &owner,
                 CapOverride::membership(Subject::person(person), room.clone(), verb),
