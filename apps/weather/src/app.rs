@@ -127,18 +127,28 @@ impl WeatherApp {
         Self::assemble(core, false)
     }
 
-    /// Live event-loop configuration: real saved places (coordinates), real
+    /// Live event-loop configuration: the user's own saved places, real
     /// Open-Meteo fetches, and display units read from the shared Settings
-    /// store. The synthesized readings are dropped so nothing invented ever
-    /// shows.
+    /// store. Nothing invented ever shows on a fresh launch — both the bundled
+    /// sample cities and their synthesized readings are dropped, so a first run
+    /// lands on the "No places yet — search above" onboarding and the user adds
+    /// real cities through the geocoding search. Any places they add persist to
+    /// the shared document and are re-adopted by `sync` on the next launch.
     pub fn live() -> Self {
         let mut model = crate::sample::sample_model();
+        model.locations.clear();
         model.snapshots.clear();
+        model.selected = 0;
         let units = crate::region::load_units();
         model.units = units;
         let core = Rc::new(RefCell::new(Core::new(model, units)));
         let app = Self::assemble(core, true);
-        app.core.borrow_mut().status = "Loading…".to_string();
+        // Only advertise "Loading…" when there is actually something to fetch;
+        // a place-less first run shows the onboarding, not a phantom spinner.
+        // (The persisted doc's real cities, if any, are adopted in `sync`.)
+        if !app.core.borrow().model.locations.is_empty() {
+            app.core.borrow_mut().status = "Loading…".to_string();
+        }
         app
     }
 
@@ -204,8 +214,18 @@ impl WeatherApp {
     /// * `"search"` — the live-search dropdown showing geocoded matches.
     /// * `"search_loading"` — the dropdown's in-flight loading state.
     /// * `"search_empty"` — the dropdown's "no matches" state.
+    /// * `"onboarding"` — the fresh-launch empty state a live first run shows:
+    ///   no saved places (the sample cities + readings dropped), inviting the
+    ///   user to search. Mirrors what [`WeatherApp::live`] renders on first run.
     pub fn seed_shot_scenario(&mut self, scenario: &str) {
         match scenario {
+            "onboarding" => {
+                let mut core = self.core.borrow_mut();
+                core.model.locations.clear();
+                core.model.snapshots.clear();
+                core.model.selected = 0;
+                core.status.clear();
+            }
             "detail" => {
                 self.nav.show_detail();
                 self.nav.snap();
@@ -664,15 +684,35 @@ mod interaction_tests {
     }
 
     #[test]
-    fn live_starts_without_fabricated_snapshots() {
+    fn onboarding_scenario_matches_the_live_empty_state() {
+        // The `--shots onboarding` capture must exercise the SAME place-less
+        // empty state a live first run shows — not a half-cleared sample.
+        let mut app = WeatherApp::new();
+        assert!(!app.core.borrow().model.locations.is_empty(), "sample seeds cities");
+        app.seed_shot_scenario("onboarding");
+        let core = app.core.borrow();
+        assert!(core.model.locations.is_empty(), "onboarding clears saved places");
+        assert!(core.model.snapshots.is_empty(), "onboarding clears readings");
+        assert!(core.status.is_empty(), "onboarding shows no spinner");
+    }
+
+    #[test]
+    fn live_starts_empty_with_no_fabricated_places_or_readings() {
+        // A fresh live launch must invent nothing: neither cities the user never
+        // added nor readings for them. It lands on the onboarding empty state and
+        // adopts the user's real, persisted places in `sync`.
         let live = WeatherApp::live();
         assert!(live.live);
         {
             let core = live.core.borrow();
-            assert!(!core.model.locations.is_empty(), "keeps default saved places");
-            assert!(core.model.snapshots.is_empty(), "never shows invented readings on startup");
+            assert!(core.model.locations.is_empty(), "no fabricated saved places on startup");
+            assert!(core.model.snapshots.is_empty(), "no invented readings on startup");
+            assert!(core.status.is_empty(), "no phantom Loading spinner with nothing to fetch");
         }
+        // The bundled sample (used only by `--shots`/tests) still carries demo
+        // cities + readings, so the offline screenshot path stays populated.
         let sample = WeatherApp::new();
+        assert!(!sample.core.borrow().model.locations.is_empty());
         assert!(!sample.core.borrow().model.snapshots.is_empty());
     }
 
