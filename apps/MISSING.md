@@ -208,7 +208,7 @@ verified by an offscreen shot (header gone, functional controls intact) + tests:
       the populated 1280px overlay + the empty-state shots; asserted by the
       `traffic::` model tests + the app toggle / honest-empty / click-target tests.
 
-## typst_editor
+## typst_editor — CLEAR (re-verified: every interaction driven + shot-graded)
 - [x] Horizontal scroll / keep caret in view → fixed.
 - [x] Idle spin while editor focused → fixed.
 - [x] Source-editor cut/copy/paste used an app-local buffer, so text couldn't
@@ -219,6 +219,65 @@ verified by an offscreen shot (header gone, functional controls intact) + tests:
 - [x] A failed recompile blanked the preview and lost the reader's place →
       the last successful render stays on screen under a "showing last
       successful render" banner until the next clean compile.
+- [x] Preview zoom / pan / scroll / selection all drive the real shared
+      viewport kernel (Ctrl+wheel zooms toward the cursor, ± and Fit, drag-pan
+      when zoomed past fit, plain/tilt wheel scroll, glyph-precise text select +
+      Ctrl+C copy) — verified by shots (100%/190% zoom, horizontal-scroll caret,
+      heading selection) and the preview::/app:: interaction tests.
+- [x] Compiler diagnostics UX is real: red/orange squiggles under the offending
+      spans, gutter dots, a Problems panel listing `line:col` + severity swatch,
+      and clicking a row jumps the editor caret to that diagnostic
+      (`diagnostic_click_jumps_editor_for_both_severities` on the production
+      `goto_line` path). Failed compile shows an honest "Compilation failed"
+      preview instead of blanking.
+- [x] PDF export is REAL (the earlier "no export" gap is closed): the toolbar
+      "Export PDF" writes a real `.pdf` next to the source via `typst_pdf::pdf`
+      over the same `World` the preview uses (`export_pdf_writes_a_real_pdf_file`
+      asserts the file opens with the `%PDF` magic).
+
+## git_client — CLEAR (real git2 end-to-end: rendered + mutated a live repo)
+- [x] Every surface reads a real repository, not stubs: opened a prepared temp
+      repo via `GIT_CLIENT_REPO` and the Changes/History/Branches views rendered
+      its actual state — staged/unstaged/untracked with real M/A/R/D badges and
+      `+/-` counts, the real commit graph (HEAD/main/branch refs, real hashes),
+      the real branch/tag/remote/stash lists, and the author read from the repo
+      config. Honest empty state ("No repository open" + an Open-path input) when
+      no repo is reachable — never a fabricated repo.
+- [x] Mutating operations are real `git2`, driven end-to-end: `--stage-commit`
+      staged all four pending changes (new/deleted/modified) and wrote a real
+      commit to the temp repo (working tree went clean). The 26-test `repo_ops`
+      integration suite drives stage/unstage (file + hunk), commit (rejects empty
+      message / missing identity), branch create/checkout/delete (refuses HEAD),
+      discard file/hunk, stash save+apply, and fetch/pull against a local remote —
+      all through the production actions the UI buttons invoke. Push is real
+      `git2` (credentials + refspec).
+- [x] Dead-label fix (HIG §7): the top-right diff option toggled syntax
+      highlighting but was labelled with the cryptic fragment "Syn" — replaced
+      with the universal `</>` code glyph, centred in the pill.
+
+## disks — CLEAR (reads real block devices; mutations real + honestly gated)
+- [x] Reads REAL storage, never fabricated: `--live` probes this machine via
+      lsblk/sysfs and rendered its actual drives (both NVMe SSDs, the real
+      partition label, zram devices, real capacities/usage); SMART shows an
+      honest "Unknown — needs administrator access" rather than inventing values.
+      The offline sample topology is used only for `--shots`/tests and is labelled
+      as such (`probe_returns_none_or_real_devices_never_fabricates`,
+      `drives_real_probed_topology_end_to_end`).
+- [x] Mount / unmount / format / eject / benchmark are real and correctly gated:
+      the live binary runs udisks2 over D-Bus (feature `live`) → `udisksctl` →
+      raw `mount`/`umount`/`mkfs.<fs>` fallback, plus a genuine read/seek
+      benchmark; every executing path is runtime-gated on `DISKS_LIVE` so
+      `--shots`/tests stay inert and state only what *would* run. Destructive
+      Format is behind a type-the-device-name confirm gate.
+- [x] Honesty fix: the Format confirm body unconditionally claimed
+      "(Demo build — no changes are written to disk.)" — but the shipping live
+      binary sets `DISKS_LIVE` and really erases the device, so the reassurance
+      was false and dangerous there. Now the clause appears ONLY in the hermetic
+      demo build; the live confirm just warns the erase is permanent
+      (`format_confirm_body_is_honest_about_live_vs_demo`).
+- [ ] Follow-up (pre-existing, fleet-wide, not a defect): two taffy
+      `percent()` deprecation warnings (rust #154024) in the lib — swept when the
+      toolkit's taffy usage is normalised across apps.
 
 ## contacts
 - [x] Toasts auto-dismiss → fixed.
