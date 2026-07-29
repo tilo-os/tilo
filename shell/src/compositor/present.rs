@@ -335,6 +335,16 @@ mod tests {
         PresentPipe::spawn(p, Box::new(|| {}))
     }
 
+    // Note on declaration order in the gate-holding tests below: each
+    // spawns the pipe *before* taking the gate, so the guard drops first
+    // and the render thread is released before `shutdown` waits on it.
+    // That ordering is not what makes them correct —
+    // `PresentPipe::shutdown` is bounded, so the other order returns after
+    // the grace period with a detach warning rather than hanging. The
+    // ordering is here so these tests exercise the clean shutdown path
+    // instead of paying `SHUTDOWN_GRACE` on every teardown, which would be
+    // slow and would hide a regression in the fast path.
+
     fn wait_until(mut cond: impl FnMut() -> bool, what: &str) {
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
         while std::time::Instant::now() < deadline {
