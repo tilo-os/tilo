@@ -691,10 +691,28 @@ impl LogsApp {
 
         // Empty state.
         if self.filtered.is_empty() {
-            let msg = "No entries match the current filters.";
-            let sz = theme.tokens.typography.scale.base;
-            let (mw, _) = tr.measure(msg, sz, None);
-            text_at(tr, scene, t, msg, sz, theme.text_dim, reg.list_body.center().x - mw as f64 / 2.0, reg.list_body.center().y - 10.0, TextWeight::Regular, false);
+            let cx = reg.list_body.center().x;
+            let cy = reg.list_body.center().y;
+            if self.entries.is_empty() {
+                // Honest zero-state: no readable journal (never the sample).
+                let title = "No journal entries";
+                let subtitle = if self.allow_live {
+                    "The systemd journal is empty or not readable from this session."
+                } else {
+                    "Run where journald is available to view live system logs."
+                };
+                let tsz = theme.tokens.typography.scale.lg;
+                let (tw, _) = tr.measure(title, tsz, None);
+                text_at(tr, scene, t, title, tsz, c.text_primary, cx - tw as f64 / 2.0, cy - 24.0, TextWeight::Semibold, false);
+                let ssz = theme.tokens.typography.scale.sm;
+                let (sw, _) = tr.measure(subtitle, ssz, None);
+                text_at(tr, scene, t, subtitle, ssz, theme.text_dim, cx - sw as f64 / 2.0, cy + 2.0, TextWeight::Regular, false);
+            } else {
+                let msg = "No entries match the current filters.";
+                let sz = theme.tokens.typography.scale.base;
+                let (mw, _) = tr.measure(msg, sz, None);
+                text_at(tr, scene, t, msg, sz, theme.text_dim, cx - mw as f64 / 2.0, cy - 10.0, TextWeight::Regular, false);
+            }
             return;
         }
 
