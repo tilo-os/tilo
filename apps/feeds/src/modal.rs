@@ -115,6 +115,14 @@ impl ModalBody {
         self.input.as_ref().map(|i| i.value()).unwrap_or("")
     }
 
+    /// Seed the field text (used to stage a typed URL for a `--shots` capture).
+    pub fn set_value(&mut self, s: &str) {
+        if let Some(input) = &mut self.input {
+            input.set_text(s);
+            input.set_cursor_pos(s.len());
+        }
+    }
+
     /// Recompute the embedded field rect from the current body rect.
     fn place_field(&mut self) {
         if let Some(input) = &mut self.input {
