@@ -364,6 +364,58 @@ impl ShellDriver {
                 });
                 self.fb.host_mut().force_ws_settings_settled();
             }
+            "room-activity" => {
+                // Drive the room through the *production* mirrors first, so
+                // the pane has a history to show that the shell actually
+                // recorded. Nothing here seeds a `HistoryEntry`: these are the
+                // same calls the portal, the permission prompt, the drop
+                // handler and the settings modal make.
+                use shell::shell::state::{CapOverride, Scope, Subject, Verb};
+                let handle = self.chrome_handle();
+                let owner = {
+                    let st = handle.borrow();
+                    st.local_user_id.clone()
+                };
+                {
+                    let st = handle.borrow();
+                    let mut tree = st.tree_mut();
+                    tree.adopt_ownerless_workspaces(&owner);
+                    let ws_id = tree.active;
+                    tree.grant_in_workspace(
+                        ws_id,
+                        &owner,
+                        CapOverride::grant(
+                            Subject::app("Files"),
+                            Scope::FsPath("/var/workspace/design".to_string()),
+                            Verb::Write,
+                        ),
+                    );
+                    let temp = tree.grant_in_workspace(
+                        ws_id,
+                        &owner,
+                        CapOverride::grant(
+                            Subject::app("Terminal"),
+                            Scope::Device("camera".to_string()),
+                            Verb::Read,
+                        ),
+                    );
+                    tree.doc_append_tab_to_first_group_of_active_workspace(
+                        90_001,
+                        "Release notes".to_string(),
+                        b"{}".to_vec(),
+                    );
+                    tree.commit_room_change();
+                    if let Some(cap_id) = temp {
+                        tree.revoke_in_workspace(ws_id, &owner, &cap_id);
+                    }
+                    if let Some(ws) = tree.active_workspace_mut() {
+                        ws.name = "Design review".to_string();
+                    }
+                    tree.seed_doc_from_cache();
+                }
+                self.with_chrome(|st| st.overlays.room_activity = true);
+                self.fb.host_mut().force_room_activity_settled();
+            }
             "ws-settings-permissions" => {
                 self.with_chrome(|st| {
                     st.overlays.ws_settings = true;
@@ -511,6 +563,7 @@ impl ShellDriver {
         "notifications",
         "notifications-one",
         "notifications-dnd",
+        "room-activity",
     ];
 
     /// Resolve a "named" UI target (button, pill, tab) to its on-screen
