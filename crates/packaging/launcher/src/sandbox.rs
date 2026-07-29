@@ -725,6 +725,7 @@ mod tests {
             sandbox: crate::manifest::Sandbox {
                 net: crate::manifest::Net {
                     mode: net_mode.to_string(),
+                    hosts: Vec::new(),
                 },
                 fs: crate::manifest::Fs {
                     read: vec!["/usr/share/fonts".to_string()],
@@ -1484,21 +1485,99 @@ mod tests {
 
         let caps = vec![CapOverride::grant(
             Subject::app("dev.qos.mail"),
-            Scope::NetHost("mail.example.com".to_string()),
+            Scope::NetHost("*".to_string()),
             Verb::Write,
         )];
         let granted = argv_with_caps("dev.qos.mail", &caps, 1_000);
         assert!(
             granted.iter().any(|a| a == "--share-net"),
-            "a network capability must share the namespace: {granted:?}"
+            "a grant for `*` is unrestricted access and shares the namespace: {granted:?}"
         );
-        // Honest about the gap: the host the user named reaches no
-        // filter. bwrap has no per-host vocabulary, so the argv cannot
-        // and does not mention it. See `CapabilityPlan::for_app`, which
-        // logs a warning whenever this happens.
+    }
+
+    /// This test used to assert the opposite, and the assertion was
+    /// correct at the time: a grant naming a host produced `--share-net`
+    /// and the host itself appeared nowhere, because bwrap has no
+    /// per-host vocabulary and nothing else was reading the name. It
+    /// read:
+    ///
+    /// ```text
+    /// assert!(!argv.iter().any(|a| a.contains("github.com")),
+    ///     "the recorded allowlist reaches no enforcement mechanism — it is absent from the \
+    ///      argv that builds the sandbox: {argv:?}");
+    /// ```
+    ///
+    /// Both halves of that are now false, and this asserts the
+    /// replacement: a named host does **not** share the namespace, and
+    /// it does reach a mechanism. The mechanism is deliberately still
+    /// not an argv string — a hostname in a bwrap argument would mean
+    /// nothing to bwrap. It is the gate socket, which is what the empty
+    /// namespace leaves as the app's only way out, so the assertion
+    /// here is about the shape of the sandbox and
+    /// `tests/netgate_egress.rs` is about the packets that shape
+    /// permits.
+    #[test]
+    fn a_grant_naming_a_host_no_longer_shares_the_whole_network() {
+        let caps = vec![CapOverride::grant(
+            Subject::app("dev.qos.mail"),
+            Scope::NetHost("github.com".to_string()),
+            Verb::Write,
+        )];
+        let argv = argv_with_caps("dev.qos.mail", &caps, 1_000);
+
         assert!(
-            !granted.iter().any(|a| a.contains("mail.example.com")),
-            "per-host filtering is NOT enforced — the named host reaches no mechanism: {granted:?}"
+            !argv.iter().any(|a| a == "--share-net"),
+            "a grant naming one host must NOT hand the app the host's whole network — that \
+             equivalence between `github.com` and `*` is the bug this closes: {argv:?}"
         );
+
+        // And the grant does reach a mechanism now: the decision that
+        // drives the gate says so, from the same manifest + capability
+        // pair that built the argv above.
+        let plan = CapabilityPlan::for_app_with(
+            "dev.qos.mail",
+            &caps,
+            Some(1_000),
+            |_| Vec::new(),
+        );
+        let decision = egress_decision(&mk_manifest("off"), &plan);
+        let policy = decision
+            .policy()
+            .unwrap_or_else(|| panic!("a named host must resolve to a filtered egress policy, got {decision:?}"));
+        assert!(policy.permits("github.com"));
+        assert!(
+            !policy.permits("evil.example.com"),
+            "the allowlist must exclude what it does not name: {policy:?}"
+        );
+    }
+
+    #[test]
+    fn the_gate_bind_is_writable_and_points_the_app_at_the_relay() {
+        let bind = NetGateBind {
+            host_socket: PathBuf::from("/run/user/1000/qos/net/7.sock"),
+            sandbox_socket: PathBuf::from(crate::netgate::SANDBOX_GATE_PATH),
+            port: crate::netgate::RELAY_PORT,
+        };
+        let mut argv = Vec::new();
+        push_net_gate(&mut argv, &bind);
+
+        assert!(
+            argv.windows(3).any(|w| w[0] == "--bind"
+                && w[1] == "/run/user/1000/qos/net/7.sock"
+                && w[2] == crate::netgate::SANDBOX_GATE_PATH),
+            "the gate socket must be bound read-write: connect(2) on a pathname socket is a \
+             write and a --ro-bind surfaces as EACCES: {argv:?}"
+        );
+        // socks5h, not socks5: the `h` is what sends the hostname to
+        // the gate instead of resolving it locally first, and the
+        // sandbox cannot resolve at all.
+        let expected = format!("socks5h://127.0.0.1:{}", crate::netgate::RELAY_PORT);
+        for var in ["ALL_PROXY", "all_proxy"] {
+            assert!(
+                argv.windows(3)
+                    .any(|w| w[0] == "--setenv" && w[1] == var && w[2] == expected),
+                "{var} must point at the relay as socks5h: {argv:?}"
+            );
+        }
     }
 }
