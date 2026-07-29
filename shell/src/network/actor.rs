@@ -300,11 +300,20 @@ impl Actor {
                         .gossipsub
                         .add_explicit_peer(&peer_id);
                 }
-                // Phase 6 Task 6.2 — kick a "give me everything" SyncReq
-                // out on every joined workspace so a returning peer
-                // catches up without waiting for the next local edit.
+                // Kick a roomless SyncReq out on every joined workspace
+                // so a returning peer starts a sync round without waiting
+                // for the next local edit.
+                //
+                // Roomless because the transport does not hold the tree
+                // and so cannot know which rooms anyone is in. It is not
+                // a request for everything: a replica answers a roomless
+                // request by naming its own rooms, never by exporting a
+                // document. See `WorkspaceTreeReplica::handle`.
                 if any_discovered {
-                    let msg = NeighbourMsg::SyncReq { since: vec![] };
+                    let msg = NeighbourMsg::SyncReq {
+                        since: vec![],
+                        room: String::new(),
+                    };
                     let bytes = match serde_json::to_vec(&msg) {
                         Ok(b) => b,
                         Err(_) => return,
@@ -464,6 +473,7 @@ mod tests {
         // 6. Publish a SyncReq from A.
         let payload = NeighbourMsg::SyncReq {
             since: vec![1, 2, 3],
+            room: "6b3f9a10-0000-4000-8000-00000000000a".to_string(),
         };
         cmd_a
             .send(NetCmd::Publish {
