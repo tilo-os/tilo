@@ -284,6 +284,25 @@ verified by an offscreen shot (header gone, functional controls intact) + tests:
       hook, so present returns false = wait-for-input rather than an autonomous
       1 Hz tick; correct per "not every vsync").
 - [x] Crate stays named `slides`.
+- [x] On-canvas text + speaker-notes editing adopt the shared `ui`
+      caret/selection core (`ui::text_selection`): shift+arrow extends,
+      ctrl+arrow is word-wise, Ctrl+A selects all, Ctrl+C/X/V use the shared
+      clipboard, Delete forward-deletes, typing/paste replace the selection —
+      all splicing the real CRDT (no per-app text buffer). Click-to-place caret,
+      double-click word-select and drag-select on the canvas text box; selection
+      highlight rendered. Undo/redo already handled by the toolkit. Tests assert
+      each on the real key path into the CRDT.
+- [x] Drag-to-delete: a red dashed "Drop to delete" zone pinned to the bottom of
+      the slide rail, live only while a thumbnail is dragged; dropping there
+      removes that slide from the CRDT (test drives on_press → drag → release).
+      Slide reorder + context menu (add/duplicate/move/delete) already via the
+      shared `PageSidebar`.
+- [x] Present mode is genuine borderless fullscreen via `ui::fullscreen`
+      (`FullscreenRequest::distinct(Largest)`); the App drives
+      `set_fullscreen(Borderless)` and drops present mode on a compositor-side
+      un-fullscreen. Verified in shots (present / presenter / notes / white-out).
+- [x] §7 visual pass on the editor, filmstrip and present surfaces (spacing,
+      typographic hierarchy, visible selection/active state, honest empty state).
 
 ## camera
 - [x] Killed the left desktop nav rail (Camera/Scan/Gallery/Settings + app
