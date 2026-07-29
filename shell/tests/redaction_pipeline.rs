@@ -49,6 +49,7 @@ use collab_types::{
     encode_compaction_payload, encode_redact_payload, generate_keypair, hash_op_prefix,
     hash_target_op, parse_redact_payload, sign_event, sign_op,
 };
+use collab_fixtures::{role_attestation, signed_op, signed_op_encrypted};
 use ed25519_dalek::SigningKey;
 use shell::shell::collab_broker;
 use ui::collaboration::{CollabEvent, CollabRequest};
@@ -141,78 +142,6 @@ fn wait_for_broker(socket: &PathBuf) -> UnixStream {
 
 // ---------- attestation / op factories ----------
 
-fn make_role_attestation(
-    issuer_sk: &SigningKey,
-    issuer_pk: Ed25519PublicKey,
-    subject: Ed25519PublicKey,
-    channel: ChannelId,
-    role: Role,
-) -> RoleAttestation {
-    let now = SystemTime::now();
-    let mut att = Attestation {
-        id: AttestationId::new(),
-        issued_by: issuer_pk,
-        subject,
-        claims: vec![],
-        valid_from: now - Duration::from_secs(365 * 24 * 3600),
-        valid_until: now + Duration::from_secs(10 * 365 * 24 * 3600),
-        signature: Signature::from_bytes([0u8; 64]),
-    };
-    let sb = att.signing_bytes().expect("att signing");
-    att.signature = sign_event(&sb, issuer_sk).expect("sign att");
-    RoleAttestation {
-        channel,
-        role,
-        attestation: att,
-    }
-}
-
-fn build_signed_op(
-    sk: &SigningKey,
-    pk: Ed25519PublicKey,
-    artifact: ArtifactId,
-    att_id: AttestationId,
-    op_class: OpClass,
-    payload: Vec<u8>,
-    seq: u64,
-) -> SignedOp {
-    let mut op = SignedOp::new_unsigned(
-        payload,
-        artifact,
-        pk,
-        att_id,
-        op_class,
-        SystemTime::now(),
-        seq,
-    );
-    sign_op(&mut op, sk).expect("sign");
-    op
-}
-
-fn build_signed_op_with_encryption(
-    sk: &SigningKey,
-    pk: Ed25519PublicKey,
-    artifact: ArtifactId,
-    att_id: AttestationId,
-    op_class: OpClass,
-    payload: Vec<u8>,
-    seq: u64,
-    encryption: EncryptionMetadata,
-) -> SignedOp {
-    let mut op = SignedOp::new_unsigned_with_encryption(
-        payload,
-        artifact,
-        pk,
-        att_id,
-        op_class,
-        SystemTime::now(),
-        seq,
-        encryption,
-    );
-    sign_op(&mut op, sk).expect("sign");
-    op
-}
-
 /// Build a channel state populated with `owner_pk` as the
 /// authorised-signers list, plus an Owner attestation for `owner_pk`
 /// and an Editor attestation for `editor_pk`. Returns (state,
@@ -224,9 +153,9 @@ fn channel_state_with(
     channel: ChannelId,
     artifact: ArtifactId,
 ) -> (ChannelState, AttestationId, AttestationId) {
-    let owner_ra = make_role_attestation(owner_sk, owner_pk, owner_pk, channel, Role::Owner);
+    let owner_ra = role_attestation(owner_sk, owner_pk, owner_pk, channel, Role::Owner);
     let owner_att_id = owner_ra.attestation.id;
-    let editor_ra = make_role_attestation(owner_sk, owner_pk, editor_pk, channel, Role::Editor);
+    let editor_ra = role_attestation(owner_sk, owner_pk, editor_pk, channel, Role::Editor);
     let editor_att_id = editor_ra.attestation.id;
 
     let mut state = ChannelState::default();
@@ -260,7 +189,7 @@ fn build_redact_op(
         redacted_at: SystemTime::now(),
     };
     let payload = encode_redact_payload(&req).expect("encode redact");
-    build_signed_op(
+    signed_op(
         owner_sk,
         owner_pk,
         artifact,
@@ -304,7 +233,7 @@ fn owner_can_redact_a_recent_op() {
 
     // Editor publishes one op carrying a secret payload.
     let secret_payload = b"PII: alice@example.com home address 123 Main St".to_vec();
-    let target_op = build_signed_op(
+    let target_op = signed_op(
         &editor_sk,
         editor_pk,
         artifact,
@@ -421,7 +350,7 @@ fn editor_redact_request_is_rejected() {
     wait_for_announced(&handle, 2);
 
     // Craft a target op (unused, but lets us build a well-formed Redact).
-    let target = build_signed_op(
+    let target = signed_op(
         &editor_sk,
         editor_pk,
         artifact,
@@ -441,7 +370,7 @@ fn editor_redact_request_is_rejected() {
         redacted_at: SystemTime::now(),
     };
     let payload = encode_redact_payload(&req).unwrap();
-    let bad_redact = build_signed_op(
+    let bad_redact = signed_op(
         &editor_sk,
         editor_pk,
         artifact,
@@ -514,7 +443,7 @@ fn redaction_persists_through_audit_log_across_compaction() {
     // Editor publishes 3 ops.
     let mut ops: Vec<SignedOp> = Vec::new();
     for seq in 1..=3_u64 {
-        let op = build_signed_op(
+        let op = signed_op(
             &editor_sk,
             editor_pk,
             artifact,
@@ -564,7 +493,7 @@ fn redaction_persists_through_audit_log_across_compaction() {
         prefix_hash: hash_op_prefix(&prefix).unwrap(),
     };
     let cp_bytes = encode_compaction_payload(&cp).unwrap();
-    let comp_op = build_signed_op(
+    let comp_op = signed_op(
         &owner_sk,
         owner_pk,
         artifact,
@@ -628,7 +557,7 @@ fn redacted_op_is_filtered_from_scrollback() {
     wait_for_announced(&handle, 3);
 
     let confidential = b"the password is hunter2".to_vec();
-    let target = build_signed_op(
+    let target = signed_op(
         &editor_sk,
         editor_pk,
         artifact,
@@ -733,7 +662,7 @@ fn late_arriving_op_with_already_redacted_id_is_dropped() {
     // Build an op (the redaction target). DO NOT push it through the
     // broker yet — we redact it first so we can simulate "late
     // arrival from a peer who never got the Redact".
-    let target = build_signed_op(
+    let target = signed_op(
         &editor_sk,
         editor_pk,
         artifact,
@@ -844,7 +773,7 @@ fn redaction_of_mls_encrypted_op_succeeds() {
     // the ciphertext with arbitrary bytes — the broker treats
     // ciphertext opaquely; it never decrypts inside validation).
     let ciphertext = b"\x00\x01\xfe\xff...mls-ciphertext-blob".to_vec();
-    let target = build_signed_op_with_encryption(
+    let target = signed_op_encrypted(
         &editor_sk,
         editor_pk,
         artifact,
@@ -921,7 +850,7 @@ fn recursive_redaction_is_rejected() {
     wait_for_announced(&handle, 3);
 
     // 1) Editor publishes a Splice op.
-    let target = build_signed_op(
+    let target = signed_op(
         &editor_sk,
         editor_pk,
         artifact,
@@ -1038,7 +967,7 @@ fn audit_entry_carries_reason_and_redactor_pk() {
     }
     wait_for_announced(&handle, 2);
 
-    let target = build_signed_op(
+    let target = signed_op(
         &editor_sk,
         editor_pk,
         artifact,

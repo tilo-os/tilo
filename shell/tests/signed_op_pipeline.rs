@@ -23,6 +23,7 @@ use collab_types::{
     Ed25519PublicKey, OpClass, Role, RoleAttestation, Signature, SignedOp, ValidationError,
     generate_keypair, sign_event, sign_op,
 };
+use collab_fixtures::{role_attestation, signed_op};
 use ed25519_dalek::SigningKey;
 use shell::shell::collab_broker;
 use ui::collaboration::{CollabEvent, CollabRequest};
@@ -86,55 +87,6 @@ fn wait_for_announced(handle: &collab_broker::BrokerHandle, n: usize) {
     );
 }
 
-fn make_role_attestation(
-    issuer_sk: &SigningKey,
-    issuer_pk: Ed25519PublicKey,
-    subject: Ed25519PublicKey,
-    channel: ChannelId,
-    role: Role,
-) -> RoleAttestation {
-    // Validity window: from a year ago to ten years from now. The op
-    // signing timestamp is `SystemTime::now()`, so the window must
-    // straddle it.
-    let now = SystemTime::now();
-    let mut att = Attestation {
-        id: AttestationId::new(),
-        issued_by: issuer_pk,
-        subject,
-        claims: vec![],
-        valid_from: now - Duration::from_secs(365 * 24 * 3600),
-        valid_until: now + Duration::from_secs(10 * 365 * 24 * 3600),
-        signature: Signature::from_bytes([0u8; 64]),
-    };
-    let sb = att.signing_bytes().expect("attestation signing_bytes");
-    att.signature = sign_event(&sb, issuer_sk).expect("sign attestation");
-    RoleAttestation {
-        channel,
-        role,
-        attestation: att,
-    }
-}
-
-fn build_signed_op(
-    author_sk: &SigningKey,
-    author_pk: Ed25519PublicKey,
-    artifact: ArtifactId,
-    attestation_id: AttestationId,
-    seq: u64,
-) -> SignedOp {
-    let mut op = SignedOp::new_unsigned(
-        b"hello from a valid peer".to_vec(),
-        artifact,
-        author_pk,
-        attestation_id,
-        OpClass::Splice,
-        SystemTime::now(),
-        seq,
-    );
-    sign_op(&mut op, author_sk).expect("sign op");
-    op
-}
-
 fn wait_for_broker(socket: &PathBuf) -> UnixStream {
     let deadline = Instant::now() + Duration::from_secs(2);
     loop {
@@ -162,7 +114,7 @@ fn valid_signed_op_reaches_other_peers_invalid_one_is_dropped() {
     let channel = ChannelId::new();
     let artifact = ArtifactId::new();
 
-    let editor_ra = make_role_attestation(&owner_sk, owner_pk, editor_pk, channel, Role::Editor);
+    let editor_ra = role_attestation(&owner_sk, owner_pk, editor_pk, channel, Role::Editor);
     let editor_att_id = editor_ra.attestation.id;
     let outsider_att_id = AttestationId::new(); // not minted by the channel owner
 
@@ -190,7 +142,7 @@ fn valid_signed_op_reaches_other_peers_invalid_one_is_dropped() {
     wait_for_announced(&handle, 3);
 
     // Editor publishes a valid signed op.
-    let valid_op = build_signed_op(&editor_sk, editor_pk, artifact, editor_att_id, 1);
+    let valid_op = signed_op(&editor_sk, editor_pk, artifact, editor_att_id, OpClass::Splice, b"hello from a valid peer".to_vec(), 1);
     write_frame(
         &mut editor,
         &CollabRequest::SignedSyncIncremental {
@@ -221,7 +173,7 @@ fn valid_signed_op_reaches_other_peers_invalid_one_is_dropped() {
 
     // Outsider tries to publish an op with a forged attestation id
     // that is NOT in the channel's role table.
-    let invalid_op = build_signed_op(&outsider_sk, outsider_pk, artifact, outsider_att_id, 1);
+    let invalid_op = signed_op(&outsider_sk, outsider_pk, artifact, outsider_att_id, OpClass::Splice, b"hello from a valid peer".to_vec(), 1);
     write_frame(
         &mut outsider,
         &CollabRequest::SignedSyncIncremental {
@@ -276,7 +228,7 @@ fn replay_of_same_signed_op_is_dropped() {
     let channel = ChannelId::new();
     let artifact = ArtifactId::new();
 
-    let editor_ra = make_role_attestation(&owner_sk, owner_pk, editor_pk, channel, Role::Editor);
+    let editor_ra = role_attestation(&owner_sk, owner_pk, editor_pk, channel, Role::Editor);
     let editor_att_id = editor_ra.attestation.id;
 
     let mut state = ChannelState::default();
@@ -299,7 +251,7 @@ fn replay_of_same_signed_op_is_dropped() {
     }
     wait_for_announced(&handle, 2);
 
-    let op = build_signed_op(&editor_sk, editor_pk, artifact, editor_att_id, 1);
+    let op = signed_op(&editor_sk, editor_pk, artifact, editor_att_id, OpClass::Splice, b"hello from a valid peer".to_vec(), 1);
 
     // First send — valid, observer sees it.
     write_frame(
