@@ -465,13 +465,10 @@ impl collab_service::Server for CapnpCollabService {
                 .to_str()
                 .map_err(|e| capnp::Error::failed(format!("channelId not utf8: {e}")))?
                 .to_owned();
-            // `identity` bytes are captured on the handle so tests /
-            // future auditing can inspect them; the broker doesn't
-            // dispatch on identity today (validation happens per-op
-            // against `authorised_signers`). Retained rather than
-            // dropped so a future extension can lift them into the
-            // per-channel context snapshot.
-            let identity = reader.get_identity()?.to_vec();
+            // The broker doesn't dispatch on identity today (validation happens per-op
+            // against `authorised_signers`), so the bytes are read only
+            // to enforce that the field is present and decodable.
+            let _identity = reader.get_identity()?;
 
             state.ensure_channel(&channel_id);
 
@@ -479,7 +476,6 @@ impl collab_service::Server for CapnpCollabService {
                 state: state.clone(),
                 channel_id: channel_id.clone(),
                 peer_id,
-                identity,
             };
             let client: channel_handle::Client = capnp_rpc::new_client(handle);
             results.get().set_handle(client);
@@ -496,13 +492,6 @@ struct CapnpChannelHandle {
     state: Arc<CapnpBrokerState>,
     channel_id: String,
     peer_id: u64,
-    /// The identity bytes the caller presented on join. Currently
-    /// only retained for observability; role enforcement runs against
-    /// `SignedOp.author` on the fanout hot path (same as the legacy
-    /// broker). Marked `allow(dead_code)` while the field waits for
-    /// its consumer.
-    #[allow(dead_code)]
-    identity: Vec<u8>,
 }
 
 impl CapnpChannelHandle {

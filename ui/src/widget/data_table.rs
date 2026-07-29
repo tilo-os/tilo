@@ -82,7 +82,6 @@ pub struct ColumnDef<Row> {
     /// every visible cell in the `draw` pass; set via [`ColumnDef::with_render`].
     pub render_cell: CellRender<Row>,
     /// Width in px of the right-edge resize hit area. Used by T5.
-    #[allow(dead_code)]
     pub(crate) resize_handle_px: f32,
 }
 
