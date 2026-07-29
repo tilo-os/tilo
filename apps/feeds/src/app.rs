@@ -12,7 +12,9 @@
 //! is *local* to this peer (which article is selected, scroll offsets, the
 //! active filter, the open modal) is kept in widget fields.
 
+use std::cell::Cell;
 use std::collections::HashMap;
+use std::rc::Rc;
 use std::time::Instant;
 
 use automerge::{AutoCommit, ObjId};
@@ -30,9 +32,10 @@ use ui::richtext::{FontFamily, RichSpan, RichTextLayout, TextAlign};
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::context_menu::{ContextMenu, MenuItem};
-use ui::widget::{FlapState, SplitLayout, Widget};
+use ui::widget::{FlapState, ModalDialog, SplitLayout, Widget};
 
 use crate::doc::FeedsDoc;
+use crate::modal::{ModalBody, ModalIntent};
 use crate::fetch::{FetchRequest, FetchResult, FetchWorker};
 use crate::icons;
 use crate::model::{
@@ -138,10 +141,95 @@ struct ListRow {
     id: Id,
 }
 
-/// A transient modal overlay.
-enum Modal {
-    AddSubscription { input: String },
-    RenameFeed { feed_id: Id, input: String },
+/// A live dialog: the shared [`ModalDialog`] plus the intent that says which
+/// real mutation its primary action runs. The dialog owns the backdrop, box,
+/// title, footer buttons, Esc + backdrop dismissal, and the focus trap; the
+/// [`ModalBody`] inside it hosts a real [`ui::widget::TextInput`] (or a
+/// message). The `submit` / `cancel` cells are flipped by the dialog's action
+/// callbacks and drained by the host each event.
+struct FeedsModal {
+    intent: ModalIntent,
+    dialog: ModalDialog<ModalBody>,
+    submit: Rc<Cell<bool>>,
+    cancel: Rc<Cell<bool>>,
+}
+
+impl FeedsModal {
+    fn new(
+        intent: ModalIntent,
+        title: &str,
+        body: ModalBody,
+        primary_label: &str,
+        max_w: f64,
+        max_h: f64,
+    ) -> Self {
+        let submit = Rc::new(Cell::new(false));
+        let cancel = Rc::new(Cell::new(false));
+        let dialog = ModalDialog::new(title, body)
+            .open(true)
+            .with_max_size(max_w, max_h)
+            .primary_action(primary_label, {
+                let s = submit.clone();
+                move || s.set(true)
+            })
+            .secondary_action("Cancel", {
+                let c = cancel.clone();
+                move || c.set(true)
+            })
+            .on_dismiss({
+                let c = cancel.clone();
+                move || c.set(true)
+            });
+        Self { intent, dialog, submit, cancel }
+    }
+
+    fn add_subscription() -> Self {
+        let body = ModalBody::input(
+            "Paste a feed or site URL — RSS, Atom, and gemini:// all work.",
+            "Feed URL",
+            "",
+            "https://example.com/feed.xml",
+        );
+        Self::new(
+            ModalIntent::AddSubscription,
+            "Add subscription",
+            body,
+            "Add",
+            520.0,
+            248.0,
+        )
+    }
+
+    fn rename(feed_id: Id, title: &str) -> Self {
+        let body = ModalBody::input(
+            "Give this feed a name that makes sense to you.",
+            "Feed name",
+            title,
+            "Feed name",
+        );
+        Self::new(
+            ModalIntent::RenameFeed { feed_id },
+            "Rename feed",
+            body,
+            "Save",
+            520.0,
+            236.0,
+        )
+    }
+
+    fn unsubscribe(feed_id: Id, title: &str) -> Self {
+        let body = ModalBody::message(&format!(
+            "Unsubscribe from \u{201c}{title}\u{201d}? Its articles will be removed from this device.",
+        ));
+        Self::new(
+            ModalIntent::Unsubscribe { feed_id },
+            "Unsubscribe",
+            body,
+            "Unsubscribe",
+            460.0,
+            210.0,
+        )
+    }
 }
 
 /// Live progress for an in-flight (or just-finished) "Refresh all". Shown as a
@@ -225,7 +313,7 @@ pub struct FeedsApp {
     reader_open_rect: Option<Rect>,
 
     last_mouse: Point,
-    modal: Option<Modal>,
+    modal: Option<FeedsModal>,
     toast: Option<(String, Instant)>,
 
     // --- OPML import (XDG portal) ---------------------------------------
@@ -884,9 +972,132 @@ impl FeedsApp {
                     .feed(feed_id)
                     .map(|f| f.title.clone())
                     .unwrap_or_default();
-                self.modal = Some(Modal::RenameFeed { feed_id, input: title });
+                self.modal = Some(FeedsModal::rename(feed_id, &title));
             }
-            FeedMenuAction::Unsubscribe => self.unsubscribe_feed(feed_id, doc),
+            // Unsubscribe is destructive, so confirm it through the shared modal
+            // rather than removing the feed on the spot.
+            FeedMenuAction::Unsubscribe => self.open_unsubscribe_confirm(feed_id),
+        }
+    }
+
+    /// Open the "Add subscription" dialog (real modal + real URL field).
+    fn open_add_subscription(&mut self) {
+        self.modal = Some(FeedsModal::add_subscription());
+    }
+
+    /// Open the unsubscribe confirmation for `feed_id`.
+    fn open_unsubscribe_confirm(&mut self, feed_id: Id) {
+        let title = self
+            .store
+            .feed(feed_id)
+            .map(|f| f.title.clone())
+            .unwrap_or_default();
+        self.modal = Some(FeedsModal::unsubscribe(feed_id, &title));
+    }
+
+    // --- modal lifecycle (drive the shared ModalDialog) ------------------
+
+    /// Lay the open dialog out against the widget's own rect so its box,
+    /// footer buttons, and embedded field geometry are current. Runs each
+    /// frame from `apply_layout`. No-op when no modal is open.
+    fn layout_modal(&mut self) {
+        if self.rect.width() <= 0.0 || self.rect.height() <= 0.0 {
+            return;
+        }
+        let Some(m) = self.modal.as_mut() else { return };
+        let theme = Theme::dark();
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let node = m.dialog.build_layout(&mut taffy, &theme, &mut node_map);
+        let root = taffy
+            .new_with_children(
+                Style {
+                    size: Size {
+                        width: Dimension::length(self.rect.width() as f32),
+                        height: Dimension::length(self.rect.height() as f32),
+                    },
+                    ..Default::default()
+                },
+                &[node],
+            )
+            .unwrap();
+        let _ = taffy.compute_layout(
+            root,
+            Size {
+                width: taffy::AvailableSpace::Definite(self.rect.width() as f32),
+                height: taffy::AvailableSpace::Definite(self.rect.height() as f32),
+            },
+        );
+        m.dialog
+            .apply_layout(&taffy, node, Point::new(self.rect.x0, self.rect.y0));
+    }
+
+    /// Route an event to the open dialog and act on the flags its action
+    /// callbacks set. The dialog handles Esc, backdrop click, button clicks,
+    /// typing, selection, and clipboard itself; Enter here is a submit
+    /// convenience (the Add/Save button remains the real affordance).
+    fn handle_modal_event(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: &winit::event::Modifiers,
+        state: &mut AutoCommit,
+        path: &ObjId,
+        handled: &mut bool,
+    ) {
+        if let WindowEvent::KeyboardInput { event: ke, .. } = event {
+            if ke.state == ElementState::Pressed
+                && matches!(ke.logical_key, Key::Named(NamedKey::Enter))
+            {
+                self.submit_modal(state);
+                *handled = true;
+                return;
+            }
+        }
+        let (submit, cancel) = {
+            let Some(m) = self.modal.as_mut() else { return };
+            // The dialog ignores the node/taffy it's handed (it drives its own
+            // retained content tree), so a throwaway leaf is fine.
+            let mut taffy: TaffyTree<()> = TaffyTree::new();
+            let node = taffy.new_leaf(Style::default()).unwrap();
+            let mut focus_target = None;
+            m.dialog.handle_event(
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                &mut focus_target,
+                node,
+                &taffy,
+            );
+            (m.submit.replace(false), m.cancel.replace(false))
+        };
+        if submit {
+            self.submit_modal(state);
+        } else if cancel {
+            self.modal = None;
+        }
+        *handled = true;
+    }
+
+    /// Apply the open dialog's primary action against the real store +
+    /// document, then close it. An input dialog with an empty field stays open
+    /// (nothing to submit yet).
+    fn submit_modal(&mut self, doc: &mut AutoCommit) {
+        let (intent, value) = match self.modal.as_ref() {
+            Some(m) => (m.intent, m.dialog.content().value().trim().to_string()),
+            None => return,
+        };
+        if intent.requires_input() && value.is_empty() {
+            return;
+        }
+        self.modal = None;
+        match intent {
+            ModalIntent::AddSubscription => self.subscribe(value),
+            ModalIntent::RenameFeed { feed_id } => self.rename_feed(feed_id, value, doc),
+            ModalIntent::Unsubscribe { feed_id } => self.unsubscribe_feed(feed_id, doc),
         }
     }
 
@@ -1461,32 +1672,11 @@ impl FeedsApp {
             }
         }
 
-        match &self.modal {
-            Some(Modal::AddSubscription { input }) => draw_input_modal(
-                scene,
-                t,
-                tr,
-                theme,
-                &self.rect,
-                "Add subscription",
-                "Paste a feed or site URL (RSS, Atom, or gemini://).",
-                "https://",
-                input,
-                "Enter to subscribe · Esc to cancel",
-            ),
-            Some(Modal::RenameFeed { input, .. }) => draw_input_modal(
-                scene,
-                t,
-                tr,
-                theme,
-                &self.rect,
-                "Rename feed",
-                "Enter a new name for this feed.",
-                "Feed name",
-                input,
-                "Enter to save · Esc to cancel",
-            ),
-            None => {}
+        // Dialog on top of everything — the shared ModalDialog paints its own
+        // backdrop, box, title, footer buttons, and the embedded field.
+        if let Some(m) = self.modal.as_mut() {
+            let presence = PresenceCtx::empty();
+            m.dialog.draw(scene, t, tr, theme, &presence);
         }
     }
 
@@ -1736,9 +1926,7 @@ impl FeedsApp {
         for b in self.toolbar_buttons.clone() {
             if b.rect.contains(p) {
                 match b.action {
-                    ToolbarAction::AddSubscription => {
-                        self.modal = Some(Modal::AddSubscription { input: String::new() });
-                    }
+                    ToolbarAction::AddSubscription => self.open_add_subscription(),
                     ToolbarAction::Refresh => self.refresh_all(),
                     ToolbarAction::MarkAllRead => self.mark_all_read(doc),
                     ToolbarAction::ImportOpml => self.request_import(),
@@ -2662,81 +2850,6 @@ fn draw_toast(
     tr.draw_text(scene, msg, 13.0, c.text_primary, t * Affine::translate((x + 18.0, y + 11.0)), None);
 }
 
-/// A centred single-input modal card over a scrim. Shared by the
-/// "Add subscription" and "Rename feed" flows — only the title, helper line,
-/// placeholder and footer hint differ.
-#[allow(clippy::too_many_arguments)]
-fn draw_input_modal(
-    scene: &mut Scene,
-    t: Affine,
-    tr: &mut TextRenderer,
-    theme: &Theme,
-    rect: &Rect,
-    title: &str,
-    helper: &str,
-    placeholder: &str,
-    input: &str,
-    footer: &str,
-) {
-    let c = &theme.tokens.colors;
-    // Scrim.
-    scene.fill(Fill::NonZero, t, c.surfaces.overlay, None, rect);
-
-    let w = 520.0;
-    let h = 190.0;
-    let cx = (rect.x0 + rect.x1) / 2.0;
-    let x = cx - w / 2.0;
-    let y = rect.y0 + 150.0;
-    let card = Rect::new(x, y, x + w, y + h);
-    scene.fill(Fill::NonZero, t, c.surfaces.raised, None, &RoundedRect::from_rect(card, 14.0));
-    scene.stroke(&Stroke::new(1.0), t, alpha(c.border_standard, 180), None, &RoundedRect::from_rect(card, 14.0));
-
-    tr.draw_text_weighted(
-        scene,
-        title,
-        18.0,
-        c.text_primary,
-        t * Affine::translate((x + 24.0, y + 20.0)),
-        None,
-        TextWeight::Bold,
-    );
-    tr.draw_text(
-        scene,
-        helper,
-        13.0,
-        c.text_dim,
-        t * Affine::translate((x + 24.0, y + 48.0)),
-        None,
-    );
-
-    // Input field.
-    let field = Rect::new(x + 24.0, y + 78.0, x + w - 24.0, y + 78.0 + 40.0);
-    scene.fill(Fill::NonZero, t, c.surfaces.base, None, &RoundedRect::from_rect(field, 8.0));
-    scene.stroke(&Stroke::new(1.5), t, c.border_focus, None, &RoundedRect::from_rect(field, 8.0));
-    let shown = if input.is_empty() {
-        placeholder.to_string()
-    } else {
-        input.to_string()
-    };
-    let color = if input.is_empty() { alpha(c.text_dim, 160) } else { c.text_primary };
-    tr.draw_text(scene, &shown, 14.0, color, t * Affine::translate((field.x0 + 12.0, field.y0 + 11.0)), None);
-    // Caret.
-    let cw = measure_w(tr, &shown, 14.0);
-    if !input.is_empty() {
-        vline(scene, t, field.x0 + 12.0 + cw + 1.0, field.y0 + 9.0, field.y1 - 9.0, c.accent[5]);
-    }
-
-    // Hint.
-    tr.draw_text(
-        scene,
-        footer,
-        12.0,
-        c.text_dim,
-        t * Affine::translate((x + 24.0, y + h - 26.0)),
-        None,
-    );
-}
-
 // --- text helpers -----------------------------------------------------
 
 fn measure_w(tr: &mut TextRenderer, s: &str, size: f32) -> f64 {
@@ -2899,6 +3012,9 @@ impl Widget for FeedsApp {
             self.settled_once = true;
         }
         self.recompute_geometry();
+        // With the widget rect known, lay the open dialog out over it so its
+        // box + footer buttons + embedded field are current before draw/events.
+        self.layout_modal();
     }
 
     fn draw(
@@ -2928,9 +3044,9 @@ impl Widget for FeedsApp {
         &mut self,
         event: &WindowEvent,
         scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
+        modifiers: &winit::event::Modifiers,
         state: &mut AutoCommit,
-        _path: &ObjId,
+        path: &ObjId,
         handled: &mut bool,
         _focus_target: &mut Option<NodeId>,
         _node_id: NodeId,
@@ -2939,6 +3055,15 @@ impl Widget for FeedsApp {
         // Persist anything the live drain queued since the last doc-holding
         // pass (keeps the CRDT current without waiting for `sync`).
         self.flush_doc_writes(state);
+        // Track the pointer everywhere so it's current when a modal closes.
+        if let WindowEvent::CursorMoved { position, .. } = event {
+            self.last_mouse = Point::new(position.x / scale_factor, position.y / scale_factor);
+        }
+        // An open dialog captures all input while it's up.
+        if self.modal.is_some() {
+            self.handle_modal_event(event, scale_factor, modifiers, state, path, handled);
+            return;
+        }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 self.last_mouse = Point::new(position.x / scale_factor, position.y / scale_factor);
@@ -3032,41 +3157,6 @@ impl FeedsApp {
         state: &mut AutoCommit,
         handled: &mut bool,
     ) {
-        // Modal: capture text entry (shared by Add-subscription + Rename).
-        if self.modal.is_some() {
-            let mut cancel = false;
-            let mut submit = false;
-            match &mut self.modal {
-                Some(Modal::AddSubscription { input })
-                | Some(Modal::RenameFeed { input, .. }) => match &key_event.logical_key {
-                    Key::Named(NamedKey::Escape) => cancel = true,
-                    Key::Named(NamedKey::Enter) => submit = true,
-                    Key::Named(NamedKey::Backspace) => {
-                        input.pop();
-                    }
-                    Key::Named(NamedKey::Space) => input.push(' '),
-                    Key::Character(s) => input.push_str(s.as_str()),
-                    _ => {}
-                },
-                None => {}
-            }
-            if cancel {
-                self.modal = None;
-            } else if submit {
-                // Take the modal out first so the follow-up mutation is free of
-                // the `&mut self.modal` borrow.
-                match self.modal.take() {
-                    Some(Modal::AddSubscription { input }) => self.subscribe(input),
-                    Some(Modal::RenameFeed { feed_id, input }) => {
-                        self.rename_feed(feed_id, input, state)
-                    }
-                    None => {}
-                }
-            }
-            *handled = true;
-            return;
-        }
-
         // Esc closes an open feed context menu before anything else.
         if matches!(&key_event.logical_key, Key::Named(NamedKey::Escape)) && self.feed_menu.is_open()
         {
@@ -3131,7 +3221,7 @@ impl FeedsApp {
                         *handled = true;
                     }
                     "n" => {
-                        self.modal = Some(Modal::AddSubscription { input: String::new() });
+                        self.open_add_subscription();
                         *handled = true;
                     }
                     "e" => {
@@ -3856,6 +3946,13 @@ mod tests {
             button: MouseButton::Right,
         }
     }
+    fn left_press() -> WindowEvent {
+        WindowEvent::MouseInput {
+            device_id: synth_device(),
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+        }
+    }
     /// Drive the app's real `handle_event` dispatch (same path the winit loop
     /// uses), returning whether the event was consumed.
     fn dispatch(a: &mut FeedsApp, doc: &mut AutoCommit, event: &WindowEvent) -> bool {
@@ -4045,11 +4142,27 @@ mod tests {
             .count();
         assert!(had_articles > 0, "the target feed has articles to remove");
 
-        // Click the Unsubscribe row (index 2) via the real click path.
+        // Click the Unsubscribe row (index 2) via the real click path — this
+        // now opens a confirmation dialog rather than removing on the spot.
         let p = menu_point_for(&a, 2);
         assert!(a.click(p, &mut doc), "unsubscribe click is consumed");
-
         assert!(!a.feed_menu.is_open(), "the menu closes after the action");
+
+        let m = a.modal.as_ref().expect("unsubscribe opens a confirmation dialog");
+        assert_eq!(m.intent, ModalIntent::Unsubscribe { feed_id: id });
+        assert!(
+            a.store.feed(id).is_some(),
+            "the feed is NOT removed until the confirmation is accepted"
+        );
+
+        // Confirm via the dialog's real primary ("Unsubscribe") button.
+        lay_out(&mut a, 1280.0, 800.0);
+        a.layout_modal();
+        let primary = a.modal.as_ref().unwrap().dialog.primary_rect().center();
+        assert!(dispatch(&mut a, &mut doc, &cursor_at(primary)));
+        assert!(dispatch(&mut a, &mut doc, &left_press()), "confirm click is consumed");
+
+        assert!(a.modal.is_none(), "confirming closes the dialog");
         assert!(a.store.feed(id).is_none(), "the feed is removed from the store");
         assert!(
             !a.store.articles.iter().any(|x| x.feed_id == id),
@@ -4099,16 +4212,16 @@ mod tests {
         let old_title = a.store.feed(id).unwrap().title.clone();
 
         // Click the Rename row (index 1) — opens the rename modal prefilled with
-        // the current title.
+        // the current title in a real TextInput.
         let p = menu_point_for(&a, 1);
         assert!(a.click(p, &mut doc));
-        match &a.modal {
-            Some(Modal::RenameFeed { feed_id, input }) => {
-                assert_eq!(*feed_id, id);
-                assert_eq!(input, &old_title, "the field is prefilled with the title");
-            }
-            _ => panic!("rename opens the rename modal"),
-        }
+        let m = a.modal.as_ref().expect("rename opens the rename modal");
+        assert_eq!(m.intent, ModalIntent::RenameFeed { feed_id: id });
+        assert_eq!(
+            m.dialog.content().value(),
+            old_title,
+            "the field is prefilled with the current title"
+        );
 
         // Commit a new name through the production mutation and assert it lands
         // in both the store and the document.
