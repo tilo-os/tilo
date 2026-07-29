@@ -33,8 +33,24 @@ webview-wpe = ["dep:ash"]
 # `media` feature turns on `ui/mpris`). `zbus` is pinned to 4.4 to match the
 # copy `apps/music` + `apps/chat` already resolve, so no second zbus lands.
 mpris = ["dep:zbus", "zbus/tokio"]
+# Host-native file choosing through the XDG Desktop Portal. Off by
+# default so apps that never open a chooser need no D-Bus; the pure
+# URI->path mapping (the file-access rule) compiles either way.
+portal = ["dep:ashpd"]
 
 [dependencies]
+# Crash-safe file replacement (temp + fsync + rename + dir fsync).
+atomic-file = { path = "../crates/system/atomic-file" }
+# XDG Desktop Portal client for `portal` (feature `portal`).
+ashpd = { workspace = true, optional = true }
+# Parses the portal's returned file URIs. Non-optional:
+# `portal::to_local_path` is the file-access rule and must be
+# testable in every build configuration.
+url.workspace = true
+# The two halves of `uri`: RFC 3986 percent-decoding and the
+# x-www-form-urlencoded dialect that also reads `+` as a space.
+percent-encoding = "2"
+form_urlencoded = "1"
 qos-startup-metrics = { path = "../crates/system/qos-startup-metrics" }
 # Filter-list compiler for the WebView's built-in ad blocking (feature
 # `webview-adblock`). The `content-blocking` feature provides the

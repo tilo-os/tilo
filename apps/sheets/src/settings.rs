@@ -44,15 +44,9 @@ use std::path::PathBuf;
 
 use crate::model::{Currency, DateStyle, TimeStyle};
 
-/// Where the shared per-user settings live. Honors `XDG_CONFIG_HOME` and
-/// falls back to `~/.config`. Returns `None` only if neither the env var
-/// nor a home directory can be determined.
+/// Where the shared per-user settings live.
 pub fn settings_path() -> Option<PathBuf> {
-    let base = std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .filter(|p| !p.as_os_str().is_empty())
-        .or_else(|| dirs::home_dir().map(|h| h.join(".config")))?;
-    Some(base.join("qos").join("settings.json"))
+    settings_store::settings_path()
 }
 
 /// Measurement system. Sheets doesn't use this directly, but it is part of

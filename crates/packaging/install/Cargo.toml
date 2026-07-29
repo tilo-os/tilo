@@ -13,6 +13,8 @@ name = "install"
 path = "src/lib.rs"
 
 [dependencies]
+# Crash-safe file replacement (temp + fsync + rename + dir fsync).
+atomic-file = { path = "../../../crates/system/atomic-file" }
 pkg = { path = "../pkg" }
 runtime-bundle = { path = "../runtime-bundle" }
 clap.workspace = true

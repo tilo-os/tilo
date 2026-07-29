@@ -12,7 +12,9 @@ name = "contacts"
 path = "src/main.rs"
 
 [dependencies]
-ui = { path = "../../ui" }
+# Crash-safe file replacement (temp + fsync + rename + dir fsync).
+atomic-file = { path = "../../crates/system/atomic-file" }
+ui = { path = "../../ui", features = ["portal"] }
 automerge.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -33,9 +35,6 @@ anyhow.workspace = true
 # call runs off the UI thread on its own small Tokio runtime and the chosen
 # paths come back over a channel (see `portal`). All three are already
 # resolved in the shared workspace lockfile, so this adds no registry fetch.
-ashpd.workspace = true
-tokio = { workspace = true, features = ["rt", "rt-multi-thread", "net", "time"] }
-url.workspace = true
 
 [dev-dependencies]
 # Serialises the tests that construct scratch files / drive the portal

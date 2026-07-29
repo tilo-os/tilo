@@ -12,6 +12,8 @@ name = "notes"
 path = "src/main.rs"
 
 [dependencies]
+# Crash-safe file replacement (temp + fsync + rename + dir fsync).
+atomic-file = { path = "../../crates/system/atomic-file" }
 ui = { path = "../../ui" }
 automerge.workspace = true
 serde.workspace = true

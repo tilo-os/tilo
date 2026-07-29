@@ -118,7 +118,10 @@ pub fn read_page_body(root: &Path, id: PageId) -> io::Result<String> {
 /// directory if it doesn't exist yet.
 pub fn write_page_body(root: &Path, id: PageId, body: &str) -> io::Result<()> {
     ensure_layout(root)?;
-    std::fs::write(page_file_path(root, id), body)
+    // These are the user's real markdown files. A plain write truncates in
+    // place, so a crash between the truncate and the write loses the note
+    // outright; replacing the file leaves the previous text readable.
+    atomic_file::write(&page_file_path(root, id), body.as_bytes())
 }
 
 /// Delete the page file for `id`. Missing-file is success (the caller
@@ -193,10 +196,7 @@ pub fn load_workspace(root: &Path) -> Result<Option<Workspace>, String> {
 pub fn save_workspace(root: &Path, workspace: &Workspace) -> io::Result<()> {
     ensure_layout(root)?;
     let bytes = encode_workspace(workspace);
-    let dest = workspace_file_path(root);
-    let tmp = dest.with_extension("automerge.tmp");
-    std::fs::write(&tmp, &bytes)?;
-    std::fs::rename(&tmp, &dest)?;
+    atomic_file::write(&workspace_file_path(root), &bytes)?;
     Ok(())
 }
 

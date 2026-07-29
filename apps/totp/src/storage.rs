@@ -169,7 +169,7 @@ fn save_at(dir: &Path, vault: &Vault) {
         tracing::warn!("authenticator: vault encryption failed");
         return;
     };
-    if let Err(e) = atomic_write(&dir.join("vault.enc"), &blob) {
+    if let Err(e) = atomic_file::write(&dir.join("vault.enc"), &blob) {
         tracing::warn!(error = %e, "authenticator: vault write failed");
     }
 }
@@ -269,25 +269,10 @@ fn open(key: &[u8; KEY_LEN], blob: &[u8]) -> Option<Zeroizing<Vec<u8>>> {
         .map(Zeroizing::new)
 }
 
-/// Write via a temp file + rename so a crash mid-write can't truncate an
-/// existing file.
-fn atomic_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    let tmp = path.with_extension("tmp");
-    std::fs::write(&tmp, bytes)?;
-    std::fs::rename(&tmp, path)
-}
-
-/// Write the key file atomically and, on unix, restrict it to `0600`
-/// before it's visible at its final path.
+/// Write the key file atomically, restricted to `0600` before it is ever
+/// visible at its final path.
 fn write_key_file(path: &Path, key: &[u8; KEY_LEN]) -> std::io::Result<()> {
-    let tmp = path.with_extension("key.tmp");
-    std::fs::write(&tmp, key)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))?;
-    }
-    std::fs::rename(&tmp, path)
+    atomic_file::write_with_mode(path, key, 0o600)
 }
 
 /// Fresh-install check: true when no vault has been persisted yet, so the

@@ -390,10 +390,7 @@ fn save_registry(reg: &Registry) -> Result<(), Error> {
         fs::create_dir_all(parent)?;
     }
     let text = toml::to_string(reg).map_err(|e| Error::RegistryWrite(e.to_string()))?;
-    // Atomic rewrite: write to sibling tmp, rename over.
-    let tmp = p.with_extension("toml.tmp");
-    fs::write(&tmp, text)?;
-    fs::rename(tmp, p)?;
+    atomic_file::write(p, text.as_bytes())?;
     Ok(())
 }
 

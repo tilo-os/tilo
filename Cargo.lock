@@ -130,6 +130,7 @@ dependencies = [
 name = "accounts"
 version = "0.1.0"
 dependencies = [
+ "atomic-file",
  "chacha20poly1305",
  "dirs 6.0.0",
  "getrandom 0.2.17",
@@ -434,6 +435,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "app-registry",
+ "atomic-file",
  "capnp",
  "capnp-futures",
  "capnp-rpc",
@@ -463,6 +465,7 @@ name = "app-registry"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "atomic-file",
  "blake3",
  "bytes",
  "dirs 6.0.0",
@@ -488,6 +491,7 @@ dependencies = [
 name = "app-state"
 version = "0.1.0"
 dependencies = [
+ "atomic-file",
  "automerge",
  "cli",
  "libc",
@@ -895,6 +899,13 @@ dependencies = [
  "futures-util",
  "memchr",
  "pin-project-lite",
+]
+
+[[package]]
+name = "atomic-file"
+version = "0.1.0"
+dependencies = [
+ "tempfile",
 ]
 
 [[package]]
@@ -1522,6 +1533,7 @@ version = "0.1.0"
 dependencies = [
  "accounts",
  "anyhow",
+ "atomic-file",
  "automerge",
  "chrono",
  "reqwest 0.12.28",
@@ -2291,7 +2303,7 @@ name = "contacts"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "ashpd",
+ "atomic-file",
  "automerge",
  "pkg",
  "serde",
@@ -2299,11 +2311,9 @@ dependencies = [
  "serial_test",
  "taffy",
  "tempfile",
- "tokio",
  "tracing",
  "tracing-subscriber",
  "ui",
- "url",
  "uuid",
  "vello",
  "winit",
@@ -2986,17 +2996,14 @@ name = "diffmerge"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "ashpd",
  "automerge",
  "serde",
  "serde_json",
  "similar",
  "taffy",
- "tokio",
  "tracing",
  "tracing-subscriber",
  "ui",
- "url",
  "uuid",
  "vello",
  "winit",
@@ -3673,7 +3680,6 @@ name = "feeds"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "ashpd",
  "automerge",
  "chrono",
  "feed-rs",
@@ -3686,7 +3692,6 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "ui",
- "url",
  "uuid",
  "vello",
  "winit",
@@ -4104,6 +4109,7 @@ name = "fs"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "atomic-file",
  "automerge",
  "blake3",
  "bytes",
@@ -6165,6 +6171,7 @@ checksum = "bd4f5b4d1c00331c5245163aacfe5f20be75b564c7112d45893d4ae038119eb0"
 name = "install"
 version = "0.1.0"
 dependencies = [
+ "atomic-file",
  "clap",
  "dirs 6.0.0",
  "ed25519-dalek 2.2.0",
@@ -8251,7 +8258,7 @@ name = "music"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "ashpd",
+ "atomic-file",
  "automerge",
  "gstreamer",
  "iroh",
@@ -8264,7 +8271,6 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "ui",
- "url",
  "uuid",
  "vello",
  "winit",
@@ -8742,6 +8748,7 @@ dependencies = [
 name = "notes"
 version = "0.1.0"
 dependencies = [
+ "atomic-file",
  "automerge",
  "dirs 6.0.0",
  "serde",
@@ -9718,7 +9725,6 @@ name = "pdf_viewer"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "ashpd",
  "automerge",
  "image",
  "pdf-extract",
@@ -9727,11 +9733,9 @@ dependencies = [
  "serde_json",
  "serial_test",
  "taffy",
- "tokio",
  "tracing",
  "tracing-subscriber",
  "ui",
- "url",
  "uuid",
  "vello",
  "winit",
@@ -9979,6 +9983,7 @@ dependencies = [
 name = "pkg"
 version = "0.1.0"
 dependencies = [
+ "atomic-file",
  "blake3",
  "collab-types",
  "ed25519-dalek 2.2.0",
@@ -10582,6 +10587,7 @@ dependencies = [
  "futures-util",
  "serde",
  "serde_json",
+ "settings-store",
  "tokio",
  "tracing",
  "zbus 4.4.0",
@@ -10592,6 +10598,7 @@ name = "qos-relay"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "atomic-file",
  "automerge",
  "blake3",
  "bytes",
@@ -10629,6 +10636,7 @@ dependencies = [
 name = "qos-user-identity"
 version = "0.1.0"
 dependencies = [
+ "atomic-file",
  "automerge",
  "base32",
  "blake3",
@@ -11226,6 +11234,7 @@ name = "registry-server"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "atomic-file",
  "bytes",
  "clap",
  "ed25519-dalek 2.2.0",
@@ -12286,6 +12295,7 @@ dependencies = [
  "os-actions",
  "serde",
  "serde_json",
+ "settings-store",
  "taffy",
  "tracing",
  "tracing-subscriber",
@@ -12293,6 +12303,17 @@ dependencies = [
  "uuid",
  "vello",
  "winit",
+]
+
+[[package]]
+name = "settings-store"
+version = "0.1.0"
+dependencies = [
+ "atomic-file",
+ "dirs 6.0.0",
+ "serde_json",
+ "serial_test",
+ "tracing",
 ]
 
 [[package]]
@@ -12364,6 +12385,7 @@ dependencies = [
  "rust_xlsxwriter",
  "serde",
  "serde_json",
+ "settings-store",
  "taffy",
  "tracing",
  "tracing-subscriber",
@@ -12378,6 +12400,7 @@ dependencies = [
 name = "shell"
 version = "0.1.0"
 dependencies = [
+ "atomic-file",
  "automerge",
  "base64",
  "bs58",
@@ -12420,6 +12443,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serial_test",
+ "settings-store",
  "smithay",
  "smithay-client-toolkit 0.20.0",
  "sysinfo",
@@ -13476,6 +13500,7 @@ dependencies = [
  "automerge",
  "serde",
  "serde_json",
+ "settings-store",
  "taffy",
  "tracing",
  "tracing-subscriber",
@@ -13925,7 +13950,7 @@ name = "totp"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "ashpd",
+ "atomic-file",
  "automerge",
  "base32",
  "chacha20poly1305",
@@ -13939,11 +13964,9 @@ dependencies = [
  "sha1",
  "sha2 0.10.9",
  "taffy",
- "tokio",
  "tracing",
  "tracing-subscriber",
  "ui",
- "url",
  "uuid",
  "vello",
  "winit",
@@ -14557,6 +14580,8 @@ dependencies = [
  "app-state",
  "arboard",
  "ash",
+ "ashpd",
+ "atomic-file",
  "automerge",
  "base32",
  "bip39",
@@ -14567,6 +14592,7 @@ dependencies = [
  "cosmic-text",
  "ed25519-dalek 2.2.0",
  "fluent",
+ "form_urlencoded",
  "hex",
  "hmac",
  "image",
@@ -14576,6 +14602,7 @@ dependencies = [
  "once_cell",
  "open",
  "openh264",
+ "percent-encoding",
  "pkg-config",
  "png 0.18.1",
  "pollster",
@@ -14603,6 +14630,7 @@ dependencies = [
  "tracing",
  "tts",
  "unic-langid",
+ "url",
  "uuid",
  "vello",
  "vello_encoding",
@@ -14980,11 +15008,9 @@ name = "video-player"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "ashpd",
  "automerge",
  "media",
  "taffy",
- "tokio",
  "tracing",
  "tracing-subscriber",
  "ui",
@@ -15781,6 +15807,7 @@ dependencies = [
  "reqwest 0.12.28",
  "serde",
  "serde_json",
+ "settings-store",
  "taffy",
  "tokio",
  "tracing",
@@ -16864,7 +16891,6 @@ name = "word-processor"
 version = "0.1.0"
 dependencies = [
  "arboard",
- "ashpd",
  "automerge",
  "fluent",
  "qdoc",
@@ -16877,10 +16903,8 @@ dependencies = [
  "serde_json",
  "spellcheck",
  "taffy",
- "tokio",
  "ui",
  "unic-langid",
- "url",
  "vello",
  "winit",
 ]
