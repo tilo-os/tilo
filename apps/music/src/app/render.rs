@@ -563,7 +563,7 @@ impl Widget for MusicApp {
             || self.images_pending()
             || self.lyrics_pending_for.is_some()
             || self.search_edit_at.is_some()
-            || (self.home_requested && self.home.is_none())
+            || self.home_is_loading()
             || self.detail_loading()
             // Keep frames flowing so the download spinner spins + progresses.
             || !self.downloads.is_empty()
@@ -628,11 +628,19 @@ impl MusicApp {
 
     /// Whether the current detail view is a real (live) artist/album page whose
     /// content hasn't landed yet — so its loading skeleton must keep animating.
+    /// Whether the Home page is genuinely still loading — a fetch is in flight
+    /// and hasn't come back (nor failed). The single source of truth for the
+    /// Home skeleton *and* the animation loop, so a failed/offline fetch stops
+    /// both instead of shimmering (and spinning frames) forever.
+    pub(crate) fn home_is_loading(&self) -> bool {
+        self.home_requested && self.home.is_none() && !self.home_failed
+    }
+
     fn detail_loading(&self) -> bool {
         match &self.view {
-            View::Artist(id) => is_live_id(id) && !self.artist_pages.contains_key(id) && !self.lib.artists.contains_key(id),
-            View::Album(id) => is_live_album_id(id) && !self.album_pages.contains_key(id) && !self.lib.albums.contains_key(id),
-            View::Playlist(id) => is_live_playlist_id(id) && !self.playlist_pages.contains_key(id) && self.lib.playlist(id).is_none(),
+            View::Artist(id) => is_live_id(id) && !self.artist_pages.contains_key(id) && !self.lib.artists.contains_key(id) && !self.failed_pages.contains(id),
+            View::Album(id) => is_live_album_id(id) && !self.album_pages.contains_key(id) && !self.lib.albums.contains_key(id) && !self.failed_pages.contains(id),
+            View::Playlist(id) => is_live_playlist_id(id) && !self.playlist_pages.contains_key(id) && self.lib.playlist(id).is_none() && !self.failed_pages.contains(id),
             _ => false,
         }
     }
@@ -1180,14 +1188,27 @@ impl MusicApp {
             return y;
         }
 
-        // While a real Home fetch is in flight, show a shimmering skeleton grid
-        // rather than the sample fallback (or any "fake title" text).
-        if self.home_requested {
+        // While a real Home fetch is genuinely in flight, show a shimmering
+        // skeleton grid rather than the sample fallback (or any "fake title"
+        // text). Once a fetch has failed (offline build / network error) we stop
+        // the skeleton and fall through to the honest state below, so Home never
+        // shimmers forever.
+        if self.home_is_loading() {
             return self.draw_home_skeleton(scene, t, c, body, y);
         }
 
-        // Offline fallback (no live fetch requested): the bundled sample library.
-        // Quick-pick tiles: a mix of playlists rendered as wide chips.
+        // Nothing live, and nothing in the library yet — the default build
+        // starts empty. Show a composed, inviting zero-state instead of bare
+        // section labels stacked over emptiness. Never fabricates content.
+        if self.lib.playlists.is_empty()
+            && self.lib.albums.is_empty()
+            && self.lib.tracks.is_empty()
+        {
+            return self.draw_home_empty(scene, t, tr, c, body, y);
+        }
+
+        // The user's own library (built up as they play / like / save, or synced
+        // from another device): quick-pick chips, jump-back-in, top tracks.
         let pls = self.gather_playlists();
         let chip_h = 64.0;
         let cols = 2usize;
@@ -1223,6 +1244,69 @@ impl MusicApp {
     fn section_label(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, c: &Palette, body: Rect, y: f64, label: &str) -> f64 {
         draw_text(tr, scene, t, label, body.x0 + 28.0, y, 19.0, c.text, TextWeight::Bold, None);
         y + 36.0
+    }
+
+    /// A composed, inviting zero-state for an empty Home (the default build
+    /// starts with an empty library and no live content). A soft badge, a warm
+    /// heading + subtext, and a single primary action — Search — that gets the
+    /// user listening. Fabricates nothing (HIG §4/§7).
+    fn draw_home_empty(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, c: &Palette, body: Rect, y: f64) -> f64 {
+        let cx = body.center().x;
+        let mut yy = y + (body.height() * 0.14).clamp(48.0, 140.0);
+
+        // Soft badge with a music-note glyph.
+        let r = 42.0;
+        let center = Point::new(cx, yy + r);
+        scene.fill(Fill::NonZero, t, c.card, None, &Circle::new(center, r));
+        scene.fill(Fill::NonZero, t, c.accent.multiply_alpha(0.16), None, &Circle::new(center, r));
+        icon::draw(scene, t, Icon::Note, center, 34.0, c.accent);
+        yy += 2.0 * r + 30.0;
+
+        // Heading (centred).
+        let head = "Your music starts here";
+        let hw = tr.measure_weighted(head, 25.0, None, TextWeight::Bold).0 as f64;
+        draw_text(tr, scene, t, head, cx - hw / 2.0, yy, 25.0, c.text, TextWeight::Bold, None);
+        yy += 42.0;
+
+        // Subtext, wrapped + centred to a comfortable measure.
+        let sub = "Search for a song, album or artist. Everything you play collects here — in sync across your devices.";
+        let maxw = (body.width() - 56.0).min(440.0).max(180.0);
+        let mut cur = String::new();
+        let mut lines: Vec<String> = Vec::new();
+        for w in sub.split_whitespace() {
+            let cand = if cur.is_empty() { w.to_string() } else { format!("{cur} {w}") };
+            if tr.measure_weighted(&cand, 14.0, None, TextWeight::Regular).0 as f64 > maxw
+                && !cur.is_empty()
+            {
+                lines.push(std::mem::take(&mut cur));
+                cur = w.to_string();
+            } else {
+                cur = cand;
+            }
+        }
+        if !cur.is_empty() {
+            lines.push(cur);
+        }
+        for line in &lines {
+            let lw = tr.measure_weighted(line, 14.0, None, TextWeight::Regular).0 as f64;
+            draw_text(tr, scene, t, line, cx - lw / 2.0, yy, 14.0, c.dim, TextWeight::Regular, None);
+            yy += 22.0;
+        }
+        yy += 18.0;
+
+        // Primary action: Search (the one thing to do from an empty Home).
+        let bh = 44.0;
+        let label = "Search";
+        let labelw = tr.measure_weighted(label, 15.0, None, TextWeight::Semibold).0 as f64;
+        let group = 18.0 + 10.0 + labelw;
+        let bw = (group + 48.0).max(150.0);
+        let btn = Rect::new(cx - bw / 2.0, yy, cx + bw / 2.0, yy + bh);
+        let hover = self.push_hit(btn, Action::Nav(View::Search));
+        fill_rrect(scene, t, btn, bh / 2.0, if hover { c.accent_hover } else { c.accent });
+        let gx = btn.center().x - group / 2.0;
+        icon::draw(scene, t, Icon::Search, Point::new(gx + 9.0, btn.center().y), 16.0, Color::WHITE);
+        draw_text(tr, scene, t, label, gx + 28.0, vy(btn.y0, bh, 15.0), 15.0, Color::WHITE, TextWeight::Semibold, None);
+        yy + bh + 24.0
     }
 
     /// Draw one real Home section as a responsive grid of cover tiles. Track
@@ -1717,6 +1801,9 @@ impl MusicApp {
             return r;
         }
         if is_live_album_id(id) && !self.lib.albums.contains_key(id) {
+            if self.failed_pages.contains(id) {
+                return self.draw_detail_error(scene, t, tr, c, body, y, "album");
+            }
             return self.draw_loading_detail(scene, t, tr, c, body, y, "ALBUM", id);
         }
         let (title, artist, year, ids) = {
@@ -1773,6 +1860,27 @@ impl MusicApp {
         y
     }
 
+    /// An honest error state for a live detail page whose fetch failed (offline,
+    /// geo-block, network error) — shown instead of an endless skeleton. The OS
+    /// chrome's Back affordance returns the user; this just explains the gap.
+    fn draw_detail_error(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, c: &Palette, body: Rect, y: f64, kind: &str) -> f64 {
+        let cx = body.center().x;
+        let mut yy = y + (body.height() * 0.14).clamp(48.0, 140.0);
+        let r = 38.0;
+        let center = Point::new(cx, yy + r);
+        scene.fill(Fill::NonZero, t, c.card, None, &Circle::new(center, r));
+        icon::draw(scene, t, Icon::Disc, center, 30.0, c.dim);
+        yy += 2.0 * r + 28.0;
+        let head = format!("Couldn't load this {kind}");
+        let hw = tr.measure_weighted(&head, 20.0, None, TextWeight::Bold).0 as f64;
+        draw_text(tr, scene, t, &head, cx - hw / 2.0, yy, 20.0, c.text, TextWeight::Bold, None);
+        yy += 34.0;
+        let sub = "Check your connection and try again.";
+        let sw = tr.measure_weighted(sub, 14.0, None, TextWeight::Regular).0 as f64;
+        draw_text(tr, scene, t, sub, cx - sw / 2.0, yy, 14.0, c.dim, TextWeight::Regular, None);
+        yy + 40.0
+    }
+
     /// A shimmering skeleton grid for the Home page while the real charts /
     /// new-releases sections stream in.
     fn draw_home_skeleton(&mut self, scene: &mut Scene, t: Affine, c: &Palette, body: Rect, mut y: f64) -> f64 {
@@ -1806,6 +1914,9 @@ impl MusicApp {
             return r;
         }
         if is_live_id(id) && !self.lib.artists.contains_key(id) {
+            if self.failed_pages.contains(id) {
+                return self.draw_detail_error(scene, t, tr, c, body, y, "artist");
+            }
             return self.draw_loading_detail(scene, t, tr, c, body, y, "ARTIST", id);
         }
         let (name, genre, listeners, top_ids, albums) = {
@@ -1953,6 +2064,9 @@ impl MusicApp {
                 let r = self.draw_playlist_detail_live(scene, t, tr, c, body, y, &page);
                 self.playlist_pages.insert(id.to_string(), page);
                 return r;
+            }
+            if self.failed_pages.contains(id) {
+                return self.draw_detail_error(scene, t, tr, c, body, y, "playlist");
             }
             return self.draw_loading_detail(scene, t, tr, c, body, y, "PLAYLIST", id);
         }
@@ -2398,7 +2512,7 @@ impl MusicApp {
             } else if searching {
                 ""
             } else {
-                "Press Enter to search YouTube Music (needs the `live` build)"
+                "Streaming search is unavailable here — your saved library is still searchable."
             };
             if !hint.is_empty() {
                 draw_text(tr, scene, t, hint, body.x0 + pad, y + 24.0, 12.0, c.dim, TextWeight::Regular, None);

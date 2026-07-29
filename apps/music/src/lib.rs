@@ -56,6 +56,7 @@ pub mod mpris;
 pub mod net;
 pub mod portal;
 pub mod relay;
+pub mod search_type;
 pub mod seed;
 pub mod source;
 pub mod storage;
@@ -63,8 +64,19 @@ pub mod stream;
 pub mod sync;
 
 pub use app::{MusicApp, View};
+pub use search_type::{MusicSearchProvider, SearchHit, SearchableType};
 
 use ui::widget::Widget;
+
+/// The searchable result types Music contributes to qOS's global search. An OS
+/// search host registers these descriptors (id, display name, whether hits
+/// carry a cover) once, then drives one of the providers per query. Exposing
+/// this list keeps the host's integration a one-liner
+/// (`for t in music::searchable_types() { registry.register(t) }`) with no
+/// reach into the app internals — the same seam [`apps/tube`] pins for videos.
+pub fn searchable_types() -> Vec<SearchableType> {
+    search_type::all_searchable_types()
+}
 
 /// Build and return the app's root widget tree.
 ///

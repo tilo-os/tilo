@@ -402,6 +402,13 @@ pub struct MusicApp {
     /// once fetched. `None` offline / before it lands → the sample home shows.
     home: Option<HomeContent>,
     home_requested: bool,
+    /// Set once a Home fetch has come back empty-handed (offline build, network
+    /// error). Stops the loading skeleton — and the animation loop — so the
+    /// empty Home settles instead of shimmering forever.
+    home_failed: bool,
+    /// Detail pages (artist / album / playlist ids) whose live fetch failed, so
+    /// their skeleton stops and an honest "couldn't load" state shows instead.
+    failed_pages: HashSet<String>,
     /// Real artist pages keyed by channel id, and the set already requested.
     artist_pages: HashMap<String, ArtistPage>,
     artist_requested: HashSet<String>,
@@ -568,6 +575,8 @@ impl MusicApp {
             art_urls: HashMap::new(),
             home: None,
             home_requested: false,
+            home_failed: false,
+            failed_pages: HashSet::new(),
             artist_pages: HashMap::new(),
             artist_requested: HashSet::new(),
             album_pages: HashMap::new(),
@@ -658,6 +667,34 @@ impl MusicApp {
         let Some(first) = ids.first().cloned() else { return false };
         self.inject_live_hits();
         self.dispatch(Action::Play { queue: vec![first], index: 0 }, state);
+        true
+    }
+
+    /// Open a global-search hit's deep link onto the real navigation / play
+    /// path. This is the app side of the [`crate::search_type`] seam: the OS
+    /// search host round-trips `music://{track,album,artist,playlist}/<id>`
+    /// back to Music, and this routes it exactly like an in-app click —
+    /// playing the track, or navigating to the album / artist / playlist page
+    /// (the view's own `sync` then loads a live page on demand). Returns
+    /// whether the link was recognised and routed.
+    pub fn open_deep_link(&mut self, link: &str, state: &mut AutoCommit) -> bool {
+        let Some(dl) = crate::search_type::DeepLink::parse(link) else {
+            return false;
+        };
+        match dl {
+            crate::search_type::DeepLink::Track(id) => {
+                self.dispatch(Action::Play { queue: vec![id], index: 0 }, state);
+            }
+            crate::search_type::DeepLink::Album(id) => {
+                self.dispatch(Action::Nav(View::Album(id)), state);
+            }
+            crate::search_type::DeepLink::Artist(id) => {
+                self.dispatch(Action::Nav(View::Artist(id)), state);
+            }
+            crate::search_type::DeepLink::Playlist(id) => {
+                self.dispatch(Action::Nav(View::Playlist(id)), state);
+            }
+        }
         true
     }
 
@@ -1729,6 +1766,17 @@ impl MusicApp {
                 StreamUpdate::Home { content } => {
                     self.absorb_home(&content);
                     self.home = Some(*content);
+                    self.home_failed = false;
+                }
+                StreamUpdate::HomeUnavailable => {
+                    // No live Home (offline build / network error): stop the
+                    // skeleton and let the honest empty Home settle.
+                    self.home_failed = true;
+                }
+                StreamUpdate::PageUnavailable { id } => {
+                    // A live detail fetch failed: stop that page's skeleton so it
+                    // shows an honest "couldn't load" state instead of shimmering.
+                    self.failed_pages.insert(id);
                 }
                 StreamUpdate::Artist { page } => {
                     self.absorb_artist(&page);
@@ -3479,6 +3527,73 @@ mod tests {
         assert!(matches!(app.view, View::Playlist(_)), "creating opens the new playlist");
         let created = app.lib.playlists.iter().any(|p| p.name == "Roadtrip");
         assert!(created);
+    }
+
+    #[test]
+    fn offline_home_fetch_reports_unavailable_and_stops_the_skeleton() {
+        // The real default startup: an empty library, network allowed. There is
+        // no live backend in this build, so the worker's offline backend cannot
+        // serve Home — and the app must settle on its honest empty state rather
+        // than shimmer a loading skeleton (and spin frames) forever.
+        let mut app = MusicApp::new();
+        let mut doc = AutoCommit::new();
+        app.ensure_seeded(&mut doc);
+        app.reload(&doc);
+        assert!(app.lib.tracks.is_empty(), "default startup has an empty library");
+
+        // Kick the real Home fetch through the worker + backend.
+        app.ensure_home();
+        assert!(app.home_requested);
+        assert!(app.home_is_loading(), "a Home request in flight reads as loading");
+
+        // Pump the worker until it reports Home unavailable (the offline backend
+        // errors on `home()`), exercising stream.rs → drain end to end.
+        let mut settled = false;
+        for _ in 0..300 {
+            app.drain_worker();
+            if app.home_failed {
+                settled = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(settled, "the offline Home fetch reports unavailable");
+        assert!(!app.home_is_loading(), "Home stops loading — no endless skeleton / frame spin");
+        assert!(!app.needs_animation_frame(), "an unavailable, idle Home requests no more frames");
+    }
+
+    #[test]
+    fn global_search_deep_links_route_to_the_real_view_and_play_path() {
+        use crate::search_type::SearchHit;
+        let (mut app, mut doc) = app_with_doc();
+
+        // Real ids straight from the seeded library.
+        let album = app.lib.albums.keys().next().unwrap().clone();
+        let artist = app.lib.artists.keys().next().unwrap().clone();
+        let playlist = app.lib.playlists.first().unwrap().id.clone();
+        let track = app.lib.tracks.keys().next().unwrap().clone();
+
+        // An album deep-link opens the album page.
+        assert!(app.open_deep_link(&SearchHit::album_link(&album), &mut doc));
+        assert_eq!(app.view, View::Album(album.clone()));
+
+        // An artist deep-link opens the artist page.
+        assert!(app.open_deep_link(&SearchHit::artist_link(&artist), &mut doc));
+        assert_eq!(app.view, View::Artist(artist.clone()));
+
+        // A playlist deep-link opens the playlist page.
+        assert!(app.open_deep_link(&SearchHit::playlist_link(&playlist), &mut doc));
+        assert_eq!(app.view, View::Playlist(playlist.clone()));
+
+        // A track deep-link actually plays that track through the real play path.
+        assert!(app.open_deep_link(&SearchHit::track_link(&track), &mut doc));
+        assert_eq!(app.pb.current.as_deref(), Some(track.as_str()));
+        assert!(app.pb.queue.contains(&track));
+
+        // A hostile / unknown link is rejected and changes nothing.
+        let view_before = app.view.clone();
+        assert!(!app.open_deep_link("https://evil/track/x", &mut doc));
+        assert_eq!(app.view, view_before);
     }
 
     #[test]
