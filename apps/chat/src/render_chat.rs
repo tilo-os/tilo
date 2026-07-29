@@ -10,6 +10,7 @@ use vello::peniko::Color;
 
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
+use ui::widget::Avatar;
 use ui::ColorCompat;
 
 use crate::app::{ChatApp, Hit, MenuTarget, AVATAR};
@@ -29,22 +30,13 @@ pub(crate) fn draw_avatar(
     color_idx: usize,
     status: Option<Presence>,
 ) {
+    // Peer colour comes from the per-peer palette index (deliberately distinct
+    // per identity, and shared with the workspace-tint colouring), so it's
+    // passed straight through; the disc + centred monogram are painted by the
+    // shared toolkit avatar so shape/placement match every other app's roster.
     let bg = palette_color(theme, color_idx);
-    fill_circle(scene, tf, center, r, bg);
-    let size = (r * 0.8) as f32;
-    let (tw, th) = tr.measure_weighted(initials, size, None, TextWeight::Semibold);
-    text(
-        scene,
-        tr,
-        tf,
-        initials,
-        size,
-        Color::WHITE,
-        center.x - tw as f64 / 2.0,
-        center.y - th as f64 / 2.0,
-        TextWeight::Semibold,
-        None,
-    );
+    let rect = Rect::new(center.x - r, center.y - r, center.x + r, center.y + r);
+    Avatar::draw_at(scene, tf, rect, initials, bg, theme, tr);
     if let Some(st) = status {
         let c = &theme.tokens.colors;
         let dot = match st {
