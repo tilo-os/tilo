@@ -113,29 +113,7 @@ does) and none of these apps implement `AppWidget` yet.
 
 ## Ranked backlog (not yet built)
 
-### 4. Sidebar / NavSplit adoption sweep  — HIGH leverage, LOW risk  ⏳ file-explorer DONE
-
-**Executed (file-explorer).** The file explorer's hand-rolled fixed-width
-`[ places | file view ]` split (no width reactivity) + two dead sidebar modules
-are gone; the split is now the shared **`NavShell`**. Wide docks the places list
-beside the file view; below ~640 px the body collapses to one pane — the places
-list, then tapping a place pushes the file view in with a Back arrow (Esc/Back
-returns). `PlacesSidebar` (drag-to-reorder favourites + workspace mounts) is
-kept verbatim as the shell's overview pane. **Why `NavShell`, not `NavSplit`:**
-the places list is a reorderable, user-managed content list (the Weather §1b
-precedent), and the file explorer's search is over *files* (the content), not
-the short places list — so the content master/detail shape fits, and `NavShell`
-already gives the adaptive docked→push behaviour `NavSplit::Adaptive` (overlay
-flap) does not. Dead code removed: `sidebar_row.rs` (348 LOC). Graded against
-HIG §7 with `--shots` (wide populated/empty, narrow places, narrow pushed detail).
-
-**New `ui` this pass** (all landed): `NavShell::set_overview/set_detail/set_sidebar`
-(swap panes into a **persistent** shell so a host that rebuilds its subtree on a
-structure change keeps the docked/push position); `Container::with_flex_grow`
-(grow-from-zero so a `percent(1.0)` field stays inline on a wide wrapping row and
-wraps only when narrow); `Column::with_extra_top_padding` (reserve room for the
-shell's floating Back chip).
-
+### 4. Sidebar / NavSplit adoption sweep  — HIGH leverage, LOW risk
 `ui` already has the right primitives — `NavShell` (§1a sidebar + §1b
 master/detail), `AppShell` (flush sidebar + content + search; narrow = two
 screens with a back arrow), `NavSplit` (single responsive split),
@@ -146,23 +124,16 @@ own. **Worst bespoke offenders (fix first):**
 - **camera** — a *floating* rounded "glass" nav rail inset 14px, no collapse
   affordance, never becomes a separate screen when narrow. Should adopt
   `NavShell`.
-- **backups** — the rail is literally a floating `card`, no responsive handling.
-  Adopt `NavSplit`.
-- **file-explorer** — ✅ DONE (see "Executed" above): now on `NavShell`,
-  dead `sidebar_row.rs` deleted, §7-graded.
-- **firewall** — fixed 214px zone rail, zero responsive behaviour. The rail is a
-  §1a genuine sidebar (9 zone destinations) → `SidebarDrawer` (docked wide /
-  overlay drawer narrow) is the fit; it is an immediate-mode painter, and
-  `SidebarDrawer` is the headless controller built for exactly that. **Caveat:**
-  a §7-clean *narrow* result needs the rest of the dense 3-column layout
-  (300 px services panel + rules table + form) to reflow too — a swap of the
-  rail alone leaves the content crushed at phone widths, so this is a
-  layout-reflow job, not just a rail swap.
-- **backups** — the rail is a floating `card` shown only in the Timeline view,
-  variable-height rows, selection in the CRDT. `SidebarDrawer` fits the 2-column
-  (rail | main) split; keep the card treatment by painting into the drawer's
-  resolved rects. Same narrow caveat as firewall (the main panel's tiles must
-  re-column narrow).
+- **backups** ✅ DONE — the Timeline source rail now uses `SidebarDrawer`
+  (docked wide / overlay drawer + scrim when narrow), and the tile/card grids
+  reflow (summary tiles 4→2→1 via `card_columns`, destination cards regrid +
+  compact, schedules stack, top bar compacts). Both immediate-mode painters, so
+  the *headless* `SidebarDrawer` (not the `Widget` `NavSplit`) is the right fit.
+- **file-explorer** — 1122 LOC of bespoke places-sidebar, fixed 180px, no narrow
+  behaviour. Adopt `NavSplit` for the frame.
+- **firewall** ✅ DONE — the zone rail now uses `SidebarDrawer` (docked/overlay),
+  plus progressive breakpoints (services panel collapses, rules table → two-line
+  rows, add-rule form stacks). Also an immediate-mode painter → `SidebarDrawer`.
 - Duplication tail (behave OK, just re-implement the flap): api_tester, chat,
   calendar, db_client, code_editor, snippets, containers, disks, feeds, remote,
   contacts, git_client, monitor, software_store, themes.
