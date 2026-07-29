@@ -706,4 +706,325 @@ mod tests {
         let newest = panel.entries().last().unwrap().id;
         assert!(!restore_to(&mut s.doc, &newest));
     }
+
+    // -----------------------------------------------------------------
+    // Versions on the track
+    // -----------------------------------------------------------------
+
+    /// A document with three working sessions: two by the local author either
+    /// side of a long break, one by a peer in between — the shape that makes
+    /// grouping mean something. Committed with explicit wall clocks, the way the
+    /// FS layer commits when it replays a durable chain, because the gaps are the
+    /// point.
+    fn three_session_doc() -> (State, Vec<String>) {
+        let mut s = State::new();
+        s.doc.set_actor(automerge::ActorId::from("alice".as_bytes()));
+        let c = qdoc::model::init(&mut s.doc, &s.root);
+        let mut ids = qdoc::IdGen::new(s.doc.get_actor().to_hex_string());
+        qdoc::history::commit_stamped_at(&mut s.doc, 1_000_000);
+        let p = {
+            let mut dm = qdoc::DocMut { doc: &mut s.doc, c: &c, ids: &mut ids };
+            let id = dm.insert_block(None, "paragraph");
+            dm.splice_text(&id, 0, 0, "Start.");
+            id
+        };
+        qdoc::history::commit_stamped_at(&mut s.doc, 1_000_010);
+
+        // Session one: five more edits, seconds apart.
+        for i in 0..5 {
+            let at = {
+                let cc = qdoc::model::open(&s.doc, &s.root).unwrap();
+                qdoc::model::materialize(&s.doc, &cc).blocks[0]
+                    .text
+                    .chars()
+                    .count()
+            };
+            let mut dm = qdoc::DocMut { doc: &mut s.doc, c: &c, ids: &mut ids };
+            dm.splice_text(&p, at, 0, " one");
+            drop(dm);
+            qdoc::history::commit_stamped_at(&mut s.doc, 1_000_020 + i * 10);
+        }
+
+        // Session two, an hour later, by a peer — forked, edited under its own
+        // actor, merged back, exactly as a sync round arrives.
+        let mut peer = s.doc.fork();
+        peer.set_actor(automerge::ActorId::from("bob".as_bytes()));
+        for i in 0..3 {
+            let at = {
+                let cc = qdoc::model::open(&peer, &s.root).unwrap();
+                qdoc::model::materialize(&peer, &cc).blocks[0]
+                    .text
+                    .chars()
+                    .count()
+            };
+            let cc = qdoc::model::open(&peer, &s.root).unwrap();
+            let mut pids = qdoc::IdGen::new(peer.get_actor().to_hex_string());
+            let mut dm = qdoc::DocMut { doc: &mut peer, c: &cc, ids: &mut pids };
+            dm.splice_text(&p, at, 0, " two");
+            drop(dm);
+            qdoc::history::commit_stamped_at(&mut peer, 1_004_000 + i * 10);
+        }
+        s.doc.merge(&mut peer).expect("peers merge");
+
+        // Session three, two hours after that, back to the local author.
+        for i in 0..4 {
+            let at = {
+                let cc = qdoc::model::open(&s.doc, &s.root).unwrap();
+                qdoc::model::materialize(&s.doc, &cc).blocks[0]
+                    .text
+                    .chars()
+                    .count()
+            };
+            let cc = qdoc::model::open(&s.doc, &s.root).unwrap();
+            let mut dm = qdoc::DocMut { doc: &mut s.doc, c: &cc, ids: &mut ids };
+            dm.splice_text(&p, at, 0, " three");
+            drop(dm);
+            qdoc::history::commit_stamped_at(&mut s.doc, 1_012_000 + i * 10);
+        }
+        (s, Vec::new())
+    }
+
+    #[test]
+    fn the_track_shows_versions_not_one_tick_per_change() {
+        let (mut s, _) = three_session_doc();
+        let mut panel = HistoryPanel::new();
+        panel.refresh(&mut s.doc);
+        let changes = panel.version_count();
+        assert!(changes >= 13, "the fixture has three sessions: {changes}");
+        let versions = panel.versions().len();
+        assert!(
+            versions >= 3 && versions < changes,
+            "{changes} changes must read as a handful of versions, got {versions}"
+        );
+        // The sessions are the boundaries: a long gap and a change of author.
+        assert!(
+            panel.versions().iter().any(|v| v.derived.contains("edits")),
+            "an unnamed version describes itself: {:?}",
+            panel.versions().iter().map(|v| v.derived.clone()).collect::<Vec<_>>()
+        );
+        // And the segments tile the whole track without gaps or overlaps.
+        let mut cursor = 0usize;
+        for v in panel.versions() {
+            assert_eq!(v.start, cursor, "versions must tile: {:?}", panel.versions());
+            cursor = v.end + 1;
+        }
+        assert_eq!(cursor, changes, "and cover every change");
+    }
+
+    #[test]
+    fn the_strip_grows_to_make_room_for_the_version_band() {
+        let (mut s, _) = three_session_doc();
+        let mut panel = HistoryPanel::new();
+        panel.toggle();
+        panel.refresh(&mut s.doc);
+        assert_eq!(
+            panel.band_height(),
+            HISTORY_BAND_H,
+            "the strip asks for the taller band once it has versions to show"
+        );
+        let mut empty = HistoryPanel::new();
+        empty.toggle();
+        let mut blank = State::new();
+        empty.refresh(&mut blank.doc);
+        assert!(
+            empty.band_height() > 0.0,
+            "an open strip over an empty document still reserves space to say so"
+        );
+    }
+
+    #[test]
+    fn naming_the_current_version_round_trips_through_the_document() {
+        let (mut s, _) = three_session_doc();
+        let mut panel = HistoryPanel::new();
+        panel.refresh(&mut s.doc);
+        let v = panel.versions()[1].clone();
+        let entries = panel.entries().to_vec();
+        let req = GroupNameRequest {
+            record_id: None,
+            start: entries[v.start].id,
+            end: entries[v.end].id,
+            label: "Bob's pass".to_string(),
+        };
+        assert!(apply_name(&mut s.doc, &req));
+        s.commit_action(None, None);
+
+        // In the document, so a collaborator gets it with the edits.
+        let ranges = ui::history_groups::read_named_ranges(&s.doc, &AuthorDirectory::new());
+        assert_eq!(ranges.len(), 1);
+        assert_eq!(ranges[0].label, "Bob's pass");
+
+        panel.follow_document();
+        panel.refresh(&mut s.doc);
+        assert!(
+            panel
+                .versions()
+                .iter()
+                .any(|g| g.label.as_deref() == Some("Bob's pass")),
+            "the band is on the track: {:?}",
+            panel.versions().iter().map(|g| g.title().to_string()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn naming_a_version_adds_no_version_of_its_own() {
+        let (mut s, _) = three_session_doc();
+        let mut panel = HistoryPanel::new();
+        panel.refresh(&mut s.doc);
+        let before = panel.version_count();
+        let entries = panel.entries().to_vec();
+        apply_name(
+            &mut s.doc,
+            &GroupNameRequest {
+                record_id: None,
+                start: entries[0].id,
+                end: entries[2].id,
+                label: "Opening".to_string(),
+            },
+        );
+        s.commit_action(None, None);
+        panel.follow_document();
+        panel.refresh(&mut s.doc);
+        assert_eq!(
+            panel.version_count(),
+            before,
+            "naming a version must not appear as a change on the track it named"
+        );
+    }
+
+    #[test]
+    fn an_open_version_absorbs_the_changes_that_come_after_it() {
+        let (mut s, _) = three_session_doc();
+        let mut panel = HistoryPanel::new();
+        panel.refresh(&mut s.doc);
+        let entries = panel.entries().to_vec();
+        let last = entries.last().unwrap().id;
+
+        assert!(apply_version(
+            &mut s.doc,
+            &VersionAction::Open {
+                at: last,
+                label: "Rework the intro".to_string()
+            }
+        ));
+        s.commit_action(None, None);
+        panel.follow_document();
+        panel.refresh(&mut s.doc);
+        let open = panel
+            .versions()
+            .iter()
+            .find(|v| v.open)
+            .cloned()
+            .expect("the version is open");
+        assert_eq!(open.label.as_deref(), Some("Rework the intro"));
+        let width_before = open.end - open.start;
+
+        // Keep working. The open version has to grow.
+        let c = qdoc::model::open(&s.doc, &s.root).unwrap();
+        let blocks = qdoc::model::materialize(&s.doc, &c).blocks;
+        let mut ids = qdoc::IdGen::new(s.doc.get_actor().to_hex_string());
+        for _ in 0..3 {
+            let at = {
+                let cc = qdoc::model::open(&s.doc, &s.root).unwrap();
+                qdoc::model::materialize(&s.doc, &cc).blocks[0].text.chars().count()
+            };
+            let mut dm = qdoc::DocMut { doc: &mut s.doc, c: &c, ids: &mut ids };
+            dm.splice_text(&blocks[0].id, at, 0, " more");
+            drop(dm);
+            s.commit_action(None, None);
+        }
+        panel.follow_document();
+        panel.refresh(&mut s.doc);
+        let open = panel
+            .versions()
+            .iter()
+            .find(|v| v.open)
+            .cloned()
+            .expect("still open");
+        assert!(
+            open.end - open.start > width_before,
+            "an open version must absorb what comes next: {} then {}",
+            width_before,
+            open.end - open.start
+        );
+        assert_eq!(
+            open.end,
+            panel.version_count() - 1,
+            "and it must run right up to the present"
+        );
+
+        // Closing it pins the end where it is now.
+        let entries = panel.entries().to_vec();
+        let end_id = entries.last().unwrap().id;
+        let record = ui::history_groups::read_named_ranges(&s.doc, &AuthorDirectory::new())[0]
+            .id
+            .clone();
+        assert!(apply_version(
+            &mut s.doc,
+            &VersionAction::Close { record_id: record, at: end_id }
+        ));
+        s.commit_action(None, None);
+        panel.follow_document();
+        panel.refresh(&mut s.doc);
+        assert!(
+            panel.versions().iter().all(|v| !v.open),
+            "nothing is open any more"
+        );
+        assert!(
+            panel
+                .versions()
+                .iter()
+                .any(|v| v.label.as_deref() == Some("Rework the intro")),
+            "and the version is still named"
+        );
+    }
+
+    #[test]
+    fn restoring_to_a_version_boundary_lands_on_that_versions_text() {
+        // The strip's [Restore] passes the tick the handle is on, and with
+        // snapping the handle can only be on a version boundary. So this is what
+        // "restore to the end of that version" actually does to the document.
+        let (mut s, _) = three_session_doc();
+        let mut panel = HistoryPanel::new();
+        panel.refresh(&mut s.doc);
+        let live = body(&s);
+        assert!(live.contains("three"), "the fixture ends in session three");
+
+        // The end of the *second* session: everything up to and including Bob's
+        // work, and nothing after it.
+        let v = panel.versions()[1].clone();
+        let boundary = panel.entries()[v.end].id;
+        let expected = {
+            let snap = qdoc::history::materialize_at(&mut s.doc, v.end).unwrap();
+            snap.blocks.first().map(|b| b.text.clone()).unwrap_or_default()
+        };
+        assert_ne!(expected, live, "the boundary is a different state");
+
+        assert!(restore_to(&mut s.doc, &boundary), "the restore wrote something");
+        s.commit_action(None, None);
+        assert_eq!(
+            body(&s),
+            expected,
+            "the document is the state that version boundary produced"
+        );
+        // Forward, not a rewind.
+        panel.follow_document();
+        panel.refresh(&mut s.doc);
+        assert!(
+            panel.version_count() > v.end + 1,
+            "the changes rolled past are still in the graph"
+        );
+    }
+
+    #[test]
+    fn a_version_that_snapping_can_reach_is_every_version() {
+        // Every version boundary must be reachable, or a version the user can see
+        // is one they cannot scrub to.
+        let (mut s, _) = three_session_doc();
+        let mut panel = HistoryPanel::new();
+        panel.refresh(&mut s.doc);
+        for v in panel.versions().to_vec() {
+            panel.set_current_tick(v.end);
+            assert_eq!(panel.current_tick(), v.end, "version ending at {} unreachable", v.end);
+        }
+    }
 }
