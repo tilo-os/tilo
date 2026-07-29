@@ -188,14 +188,14 @@ impl Category {
             Category::TimeDate => "\u{f0954}",         // clock
             Category::Users => "\u{f0849}",            // account-group
             Category::Printers => "\u{f042a}",         // printer
-            Category::Power => "\u{f0079}",            // battery
-            Category::Appearance => "\u{f0779}",       // palette
-            Category::Accessibility => "\u{f0004}",    // human (universal access)
-            Category::Notifications => "\u{f009a}",     // bell
-            Category::ExternalAccounts => "\u{f16e1}", // cloud
-            Category::RegionFormats => "\u{f0ac0}",    // earth
-            Category::Permissions => "\u{f0498}",      // shield-account
-            Category::Updates => "\u{f06b0}",          // download
+            Category::Power => "\u{f0079}",            // md-battery
+            Category::Appearance => "\u{f03d8}",       // md-palette
+            Category::Accessibility => "\u{f02e6}",    // md-human (universal access)
+            Category::Notifications => "\u{f009a}",     // md-bell
+            Category::ExternalAccounts => "\u{f015f}", // md-cloud
+            Category::RegionFormats => "\u{f01e7}",    // md-earth
+            Category::Permissions => "\u{f088f}",      // md-shield-account
+            Category::Updates => "\u{f06b0}",          // md-update
             Category::About => "\u{f02fd}",            // information
         }
     }

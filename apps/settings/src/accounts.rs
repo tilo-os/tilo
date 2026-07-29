@@ -402,10 +402,10 @@ impl AccountKind {
 
     pub fn glyph(self) -> &'static str {
         match self {
-            AccountKind::Mail => "\u{f01ee}",
-            AccountKind::CalDav => "\u{f00ed}",
-            AccountKind::WebDav => "\u{f0256}",
-            AccountKind::Nextcloud => "\u{f16e1}",
+            AccountKind::Mail => "\u{f01ee}",     // md-email
+            AccountKind::CalDav => "\u{f00ed}",   // md-calendar
+            AccountKind::WebDav => "\u{f0256}",   // md-folder_outline
+            AccountKind::Nextcloud => "\u{f015f}", // md-cloud
         }
     }
 
