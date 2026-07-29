@@ -38,6 +38,28 @@ use crate::net::{self, NetMsg};
 use crate::sample::{self, Basemap};
 use crate::tiles::{GeoBounds, TileLayer};
 use crate::traffic::{Congestion, TrafficData};
+use ui::widget::TextInput;
+
+/// Feed one raw winit event into an embedded [`TextInput`]. The search /
+/// endpoint fields live outside the taffy tree (the app lays them out by hand),
+/// so a throwaway leaf node + doc satisfy `Widget::handle_event`; the fields are
+/// local-mode, so the doc is never touched.
+fn drive_text_input(
+    ti: &mut TextInput,
+    event: &WindowEvent,
+    scale: f64,
+    modifiers: &winit::event::Modifiers,
+) {
+    let mut doc = AutoCommit::new();
+    let mut taffy: TaffyTree<()> = TaffyTree::new();
+    let node = taffy.new_leaf(Style::default()).unwrap();
+    let mut handled = false;
+    let mut focus_target: Option<NodeId> = None;
+    ti.handle_event(
+        event, scale, modifiers, &mut doc, &automerge::ROOT, &mut handled, &mut focus_target,
+        node, &taffy,
+    );
+}
 
 /// Which Directions endpoint field (From / To) currently has keyboard focus for
 /// typed geocoding. `None` when neither is being edited.
@@ -151,6 +173,15 @@ pub struct MapsApp {
     // interaction state (render/UI caches only — app state lives in `model`)
     last_mouse: Point,
     search_focused: bool,
+    /// The top search field — a shared single-line [`TextInput`] (Enter runs
+    /// the search) so it gets real caret, selection, clipboard, focus ring,
+    /// a11y, and theming. Its value mirrors `model.query`.
+    search_input: TextInput,
+    /// The Directions From / To endpoint fields, likewise shared `TextInput`s
+    /// (Enter geocodes that endpoint). While editing, each mirrors its
+    /// `model.*_query`; otherwise it shows the resolved endpoint name.
+    origin_input: TextInput,
+    dest_input: TextInput,
     /// Which Directions endpoint field is being typed into, if any.
     edit_field: Option<EndField>,
     /// Geocoded dropdown results for the "From" field (render cache).
@@ -181,7 +212,6 @@ pub struct MapsApp {
     scroll: f64,
     content_h: f64,
     content_view_h: f64,
-    start: Instant,
 
     // CRDT bridge
     loaded: bool,
@@ -277,6 +307,24 @@ impl MapsApp {
             node: None,
             last_mouse: Point::ZERO,
             search_focused: false,
+            search_input: {
+                let mut t = TextInput::local().with_enter_submits(true).with_font_size(15.0);
+                t.set_plain_chrome(true);
+                t.set_placeholder("Search places, addresses…");
+                t
+            },
+            origin_input: {
+                let mut t = TextInput::local().with_enter_submits(true).with_font_size(13.0);
+                t.set_plain_chrome(true);
+                t.set_placeholder("Choose starting point");
+                t
+            },
+            dest_input: {
+                let mut t = TextInput::local().with_enter_submits(true).with_font_size(13.0);
+                t.set_plain_chrome(true);
+                t.set_placeholder("Choose destination");
+                t
+            },
             edit_field: None,
             origin_results: Vec::new(),
             dest_results: Vec::new(),
@@ -293,7 +341,6 @@ impl MapsApp {
             scroll: 0.0,
             content_h: 0.0,
             content_view_h: 0.0,
-            start: Instant::now(),
             loaded: false,
             dirty: true,
             net_tx,
@@ -1936,27 +1983,17 @@ impl MapsApp {
             theme.text_dim,
         );
 
+        // The shared TextInput owns the text, caret, selection, and placeholder
+        // inside the field. Its value mirrors `model.query`; a `/`-focus or click
+        // sets `search_focused`, which drives the widget's focus (caret) here.
         let text_x = r.x0 + 40.0;
-        let avail = r.x1 - text_x - 34.0;
-        let size = 15.0_f32;
-        let ty = vmid(r.y0, r.height(), size);
-        if self.model.query.is_empty() {
-            draw::text(scene, tr, t, "Search places, addresses…", text_x, ty, size, theme.text_dim);
-        } else {
-            draw::text_clip(scene, tr, t, &self.model.query, text_x, ty, size, theme.text_primary, avail);
-            // Caret when focused.
-            if self.search_focused && self.caret_on() {
-                let w = draw::measure_w(tr, &self.model.query, size).min(avail);
-                draw::line(
-                    scene,
-                    t,
-                    Point::new(text_x + w + 2.0, r.y0 + 12.0),
-                    Point::new(text_x + w + 2.0, r.y1 - 12.0),
-                    1.5,
-                    theme.accent_primary,
-                );
-            }
-            // Clear (×) button.
+        let text_rect = Rect::new(text_x - 4.0, r.y0, r.x1 - 34.0, r.y1);
+        self.search_input.set_text(&self.model.query);
+        self.search_input.set_focus(self.search_focused);
+        self.search_input.apply_layout_external(text_rect);
+        self.search_input.draw(scene, t, tr, theme, &PresenceCtx::empty());
+        // Clear (×) button, shown whenever there is text to clear.
+        if !self.model.query.is_empty() {
             let cb = Rect::new(r.x1 - 32.0, r.y0 + 10.0, r.x1 - 10.0, r.y1 - 10.0);
             draw::fill_circle(scene, t, cb.center(), 10.0, c.surfaces.base);
             let cc = cb.center();
@@ -1964,10 +2001,6 @@ impl MapsApp {
             draw::line(scene, t, Point::new(cc.x + 4.0, cc.y - 4.0), Point::new(cc.x - 4.0, cc.y + 4.0), 1.8, theme.text_dim);
             self.click_targets.push((cb, Hit::ClearSearch));
         }
-    }
-
-    fn caret_on(&self) -> bool {
-        (self.start.elapsed().as_secs_f64() * 1.6) as u64 % 2 == 0
     }
 
     /// Whether the floating search-results overlay is currently on screen.
@@ -2717,8 +2750,9 @@ impl MapsApp {
         y + ROW_H
     }
 
-    /// One typeable endpoint field (a rounded input with a leading dot, the
-    /// current text or a placeholder, and a blinking caret while focused).
+    /// One typeable endpoint field: draw the rounded box + leading dot, record
+    /// the click target, and return the inner rect the caller lays the endpoint
+    /// [`TextInput`] into (the widget owns the text, caret, and placeholder).
     #[allow(clippy::too_many_arguments)]
     fn draw_endpoint_field(
         &mut self,
@@ -2728,37 +2762,18 @@ impl MapsApp {
         theme: &Theme,
         r: Rect,
         dot: Color,
-        text: &str,
         editing: bool,
-        placeholder: &str,
         hit: Hit,
-    ) {
+    ) -> Rect {
+        let _ = tr;
         let c = &theme.tokens.colors;
         let border = if editing { theme.border_focus } else { c.border_standard };
         draw::fill_rrect(scene, t, r, 9.0, c.surfaces.base);
         draw::stroke_rrect(scene, t, r, 9.0, 1.0, border);
         draw::fill_circle(scene, t, Point::new(r.x0 + 16.0, r.center().y), 4.0, dot);
-        let tx = r.x0 + 30.0;
-        let size = 13.0_f32;
-        let ty = vmid(r.y0, r.height(), size);
-        let avail = r.x1 - tx - 12.0;
-        if text.is_empty() {
-            draw::text(scene, tr, t, placeholder, tx, ty, size, theme.text_dim);
-        } else {
-            draw::text_clip(scene, tr, t, text, tx, ty, size, theme.text_primary, avail);
-        }
-        if editing && self.caret_on() {
-            let w = draw::measure_w(tr, text, size).min(avail);
-            draw::line(
-                scene,
-                t,
-                Point::new(tx + w + 2.0, r.y0 + 10.0),
-                Point::new(tx + w + 2.0, r.y1 - 10.0),
-                1.5,
-                theme.accent_primary,
-            );
-        }
         self.click_targets.push((r, hit));
+        let tx = r.x0 + 30.0;
+        Rect::new(tx - 4.0, r.y0, r.x1 - 12.0, r.y1)
     }
 
     fn draw_directions(
@@ -2789,10 +2804,13 @@ impl MapsApp {
         };
         let from_r = Rect::new(x, y, fields_right, y + field_h);
         self.origin_field_rect = Some(from_r);
-        self.draw_endpoint_field(
-            scene, t, tr, theme, from_r, theme.accent_primary, &from_text, from_editing,
-            "Choose starting point", Hit::EditOrigin,
+        let from_inner = self.draw_endpoint_field(
+            scene, t, tr, theme, from_r, theme.accent_primary, from_editing, Hit::EditOrigin,
         );
+        self.origin_input.set_text(&from_text);
+        self.origin_input.set_focus(from_editing);
+        self.origin_input.apply_layout_external(from_inner);
+        self.origin_input.draw(scene, t, tr, theme, &PresenceCtx::empty());
 
         let to_y = y + field_h + 8.0;
         let to_r = Rect::new(x, to_y, fields_right, to_y + field_h);
@@ -2805,10 +2823,13 @@ impl MapsApp {
         } else {
             self.model.selected_place().map(|p| p.name.clone()).unwrap_or_default()
         };
-        self.draw_endpoint_field(
-            scene, t, tr, theme, to_r, c.semantic.danger, &to_text, to_editing,
-            "Choose destination", Hit::EditDest,
+        let to_inner = self.draw_endpoint_field(
+            scene, t, tr, theme, to_r, c.semantic.danger, to_editing, Hit::EditDest,
         );
+        self.dest_input.set_text(&to_text);
+        self.dest_input.set_focus(to_editing);
+        self.dest_input.apply_layout_external(to_inner);
+        self.dest_input.draw(scene, t, tr, theme, &PresenceCtx::empty());
 
         // Swap button spanning both fields on the trailing edge.
         let swap = Rect::new(right - swap_w, y + field_h / 2.0, right, to_r.y1 - field_h / 2.0);
@@ -3269,6 +3290,9 @@ impl Widget for MapsApp {
             WindowEvent::CursorMoved { position, .. } => {
                 let p = Point::new(position.x / scale_factor, position.y / scale_factor);
                 self.last_mouse = p;
+                // Keep the field inputs' hover state current so a click lands a
+                // caret and a press-drag extends a selection.
+                self.forward_move_to_field_inputs(event, scale_factor, modifiers);
                 if self.dragging && self.left_down {
                     let dx = p.x - self.drag_last.x;
                     let dy = p.y - self.drag_last.y;
@@ -3313,6 +3337,12 @@ impl Widget for MapsApp {
                         self.edit_field = None;
                     }
                     self.dispatch(&hit);
+                    // A click that focused a text field forwards the press so the
+                    // shared TextInput places its caret at the click point (the
+                    // preceding CursorMoved already set its hover flag).
+                    if matches!(hit, Hit::FocusSearch | Hit::EditOrigin | Hit::EditDest) {
+                        self.forward_press_to_field(hit, event, scale_factor, modifiers);
+                    }
                     consumed = true;
                     *handled = true;
                 }
@@ -3363,7 +3393,15 @@ impl Widget for MapsApp {
                 if key_event.state != ElementState::Pressed {
                     return;
                 }
-                if self.handle_key(&key_event.logical_key, modifiers) {
+                // A focused text field (search or an endpoint) owns the
+                // keystroke via the shared TextInput; otherwise the map-level
+                // shortcuts apply.
+                let field_focused = self.edit_field.is_some() || self.search_focused;
+                if field_focused {
+                    if self.route_field_key(event, scale_factor, modifiers) {
+                        *handled = true;
+                    }
+                } else if self.handle_key(&key_event.logical_key, modifiers) {
                     *handled = true;
                 }
             }
@@ -3433,147 +3471,190 @@ impl Widget for MapsApp {
 }
 
 impl MapsApp {
+    fn endpoint_input_mut(&mut self, origin: bool) -> &mut TextInput {
+        if origin { &mut self.origin_input } else { &mut self.dest_input }
+    }
+
+    /// Route a keystroke into the focused text field (search or an endpoint).
+    /// Enter runs the corresponding search; any text edit is mirrored into the
+    /// model (`query` / `*_query`) so the existing geocode / dropdown logic runs
+    /// unchanged. Returns whether the key was consumed.
+    fn route_field_key(
+        &mut self,
+        event: &WindowEvent,
+        scale: f64,
+        modifiers: &winit::event::Modifiers,
+    ) -> bool {
+        let is_escape = matches!(
+            event,
+            WindowEvent::KeyboardInput {
+                event: winit::event::KeyEvent {
+                    logical_key: Key::Named(NamedKey::Escape),
+                    ..
+                },
+                ..
+            }
+        );
+        if let Some(field) = self.edit_field {
+            let origin = field == EndField::Origin;
+            if is_escape {
+                self.edit_field = None;
+                self.mark_dirty();
+                return true;
+            }
+            let (submitted, dirty) = {
+                let input = self.endpoint_input_mut(origin);
+                // The widget only acts on keys while focused; the app's
+                // `edit_field` is the source of truth, so assert focus here (a
+                // draw may not have run since the field was focused).
+                input.set_focus(true);
+                drive_text_input(input, event, scale, modifiers);
+                let submitted = input.take_submit();
+                (submitted, if submitted { None } else { input.take_dirty() })
+            };
+            if submitted {
+                self.run_endpoint_search(origin);
+            } else if let Some(text) = dirty {
+                *self.endpoint_query_mut(origin) = text;
+                self.on_endpoint_input(origin);
+            }
+            return true;
+        }
+        if self.search_focused {
+            if is_escape {
+                self.search_focused = false;
+                self.mark_dirty();
+                return true;
+            }
+            self.search_input.set_focus(true);
+            drive_text_input(&mut self.search_input, event, scale, modifiers);
+            if self.search_input.take_submit() {
+                self.search_focused = false;
+                self.run_search();
+            } else if let Some(text) = self.search_input.take_dirty() {
+                self.model.query = text;
+                self.on_search_input();
+            }
+            return true;
+        }
+        false
+    }
+
+    /// Forward a `CursorMoved` to all field inputs so their hover state tracks
+    /// (a click then lands a caret; a press-drag extends a selection).
+    fn forward_move_to_field_inputs(
+        &mut self,
+        event: &WindowEvent,
+        scale: f64,
+        modifiers: &winit::event::Modifiers,
+    ) {
+        drive_text_input(&mut self.search_input, event, scale, modifiers);
+        drive_text_input(&mut self.origin_input, event, scale, modifiers);
+        drive_text_input(&mut self.dest_input, event, scale, modifiers);
+    }
+
+    /// Forward a press to the field input `origin`/dest/search just focused so
+    /// it places its caret at the click point.
+    fn forward_press_to_field(
+        &mut self,
+        which: Hit,
+        event: &WindowEvent,
+        scale: f64,
+        modifiers: &winit::event::Modifiers,
+    ) {
+        let input = match which {
+            Hit::FocusSearch => &mut self.search_input,
+            Hit::EditOrigin => &mut self.origin_input,
+            Hit::EditDest => &mut self.dest_input,
+            _ => return,
+        };
+        input.set_focus(true);
+        drive_text_input(input, event, scale, modifiers);
+    }
+
     fn handle_key(&mut self, key: &Key, modifiers: &winit::event::Modifiers) -> bool {
         // A Directions endpoint field (From / To) has keyboard focus: typed
         // characters geocode that endpoint, mirroring the top search field.
-        if let Some(field) = self.edit_field {
-            let origin = field == EndField::Origin;
-            return match key {
-                Key::Named(NamedKey::Escape) => {
-                    self.edit_field = None;
-                    self.mark_dirty();
-                    true
-                }
-                Key::Named(NamedKey::Enter) => {
-                    self.run_endpoint_search(origin);
-                    true
-                }
-                Key::Named(NamedKey::Backspace) => {
-                    self.endpoint_query_mut(origin).pop();
-                    self.on_endpoint_input(origin);
-                    true
-                }
-                Key::Named(NamedKey::Space) => {
-                    self.endpoint_query_mut(origin).push(' ');
-                    self.on_endpoint_input(origin);
-                    true
-                }
-                Key::Character(s) => {
-                    self.endpoint_query_mut(origin).push_str(s);
-                    self.on_endpoint_input(origin);
-                    true
-                }
-                _ => false,
-            };
-        }
-        // Search field has keyboard focus.
-        if self.search_focused {
-            match key {
-                Key::Named(NamedKey::Escape) => {
-                    self.search_focused = false;
-                    true
-                }
-                Key::Named(NamedKey::Enter) => {
-                    self.search_focused = false;
-                    self.run_search();
-                    true
-                }
-                Key::Named(NamedKey::Backspace) => {
-                    self.model.query.pop();
-                    self.on_search_input();
-                    true
-                }
-                Key::Named(NamedKey::Space) => {
-                    self.model.query.push(' ');
-                    self.on_search_input();
-                    true
-                }
-                Key::Character(s) => {
-                    self.model.query.push_str(s);
-                    self.on_search_input();
-                    true
-                }
-                _ => false,
+        // Focused text fields (search / endpoints) are handled by
+        // `route_field_key`; `handle_key` runs only when no field has keyboard
+        // focus, so it dispatches the map-level shortcuts.
+        let ctrl = modifiers.state().control_key() || modifiers.state().super_key();
+        match key {
+            Key::Character(s) if s.as_str() == "/" => {
+                self.search_focused = true;
+                true
             }
-        } else {
-            let ctrl = modifiers.state().control_key() || modifiers.state().super_key();
-            match key {
-                Key::Character(s) if s.as_str() == "/" => {
-                    self.search_focused = true;
-                    true
-                }
-                Key::Character(s) if s.as_str() == "+" || s.as_str() == "=" => {
-                    self.zoom_by(1.0, self.view_center());
-                    true
-                }
-                Key::Character(s) if s.as_str() == "-" || s.as_str() == "_" => {
-                    self.zoom_by(-1.0, self.view_center());
-                    true
-                }
-                Key::Character(s) if s.eq_ignore_ascii_case("d") => {
-                    self.enter_directions();
-                    true
-                }
-                Key::Character(s) if s.eq_ignore_ascii_case("t") => {
-                    self.enter_transit();
-                    true
-                }
-                Key::Character(s) if s.eq_ignore_ascii_case("f") => {
-                    // Fit whatever is shown: a road route, or — in Transit mode
-                    // — the selected itinerary's geometry, or the endpoints.
-                    self.fit_current();
-                    true
-                }
-                Key::Character(s) if s.eq_ignore_ascii_case("s") && !ctrl => {
-                    self.toggle_save_selected();
-                    true
-                }
-                Key::Character(s) if s.as_str() == "1" => {
-                    self.set_panel(Panel::Explore);
-                    true
-                }
-                Key::Character(s) if s.as_str() == "2" => {
-                    self.set_panel(Panel::Directions);
-                    true
-                }
-                Key::Named(NamedKey::ArrowLeft) => {
-                    self.pan_by(-80.0, 0.0);
-                    true
-                }
-                Key::Named(NamedKey::ArrowRight) => {
-                    self.pan_by(80.0, 0.0);
-                    true
-                }
-                Key::Named(NamedKey::ArrowUp) => {
-                    self.pan_by(0.0, -80.0);
-                    true
-                }
-                Key::Named(NamedKey::ArrowDown) => {
-                    self.pan_by(0.0, 80.0);
-                    true
-                }
-                Key::Named(NamedKey::Escape) => {
-                    if self.offline_open {
-                        self.offline_open = false;
-                    } else if self.selected_poi.is_some() {
-                        self.selected_poi = None;
-                    } else if self.overlay_mode() && self.nav_open {
-                        self.nav_open = false;
-                    } else {
-                        self.model.selected = None;
-                    }
-                    self.mark_dirty();
-                    true
-                }
-                Key::Character(s) if s.eq_ignore_ascii_case("m") => {
-                    self.offline_open = !self.offline_open;
-                    if self.offline_open {
-                        self.cache_bytes = self.tiles.cache_bytes();
-                    }
-                    true
-                }
-                _ => false,
+            Key::Character(s) if s.as_str() == "+" || s.as_str() == "=" => {
+                self.zoom_by(1.0, self.view_center());
+                true
             }
+            Key::Character(s) if s.as_str() == "-" || s.as_str() == "_" => {
+                self.zoom_by(-1.0, self.view_center());
+                true
+            }
+            Key::Character(s) if s.eq_ignore_ascii_case("d") => {
+                self.enter_directions();
+                true
+            }
+            Key::Character(s) if s.eq_ignore_ascii_case("t") => {
+                self.enter_transit();
+                true
+            }
+            Key::Character(s) if s.eq_ignore_ascii_case("f") => {
+                // Fit whatever is shown: a road route, or — in Transit mode
+                // — the selected itinerary's geometry, or the endpoints.
+                self.fit_current();
+                true
+            }
+            Key::Character(s) if s.eq_ignore_ascii_case("s") && !ctrl => {
+                self.toggle_save_selected();
+                true
+            }
+            Key::Character(s) if s.as_str() == "1" => {
+                self.set_panel(Panel::Explore);
+                true
+            }
+            Key::Character(s) if s.as_str() == "2" => {
+                self.set_panel(Panel::Directions);
+                true
+            }
+            Key::Named(NamedKey::ArrowLeft) => {
+                self.pan_by(-80.0, 0.0);
+                true
+            }
+            Key::Named(NamedKey::ArrowRight) => {
+                self.pan_by(80.0, 0.0);
+                true
+            }
+            Key::Named(NamedKey::ArrowUp) => {
+                self.pan_by(0.0, -80.0);
+                true
+            }
+            Key::Named(NamedKey::ArrowDown) => {
+                self.pan_by(0.0, 80.0);
+                true
+            }
+            Key::Named(NamedKey::Escape) => {
+                if self.offline_open {
+                    self.offline_open = false;
+                } else if self.selected_poi.is_some() {
+                    self.selected_poi = None;
+                } else if self.overlay_mode() && self.nav_open {
+                    self.nav_open = false;
+                } else {
+                    self.model.selected = None;
+                }
+                self.mark_dirty();
+                true
+            }
+            Key::Character(s) if s.eq_ignore_ascii_case("m") => {
+                self.offline_open = !self.offline_open;
+                if self.offline_open {
+                    self.cache_bytes = self.tiles.cache_bytes();
+                }
+                true
+            }
+            _ => false,
         }
     }
 }
@@ -4836,13 +4917,21 @@ mod tests {
 
     fn feed_key(a: &mut MapsApp, logical: Key) -> bool {
         use winit::keyboard::{KeyLocation, NativeKeyCode, PhysicalKey};
+        // Real winit reports the committed text alongside the logical key for a
+        // printable character; the shared TextInput inserts from that `text`
+        // field, so mirror it here (named keys carry no text).
+        let text = match &logical {
+            Key::Character(s) => Some(s.clone()),
+            Key::Named(NamedKey::Space) => Some(winit::keyboard::SmolStr::new(" ")),
+            _ => None,
+        };
         let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
         ev.logical_key = logical;
         ev.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
         ev.location = KeyLocation::Standard;
         ev.state = ElementState::Pressed;
         ev.repeat = false;
-        ev.text = None;
+        ev.text = text;
         feed(
             a,
             WindowEvent::KeyboardInput {
@@ -4859,6 +4948,65 @@ mod tests {
 
     fn key_named(a: &mut MapsApp, named: NamedKey) -> bool {
         feed_key(a, Key::Named(named))
+    }
+
+    /// Ctrl+V pastes the system clipboard into the focused search field via the
+    /// shared TextInput — the hand-rolled field had no clipboard at all. Primes
+    /// the real clipboard, checks it round-trips, then drives Ctrl+V through the
+    /// real event path and asserts the pasted text reached `model.query`.
+    #[test]
+    fn ctrl_v_pastes_into_the_search_field() {
+        let mut a = app_at(1280.0, 720.0);
+        a.model.query.clear();
+        a.search_focused = false;
+        key_char(&mut a, "/"); // focus the search field
+        assert!(a.search_focused);
+
+        let sentinel = "Alexanderplatz";
+        ui::clipboard_copy(sentinel);
+        assert_eq!(
+            ui::clipboard_paste().as_deref(),
+            Some(sentinel),
+            "clipboard round-trips here (precondition for the paste path)"
+        );
+
+        // Ctrl+V through the real KeyboardInput path.
+        let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
+        ev.logical_key = Key::Character(winit::keyboard::SmolStr::new("v"));
+        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
+            winit::keyboard::NativeKeyCode::Unidentified,
+        );
+        ev.location = winit::keyboard::KeyLocation::Standard;
+        ev.state = ElementState::Pressed;
+        ev.repeat = false;
+        ev.text = None; // Ctrl+V carries no committed text
+        let ctrl = {
+            use winit::keyboard::ModifiersState;
+            winit::event::Modifiers::from(ModifiersState::CONTROL)
+        };
+        let mut state = AutoCommit::new();
+        let root = automerge::ROOT;
+        let mut handled = false;
+        let mut focus: Option<NodeId> = None;
+        let mut taffy = TaffyTree::<()>::new();
+        let node = taffy.new_leaf(Style::default()).unwrap();
+        a.handle_event(
+            &WindowEvent::KeyboardInput {
+                device_id: dummy_device_id(),
+                event: ev,
+                is_synthetic: false,
+            },
+            1.0,
+            &ctrl,
+            &mut state,
+            &root,
+            &mut handled,
+            &mut focus,
+            node,
+            &taffy,
+        );
+
+        assert_eq!(a.model.query, sentinel, "Ctrl+V pasted the clipboard into the search query");
     }
 
     /// `/` focuses the search field, characters then type into it, Backspace
@@ -5025,8 +5173,12 @@ mod tests {
     #[test]
     fn offline_clear_cache_dispatch_removes_dir() {
         let mut a = app_at(1280.0, 720.0);
+        let uniq = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
         let dir = std::env::temp_dir()
-            .join(format!("qos-maps-cctest-{}-{}", std::process::id(), a.start.elapsed().as_nanos()));
+            .join(format!("qos-maps-cctest-{}-{}", std::process::id(), uniq));
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("seed.png"), b"not-a-real-tile").unwrap();
         a.tiles = TileLayer::offline_with_cache_dir(dir.clone());
