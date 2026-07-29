@@ -474,8 +474,12 @@ impl ActivityTimeline {
         if vp <= 0.0 {
             return 0..0;
         }
-        let first = (self.scroll_y / ROW_HEIGHT).floor().max(0.0) as usize;
-        let last = ((self.scroll_y + vp) / ROW_HEIGHT).ceil() as usize + 1;
+        // Derived from the same inequalities `row_rect` clips on, so the window
+        // and the rows that actually lay out cannot disagree: row `i` is on
+        // screen iff its bottom edge is at or below the top of the list and
+        // its top edge is at or above the bottom of it.
+        let first = ((self.scroll_y / ROW_HEIGHT).ceil() as usize).saturating_sub(1);
+        let last = ((self.scroll_y + vp) / ROW_HEIGHT).floor() as usize + 1;
         first.min(n)..last.min(n)
     }
 
