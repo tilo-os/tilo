@@ -109,10 +109,75 @@ automerge change graph **cannot be served in part**. Changes carry their
 dependencies never arrive, parked forever. Per-record sharing therefore implies
 per-record *documents*, not a filtered view of one document.
 
-## Open questions
+## Rooms hold references, not copies
 
-- The gesture for bringing a record into a room. It has to be one step.
-- Whether a record can live in two rooms, or only be copied between them.
-  Copying is simpler and loses the shared-edit property that motivates the CRDT.
-- What a room's *own* history shows once records move in and out of it.
-- Whether "personal room" is a room in the same sense, or a distinguished one.
+**A record exists once. Rooms reference it.**
+
+This is the load-bearing answer to "can a record live in two rooms". Copying is
+simpler and it throws away the shared-edit property that is the entire reason
+the state is a CRDT — two copies of a book diverge and no amount of merging
+makes them one book again. So: the record *is* the document, identified by its
+record id, and a room holds a list of record ids. Bringing a record into a room
+adds a reference; it moves no bytes. Edits made through either room are edits to
+the one document.
+
+**The reference is what grants access.** A member of a room can reach the
+records that room references, and nothing else. Removing the reference removes
+the access — with the honest caveat that a peer who already synced the bytes has
+them, so removal stops future changes flowing, it does not un-share history.
+That limit is inherent to giving someone data, not a flaw in the model, and the
+UI must not imply otherwise.
+
+**Copying still exists, as a different verb.** "Duplicate here" forks a new
+record id with a provenance link to its origin. Two verbs, two names, two
+outcomes — the user is never left guessing which one a gesture did.
+
+## Bringing your own is a search result
+
+The gesture has to be one step or the clean-slate default collapses back to
+global (see above). It already exists: **search**.
+
+Super+K, type the book's name, and results include records from your other
+rooms — labelled with where they live. Activating one brings it into this room.
+No import dialog, no file picker, no new vocabulary: the gesture for *opening*
+something and the gesture for *bringing* it are the same gesture, which is why
+it is cheap enough to rely on.
+
+This also settles what search is for. It is not a file finder that happens to
+list apps; it is the way you reach any record from anywhere, and provenance is
+part of the result row. Drag onto a workspace spoke in the wheel disc stays as
+the bulk gesture, for when you are moving several things and already have them
+in front of you.
+
+## History nests: room outside, record inside
+
+A room's own history is the log of actions on the room **as a resource** —
+references added and removed, members joined and left, capabilities granted and
+revoked. A record's edits belong to the record's history.
+
+The room timeline shows those edits as roll-ups — *"Alice made 12 changes to
+Chapter 3"* — that expand into the record's own history. That is the
+expand/collapse structure the history surfaces already want, arrived at from the
+data model rather than bolted onto it: the room timeline is the outer level, the
+record history the inner one, and the filters (contributor, action type, date
+range, app) mean the same thing at both levels.
+
+## Your own room is not special
+
+Same kind of room, one member. It is where new records land by default, and that
+is the only thing that distinguishes it — a default, not a rule. The shell opens
+it when no workspace is selected, which is a UI choice.
+
+Making it a distinguished kind would reintroduce exactly the asymmetry this
+document exists to remove: the moment "personal" is a different sort of thing
+from "shared", every feature has to be built twice and sharing becomes a
+migration instead of a reference.
+
+## Still open
+
+- Whether a record's *type* is app-owned or system-owned. App-owned is less
+  coordination; system-owned is what would let one library view show a book, a
+  playlist and a document side by side.
+- What happens to a room's references when the room is deleted. Orphaned records
+  need a home, and "your own room" is the obvious one — but silently moving
+  another person's records there is wrong.
