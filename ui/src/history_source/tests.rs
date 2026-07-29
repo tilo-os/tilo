@@ -11,8 +11,6 @@ use automerge::{ActorId, AutoCommit, ObjType, ROOT};
 use automerge::transaction::Transactable;
 use collab_types::OpClass;
 
-use crate::HistoryAuthor;
-
 use super::*;
 use crate::permissions::UserId;
 use crate::widget::history::HistoryAuthor;
