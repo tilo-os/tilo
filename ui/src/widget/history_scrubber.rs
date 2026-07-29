@@ -798,12 +798,20 @@ impl HistoryScrubber {
         let track = self.track_rect();
         let size = (theme.tokens.typography.scale.sm - 3.0).max(9.0);
 
+        // Segments abut at the tick each one ends on, so the band tiles the whole
+        // track and every visible edge is a real boundary. Spanning only
+        // first-tick..last-tick instead leaves one tick of nothing between
+        // neighbours — 50 px on a twenty-change document, which reads as a hole.
+        let mut cursor = band.x0;
         for (i, g) in self.groups.iter().enumerate() {
-            // A segment spans from its first tick to its last; a one-tick segment
-            // would be zero-wide, so give it a minimum so it is still visible.
-            let x0 = self.tick_x(g.start);
-            let x1 = self.tick_x(g.end).max(x0 + 2.0);
-            let seg = Rect::new(x0, band.y0, x1.min(band.x1), band.y1);
+            let x0 = cursor;
+            let x1 = if i + 1 == self.groups.len() {
+                band.x1
+            } else {
+                self.tick_x(g.end).clamp(x0, band.x1)
+            };
+            cursor = x1;
+            let seg = Rect::new(x0, band.y0, x1.max(x0 + 2.0).min(band.x1), band.y1);
             if seg.width() <= 0.0 {
                 continue;
             }
