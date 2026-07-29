@@ -603,7 +603,7 @@ mod tests {
         let guest_room = guest_tree.room_of(guest_ws).expect("the guest's room");
 
         let applied = guest_tree
-            .apply_room_changes(guest_room, &room_b_changes)
+            .apply_room_changes(guest_room, &room_b_changes, &PeerOrigin::hub(1))
             .expect("well-formed change blobs still parse");
         assert!(
             !applied,
