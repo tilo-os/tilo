@@ -234,6 +234,22 @@ impl PdfDoc {
         }
     }
 
+    /// Move an annotation's anchor to `(x, y)` in page-point space. Used by the
+    /// draggable annotation markers — repositioning a sticky note. Highlights
+    /// keep their width/height and shift; notes carry only a point. A no-op for
+    /// ink (its geometry is the polyline, not a single anchor).
+    pub fn set_annotation_position(doc: &mut AutoCommit, id: &str, x: f64, y: f64) {
+        let list = Self::list(doc, "annotations");
+        if let Some(i) = Self::index_of(doc, &list, id) {
+            if let Ok(Some((Value::Object(ObjType::Map), m))) = doc.get(&list, i) {
+                if Self::get_str(doc, &m, "kind").as_deref() != Some("ink") {
+                    let _ = doc.put(&m, "x", x);
+                    let _ = doc.put(&m, "y", y);
+                }
+            }
+        }
+    }
+
     pub fn delete_annotation(doc: &mut AutoCommit, id: &str) {
         let list = Self::list(doc, "annotations");
         if let Some(i) = Self::index_of(doc, &list, id) {
@@ -492,6 +508,48 @@ mod tests {
         assert_eq!(PdfDoc::list_annotations(&doc)[0].color, Swatch::Green);
         PdfDoc::delete_annotation(&mut doc, &id);
         assert!(PdfDoc::list_annotations(&doc).is_empty());
+    }
+
+    #[test]
+    fn set_position_moves_a_note_marker() {
+        let mut doc = AutoCommit::new();
+        let a = Annotation {
+            id: Annotation::new_id(),
+            page: 1,
+            kind: AnnoKind::Note { x: 30.0, y: 40.0 },
+            color: Swatch::Blue,
+            author: "Alice".into(),
+        };
+        let id = a.id.clone();
+        PdfDoc::add_annotation(&mut doc, &a);
+        PdfDoc::set_annotation_position(&mut doc, &id, 120.5, 210.25);
+        match &PdfDoc::list_annotations(&doc)[0].kind {
+            AnnoKind::Note { x, y } => {
+                assert!((x - 120.5).abs() < 1e-6, "note x moved");
+                assert!((y - 210.25).abs() < 1e-6, "note y moved");
+            }
+            _ => panic!("expected note"),
+        }
+    }
+
+    #[test]
+    fn set_position_leaves_ink_geometry_untouched() {
+        // Ink is a polyline, not a single anchor — repositioning must be a no-op.
+        let mut doc = AutoCommit::new();
+        let a = Annotation {
+            id: Annotation::new_id(),
+            page: 1,
+            kind: AnnoKind::Ink { points: vec![(1.0, 2.0), (3.0, 4.0)] },
+            color: Swatch::Blue,
+            author: "Bob".into(),
+        };
+        let id = a.id.clone();
+        PdfDoc::add_annotation(&mut doc, &a);
+        PdfDoc::set_annotation_position(&mut doc, &id, 99.0, 99.0);
+        match &PdfDoc::list_annotations(&doc)[0].kind {
+            AnnoKind::Ink { points } => assert_eq!(points.len(), 2, "ink polyline preserved"),
+            _ => panic!("expected ink"),
+        }
     }
 
     #[test]
