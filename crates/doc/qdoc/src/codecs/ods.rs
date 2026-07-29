@@ -134,7 +134,7 @@ fn parse_content(xml: &[u8], wb: &mut Workbook) -> Result<(), CodecError> {
             }
             Event::Text(t) => {
                 if in_text_p {
-                    let txt = t.unescape().map_err(|e| CodecError::Parse(format!("cell text: {e}")))?;
+                    let txt = t.xml10_content().map_err(|e| CodecError::Parse(format!("cell text: {e}")))?;
                     cur.text.push_str(&txt);
                 }
             }
@@ -234,7 +234,7 @@ fn import_meta(xml: &[u8], wb: &mut Workbook) {
             }
             Event::Text(t) => {
                 if cur.is_some() {
-                    if let Ok(txt) = t.unescape() {
+                    if let Ok(txt) = t.xml10_content() {
                         buf.push_str(&txt);
                     }
                 }

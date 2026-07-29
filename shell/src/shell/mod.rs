@@ -45,6 +45,7 @@ pub mod persist;
 pub mod qs_actions;
 pub mod quick_settings;
 pub mod remote_cursors;
+pub mod room_activity;
 pub mod roster_panel;
 pub mod search;
 pub mod sidebar_wheel;

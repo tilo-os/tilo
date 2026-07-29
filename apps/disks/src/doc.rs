@@ -16,8 +16,8 @@
 //! └── "status"        (Str)   # last action / status-line message
 //! ```
 
-use automerge::transaction::Transactable;
-use automerge::{AutoCommit, ReadDoc, ROOT, ScalarValue, Value};
+use ui::automerge::transaction::Transactable;
+use ui::automerge::{AutoCommit, ReadDoc, ROOT, ScalarValue, Value};
 
 use crate::model::Topology;
 
