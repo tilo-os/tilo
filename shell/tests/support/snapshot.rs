@@ -64,7 +64,22 @@ impl SnapshotAssertion {
         let update = std::env::var_os("UPDATE_SNAPSHOTS")
             .map(|v| v == "1")
             .unwrap_or(false);
+        self.assert_with(update);
+    }
 
+    /// [`Self::assert`] with the refresh decision handed in rather than
+    /// read from the environment.
+    ///
+    /// This module's own tests need to exercise both sides of that
+    /// decision, and they used to do it by setting and removing
+    /// `UPDATE_SNAPSHOTS` in the process. That is the same process the
+    /// golden-pinned tests run in, so `UPDATE_SNAPSHOTS=1 cargo test`
+    /// raced: whichever unit test removed the variable first turned the
+    /// refresh off for every golden that had not been reached yet, and
+    /// the run ended in snapshot diffs with no sign of why. Reading the
+    /// environment exactly once, at the real call site, keeps that
+    /// coupling from existing.
+    pub fn assert_with(self, update: bool) {
         if !self.rendered_png.exists() {
             panic!(
                 "snapshot: rendered PNG missing at {}",
@@ -266,60 +281,32 @@ mod tests {
         writer.write_image_data(rgba).unwrap();
     }
 
-    /// `UPDATE_SNAPSHOTS` is process-global env state, so test cases
-    /// that touch it must not run concurrently with ones that assume
-    /// it's unset. Serialize via a mutex.
-    fn update_snapshots_lock() -> std::sync::MutexGuard<'static, ()> {
-        use std::sync::{Mutex, OnceLock};
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-    }
-
     #[test]
     fn identical_pngs_pass() {
-        let _g = update_snapshots_lock();
-        // SAFETY: `assert()` below may read UPDATE_SNAPSHOTS. Guarded
-        // by the mutex above so no other test toggles it mid-read.
-        unsafe {
-            std::env::remove_var("UPDATE_SNAPSHOTS");
-        }
-
         let dir = scratch_dir();
         let rendered = dir.join("rendered.png");
         let golden = dir.join("golden.png");
         write_png(&rendered, 4, 4, [10, 20, 30, 255]);
         write_png(&golden, 4, 4, [10, 20, 30, 255]);
 
-        SnapshotAssertion::new(rendered, golden).assert();
+        SnapshotAssertion::new(rendered, golden).assert_with(false);
     }
 
     #[test]
     #[should_panic(expected = "dimension mismatch")]
     fn dimension_mismatch_panics() {
-        let _g = update_snapshots_lock();
-        unsafe {
-            std::env::remove_var("UPDATE_SNAPSHOTS");
-        }
-
         let dir = scratch_dir();
         let rendered = dir.join("rendered.png");
         let golden = dir.join("golden.png");
         write_png(&rendered, 4, 4, [0, 0, 0, 255]);
         write_png(&golden, 8, 8, [0, 0, 0, 255]);
 
-        SnapshotAssertion::new(rendered, golden).assert();
+        SnapshotAssertion::new(rendered, golden).assert_with(false);
     }
 
     #[test]
     #[should_panic(expected = "pixels differ")]
     fn diff_above_tolerance_panics() {
-        let _g = update_snapshots_lock();
-        unsafe {
-            std::env::remove_var("UPDATE_SNAPSHOTS");
-        }
-
         let dir = scratch_dir();
         let rendered = dir.join("rendered.png");
         let golden = dir.join("golden.png");
@@ -333,16 +320,11 @@ mod tests {
         write_png_bytes(&rendered, 2, 2, &rendered_px);
         write_png_bytes(&golden, 2, 2, &golden_px);
 
-        SnapshotAssertion::new(rendered, golden).assert();
+        SnapshotAssertion::new(rendered, golden).assert_with(false);
     }
 
     #[test]
     fn diff_within_tolerance_passes() {
-        let _g = update_snapshots_lock();
-        unsafe {
-            std::env::remove_var("UPDATE_SNAPSHOTS");
-        }
-
         let dir = scratch_dir();
         let rendered = dir.join("rendered.png");
         let golden = dir.join("golden.png");
@@ -355,13 +337,11 @@ mod tests {
         write_png_bytes(&rendered, 2, 2, &rendered_px);
         write_png_bytes(&golden, 2, 2, &golden_px);
 
-        SnapshotAssertion::new(rendered, golden).assert();
+        SnapshotAssertion::new(rendered, golden).assert_with(false);
     }
 
     #[test]
     fn update_snapshots_overwrites_golden() {
-        let _g = update_snapshots_lock();
-
         let dir = scratch_dir();
         let rendered = dir.join("rendered.png");
         let golden = dir.join("golden.png");
@@ -369,16 +349,7 @@ mod tests {
         write_png(&rendered, 4, 4, [255, 0, 0, 255]);
         write_png(&golden, 4, 4, [0, 0, 255, 255]);
 
-        unsafe {
-            std::env::set_var("UPDATE_SNAPSHOTS", "1");
-        }
-        let result = std::panic::catch_unwind(|| {
-            SnapshotAssertion::new(&rendered, &golden).assert();
-        });
-        unsafe {
-            std::env::remove_var("UPDATE_SNAPSHOTS");
-        }
-        result.expect("UPDATE_SNAPSHOTS=1 should not panic");
+        SnapshotAssertion::new(&rendered, &golden).assert_with(true);
 
         // Verify the golden now matches the rendered (both red).
         let g = decode_png(&golden);
@@ -387,18 +358,13 @@ mod tests {
 
     #[test]
     fn missing_golden_writes_it_and_passes() {
-        let _g = update_snapshots_lock();
-        unsafe {
-            std::env::remove_var("UPDATE_SNAPSHOTS");
-        }
-
         let dir = scratch_dir();
         let rendered = dir.join("rendered.png");
         // Deliberately NOT creating the golden ahead of time.
         let golden = dir.join("subdir/golden.png");
         write_png(&rendered, 4, 4, [100, 120, 140, 255]);
 
-        SnapshotAssertion::new(&rendered, &golden).assert();
+        SnapshotAssertion::new(&rendered, &golden).assert_with(false);
 
         assert!(
             golden.exists(),
