@@ -504,6 +504,44 @@ impl ShellDriver {
                 self.with_chrome(|st| st.overlays.room_activity = true);
                 self.fb.host_mut().force_room_activity_settled();
             }
+            "room-activity-named" => {
+                // The same room, with two of its runs named — one of them by the
+                // peer, under the peer's own actor, so the band reads "named by"
+                // somebody other than whoever is looking. Both names go in through
+                // the pane's own write path, which is what the [Name] chip calls.
+                self.scene_setup("room-activity")?;
+                let handle = self.chrome_handle();
+                let st = handle.borrow();
+                let mut tree = st.tree_mut();
+                let entries = self.fb.host().room_activity().entries().to_vec();
+                if entries.len() >= 6 {
+                    // The peer's own run: it named it before syncing.
+                    let mut peer = tree.doc.fork();
+                    peer.set_actor(automerge::ActorId::from("ada".as_bytes()));
+                    ui::history_groups::name_range(
+                        &mut peer,
+                        &entries[entries.len() - 3].id,
+                        Some(&entries[entries.len() - 1].id),
+                        "Reading week",
+                    );
+                    qdoc::history::commit_stamped(&mut peer);
+                    let _ = tree.doc.merge(&mut peer);
+
+                    let pane = self.fb.host_mut().room_activity_mut();
+                    pane.apply_name(
+                        &mut tree,
+                        &ui::GroupNameRequest {
+                            record_id: None,
+                            start: entries[0].id,
+                            end: entries[3].id,
+                            label: "Set up the room".to_string(),
+                        },
+                    );
+                }
+                drop(tree);
+                drop(st);
+                self.fb.host_mut().force_room_activity_settled();
+            }
             "room-activity-all" => {
                 // The same room, widened to the whole tree — which is what
                 // the document actually holds. Every row now says which
@@ -667,6 +705,7 @@ impl ShellDriver {
         "notifications-dnd",
         "room-activity",
         "room-activity-all",
+        "room-activity-named",
     ];
 
     /// Resolve a "named" UI target (button, pill, tab) to its on-screen

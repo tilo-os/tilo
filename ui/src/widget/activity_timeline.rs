@@ -102,6 +102,10 @@ const INDENT: f64 = 20.0;
 /// This is the line between the two, and it is spent newest-first because that
 /// is what the reader came for.
 const AUTO_EXPAND_BUDGET: usize = 14;
+/// Past this many top-level bands the pane stops expanding anything by default.
+/// The reader came for an overview at that point, not for the first fourteen
+/// changes of it.
+const DENSE_GROUP_COUNT: usize = 6;
 
 /// Five filter chips painted across the top of the pane.
 /// Ordered left-to-right so a flat `[i]` lookup matches the visual.
@@ -246,6 +250,9 @@ pub struct ActivityTimeline {
     grouping: GroupingConfig,
     /// The forest, over the **unfiltered** entry list.
     groups: Vec<HistoryGroup>,
+    /// Display order of the top-level groups: newest band first (or last), by the
+    /// newest change each band holds.
+    group_order: Vec<usize>,
     filter: HistoryFilter,
     /// Indexes (into `entries`) that pass the filter, in display order.
     visible: Vec<usize>,
@@ -317,6 +324,7 @@ impl ActivityTimeline {
             named: Vec::new(),
             grouping: GroupingConfig::default(),
             groups: Vec::new(),
+            group_order: Vec::new(),
             filter: HistoryFilter::default(),
             visible: Vec::new(),
             rows: Vec::new(),
@@ -888,6 +896,7 @@ impl ActivityTimeline {
     pub fn set_newest_first(&mut self, newest_first: bool) {
         if self.newest_first != newest_first {
             self.newest_first = newest_first;
+            self.reorder_groups();
             self.rebuild();
         }
     }
@@ -1013,6 +1022,7 @@ impl ActivityTimeline {
     /// downstream. O(n).
     fn regroup(&mut self) {
         self.groups = group_entries(&self.entries, &self.named, &self.grouping);
+        self.reorder_groups();
         // A selection that no longer addresses real changes would name a range
         // that does not exist.
         if let Some((a, b)) = self.selection
@@ -1024,24 +1034,67 @@ impl ActivityTimeline {
         self.rebuild();
     }
 
-    /// Rebuild the filtered list and the rendered lines.
-    fn rebuild(&mut self) {
-        self.visible.clear();
-        let chip_ops = self.active_chip.op_classes();
-        let needle = self.author_query.trim().to_lowercase();
-        for (i, e) in self.entries.iter().enumerate() {
-            if self.passes(e, &chip_ops, &needle) {
-                self.visible.push(i);
+    /// Order the bands for display: by the newest change each one holds.
+    ///
+    /// Bands, not rows. Sorting rows by the clock alone breaks a band apart —
+    /// automerge records a change's advisory time in whole seconds, so a burst of
+    /// activity inside one second is a wall of ties, and a peer whose changes
+    /// merged late carries an old clock into the newest part of the graph.
+    /// Ordering *bands* by their newest change keeps each band contiguous and in
+    /// causal order internally, while the list as a whole still reads
+    /// chronologically — which is what a reader checks it against.
+    fn reorder_groups(&mut self) {
+        let mut order: Vec<usize> = (0..self.groups.len()).collect();
+        order.sort_by(|a, b| {
+            let (ga, gb) = (&self.groups[*a], &self.groups[*b]);
+            if self.newest_first {
+                gb.last_time.cmp(&ga.last_time).then(b.cmp(a))
+            } else {
+                ga.last_time.cmp(&gb.last_time).then(a.cmp(b))
+            }
+        });
+        self.group_order = order;
+    }
+
+    /// Entry indices in `g`'s subtree, in display order.
+    fn group_entries_in_display_order(&self, g: &HistoryGroup, out: &mut Vec<usize>) {
+        let mut members: Vec<Member<'_>> = Vec::new();
+        let mut i = g.start;
+        while i < g.end {
+            if let Some(c) = g.children.iter().find(|c| c.start == i) {
+                members.push(Member::Child(c));
+                i = c.end;
+            } else {
+                members.push(Member::Entry(i));
+                i += 1;
             }
         }
-        // Display order is the document's causal order, reversed when the pane
-        // reads newest-first. Automerge records a change's advisory time in
-        // whole seconds, so a burst of activity inside one second is a wall of
-        // ties that a clock-only sort would render in an arbitrary order; causal
-        // order is the one order the change graph actually defines.
         if self.newest_first {
-            self.visible.reverse();
+            members.reverse();
         }
+        for m in members {
+            match m {
+                Member::Entry(e) => out.push(e),
+                Member::Child(c) => self.group_entries_in_display_order(c, out),
+            }
+        }
+    }
+
+    /// Rebuild the filtered list and the rendered lines.
+    fn rebuild(&mut self) {
+        let chip_ops = self.active_chip.op_classes();
+        let needle = self.author_query.trim().to_lowercase();
+        // Walked in the same order the lines are, so a count and a position mean
+        // the same thing in both.
+        let mut ordered: Vec<usize> = Vec::with_capacity(self.entries.len());
+        for gi in self.group_order.clone() {
+            let g = &self.groups[gi];
+            self.group_entries_in_display_order(g, &mut ordered);
+        }
+        self.visible = ordered
+            .into_iter()
+            .filter(|i| self.passes(&self.entries[*i], &chip_ops, &needle))
+            .collect();
         self.rebuild_rows();
     }
 
@@ -1054,12 +1107,7 @@ impl ActivityTimeline {
         let mut row_groups: Vec<RowGroup> = Vec::new();
         let mut budget = AUTO_EXPAND_BUDGET;
 
-        let order: Vec<usize> = if self.newest_first {
-            (0..self.groups.len()).rev().collect()
-        } else {
-            (0..self.groups.len()).collect()
-        };
-        for gi in order {
+        for gi in self.group_order.clone() {
             let g = &self.groups[gi];
             self.emit_group(
                 g,
@@ -1130,7 +1178,20 @@ impl ActivityTimeline {
         } else if self.collapsed.contains(&g.key) {
             false
         } else {
-            visible_count <= *budget
+            // Two conditions, and both are about the *whole* list rather than
+            // this band: a short history should read as a list, and a long one
+            // has to read as bands. Expanding the first seven of a thousand
+            // bands satisfies neither — it just looks like something went wrong
+            // partway down.
+            // Count the bands, not the groups: a run of one unnamed change is
+            // drawn as a plain row, and a list of eight loose rows next to one
+            // band is not a dense list of bands.
+            let bands = self
+                .groups
+                .iter()
+                .filter(|g| !g.is_bare_change())
+                .count();
+            bands <= DENSE_GROUP_COUNT && visible_count <= *budget
         };
         if expanded {
             *budget = budget.saturating_sub(visible_count);
@@ -1335,11 +1396,12 @@ impl ActivityTimeline {
             full_row.y1,
         );
 
-        // The rail: a hairline down the left of every nested row, so a run of
-        // rows reads as belonging to the band above it rather than as a list
-        // that happens to start further right.
-        if depth > 0 {
-            let x = full_row.x0 + (depth as f64 - 0.5) * INDENT;
+        // The rail: a hairline down the left for every level this row sits
+        // inside, so a run of rows reads as belonging to the bands above it
+        // rather than as a list that happens to start further right. One line per
+        // level, or a row two deep would only show the inner containment.
+        for level in 1..=depth {
+            let x = full_row.x0 + (level as f64 - 0.5) * INDENT;
             scene.stroke(
                 &Stroke::new(1.0),
                 transform,
@@ -1350,13 +1412,27 @@ impl ActivityTimeline {
         }
 
         if is_selected {
+            // A neutral raise plus an accent edge, not an accent *fill*. The pale
+            // end of the accent ramp behind primary text is unreadable, and a
+            // selection the user cannot read through is worse than no selection.
             let shape = RoundedRect::from_rect(row, theme.tokens.radii.sm as f64);
             scene.fill(
                 vello::peniko::Fill::NonZero,
                 transform,
-                theme.tokens.colors.accent[7],
+                theme.tokens.colors.surface_white_20,
                 None,
                 &shape,
+            );
+            let edge = RoundedRect::from_rect(
+                Rect::new(row.x0, row.y0 + 2.0, row.x0 + 2.5, row.y1 - 2.0),
+                1.25,
+            );
+            scene.fill(
+                vello::peniko::Fill::NonZero,
+                transform,
+                theme.tokens.colors.accent[4],
+                None,
+                &edge,
             );
         } else if is_hovered {
             let shape = RoundedRect::from_rect(row, theme.tokens.radii.sm as f64);
@@ -1571,8 +1647,8 @@ impl ActivityTimeline {
             full_row.x1,
             full_row.y1 - 2.0,
         );
-        if rg.depth > 0 {
-            let x = full_row.x0 + (rg.depth as f64 - 0.5) * INDENT;
+        for level in 1..=rg.depth {
+            let x = full_row.x0 + (level as f64 - 0.5) * INDENT;
             scene.stroke(
                 &Stroke::new(1.0),
                 transform,
@@ -3675,6 +3751,59 @@ mod group_tests {
             (with_bar - without_bar - SELECTION_BAR_H).abs() < 0.01,
             "scroll extent moved by {} for a {SELECTION_BAR_H} px bar",
             with_bar - without_bar
+        );
+    }
+
+    #[test]
+    fn bands_are_ordered_by_their_clock_but_never_broken_apart() {
+        // A peer's session merges in last (so it is last in causal order) while
+        // carrying a clock from days ago. Ordering rows by the clock alone would
+        // interleave it with the local work; ordering by causal position alone
+        // would put "5 d ago" above "just now". Bands sort by their newest change
+        // and stay contiguous.
+        let day = 86_400u64;
+        let mut entries: Vec<HistoryEntry> = Vec::new();
+        // Local session, recent.
+        for i in 0..4 {
+            entries.push(entry(OpClass::Splice, "Alice", NOW - 60 + i as u64, i));
+        }
+        // Peer session, merged after but stamped days earlier.
+        for i in 0..3 {
+            entries.push(entry(OpClass::Splice, "Ada", NOW - 5 * day + i as u64, 10 + i));
+        }
+        let t = timeline_at(Rect::new(0.0, 0.0, 620.0, 900.0), entries);
+        let mut tl = t;
+        tl.set_all_expanded(true);
+
+        let authors: Vec<&str> = (0..tl.row_count())
+            .filter_map(|i| tl.row_entry(i).map(|e| e.author.name.as_str()))
+            .collect();
+        // Newest-first: Alice's whole band, then Ada's whole band. No interleaving.
+        assert_eq!(
+            authors,
+            vec!["Alice", "Alice", "Alice", "Alice", "Ada", "Ada", "Ada"],
+            "the recent band comes first and neither band is broken apart"
+        );
+        // And the band headers agree with that order.
+        let titles: Vec<&str> = (0..tl.row_count())
+            .filter_map(|i| tl.group_title_at_row(i))
+            .collect();
+        assert_eq!(titles.len(), 2, "two bands: {titles:?}");
+
+        // `visible` walks the same order, so a count and a position agree.
+        let visible_authors: Vec<&str> = (0..tl.visible_len())
+            .map(|i| tl.visible_entry(i).unwrap().author.name.as_str())
+            .collect();
+        assert_eq!(visible_authors, authors);
+
+        tl.set_newest_first(false);
+        let authors: Vec<&str> = (0..tl.row_count())
+            .filter_map(|i| tl.row_entry(i).map(|e| e.author.name.as_str()))
+            .collect();
+        assert_eq!(
+            authors,
+            vec!["Ada", "Ada", "Ada", "Alice", "Alice", "Alice", "Alice"],
+            "oldest-first flips the bands, and still does not break them"
         );
     }
 }
