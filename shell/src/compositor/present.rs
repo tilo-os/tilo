@@ -66,9 +66,10 @@
 //! acquire a threading model it doesn't need.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
 
 use vello::Scene;
 
@@ -122,8 +123,20 @@ pub struct PresentPipe {
     /// Surfaced in the paint stats — a large number means the GPU is the
     /// bottleneck, which is a different diagnosis from a slow scene build.
     backpressured: u64,
+    /// Set by the render thread just before it returns. Read by
+    /// [`Self::shutdown`] so it can tell "finished" from "wedged" without
+    /// committing to a `join` that might never return.
+    finished: Arc<AtomicBool>,
     handle: Option<JoinHandle<()>>,
 }
+
+/// How long [`PresentPipe::shutdown`] waits for the render thread before
+/// giving up on it.
+///
+/// Generous enough to cover a frame in flight on any real display (a
+/// 24 Hz mode is 42 ms) plus a slow driver's teardown, short enough that
+/// a wedged GPU cannot hold the session open.
+pub const SHUTDOWN_GRACE: Duration = Duration::from_secs(2);
 
 impl PresentPipe {
     /// Move `presenter` onto a dedicated thread.
@@ -145,9 +158,15 @@ impl PresentPipe {
         let presented = Arc::new(AtomicU64::new(0));
         let thread_inflight = inflight.clone();
         let thread_presented = presented.clone();
+        let finished = Arc::new(AtomicBool::new(false));
+        let thread_finished = finished.clone();
         let handle = std::thread::Builder::new()
             .name("qos-present".to_string())
             .spawn(move || {
+                // Flag completion however this thread leaves — normal
+                // return or unwind — so `shutdown` never waits on a
+                // thread that is already gone.
+                let _done = FinishedOnDrop(thread_finished);
                 for msg in rx {
                     match msg {
                         PresentMsg::Frame { scene, output } => {
@@ -174,6 +193,7 @@ impl PresentPipe {
             inflight,
             presented,
             backpressured: 0,
+            finished,
             handle: Some(handle),
         }
     }
@@ -227,11 +247,50 @@ impl PresentPipe {
     /// Stop the render thread and wait for the frame in flight to finish.
     /// Called on shutdown so a half-presented frame doesn't outlive the
     /// device it was rendering into.
+    /// Stop the render thread and wait — for at most [`SHUTDOWN_GRACE`] —
+    /// for the frame in flight to finish.
+    ///
+    /// The wait is bounded because the thing being waited on is a GPU. A
+    /// bare `join` here is a deadlock waiting for a driver to hang: the
+    /// render thread is blocked inside `present`, `join` blocks the
+    /// caller, and neither ever returns. That is not hypothetical — it is
+    /// exactly how a deliberate-breakage run of the queue bound wedged,
+    /// hanging for ten minutes instead of reporting a failure, because
+    /// `Drop` ran `join` while the test still held the presenter blocked.
+    ///
+    /// If the thread doesn't finish in time we detach it and say so. A
+    /// leaked thread on the way out of a process is a far better outcome
+    /// than a compositor that will not exit.
     pub fn shutdown(&mut self) {
+        let Some(handle) = self.handle.take() else {
+            return;
+        };
         let _ = self.tx.send(PresentMsg::Stop);
-        if let Some(h) = self.handle.take() {
-            let _ = h.join();
+        let deadline = Instant::now() + SHUTDOWN_GRACE;
+        while !self.finished.load(Ordering::Acquire) {
+            if Instant::now() >= deadline {
+                eprintln!(
+                    "nirios compositor: render thread did not stop within {SHUTDOWN_GRACE:?}; \
+                     detaching it rather than blocking shutdown"
+                );
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(1));
         }
+        // The thread has flagged completion, so this join returns
+        // promptly. `Err` means it panicked, which its own handler
+        // already reported.
+        let _ = handle.join();
+    }
+}
+
+/// Sets the shared "thread finished" flag on drop, so it is set whether
+/// the render thread returns normally or unwinds.
+struct FinishedOnDrop(Arc<AtomicBool>);
+
+impl Drop for FinishedOnDrop {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Release);
     }
 }
 
@@ -318,13 +377,17 @@ mod tests {
         // and assert the submitting thread returns anyway — if `submit`
         // blocked, this call would not return until the gate is released.
         let gate = Arc::new(Mutex::new(()));
-        let held = gate.lock().expect("take the gate before spawning");
+        // Spawn *before* taking the gate: locals drop in reverse
+        // declaration order, so `held` must be declared after `pipe` to be
+        // released before `shutdown` waits on the render thread. The other
+        // order deadlocks on any assertion failure.
         let mut pipe = spawn_with_retire(Box::new(Blocking {
             gate: gate.clone(),
             seen: Arc::new(AtomicU64::new(0)),
             resizes: Arc::new(Mutex::new(Vec::new())),
             dpms: Arc::new(Mutex::new(Vec::new())),
         }));
+        let held = gate.lock().expect("hold the presenter inside `present`");
         let t0 = std::time::Instant::now();
         assert!(pipe.submit(Scene::new(), OutputId(0)));
         let elapsed = t0.elapsed();
@@ -345,13 +408,17 @@ mod tests {
         // frames forever and the input-to-photon path would grow without
         // bound.
         let gate = Arc::new(Mutex::new(()));
-        let held = gate.lock().expect("take the gate before spawning");
+        // Spawn *before* taking the gate: locals drop in reverse
+        // declaration order, so `held` must be declared after `pipe` to be
+        // released before `shutdown` waits on the render thread. The other
+        // order deadlocks on any assertion failure.
         let mut pipe = spawn_with_retire(Box::new(Blocking {
             gate: gate.clone(),
             seen: Arc::new(AtomicU64::new(0)),
             resizes: Arc::new(Mutex::new(Vec::new())),
             dpms: Arc::new(Mutex::new(Vec::new())),
         }));
+        let held = gate.lock().expect("hold the presenter inside `present`");
         let mut accepted = 0;
         for _ in 0..10 {
             if !pipe.has_capacity() {
@@ -394,13 +461,14 @@ mod tests {
         let dpms = Arc::new(Mutex::new(Vec::new()));
         let seen = Arc::new(AtomicU64::new(0));
         let gate = Arc::new(Mutex::new(()));
-        let held = gate.lock().expect("take the gate");
+        // See the note above about declaration order and `shutdown`.
         let mut pipe = spawn_with_retire(Box::new(Blocking {
             gate: gate.clone(),
             seen: seen.clone(),
             resizes: resizes.clone(),
             dpms: dpms.clone(),
         }));
+        let held = gate.lock().expect("hold the presenter inside `present`");
         pipe.submit(Scene::new(), OutputId(0));
         pipe.resize((800, 600));
         pipe.set_dpms(false);
@@ -429,7 +497,7 @@ mod tests {
         let wakeups = Arc::new(AtomicU64::new(0));
         let counter = wakeups.clone();
         let gate = Arc::new(Mutex::new(()));
-        let held = gate.lock().expect("take the gate before spawning");
+        // See the note above about declaration order and `shutdown`.
         let mut pipe = PresentPipe::spawn(
             Box::new(Blocking {
                 gate: gate.clone(),
@@ -441,6 +509,7 @@ mod tests {
                 counter.fetch_add(1, Ordering::Release);
             }),
         );
+        let held = gate.lock().expect("hold the presenter inside `present`");
         // Fill the pipe while the presenter is stuck. Bounded rather than
         // `while has_capacity()`: a regression that made capacity
         // unconditional would turn an unbounded fill into a hang, and a
@@ -476,6 +545,42 @@ mod tests {
              full pipe it just parked from"
         );
         pipe.shutdown();
+    }
+
+    #[test]
+    fn shutdown_returns_even_when_the_presenter_never_finishes() {
+        // The failure this guards against is not hypothetical: a
+        // deliberate-breakage run of the queue bound hung for ten minutes
+        // instead of reporting a failed assertion, because `Drop` ran a
+        // bare `join` on a render thread blocked inside `present`. The
+        // same shape is a compositor that will not exit when its GPU
+        // driver wedges.
+        //
+        // Hold the presenter forever and assert `shutdown` still returns,
+        // within a bound comfortably above SHUTDOWN_GRACE.
+        let gate = Arc::new(Mutex::new(()));
+        let mut pipe = spawn_with_retire(Box::new(Blocking {
+            gate: gate.clone(),
+            seen: Arc::new(AtomicU64::new(0)),
+            resizes: Arc::new(Mutex::new(Vec::new())),
+            dpms: Arc::new(Mutex::new(Vec::new())),
+        }));
+        let held = gate.lock().expect("wedge the presenter");
+        assert!(pipe.submit(Scene::new(), OutputId(0)));
+        // The channel is FIFO, so the render thread must take this frame
+        // — and block on the gate inside `present` — before it can ever
+        // see the `Stop` that `shutdown` is about to send. It is therefore
+        // guaranteed to be wedged, not merely likely to be.
+        let t0 = Instant::now();
+        pipe.shutdown();
+        let took = t0.elapsed();
+        assert!(
+            took < SHUTDOWN_GRACE * 3,
+            "shutdown must give up on a wedged render thread, not block on it; \
+             took {took:?} against a {SHUTDOWN_GRACE:?} grace"
+        );
+        // Releasing afterwards must not panic or double-free anything.
+        drop(held);
     }
 
     #[test]
