@@ -3809,17 +3809,21 @@ impl Widget for ShellOverlayHost {
             let is_key = matches!(event, WindowEvent::KeyboardInput { .. });
             // Escape belongs to the ladder below, which owns overlay
             // dismissal ordering; every other key is the sheet's contributor
-            // typeahead.
-            let is_escape = matches!(
-                event,
-                WindowEvent::KeyboardInput {
-                    event: KeyEvent {
-                        logical_key: Key::Named(NamedKey::Escape),
+            // typeahead. The exception is a name field: while one is up, Escape
+            // is how the user abandons it, and closing the whole sheet instead
+            // would throw away what they typed.
+            let naming = self.room_activity.wants_keyboard();
+            let is_escape = !naming
+                && matches!(
+                    event,
+                    WindowEvent::KeyboardInput {
+                        event: KeyEvent {
+                            logical_key: Key::Named(NamedKey::Escape),
+                            ..
+                        },
                         ..
-                    },
-                    ..
-                }
-            );
+                    }
+                );
             if (pointer_inside || (is_key && !is_escape))
                 && let Some(chrome) = self.chrome.clone()
             {
@@ -3836,6 +3840,17 @@ impl Widget for ShellOverlayHost {
                     st.push_notification(
                         "Reverted a room change",
                         "Written forward: the version you reverted from is still in the history.",
+                    );
+                }
+                if outcome.named {
+                    // The name went into the room document, so it syncs to
+                    // whoever else is in the room — worth saying, because the
+                    // user just labelled something for other people.
+                    let mut st = chrome.borrow_mut();
+                    st.bump();
+                    st.push_notification(
+                        "Named a version",
+                        "Saved in this room's history, so everyone here sees it.",
                     );
                 }
                 // Pointer events over the sheet are absorbed whether or not it
