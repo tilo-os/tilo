@@ -55,6 +55,25 @@
 //! latency-first workload: a desktop that renders 200 fps at four frames
 //! of lag feels worse than one that renders 144 fps at two.
 //!
+//! # If a presenter panics
+//!
+//! The render thread unwinds, its `finished` flag is set on the way out,
+//! and the channel's receiver drops. The next [`PresentPipe::submit`]
+//! sees a closed channel, returns `false`, and the loop logs and reverts
+//! to `present_pipe = None` — presentation stops, but the compositor
+//! keeps serving its clients and holding its protocol state. Losing the
+//! display is bad; taking the session (and every client's unsaved work)
+//! with it would be worse.
+//!
+//! Note that neither production presenter can panic on a poisoned lock,
+//! because neither takes a lock at all: [`super::backend::winit::WinitPresenter`]
+//! makes only wgpu calls, and `DrmPresenter` only touches scanouts it
+//! solely owns. The `Arc<Mutex<RenderContext>>` in `ui::offscreen` — the
+//! one shared GPU lock in the process — is reached only by the headless
+//! backend, which deliberately has no presenter. The scene arriving here
+//! is already built, so nothing on this thread reaches back into the
+//! frame builder, the CRDT, or the foreign-surface store.
+//!
 //! # What stays synchronous
 //!
 //! The headless backend. Its `submit_frame` renders into an offscreen
@@ -330,15 +349,29 @@ mod tests {
     }
 
     impl Presenter for Blocking {
+        // Every lock here recovers from poisoning rather than panicking.
+        // A test that fails while holding the gate poisons it, and a
+        // presenter that then panicked would print a second, unrelated
+        // `PoisonError` backtrace underneath the real assertion failure —
+        // a red herring in exactly the output someone is reading to
+        // understand why the test failed. The state behind these locks is
+        // a counter and two Vecs; there is no invariant for a poisoned
+        // lock to be protecting.
         fn present(&mut self, _scene: &Scene, _output: OutputId) {
-            let _held = self.gate.lock().expect("gate poisoned");
+            let _held = self.gate.lock().unwrap_or_else(|e| e.into_inner());
             self.seen.fetch_add(1, Ordering::Release);
         }
         fn resize(&mut self, size: (u32, u32)) {
-            self.resizes.lock().expect("resizes poisoned").push(size);
+            self.resizes
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(size);
         }
         fn set_dpms(&mut self, on: bool) {
-            self.dpms.lock().expect("dpms poisoned").push(on);
+            self.dpms
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(on);
         }
     }
 
