@@ -16,6 +16,21 @@
 //! between the two plus the room-specific vocabulary, the filters the shell
 //! owns, and the sheet's geometry.
 //!
+//! # One document, several rooms
+//!
+//! [`WorkspaceTree::doc`] is **tree-wide**: a single automerge document whose
+//! `workspaces` list holds every workspace on this machine. A change in it
+//! therefore belongs to a particular workspace (a grant, a rename, a window
+//! opened), to several at once (a cache flush rewrites the whole list), or to
+//! none (the active-workspace pointer lives at the document root).
+//!
+//! So a pane titled with one room's name cannot simply render the whole
+//! document — that would put another room's governance under this room's
+//! heading. Each row is attributed to the workspace whose subtree the change
+//! touched, and [`RoomScope`] decides which of them are shown. The default is
+//! this room only; widening to the whole tree is explicit, and says so in the
+//! header.
+//!
 //! # What it deliberately does not show
 //!
 //! Not the contents of the documents open inside the room. An app's document
@@ -119,6 +134,35 @@ impl Period {
     }
 }
 
+/// Which workspaces' changes the pane is showing.
+///
+/// The room document is shared by every workspace on the machine, so this is
+/// a genuine scope decision rather than a filter: a row outside the scope is
+/// not hidden, it is not this room's history.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum RoomScope {
+    /// Only changes that touched the active workspace, plus changes that
+    /// belong to no single workspace (the active-workspace pointer, a flush
+    /// that rewrote the whole list). Those cannot be attributed to another
+    /// room, so they cannot carry one into this view.
+    #[default]
+    ThisRoom,
+    /// Every change in the tree document, with each row labelled by the
+    /// workspace it belongs to.
+    AllWorkspaces,
+}
+
+impl RoomScope {
+    pub const ALL: [RoomScope; 2] = [RoomScope::ThisRoom, RoomScope::AllWorkspaces];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            RoomScope::ThisRoom => "This room",
+            RoomScope::AllWorkspaces => "All workspaces",
+        }
+    }
+}
+
 /// What a dispatched event did.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct RoomActivityOutcome {
@@ -141,6 +185,13 @@ pub struct RoomActivityPane {
     /// when someone commits.
     last_heads: Vec<ChangeHash>,
     period: Period,
+    /// Every row the document yielded, with the workspace each belongs to.
+    /// `None` means the change belongs to no single workspace. The timeline
+    /// is handed the subset [`Self::scope`] selects out of this.
+    derived: Vec<(HistoryEntry, Option<u64>)>,
+    scope: RoomScope,
+    /// Hit rects for the scope segments, cached by `draw`.
+    scope_rects: Vec<(RoomScope, Rect)>,
     /// Contributor the user picked from the people row, or `None` for
     /// everyone. Drives [`HistoryFilter::authors`].
     author: Option<String>,
@@ -157,6 +208,10 @@ pub struct RoomActivityPane {
     room_name: String,
     /// Total rows before the shell's own filters, for the header count.
     total_entries: usize,
+    /// Active workspace at the last scope application. Switching rooms moves
+    /// no changes, so the heads check would not notice — but it changes which
+    /// rows are this room's.
+    last_active: Option<u64>,
     /// Pinned "now" for tests, so relative timestamps and the period windows
     /// stay stable across runs.
     now_override: Option<SystemTime>,
@@ -186,6 +241,9 @@ impl RoomActivityPane {
             revert_intent,
             last_heads: Vec::new(),
             period: Period::default(),
+            derived: Vec::new(),
+            scope: RoomScope::default(),
+            scope_rects: Vec::new(),
             author: None,
             contributors: Vec::new(),
             sheet: Rect::ZERO,
@@ -193,6 +251,7 @@ impl RoomActivityPane {
             author_rects: Vec::new(),
             room_name: String::new(),
             total_entries: 0,
+            last_active: None,
             now_override: None,
         }
     }
@@ -303,7 +362,11 @@ impl RoomActivityPane {
         }
 
         let heads = tree.doc.get_heads();
+        let active = tree.active.raw();
         if heads == self.last_heads && !self.timeline.entries().is_empty() {
+            if self.last_active != Some(active) {
+                self.apply_scope(tree);
+            }
             return;
         }
         self.last_heads = heads;
@@ -337,11 +400,51 @@ impl RoomActivityPane {
         }
 
         let mut entries = self.source.entries(&mut tree.doc);
-        describe_room_changes(&mut tree.doc, &mut entries);
-        self.total_entries = entries.len();
+        let tags = describe_room_changes(&mut tree.doc, &mut entries);
+        self.derived = entries.into_iter().zip(tags).collect();
+        self.apply_scope(tree);
+    }
+
+    /// Hand the timeline the rows [`Self::scope`] selects, labelled where a
+    /// label is needed, and re-derive everything that depends on which rows
+    /// are in play.
+    fn apply_scope(&mut self, tree: &WorkspaceTree) {
+        let active = tree.active.raw();
+        self.last_active = Some(active);
+        let names: std::collections::HashMap<u64, String> = tree
+            .workspaces
+            .iter()
+            .map(|w| (w.id.raw(), w.name.clone()))
+            .collect();
+
+        let mut rows: Vec<HistoryEntry> = Vec::with_capacity(self.derived.len());
+        for (entry, tag) in &self.derived {
+            match (self.scope, tag) {
+                // This room: its own changes, plus the ones that belong to no
+                // room at all. A change owned by another workspace is simply
+                // not this room's history.
+                (RoomScope::ThisRoom, Some(id)) if *id != active => continue,
+                (RoomScope::ThisRoom, _) => rows.push(entry.clone()),
+                (RoomScope::AllWorkspaces, tag) => {
+                    let mut e = entry.clone();
+                    // Across the whole tree a row is meaningless without
+                    // saying which room it happened in — three identical
+                    // "Set the room owner" lines are noise otherwise.
+                    if let Some(id) = tag {
+                        let label = names
+                            .get(id)
+                            .cloned()
+                            .unwrap_or_else(|| "a removed workspace".to_string());
+                        e.summary = format!("{label} \u{00b7} {}", e.summary);
+                    }
+                    rows.push(e);
+                }
+            }
+        }
+        self.total_entries = rows.len();
 
         let mut seen: HashSet<String> = HashSet::new();
-        self.contributors = entries
+        self.contributors = rows
             .iter()
             .filter(|e| seen.insert(e.author.name.clone()))
             .map(|e| e.author.name.clone())
@@ -356,8 +459,20 @@ impl RoomActivityPane {
             self.author = None;
         }
 
-        self.timeline.set_entries(entries);
+        self.timeline.set_entries(rows);
         self.reinstall_filter();
+    }
+
+    /// Widen or narrow which workspaces the pane covers.
+    pub fn set_scope(&mut self, scope: RoomScope, tree: &WorkspaceTree) {
+        if self.scope != scope {
+            self.scope = scope;
+            self.apply_scope(tree);
+        }
+    }
+
+    pub fn scope(&self) -> RoomScope {
+        self.scope
     }
 
     /// Explicitly seed the author directory — the collaboration layer calls
@@ -441,24 +556,39 @@ impl RoomActivityPane {
         // says what "activity" covers here, so nobody reads an empty list as
         // "nothing happened in my documents".
         let title_size = tokens.typography.scale.lg;
+        let title = match self.scope {
+            RoomScope::ThisRoom => "Room activity",
+            RoomScope::AllWorkspaces => "Workspace activity",
+        };
         tr.draw_text(
             scene,
-            "Room activity",
+            title,
             title_size,
             colors.text_primary,
             transform * Affine::translate((self.sheet.x0 + 16.0, self.sheet.y0 + 12.0)),
             None,
         );
         let sub_size = (tokens.typography.scale.sm - 1.0).max(10.0);
-        let room = if self.room_name.is_empty() {
-            "this room"
-        } else {
-            self.room_name.as_str()
+        // The subtitle is the pane's scope, spelled out. A title naming one
+        // room over a list drawn from every room would be a lie the reader
+        // has no way to catch.
+        let subtitle = match self.scope {
+            RoomScope::ThisRoom => {
+                let room = if self.room_name.is_empty() {
+                    "This room"
+                } else {
+                    self.room_name.as_str()
+                };
+                format!(
+                    "{room} \u{00b7} {} changes to this workspace, its people and its permissions",
+                    self.total_entries
+                )
+            }
+            RoomScope::AllWorkspaces => format!(
+                "Every workspace on this machine \u{00b7} {} changes",
+                self.total_entries
+            ),
         };
-        let subtitle = format!(
-            "{room} \u{00b7} {} changes to the workspace, its people and its permissions",
-            self.total_entries
-        );
         tr.draw_text(
             scene,
             &subtitle,
@@ -467,6 +597,61 @@ impl RoomActivityPane {
             transform * Affine::translate((self.sheet.x0 + 16.0, self.sheet.y0 + 32.0)),
             Some((self.sheet.width() - 32.0) as f32),
         );
+
+        // Scope switch, right-aligned in the header. Two segments rather than
+        // a chip row: this is not another filter, it is which document region
+        // the pane is reading.
+        self.scope_rects.clear();
+        {
+            let size = (tokens.typography.scale.sm - 1.0).max(10.0);
+            let h = 22.0_f64;
+            let cy = self.sheet.y0 + 24.0;
+            let mut widths: Vec<f64> = Vec::with_capacity(2);
+            for sc in RoomScope::ALL {
+                widths.push(tr.measure(sc.label(), size, None).0 as f64 + 16.0);
+            }
+            let total: f64 = widths.iter().sum::<f64>() + 4.0;
+            // Only offered when there is room for it; the sheet stays usable
+            // at every width, and the default scope is the safe one.
+            if total < self.sheet.width() * 0.62 {
+                let mut x = self.sheet.x1 - 16.0 - total;
+                for (i, sc) in RoomScope::ALL.iter().enumerate() {
+                    let rect = Rect::new(x, cy - h / 2.0, x + widths[i], cy + h / 2.0);
+                    self.scope_rects.push((*sc, rect));
+                    let active = self.scope == *sc;
+                    let shape = RoundedRect::from_rect(rect, h / 2.0);
+                    scene.fill(
+                        Fill::NonZero,
+                        transform,
+                        if active {
+                            colors.accent[5]
+                        } else {
+                            colors.surface_white_5
+                        },
+                        None,
+                        &shape,
+                    );
+                    let (lw, lh) = tr.measure(sc.label(), size, None);
+                    tr.draw_text(
+                        scene,
+                        sc.label(),
+                        size,
+                        if active {
+                            colors.text_primary
+                        } else {
+                            colors.text_dim
+                        },
+                        transform
+                            * Affine::translate((
+                                rect.x0 + (rect.width() - lw as f64) / 2.0,
+                                rect.y0 + (rect.height() - lh as f64) / 2.0,
+                            )),
+                        None,
+                    );
+                    x += widths[i] + 4.0;
+                }
+            }
+        }
 
         self.period_rects.clear();
         self.author_rects.clear();
@@ -535,6 +720,15 @@ impl RoomActivityPane {
             && *state == winit::event::ElementState::Pressed
             && *button == winit::event::MouseButton::Left
         {
+            for (scope, rect) in self.scope_rects.clone() {
+                if rect.contains(p) {
+                    self.set_scope(scope, tree);
+                    return RoomActivityOutcome {
+                        handled: true,
+                        reverted: false,
+                    };
+                }
+            }
             for (period, rect) in self.period_rects.clone() {
                 if rect.contains(p) {
                     self.set_period(period);
@@ -722,9 +916,15 @@ fn draw_chip_row<T: Clone>(
 /// revoke, a window opened, a workspace renamed. Everything here is derived
 /// from the change's own patch set; a change whose shape is not recognised
 /// keeps whatever the generic producer said.
-fn describe_room_changes(doc: &mut automerge::AutoCommit, entries: &mut [HistoryEntry]) {
+/// Returns, per entry and in the same order, the workspace the change belongs
+/// to — `None` when it belongs to several or to none.
+fn describe_room_changes(
+    doc: &mut automerge::AutoCommit,
+    entries: &mut [HistoryEntry],
+) -> Vec<Option<u64>> {
+    let mut tags: Vec<Option<u64>> = vec![None; entries.len()];
     if entries.is_empty() {
-        return;
+        return tags;
     }
     // One pass over the change list, indexed so a long-lived room does not
     // pay a linear scan per change. A change's own `deps` are the document
@@ -754,11 +954,62 @@ fn describe_room_changes(doc: &mut automerge::AutoCommit, entries: &mut [History
             continue;
         };
         let patches = doc.diff(&deps, &[hash]);
+        tags[i] = workspace_touched(doc, &patches, hash);
         if let Some((summary, op_class)) = describe_patches(&patches) {
             entries[i].summary = summary;
             entries[i].op_class = op_class;
         }
     }
+    tags
+}
+
+/// The workspace a change belongs to, or `None` when it belongs to more than
+/// one or to none.
+///
+/// Every path into a workspace's subtree runs `workspaces -> [i] -> …`, so the
+/// third path element's object is that workspace's entry map whatever depth
+/// the patch lands at, and a patch on the entry itself is that map. The entry
+/// is read **at the change's own heads**: a cache flush deletes and re-inserts
+/// every entry, so the object a historical change wrote to no longer exists at
+/// the document's current state.
+fn workspace_touched(
+    doc: &automerge::AutoCommit,
+    patches: &[automerge::Patch],
+    hash: ChangeHash,
+) -> Option<u64> {
+    let heads = [hash];
+    let mut found: Option<u64> = None;
+    for p in patches {
+        let entry_obj = match p.path.len() {
+            0 | 1 => continue, // the document root: not a workspace's change
+            2 => p.obj.clone(),
+            _ => p.path[2].0.clone(),
+        };
+        // Guard the shape: the first hop must be into `workspaces`, and the
+        // second must be a list index. Anything else is a document layout we
+        // do not recognise, and guessing at it would be worse than declining.
+        if !matches!(&p.path[0].1, Prop::Map(k) if k == "workspaces") {
+            continue;
+        }
+        if !matches!(p.path[1].1, Prop::Seq(_)) {
+            continue;
+        }
+        let id = match doc.get_at(&entry_obj, "id", &heads) {
+            Ok(Some((Value::Scalar(v), _))) => match v.as_ref() {
+                ScalarValue::Uint(n) => *n,
+                _ => continue,
+            },
+            _ => continue,
+        };
+        match found {
+            None => found = Some(id),
+            // Two workspaces in one change — a whole-tree flush. It is nobody's
+            // room in particular.
+            Some(prev) if prev != id => return None,
+            Some(_) => {}
+        }
+    }
+    found
 }
 
 /// Map a change's patches onto a room event, or `None` when nothing in it is
@@ -1111,6 +1362,149 @@ mod tests {
         assert!(
             !summaries.iter().any(|s| s == &"Granted 4 capabilities"),
             "a flush that granted nothing must not read as a grant: {summaries:?}"
+        );
+    }
+
+    /// Give the tree a second workspace with governance of its own, so the
+    /// two rooms' histories are genuinely interleaved in one document.
+    fn two_room_tree() -> (WorkspaceTree, WorkspaceId, WorkspaceId) {
+        let (mut tree, first, user) = busy_room();
+        let second = tree.append_empty_workspace("Research");
+        tree.adopt_ownerless_workspaces(&user);
+        tree.grant_in_workspace(
+            second,
+            &user,
+            CapOverride::grant(
+                Subject::app("browser"),
+                Scope::NetHost("research.example".to_string()),
+                Verb::Read,
+            ),
+        )
+        .expect("owner may grant in the second room too");
+        // Make the first workspace the active one again — `append_empty_workspace`
+        // does not switch, but be explicit rather than relying on that.
+        tree.set_active(first);
+        (tree, first, second)
+    }
+
+    #[test]
+    fn this_rooms_scope_excludes_another_workspaces_governance() {
+        // The room document is tree-wide. A pane headed with one room's name
+        // must not show a different room's grants — that is the whole reason
+        // the scope exists.
+        let (mut tree, _first, _second) = two_room_tree();
+        let mut pane = pane_over(&mut tree);
+        assert_eq!(pane.scope(), RoomScope::ThisRoom, "scoped by default");
+
+        let scoped: Vec<String> = pane
+            .entries()
+            .iter()
+            .map(|e| e.summary.clone())
+            .collect();
+        assert!(
+            !scoped.iter().any(|s| s.contains("research.example")),
+            "the other room's network grant leaked into this room: {scoped:?}"
+        );
+        assert!(
+            scoped.iter().any(|s| s.contains("/home/quinten/notes")),
+            "this room's own grant is present: {scoped:?}"
+        );
+
+        let all_tree = { tree.workspaces.clone() };
+        let _ = all_tree;
+        pane.set_scope(RoomScope::AllWorkspaces, &tree);
+        let widened: Vec<String> = pane
+            .entries()
+            .iter()
+            .map(|e| e.summary.clone())
+            .collect();
+        assert!(
+            widened.iter().any(|s| s.contains("research.example")),
+            "widening the scope must reveal the other room: {widened:?}"
+        );
+        assert!(
+            widened.len() > scoped.len(),
+            "the whole tree is strictly more than one room: {} vs {}",
+            widened.len(),
+            scoped.len()
+        );
+    }
+
+    #[test]
+    fn a_widened_row_names_the_workspace_it_happened_in() {
+        // Across the tree, "Set the room owner" three times is noise unless
+        // each says which room.
+        let (mut tree, _first, _second) = two_room_tree();
+        let mut pane = pane_over(&mut tree);
+        pane.set_scope(RoomScope::AllWorkspaces, &tree);
+        let owner_rows: Vec<String> = pane
+            .entries()
+            .iter()
+            .filter(|e| e.summary.contains("Set the room owner"))
+            .map(|e| e.summary.clone())
+            .collect();
+        assert!(
+            owner_rows.len() > 1,
+            "the fixture has several workspaces adopting an owner: {owner_rows:?}"
+        );
+        assert!(
+            owner_rows.iter().any(|s| s.starts_with("Research \u{00b7} ")),
+            "a row must name the room it happened in: {owner_rows:?}"
+        );
+        let distinct: std::collections::HashSet<&String> = owner_rows.iter().collect();
+        assert_eq!(
+            distinct.len(),
+            owner_rows.len(),
+            "no two rows may read identically: {owner_rows:?}"
+        );
+    }
+
+    #[test]
+    fn switching_the_active_workspace_re_scopes_without_a_document_change() {
+        // Switching rooms moves no changes, so the heads check would not
+        // notice — but it changes whose history this is.
+        let (mut tree, first, second) = two_room_tree();
+        let mut pane = pane_over(&mut tree);
+        let in_first: Vec<String> = pane.entries().iter().map(|e| e.summary.clone()).collect();
+        assert!(in_first.iter().any(|s| s.contains("/home/quinten/notes")));
+
+        tree.set_active(second);
+        pane.refresh(&mut tree);
+        let in_second: Vec<String> = pane.entries().iter().map(|e| e.summary.clone()).collect();
+        assert!(
+            in_second.iter().any(|s| s.contains("research.example")),
+            "the second room's own grant: {in_second:?}"
+        );
+        assert!(
+            !in_second.iter().any(|s| s.contains("/home/quinten/notes")),
+            "the first room's grant must not follow us: {in_second:?}"
+        );
+        let _ = first;
+    }
+
+    #[test]
+    fn a_whole_tree_flush_belongs_to_no_single_room() {
+        // `seed_doc_from_cache` rewrites every workspace at once. Attributing
+        // that to whichever entry the patch walk happened to see first would
+        // be a guess; it is shown in both scopes because it cannot carry
+        // another room's business into this one.
+        let (mut tree, _first, _second) = two_room_tree();
+        let mut pane = pane_over(&mut tree);
+        let scoped_flushes = pane
+            .entries()
+            .iter()
+            .filter(|e| e.summary.starts_with("Recorded "))
+            .count();
+        assert!(scoped_flushes > 0, "the fixture flushed at least once");
+        pane.set_scope(RoomScope::AllWorkspaces, &tree);
+        let widened_flushes = pane
+            .entries()
+            .iter()
+            .filter(|e| e.summary.starts_with("Recorded "))
+            .count();
+        assert_eq!(
+            scoped_flushes, widened_flushes,
+            "a flush is unattributed, so widening must not add or drop one"
         );
     }
 
