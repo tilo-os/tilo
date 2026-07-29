@@ -38,7 +38,7 @@ use crate::icon::{self, Icon};
 use crate::lyrics::{self, LyricsLine, LyricsWorker, TrackMeta};
 use crate::mpris::{MprisCommand, MprisHandle, PlaybackStatus, PlayerSnapshot};
 use crate::portal::{self, CoverOutcome};
-use crate::model::{fmt_duration, Album, Artist, CacheState, Library, Playback, RepeatMode, SearchResults, Track};
+use crate::model::{Album, Artist, CacheState, Library, Playback, RepeatMode, SearchResults, Track};
 use crate::seed;
 use crate::source::Source;
 use crate::stream::{StreamRequest, StreamUpdate, StreamWorker};
