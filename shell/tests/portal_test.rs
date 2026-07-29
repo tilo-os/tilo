@@ -23,7 +23,8 @@ use shell::portal::{
     RemoteInputInjectorHandle, ScreenCastStreamProvisionerHandle, BUS_NAME, OBJECT_PATH,
 };
 use shell::shell::state::{
-    Capability, FsMode, GRANT_ALWAYS, GRANT_ONCE, GRANT_SESSION, Workspace, WorkspaceId,
+    Capability, FsMode, GRANT_ALWAYS, GRANT_ONCE, GRANT_SESSION, Principal, Subject, Workspace,
+    WorkspaceId,
 };
 use std::time::Duration;
 use tokio::net::UnixStream;
@@ -509,12 +510,7 @@ fn screencast_always(
     app: &str,
 ) -> (GrantStoreHandle, CallerMap, WorkspaceId) {
     let mut ws = empty_workspace(ws_num, "ws");
-    ws.grants.insert(
-        app.into(),
-        vec![Capability::Screencast {
-            scope: GrantScope::Always,
-        }],
-    );
+    ws.grant_app(app, &Capability::Screencast { scope: GRANT_ALWAYS });
     let (store, ws_id) = GrantStoreHandle::test_with_workspace(ws);
     let map = CallerMap::new();
     map.force_caller_for_tests(PortalCaller::new(ws_id, app));
@@ -655,7 +651,11 @@ async fn screencast_restore_token_skips_reprompt() {
         let handle = ctx.grants.tree_handle();
         let mut t = handle.write();
         if let Some(ws) = t.workspaces.iter_mut().find(|w| w.id == ws_id) {
-            ws.grants.clear();
+            // Drop every app-subject grant: the test is asserting that a
+            // restore token cannot resurrect access after a revoke.
+            ws.revoke_matching(|c| {
+                matches!(&c.subject, Subject::Principal(Principal::App(_)))
+            });
         }
     }
 

@@ -99,6 +99,16 @@ impl ShellDriver {
     pub fn host(&self) -> &ShellOverlayHost {
         self.fb.host()
     }
+    /// Mutable overlay host, for scenarios and tests that put the shell
+    /// into a specific overlay state before stepping frames.
+    pub fn host_mut(&mut self) -> &mut ShellOverlayHost {
+        self.fb.host_mut()
+    }
+    /// The palette's current query — what a scenario typed, read back
+    /// through the same accessor the overlay uses.
+    pub fn palette_query(&self) -> &str {
+        self.fb.host().palette_query()
+    }
     pub fn viewport(&self) -> (f64, f64) {
         self.fb.viewport()
     }
