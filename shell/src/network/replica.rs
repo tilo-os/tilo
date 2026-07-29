@@ -619,6 +619,93 @@ mod tests {
         assert_eq!(named.len(), 2, "one request per room, no more: {named:?}");
     }
 
+    /// The write-authority check on the live message path.
+    ///
+    /// A guest in room A publishes a `SyncResp` for room A carrying its own
+    /// owner and its own grant. The host administers room A, so what it
+    /// holds afterwards must be what it granted — read off the host's own
+    /// state, through `handle`, which is the entry point the network actor
+    /// calls.
+    #[test]
+    fn a_syncresp_that_would_rewrite_our_rooms_governance_is_not_taken() {
+        const ROGUE_OWNER: &str = "guest-claiming-room-a";
+        const ROGUE_PATH: &str = "/srv/rogue-claim";
+
+        let (host_tree, a, _b) = host_with_two_rooms();
+        let room_a = host_tree.room_of(a).expect("room A");
+        let host_handle = host_tree.shared();
+        let mut host = WorkspaceTreeReplica::new(1, host_handle.clone());
+
+        // A guest in room A whose own state says it governs the room, and
+        // which therefore projects its owner and its grants into it.
+        let mut guest = WorkspaceTree::default();
+        let guest_ws = guest.append_empty_workspace("Mine");
+        assert!(guest.set_room(guest_ws, room_a), "the guest joins room A");
+        guest
+            .room_authority
+            .insert(room_a, crate::shell::state::RoomAuthority::Local);
+        guest
+            .workspaces
+            .iter_mut()
+            .find(|w| w.id == guest_ws)
+            .expect("the guest's workspace")
+            .set_owner(ROGUE_OWNER.to_string());
+        guest
+            .grant_in_workspace(
+                guest_ws,
+                &ROGUE_OWNER.to_string(),
+                CapOverride::grant(
+                    Subject::app("rogue"),
+                    Scope::FsPath(ROGUE_PATH.to_string()),
+                    Verb::Write,
+                ),
+            )
+            .expect("the guest grants in its own copy");
+        let changes = guest
+            .export_room_changes_since(room_a, &[])
+            .expect("the guest is in room A");
+
+        host.handle(
+            &PeerOrigin::hub(9),
+            &NeighbourMsg::SyncResp {
+                changes,
+                room: room_a.to_string(),
+            },
+        );
+
+        let mut tree = host_handle.write();
+        let ws = tree
+            .workspaces
+            .iter()
+            .find(|w| w.id == a)
+            .expect("the host keeps room A's workspace");
+        assert_eq!(
+            ws.owner.as_deref(),
+            Some(ROOM_A_OWNER),
+            "a guest's SyncResp took ownership of the host's room",
+        );
+        assert!(
+            ws.capabilities
+                .iter()
+                .any(|c| matches!(&c.scope, Scope::FsPath(p) if p == ROOM_A_PATH)),
+            "the owner's own grant was replaced by the guest's list",
+        );
+        assert!(
+            !ws.capabilities
+                .iter()
+                .any(|c| matches!(&c.scope, Scope::FsPath(p) if p == ROGUE_PATH)),
+            "the guest's grant entered the host's capability list",
+        );
+        // And nowhere in what the host now holds — including the room
+        // document it will hand to the next peer that asks.
+        let held = holdings(&mut tree);
+        assert!(
+            !held.contains(ROGUE_OWNER) && !held.contains(ROGUE_PATH),
+            "the refused governance is still somewhere in the host's state: \
+             {held}"
+        );
+    }
+
     /// A response is merged into the room its envelope names, and the
     /// payload has to agree. A host that answered a request for room A
     /// with room B's document must not have that document accepted.
