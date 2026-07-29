@@ -426,24 +426,6 @@ impl Catalog {
     }
 }
 
-/// Format a byte count as a compact human string (binary units, decimal-ish
-/// rounding): 1.2 TB, 312 GB, 820 MB, 4 MB.
-pub fn human_bytes(b: u64) -> String {
-    let bf = b as f64;
-    if b >= TB {
-        format!("{:.1} TB", bf / TB as f64)
-    } else if b >= GB {
-        let v = bf / GB as f64;
-        if v >= 100.0 { format!("{v:.0} GB") } else { format!("{v:.1} GB") }
-    } else if b >= MB {
-        format!("{:.0} MB", bf / MB as f64)
-    } else if b >= 1024 {
-        format!("{:.0} KB", bf / 1024.0)
-    } else {
-        format!("{b} B")
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -476,11 +458,14 @@ mod tests {
     }
 
     #[test]
-    fn human_bytes_units() {
-        assert_eq!(human_bytes(4 * MB), "4 MB");
-        assert_eq!(human_bytes(512 * GB), "512 GB");
-        assert_eq!(human_bytes(2 * TB), "2.0 TB");
-        assert_eq!(human_bytes(9 * GB), "9.0 GB");
+    fn snapshot_sizes_render_with_iec_binary_units() {
+        // Snapshot sizes are base-1024, so they must wear IEC binary units
+        // (KiB/MiB/GiB/TiB) — not the base-1000 KB/MB/GB labels this app used
+        // to print for the identical division.
+        assert_eq!(ui::format::bytes(4 * MB), "4.0 MiB");
+        assert_eq!(ui::format::bytes(512 * GB), "512.0 GiB");
+        assert_eq!(ui::format::bytes(2 * TB), "2.0 TiB");
+        assert_eq!(ui::format::bytes(9 * GB), "9.0 GiB");
     }
 
     #[test]

@@ -272,3 +272,60 @@ Hard-coded `Color::rgb*` literals (widgets must read from `Theme`) are heaviest 
 `terminal` (14), `sheets` (13), `camera` (12), `chat` (11). There is nothing to
 *extract* here — the fix is per-app (route through `Theme`) — but it's the same
 consistency failure the formatting item (A) exposes, and worth a dedicated pass.
+
+## 2026-07-29 — finding A landed: `ui::format`
+
+The shared formatter module now exists at `ui/src/format.rs` (`ui::format`) with
+unit tests covering edge cases (0, the 1000/1024 boundaries, singular/plural,
+rounding). API:
+
+- `bytes(u64)` — base-1024 with **correct IEC binary units** (`KiB/MiB/GiB/TiB/…`).
+- `bytes_si(u64)` — base-1000 SI (`kB/MB/GB/…`) for genuinely-decimal callers.
+- `rate(f64)` — bytes/sec → base-1024 IEC + `/s`.
+- `timecode(u64)` / `duration(u64)` — `m:ss` / `h:mm:ss`.
+- `relative(i64)` — coarse "time ago" (`just now`, `3 min ago`, `yesterday`, …).
+- `compact_count(u64)` — `1.2K` / `3.4M` / `1.1B`.
+- `month_abbrev`/`month_name`/`weekday_abbrev`/`weekday_name` — 0-based index,
+  English tables, index-based so a `fluent` caller can translate the same index.
+
+**The KB/KiB correctness bug is fixed.** `mail`, `backups`, `containers`, and
+`vpn` now all label base-1024 sizes with IEC binary units via `ui::format::bytes`
+(previously `mail`/`backups`/`vpn` printed `KB/MB/GB` for the identical `/1024`
+math). A `ui::format` test asserts the unit label matches its base
+(`byte_unit_label_matches_its_base`).
+
+**Converted (local copies deleted):**
+
+- [x] `mail` — `human_bytes` → `ui::format::bytes`
+- [x] `backups` — `human_bytes` → `ui::format::bytes`
+- [x] `containers` — `human_bytes` → `ui::format::bytes`
+- [x] `vpn` — `human_bytes` + `human_rate` → `ui::format::bytes` + `ui::format::rate`
+- [x] `music` — `fmt_duration` → `timecode`; **three** count copies
+  (`search_type.rs:compact_count`, `backend/live.rs:human_count`,
+  `app/render.rs:human_count`) → `ui::format::compact_count`
+
+**Remaining adopters — checklist for follow-up** (each is a straight swap to the
+matching `ui::format` fn + delete the local copy; adjust the app's own test
+expectations to the IEC/canonical output):
+
+- byte-size (9): `api_tester model.rs:human_size`, `imager model.rs:fmt_size`,
+  `maps app.rs:fmt_bytes`, `camera app.rs:human_size`,
+  `chat render_chat.rs:human_size`, `disks model.rs:fmt_size`,
+  `file-explorer model.rs:human_size`, `hex_editor view.rs:human_size`,
+  `monitor model.rs:fmt_bytes` — all base-1024, so all currently mis-label as
+  `KB/MB/GB`; `ui::format::bytes` fixes each.
+- timecode (5): `tube util.rs:clock`, `video_editor timecode.rs:clock`+`timecode`,
+  `camera app.rs:fmt_dur`, `slides app.rs:present_clock`, `maps geo.rs:fmt_duration`.
+- compact-count (3): `tube util.rs:human_count`, inline in `monitor`,
+  inline in `software_store`.
+- relative-time (8): `camera app.rs:ago`, `feeds model.rs:relative_time`,
+  `git_client repo.rs:relative_time`, `chat model.rs:day_label`,
+  `calendar date.rs:relative_label`, `tube ytdlp.rs`, plus `vpn model.rs:human_ago`
+  and `mail util.rs:format_relative` — the last two were **intentionally left
+  app-local** here: `vpn` wants the compact `34s ago` style and `mail` a
+  calendar-style label (`09:42` / `Yesterday` / `Jun 24`), both distinct from
+  `ui::format::relative`'s `3 min ago` wording. Adopting them needs either a
+  matching `ui::format` variant or an agreed wording change, not a straight swap.
+- month/weekday tables (5): `calendar`, `logs`, `mail util.rs` (its `MONTHS`
+  table + `weekday`, still used by `format_relative`/`format_absolute`),
+  `sheets` ×2 (`month_abbrev`+`month_abbrev_local`), `tube`.
