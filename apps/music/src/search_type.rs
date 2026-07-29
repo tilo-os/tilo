@@ -30,7 +30,7 @@
 //! tested now so the seam is live, not decorative.
 
 use crate::backend::{MusicBackend, SearchTop};
-use crate::model::{Library, fmt_duration};
+use crate::model::Library;
 
 /// Stable ids for Music's four searchable result types. The framework uses them
 /// to deduplicate providers and persist per-type preferences.
@@ -358,7 +358,7 @@ fn song_subtitle(artist: &str, duration_s: u32) -> String {
     if duration_s == 0 {
         format!("Song · {artist}")
     } else {
-        format!("Song · {artist} · {}", fmt_duration(duration_s as u64))
+        format!("Song · {artist} · {}", ui::format::timecode(duration_s as u64))
     }
 }
 
@@ -374,7 +374,7 @@ fn artist_subtitle(subscribers: u64) -> String {
     if subscribers == 0 {
         "Artist".into()
     } else {
-        format!("Artist · {} subscribers", compact_count(subscribers))
+        format!("Artist · {} subscribers", ui::format::compact_count(subscribers))
     }
 }
 
@@ -387,16 +387,6 @@ fn playlist_subtitle(owner: &str, tracks: u64) -> String {
     }
 }
 
-/// Human-compact a large count (12_300 → "12.3K", 4_100_000 → "4.1M").
-fn compact_count(n: u64) -> String {
-    if n >= 1_000_000 {
-        format!("{:.1}M", n as f64 / 1_000_000.0)
-    } else if n >= 1_000 {
-        format!("{:.1}K", n as f64 / 1_000.0)
-    } else {
-        n.to_string()
-    }
-}
 
 #[cfg(test)]
 mod tests {
@@ -501,9 +491,11 @@ mod tests {
     }
 
     #[test]
-    fn compact_count_formats() {
-        assert_eq!(compact_count(999), "999");
-        assert_eq!(compact_count(12_300), "12.3K");
-        assert_eq!(compact_count(4_100_000), "4.1M");
+    fn artist_subtitle_uses_compact_subscriber_count() {
+        // The subscriber count in an artist subtitle is abbreviated via the
+        // shared compact-count formatter (12_300 → "12.3K").
+        assert_eq!(artist_subtitle(0), "Artist");
+        assert_eq!(artist_subtitle(12_300), "Artist · 12.3K subscribers");
+        assert_eq!(artist_subtitle(4_100_000), "Artist · 4.1M subscribers");
     }
 }
