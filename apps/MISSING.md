@@ -289,11 +289,32 @@ verified by an offscreen shot (header gone, functional controls intact) + tests:
       Verified on the QWERTY/phone/pin shots (icons crisp, no tofu); asserted by
       `modifier_and_edit_keys_carry_icons` on the production layout data.
 
-## totp
-- [x] QR-image import wired to a real picker → fixed. (Follow-up: it must go
-      through the XDG portal per HIG §5 — audit in the picker sweep.)
+## totp — CLEAR (verified real RFC 6238 + real vault + §7 token list)
+- [x] QR-image import wired to a real picker → fixed. QR scan + paste-otpauth
+      cards both go through the XDG FileChooser portal (HIG §5) — asserted by
+      `clicking_the_scan_qr_card_emits_pick_image` +
+      `portal_chosen_qr_image_fills_the_add_panel_via_frame_drain`.
 - [x] Advanced options scroll into view → fixed.
-- [x] Vault encrypted at rest → fixed.
+- [x] Vault encrypted at rest → fixed. Real persistence verified:
+      `save_then_load_round_trips_the_vault` + `plaintext_vault_is_migrated_and_
+      removed` (XChaCha20-Poly1305), and `doc::sync_vault_removes_deleted_accounts`.
+- [x] Real RFC 6238 codes from real stored secrets: HOTP dynamic truncation on
+      RustCrypto HMAC + SHA1/256/512, RFC 4648 base32 decode, key zeroized after
+      derivation. Proven by the RFC 6238 Appendix B test vectors
+      (`rfc6238_sha1_vectors`: 94287082 / 07081804 / 89005924 / 69279037) and
+      `code_is_stable_within_a_period_and_rotates_after`. Invalid secrets show a
+      masked •••••• row, never a fabricated code.
+- [x] Add / remove / copy / reorder driven on the production path (not seeded
+      shots): `adding_an_account_through_the_panel_grows_the_vault`,
+      `delete_event_removes_account`, `mouse_click_in_the_copy_zone_emits_a_copy_
+      event`, `mouse_clicks_in_the_action_column_emit_reorder_and_delete`. Ctrl+N
+      opens Add. Live path loads the persisted vault only — never fabricates
+      accounts (sample is `--shots`/demo).
+- [x] §7 token list: per-account colour monogram, name + username hierarchy, the
+      grouped code in tabular figures, and a live per-row countdown ring
+      (seconds-remaining + colour arc) — state reads at a glance. Empty state is a
+      centred "No accounts yet — press + or Ctrl+N". Verified on the list / empty /
+      add / add-advanced shots.
 
 ## settings — CLEAR (every pane shot + inspected, controls driven against the real stores)
 - [x] Sidebar is HIG §1 correct and stays that way: when it fits it is docked
