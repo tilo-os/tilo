@@ -855,6 +855,15 @@ pub fn run_with(
         argv.push(entry);
     }
 
+    // Egress gate socket. Spliced like the Wayland socket, and for the
+    // same reason — it is the app's only route out of an otherwise
+    // empty network namespace.
+    if let Some(bind) = &net_gate {
+        let entry = argv.pop().expect("argv non-empty after build_bwrap_argv");
+        crate::sandbox::push_net_gate(&mut argv, bind);
+        argv.push(entry);
+    }
+
     // GPU. The compositor's render node decides which EGL vendor and
     // which Vulkan ICD the app is allowed to load, and which device
     // node it can see at all. Spliced in after the manifest's own
@@ -870,11 +879,18 @@ pub fn run_with(
         argv.push(entry);
     }
 
-    // Landlock shim wiring. Bind this launcher binary into the sandbox
-    // and rewrite the trailing entrypoint token into
-    //   <shim-in-sandbox> __sandbox-exec --ro <p>* --rw <p>* [--net-restricted] -- <entry>
-    // so Landlock is applied AFTER bwrap sets up the mount namespace.
-    if opts.landlock_enforce {
+    // In-sandbox shim. Bind this launcher binary into the sandbox and
+    // rewrite the trailing entrypoint token into
+    //   <shim-in-sandbox> __sandbox-exec [rules…] -- <entry>
+    //
+    // Two jobs, either of which is reason enough to be here: apply
+    // Landlock *after* bwrap has set up the mount namespace, and start
+    // the egress relay before the app's first connect. A launch with
+    // the gate but without Landlock enforcement still needs the shim,
+    // and says `--no-landlock` so the shim does not read an empty rule
+    // list as "deny everything".
+    let need_shim = opts.landlock_enforce || net_gate.is_some();
+    if need_shim {
         let entry = argv.pop().expect("argv non-empty after build_bwrap_argv");
         let launcher = std::env::current_exe()
             .map_err(|e| RunError::Io(std::io::Error::new(std::io::ErrorKind::Other, format!("current_exe: {e}"))))?;
@@ -883,6 +899,17 @@ pub fn run_with(
         argv.push(SHIM_MOUNT_PATH.to_string());
         argv.push(SHIM_MOUNT_PATH.to_string());
         argv.push(crate::landlock_shim::SANDBOX_EXEC_SUBCOMMAND.to_string());
+        if !opts.landlock_enforce {
+            argv.push("--no-landlock".to_string());
+        }
+        // The relay's endpoints. Passed whenever a gate is running, so
+        // an unmodified HTTP client honouring ALL_PROXY reaches it.
+        if let Some(bind) = &net_gate {
+            argv.push("--net-gate".to_string());
+            argv.push(bind.sandbox_socket.display().to_string());
+            argv.push("--net-gate-port".to_string());
+            argv.push(bind.port.to_string());
+        }
         // Sandbox-side ro paths for Landlock. The payload mount, the
         // runtime mount (if any), the minimal-libs binds, and the
         // manifest's declared read paths.
@@ -983,10 +1010,21 @@ pub fn run_with(
             argv.push("--rw".to_string());
             argv.push(path.display().to_string());
         }
+        // The gate socket is reached with connect(2), which is a
+        // write-flavoured access on a pathname socket — a read-only
+        // rule surfaces as EACCES at connect time, exactly like the
+        // Wayland socket above.
+        if let Some(bind) = &net_gate {
+            argv.push("--rw".to_string());
+            argv.push(bind.sandbox_socket.display().to_string());
+        }
         // Landlock's network restriction mirrors the namespace decision
-        // above: an app the user granted network keeps TCP, everything
-        // else is denied bind/connect on top of an already-empty netns.
-        if manifest.sandbox.net.mode == "off" && !capabilities.allow_network {
+        // above. Blocked: deny every TCP bind and connect, on top of an
+        // already-empty netns. Filtered: the shim pins the app to the
+        // relay port instead (it derives that from --net-gate-port), so
+        // a blanket ban here would lock it out of its own gate.
+        // Unrestricted: nothing to say.
+        if matches!(egress, crate::netgate::EgressDecision::Blocked) {
             argv.push("--net-restricted".to_string());
         }
         argv.push("--".to_string());
@@ -1042,7 +1080,7 @@ pub fn run_with(
             .map(|s| crate::manifest::expand_path(s))
             .collect::<Vec<_>>(),
     );
-    let net_restricted = manifest.sandbox.net.mode == "off" && !capabilities.allow_network;
+    let net_restricted = matches!(egress, crate::netgate::EgressDecision::Blocked);
     // The shim now IS wired via opts.landlock_enforce (see argv splice
     // above). Log intent from the parent for observability; the shim's
     // own "landlock: {fully,partially} enforced" line surfaces the real
@@ -1053,6 +1091,13 @@ pub fn run_with(
         net_restricted,
         enforce = opts.landlock_enforce,
         "landlock plan derived",
+    );
+    tracing::info!(
+        target: "qos_launcher::netgate",
+        gated = net_gate.is_some(),
+        hosts = ?egress.policy().map(|p| p.hosts()),
+        shares_host_network = egress.shares_host_network(),
+        "egress resolved",
     );
     let _ = landlock_plan;
 
