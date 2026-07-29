@@ -29,7 +29,8 @@ use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::Widget;
+use ui::widget::{SidebarDrawer, Widget};
+use ui::{card_column_width, card_columns};
 
 use crate::doc::{BackupsDoc, PolicyField};
 use crate::model::{
@@ -48,6 +49,13 @@ const ROW_H: f64 = 46.0;
 const DETAIL_H: f64 = 70.0;
 const DAY_H: f64 = 30.0;
 
+/// Below this window width the Timeline source rail overlays (a summoned
+/// drawer) instead of docking beside the snapshot list.
+const RAIL_BREAKPOINT: f64 = 820.0;
+/// Below this width the top-bar chrome compacts (icon-only primary action,
+/// tighter tabs) and multi-column tile/card grids drop toward a single column.
+const NARROW_BREAKPOINT: f64 = 720.0;
+
 /// Click/hover targets discovered during `draw` and consumed by
 /// `handle_event`. Cleared and rebuilt every frame.
 #[derive(Clone, Debug, PartialEq)]
@@ -64,6 +72,10 @@ enum Hit {
     Dest(String),
     Policy(PolicyField, i64),
     FileRow(usize),
+    /// The Timeline source-rail collapse / summon toggle.
+    ToggleRail,
+    /// The scrim behind an open overlay rail (tap to dismiss).
+    CloseRail,
 }
 
 /// An in-flight "Back up now" job. Purely visual / in-memory: it animates a
@@ -115,6 +127,12 @@ pub struct BackupsApp {
     job: Option<Job>,
     toast: Option<(String, Instant)>,
     seeded: bool,
+    /// The Timeline source rail as the shared adaptive drawer: docked beside the
+    /// snapshot list on wide windows, a summoned overlay drawer when narrow.
+    drawer: SidebarDrawer,
+    /// `--shots` hook: force the overlay rail open so its narrow state can be
+    /// captured headlessly (`QOS_BACKUPS_RAIL_OPEN=1`).
+    force_rail_open: bool,
 }
 
 impl Default for BackupsApp {
@@ -154,6 +172,12 @@ impl BackupsApp {
             job: None,
             toast: None,
             seeded: false,
+            drawer: SidebarDrawer::new()
+                .left()
+                .docked_width(RAIL_W)
+                .overlay_width(RAIL_W.max(288.0))
+                .breakpoint(RAIL_BREAKPOINT),
+            force_rail_open: std::env::var("QOS_BACKUPS_RAIL_OPEN").as_deref() == Ok("1"),
         }
     }
 
@@ -211,6 +235,11 @@ impl BackupsApp {
 
     // ---- top-level draw -------------------------------------------------
 
+    /// Fresh install: nothing configured yet, show onboarding not a dashboard.
+    fn is_empty(&self) -> bool {
+        self.catalog.sources.is_empty() && self.catalog.destinations.is_empty()
+    }
+
     fn render(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
         self.hits.clear();
         let c = &theme.tokens.colors;
@@ -218,15 +247,26 @@ impl BackupsApp {
         // Window background.
         paint::fill_rect(scene, t, self.rect, c.surfaces.base);
 
-        self.draw_top_bar(scene, t, tr, theme);
-
         let content = Rect::new(
             self.rect.x0 + PAD,
             self.rect.y0 + BAR_H + 14.0,
             self.rect.x1 - PAD,
             self.rect.y1 - STATUS_H - 12.0,
         );
-        if self.catalog.sources.is_empty() && self.catalog.destinations.is_empty() {
+
+        // Advance + resolve the Timeline source rail. Ticking eases the reveal
+        // off a real wall-clock delta; resolving re-decides docked-vs-overlay
+        // from the width so the top bar's hamburger reflects the live state.
+        self.drawer.tick(false);
+        if self.force_rail_open && self.drawer.is_overlay() && !self.drawer.is_open() {
+            self.drawer.open();
+            self.drawer.snap(true);
+        }
+        let _ = self.drawer.resolve(content);
+
+        self.draw_top_bar(scene, t, tr, theme);
+
+        if self.is_empty() {
             // Fresh install: nothing to back up yet. Show onboarding instead of
             // an empty dashboard so the app reads as ready, not broken.
             self.draw_empty_onboarding(scene, t, tr, theme, content);
@@ -240,6 +280,20 @@ impl BackupsApp {
         }
 
         self.draw_status_bar(scene, t, tr, theme);
+
+        // The Timeline source rail draws last so an overlay drawer floats over
+        // the snapshot list (with a dismiss scrim); docked, it simply sits beside.
+        if !self.is_empty() && self.ui.view == View::Timeline {
+            let side = self.drawer.sidebar_rect();
+            let scrim = self.drawer.scrim_rect();
+            if scrim.width() > 0.5 {
+                self.drawer.draw_scrim(scene, t);
+                self.hits.push((scrim, Hit::CloseRail));
+            }
+            if side.width() > 4.0 {
+                self.draw_rail(scene, t, tr, theme, side);
+            }
+        }
 
         if self.ui.restore_open {
             self.draw_restore_modal(scene, t, tr, theme);
@@ -374,24 +428,31 @@ impl BackupsApp {
     // ---- TIMELINE view --------------------------------------------------
 
     fn draw_timeline_view(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, content: Rect) {
-        let rail = Rect::new(content.x0, content.y0, content.x0 + RAIL_W, content.y1);
-        let main = Rect::new(rail.x1 + 18.0, content.y0, content.x1, content.y1);
-        self.draw_rail(scene, t, tr, theme, rail);
+        // Main column: the drawer's resolved content rect (inset by the docked
+        // rail, or full width in overlay). A small gap keeps it off a docked rail.
+        let docked_gap = if self.drawer.is_docked() { 18.0 } else { 0.0 };
+        let cr = self.drawer.content_rect();
+        let main = Rect::new(cr.x0 + docked_gap, content.y0, content.x1, content.y1);
 
-        // Summary stat tiles.
-        let tiles_h = 86.0;
+        // Summary stat tiles — reflow from four abreast down to a 2×2 grid so
+        // they never crush at narrow widths.
+        let cols = card_columns(main.width(), 156.0, 12.0).clamp(1, 4);
+        let rows = 4usize.div_ceil(cols);
+        let tile_h = 82.0;
+        let tiles_h = rows as f64 * tile_h + (rows as f64 - 1.0) * 12.0;
         let tiles = Rect::new(main.x0, main.y0, main.x1, main.y0 + tiles_h);
-        self.draw_summary_tiles(scene, t, tr, theme, tiles);
+        self.draw_summary_tiles(scene, t, tr, theme, tiles, cols);
 
         // Timeline header.
         let c = &theme.tokens.colors;
-        let hy = tiles.y1 + 16.0;
+        let hy = tiles.y1 + 18.0;
         let scope = match &self.ui.sel_source {
             Some(id) => self.catalog.source(id).map(|s| s.path.clone()).unwrap_or_default(),
             None => "All sources".to_string(),
         };
         paint::text_bold(scene, tr, t, "Snapshot timeline", 15.0, c.text_primary, main.x0, hy);
-        paint::text(scene, tr, t, &scope, 12.5, theme.accent_primary, main.x0 + 168.0, hy + 1.0);
+        let (title_w, _) = tr.measure("Snapshot timeline", 15.0, None);
+        paint::text(scene, tr, t, &scope, 12.5, theme.accent_primary, main.x0 + title_w as f64 + 14.0, hy + 1.0);
         paint::text_right(scene, tr, t, "newest first", 11.5, c.text_dim, main.x1, hy + 2.0);
 
         let list = Rect::new(main.x0, hy + 26.0, main.x1, main.y1);
@@ -490,11 +551,13 @@ impl BackupsApp {
         *y += h + 2.0;
     }
 
-    fn draw_summary_tiles(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, region: Rect) {
+    fn draw_summary_tiles(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, region: Rect, cols: usize) {
         let c = &theme.tokens.colors;
         let gap = 12.0;
-        let n = 4.0;
-        let tw = (region.width() - gap * (n - 1.0)) / n;
+        let cols = cols.max(1);
+        let tw = card_column_width(region.width(), cols, gap);
+        let rows = 4usize.div_ceil(cols);
+        let th = ((region.height() - gap * (rows as f64 - 1.0)) / rows as f64).max(64.0);
         let next_run = self
             .ui
             .sel_source
@@ -511,8 +574,11 @@ impl BackupsApp {
             ("Last backup", last, if failed == 0 { c.semantic.success } else { c.semantic.warning }),
         ];
         for (i, (label, value, accent)) in tiles.iter().enumerate() {
-            let x0 = region.x0 + i as f64 * (tw + gap);
-            let tile = Rect::new(x0, region.y0, x0 + tw, region.y1);
+            let col = i % cols;
+            let rowi = i / cols;
+            let x0 = region.x0 + col as f64 * (tw + gap);
+            let y0 = region.y0 + rowi as f64 * (th + gap);
+            let tile = Rect::new(x0, y0, x0 + tw, y0 + th);
             paint::card(scene, t, tile, 12.0, c.surfaces.raised, c.border_white_10);
             // accent ticker on the left edge
             let tick = Rect::new(tile.x0, tile.y0 + 10.0, tile.x0 + 3.0, tile.y1 - 10.0);

@@ -28,7 +28,7 @@ use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::{TextInput, Widget};
+use ui::widget::{SidebarDrawer, TextInput, Widget};
 
 use crate::backend::{Backend, Mode};
 use crate::doc::FirewallDoc;
@@ -44,10 +44,26 @@ const SERVICES_W: f64 = 300.0;
 const PAD: f64 = 16.0;
 const CARD_R: f64 = 12.0;
 const SUMMARY_H: f64 = 134.0;
+/// Taller summary when the stat chips wrap onto a second row at narrow widths.
+const SUMMARY_H_NARROW: f64 = 188.0;
 const FORM_H: f64 = 154.0;
+/// The add-rule form stacks its controls onto four lines when narrow.
+const FORM_H_NARROW: f64 = 226.0;
 const RULE_ROW_H: f64 = 40.0;
+/// Two-line rule rows (target + action on top, proto · source beneath) when
+/// the table is too narrow for five abreast columns.
+const RULE_ROW_H_NARROW: f64 = 58.0;
 const SVC_ROW_H: f64 = 46.0;
 const CTRL_H: f64 = 34.0;
+const TOGGLE_SIZE: f64 = 34.0;
+
+/// Below this window width the zone rail overlays (a summoned drawer) instead
+/// of docking, the add-rule form stacks its controls, and the rules table
+/// switches to two-line rows.
+const NARROW_BREAKPOINT: f64 = 720.0;
+/// The per-zone services panel only earns its ~300px column at/above this
+/// width; below it collapses so the rules table + form get the whole center.
+const SERVICES_BREAKPOINT: f64 = 1000.0;
 
 /// Which rules are shown in the table.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -127,12 +143,18 @@ impl FormState {
 /// Computed per-frame layout. Rebuilt by [`FirewallApp::relayout`].
 #[derive(Default, Clone)]
 struct Layout {
+    /// Window is below [`NARROW_BREAKPOINT`]: rail overlays, form + table stack.
+    narrow: bool,
+    /// Window is at/above [`SERVICES_BREAKPOINT`]: the services panel is shown.
+    services_visible: bool,
+
     header: Rect,
     enable_pill: Rect,
     panic_btn: Rect,
     apply_btn: Rect,
 
     rail: Rect,
+    rail_toggle: Rect,
     zone_rows: Vec<(ZoneKind, Rect)>,
 
     summary: Rect,
@@ -173,6 +195,13 @@ pub struct FirewallApp {
     form: FormState,
     backend: Backend,
     status: String,
+
+    /// The zone rail as the shared adaptive drawer: docked beside the content
+    /// on wide windows, a summoned overlay drawer when narrow.
+    rail: SidebarDrawer,
+    /// `--shots` hook: force the overlay rail open so the narrow drawer state
+    /// can be captured headlessly (`QOS_FIREWALL_RAIL_OPEN=1`).
+    force_rail_open: bool,
 
     rect: Rect,
     node: Option<NodeId>,
@@ -218,6 +247,12 @@ impl FirewallApp {
             form: FormState::new(),
             backend: Backend::detect(),
             status: String::new(),
+            rail: SidebarDrawer::new()
+                .left()
+                .docked_width(RAIL_W)
+                .overlay_width(RAIL_W.max(264.0))
+                .breakpoint(NARROW_BREAKPOINT),
+            force_rail_open: std::env::var("QOS_FIREWALL_RAIL_OPEN").as_deref() == Ok("1"),
             rect: Rect::ZERO,
             node: None,
             layout: Layout::default(),
@@ -262,47 +297,89 @@ impl FirewallApp {
             return;
         }
 
-        // Header + right-aligned controls.
+        let narrow = r.width() < NARROW_BREAKPOINT;
+        let services_visible = r.width() >= SERVICES_BREAKPOINT;
+        l.narrow = narrow;
+        l.services_visible = services_visible;
+
+        // Header spans the full width; controls are right-aligned.
         l.header = Rect::new(r.x0, r.y0, r.x1, r.y0 + HEADER_H);
         let by = r.y0 + HEADER_H / 2.0;
         let mut rx = r.x1 - PAD;
-        let apply_w = 96.0;
+        let apply_w = if narrow { 76.0 } else { 92.0 };
         l.apply_btn = Rect::new(rx - apply_w, by - 17.0, rx, by + 17.0);
-        rx = l.apply_btn.x0 - 10.0;
-        let panic_w = 104.0;
+        rx = l.apply_btn.x0 - 8.0;
+        let panic_w = if narrow { 78.0 } else { 104.0 };
         l.panic_btn = Rect::new(rx - panic_w, by - 17.0, rx, by + 17.0);
-        rx = l.panic_btn.x0 - 10.0;
-        let enable_w = 92.0;
+        rx = l.panic_btn.x0 - 8.0;
+        let enable_w = if narrow { 80.0 } else { 92.0 };
         l.enable_pill = Rect::new(rx - enable_w, by - 17.0, rx, by + 17.0);
 
-        // Content row.
-        let cy0 = r.y0 + HEADER_H;
-        l.rail = Rect::new(r.x0, cy0, r.x0 + RAIL_W, r.y1);
-        l.services = Rect::new(r.x1 - SERVICES_W, cy0, r.x1, r.y1);
-        let center = Rect::new(l.rail.x1, cy0, l.services.x0, r.y1);
-
-        // Rail zone rows.
-        let rows_top = l.rail.y0 + 44.0;
-        let row_h = 32.0;
-        for (i, kind) in ZoneKind::ALL.iter().enumerate() {
-            let y = rows_top + i as f64 * row_h;
-            let rect = Rect::new(l.rail.x0 + 8.0, y, l.rail.x1 - 8.0, y + row_h - 4.0);
-            l.zone_rows.push((*kind, rect));
+        // Content area below the header. The rail drawer decides docked (wide)
+        // vs overlay (narrow) from its width, insetting the content when docked.
+        let content_outer = Rect::new(r.x0, r.y0 + HEADER_H, r.x1, r.y1);
+        self.rail.set_docked_width(RAIL_W);
+        self.rail.set_overlay_width(RAIL_W.max(264.0));
+        let mut content = self.rail.resolve(content_outer);
+        // `--shots`: force the overlay drawer open so its narrow state renders.
+        if self.force_rail_open && self.rail.is_overlay() && !self.rail.is_open() {
+            self.rail.open();
+            self.rail.snap(true);
+            content = self.rail.resolve(content_outer);
         }
+        l.rail = self.rail.sidebar_rect();
+
+        // Rail toggle: a docked-collapse chevron pinned inside the rail when
+        // docked-open, otherwise a hamburger at the header's left edge.
+        if self.rail.is_docked() && self.rail.is_open() {
+            let rr = l.rail;
+            l.rail_toggle = Rect::new(
+                rr.x1 - 12.0 - TOGGLE_SIZE,
+                rr.y0 + 10.0,
+                rr.x1 - 12.0,
+                rr.y0 + 10.0 + TOGGLE_SIZE,
+            );
+        } else {
+            l.rail_toggle = Rect::new(
+                l.header.x0 + 12.0,
+                by - TOGGLE_SIZE / 2.0,
+                l.header.x0 + 12.0 + TOGGLE_SIZE,
+                by + TOGGLE_SIZE / 2.0,
+            );
+        }
+
+        // Zone rows within the (possibly off-screen / sliding) rail rect.
+        if l.rail.width() > 4.0 {
+            let rows_top = l.rail.y0 + 44.0;
+            let row_h = 32.0;
+            for (i, kind) in ZoneKind::ALL.iter().enumerate() {
+                let y = rows_top + i as f64 * row_h;
+                let rect = Rect::new(l.rail.x0 + 8.0, y, l.rail.x1 - 8.0, y + row_h - 4.0);
+                l.zone_rows.push((*kind, rect));
+            }
+        }
+
+        // Services panel earns its column only when wide.
+        if services_visible {
+            l.services = Rect::new(content.x1 - SERVICES_W, content.y0, content.x1, content.y1);
+        }
+        let center_x1 = if services_visible { l.services.x0 } else { content.x1 };
+        let center = Rect::new(content.x0, content.y0, center_x1, content.y1);
 
         // Center column inner box.
         let cx0 = center.x0 + PAD;
         let cx1 = center.x1 - PAD;
-        let cy = cy0 + PAD;
+        let cy = center.y0 + PAD;
         let cy1 = r.y1 - PAD;
 
-        l.summary = Rect::new(cx0, cy, cx1, cy + SUMMARY_H);
+        let summary_h = if narrow { SUMMARY_H_NARROW } else { SUMMARY_H };
+        l.summary = Rect::new(cx0, cy, cx1, cy + summary_h);
         // Set-active button inside summary, top-right.
         l.set_active_btn = Rect::new(l.summary.x1 - 12.0 - 118.0, l.summary.y0 + 12.0, l.summary.x1 - 12.0, l.summary.y0 + 12.0 + 30.0);
 
         // Filter row.
         let fy = l.summary.y1 + PAD;
-        let seg_w = 72.0;
+        let seg_w = if narrow { 60.0 } else { 72.0 };
         let seg_h = 30.0;
         let seg_total = seg_w * 3.0;
         for i in 0..3 {
@@ -310,27 +387,30 @@ impl FirewallApp {
             l.filter_seg.push(Rect::new(x, fy, x + seg_w, fy + seg_h));
         }
 
-        // Form card pinned to the bottom.
-        l.form = Rect::new(cx0, cy1 - FORM_H, cx1, cy1);
+        // Form card pinned to the bottom (taller when its controls stack).
+        let form_h = if narrow { FORM_H_NARROW } else { FORM_H };
+        l.form = Rect::new(cx0, cy1 - form_h, cx1, cy1);
 
         // Rules table fills the gap.
         l.table = Rect::new(cx0, fy + seg_h + 10.0, cx1, l.form.y0 - PAD);
-        self.build_table_rows(&mut l);
+        self.build_table_rows(&mut l, narrow);
 
         // Form internals.
-        self.build_form(&mut l);
+        self.build_form(&mut l, narrow);
 
         // Services rows.
-        let svc_top = l.services.y0 + 48.0;
-        for (i, def) in ServiceCatalog::ALL.iter().enumerate() {
-            let y = svc_top + i as f64 * SVC_ROW_H;
-            if y + SVC_ROW_H > l.services.y1 - 6.0 {
-                break;
+        if services_visible {
+            let svc_top = l.services.y0 + 48.0;
+            for (i, def) in ServiceCatalog::ALL.iter().enumerate() {
+                let y = svc_top + i as f64 * SVC_ROW_H;
+                if y + SVC_ROW_H > l.services.y1 - 6.0 {
+                    break;
+                }
+                let row = Rect::new(l.services.x0 + 12.0, y, l.services.x1 - 12.0, y + SVC_ROW_H - 6.0);
+                let toggle = Rect::new(row.x1 - 44.0, row.y0 + (row.height() - 24.0) / 2.0, row.x1, row.y0 + (row.height() - 24.0) / 2.0 + 24.0);
+                l.service_rows.push((i, row, toggle));
+                let _ = def;
             }
-            let row = Rect::new(l.services.x0 + 12.0, y, l.services.x1 - 12.0, y + SVC_ROW_H - 6.0);
-            let toggle = Rect::new(row.x1 - 44.0, row.y0 + (row.height() - 24.0) / 2.0, row.x1, row.y0 + (row.height() - 24.0) / 2.0 + 24.0);
-            l.service_rows.push((i, row, toggle));
-            let _ = def;
         }
 
         self.layout = l;
@@ -339,25 +419,30 @@ impl FirewallApp {
         self.form.source.apply_layout_external(self.layout.source_field);
     }
 
-    fn build_table_rows(&self, l: &mut Layout) {
+    fn build_table_rows(&self, l: &mut Layout, narrow: bool) {
         let indices = self.filtered_indices();
         let Some(z) = self.selected_zone_ref() else { return };
         let inner_x0 = l.table.x0 + 12.0;
         let inner_x1 = l.table.x1 - 12.0;
         let body_top = l.table.y0 + 34.0;
-        let max_rows = ((l.table.y1 - body_top) / RULE_ROW_H).floor().max(0.0) as usize;
+        let row_h = if narrow { RULE_ROW_H_NARROW } else { RULE_ROW_H };
+        let max_rows = ((l.table.y1 - body_top) / row_h).floor().max(0.0) as usize;
         for (vis, &idx) in indices.iter().take(max_rows).enumerate() {
-            let y = body_top + vis as f64 * RULE_ROW_H;
-            let rect = Rect::new(inner_x0, y, inner_x1, y + RULE_ROW_H - 4.0);
+            let y = body_top + vis as f64 * row_h;
+            let rect = Rect::new(inner_x0, y, inner_x1, y + row_h - 4.0);
             let toggle = Rect::new(rect.x1 - 92.0, rect.y0 + (rect.height() - 22.0) / 2.0, rect.x1 - 92.0 + 38.0, rect.y0 + (rect.height() - 22.0) / 2.0 + 22.0);
             let delete = Rect::new(rect.x1 - 30.0, rect.y0 + (rect.height() - 26.0) / 2.0, rect.x1, rect.y0 + (rect.height() - 26.0) / 2.0 + 26.0);
             l.rule_rows.push(RuleRow { id: z.rules[idx].id, rect, toggle, delete });
         }
     }
 
-    fn build_form(&self, l: &mut Layout) {
+    fn build_form(&self, l: &mut Layout, narrow: bool) {
         let fx0 = l.form.x0 + 16.0;
         let fx1 = l.form.x1 - 16.0;
+        if narrow {
+            self.build_form_narrow(l, fx0, fx1);
+            return;
+        }
         // Line 1.
         let y1 = l.form.y0 + 42.0;
         // kind segmented Service|Port
@@ -399,6 +484,48 @@ impl FirewallApp {
         l.add_btn = Rect::new(fx1 - add_w, y2, fx1, y2 + CTRL_H);
         let src_x0 = fx0 + 64.0; // after "Source" label
         l.source_field = Rect::new(src_x0, y2, l.add_btn.x0 - 16.0, y2 + CTRL_H);
+    }
+
+    /// Stacked add-rule form for narrow windows: four short lines instead of a
+    /// dense two-line row, so no control is crushed or clipped.
+    fn build_form_narrow(&self, l: &mut Layout, fx0: f64, fx1: f64) {
+        // Line 1: kind segmented (Service|Port) on the left, action on the right.
+        let y1 = l.form.y0 + 40.0;
+        let kind_w = 62.0;
+        for i in 0..2 {
+            let x = fx0 + i as f64 * kind_w;
+            l.kind_seg.push(Rect::new(x, y1, x + kind_w, y1 + CTRL_H));
+        }
+        let act_w = 62.0;
+        for i in 0..2 {
+            let ax = fx1 - act_w * 2.0 + i as f64 * act_w;
+            l.action_seg.push(Rect::new(ax, y1, ax + act_w, y1 + CTRL_H));
+        }
+
+        // Line 2: service selector OR port + proto, spanning the width.
+        let y2 = y1 + CTRL_H + 12.0;
+        if self.form.is_service {
+            let prev_w = 34.0;
+            l.service_prev = Rect::new(fx0, y2, fx0 + prev_w, y2 + CTRL_H);
+            l.service_next = Rect::new(fx1 - prev_w, y2, fx1, y2 + CTRL_H);
+            l.service_sel = Rect::new(fx0 + prev_w, y2, fx1 - prev_w, y2 + CTRL_H);
+        } else {
+            let pw = 52.0;
+            let port_x1 = fx1 - pw * 2.0 - 8.0;
+            l.port_field = Rect::new(fx0, y2, port_x1, y2 + CTRL_H);
+            for i in 0..2 {
+                let px = fx1 - pw * 2.0 + i as f64 * pw;
+                l.proto_seg.push(Rect::new(px, y2, px + pw, y2 + CTRL_H));
+            }
+        }
+
+        // Line 3: source field (label sits above it), full width.
+        let y3 = y2 + CTRL_H + 26.0;
+        l.source_field = Rect::new(fx0, y3, fx1, y3 + CTRL_H);
+
+        // Line 4: Add button, full width.
+        let y4 = y3 + CTRL_H + 12.0;
+        l.add_btn = Rect::new(fx0, y4, fx1, y4 + CTRL_H);
     }
 
     // ---- mutations ------------------------------------------------------
@@ -612,6 +739,9 @@ impl Widget for FirewallApp {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
+        // Advance the rail's eased reveal off a real wall-clock delta, then lay
+        // out against the freshly-settled geometry so the drawer slides.
+        self.rail.tick(false);
         self.relayout();
         self.draw_app(scene, t, tr, theme, presence);
     }
@@ -667,6 +797,10 @@ impl Widget for FirewallApp {
 
     fn get_rect(&self) -> Rect {
         self.rect
+    }
+
+    fn needs_animation_frame(&self) -> bool {
+        self.rail.is_animating()
     }
 }
 
@@ -784,6 +918,31 @@ impl FirewallApp {
         }
 
         let l = self.layout.clone();
+
+        // Rail drawer first: a scrim tap dismisses an open overlay; the toggle
+        // flips it; a tap inside an open overlay drawer only selects a zone (and
+        // then closes it) — it never falls through to the content behind.
+        if self.rail.press_dismisses(p) {
+            *handled = true;
+            return self.set_form_focus(None);
+        }
+        if l.rail_toggle.contains(p) {
+            self.rail.toggle();
+            *handled = true;
+            return self.set_form_focus(None);
+        }
+        if self.rail.is_overlay() && self.rail.is_open() && self.rail.sidebar_contains(p) {
+            for (kind, rect) in &l.zone_rows {
+                if rect.contains(p) {
+                    self.select_zone(*kind);
+                    self.rail.close();
+                    *handled = true;
+                    return self.set_form_focus(None);
+                }
+            }
+            *handled = true;
+            return;
+        }
 
         // Header controls.
         if l.enable_pill.contains(p) {
@@ -983,12 +1142,27 @@ impl FirewallApp {
             self.draw_unavailable(scene, t, tr, theme, &l);
             return;
         }
-        self.draw_rail(scene, t, tr, theme, &l);
+        // Center content first, so the (overlay) rail + scrim draw over it.
         self.draw_summary(scene, t, tr, theme, &l);
         self.draw_filter(scene, t, tr, theme, &l);
         self.draw_table(scene, t, tr, theme, &l);
-        self.draw_services(scene, t, tr, theme, &l);
+        if l.services_visible {
+            self.draw_services(scene, t, tr, theme, &l);
+        }
         self.draw_form(scene, t, tr, theme, presence, &l);
+
+        // Overlay drawer: dim the content behind the sliding rail.
+        let scrim = self.rail.scrim_rect();
+        if scrim.width() > 0.5 {
+            self.rail.draw_scrim(scene, t);
+        }
+        // The zone rail (docked column, or the overlay drawer floating on top).
+        if l.rail.width() > 4.0 {
+            self.draw_rail(scene, t, tr, theme, &l);
+        }
+        // Collapse / summon affordance (themed pill from the shared primitive).
+        let hov = l.rail_toggle.contains(self.last_cursor);
+        self.rail.draw_toggle(scene, t, theme, l.rail_toggle, hov);
     }
 
     /// The honest "no firewall to show" state: firewalld is not installed
@@ -1041,7 +1215,18 @@ impl FirewallApp {
         } else {
             theme.text_primary
         };
-        paint::label(tr, scene, t, &sub, 13.0, sub_color, h.x0 + 20.0, h.y0 + 18.0, 520.0);
+        // Shift the status right when the hamburger occupies the header's left
+        // edge (rail overlaid or collapsed), and clamp its width so it never
+        // runs under the right-aligned controls.
+        let toggle_in_header = !(self.rail.is_docked() && self.rail.is_open());
+        let sub_x = if toggle_in_header {
+            h.x0 + 12.0 + TOGGLE_SIZE + 12.0
+        } else {
+            h.x0 + 20.0
+        };
+        let ctrl_left = if self.available { l.enable_pill.x0 - 52.0 } else { h.x1 - PAD };
+        let sub_max = (ctrl_left - sub_x).max(80.0);
+        paint::label(tr, scene, t, &sub, 13.0, sub_color, sub_x, h.y0 + 18.0, sub_max);
 
         // With no readable firewall there are no live controls to offer.
         if !self.available {
@@ -1085,6 +1270,14 @@ impl FirewallApp {
 
     fn draw_rail(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, l: &Layout) {
         let rail = l.rail;
+        // Clip every rail pixel to the (possibly sliding) panel so an overlay
+        // reveal never spills zone rows over the content beside it.
+        scene.push_layer(vello::peniko::Fill::NonZero, vello::peniko::BlendMode::default(), 1.0, t, &rail);
+        // Opaque panel fill: transparent when docked (window bg matches), but a
+        // real surface when the drawer floats over content in overlay mode.
+        if self.rail.is_overlay() {
+            paint::fill_rect(scene, t, rail, theme.tokens.colors.neutral[0]);
+        }
         // Right divider.
         scene.stroke(
             &vello::kurbo::Stroke::new(1.0),
@@ -1127,6 +1320,7 @@ impl FirewallApp {
                 }
             }
         }
+        scene.pop_layer();
     }
 
     fn draw_summary(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, l: &Layout) {
@@ -1146,19 +1340,35 @@ impl FirewallApp {
         // Description.
         paint::label(tr, scene, t, self.selected_zone.description(), 12.0, theme.text_dim, x, card.y0 + 46.0, card.width() - 36.0);
 
-        // Stat chips row.
+        // Stat chips: laid out left-to-right, wrapping onto further rows so a
+        // narrow card never runs them off its right edge.
         let (allow, deny) = z.rule_counts();
-        let cy = card.y1 - 26.0;
-        let mut sx = x;
-        let gap = 10.0;
-        sx += self.stat_chip(scene, t, tr, theme, "target", z.target.short(), target_color(theme, z.target), sx, cy) + gap;
-        sx += self.stat_chip(scene, t, tr, theme, "services", &z.services.len().to_string(), theme.text_primary, sx, cy) + gap;
-        sx += self.stat_chip(scene, t, tr, theme, "allow rules", &allow.to_string(), theme.tokens.colors.semantic.success, sx, cy) + gap;
-        sx += self.stat_chip(scene, t, tr, theme, "deny rules", &deny.to_string(), theme.tokens.colors.semantic.danger, sx, cy) + gap;
         let ifaces = if z.interfaces.is_empty() { "—".to_string() } else { z.interfaces.join(", ") };
-        sx += self.stat_chip(scene, t, tr, theme, "interfaces", &ifaces, theme.text_primary, sx, cy) + gap;
+        let mut chips: Vec<(&str, String, Color)> = vec![
+            ("target", z.target.short().to_string(), target_color(theme, z.target)),
+            ("services", z.services.len().to_string(), theme.text_primary),
+            ("allow rules", allow.to_string(), theme.tokens.colors.semantic.success),
+            ("deny rules", deny.to_string(), theme.tokens.colors.semantic.danger),
+            ("interfaces", ifaces, theme.text_primary),
+        ];
         if z.masquerade {
-            let _ = self.stat_chip(scene, t, tr, theme, "nat", "masquerade", theme.tokens.colors.semantic.info, sx, cy);
+            chips.push(("nat", "masquerade".to_string(), theme.tokens.colors.semantic.info));
+        }
+        let gap = 10.0;
+        let row_h = 48.0;
+        let chips_top = card.y0 + 74.0;
+        let max_x = card.x1 - 16.0;
+        let mut sx = x;
+        let mut row = 0.0_f64;
+        for (caption, value, color) in &chips {
+            let w = self.stat_chip_width(tr, caption, value);
+            if sx + w > max_x && sx > x + 0.5 {
+                row += 1.0;
+                sx = x;
+            }
+            let cy = chips_top + row * row_h + 20.0;
+            self.stat_chip(scene, t, tr, theme, caption, value, *color, sx, cy);
+            sx += w + gap;
         }
 
         // Set-active button (only meaningful when not already active).
@@ -1169,6 +1379,14 @@ impl FirewallApp {
             let w = paint::text_width(tr, txt, 12.0);
             paint::label_v(tr, scene, t, txt, 12.0, theme.text_primary, l.set_active_btn.x0 + (l.set_active_btn.width() - w) / 2.0, l.set_active_btn.y0, l.set_active_btn.height(), w + 2.0);
         }
+    }
+
+    /// The width [`Self::stat_chip`] will paint for `caption`/`value`, so the
+    /// summary can wrap chips before drawing them.
+    fn stat_chip_width(&self, tr: &mut TextRenderer, caption: &str, value: &str) -> f64 {
+        let cap_w = paint::text_width(tr, caption, 9.0);
+        let val_w = paint::text_width(tr, value, 13.0);
+        cap_w.max(val_w) + 20.0
     }
 
     /// A two-tier stat: a dim caption with a coloured value beneath, framed
@@ -1214,14 +1432,19 @@ impl FirewallApp {
         paint::stroke_rrect(scene, t, table, CARD_R, theme.border_standard, 1.0);
 
         let (cx_target, cx_proto, cx_action, cx_source, cx_ctrl) = rule_columns(table);
-        // Header.
+        // Header — the five columns collapse to two labels when narrow.
         let hy = table.y0 + 8.0;
         let hc = theme.text_dim;
-        paint::label(tr, scene, t, "TARGET", 10.0, hc, cx_target, hy, 200.0);
-        paint::label(tr, scene, t, "PROTO", 10.0, hc, cx_proto, hy, 80.0);
-        paint::label(tr, scene, t, "ACTION", 10.0, hc, cx_action, hy, 80.0);
-        paint::label(tr, scene, t, "SOURCE", 10.0, hc, cx_source, hy, 160.0);
-        paint::label(tr, scene, t, "ON", 10.0, hc, cx_ctrl, hy, 60.0);
+        if l.narrow {
+            paint::label(tr, scene, t, "RULE", 10.0, hc, cx_target, hy, 200.0);
+            paint::label(tr, scene, t, "ON", 10.0, hc, cx_ctrl, hy, 60.0);
+        } else {
+            paint::label(tr, scene, t, "TARGET", 10.0, hc, cx_target, hy, 200.0);
+            paint::label(tr, scene, t, "PROTO", 10.0, hc, cx_proto, hy, 80.0);
+            paint::label(tr, scene, t, "ACTION", 10.0, hc, cx_action, hy, 80.0);
+            paint::label(tr, scene, t, "SOURCE", 10.0, hc, cx_source, hy, 160.0);
+            paint::label(tr, scene, t, "ON", 10.0, hc, cx_ctrl, hy, 60.0);
+        }
         paint::hline(scene, t, table.x0 + 12.0, table.x1 - 12.0, table.y0 + 30.0, theme.border_standard, 1.0);
 
         if l.rule_rows.is_empty() {
@@ -1240,26 +1463,37 @@ impl FirewallApp {
             let dim = !rule.enabled;
             let primary = if dim { theme.text_dim } else { theme.text_primary };
             let secondary = if dim { alpha(theme.text_dim, 140) } else { theme.text_dim };
-
-            // Type dot.
-            let cy = (row.rect.y0 + row.rect.y1) / 2.0;
             let dot_c = if rule.matcher.is_service() { theme.accent_primary } else { theme.tokens.colors.semantic.info };
-            paint::dot(scene, t, Point::new(cx_target + 4.0, cy), 3.0, if dim { alpha(dot_c, 120) } else { dot_c });
-
-            paint::label_v(tr, scene, t, &rule.matcher.label(), 14.0, primary, cx_target + 14.0, row.rect.y0, row.rect.height(), cx_proto - cx_target - 18.0);
-            paint::label_v(tr, scene, t, &rule.matcher.proto_label(), 12.0, secondary, cx_proto, row.rect.y0, row.rect.height(), 60.0);
-
-            // Action chip.
             let (ac, atxt) = match rule.action {
                 Action::Allow => (theme.tokens.colors.semantic.success, "allow"),
                 Action::Deny => (theme.tokens.colors.semantic.danger, "deny"),
             };
-            let _ = paint::chip(tr, scene, t, atxt, 11.0, ac, alpha(ac, 40), cx_action, cy, 8.0, 20.0, 6.0);
-
-            // Source.
             let src = rule.source_label();
-            let src_color = if src == "anywhere" { secondary } else { primary };
-            paint::label_v(tr, scene, t, src, 12.0, src_color, cx_source, row.rect.y0, row.rect.height(), cx_ctrl - cx_source - 8.0);
+
+            if l.narrow {
+                // Two-line row: target + action on top, proto · source beneath.
+                let dot_y = row.rect.y0 + 18.0;
+                paint::dot(scene, t, Point::new(cx_target + 4.0, dot_y), 3.0, if dim { alpha(dot_c, 120) } else { dot_c });
+                let label_max = row.toggle.x0 - (cx_target + 14.0) - 60.0;
+                paint::label(tr, scene, t, &rule.matcher.label(), 14.0, primary, cx_target + 14.0, row.rect.y0 + 10.0, label_max.max(40.0));
+                // Action chip on the top line, just left of the toggle.
+                let _ = paint::chip(tr, scene, t, atxt, 11.0, ac, alpha(ac, 40), row.toggle.x0 - 62.0, dot_y, 8.0, 20.0, 6.0);
+                // Second line: proto · source.
+                let sub = if src == "anywhere" {
+                    format!("{} · anywhere", rule.matcher.proto_label())
+                } else {
+                    format!("{} · {}", rule.matcher.proto_label(), src)
+                };
+                paint::label(tr, scene, t, &sub, 12.0, secondary, cx_target + 14.0, row.rect.y0 + 32.0, row.rect.width() - 30.0);
+            } else {
+                let cy = (row.rect.y0 + row.rect.y1) / 2.0;
+                paint::dot(scene, t, Point::new(cx_target + 4.0, cy), 3.0, if dim { alpha(dot_c, 120) } else { dot_c });
+                paint::label_v(tr, scene, t, &rule.matcher.label(), 14.0, primary, cx_target + 14.0, row.rect.y0, row.rect.height(), cx_proto - cx_target - 18.0);
+                paint::label_v(tr, scene, t, &rule.matcher.proto_label(), 12.0, secondary, cx_proto, row.rect.y0, row.rect.height(), 60.0);
+                let _ = paint::chip(tr, scene, t, atxt, 11.0, ac, alpha(ac, 40), cx_action, cy, 8.0, 20.0, 6.0);
+                let src_color = if src == "anywhere" { secondary } else { primary };
+                paint::label_v(tr, scene, t, src, 12.0, src_color, cx_source, row.rect.y0, row.rect.height(), cx_ctrl - cx_source - 8.0);
+            }
 
             // Enable toggle.
             draw_toggle(scene, t, theme, row.toggle, rule.enabled);
@@ -1345,8 +1579,13 @@ impl FirewallApp {
         };
         self.draw_segmented(scene, t, tr, theme, &l.action_seg, &["allow", "deny"], asel);
 
-        // Source label + field.
-        paint::label_v(tr, scene, t, "Source", 12.0, theme.text_dim, card.x0 + 16.0, l.source_field.y0, CTRL_H, 60.0);
+        // Source label + field. The label sits above the full-width field when
+        // stacked (narrow), and beside it when the form is a single row (wide).
+        if l.narrow {
+            paint::label(tr, scene, t, "Source", 11.0, theme.text_dim, l.source_field.x0, l.source_field.y0 - 16.0, 120.0);
+        } else {
+            paint::label_v(tr, scene, t, "Source", 12.0, theme.text_dim, card.x0 + 16.0, l.source_field.y0, CTRL_H, 60.0);
+        }
         self.form.source.draw(scene, t, tr, theme, presence);
 
         // Add button.
@@ -1355,8 +1594,8 @@ impl FirewallApp {
         let w = paint::text_width(tr, at, 13.0);
         paint::label_v(tr, scene, t, at, 13.0, Color::WHITE, l.add_btn.x0 + (l.add_btn.width() - w) / 2.0, l.add_btn.y0, l.add_btn.height(), w + 2.0);
 
-        // Status line.
-        if !self.status.is_empty() {
+        // Status line (wide only — the stacked form fills its card top to bottom).
+        if !self.status.is_empty() && !l.narrow {
             paint::label(tr, scene, t, &self.status, 11.0, theme.text_dim, card.x0 + 16.0, card.y1 - 22.0, card.width() - 32.0);
         }
     }
