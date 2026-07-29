@@ -1,9 +1,10 @@
 //! Editor — a code-leaning sibling to [`super::notes_app::NotesApp`].
 //!
-//! Same CRDT-backed plaintext store (single Automerge `Text` under
-//! [`BODY_KEY`]), same `splice_text` edit path, same caret / typing
-//! controls — but rendered as discrete lines with a left-edge line-number
-//! gutter, mirroring the concept's `EditorApp.tsx` mock at
+//! Both sit on the same [`CrdtTextBody`]: one Automerge `Text` under
+//! [`BODY_KEY`], the same narrow-splice edit path, the same caret
+//! arithmetic. What makes this one the *editor* is entirely in `draw` —
+//! discrete lines behind a left-edge line-number gutter and a token-level
+//! syntax sweep, mirroring the concept's `EditorApp.tsx` mock at
 //! `nirios-concept/src/components/apps/EditorApp.tsx`.
 //!
 //! The concept uses the Catppuccin Mocha palette hard-coded into the mock.
@@ -19,14 +20,16 @@
 //! for the parity milestone — the mock itself only shows a frozen snippet.
 
 use std::collections::HashMap;
-use std::time::{Duration, Instant};
 
-use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, Value, transaction::Transactable};
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use automerge::{AutoCommit, ObjId};
+use taffy::{NodeId, TaffyTree};
 use ui::presence::{PathSegment, PresenceCtx, PresenceKey};
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
+use ui::text_selection::line_boundaries;
 use ui::widget::{AppKind, AppWidget, IconDescriptor, Widget};
+
+use crate::shell::crdt_text::{CrdtTextBody, full_bleed_leaf, full_bleed_rect};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::{Color, Fill};
@@ -43,7 +46,6 @@ const PADDING_Y: f64 = 48.0; // leave room for the "Editor" header
 const TEXT_SIZE: f32 = 14.0;
 const LINE_HEIGHT: f32 = TEXT_SIZE * 1.5;
 const GUTTER_WIDTH: f64 = 44.0;
-const COMMIT_DEBOUNCE: Duration = Duration::from_millis(800);
 
 /// Default seed used when the CRDT is empty on first boot. A short TSX
 /// snippet that exercises every highlight class: keywords, strings,
@@ -61,10 +63,10 @@ pub struct EditorApp {
     rect: Rect,
     hovered: bool,
     focused: bool,
-    text: String,
-    /// Byte offset into `text` for the caret.
+    /// CRDT-backed body plus the caret arithmetic over it.
+    body: CrdtTextBody,
+    /// Byte offset into `body.text` for the caret.
     cursor_pos: usize,
-    last_edit: Option<Instant>,
     last_mouse: Point,
 }
 
@@ -74,17 +76,16 @@ impl EditorApp {
             rect: Rect::ZERO,
             hovered: false,
             focused: false,
-            text: String::new(),
+            body: CrdtTextBody::new(BODY_KEY),
             cursor_pos: 0,
-            last_edit: None,
             last_mouse: Point::ZERO,
         }
     }
 
     pub fn with_seed(text: impl Into<String>) -> Self {
         let mut app = Self::new();
-        app.text = text.into();
-        app.cursor_pos = app.text.len();
+        app.body = CrdtTextBody::with_seed(BODY_KEY, text);
+        app.cursor_pos = app.body.text.len();
         app
     }
 
@@ -93,78 +94,33 @@ impl EditorApp {
         Self::with_seed(DEFAULT_SEED)
     }
 
-    fn resolve_body(&self, state: &mut AutoCommit, root: &ObjId) -> Option<ObjId> {
-        if let Ok(Some((Value::Object(ObjType::Text), id))) = state.get(root, BODY_KEY) {
-            return Some(id);
-        }
-        state.put_object(root, BODY_KEY, ObjType::Text).ok()
-    }
-
     fn clamp_cursor(&mut self) {
-        if self.cursor_pos > self.text.len() {
-            self.cursor_pos = self.text.len();
-        }
-        while self.cursor_pos > 0 && !self.text.is_char_boundary(self.cursor_pos) {
-            self.cursor_pos -= 1;
-        }
+        self.cursor_pos = self.body.clamp(self.cursor_pos);
     }
 
     fn insert_text(&mut self, state: &mut AutoCommit, root: &ObjId, s: &str) {
-        let Some(body) = self.resolve_body(state, root) else {
-            return;
-        };
-        let char_idx = self.text[..self.cursor_pos].chars().count();
-        self.text.insert_str(self.cursor_pos, s);
-        let _ = state.splice_text(&body, char_idx, 0, s);
-        self.cursor_pos += s.len();
-        self.last_edit = Some(Instant::now());
+        let at = self.cursor_pos;
+        self.cursor_pos = self.body.splice(state, root, at..at, s);
     }
 
     fn delete_before(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        if self.cursor_pos == 0 {
+        let cur = self.cursor_pos;
+        if cur == 0 {
             return;
         }
-        let Some(body) = self.resolve_body(state, root) else {
-            return;
-        };
-        let mut prev = self.cursor_pos - 1;
-        while prev > 0 && !self.text.is_char_boundary(prev) {
-            prev -= 1;
-        }
-        let removed = &self.text[prev..self.cursor_pos];
-        let char_idx = self.text[..prev].chars().count();
-        let n = removed.chars().count();
-        self.text.drain(prev..self.cursor_pos);
-        self.cursor_pos = prev;
-        let _ = state.splice_text(&body, char_idx, n as isize, "");
-        self.last_edit = Some(Instant::now());
+        let prev = self.body.prev_boundary(cur);
+        self.cursor_pos = self.body.splice(state, root, prev..cur, "");
     }
 
-    /// Move the caret to the visual start of the current line (the offset
-    /// right after the preceding `\n`, or 0 for the first line).
+    /// Byte offset of the start of the line `pos` sits on.
     fn line_start(&self, pos: usize) -> usize {
-        self.text[..pos].rfind('\n').map(|i| i + 1).unwrap_or(0)
+        line_boundaries(&self.body.text, pos).0
     }
 
-    /// Move the caret to the visual end of the current line (the offset of
-    /// the next `\n`, or the end of the buffer for the last line).
+    /// Byte offset of the end of the line `pos` sits on (the next `\n`, or
+    /// the end of the buffer on the last line).
     fn line_end(&self, pos: usize) -> usize {
-        self.text[pos..]
-            .find('\n')
-            .map(|i| pos + i)
-            .unwrap_or(self.text.len())
-    }
-
-    /// Convert a **char-index** (as stored in `PresenceCtx::carets`) to a
-    /// byte offset into `self.text`. Returns `self.text.len()` if the char
-    /// index walks past the end — peer state that's a bit ahead shouldn't
-    /// panic us.
-    fn char_index_to_byte(&self, char_idx: usize) -> usize {
-        self.text
-            .char_indices()
-            .nth(char_idx)
-            .map(|(b, _)| b)
-            .unwrap_or(self.text.len())
+        line_boundaries(&self.body.text, pos).1
     }
 
     /// Presence key for the editor body. Widget-level path so `text_input`-
@@ -349,20 +305,7 @@ fn tokenize(line: &str) -> Vec<(usize, usize, TokClass)> {
 
 impl Widget for EditorApp {
     fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        match state.get(root, BODY_KEY) {
-            Ok(Some((Value::Object(ObjType::Text), id))) => {
-                if let Ok(t) = state.text(&id) {
-                    self.text = t;
-                }
-            }
-            _ => {
-                if let Ok(id) = state.put_object(root, BODY_KEY, ObjType::Text) {
-                    if !self.text.is_empty() {
-                        let _ = state.splice_text(&id, 0, 0, &self.text);
-                    }
-                }
-            }
-        }
+        self.body.sync(state, root);
         self.clamp_cursor();
     }
 
@@ -372,27 +315,11 @@ impl Widget for EditorApp {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let node = taffy
-            .new_leaf(Style {
-                size: Size {
-                    width: Dimension::percent(1.0),
-                    height: Dimension::percent(1.0),
-                },
-                ..Default::default()
-            })
-            .unwrap();
-        node_map.insert(node, self as *mut dyn Widget);
-        node
+        full_bleed_leaf(taffy, node_map, self as *mut dyn Widget)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let l = taffy.layout(node).unwrap();
-        self.rect = Rect::new(
-            origin.x + l.location.x as f64,
-            origin.y + l.location.y as f64,
-            origin.x + l.location.x as f64 + l.size.width as f64,
-            origin.y + l.location.y as f64 + l.size.height as f64,
-        );
+        self.rect = full_bleed_rect(taffy, node, origin);
     }
 
     fn draw(
@@ -471,7 +398,7 @@ impl Widget for EditorApp {
 
         let content_x = self.rect.x0 + PADDING_X + GUTTER_WIDTH + 10.0;
 
-        if self.text.is_empty() && !self.focused {
+        if self.body.text.is_empty() && !self.focused {
             let placeholder =
                 "// Empty buffer. Type to begin — edits sync live with collaborators.";
             tr.draw_text(
@@ -487,13 +414,13 @@ impl Widget for EditorApp {
         }
 
         // Running caret position: set if the cursor falls on this line.
-        let cursor_line = self.text[..self.cursor_pos].matches('\n').count();
+        let cursor_line = self.body.text[..self.cursor_pos].matches('\n').count();
         let cursor_col_prefix: &str = {
             let line_start = self.line_start(self.cursor_pos);
-            &self.text[line_start..self.cursor_pos]
+            &self.body.text[line_start..self.cursor_pos]
         };
 
-        for (row, line) in self.text.split('\n').enumerate() {
+        for (row, line) in self.body.text.split('\n').enumerate() {
             let y = body_top + (row as f64) * LINE_HEIGHT as f64 + 2.0;
             if y > self.rect.y1 {
                 break;
@@ -581,10 +508,10 @@ impl Widget for EditorApp {
         let key = Self::body_presence_key();
         if let Some(carets) = presence.carets.get(&key) {
             for (user, caret_char) in carets.iter() {
-                let byte_idx = self.char_index_to_byte(*caret_char);
-                let row = self.text[..byte_idx].matches('\n').count();
+                let byte_idx = self.body.char_index_to_byte(*caret_char);
+                let row = self.body.text[..byte_idx].matches('\n').count();
                 let line_start_byte = self.line_start(byte_idx);
-                let prefix = &self.text[line_start_byte..byte_idx];
+                let prefix = &self.body.text[line_start_byte..byte_idx];
                 let (prefix_w, _) = tr.measure(prefix, TEXT_SIZE, None);
                 let x = content_x + prefix_w as f64;
                 let y = body_top + (row as f64) * LINE_HEIGHT as f64 + 2.0;
@@ -610,16 +537,16 @@ impl Widget for EditorApp {
                 // line. Multi-line selections therefore produce one rect
                 // per visual row, matching how editors conventionally
                 // render per-line selection bands.
-                let sel_start_byte = self.char_index_to_byte(range.start);
-                let sel_end_byte = self.char_index_to_byte(range.end);
+                let sel_start_byte = self.body.char_index_to_byte(range.start);
+                let sel_end_byte = self.body.char_index_to_byte(range.end);
                 let mut byte_cursor = sel_start_byte;
-                let mut row = self.text[..sel_start_byte].matches('\n').count();
+                let mut row = self.body.text[..sel_start_byte].matches('\n').count();
                 let mut line_rects: Vec<Rect> = Vec::new();
                 while byte_cursor < sel_end_byte {
                     let line_end_byte = self.line_end(byte_cursor).min(sel_end_byte);
                     let line_start_byte = self.line_start(byte_cursor);
-                    let pre = &self.text[line_start_byte..byte_cursor];
-                    let span = &self.text[byte_cursor..line_end_byte];
+                    let pre = &self.body.text[line_start_byte..byte_cursor];
+                    let span = &self.body.text[byte_cursor..line_end_byte];
                     let (pre_w, _) = tr.measure(pre, TEXT_SIZE, None);
                     let (span_w, _) = tr.measure(span, TEXT_SIZE, None);
                     let x0 = content_x + pre_w as f64;
@@ -629,7 +556,7 @@ impl Widget for EditorApp {
                     line_rects.push(Rect::new(x0, y0, x1, y1));
                     // Advance to the start of the next line (skip the `\n`).
                     byte_cursor = line_end_byte;
-                    if byte_cursor < self.text.len() && self.text.as_bytes()[byte_cursor] == b'\n' {
+                    if byte_cursor < self.body.text.len() && self.body.text.as_bytes()[byte_cursor] == b'\n' {
                         byte_cursor += 1;
                         row += 1;
                     } else {
@@ -720,7 +647,7 @@ impl Widget for EditorApp {
                     Key::Named(NamedKey::ArrowLeft) => {
                         if self.cursor_pos > 0 {
                             let mut p = self.cursor_pos - 1;
-                            while p > 0 && !self.text.is_char_boundary(p) {
+                            while p > 0 && !self.body.text.is_char_boundary(p) {
                                 p -= 1;
                             }
                             self.cursor_pos = p;
@@ -728,9 +655,9 @@ impl Widget for EditorApp {
                         }
                     }
                     Key::Named(NamedKey::ArrowRight) => {
-                        if self.cursor_pos < self.text.len() {
+                        if self.cursor_pos < self.body.text.len() {
                             let mut p = self.cursor_pos + 1;
-                            while p < self.text.len() && !self.text.is_char_boundary(p) {
+                            while p < self.body.text.len() && !self.body.text.is_char_boundary(p) {
                                 p += 1;
                             }
                             self.cursor_pos = p;
@@ -758,7 +685,7 @@ impl Widget for EditorApp {
                         let line_start = self.line_start(self.cursor_pos);
                         let col = self.cursor_pos - line_start;
                         let line_end = self.line_end(self.cursor_pos);
-                        if line_end < self.text.len() {
+                        if line_end < self.body.text.len() {
                             let next_line_start = line_end + 1;
                             let next_line_end = self.line_end(next_line_start);
                             let next_len = next_line_end - next_line_start;
@@ -812,13 +739,11 @@ impl Widget for EditorApp {
     }
 
     fn needs_commit(&self) -> bool {
-        self.last_edit
-            .map(|t| t.elapsed() >= COMMIT_DEBOUNCE)
-            .unwrap_or(false)
+        self.body.needs_commit()
     }
 
     fn on_commit(&mut self) {
-        self.last_edit = None;
+        self.body.on_commit();
     }
 
     fn get_state(&self) -> Option<String> {
@@ -851,7 +776,7 @@ impl AppWidget for EditorApp {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use automerge::transaction::Transactable;
+    use automerge::{ObjType, ReadDoc, Value, transaction::Transactable};
 
     fn bind() -> (AutoCommit, ObjId) {
         let mut doc = AutoCommit::new();
@@ -889,7 +814,7 @@ mod tests {
         let (mut doc, tile) = bind();
         let mut app = EditorApp::with_seed("fn main() {}\n");
         app.sync(&mut doc, &tile);
-        assert_eq!(app.text, "fn main() {}\n");
+        assert_eq!(app.body.text, "fn main() {}\n");
         assert!(matches!(
             doc.get(&tile, BODY_KEY),
             Ok(Some((Value::Object(ObjType::Text), _)))
@@ -902,10 +827,10 @@ mod tests {
         let mut app = EditorApp::new();
         app.sync(&mut doc, &tile);
         app.insert_text(&mut doc, &tile, "abc");
-        assert_eq!(app.text, "abc");
+        assert_eq!(app.body.text, "abc");
         assert_eq!(app.cursor_pos, 3);
         app.delete_before(&mut doc, &tile);
-        assert_eq!(app.text, "ab");
+        assert_eq!(app.body.text, "ab");
     }
 
     #[test]
@@ -930,11 +855,11 @@ mod tests {
     fn char_index_to_byte_handles_multibyte_and_oob() {
         // The body is "aβc" where `β` is a 2-byte UTF-8 scalar.
         let app = EditorApp::with_seed("aβc");
-        assert_eq!(app.char_index_to_byte(0), 0);
-        assert_eq!(app.char_index_to_byte(1), 1);
-        assert_eq!(app.char_index_to_byte(2), 3); // past `β`
+        assert_eq!(app.body.char_index_to_byte(0), 0);
+        assert_eq!(app.body.char_index_to_byte(1), 1);
+        assert_eq!(app.body.char_index_to_byte(2), 3); // past `β`
         // Walk past the end clamps to text.len() rather than panicking.
-        assert_eq!(app.char_index_to_byte(99), app.text.len());
+        assert_eq!(app.body.char_index_to_byte(99), app.body.text.len());
     }
 
     #[test]
