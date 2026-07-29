@@ -583,6 +583,7 @@ pub mod toggle_group;     pub use toggle_group::ToggleGroup;
 // (rather than building a widget tree) can adopt them too.
 pub mod empty_state;      pub use empty_state::EmptyState;
 pub mod search_field;     pub use search_field::SearchField;
+pub mod search_results;   pub use search_results::SearchResultsView;
 pub mod stat_tile;        pub use stat_tile::{StatTile, Trend};
 pub mod banner;           pub use banner::{Banner, BannerKind};
 pub mod chip;             pub use chip::Chip;

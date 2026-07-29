@@ -68,6 +68,7 @@ pub mod fullscreen;
 pub mod mpris;
 pub mod nav_stack;
 pub mod reader_hud;
+pub mod search;
 
 // The toolkit's own stack, re-exported so an app never has to name a version.
 // See the crate-level note above for why this matters for `vello` and `winit`
@@ -88,6 +89,7 @@ pub use theme::Theme;
 pub use image_store::{Fetcher, ImageStore};
 pub use nav_stack::{EdgeSwipeBack, NavAction, NavStack};
 pub use portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
+pub use search::{fuzzy_score, FnProvider, SearchGroup, SearchProvider, SearchRegistry, SearchResult};
 pub use caps_lock::CapsLockEstimate;
 pub use selection::SelectionModel;
 
