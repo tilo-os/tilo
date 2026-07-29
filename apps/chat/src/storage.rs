@@ -82,10 +82,13 @@ mod tests {
         // module still exists is to point `open_migrating` at the legacy
         // file. The needles are assembled at runtime so this assertion does
         // not match itself.
+        // Only the production half — the tests below legitimately write a
+        // legacy file to have something for `open_migrating` to import.
         let src = include_str!("storage.rs");
+        let production = src.split(["#[cfg", "(test)]"].concat().as_str()).next().unwrap();
         for needle in [["fs::", "write("].concat(), ["fs::", "rename("].concat()] {
             assert!(
-                !src.contains(&needle),
+                !production.contains(&needle),
                 "storage.rs regained `{needle}` — app-state owns persistence, \
                  and a second writer here is what made two files disagree"
             );
