@@ -66,6 +66,12 @@ const MULTI_CLICK_INTERVAL: Duration = Duration::from_millis(400);
 /// Pixels of cursor wiggle still allowed between rapid clicks before
 /// they're treated as separate click chains.
 const MULTI_CLICK_RADIUS: f64 = 4.0;
+/// Horizontal text inset for the multiline path, in logical px. Shared by the
+/// draw, caret geometry, and pointer hit-test so all three agree — the
+/// single-line path keeps its own (theme-derived) padding untouched.
+const ML_PAD_X: f64 = 10.0;
+/// Vertical text inset (top/bottom) for the multiline path, in logical px.
+const ML_PAD_Y: f64 = 8.0;
 
 /// What unit the in-flight drag snaps to. Set on press based on the
 /// click ladder so a double-click-then-drag extends by whole words
@@ -192,6 +198,59 @@ pub struct TextInput {
     /// render the edited value in its own typeface. Takes precedence over
     /// `mono`. Default `None` (sans / mono per `mono`).
     family: Option<FontChoice>,
+    /// When true the field is a multi-line editor: newlines are real
+    /// characters, `Enter` inserts one, `Up`/`Down` move the caret by visual
+    /// line, `Home`/`End` act per visual line, selection spans lines, and the
+    /// text soft-wraps at the field width instead of scrolling horizontally.
+    /// Default `false` — the single-line behaviour is byte-for-byte unchanged.
+    multiline: bool,
+    /// When true, a plain `Enter` (no Shift) fires a one-shot submit signal
+    /// (`take_submit`) instead of inserting a newline — for single-line hosts
+    /// that want Enter to accept, and for chat-style multiline composers where
+    /// Enter sends and Shift+Enter inserts a newline. Default `false`.
+    enter_submits: bool,
+    /// One-shot: set when `Enter` was pressed while [`enter_submits`]. The host
+    /// reads and clears it via [`take_submit`].
+    submit_requested: bool,
+    /// Reveal a `secret` field's real glyphs (the eye toggle). Only meaningful
+    /// when `secret` is set; the plaintext is still kept out of the a11y tree
+    /// and `text_review` regardless, so revealing shows it on screen only.
+    reveal: bool,
+    /// Visual-line layout for the multiline path, rebuilt by each `draw`. Each
+    /// entry is one on-screen row (a soft-wrapped fragment or a full short
+    /// line); the caret/selection/hit-test math reads it. Empty in single-line
+    /// mode.
+    lines: Vec<VisualLine>,
+    /// Preferred line-relative x (logical px) preserved across consecutive
+    /// `Up`/`Down` so the caret keeps its column over shorter lines. Reset to
+    /// `None` on any horizontal move, edit, or click. Multiline only.
+    goal_x: Option<f64>,
+    /// Vertical scroll offset in logical px (multiline). Follows the caret so a
+    /// body taller than the field stays legible while editing.
+    scroll_y: f64,
+}
+
+/// One on-screen row of a multiline [`TextInput`]: either a whole short logical
+/// line or one soft-wrapped fragment of a longer paragraph. Rebuilt every
+/// `draw`; the caret, selection, and pointer hit-test all read it so they agree
+/// pixel-for-pixel with what was painted.
+#[derive(Clone, Debug)]
+struct VisualLine {
+    /// Byte offset in `text` where this row starts.
+    start: usize,
+    /// Byte offset (exclusive) where this row ends, NOT counting a trailing
+    /// hard `\n`.
+    end: usize,
+    /// True when the row ends at a hard `\n` (or is the final row). A
+    /// soft-wrapped row is `false`, which is how the caret decides a boundary
+    /// byte belongs to the *next* row's start rather than this row's end.
+    hard_break: bool,
+    /// Per-char left-edge x within the row (line-relative logical px), measured
+    /// with the same family the draw uses. `len() == chars_in_row + 1`; the
+    /// last entry is the row's total width.
+    char_x: Vec<f64>,
+    /// Top y of the row in this input's local coordinates (before `scroll_y`).
+    y: f64,
 }
 
 /// Automerge mark name used to attribute each character's author.
@@ -235,6 +294,13 @@ impl TextInput {
             placeholder: String::new(),
             mono: false,
             family: None,
+            multiline: false,
+            enter_submits: false,
+            submit_requested: false,
+            reveal: false,
+            lines: Vec::new(),
+            goal_x: None,
+            scroll_y: 0.0,
         }
     }
 
@@ -486,20 +552,413 @@ impl TextInput {
     /// The exact caret rectangle for byte offset `byte`, in local
     /// coordinates — identical geometry to the focused local caret. Peer
     /// carets render through this so a remote caret is pixel-identical to
-    /// the local one, only recoloured.
+    /// the local one, only recoloured. In multiline mode the caret is placed
+    /// on the visual row that contains `byte` (from the last `draw`'s layout).
     pub fn caret_rect(&self, theme: &Theme, byte: usize) -> Rect {
+        if self.multiline {
+            return self.caret_rect_ml(byte);
+        }
         let x = self.caret_x(theme, byte);
         let (text_y, line_height) = self.text_band();
         Rect::new(x, text_y, x + CARET_WIDTH, text_y + line_height)
     }
 
     /// The selection highlight rect for the `[start, end)` byte range, in
-    /// local coordinates — same vertical band as the caret.
+    /// local coordinates — same vertical band as the caret. Single-line only;
+    /// multiline callers use [`selection_rects`], which returns one rect per
+    /// visual row the selection covers.
     pub fn selection_rect(&self, theme: &Theme, start: usize, end: usize) -> Rect {
         let x0 = self.caret_x(theme, start);
         let x1 = self.caret_x(theme, end);
         let (text_y, line_height) = self.text_band();
         Rect::new(x0, text_y, x1, text_y + line_height)
+    }
+
+    /// Highlight rects for the `[start, end)` byte range. Single-line returns
+    /// exactly one rect ([`selection_rect`]); multiline returns one rect per
+    /// visual row the range spans, so a cross-line selection paints correctly.
+    pub fn selection_rects(&self, theme: &Theme, start: usize, end: usize) -> Vec<Rect> {
+        if !self.multiline {
+            return vec![self.selection_rect(theme, start, end)];
+        }
+        let lh = self.line_height();
+        let px = ML_PAD_X;
+        let py = ML_PAD_Y;
+        let mut out = Vec::new();
+        for r in &self.lines {
+            let lo = start.max(r.start);
+            let hi = end.min(r.end);
+            if lo > hi {
+                continue;
+            }
+            // Does the selection continue past this row's break? If so, extend
+            // the highlight a little past the last glyph to mark the newline.
+            let spans_break = end > r.end;
+            let x0 = self.x_in_row(r, lo);
+            let mut x1 = self.x_in_row(r, hi);
+            if spans_break && hi == r.end {
+                x1 += (self.effective_font_size() as f64) * 0.4;
+            }
+            if x1 - x0 < 0.5 {
+                continue;
+            }
+            let y0 = self.rect.y0 + py + r.y - self.scroll_y;
+            out.push(Rect::new(
+                self.rect.x0 + px + x0,
+                y0,
+                self.rect.x0 + px + x1,
+                y0 + lh,
+            ));
+        }
+        out
+    }
+
+    // ---- multiline geometry / layout ---------------------------------------
+
+    /// Effective body font size (per-widget override or the default).
+    fn effective_font_size(&self) -> f32 {
+        self.font_size_override.unwrap_or(FONT_SIZE)
+    }
+
+    /// The line-height band both text and caret share, in logical px.
+    fn line_height(&self) -> f64 {
+        (self.effective_font_size() * LINE_HEIGHT_RATIO) as f64
+    }
+
+    /// Total laid-out content height for the multiline path (rows × line height
+    /// plus top/bottom inset), from the last `draw`/`measure`. Hosts that want
+    /// the field to grow with its content read this. Falls back to one row when
+    /// nothing has been laid out yet.
+    pub fn content_height(&self) -> f64 {
+        let lh = self.line_height();
+        let rows = self.lines.len().max(1) as f64;
+        rows * lh + ML_PAD_Y * 2.0
+    }
+
+    /// Line-relative x of the char boundary nearest `byte` within row `r`.
+    fn x_in_row(&self, r: &VisualLine, byte: usize) -> f64 {
+        let b = byte.clamp(r.start, r.end);
+        let ci = self.text[r.start..b].chars().count();
+        r.char_x
+            .get(ci)
+            .copied()
+            .unwrap_or_else(|| r.char_x.last().copied().unwrap_or(0.0))
+    }
+
+    /// Byte offset of the `ci`-th char boundary within row `r`.
+    fn byte_of_row_char(&self, r: &VisualLine, ci: usize) -> usize {
+        match self.text[r.start..r.end].char_indices().nth(ci) {
+            Some((b, _)) => r.start + b,
+            None => r.end,
+        }
+    }
+
+    /// Resolve `byte` to `(row index, line-relative x)` against the current
+    /// visual-line layout. Handles the soft-wrap boundary: a byte that is both
+    /// the end of a soft-wrapped row and the start of the next lands on the
+    /// next row's left edge (so the caret reads as "start of the wrapped
+    /// continuation", never a phantom position past the right edge).
+    fn locate_ml(&self, byte: usize) -> (usize, f64) {
+        if self.lines.is_empty() {
+            return (0, 0.0);
+        }
+        for (i, r) in self.lines.iter().enumerate() {
+            if byte >= r.start && byte < r.end {
+                return (i, self.x_in_row(r, byte));
+            }
+        }
+        for i in (0..self.lines.len()).rev() {
+            let r = &self.lines[i];
+            if byte >= r.start && byte <= r.end {
+                if byte == r.end
+                    && !r.hard_break
+                    && i + 1 < self.lines.len()
+                    && self.lines[i + 1].start == byte
+                {
+                    return (i + 1, 0.0);
+                }
+                return (i, self.x_in_row(r, byte));
+            }
+        }
+        let last = self.lines.len() - 1;
+        let r = &self.lines[last];
+        (last, self.x_in_row(r, r.end))
+    }
+
+    /// Multiline caret rect for `byte`, in local coordinates.
+    fn caret_rect_ml(&self, byte: usize) -> Rect {
+        let (i, x) = self.locate_ml(byte);
+        let y = self.lines.get(i).map(|r| r.y).unwrap_or(0.0);
+        let cx = self.rect.x0 + ML_PAD_X + x;
+        let cy = self.rect.y0 + ML_PAD_Y + y - self.scroll_y;
+        Rect::new(cx, cy, cx + CARET_WIDTH, cy + self.line_height())
+    }
+
+    /// Resolve a local-space point to a byte offset in multiline mode: pick the
+    /// row by y (clamped to the first/last), then the nearest char boundary in
+    /// that row by x. Requires a prior `draw` to have built the layout.
+    fn cursor_from_point(&self, pt: Point) -> usize {
+        if self.lines.is_empty() {
+            return 0;
+        }
+        let lh = self.line_height();
+        let local_y = pt.y - (self.rect.y0 + ML_PAD_Y) + self.scroll_y;
+        let mut row = (local_y / lh).floor() as isize;
+        row = row.clamp(0, self.lines.len() as isize - 1);
+        let r = &self.lines[row as usize];
+        let rel_x = pt.x - (self.rect.x0 + ML_PAD_X);
+        let mut best = 0usize;
+        let mut best_d = f64::MAX;
+        for (ci, &cx) in r.char_x.iter().enumerate() {
+            let d = (rel_x - cx).abs();
+            if d < best_d {
+                best_d = d;
+                best = ci;
+            }
+        }
+        // On a soft-wrapped row, snapping to the very last boundary would jump
+        // the caret to the next row's start; keep it on this row.
+        let is_last = row as usize == self.lines.len() - 1;
+        if best + 1 == r.char_x.len() && !r.hard_break && !is_last && best > 0 {
+            best -= 1;
+        }
+        self.byte_of_row_char(r, best)
+    }
+
+    /// Move the caret one visual row up or down, preserving the goal column
+    /// across consecutive vertical moves. Multiline only; reads the last
+    /// `draw`'s layout.
+    fn move_vertical(&mut self, down: bool, extend: bool) {
+        if self.lines.is_empty() {
+            return;
+        }
+        let (i, cur_x) = self.locate_ml(self.cursor_pos);
+        let goal = self.goal_x.unwrap_or(cur_x);
+        let target = if down {
+            if i + 1 < self.lines.len() {
+                i + 1
+            } else {
+                self.set_cursor(self.text.len(), extend);
+                self.goal_x = Some(goal);
+                return;
+            }
+        } else if i > 0 {
+            i - 1
+        } else {
+            self.set_cursor(0, extend);
+            self.goal_x = Some(goal);
+            return;
+        };
+        // Nearest char boundary in the target row to the goal x.
+        let r = &self.lines[target];
+        let mut best = 0usize;
+        let mut best_d = f64::MAX;
+        for (ci, &cx) in r.char_x.iter().enumerate() {
+            let d = (goal - cx).abs();
+            if d < best_d {
+                best_d = d;
+                best = ci;
+            }
+        }
+        let is_last = target == self.lines.len() - 1;
+        if best + 1 == r.char_x.len() && !r.hard_break && !is_last && best > 0 {
+            best -= 1;
+        }
+        let byte = self.byte_of_row_char(r, best);
+        self.set_cursor(byte, extend);
+        self.goal_x = Some(goal);
+    }
+
+    /// Rebuild the visual-line layout for the current text at width `avail_w`
+    /// (logical px, the inner text width). Soft-wraps each paragraph at word
+    /// boundaries, falling back to a mid-word break for a single word wider
+    /// than the field. Measures with the same family the draw uses so caret,
+    /// selection, and hit-test stay glyph-aligned.
+    fn build_lines(&mut self, tr: &mut TextRenderer, avail_w: f64) {
+        let size = self.effective_font_size();
+        let lh = self.line_height();
+        let wrap_w = if avail_w > 1.0 { avail_w } else { f64::MAX };
+        let mut lines: Vec<VisualLine> = Vec::new();
+        let mut y = 0.0f64;
+        let mut para_start = 0usize;
+        loop {
+            let rel_nl = self.text[para_start..].find('\n');
+            let para_end = rel_nl.map(|i| para_start + i).unwrap_or(self.text.len());
+            self.wrap_paragraph(tr, size, para_start, para_end, rel_nl.is_some(), wrap_w, lh, &mut y, &mut lines);
+            match rel_nl {
+                Some(i) => para_start = para_start + i + 1,
+                None => break,
+            }
+        }
+        self.lines = lines;
+    }
+
+    /// Wrap one paragraph `[start, end)` (no interior '\n') into visual rows,
+    /// appending them to `out` and advancing `y`. `hard_break` marks the final
+    /// row as ending at a real newline (vs. the document end).
+    #[allow(clippy::too_many_arguments)]
+    fn wrap_paragraph(
+        &self,
+        tr: &mut TextRenderer,
+        size: f32,
+        start: usize,
+        end: usize,
+        hard_break: bool,
+        wrap_w: f64,
+        lh: f64,
+        y: &mut f64,
+        out: &mut Vec<VisualLine>,
+    ) {
+        let para = &self.text[start..end];
+        // Char boundaries relative to `start`, plus an end sentinel.
+        let mut boundaries: Vec<usize> = para.char_indices().map(|(i, _)| i).collect();
+        boundaries.push(para.len());
+        // Cumulative (masked-aware) x at each boundary.
+        let cum: Vec<f64> = boundaries
+            .iter()
+            .map(|&b| self.measure_str(tr, &self.display_slice(start, start + b), size).0 as f64)
+            .collect();
+        let nchars = boundaries.len() - 1;
+        if nchars == 0 {
+            out.push(VisualLine { start, end, hard_break, char_x: vec![0.0], y: *y });
+            *y += lh;
+            return;
+        }
+        let push_row =
+            |out: &mut Vec<VisualLine>, y: &mut f64, a: usize, b: usize, hard: bool| {
+                let char_x: Vec<f64> = (a..=b).map(|j| cum[j] - cum[a]).collect();
+                out.push(VisualLine {
+                    start: start + boundaries[a],
+                    end: start + boundaries[b],
+                    hard_break: hard,
+                    char_x,
+                    y: *y,
+                });
+                *y += lh;
+            };
+        let mut row_start_k = 0usize;
+        let mut last_space_k: Option<usize> = None;
+        let mut k = 0usize;
+        while k < nchars {
+            let row_w = cum[k + 1] - cum[row_start_k];
+            if row_w > wrap_w && k > row_start_k {
+                let break_k = match last_space_k {
+                    Some(sp) if sp + 1 > row_start_k => sp + 1,
+                    _ => k,
+                };
+                push_row(out, y, row_start_k, break_k, false);
+                row_start_k = break_k;
+                last_space_k = None;
+                continue;
+            }
+            if &para[boundaries[k]..boundaries[k + 1]] == " " {
+                last_space_k = Some(k);
+            }
+            k += 1;
+        }
+        push_row(out, y, row_start_k, nchars, hard_break);
+    }
+
+    /// Draw one run of body text in whatever family the input is configured
+    /// for (explicit family override wins, else mono when `self.mono`, else
+    /// sans) — the same choice `measure_str` makes, so glyphs stay aligned
+    /// with the measured caret/selection metrics.
+    fn draw_text_run(
+        &self,
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        text: &str,
+        size: f32,
+        color: vello::peniko::Color,
+        origin: Affine,
+    ) {
+        if let Some(fam) = &self.family {
+            tr.draw_text_font(scene, text, size, color, origin, None, TextWeight::Regular, false, fam);
+        } else {
+            tr.draw_text_styled(scene, text, size, color, origin, None, TextWeight::Regular, false, self.mono);
+        }
+    }
+
+    /// The multiline body: rebuild the wrapped layout, follow the caret with
+    /// vertical scroll, then paint per-row selection, text, placeholder, and
+    /// caret inside a clip of the field rect. `shape` is the field's rounded
+    /// clip (already used for the chrome).
+    fn draw_multiline_body(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        shape: &RoundedRect,
+    ) {
+        let size = self.effective_font_size();
+        let lh = self.line_height();
+        let avail_w = self.rect.width() - ML_PAD_X * 2.0;
+        self.build_lines(tr, avail_w);
+
+        // Vertical scroll follows the caret while focused; otherwise pin to the
+        // top so the first line is always visible.
+        let (caret_row, _) = self.locate_ml(self.cursor_pos);
+        let caret_top = self.lines.get(caret_row).map(|r| r.y).unwrap_or(0.0);
+        let caret_bot = caret_top + lh;
+        let view_h = self.rect.height() - ML_PAD_Y * 2.0;
+        if self.is_focused {
+            if caret_top - self.scroll_y < 0.0 {
+                self.scroll_y = caret_top;
+            } else if caret_bot - self.scroll_y > view_h {
+                self.scroll_y = caret_bot - view_h;
+            }
+        } else {
+            self.scroll_y = 0.0;
+        }
+        let content_h = self.lines.len() as f64 * lh;
+        let max_scroll = (content_h - view_h).max(0.0);
+        self.scroll_y = self.scroll_y.clamp(0.0, max_scroll);
+
+        scene.push_layer(vello::peniko::Fill::NonZero, BlendMode::default(), 1.0, transform, shape);
+
+        // Selection (per visual row), painted under the glyphs.
+        if let Some((s, e)) = self.selection_range() {
+            let sel_color = theme.accent_primary.with_alpha_factor(0.35);
+            for r in self.selection_rects(theme, s, e) {
+                scene.fill(vello::peniko::Fill::NonZero, transform, sel_color, None, &r);
+            }
+        }
+
+        // Placeholder when empty + unfocused.
+        if self.shows_placeholder() {
+            let origin = transform
+                * Affine::translate((self.rect.x0 + ML_PAD_X, self.rect.y0 + ML_PAD_Y - self.scroll_y));
+            tr.draw_text(scene, &self.placeholder, size, theme.text_dim, origin, None);
+        }
+
+        let text_color = if self.disabled { theme.text_dim } else { theme.text_primary };
+        // Draw each row at least partly within the viewport. Collect first so
+        // the `self` borrow for `display_slice` ends before the draw borrow.
+        let rows: Vec<(f64, String)> = self
+            .lines
+            .iter()
+            .filter(|r| {
+                let top = r.y - self.scroll_y;
+                top + lh >= 0.0 && top <= view_h
+            })
+            .map(|r| (r.y, self.display_slice(r.start, r.end)))
+            .collect();
+        for (ry, text) in rows {
+            if text.is_empty() {
+                continue;
+            }
+            let origin = transform
+                * Affine::translate((self.rect.x0 + ML_PAD_X, self.rect.y0 + ML_PAD_Y + ry - self.scroll_y));
+            self.draw_text_run(scene, tr, &text, size, text_color, origin);
+        }
+
+        if self.is_focused && !self.disabled {
+            let caret = self.caret_rect_ml(self.cursor_pos);
+            scene.fill(vello::peniko::Fill::NonZero, transform, theme.accent_primary, None, &caret);
+        }
+
+        scene.pop_layer();
     }
 
     /// One-shot read of user edits. Returns `Some(text)` if any
@@ -546,6 +1005,83 @@ impl TextInput {
     pub fn with_secret(mut self, on: bool) -> Self {
         self.secret = on;
         self
+    }
+
+    /// Mutate the secret (password-masking) flag after construction.
+    pub fn set_secret(&mut self, on: bool) {
+        self.secret = on;
+    }
+
+    /// Whether this input masks its value (password mode).
+    pub fn is_secret(&self) -> bool {
+        self.secret
+    }
+
+    /// Builder-style: start a secret field with its glyphs revealed (the eye
+    /// toggle on). Only meaningful together with [`with_secret`]. Even when
+    /// revealed the plaintext is kept out of the a11y tree and `text_review`;
+    /// revealing shows the characters on screen only.
+    pub fn with_reveal(mut self, on: bool) -> Self {
+        self.reveal = on;
+        self
+    }
+
+    /// Mutate the reveal flag after construction.
+    pub fn set_reveal(&mut self, on: bool) {
+        self.reveal = on;
+    }
+
+    /// Flip the reveal flag (drives an eye toggle button). No-op on a
+    /// non-secret field.
+    pub fn toggle_reveal(&mut self) {
+        if self.secret {
+            self.reveal = !self.reveal;
+        }
+    }
+
+    /// Whether a secret field is currently showing its real glyphs.
+    pub fn is_revealed(&self) -> bool {
+        self.reveal
+    }
+
+    /// Builder-style: make this a multi-line editor. Newlines become real
+    /// characters, `Enter` inserts one, `Up`/`Down` move by visual line,
+    /// `Home`/`End` act per visual line, selection spans lines, and text
+    /// soft-wraps at the field width. Unblocks mail/chat compose bodies,
+    /// slides notes, etc. The default (`false`) is the single-line field.
+    pub fn multiline(mut self, on: bool) -> Self {
+        self.multiline = on;
+        self
+    }
+
+    /// Mutate the multiline flag after construction.
+    pub fn set_multiline(&mut self, on: bool) {
+        self.multiline = on;
+    }
+
+    /// Whether this input is in multi-line mode.
+    pub fn is_multiline(&self) -> bool {
+        self.multiline
+    }
+
+    /// Builder-style: make a plain `Enter` (no Shift) fire a one-shot submit
+    /// signal instead of inserting a newline. In multiline mode `Shift+Enter`
+    /// still inserts a newline (the chat-composer pattern); in single-line mode
+    /// this lets `Enter` accept the field. Read the signal with [`take_submit`].
+    pub fn with_enter_submits(mut self, on: bool) -> Self {
+        self.enter_submits = on;
+        self
+    }
+
+    /// Mutate the enter-submits flag after construction.
+    pub fn set_enter_submits(&mut self, on: bool) {
+        self.enter_submits = on;
+    }
+
+    /// One-shot read of the submit signal: `true` exactly once after the user
+    /// pressed `Enter` while [`enter_submits`] was set. Clears on read.
+    pub fn take_submit(&mut self) -> bool {
+        std::mem::take(&mut self.submit_requested)
     }
 
     /// Builder-style: mark the input disabled. A disabled input is inert —
@@ -598,11 +1134,17 @@ impl TextInput {
         !self.placeholder.is_empty() && self.text.is_empty() && !self.is_focused
     }
 
-    /// The string actually painted / measured. For secret inputs this is
-    /// one bullet per *character* of the real text; otherwise it's the
-    /// real text itself.
+    /// Whether glyphs are masked this frame — true for a secret field that is
+    /// not currently revealed by the eye toggle.
+    fn masked(&self) -> bool {
+        self.secret && !self.reveal
+    }
+
+    /// The string actually painted / measured. For a masked (secret,
+    /// unrevealed) input this is one bullet per *character* of the real text;
+    /// otherwise it's the real text itself.
     fn display_text(&self) -> String {
-        if self.secret {
+        if self.masked() {
             "•".repeat(self.text.chars().count())
         } else {
             self.text.clone()
@@ -614,10 +1156,21 @@ impl TextInput {
     /// aligned with the masked glyph run, so caret placement and click
     /// resolution stay correct under masking.
     fn display_prefix(&self, byte_idx: usize) -> String {
-        if self.secret {
+        if self.masked() {
             "•".repeat(self.text[..byte_idx].chars().count())
         } else {
             self.text[..byte_idx].to_string()
+        }
+    }
+
+    /// The display string for the byte range `self.text[start..end]` — masked
+    /// bullets when secret+unrevealed, else the real slice. Used by the
+    /// multiline layout, which measures and paints one visual row at a time.
+    fn display_slice(&self, start: usize, end: usize) -> String {
+        if self.masked() {
+            "•".repeat(self.text[start..end].chars().count())
+        } else {
+            self.text[start..end].to_string()
         }
     }
 
@@ -653,6 +1206,10 @@ impl TextInput {
             self.selection_anchor = None;
         }
         self.cursor_pos = pos;
+        // Any explicit caret move resets the vertical goal column; a following
+        // Up/Down establishes a fresh one. `move_vertical` re-sets it after
+        // calling here so vertical runs still track their column.
+        self.goal_x = None;
     }
 
     /// Delete the current selection from both the local string and
@@ -665,6 +1222,7 @@ impl TextInput {
         self.text.replace_range(start..end, "");
         self.cursor_pos = start;
         self.selection_anchor = None;
+        self.goal_x = None;
         self.last_edit_time = Some(Instant::now());
         if let Some(obj_id) = obj_id {
             let _ = state.splice_text(obj_id, char_start, char_count as isize, "");
@@ -715,6 +1273,7 @@ impl TextInput {
                 let _ = state.mark(obj_id, mark, automerge::marks::ExpandMark::None);
             }
         }
+        self.goal_x = None;
         self.last_edit_time = Some(Instant::now());
         self.dirty = true;
     }
@@ -770,12 +1329,23 @@ impl TextInput {
         }
     }
 
-    /// Paste clipboard text at the caret (replacing the selection), stripping
-    /// control characters since this is a single-line field. Shared by the
-    /// Ctrl-V path and the menu's **Paste** row.
+    /// Paste clipboard text at the caret (replacing the selection). A
+    /// single-line field strips all control characters; a multiline field
+    /// keeps real newlines (normalising `\r\n`/`\r` to `\n`) and tabs, so a
+    /// pasted paragraph lands intact. Shared by the Ctrl-V path and the
+    /// menu's **Paste** row.
     fn do_paste(&mut self, state: &mut AutoCommit, obj_id: Option<&ObjId>) {
         if let Some(paste) = clipboard_paste() {
-            let cleaned: String = paste.chars().filter(|c| !c.is_control()).collect();
+            let cleaned: String = if self.multiline {
+                paste
+                    .replace("\r\n", "\n")
+                    .replace('\r', "\n")
+                    .chars()
+                    .filter(|c| *c == '\n' || *c == '\t' || !c.is_control())
+                    .collect()
+            } else {
+                paste.chars().filter(|c| !c.is_control()).collect()
+            };
             if !cleaned.is_empty() {
                 self.insert_str(&cleaned, state, obj_id);
             }
@@ -810,7 +1380,7 @@ impl TextInput {
         // Clicked-word fallback: select the word under the caret-from-point when
         // there's no live selection, so Cut/Copy act on something sensible.
         if !self.has_selection() {
-            let byte = self.cursor_from_x(pos[0] as f64);
+            let byte = self.resolve_cursor(Point::new(pos[0] as f64, pos[1] as f64));
             let (start, end) = word_boundaries(&self.text, byte);
             if start != end {
                 self.selection_anchor = Some(start);
@@ -902,6 +1472,17 @@ impl TextInput {
         best_idx
     }
 
+    /// Resolve a pointer position to a byte offset, dispatching by mode:
+    /// multiline uses the 2D row+column hit-test, single-line the horizontal
+    /// one. Both require a prior `draw` to have built their metrics.
+    fn resolve_cursor(&self, pt: Point) -> usize {
+        if self.multiline {
+            self.cursor_from_point(pt)
+        } else {
+            self.cursor_from_x(pt.x)
+        }
+    }
+
     fn clamp_to_text(&mut self) {
         if self.cursor_pos > self.text.len() {
             self.cursor_pos = self.text.len();
@@ -948,10 +1529,17 @@ impl Widget for TextInput {
     }
 
     fn build_layout(&mut self, taffy: &mut TaffyTree<()>, _theme: &Theme, node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>) -> NodeId {
+        // A multiline field is measured (it grows with its content, see
+        // `measure`); a single-line field is a fixed 40 px row.
+        let height = if self.multiline {
+            Dimension::auto()
+        } else {
+            Dimension::length(40.0)
+        };
         let node = taffy.new_leaf(Style {
             size: Size {
                 width: Dimension::percent(1.0),
-                height: Dimension::length(40.0),
+                height,
             },
             ..Default::default()
         }).unwrap();
@@ -967,6 +1555,29 @@ impl Widget for TextInput {
             origin.x + layout.location.x as f64 + layout.size.width as f64,
             origin.y + layout.location.y as f64 + layout.size.height as f64,
         );
+    }
+
+    /// A multiline field is measured so it grows with its content: wrap at the
+    /// resolved width, report the wrapped height. Single-line fields keep the
+    /// fixed row height from `build_layout` (return ZERO here, the trait
+    /// default). Only hit for taffy-hosted inputs — embedded callers use
+    /// `apply_layout_external` and never reach `measure`.
+    fn measure(
+        &mut self,
+        known: taffy::Size<Option<f32>>,
+        available: taffy::Size<taffy::AvailableSpace>,
+        text_renderer: &mut TextRenderer,
+    ) -> taffy::Size<f32> {
+        if !self.multiline {
+            return taffy::Size::ZERO;
+        }
+        let width = known.width.unwrap_or(match available.width {
+            taffy::AvailableSpace::Definite(w) => w,
+            _ => 400.0,
+        });
+        let avail_w = (width as f64 - ML_PAD_X * 2.0).max(1.0);
+        self.build_lines(text_renderer, avail_w);
+        taffy::Size { width, height: self.content_height() as f32 }
     }
 
     fn draw(&mut self, scene: &mut Scene, transform: Affine, text_renderer: &mut TextRenderer, theme: &Theme, _presence: &crate::presence::PresenceCtx) {
@@ -996,6 +1607,13 @@ impl Widget for TextInput {
                 None,
                 &shape,
             );
+        }
+
+        // Multiline shares the chrome above, then takes its own body path
+        // (soft-wrapped rows, vertical scroll, per-row selection).
+        if self.multiline {
+            self.draw_multiline_body(scene, transform, text_renderer, theme, &shape);
+            return;
         }
 
         let text_size = self.font_size_override.unwrap_or(FONT_SIZE);
@@ -1142,7 +1760,7 @@ impl Widget for TextInput {
                 self.last_mouse_pos = logical_pos;
 
                 if self.is_dragging {
-                    let raw = self.cursor_from_x(logical_pos.x);
+                    let raw = self.resolve_cursor(logical_pos);
                     let (anchor_lo, anchor_hi) = self.drag_anchor_span;
                     // Snap the pointer position + pick the anchor end
                     // so the selection always *contains* the original
@@ -1232,7 +1850,7 @@ impl Widget for TextInput {
                         self.last_click_time = Some(now);
                         self.last_click_pos = self.last_mouse_pos;
 
-                        let pos = self.cursor_from_x(self.last_mouse_pos.x);
+                        let pos = self.resolve_cursor(self.last_mouse_pos);
                         match self.click_count {
                             1 => {
                                 if modifiers.state().shift_key() {
@@ -1351,13 +1969,54 @@ impl Widget for TextInput {
                         self.set_cursor(new_pos, shift);
                         *handled = true;
                     }
+                    // Vertical caret motion, multiline only. Moves by *visual*
+                    // row (from the last draw's wrapped layout), preserving the
+                    // goal column across a run of Up/Down.
+                    Key::Named(NamedKey::ArrowUp) if self.multiline => {
+                        self.move_vertical(false, shift);
+                        *handled = true;
+                    }
+                    Key::Named(NamedKey::ArrowDown) if self.multiline => {
+                        self.move_vertical(true, shift);
+                        *handled = true;
+                    }
                     Key::Named(NamedKey::Home) => {
-                        self.set_cursor(0, shift);
+                        // Multiline Home goes to the start of the current visual
+                        // row; single-line to the field start.
+                        let target = if self.multiline && !self.lines.is_empty() {
+                            let (i, _) = self.locate_ml(self.cursor_pos);
+                            self.lines[i].start
+                        } else {
+                            0
+                        };
+                        self.set_cursor(target, shift);
                         *handled = true;
                     }
                     Key::Named(NamedKey::End) => {
-                        self.set_cursor(self.text.len(), shift);
+                        // Multiline End goes to the end of the current visual
+                        // row; single-line to the field end.
+                        let target = if self.multiline && !self.lines.is_empty() {
+                            let (i, _) = self.locate_ml(self.cursor_pos);
+                            self.lines[i].end
+                        } else {
+                            self.text.len()
+                        };
+                        self.set_cursor(target, shift);
                         *handled = true;
+                    }
+                    // Enter: in enter-submit mode a plain Enter fires the submit
+                    // signal (Shift+Enter still inserts a newline in multiline);
+                    // otherwise a multiline field inserts a real newline. A
+                    // single-line field with no submit binding ignores Enter,
+                    // exactly as before.
+                    Key::Named(NamedKey::Enter) => {
+                        if self.enter_submits && !shift {
+                            self.submit_requested = true;
+                            *handled = true;
+                        } else if self.multiline {
+                            self.insert_str("\n", state, obj_id_opt.as_ref());
+                            *handled = true;
+                        }
                     }
                     Key::Named(NamedKey::Backspace) => {
                         if self.has_selection() {
@@ -1507,6 +2166,7 @@ impl Widget for TextInput {
                     focused: self.is_focused(),
                     disabled: self.disabled,
                     protected: self.secret,
+                    multiline: self.multiline,
                     ..Default::default()
                 }),
         )
@@ -1590,13 +2250,11 @@ impl Widget for TextInput {
 
             if let Some(list) = presence.selections.get(&key) {
                 for (user, range) in list.iter() {
-                    presence.draw_peer_selection(
-                        scene,
-                        theme,
-                        transform,
-                        user,
-                        self.selection_rect(theme, range.start, range.end),
-                    );
+                    // Multiline spans multiple rows → one peer highlight per
+                    // row; single-line resolves to exactly one rect.
+                    for r in self.selection_rects(theme, range.start, range.end) {
+                        presence.draw_peer_selection(scene, theme, transform, user, r);
+                    }
                 }
             }
         }
