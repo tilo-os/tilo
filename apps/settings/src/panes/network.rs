@@ -388,7 +388,10 @@ impl NetworkPane {
     /// Connect / Connected button on the right.
     fn network_row(&self, net: &WifiNetworkInfo) -> El {
         let signal_glyph = wifi_signal_glyph(net.signal);
-        let lock_glyph = if net.secure { "\u{f033e}" } else { "\u{f0db1}" };
+        // A closed padlock for secure networks, its open-padlock pair for open
+        // ones — both from the MDI `lock` family the shipped fonts carry, so the
+        // security state reads at a glance without a stray unrelated glyph.
+        let lock_glyph = if net.secure { "\u{f033e}" } else { "\u{f033f}" };
         let label = format!("{signal_glyph}  {lock_glyph}  {ssid}", ssid = net.ssid);
         let key = connect_key(&net.ssid);
         let cta_id = format!("settings.network.connect.{}", net.ssid);
