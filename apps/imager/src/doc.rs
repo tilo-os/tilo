@@ -26,7 +26,7 @@ use automerge::{AutoCommit, ReadDoc, ROOT, ScalarValue, Value};
 
 use crate::model::{
     sample_profiles, sample_recent_sources, sample_source, sample_targets, Action, InstallProfile,
-    Progress, Source, TargetDrive,
+    Progress, Source, Step, TargetDrive,
 };
 
 pub struct ImagerDoc;
@@ -63,6 +63,9 @@ impl ImagerDoc {
         }
         if Self::get_str(doc, "action").is_none() {
             let _ = doc.put(&ROOT, "action", "flash");
+        }
+        if Self::get_str(doc, "step").is_none() {
+            let _ = doc.put(&ROOT, "step", Step::Source.key());
         }
         if Self::get_str(doc, "confirm").is_none() {
             let _ = doc.put(&ROOT, "confirm", "");
@@ -145,6 +148,13 @@ impl ImagerDoc {
     }
     pub fn set_action(doc: &mut AutoCommit, a: Action) {
         let _ = doc.put(&ROOT, "action", a.key());
+    }
+
+    pub fn step(doc: &AutoCommit) -> Step {
+        Step::from_key(&Self::get_str(doc, "step").unwrap_or_default())
+    }
+    pub fn set_step(doc: &mut AutoCommit, s: Step) {
+        let _ = doc.put(&ROOT, "step", s.key());
     }
 
     pub fn confirm(doc: &AutoCommit) -> String {
@@ -245,5 +255,13 @@ mod tests {
         ImagerDoc::set_status(&mut doc, "ready");
         assert_eq!(ImagerDoc::confirm(&doc), "sdb");
         assert_eq!(ImagerDoc::status(&doc), "ready");
+    }
+
+    #[test]
+    fn step_defaults_to_source_and_round_trips() {
+        let mut doc = seeded();
+        assert_eq!(ImagerDoc::step(&doc), Step::Source);
+        ImagerDoc::set_step(&mut doc, Step::Write);
+        assert_eq!(ImagerDoc::step(&doc), Step::Write);
     }
 }
