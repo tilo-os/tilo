@@ -61,7 +61,6 @@ RUN --mount=type=cache,target=/build/.cargo-home \
     --mount=type=cache,target=/build/target \
     --mount=type=cache,target=/build/.sccache \
     sed -i '/"apps\/browser",/d' Cargo.toml \
-    && cp os/Cargo.lock.pinned Cargo.lock \
     && cargo build --release -p qos-relay --bins \
     && mkdir -p /out \
     && cp target/release/qos-relay \

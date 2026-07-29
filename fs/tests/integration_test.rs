@@ -5,7 +5,7 @@ use collab_types::{CapOverride, Ed25519PublicKey, Effect, Role, Scope, Subject, 
 use fs::namespace::ROOT_INO;
 use fs::{Access, ContentStore, Heuristics, Hydrator, Namespace, QuickFS, WorkspaceAcl};
 use fuser::{Config, MountOption};
-use iroh::endpoint::Endpoint;
+use iroh::endpoint::{Endpoint, presets};
 use tempfile::tempdir;
 use tokio::time::timeout;
 
@@ -56,7 +56,7 @@ struct CapFixture {
 }
 
 async fn cap_fixture(identity: [u8; 32], caps: &[CapOverride], now: Option<u64>) -> CapFixture {
-    let endpoint = Endpoint::bind().await.expect("bind endpoint");
+    let endpoint = Endpoint::bind(presets::N0).await.expect("bind endpoint");
     let store = Arc::new(ContentStore::memory());
     let body = b"contents";
     let hash = store.write_content(body).await.unwrap().unwrap();
@@ -280,7 +280,7 @@ async fn identity_acl_gates_the_real_fs_access_path() {
         namespace: Arc<Mutex<Namespace>>,
         acl: Option<(WorkspaceAcl, [u8; 32])>,
     ) -> QuickFS {
-        let endpoint = Endpoint::bind().await.expect("bind endpoint");
+        let endpoint = Endpoint::bind(presets::N0).await.expect("bind endpoint");
         let store = Arc::new(ContentStore::memory());
         let hydrator = Arc::new(Hydrator::new(endpoint, store));
         let heuristics = Arc::new(Heuristics::new(hydrator.clone(), namespace.clone()));
@@ -353,7 +353,7 @@ async fn identity_acl_gates_the_real_fs_access_path() {
 async fn fuse_mount_enforces_identity_acl_end_to_end() {
     require_fuse!();
     let _ = timeout(Duration::from_secs(20), async {
-        let endpoint = Endpoint::bind().await.expect("bind endpoint");
+        let endpoint = Endpoint::bind(presets::N0).await.expect("bind endpoint");
         let store = Arc::new(ContentStore::memory());
         let body = b"members only";
         let hash = store.write_content(body).await.unwrap().unwrap();
@@ -413,7 +413,7 @@ async fn fuse_projects_tree_and_reads_real_content() {
         let mount_dir = tempdir().expect("mount temp dir");
         let mount_path = mount_dir.path().to_path_buf();
 
-        let endpoint = Endpoint::bind().await.expect("bind endpoint");
+        let endpoint = Endpoint::bind(presets::N0).await.expect("bind endpoint");
 
         // Ingest real content into the local store and seed the namespace with it.
         let store = Arc::new(ContentStore::memory());
@@ -479,7 +479,7 @@ async fn fuse_write_create_overwrite_rename_unlink() {
         let mount_dir = tempdir().expect("mount temp dir");
         let path = mount_dir.path().to_path_buf();
 
-        let endpoint = Endpoint::bind().await.expect("bind endpoint");
+        let endpoint = Endpoint::bind(presets::N0).await.expect("bind endpoint");
         let store = Arc::new(ContentStore::memory());
         let namespace = Arc::new(Mutex::new(Namespace::new("rw-peer")));
         let hydrator = Arc::new(Hydrator::new(endpoint, store));
@@ -554,7 +554,7 @@ async fn getxattr_reports_projected_vs_local_sync_state() {
         let mount_dir = tempdir().expect("mount temp dir");
         let path = mount_dir.path().to_path_buf();
 
-        let endpoint = Endpoint::bind().await.expect("bind endpoint");
+        let endpoint = Endpoint::bind(presets::N0).await.expect("bind endpoint");
         let store = Arc::new(ContentStore::memory());
 
         // A file whose content IS ingested locally → hydrated → `local`.
@@ -613,7 +613,7 @@ async fn fuse_document_roundtrip_and_opaque_still_works() {
         let mount_dir = tempdir().expect("mount temp dir");
         let path = mount_dir.path().to_path_buf();
 
-        let endpoint = Endpoint::bind().await.expect("bind endpoint");
+        let endpoint = Endpoint::bind(presets::N0).await.expect("bind endpoint");
         let store = Arc::new(ContentStore::memory());
         let namespace = Arc::new(Mutex::new(Namespace::new("doc-peer")));
         let hydrator = Arc::new(Hydrator::new(endpoint, store));
@@ -652,7 +652,7 @@ async fn rmdir_rejects_nonempty_and_unlink_rejects_dir() {
         let mount_dir = tempdir().expect("mount temp dir");
         let path = mount_dir.path().to_path_buf();
 
-        let endpoint = Endpoint::bind().await.expect("bind endpoint");
+        let endpoint = Endpoint::bind(presets::N0).await.expect("bind endpoint");
         let store = Arc::new(ContentStore::memory());
         let namespace = Arc::new(Mutex::new(Namespace::new("rm-peer")));
         let hydrator = Arc::new(Hydrator::new(endpoint, store));
