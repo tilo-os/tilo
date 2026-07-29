@@ -35,6 +35,8 @@ ed25519-dalek = { version = "2", features = ["rand_core"] }
 semver = "1"
 thiserror = "1"
 anyhow = "1"
+# Crash-safe file replacement (temp + fsync + rename + dir fsync).
+atomic-file = { path = "../../../crates/system/atomic-file" }
 tracing = "0.1"
 
 [dev-dependencies]

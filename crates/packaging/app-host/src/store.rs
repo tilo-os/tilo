@@ -70,15 +70,11 @@ impl BlobStore for FsBlobStore {
         let h = BlobHash::of(bytes);
         let path = self.blob_path(&h);
         if !path.exists() {
-            // Write to a tempfile + rename so the visible blob is
-            // either absent or complete; concurrent writers of the
-            // same bytes converge on the same final file.
-            let tmp = path.with_extension("tmp");
-            fs::write(&tmp, bytes).map_err(BlobStoreError::Io)?;
-            // rename is atomic on a single filesystem; if another
-            // process raced ahead and produced the same blob bytes,
-            // the destination is now correct either way.
-            let _ = fs::rename(&tmp, &path);
+            // The visible blob is either absent or complete. If another
+            // process raced ahead and wrote the same content-addressed bytes,
+            // the destination is correct either way — but a genuine IO
+            // failure is reported rather than dropped.
+            atomic_file::write(&path, bytes).map_err(BlobStoreError::Io)?;
         }
         Ok(h)
     }
