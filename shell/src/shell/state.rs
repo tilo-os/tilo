@@ -1304,6 +1304,28 @@ pub struct WorkspaceTree {
     /// safe for peer-sync internals or tests.
     #[serde(skip, default = "AutoCommit::new")]
     pub doc: AutoCommit,
+    /// One replication document per room this machine is in.
+    ///
+    /// [`Self::doc`] describes **every** workspace on this machine, so it
+    /// is not something a peer may be handed: a guest invited to one room
+    /// would learn every other room's name, room id, owner and capability
+    /// set. These are what crosses the wire instead — each holds exactly
+    /// one room's own state, so a peer can only ever receive the rooms it
+    /// is in. The boundary is the document, not a filter over one: what a
+    /// peer is not entitled to is not in the document it is sent.
+    ///
+    /// Maintained by [`Self::sync_room_doc`], which projects the cached
+    /// [`Workspace`] with that room into it and writes only what actually
+    /// differs, so the document accumulates a change per real change
+    /// rather than per export.
+    ///
+    /// `#[serde(skip)]` for the same reason as [`Self::doc`]: the cache is
+    /// what persists, and a room document is re-projected from it. Every
+    /// value in it is a map key rather than a list element, so a document
+    /// re-projected under a fresh actor after a restart merges into a
+    /// peer's copy by last-writer-wins instead of duplicating entries.
+    #[serde(skip, default)]
+    pub room_docs: HashMap<RoomId, AutoCommit>,
     /// Where to write this tree when a capability changes.
     ///
     /// `None` disables the write, which is what tests and the offscreen
@@ -1331,6 +1353,7 @@ impl Default for WorkspaceTree {
             active_group: HashMap::new(),
             collaborators: Vec::new(),
             doc: AutoCommit::new(),
+            room_docs: HashMap::new(),
             persist_path: None,
             fs_acl_path: None,
         }
@@ -1500,9 +1523,18 @@ impl WorkspaceTree {
         self.doc.get_heads()
     }
 
-    /// Export every change applied since `since` as opaque change-blobs
-    /// suitable for shipping to a peer. Returns an empty vec when the
-    /// caller is already up-to-date with the current heads.
+    /// Export every change applied since `since` as opaque change-blobs.
+    ///
+    /// **Not a peer-facing export.** [`Self::doc`] holds every workspace
+    /// on this machine, so its change graph carries every room's name,
+    /// room id, owner and capability set; handing it to a peer invited to
+    /// one room hands them a directory of all the others. Peers are served
+    /// by [`Self::export_room_changes_since`], which reads a document that
+    /// only ever contained the one room.
+    ///
+    /// What remains for this: forking the local document (the history
+    /// pane's restore path, the screenshot driver's synthetic second
+    /// author) and the tests that pin the automerge foundation.
     ///
     /// Takes `&mut self` for the same reason as
     /// [`Self::current_heads`] — the underlying `AutoCommit::get_changes`
@@ -1538,6 +1570,320 @@ impl WorkspaceTree {
         self.doc.apply_changes(parsed?)?;
         self.rebuild_cache_from_doc();
         Ok(())
+    }
+
+    // =================================================================
+    // Per-room replication
+    //
+    // Inviting someone to a workspace grants them that room. It does not
+    // grant them a directory of every other room on the host — their
+    // names, their room ids, their owners, and above all their capability
+    // sets, which say which app holds which grant over paths the guest
+    // has no access to.
+    //
+    // The tree document cannot express that boundary. It is one automerge
+    // document holding every workspace, and an automerge change graph
+    // cannot be safely served in part: changes form a hash chain, so a
+    // subset with another room's changes removed leaves the remaining
+    // changes with dependencies the receiver will never see, and automerge
+    // parks them unapplied forever. A filter over the tree document is
+    // therefore not a smaller version of this fix; it is a fix that does
+    // not work, whichever way the attribution is computed.
+    //
+    // So the replication unit is a document per room, projected from the
+    // cache. A peer receives a document that only ever contained the room
+    // it asked for, which is what makes the guarantee checkable by reading
+    // the code rather than by trusting a predicate.
+    // =================================================================
+
+    /// Every room this machine is in, deduplicated, in workspace order.
+    ///
+    /// A workspace whose room is still the unminted sentinel is not in a
+    /// room and is skipped — there is nothing for a peer to address.
+    pub fn rooms(&self) -> Vec<RoomId> {
+        let mut seen = std::collections::HashSet::new();
+        self.workspaces
+            .iter()
+            .map(|w| w.room)
+            .filter(|r| !r.is_nil() && seen.insert(*r))
+            .collect()
+    }
+
+    /// The cached workspace that addresses `room`, if this machine is in
+    /// it. First match wins: two local workspaces sharing a room would be
+    /// one room the machine joined twice, and the sync path has to pick
+    /// one to be authoritative rather than alternate between them.
+    fn workspace_in_room(&self, room: RoomId) -> Option<&Workspace> {
+        if room.is_nil() {
+            return None;
+        }
+        self.workspaces.iter().find(|w| w.room == room)
+    }
+
+    /// Project the cached state of `room`'s workspace into that room's
+    /// replication document, writing only what differs.
+    ///
+    /// The projection is deliberately narrow: the room's identity, its
+    /// name, its owner and its capabilities. That is what a peer in the
+    /// room needs in order to know whose room it is and who may do what
+    /// in it, and it is exactly the set [`Self::rebuild_cache_from_doc`]
+    /// reads back — the strips, groups and tabs the tree document also
+    /// carries have never been read back out of it on the receiving side,
+    /// so shipping them would send a peer the host's window titles to no
+    /// effect.
+    ///
+    /// Values are compared before they are written so that an export does
+    /// not manufacture a change. A revoked capability is deleted from the
+    /// map rather than left behind, which is what makes a revocation
+    /// reach a peer that already holds the grant.
+    ///
+    /// No-op when this machine is not in `room`.
+    pub fn sync_room_doc(&mut self, room: RoomId) {
+        use automerge::{ObjType, ROOT, ReadDoc, ScalarValue, Value, transaction::Transactable};
+
+        let Some(ws) = self.workspace_in_room(room) else {
+            return;
+        };
+        let name = ws.name.clone();
+        let owner = ws.owner.clone();
+        let caps: Vec<CapOverride> = ws.capabilities.clone();
+        let room_str = room.to_string();
+
+        let doc = self.room_docs.entry(room).or_insert_with(AutoCommit::new);
+
+        // Identity first: a document that did not say which room it was
+        // could be applied to the wrong one by a receiver that trusted the
+        // envelope. The receiver checks this field against the room it
+        // asked for.
+        let current_room = match doc.get(&ROOT, "room").ok().flatten() {
+            Some((Value::Scalar(s), _)) => match s.as_ref() {
+                ScalarValue::Str(v) => Some(v.to_string()),
+                _ => None,
+            },
+            _ => None,
+        };
+        if current_room.as_deref() != Some(room_str.as_str()) {
+            let _ = doc.put(&ROOT, "room", room_str.clone());
+        }
+
+        let current_name = match doc.get(&ROOT, "name").ok().flatten() {
+            Some((Value::Scalar(s), _)) => match s.as_ref() {
+                ScalarValue::Str(v) => Some(v.to_string()),
+                _ => None,
+            },
+            _ => None,
+        };
+        if current_name.as_deref() != Some(name.as_str()) {
+            let _ = doc.put(&ROOT, "name", name);
+        }
+
+        let current_owner = match doc.get(&ROOT, "owner").ok().flatten() {
+            Some((Value::Scalar(s), _)) => match s.as_ref() {
+                ScalarValue::Str(v) => Some(v.to_string()),
+                _ => None,
+            },
+            _ => None,
+        };
+        match &owner {
+            Some(o) if current_owner.as_deref() != Some(o.as_str()) => {
+                let _ = doc.put(&ROOT, "owner", o.clone());
+            }
+            // An owner is never unset once recorded — `adopt_ownerless_workspaces`
+            // only ever fills the field in — so there is no deletion case here.
+            _ => {}
+        }
+
+        let caps_id = match doc.get(&ROOT, "capabilities").ok().flatten() {
+            Some((_, id)) => id,
+            None => match doc.put_object(&ROOT, "capabilities", ObjType::Map) {
+                Ok(id) => id,
+                Err(err) => {
+                    tracing::error!(?err, room = %room_str, "room doc: capabilities map");
+                    return;
+                }
+            },
+        };
+        let live: std::collections::HashSet<&str> = caps.iter().map(|c| c.id.as_str()).collect();
+        let stale: Vec<String> = doc
+            .keys(&caps_id)
+            .filter(|k| !live.contains(k.as_str()))
+            .collect();
+        for key in stale {
+            let _ = doc.delete(&caps_id, key.as_str());
+        }
+        for cap in &caps {
+            let Ok(blob) = serde_json::to_vec(cap) else {
+                continue;
+            };
+            let unchanged = matches!(
+                doc.get(&caps_id, &cap.id).ok().flatten(),
+                Some((Value::Scalar(s), _)) if matches!(s.as_ref(), ScalarValue::Bytes(b) if b == &blob)
+            );
+            if !unchanged {
+                let _ = doc.put(&caps_id, &cap.id, ScalarValue::Bytes(blob));
+            }
+        }
+        let _ = qdoc::history::commit_stamped(doc);
+    }
+
+    /// Current heads of `room`'s replication document — the baseline a
+    /// peer sends so the answer carries only what it is missing.
+    ///
+    /// Empty for a room this machine is not in, which reads on the wire as
+    /// "send me everything you have for it" and is answered with nothing.
+    pub fn room_heads(&mut self, room: RoomId) -> Vec<ChangeHash> {
+        match self.room_docs.get_mut(&room) {
+            Some(doc) => doc.get_heads(),
+            None => Vec::new(),
+        }
+    }
+
+    /// Changes to `room` since `since`, as opaque blobs to ship to a peer
+    /// in that room.
+    ///
+    /// `None` when this machine has no workspace in `room` — there is
+    /// nothing to send and nothing is said about whether the room exists
+    /// elsewhere. `Some(vec![])` when the caller is already current.
+    ///
+    /// The room's document is brought up to date from the cache first, so
+    /// a caller need not remember to flush before exporting.
+    pub fn export_room_changes_since(
+        &mut self,
+        room: RoomId,
+        since: &[ChangeHash],
+    ) -> Option<Vec<Vec<u8>>> {
+        self.workspace_in_room(room)?;
+        self.sync_room_doc(room);
+        let doc = self.room_docs.get_mut(&room)?;
+        Some(
+            doc.get_changes(since)
+                .into_iter()
+                .map(|c| c.raw_bytes().to_vec())
+                .collect(),
+        )
+    }
+
+    /// Merge a peer's changes to `room` and fold the result into the
+    /// cached workspace that addresses it.
+    ///
+    /// Refuses, before anything is stored, a room this machine is not in:
+    /// an uninvited payload is not merged and then ignored, it is never
+    /// held at all. Refuses too a payload whose own `room` field names a
+    /// different room than the envelope claimed, so a host cannot answer a
+    /// request for one room with another room's document.
+    ///
+    /// Returns whether the local workspace changed.
+    pub fn apply_room_changes(
+        &mut self,
+        room: RoomId,
+        changes: &[Vec<u8>],
+    ) -> Result<bool, automerge::AutomergeError> {
+        use automerge::{ROOT, ReadDoc, ScalarValue, Value};
+
+        if self.workspace_in_room(room).is_none() {
+            return Ok(false);
+        }
+        let parsed: Result<Vec<automerge::Change>, _> = changes
+            .iter()
+            .map(|b| automerge::Change::try_from(b.as_slice()))
+            .collect();
+        let parsed = parsed?;
+
+        // Applied to a copy first: the identity check below decides
+        // whether this payload is allowed to become part of the room's
+        // document at all, and a check that runs after the merge has
+        // already happened is not a check.
+        let mut candidate = self
+            .room_docs
+            .get(&room)
+            .cloned()
+            .unwrap_or_else(AutoCommit::new);
+        candidate.apply_changes(parsed)?;
+
+        let declared = match candidate.get(&ROOT, "room").ok().flatten() {
+            Some((Value::Scalar(s), _)) => match s.as_ref() {
+                ScalarValue::Str(v) => RoomId::parse(v.as_str()),
+                _ => None,
+            },
+            _ => None,
+        };
+        if declared.is_some_and(|d| d != room) {
+            tracing::warn!(
+                target: "shell::state",
+                asked = %room,
+                got = %declared.map(|d| d.to_string()).unwrap_or_default(),
+                "room sync refused: the payload names a different room than \
+                 the one it answers",
+            );
+            return Ok(false);
+        }
+
+        let name = match candidate.get(&ROOT, "name").ok().flatten() {
+            Some((Value::Scalar(s), _)) => match s.as_ref() {
+                ScalarValue::Str(v) => Some(v.to_string()),
+                _ => None,
+            },
+            _ => None,
+        };
+        let owner = match candidate.get(&ROOT, "owner").ok().flatten() {
+            Some((Value::Scalar(s), _)) => match s.as_ref() {
+                ScalarValue::Str(v) => Some(v.to_string()),
+                _ => None,
+            },
+            _ => None,
+        };
+        let mut caps: Vec<CapOverride> = Vec::new();
+        if let Some((_, caps_id)) = candidate.get(&ROOT, "capabilities").ok().flatten() {
+            let keys: Vec<String> = candidate.keys(&caps_id).collect();
+            for key in keys {
+                if let Some((Value::Scalar(s), _)) = candidate.get(&caps_id, &key).ok().flatten()
+                    && let ScalarValue::Bytes(blob) = s.as_ref()
+                    && let Ok(cap) = serde_json::from_slice::<CapOverride>(blob)
+                {
+                    caps.push(cap);
+                }
+            }
+        }
+
+        self.room_docs.insert(room, candidate);
+
+        let Some(ws) = self.workspaces.iter_mut().find(|w| w.room == room) else {
+            return Ok(false);
+        };
+        let mut changed = false;
+        if let Some(name) = name
+            && ws.name != name
+        {
+            ws.name = name;
+            changed = true;
+        }
+        if let Some(owner) = owner
+            && ws.owner.as_deref() != Some(owner.as_str())
+        {
+            ws.owner = Some(owner);
+            changed = true;
+        }
+        // Capabilities are replaced rather than merged: a capability the
+        // peer revoked is simply absent from their document, and carrying
+        // the local list over would let a revoked grant survive on every
+        // machine that already had it.
+        let mut sorted = caps;
+        sorted.sort_by(|a, b| a.id.cmp(&b.id));
+        let mut current = ws.capabilities.clone();
+        current.sort_by(|a, b| a.id.cmp(&b.id));
+        if serde_json::to_vec(&current).ok() != serde_json::to_vec(&sorted).ok() {
+            ws.capabilities = sorted;
+            changed = true;
+        }
+
+        if changed {
+            // The merged room state is now the cache's; mirror it into the
+            // tree document so the room's own activity view records what
+            // arrived, and to disk so it survives a restart.
+            self.seed_doc_from_cache();
+            self.flush_to_disk();
+        }
+        Ok(changed)
     }
 
     /// Seed the automerge doc from the cache. Idempotent: a second call
