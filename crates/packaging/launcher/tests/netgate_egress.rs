@@ -789,10 +789,19 @@ fn widening_the_allowlist_lets_the_refused_connection_through() {
         refused.get("gate_by_literal"),
         format!("REFUSED:{:#04x}", reply::NOT_ALLOWED)
     );
+    // Exactly the two by-name requests — one per protocol — and
+    // exactly the four that named the literal or the unlisted host.
+    // The control run has the relay disabled, so this accounts for
+    // every connection the probe made.
     assert_eq!(
         strict_gate.stats().allowed(),
-        1,
-        "only the by-name request should have been allowed"
+        2,
+        "only the by-name requests (SOCKS5 and HTTP CONNECT) should have been allowed"
+    );
+    assert_eq!(
+        strict_gate.stats().denied(),
+        4,
+        "the literal and the unlisted name should have been denied on both protocols"
     );
 
     // Filter disabled: the allowlist now permits everything. Nothing
@@ -823,6 +832,19 @@ fn widening_the_allowlist_lets_the_refused_connection_through() {
         format!("REFUSED:{:#04x}", reply::HOST_UNREACHABLE),
         "an unresolvable name must fail at resolution (0x04) once the policy stops refusing \
          it (0x02) — which is also what distinguishes the two failures"
+    );
+    // Same experiment on the HTTP path: 403 (policy) becomes 200 for
+    // the reachable host and 502 (upstream) for the unresolvable one.
+    assert_eq!(
+        passed.get("http_by_literal"),
+        "BODY:ALLOWED-SERVER",
+        "the HTTP refusal must also have been the policy: {}",
+        passed.get("http_by_literal")
+    );
+    assert_eq!(
+        passed.get("http_by_other_name"),
+        "STATUS:502",
+        "a forbidden host (403) and an unreachable one (502) must stay distinguishable"
     );
     assert!(
         open_gate.stats().allowed() > strict_gate.stats().allowed(),
