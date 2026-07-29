@@ -1633,14 +1633,10 @@ pub fn run() -> ! {
         // polls the file concurrently with the frame loop writing it).
         if let Some(path) = test_dump_path.as_ref() {
             if let Ok(json) = serde_json::to_vec(&state.workspace_tree) {
-                let final_path = std::path::Path::new(path);
-                let tmp_path = {
-                    let mut p = final_path.as_os_str().to_os_string();
-                    p.push(".tmp");
-                    std::path::PathBuf::from(p)
-                };
-                if std::fs::write(&tmp_path, &json).is_ok() {
-                    let _ = std::fs::rename(&tmp_path, final_path);
+                if let Err(e) =
+                    atomic_file::write_creating_parent(std::path::Path::new(path), &json)
+                {
+                    tracing::warn!(error = %e, path, "workspace tree save failed");
                 }
             }
         }

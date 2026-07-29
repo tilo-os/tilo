@@ -138,21 +138,12 @@ pub fn read_signing_key(path: &Path) -> Result<SigningKey, PersistError> {
 
 /// Write a 32-byte Ed25519 signing key to disk with mode 0600.
 pub fn write_signing_key(path: &Path, sk: &SigningKey) -> io::Result<()> {
-    // Write via a tempfile in the same directory + rename, so a
-    // partial write leaves the previous secret intact. The mode is
-    // set on the tempfile before the rename atomically publishes it.
-    let dir = path
-        .parent()
+    // A partial write must leave the previous secret intact, and the mode is
+    // set on the temp file so the key is never briefly world-readable at its
+    // final path.
+    path.parent()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "path has no parent"))?;
-    let tmp = dir.join(format!(
-        ".{}.tmp",
-        path.file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("keypair")
-    ));
-    fs::write(&tmp, sk.to_bytes())?;
-    apply_secret_mode(&tmp)?;
-    fs::rename(&tmp, path)
+    atomic_file::write_with_mode(path, &sk.to_bytes(), 0o600)
 }
 
 /// Read a signed device cert from disk.
@@ -167,18 +158,6 @@ pub fn read_device_cert(path: &Path) -> Result<DeviceCert, PersistError> {
 pub fn write_device_cert(path: &Path, cert: &DeviceCert) -> Result<(), PersistError> {
     let bytes = crate::canonical::canonical_bytes(cert)?;
     fs::write(path, bytes)?;
-    Ok(())
-}
-
-#[cfg(unix)]
-fn apply_secret_mode(path: &Path) -> io::Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-    let perms = fs::Permissions::from_mode(0o600);
-    fs::set_permissions(path, perms)
-}
-
-#[cfg(not(unix))]
-fn apply_secret_mode(_path: &Path) -> io::Result<()> {
     Ok(())
 }
 

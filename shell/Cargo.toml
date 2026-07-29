@@ -39,6 +39,8 @@ serde_json = "1.0"
 # compositor's display scale and the Settings pane that writes it cannot end
 # up on two different files.
 settings-store = { path = "../crates/system/settings-store" }
+# Crash-safe file replacement (temp + fsync + rename + dir fsync).
+atomic-file = { path = "../crates/system/atomic-file" }
 toml = "0.8"
 tracing = "0.1"
 tracing-subscriber = "0.3"

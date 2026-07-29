@@ -1,0 +1,16 @@
+[package]
+name = "atomic-file"
+version = "0.1.0"
+edition = "2024"
+description = "Crash-safe file replacement: temp file, fsync, rename, fsync the directory."
+
+[lib]
+name = "atomic_file"
+path = "src/lib.rs"
+
+# Deliberately no dependencies. Every crate that persists anything needs this,
+# including ones that must not pay for automerge or the CLI SDK, so it stays a
+# std-only leaf.
+
+[dev-dependencies]
+tempfile = "3"

@@ -20,6 +20,8 @@ dirs = "5"
 hex = "0.4"
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
+# Crash-safe file replacement (temp + fsync + rename + dir fsync).
+atomic-file = { path = "../../../crates/system/atomic-file" }
 thiserror = "1"
 tar = "0.4"
 

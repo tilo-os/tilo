@@ -39,7 +39,7 @@ use crate::media::MediaEngine;
 use crate::model::{self, Channel, Id, Message, User, Workspace};
 use crate::permissions::ChatPermissions;
 use crate::responsive::{FlapMode, FlapState, LEFT_BREAKPOINT, RIGHT_BREAKPOINT};
-use crate::storage::{self, Saver};
+use crate::storage;
 
 // --- Fixed chrome metrics (logical px) ------------------------------------
 pub(crate) const RAIL_W: f64 = 68.0;
@@ -288,7 +288,6 @@ pub struct ChatApp {
     pub(crate) perms: ChatPermissions,
 
     // Persistence (None for ephemeral / `--shots` instances).
-    saver: Option<Saver>,
 
     // Background image loader/cache for attachment thumbnails (decodes off
     // the UI thread; real bytes come from the FUSE mount).
@@ -310,9 +309,9 @@ pub struct ChatApp {
     shot_starter: bool,
     /// True for the live binary (`ChatApp::new`). A live instance always seeds
     /// the honest empty starter and never the fabricated demo workspace — even
-    /// when no data dir is available (so no saver could be wired). Only the
-    /// ephemeral `--shots`/test instances (`new_ephemeral`) leave this `false`
-    /// and may stage the rich demo.
+    /// when nothing is persisting behind it. Only the ephemeral `--shots`/test
+    /// instances (`new_ephemeral`) leave this `false` and may stage the rich
+    /// demo.
     pub(crate) is_live: bool,
 
     /// Latest decoded RGBA frame per remote peer id, shown in that peer's call
@@ -349,10 +348,11 @@ impl Default for ChatApp {
 }
 
 impl ChatApp {
-    /// The persistent, live instance: resolves this peer's real identity,
-    /// loads the saved workspace from disk (if any) and wires the background
-    /// saver. The resolved identity is what makes two running instances
-    /// genuinely different participants rather than two "u_me"s colliding.
+    /// The live instance: resolves this peer's real identity. The document
+    /// itself is loaded and written by `app-state` (see `main`), so nothing
+    /// here touches disk. The resolved identity is what makes two running
+    /// instances genuinely different participants rather than two "u_me"s
+    /// colliding.
     pub fn new() -> Self {
         let mut app = Self::bare();
         app.is_live = true;
@@ -366,9 +366,6 @@ impl ChatApp {
         app.active_ws.clear();
         app.active_channel.clear();
         app.thread_open = None;
-        if let Some(dir) = storage::data_dir() {
-            app.saver = Some(Saver::spawn(dir, Duration::from_millis(400)));
-        }
         app
     }
 
@@ -422,7 +419,6 @@ impl ChatApp {
             // `--shots`/tests from binding a real iroh endpoint per instance.
             media: MediaEngine::simulated(),
             perms: ChatPermissions::permissive(),
-            saver: None,
             images: ui::ImageStore::new(crate::images::fetcher()),
             rect: Rect::ZERO,
             root_node: None,
@@ -474,14 +470,6 @@ impl ChatApp {
     /// the file — the permission boundary for a projected FUSE share.
     pub(crate) fn embed_allowed(&self, path: &str) -> bool {
         self.perms.can_embed(path)
-    }
-
-    /// Persist the current document. Called after every mutation; a no-op
-    /// for ephemeral instances.
-    pub(crate) fn persist(&self, doc: &mut AutoCommit) {
-        if let Some(saver) = &self.saver {
-            saver.request(doc.save());
-        }
     }
 
     /// Stage a named scenario for a headless screenshot against the ephemeral
@@ -1150,20 +1138,13 @@ pub(crate) fn frac_rect(win: Rect, f: (f64, f64, f64, f64)) -> Rect {
 impl Widget for ChatApp {
     fn sync(&mut self, doc: &mut AutoCommit, _path: &ObjId) {
         if self.is_live {
-            // Live instance. Restore a persisted workspace if one exists so a
-            // restart keeps prior messages/structure; otherwise scaffold a
-            // real, empty starter workspace for this user — never the demo.
-            // Keyed off `is_live` (not the saver) so a live run with no data
-            // dir still gets the honest empty starter rather than the demo.
-            if !ChatDoc::is_seeded(doc) {
-                if let Some(dir) = storage::data_dir() {
-                    if let Ok(Some(bytes)) = storage::load_bytes(&dir) {
-                        if let Ok(loaded) = AutoCommit::load(&bytes) {
-                            let _ = doc.merge(&mut loaded.clone());
-                        }
-                    }
-                }
-            }
+            // Live instance. `app-state` has already restored the previous
+            // session's document by now, so an unseeded document really is a
+            // first run: scaffold a real, empty starter workspace for this
+            // user — never the demo.
+            // Keyed off `is_live` (not on whether anything persisted) so a
+            // live run with no data dir still gets the honest empty starter
+            // rather than the demo.
             if !ChatDoc::is_seeded(doc) {
                 ChatDoc::seed_starter(doc, &self.me.id, &self.me.name, &self.me.initials);
             }
@@ -1180,7 +1161,6 @@ impl Widget for ChatApp {
                 self.me.color_idx,
                 model::Presence::Online,
             ) {
-                self.persist(doc);
             }
         } else if self.shot_starter {
             // `--shots` capture of the honest first-run empty workspace.

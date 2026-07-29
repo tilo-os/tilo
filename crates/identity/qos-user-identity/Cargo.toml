@@ -28,6 +28,8 @@ path = "src/lib.rs"
 # may change without a version bump.
 
 [dependencies]
+# Crash-safe file replacement (temp + fsync + rename + dir fsync).
+atomic-file = { path = "../../system/atomic-file" }
 # Ed25519 signing/verification. Same version + features used across
 # the collab crates (`collab-types`, `threshold-identity`) so the
 # `SigningKey`/`VerifyingKey` types are interchangeable.

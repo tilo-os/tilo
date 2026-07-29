@@ -1,5 +1,4 @@
 use crate::shell::state::WorkspaceTree;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 
 pub fn state_json_path() -> PathBuf {
@@ -36,20 +35,13 @@ pub fn save_tree_to(tree: &WorkspaceTree, path: &Path) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let tmp = path.with_extension("json.tmp");
     let mut durable = tree.clone();
     for ws in &mut durable.workspaces {
         ws.capabilities.retain(|c| c.persists_across_restart());
     }
     let json = serde_json::to_string_pretty(&durable)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-    {
-        let mut f = std::fs::File::create(&tmp)?;
-        f.write_all(json.as_bytes())?;
-        f.sync_all()?;
-    }
-    std::fs::rename(&tmp, path)?;
-    Ok(())
+    atomic_file::write(path, json.as_bytes())
 }
 
 pub fn load_tree_from(path: &Path) -> std::io::Result<WorkspaceTree> {
