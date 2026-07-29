@@ -25,7 +25,17 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let args: Vec<String> = std::env::args().collect();
     if let Some(out) = parse_shots_arg(&args) {
-        render_shot_to_png(backups::app_root(), DEFAULT_SHOTS_VIEWPORT, &out)?;
+        let viewport = parse_value_arg(&args, "--viewport")
+            .and_then(|s| parse_viewport(&s))
+            .unwrap_or(DEFAULT_SHOTS_VIEWPORT);
+        // Screenshots render the sample catalog; `--empty` renders the real
+        // live first-run (empty → onboarding) for verification.
+        let root = if args.iter().any(|a| a == "--empty") {
+            backups::app_root()
+        } else {
+            backups::app_root_demo()
+        };
+        render_shot_to_png(root, viewport, &out)?;
         return Ok(());
     }
 
@@ -53,6 +63,27 @@ fn parse_shots_arg(args: &[String]) -> Option<std::path::PathBuf> {
         }
     }
     None
+}
+
+/// Parse a `--key VALUE` or `--key=VALUE` flag.
+fn parse_value_arg(args: &[String], key: &str) -> Option<String> {
+    let prefix = format!("{key}=");
+    let mut iter = args.iter().skip(1);
+    while let Some(arg) = iter.next() {
+        if arg == key {
+            return iter.next().cloned();
+        }
+        if let Some(rest) = arg.strip_prefix(&prefix) {
+            return Some(rest.to_string());
+        }
+    }
+    None
+}
+
+/// Parse a `WIDTHxHEIGHT` viewport spec (e.g. `1280x800`).
+fn parse_viewport(s: &str) -> Option<(u32, u32)> {
+    let (w, h) = s.split_once(['x', 'X'])?;
+    Some((w.trim().parse().ok()?, h.trim().parse().ok()?))
 }
 
 /// Run one offscreen frame against `widget` and write RGBA to `out` as PNG.

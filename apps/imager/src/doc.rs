@@ -26,7 +26,7 @@ use automerge::{AutoCommit, ReadDoc, ROOT, ScalarValue, Value};
 
 use crate::model::{
     sample_profiles, sample_recent_sources, sample_source, sample_targets, Action, InstallProfile,
-    Progress, Source, TargetDrive,
+    Progress, Source, Step, TargetDrive,
 };
 
 pub struct ImagerDoc;
@@ -59,10 +59,15 @@ impl ImagerDoc {
             Self::write_json(doc, "progress", &Progress::default());
         }
         if !matches!(doc.get(&ROOT, "selected"), Ok(Some((Value::Scalar(_), _)))) {
-            let _ = doc.put(&ROOT, "selected", 0i64);
+            // Start with NO drive selected: the wizard's Drive step must gate
+            // on a deliberate user choice before it will advance to Customize.
+            let _ = doc.put(&ROOT, "selected", -1i64);
         }
         if Self::get_str(doc, "action").is_none() {
             let _ = doc.put(&ROOT, "action", "flash");
+        }
+        if Self::get_str(doc, "step").is_none() {
+            let _ = doc.put(&ROOT, "step", Step::Source.key());
         }
         if Self::get_str(doc, "confirm").is_none() {
             let _ = doc.put(&ROOT, "confirm", "");
@@ -147,6 +152,13 @@ impl ImagerDoc {
         let _ = doc.put(&ROOT, "action", a.key());
     }
 
+    pub fn step(doc: &AutoCommit) -> Step {
+        Step::from_key(&Self::get_str(doc, "step").unwrap_or_default())
+    }
+    pub fn set_step(doc: &mut AutoCommit, s: Step) {
+        let _ = doc.put(&ROOT, "step", s.key());
+    }
+
     pub fn confirm(doc: &AutoCommit) -> String {
         Self::get_str(doc, "confirm").unwrap_or_default()
     }
@@ -202,7 +214,9 @@ mod tests {
         assert_eq!(ImagerDoc::recent(&doc).len(), 3);
         assert_eq!(ImagerDoc::profiles(&doc).len(), 2);
         assert_eq!(ImagerDoc::action(&doc), Action::Flash);
-        assert_eq!(ImagerDoc::selected(&doc), Some(0));
+        // A fresh document starts with no drive chosen — the Drive step gates on
+        // a deliberate selection.
+        assert_eq!(ImagerDoc::selected(&doc), None);
     }
 
     #[test]
@@ -245,5 +259,13 @@ mod tests {
         ImagerDoc::set_status(&mut doc, "ready");
         assert_eq!(ImagerDoc::confirm(&doc), "sdb");
         assert_eq!(ImagerDoc::status(&doc), "ready");
+    }
+
+    #[test]
+    fn step_defaults_to_source_and_round_trips() {
+        let mut doc = seeded();
+        assert_eq!(ImagerDoc::step(&doc), Step::Source);
+        ImagerDoc::set_step(&mut doc, Step::Write);
+        assert_eq!(ImagerDoc::step(&doc), Step::Write);
     }
 }

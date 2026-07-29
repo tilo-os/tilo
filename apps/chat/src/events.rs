@@ -338,17 +338,7 @@ impl ChatApp {
                     self.sync_local_voice(doc);
                 }
             }
-            Hit::CallShareScreen => {
-                // Toggle the real portal ScreenCast share (permission-gated
-                // inside `share_screen`). Starting it prompts the user via
-                // xdg-desktop-portal; there is nothing to fabricate when the
-                // portal is unavailable.
-                if self.sharing_screen() {
-                    self.stop_screen_share();
-                } else {
-                    self.share_screen();
-                }
-            }
+            Hit::CallShareScreen => self.toggle_screen_share(doc),
             Hit::CallExpand => {
                 self.call.expanded = !self.call.expanded;
                 self.request_relayout();
@@ -424,6 +414,38 @@ impl ChatApp {
         self.call.leave();
         self.sound.leave();
         self.request_relayout();
+    }
+
+    /// Toggle this peer's screen share. Starting one asks the portal seam for a
+    /// source (real xdg-desktop-portal picker behind `live-media`, honest `None`
+    /// otherwise) via [`ChatApp::acquire_screen`]; only a granted source flips
+    /// `call.sharing` and mirrors it into the shared voice membership, so remote
+    /// peers reserve the featured tile. Stopping tears the capture down and
+    /// clears the shared flag. A relayout follows because the featured stage
+    /// re-slots the participant tiles (and the host video node).
+    fn toggle_screen_share(&mut self, doc: &mut AutoCommit) {
+        if !self.call.active {
+            return;
+        }
+        if self.call.sharing {
+            self.call.sharing = false;
+            self.release_screen();
+            self.sync_local_sharing(doc);
+            self.request_relayout();
+        } else if self.acquire_screen() {
+            self.call.sharing = true;
+            self.sync_local_sharing(doc);
+            self.request_relayout();
+        }
+    }
+
+    /// Mirror this peer's screen-share state into the shared voice membership.
+    fn sync_local_sharing(&mut self, doc: &mut AutoCommit) {
+        if !self.call.active {
+            return;
+        }
+        let ch = self.call.channel.clone();
+        ChatDoc::voice_set_sharing(doc, &ch, &self.me.id, self.call.sharing);
     }
 
     /// Mirror this peer's local mic/deafen/audio-only state into the shared
@@ -935,10 +957,16 @@ mod tests {
         // empty starter — one local user, a `#general` with no messages — and
         // never the fabricated demo (its people, channels, and the screenshare
         // conversation thread).
+        // Pin the data dir to an empty temp path so the live sync's persistence
+        // load can't adopt a real chat store left on the dev machine — the test
+        // must exercise the fresh-first-run seed, not whatever is on disk.
+        let data = tempfile::tempdir().unwrap();
+        unsafe { std::env::set_var("QOS_CHAT_DATA", data.path()) };
         let mut app = ChatApp::new_ephemeral();
         app.is_live = true; // a live view with no disk behind it
         let mut doc = AutoCommit::new();
         app.sync(&mut doc, &automerge::ROOT);
+        unsafe { std::env::remove_var("QOS_CHAT_DATA") };
 
         let ws = ChatDoc::list_workspaces(&doc);
         assert!(ws.iter().any(|w| w.id == "ws_home"), "the real starter workspace");
@@ -1502,6 +1530,110 @@ mod tests {
         assert!(me_muted(&doc), "muting is mirrored into the shared voice membership");
     }
 
+    // --- screen share (portal seam + presentation stage) ----------------
+
+    fn me_sharing(doc: &AutoCommit, channel: &str) -> bool {
+        ChatDoc::list_voice_members(doc, channel)
+            .into_iter()
+            .find(|m| m.user == model::ME)
+            .map(|m| m.sharing)
+            .unwrap_or(false)
+    }
+
+    #[test]
+    fn share_screen_gates_on_the_portal_and_mirrors_into_voice_membership() {
+        let (mut app, mut doc) = app_with_doc();
+        app.on_hit(Hit::Channel("c_huddle".into()), &mut doc); // join the huddle
+        assert!(app.call.active);
+
+        // Honest gating: the default system portal grants nothing headless, so
+        // hitting the control starts no share and records nothing.
+        app.on_hit(Hit::CallShareScreen, &mut doc);
+        assert!(!app.sharing_screen(), "no portal source → no share (honest gating)");
+        assert!(!me_sharing(&doc, "c_huddle"), "nothing is recorded when the portal declines");
+
+        // Inject a portal that grants a source: the whole share flow runs and is
+        // mirrored into the shared voice membership so peers reserve the tile.
+        app.portal = Box::new(crate::call::FakePortal(Some(crate::call::ScreenSource {
+            node: 42,
+            width: 1280,
+            height: 720,
+        })));
+        app.on_hit(Hit::CallShareScreen, &mut doc);
+        assert!(app.sharing_screen(), "a granted portal source starts the share");
+        assert!(me_sharing(&doc, "c_huddle"), "the share is mirrored into the shared voice membership");
+
+        // Toggling again stops the share and clears the shared flag.
+        app.on_hit(Hit::CallShareScreen, &mut doc);
+        assert!(!app.sharing_screen(), "toggling again stops the share");
+        assert!(!me_sharing(&doc, "c_huddle"), "stopping clears the shared flag");
+    }
+
+    #[test]
+    fn a_remote_screen_share_promotes_the_overlay_to_the_presentation_stage() {
+        use crate::render_call::CallStage;
+        use vello::kurbo::Rect;
+        let (mut app, mut doc) = app_with_doc();
+        app.on_hit(Hit::Channel("c_huddle".into()), &mut doc);
+        app.on_hit(Hit::CallExpand, &mut doc);
+        app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+
+        // No one sharing yet → a uniform participant grid.
+        assert!(app.screen_sharer().is_none());
+        assert!(matches!(app.overlay_stage(), CallStage::Grid(_)), "no share is a plain grid");
+
+        // A remote announces a screen share over the shared voice membership.
+        ChatDoc::voice_set_sharing(&mut doc, "c_huddle", "u_aria", true);
+        app.reload(&doc);
+        assert_eq!(app.screen_sharer().as_deref(), Some("u_aria"), "the sharer is read from the CRDT");
+
+        match app.overlay_stage() {
+            CallStage::Share { screen, strip } => {
+                // Host + three remotes ride the filmstrip; the featured screen
+                // dominates it and everything stays inside the content region.
+                assert_eq!(strip.len(), 4, "host + three remotes fill the filmstrip");
+                assert!(screen.height() > strip[0].height(), "the featured screen dominates the stage");
+                let region = app.overlay_content_region();
+                for t in strip.iter().chain(std::iter::once(&screen)) {
+                    assert!(
+                        t.x0 >= region.x0 - 0.5 && t.x1 <= region.x1 + 0.5
+                            && t.y0 >= region.y0 - 0.5 && t.y1 <= region.y1 + 0.5,
+                        "a stage tile escaped the content region"
+                    );
+                }
+            }
+            CallStage::Grid(_) => panic!("a screen share must promote the overlay to the presentation stage"),
+        }
+    }
+
+    #[test]
+    fn share_control_reads_the_live_share_state() {
+        // The expanded controls surface a real Share/Stop toggle whose active
+        // state tracks `sharing_screen()` — driven by the portal grant, not a
+        // fabricated flag.
+        let (mut app, mut doc) = app_with_doc();
+        app.on_hit(Hit::Channel("c_huddle".into()), &mut doc);
+        app.on_hit(Hit::CallExpand, &mut doc);
+        let (_, buttons) = app.overlay_controls_layout();
+        let share = buttons.iter().find(|(_, _, _, h, _)| matches!(h, Hit::CallShareScreen));
+        let (label, active, ..) = share.expect("the expanded controls include a screen-share button");
+        assert_eq!(*label, "Share screen");
+        assert!(!*active, "not sharing → the control reads inactive 'Share screen'");
+        app.portal = Box::new(crate::call::FakePortal(Some(crate::call::ScreenSource {
+            node: 7,
+            width: 800,
+            height: 600,
+        })));
+        app.on_hit(Hit::CallShareScreen, &mut doc);
+        let (_, buttons) = app.overlay_controls_layout();
+        let (label, active, ..) = buttons
+            .iter()
+            .find(|(_, _, _, h, _)| matches!(h, Hit::CallShareScreen))
+            .expect("share button present");
+        assert_eq!(*label, "Stop share", "sharing flips the control to 'Stop share'");
+        assert!(*active, "sharing → the control reads active");
+    }
+
     // --- header Call button (was unreachable without a voice channel) ---
 
     #[test]
@@ -1824,6 +1956,65 @@ mod tests {
         // Full convergence: identical timelines on both peers.
         let ids = |app: &ChatApp| app.messages.iter().map(|m| m.id.clone()).collect::<Vec<_>>();
         assert_eq!(ids(&a), ids(&b), "both peers converge on the same timeline");
+    }
+
+    #[test]
+    fn an_edit_and_its_history_converge_across_two_participants() {
+        use crate::model::Presence;
+        // The author edits a message; the *new* body AND the archived prior
+        // version both reach the other peer. Drives the real inline-editor path
+        // (begin_edit → insert_text → commit_edit → ChatDoc::edit_message), then
+        // shuttles the incremental delta a peer would receive from the broker.
+        let mut doc_a = AutoCommit::new();
+        ChatDoc::seed_starter(&mut doc_a, "u_alice", "Alice", "AL");
+        let snapshot = doc_a.save();
+        let mut doc_b = AutoCommit::load(&snapshot).unwrap();
+        ChatDoc::ensure_user(&mut doc_b, "u_bob", "Bob", "BO", 1, Presence::Online);
+        exchange(&mut doc_a, &mut doc_b);
+
+        let mut a = peer("u_alice", "Alice", "AL", 0);
+        let mut b = peer("u_bob", "Bob", "BO", 1);
+        a.reload(&doc_a);
+        b.reload(&doc_b);
+
+        // Alice posts, then Bob sees the original body.
+        a.insert_text(&mut doc_a, "shipping friday");
+        a.send_focused(&mut doc_a);
+        exchange(&mut doc_a, &mut doc_b);
+        b.reload(&doc_b);
+        let msg_id = b.messages.iter().find(|m| m.text == "shipping friday").expect("B sees it").id.clone();
+        assert!(b.message(&msg_id).is_some_and(|m| !m.edited), "not edited yet");
+
+        // Alice edits through the real inline editor: load her own message,
+        // append to its working text, and commit.
+        a.begin_edit(msg_id.clone());
+        assert!(a.editing.is_some(), "the author can open the inline editor");
+        a.insert_text(&mut doc_a, " → moved to monday");
+        a.commit_edit(&mut doc_a);
+
+        // The edit — new body + archived prior version — converges to Bob.
+        exchange(&mut doc_a, &mut doc_b);
+        b.reload(&doc_b);
+        let m = b.message(&msg_id).expect("edited message present for B");
+        assert_eq!(m.text, "shipping friday → moved to monday", "B sees the edited body");
+        assert!(m.edited, "B sees the (edited) flag");
+        assert_eq!(m.history.len(), 1, "B sees one archived prior version");
+        assert_eq!(m.history[0].text, "shipping friday", "the prior body is preserved verbatim");
+
+        // A second edit accumulates history without losing the first — proving
+        // the log grows rather than overwriting.
+        a.begin_edit(msg_id.clone());
+        a.insert_text(&mut doc_a, " (confirmed)");
+        a.commit_edit(&mut doc_a);
+        exchange(&mut doc_a, &mut doc_b);
+        b.reload(&doc_b);
+        let m = b.message(&msg_id).unwrap();
+        assert_eq!(m.history.len(), 2, "both prior versions are kept");
+        assert_eq!(m.history[0].text, "shipping friday");
+        assert_eq!(m.history[1].text, "shipping friday → moved to monday");
+        // And a non-author cannot edit someone else's message via the same path.
+        b.begin_edit(msg_id.clone());
+        assert!(b.editing.is_none(), "a non-author can't open the editor on A's message");
     }
 
     #[test]

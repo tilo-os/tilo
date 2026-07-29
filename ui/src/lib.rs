@@ -67,6 +67,7 @@ pub mod webview;
 pub mod fullscreen;
 pub mod mpris;
 pub mod nav_stack;
+pub mod reader_hud;
 
 // The toolkit's own stack, re-exported so an app never has to name a version.
 // See the crate-level note above for why this matters for `vello` and `winit`
@@ -79,12 +80,14 @@ pub use vello::{kurbo, peniko};
 pub use winit;
 
 pub use app::App;
+pub use reader_hud::{HudAction, HudSwatch, MarkerDrag, ReaderHudStyle, SelectionHud};
 pub use color_compat::ColorCompat;
 pub use doc::{TextEdit, put_if_changed, put_text_diffed, splice_text_diffed};
 pub use state::{State, UndoEntry};
 pub use theme::Theme;
 pub use image_store::{Fetcher, ImageStore};
 pub use nav_stack::{EdgeSwipeBack, NavAction, NavStack};
+pub use portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
 pub use caps_lock::CapsLockEstimate;
 pub use selection::SelectionModel;
 
@@ -100,6 +103,7 @@ pub use screen_reader::{ScreenReader, describe, flatten_reading_order};
 
 pub use widget::{Widget, Element};
 pub use widget::{AppShell, NarrowScreen, ShellLayout};
+pub use widget::{Card, CardGrid, card_column_width, card_columns};
 pub use widget::{EditableLabel, EditOutcome};
 pub use widget::{AppCommand, AppKind, AppWidget, IconDescriptor};
 pub use widget::command_palette::{

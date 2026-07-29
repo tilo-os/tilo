@@ -32,6 +32,7 @@ live-media = [
     "dep:tokio",
     "dep:openh264",
     "dep:ashpd",
+    "dep:qos-callstream",
 ]
 
 [dependencies]
@@ -71,6 +72,7 @@ iroh = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true, features = ["rt-multi-thread", "sync", "time"] }
 openh264 = { workspace = true, optional = true }
 ashpd = { workspace = true, optional = true, default-features = true }
+qos-callstream = { path = "../../crates/collab/qos-callstream", optional = true }
 
 [dev-dependencies]
 tempfile.workspace = true

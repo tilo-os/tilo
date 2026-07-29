@@ -238,7 +238,41 @@ impl AppKind {
             AppKind::Other(s) => s,
         }
     }
+
+    /// Canonical, stable app-id for this app kind — the identity used to
+    /// key the per-workspace capability [`Workspace::grants`] map.
+    ///
+    /// Distinct from [`Self::as_str`], which is the human-facing display
+    /// label ("Files", "Editor") shown in tab pills and role tables. An
+    /// app-id is the identity a Wayland client advertises via
+    /// `xdg_toplevel::set_app_id`; adopted foreign clients carry their
+    /// real one (`org.gimp.GIMP`, …) straight into the grants map (see
+    /// [`TileContent::Foreign`]). Built-in apps are drawn in-process and
+    /// never call `set_app_id`, so the compositor assigns them these
+    /// canonical ids under its own reverse-DNS prefix — keeping every
+    /// grant key in one namespace instead of mixing a display label
+    /// ("Editor") with real Wayland app-ids.
+    ///
+    /// An [`AppKind::Other`] label that already looks like a reverse-DNS
+    /// app-id (contains a dot) is trusted verbatim; a bare label is
+    /// namespaced under the compositor prefix.
+    pub fn app_id(&self) -> AppId {
+        match self {
+            AppKind::Terminal => format!("{APP_ID_PREFIX}.Terminal"),
+            AppKind::FileExplorer => format!("{APP_ID_PREFIX}.Files"),
+            AppKind::Browser => format!("{APP_ID_PREFIX}.Browser"),
+            AppKind::Settings => format!("{APP_ID_PREFIX}.Settings"),
+            AppKind::Other(s) if s.contains('.') => s.clone(),
+            AppKind::Other(s) => format!("{APP_ID_PREFIX}.{s}"),
+        }
+    }
 }
+
+/// Reverse-DNS prefix the compositor stamps on the app-ids of its
+/// in-process built-in apps. Matches the name it already identifies
+/// itself by (the `org.freedesktop.impl.portal.desktop.nirios` portal
+/// backend, the `nirios` window title).
+pub const APP_ID_PREFIX: &str = "org.nirios";
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub enum WindowWidth {
@@ -532,6 +566,13 @@ pub enum Capability {
     Microphone { scope: GrantScope },
     /// Screen capture via portal `ScreenCast`.
     Screencast { scope: GrantScope },
+    /// Remote control of the seat (pointer + keyboard injection) via portal
+    /// `RemoteDesktop`. Distinct from [`Capability::Screencast`] because
+    /// remote *control* is strictly more invasive than screen *viewing* —
+    /// the consent prompt and the Permissions tab must disclose it
+    /// separately so a user can grant "let them watch" without also
+    /// granting "let them type".
+    RemoteDesktop { scope: GrantScope },
     /// Outbound network access. `hosts: None` = "any host"; `hosts:
     /// Some(allowlist)` = "only these hosts".
     ///
@@ -692,6 +733,13 @@ impl Capability {
             Capability::Screencast { .. } => {
                 vec![(Scope::Device("screencast".into()), Verb::Read)]
             }
+            // Remote desktop is screencast plus input injection, so it
+            // asks for the write verb on its own device scope rather than
+            // borrowing screencast's — revoking one must not revoke the
+            // other.
+            Capability::RemoteDesktop { .. } => {
+                vec![(Scope::Device("remote-desktop".into()), Verb::Write)]
+            }
             Capability::Network { hosts, .. } => match hosts {
                 // An allowlist means exactly those hosts. `None` is the
                 // explicit "any host" request and is the only thing
@@ -714,6 +762,7 @@ impl Capability {
             | Capability::Camera { scope }
             | Capability::Microphone { scope }
             | Capability::Screencast { scope }
+            | Capability::RemoteDesktop { scope }
             | Capability::Network { scope, .. } => *scope,
         }
     }
@@ -4826,10 +4875,52 @@ mod capability_tests {
     }
 
     #[test]
-    fn app_grants_round_trip_via_serde_json() {
-        // Grants are stored as capabilities and re-derived for the
-        // portal view. Round-tripping the workspace must preserve both
-        // the stored form and the derived one.
+    fn app_kind_app_id_is_a_reverse_dns_id_not_the_display_label() {
+        // The grant key must be a real app-id, in the same namespace as
+        // an adopted foreign client's `set_app_id` value — never the
+        // human-facing display label that `as_str()` returns.
+        assert_eq!(AppKind::FileExplorer.app_id(), "org.nirios.Files");
+        assert_eq!(AppKind::Terminal.app_id(), "org.nirios.Terminal");
+        assert_eq!(AppKind::Browser.app_id(), "org.nirios.Browser");
+        assert_eq!(AppKind::Settings.app_id(), "org.nirios.Settings");
+        // A bare `Other` label is namespaced under the compositor prefix.
+        assert_eq!(
+            AppKind::Other("Editor".into()).app_id(),
+            "org.nirios.Editor"
+        );
+        // The app-id is distinct from the display label for every kind.
+        for kind in [
+            AppKind::FileExplorer,
+            AppKind::Terminal,
+            AppKind::Browser,
+            AppKind::Settings,
+            AppKind::Other("Editor".into()),
+        ] {
+            assert_ne!(
+                kind.app_id(),
+                kind.as_str(),
+                "app_id must not collapse to the display label for {kind:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn app_kind_app_id_trusts_reverse_dns_other_labels_verbatim() {
+        // An `Other` value that is already a reverse-DNS app-id (a real
+        // adopted client re-parked as `Other`) is used as-is, not
+        // double-prefixed.
+        assert_eq!(
+            AppKind::Other("org.gimp.GIMP".into()).app_id(),
+            "org.gimp.GIMP"
+        );
+    }
+
+    #[test]
+    fn grants_round_trip_via_serde_json() {
+        // Build a workspace with two grants for one app and round-trip
+        // through serde_json. Re-serialising the deserialised value
+        // must yield the same JSON shape — pinning the on-disk schema
+        // for portal-side consumers.
         let mut ws = Workspace::new(WorkspaceId::from(1), "Demo");
         ws.grant_app(
             "org.gnome.gedit",

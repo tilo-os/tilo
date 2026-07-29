@@ -11,8 +11,8 @@
 //!                  with a source rail, snapshot timeline, storage gauges, a
 //!                  retention editor, and a restore sheet.
 //!
-//! `app_root()` is the single integration point used by both the live event
-//! loop and the headless `--shots` renderer.
+//! `app_root()` builds the live tree (an empty catalog → onboarding); the
+//! headless `--shots` renderer uses `app_root_demo()` for the sample catalog.
 
 pub mod app;
 pub mod doc;
@@ -23,7 +23,13 @@ pub use app::BackupsApp;
 
 use ui::widget::Widget;
 
-/// Build and return the app's root widget tree.
+/// Build the live app's root widget tree (empty catalog → onboarding).
 pub fn app_root() -> Box<dyn Widget> {
     Box::new(BackupsApp::new())
+}
+
+/// Build the demo tree pre-seeded with the sample catalog. Used only by the
+/// `--shots` renderer so screenshots show a populated dashboard.
+pub fn app_root_demo() -> Box<dyn Widget> {
+    Box::new(BackupsApp::new_demo())
 }

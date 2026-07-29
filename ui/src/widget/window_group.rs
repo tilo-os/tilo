@@ -1510,6 +1510,31 @@ impl Widget for WindowGroup {
     }
     fn name(&self) -> &str { "WindowGroup" }
     fn get_rect(&self) -> Rect { self.rect }
+    /// East-west resize cursor while the pointer sits in the group's
+    /// right-edge resize band (the `RESIZE_HANDLE_PX`-wide grip that
+    /// `draw` paints and `handle_event` hit-tests via `hover_resize`)
+    /// or a width-resize drag is in flight. Mirrors the inter-group
+    /// [`crate::widget::ResizeHandle`]'s `cursor_shape` so both resize
+    /// affordances give the same OS feedback: without this the
+    /// between-groups handle changed the cursor but a group's own
+    /// right edge — the only resize affordance on the last / lone
+    /// group in a strip — did not. The host (`App::resolve_cursor`)
+    /// hit-tests the tree on every pointer move and adopts the icon;
+    /// the inter-group handle's 16 px hit area is smaller-area, so it
+    /// still wins in the narrow overlap between two groups.
+    fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
+        let band = Rect::new(
+            self.rect.x1 - RESIZE_HANDLE_PX,
+            self.rect.y0,
+            self.rect.x1,
+            self.rect.y1,
+        );
+        if self.resize_origin.is_some() || band.contains(point) {
+            Some(winit::window::CursorIcon::EwResize)
+        } else {
+            None
+        }
+    }
     fn wants_pointer_capture(&self) -> bool { self.resize_origin.is_some() }
     fn take_structure_dirty(&mut self) -> bool {
         // Bubble both the TabBar's and every host's dirty flag. Ordered
@@ -2096,6 +2121,65 @@ mod tests {
             start_w + 100,
             "a 100 px drag from the press point must widen the group by exactly \
              100 px (no jump from anchoring on the group edge)",
+        );
+    }
+
+    /// The group's right-edge resize band must request an east-west
+    /// resize cursor, matching the inter-group [`ResizeHandle`]. Without
+    /// it the last / lone group in a strip — whose only resize affordance
+    /// is its own right edge — gives no cursor feedback. Driven off a real
+    /// layout pass so `self.rect` (and thus the band) is authoritative.
+    #[test]
+    fn cursor_shape_is_ew_resize_over_right_edge_band() {
+        use std::collections::HashMap;
+        use taffy::Style;
+        use taffy::prelude::TaffyMaxContent;
+
+        let theme = Theme::dark();
+        let mut g = make_group();
+        let mut taffy = TaffyTree::<()>::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let node = g.build_layout(&mut taffy, &theme, &mut node_map);
+        let root = taffy
+            .new_with_children(
+                Style {
+                    size: Size {
+                        width: Dimension::length(1600.0),
+                        height: Dimension::length(900.0),
+                    },
+                    ..Default::default()
+                },
+                &[node],
+            )
+            .unwrap();
+        taffy.compute_layout(root, taffy::Size::MAX_CONTENT).unwrap();
+        g.apply_layout(&taffy, node, Point::ZERO);
+
+        let rect = g.get_rect();
+        assert!(rect.height() > 0.0, "group must have a real height to hit-test");
+        let cy = rect.center().y;
+
+        // 3 px inside the right edge → inside the RESIZE_HANDLE_PX band.
+        assert_eq!(
+            Widget::cursor_shape(&g, Point::new(rect.x1 - 3.0, cy)),
+            Some(winit::window::CursorIcon::EwResize),
+            "pointer in the right-edge resize band requests an east-west resize cursor",
+        );
+        // Well inside the group, away from the edge → no cursor claim.
+        assert_eq!(
+            Widget::cursor_shape(&g, Point::new(rect.center().x, cy)),
+            None,
+            "pointer over the group body (not the edge band) defers",
+        );
+
+        // While a resize drag is in flight the cursor stays EwResize even
+        // if the pointer has wandered off the band (pointer capture keeps
+        // the gesture alive), so long as it's still within the group rect.
+        g.begin_resize(rect.x1 as f32);
+        assert_eq!(
+            Widget::cursor_shape(&g, Point::new(rect.center().x, cy)),
+            Some(winit::window::CursorIcon::EwResize),
+            "an in-flight resize drag holds the east-west cursor across the group",
         );
     }
 

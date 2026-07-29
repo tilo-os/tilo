@@ -60,6 +60,22 @@ fn password_key(ssid: &str) -> String {
     format!("network.password.{ssid}")
 }
 
+/// Nerd Font (Material Design Icons) Wi-Fi signal-strength glyph for a 0..=4
+/// bar level. These are the same MDI `wifi-strength-*` family the sidebar's
+/// Network icon draws, so they render as real signal arcs. The previous
+/// Unicode block-element bars (`▁▂▄▆█`) have no glyph in the shipped fonts and
+/// fell back to a `.notdef` tofu box, which read as broken and conveyed no
+/// signal level.
+fn wifi_signal_glyph(signal: u8) -> &'static str {
+    match signal {
+        0 => "\u{f092b}", // wifi-strength-outline (no bars)
+        1 => "\u{f091f}", // wifi-strength-1
+        2 => "\u{f0922}", // wifi-strength-2
+        3 => "\u{f0925}", // wifi-strength-3
+        _ => "\u{f0928}", // wifi-strength-4 (full)
+    }
+}
+
 /// Read a boolean scalar at `key`, defaulting to `false`.
 fn read_bool(state: &AutoCommit, root: &ObjId, key: &str) -> bool {
     matches!(
@@ -371,14 +387,11 @@ impl NetworkPane {
     /// One scanned-network row: signal + lock glyph + SSID on the left, a
     /// Connect / Connected button on the right.
     fn network_row(&self, net: &WifiNetworkInfo) -> El {
-        let signal_glyph = match net.signal {
-            0 => "\u{2581}",
-            1 => "\u{2582}",
-            2 => "\u{2584}",
-            3 => "\u{2586}",
-            _ => "\u{2588}",
-        };
-        let lock_glyph = if net.secure { "\u{f033e}" } else { "\u{f0db1}" };
+        let signal_glyph = wifi_signal_glyph(net.signal);
+        // A closed padlock for secure networks, its open-padlock pair for open
+        // ones — both from the MDI `lock` family the shipped fonts carry, so the
+        // security state reads at a glance without a stray unrelated glyph.
+        let lock_glyph = if net.secure { "\u{f033e}" } else { "\u{f033f}" };
         let label = format!("{signal_glyph}  {lock_glyph}  {ssid}", ssid = net.ssid);
         let key = connect_key(&net.ssid);
         let cta_id = format!("settings.network.connect.{}", net.ssid);
@@ -756,6 +769,29 @@ mod tests {
                 connected: false,
             },
         ]
+    }
+
+    /// The signal indicator must use the Material Design Icons `wifi-strength`
+    /// family (Private Use Area, `U+F09xx`) — the same family the sidebar's
+    /// Network glyph uses and which the shipped fonts actually carry — never the
+    /// Unicode block elements (`U+258x`), which fall back to a `.notdef` tofu
+    /// box and convey no signal level.
+    #[test]
+    fn wifi_signal_glyph_uses_the_mdi_family_not_block_elements() {
+        for signal in 0u8..=6 {
+            let g = wifi_signal_glyph(signal);
+            let cp = g.chars().next().unwrap() as u32;
+            assert!(
+                (0xF091F..=0xF092B).contains(&cp),
+                "signal {signal} glyph U+{cp:04X} must be an MDI wifi-strength glyph"
+            );
+            // Never a Unicode block element (the old tofu bars).
+            assert!(!(0x2580..=0x259F).contains(&cp), "block-element bars are tofu");
+        }
+        // Distinct levels for 1..=4 so strength is legible at a glance.
+        let levels: Vec<&str> = (1u8..=4).map(wifi_signal_glyph).collect();
+        let unique: std::collections::HashSet<&&str> = levels.iter().collect();
+        assert_eq!(unique.len(), 4, "each bar level is a distinct glyph");
     }
 
     #[test]

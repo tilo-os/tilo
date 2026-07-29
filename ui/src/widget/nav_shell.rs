@@ -245,6 +245,36 @@ impl NavShell {
         self
     }
 
+    // --- live child swap -------------------------------------------------
+    //
+    // Hosts that **rebuild** their child subtree on a structure change (the
+    // file-explorer rebuilds its list/grid + places list every time the
+    // directory, sort, view mode or search changes) keep the `NavShell` itself
+    // persistent and swap in the freshly-built panes here. Because the shell's
+    // responsive state (docked/push, the eased reveal, the current pane) lives
+    // on the shell — not the children — swapping the panes preserves the
+    // sidebar's open/closed and master/detail position across the rebuild. The
+    // next `apply_layout` re-solves the inner tree from the new children
+    // (`place_children` always rebuilds it), so no explicit invalidation is
+    // needed.
+
+    /// Replace the overview (master) pane in place, keeping the shell's
+    /// responsive state (see the module note on live child swap).
+    pub fn set_overview(&mut self, overview: Element) {
+        self.overview = overview;
+    }
+
+    /// Replace the detail pane in place, keeping the shell's responsive state.
+    pub fn set_detail(&mut self, detail: Element) {
+        self.detail = detail;
+    }
+
+    /// Replace (or clear) the genuine menu sidebar in place, keeping the
+    /// shell's responsive state.
+    pub fn set_sidebar(&mut self, sidebar: Option<Element>) {
+        self.sidebar = sidebar;
+    }
+
     // --- layout-mode queries ---------------------------------------------
 
     /// Whether this shell has a genuine sidebar.
@@ -1356,6 +1386,47 @@ mod tests {
         draw_frame(&mut ns);
         assert_eq!(ns.push.reveal(), 1.0, "a snapped shell must not drift on draw");
         assert!(!ns.needs_animation_frame(), "a settled shell requests no frames");
+    }
+
+    /// A host that rebuilds its panes on a structure change swaps them into the
+    /// persistent shell via `set_overview` / `set_detail`; the swap must keep
+    /// the shell's push position (the whole point of keeping the shell around
+    /// instead of reconstructing it), and the next layout must pick up the new
+    /// child.
+    #[test]
+    fn swapping_panes_preserves_push_state_and_relayouts_new_child() {
+        let mut ns = shell(420.0, false); // narrow, content-only
+        ns.snap_pane(NavPane::Detail); // push to detail (deterministic)
+        assert!(ns.is_detail_shown(), "pushed to detail before the swap");
+
+        // Rebuild both panes (a fresh directory listing would do this) and swap
+        // them in. The pushed-detail position must survive the swap.
+        ns.set_overview(Box::new(Text::new("new-overview")));
+        ns.set_detail(Box::new(Text::new("new-detail")));
+        assert!(ns.is_detail_shown(), "the swap kept the shell showing the detail");
+
+        // Re-lay-out at the same size: the shell re-solves its inner tree from
+        // the NEW children, so the freshly-swapped detail occupies the pane.
+        lay_out(&mut ns, 420.0, 640.0);
+        ns.snap_pane(NavPane::Detail);
+        assert!(
+            (ns.detail_rect().x0 - ns.get_rect().x0).abs() < 1.0,
+            "the swapped-in detail is laid out in the pane"
+        );
+        // And a real draw of the new children paints something.
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let presence = PresenceCtx::default();
+        let perms = crate::permissions::PermissionContext::permissive();
+        let mut scene = Scene::new();
+        ns.draw_with_presence(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence, &perms);
+        let fills = scene
+            .encoding()
+            .draw_tags
+            .iter()
+            .filter(|t| **t == DrawTag::COLOR)
+            .count();
+        assert!(fills >= 1, "the swapped children paint after the swap");
     }
 
     // --- scaffolding -----------------------------------------------------

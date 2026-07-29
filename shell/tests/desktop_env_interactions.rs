@@ -254,6 +254,59 @@ fn resize_handle_drag_persists_new_group_widths_into_tree() {
     );
 }
 
+/// A drag far past a neighbour's minimum width must clamp — the shrinking
+/// group pins at [`WIDTH_MIN_PX`] and the growing group absorbs only the
+/// slack, so the pair sum is preserved (no overlap, no runaway width) and
+/// the clamped widths persist into the tree. Same real host + harvest path
+/// as the linear-reflow test above, just a delta big enough to hit the wall.
+#[test]
+fn resize_handle_drag_clamps_at_min_width_and_persists() {
+    let (tree, strip_id, ids) = single_strip_tree(&[100, 200]);
+    let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
+    let layout = lay_out_host(&mut host);
+
+    // Both groups start at Normal = 600 px; pair sum = 1200.
+    let handle_rect = host
+        .group_row_mut_for_tests(strip_id)
+        .expect("strip GroupRow")
+        .handle_at(0)
+        .expect("one inter-group resize handle for a 2-group strip")
+        .get_rect();
+    let cx = (handle_rect.x0 + handle_rect.x1) / 2.0;
+    let cy = (handle_rect.y0 + handle_rect.y1) / 2.0;
+
+    // Drag +5000 px right — far past the right neighbour's min. The right
+    // group can only shrink from 600 to WIDTH_MIN_PX (300), so the left
+    // group grows by that same 300 (to 900), NOT by the requested 5000.
+    cursor(&mut host, &layout, Point::new(cx, cy));
+    press(&mut host, &layout);
+    cursor(&mut host, &layout, Point::new(cx + 5000.0, cy));
+    release(&mut host, &layout);
+
+    host.tick_pending_width_harvest_for_tests();
+
+    let st = chrome.borrow();
+    let tree = st.tree();
+    let groups = &tree.workspaces[0].strips[0].window_groups;
+    let left = groups.iter().find(|g| g.id == ids[0]).unwrap();
+    let right = groups.iter().find(|g| g.id == ids[1]).unwrap();
+    assert_eq!(
+        right.width.pixels(),
+        ui::widget::WIDTH_MIN_PX,
+        "the shrinking (right) group clamps at the minimum width, not below",
+    );
+    assert_eq!(
+        left.width.pixels(),
+        900,
+        "the growing (left) group absorbs only the neighbour's actual slack (300 px)",
+    );
+    assert_eq!(
+        left.width.pixels() + right.width.pixels(),
+        1200,
+        "pair sum is preserved under clamp — no overlap, no runaway width",
+    );
+}
+
 // -----------------------------------------------------------------------
 // 2. Whole-group reorder
 // -----------------------------------------------------------------------
