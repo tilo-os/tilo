@@ -1,9 +1,12 @@
-//! Install Media — thin binary entry point. All logic lives in the library.
+//! Image Writer — thin binary entry point. All logic lives in the library.
 //!
 //! Modes:
-//!   * default        — run the live winit event loop via `ui::App`.
-//!   * `--shots PATH` — render one offscreen frame to a PNG and exit
-//!                       (headless screenshot; identical passes to the live app).
+//!   * default            — run the live winit event loop via `ui::App`.
+//!   * `--shots PATH`     — render one offscreen frame to a PNG and exit.
+//!                          `--scenario NAME` picks which wizard state
+//!                          (defaults to `source`); `--viewport WxH` sizes it.
+//!   * `--shots-dir DIR`  — render *every* wizard scenario into `DIR` as
+//!                          `NN-name.png` (the screenshot gallery).
 
 use std::collections::HashMap;
 
@@ -18,20 +21,37 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point};
 use vello::peniko::Color;
 
-const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1280, 800);
+const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1180, 820);
 
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt::init();
 
     let args: Vec<String> = std::env::args().collect();
-    if let Some(out) = parse_shots_arg(&args) {
-        render_shot_to_png(imager::app_root(), DEFAULT_SHOTS_VIEWPORT, &out)?;
+    let viewport = parse_value_arg(&args, "--viewport")
+        .and_then(|s| parse_viewport(&s))
+        .unwrap_or(DEFAULT_SHOTS_VIEWPORT);
+
+    // Render every scenario into a directory.
+    if let Some(dir) = parse_value_arg(&args, "--shots-dir") {
+        let dir = std::path::PathBuf::from(dir);
+        std::fs::create_dir_all(&dir).ok();
+        for (i, scenario) in imager::SHOT_SCENARIOS.iter().enumerate() {
+            let out = dir.join(format!("{:02}-{}.png", i + 1, scenario));
+            render_scenario(scenario, viewport, &out)?;
+        }
         return Ok(());
     }
 
-    // Live mode: enumerate real write targets (lsblk). The `--shots` path
-    // above never sets this, so the screenshot stays on the curated sample
-    // and is fully populated offline.
+    // Single-shot PNG.
+    if let Some(out) = parse_shots_arg(&args) {
+        let scenario = parse_value_arg(&args, "--scenario").unwrap_or_else(|| "source".to_string());
+        render_scenario(&scenario, viewport, &out)?;
+        return Ok(());
+    }
+
+    // Live mode: enumerate real write targets (lsblk). The `--shots` paths
+    // above never set this, so a screenshot stays on the curated sample and is
+    // fully populated offline.
     // SAFETY: set once at startup before any threads read the environment.
     unsafe {
         std::env::set_var("IMAGER_LIVE", "1");
@@ -55,10 +75,30 @@ fn parse_shots_arg(args: &[String]) -> Option<std::path::PathBuf> {
     None
 }
 
-/// Run one offscreen frame against `widget` and write RGBA to `out` as PNG.
-/// Mirrors `ui::App`'s cycle: sync → build_layout → compute_layout → apply_layout → draw.
-fn render_shot_to_png(
-    mut widget: Box<dyn Widget>,
+/// Parse a `--key VALUE` or `--key=VALUE` flag.
+fn parse_value_arg(args: &[String], key: &str) -> Option<String> {
+    let prefix = format!("{key}=");
+    let mut iter = args.iter().skip(1);
+    while let Some(arg) = iter.next() {
+        if arg == key {
+            return iter.next().cloned();
+        }
+        if let Some(rest) = arg.strip_prefix(&prefix) {
+            return Some(rest.to_string());
+        }
+    }
+    None
+}
+
+/// Parse a `WIDTHxHEIGHT` viewport spec (e.g. `1180x820`).
+fn parse_viewport(s: &str) -> Option<(u32, u32)> {
+    let (w, h) = s.split_once(['x', 'X'])?;
+    Some((w.trim().parse().ok()?, h.trim().parse().ok()?))
+}
+
+/// Seed `scenario`, run one offscreen frame, and write the PNG.
+fn render_scenario(
+    scenario: &str,
     viewport: (u32, u32),
     out: &std::path::Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -70,10 +110,9 @@ fn render_shot_to_png(
     let mut taffy: TaffyTree<()> = TaffyTree::new();
     let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
 
+    let mut widget = imager::app_root();
     let mut state = ui::State::new();
-    // Pose the demo state (source + selected install target + options panel)
-    // before the first sync so the screenshot shows the whole flow.
-    imager::seed_shots_demo(&mut state.doc);
+    imager::seed_scenario(&mut state.doc, scenario);
     widget.sync(&mut state.doc, &state.root);
 
     let child = widget.build_layout(&mut taffy, &theme, &mut node_map);
@@ -123,6 +162,6 @@ fn render_shot_to_png(
     }
     let mut renderer = OffscreenRenderer::new(w, h);
     renderer.render_png(&scene, Color::TRANSPARENT, out);
-    println!("imager: wrote shot to {}", out.display());
+    println!("imager: wrote {} shot to {}", scenario, out.display());
     Ok(())
 }
