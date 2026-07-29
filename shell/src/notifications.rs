@@ -370,7 +370,6 @@ impl NotificationService {
 /// RAII handle keeping the notification D-Bus connection alive. Dropping
 /// it releases the bus name and tears down the object server.
 pub struct ServerHandle {
-    #[allow(dead_code)]
     connection: zbus::Connection,
 }
 
