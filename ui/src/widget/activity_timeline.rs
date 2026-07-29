@@ -434,7 +434,7 @@ impl ActivityTimeline {
     /// Width of the leading author cluster, proportional to the pane with a
     /// floor so a name is never squeezed to nothing.
     fn author_slot_w(&self) -> f64 {
-        (self.rect.width() * 0.30).clamp(84.0, AUTHOR_SLOT_W)
+        (self.rect.width() * 0.32).clamp(84.0, AUTHOR_SLOT_W)
     }
 
     /// Width of the trailing relative-time slot.
@@ -601,17 +601,24 @@ impl ActivityTimeline {
             }
             self.visible.push(i);
         }
+        // Sort by time, tie-broken by the producer's own order — which is the
+        // document's causal order. Automerge records a change's advisory time
+        // in *seconds*, so a burst of activity inside one second is a wall of
+        // ties; ordering those by input index is what keeps "newest first"
+        // meaning something rather than silently degrading to oldest-first.
         if self.newest_first {
-            // Stable reverse sort by timestamp so equal-ts entries
-            // keep their input order. The producer is expected to
-            // emit in causal order; we just respect that and flip
-            // the iteration direction here.
             self.visible.sort_by(|a, b| {
-                self.entries[*b].timestamp.cmp(&self.entries[*a].timestamp)
+                self.entries[*b]
+                    .timestamp
+                    .cmp(&self.entries[*a].timestamp)
+                    .then(b.cmp(a))
             });
         } else {
             self.visible.sort_by(|a, b| {
-                self.entries[*a].timestamp.cmp(&self.entries[*b].timestamp)
+                self.entries[*a]
+                    .timestamp
+                    .cmp(&self.entries[*b].timestamp)
+                    .then(a.cmp(b))
             });
         }
         // Clamp scroll to the new extent.
@@ -728,12 +735,25 @@ impl ActivityTimeline {
         // identity hash over the glyph or the summary over the timestamp.
         let short_size = (text_size - 2.0).max(10.0);
         let short = entry.author.identity_short.as_str();
+        let slot_end = row.x0 + author_slot_w - 6.0;
+        let full_name_w = text_renderer
+            .measure(entry.author.name.as_str(), text_size, None)
+            .0 as f64;
+        // The hash disambiguates two people with the same display name; the
+        // name is what the reader is actually scanning for. So the hash is
+        // shown out of what the name leaves over, and dropped entirely rather
+        // than truncating the name to make room for it.
         let short_w = if compact || short.is_empty() {
             0.0
         } else {
-            text_renderer.measure(short, short_size, None).0 as f64 + 6.0
+            let w = text_renderer.measure(short, short_size, None).0 as f64 + 6.0;
+            if x_cursor + full_name_w + w <= slot_end {
+                w
+            } else {
+                0.0
+            }
         };
-        let name_budget = (row.x0 + author_slot_w - 6.0 - x_cursor - short_w).max(24.0);
+        let name_budget = (slot_end - x_cursor - short_w).max(24.0);
         let name = fit_text(
             text_renderer,
             entry.author.name.as_str(),
@@ -784,8 +804,17 @@ impl ActivityTimeline {
         // suppressed in favour of a struck-through "[redacted by …]"
         // label so the original content never re-renders, even
         // accidentally, on the audit pane.
+        // The `[Revert]` chip is only painted on hover, so only a hovered row
+        // pays for it. Reserving it on every row cost the summary — the row's
+        // load-bearing text — a third of its width for something not on
+        // screen.
+        let chip_reserve = if is_hovered {
+            self.revert_chip_w() + 6.0
+        } else {
+            0.0
+        };
         let summary_x = glyph_x + 24.0;
-        let summary_x_end = row.x1 - self.time_slot_w() - self.revert_chip_w() - 12.0;
+        let summary_x_end = row.x1 - self.time_slot_w() - chip_reserve - 12.0;
         let (summary_owned, is_redacted_row): (String, bool) =
             if let Some(redaction) = entry.redaction.as_ref() {
                 (
@@ -846,7 +875,7 @@ impl ActivityTimeline {
             self.time_slot_w(),
         );
         let (tw, _) = text_renderer.measure(&rel, text_size, None);
-        let time_x = row.x1 - self.revert_chip_w() - 12.0 - tw as f64;
+        let time_x = row.x1 - chip_reserve - 12.0 - tw as f64;
         text_renderer.draw_text(
             scene,
             &rel,
@@ -1760,6 +1789,32 @@ mod tests {
             ChipKind::All,
             "click in the gap between chips is a no-op",
         );
+    }
+
+    #[test]
+    fn entries_sharing_a_timestamp_still_order_newest_first() {
+        // Automerge stamps in whole seconds, so anything done in a burst ties.
+        // Newest-first has to fall back to causal order, not to input order —
+        // which would render the list upside down.
+        let entries: Vec<HistoryEntry> = (0..5)
+            .map(|i| entry(OpClass::Splice, "Alice", 100, i as u8))
+            .collect();
+        let mut t = timeline_at(Rect::new(0.0, 0.0, 400.0, 400.0), entries);
+        t.set_newest_first(true);
+        let ids: Vec<u8> = (0..t.visible_len())
+            .map(|i| t.visible_entry(i).unwrap().id.0[0])
+            .collect();
+        assert_eq!(
+            ids,
+            vec![4, 3, 2, 1, 0],
+            "the last change the producer emitted is the newest"
+        );
+
+        t.set_newest_first(false);
+        let ids: Vec<u8> = (0..t.visible_len())
+            .map(|i| t.visible_entry(i).unwrap().id.0[0])
+            .collect();
+        assert_eq!(ids, vec![0, 1, 2, 3, 4]);
     }
 
     #[test]
