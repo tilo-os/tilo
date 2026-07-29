@@ -62,13 +62,42 @@ const LIST_ROW_H: f64 = 88.0;
 /// "Refresh all" is in flight (and briefly after, as a summary).
 const REFRESH_STRIP_H: f64 = 52.0;
 
-/// Below this allocated width (logical px) the three panes stop fitting side
-/// by side: the subscriptions sidebar collapses to an overlay flap and the
-/// list + reader switch to single-pane master→detail push navigation. Above
-/// it the classic three-pane desktop layout is kept. Sized so the sidebar
-/// (256) + a usable article list (400) + a readable reader column still fit
-/// when docked.
-const NAV_BREAKPOINT: f64 = 820.0;
+/// At or above this width the three panes fit side by side (docked sidebar +
+/// article list + reader). Sized so the sidebar (256) + a usable article list
+/// (400) + a readable reader column (~344) all fit at once.
+const WIDE_BREAKPOINT: f64 = 1000.0;
+/// At or above this width (but below [`WIDE_BREAKPOINT`]) the sidebar stays
+/// docked (fixed) but only one content pane — the article list OR the reader —
+/// shares the remaining width, with a top-left Back returning reader→list.
+/// Below it the sidebar itself collapses to an overlay drawer. Sized so the
+/// docked sidebar (256) + a usable single content pane (~384) still fit.
+const MIDDLE_BREAKPOINT: f64 = 640.0;
+
+/// Which responsive tier the current width resolves to. Recomputed from the
+/// allocated width every geometry pass (never laid out once), per HIG §1/§7.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Tier {
+    /// Sidebar + list + reader, all docked side by side.
+    Wide,
+    /// Sidebar docked (fixed) + exactly one of {list, reader}; Back returns
+    /// reader→list.
+    Middle,
+    /// A single view stack (list→reader push) with the sidebar as an overlay
+    /// drawer.
+    Narrow,
+}
+
+impl Tier {
+    fn from_width(w: f64) -> Self {
+        if w >= WIDE_BREAKPOINT {
+            Tier::Wide
+        } else if w >= MIDDLE_BREAKPOINT {
+            Tier::Middle
+        } else {
+            Tier::Narrow
+        }
+    }
+}
 
 // ---------------------------------------------------------------------
 // Local geometry / interaction model
@@ -451,12 +480,25 @@ impl FeedsApp {
         app
     }
 
-    /// Resolve the navigation layout purely from the *allocated* width: wide
-    /// keeps the three panes docked side by side; narrow collapses the
-    /// subscriptions sidebar to an overlay flap and switches the list + reader
-    /// to single-pane master→detail push.
+    /// The responsive tier resolved from the current allocated width.
+    fn tier(&self) -> Tier {
+        Tier::from_width(self.rect.width())
+    }
+
+    /// Whether the content is a single pane showing one of {list, reader} at a
+    /// time (master→detail push). True at the middle and narrow tiers.
+    fn single_pane(&self) -> bool {
+        matches!(self.tier(), Tier::Middle | Tier::Narrow)
+    }
+
+    /// How the subscriptions sidebar flap resolves: docked beside the content
+    /// at the wide + middle tiers (fixed at middle), an overlay drawer at the
+    /// narrow tier. The [`FlapState`] easing is driven off this.
     fn nav_layout(&self) -> SplitLayout {
-        SplitLayout::from_width(self.rect.width(), NAV_BREAKPOINT)
+        match self.tier() {
+            Tier::Narrow => SplitLayout::Overlay,
+            Tier::Wide | Tier::Middle => SplitLayout::Docked,
+        }
     }
 
     /// Snap the subscriptions sidebar fully open/closed with no animation, so
@@ -623,9 +665,9 @@ impl FeedsApp {
         self.list_scroll = 0.0;
         self.ensure_selection();
         self.reader_scroll = 0.0;
-        // Changing the source in narrow mode returns to the list so the new
-        // selection is visible (the reader is pushed back on the next select).
-        if self.nav_layout() == SplitLayout::Overlay {
+        // In a single-pane tier, changing the source returns to the list so the
+        // new selection is visible (the reader is pushed back on the next select).
+        if self.single_pane() {
             self.detail_pushed = false;
         }
     }
@@ -636,14 +678,14 @@ impl FeedsApp {
         if self.store.mark_read(id, true) {
             FeedsDoc::set_read(doc, id, true);
         }
-        // Narrow master→detail: selecting from the list pushes the reader in.
-        if self.nav_layout() == SplitLayout::Overlay {
+        // Single-pane master→detail: selecting from the list pushes the reader in.
+        if self.single_pane() {
             self.detail_pushed = true;
         }
     }
 
     /// Return from the pushed reader (detail) to the article list (master) in
-    /// narrow master→detail navigation.
+    /// single-pane master→detail navigation.
     fn show_master(&mut self) {
         self.detail_pushed = false;
     }
@@ -1270,16 +1312,15 @@ impl FeedsApp {
 
     fn recompute_geometry(&mut self) {
         let r = self.rect;
-        let layout = self.nav_layout();
         let reveal = self.sidebar.reveal();
         // Sidebar can't be wider than the window (very narrow phones).
         let sw = SIDEBAR_W.min(r.width());
 
-        match layout {
-            SplitLayout::Docked => {
-                // Wide: the subscriptions sidebar is docked beside the content,
-                // which is inset by the eased width so it reveals/collapses
-                // smoothly. The list + reader sit side by side in the content.
+        match self.tier() {
+            Tier::Wide => {
+                // The subscriptions sidebar is docked beside the content, which
+                // is inset by the eased width so it reveals/collapses smoothly.
+                // The list + reader sit side by side in the content.
                 let inset = sw * reveal;
                 self.sidebar_rect = Rect::new(r.x0, r.y0, r.x0 + inset, r.y1);
                 let content_x0 = r.x0 + inset;
@@ -1295,22 +1336,23 @@ impl FeedsApp {
                     Rect::ZERO
                 };
             }
-            SplitLayout::Overlay => {
-                // Narrow: the content spans the full width and the subscriptions
-                // sidebar floats in over a scrim. Within the content, the list
-                // and reader are a single master→detail push — one fills the
-                // pane at a time.
+            Tier::Middle => {
+                // The sidebar stays docked and FIXED (always open, not
+                // collapsible), sharing the width with exactly one content pane.
+                // The list + reader are a master→detail push in that pane; a
+                // top-left Back returns reader→list.
+                self.sidebar_rect = Rect::new(r.x0, r.y0, r.x0 + sw, r.y1);
+                let content = Rect::new(r.x0 + sw, r.y0, r.x1, r.y1);
+                self.place_single_content(content);
+                self.scrim_rect = Rect::ZERO;
+                // No hamburger — the sidebar is fixed at this tier.
+                self.hamburger_rect = Rect::ZERO;
+            }
+            Tier::Narrow => {
+                // The content spans the full width as a single master→detail
+                // pane; the subscriptions sidebar floats in over a scrim.
                 let content = r;
-                self.toolbar_rect = Rect::new(content.x0, content.y0, content.x1, content.y0 + HEADER_H);
-                if self.detail_pushed {
-                    // Detail (reader) fills the content; list is parked off-pane.
-                    self.list_rect = Rect::new(content.x0 - content.width(), content.y0, content.x0, content.y1);
-                    self.reader_rect = content;
-                } else {
-                    // Master (list) fills the content; reader is parked off-pane.
-                    self.list_rect = content;
-                    self.reader_rect = Rect::new(content.x1, content.y0, content.x1 + content.width(), content.y1);
-                }
+                self.place_single_content(content);
                 // Sidebar slides in from the left edge by the eased reveal.
                 let slide = self.sidebar.slide();
                 let x0 = r.x0 - sw * (1.0 - slide);
@@ -1331,6 +1373,26 @@ impl FeedsApp {
         self.build_list_rows();
         self.build_toolbar();
         self.build_back_affordance();
+    }
+
+    /// Lay out the single content pane used at the middle + narrow tiers: the
+    /// toolbar spans the pane, and the list + reader are a master→detail push —
+    /// one fills the pane while the other is parked off to the side (so a
+    /// selection can slide the reader in and Back can slide it back out).
+    fn place_single_content(&mut self, content: Rect) {
+        self.toolbar_rect =
+            Rect::new(content.x0, content.y0, content.x1, content.y0 + HEADER_H);
+        if self.detail_pushed {
+            // Detail (reader) fills the content; list is parked off to the left.
+            self.list_rect =
+                Rect::new(content.x0 - content.width(), content.y0, content.x0, content.y1);
+            self.reader_rect = content;
+        } else {
+            // Master (list) fills the content; reader is parked off to the right.
+            self.list_rect = content;
+            self.reader_rect =
+                Rect::new(content.x1, content.y0, content.x1 + content.width(), content.y1);
+        }
     }
 
     /// Extra left margin for the sidebar's "Feeds" wordmark so it never sits
@@ -1361,10 +1423,10 @@ impl FeedsApp {
         Rect::new(x, cy - size / 2.0, x + size, cy + size / 2.0)
     }
 
-    /// In narrow master→detail mode, a Back chevron in the reader's header
-    /// returns to the list. Empty otherwise.
+    /// In a single-pane tier (middle + narrow), a Back chevron in the reader's
+    /// header returns to the list. Empty otherwise.
     fn build_back_affordance(&mut self) {
-        self.back_rect = if self.nav_layout() == SplitLayout::Overlay && self.detail_pushed {
+        self.back_rect = if self.single_pane() && self.detail_pushed {
             let size = 36.0;
             let x = self.reader_rect.x0 + 10.0;
             let cy = self.reader_rect.y0 + HEADER_H / 2.0;
@@ -1585,8 +1647,10 @@ impl FeedsApp {
         let c = &theme.tokens.colors;
         let base = c.surfaces.base;
         let sidebar_bg = c.neutral[0];
-        let layout = self.nav_layout();
-        let overlay = layout == SplitLayout::Overlay;
+        let tier = self.tier();
+        // The subscriptions sidebar is an overlay (scrim) drawer only at the
+        // narrow tier; docked (wide + middle) otherwise.
+        let overlay = tier == Tier::Narrow;
 
         // Base background covers the whole widget so an off-pane child never
         // shows through during a push slide.
@@ -1602,7 +1666,9 @@ impl FeedsApp {
             self.now, &self.filter_title(), self.store.count_for(self.filter), list_inset,
             &self.refresh,
         );
-        let reader_inset = if overlay && self.detail_pushed { 46.0 } else { 0.0 };
+        // The reader shifts right to clear the top-left Back button whenever it
+        // is the pushed single pane (middle + narrow).
+        let reader_inset = if self.single_pane() && self.detail_pushed { 46.0 } else { 0.0 };
         let palette = ReaderPalette::resolve(self.settings.theme, theme);
         let has_article = self.selected.and_then(|id| self.store.article(id)).is_some();
         let (links, open_rect, content_h) = draw_reader(
@@ -1623,9 +1689,10 @@ impl FeedsApp {
         self.reader_open_rect = open_rect;
         self.reader_content_h = content_h;
 
-        // The list/reader divider only exists in the wide three-pane layout.
+        // The list/reader divider only exists in the wide three-pane layout;
+        // the middle + narrow tiers show a single content pane at a time.
         let divider = alpha(c.border_standard, 150);
-        if !overlay {
+        if tier == Tier::Wide {
             vline(scene, t, self.list_rect.x1, self.rect.y0, self.rect.y1, divider);
         }
 
@@ -3176,7 +3243,7 @@ impl FeedsApp {
         }
 
         // Esc dismisses the responsive overlay sidebar, then unwinds a pushed
-        // detail back to the list (narrow master→detail).
+        // detail back to the list (single-pane master→detail).
         if matches!(&key_event.logical_key, Key::Named(NamedKey::Escape)) {
             if self.nav_layout() == SplitLayout::Overlay
                 && self.sidebar.is_open(SplitLayout::Overlay)
@@ -3185,7 +3252,7 @@ impl FeedsApp {
                 *handled = true;
                 return;
             }
-            if self.nav_layout() == SplitLayout::Overlay && self.detail_pushed {
+            if self.single_pane() && self.detail_pushed {
                 self.show_master();
                 *handled = true;
                 return;
