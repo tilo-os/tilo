@@ -477,16 +477,9 @@ mod tests {
     use crate::shell::state::{Workspace, WorkspaceId};
 
     fn empty_ws(id: u64) -> Workspace {
-        Workspace {
-            id: WorkspaceId(id),
-            name: "rd".into(),
-            strips: vec![],
-            roles: vec![],
-            workspace_files: vec![],
-            collaborators: vec![],
-            grants: HashMap::new(),
-            shared_surfaces: HashMap::new(),
-        }
+        // `Workspace` grew a durable room id, an owner and a capability
+        // list; the builder keeps this fixture from having to track them.
+        Workspace::test_default(WorkspaceId(id), "rd")
     }
 
     fn ctx_with(injector: RemoteInputInjectorHandle, resolver: PromptResolver) -> (PortalContext, WorkspaceId) {
