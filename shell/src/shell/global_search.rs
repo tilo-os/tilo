@@ -13,9 +13,10 @@
 use ui::widget::command_palette::{CommandEntry, CommandPalette};
 
 /// Alpha the shell overlay host tints the GlobalSearch palette surface
-/// with. Bumped from the original 0.70 after the 2026-07-09 legibility
-/// complaint — see [`crate::shell::overlay_host::MODAL_SURFACE_ALPHA`]
-/// for the full rationale. Kept in sync with that constant.
+/// with. Bumped from the concept's 0.70 to fully opaque after the
+/// 2026-07-09 legibility complaint — see
+/// [`crate::shell::overlay_host::MODAL_SURFACE_ALPHA`] for the full
+/// rationale. Kept in sync with that constant.
 pub const PALETTE_SURFACE_ALPHA: f32 = 1.0;
 
 /// Which slice of the command catalog the palette is focusing on.
@@ -72,11 +73,10 @@ impl GlobalSearch {
         &self.context
     }
 
-    /// Translucent-tint fallback alpha for the palette surface. See
-    /// [`PALETTE_SURFACE_ALPHA`] for background — the palette sits at
-    /// `bg-slate-900/70` over the desktop scrim, and losing this alpha
-    /// step would collapse the command palette back into an opaque flat
-    /// rectangle (visual-gap #3).
+    /// Tint alpha for the palette surface. See
+    /// [`PALETTE_SURFACE_ALPHA`] for background — the palette paints
+    /// solid slate-900 and gets its depth from the scrim beneath it, not
+    /// from letting the desktop through the card.
     pub fn surface_alpha() -> f32 {
         PALETTE_SURFACE_ALPHA
     }
