@@ -42,6 +42,14 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # them comes from the replicated capability list.
 DEMO_APP = "org.qos.Notes"
 DEMO_ACTION = "edit"
+# A path the filesystem capability covers. Two capabilities are granted
+# rather than one because they answer different questions and only one of
+# them is expressible in the Permissions tab: `Capability::from_capability`
+# maps filesystem / device / network scopes into the portal-shaped
+# descriptor the tab renders, and nothing else. So the workspace-scoped
+# grant is the one the action gate reads, and the path-scoped grant is the
+# one that shows up on screen with a Revoke button next to it.
+DEMO_PATH = "/var/workspace/shared"
 
 # How long to wait for a room change to cross. Replication is pulled on
 # a fixed cadence, so this is that cadence plus room for a slow frame.
@@ -233,6 +241,34 @@ class Session:
         self.settle()
         return selected
 
+    def open_permissions_tab(self) -> bool:
+        """Open workspace settings on its Permissions tab.
+
+        Returns whether the tab was reachable: the pill only paints when
+        the room has at least one grant the tab can express, so "no tab"
+        is itself an observation rather than a failure to click.
+        """
+        if not self.chrome()["overlays"]["ws_settings"]:
+            self.run_palette_command("workspace settings", expect_id="result:0")
+        if not self.chrome()["overlays"]["ws_settings"]:
+            return False
+        self.settle()
+        targets = {t["name"] for t in ok(call(self.sock, {"op": "list_targets"}))["targets"]}
+        if "ws_settings_tab[permissions]" not in targets:
+            return False
+        self.click("ws_settings_tab[permissions]")
+        return self.chrome()["ws_settings_tab"] == "Permissions"
+
+    def close_ws_settings(self) -> None:
+        while self.chrome()["overlays"]["ws_settings"]:
+            self.key("Escape")
+            self.settle(0.3)
+
+    def revoke_rects(self) -> list[str]:
+        return sorted(t["name"]
+                      for t in ok(call(self.sock, {"op": "list_targets"}))["targets"]
+                      if t["name"].startswith("permissions_revoke["))
+
     def toggle_overview(self) -> None:
         self.modifiers(ctrl=True)
         self.key("Tab")
@@ -400,19 +436,36 @@ def run(host: Session, peer: Session, shots: str) -> None:
 
     step("7.", "the host grants the capability")
     cap_id = "demo-notes-write"
+    fs_cap_id = "demo-notes-path"
     granted = host.grant(f"app:{DEMO_APP}", "workspace", "write", cap_id)
-    note(f"host grant -> {json.dumps(granted)}")
+    note(f"host grant (workspace scope) -> {json.dumps(granted)}")
     claim("the grant was recorded", granted.get("answer", {}).get("granted"), cap_id)
+    granted_fs = host.grant(f"app:{DEMO_APP}", f"fs:{DEMO_PATH}", "write", fs_cap_id)
+    note(f"host grant (path scope) -> {json.dumps(granted_fs)}")
+    claim("the path grant was recorded",
+          granted_fs.get("answer", {}).get("granted"), fs_cap_id)
+
     has_cap = wait_for(
-        lambda: any(c["id"] == cap_id
-                    for c in peer.active_workspace().get("capabilities") or []))
-    claim("the capability is in the peer's own list", bool(has_cap), True)
+        lambda: {c["id"] for c in peer.active_workspace().get("capabilities") or []}
+        >= {cap_id, fs_cap_id})
+    claim("both capabilities are in the peer's own list", bool(has_cap), True)
     after_grant = peer.check_action(f"app:{DEMO_APP}")
     note(f"peer check_action -> {json.dumps(after_grant)}")
     claim("the peer's own action gate now permits it",
           after_grant.get("answer", {}).get("permitted"), True)
-    host.snapshot(os.path.join(shots, "06-host-after-grant.png"))
-    peer.snapshot(os.path.join(shots, "07-peer-after-grant.png"))
+
+    # On screen, on the peer's machine: the Permissions tab lists the
+    # grant that arrived over the wire. This is the one place the chrome
+    # paints a replicated capability, so it is the screenshot that shows
+    # the sync rather than merely showing a running desktop.
+    claim("the peer's Permissions tab is reachable", peer.open_permissions_tab(), True)
+    peer_rows = peer.revoke_rects()
+    note(f"peer permissions rows: {peer_rows}")
+    claim("the peer's tab lists the granted app",
+          any(DEMO_APP in r for r in peer_rows), True)
+    peer.snapshot(os.path.join(shots, "07-peer-permissions-after-grant.png"))
+    host.open_permissions_tab()
+    host.snapshot(os.path.join(shots, "06-host-permissions-after-grant.png"))
 
     step("8.", "the peer tries to administer the room, and is refused")
     peer_grant = peer.grant("app:org.qos.Rogue", "workspace", "admin")
@@ -431,10 +484,33 @@ def run(host: Session, peer: Session, shots: str) -> None:
                         and "Rogue" in json.dumps(c.get("subject"))
                         for c in host.active_workspace().get("capabilities") or [])
     claim("nothing the peer asked for reached the host", rogue_on_host, False)
+    peer.snapshot(os.path.join(shots, "07b-peer-revoke-disabled.png"))
 
     step("9.", "the host revokes, and the peer stops being able to")
+    # The path-scoped grant is revoked by clicking the Revoke button in
+    # the host's own Permissions tab — the affordance a user has.
+    host_rows = host.revoke_rects()
+    note(f"host permissions rows: {host_rows}")
+    target = next((r for r in host_rows if DEMO_APP in r), None)
+    claim("the host's tab offers a Revoke button for it", bool(target), True)
+    if target:
+        host.click(target)
+        host.settle()
+    claim("the path capability is gone from the host's list",
+          all(c["id"] != fs_cap_id
+              for c in host.active_workspace().get("capabilities") or []), True)
+    fs_gone = wait_for(
+        lambda: all(c["id"] != fs_cap_id
+                    for c in peer.active_workspace().get("capabilities") or []))
+    claim("and gone from the peer's own list too", bool(fs_gone), True)
+    host.snapshot(os.path.join(shots, "08b-host-permissions-after-revoke.png"))
+    host.close_ws_settings()
+
+    # The workspace-scoped grant has no Permissions-tab row to click —
+    # the tab only renders filesystem / device / network scopes — so it
+    # goes back through `Workspace::revoke_as`.
     revoked = host.revoke(cap_id)
-    note(f"host revoke -> {json.dumps(revoked)}")
+    note(f"host revoke (workspace scope) -> {json.dumps(revoked)}")
     claim("the host's revoke succeeded",
           revoked.get("answer", {}).get("revoked"), True)
     gone = wait_for(
@@ -445,8 +521,13 @@ def run(host: Session, peer: Session, shots: str) -> None:
     note(f"peer check_action -> {json.dumps(after_revoke)}")
     claim("the peer's own action gate denies it again",
           after_revoke.get("answer", {}).get("permitted"), False)
+    # Snapshot the peer while its settings modal is still up: the row
+    # that was there in shot 07 is gone, and the Permissions pill with
+    # it, because the room no longer holds a grant the tab can express.
+    peer.snapshot(os.path.join(shots, "09-peer-permissions-after-revoke.png"))
+    note(f"peer permissions rows after revoke: {peer.revoke_rects()}")
+    peer.close_ws_settings()
     host.snapshot(os.path.join(shots, "08-host-after-revoke.png"))
-    peer.snapshot(os.path.join(shots, "09-peer-after-revoke.png"))
 
 
 def peer_id_of(s: Session) -> str:
