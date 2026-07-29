@@ -46,7 +46,7 @@ use crate::content::load_library;
 use crate::doc::BooksDoc;
 use crate::model::{
     default_fonts, default_schemes, now_ms, AnnoKind, Annotation, Book, ColorScheme, FontEntry,
-    FontKind, HiColor, Progress, ReadTheme, Settings,
+    FontKind, HiColor, Progress, ReadMode, ReadTheme, Settings,
 };
 use crate::paginate::{font_choice, layout_chapter, ChapterLayout, LayoutKey, LayoutKind};
 use crate::paint;
@@ -186,6 +186,44 @@ struct SelRun {
     y1: f64,
     cs: usize,
     cl: usize,
+    /// Which on-screen column this run was painted in. Two facing pages in the
+    /// spread ([`ReadMode::TwoUp`]) map different flow lines to the *same*
+    /// screen-y, so pointer→[`DocPos`] hit-testing groups a visual line by
+    /// column as well as by y — otherwise a click near the gutter could snap to
+    /// the wrong page.
+    col: u8,
+}
+
+/// One on-screen reading column: where the flow slice lands ([`Self::x`],
+/// [`Self::y`], [`Self::w`]) and which flow band it shows
+/// (`win_start..win_end`). Paged draws one; the two-up spread draws two; the
+/// continuous mode draws one `partial` pane (partially-visible lines allowed,
+/// clipped to the content box).
+struct Pane {
+    x: f64,
+    y: f64,
+    w: f32,
+    win_start: f32,
+    win_end: f32,
+    col: u8,
+    /// Include partially-visible lines at the window edges (continuous scroll),
+    /// vs. a strict page slice where every line belongs to exactly one page.
+    partial: bool,
+}
+
+impl Pane {
+    /// Whether a line at flow-y `ly` with height `lh` shows in this pane.
+    fn shows(&self, ly: f32, lh: f32) -> bool {
+        if self.partial {
+            ly + lh > self.win_start && ly < self.win_end
+        } else {
+            ly >= self.win_start - 0.5 && ly < self.win_end
+        }
+    }
+    /// Screen-y for a flow-y within this pane.
+    fn screen_y(&self, ly: f32) -> f64 {
+        self.y + (ly - self.win_start) as f64
+    }
 }
 
 /// Everything a click or key can ask the app to do.
@@ -214,6 +252,8 @@ enum Action {
     /// Select a registered font by id (quick-settings font pill).
     SetFont(String),
     SetReadTheme(ReadTheme),
+    /// Switch the page layout (single page / continuous scroll / two-up spread).
+    SetMode(ReadMode),
     /// Apply/toggle/replace a highlight colour over the current text selection.
     SetColor(HiColor),
     /// Begin typing a numeric value directly (text size / line spacing / a
@@ -471,6 +511,18 @@ pub struct BooksApp {
     /// Accumulated horizontal swipe travel (px) for trackpad/touch page turns.
     swipe_accum: f64,
 
+    /// Continuous-scroll offset (logical px) into the current chapter's flow.
+    /// Only meaningful in [`ReadMode::Continuous`]; paged/two-up drive `page`
+    /// instead. Clamped each frame to `[0, total_height - viewport]`.
+    scroll_y: f64,
+    /// The current chapter's `(total_flow_height, viewport_height)` in logical
+    /// px, recorded each `draw` so the wheel/keys can clamp a continuous scroll
+    /// (which runs before the next layout) without re-measuring.
+    flow_extent: (f64, f64),
+    /// After a backward chapter roll in continuous mode, land at the foot of the
+    /// new chapter once it has been laid out (mirrors `pending_last_page`).
+    pending_scroll_end: bool,
+
     // --- caches pulled from the CRDT (refreshed in sync / after events) ----
     settings: Settings,
     /// The registered fonts (built-ins + user-added), read from the CRDT.
@@ -603,6 +655,9 @@ impl BooksApp {
             pending_last_page: false,
             pending_jump_block: None,
             swipe_accum: 0.0,
+            scroll_y: 0.0,
+            flow_extent: (0.0, 0.0),
+            pending_scroll_end: false,
             settings: Settings::default(),
             fonts: default_fonts(),
             default_font_id: String::new(),
@@ -1087,6 +1142,30 @@ impl BooksApp {
         self.last_persisted = Some((self.chapter, self.page));
     }
 
+    /// Move the continuous-scroll offset by `delta` logical px, rolling into the
+    /// neighbouring chapter when the scroll runs off either end so the book
+    /// reads as one uninterrupted column. Clamped against the flow extent
+    /// recorded on the last frame.
+    fn scroll_continuous(&mut self, delta: f64) {
+        let (total_h, view_h) = self.flow_extent;
+        let max_scroll = (total_h - view_h).max(0.0);
+        let target = self.scroll_y + delta;
+        if target < -0.5 && self.chapter > 0 {
+            self.chapter -= 1;
+            self.selected_block = None;
+            self.pending_scroll_end = true;
+            self.scroll_y = 0.0;
+            self.layout = None;
+        } else if target > max_scroll + 0.5 && self.chapter + 1 < self.num_chapters() {
+            self.chapter += 1;
+            self.selected_block = None;
+            self.scroll_y = 0.0;
+            self.layout = None;
+        } else {
+            self.scroll_y = target.clamp(0.0, max_scroll);
+        }
+    }
+
     // ======================================================================
     // Action dispatch (event side — has the document)
     // ======================================================================
@@ -1118,9 +1197,15 @@ impl BooksApp {
             }
             Action::NextPage => {
                 self.comment_group = None;
+                if self.settings.mode.is_continuous() {
+                    // A "page" in continuous mode is a viewport-height scroll.
+                    self.scroll_continuous(self.flow_extent.1 * 0.9);
+                    return;
+                }
+                let stride = self.settings.mode.page_stride();
                 let pc = self.cur_page_count.max(1);
-                if self.page + 1 < pc {
-                    self.page += 1;
+                if self.page + stride < pc {
+                    self.page += stride;
                 } else if self.chapter + 1 < self.num_chapters() {
                     self.chapter += 1;
                     self.page = 0;
@@ -1130,12 +1215,35 @@ impl BooksApp {
             }
             Action::PrevPage => {
                 self.comment_group = None;
-                if self.page > 0 {
-                    self.page -= 1;
+                if self.settings.mode.is_continuous() {
+                    self.scroll_continuous(-self.flow_extent.1 * 0.9);
+                    return;
+                }
+                let stride = self.settings.mode.page_stride();
+                if self.page >= stride {
+                    self.page -= stride;
+                } else if self.page > 0 {
+                    // A spread whose left column is page 1: step to the cover.
+                    self.page = 0;
                 } else if self.chapter > 0 {
                     self.chapter -= 1;
                     self.selected_block = None;
                     self.pending_last_page = true;
+                    self.layout = None;
+                }
+            }
+            Action::SetMode(mode) => {
+                // Preserve the reading position across the switch: entering
+                // continuous scroll lands on the current page's flow offset;
+                // leaving it snaps back to the nearest page (resolved in draw).
+                if self.settings.mode != mode {
+                    if mode.is_continuous() && !self.settings.mode.is_continuous() {
+                        if let Some(l) = self.layout.as_ref() {
+                            self.scroll_y = l.pages.get(self.page).copied().unwrap_or(0.0) as f64;
+                        }
+                    }
+                    self.bump_setting(doc, |s| s.mode = mode);
+                    // Two-up halves the column width → relayout on the next draw.
                     self.layout = None;
                 }
             }
@@ -1986,15 +2094,36 @@ impl BooksApp {
                 (p.y - r.y0).abs().min((p.y - r.y1).abs())
             }
         };
+        // Horizontal distance from the point to a run's x-span (0 when inside).
+        let hdist = |r: &SelRun| -> f64 {
+            if p.x < r.x0 {
+                r.x0 - p.x
+            } else if p.x > r.x1 {
+                p.x - r.x1
+            } else {
+                0.0
+            }
+        };
+        // In a two-up spread the two facing pages map different flow lines to the
+        // *same* screen-y, so vertical distance alone can't tell the columns
+        // apart. Pick the nearest run by vertical distance, breaking exact ties
+        // (both pages' top lines share a screen-y) by horizontal proximity, then
+        // group the visual line within that run's column.
         let target = self
             .sel_runs
             .iter()
-            .min_by(|a, b| vdist(a).partial_cmp(&vdist(b)).unwrap_or(std::cmp::Ordering::Equal))?;
+            .min_by(|a, b| match vdist(a).partial_cmp(&vdist(b)) {
+                Some(std::cmp::Ordering::Equal) | None => {
+                    hdist(a).partial_cmp(&hdist(b)).unwrap_or(std::cmp::Ordering::Equal)
+                }
+                Some(o) => o,
+            })?;
         let ty0 = target.y0;
+        let tcol = target.col;
         let mut line: Vec<&SelRun> = self
             .sel_runs
             .iter()
-            .filter(|r| (r.y0 - ty0).abs() < 0.5)
+            .filter(|r| (r.y0 - ty0).abs() < 0.5 && r.col == tcol)
             .collect();
         line.sort_by(|a, b| a.x0.partial_cmp(&b.x0).unwrap_or(std::cmp::Ordering::Equal));
         let first = line.first()?;
@@ -3006,6 +3135,13 @@ impl BooksApp {
                 if self.type_popover || self.composing.is_some() {
                     return false;
                 }
+                // Continuous mode scrolls the flow by pixels instead of turning
+                // whole pages — the wheel delta drives the column directly.
+                if self.settings.mode.is_continuous() {
+                    let before = (self.chapter, self.scroll_y);
+                    self.scroll_continuous(dy * 1.4);
+                    return (self.chapter, self.scroll_y) != before;
+                }
                 self.turn_accum += dy;
                 let mut turned = false;
                 while self.turn_accum >= TURN_STEP_PX {
@@ -3829,10 +3965,24 @@ impl BooksApp {
             let paper_h = (body_y1 - body_y0).max(120.0);
             (paper_x, paper_y, paper_w, paper_h, 22.0, 24.0, 30.0)
         };
-        let content_x = paper_x + pad_x;
+        let mode = self.settings.mode;
+        let full_content_x = paper_x + pad_x;
+        let full_content_w = (paper_w - 2.0 * pad_x).max(60.0) as f32;
         let content_y = paper_y + pad_top;
-        let content_w = (paper_w - 2.0 * pad_x).max(60.0) as f32;
         let content_h = (paper_h - pad_top - pad_bot).max(60.0) as f32;
+        // A spread lays each page out in half the width (minus a centre gutter);
+        // paged/continuous use the full column. The pagination width must match
+        // the column the pages are shown in, so the layout key carries it.
+        let gutter: f64 = if framed { 48.0 } else { 30.0 };
+        let column_w = if mode == ReadMode::TwoUp {
+            (((full_content_w as f64 - gutter) / 2.0).max(80.0)) as f32
+        } else {
+            full_content_w
+        };
+        // The header + progress bar use the left column origin; `content_w` is
+        // the per-column layout width.
+        let content_x = full_content_x;
+        let content_w = column_w;
 
         // ---- (re)compute the chapter layout -----------------------------
         let (base_family, font_mult, font_sig, base_mono) = self.body_font();
@@ -3869,21 +4019,74 @@ impl BooksApp {
             self.page = page_for_block(&layout, jb);
         }
         self.page = self.page.min(layout.page_count().saturating_sub(1));
+        // Spreads align to an even left page so a spread is always (2k, 2k+1).
+        if mode == ReadMode::TwoUp {
+            self.page -= self.page % 2;
+        }
 
-        let page_start = layout.pages.get(self.page).copied().unwrap_or(0.0);
-        let page_end = layout
-            .pages
-            .get(self.page + 1)
-            .copied()
-            .unwrap_or(layout.total_height + 1.0);
+        // Record the flow extent so a continuous scroll (which runs before the
+        // next layout) can clamp itself, and resolve a pending end-scroll after
+        // a backward chapter roll. Keep `page` synced to the scroll so progress
+        // and the page locator stay meaningful.
+        self.flow_extent = (layout.total_height as f64, content_h as f64);
+        if mode.is_continuous() {
+            let max_scroll = (layout.total_height as f64 - content_h as f64).max(0.0);
+            if self.pending_scroll_end {
+                self.scroll_y = max_scroll;
+                self.pending_scroll_end = false;
+            }
+            self.scroll_y = self.scroll_y.clamp(0.0, max_scroll);
+            self.page = layout
+                .pages
+                .iter()
+                .rposition(|&py| py as f64 <= self.scroll_y + 0.5)
+                .unwrap_or(0);
+        } else {
+            self.pending_scroll_end = false;
+        }
 
-        // first visible block → bookmark target
-        self.page_top_block = layout
-            .blocks
-            .iter()
-            .find(|b| b.lines.iter().any(|l| l.y >= page_start - 0.5 && l.y < page_end))
-            .map(|b| b.index)
-            .unwrap_or(0);
+        // ---- the on-screen reading columns (panes) ----------------------
+        let win_for = |p: usize| -> (f32, f32) {
+            let s = layout.pages.get(p).copied().unwrap_or(layout.total_height + 1.0);
+            let e = layout.pages.get(p + 1).copied().unwrap_or(layout.total_height + 1.0);
+            (s, e)
+        };
+        let mut panes: Vec<Pane> = Vec::new();
+        match mode {
+            ReadMode::Continuous => panes.push(Pane {
+                x: full_content_x,
+                y: content_y,
+                w: column_w,
+                win_start: self.scroll_y as f32,
+                win_end: self.scroll_y as f32 + content_h,
+                col: 0,
+                partial: true,
+            }),
+            ReadMode::TwoUp => {
+                let (ls, le) = win_for(self.page);
+                panes.push(Pane { x: full_content_x, y: content_y, w: column_w, win_start: ls, win_end: le, col: 0, partial: false });
+                if self.page + 1 < layout.page_count() {
+                    let (rs, re) = win_for(self.page + 1);
+                    let rx = full_content_x + column_w as f64 + gutter;
+                    panes.push(Pane { x: rx, y: content_y, w: column_w, win_start: rs, win_end: re, col: 1, partial: false });
+                }
+            }
+            ReadMode::Paged => {
+                let (s, e) = win_for(self.page);
+                panes.push(Pane { x: full_content_x, y: content_y, w: column_w, win_start: s, win_end: e, col: 0, partial: false });
+            }
+        }
+
+        // first visible block on the top-left pane → bookmark target
+        self.page_top_block = {
+            let (ts, te) = (panes[0].win_start, panes[0].win_end);
+            layout
+                .blocks
+                .iter()
+                .find(|b| b.lines.iter().any(|l| l.y >= ts - 0.5 && l.y < te))
+                .map(|b| b.index)
+                .unwrap_or(0)
+        };
 
         // ---- page surface ------------------------------------------------
         let paper = Rect::new(paper_x, paper_y, paper_x + paper_w, paper_y + paper_h);
@@ -3925,155 +4128,45 @@ impl BooksApp {
             );
         }
 
-        // ---- highlight bands + margin glyphs (behind text) --------------
+        // ---- draw each reading column (margins → selection bands → text) -
         let chapter = self.chapter;
-        // Screen-y of the selected block's top, if it is on this page — used to
-        // anchor the floating selection toolbar.
-        let mut sel_anchor: Option<f64> = None;
-        for b in &layout.blocks {
-            let visible: Vec<&crate::paginate::LaidLine> = b
-                .lines
-                .iter()
-                .filter(|l| l.y >= page_start - 0.5 && l.y < page_end)
-                .collect();
-            if visible.is_empty() {
-                continue;
-            }
-            let by0 = content_y + (visible.first().unwrap().y - page_start) as f64 - 3.0;
-            let by1 = content_y + (visible.last().unwrap().y - page_start) as f64 + b.line_height as f64;
-
-            // Note + bookmark margins (behind the glyphs). Highlights — now
-            // always ranged — are painted as continuous bands in the selection
-            // pass below, filling the spaces between words.
-            for a in annos.iter().filter(|a| a.chapter == chapter && a.block == b.index) {
-                match a.kind {
-                    AnnoKind::Highlight => {}
-                    AnnoKind::Note => {
-                        // faint band + accent left bar + margin glyph
-                        let band = Rect::new(content_x + b.indent as f64 - 4.0, by0, content_x + content_w as f64, by1);
-                        paint::fill_round(scene, t, band, 4.0, palette.highlight_fill(a.color).with_alpha_factor(0.5));
-                        let bar = Rect::new(content_x + b.indent as f64 - 10.0, by0, content_x + b.indent as f64 - 6.0, by1);
-                        paint::fill_rect(scene, t, bar, ReaderPalette::highlight_swatch(a.color));
-                        let gx = paper_x + paper_w - 30.0;
-                        paint::note(scene, t, Rect::new(gx, by0, gx + 20.0, by0 + 20.0), palette.ink_dim, 1.6);
-                    }
-                    AnnoKind::Bookmark => {
-                        let gx = paper_x + paper_w - 30.0;
-                        paint::bookmark(
-                            scene,
-                            t,
-                            Rect::new(gx, by0 - 2.0, gx + 20.0, by0 + 22.0),
-                            theme.accent_primary,
-                            1.6,
-                            true,
-                        );
-                    }
-                }
-            }
-        }
-
-        // ---- selection pass: run geometry + selection / ranged-highlight
-        // bands, painted behind the glyphs. Rebuilds `sel_runs` for pointer
-        // hit-testing and records the page's first/last doc position. ------
         self.reader_body = (body_y0, body_y1);
         self.sel_runs.clear();
         self.hi_bands.clear();
         self.page_first_doc = None;
         self.page_last_doc = None;
-        // Accumulate the on-page bounds of the highlight whose comment overlay is
-        // open, so the popover can anchor to the exact glyphs of the range.
         let comment_group = self.comment_group;
-        let mut comment_box: Option<(f64, f64, f64, f64)> = None;
         let sel_ord = self.sel.filter(|s| !s.is_empty()).map(|s| s.ordered());
-        let ranged: Vec<&Annotation> = annos
-            .iter()
-            .filter(|a| a.chapter == chapter && a.kind == AnnoKind::Highlight && a.start < a.end)
-            .collect();
-        for b in &layout.blocks {
-            if matches!(b.kind, LayoutKind::Separator) {
-                continue;
+        // Screen (x, y) of the first selected band, if any — anchors the HUD.
+        let mut sel_anchor: Option<(f64, f64)> = None;
+        // On-page bounds of the highlight whose comment overlay is open.
+        let mut comment_box: Option<(f64, f64, f64, f64)> = None;
+        for pane in &panes {
+            if pane.partial {
+                // Continuous scroll shows partial lines at the edges — clip them
+                // to the content box so nothing bleeds into header/footer chrome.
+                let clip = Rect::new(
+                    pane.x - 8.0,
+                    content_y - 2.0,
+                    pane.x + pane.w as f64 + 8.0,
+                    content_y + content_h as f64 + 2.0,
+                );
+                scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &RoundedRect::from_rect(clip, 2.0));
             }
-            let indent = b.indent as f64;
-            // Highlights that touch this block, in creation order.
-            let block_ranged: Vec<&Annotation> =
-                ranged.iter().copied().filter(|a| a.block == b.index).collect();
-            for l in &b.lines {
-                if l.y < page_start - 0.5 || l.y >= page_end {
-                    continue;
-                }
-                let ly = content_y + (l.y - page_start) as f64;
-                let lh = b.line_height as f64;
-                // Per-line selection band extent + one continuous span per
-                // highlight — accumulated across runs so the band fills the
-                // spaces *between* words rather than only the glyphs.
-                let mut sel_band: Option<(f64, f64)> = None;
-                let mut hi_span: Vec<Option<(f64, f64)>> = vec![None; block_ranged.len()];
-                for run in &l.runs {
-                    let weight = if run.bold { TextWeight::Bold } else { TextWeight::Regular };
-                    let fam = if run.mono || base_mono { FontChoice::Monospace } else { base_family.clone() };
-                    let (w, _) = tr.measure_font(&run.text, b.size, None, weight, run.italic, &fam);
-                    let x0 = content_x + indent + run.x as f64;
-                    let x1 = x0 + w as f64;
-                    self.sel_runs.push(SelRun { block: b.index, x0, x1, y0: ly, y1: ly + lh, cs: run.char_start, cl: run.char_len });
-                    if self.page_first_doc.is_none() {
-                        self.page_first_doc = Some(DocPos { block: b.index, ch: run.char_start });
-                    }
-                    self.page_last_doc = Some(DocPos { block: b.index, ch: run.char_start + run.char_len });
-                    let run_end = run.char_start + run.char_len;
-                    let grow = |acc: &mut Option<(f64, f64)>, bx0: f64, bx1: f64| {
-                        *acc = Some(match *acc {
-                            Some((a, b2)) => (a.min(bx0), b2.max(bx1)),
-                            None => (bx0, bx1),
-                        });
-                    };
-                    // Selection sub-range within this run.
-                    if let Some((s, e)) = sel_ord {
-                        if b.index >= s.block && b.index <= e.block {
-                            let lo = if b.index == s.block { s.ch.max(run.char_start) } else { run.char_start };
-                            let hi = if b.index == e.block { e.ch.min(run_end) } else { run_end };
-                            if lo < hi {
-                                let (bx0, bx1) = run_sub_x(x0, w as f64, run.char_start, run.char_len, lo, hi);
-                                grow(&mut sel_band, bx0, bx1);
-                                if sel_anchor.is_none() {
-                                    sel_anchor = Some(ly);
-                                }
-                            }
-                        }
-                    }
-                    // Accumulate each highlight's covered x-span on this line.
-                    for (i, a) in block_ranged.iter().enumerate() {
-                        let lo = a.start.max(run.char_start);
-                        let hi = a.end.min(run_end);
-                        if lo < hi {
-                            let (bx0, bx1) = run_sub_x(x0, w as f64, run.char_start, run.char_len, lo, hi);
-                            grow(&mut hi_span[i], bx0, bx1);
-                        }
-                    }
-                }
-                // One continuous highlight band per annotation (fills word gaps).
-                for (i, a) in block_ranged.iter().enumerate() {
-                    if let Some((mnx, mxx)) = hi_span[i] {
-                        let band = Rect::new(mnx - 2.0, ly - 1.0, mxx + 2.0, ly + lh - 2.0);
-                        paint::fill_round(scene, t, band, 4.0, palette.highlight_fill(a.color));
-                        self.hi_bands.push(band);
-                        if comment_group == Some(a.group) {
-                            comment_box = Some(match comment_box {
-                                Some((x0, y0, x1, y1)) => (
-                                    x0.min(band.x0),
-                                    y0.min(band.y0),
-                                    x1.max(band.x1),
-                                    y1.max(band.y1),
-                                ),
-                                None => (band.x0, band.y0, band.x1, band.y1),
-                            });
-                        }
-                    }
-                }
-                // Live selection band drawn on top of any committed highlight.
-                if let Some((mnx, mxx)) = sel_band {
-                    let band = Rect::new(mnx - 2.0, ly - 1.0, mxx + 2.0, ly + lh - 2.0);
-                    paint::fill_round(scene, t, band, 3.0, palette.accent.with_alpha_factor(0.30));
-                }
+            let (a, cb) = self.draw_pane(
+                scene, t, tr, &layout, &annos, &palette, &base_family, base_mono, chapter, sel_ord, comment_group, pane, theme,
+            );
+            if pane.partial {
+                scene.pop_layer();
+            }
+            if sel_anchor.is_none() {
+                sel_anchor = a;
+            }
+            if let Some(cb) = cb {
+                comment_box = Some(match comment_box {
+                    Some((x0, y0, x1, y1)) => (x0.min(cb.0), y0.min(cb.1), x1.max(cb.2), y1.max(cb.3)),
+                    None => cb,
+                });
             }
         }
         self.comment_anchor = comment_box;
@@ -4090,96 +4183,20 @@ impl BooksApp {
             }
         }
 
-        // ---- text + decorations (on top of bands) -----------------------
-        for b in &layout.blocks {
-            // quote bar / separator rule
-            match b.kind {
-                LayoutKind::Quote => {
-                    let visible: Vec<&crate::paginate::LaidLine> = b
-                        .lines
-                        .iter()
-                        .filter(|l| l.y >= page_start - 0.5 && l.y < page_end)
-                        .collect();
-                    if let (Some(f), Some(la)) = (visible.first(), visible.last()) {
-                        let y0 = content_y + (f.y - page_start) as f64;
-                        let y1 = content_y + (la.y - page_start) as f64 + b.line_height as f64;
-                        let bar = Rect::new(content_x + 10.0, y0, content_x + 13.5, y1);
-                        paint::fill_rect(scene, t, bar, palette.rule);
-                    }
-                }
-                LayoutKind::Separator => {
-                    if b.top >= page_start - 0.5 && b.top < page_end {
-                        let cy = content_y + (b.top - page_start) as f64 + b.line_height as f64 / 2.0;
-                        let cx = content_x + content_w as f64 / 2.0;
-                        paint::line(
-                            scene,
-                            t,
-                            Point::new(cx - 28.0, cy),
-                            Point::new(cx + 28.0, cy),
-                            palette.rule,
-                            1.4,
-                        );
-                    }
-                }
-                _ => {}
-            }
-
-            // bullet
-            if let Some(bullet) = &b.bullet {
-                if let Some(first) = b.lines.iter().find(|l| l.y >= page_start - 0.5 && l.y < page_end) {
-                    let ly = content_y + (first.y - page_start) as f64;
-                    tr.draw_text(
-                        scene,
-                        bullet,
-                        b.size,
-                        palette.ink_dim,
-                        t * Affine::translate((content_x + b.indent as f64 - 20.0, ly)),
-                        None,
-                    );
-                }
-            }
-
-            for l in &b.lines {
-                if l.y < page_start - 0.5 || l.y >= page_end {
-                    continue;
-                }
-                let ly = content_y + (l.y - page_start) as f64;
-                for run in &l.runs {
-                    let mono = run.mono || base_mono;
-                    let weight = if run.bold { TextWeight::Bold } else { TextWeight::Regular };
-                    let x = content_x + b.indent as f64 + run.x as f64;
-                    let fam = if mono { FontChoice::Monospace } else { base_family.clone() };
-                    // inline-code chip
-                    if run.mono && !base_mono {
-                        let (cw, _) = tr.measure_styled(&run.text, b.size, None, weight, run.italic, true);
-                        let chip = Rect::new(x - 3.0, ly - 1.0, x + cw as f64 + 3.0, ly + b.size as f64 + 3.0);
-                        paint::fill_round(scene, t, chip, 3.0, palette.code_bg);
-                    }
-                    tr.draw_text_font(
-                        scene,
-                        &run.text,
-                        b.size,
-                        palette.ink,
-                        t * Affine::translate((x, ly)),
-                        None,
-                        weight,
-                        run.italic,
-                        &fam,
-                    );
-                }
-            }
-        }
-
         // ---- page footer -------------------------------------------------
-        // The page stays clean: only a thin book-progress bar. The page/chapter
-        // locators live in the bottom chrome bar, so an on-page "Page X · Chapter
-        // Y" footer would just duplicate them next to this bar.
+        // The page stays clean: only a thin book-progress bar spanning the full
+        // page width. The page/chapter locators live in the bottom chrome bar.
         let frac = if nchap > 0 {
-            (self.chapter as f32 + (self.page as f32 + 1.0) / layout.page_count() as f32) / nchap as f32
+            let in_ch = if mode.is_continuous() {
+                (self.scroll_y as f32 + content_h) / layout.total_height.max(1.0)
+            } else {
+                (self.page as f32 + mode.page_stride() as f32) / layout.page_count() as f32
+            };
+            ((self.chapter as f32 + in_ch.min(1.0)) / nchap as f32).clamp(0.0, 1.0)
         } else {
             0.0
         };
-        let pbar = Rect::new(content_x, paper_y + paper_h - 16.0, content_x + content_w as f64, paper_y + paper_h - 13.0);
+        let pbar = Rect::new(full_content_x, paper_y + paper_h - 16.0, full_content_x + full_content_w as f64, paper_y + paper_h - 13.0);
         paint::progress(scene, t, pbar, frac, palette.rule, palette.accent);
 
         // restore the layout cache (key drives reuse next frame)
@@ -4192,11 +4209,11 @@ impl BooksApp {
         self.draw_reader_topbar(scene, t, tr, theme, &lib, &c);
         self.draw_reader_bottombar(scene, t, tr, theme, &c, nchap.max(1));
         // Floating selection toolbar over the page (under any overlay rail).
-        self.draw_selection_hud(scene, t, tr, theme, &c, paper_x, paper_w, body_y0, sel_anchor);
+        self.draw_selection_hud(scene, t, tr, theme, &c, paper_x, paper_w, body_y0, body_y1, sel_anchor);
         self.draw_rails(scene, t, tr, theme, &lib, body_y0, body_y1, &c);
         // The on-page note composer (anchored near the passage) floats over the
         // page instead of shunting note-writing off to a separate screen.
-        self.draw_note_composer(scene, t, tr, theme, &c, sel_anchor);
+        self.draw_note_composer(scene, t, tr, theme, &c, sel_anchor.map(|(_, y)| y));
         // The floating comment overlay for a clicked highlight (its own composer
         // lives inside it, so the standalone note composer above stands down).
         self.draw_comment_overlay(scene, t, tr, theme, &c);
@@ -4204,6 +4221,202 @@ impl BooksApp {
         self.draw_type_popover(scene, t, tr, theme, &c);
 
         self.library = lib;
+    }
+
+    /// Draw one reading column: the note/bookmark margins, the selection +
+    /// ranged-highlight bands (rebuilding `sel_runs` for pointer hit-testing),
+    /// and the glyphs. Shared by all three modes — paged/two-up call it once per
+    /// page slice, continuous calls it once over the scrolled window. Returns
+    /// the first selected band's screen `(x, y)` (to anchor the HUD) and the
+    /// on-page bounds of the open comment overlay's highlight, if any.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_pane(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        layout: &ChapterLayout,
+        annos: &[Annotation],
+        palette: &ReaderPalette,
+        base_family: &FontChoice,
+        base_mono: bool,
+        chapter: usize,
+        sel_ord: Option<(DocPos, DocPos)>,
+        comment_group: Option<Uuid>,
+        pane: &Pane,
+        theme: &Theme,
+    ) -> (Option<(f64, f64)>, Option<(f64, f64, f64, f64)>) {
+        let content_x = pane.x;
+        let content_w = pane.w;
+        let mut sel_anchor: Option<(f64, f64)> = None;
+        let mut comment_box: Option<(f64, f64, f64, f64)> = None;
+
+        // ---- note bands + bookmark glyphs (behind text) -----------------
+        for b in &layout.blocks {
+            let visible: Vec<&crate::paginate::LaidLine> =
+                b.lines.iter().filter(|l| pane.shows(l.y, b.line_height)).collect();
+            if visible.is_empty() {
+                continue;
+            }
+            let by0 = pane.screen_y(visible.first().unwrap().y) - 3.0;
+            let by1 = pane.screen_y(visible.last().unwrap().y) + b.line_height as f64;
+            for a in annos.iter().filter(|a| a.chapter == chapter && a.block == b.index) {
+                match a.kind {
+                    AnnoKind::Highlight => {}
+                    AnnoKind::Note => {
+                        let band = Rect::new(content_x + b.indent as f64 - 4.0, by0, content_x + content_w as f64, by1);
+                        paint::fill_round(scene, t, band, 4.0, palette.highlight_fill(a.color).with_alpha_factor(0.5));
+                        let bar = Rect::new(content_x + b.indent as f64 - 10.0, by0, content_x + b.indent as f64 - 6.0, by1);
+                        paint::fill_rect(scene, t, bar, ReaderPalette::highlight_swatch(a.color));
+                        let gx = content_x + content_w as f64 + 6.0;
+                        paint::note(scene, t, Rect::new(gx, by0, gx + 20.0, by0 + 20.0), palette.ink_dim, 1.6);
+                    }
+                    AnnoKind::Bookmark => {
+                        let gx = content_x + content_w as f64 + 6.0;
+                        paint::bookmark(scene, t, Rect::new(gx, by0 - 2.0, gx + 20.0, by0 + 22.0), theme.accent_primary, 1.6, true);
+                    }
+                }
+            }
+        }
+
+        // ---- selection + ranged-highlight bands; rebuild sel_runs -------
+        let ranged: Vec<&Annotation> = annos
+            .iter()
+            .filter(|a| a.chapter == chapter && a.kind == AnnoKind::Highlight && a.start < a.end)
+            .collect();
+        for b in &layout.blocks {
+            if matches!(b.kind, LayoutKind::Separator) {
+                continue;
+            }
+            let indent = b.indent as f64;
+            let block_ranged: Vec<&Annotation> =
+                ranged.iter().copied().filter(|a| a.block == b.index).collect();
+            for l in &b.lines {
+                if !pane.shows(l.y, b.line_height) {
+                    continue;
+                }
+                let ly = pane.screen_y(l.y);
+                let lh = b.line_height as f64;
+                let mut sel_band: Option<(f64, f64)> = None;
+                let mut hi_span: Vec<Option<(f64, f64)>> = vec![None; block_ranged.len()];
+                for run in &l.runs {
+                    let weight = if run.bold { TextWeight::Bold } else { TextWeight::Regular };
+                    let fam = if run.mono || base_mono { FontChoice::Monospace } else { base_family.clone() };
+                    let (w, _) = tr.measure_font(&run.text, b.size, None, weight, run.italic, &fam);
+                    let x0 = content_x + indent + run.x as f64;
+                    let x1 = x0 + w as f64;
+                    self.sel_runs.push(SelRun {
+                        block: b.index,
+                        x0,
+                        x1,
+                        y0: ly,
+                        y1: ly + lh,
+                        cs: run.char_start,
+                        cl: run.char_len,
+                        col: pane.col,
+                    });
+                    if self.page_first_doc.is_none() {
+                        self.page_first_doc = Some(DocPos { block: b.index, ch: run.char_start });
+                    }
+                    self.page_last_doc = Some(DocPos { block: b.index, ch: run.char_start + run.char_len });
+                    let run_end = run.char_start + run.char_len;
+                    let grow = |acc: &mut Option<(f64, f64)>, bx0: f64, bx1: f64| {
+                        *acc = Some(match *acc {
+                            Some((a, b2)) => (a.min(bx0), b2.max(bx1)),
+                            None => (bx0, bx1),
+                        });
+                    };
+                    if let Some((s, e)) = sel_ord {
+                        if b.index >= s.block && b.index <= e.block {
+                            let lo = if b.index == s.block { s.ch.max(run.char_start) } else { run.char_start };
+                            let hi = if b.index == e.block { e.ch.min(run_end) } else { run_end };
+                            if lo < hi {
+                                let (bx0, bx1) = run_sub_x(x0, w as f64, run.char_start, run.char_len, lo, hi);
+                                grow(&mut sel_band, bx0, bx1);
+                            }
+                        }
+                    }
+                    for (i, a) in block_ranged.iter().enumerate() {
+                        let lo = a.start.max(run.char_start);
+                        let hi = a.end.min(run_end);
+                        if lo < hi {
+                            let (bx0, bx1) = run_sub_x(x0, w as f64, run.char_start, run.char_len, lo, hi);
+                            grow(&mut hi_span[i], bx0, bx1);
+                        }
+                    }
+                }
+                for (i, a) in block_ranged.iter().enumerate() {
+                    if let Some((mnx, mxx)) = hi_span[i] {
+                        let band = Rect::new(mnx - 2.0, ly - 1.0, mxx + 2.0, ly + lh - 2.0);
+                        paint::fill_round(scene, t, band, 4.0, palette.highlight_fill(a.color));
+                        self.hi_bands.push(band);
+                        if comment_group == Some(a.group) {
+                            comment_box = Some(match comment_box {
+                                Some((x0, y0, x1, y1)) => (x0.min(band.x0), y0.min(band.y0), x1.max(band.x1), y1.max(band.y1)),
+                                None => (band.x0, band.y0, band.x1, band.y1),
+                            });
+                        }
+                    }
+                }
+                if let Some((mnx, mxx)) = sel_band {
+                    let band = Rect::new(mnx - 2.0, ly - 1.0, mxx + 2.0, ly + lh - 2.0);
+                    paint::fill_round(scene, t, band, 3.0, palette.accent.with_alpha_factor(0.30));
+                    if sel_anchor.is_none() {
+                        sel_anchor = Some(((mnx + mxx) / 2.0, ly));
+                    }
+                }
+            }
+        }
+
+        // ---- glyphs + decorations (on top of bands) ---------------------
+        for b in &layout.blocks {
+            match b.kind {
+                LayoutKind::Quote => {
+                    let visible: Vec<&crate::paginate::LaidLine> =
+                        b.lines.iter().filter(|l| pane.shows(l.y, b.line_height)).collect();
+                    if let (Some(f), Some(la)) = (visible.first(), visible.last()) {
+                        let y0 = pane.screen_y(f.y);
+                        let y1 = pane.screen_y(la.y) + b.line_height as f64;
+                        let bar = Rect::new(content_x + 10.0, y0, content_x + 13.5, y1);
+                        paint::fill_rect(scene, t, bar, palette.rule);
+                    }
+                }
+                LayoutKind::Separator => {
+                    if pane.shows(b.top, b.line_height) {
+                        let cy = pane.screen_y(b.top) + b.line_height as f64 / 2.0;
+                        let cx = content_x + content_w as f64 / 2.0;
+                        paint::line(scene, t, Point::new(cx - 28.0, cy), Point::new(cx + 28.0, cy), palette.rule, 1.4);
+                    }
+                }
+                _ => {}
+            }
+            if let Some(bullet) = &b.bullet {
+                if let Some(first) = b.lines.iter().find(|l| pane.shows(l.y, b.line_height)) {
+                    let ly = pane.screen_y(first.y);
+                    tr.draw_text(scene, bullet, b.size, palette.ink_dim, t * Affine::translate((content_x + b.indent as f64 - 20.0, ly)), None);
+                }
+            }
+            for l in &b.lines {
+                if !pane.shows(l.y, b.line_height) {
+                    continue;
+                }
+                let ly = pane.screen_y(l.y);
+                for run in &l.runs {
+                    let mono = run.mono || base_mono;
+                    let weight = if run.bold { TextWeight::Bold } else { TextWeight::Regular };
+                    let x = content_x + b.indent as f64 + run.x as f64;
+                    let fam = if mono { FontChoice::Monospace } else { base_family.clone() };
+                    if run.mono && !base_mono {
+                        let (cw, _) = tr.measure_styled(&run.text, b.size, None, weight, run.italic, true);
+                        let chip = Rect::new(x - 3.0, ly - 1.0, x + cw as f64 + 3.0, ly + b.size as f64 + 3.0);
+                        paint::fill_round(scene, t, chip, 3.0, palette.code_bg);
+                    }
+                    tr.draw_text_font(scene, &run.text, b.size, palette.ink, t * Affine::translate((x, ly)), None, weight, run.italic, &fam);
+                }
+            }
+        }
+
+        (sel_anchor, comment_box)
     }
 
     /// A floating, contextual toolbar shown while a paragraph is selected:
@@ -4221,7 +4434,8 @@ impl BooksApp {
         paper_x: f64,
         paper_w: f64,
         body_y0: f64,
-        anchor_y: Option<f64>,
+        body_y1: f64,
+        anchor: Option<(f64, f64)>,
     ) {
         // Hide the picker while a note is being composed (the composer takes
         // over) or when there's no active selection/block.
@@ -4229,107 +4443,56 @@ impl BooksApp {
         if self.view != View::Reader || !has_sel || self.composing.is_some() {
             return;
         }
-        let r = self.rect;
-
-        let pad = 12.0;
-        let dot_r = 9.0;
-        let dot_gap = 10.0;
-        let hud_h = 42.0;
-        let dots_w = HiColor::ALL.len() as f64 * (dot_r * 2.0) + (HiColor::ALL.len() as f64 - 1.0) * dot_gap;
-        // "Copy" + "Note" action pills.
-        let pill_gap = 8.0;
-        let (cw, _) = tr.measure_weighted("Copy", 13.0, None, TextWeight::Medium);
-        let copy_w = cw as f64 + 24.0;
-        let (nw, _) = tr.measure_weighted("Note", 13.0, None, TextWeight::Medium);
-        let note_w = nw as f64 + 24.0;
-        let sep_w = 13.0;
-        // A trash button appears when the selection covers an existing highlight,
-        // so the same range that colours text can also clear it.
+        // The shared reader HUD owns the bar's look, spacing, hover, and armed
+        // ring — the pdf reader draws the identical bar. This reader keeps the
+        // page palette's accent for the armed swatch and maps the emitted
+        // actions to its own command set.
         let del_group = self.selection_highlight_group();
-        let trash_s = 24.0;
-        let trash_extra = if del_group.is_some() { trash_s + 8.0 } else { 0.0 };
-        let hud_w = pad * 2.0 + dots_w + sep_w + copy_w + pill_gap + note_w + trash_extra;
-
-        let cx = paper_x + paper_w / 2.0;
-        let hud_x = (cx - hud_w / 2.0).clamp(r.x0 + 8.0, r.x1 - 8.0 - hud_w);
-        // Prefer floating just above the selected block; drop below if that
-        // would collide with the top bar; fall back to the page top.
-        let hud_y = match anchor_y {
-            Some(ay) if ay - hud_h - 12.0 >= body_y0 + 6.0 => ay - hud_h - 12.0,
-            Some(ay) => ay + 30.0,
-            None => body_y0 + 12.0,
+        let palette = self.resolve_palette(theme);
+        let style = ui::ReaderHudStyle {
+            surface: c.surfaces.raised,
+            border: c.border_standard,
+            shadow: Color::from_rgba8(0, 0, 0, 70),
+            text: c.text_primary,
+            hover: theme.bg_hover,
+            pill: c.surfaces.overlay,
+            ring: palette.accent,
+            danger: c.semantic.danger,
         };
-        let hud = Rect::new(hud_x, hud_y, hud_x + hud_w, hud_y + hud_h);
-
-        // Shadow + body.
-        let shadow = Rect::new(hud.x0 - 1.0, hud.y0 + 3.0, hud.x1 + 1.0, hud.y1 + 5.0);
-        paint::fill_round(scene, t, shadow, hud_h / 2.0, Color::from_rgba8(0, 0, 0, 70));
-        paint::fill_round(scene, t, hud, hud_h / 2.0, c.surfaces.raised);
-        paint::stroke_round(scene, t, hud, hud_h / 2.0, c.border_standard, 1.0);
-        // Swallow taps on the bar body so they don't fall through to the page.
-        self.push_hit(hud, Action::Swallow);
-
-        let cyc = hud_y + hud_h / 2.0;
-        let mut x = hud_x + pad + dot_r;
-        for col in HiColor::ALL {
-            let center = Point::new(x, cyc);
-            let rect = Rect::new(center.x - dot_r, center.y - dot_r, center.x + dot_r, center.y + dot_r);
-            paint::circle(scene, t, center, dot_r, ReaderPalette::highlight_swatch(col));
-            if self.hi_color == col {
-                paint::stroke_round(scene, t, rect.inflate(2.5, 2.5), dot_r + 2.5, theme.text_primary, 1.8);
-            } else if self.is_hover(rect) {
-                paint::stroke_round(scene, t, rect.inflate(2.5, 2.5), dot_r + 2.5, c.border_standard, 1.2);
-            }
-            self.push_hit(rect.inflate(3.0, 3.0), Action::SetColor(col));
-            x += dot_r * 2.0 + dot_gap;
-        }
-        // Divider between the swatches and the Note action.
-        let dots_end = hud_x + pad + dots_w;
-        let div_x = dots_end + sep_w / 2.0;
-        paint::line(scene, t, Point::new(div_x, cyc - 10.0), Point::new(div_x, cyc + 10.0), c.border_standard, 1.0);
-        // Copy pill — write the selected passage to the system clipboard.
-        let copy_x = dots_end + sep_w;
-        let copy_rect = Rect::new(copy_x, cyc - 14.0, copy_x + copy_w, cyc + 14.0);
-        let copy_hover = self.is_hover(copy_rect);
-        paint::fill_round(scene, t, copy_rect, 14.0, if copy_hover { theme.bg_hover } else { c.surfaces.overlay });
-        tr.draw_text_weighted(
+        let swatches: Vec<ui::HudSwatch> = HiColor::ALL
+            .iter()
+            .map(|&col| ui::HudSwatch::new([col.rgb().0, col.rgb().1, col.rgb().2], self.hi_color == col))
+            .collect();
+        // Anchor above the selection; fall back to the page centre near the top.
+        let anchor_pt = anchor
+            .map(|(x, y)| Point::new(x, y))
+            .unwrap_or_else(|| Point::new(paper_x + paper_w / 2.0, body_y0 + 54.0));
+        let bounds = Rect::new(self.rect.x0, body_y0, self.rect.x1, body_y1);
+        let hud = ui::SelectionHud::draw(
             scene,
-            "Copy",
-            13.0,
-            c.text_primary,
-            t * Affine::translate((copy_x + 12.0, cyc - 7.0)),
-            None,
-            TextWeight::Medium,
+            t,
+            tr,
+            &style,
+            &swatches,
+            true,
+            del_group.is_some(),
+            self.cursor,
+            anchor_pt,
+            bounds,
         );
-        self.push_hit(copy_rect, Action::CopySelection);
-
-        // Note pill.
-        let note_x = copy_x + copy_w + pill_gap;
-        let note_rect = Rect::new(note_x, cyc - 14.0, note_x + note_w, cyc + 14.0);
-        let note_hover = self.is_hover(note_rect);
-        paint::fill_round(scene, t, note_rect, 14.0, if note_hover { theme.bg_hover } else { c.surfaces.overlay });
-        tr.draw_text_weighted(
-            scene,
-            "Note",
-            13.0,
-            c.text_primary,
-            t * Affine::translate((note_x + 12.0, cyc - 7.0)),
-            None,
-            TextWeight::Medium,
-        );
-        self.push_hit(note_rect, Action::AddNote);
-
-        // Trash — delete the highlight under the selection (only shown when the
-        // selection actually overlaps one).
-        if let Some(group) = del_group {
-            let tx = note_x + note_w + 8.0;
-            let trash = Rect::new(tx, cyc - trash_s / 2.0, tx + trash_s, cyc + trash_s / 2.0);
-            let thov = self.is_hover(trash);
-            if thov {
-                paint::fill_round(scene, t, trash, 6.0, theme.bg_hover);
-            }
-            paint::trash(scene, t, trash, if thov { c.semantic.danger } else { c.text_primary }, 1.5);
-            self.push_hit(trash, Action::DeleteHighlight(group));
+        // Swallow taps on the bar body, and route each control to a command.
+        self.push_hit(hud.rect(), Action::Swallow);
+        for &(rect, action) in hud.buttons() {
+            let mapped = match action {
+                ui::HudAction::Copy => Action::CopySelection,
+                ui::HudAction::Note => Action::AddNote,
+                ui::HudAction::Highlight(i) => Action::SetColor(HiColor::ALL[i.min(HiColor::ALL.len() - 1)]),
+                ui::HudAction::Delete => match del_group {
+                    Some(g) => Action::DeleteHighlight(g),
+                    None => Action::Swallow,
+                },
+            };
+            self.push_hit(rect, mapped);
         }
     }
 
@@ -4899,11 +5062,14 @@ impl BooksApp {
 
         let header_h = 30.0;
         let steppers_h = row_h + 10.0 + row_h;
+        // Layout row: a "LAYOUT" label + one row of page/scroll/spread pills.
+        let layout_h = 16.0 + pill_h;
         let type_h =
             16.0 + font_rows as f64 * pill_h + font_rows.saturating_sub(1) as f64 * pill_gap;
         let page_h =
             16.0 + scheme_rows as f64 * pill_h + scheme_rows.saturating_sub(1) as f64 * pill_gap;
-        let panel_h = pad * 2.0 + header_h + steppers_h + 22.0 + type_h + 22.0 + page_h;
+        let panel_h =
+            pad * 2.0 + header_h + steppers_h + 22.0 + layout_h + 22.0 + type_h + 22.0 + page_h;
 
         let bar_top = r.y1 - BOTTOM_BAR;
         let (px0, px1) = self.type_popover_x_bounds(panel_w);
@@ -4934,6 +5100,23 @@ impl BooksApp {
         let ls = format!("{:.1}", self.settings.line_spacing);
         self.stepper_row(scene, t, tr, theme, c, ix0, ix1, y, row_h, "Line spacing", &ls, NumField::LineSpacing, Action::SpacingDec, Action::SpacingInc);
         y += row_h + 22.0;
+
+        // Layout — single page / continuous scroll / two-up spread.
+        tr.draw_text_weighted(scene, "LAYOUT", 10.0, c.text_dim, t * Affine::translate((ix0, y)), None, TextWeight::Semibold);
+        y += 16.0;
+        let mut sx = ix0;
+        for m in ReadMode::ALL {
+            let w = tr.measure_weighted(m.label(), 12.5, None, TextWeight::Medium).0 as f64 + 24.0;
+            if sx + w > ix1 && sx > ix0 {
+                sx = ix0;
+                y += pill_h + pill_gap;
+            }
+            let active = self.settings.mode == m;
+            let action = if active { Action::Swallow } else { Action::SetMode(m) };
+            self.pill(scene, t, tr, theme, sx, y, pill_h, m.label(), 12.5, active, Some(action));
+            sx += w + pill_gap;
+        }
+        y += pill_h + 22.0;
 
         // Typeface — one pill per shown font, wrapping within the panel.
         tr.draw_text_weighted(scene, "TYPEFACE", 10.0, c.text_dim, t * Affine::translate((ix0, y)), None, TextWeight::Semibold);
@@ -6313,24 +6496,32 @@ mod interaction_tests {
         let mut app = app_with_sample();
         let mut doc = AutoCommit::new();
         frame(&mut app, &mut doc, 1000.0, 700.0);
-        // Default (sans) to start.
-        assert_eq!(app.active_font().kind, FontKind::Default);
-        // Open the settings popover and pick the Serif font pill — the real path.
+        // The reader opens in the serif book face (books read best in serif) —
+        // and that is the face the paint pass shapes with.
+        assert_eq!(app.active_font().kind, FontKind::Serif, "serif is the default reading face");
+        let (fam0, _m0, serif_sig, mono0) = app.body_font();
+        assert_eq!(fam0, ui::text_render::FontChoice::Serif);
+        assert!(!mono0, "serif is a proportional face");
+        // Open the settings popover and switch to the sans "Default" pill — the
+        // real click path — which must apply and persist to the CRDT.
         let aa = find_hit(&app, |a| matches!(a, Action::ToggleTypePopover)).expect("Aa button");
         click(&mut app, &mut doc, aa);
         frame(&mut app, &mut doc, 1000.0, 700.0);
+        let sans = find_hit(&app, |a| matches!(a, Action::SetFont(id) if id.as_str() == "default"))
+            .expect("default (sans) pill");
+        assert!(click(&mut app, &mut doc, sans), "sans pill handled");
+        assert_eq!(app.active_font().kind, FontKind::Default, "sans face is now active");
+        assert_eq!(BooksDoc::read_settings(&doc).font_id, "default", "selection persisted to CRDT");
+        frame(&mut app, &mut doc, 1000.0, 700.0);
+        let (fam1, _m1, sans_sig, _mono1) = app.body_font();
+        assert_eq!(fam1, ui::text_render::FontChoice::SansSerif);
+        assert_ne!(sans_sig, serif_sig, "font signature differs so the chapter relays out");
+        // And back to serif via its own pill — reselecting the reading face.
         let serif = find_hit(&app, |a| matches!(a, Action::SetFont(id) if id.as_str() == "serif"))
             .expect("serif pill");
         assert!(click(&mut app, &mut doc, serif), "serif pill handled");
-        assert_eq!(app.active_font().kind, FontKind::Serif, "serif font is now active");
-        assert_eq!(BooksDoc::read_settings(&doc).font_id, "serif", "selection persisted to CRDT");
-        // The body face the paint pass will use is serif, not mono.
-        frame(&mut app, &mut doc, 1000.0, 700.0);
-        let (fam, _mult, sig, mono) = app.body_font();
-        assert_eq!(fam, ui::text_render::FontChoice::Serif);
-        assert!(!mono, "serif is a proportional face");
-        let default_sig = font_sig(&crate::model::default_fonts()[0]);
-        assert_ne!(sig, default_sig, "font signature differs so the chapter relays out");
+        assert_eq!(app.active_font().kind, FontKind::Serif, "serif font is active again");
+        assert_eq!(BooksDoc::read_settings(&doc).font_id, "serif", "serif selection persisted");
     }
 
     #[test]

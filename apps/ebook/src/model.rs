@@ -373,6 +373,62 @@ impl ReadTheme {
     }
 }
 
+/// How the reader lays the book out on the page. The three modes share one
+/// paginated layout ([`crate::paginate::ChapterLayout`]); they differ only in
+/// which slice of the flow is shown and how the reader moves through it:
+///
+/// - [`ReadMode::Paged`] — one viewport-height page at a time (the classic
+///   e-reader). The wheel/arrows turn whole pages.
+/// - [`ReadMode::Continuous`] — the chapter as one uninterrupted column the
+///   reader scrolls through; page boundaries dissolve. The wheel scrolls by
+///   pixels and rolls into the next/previous chapter at the ends.
+/// - [`ReadMode::TwoUp`] — two facing pages side by side (a book spread). The
+///   wheel/arrows turn two pages at a time.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReadMode {
+    Paged,
+    Continuous,
+    TwoUp,
+}
+
+impl ReadMode {
+    pub const ALL: [ReadMode; 3] = [ReadMode::Paged, ReadMode::Continuous, ReadMode::TwoUp];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            ReadMode::Paged => "Page",
+            ReadMode::Continuous => "Scroll",
+            ReadMode::TwoUp => "Spread",
+        }
+    }
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ReadMode::Paged => "paged",
+            ReadMode::Continuous => "continuous",
+            ReadMode::TwoUp => "two_up",
+        }
+    }
+    pub fn from_str(s: &str) -> Self {
+        match s {
+            "continuous" | "scroll" => ReadMode::Continuous,
+            "two_up" | "two-up" | "spread" => ReadMode::TwoUp,
+            _ => ReadMode::Paged,
+        }
+    }
+    /// Whether this mode scrolls the flow continuously (no page snapping).
+    pub fn is_continuous(self) -> bool {
+        matches!(self, ReadMode::Continuous)
+    }
+    /// How many pages advance per page-turn in this mode.
+    pub fn page_stride(self) -> usize {
+        match self {
+            ReadMode::TwoUp => 2,
+            _ => 1,
+        }
+    }
+}
+
 /// Which font *class* a registered face resolves to. `Default` is the reader's
 /// proportional face (also used for EPUB-specified text); `Serif` / `Mono` are
 /// the other generic classes; `Named` targets a specific installed family the
@@ -714,6 +770,9 @@ pub struct Settings {
     pub theme: ReadTheme,
     /// Id of a selected custom colour scheme, or empty to use `theme`.
     pub scheme_id: String,
+    /// How the page is laid out (single page / continuous scroll / two-up
+    /// spread). A reading preference, shared across the library like the tint.
+    pub mode: ReadMode,
 }
 
 impl Default for Settings {
@@ -721,9 +780,12 @@ impl Default for Settings {
         Self {
             font_scale: 1.0,
             line_spacing: 1.2,
-            font_id: String::new(),
+            // Books read best in a serif face, so the reader opens in the serif
+            // book font; the font picker offers the sans "Default" and monospace.
+            font_id: "serif".to_string(),
             theme: ReadTheme::Sepia,
             scheme_id: String::new(),
+            mode: ReadMode::Paged,
         }
     }
 }
@@ -851,6 +913,19 @@ mod tests {
         for t in ReadTheme::ALL {
             assert_eq!(ReadTheme::from_str(t.as_str()), t);
         }
+    }
+
+    #[test]
+    fn read_mode_round_trips_and_defaults_to_paged() {
+        for m in ReadMode::ALL {
+            assert_eq!(ReadMode::from_str(m.as_str()), m);
+        }
+        assert_eq!(ReadMode::from_str("nonsense"), ReadMode::Paged);
+        assert_eq!(Settings::default().mode, ReadMode::Paged, "readers open paged by default");
+        assert_eq!(ReadMode::TwoUp.page_stride(), 2, "a spread turns two pages");
+        assert_eq!(ReadMode::Paged.page_stride(), 1);
+        assert!(ReadMode::Continuous.is_continuous());
+        assert!(!ReadMode::Paged.is_continuous());
     }
 
     #[test]

@@ -22,7 +22,7 @@ use uuid::Uuid;
 
 use crate::model::{
     default_fonts, default_schemes, AnnoKind, Annotation, ColorScheme, FontEntry, FontKind,
-    HiColor, LibraryPrefs, LibrarySort, Progress, ReadTheme, Settings,
+    HiColor, LibraryPrefs, LibrarySort, Progress, ReadMode, ReadTheme, Settings,
 };
 
 /// Pack an sRGB triple into a single int for the CRDT.
@@ -110,6 +110,7 @@ impl BooksDoc {
         let _ = doc.put(&m, "font_id", s.font_id.as_str());
         let _ = doc.put(&m, "theme", s.theme.as_str());
         let _ = doc.put(&m, "scheme_id", s.scheme_id.as_str());
+        let _ = doc.put(&m, "mode", s.mode.as_str());
     }
 
     pub fn read_settings(doc: &AutoCommit) -> Settings {
@@ -132,6 +133,9 @@ impl BooksDoc {
         }
         if let Some(v) = Self::scalar_str(doc, &m, "scheme_id") {
             s.scheme_id = v;
+        }
+        if let Some(v) = Self::scalar_str(doc, &m, "mode") {
+            s.mode = ReadMode::from_str(&v);
         }
         s
     }
@@ -420,6 +424,7 @@ mod tests {
         s.font_id = "serif".into();
         s.theme = ReadTheme::Dark;
         s.scheme_id = "midnight".into();
+        s.mode = crate::model::ReadMode::TwoUp;
         BooksDoc::write_settings(&mut doc, &s);
         let back = BooksDoc::read_settings(&doc);
         assert!((back.font_scale - 1.3).abs() < 0.001);
@@ -427,6 +432,9 @@ mod tests {
         assert_eq!(back.font_id, "serif");
         assert_eq!(back.theme, ReadTheme::Dark);
         assert_eq!(back.scheme_id, "midnight");
+        assert_eq!(back.mode, crate::model::ReadMode::TwoUp, "reading mode persists");
+        // A fresh document defaults to the paged reading mode.
+        assert_eq!(BooksDoc::read_settings(&AutoCommit::new()).mode, crate::model::ReadMode::Paged);
     }
 
     #[test]
