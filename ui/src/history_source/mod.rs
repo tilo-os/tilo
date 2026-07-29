@@ -47,7 +47,7 @@ use automerge::{AutoCommit, ChangeHash, ObjType, PatchAction, ReadDoc};
 use collab_types::{ArtifactKind, OpClass};
 use qdoc::snapshot::DocSnapshot;
 
-use crate::widget::history::{HistoryAuthor, HistoryEntry, HistoryEntryId};
+use crate::widget::history::{HistoryEntry, HistoryEntryId};
 
 pub mod authors;
 pub use authors::{

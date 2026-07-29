@@ -22,7 +22,6 @@
 //! — we don't materialise a "bold-italic" enum variant. This is
 //! enough for round-trip stability on documents we produce.
 
-use crate::widget::block_editor::BlockKind;
 use std::ops::Range;
 
 use uuid::Uuid;
@@ -367,16 +366,6 @@ pub fn segments_for(text_len: usize, spans: &[MarkSpan]) -> Vec<MarkSegment> {
         out.push(seg);
     }
     out
-}
-
-/// Built-in block kind awareness — keeps the rendering helpers
-/// generic over which block they live in. (Currently unused, but
-/// shapes the door for future block-specific mark filtering, e.g.
-/// "code blocks render the whole line in monospace, so don't paint
-/// the Mark::Code chrome on top".)
-#[allow(dead_code)]
-pub(crate) fn marks_render_inline(kind: &BlockKind) -> bool {
-    !matches!(kind, BlockKind::CodeBlock { .. } | BlockKind::Divider)
 }
 
 #[cfg(test)]

@@ -174,7 +174,6 @@ pub enum FrameInput<'a> {
     /// Row-major RGBA, `width * height * 4` bytes, no padding.
     Rgba(&'a [u8]),
     /// Planar NV12 (Y plane then interleaved UV plane).
-    #[allow(dead_code)]
     Nv12 { y: &'a [u8], uv: &'a [u8] },
     /// DMABUF fds + per-plane offsets/strides. VA-API can import via
     /// `av_hwframe_map` on a `DRM_PRIME` source frame; other backends
@@ -192,7 +191,6 @@ pub enum FrameInput<'a> {
     /// `plane_fds[i]` are borrowed for the encode call — the encoder
     /// dupes them itself via `av_hwframe_map` if it needs to hold on
     /// past the call. The caller keeps ownership.
-    #[allow(dead_code)]
     DmabufFd {
         /// Per-plane file descriptors. Same fd may appear in every
         /// entry for a single-object multi-plane buffer.

@@ -2151,6 +2151,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "collab-fixtures"
+version = "0.1.0"
+dependencies = [
+ "collab-types",
+ "ed25519-dalek 2.2.0",
+]
+
+[[package]]
 name = "collab-link"
 version = "0.1.0"
 
@@ -12409,6 +12417,7 @@ dependencies = [
  "capnp-rpc",
  "channel-crypto",
  "chrono",
+ "collab-fixtures",
  "collab-types",
  "dirs 6.0.0",
  "ed25519-dalek 2.2.0",

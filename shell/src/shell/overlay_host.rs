@@ -2239,7 +2239,7 @@ impl ShellOverlayHost {
     /// indistinguishable from the bare desktop.
     ///
     /// Each helper backdates the `*_opened_at` timestamp by the matching
-    /// animation duration so `modal_open_curve` / the QS open curve
+    /// animation duration so `modal_transition_curve` / the QS open curve
     /// short-circuit to the "fully open" branch, and sets the
     /// `*_was_visible` mirror so the next `draw` doesn't immediately
     /// re-arm the rising edge.
@@ -2347,12 +2347,6 @@ impl ShellOverlayHost {
         Self::overview_header_font_size_for(&theme.tokens)
     }
 
-    fn overview_header_font_size_for(tokens: &ui::tokens::Tokens) -> f32 {
-        // Largest step in the type scale — currently 40 px, well above the
-        // 32 px floor the concept's `text-4xl` implies.
-        tokens.typography.scale.x4l
-    }
-
     /// Dispatch the shell action associated with a palette command id,
     /// then close the palette. Returns `true` if the id matched a known
     /// command. Callers still close the palette on unknown ids to avoid
@@ -2362,6 +2356,11 @@ impl ShellOverlayHost {
     /// (`search.open` / `overview.toggle` / `settings.open` /
     /// `quick-settings.open`) and map to a single overlay-flag mutation
     /// on the shared [`Chrome`] state.
+    // No production caller: nothing routes a palette selection into this,
+    // so `/invite` and `/connect` are inert even under --enable-peer-sync.
+    // Kept rather than deleted because it is the only definition of what
+    // those commands do, and its tests pin that contract.
+    #[allow(dead_code)]
     pub(crate) fn dispatch_palette_command(&mut self, id: &str) -> bool {
         // Peer-sync rows (`/invite`, `/connect`) don't mutate chrome
         // state — they enqueue an action the compositor drains via
@@ -2416,6 +2415,12 @@ impl ShellOverlayHost {
         };
         self.palette_visible = false;
         matched
+    }
+
+    fn overview_header_font_size_for(tokens: &ui::tokens::Tokens) -> f32 {
+        // Largest step in the type scale — currently 40 px, well above the
+        // 32 px floor the concept's `text-4xl` implies.
+        tokens.typography.scale.x4l
     }
 
     fn overlay_flags(&self) -> crate::shell::chrome_state::OverlayFlags {
@@ -5228,19 +5233,6 @@ fn draw_scrim_at(scene: &mut Scene, transform: Affine, rect: Rect, openness: f32
     );
 }
 
-/// Scrim tuned for the settings modal. Concept §4.1 uses
-/// `bg-black/30 backdrop-blur-[1px]`; without the 1-px blur primitive a
-/// literal `0.30` scrim under-dims and the desktop bleeds through the
-/// translucent modal surface. We lift the alpha to `0.45`
-/// ([`MODAL_SCRIM_ALPHA`]) so the un-blurred scrim reads roughly the
-/// same as the concept's blurred 0.30 fill and the modal lifts off the
-/// desktop instead of compositing onto it. Kept in lock-step with the
-/// pub constant so the chrome-test suite can pin the exact value
-/// without sampling pixels.
-fn draw_modal_scrim(scene: &mut Scene, transform: Affine, rect: Rect) {
-    draw_modal_scrim_at(scene, transform, rect, 1.0);
-}
-
 /// [`draw_modal_scrim`] scaled by `openness` in `0.0..=1.0` so the scrim
 /// fades in with the modal opening and out with it closing.
 fn draw_modal_scrim_at(scene: &mut Scene, transform: Affine, rect: Rect, openness: f32) {
@@ -5383,33 +5375,11 @@ fn palette_surface_theme(theme: &Theme, alpha: f32) -> Theme {
     themed
 }
 
-/// Shared ease-out-cubic curve for modal-style open animations. Both
-/// workspace-settings and the command palette wrap their panels in
-/// `motion.div` with `initial={{ opacity: 0, scale: start_scale, y: 20 }}` →
-/// `animate={{ opacity: 1, scale: 1, y: 0 }}`. Returns `(alpha, dy, scale)`
-/// sampled `elapsed.ms()` into a `MODAL_OPEN_ANIM_MS` window. Idle (no
-/// timestamp) returns `(1.0, 0.0, 1.0)` so callers can detect rest via
-/// `alpha >= 1.0 && dy == 0.0 && scale == 1.0`.
-fn modal_open_curve(opened_at: Option<Instant>, start_scale: f64) -> (f32, f64, f64) {
-    let Some(started) = opened_at else {
-        return (1.0, 0.0, 1.0);
-    };
-    let window = Duration::from_millis(MODAL_OPEN_ANIM_MS);
-    let elapsed = started.elapsed();
-    if elapsed >= window {
-        return (1.0, 0.0, 1.0);
-    }
-    let raw = (elapsed.as_secs_f64() / (MODAL_OPEN_ANIM_MS as f64 / 1000.0)).clamp(0.0, 1.0);
-    let eased = 1.0 - (1.0 - raw).powi(3);
-    let scale = start_scale + (1.0 - start_scale) * eased;
-    (eased as f32, 20.0 * (1.0 - eased), scale)
-}
-
 /// `(alpha, dy, scale)` for a modal driven by a [`ui::Transition`],
 /// covering BOTH the enter (openness 0→1) and the exit (openness 1→0).
-/// Same visual shape `modal_open_curve` produced for the enter — panel
-/// starts 20 px low at `start_scale`, rises to rest — but now the exit
-/// plays the curve in reverse instead of the panel vanishing.
+/// The panel starts 20 px low at `start_scale` and rises to rest on the
+/// enter; the exit plays the same curve in reverse instead of the panel
+/// vanishing.
 fn modal_transition_curve(t: &ui::Transition, now: Instant, start_scale: f64) -> (f32, f64, f64) {
     let o = t.value(now);
     let scale = start_scale + (1.0 - start_scale) * o as f64;
@@ -6823,7 +6793,6 @@ impl ShellOverlayHost {
         text_renderer: &mut TextRenderer,
         theme: &Theme,
     ) {
-        use crate::shell::chrome_state::SearchScope;
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
         let banner = self.search_banner_rect();
@@ -8248,7 +8217,9 @@ mod me_tile_fallback_tests {
 #[cfg(test)]
 mod modal_curve_tests {
     //! Guards the shared ease-out-cubic curve used by the workspace-settings
-    //! modal and the command palette. The actual draw path composes this
+    //! modal and the command palette. `modal_transition_curve` is the live
+    //! one — it drives both the enter and the exit off a `ui::Transition`,
+    //! and is what both draw paths call. The actual draw path composes this
     //! curve into an alpha/translate/scale — these assertions keep the
     //! *source* of that composition honest so a later refactor of the
     //! draw path can't silently regress the rest state or the concept
@@ -8256,36 +8227,49 @@ mod modal_curve_tests {
 
     use super::*;
 
+    /// A transition that has just begun opening, so `modal_transition_curve`
+    /// can be sampled anywhere across the enter window.
+    fn opening() -> ui::Transition {
+        let mut t = ui::Transition::closed();
+        t.set_open(
+            true,
+            Duration::from_millis(MODAL_OPEN_ANIM_MS),
+            ui::Curve::EaseOut,
+        );
+        t
+    }
+
     #[test]
-    fn modal_open_curve_at_rest_when_no_timestamp() {
-        let (alpha, dy, scale) = modal_open_curve(None, 0.95);
+    fn modal_curve_is_at_rest_when_fully_open() {
+        let t = ui::Transition::open();
+        let (alpha, dy, scale) = modal_transition_curve(&t, Instant::now(), 0.95);
         assert_eq!(alpha, 1.0);
         assert_eq!(dy, 0.0);
         assert_eq!(scale, 1.0);
     }
 
     #[test]
-    fn modal_open_curve_starts_from_initial_values() {
-        // Timestamp "just now" — elapsed is effectively zero, so the
-        // curve should be at its initial (pre-animate) state.
-        let (alpha, dy, scale) = modal_open_curve(Some(Instant::now()), 0.9);
-        assert!(alpha < 0.05, "alpha at t=0 should be ~0, got {}", alpha);
-        assert!(
-            (dy - 20.0).abs() < 0.5,
-            "dy at t=0 should be ~20 px, got {}",
-            dy
-        );
+    fn modal_curve_starts_from_initial_values() {
+        // Sampled at the instant the open begins, the panel must still be
+        // invisible, 20 px low and at its start scale — otherwise it pops
+        // in rather than animating.
+        let start = Instant::now();
+        let t = opening();
+        let (alpha, dy, scale) = modal_transition_curve(&t, start, 0.9);
+        assert!(alpha < 0.05, "alpha at t=0 should be ~0, got {alpha}");
+        assert!((dy - 20.0).abs() < 0.5, "dy at t=0 should be ~20 px, got {dy}");
         assert!(
             (scale - 0.9).abs() < 0.01,
-            "scale at t=0 should equal start_scale 0.9, got {}",
-            scale
+            "scale at t=0 should equal start_scale 0.9, got {scale}"
         );
     }
 
     #[test]
-    fn modal_open_curve_settles_at_rest_after_duration() {
-        let past = Instant::now() - Duration::from_millis(MODAL_OPEN_ANIM_MS + 50);
-        let (alpha, dy, scale) = modal_open_curve(Some(past), 0.95);
+    fn modal_curve_settles_at_rest_after_duration() {
+        let start = Instant::now();
+        let t = opening();
+        let past = start + Duration::from_millis(MODAL_OPEN_ANIM_MS + 50);
+        let (alpha, dy, scale) = modal_transition_curve(&t, past, 0.95);
         assert_eq!(alpha, 1.0);
         assert_eq!(dy, 0.0);
         assert_eq!(scale, 1.0);

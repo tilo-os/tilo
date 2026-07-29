@@ -244,6 +244,10 @@ postcard = { workspace = true, features = ["alloc"] }
 # single end-to-end flow — threshold-signed, MLS-encrypted op crossing
 # the broker, validated, decrypted, then compacted.
 channel-crypto = { path = "../crates/collab/channel-crypto" }
+# Signed `RoleAttestation` / `SignedOp` fixtures shared by every wire-format
+# integration test here. Was six drifting copies of the same signing ceremony
+# pasted across tests/; now one crate that only test targets can see.
+collab-fixtures = { path = "../crates/collab/collab-fixtures" }
 # Deterministic RNG used by the FROST signing fixture in
 # `tests/everything_composes.rs`. The alias is historical: it was added
 # when shell also carried a `rand = "0.10.1"` runtime dep. That dep was

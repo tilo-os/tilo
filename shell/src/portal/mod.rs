@@ -289,16 +289,6 @@ impl GrantStoreHandle {
     }
 }
 
-fn capability_scope(cap: &Capability) -> GrantScope {
-    match cap {
-        Capability::Filesystem { scope, .. } => scope.clone(),
-        Capability::Camera { scope } => scope.clone(),
-        Capability::Microphone { scope } => scope.clone(),
-        Capability::Screencast { scope } => scope.clone(),
-        Capability::Network { scope, .. } => scope.clone(),
-    }
-}
-
 /// The longer-lived of two expiries.
 ///
 /// Delegates to [`Expiry::longest`] rather than re-deriving the order:
@@ -641,6 +631,9 @@ pub async fn serve(
 /// RAII handle keeping the portal D-Bus connection alive. Drop releases
 /// the bus name and tears down the object server.
 pub struct ServerHandle {
+    // Never read on purpose: holding the `Connection` IS the job. Drop it
+    // and zbus releases `org.freedesktop.impl.portal.desktop.nirios` and
+    // tears the object server down, so the portal stops answering.
     #[allow(dead_code)]
     connection: zbus::Connection,
 }
