@@ -1790,11 +1790,12 @@ mod tests {
     }
 
     #[test]
-    fn write_starts_with_matching_confirmation_but_stays_gated() {
-        // With the gate off, a matching confirmation starts a *simulated* job:
-        // the phase advances to Writing and a channel is installed, but no
-        // device is ever opened (proven in write.rs).
-        unsafe { std::env::remove_var("QOS_IMAGER_ALLOW_WRITE") };
+    fn write_starts_with_matching_confirmation() {
+        // A matching typed confirmation starts a job: the phase advances to
+        // Writing and a progress channel is installed. Whether the backend is
+        // simulated or real is decided by the allow-gate in write.rs (tested
+        // there); either way these UI invariants hold and the assertions below
+        // never depend on the process environment.
         let (mut app, mut doc) = seeded_app();
         app.select_target(&mut doc, 0); // sdb
         app.goto(&mut doc, Step::Write);
