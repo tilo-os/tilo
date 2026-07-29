@@ -210,8 +210,9 @@ impl EgressDecision {
     /// | `off` | none | blocked |
     /// | `allowlist = [h…]` | none | filtered to `h…` |
     /// | `host` | none | unrestricted |
-    /// | any | `["*"]` | unrestricted |
-    /// | any | `[h…]` | filtered to `h…`, minus anything the manifest's own allowlist does not cover |
+    /// | `off` / `host` | `["*"]` | unrestricted |
+    /// | `off` / `host` | `[h…]` | filtered to `h…` |
+    /// | `allowlist = [c…]` | any grant | filtered to the `c…` that grant permits |
     ///
     /// **The user's decision replaces the manifest's, it does not union
     /// with it.** A union would make a narrowing grant useless: an app
@@ -245,17 +246,38 @@ impl EgressDecision {
             };
         }
 
+        // An explicit manifest allowlist is an exhaustive enumeration of
+        // where the app may ever go, so the effective set is the entries
+        // of *that* list which the grant permits. Phrasing it this way
+        // round rather than filtering the grant is what makes a `*`
+        // grant narrow to the declared endpoints instead of resolving to
+        // nothing: `host_covers("api.example.com", "*")` is false, so
+        // filtering the grant would drop the wildcard and block the app
+        // outright. It also makes a suffix grant like `.example.com`
+        // select the declared endpoints under that domain, which
+        // filtering the grant could not express at all.
+        if manifest_is_allowlist {
+            let kept: Vec<String> = manifest_hosts
+                .iter()
+                .filter(|c| granted_hosts.iter().any(|g| host_covers(g, c)))
+                .cloned()
+                .collect();
+            for declared in manifest_hosts {
+                if !kept.contains(declared) {
+                    tracing::info!(
+                        host = %declared,
+                        "endpoint declared by the package is not covered by the user's network \
+                         grant; the app cannot reach it"
+                    );
+                }
+            }
+            return EgressPolicy::new(kept).into_decision();
+        }
+
+        // No enumeration to cap against: `off` and `host` declare
+        // nothing specific, so the grant stands as written.
         let mut kept: Vec<String> = Vec::new();
         for host in granted_hosts {
-            if manifest_is_allowlist && !manifest_hosts.iter().any(|c| host_covers(c, host)) {
-                tracing::warn!(
-                    host = %host,
-                    "dropping network grant: the package manifest declares an endpoint \
-                     allowlist that does not cover this host, and a runtime grant does not \
-                     widen what was declared at install time"
-                );
-                continue;
-            }
             if !kept.iter().any(|k| k == host) {
                 kept.push(host.clone());
             }
@@ -1020,6 +1042,43 @@ mod tests {
         assert_eq!(
             EgressDecision::resolve("off", &[], &v(&["*"])),
             EgressDecision::Unrestricted
+        );
+    }
+
+    #[test]
+    fn a_star_grant_narrows_to_an_explicit_manifest_allowlist() {
+        // "Allow everything this app asks for" must mean the endpoints
+        // the package declared, not the whole internet — and must not
+        // mean *nothing*, which is what filtering the grant against the
+        // ceiling would produce, since no specific host covers `*`.
+        let weather = v(&["api.open-meteo.com", "geocoding-api.open-meteo.com"]);
+        let decision = EgressDecision::resolve("allowlist", &weather, &v(&["*"]));
+        let policy = decision
+            .policy()
+            .unwrap_or_else(|| panic!("expected the declared endpoints, got {decision:?}"));
+        assert_eq!(policy.hosts(), weather.as_slice());
+        assert!(
+            !decision.shares_host_network(),
+            "a `*` grant must not widen a package that enumerated its endpoints: {decision:?}"
+        );
+    }
+
+    #[test]
+    fn a_suffix_grant_selects_the_declared_endpoints_under_it() {
+        let maps = v(&[
+            "tile.openstreetmap.org",
+            "nominatim.openstreetmap.org",
+            "overpass-api.de",
+        ]);
+        let decision = EgressDecision::resolve("allowlist", &maps, &v(&[".openstreetmap.org"]));
+        let policy = decision.policy().expect("filtered");
+        assert_eq!(
+            policy.hosts(),
+            ["tile.openstreetmap.org", "nominatim.openstreetmap.org"]
+        );
+        assert!(
+            !policy.permits("overpass-api.de"),
+            "an endpoint outside the granted suffix must not survive: {policy:?}"
         );
     }
 
