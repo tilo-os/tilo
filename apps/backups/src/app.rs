@@ -258,11 +258,14 @@ impl BackupsApp {
         // off a real wall-clock delta; resolving re-decides docked-vs-overlay
         // from the width so the top bar's hamburger reflects the live state.
         self.drawer.tick(false);
+        let _ = self.drawer.resolve(content);
+        // `--shots`: force the overlay drawer open *after* the first resolve
+        // (which settles the eased reveal to the width default), then re-resolve.
         if self.force_rail_open && self.drawer.is_overlay() && !self.drawer.is_open() {
             self.drawer.open();
             self.drawer.snap(true);
+            let _ = self.drawer.resolve(content);
         }
-        let _ = self.drawer.resolve(content);
 
         self.draw_top_bar(scene, t, tr, theme);
 
@@ -408,7 +411,20 @@ impl BackupsApp {
                 paint::fill_rrect(scene, t, pill, 7.0, c.surface_white_5);
             }
             let fg = if active { c.text_primary } else { c.text_dim };
-            paint::text_center(scene, tr, t, v.title(), 13.5, fg, tab.x0, tab.x1, tab.y0 + (TAB_H - 13.5) / 2.0);
+            // Abbreviate the labels once the tabs get too tight for full words,
+            // so "Destinations"/"Schedules" never collide with their neighbours.
+            let (label, fs) = if tab_w < 96.0 {
+                let short = match v {
+                    View::Timeline => "Timeline",
+                    View::Sources => "Sources",
+                    View::Destinations => "Dests",
+                    View::Schedules => "Policy",
+                };
+                (short, 12.0)
+            } else {
+                (v.title(), 13.5)
+            };
+            paint::text_center(scene, tr, t, label, fs, fg, tab.x0, tab.x1, tab.y0 + (TAB_H - fs as f64) / 2.0);
             self.hits.push((tab, Hit::Tab(*v)));
         }
     }
@@ -429,13 +445,17 @@ impl BackupsApp {
         paint::dot(scene, t, Point::new(bar.x0 + PAD + 4.0, cy), 4.0, dotc);
         paint::text(scene, tr, t, &msg, 12.0, c.text_dim, bar.x0 + PAD + 16.0, cy - 6.0);
 
+        // The snapshot/size tally on the right; the centred wordmark is dropped
+        // on tight windows so the three status texts never overlap.
         let right = format!(
             "{} snapshots · {} protected",
             self.catalog.total_snapshots(),
             human_bytes(self.catalog.total_protected())
         );
         paint::text_right(scene, tr, t, &right, 12.0, c.text_dim, bar.x1 - PAD, cy - 6.0);
-        paint::text_center(scene, tr, t, "qOS Backups 1.0", 11.0, c.text_dim.with_alpha_factor(0.7), bar.x0, bar.x1, cy - 5.5);
+        if self.rect.width() >= 900.0 {
+            paint::text_center(scene, tr, t, "qOS Backups 1.0", 11.0, c.text_dim.with_alpha_factor(0.7), bar.x0, bar.x1, cy - 5.5);
+        }
     }
 
     // ---- EMPTY onboarding -----------------------------------------------
@@ -870,30 +890,40 @@ impl BackupsApp {
         paint::text_bold(scene, tr, t, "Recent activity", 13.5, c.text_primary, region.x0 + 18.0, region.y0 + 14.0);
         paint::text_right(scene, tr, t, "last 7 events", 11.0, c.text_dim, region.x1 - 18.0, region.y0 + 16.0);
 
+        // Below this the fixed activity columns won't fit; the row folds to two
+        // lines (when + size on top, the action beneath).
+        let narrow = region.width() < 660.0;
         let events: Vec<Snapshot> = self.catalog.timeline(None).into_iter().take(7).cloned().collect();
-        let row_h = 38.0;
+        let row_h = if narrow { 46.0 } else { 38.0 };
         let y0 = region.y0 + 44.0;
         for (i, s) in events.iter().enumerate() {
             let ry = y0 + i as f64 * row_h;
             if ry + row_h > region.y1 - 8.0 {
                 break;
             }
-            let cy = ry + row_h / 2.0;
-            paint::dot(scene, t, Point::new(region.x0 + 22.0, cy), 4.0, Self::status_color(theme, s.status));
-            let when = format!("{} {}", Catalog::day_label(s.day), s.time);
-            paint::text(scene, tr, t, &when, 12.5, c.text_primary, region.x0 + 36.0, cy - 7.0);
             let path = self.catalog.source(&s.source_id).map(|x| x.path.clone()).unwrap_or_default();
             let action = format!("{} snapshot of {}", s.kind.label(), path);
-            paint::text(scene, tr, t, &action, 12.0, c.text_dim, region.x0 + 168.0, cy - 7.0);
-            let dest = self.catalog.destination(&s.dest_id).map(|d| d.name.clone()).unwrap_or_default();
-            paint::text(scene, tr, t, &format!("→ {dest}"), 11.5, Self::dest_color(theme, &s.dest_id), region.x0 + 440.0, cy - 6.0);
-            let status = match s.status {
-                SnapStatus::Complete => "completed",
-                SnapStatus::Verifying => "verifying",
-                SnapStatus::Failed => "failed",
-            };
-            paint::text_right(scene, tr, t, status, 11.5, Self::status_color(theme, s.status), region.x1 - 110.0, cy - 6.0);
-            paint::text_right(scene, tr, t, &human_bytes(s.delta_bytes), 12.0, c.text_dim, region.x1 - 18.0, cy - 7.0);
+            let when = format!("{} {}", Catalog::day_label(s.day), s.time);
+            if narrow {
+                paint::dot(scene, t, Point::new(region.x0 + 22.0, ry + 12.0), 4.0, Self::status_color(theme, s.status));
+                paint::text(scene, tr, t, &when, 12.5, c.text_primary, region.x0 + 36.0, ry + 4.0);
+                paint::text_right(scene, tr, t, &human_bytes(s.delta_bytes), 12.0, c.text_dim, region.x1 - 18.0, ry + 4.0);
+                paint::text(scene, tr, t, &action, 11.5, c.text_dim, region.x0 + 36.0, ry + 24.0);
+            } else {
+                let cy = ry + row_h / 2.0;
+                paint::dot(scene, t, Point::new(region.x0 + 22.0, cy), 4.0, Self::status_color(theme, s.status));
+                paint::text(scene, tr, t, &when, 12.5, c.text_primary, region.x0 + 36.0, cy - 7.0);
+                paint::text(scene, tr, t, &action, 12.0, c.text_dim, region.x0 + 168.0, cy - 7.0);
+                let dest = self.catalog.destination(&s.dest_id).map(|d| d.name.clone()).unwrap_or_default();
+                paint::text(scene, tr, t, &format!("→ {dest}"), 11.5, Self::dest_color(theme, &s.dest_id), region.x0 + 440.0, cy - 6.0);
+                let status = match s.status {
+                    SnapStatus::Complete => "completed",
+                    SnapStatus::Verifying => "verifying",
+                    SnapStatus::Failed => "failed",
+                };
+                paint::text_right(scene, tr, t, status, 11.5, Self::status_color(theme, s.status), region.x1 - 110.0, cy - 6.0);
+                paint::text_right(scene, tr, t, &human_bytes(s.delta_bytes), 12.0, c.text_dim, region.x1 - 18.0, cy - 7.0);
+            }
             if i + 1 < events.len() && ry + row_h * 2.0 <= region.y1 - 8.0 {
                 paint::hline(scene, t, region.x0 + 18.0, region.x1 - 18.0, ry + row_h, c.border_white_10, 1.0);
             }
@@ -1054,15 +1084,20 @@ impl BackupsApp {
             x += w;
         }
 
-        // Legend.
+        // Legend — wraps onto further rows so it never runs off the right edge.
         let mut lx = content.x0;
-        let ly = y0 + 56.0;
+        let mut ly = y0 + 56.0;
         for (id, name, n) in &counts {
-            paint::dot(scene, t, Point::new(lx + 5.0, ly + 6.0), 5.0, Self::dest_color(theme, id));
             let label = format!("{name}  ·  {n} snapshots");
-            paint::text(scene, tr, t, &label, 12.0, c.text_dim, lx + 16.0, ly);
             let (w, _) = tr.measure(&label, 12.0, None);
-            lx += w as f64 + 48.0;
+            let item_w = 16.0 + w as f64 + 28.0;
+            if lx + item_w > content.x1 && lx > content.x0 + 0.5 {
+                lx = content.x0;
+                ly += 24.0;
+            }
+            paint::dot(scene, t, Point::new(lx + 5.0, ly + 6.0), 5.0, Self::dest_color(theme, id));
+            paint::text(scene, tr, t, &label, 12.0, c.text_dim, lx + 16.0, ly);
+            lx += item_w + 20.0;
         }
     }
 
@@ -1203,8 +1238,12 @@ impl BackupsApp {
         let Some(snap) = snap else { return };
         let src = self.catalog.source(&snap.source_id);
         // Clamp the modal to the window so it never overflows a small screen.
+        // When it's too narrow for two columns it stacks, and needs more height
+        // so the options don't crowd the footer buttons.
         let mw = 760.0_f64.min(self.rect.width() - 40.0).max(300.0);
-        let mh = 460.0_f64.min(self.rect.height() - 40.0).max(300.0);
+        let narrow_modal = mw < 620.0;
+        let target_h: f64 = if narrow_modal { 620.0 } else { 460.0 };
+        let mh = target_h.min(self.rect.height() - 40.0).max(300.0);
         let m = Rect::new(
             self.rect.center().x - mw / 2.0,
             self.rect.center().y - mh / 2.0,
@@ -1226,7 +1265,6 @@ impl BackupsApp {
         // options) when the modal is too narrow for two readable columns.
         let body_y = m.y0 + 74.0;
         let body_bottom = m.y1 - 76.0;
-        let narrow_modal = mw < 620.0;
         let (tree, opt) = if narrow_modal {
             let mid = body_y + (body_bottom - body_y) * 0.56;
             (

@@ -1215,30 +1215,35 @@ impl FirewallApp {
         } else {
             theme.text_primary
         };
-        // Shift the status right when the hamburger occupies the header's left
-        // edge (rail overlaid or collapsed), and clamp its width so it never
-        // runs under the right-aligned controls.
-        let toggle_in_header = !(self.rail.is_docked() && self.rail.is_open());
-        let sub_x = if toggle_in_header {
-            h.x0 + 12.0 + TOGGLE_SIZE + 12.0
-        } else {
-            h.x0 + 20.0
-        };
-        let ctrl_left = if self.available { l.enable_pill.x0 - 52.0 } else { h.x1 - PAD };
-        let sub_max = (ctrl_left - sub_x).max(80.0);
-        paint::label(tr, scene, t, &sub, 13.0, sub_color, sub_x, h.y0 + 18.0, sub_max);
+        // The status line is dropped at narrow widths, where there's no room
+        // for it beside the controls (the enable pill + red "Panic ON" button
+        // already carry active / panic state). When shown, shift it right past
+        // the header hamburger and clamp its width under the controls.
+        if !l.narrow {
+            let toggle_in_header = !(self.rail.is_docked() && self.rail.is_open());
+            let sub_x = if toggle_in_header {
+                h.x0 + 12.0 + TOGGLE_SIZE + 12.0
+            } else {
+                h.x0 + 20.0
+            };
+            let ctrl_left = if self.available { l.enable_pill.x0 - 52.0 } else { h.x1 - PAD };
+            let sub_max = (ctrl_left - sub_x).max(80.0);
+            paint::label(tr, scene, t, &sub, 13.0, sub_color, sub_x, h.y0 + 18.0, sub_max);
+        }
 
         // With no readable firewall there are no live controls to offer.
         if !self.available {
             return;
         }
 
-        // Backend mode chip, just left of the enable pill.
-        let mode_txt = match self.backend.mode() {
-            Mode::Live => "live",
-            Mode::DryRun => "dry-run",
-        };
-        paint::label_right_v(tr, scene, t, mode_txt, 11.0, theme.text_dim, l.enable_pill.x0 - 10.0, h.y0, HEADER_H);
+        // Backend mode chip, just left of the enable pill (hidden when narrow).
+        if !l.narrow {
+            let mode_txt = match self.backend.mode() {
+                Mode::Live => "live",
+                Mode::DryRun => "dry-run",
+            };
+            paint::label_right_v(tr, scene, t, mode_txt, 11.0, theme.text_dim, l.enable_pill.x0 - 10.0, h.y0, HEADER_H);
+        }
 
         // Enable pill.
         let (pill_bg, pill_fg, pill_txt) = if self.config.enabled {
