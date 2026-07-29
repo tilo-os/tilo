@@ -263,14 +263,17 @@ mod tests {
     fn iso_with_label(label: &str) -> tempfile::NamedTempFile {
         use std::io::{Seek, SeekFrom, Write};
         let mut f = tempfile::Builder::new().suffix(".iso").tempfile().unwrap();
-        // Pad up to the PVD sector, then write: type(1) + "CD001" + version(1)
-        // + 32 bytes system id + 32 bytes volume id (space-padded).
+        // Pad up to the PVD sector, then write the real ISO-9660 header layout:
+        // type(1) + "CD001"(5) + version(1) + unused(1) + system id(32) +
+        // volume id(32). The volume id must land at PVD offset 40 (file
+        // offset 0x8028) for `read_iso_label` to find it.
         f.seek(SeekFrom::Start(0x8000)).unwrap();
-        let mut pvd = vec![0x01u8];
-        pvd.extend_from_slice(b"CD001");
-        pvd.push(0x01);
-        pvd.extend_from_slice(&[b' '; 32]); // system identifier
-        let mut vol = [b' '; 32];
+        let mut pvd = vec![0x01u8]; // offset 0: descriptor type
+        pvd.extend_from_slice(b"CD001"); // offset 1..6: standard identifier
+        pvd.push(0x01); // offset 6: version
+        pvd.push(0x00); // offset 7: unused
+        pvd.extend_from_slice(&[b' '; 32]); // offset 8..40: system identifier
+        let mut vol = [b' '; 32]; // offset 40..72: volume identifier
         let b = label.as_bytes();
         vol[..b.len()].copy_from_slice(b);
         pvd.extend_from_slice(&vol);
