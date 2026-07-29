@@ -39,7 +39,14 @@ pub fn app_root() -> Box<dyn Widget> {
 ///
 /// An empty / unknown name yields the same frame as [`app_root`].
 pub fn app_root_for_shot(scenario: &str) -> Box<dyn Widget> {
-    let mut app = SnippetsApp::new();
+    // The `empty` scenario captures the honest live zero-state (a fresh
+    // install has no snippets); every other scenario stages the seeded demo
+    // library so the capture shows the manager doing real work.
+    let mut app = if scenario == "empty" {
+        SnippetsApp::new()
+    } else {
+        SnippetsApp::new_demo()
+    };
     app.seed_shot_scenario(scenario);
     Box::new(app)
 }
