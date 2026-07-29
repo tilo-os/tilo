@@ -13,6 +13,7 @@ pub mod doc;
 pub mod model;
 pub mod portal;
 pub mod responsive;
+pub mod search_provider;
 pub mod storage;
 pub mod vcard;
 
