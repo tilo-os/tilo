@@ -328,6 +328,8 @@ pub fn chrome_state_json(driver: &ShellDriver) -> String {
     out.push(',');
     push_kv_bool(&mut out, "overlay_collaborators", st.overlays.collaborators);
     out.push(',');
+    push_kv_bool(&mut out, "overlay_room_activity", st.overlays.room_activity);
+    out.push(',');
     push_kv_str(&mut out, "qs_level", qs_level);
     out.push(',');
     push_kv_str(&mut out, "ws_settings_tab", ws_tab);

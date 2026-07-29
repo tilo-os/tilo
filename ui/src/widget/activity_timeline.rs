@@ -41,7 +41,8 @@ use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Circle, Line, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::Color;
-use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
+use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
+use winit::keyboard::{Key, NamedKey};
 
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
@@ -103,6 +104,20 @@ impl ChipKind {
         }
     }
 
+    /// Abbreviated label used when the full set of chips will not fit the
+    /// pane's width. Every chip switches together — a strip with three long
+    /// labels and two short ones reads as a rendering accident rather than as
+    /// a deliberate density change.
+    pub fn short_label(&self) -> &'static str {
+        match self {
+            ChipKind::All => "ALL",
+            ChipKind::Edits => "EDIT",
+            ChipKind::Comments => "NOTE",
+            ChipKind::Governance => "GOV",
+            ChipKind::Deletes => "DEL",
+        }
+    }
+
     /// Map a chip to the op-class subset it filters to. `All` is
     /// `None` because "no op-class filter" is how
     /// [`HistoryFilter`] expresses "show everything"; the empty Vec
@@ -122,8 +137,22 @@ impl ChipKind {
     }
 }
 
+/// Below this pane width the row drops its per-author identity hash and the
+/// chip strip switches to [`ChipKind::short_label`]. Picked as the width at
+/// which the full-label strip plus the author pill stop fitting side by side.
+const COMPACT_WIDTH: f64 = 420.0;
+/// Below this pane width the trailing time + revert slots shrink so the
+/// summary — the row's load-bearing text — keeps a usable share of the row.
+const NARROW_WIDTH: f64 = 340.0;
+
 /// Callback fired when the user clicks `[Revert]` on a row.
 pub type RevertCallback = Box<dyn FnMut(&HistoryEntryId)>;
+
+/// Callback fired when the user clicks `[Clear filters]` on the
+/// filtered-to-nothing empty state. The widget resets its own chip + author
+/// query before calling this; the host uses it to drop any filter it owns
+/// itself (a date range, say) so "clear" clears everything the user can see.
+pub type ClearFiltersCallback = Box<dyn FnMut()>;
 
 /// Scrolling, filterable activity-pane widget. See module-level
 /// docs for the contract.
@@ -161,6 +190,19 @@ pub struct ActivityTimeline {
     /// re-measuring text. Empty until the first paint — clicks land
     /// in the strip before that are no-ops.
     chip_rects: Vec<(ChipKind, Rect)>,
+    /// Last-drawn rect of the trailing `author:` pill, so a click can clear
+    /// the typeahead without the host having to re-derive the geometry.
+    author_pill_rect: Rect,
+    /// Last-drawn rect of the `[Clear filters]` chip in the
+    /// filtered-to-nothing empty state. `Rect::ZERO` whenever that state is
+    /// not on screen, so a stale click cannot trip it.
+    clear_chip_rect: Rect,
+    /// Human label for whatever time range the host installed on
+    /// [`Self::filter`]. The widget cannot name a `SystemTime` pair in the
+    /// user's own vocabulary ("Last 7 days"), so the host supplies the words
+    /// and the widget renders them in the filter summary.
+    time_range_label: Option<String>,
+    on_clear_filters: Option<ClearFiltersCallback>,
     dirty: bool,
 }
 
@@ -188,6 +230,10 @@ impl ActivityTimeline {
             now_override: None,
             newest_first: true,
             chip_rects: Vec::new(),
+            author_pill_rect: Rect::ZERO,
+            clear_chip_rect: Rect::ZERO,
+            time_range_label: None,
+            on_clear_filters: None,
             dirty: true,
         }
     }
@@ -261,6 +307,163 @@ impl ActivityTimeline {
         self
     }
 
+    /// Builder: install the callback fired by `[Clear filters]`.
+    pub fn on_clear_filters<F: FnMut() + 'static>(mut self, f: F) -> Self {
+        self.on_clear_filters = Some(Box::new(f));
+        self
+    }
+
+    /// Name the time range the host installed on the filter, in the words the
+    /// host's own control uses. Shown in the "nothing matched" explanation so
+    /// a date filter is never an invisible reason for an empty list.
+    pub fn set_time_range_label(&mut self, label: Option<String>) {
+        if self.time_range_label != label {
+            self.time_range_label = label;
+            self.dirty = true;
+        }
+    }
+
+    /// Reset every filter the widget owns — the op-class chip and the author
+    /// typeahead — and fire [`Self::on_clear_filters`] so the host drops the
+    /// ones it owns. Wired to the `[Clear filters]` chip; also callable
+    /// directly by a host that offers its own reset.
+    pub fn clear_filters(&mut self) {
+        self.active_chip = ChipKind::All;
+        self.author_query.clear();
+        self.rebuild();
+        if let Some(cb) = self.on_clear_filters.as_mut() {
+            cb();
+        }
+    }
+
+    /// Whether any filter is currently narrowing the list — the widget's own
+    /// chip / typeahead, or a range or author list the host installed.
+    pub fn is_filtered(&self) -> bool {
+        self.active_chip != ChipKind::All
+            || !self.author_query.trim().is_empty()
+            || !self.filter.authors.is_empty()
+            || !self.filter.op_classes.is_empty()
+            || self.filter.time_range.is_some()
+    }
+
+    /// The active narrowing, spelled out. Empty string when nothing narrows.
+    ///
+    /// This is what turns "the list is blank" into "the list is blank
+    /// *because*" — it is rendered under the empty-state title whenever a
+    /// filter, rather than an empty history, is why there is nothing to show.
+    pub fn active_filter_summary(&self) -> String {
+        let mut parts: Vec<String> = Vec::new();
+        if self.active_chip != ChipKind::All {
+            parts.push(self.active_chip.label().to_string());
+        }
+        for op in &self.filter.op_classes {
+            let label = format!("{op:?}").to_uppercase();
+            if !parts.iter().any(|p| *p == label) {
+                parts.push(label);
+            }
+        }
+        let typed = self.author_query.trim();
+        if !typed.is_empty() {
+            parts.push(format!("author:{typed}"));
+        }
+        for a in &self.filter.authors {
+            parts.push(a.clone());
+        }
+        if self.filter.time_range.is_some() {
+            parts.push(
+                self.time_range_label
+                    .clone()
+                    .unwrap_or_else(|| "a date range".to_string()),
+            );
+        }
+        parts.join(" \u{00b7} ")
+    }
+
+    /// Title + explanation for the current empty state.
+    ///
+    /// Two genuinely different situations that must not read the same: a room
+    /// nothing has happened in yet, and a room whose activity the current
+    /// filter is hiding. The second returns the count it is hiding and the
+    /// filter doing the hiding.
+    pub fn empty_state_lines(&self) -> (String, Option<String>) {
+        if self.entries.is_empty() {
+            return ("No activity yet".to_string(), None);
+        }
+        let hidden = self.entries.len();
+        let summary = self.active_filter_summary();
+        let detail = if summary.is_empty() {
+            format!("{hidden} entries are loaded but none are shown")
+        } else {
+            format!("{hidden} hidden by {summary}")
+        };
+        ("No activity matches these filters".to_string(), Some(detail))
+    }
+
+    /// Rect of the `[Clear filters]` chip, or `Rect::ZERO` when the
+    /// filtered-to-nothing empty state is not on screen.
+    pub fn clear_filters_chip_rect(&self) -> Rect {
+        self.clear_chip_rect
+    }
+
+    /// Rect of the trailing `author:` pill in the chip strip. `Rect::ZERO`
+    /// before the first paint.
+    pub fn author_pill_rect(&self) -> Rect {
+        self.author_pill_rect
+    }
+
+    /// Whether the pane is narrow enough to drop per-row secondary detail.
+    fn is_compact(&self) -> bool {
+        self.rect.width() < COMPACT_WIDTH
+    }
+
+    /// Width of the leading author cluster, proportional to the pane with a
+    /// floor so a name is never squeezed to nothing.
+    fn author_slot_w(&self) -> f64 {
+        (self.rect.width() * 0.30).clamp(84.0, AUTHOR_SLOT_W)
+    }
+
+    /// Width of the trailing relative-time slot.
+    fn time_slot_w(&self) -> f64 {
+        if self.rect.width() < NARROW_WIDTH {
+            48.0
+        } else {
+            TIME_SLOT_W
+        }
+    }
+
+    /// Width of the trailing `[Revert]` chip.
+    fn revert_chip_w(&self) -> f64 {
+        if self.rect.width() < NARROW_WIDTH {
+            48.0
+        } else {
+            REVERT_CHIP_W
+        }
+    }
+
+    /// Top edge of the row list, below the pane padding and the chip strip.
+    fn rows_top(&self) -> f64 {
+        self.rect.y0 + PADDING + FILTER_STRIP_HEIGHT + PADDING
+    }
+
+    /// Half-open range of visible-row indices that intersect the viewport.
+    ///
+    /// Derived from the scroll offset rather than by walking every row, so a
+    /// room with thousands of entries costs the same per frame as one with
+    /// twenty. Nothing downstream may assume the range is the whole list.
+    fn visible_row_range(&self) -> std::ops::Range<usize> {
+        let n = self.visible.len();
+        if n == 0 {
+            return 0..0;
+        }
+        let vp = self.viewport_height();
+        if vp <= 0.0 {
+            return 0..0;
+        }
+        let first = (self.scroll_y / ROW_HEIGHT).floor().max(0.0) as usize;
+        let last = ((self.scroll_y + vp) / ROW_HEIGHT).ceil() as usize + 1;
+        first.min(n)..last.min(n)
+    }
+
     /// Flip the display order. `true` = newest at top (default).
     pub fn set_newest_first(&mut self, newest_first: bool) {
         if self.newest_first != newest_first {
@@ -322,15 +525,13 @@ impl ActivityTimeline {
         if i >= self.visible.len() {
             return None;
         }
-        let top = self.rect.y0 + PADDING + FILTER_STRIP_HEIGHT + PADDING - self.scroll_y;
+        let top = self.rows_top() - self.scroll_y;
         let y0 = top + (i as f64) * ROW_HEIGHT;
         let y1 = y0 + ROW_HEIGHT;
         // Spatial cull: rows entirely outside the rect are
         // off-screen — return None so callers can skip drawing /
         // hit-testing them.
-        if y1 < self.rect.y0 + PADDING + FILTER_STRIP_HEIGHT + PADDING
-            || y0 > self.rect.y1 - PADDING
-        {
+        if y1 < self.rows_top() || y0 > self.rect.y1 - PADDING {
             return None;
         }
         Some(Rect::new(
@@ -354,7 +555,7 @@ impl ActivityTimeline {
         let chip_h = ROW_HEIGHT - 16.0;
         let cy = (row.y0 + row.y1) / 2.0;
         Some(Rect::new(
-            row.x1 - REVERT_CHIP_W - 6.0,
+            row.x1 - self.revert_chip_w() - 6.0,
             cy - chip_h / 2.0,
             row.x1 - 6.0,
             cy + chip_h / 2.0,
@@ -436,15 +637,27 @@ impl ActivityTimeline {
     }
 
     /// Find the visible-row index containing `p`, or `None`.
+    ///
+    /// Constant time: rows are a uniform-pitch stack, so the index falls out
+    /// of the arithmetic. Scanning every row here was the other half of the
+    /// per-frame cost a room with thousands of entries would have paid — this
+    /// runs on every `CursorMoved`.
     pub fn row_at(&self, p: Point) -> Option<usize> {
-        for i in 0..self.visible.len() {
-            if let Some(r) = self.row_rect(i)
-                && r.contains(p)
-            {
-                return Some(i);
-            }
+        if p.x < self.rect.x0 + PADDING || p.x > self.rect.x1 - PADDING {
+            return None;
         }
-        None
+        let top = self.rows_top();
+        if p.y < top || p.y > self.rect.y1 - PADDING {
+            return None;
+        }
+        let idx = ((p.y - top + self.scroll_y) / ROW_HEIGHT).floor();
+        if idx < 0.0 {
+            return None;
+        }
+        let i = idx as usize;
+        // `row_rect` owns the clipping rules; going through it keeps hover and
+        // paint agreeing on which rows exist.
+        self.row_rect(i).filter(|r| r.contains(p)).map(|_| i)
     }
 
     /// Draw one row body — avatar dot, author name, glyph, summary,
@@ -491,37 +704,56 @@ impl ActivityTimeline {
         );
 
         let text_size = theme.tokens.typography.scale.sm;
+        let author_slot_w = self.author_slot_w();
+        let compact = self.is_compact();
         let mut x_cursor = dot_x + AVATAR_DIAM / 2.0 + 8.0;
 
-        // Author display name in primary text colour.
-        let name = entry.author.name.as_str();
+        // Author display name in primary text colour. Ellipsised to whatever
+        // is left of the author slot, so a long display name cannot push the
+        // identity hash over the glyph or the summary over the timestamp.
+        let short_size = (text_size - 2.0).max(10.0);
+        let short = entry.author.identity_short.as_str();
+        let short_w = if compact || short.is_empty() {
+            0.0
+        } else {
+            text_renderer.measure(short, short_size, None).0 as f64 + 6.0
+        };
+        let name_budget = (row.x0 + author_slot_w - 6.0 - x_cursor - short_w).max(24.0);
+        let name = fit_text(
+            text_renderer,
+            entry.author.name.as_str(),
+            text_size,
+            name_budget,
+        );
         text_renderer.draw_text(
             scene,
-            name,
+            &name,
             text_size,
             theme.tokens.colors.text_primary,
             transform * Affine::translate((x_cursor, cy - text_size as f64 / 2.0)),
             None,
         );
-        let (name_w, _) = text_renderer.measure(name, text_size, None);
+        let (name_w, _) = text_renderer.measure(&name, text_size, None);
         x_cursor += name_w as f64 + 6.0;
 
         // Identity short hash in dim text — disambiguates two
-        // authors who share a display name.
-        let short_size = (text_size - 2.0).max(10.0);
-        text_renderer.draw_text(
-            scene,
-            entry.author.identity_short.as_str(),
-            short_size,
-            theme.tokens.colors.text_dim,
-            transform * Affine::translate((x_cursor, cy - short_size as f64 / 2.0)),
-            None,
-        );
+        // authors who share a display name. Dropped on a compact pane, where
+        // the width it costs is worth more to the summary.
+        if short_w > 0.0 {
+            text_renderer.draw_text(
+                scene,
+                short,
+                short_size,
+                theme.tokens.colors.text_dim,
+                transform * Affine::translate((x_cursor, cy - short_size as f64 / 2.0)),
+                None,
+            );
+        }
 
         // Op-class glyph at the end of the author-slot.
         let glyph = op_class_glyph(entry.op_class);
         let (glyph_w, _) = text_renderer.measure(glyph, text_size, None);
-        let glyph_x = row.x0 + AUTHOR_SLOT_W;
+        let glyph_x = row.x0 + author_slot_w;
         text_renderer.draw_text(
             scene,
             glyph,
@@ -538,7 +770,7 @@ impl ActivityTimeline {
         // label so the original content never re-renders, even
         // accidentally, on the audit pane.
         let summary_x = glyph_x + 24.0;
-        let summary_x_end = row.x1 - TIME_SLOT_W - REVERT_CHIP_W - 12.0;
+        let summary_x_end = row.x1 - self.time_slot_w() - self.revert_chip_w() - 12.0;
         let (summary_owned, is_redacted_row): (String, bool) =
             if let Some(redaction) = entry.redaction.as_ref() {
                 (
@@ -554,29 +786,12 @@ impl ActivityTimeline {
                 (entry.summary.clone(), false)
             };
         let summary = summary_owned.as_str();
-        // Crude width clip — drop chars from the end until it fits.
-        // `text_renderer.measure` is cheap; for the typical short
-        // "+12 -3 chars" summary it never trips.
-        let (sw, _) = text_renderer.measure(summary, text_size, None);
-        let drawn_summary = if sw as f64 > (summary_x_end - summary_x).max(0.0) {
-            let budget = (summary_x_end - summary_x).max(0.0);
-            // Binary chop on char index until the rendered width fits.
-            let mut lo = 0;
-            let mut hi = summary.chars().count();
-            while lo < hi {
-                let mid = (lo + hi).div_ceil(2);
-                let s: String = summary.chars().take(mid).collect();
-                let (w, _) = text_renderer.measure(&s, text_size, None);
-                if w as f64 <= budget {
-                    lo = mid;
-                } else {
-                    hi = mid - 1;
-                }
-            }
-            summary.chars().take(lo).collect::<String>()
-        } else {
-            summary.to_string()
-        };
+        let drawn_summary = fit_text(
+            text_renderer,
+            summary,
+            text_size,
+            (summary_x_end - summary_x).max(0.0),
+        );
         let summary_color = if is_redacted_row {
             theme.tokens.colors.text_dim
         } else {
@@ -609,9 +824,14 @@ impl ActivityTimeline {
         }
 
         // Relative timestamp slot, right-aligned within its width.
-        let rel = format_relative_time(entry.timestamp, now);
+        let rel = fit_text(
+            text_renderer,
+            &format_relative_time(entry.timestamp, now),
+            text_size,
+            self.time_slot_w(),
+        );
         let (tw, _) = text_renderer.measure(&rel, text_size, None);
-        let time_x = row.x1 - REVERT_CHIP_W - 12.0 - tw as f64;
+        let time_x = row.x1 - self.revert_chip_w() - 12.0 - tw as f64;
         text_renderer.draw_text(
             scene,
             &rel,
@@ -629,7 +849,7 @@ impl ActivityTimeline {
         if is_hovered && op_class_is_revertible(entry.op_class) && !is_redacted_row {
             let chip_h = ROW_HEIGHT - 16.0;
             let chip_rect = Rect::new(
-                row.x1 - REVERT_CHIP_W - 6.0,
+                row.x1 - self.revert_chip_w() - 6.0,
                 cy - chip_h / 2.0,
                 row.x1 - 6.0,
                 cy + chip_h / 2.0,
@@ -649,11 +869,16 @@ impl ActivityTimeline {
                 None,
                 &chip_shape,
             );
-            let label = "Revert";
-            let (lw, lh) = text_renderer.measure(label, text_size - 1.0, None);
+            let label = fit_text(
+                text_renderer,
+                "Revert",
+                text_size - 1.0,
+                chip_rect.width() - 8.0,
+            );
+            let (lw, lh) = text_renderer.measure(&label, text_size - 1.0, None);
             text_renderer.draw_text(
                 scene,
-                label,
+                &label,
                 text_size - 1.0,
                 theme.tokens.colors.text_primary,
                 transform
@@ -690,13 +915,50 @@ impl ActivityTimeline {
         // (`handle_event`) lines up with what was just painted.
         self.chip_rects.clear();
 
+        // The author pill is anchored to the right edge; reserve its width
+        // first so the chips lay out into what is actually left rather than
+        // sliding underneath it on a narrow pane.
+        let author_label = if self.author_query.is_empty() {
+            "author:\u{2026}".to_string()
+        } else {
+            format!("author:{}", self.author_query)
+        };
+        let author_full_w =
+            (text_renderer.measure(&author_label, chip_text_size, None).0 as f64 + 16.0)
+                .min(strip.width() * 0.45);
+        let chips_budget = (strip.width() - author_full_w - 8.0).max(0.0);
+
+        // One measurement pass to decide whether the full labels fit. Every
+        // chip switches together — a strip with a mix reads as a bug.
+        let measure_run = |tr: &mut TextRenderer, short: bool| -> f64 {
+            let mut total = 0.0;
+            for chip in ChipKind::ALL {
+                let l = if short { chip.short_label() } else { chip.label() };
+                total += tr.measure(l, chip_text_size, None).0 as f64 + 16.0 + 6.0;
+            }
+            total
+        };
+        let use_short = measure_run(text_renderer, false) > chips_budget;
+
         let mut x = strip.x0;
         for chip in ChipKind::ALL {
-            let label = chip.label();
+            let label = if use_short {
+                chip.short_label()
+            } else {
+                chip.label()
+            };
             let (w, _) = text_renderer.measure(label, chip_text_size, None);
             let chip_w = w as f64 + 16.0;
             let chip_h = (strip.height() - 8.0).max(20.0);
             let cy = (strip.y0 + strip.y1) / 2.0;
+            // Even the short labels can overrun a very narrow pane. Stop
+            // rather than paint a chip half-under the author pill; the
+            // remaining classes stay reachable from a wider window and,
+            // crucially, an unpainted chip is not in `chip_rects` so it
+            // cannot be clicked either.
+            if x + chip_w > strip.x0 + chips_budget && !self.chip_rects.is_empty() {
+                break;
+            }
             let chip_rect = Rect::new(x, cy - chip_h / 2.0, x + chip_w, cy + chip_h / 2.0);
             self.chip_rects.push((chip, chip_rect));
             let active = self.active_chip == chip;
@@ -728,21 +990,22 @@ impl ActivityTimeline {
 
         // Show the typeahead author filter as a trailing pill so the
         // user always sees what's narrowed. Empty = "no filter"
-        // placeholder.
-        let author_label = if self.author_query.is_empty() {
-            "author:…".to_string()
-        } else {
-            format!("author:{}", self.author_query)
-        };
-        let (aw, _) = text_renderer.measure(&author_label, chip_text_size, None);
-        let aw_full = aw as f64 + 16.0;
+        // placeholder. The query is ellipsised from the left-hand side of
+        // the name, keeping the characters most recently typed visible.
         let cy = (strip.y0 + strip.y1) / 2.0;
         let chip_h = (strip.height() - 8.0).max(20.0);
         // Anchor to the right edge so the chip strip degrades
         // gracefully when the pane is narrow.
         let arx1 = strip.x1;
-        let arx0 = arx1 - aw_full;
+        let arx0 = arx1 - author_full_w;
         let chip_rect = Rect::new(arx0, cy - chip_h / 2.0, arx1, cy + chip_h / 2.0);
+        self.author_pill_rect = chip_rect;
+        let drawn_author = fit_text(
+            text_renderer,
+            &author_label,
+            chip_text_size,
+            chip_rect.width() - 12.0,
+        );
         let body = if self.author_query.is_empty() {
             idle_fill
         } else {
@@ -761,10 +1024,10 @@ impl ActivityTimeline {
             None,
             &shape,
         );
-        let (lw, lh) = text_renderer.measure(&author_label, chip_text_size, None);
+        let (lw, lh) = text_renderer.measure(&drawn_author, chip_text_size, None);
         text_renderer.draw_text(
             scene,
-            &author_label,
+            &drawn_author,
             chip_text_size,
             text_color,
             transform
@@ -775,6 +1038,45 @@ impl ActivityTimeline {
             None,
         );
     }
+}
+
+/// Shorten `s` until it fits `budget` pixels at `size`, appending an ellipsis
+/// when anything was dropped.
+///
+/// Binary chop on the char index; `measure` is cheap and the common case (a
+/// short summary in a wide row) exits on the first measurement. Returns an
+/// empty string when not even one character fits, which is the honest answer
+/// for a slot that has been squeezed to nothing.
+fn fit_text(tr: &mut TextRenderer, s: &str, size: f32, budget: f64) -> String {
+    if budget <= 0.0 {
+        return String::new();
+    }
+    if tr.measure(s, size, None).0 as f64 <= budget {
+        return s.to_string();
+    }
+    const ELLIPSIS: &str = "\u{2026}";
+    let ell_w = tr.measure(ELLIPSIS, size, None).0 as f64;
+    if ell_w > budget {
+        return String::new();
+    }
+    let inner = budget - ell_w;
+    let mut lo = 0usize;
+    let mut hi = s.chars().count();
+    while lo < hi {
+        let mid = (lo + hi).div_ceil(2);
+        let candidate: String = s.chars().take(mid).collect();
+        if tr.measure(&candidate, size, None).0 as f64 <= inner {
+            lo = mid;
+        } else {
+            hi = mid - 1;
+        }
+    }
+    if lo == 0 {
+        return ELLIPSIS.to_string();
+    }
+    let mut out: String = s.chars().take(lo).collect();
+    out.push_str(ELLIPSIS);
+    out
 }
 
 impl Widget for ActivityTimeline {
@@ -843,42 +1145,106 @@ impl Widget for ActivityTimeline {
 
         self.draw_filter_strip(scene, transform, text_renderer, theme);
 
-        // Empty state — centred "No activity yet" label. Painted
-        // *after* the strip so it doesn't overlap the chips, and
-        // *before* clipping the row area so a future scroll clip
-        // doesn't accidentally hide it.
+        // Empty state. Painted *after* the strip so it doesn't overlap the
+        // chips. Two distinct cases — a room nothing has happened in, and a
+        // room whose activity the filter is hiding — because a pane that
+        // renders those identically reads as broken in the second case.
         if self.visible.is_empty() {
-            let label = "No activity yet";
+            let (title, detail) = self.empty_state_lines();
             let size = theme.tokens.typography.scale.sm;
-            let (w, h) = text_renderer.measure(label, size, None);
-            let rows_top = self.rect.y0 + PADDING + FILTER_STRIP_HEIGHT + PADDING;
+            let small = (size - 1.0).max(10.0);
+            let rows_top = self.rows_top();
             let cx = (self.rect.x0 + self.rect.x1) / 2.0;
             let cy = (rows_top + self.rect.y1 - PADDING) / 2.0;
+            let budget = (self.rect.width() - 2.0 * PADDING - 16.0).max(0.0);
+
+            let title = fit_text(text_renderer, &title, size, budget);
+            let (w, h) = text_renderer.measure(&title, size, None);
+            let title_y = if detail.is_some() {
+                cy - h as f64 - 14.0
+            } else {
+                cy - h as f64 / 2.0
+            };
             text_renderer.draw_text(
                 scene,
-                label,
+                &title,
                 size,
                 theme.tokens.colors.text_dim,
-                transform * Affine::translate((cx - w as f64 / 2.0, cy - h as f64 / 2.0)),
+                transform * Affine::translate((cx - w as f64 / 2.0, title_y)),
                 None,
             );
+
+            self.clear_chip_rect = Rect::ZERO;
+            if let Some(detail) = detail {
+                let detail = fit_text(text_renderer, &detail, small, budget);
+                let (dw, dh) = text_renderer.measure(&detail, small, None);
+                let detail_y = title_y + h as f64 + 8.0;
+                text_renderer.draw_text(
+                    scene,
+                    &detail,
+                    small,
+                    theme.tokens.colors.text_dim,
+                    transform * Affine::translate((cx - dw as f64 / 2.0, detail_y)),
+                    None,
+                );
+
+                // `[Clear filters]` — the way back out. Without it the user
+                // has to remember which chip they pressed to get here.
+                let label = "Clear filters";
+                let (lw, lh) = text_renderer.measure(label, small, None);
+                let chip_w = (lw as f64 + 20.0).min(budget.max(24.0));
+                let chip_h = lh as f64 + 10.0;
+                let chip_y0 = detail_y + dh as f64 + 12.0;
+                if chip_y0 + chip_h <= self.rect.y1 - PADDING {
+                    let chip = Rect::new(
+                        cx - chip_w / 2.0,
+                        chip_y0,
+                        cx + chip_w / 2.0,
+                        chip_y0 + chip_h,
+                    );
+                    self.clear_chip_rect = chip;
+                    let shape = RoundedRect::from_rect(chip, chip_h / 2.0);
+                    scene.fill(
+                        vello::peniko::Fill::NonZero,
+                        transform,
+                        theme.tokens.colors.surface_white_10,
+                        None,
+                        &shape,
+                    );
+                    scene.stroke(
+                        &Stroke::new(1.0),
+                        transform,
+                        theme.tokens.colors.border_white_20,
+                        None,
+                        &shape,
+                    );
+                    text_renderer.draw_text(
+                        scene,
+                        label,
+                        small,
+                        theme.tokens.colors.text_primary,
+                        transform
+                            * Affine::translate((
+                                chip.x0 + (chip.width() - lw as f64) / 2.0,
+                                chip.y0 + (chip.height() - lh as f64) / 2.0,
+                            )),
+                        None,
+                    );
+                }
+            }
             self.dirty = false;
             return;
         }
+        self.clear_chip_rect = Rect::ZERO;
 
-        // Walk visible rows, paint each that intersects the row
-        // viewport.
+        // Paint only the rows the viewport can actually show. The range comes
+        // out of the scroll offset, so a room with ten thousand entries costs
+        // the same per frame as one with ten.
         let now = self.now();
-        for i in 0..self.visible.len() {
+        for i in self.visible_row_range() {
             let Some(row) = self.row_rect(i) else {
                 continue;
             };
-            // Skip rows entirely outside the rect — `row_rect` already
-            // does some culling, but a partially-clipped row is still
-            // painted (Vello's scene clipping draws the visible band).
-            if row.y1 < self.rect.y0 || row.y0 > self.rect.y1 {
-                continue;
-            }
             let entry = &self.entries[self.visible[i]];
             let is_hovered = self.hover_row == Some(i);
             self.draw_row(scene, transform, text_renderer, theme, row, entry, is_hovered, now);
@@ -891,7 +1257,7 @@ impl Widget for ActivityTimeline {
         &mut self,
         event: &WindowEvent,
         scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
+        modifiers: &winit::event::Modifiers,
         _state: &mut AutoCommit,
         _root: &ObjId,
         handled: &mut bool,
@@ -900,6 +1266,46 @@ impl Widget for ActivityTimeline {
         _taffy: &TaffyTree<()>,
     ) {
         match event {
+            // Author typeahead. Printable characters and Backspace narrow the
+            // list by contributor as they are typed; the pill in the chip
+            // strip is the visible echo. Chorded keys are left alone so the
+            // host's own shortcuts still work while the pane has the keyboard.
+            WindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
+                        logical_key,
+                        state: ElementState::Pressed,
+                        ..
+                    },
+                ..
+            } if !modifiers.state().control_key()
+                && !modifiers.state().super_key()
+                && !modifiers.state().alt_key() =>
+            {
+                match logical_key {
+                    Key::Character(c) => {
+                        let text: String =
+                            c.chars().filter(|ch| !ch.is_control()).collect();
+                        if !text.is_empty() {
+                            self.author_query.push_str(&text);
+                            self.rebuild();
+                            *handled = true;
+                        }
+                    }
+                    Key::Named(NamedKey::Space) => {
+                        self.author_query.push(' ');
+                        self.rebuild();
+                        *handled = true;
+                    }
+                    Key::Named(NamedKey::Backspace) => {
+                        if self.author_query.pop().is_some() {
+                            self.rebuild();
+                            *handled = true;
+                        }
+                    }
+                    _ => {}
+                }
+            }
             WindowEvent::CursorMoved { position, .. } => {
                 let p = Point::new(position.x / scale_factor, position.y / scale_factor);
                 self.last_cursor = p;
@@ -915,6 +1321,19 @@ impl Widget for ActivityTimeline {
                 button: MouseButton::Left,
                 ..
             } => {
+                // The `[Clear filters]` chip only exists while the
+                // filtered-to-nothing empty state is painted, and the rect is
+                // zeroed the moment it is not — so this can never fire on a
+                // stale hit zone.
+                if self.clear_chip_rect.area() > 0.0
+                    && self.clear_chip_rect.contains(self.last_cursor)
+                {
+                    self.clear_filters();
+                    self.dirty = true;
+                    *handled = true;
+                    return;
+                }
+
                 // Check whether the press landed on a chip first —
                 // the chip strip steals the click before falling
                 // through to the row hit-test. `chip_rects` is
@@ -932,6 +1351,17 @@ impl Widget for ActivityTimeline {
                             *handled = true;
                             return;
                         }
+                    }
+                    // The author pill clears the typeahead — the only way back
+                    // from a mistyped name without reaching for backspace.
+                    if self.author_pill_rect.contains(self.last_cursor) {
+                        if !self.author_query.is_empty() {
+                            self.author_query.clear();
+                            self.rebuild();
+                            self.dirty = true;
+                        }
+                        *handled = true;
+                        return;
                     }
                     // Click inside the strip but not on a chip — eat
                     // it so the row hit-test below doesn't fire.
