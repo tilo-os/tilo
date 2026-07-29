@@ -1,91 +1,188 @@
-//! Packet-level proof of the egress mechanism, run against a real
+//! Packet-level proof of per-host egress filtering, run against a real
 //! `bwrap` sandbox.
 //!
-//! Per-host egress filtering rests on two kernel properties. Neither is
-//! obvious, both are load-bearing, and asserting them here means a
-//! kernel or a `bwrap` that stops providing them fails the build
-//! instead of quietly turning the filter into a no-op:
+//! Everything here asserts on **connection outcomes from inside the
+//! sandbox** — bytes that arrived, or a refusal code that came back —
+//! never on the argv that built it. An argv assertion proves a string
+//! was constructed; these prove a packet did or did not go anywhere.
 //!
-//! 1. **An unshared network namespace is genuinely empty.** With
-//!    `--unshare-all` and no `--share-net`, a socket inside the sandbox
-//!    has no route to anywhere. `connect(2)` to a public address fails
-//!    with `ENETUNREACH` before a packet is built, and the loopback
-//!    inside the sandbox is *its own* loopback — a server the host is
-//!    running on `127.0.0.1` is not reachable at that address from
-//!    inside. This is what makes the filter unbypassable: an app that
-//!    ignores the egress path we give it does not get a fallback, it
-//!    gets nothing.
+//! ## The two kernel properties underneath
 //!
-//! 2. **A bind-mounted `AF_UNIX` socket crosses the boundary anyway.**
-//!    Pathname sockets are addressed through the filesystem, not
-//!    through the network namespace, so one bind-mount punches exactly
-//!    one hole through an otherwise-empty namespace — and the process
-//!    on the far side of it is ours, in the host namespace, holding the
-//!    policy.
+//! Per-host filtering rests on two behaviours that are not obvious and
+//! are both load-bearing.
+//! [`an_unshared_netns_has_no_route_but_a_bound_unix_socket_still_reaches_the_host`]
+//! pins them, so a kernel or a `bwrap` that stops providing them fails
+//! the build instead of quietly turning the filter into a no-op:
 //!
-//! Together those two say: the sandbox's *only* egress is a channel
-//! whose far end we control. That is the whole architecture. Everything
-//! else — SOCKS5, hostname matching, resolution — is policy layered on
-//! a channel these two properties make exclusive.
+//! 1. **An unshared network namespace is genuinely empty.**
+//!    `connect(2)` to a public address fails `ENETUNREACH` before a
+//!    packet is built, and the loopback inside the sandbox is *its own*
+//!    — a host service on `127.0.0.1` is not reachable at that address
+//!    from inside. This is what makes the filter unbypassable: an app
+//!    that ignores the egress path it is given does not get a fallback,
+//!    it gets nothing.
+//! 2. **A bind-mounted `AF_UNIX` socket crosses the boundary anyway,**
+//!    because pathname sockets are addressed through the filesystem. So
+//!    one bind-mount is exactly one hole, and the process on its far
+//!    side is ours.
+//!
+//! ## Where the sandbox shape comes from
+//!
+//! The tests below build a sandbox around a probe rather than launching
+//! a packaged app, but every security-relevant decision in that sandbox
+//! is made by the **production** functions: `EgressDecision::resolve`
+//! decides whether the namespace is shared, `push_net_gate` writes the
+//! socket bind and the proxy environment, `NetGate` is the process
+//! enforcing the allowlist, and `run_relay` is the in-sandbox hop. Only
+//! the boilerplate — binding `/usr`, binding the probe — is test-local.
 //!
 //! ## How the in-sandbox side runs
 //!
 //! There is no separate probe binary to package. The test binary
-//! re-executes *itself* inside the sandbox, selecting the single
-//! `netns_probe` test by name and handing it the sandbox-side socket
-//! path through the environment. The probe writes `PROBE <key>=<value>`
-//! lines to stdout; the outer test asserts on those lines, so a probe
-//! that silently did nothing fails the outer test rather than passing
-//! it.
+//! re-executes *itself* inside the sandbox, selecting one probe test by
+//! name. The probe writes `PROBE <key>=<value>` lines to stdout and the
+//! outer tests assert on those, so a probe that silently did nothing
+//! fails the outer assertions rather than passing them.
 
 use std::io::{Read, Write};
+use std::net::{TcpListener, TcpStream};
 use std::os::unix::net::{UnixListener, UnixStream};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-/// Set by the outer test on the re-executed child; carries the
-/// sandbox-side path of the bind-mounted gate socket.
-const PROBE_SOCKET_ENV: &str = "QOS_NETGATE_PROBE_SOCKET";
-/// Carries the host-side TCP port the outer test is listening on, so
-/// the probe can demonstrate that the host's loopback is *not* the
-/// sandbox's loopback.
-const PROBE_PORT_ENV: &str = "QOS_NETGATE_PROBE_PORT";
+use launcher::netgate::{EgressDecision, EgressPolicy, NetGate, reply};
+use launcher::sandbox::NetGateBind;
 
-/// Where the gate socket appears inside the sandbox. Short on purpose:
-/// `sun_path` is 108 bytes and a socket bound at a long host path
-/// cannot be connected to at all. The host side lives under
-/// `$XDG_RUNTIME_DIR`, which is short; a `TempDir` under `/tmp` in a
-/// harness-provided scratch directory is not, which is a real failure
-/// mode worth pinning here rather than discovering in the field.
+// ---------------------------------------------------------------- env
+
+/// Sandbox-side path of the bind-mounted gate socket. Absent when the
+/// launch has no gate.
+const ENV_SOCKET: &str = "QOS_NETGATE_PROBE_SOCKET";
+/// Port of the server the probe should be able to reach.
+const ENV_ALLOWED_PORT: &str = "QOS_NETGATE_PROBE_ALLOWED_PORT";
+/// Port of a second server, for the raw-TCP reachability checks.
+const ENV_OTHER_PORT: &str = "QOS_NETGATE_PROBE_OTHER_PORT";
+/// Set when the probe should also exercise the loopback relay.
+const ENV_RELAY: &str = "QOS_NETGATE_PROBE_RELAY";
+
+/// Where the gate socket appears inside the sandbox.
+///
+/// Short on purpose: `sun_path` is 108 bytes, so a socket at a long
+/// host path cannot be connected to at all — and the failure surfaces
+/// as a confusing error at connect time rather than at bind time.
 const SANDBOX_SOCKET_PATH: &str = "/run/qos-gate.sock";
 
-/// The in-sandbox half. A no-op unless the outer test selected it and
-/// handed it a socket path — running the suite normally executes this
-/// as an empty test, and it asserts nothing in that case *by design*:
-/// every assertion about what the probe found lives in the outer test,
-/// which reads the probe's stdout. An empty run here therefore cannot
-/// hide a regression, it can only fail the outer test.
+/// Loopback port for the relay inside the sandbox.
+const PROBE_RELAY_PORT: u16 = 19050;
+
+/// The name the allowlist is written against in these tests.
+/// `localhost` resolves on every host, so the gate's *resolution* step
+/// runs for real rather than being stubbed.
+const ALLOWED_NAME: &str = "localhost";
+
+/// RFC 2606 reserves `.invalid` as never-resolvable, so a refusal for
+/// this name can only have come from the policy — the gate answers
+/// before it ever tries to resolve.
+const BLOCKED_NAME: &str = "blocked.invalid";
+
+// -------------------------------------------------------------- probe
+
+/// The in-sandbox half. A no-op unless the outer test selected it —
+/// running the suite normally executes this as an empty test, and it
+/// asserts nothing in that case *by design*: every assertion about what
+/// the probe found lives in the outer tests, which read its stdout. An
+/// empty run here therefore cannot hide a regression, only fail the
+/// outer test.
 #[test]
 fn netns_probe() {
-    let Ok(socket) = std::env::var(PROBE_SOCKET_ENV) else {
+    let Ok(allowed_port) = std::env::var(ENV_ALLOWED_PORT) else {
         return;
     };
-    let host_port: u16 = std::env::var(PROBE_PORT_ENV)
-        .expect("probe needs the host's port")
+    let allowed_port: u16 = allowed_port.parse().expect("port parses");
+    let other_port: u16 = std::env::var(ENV_OTHER_PORT)
+        .expect("probe needs the second port")
         .parse()
         .expect("port parses");
 
-    // (1a) A public address, from inside an unshared namespace. There
-    // is no default route, so this fails in the kernel's routing
-    // lookup — no packet is emitted, nothing to filter, nothing to
-    // leak. 198.51.100.0/24 is TEST-NET-2 (RFC 5737): it is not
-    // routable anywhere, so a machine that *does* have a route would
-    // still not reach it, and this assertion is about the local
-    // routing table rather than about the test host's connectivity.
-    let public = std::net::TcpStream::connect_timeout(
-        &"198.51.100.9:80".parse().unwrap(),
-        Duration::from_secs(2),
+    // Raw TCP, no gate involved. Under an unshared namespace these hit
+    // the sandbox's own empty loopback; under `--share-net` they hit
+    // the host's and reach the servers.
+    println!("PROBE raw_allowed={}", describe(raw_get(allowed_port)));
+    println!("PROBE raw_other={}", describe(raw_get(other_port)));
+    println!(
+        "PROBE raw_public={}",
+        match TcpStream::connect_timeout(
+            &"198.51.100.9:80".parse().unwrap(),
+            Duration::from_secs(2)
+        ) {
+            Ok(_) => "REACHED".to_string(),
+            Err(e) => format!("{:?}", e.kind()),
+        }
     );
+
+    let Ok(socket) = std::env::var(ENV_SOCKET) else {
+        return;
+    };
+
+    // Through the gate, by name: the allowlisted host.
+    println!(
+        "PROBE gate_by_name={}",
+        describe(socks_get(&socket, ALLOWED_NAME, allowed_port))
+    );
+
+    // Through the gate, by address literal: the SAME server, spelled as
+    // an address. Reachability is identical, so a different outcome can
+    // only be the policy — this is the bypass where an app resolves an
+    // allowed name itself and then asks for the address.
+    println!(
+        "PROBE gate_by_literal={}",
+        describe(socks_get(&socket, "127.0.0.1", allowed_port))
+    );
+
+    // Through the gate, a name that is not on the list.
+    println!(
+        "PROBE gate_by_other_name={}",
+        describe(socks_get(&socket, BLOCKED_NAME, 80))
+    );
+
+    // The loopback relay — the path an unmodified HTTP client takes via
+    // ALL_PROXY. Uses the production `run_relay`.
+    if std::env::var(ENV_RELAY).is_ok() {
+        let gate = PathBuf::from(&socket);
+        std::thread::spawn(move || {
+            let _ = launcher::netgate::run_relay(&gate, PROBE_RELAY_PORT);
+        });
+        for _ in 0..100 {
+            if TcpStream::connect(("127.0.0.1", PROBE_RELAY_PORT)).is_ok() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        println!(
+            "PROBE relay_by_name={}",
+            describe(socks_get_tcp(PROBE_RELAY_PORT, ALLOWED_NAME, allowed_port))
+        );
+        println!(
+            "PROBE relay_by_literal={}",
+            describe(socks_get_tcp(PROBE_RELAY_PORT, "127.0.0.1", allowed_port))
+        );
+    }
+}
+
+/// Companion probe for the kernel-property test. Same dispatcher shape
+/// as [`netns_probe`].
+#[test]
+fn proof_probe() {
+    let Ok(socket) = std::env::var("QOS_NETGATE_PROOF_SOCKET") else {
+        return;
+    };
+    let port: u16 = std::env::var("QOS_NETGATE_PROOF_PORT")
+        .expect("port")
+        .parse()
+        .expect("parses");
+
+    let public =
+        TcpStream::connect_timeout(&"198.51.100.9:80".parse().unwrap(), Duration::from_secs(2));
     println!(
         "PROBE tcp_public={}",
         match &public {
@@ -93,13 +190,8 @@ fn netns_probe() {
             Err(e) => format!("{:?}", e.kind()),
         }
     );
-
-    // (1b) The host's own loopback server, by address. Inside the
-    // sandbox `127.0.0.1` names the sandbox's private loopback, where
-    // nothing is listening — so a host service bound to loopback is
-    // invisible even though the address is spellable.
-    let loopback = std::net::TcpStream::connect_timeout(
-        &format!("127.0.0.1:{host_port}").parse().unwrap(),
+    let loopback = TcpStream::connect_timeout(
+        &format!("127.0.0.1:{port}").parse().unwrap(),
         Duration::from_secs(2),
     );
     println!(
@@ -109,9 +201,6 @@ fn netns_probe() {
             Err(e) => format!("{:?}", e.kind()),
         }
     );
-
-    // (2) The bind-mounted unix socket. Same empty namespace, and this
-    // one reaches a process in the host's namespace.
     let unix = UnixStream::connect(&socket).and_then(|mut s| {
         s.write_all(b"PING")?;
         let mut buf = [0u8; 4];
@@ -127,104 +216,132 @@ fn netns_probe() {
     );
 }
 
-#[test]
-fn an_unshared_netns_has_no_route_but_a_bound_unix_socket_still_reaches_the_host() {
-    let bwrap = which("bwrap").expect(
-        "bwrap is a hard runtime dependency of the launcher — a host without it cannot run \
-         a sandboxed app at all, so this is a failure and not a reason to skip",
-    );
-
-    // Host side of the one hole in the namespace. Under
-    // $XDG_RUNTIME_DIR because `sun_path` is 108 bytes; see
-    // SANDBOX_SOCKET_PATH.
-    let dir = runtime_scratch_dir();
-    let host_socket = dir.join("proof.sock");
-    let _ = std::fs::remove_file(&host_socket);
-    let listener = UnixListener::bind(&host_socket).expect("bind unix socket");
-    std::thread::spawn(move || {
-        if let Ok((mut stream, _)) = listener.accept() {
-            let mut buf = [0u8; 4];
-            if stream.read_exact(&mut buf).is_ok() && &buf == b"PING" {
-                let _ = stream.write_all(b"PONG");
-            }
-        }
-    });
-
-    // A host TCP service on loopback, so the probe can try to reach it
-    // by address and fail. Port 0 → the kernel picks a free one.
-    let tcp = std::net::TcpListener::bind("127.0.0.1:0").expect("bind tcp");
-    let host_port = tcp.local_addr().unwrap().port();
-    std::thread::spawn(move || {
-        while let Ok((mut stream, _)) = tcp.accept() {
-            let _ = stream.write_all(b"HOST");
-        }
-    });
-
-    let exe = std::env::current_exe().expect("current_exe");
-    let output = std::process::Command::new(&bwrap)
-        .args(["--unshare-all", "--die-with-parent"])
-        .args(["--ro-bind", "/usr", "/usr"])
-        .args(["--ro-bind-try", "/lib64", "/lib64"])
-        .args(["--ro-bind-try", "/lib", "/lib"])
-        .args(["--proc", "/proc"])
-        .args(["--dev", "/dev"])
-        .args(["--tmpfs", "/tmp"])
-        .args(["--ro-bind", &exe.display().to_string(), &exe.display().to_string()])
-        .args([
-            "--bind",
-            &host_socket.display().to_string(),
-            SANDBOX_SOCKET_PATH,
-        ])
-        .arg(&exe)
-        .args(["--exact", "netns_probe", "--nocapture", "--test-threads", "1"])
-        .env(PROBE_SOCKET_ENV, SANDBOX_SOCKET_PATH)
-        .env(PROBE_PORT_ENV, host_port.to_string())
-        .output()
-        .expect("spawn bwrap");
-
-    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-    // libtest writes its own `test <name> ... ` prefix onto the same
-    // line as the first `println!`, so match the marker anywhere in
-    // the line rather than only at its start.
-    let probe = |key: &str| -> String {
-        let marker = format!("PROBE {key}=");
-        stdout
-            .lines()
-            .find_map(|l| l.split_once(&marker).map(|(_, v)| v.trim().to_string()))
-            .unwrap_or_else(|| {
-                panic!("probe did not report `{key}`.\nstdout:\n{stdout}\nstderr:\n{stderr}")
-            })
-    };
-
-    // Property 1: the namespace is empty.
-    assert_eq!(
-        probe("tcp_public"),
-        "NetworkUnreachable",
-        "an unshared netns must have no route to a public address — if this reaches, every \
-         filter built on namespace isolation is decorative.\nstdout:\n{stdout}"
-    );
-    assert_ne!(
-        probe("tcp_loopback"),
-        "REACHED",
-        "the host's loopback must not be the sandbox's loopback — a host service bound to \
-         127.0.0.1 is otherwise reachable from inside and the isolation is illusory.\
-         \nstdout:\n{stdout}"
-    );
-
-    // Property 2: one bind-mounted unix socket still crosses it.
-    assert_eq!(
-        probe("unix"),
-        "PONG",
-        "a bind-mounted AF_UNIX socket must remain connectable from inside an unshared \
-         network namespace — this is the single channel the egress policy sits on.\
-         \nstdout:\n{stdout}\nstderr:\n{stderr}"
-    );
+/// Outcome of one attempt, in the form the outer tests match on.
+enum Outcome {
+    /// The HTTP body that came back.
+    Body(String),
+    /// The gate refused with this SOCKS5 reply code.
+    Refused(u8),
+    /// Something else went wrong.
+    Failed(String),
 }
 
-/// `$XDG_RUNTIME_DIR/qos-test`, falling back to `/run/user/<uid>`.
-/// Deliberately not a `TempDir`: the harness' scratch root is long
-/// enough to overflow `sun_path`.
+fn describe(o: Outcome) -> String {
+    match o {
+        Outcome::Body(b) => format!("BODY:{b}"),
+        Outcome::Refused(code) => format!("REFUSED:{code:#04x}"),
+        Outcome::Failed(e) => format!("ERR:{e}"),
+    }
+}
+
+fn raw_get(port: u16) -> Outcome {
+    match TcpStream::connect_timeout(
+        &format!("127.0.0.1:{port}").parse().unwrap(),
+        Duration::from_secs(2),
+    ) {
+        Ok(mut s) => http_exchange(&mut s),
+        Err(e) => Outcome::Failed(format!("{:?}", e.kind())),
+    }
+}
+
+/// SOCKS5 CONNECT over the gate's unix socket, then an HTTP request.
+fn socks_get(socket: &str, host: &str, port: u16) -> Outcome {
+    match UnixStream::connect(socket) {
+        Ok(mut s) => socks_exchange(&mut s, host, port),
+        Err(e) => Outcome::Failed(format!("connect gate: {:?}", e.kind())),
+    }
+}
+
+/// Same, but over the loopback relay.
+fn socks_get_tcp(relay_port: u16, host: &str, port: u16) -> Outcome {
+    match TcpStream::connect(("127.0.0.1", relay_port)) {
+        Ok(mut s) => socks_exchange(&mut s, host, port),
+        Err(e) => Outcome::Failed(format!("connect relay: {:?}", e.kind())),
+    }
+}
+
+fn socks_exchange<S: Read + Write>(s: &mut S, host: &str, port: u16) -> Outcome {
+    // Greeting: SOCKS5, one method, "no authentication".
+    if s.write_all(&[0x05, 0x01, 0x00]).is_err() {
+        return Outcome::Failed("greeting write".into());
+    }
+    let mut ack = [0u8; 2];
+    if s.read_exact(&mut ack).is_err() {
+        return Outcome::Failed("greeting read".into());
+    }
+
+    // CONNECT, by domain name — including for an address literal, so
+    // the gate sees exactly what the app asked for and the policy
+    // decision is made on that string.
+    let mut req = vec![0x05, 0x01, 0x00, 0x03, host.len() as u8];
+    req.extend_from_slice(host.as_bytes());
+    req.extend_from_slice(&port.to_be_bytes());
+    if s.write_all(&req).is_err() {
+        return Outcome::Failed("request write".into());
+    }
+
+    let mut head = [0u8; 4];
+    if s.read_exact(&mut head).is_err() {
+        return Outcome::Failed("reply read".into());
+    }
+    if head[1] != reply::SUCCESS {
+        return Outcome::Refused(head[1]);
+    }
+    // Drain the bound-address field of a successful reply.
+    let rest = match head[3] {
+        0x01 => 4 + 2,
+        0x04 => 16 + 2,
+        _ => return Outcome::Failed("unexpected reply address type".into()),
+    };
+    let mut drain = vec![0u8; rest];
+    if s.read_exact(&mut drain).is_err() {
+        return Outcome::Failed("reply drain".into());
+    }
+    http_exchange(s)
+}
+
+fn http_exchange<S: Read + Write>(s: &mut S) -> Outcome {
+    if s.write_all(b"GET / HTTP/1.0\r\n\r\n").is_err() {
+        return Outcome::Failed("http write".into());
+    }
+    let mut buf = Vec::new();
+    if s.read_to_end(&mut buf).is_err() {
+        return Outcome::Failed("http read".into());
+    }
+    let text = String::from_utf8_lossy(&buf);
+    match text.split("\r\n\r\n").nth(1) {
+        Some(body) if !body.is_empty() => Outcome::Body(body.trim().to_string()),
+        _ => Outcome::Failed(format!("no body in {text:?}")),
+    }
+}
+
+// ------------------------------------------------------------ harness
+
+/// A tiny HTTP server on loopback answering every request with `body`.
+/// Returns the port it bound.
+fn serve(body: &'static str) -> u16 {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind http");
+    let port = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        while let Ok((mut stream, _)) = listener.accept() {
+            std::thread::spawn(move || {
+                let mut scratch = [0u8; 1024];
+                let _ = stream.read(&mut scratch);
+                let _ = stream.write_all(
+                    format!(
+                        "HTTP/1.0 200 OK\r\nContent-Length: {}\r\n\r\n{body}",
+                        body.len()
+                    )
+                    .as_bytes(),
+                );
+            });
+        }
+    });
+    port
+}
+
+/// `$XDG_RUNTIME_DIR/qos-netgate-test`. Deliberately not a `TempDir`:
+/// the harness' scratch root is long enough to overflow `sun_path`.
 fn runtime_scratch_dir() -> PathBuf {
     let base = std::env::var_os("XDG_RUNTIME_DIR")
         .map(PathBuf::from)
@@ -240,4 +357,437 @@ fn which(bin: &str) -> Option<PathBuf> {
     std::env::split_paths(&paths)
         .map(|d| d.join(bin))
         .find(|p| p.is_file())
+}
+
+fn bwrap() -> PathBuf {
+    which("bwrap").expect(
+        "bwrap is a hard runtime dependency of the launcher — a host without it cannot run a \
+         sandboxed app at all, so this is a failure and not a reason to skip",
+    )
+}
+
+/// What one probe run reported.
+struct ProbeReport {
+    stdout: String,
+    stderr: String,
+}
+
+impl ProbeReport {
+    /// Echo everything the probe observed, tagged with the scenario.
+    /// Captured by libtest unless `--nocapture`, where it becomes the
+    /// packet-level record of what each sandbox could and could not
+    /// reach.
+    fn dump(&self, scenario: &str) -> &Self {
+        for line in self.stdout.lines() {
+            if let Some(idx) = line.find("PROBE ") {
+                println!("[{scenario}] {}", &line[idx..]);
+            }
+        }
+        self
+    }
+
+    fn get(&self, key: &str) -> String {
+        // libtest writes its own `test <name> ... ` prefix onto the
+        // same line as the first `println!`, so match the marker
+        // anywhere in the line rather than only at its start.
+        let marker = format!("PROBE {key}=");
+        self.stdout
+            .lines()
+            .find_map(|l| l.split_once(&marker).map(|(_, v)| v.trim().to_string()))
+            .unwrap_or_else(|| {
+                panic!(
+                    "probe did not report `{key}`.\nstdout:\n{}\nstderr:\n{}",
+                    self.stdout, self.stderr
+                )
+            })
+    }
+}
+
+/// Run the probe inside a sandbox whose network shape is decided by the
+/// production [`EgressDecision`].
+fn run_probe(
+    decision: &EgressDecision,
+    gate_socket: Option<&Path>,
+    allowed_port: u16,
+    other_port: u16,
+    with_relay: bool,
+) -> ProbeReport {
+    let exe = std::env::current_exe().expect("current_exe");
+    let exe_s = exe.display().to_string();
+
+    let mut argv: Vec<String> = vec!["--unshare-all".into(), "--die-with-parent".into()];
+    // THE decision under test, taken from production code.
+    if decision.shares_host_network() {
+        argv.push("--share-net".into());
+    }
+    for (flag, a, b) in [
+        ("--ro-bind", "/usr", "/usr"),
+        ("--ro-bind-try", "/lib64", "/lib64"),
+        ("--ro-bind-try", "/lib", "/lib"),
+        ("--ro-bind", exe_s.as_str(), exe_s.as_str()),
+    ] {
+        argv.extend([flag.to_string(), a.to_string(), b.to_string()]);
+    }
+    argv.extend(["--proc".into(), "/proc".into()]);
+    argv.extend(["--dev".into(), "/dev".into()]);
+    argv.extend(["--tmpfs".into(), "/tmp".into()]);
+
+    // The gate bind + proxy environment, written by production code.
+    if let Some(host_socket) = gate_socket {
+        let bind = NetGateBind {
+            host_socket: host_socket.to_path_buf(),
+            sandbox_socket: PathBuf::from(SANDBOX_SOCKET_PATH),
+            port: PROBE_RELAY_PORT,
+        };
+        launcher::sandbox::push_net_gate(&mut argv, &bind);
+    }
+
+    argv.push(exe_s);
+    argv.extend([
+        "--exact".into(),
+        "netns_probe".into(),
+        "--nocapture".into(),
+        "--test-threads".into(),
+        "1".into(),
+    ]);
+
+    let mut cmd = std::process::Command::new(bwrap());
+    cmd.args(&argv)
+        .env(ENV_ALLOWED_PORT, allowed_port.to_string())
+        .env(ENV_OTHER_PORT, other_port.to_string());
+    if gate_socket.is_some() {
+        cmd.env(ENV_SOCKET, SANDBOX_SOCKET_PATH);
+    } else {
+        cmd.env_remove(ENV_SOCKET);
+    }
+    if with_relay {
+        cmd.env(ENV_RELAY, "1");
+    } else {
+        cmd.env_remove(ENV_RELAY);
+    }
+
+    let output = cmd.output().expect("spawn bwrap");
+    ProbeReport {
+        stdout: String::from_utf8_lossy(&output.stdout).to_string(),
+        stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+    }
+}
+
+/// Start a gate on a unique per-test socket path.
+fn start_gate(name: &str, policy: EgressPolicy) -> (NetGate, PathBuf) {
+    let path = runtime_scratch_dir().join(format!("{name}.sock"));
+    let gate = NetGate::start(&path, policy).expect("gate starts");
+    (gate, path)
+}
+
+// -------------------------------------------------------------- tests
+
+#[test]
+fn an_unshared_netns_has_no_route_but_a_bound_unix_socket_still_reaches_the_host() {
+    let dir = runtime_scratch_dir();
+    let host_socket = dir.join("proof.sock");
+    let _ = std::fs::remove_file(&host_socket);
+    let listener = UnixListener::bind(&host_socket).expect("bind unix socket");
+    std::thread::spawn(move || {
+        if let Ok((mut stream, _)) = listener.accept() {
+            let mut buf = [0u8; 4];
+            if stream.read_exact(&mut buf).is_ok() && &buf == b"PING" {
+                let _ = stream.write_all(b"PONG");
+            }
+        }
+    });
+
+    let exe = std::env::current_exe().expect("current_exe");
+    let exe_s = exe.display().to_string();
+    let tcp = TcpListener::bind("127.0.0.1:0").expect("bind tcp");
+    let host_port = tcp.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        while let Ok((mut stream, _)) = tcp.accept() {
+            let _ = stream.write_all(b"HOST");
+        }
+    });
+
+    let output = std::process::Command::new(bwrap())
+        .args(["--unshare-all", "--die-with-parent"])
+        .args(["--ro-bind", "/usr", "/usr"])
+        .args(["--ro-bind-try", "/lib64", "/lib64"])
+        .args(["--ro-bind-try", "/lib", "/lib"])
+        .args(["--proc", "/proc"])
+        .args(["--dev", "/dev"])
+        .args(["--tmpfs", "/tmp"])
+        .args(["--ro-bind", &exe_s, &exe_s])
+        .args([
+            "--bind",
+            &host_socket.display().to_string(),
+            SANDBOX_SOCKET_PATH,
+        ])
+        .arg(&exe)
+        .args(["--exact", "proof_probe", "--nocapture", "--test-threads", "1"])
+        .env("QOS_NETGATE_PROOF_SOCKET", SANDBOX_SOCKET_PATH)
+        .env("QOS_NETGATE_PROOF_PORT", host_port.to_string())
+        .output()
+        .expect("spawn bwrap");
+
+    let report = ProbeReport {
+        stdout: String::from_utf8_lossy(&output.stdout).to_string(),
+        stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+    };
+
+    assert_eq!(
+        report.get("tcp_public"),
+        "NetworkUnreachable",
+        "an unshared netns must have no route to a public address — if this reaches, every \
+         filter built on namespace isolation is decorative"
+    );
+    assert_ne!(
+        report.get("tcp_loopback"),
+        "REACHED",
+        "the host's loopback must not be the sandbox's loopback — a host service bound to \
+         127.0.0.1 would otherwise be reachable from inside and the isolation illusory"
+    );
+    assert_eq!(
+        report.get("unix"),
+        "PONG",
+        "a bind-mounted AF_UNIX socket must remain connectable from inside an unshared \
+         network namespace — this is the single channel the egress policy sits on"
+    );
+}
+
+/// (1) An app granted one host reaches it, and reaches nothing else.
+#[test]
+fn a_grant_naming_one_host_reaches_that_host_and_no_other() {
+    let allowed_port = serve("ALLOWED-SERVER");
+    let other_port = serve("OTHER-SERVER");
+
+    let decision = EgressDecision::resolve("off", &[], &[ALLOWED_NAME.to_string()]);
+    let policy = decision.policy().expect("a named host is filtered").clone();
+    let (gate, socket) = start_gate("one-host", policy);
+
+    let report = run_probe(&decision, Some(&socket), allowed_port, other_port, true);
+    report.dump("granted: localhost");
+
+    // Reaches the allowlisted host, end to end, by name.
+    assert_eq!(
+        report.get("gate_by_name"),
+        "BODY:ALLOWED-SERVER",
+        "a granted host must actually be reachable — a filter that denies everything is not \
+         enforcement, it is breakage"
+    );
+    // And via the relay, the path an unmodified HTTP client takes
+    // through ALL_PROXY.
+    assert_eq!(
+        report.get("relay_by_name"),
+        "BODY:ALLOWED-SERVER",
+        "the loopback relay must carry the same traffic the direct socket does"
+    );
+
+    // Does NOT reach the same server addressed as a literal. Identical
+    // reachability, different outcome — so the difference is the
+    // policy, and the resolve-it-yourself bypass is closed.
+    assert_eq!(
+        report.get("gate_by_literal"),
+        format!("REFUSED:{:#04x}", reply::NOT_ALLOWED),
+        "an address literal must not satisfy a hostname grant, even when it is the very \
+         server the grant names — otherwise anyone who controls a DNS answer turns a \
+         name-scoped grant into an any-host grant"
+    );
+    assert_eq!(
+        report.get("relay_by_literal"),
+        format!("REFUSED:{:#04x}", reply::NOT_ALLOWED),
+        "the relay must not be a way around the policy the direct socket enforces"
+    );
+
+    // Does not reach an unlisted name, and is refused by the *policy*
+    // (0x02) rather than failing to resolve (0x04) — the gate answers
+    // before it ever looks the name up.
+    assert_eq!(
+        report.get("gate_by_other_name"),
+        format!("REFUSED:{:#04x}", reply::NOT_ALLOWED),
+        "an unlisted host must be refused by the ruleset, not merely fail to resolve"
+    );
+
+    // No route beside the gate.
+    assert_eq!(
+        report.get("raw_public"),
+        "NetworkUnreachable",
+        "the namespace must stay empty — the gate is the only way out"
+    );
+    assert!(
+        report.get("raw_allowed").starts_with("ERR:"),
+        "even the allowed server must be unreachable by raw TCP: {}",
+        report.get("raw_allowed")
+    );
+
+    // The gate itself agrees about what it did.
+    assert!(
+        gate.stats().allowed() >= 2,
+        "gate should have allowed the two by-name connections, saw {}",
+        gate.stats().allowed()
+    );
+    assert!(
+        gate.stats().denied() >= 3,
+        "gate should have denied both literals and the unlisted name, saw {}",
+        gate.stats().denied()
+    );
+}
+
+/// (2) An app granted nothing reaches neither host.
+#[test]
+fn a_grant_of_nothing_reaches_nothing() {
+    let allowed_port = serve("ALLOWED-SERVER");
+    let other_port = serve("OTHER-SERVER");
+
+    let decision = EgressDecision::resolve("off", &[], &[]);
+    assert_eq!(
+        decision,
+        EgressDecision::Blocked,
+        "no manifest network and no grant must resolve to blocked"
+    );
+
+    // Blocked means no gate is started at all, so there is no socket to
+    // bind into the sandbox.
+    let report = run_probe(&decision, None, allowed_port, other_port, false);
+    report.dump("granted: nothing");
+
+    for key in ["raw_allowed", "raw_other"] {
+        assert!(
+            report.get(key).starts_with("ERR:"),
+            "an app granted nothing must reach no server: {key} = {}",
+            report.get(key)
+        );
+    }
+    assert_eq!(report.get("raw_public"), "NetworkUnreachable");
+}
+
+/// (3) An app granted `*` reaches both.
+#[test]
+fn a_grant_of_star_reaches_both() {
+    let allowed_port = serve("ALLOWED-SERVER");
+    let other_port = serve("OTHER-SERVER");
+
+    let decision = EgressDecision::resolve("off", &[], &["*".to_string()]);
+    assert_eq!(
+        decision,
+        EgressDecision::Unrestricted,
+        "a grant for `*` is unrestricted and needs no gate"
+    );
+
+    let report = run_probe(&decision, None, allowed_port, other_port, false);
+    report.dump("granted: *");
+
+    assert_eq!(
+        report.get("raw_allowed"),
+        "BODY:ALLOWED-SERVER",
+        "`*` shares the host network, so both servers are reachable directly"
+    );
+    assert_eq!(report.get("raw_other"), "BODY:OTHER-SERVER");
+}
+
+/// (4) The negative case is not vacuous.
+///
+/// Same sandbox, same servers, same request — one variable changed: the
+/// allowlist. The connection that was refused in
+/// [`a_grant_naming_one_host_reaches_that_host_and_no_other`] now
+/// carries traffic. So the refusal there was the policy doing work, not
+/// a server that was down or a fixture that never connected to
+/// anything.
+#[test]
+fn widening_the_allowlist_lets_the_refused_connection_through() {
+    let allowed_port = serve("ALLOWED-SERVER");
+    let other_port = serve("OTHER-SERVER");
+
+    // Control: the exact request the strict policy refused.
+    let strict = EgressDecision::resolve("off", &[], &[ALLOWED_NAME.to_string()]);
+    let (strict_gate, strict_socket) =
+        start_gate("breakage-strict", strict.policy().unwrap().clone());
+    let refused = run_probe(&strict, Some(&strict_socket), allowed_port, other_port, false);
+    refused.dump("control: filter on");
+    assert_eq!(
+        refused.get("gate_by_literal"),
+        format!("REFUSED:{:#04x}", reply::NOT_ALLOWED)
+    );
+    assert_eq!(
+        strict_gate.stats().allowed(),
+        1,
+        "only the by-name request should have been allowed"
+    );
+
+    // Filter disabled: the allowlist now permits everything. Nothing
+    // else about the sandbox, the servers or the request changed. The
+    // decision is spelled `Filtered(["*"])` rather than `Unrestricted`
+    // on purpose — an `Unrestricted` decision would take the
+    // `--share-net` path and change two variables at once.
+    let (open_gate, open_socket) =
+        start_gate("breakage-open", EgressPolicy::new(vec!["*".to_string()]));
+    let open_decision = EgressDecision::Filtered(EgressPolicy::new(vec!["*".to_string()]));
+    let passed = run_probe(
+        &open_decision,
+        Some(&open_socket),
+        allowed_port,
+        other_port,
+        false,
+    );
+
+    passed.dump("breakage: filter off");
+    assert_eq!(
+        passed.get("gate_by_literal"),
+        "BODY:ALLOWED-SERVER",
+        "with the filter open, the previously-refused connection must carry traffic — if it \
+         still failed, the negative assertion above was proving nothing"
+    );
+    assert_eq!(
+        passed.get("gate_by_other_name"),
+        format!("REFUSED:{:#04x}", reply::HOST_UNREACHABLE),
+        "an unresolvable name must fail at resolution (0x04) once the policy stops refusing \
+         it (0x02) — which is also what distinguishes the two failures"
+    );
+    assert!(
+        open_gate.stats().allowed() > strict_gate.stats().allowed(),
+        "the open gate must have allowed strictly more than the strict one: {} vs {}",
+        open_gate.stats().allowed(),
+        strict_gate.stats().allowed()
+    );
+}
+
+/// (5) The degradation path.
+///
+/// The gate needs no privilege and no kernel feature `bwrap` does not
+/// already require, so there is no "unsupported kernel" branch to
+/// simulate — a kernel that cannot do this cannot run `bwrap`, and the
+/// launch has already failed for a clearer reason. What can fail is
+/// binding the socket, so that is what is simulated here.
+///
+/// The launcher refuses. Falling back to `--share-net` would apply a
+/// grant naming one host as "every host", which is the false assurance
+/// this work exists to remove.
+#[test]
+fn a_gate_that_cannot_start_refuses_rather_than_sharing_the_network() {
+    let policy = EgressPolicy::new(vec![ALLOWED_NAME.to_string()]);
+    // `/proc` is not writable, so creating the parent directory fails
+    // before any bind is attempted.
+    let impossible = PathBuf::from("/proc/qos-netgate-nope/gate.sock");
+    let err = NetGate::start(&impossible, policy).expect_err("binding here must fail");
+
+    let rendered = err.to_string();
+    assert!(
+        rendered.contains("gate socket"),
+        "the error must name the gate so an operator can act on it: {rendered}"
+    );
+
+    // And the launch-level consequence: a refusal that says what was
+    // granted, and how to deliberately choose the unfiltered path.
+    let run_err = launcher::run::RunError::EgressGate {
+        hosts: vec![ALLOWED_NAME.to_string()],
+        source: err,
+    };
+    let msg = run_err.to_string();
+    assert!(
+        msg.contains("refusing to launch"),
+        "the launch must be refused, not downgraded: {msg}"
+    );
+    assert!(
+        msg.contains(launcher::run::NET_GATE_ENV),
+        "the refusal must name the explicit opt-out so the fallback is a decision on the \
+         record rather than a default: {msg}"
+    );
 }
