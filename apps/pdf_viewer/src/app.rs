@@ -26,7 +26,7 @@ use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::tooltip::Tooltip;
 use ui::widget::page_sidebar::{PageSidebar, PageSidebarEvent};
-use ui::widget::{Avatar, SmallContentAlign, ViewportState};
+use ui::widget::{Avatar, SmallContentAlign, TextInput, ViewportState};
 use ui::Widget;
 
 use crate::doc::PdfDoc;
@@ -276,14 +276,22 @@ enum EditTarget {
     Signer,
 }
 
-/// A live inline text edit. The buffer is local until committed so a burst
-/// of keystrokes is a single undo step rather than one per character.
-#[derive(Clone)]
+/// A live inline text edit (comment body, thread reply, or signer name),
+/// backed by the shared multiline [`TextInput`] so it gets real caret,
+/// selection (shift+arrows / drag), clipboard (Ctrl+C/V/X), focus ring, a11y,
+/// and theming instead of a hand-rolled buffer + caret. The text is local until
+/// committed, so a burst of keystrokes is a single undo step. `Enter` commits
+/// (the input is `with_enter_submits`), `Shift+Enter` inserts a newline.
 struct Editing {
     target: EditTarget,
-    buffer: String,
-    /// Caret position as a byte offset into `buffer`.
-    caret: usize,
+    input: TextInput,
+}
+
+impl Editing {
+    /// The current edited text.
+    fn text(&self) -> &str {
+        self.input.value()
+    }
 }
 
 pub struct PdfApp {
@@ -1560,12 +1568,24 @@ impl PdfApp {
 
     // ---- inline text editing ----------------------------------------
 
-    /// Start editing `target`, seeding the buffer with its current text and
-    /// dropping the caret at the end. Any in-flight edit is dropped without
-    /// committing — callers that need to preserve it commit first.
+    /// Start editing `target`, seeding a shared [`TextInput`] with its current
+    /// text and dropping the caret at the end. Any in-flight edit is dropped
+    /// without committing — callers that need to preserve it commit first.
     fn begin_edit(&mut self, target: EditTarget, initial: String) {
-        let caret = initial.len();
-        self.editing = Some(Editing { target, buffer: initial, caret });
+        let size = match target {
+            EditTarget::CommentBody(_) => 12.0,
+            EditTarget::Reply(_) => 11.5,
+            EditTarget::Signer => 13.0,
+        };
+        let mut input = TextInput::local()
+            .multiline(true)
+            .with_enter_submits(true)
+            .with_font_size(size);
+        input.set_plain_chrome(true);
+        input.set_text(&initial);
+        input.set_cursor_pos(initial.len());
+        input.set_focus(true);
+        self.editing = Some(Editing { target, input });
         self.dirty = true;
     }
 
@@ -1574,98 +1594,15 @@ impl PdfApp {
         self.editing.as_ref().map(|e| &e.target == target).unwrap_or(false)
     }
 
-    fn edit_insert(&mut self, s: &str) {
-        if let Some(e) = self.editing.as_mut() {
-            let filtered: String = s.chars().filter(|c| !c.is_control()).collect();
-            if filtered.is_empty() {
-                return;
-            }
-            e.buffer.insert_str(e.caret, &filtered);
-            e.caret += filtered.len();
-            self.dirty = true;
-        }
-    }
-
-    fn edit_backspace(&mut self) {
-        if let Some(e) = self.editing.as_mut() {
-            if e.caret == 0 {
-                return;
-            }
-            // Remove the char boundary immediately before the caret.
-            let prev = e.buffer[..e.caret]
-                .char_indices()
-                .next_back()
-                .map(|(i, _)| i)
-                .unwrap_or(0);
-            e.buffer.replace_range(prev..e.caret, "");
-            e.caret = prev;
-            self.dirty = true;
-        }
-    }
-
-    fn edit_move(&mut self, dir: isize) {
-        if let Some(e) = self.editing.as_mut() {
-            if dir < 0 {
-                e.caret = e.buffer[..e.caret].char_indices().next_back().map(|(i, _)| i).unwrap_or(0);
-            } else if e.caret < e.buffer.len() {
-                let next = e.buffer[e.caret..].char_indices().nth(1).map(|(i, _)| e.caret + i).unwrap_or(e.buffer.len());
-                e.caret = next;
-            }
-            self.dirty = true;
-        }
-    }
-
-    fn edit_home_end(&mut self, end: bool) {
-        if let Some(e) = self.editing.as_mut() {
-            e.caret = if end { e.buffer.len() } else { 0 };
-            self.dirty = true;
-        }
-    }
-
-    /// Copy the whole field to the system clipboard. The inline editor has no
-    /// selection model, so the copyable unit is the entire buffer. Backed by
-    /// the shared `ui::clipboard_copy` (a silent no-op when the platform
-    /// clipboard is unavailable, exactly like the toolkit's own text input).
-    fn edit_clipboard_copy(&self) {
-        if let Some(e) = self.editing.as_ref() {
-            if !e.buffer.is_empty() {
-                ui::clipboard_copy(&e.buffer);
-            }
-        }
-    }
-
-    /// Cut: copy the whole field to the clipboard, then clear it.
-    fn edit_clipboard_cut(&mut self) {
-        self.edit_clipboard_copy();
-        if let Some(e) = self.editing.as_mut() {
-            if !e.buffer.is_empty() {
-                e.buffer.clear();
-                e.caret = 0;
-                self.dirty = true;
-            }
-        }
-    }
-
-    /// Paste the clipboard's text at the caret. Reuses [`Self::edit_insert`],
-    /// so control characters (newlines, etc.) are stripped to keep the field
-    /// single-line, matching typed input.
-    fn edit_clipboard_paste(&mut self) {
-        if self.editing.is_none() {
-            return;
-        }
-        if let Some(text) = ui::clipboard_paste() {
-            self.edit_insert(&text);
-        }
-    }
-
-    /// Write the active edit's buffer to its durable home and clear the edit.
+    /// Write the active edit's text to its durable home and clear the edit.
     /// An emptied comment body (with no replies) removes the note entirely so
     /// an abandoned marker never litters the page.
     fn commit_edit(&mut self, state: &mut AutoCommit) {
         let Some(e) = self.editing.take() else { return };
+        let text = e.text().to_string();
         match e.target {
             EditTarget::CommentBody(id) => {
-                let trimmed = e.buffer.trim();
+                let trimmed = text.trim();
                 let has_replies = self
                     .comments
                     .iter()
@@ -1676,12 +1613,12 @@ impl PdfApp {
                     self.delete_target(&DeleteTarget::Comment(id), state);
                     return;
                 }
-                PdfDoc::set_comment_body(state, &id, e.buffer.trim_end());
+                PdfDoc::set_comment_body(state, &id, text.trim_end());
                 self.commit_pending = true;
                 self.reload(state);
             }
             EditTarget::Reply(id) => {
-                let body = e.buffer.trim();
+                let body = text.trim();
                 if !body.is_empty() {
                     PdfDoc::add_reply(
                         state,
@@ -1693,7 +1630,7 @@ impl PdfApp {
                 }
             }
             EditTarget::Signer => {
-                let name = e.buffer.trim();
+                let name = text.trim();
                 self.signer_name = if name.is_empty() { self.author.clone() } else { name.to_string() };
             }
         }
