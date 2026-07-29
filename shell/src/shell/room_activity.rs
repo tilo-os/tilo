@@ -173,7 +173,12 @@ impl RoomActivityPane {
         let revert_intent = Rc::new(Cell::new(None));
         let ri = Rc::clone(&revert_intent);
         Self {
-            timeline: ActivityTimeline::new().on_revert(move |id| ri.set(Some(*id))),
+            timeline: {
+                let mut t = ActivityTimeline::new().on_revert(move |id| ri.set(Some(*id)));
+                // The sheet is the surface; the timeline sits on it.
+                t.set_draws_own_surface(false);
+                t
+            },
             // A workspace is a cluster: a tiled set of running windows that
             // can be saved and reopened collaboratively. That is what this
             // document describes, so that is what its rows are tagged with.

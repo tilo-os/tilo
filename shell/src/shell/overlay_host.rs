@@ -3737,7 +3737,12 @@ impl Widget for ShellOverlayHost {
                         "Written forward: the version you reverted from is still in the history.",
                     );
                 }
-                if outcome.handled || pointer_inside {
+                // Pointer events over the sheet are absorbed whether or not it
+                // used them, so the desktop underneath stays inert. Keys are
+                // absorbed only when the sheet actually consumed them —
+                // otherwise an arrow key pressed with the cursor resting over
+                // the sheet would vanish instead of reaching the shell.
+                if outcome.handled || (pointer_inside && !is_key) {
                     *handled = true;
                     return;
                 }
