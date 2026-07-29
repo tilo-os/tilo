@@ -658,19 +658,14 @@ pub const NET_GATE_ENV: &str = "QOS_LAUNCHER_NET_GATE";
 fn start_egress_gate(
     egress: &crate::netgate::EgressDecision,
 ) -> Result<(Option<crate::sandbox::NetGateBind>, Option<crate::netgate::NetGate>), RunError> {
+    // `Filtered` is the only decision that needs a gate. The
+    // `QOS_LAUNCHER_NET_GATE=off` escape hatch is not handled here: it
+    // is applied in `crate::sandbox::egress_decision`, so that turning
+    // the gate off also shares the network instead of leaving the app
+    // sealed in an empty namespace with nothing to reach.
     let Some(policy) = egress.policy() else {
         return Ok((None, None));
     };
-
-    if std::env::var(NET_GATE_ENV).is_ok_and(|v| v == "off") {
-        tracing::warn!(
-            hosts = ?policy.hosts(),
-            "{NET_GATE_ENV}=off: launching with UNRESTRICTED outbound network access even \
-             though this app was granted specific hosts. Per-host filtering is NOT enforced \
-             for this launch."
-        );
-        return Ok((None, None));
-    }
 
     let host_socket = crate::netgate::gate_socket_path(current_uid(), std::process::id());
     match crate::netgate::NetGate::start(&host_socket, policy.clone()) {

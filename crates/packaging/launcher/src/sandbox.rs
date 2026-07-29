@@ -569,11 +569,30 @@ pub fn egress_decision(
     manifest: &MinimalManifest,
     capabilities: &CapabilityPlan,
 ) -> crate::netgate::EgressDecision {
-    crate::netgate::EgressDecision::resolve(
+    let decision = crate::netgate::EgressDecision::resolve(
         &manifest.sandbox.net.mode,
         &manifest.sandbox.net.hosts,
         &capabilities.net_hosts,
-    )
+    );
+    // The operator escape hatch is applied *here*, not at the point the
+    // gate is started, because the namespace decision and the gate have
+    // to be made from the same answer. Turning the gate off downstream
+    // while this layer still reported `Filtered` would leave the app
+    // with an empty namespace and nothing to reach through it — offline
+    // rather than unfiltered, which is neither of the two behaviours
+    // anyone asked for.
+    if matches!(decision, crate::netgate::EgressDecision::Filtered(_))
+        && std::env::var(crate::run::NET_GATE_ENV).is_ok_and(|v| v == "off")
+    {
+        tracing::warn!(
+            hosts = ?decision.policy().map(|p| p.hosts()),
+            "{}=off: launching with UNRESTRICTED outbound network access even though this app \
+             was granted specific hosts. Per-host filtering is NOT enforced for this launch.",
+            crate::run::NET_GATE_ENV,
+        );
+        return crate::netgate::EgressDecision::Unrestricted;
+    }
+    decision
 }
 
 /// Where the egress gate socket is on each side of the sandbox
