@@ -19,7 +19,6 @@ use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 
-use ui::State;
 use ui::icons::Icon;
 use ui::offscreen::OffscreenRenderer;
 use ui::presence::PresenceCtx;
@@ -120,7 +119,6 @@ fn lay_out_field(field: &mut SearchField, theme: &Theme, width: f64, origin: Poi
 }
 
 fn shoot(theme: &Theme, out: PathBuf, query: &str, cursor: usize) {
-    let mut state = State::new();
     let mut tr = TextRenderer::new();
     let presence = PresenceCtx::default();
     let field_w = WIDTH as f64 - PAD * 2.0;
@@ -154,7 +152,6 @@ fn shoot(theme: &Theme, out: PathBuf, query: &str, cursor: usize) {
 
     let mut r = OffscreenRenderer::new(WIDTH, height);
     r.render_png(&scene, theme.bg_app, &out);
-    let _ = &mut state;
     println!("wrote {} ({}x{})", out.display(), WIDTH, height);
 }
 
