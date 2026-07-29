@@ -1844,23 +1844,13 @@ pub fn run() -> ! {
         // included) and sleep up to one frame. The calloop loop itself
         // dispatches sources on each iteration; this is what lets
         // newly-accepted connections fan out into `insert_client` calls.
-        // Park until the next presentation deadline — the *remainder* of
-        // the interval, not a fresh one. This is the half of the pacing
-        // fix that lives in the loop: `budget` is measured from the
-        // deadline the clock advanced when the frame was submitted, so a
-        // tick that spent 6 ms working parks 10.7 ms and the next tick
-        // starts one interval after this one did.
-        //
-        // A tick that presented nothing has a stale deadline and would
-        // get a zero budget, which would spin the loop at 100% CPU. There
-        // is nothing to show, so park a whole interval instead: the loop
-        // still wakes at display rate to poll input and protocol traffic,
-        // it just doesn't render.
-        let park = if should_paint {
-            frame_clock.budget(Instant::now())
-        } else {
-            frame_clock.interval()
-        };
+        // Park until the next presentation deadline. See
+        // `FrameClock::park` for why this is a question about the
+        // deadline rather than about whether this tick painted: anything
+        // that wakes the loop mid-interval (the render thread retiring a
+        // frame, protocol traffic, input) must not be able to push the
+        // next frame past its deadline.
+        let park = frame_clock.park(Instant::now());
         let t_sleep_start = Instant::now();
         if let Err(err) = event_loop.dispatch(park, &mut state) {
             eprintln!("nirios compositor: event loop dispatch error: {err}");
