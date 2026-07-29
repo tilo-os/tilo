@@ -174,9 +174,10 @@ pub struct ComposeWindow {
     // body
     format: ComposeFormat,
     editor: Wysiwyg,
-    /// Plain-text body buffer (Text mode). A single-line `TextInput` can't hold
-    /// a multi-line body, so we own the buffer and render it ourselves.
-    plain_body: String,
+    /// Plain-text body (Text mode) — a shared multiline [`TextInput`], so the
+    /// body gets real caret/selection/clipboard/a11y for free instead of a
+    /// hand-rolled `String`.
+    plain_body: TextInput,
 
     /// Filesystem paths of staged attachments (real files read on send).
     attachments: Vec<String>,
@@ -211,7 +212,11 @@ impl ComposeWindow {
             show_cc_bcc: false,
             format,
             editor: Wysiwyg::new(),
-            plain_body: String::new(),
+            plain_body: {
+                let mut b = TextInput::local().multiline(true).with_placeholder("Write your message…");
+                b.set_plain_chrome(true); // the body area draws its own card
+                b
+            },
             attachments: Vec::new(),
             prompt: None,
             focus: Field::None,
@@ -264,7 +269,7 @@ impl ComposeWindow {
         self.attachments.clear();
         self.prompt = None;
         self.editor = Wysiwyg::new();
-        self.plain_body.clear();
+        self.plain_body.set_text("");
         self.title_hint.clear();
         self.set_focus(Field::To);
         self.dirty = true;
@@ -280,7 +285,7 @@ impl ComposeWindow {
         match self.format {
             ComposeFormat::Html => self.editor.set_plain(quote),
             ComposeFormat::Text => {
-                self.plain_body = quote.to_string();
+                self.plain_body.set_text(quote);
             }
         }
         self.set_focus(Field::Body);
@@ -307,7 +312,7 @@ impl ComposeWindow {
         self.attachments = draft.attachments.clone();
         match self.format {
             ComposeFormat::Html => self.editor.set_plain(&draft.body),
-            ComposeFormat::Text => self.plain_body = draft.body.clone(),
+            ComposeFormat::Text => self.plain_body.set_text(&draft.body),
         }
         if !draft.subject.is_empty() {
             self.title_hint = draft.subject.clone();
@@ -362,12 +367,13 @@ impl ComposeWindow {
         match self.format {
             ComposeFormat::Html => {
                 // HTML → plain: flatten.
-                self.plain_body = self.editor.to_plain();
+                let flat = self.editor.to_plain();
+                self.plain_body.set_text(&flat);
                 self.format = ComposeFormat::Text;
             }
             ComposeFormat::Text => {
                 // plain → HTML: re-parse into blocks.
-                self.editor.set_plain(&self.plain_body);
+                self.editor.set_plain(self.plain_body.value());
                 self.format = ComposeFormat::Html;
             }
         }
@@ -394,7 +400,7 @@ impl ComposeWindow {
         self.cc.set_text(&draft.cc);
         self.bcc.set_text(&draft.bcc);
         self.subject.set_text(&draft.subject);
-        self.plain_body = draft.body.clone();
+        self.plain_body.set_text(&draft.body);
         if let Some(html) = &draft.html_body {
             // Best-effort: re-seed from the plain alternative (HTML re-import is
             // a future enhancement — see wysiwyg promotion note).
@@ -411,7 +417,7 @@ impl ComposeWindow {
     pub fn to_draft(&self) -> Draft {
         let (body, html_body) = match self.format {
             ComposeFormat::Html => (self.editor.to_plain(), Some(self.editor.to_html())),
-            ComposeFormat::Text => (self.plain_body.clone(), None),
+            ComposeFormat::Text => (self.plain_body.value().to_string(), None),
         };
         Draft {
             to: self.to.value().to_string(),
@@ -434,6 +440,7 @@ impl ComposeWindow {
         self.bcc.set_focus(matches!(field, Field::Bcc));
         self.subject.set_focus(matches!(field, Field::Subject));
         self.editor.set_focus(matches!(field, Field::Body) && matches!(self.format, ComposeFormat::Html));
+        self.plain_body.set_focus(matches!(field, Field::Body) && matches!(self.format, ComposeFormat::Text));
         self.dirty = true;
     }
 
@@ -564,7 +571,7 @@ impl ComposeWindow {
         self.hits.push((body, ComposeHit::Body));
         match self.format {
             ComposeFormat::Html => self.editor.apply_layout(body),
-            ComposeFormat::Text => {}
+            ComposeFormat::Text => self.plain_body.apply_layout_external(body),
         }
 
         // Buttons.
@@ -628,6 +635,11 @@ impl ComposeWindow {
                 let mut ft: Option<taffy::NodeId> = None;
                 for inp in [&mut self.to, &mut self.cc, &mut self.bcc, &mut self.subject] {
                     inp.handle_event(event, scale_factor, modifiers, state, path, &mut h, &mut ft, node_id, taffy);
+                }
+                // Forward to the plain body too so its hover / drag-selection
+                // tracks (Text mode).
+                if matches!(self.format, ComposeFormat::Text) {
+                    self.plain_body.handle_event(event, scale_factor, modifiers, state, path, &mut h, &mut ft, node_id, taffy);
                 }
                 if let Some(p) = self.prompt.as_mut() {
                     p.input.handle_event(event, scale_factor, modifiers, state, path, &mut h, &mut ft, node_id, taffy);
@@ -707,7 +719,9 @@ impl ComposeWindow {
                             self.editor.on_key(event, shift, ctrl);
                         }
                         ComposeFormat::Text => {
-                            self.handle_plain_key(event);
+                            let mut h = false;
+                            let mut ft: Option<taffy::NodeId> = None;
+                            self.plain_body.handle_event(event, scale_factor, modifiers, state, path, &mut h, &mut ft, node_id, taffy);
                         }
                     }
                     self.dirty = true;
@@ -763,8 +777,17 @@ impl ComposeWindow {
             ComposeHit::FieldSubject => self.focus_and_forward(Field::Subject, event, scale_factor, modifiers, state, path, node_id, taffy),
             ComposeHit::Body => {
                 self.set_focus(Field::Body);
-                if matches!(self.format, ComposeFormat::Html) {
-                    self.editor.on_mouse_press(pt);
+                match self.format {
+                    ComposeFormat::Html => {
+                        self.editor.on_mouse_press(pt);
+                    }
+                    ComposeFormat::Text => {
+                        // Forward the real press so the body places its caret at
+                        // the click point (the preceding CursorMoved set hover).
+                        let mut h = false;
+                        let mut ft: Option<taffy::NodeId> = None;
+                        self.plain_body.handle_event(event, scale_factor, modifiers, state, path, &mut h, &mut ft, node_id, taffy);
+                    }
                 }
             }
             ComposeHit::Bold => self.editor.toggle_inline(InlineMark::Bold),
@@ -868,31 +891,6 @@ impl ComposeWindow {
         let mut ft: Option<taffy::NodeId> = None;
         if let Some(inp) = self.focused_input() {
             inp.handle_event(event, scale_factor, modifiers, state, path, &mut h, &mut ft, node_id, taffy);
-        }
-    }
-
-    fn handle_plain_key(&mut self, event: &WindowEvent) {
-        if let WindowEvent::KeyboardInput {
-            event: winit::event::KeyEvent { logical_key, text, state: ElementState::Pressed, .. },
-            ..
-        } = event
-        {
-            use winit::keyboard::{Key, NamedKey};
-            match logical_key {
-                Key::Named(NamedKey::Backspace) => {
-                    self.plain_body.pop();
-                }
-                Key::Named(NamedKey::Enter) => self.plain_body.push('\n'),
-                Key::Named(NamedKey::Space) => self.plain_body.push(' '),
-                _ => {
-                    if let Some(txt) = text {
-                        let s = txt.as_str();
-                        if !s.is_empty() && !s.chars().any(|c| c.is_control()) {
-                            self.plain_body.push_str(s);
-                        }
-                    }
-                }
-            }
         }
     }
 
@@ -1020,7 +1018,11 @@ impl ComposeWindow {
                 self.editor.draw(scene, t, tr, theme);
                 scene.pop_layer();
             }
-            ComposeFormat::Text => self.draw_plain_body(scene, t, tr, theme, body),
+            ComposeFormat::Text => {
+                // The shared multiline TextInput draws the wrapped body, caret,
+                // selection, and placeholder inside the card (it clips itself).
+                ui::widget::Widget::draw(&mut self.plain_body, scene, t, tr, theme, presence);
+            }
         }
 
         // Attachment chips (staged real files — shown by their basename).
@@ -1119,32 +1121,6 @@ impl ComposeWindow {
         };
         let (lw, _) = tr.measure(label, 11.5, None);
         tr.draw_text(scene, label, 11.5, c.neutral[8], t * Affine::translate(((rect.x0 + rect.x1) / 2.0 - lw as f64 / 2.0, rect.y0 + 8.0)), None);
-    }
-
-    fn draw_plain_body(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, body: Rect) {
-        let c = &theme.tokens.colors;
-        let bw = (body.width() - 20.0) as f32;
-        let mut by = body.y0 + 10.0;
-        scene.push_layer(Fill::NonZero, vello::peniko::BlendMode::default(), 1.0, t, &body);
-        if self.plain_body.is_empty() && !matches!(self.focus, Field::Body) {
-            tr.draw_text(scene, "Write your message…", 13.0, c.text_dim, t * Affine::translate((body.x0 + 10.0, by)), None);
-        }
-        for para in self.plain_body.split('\n') {
-            if by > body.y1 - 16.0 {
-                break;
-            }
-            let (_w, h) = tr.measure(if para.is_empty() { " " } else { para }, 13.0, Some(bw));
-            tr.draw_text(scene, para, 13.0, c.neutral[8], t * Affine::translate((body.x0 + 10.0, by)), Some(bw));
-            by += h.max(18.0) as f64;
-        }
-        if matches!(self.focus, Field::Body) {
-            let last = self.plain_body.rsplit('\n').next().unwrap_or("");
-            let (cw, _) = tr.measure(last, 13.0, None);
-            let cx = body.x0 + 10.0 + cw as f64;
-            let cy = (by - 18.0).max(body.y0 + 10.0);
-            fill(scene, t, Rect::new(cx, cy, cx + 1.6, cy + 16.0), c.accent[5]);
-        }
-        scene.pop_layer();
     }
 
     fn draw_prompt(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, presence: &PresenceCtx) {
@@ -1247,7 +1223,7 @@ mod tests {
         w.editor.set_plain("Hello world");
         w.toggle_format();
         assert_eq!(w.format(), ComposeFormat::Text);
-        assert!(w.plain_body.contains("Hello world"));
+        assert!(w.plain_body.value().contains("Hello world"));
         w.toggle_format();
         assert_eq!(w.format(), ComposeFormat::Html);
     }
@@ -1269,10 +1245,57 @@ mod tests {
         let mut w = ComposeWindow::new(ComposeFormat::Text);
         w.open_blank();
         w.layout(Rect::new(0.0, 0.0, 1280.0, 800.0));
-        w.plain_body = "Just text".into();
+        w.plain_body.set_text("Just text");
         let d = w.to_draft();
         assert!(d.html_body.is_none());
         assert_eq!(d.body, "Just text");
+    }
+
+    /// The plain body is now a shared multiline `TextInput`: typing a newline
+    /// through the window's real keyboard path lands a genuinely multi-line
+    /// draft body — the thing a single-line field could not do.
+    #[test]
+    fn plain_body_accepts_a_multiline_draft_via_the_real_key_path() {
+        use winit::event::KeyEvent;
+        use winit::keyboard::{Key, NamedKey, SmolStr};
+
+        fn key(logical: Key, text: Option<&str>) -> WindowEvent {
+            let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
+            ev.logical_key = logical;
+            ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
+                winit::keyboard::NativeKeyCode::Unidentified,
+            );
+            ev.location = winit::keyboard::KeyLocation::Standard;
+            ev.state = ElementState::Pressed;
+            ev.repeat = false;
+            ev.text = text.map(SmolStr::new);
+            WindowEvent::KeyboardInput {
+                device_id: unsafe { std::mem::zeroed() },
+                event: ev,
+                is_synthetic: false,
+            }
+        }
+
+        let mut w = ComposeWindow::new(ComposeFormat::Text);
+        w.open_blank();
+        w.layout(Rect::new(0.0, 0.0, 1280.0, 800.0));
+        w.set_focus(Field::Body);
+
+        let m = winit::event::Modifiers::default();
+        let mut doc = automerge::AutoCommit::new();
+        let taffy: taffy::TaffyTree<()> = taffy::TaffyTree::new();
+        let node = taffy::NodeId::new(0);
+        let mut send = |ev: &WindowEvent| {
+            w.handle_event(ev, 1.0, &m, &mut doc, &automerge::ROOT, node, &taffy);
+        };
+        send(&key(Key::Character(SmolStr::new("H")), Some("H")));
+        send(&key(Key::Character(SmolStr::new("i")), Some("i")));
+        send(&key(Key::Named(NamedKey::Enter), None));
+        send(&key(Key::Character(SmolStr::new("t")), Some("t")));
+        send(&key(Key::Character(SmolStr::new("w")), Some("w")));
+        send(&key(Key::Character(SmolStr::new("o")), Some("o")));
+
+        assert_eq!(w.to_draft().body, "Hi\ntwo", "Enter split the body across two lines");
     }
 
     #[test]
