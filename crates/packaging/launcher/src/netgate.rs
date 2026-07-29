@@ -218,7 +218,14 @@ impl EgressDecision {
 
         if granted_hosts.is_empty() {
             return match net_mode {
-                "off" => EgressDecision::Blocked,
+                // `dns-only` grants no host egress, so it grants none
+                // here. It is listed explicitly rather than falling
+                // through to the catch-all, where "not off" would have
+                // read as "unrestricted" — the same mistake that made
+                // an allowlist mean unrestricted. Under this design an
+                // app has no resolver of its own in any case, so the
+                // mode has nothing left to express.
+                "off" | "dns-only" => EgressDecision::Blocked,
                 "allowlist" => EgressPolicy::new(manifest_hosts.to_vec()).into_decision(),
                 // Any other mode is the historical "share the host
                 // network" spelling.
@@ -331,6 +338,7 @@ pub enum GateError {
 }
 
 /// A running gate. Drop stops it and unlinks the socket.
+#[derive(Debug)]
 pub struct NetGate {
     socket_path: PathBuf,
     stats: Arc<GateStats>,
@@ -705,6 +713,18 @@ mod tests {
     fn no_manifest_network_and_no_grant_is_blocked() {
         assert_eq!(
             EgressDecision::resolve("off", &[], &[]),
+            EgressDecision::Blocked
+        );
+    }
+
+    #[test]
+    fn dns_only_does_not_fall_through_to_unrestricted() {
+        // The canonical manifest vocabulary has a `dns-only` mode. A
+        // catch-all reading "not off" as "share the host network" is
+        // exactly how an allowlist came to mean unrestricted, so the
+        // mode is answered explicitly.
+        assert_eq!(
+            EgressDecision::resolve("dns-only", &[], &[]),
             EgressDecision::Blocked
         );
     }
