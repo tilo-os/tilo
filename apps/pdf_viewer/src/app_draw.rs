@@ -316,6 +316,9 @@ impl PdfApp {
 
         self.draw_canvas(scene, base, tr, theme, &page_imgs);
 
+        // The floating selection HUD over the page (shared `ui` component).
+        self.draw_selection_hud(scene, base, tr, theme);
+
         // On a narrow window the panels float above the canvas behind a scrim.
         if self.overlay_mode && (self.show_rail || self.show_sidebar) {
             let strip = Rect::new(self.canvas_rect.x0, self.canvas_rect.y0, self.canvas_rect.x1, self.canvas_rect.y1);
@@ -806,6 +809,53 @@ impl PdfApp {
                 }
             }
         }
+    }
+
+    /// The floating selection HUD — the shared `ui::SelectionHud`, identical to
+    /// the ebook reader's bar: highlight swatches + Copy + Note over the live
+    /// text selection. Rebuilt each frame and stored for the next press to
+    /// hit-test. Only shown once the drag has settled (a live drag would make
+    /// the bar chase the pointer) and never while the inline editor is open.
+    fn draw_selection_hud(&mut self, scene: &mut Scene, base: Affine, tr: &mut TextRenderer, theme: &Theme) {
+        self.sel_hud = None;
+        let Some(sel) = self.selection else { return };
+        if sel.dragging || !sel.is_active() || self.editing.is_some() {
+            return;
+        }
+        let Some(bounds_rect) = self.selection_screen_bounds() else { return };
+        // Anchor above the top edge of the selection, horizontally centred on it.
+        let anchor = Point::new((bounds_rect.x0 + bounds_rect.x1) / 2.0, bounds_rect.y0);
+        let c = &theme.tokens.colors;
+        let style = ui::ReaderHudStyle {
+            surface: c.surfaces.raised,
+            border: c.border_standard,
+            shadow: Color::from_rgba8(0, 0, 0, 70),
+            text: c.text_primary,
+            hover: theme.bg_hover,
+            pill: c.surfaces.overlay,
+            ring: theme.accent_primary,
+            danger: c.semantic.danger,
+        };
+        let swatches: Vec<ui::HudSwatch> = Swatch::ALL
+            .iter()
+            .map(|&s| {
+                let (r, g, b) = s.rgb();
+                ui::HudSwatch::new([r, g, b], s == self.swatch)
+            })
+            .collect();
+        let hud = ui::SelectionHud::draw(
+            scene,
+            base,
+            tr,
+            &style,
+            &swatches,
+            true,
+            false,
+            self.last_mouse,
+            anchor,
+            self.canvas_rect,
+        );
+        self.sel_hud = Some(hud);
     }
 
     /// A transient toast pill (e.g. "Saved to …" or "Copied 42 characters")
