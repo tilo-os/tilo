@@ -6322,10 +6322,16 @@ impl ShellOverlayHost {
         // strip stay pinned for empty-grants workspaces (the parity
         // baseline) so the existing `concept_parity_spec` x-coords
         // don't shift.
-        let permissions_visible = tree
-            .active_workspace()
-            .map(|ws| ws.has_app_grants())
-            .unwrap_or(false);
+        //
+        // …and always when it is the tab you are currently on. A modal
+        // that hides the tab whose body it is showing leaves the strip
+        // with nothing highlighted, which reads as "no tab is selected"
+        // rather than "this one is".
+        let permissions_visible = active_tab == WsTab::Permissions
+            || tree
+                .active_workspace()
+                .map(|ws| ws.has_app_grants())
+                .unwrap_or(false);
         let mut tab_labels: Vec<&str> = vec!["General", "Roles", "Files", "Collaborators"];
         if permissions_visible {
             tab_labels.push("Permissions");
@@ -6365,6 +6371,27 @@ impl ShellOverlayHost {
                     colors.surface_white_10,
                     None,
                     &pill,
+                );
+                // White-on-glass alone is a very quiet difference from
+                // an inactive pill — on the dark modal surface the two
+                // are nearly the same value. An accent rule under the
+                // active tab gives the selection a form, not just a
+                // slightly lighter fill.
+                let underline = RoundedRect::from_rect(
+                    Rect::new(
+                        pill_rect.x0 + 4.0,
+                        pill_rect.y1 + 3.0,
+                        pill_rect.x1 - 4.0,
+                        pill_rect.y1 + 5.0,
+                    ),
+                    1.0,
+                );
+                scene.fill(
+                    Fill::NonZero,
+                    transform,
+                    colors.accent[5],
+                    None,
+                    &underline,
                 );
             }
             let color = if active {
@@ -7155,18 +7182,24 @@ impl ShellOverlayHost {
         let slider_values = [qs.brightness, qs.volume];
         for i in 0..2 {
             let (bar, row_y) = self.quick_settings_slider_geometry(i);
-            // Leading icon (Sun for brightness, Volume2 for volume) —
-            // placeholder ring until the lucide paths land in
-            // `ui::icons::Icon`.
+            // Leading icon. Both rows used to draw the same grey ring —
+            // a placeholder standing in for two different controls, so
+            // nothing on the card said which slider was brightness and
+            // which was volume.
             let icon_x = rect.x0 + 16.0 + 12.0 + 8.0;
             let icon_cy = row_y + 12.0;
-            let icon_ring = vello::kurbo::Circle::new(Point::new(icon_x, icon_cy), 6.0);
-            scene.stroke(
-                &vello::kurbo::Stroke::new(1.5),
+            let icon_rect = Rect::new(icon_x - 7.0, icon_cy - 7.0, icon_x + 7.0, icon_cy + 7.0);
+            ui::icons::draw_icon(
+                scene,
                 transform,
+                icon_rect,
+                if i == 0 {
+                    ui::icons::Icon::Sun
+                } else {
+                    ui::icons::Icon::Volume2
+                },
                 colors.text_dim,
-                None,
-                &icon_ring,
+                1.5,
             );
 
             // Track: white/10. Fill: solid white (concept's `bg-white`),
