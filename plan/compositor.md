@@ -86,6 +86,18 @@ overtake a frame already queued.
 (`QOS_FRAME_TRACE`, `QOS_FRAME_SUMMARY`); `scripts/perf/frame-loop-bench.py`
 drives a measured run and diffs two of them.
 
+**What is verified, and what isn't.** The loop demonstrably holds the
+cadence it is configured for — including non-60 rates, via the
+`QOS_REFRESH_HZ` override. That is a statement about the *loop*. It is
+not a statement about frames landing on a real panel's vblank: nothing in
+this design consumes hardware presentation feedback (DRM page-flip
+completion timestamps, or a `presentation-time` protocol event from a
+nested parent). `FrameClock::note_presented` is called at submit, so the
+deadline series is anchored on production, not on photons. Closing that
+loop — feeding real flip timestamps back into `note_presented`, which the
+clock is already shaped to accept — is the next step, and it needs
+hardware to be worth anything.
+
 ## Event loop + state
 
 A single `calloop::EventLoop<state::State>` owns everything. The `State` struct (`shell/src/compositor/state.rs`) holds all smithay globals:
@@ -115,6 +127,8 @@ The frame builder (`shell/src/compositor/frame.rs`) produces one `vello::Scene` 
 3. Hand the scene to the presenter — the render thread where the backend
    supports one, inline otherwise. It either presents into a winit window
    (winit backend) or schedules a page flip on the DRM output (drm backend).
+
+### No fullscreen fast path (not implemented)
 
 A fullscreen client still pays the full composition cost: its buffer is
 imported to bytes, drawn into the scene as a full-viewport image, and the
