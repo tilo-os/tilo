@@ -5,13 +5,32 @@
 //! that graph into rows, the [`HistoryScrubber`] renders them as a draggable
 //! track, and dragging the handle scrubs through the document's past.
 //!
-//! Two affordances, both the scrubber's own:
+//! Four affordances, all the scrubber's own:
 //!
 //! * **Preview** materialises the document as of the selected tick and shows
 //!   its text above the strip. Nothing is written; the live document is
 //!   untouched and the user can keep scrubbing.
 //! * **Restore to this version** rewrites the live document to that state — as
 //!   a *forward* change. See [`restore_to`].
+//! * **Name / Rename this version** writes a name over the run of changes the
+//!   handle is sitting in. Retroactive: the grouping has already drawn the run,
+//!   so naming it costs one click and no forethought.
+//! * **Start a version / Finish version** is the prospective case — say what you
+//!   are about to do, work, close it. It opens a range with no end, which absorbs
+//!   every change until it is closed.
+//!
+//! # Versions on the track
+//!
+//! The strip does not show one tick per change. A debounced editor produces
+//! hundreds of them, and a track of hundreds of ticks is a grey smear you cannot
+//! aim at. So [`ui::group_entries`] cuts the change graph into runs, the strip
+//! renders those as a labelled band above the track, and the handle snaps to
+//! their boundaries.
+//!
+//! The band shows **top-level** runs only. A name nested inside another name is
+//! a legible thing in the activity pane, which has two dimensions to draw it in;
+//! the strip has one, and stacking a sub-range on top of its parent would mean
+//! two labels over the same pixels. The pane is where nesting is read.
 //!
 //! The strip lives inside the app's own content area, under the canvas and
 //! above the layout bar, alongside the outline pane and the styles panel. It is
@@ -19,22 +38,26 @@
 //! an app must not draw those. What an app owns is its document, and its
 //! document's history is document content.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use automerge::{AutoCommit, ChangeHash};
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
+use ui::widget::history_scrubber::{ScrubberGroup, VersionAction};
 use ui::widget::{HistoryEntryId, HistoryScrubber};
-use ui::{AuthorDirectory, HistorySource, Theme};
+use ui::{AuthorDirectory, GroupNameRequest, GroupingConfig, HistorySource, Theme};
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::Fill;
 use vello::Scene;
 use winit::event::{Modifiers, WindowEvent};
 
-/// Height of the history strip when open. Covers the scrubber's popover, track
-/// and action-button row (56 + 6 + 24 + 28 plus breathing room).
-pub const HISTORY_BAND_H: f64 = 140.0;
+/// Height of the history strip when open, with the version band showing.
+///
+/// The strip asks the widget rather than hard-coding: it is taller once there is
+/// a version band above the track, and a host that reserved the old height would
+/// clip the button row.
+pub const HISTORY_BAND_H: f64 = 168.0;
 
 /// Height of the preview card drawn above the strip while a past version is
 /// selected.
@@ -50,6 +73,10 @@ pub struct HistoryOutcome {
     /// The document was rewritten to an earlier version. The host must commit
     /// (via `needs_commit()`) so the restore lands on the undo stack.
     pub restored: bool,
+    /// A version was named, renamed, un-named, opened or closed. Also needs a
+    /// commit: a name is a document write like any other, and collaborators only
+    /// see it once it is committed.
+    pub named: bool,
     /// The pane consumed the event.
     pub handled: bool,
 }
@@ -64,6 +91,10 @@ pub struct HistoryPanel {
     /// cannot reach back into this struct; a shared cell is the handshake.
     preview_intent: Rc<Cell<Option<HistoryEntryId>>>,
     restore_intent: Rc<Cell<Option<HistoryEntryId>>>,
+    /// Same handshake for the two writes that are not a restore. Neither payload
+    /// is `Copy`, so these are `RefCell` rather than `Cell`.
+    name_intent: Rc<RefCell<Option<GroupNameRequest>>>,
+    version_intent: Rc<RefCell<Option<VersionAction>>>,
     /// Document heads at the last rebuild. Re-deriving the whole timeline on
     /// every sync would materialise a snapshot per version per frame; the graph
     /// only moves when someone commits.
@@ -90,16 +121,24 @@ impl HistoryPanel {
     pub fn new() -> Self {
         let preview_intent = Rc::new(Cell::new(None));
         let restore_intent = Rc::new(Cell::new(None));
+        let name_intent = Rc::new(RefCell::new(None));
+        let version_intent = Rc::new(RefCell::new(None));
         let pi = Rc::clone(&preview_intent);
         let ri = Rc::clone(&restore_intent);
+        let ni = Rc::clone(&name_intent);
+        let vi = Rc::clone(&version_intent);
         Self {
             open: false,
             scrubber: HistoryScrubber::new(Vec::new())
                 .on_preview(move |id| pi.set(Some(*id)))
-                .on_restore(move |id| ri.set(Some(*id))),
+                .on_restore(move |id| ri.set(Some(*id)))
+                .on_name(move |req| *ni.borrow_mut() = Some(req.clone()))
+                .on_version(move |act| *vi.borrow_mut() = Some(act.clone())),
             source: HistorySource::new().with_artifact_kind(collab_kind()),
             preview_intent,
             restore_intent,
+            name_intent,
+            version_intent,
             last_heads: Vec::new(),
             preview: None,
             band: Rect::ZERO,
@@ -120,8 +159,43 @@ impl HistoryPanel {
     }
 
     /// Vertical space the strip needs out of the host's layout.
+    ///
+    /// Asked of the widget rather than fixed: the strip is taller once it has a
+    /// version band to draw above the track.
     pub fn band_height(&self) -> f64 {
-        if self.open { HISTORY_BAND_H } else { 0.0 }
+        if self.open {
+            self.scrubber.natural_height()
+        } else {
+            0.0
+        }
+    }
+
+    /// The versions currently on the track.
+    pub fn versions(&self) -> &[ScrubberGroup] {
+        self.scrubber.groups()
+    }
+
+    /// True while the strip's name field has the keyboard. The host must route
+    /// keys here regardless of where the pointer is, or a name could only be
+    /// typed with the mouse held still over the strip.
+    pub fn wants_keyboard(&self) -> bool {
+        self.scrubber.wants_keyboard()
+    }
+
+    /// Rect of the strip's `[Name this version]` button.
+    pub fn name_button_rect(&self) -> Rect {
+        self.scrubber.name_button_rect()
+    }
+
+    /// Rect of the strip's `[Start a version]` / `[Finish version]` button.
+    pub fn version_button_rect(&self) -> Rect {
+        self.scrubber.version_button_rect()
+    }
+
+    /// Whether the handle moves version by version (the default) or change by
+    /// change.
+    pub fn set_snap_to_versions(&mut self, snap: bool) {
+        self.scrubber.set_snap_to_groups(snap);
     }
 
     /// Number of versions currently on the track. Lets the host (and tests)
@@ -211,7 +285,25 @@ impl HistoryPanel {
         let at_end = self.scrubber.current_tick() + 1 >= self.scrubber.tick_count().max(1);
         let entries = self.source.entries(doc);
         let tick = self.scrubber.current_tick();
+        // The names people have given runs of this document live in the document,
+        // so a collaborator's name arrives with their edits and needs no separate
+        // channel. Grouping is derived from the graph and the names together.
+        let named = ui::history_groups::read_named_ranges(doc, self.source.authors());
+        let groups = ui::group_entries(&entries, &named, &GroupingConfig::default());
+        let segments: Vec<ScrubberGroup> = groups
+            .iter()
+            .map(|g| ScrubberGroup {
+                start: g.start,
+                // The model's ranges are half-open; the track's are inclusive.
+                end: g.end.saturating_sub(1),
+                label: g.name.clone(),
+                derived: g.title(&entries),
+                record_id: g.record_id.clone(),
+                open: g.open,
+            })
+            .collect();
         self.scrubber.set_entries(entries);
+        self.scrubber.set_groups(segments);
         // `set_entries` pins the handle to the newest tick. Keep the user's
         // position while they are scrubbing through the past; only follow the
         // document forward if they were already parked at the present.
@@ -282,7 +374,11 @@ impl HistoryPanel {
             &scratch,
         );
 
-        let mut out = HistoryOutcome { restored: false, handled };
+        let mut out = HistoryOutcome {
+            restored: false,
+            named: false,
+            handled,
+        };
         if let Some(id) = self.preview_intent.take() {
             self.preview = build_preview(doc, &id, self.scrubber.entries());
             out.handled = true;
@@ -296,6 +392,19 @@ impl HistoryPanel {
             }
             out.handled = true;
         }
+        if let Some(req) = self.name_intent.borrow_mut().take() {
+            out.named = apply_name(doc, &req);
+            out.handled = true;
+        }
+        if let Some(act) = self.version_intent.borrow_mut().take() {
+            out.named = apply_version(doc, &act);
+            out.handled = true;
+        }
+        if out.named {
+            // The graph will have a new change in it once the host commits; drop
+            // the cached heads so the next sync re-derives the band.
+            self.last_heads.clear();
+        }
         out
     }
 
@@ -304,6 +413,38 @@ impl HistoryPanel {
     pub fn follow_document(&mut self) {
         self.preview = None;
         self.last_heads.clear();
+    }
+}
+
+/// Write (or remove) a name over a run of changes.
+///
+/// An empty label is the request to take a name off — that is what clearing the
+/// field and pressing Enter means. Both paths leave the transaction open for the
+/// host to commit, so a name lands stamped and attributed like any other edit and
+/// reaches collaborators through the same sync.
+pub fn apply_name(doc: &mut AutoCommit, req: &GroupNameRequest) -> bool {
+    if req.label.is_empty() {
+        return match &req.record_id {
+            Some(id) => ui::history_groups::clear_name(doc, id),
+            None => false,
+        };
+    }
+    ui::history_groups::name_range(doc, &req.start, Some(&req.end), &req.label);
+    true
+}
+
+/// Open or close a prospective version.
+pub fn apply_version(doc: &mut AutoCommit, action: &VersionAction) -> bool {
+    match action {
+        VersionAction::Open { at, label } => {
+            // No end anchor: the range stays open and absorbs whatever comes
+            // next, which is the whole point of saying so up front.
+            ui::history_groups::name_range(doc, at, None, label);
+            true
+        }
+        VersionAction::Close { record_id, at } => {
+            ui::history_groups::close_range(doc, record_id, at)
+        }
     }
 }
 
