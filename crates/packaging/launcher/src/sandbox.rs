@@ -595,19 +595,35 @@ pub struct NetGateBind {
 /// write-flavoured access and a read-only bind surfaces as `EACCES` at
 /// connect time.
 ///
-/// `ALL_PROXY` in both spellings is what curl, reqwest and most of the
-/// ecosystem read. `socks5h` (rather than `socks5`) is load-bearing: it
-/// is the form that sends the **hostname** to the proxy instead of
-/// resolving locally first. Since the sandbox cannot resolve at all,
-/// `socks5` would simply fail — but naming the right scheme means the
-/// failure never comes up.
+/// Both proxy forms are advertised because the gate serves both on one
+/// socket, and because picking only one would break apps:
+///
+/// - `HTTP(S)_PROXY` → `http://…`. HTTP `CONNECT` is understood by
+///   every client with no feature flags. This is the one that matters
+///   in practice — `reqwest`'s SOCKS support is a **non-default
+///   feature**, so an app built without it ignores `ALL_PROXY`
+///   entirely and would end up offline rather than filtered.
+/// - `ALL_PROXY` → `socks5h://…`, for clients that prefer SOCKS.
+///   `socks5h` rather than `socks5` is load-bearing: the `h` is what
+///   sends the **hostname** to the proxy instead of resolving locally
+///   first. The sandbox cannot resolve at all, so `socks5` would
+///   simply fail.
+///
+/// Both carry the destination as a name, which is what the policy is
+/// matched against.
 pub fn push_net_gate(argv: &mut Vec<String>, bind: &NetGateBind) {
     push_bind(argv, "--bind", &bind.host_socket, &bind.sandbox_socket);
-    let url = format!("socks5h://127.0.0.1:{}", bind.port);
+    let http = format!("http://127.0.0.1:{}", bind.port);
+    for var in ["HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy"] {
+        argv.push("--setenv".to_string());
+        argv.push(var.to_string());
+        argv.push(http.clone());
+    }
+    let socks = format!("socks5h://127.0.0.1:{}", bind.port);
     for var in ["ALL_PROXY", "all_proxy"] {
         argv.push("--setenv".to_string());
         argv.push(var.to_string());
-        argv.push(url.clone());
+        argv.push(socks.clone());
     }
     // For an app that would rather speak to the gate directly than go
     // through the loopback relay. The relay is a convenience for
@@ -1571,12 +1587,24 @@ mod tests {
         // socks5h, not socks5: the `h` is what sends the hostname to
         // the gate instead of resolving it locally first, and the
         // sandbox cannot resolve at all.
-        let expected = format!("socks5h://127.0.0.1:{}", crate::netgate::RELAY_PORT);
+        let socks = format!("socks5h://127.0.0.1:{}", crate::netgate::RELAY_PORT);
         for var in ["ALL_PROXY", "all_proxy"] {
             assert!(
                 argv.windows(3)
-                    .any(|w| w[0] == "--setenv" && w[1] == var && w[2] == expected),
+                    .any(|w| w[0] == "--setenv" && w[1] == var && w[2] == socks),
                 "{var} must point at the relay as socks5h: {argv:?}"
+            );
+        }
+        // And the HTTP form, which is the one that works without an
+        // opt-in feature in the client. An app whose HTTP library was
+        // built without SOCKS support reads only these, and would be
+        // offline rather than filtered if they were missing.
+        let http = format!("http://127.0.0.1:{}", crate::netgate::RELAY_PORT);
+        for var in ["HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy"] {
+            assert!(
+                argv.windows(3)
+                    .any(|w| w[0] == "--setenv" && w[1] == var && w[2] == http),
+                "{var} must point at the relay as an HTTP proxy: {argv:?}"
             );
         }
     }
