@@ -2654,11 +2654,18 @@ mod permissions_pane_tests {
         let mut ws = ws_with_grants();
         let subjects = grant_subjects(&ws);
         let firefox = subjects.iter().position(|s| s.id == "firefox").unwrap();
-        let draft = GrantDraft {
+        // Pick something the app does not already hold. Re-granting an
+        // existing capability *merges*, keeping the longer of the two
+        // expiries, so a fresh grant is the only way to observe the
+        // chosen one.
+        let mut draft = GrantDraft {
             subject_index: firefox,
             choice_index: 0,
             expiry: Expiry::AfterUse,
         };
+        while draft.choice().label != "Microphone" {
+            draft.cycle_choice();
+        }
         let edit = apply_grant_draft(&mut ws, &OWNER.to_string(), &draft);
         let id = &edit.granted[0];
         let cap = ws
@@ -2670,6 +2677,47 @@ mod permissions_pane_tests {
         assert!(
             !cap.persists_across_restart(),
             "an after-use grant must not be written down as permanent"
+        );
+    }
+
+    #[test]
+    fn re_granting_never_shortens_an_existing_grant() {
+        // `grant_capability` keeps the longer expiry when the same
+        // (subject, scope, effect, verb) is granted again. A panel that
+        // reported "Once" after that click would be lying about what the
+        // enforcement path holds.
+        let mut ws = ws_with_grants();
+        let subjects = grant_subjects(&ws);
+        let firefox = subjects.iter().position(|s| s.id == "firefox").unwrap();
+        let mut draft = GrantDraft {
+            subject_index: firefox,
+            choice_index: 0,
+            expiry: Expiry::AfterUse,
+        };
+        while draft.choice().label != "Camera" {
+            draft.cycle_choice();
+        }
+        apply_grant_draft(&mut ws, &OWNER.to_string(), &draft);
+        let camera = ws
+            .capabilities
+            .iter()
+            .filter(|c| matches!(&c.scope, Scope::Device(d) if d == "camera"))
+            .collect::<Vec<_>>();
+        assert_eq!(camera.len(), 1, "the re-grant merges rather than duplicating");
+        assert_eq!(
+            camera[0].expiry,
+            Expiry::Never,
+            "the existing permanent grant is not demoted to once-only"
+        );
+        let layout = permissions_pane_layout(&ws, pane());
+        let row = layout
+            .rows
+            .iter()
+            .find(|r| r.allows.contains("camera"))
+            .expect("camera row");
+        assert_eq!(
+            row.expiry, "Always",
+            "the row must report the expiry that is stored, not the one that was asked for"
         );
     }
 
