@@ -50,8 +50,12 @@ use qdoc::snapshot::DocSnapshot;
 use crate::widget::history::{HistoryEntry, HistoryEntryId};
 
 pub mod authors;
+pub mod groups;
 pub use authors::{
     actor_handle, local_identity_author, short_id, stable_hue, AuthorDirectory, UNKNOWN_AUTHOR_NAME,
+};
+pub use groups::{
+    clear_name, close_range, is_group_marker, name_range, read_named_ranges, GROUPS_KEY,
 };
 
 /// Default ceiling on how many of the most recent versions are turned into
@@ -152,18 +156,25 @@ impl HistorySource {
         let mut out = Vec::with_capacity(versions.len() - start);
         for v in versions.iter().skip(start) {
             let cur_snapshot = qdoc::history::materialize_at(doc, v.index).ok();
-            let (summary, op_class) = match (&prev_snapshot, &cur_snapshot) {
+            let before = heads
+                .get(&v.index.wrapping_sub(1))
+                .cloned()
+                .unwrap_or_default();
+            let after = heads.get(&v.index).cloned().unwrap_or_default();
+            let (summary, op_class, text_delta) = match (&prev_snapshot, &cur_snapshot) {
                 (Some(prev), Some(cur)) => structural_summary(prev, cur),
-                _ => {
-                    let before = heads
-                        .get(&v.index.wrapping_sub(1))
-                        .cloned()
-                        .unwrap_or_default();
-                    let after = heads.get(&v.index).cloned().unwrap_or_default();
-                    patch_summary(doc, &before, &after)
-                }
+                _ => patch_summary(doc, &before, &after),
             };
             prev_snapshot = cur_snapshot;
+
+            // Naming a version is a change like any other, but it is not a row:
+            // the name is already on screen as the band's title, and a "1 field"
+            // row directly under the band it named says nothing. The check runs
+            // only for changes that described nothing else, so the common path
+            // pays no extra diff.
+            if summary == NO_VISIBLE_CHANGE && groups::is_group_marker(&doc.diff(&before, &after)) {
+                continue;
+            }
 
             out.push(HistoryEntry {
                 id: entry_id_from_hash(&v.change_hash),
@@ -172,6 +183,7 @@ impl HistorySource {
                 artifact_kind: self.artifact_kind,
                 timestamp: timestamp_from_ms(v.time_ms),
                 summary,
+                text_delta,
                 // The scrubber re-derives state via `materialize_at` /
                 // `heads_for_entry` rather than by cracking open a payload, so
                 // there is nothing honest to put here yet. Leaving it `None` is
@@ -275,7 +287,10 @@ fn prefix_heads_series(
 /// a new comment is a comment even if it also touched text; content edits beat
 /// pure deletions; a reordering with no content change is a move; anything left
 /// is metadata.
-fn structural_summary(prev: &DocSnapshot, cur: &DocSnapshot) -> (String, OpClass) {
+fn structural_summary(
+    prev: &DocSnapshot,
+    cur: &DocSnapshot,
+) -> (String, OpClass, Option<(usize, usize)>) {
     let diff = qdoc::diff_snapshots(prev, cur);
 
     let mut inserted = 0usize;
@@ -313,42 +328,61 @@ fn structural_summary(prev: &DocSnapshot, cur: &DocSnapshot) -> (String, OpClass
     // "-1 block" is what the reader wants to see, not "-6 chars".
     let pure_removal = blocks_removed > 0 && blocks_added == 0 && inserted == 0;
 
+    // The character counts are complete on this path — a removed block
+    // contributes the text it took with it — so every branch can report them,
+    // and a group can aggregate across branches without mixing counted and
+    // uncounted members.
+    let delta = Some((inserted, deleted));
     if comments > 0 {
         let s = if comments == 1 {
             "+1 comment".to_string()
         } else {
             format!("+{comments} comments")
         };
-        return (s, OpClass::Comment);
+        return (s, OpClass::Comment, delta);
     }
     if pure_removal {
         return (
             plural_signed(-(blocks_removed as i64), "block"),
             OpClass::Tombstone,
+            delta,
         );
     }
     if inserted > 0 || deleted > 0 {
-        return (format!("+{inserted} -{deleted} chars"), OpClass::Splice);
+        return (
+            format!("+{inserted} -{deleted} chars"),
+            OpClass::Splice,
+            delta,
+        );
     }
     if blocks_added > 0 {
-        return (plural_signed(blocks_added as i64, "block"), OpClass::Splice);
+        return (
+            plural_signed(blocks_added as i64, "block"),
+            OpClass::Splice,
+            delta,
+        );
     }
     if blocks_removed > 0 {
         return (
             plural_signed(-(blocks_removed as i64), "block"),
             OpClass::Tombstone,
+            delta,
         );
     }
     if pure_reorder {
-        return ("reordered".to_string(), OpClass::Move);
+        return ("reordered".to_string(), OpClass::Move, delta);
     }
     if formatting > 0 {
-        return (plural(formatting, "formatting change"), OpClass::EditMeta);
+        return (
+            plural(formatting, "formatting change"),
+            OpClass::EditMeta,
+            delta,
+        );
     }
     if props > 0 {
-        return (plural(props, "property"), OpClass::EditMeta);
+        return (plural(props, "property"), OpClass::EditMeta, delta);
     }
-    (NO_VISIBLE_CHANGE.to_string(), OpClass::EditMeta)
+    (NO_VISIBLE_CHANGE.to_string(), OpClass::EditMeta, delta)
 }
 
 /// True when both snapshots hold the same set of top-level block ids but in a
@@ -372,8 +406,14 @@ fn patch_summary(
     doc: &mut AutoCommit,
     before: &[ChangeHash],
     after: &[ChangeHash],
-) -> (String, OpClass) {
+) -> (String, OpClass, Option<(usize, usize)>) {
     let patches = doc.diff(before, after);
+    // A change that only named a version reports as nothing visible; the caller
+    // recognises that and drops the row rather than showing "1 field" under the
+    // band the name just created.
+    if groups::is_group_marker(&patches) {
+        return (NO_VISIBLE_CHANGE.to_string(), OpClass::EditMeta, None);
+    }
     let mut inserted = 0usize;
     let mut text_deleted = 0usize;
     let mut list_inserted = 0usize;
@@ -403,31 +443,50 @@ fn patch_summary(
         }
     }
 
+    let delta = Some((inserted, text_deleted));
     if inserted > 0 || text_deleted > 0 {
-        return (format!("+{inserted} -{text_deleted} chars"), OpClass::Splice);
+        return (
+            format!("+{inserted} -{text_deleted} chars"),
+            OpClass::Splice,
+            delta,
+        );
     }
     if list_inserted > 0 {
         return (
             plural_signed(list_inserted as i64, "item"),
             OpClass::Splice,
+            delta,
         );
     }
     if list_deleted > 0 {
         return (
             plural_signed(-(list_deleted as i64), "item"),
             OpClass::Tombstone,
+            delta,
         );
     }
     if field_deleted > 0 && fields == 0 {
-        return (plural_signed(-(field_deleted as i64), "field"), OpClass::Tombstone);
+        return (
+            plural_signed(-(field_deleted as i64), "field"),
+            OpClass::Tombstone,
+            delta,
+        );
     }
     if fields > 0 || field_deleted > 0 {
-        return (plural(fields + field_deleted, "field"), OpClass::EditMeta);
+        return (
+            plural(fields + field_deleted, "field"),
+            OpClass::EditMeta,
+            delta,
+        );
     }
     if marks > 0 {
-        return (plural(marks, "formatting change"), OpClass::EditMeta);
+        return (
+            plural(marks, "formatting change"),
+            OpClass::EditMeta,
+            delta,
+        );
     }
-    (NO_VISIBLE_CHANGE.to_string(), OpClass::EditMeta)
+    (NO_VISIBLE_CHANGE.to_string(), OpClass::EditMeta, delta)
 }
 
 fn plural(n: usize, noun: &str) -> String {
