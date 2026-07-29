@@ -48,7 +48,7 @@ use crate::shell::state::{
     Capability, GRANT_ALWAYS, GRANT_ONCE, GRANT_SESSION, GrantScope, GroupId, StripId, WorkspaceId,
 };
 use crate::shell::workspace_settings::{
-    CapEdit, EXPIRY_CHOICES, GrantDraft, draw_members_pane, draw_permissions_pane,
+    CapEdit, EXPIRY_CHOICES, draw_members_pane, draw_permissions_pane,
     members_pane_rows, permissions_pane_layout,
 };
 
@@ -6982,7 +6982,7 @@ impl ShellOverlayHost {
                 self.grant_composer_rects = None;
                 self.member_control_rects.clear();
                 if let Some(ws) = tree.active_workspace() {
-                    let layout = permissions_pane_layout(ws, body_rect, &draft);
+                    let layout = permissions_pane_layout(ws, body_rect);
                     for row in &layout.rows {
                         self.permissions_revoke_rects
                             .push((row.cap_id.clone(), row.revoke_rect));
@@ -10282,13 +10282,13 @@ mod tests {
         h.host
             .draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
 
-        let files_pill = h.host.ws_settings_tab_pill_rect(WsTab::Files);
+        let members_pill = h.host.ws_settings_tab_pill_rect(WsTab::Members);
         assert!(
-            files_pill.area() > 0.0,
-            "Files pill rect must be populated by draw_ws_settings; got {:?}",
-            files_pill
+            members_pill.area() > 0.0,
+            "Members pill rect must be populated by draw_ws_settings; got {:?}",
+            members_pill
         );
-        let p = files_pill.center();
+        let p = members_pill.center();
 
         // MouseInput doesn't carry position data; seed `last_cursor`
         // through a CursorMoved at the same point first.
@@ -10298,12 +10298,12 @@ mod tests {
 
         assert!(
             handled,
-            "click on the Files pill must be consumed by the overlay host"
+            "click on the Members pill must be consumed by the overlay host"
         );
         assert_eq!(
             h.chrome.borrow().ws_settings_tab,
-            WsTab::Files,
-            "click on the Files pill must flip chrome.ws_settings_tab to Files \
+            WsTab::Members,
+            "click on the Members pill must flip chrome.ws_settings_tab to Members \
              (production path through handle_event, not a direct setter)"
         );
     }
@@ -10504,8 +10504,6 @@ mod maximize_harvest_tests {
             room: crate::shell::state::RoomId::new(),
             name: "Test".into(),
             strips: vec![strip],
-            roles: vec![],
-            workspace_files: vec![],
             collaborators: vec![],
             shared_surfaces: StdHashMap::new(),
         };
@@ -10701,8 +10699,6 @@ mod resync_strips_tests {
             room: crate::shell::state::RoomId::new(),
             name: "Test".into(),
             strips: vec![strip],
-            roles: vec![],
-            workspace_files: vec![],
             collaborators: vec![],
             shared_surfaces: StdHashMap::new(),
         };
