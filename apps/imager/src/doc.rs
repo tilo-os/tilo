@@ -59,7 +59,9 @@ impl ImagerDoc {
             Self::write_json(doc, "progress", &Progress::default());
         }
         if !matches!(doc.get(&ROOT, "selected"), Ok(Some((Value::Scalar(_), _)))) {
-            let _ = doc.put(&ROOT, "selected", 0i64);
+            // Start with NO drive selected: the wizard's Drive step must gate
+            // on a deliberate user choice before it will advance to Customize.
+            let _ = doc.put(&ROOT, "selected", -1i64);
         }
         if Self::get_str(doc, "action").is_none() {
             let _ = doc.put(&ROOT, "action", "flash");
@@ -212,7 +214,9 @@ mod tests {
         assert_eq!(ImagerDoc::recent(&doc).len(), 3);
         assert_eq!(ImagerDoc::profiles(&doc).len(), 2);
         assert_eq!(ImagerDoc::action(&doc), Action::Flash);
-        assert_eq!(ImagerDoc::selected(&doc), Some(0));
+        // A fresh document starts with no drive chosen — the Drive step gates on
+        // a deliberate selection.
+        assert_eq!(ImagerDoc::selected(&doc), None);
     }
 
     #[test]
