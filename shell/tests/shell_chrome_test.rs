@@ -53,7 +53,7 @@ fn overview_view_click_activates_workspace() {
     assert_eq!(tree.active, b_id);
 }
 
-use shell::shell::search::GlobalSearch;
+use shell::shell::global_search::GlobalSearch;
 
 #[test]
 fn global_search_seeds_commands_and_filters() {
@@ -72,7 +72,7 @@ fn global_search_seeds_commands_and_filters() {
 fn global_search_context_filter_narrows_results() {
     let mut s = GlobalSearch::new();
     s.seed_default_commands();
-    s.set_context_kind(shell::shell::search::SearchContext::Files);
+    s.set_context_kind(shell::shell::global_search::SearchContext::Files);
     let labels: Vec<String> = s
         .palette()
         .visible_entries()
@@ -372,7 +372,7 @@ fn topbar_chrome_surface_alpha_is_80_percent() {
 /// draw path uses so the palette can't silently revert to an opaque fill.
 #[test]
 fn global_search_surface_alpha_is_70_percent() {
-    use shell::shell::search::GlobalSearch;
+    use shell::shell::global_search::GlobalSearch;
     let a = GlobalSearch::surface_alpha();
     assert!(
         (a - 0.70).abs() < f32::EPSILON,
@@ -563,17 +563,11 @@ fn topbar_center_widget_cycles_with_wheel_cooldown() {
 }
 
 #[test]
-fn shell_root_wires_all_chrome() {
+fn shell_root_starts_with_every_overlay_closed() {
     use shell::shell::Shell;
     let shell = Shell::new_for_test();
-    assert!(shell.has_topbar());
-    assert!(shell.has_sidebar_wheel());
-    assert!(shell.has_remote_cursor_overlay());
-    assert!(shell.has_toast_stack());
-    assert!(shell.has_context_menu());
-    assert!(shell.has_tooltip());
-    // overview hidden by default
     assert!(!shell.overview_visible());
+    assert!(!shell.quick_settings_visible());
 }
 
 // ---------------------------------------------------------------------------

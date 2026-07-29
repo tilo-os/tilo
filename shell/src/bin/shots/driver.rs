@@ -92,8 +92,6 @@ impl ShellDriver {
     pub fn chrome(&self) -> std::cell::Ref<'_, ChromeState> {
         self.fb.chrome()
     }
-
-    #[allow(dead_code)]
     pub fn chrome_handle(&self) -> Chrome {
         self.fb.chrome_handle()
     }
@@ -101,17 +99,6 @@ impl ShellDriver {
     pub fn host(&self) -> &ShellOverlayHost {
         self.fb.host()
     }
-
-    #[allow(dead_code)]
-    pub fn host_mut(&mut self) -> &mut ShellOverlayHost {
-        self.fb.host_mut()
-    }
-
-    #[allow(dead_code)]
-    pub fn theme(&self) -> &Theme {
-        self.fb.theme()
-    }
-
     pub fn viewport(&self) -> (f64, f64) {
         self.fb.viewport()
     }
@@ -734,12 +721,6 @@ impl ShellDriver {
         self.resolve_named_rect(name).map(|r| r.center())
     }
 
-    /// Public read-through to the host's palette query, so scenarios /
-    /// assertions don't have to drill through `host()`.
-    #[allow(dead_code)]
-    pub fn palette_query(&self) -> &str {
-        self.fb.host().palette_query()
-    }
 }
 
 // ---------- helpers ----------
@@ -773,13 +754,6 @@ pub fn key_press_event(key: Key) -> WindowEvent {
         event: ev,
         is_synthetic: false,
     }
-}
-
-/// Convenience: a Pressed key event for a [`NamedKey`]. Used by the
-/// scenario engine's `Key(NamedKey::Foo)` action variant.
-#[allow(dead_code)]
-pub fn named_key_event(key: NamedKey) -> WindowEvent {
-    key_press_event(Key::Named(key))
 }
 
 // =====================================================================

@@ -34,6 +34,7 @@ default-members = [
     "ui",
     "crates/system/os-actions",
     "crates/collab/collab-types",
+    "crates/collab/collab-fixtures",
     "crates/collab/collab-bridge",
     "crates/collab/threshold-identity",
     "crates/collab/channel-crypto",

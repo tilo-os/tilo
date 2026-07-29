@@ -1,0 +1,372 @@
+//! The plaintext body every CRDT-backed text tile in the shell is built on.
+//!
+//! [`NotesApp`](super::notes_app::NotesApp) and
+//! [`EditorApp`](super::editor_app::EditorApp) render very differently — one
+//! wraps prose, the other tiles discrete lines behind a line-number gutter —
+//! but underneath they are the same thing: a single Automerge `Text` object
+//! under a well-known key, a byte-offset caret over a mirrored `String`, and
+//! a tile that fills its parent. That shared half lives here so the two
+//! surfaces cannot drift apart on the part that has to agree: how an edit
+//! reaches the CRDT.
+//!
+//! # Why the mirror
+//!
+//! `text` is a plain `String` kept in step with the CRDT. Reading
+//! `AutoCommit::text` allocates the whole document, so the draw and hit-test
+//! passes read the mirror instead and only the write path touches Automerge.
+//! [`CrdtTextBody::sync`] is what re-establishes the invariant each frame:
+//! the CRDT is the source of truth, the mirror is a cache.
+//!
+//! The caret walkers here are thin wrappers over `ui::text_selection` —
+//! the toolkit already owns "step one scalar left/right", and a second
+//! implementation is exactly the kind of drift this module exists to stop.
+//!
+//! # Why the splices are narrow
+//!
+//! Every write goes through [`CrdtTextBody::splice`], which addresses the
+//! exact char range that changed. The pattern this avoids is
+//! `splice_text(id, 0, len, whole_new_value)` — Automerge keeps every
+//! inserted element as a tombstone, so rewriting the whole body per keystroke
+//! costs O(len) ops and accumulates O(len²) over a typing session. Callers
+//! that only have a *new whole string* rather than a range should reach for
+//! [`ui::doc::splice_text_diffed`] instead, which computes the narrow range
+//! first.
+
+use std::collections::HashMap;
+use std::ops::Range;
+use std::time::{Duration, Instant};
+
+use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, Value, transaction::Transactable};
+use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use ui::presence::{PathSegment, PresenceKey};
+use ui::text_selection::{next_char_boundary, prev_char_boundary};
+use ui::widget::Widget;
+use vello::kurbo::{Point, Rect};
+
+/// Keystrokes stop coalescing into a single undo entry after this long idle.
+pub const COMMIT_DEBOUNCE: Duration = Duration::from_millis(800);
+
+/// A single Automerge `Text` object plus the mirror and caret arithmetic
+/// around it.
+pub struct CrdtTextBody {
+    /// Automerge key under the tile's root. Distinct per app so two text
+    /// tiles hosted in the same shell don't write over each other.
+    key: &'static str,
+    /// Mirror of the CRDT text, in step after every [`Self::sync`] and
+    /// every [`Self::splice`]. Byte-indexed.
+    pub text: String,
+    /// When the last edit landed. Drives the undo-coalescing debounce.
+    last_edit: Option<Instant>,
+}
+
+impl CrdtTextBody {
+    /// An empty body bound to `key`.
+    pub fn new(key: &'static str) -> Self {
+        Self {
+            key,
+            text: String::new(),
+            last_edit: None,
+        }
+    }
+
+    /// A body pre-seeded with `text`. The seed is written to the CRDT
+    /// lazily on the first [`Self::sync`], so repeated boots against an
+    /// existing document don't keep appending it.
+    pub fn with_seed(key: &'static str, text: impl Into<String>) -> Self {
+        Self {
+            key,
+            text: text.into(),
+            last_edit: None,
+        }
+    }
+
+    /// Presence key for this body — a widget-level path, so the peer
+    /// caret / selection helpers pick it up.
+    pub fn presence_key(&self) -> PresenceKey {
+        PresenceKey::Widget {
+            path: vec![PathSegment::Field(self.key.into())],
+        }
+    }
+
+    /// Resolve (or create) the `Text` object backing this body. `None`
+    /// only if the store rejects both the read and the create, which means
+    /// a corrupt document — callers treat it as "skip this edit".
+    fn resolve(&self, state: &mut AutoCommit, root: &ObjId) -> Option<ObjId> {
+        if let Ok(Some((Value::Object(ObjType::Text), id))) = state.get(root, self.key) {
+            return Some(id);
+        }
+        state.put_object(root, self.key, ObjType::Text).ok()
+    }
+
+    /// `Widget::sync` body. Reads the CRDT into the mirror; on the very
+    /// first sync, when no body exists yet, seeds it from whatever the
+    /// widget was constructed with. After that the CRDT wins.
+    pub fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
+        match state.get(root, self.key) {
+            Ok(Some((Value::Object(ObjType::Text), id))) => {
+                if let Ok(t) = state.text(&id) {
+                    self.text = t;
+                }
+            }
+            _ => {
+                if let Ok(id) = state.put_object(root, self.key, ObjType::Text) {
+                    if !self.text.is_empty() {
+                        let _ = state.splice_text(&id, 0, 0, &self.text);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Replace the byte `range` with `s` in both the mirror and the CRDT,
+    /// splicing only that span. Returns the byte offset just past the
+    /// inserted text, which is where a caret following the edit belongs.
+    ///
+    /// An empty `range` is a pure insert; an empty `s` is a pure delete.
+    pub fn splice(
+        &mut self,
+        state: &mut AutoCommit,
+        root: &ObjId,
+        range: Range<usize>,
+        s: &str,
+    ) -> usize {
+        let Some(body) = self.resolve(state, root) else {
+            return range.start;
+        };
+        // Automerge `Text` is char-addressed; the mirror is byte-addressed.
+        let char_start = self.text[..range.start].chars().count();
+        let char_count = self.text[range.clone()].chars().count();
+        self.text.replace_range(range.clone(), s);
+        let _ = state.splice_text(&body, char_start, char_count as isize, s);
+        self.last_edit = Some(Instant::now());
+        range.start + s.len()
+    }
+
+    /// Nearest char boundary at or below `pos`, clamped to the buffer.
+    pub fn clamp(&self, pos: usize) -> usize {
+        let mut p = pos.min(self.text.len());
+        while p > 0 && !self.text.is_char_boundary(p) {
+            p -= 1;
+        }
+        p
+    }
+
+    /// Byte offset of the char boundary immediately before `pos`,
+    /// saturating at the start of the buffer.
+    pub fn prev_boundary(&self, pos: usize) -> usize {
+        prev_char_boundary(&self.text, pos)
+    }
+
+    /// Byte offset of the char boundary immediately after `pos`,
+    /// saturating at the end of the buffer.
+    pub fn next_boundary(&self, pos: usize) -> usize {
+        next_char_boundary(&self.text, pos)
+    }
+
+    /// Convert a char index — the unit `PresenceCtx::carets` speaks — to a
+    /// byte offset into the mirror. Walks past the end without panicking,
+    /// because peer state can be a little ahead of ours.
+    pub fn char_index_to_byte(&self, char_idx: usize) -> usize {
+        self.text
+            .char_indices()
+            .nth(char_idx)
+            .map(|(b, _)| b)
+            .unwrap_or(self.text.len())
+    }
+
+    /// Whether the typing burst has gone quiet long enough to close an
+    /// undo entry. `Widget::needs_commit` delegates here.
+    pub fn needs_commit(&self) -> bool {
+        self.last_edit
+            .map(|t| t.elapsed() >= COMMIT_DEBOUNCE)
+            .unwrap_or(false)
+    }
+
+    /// `Widget::on_commit` delegate — the burst is now closed.
+    pub fn on_commit(&mut self) {
+        self.last_edit = None;
+    }
+}
+
+/// `Widget::build_layout` body for a tile that fills its parent. Both text
+/// apps are full-bleed leaves; the difference is entirely in `draw`.
+///
+/// # Safety-adjacent
+///
+/// `widget` must be the `self` pointer of the caller, which is what makes
+/// the `node_map` entry point back at the right widget during dispatch.
+pub fn full_bleed_leaf(
+    taffy: &mut TaffyTree<()>,
+    node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    widget: *mut dyn Widget,
+) -> NodeId {
+    let node = taffy
+        .new_leaf(Style {
+            size: Size {
+                width: Dimension::percent(1.0),
+                height: Dimension::percent(1.0),
+            },
+            ..Default::default()
+        })
+        .unwrap();
+    node_map.insert(node, widget);
+    node
+}
+
+/// `Widget::apply_layout` body matching [`full_bleed_leaf`]: taffy's
+/// computed box translated into the parent's coordinate space.
+pub fn full_bleed_rect(taffy: &TaffyTree<()>, node: NodeId, origin: Point) -> Rect {
+    let l = taffy.layout(node).unwrap();
+    Rect::new(
+        origin.x + l.location.x as f64,
+        origin.y + l.location.y as f64,
+        origin.x + l.location.x as f64 + l.size.width as f64,
+        origin.y + l.location.y as f64 + l.size.height as f64,
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const KEY: &str = "test_body";
+
+    fn bind() -> (AutoCommit, ObjId) {
+        let mut doc = AutoCommit::new();
+        let tile = doc
+            .put_object(&automerge::ROOT, "tile", ObjType::Map)
+            .expect("tile map");
+        (doc, tile)
+    }
+
+    #[test]
+    fn sync_seeds_the_crdt_then_reads_it_back() {
+        let (mut doc, tile) = bind();
+        let mut a = CrdtTextBody::with_seed(KEY, "hello");
+        a.sync(&mut doc, &tile);
+
+        // The seed reached the document, not just the mirror.
+        let (val, id) = doc.get(&tile, KEY).unwrap().expect("body exists");
+        assert!(matches!(val, Value::Object(ObjType::Text)));
+        assert_eq!(doc.text(&id).unwrap(), "hello");
+
+        // A second body bound to the same doc reads it through rather than
+        // re-seeding — otherwise every boot would append the welcome text.
+        let mut b = CrdtTextBody::with_seed(KEY, "a different seed");
+        b.sync(&mut doc, &tile);
+        assert_eq!(b.text, "hello");
+        assert_eq!(doc.text(&id).unwrap(), "hello");
+    }
+
+    #[test]
+    fn splice_inserts_deletes_and_replaces_in_both_places() {
+        let (mut doc, tile) = bind();
+        let mut b = CrdtTextBody::new(KEY);
+        b.sync(&mut doc, &tile);
+
+        let caret = b.splice(&mut doc, &tile, 0..0, "abcd");
+        assert_eq!(caret, 4);
+        assert_eq!(b.text, "abcd");
+
+        // Pure delete.
+        let caret = b.splice(&mut doc, &tile, 1..3, "");
+        assert_eq!(caret, 1);
+        assert_eq!(b.text, "ad");
+
+        // Replace.
+        let caret = b.splice(&mut doc, &tile, 0..1, "XY");
+        assert_eq!(caret, 2);
+        assert_eq!(b.text, "XYd");
+
+        // The CRDT agrees with the mirror at every step.
+        let (_, id) = doc.get(&tile, KEY).unwrap().expect("body exists");
+        assert_eq!(doc.text(&id).unwrap(), "XYd");
+    }
+
+    #[test]
+    fn splice_only_touches_the_changed_span() {
+        // Appending one char to a long body must cost one inserted element,
+        // not a rewrite of the whole text. Proven through the document: the
+        // untouched prefix keeps its identity across the edit.
+        let (mut doc, tile) = bind();
+        let mut b = CrdtTextBody::with_seed(KEY, "x".repeat(64));
+        b.sync(&mut doc, &tile);
+        let (_, id) = doc.get(&tile, KEY).unwrap().expect("body exists");
+        let before = doc.length(&id);
+
+        b.splice(&mut doc, &tile, 64..64, "y");
+
+        assert_eq!(
+            doc.length(&id),
+            before + 1,
+            "a one-char append must add exactly one element",
+        );
+        assert!(doc.text(&id).unwrap().ends_with("xy"));
+    }
+
+    #[test]
+    fn multibyte_splices_address_chars_not_bytes() {
+        let (mut doc, tile) = bind();
+        let mut b = CrdtTextBody::with_seed(KEY, "aβc");
+        b.sync(&mut doc, &tile);
+        // Delete the two-byte β, which sits at bytes 1..3 / char 1.
+        b.splice(&mut doc, &tile, 1..3, "");
+        assert_eq!(b.text, "ac");
+        let (_, id) = doc.get(&tile, KEY).unwrap().expect("body exists");
+        assert_eq!(
+            doc.text(&id).unwrap(),
+            "ac",
+            "byte offsets must be converted to char offsets before splicing",
+        );
+    }
+
+    #[test]
+    fn boundaries_step_whole_chars() {
+        let b = CrdtTextBody::with_seed(KEY, "aβc");
+        // β occupies bytes 1..3.
+        assert_eq!(b.next_boundary(1), 3);
+        assert_eq!(b.prev_boundary(3), 1);
+        // Ends are saturating, not wrapping.
+        assert_eq!(b.prev_boundary(0), 0);
+        assert_eq!(b.next_boundary(4), 4);
+        // Clamp snaps into the middle of a char, and past the end.
+        assert_eq!(b.clamp(2), 1);
+        assert_eq!(b.clamp(99), 4);
+    }
+
+    #[test]
+    fn char_index_to_byte_handles_multibyte_and_overrun() {
+        let b = CrdtTextBody::with_seed(KEY, "aβc");
+        assert_eq!(b.char_index_to_byte(0), 0);
+        assert_eq!(b.char_index_to_byte(1), 1);
+        assert_eq!(b.char_index_to_byte(2), 3);
+        // A peer whose caret ran past our copy must not panic us.
+        assert_eq!(b.char_index_to_byte(99), 4);
+    }
+
+    #[test]
+    fn commit_debounce_opens_on_edit_and_closes_on_commit() {
+        let (mut doc, tile) = bind();
+        let mut b = CrdtTextBody::new(KEY);
+        b.sync(&mut doc, &tile);
+        assert!(!b.needs_commit(), "an untouched body has nothing to commit");
+        b.splice(&mut doc, &tile, 0..0, "hi");
+        // Still inside the debounce window, so the burst stays open.
+        assert!(!b.needs_commit());
+        b.last_edit = Some(Instant::now() - COMMIT_DEBOUNCE);
+        assert!(b.needs_commit(), "a quiet burst must close");
+        b.on_commit();
+        assert!(!b.needs_commit());
+    }
+
+    #[test]
+    fn presence_key_names_the_body_field() {
+        let b = CrdtTextBody::new(KEY);
+        assert_eq!(
+            b.presence_key(),
+            PresenceKey::Widget {
+                path: vec![PathSegment::Field(KEY.into())],
+            }
+        );
+    }
+}
