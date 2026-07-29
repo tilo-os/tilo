@@ -1784,6 +1784,14 @@ impl WorkspaceTree {
             }
         }
         let _ = qdoc::history::commit_stamped(doc);
+        // Nothing reads a room document through patches — every value
+        // above is read back with `doc.get` — so the patch log is pure
+        // overhead, and worse than overhead: it records this machine's
+        // actor list, and `PatchLog::migrate_actors` panics inside
+        // `apply_changes` when a peer's actor cannot be spliced into it
+        // in sort order. A guest merging its host's room document died
+        // on that. Drop the log at every point one could accumulate.
+        doc.reset_diff_cursor();
     }
 
     /// Current heads of `room`'s replication document — the baseline a
@@ -1858,6 +1866,9 @@ impl WorkspaceTree {
             .get(&room)
             .cloned()
             .unwrap_or_else(AutoCommit::new);
+        // See `sync_room_doc`: a patch log carried into `apply_changes`
+        // is what turns a peer's first delta into a panic.
+        candidate.reset_diff_cursor();
         candidate.apply_changes(parsed)?;
 
         let declared = match candidate.get(&ROOT, "room").ok().flatten() {
@@ -4102,6 +4113,77 @@ mod automerge_foundation_tests {
             "a workspace moved into a new room must carry that room to its \
              peers"
         );
+    }
+
+    /// A guest that has projected its own room document must survive
+    /// merging the host's.
+    ///
+    /// This is a crash, not a wrong answer. Both sides project their
+    /// cache into the room document before a sync round, which is what
+    /// gives each an `AutoCommit` carrying a patch log over its own
+    /// actor. Applying the other side's changes then runs
+    /// `PatchLog::migrate_actors`, which returns `PatchLogMismatch` when
+    /// the incoming actor cannot be spliced into that list in sort
+    /// order — and automerge unwraps it. The guest compositor died on
+    /// its host's first delta.
+    ///
+    /// The actors are random, so the failure depended on which of the
+    /// two sorted first; the loop runs enough rounds that a regression
+    /// cannot pass by being lucky.
+    #[test]
+    fn a_guest_merges_its_hosts_room_after_projecting_its_own() {
+        for _ in 0..24 {
+            let room = RoomId::new();
+
+            let mut host = WorkspaceTree::bootstrap_default();
+            let host_ws = host.workspaces[0].id;
+            assert!(host.set_room(host_ws, room));
+            host.adopt_ownerless_workspaces(&"alice".to_string());
+
+            let mut guest = WorkspaceTree::bootstrap_default();
+            let guest_ws = guest.workspaces[0].id;
+            assert!(guest.set_room(guest_ws, room));
+            guest.adopt_ownerless_workspaces(&"bob".to_string());
+
+            // The guest projects first — that is what leaves a patch log
+            // on its room document for the host's actor to collide with.
+            guest.sync_room_doc(room);
+
+            let changes = host
+                .export_room_changes_since(room, &[])
+                .expect("the host is in the room");
+            guest
+                .apply_room_changes(room, &changes)
+                .expect("the guest merges its host's room document");
+
+            // What the fix establishes: the merge completes and the two
+            // sides are addressing one room afterwards.
+            //
+            // Deliberately *not* asserted here: which owner survives.
+            // Both sides project their own cache into the shared
+            // document, so the owner and capability keys are decided by
+            // automerge's last-writer-wins between two actors rather
+            // than by who administers the room — a guest that projects
+            // before it merges takes ownership of its host's room. That
+            // is a design hole in the projection, not something this
+            // crash fix addresses, and pinning the current outcome here
+            // would pin the hole.
+            assert_eq!(
+                guest.room_of(guest_ws),
+                Some(room),
+                "the guest must still be in the room it merged",
+            );
+            assert!(
+                !guest
+                    .workspaces
+                    .iter()
+                    .find(|w| w.id == guest_ws)
+                    .expect("the guest's workspace survives the merge")
+                    .capabilities
+                    .is_empty(),
+                "the merge must leave a capability list behind, not wipe it",
+            );
+        }
     }
 
     /// "Join the unminted room" is never a meaningful request, and

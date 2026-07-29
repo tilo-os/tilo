@@ -16,6 +16,7 @@ use libp2p::futures::StreamExt;
 use libp2p::{Multiaddr, Swarm, gossipsub, mdns, swarm::SwarmEvent};
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
@@ -77,6 +78,10 @@ pub struct Actor {
     /// Last time we observed any gossipsub message from each peer; used
     /// to evict peers that have gone silent for `PEER_TIMEOUT`.
     peers_seen: HashMap<libp2p::PeerId, Instant>,
+    /// Every address the swarm has reported listening on, newest last.
+    /// Shared with the shell so [`crate::shell::network::ShellNetwork`]
+    /// can put a dialable address inside an invite token.
+    listen_addrs: Arc<Mutex<Vec<Multiaddr>>>,
 }
 
 /// Build the workspace's gossipsub topic identifier.
@@ -131,12 +136,27 @@ impl Actor {
     pub fn spawn(
         swarm: Swarm<NiriosBehaviour>,
     ) -> (mpsc::Sender<NetCmd>, tokio::task::JoinHandle<()>) {
+        Self::spawn_reporting_addrs(swarm, Arc::new(Mutex::new(Vec::new())))
+    }
+
+    /// [`Self::spawn`], plus a slot the actor writes every address the
+    /// swarm starts listening on into.
+    ///
+    /// An invite has to carry an address a peer can dial, and only the
+    /// swarm knows what it bound — the port is assigned by the kernel.
+    /// Without this the address is unknowable outside the actor task,
+    /// and an invite can only carry a guess.
+    pub fn spawn_reporting_addrs(
+        swarm: Swarm<NiriosBehaviour>,
+        listen_addrs: Arc<Mutex<Vec<Multiaddr>>>,
+    ) -> (mpsc::Sender<NetCmd>, tokio::task::JoinHandle<()>) {
         let (cmd_tx, cmd_rx) = mpsc::channel(64);
         let mut actor = Self {
             swarm,
             cmd_rx,
             subscribers: HashMap::new(),
             peers_seen: HashMap::new(),
+            listen_addrs,
         };
         let handle = tokio::spawn(async move { actor.run().await });
         (cmd_tx, handle)
@@ -242,6 +262,15 @@ impl Actor {
 
     async fn handle_swarm_event(&mut self, event: SwarmEvent<NiriosBehaviourEvent>) {
         match event {
+            // The bound address is only knowable here — the port comes
+            // from the kernel — and an invite that cannot name one is an
+            // invite nobody can act on.
+            SwarmEvent::NewListenAddr { address, .. } => {
+                tracing::info!(addr = %address, "peer-sync: listening");
+                if let Ok(mut addrs) = self.listen_addrs.lock() {
+                    addrs.push(address);
+                }
+            }
             SwarmEvent::Behaviour(NiriosBehaviourEvent::Gossipsub(gossipsub::Event::Message {
                 propagation_source,
                 message,
