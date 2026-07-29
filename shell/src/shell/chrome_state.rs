@@ -1188,11 +1188,12 @@ mod active_tab_tests {
 
         let guard = st.tree();
         let ws = guard.workspaces.iter().find(|w| w.id == ws_id).unwrap();
-        let caps = ws.grants.get("org.gimp.GIMP").unwrap_or_else(|| {
+        let grants = ws.grants();
+        let caps = grants.get("org.gimp.GIMP").unwrap_or_else(|| {
             panic!(
                 "grant must be keyed by the foreign client's real app-id; \
                  grants = {:?}",
-                ws.grants
+                grants
             )
         });
         assert!(
@@ -1204,9 +1205,9 @@ mod active_tab_tests {
         );
         // The old stand-in ("Foreign"/label) must NOT be a key.
         assert!(
-            !ws.grants.contains_key("Foreign"),
+            !grants.contains_key("Foreign"),
             "grant must not be keyed by a display label: {:?}",
-            ws.grants
+            grants
         );
     }
 
@@ -1230,16 +1231,17 @@ mod active_tab_tests {
 
         let guard = st.tree();
         let ws = guard.workspaces.iter().find(|w| w.id == ws_id).unwrap();
+        let grants = ws.grants();
         assert!(
-            ws.grants.contains_key("org.nirios.Editor"),
+            grants.contains_key("org.nirios.Editor"),
             "built-in Editor must be keyed by its canonical app-id; \
              grants = {:?}",
-            ws.grants
+            grants
         );
         assert!(
-            !ws.grants.contains_key("Editor"),
+            !grants.contains_key("Editor"),
             "the display label 'Editor' must no longer be a grant key: {:?}",
-            ws.grants
+            grants
         );
     }
 }
