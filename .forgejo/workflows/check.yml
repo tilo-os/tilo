@@ -58,7 +58,6 @@ jobs:
           # Servo's libservo can't resolve in a clean CI checkout; the image build
           # drops it the same way. Committed Cargo.toml is untouched.
           sed -i '/"apps\/browser",/d' Cargo.toml
-          cp os/Cargo.lock.pinned Cargo.lock
           cargo check --workspace
 
       - name: cargo test --workspace
