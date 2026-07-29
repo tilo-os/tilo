@@ -217,6 +217,7 @@ mod tests {
     //! indigo-500 (`#6366f1`) 14× as the dominant accent fill and
     //! indigo-600 (`#4f46e5`) only 4× as the hover shade — pin both.
     use super::*;
+    use crate::color_compat::ColorCompat;
     use crate::tokens::colors::{ACCENT_HOVER_IDX, ACCENT_PRIMARY_IDX};
 
     fn rgb(c: Color) -> [u8; 3] { [c.r(), c.g(), c.b()] }
