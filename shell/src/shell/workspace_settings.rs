@@ -1440,9 +1440,10 @@ pub fn draw_members_pane(
         let text_x = avatar.x1 + 12.0;
         let text_max = row.role_rect.x0 - 12.0 - text_x;
         let title_size = tokens.typography.scale.sm;
+        let title_text = elide(&name, title_size, text_max, text_renderer);
         text_renderer.draw_text(
             scene,
-            &elide(&name, title_size, text_max, text_renderer),
+            &title_text,
             title_size,
             colors.text_primary,
             transform * Affine::translate((text_x, row.row_rect.y0 + 12.0)),
@@ -1455,9 +1456,10 @@ pub fn draw_members_pane(
             n => format!("{} · {n} extra permissions", role_label(row.role)),
         };
         let detail_size = tokens.typography.scale.xs;
+        let detail_text = elide(&detail, detail_size, text_max, text_renderer);
         text_renderer.draw_text(
             scene,
-            &elide(&detail, detail_size, text_max, text_renderer),
+            &detail_text,
             detail_size,
             colors.text_dim,
             transform * Affine::translate((text_x, row.row_rect.y0 + 32.0)),
@@ -2022,9 +2024,10 @@ pub fn draw_permissions_pane(
         let text_x = avatar.x1 + 12.0;
         let text_max = chip.x0 - 12.0 - text_x;
         let title_size = tokens.typography.scale.sm;
+        let title_text = elide(&title, title_size, text_max, text_renderer);
         text_renderer.draw_text(
             scene,
-            &elide(&title, title_size, text_max, text_renderer),
+            &title_text,
             title_size,
             colors.text_primary,
             transform * Affine::translate((text_x, row.row_rect.y0 + 12.0)),
@@ -2035,9 +2038,10 @@ pub fn draw_permissions_pane(
             None => row.allows.clone(),
         };
         let detail_size = tokens.typography.scale.xs;
+        let detail_text = elide(&detail, detail_size, text_max, text_renderer);
         text_renderer.draw_text(
             scene,
-            &elide(&detail, detail_size, text_max, text_renderer),
+            &detail_text,
             detail_size,
             colors.text_dim,
             transform * Affine::translate((text_x, row.row_rect.y0 + 32.0)),
