@@ -23,10 +23,29 @@ pub type PresenceKey = String;
 /// [`Eq`]; [`PartialEq`] is sufficient for tests and dispatch logic.
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
 pub enum NeighbourMsg {
-    /// "Catch me up": deliver every Automerge change after the included clock.
-    SyncReq { since: Vec<u8> },
-    /// Response carrying a batch of opaque Automerge change blobs.
-    SyncResp { changes: Vec<Vec<u8>> },
+    /// "Catch me up on this room": deliver every Automerge change to
+    /// `room` after the included clock.
+    ///
+    /// `room` is a [`crate::shell::state::RoomId`] rendered as a uuid
+    /// string — the durable identity of one collaboration room, the same
+    /// value an invite token carries. It is what scopes the answer: a
+    /// request names one room and is answered with that room's document
+    /// and nothing else, so being in one room on a host never yields the
+    /// others.
+    ///
+    /// An empty (or unparseable) `room` names no room. It is not a
+    /// wildcard: it is answered with no document at all. The transport
+    /// emits one on peer-join, before it knows what the peer is in, and
+    /// receiving it is what prompts a replica to name its own rooms.
+    SyncReq { since: Vec<u8>, room: String },
+    /// Response carrying a batch of opaque Automerge change blobs for one
+    /// room.
+    ///
+    /// `room` says which room's document the blobs belong to, so the
+    /// receiver merges them into that room and no other. The blobs
+    /// themselves also carry the room's identity, and the receiver checks
+    /// the two agree.
+    SyncResp { changes: Vec<Vec<u8>>, room: String },
     /// Peer's presence cursor moved within `key`'s coordinate space.
     PresenceMoved {
         peer: PeerId,
@@ -274,6 +293,7 @@ mod tests {
     fn sync_req_round_trips() {
         round_trip(NeighbourMsg::SyncReq {
             since: vec![1, 2, 3],
+            room: "6b3f9a10-0000-4000-8000-00000000000c".to_string(),
         });
     }
 
@@ -281,6 +301,7 @@ mod tests {
     fn sync_resp_round_trips() {
         round_trip(NeighbourMsg::SyncResp {
             changes: vec![vec![0xAA, 0xBB], vec![0xCC]],
+            room: "6b3f9a10-0000-4000-8000-00000000000c".to_string(),
         });
     }
 
