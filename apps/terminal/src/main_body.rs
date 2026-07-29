@@ -827,6 +827,7 @@ impl TerminalWidget {
             next_link_id: &mut self.next_link_id,
             current_link_id: self.current_link_id,
             title_out: &mut title_out,
+            print_buf: None,
         };
         // vte 0.15: `advance` takes `&[u8]` instead of one byte at a time.
         self.parser.advance(&mut performer, bytes);
@@ -2299,6 +2300,25 @@ pub struct TerminalPerformer<'a> {
     /// Out-param for an OSC 0/2 window-title change parsed this feed; the
     /// widget writes it into the CRDT and its own `title` field afterwards.
     pub title_out: &'a mut Option<String>,
+    /// Batches consecutive `print`s to the same line so a run of characters is
+    /// written to the CRDT once (a diffed text splice + one `attrs` put) rather
+    /// than once per cell. Per-cell `splice_text` + full-`attrs`-`put` is an
+    /// O(doc) write *per character*, so a screenful of output was O(n²) — the
+    /// exact per-keystroke document rewrite HIG §6 forbids, and enough to freeze
+    /// a debug build on a bulk paste / `cat`. Any non-`print` action flushes the
+    /// buffer first (see [`flush_print_buf`](TerminalPerformer::flush_print_buf))
+    /// so it never observes stale grid state.
+    pub print_buf: Option<PrintBuf>,
+}
+
+/// In-memory accumulator for a run of `print`s landing on one grid line.
+/// Mutated per character; written to the CRDT once when the line changes, any
+/// other emulator action runs, or the feed ends.
+pub struct PrintBuf {
+    line_obj: ObjId,
+    text_id: ObjId,
+    text: String,
+    attrs: Vec<u8>,
 }
 
 impl<'a> Perform for TerminalPerformer<'a> {
@@ -2314,68 +2334,81 @@ impl<'a> Perform for TerminalPerformer<'a> {
 
         let y = self.absolute_y().min(self.active_len().saturating_sub(1));
         let line_obj = match self.active_line_id(y) { Some(o) => o, None => return };
-        if let Ok(Some((Value::Object(ObjType::Text), text_id))) = self.state.get(&line_obj, "text") {
-            // Lines are created empty and grown on demand. If the cursor
-            // sits past the line's current end (a cursor-position jump on a
-            // fresh line), pad the gap with spaces so the splice below lands
-            // at a valid index.
-            let mut current_len = self.state.length(&text_id);
-            if self.cursor_x > current_len {
-                let _ = self.state.splice_text(
-                    &text_id,
-                    current_len,
-                    0,
-                    &" ".repeat(self.cursor_x - current_len),
-                );
-                current_len = self.cursor_x;
-            }
-            let replacement = format!("{}{}", c, if char_w > 1 { " ".repeat(char_w - 1) } else { "".into() });
 
-            if self.cursor_x < current_len {
-                let _ = self.state.splice_text(&text_id, self.cursor_x, char_w as isize, &replacement);
-            } else {
-                let _ = self.state.splice_text(&text_id, self.cursor_x, 0, &replacement);
-            }
-
-            // Attrs mirror the text; the array is created lazily and grown to
-            // fit the cell being written (matching the on-demand text fill).
-            let mut attr_bytes = match self.state.get(&line_obj, "attrs") {
+        // Point the write buffer at this line, loading its current text + attrs
+        // once. Consecutive prints to the same line then mutate memory only; the
+        // CRDT is touched a single time when the line changes or an action
+        // flushes (below). This is what turns a screenful of output from O(n²)
+        // per-cell CRDT writes into O(cells) memory edits + O(lines) commits.
+        let need_load = self.print_buf.as_ref().map(|b| b.line_obj != line_obj).unwrap_or(true);
+        if need_load {
+            self.flush_print_buf();
+            let text_id = match self.state.get(&line_obj, "text") {
+                Ok(Some((Value::Object(ObjType::Text), id))) => id,
+                _ => return,
+            };
+            let text = self.state.text(&text_id).unwrap_or_default();
+            let attrs = match self.state.get(&line_obj, "attrs") {
                 Ok(Some((Value::Scalar(v), _))) => match v.as_ref() {
                     automerge::ScalarValue::Bytes(bytes) => bytes.clone(),
                     _ => Vec::new(),
                 },
                 _ => Vec::new(),
             };
-            let start = self.cursor_x * ATTR_BYTES;
-            let end = (self.cursor_x + char_w) * ATTR_BYTES;
-            if attr_bytes.len() < end { attr_bytes.resize(end, 0); }
+            self.print_buf = Some(PrintBuf { line_obj: line_obj.clone(), text_id, text, attrs });
+        }
+        let buf = self.print_buf.as_mut().expect("print_buf loaded above");
 
-            // Carry the active OSC 8 hyperlink id onto the cell,
-            // independent of SGR so a link and its styling compose.
-            let mut cell_attr = self.current_attr;
-            cell_attr.link_id = self.current_link_id;
-            attr_bytes[start..start + ATTR_BYTES].copy_from_slice(&cell_attr.pack());
-            if char_w > 1 {
-                let mut cont = cell_attr;
-                cont.is_wide_cont = true;
-                let cont_packed = cont.pack();
-                for i in 1..char_w {
-                    let s = (self.cursor_x + i) * ATTR_BYTES;
-                    if s + ATTR_BYTES <= attr_bytes.len() { attr_bytes[s..s + ATTR_BYTES].copy_from_slice(&cont_packed); }
-                }
-            }
-            let _ = self.state.put(&line_obj, "attrs", attr_bytes);
+        // Text edit, in char space (Automerge `Text` is char-addressed, so the
+        // buffer mirrors that exactly). Lines grow on demand: pad with spaces
+        // when the cursor sits past the current end (a cursor jump on a fresh
+        // line), then overwrite (or append) the cell(s) this glyph occupies.
+        let mut chars: Vec<char> = buf.text.chars().collect();
+        if self.cursor_x > chars.len() {
+            chars.resize(self.cursor_x, ' ');
+        }
+        let mut repl: Vec<char> = Vec::with_capacity(char_w);
+        repl.push(c);
+        for _ in 1..char_w { repl.push(' '); }
+        if self.cursor_x < chars.len() {
+            let end = (self.cursor_x + char_w).min(chars.len());
+            chars.splice(self.cursor_x..end, repl);
+        } else {
+            chars.extend(repl);
+        }
+        buf.text = chars.into_iter().collect();
 
-            self.cursor_x += char_w;
-            if self.cursor_x >= self.width {
-                self.pending_wrap = true;
-                self.cursor_x = self.width - 1;
+        // Attrs mirror the text; the array is grown to fit the cell being
+        // written (matching the on-demand text fill).
+        let start = self.cursor_x * ATTR_BYTES;
+        let end = (self.cursor_x + char_w) * ATTR_BYTES;
+        if buf.attrs.len() < end { buf.attrs.resize(end, 0); }
+
+        // Carry the active OSC 8 hyperlink id onto the cell, independent of SGR
+        // so a link and its styling compose.
+        let mut cell_attr = self.current_attr;
+        cell_attr.link_id = self.current_link_id;
+        buf.attrs[start..start + ATTR_BYTES].copy_from_slice(&cell_attr.pack());
+        if char_w > 1 {
+            let mut cont = cell_attr;
+            cont.is_wide_cont = true;
+            let cont_packed = cont.pack();
+            for i in 1..char_w {
+                let s = (self.cursor_x + i) * ATTR_BYTES;
+                if s + ATTR_BYTES <= buf.attrs.len() { buf.attrs[s..s + ATTR_BYTES].copy_from_slice(&cont_packed); }
             }
+        }
+
+        self.cursor_x += char_w;
+        if self.cursor_x >= self.width {
+            self.pending_wrap = true;
+            self.cursor_x = self.width - 1;
         }
         self.update_cursor();
     }
 
     fn execute(&mut self, byte: u8) {
+        self.flush_print_buf();
         match byte {
             b'\n' | 0x0B | 0x0C => { self.pending_wrap = false; self.newline(); }
             b'\r' => { self.pending_wrap = false; self.cursor_x = 0; }
@@ -2392,6 +2425,7 @@ impl<'a> Perform for TerminalPerformer<'a> {
     }
 
     fn esc_dispatch(&mut self, _intermediates: &[u8], _ignore: bool, byte: u8) {
+        self.flush_print_buf();
         match byte {
             b'7' => { *self.saved_cursor = Some((self.cursor_x, self.cursor_y, self.current_attr)); } // DECSC
             b'8' => { // DECRC
@@ -2417,6 +2451,7 @@ impl<'a> Perform for TerminalPerformer<'a> {
     }
 
     fn csi_dispatch(&mut self, params: &vte::Params, intermediates: &[u8], _ignore: bool, c: char) {
+        self.flush_print_buf();
         self.pending_wrap = false;
         let private = intermediates.first() == Some(&b'?');
         let first = |p: &vte::Params| p.iter().next().and_then(|x| x.first()).copied().unwrap_or(0);
@@ -2489,6 +2524,7 @@ impl<'a> Perform for TerminalPerformer<'a> {
     /// into `params`, so `params[0]` is the command number as ASCII bytes.
     /// Handles window title (0/2), clipboard (52), and hyperlinks (8).
     fn osc_dispatch(&mut self, params: &[&[u8]], _bell_terminated: bool) {
+        self.flush_print_buf();
         let kind = params.first().copied().unwrap_or(b"");
         let code: u32 = std::str::from_utf8(kind)
             .ok()
@@ -2573,6 +2609,10 @@ impl<'a> TerminalPerformer<'a> {
     }
 
     fn newline(&mut self) {
+        // A line feed leaves the current line; commit any buffered prints first
+        // so the appended/scrolled structure is computed over fresh CRDT state
+        // (and so a print → auto-wrap → newline doesn't strand the old line).
+        self.flush_print_buf();
         self.cursor_y += 1;
         if self.cursor_y < self.height {
             return;
@@ -2945,10 +2985,24 @@ impl<'a> TerminalPerformer<'a> {
     /// is intentionally a no-op kept only so the call sites read naturally.
     fn update_cursor(&mut self) {}
 
+    /// Commit any buffered run of printed characters to the CRDT: one diffed
+    /// text splice (touching only the changed span) + one `attrs` put for the
+    /// whole line, in place of the per-character write storm the naive path did.
+    /// A no-op when nothing is buffered.
+    pub(crate) fn flush_print_buf(&mut self) {
+        if let Some(buf) = self.print_buf.take() {
+            ui::doc::splice_text_diffed(self.state, &buf.text_id, &buf.text);
+            let _ = self.state.put(&buf.line_obj, "attrs", buf.attrs);
+        }
+    }
+
     /// Persist the final cursor position into the CRDT. Called once at the end
     /// of a feed — the cursor is read back only by `sync`/`init_crdt`, so a
     /// single write per batch is enough and avoids per-cell `put` churn.
     pub fn flush_cursor(&mut self) {
+        // Commit the last line of a print run that ended the feed (no trailing
+        // control byte to flush it).
+        self.flush_print_buf();
         let x = self.cursor_x as u64;
         let y = self.absolute_y() as u64;
         let _ = self.state.put(&self.cursor_id, "x", x);
