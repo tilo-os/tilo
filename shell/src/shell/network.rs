@@ -19,6 +19,7 @@ use tokio::sync::mpsc;
 use crate::network::actor::{Actor, NetCmd, NetEvent};
 use crate::network::behaviour::{NiriosBehaviour, load_or_create_keypair};
 use crate::network::hub::TopicSubscriber;
+use crate::network::invite::accept_invite_into;
 use crate::network::protocol::NeighbourMsg;
 use crate::network::replica::WorkspaceTreeReplica;
 #[cfg(test)]
@@ -543,6 +544,46 @@ impl ShellNetwork {
             .is_ok()
     }
 
+    /// Accept an invite token into `local`, then immediately ask the
+    /// room it named to catch us up.
+    ///
+    /// The two halves belong together. [`accept_invite_into`] is what
+    /// makes the invitee a member — it points their workspace at the
+    /// inviter's room, mirrors that to the document and flushes it to
+    /// disk. But membership is also what decides which rooms this machine
+    /// asks about, and replication is per room: without the request that
+    /// follows, a freshly accepted invite would sit idle until something
+    /// else happened to kick a round, and the guest would be in a room
+    /// they could not see.
+    ///
+    /// Takes the token *string* rather than a parsed token, so there is
+    /// no way to reach this having skipped validation. Returns the room
+    /// joined, or the reason the token was refused.
+    pub fn accept_invite(
+        &self,
+        local: crate::shell::state::WorkspaceId,
+        token: &str,
+    ) -> Result<crate::shell::state::RoomId, String> {
+        let replica = self
+            .replica
+            .lock()
+            .map_err(|_| "peer-sync replica lock poisoned".to_string())?;
+        let room = {
+            let mut tree = replica.tree.write();
+            accept_invite_into(&mut tree, local, token)?
+        };
+        replica.request_sync();
+        let outgoing = replica.drain_outgoing();
+        drop(replica);
+        for msg in outgoing {
+            let _ = self.cmd_tx.try_send(NetCmd::Publish {
+                ws: DEFAULT_WS_TOPIC,
+                msg,
+            });
+        }
+        Ok(room)
+    }
+
     /// Drive a single tick: drain pending [`NetEvent`]s from the actor
     /// and forward `Msg` variants into the replica's `handle`. Each
     /// resulting outbound message is published via `cmd_tx` so peers
@@ -742,6 +783,94 @@ mod tests {
         let net = ShellNetwork::spawn(tree, &key_path).expect("spawn");
         // Should not panic on empty channel; should not block.
         net.tick();
+    }
+
+    /// Accepting an invite joins the room *and* asks it to catch us up,
+    /// in one call. Both halves are checked on the real objects: the
+    /// tree's room after the call, and the command the network actor was
+    /// handed.
+    #[test]
+    fn accepting_an_invite_joins_the_room_and_asks_it_for_a_catch_up() {
+        use crate::network::invite::make_invite_token;
+        use crate::shell::state::Workspace;
+
+        // The inviter's workspace, and the room it is inviting into.
+        let host_ws = Workspace::test_default(
+            crate::shell::state::WorkspaceId::new(),
+            "Design review".to_string(),
+        );
+        let host_room = host_ws.room;
+        let owner_key = libp2p::identity::Keypair::generate_ed25519();
+        let token = make_invite_token(&owner_key, &host_ws, "/ip4/127.0.0.1/tcp/4001", 3600)
+            .expect("the host issues an invite");
+
+        // The guest: its own workspace, its own room, until it accepts.
+        let mut guest = WorkspaceTree::default();
+        let local = guest.append_empty_workspace("Mine");
+        let before = guest.room_of(local).expect("the guest's own room");
+        assert_ne!(before, host_room);
+        let tree = guest.shared();
+        let (net, mut cmd_rx) = shell_network_for_test(tree.clone(), 0x1234u64);
+
+        let joined = net
+            .accept_invite(local, &token)
+            .expect("a well-formed invite is accepted");
+        assert_eq!(joined, host_room, "the guest joins the room it was invited to");
+        assert_eq!(
+            tree.read().room_of(local),
+            Some(host_room),
+            "the guest's workspace now addresses the inviter's room",
+        );
+
+        // And the catch-up went out, naming that room and no other.
+        let cmd = cmd_rx
+            .try_recv()
+            .expect("accepting an invite must ask the room for a catch-up");
+        match cmd {
+            NetCmd::Publish { ws, msg } => {
+                assert_eq!(ws, DEFAULT_WS_TOPIC);
+                match msg {
+                    NeighbourMsg::SyncReq { room, .. } => assert_eq!(
+                        room,
+                        host_room.to_string(),
+                        "the request must name the room just joined",
+                    ),
+                    other => panic!("expected a SyncReq, got {other:?}"),
+                }
+            }
+            other => panic!("expected NetCmd::Publish, got {other:?}"),
+        }
+        assert!(
+            cmd_rx.try_recv().is_err(),
+            "one room joined is one request — the guest must not ask about \
+             anything else",
+        );
+    }
+
+    /// A token that does not verify joins nothing and asks nothing. The
+    /// refusal comes from `accept_invite_into`'s own validation, which is
+    /// why this path takes the token string rather than a parsed token.
+    #[test]
+    fn a_refused_invite_changes_nothing_and_asks_nothing() {
+        let mut guest = WorkspaceTree::default();
+        let local = guest.append_empty_workspace("Mine");
+        let before = guest.room_of(local).expect("the guest's own room");
+        let tree = guest.shared();
+        let (net, mut cmd_rx) = shell_network_for_test(tree.clone(), 0x1234u64);
+
+        let err = net
+            .accept_invite(local, "not-a-token")
+            .expect_err("garbage must be refused");
+        assert!(!err.is_empty());
+        assert_eq!(
+            tree.read().room_of(local),
+            Some(before),
+            "a refused invite must leave the guest in its own room",
+        );
+        assert!(
+            cmd_rx.try_recv().is_err(),
+            "a refused invite must not put anything on the wire",
+        );
     }
 
     #[test]
