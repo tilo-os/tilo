@@ -537,6 +537,35 @@ pub fn write_reply<S: Write>(stream: &mut S, code: u8) -> io::Result<()> {
     stream.write_all(&[0x05, code, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
 }
 
+/// Which proxy protocol a client is speaking.
+///
+/// Both are served on the same socket, chosen by the first byte, so an
+/// app can use whichever its HTTP client supports without the launcher
+/// having to know in advance which that is. This is not a nicety: the
+/// obvious single choice, SOCKS5, is a **non-default feature** of
+/// `reqwest`, so an app built without it silently ignores `ALL_PROXY`
+/// and would be offline rather than filtered. HTTP `CONNECT` is
+/// understood by every client out of the box.
+///
+/// Both carry the destination as a **name**, which is the property the
+/// whole design rests on. `socks5h` and `CONNECT` are equivalent for
+/// that purpose.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Protocol {
+    Socks5,
+    HttpConnect,
+}
+
+/// SOCKS5's first byte is its version, `0x05`. No HTTP method begins
+/// with a control character, so one byte separates them unambiguously.
+pub fn detect_protocol(first_byte: u8) -> Protocol {
+    if first_byte == 0x05 {
+        Protocol::Socks5
+    } else {
+        Protocol::HttpConnect
+    }
+}
+
 fn serve_connection(
     mut client: UnixStream,
     policy: &EgressPolicy,
@@ -545,8 +574,26 @@ fn serve_connection(
     client.set_read_timeout(Some(HANDSHAKE_TIMEOUT))?;
     client.set_write_timeout(Some(HANDSHAKE_TIMEOUT))?;
 
-    socks5_greet(&mut client)?;
-    let dest = socks5_request(&mut client)?;
+    let mut first = [0u8; 1];
+    client.read_exact(&mut first)?;
+    match detect_protocol(first[0]) {
+        Protocol::Socks5 => serve_socks5(client, policy, stats),
+        Protocol::HttpConnect => serve_http(client, first[0], policy, stats),
+    }
+}
+
+fn serve_socks5(
+    mut client: UnixStream,
+    policy: &EgressPolicy,
+    stats: &GateStats,
+) -> io::Result<()> {
+    // The version byte is already consumed by protocol detection; hand
+    // the greeting parser a stream that replays it.
+    let dest = {
+        let mut replayed = Replay::new(vec![0x05], &mut client);
+        socks5_greet(&mut replayed)?;
+        socks5_request(&mut replayed)?
+    };
     let key = dest.host_key();
 
     // THE decision. Everything before this is parsing and everything
@@ -582,6 +629,215 @@ fn serve_connection(
 
     // Past the handshake the stream is a bulk pipe; the handshake
     // timeout would kill a long-lived idle connection.
+    client.set_read_timeout(None)?;
+    client.set_write_timeout(None)?;
+    splice(client, upstream);
+    Ok(())
+}
+
+/// A reader that replays some already-consumed bytes before continuing
+/// with the underlying stream. Needed because protocol detection
+/// consumes the first byte the parser then expects to see.
+struct Replay<'a, S> {
+    pending: std::collections::VecDeque<u8>,
+    inner: &'a mut S,
+}
+
+impl<'a, S> Replay<'a, S> {
+    fn new(pending: Vec<u8>, inner: &'a mut S) -> Self {
+        Self {
+            pending: pending.into(),
+            inner,
+        }
+    }
+}
+
+impl<S: Read> Read for Replay<'_, S> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        if buf.is_empty() {
+            return Ok(0);
+        }
+        let mut n = 0;
+        while n < buf.len() {
+            match self.pending.pop_front() {
+                Some(b) => {
+                    buf[n] = b;
+                    n += 1;
+                }
+                None => break,
+            }
+        }
+        if n > 0 {
+            return Ok(n);
+        }
+        self.inner.read(buf)
+    }
+}
+
+impl<S: Write> Write for Replay<'_, S> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.inner.write(buf)
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        self.inner.flush()
+    }
+}
+
+/// What an HTTP proxy request asked for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HttpProxyRequest {
+    /// The destination, taken from the `CONNECT` target or from the
+    /// absolute-form request URI. A **name**, exactly as the client
+    /// wrote it.
+    pub dest: Destination,
+    /// True for `CONNECT` (a tunnel), false for an ordinary proxied
+    /// request that must be forwarded.
+    pub tunnel: bool,
+    /// For a forwarded request, the bytes to send upstream: the request
+    /// line rewritten to origin-form plus the original headers. Empty
+    /// for a tunnel.
+    pub forward: Vec<u8>,
+}
+
+/// Parse an HTTP proxy request: either `CONNECT host:port HTTP/1.1` or
+/// an ordinary request whose URI is absolute (`GET http://host/path`).
+///
+/// Returns `None` when the head is malformed. The default port is 443
+/// for `CONNECT` (the only thing anyone tunnels) and 80 for a
+/// forwarded request.
+pub fn parse_http_proxy_head(head: &str) -> Option<HttpProxyRequest> {
+    let mut lines = head.split("\r\n");
+    let request_line = lines.next()?;
+    let mut parts = request_line.split_whitespace();
+    let method = parts.next()?;
+    let target = parts.next()?;
+    let version = parts.next().unwrap_or("HTTP/1.1");
+
+    if method.eq_ignore_ascii_case("CONNECT") {
+        let (host, port) = split_host_port(target, 443)?;
+        return Some(HttpProxyRequest {
+            dest: Destination::Domain(host, port),
+            tunnel: true,
+            forward: Vec::new(),
+        });
+    }
+
+    // Absolute-form: `GET http://host[:port]/path HTTP/1.1`. Origin
+    // servers are not required to accept absolute-form, so rewrite the
+    // request line back to origin-form before forwarding.
+    let rest = target
+        .strip_prefix("http://")
+        .or_else(|| target.strip_prefix("HTTP://"))?;
+    let (authority, path) = match rest.find('/') {
+        Some(i) => (&rest[..i], &rest[i..]),
+        None => (rest, "/"),
+    };
+    let (host, port) = split_host_port(authority, 80)?;
+
+    let mut forward = format!("{method} {path} {version}\r\n").into_bytes();
+    for line in lines {
+        forward.extend_from_slice(line.as_bytes());
+        forward.extend_from_slice(b"\r\n");
+    }
+    Some(HttpProxyRequest {
+        dest: Destination::Domain(host, port),
+        tunnel: false,
+        forward,
+    })
+}
+
+/// `host:port` / `host` / `[v6]:port`, with a default when the port is
+/// absent.
+fn split_host_port(authority: &str, default_port: u16) -> Option<(String, u16)> {
+    if let Some(rest) = authority.strip_prefix('[') {
+        // Bracketed IPv6 literal.
+        let (host, tail) = rest.split_once(']')?;
+        let port = match tail.strip_prefix(':') {
+            Some(p) => p.parse().ok()?,
+            None => default_port,
+        };
+        return Some((host.to_string(), port));
+    }
+    match authority.rsplit_once(':') {
+        Some((host, port)) if !host.is_empty() => Some((host.to_string(), port.parse().ok()?)),
+        _ => Some((authority.to_string(), default_port)),
+    }
+}
+
+/// Read an HTTP message head (up to and including the blank line).
+fn read_http_head<S: Read>(stream: &mut S, seed: u8) -> io::Result<String> {
+    let mut buf = vec![seed];
+    let mut byte = [0u8; 1];
+    loop {
+        if buf.len() > 16 * 1024 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "HTTP proxy request head too large",
+            ));
+        }
+        let n = stream.read(&mut byte)?;
+        if n == 0 {
+            break;
+        }
+        buf.push(byte[0]);
+        if buf.ends_with(b"\r\n\r\n") {
+            break;
+        }
+    }
+    String::from_utf8(buf).map_err(|_| {
+        io::Error::new(io::ErrorKind::InvalidData, "HTTP proxy request is not UTF-8")
+    })
+}
+
+fn serve_http(
+    mut client: UnixStream,
+    first: u8,
+    policy: &EgressPolicy,
+    stats: &GateStats,
+) -> io::Result<()> {
+    let head = read_http_head(&mut client, first)?;
+    let Some(req) = parse_http_proxy_head(&head) else {
+        stats.failed.fetch_add(1, Ordering::Relaxed);
+        let _ = client.write_all(b"HTTP/1.1 400 Bad Request\r\n\r\n");
+        return Ok(());
+    };
+    let key = req.dest.host_key();
+
+    if !policy.permits(&key) {
+        stats.denied.fetch_add(1, Ordering::Relaxed);
+        tracing::warn!(
+            host = %key,
+            port = req.dest.port(),
+            allow = ?policy.hosts(),
+            "egress DENIED: the app asked for a host it was not granted"
+        );
+        let _ = client.write_all(
+            b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+        );
+        return Ok(());
+    }
+
+    let mut upstream = match connect_upstream(&req.dest) {
+        Ok(s) => s,
+        Err(e) => {
+            stats.failed.fetch_add(1, Ordering::Relaxed);
+            tracing::warn!(host = %key, error = %e, "egress allowed but upstream connect failed");
+            let _ = client.write_all(
+                b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            );
+            return Ok(());
+        }
+    };
+
+    stats.allowed.fetch_add(1, Ordering::Relaxed);
+    tracing::info!(host = %key, port = req.dest.port(), tunnel = req.tunnel, "egress allowed");
+
+    if req.tunnel {
+        client.write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")?;
+    } else {
+        upstream.write_all(&req.forward)?;
+    }
+
     client.set_read_timeout(None)?;
     client.set_write_timeout(None)?;
     splice(client, upstream);
@@ -890,5 +1146,84 @@ mod tests {
     fn greeting_rejects_a_non_socks5_peer() {
         let mut p = pipe(vec![0x04, 0x01]);
         assert!(socks5_greet(&mut p).is_err());
+    }
+
+    #[test]
+    fn the_first_byte_picks_the_protocol() {
+        assert_eq!(detect_protocol(0x05), Protocol::Socks5);
+        // Every HTTP method starts with an uppercase letter.
+        for m in [b'C', b'G', b'P', b'H'] {
+            assert_eq!(detect_protocol(m), Protocol::HttpConnect);
+        }
+    }
+
+    #[test]
+    fn connect_carries_the_name_the_client_asked_for() {
+        // The property that matters: an HTTP CONNECT names a host, so
+        // the policy sees a name and not an address — the same as
+        // socks5h, and available without a client feature flag.
+        let req = parse_http_proxy_head(
+            "CONNECT api.open-meteo.com:443 HTTP/1.1\r\nHost: api.open-meteo.com:443\r\n\r\n",
+        )
+        .expect("parses");
+        assert_eq!(
+            req.dest,
+            Destination::Domain("api.open-meteo.com".to_string(), 443)
+        );
+        assert!(req.tunnel);
+    }
+
+    #[test]
+    fn connect_without_a_port_defaults_to_443() {
+        let req = parse_http_proxy_head("CONNECT example.com HTTP/1.1\r\n\r\n").expect("parses");
+        assert_eq!(req.dest, Destination::Domain("example.com".to_string(), 443));
+    }
+
+    #[test]
+    fn an_absolute_form_request_is_rewritten_to_origin_form() {
+        // A plain-HTTP proxied request arrives with an absolute URI.
+        // Origin servers are not required to accept that, so the head
+        // is rewritten before it is forwarded.
+        let req = parse_http_proxy_head(
+            "GET http://tile.openstreetmap.org/1/2/3.png HTTP/1.1\r\nUser-Agent: x\r\n\r\n",
+        )
+        .expect("parses");
+        assert_eq!(
+            req.dest,
+            Destination::Domain("tile.openstreetmap.org".to_string(), 80)
+        );
+        assert!(!req.tunnel);
+        let forward = String::from_utf8(req.forward).unwrap();
+        assert!(
+            forward.starts_with("GET /1/2/3.png HTTP/1.1\r\n"),
+            "request line must be origin-form: {forward:?}"
+        );
+        assert!(
+            forward.contains("User-Agent: x"),
+            "headers must survive the rewrite: {forward:?}"
+        );
+    }
+
+    #[test]
+    fn an_ipv6_literal_authority_parses() {
+        let req = parse_http_proxy_head("CONNECT [2001:db8::1]:8443 HTTP/1.1\r\n\r\n")
+            .expect("parses");
+        assert_eq!(
+            req.dest,
+            Destination::Domain("2001:db8::1".to_string(), 8443)
+        );
+        // And it is still matched as a literal, so it cannot satisfy a
+        // hostname grant.
+        let policy = EgressPolicy::new(v(&["example.com"]));
+        assert!(!policy.permits(&req.dest.host_key()));
+    }
+
+    #[test]
+    fn a_malformed_head_parses_to_nothing_rather_than_a_default_host() {
+        assert!(parse_http_proxy_head("").is_none());
+        assert!(parse_http_proxy_head("GARBAGE\r\n\r\n").is_none());
+        // An absolute-form URI with a scheme we do not proxy must not
+        // silently become a hostname.
+        assert!(parse_http_proxy_head("GET ftp://example.com/x HTTP/1.1\r\n\r\n").is_none());
     }
 }
