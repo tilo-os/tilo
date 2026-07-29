@@ -258,7 +258,7 @@ impl ChangesColumn {
         // Author identity row.
         let ax = box_rect.x0 + 12.0;
         let ay = box_rect.y0 + 12.0;
-        draw::avatar(scene, tr, t, ax, ay, 22.0, &model.author_name, draw::author_color(theme, &model.author_email));
+        draw::avatar(scene, tr, t, theme, ax, ay, 22.0, &model.author_name, draw::author_color(theme, &model.author_email));
         let who = if model.author_name.is_empty() {
             "Set git identity".to_string()
         } else {
