@@ -174,9 +174,9 @@ impl Attachment {
         self.hydrated && !self.content.is_empty()
     }
 
-    /// Human-readable size, e.g. `14 KB`, `1.2 MB`.
+    /// Human-readable size, e.g. `14 KiB`, `1.2 MiB`.
     pub fn size_human(&self) -> String {
-        human_bytes(self.size)
+        ui::format::bytes(self.size)
     }
 
     /// Coarse category used to pick a themed vector [`Icon`] for the chip.
@@ -195,21 +195,6 @@ impl Attachment {
         } else {
             Icon::Paperclip
         }
-    }
-}
-
-pub fn human_bytes(n: u64) -> String {
-    const KB: u64 = 1024;
-    const MB: u64 = 1024 * 1024;
-    const GB: u64 = 1024 * 1024 * 1024;
-    if n >= GB {
-        format!("{:.1} GB", n as f64 / GB as f64)
-    } else if n >= MB {
-        format!("{:.1} MB", n as f64 / MB as f64)
-    } else if n >= KB {
-        format!("{} KB", n / KB)
-    } else {
-        format!("{} B", n)
     }
 }
 
