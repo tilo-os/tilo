@@ -231,7 +231,7 @@ tokio-util.workspace = true
 # crate's own `coedit_through_host` test exercises, but end-to-end
 # through the toolkit. Identity material is minted with
 # `qos-user-identity`; the iroh endpoints dial the host over the pinned
-# 0.96 stack the rest of the tree resolves.
+# 1.0 stack the rest of the tree resolves.
 qos-user-identity = { path = "../crates/identity/qos-user-identity" }
 iroh.workspace = true
 iroh-base.workspace = true
