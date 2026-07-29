@@ -4,7 +4,7 @@ path and report which ones adopt a toplevel.
 
 Drives the whole chain, no mocks:
 
-    headless compositor -> Ctrl+K palette -> Applications provider row
+    headless compositor -> Super+K palette -> Applications provider row
     -> shell::launcher::launch -> qos-launcher -> bwrap -> the app
     -> wl_display_connect -> xdg_toplevel -> tab adoption
 
@@ -42,10 +42,12 @@ import json
 import os
 import pathlib
 import re
+import shutil
 import signal
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 
 # The manual workaround this harness exists to measure against: an
@@ -159,6 +161,11 @@ class Compositor:
 
     def __init__(self, shell_bin, launcher_bin, logpath, env_extra, startup_timeout):
         self.sock = f"/tmp/qos-app-sweep-{os.getpid()}.sock"
+        # The compositor loads and writes ~/.config/qos/state.json, so an
+        # un-isolated sweep inherits whatever workspace the last real session
+        # left behind and photographs *that* app instead of the one it just
+        # launched. Give every compositor its own config root.
+        self.config_home = tempfile.mkdtemp(prefix="qos-sweep-config-")
         self.shell_bin = shell_bin
         self.launcher_bin = launcher_bin
         self.logpath = logpath
@@ -175,7 +182,8 @@ class Compositor:
         except FileNotFoundError:
             pass
         env = {**os.environ, "QOS_TEST_CONTROL": self.sock,
-               "QOS_LAUNCHER_BIN": str(self.launcher_bin), "RUST_LOG": "info"}
+               "QOS_LAUNCHER_BIN": str(self.launcher_bin), "RUST_LOG": "info",
+               "XDG_CONFIG_HOME": self.config_home}
         for k in SCRUB:
             env.pop(k, None)
         env.update(self.env_extra)
@@ -220,6 +228,7 @@ class Compositor:
             os.unlink(self.sock)
         except FileNotFoundError:
             pass
+        shutil.rmtree(self.config_home, ignore_errors=True)
         return False
 
     def open_palette_and_launch(self, short_name: str) -> None:
