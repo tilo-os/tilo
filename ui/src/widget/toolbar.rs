@@ -181,11 +181,9 @@ impl Widget for Toolbar {
             .unwrap();
         node_map.insert(node, self as *mut dyn Widget);
         // Optimistic visibility default — assume every item fits until
-        // a caller drives `recompute_visible` with a real axis budget
-        // (event handling does this when the available width shrinks).
-        // Without this, apply_layout's placement loop iterates 0 items
-        // and the toolbar paints empty even on a freshly-constructed
-        // widget with no overflow pressure.
+        // apply_layout computes the real fit against the post-taffy width.
+        // Without this, a freshly-constructed toolbar drawn before its first
+        // apply_layout would iterate 0 items and paint empty.
         if self.visible_count == 0 {
             self.visible_count = self.items.len();
         }
@@ -213,17 +211,48 @@ impl Widget for Toolbar {
             return;
         }
 
-        // We can't call `self.method()` inside this borrow cycle
-        // without holding `&Theme`, so we accept that build_layout has
-        // already populated `visible_count`. If apply_layout runs
-        // without build_layout (unit tests calling apply_layout
-        // directly), `visible_count` is left at its previous value —
-        // tests that need a fresh layout call `build_layout` first.
-
         let axis_total = match self.orientation {
             Orientation::Horizontal => self.rect.width(),
             Orientation::Vertical => self.rect.height(),
         };
+
+        // Overflow decision: how many leading items fit the real axis budget,
+        // folding the rest into the trailing overflow chip. build_layout only
+        // has the theme (not the final width); apply_layout has the post-taffy
+        // width, so the fit is computed here, using the same approximate,
+        // theme-free extents as the placement pass below so the two agree.
+        let item_axis = |it: &ToolbarItem| -> f64 {
+            match it {
+                ToolbarItem::Spacer => 0.0,
+                ToolbarItem::Separator => SEPARATOR_LINE_PX + 8.0,
+                ToolbarItem::Button { label, .. } => {
+                    let text_axis = match self.orientation {
+                        Orientation::Horizontal => label.chars().count() as f64 * APPROX_CHAR_W,
+                        Orientation::Vertical => 16.0,
+                    };
+                    (text_axis + 16.0).max(32.0)
+                }
+            }
+        };
+        let total_extent: f64 = self.items.iter().map(&item_axis).sum();
+        if total_extent <= axis_total {
+            self.visible_count = self.items.len();
+        } else {
+            // Reserve room for the overflow chip, then take leading items
+            // until the next one would exceed the budget.
+            let budget = (axis_total - OVERFLOW_CHIP_AXIS_PX).max(0.0);
+            let mut acc = 0.0;
+            let mut fit = 0usize;
+            for it in &self.items {
+                let e = item_axis(it);
+                if acc + e > budget {
+                    break;
+                }
+                acc += e;
+                fit += 1;
+            }
+            self.visible_count = fit;
+        }
 
         // Gather measured extents for the items we know are visible.
         // Spacers report 0 here so we can compute the residual space
@@ -536,11 +565,10 @@ mod tests {
     /// `item_rects` and `visible_count` populated.
     fn lay_out(mut tb: Toolbar, axis_extent: f64) -> Toolbar {
         let theme = Theme::dark();
-        // The build pass needs `Theme`-aware measurements to decide
-        // `visible_count`; do that directly so the test isn't coupled
-        // to Taffy's exact layout output.
-        tb.recompute_visible(axis_extent, &theme);
-
+        // `visible_count` is derived in `apply_layout` from the taffy-computed
+        // rect, so driving the real build_layout → compute_layout →
+        // apply_layout pipeline below (pinned to `axis_extent` width) is what
+        // populates it — no separate pre-pass needed.
         let mut taffy: TaffyTree<()> = TaffyTree::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
         let node = tb.build_layout(&mut taffy, &theme, &mut node_map);
