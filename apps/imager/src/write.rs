@@ -369,6 +369,11 @@ fn simulate_job(req: &WriteRequest, tx: &Sender<Progress>) {
 mod tests {
     use super::*;
     use crate::model::{sample_source, sample_targets};
+    use std::sync::Mutex;
+
+    /// Serialises the tests that read/write `QOS_IMAGER_ALLOW_WRITE`, since the
+    /// process environment is shared across the parallel test threads.
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     fn req() -> WriteRequest {
         WriteRequest {
@@ -381,11 +386,24 @@ mod tests {
 
     #[test]
     fn default_backend_is_simulated_without_gate() {
+        let _g = ENV_LOCK.lock().unwrap();
         // No opt-in env var set → must be simulated, never System.
-        // (Guard against a polluted env from another test in-process.)
         unsafe { std::env::remove_var("QOS_IMAGER_ALLOW_WRITE") };
         assert_eq!(WriteBackend::system(), WriteBackend::Simulated);
         assert!(!allow_write());
+    }
+
+    #[test]
+    fn system_backend_selected_only_with_gate_on() {
+        let _g = ENV_LOCK.lock().unwrap();
+        // The real block-device backend is chosen ONLY when the operator opts
+        // in explicitly; flipping the gate is the single switch between the
+        // simulated worker and the real device write.
+        unsafe { std::env::set_var("QOS_IMAGER_ALLOW_WRITE", "1") };
+        assert!(allow_write());
+        assert_eq!(WriteBackend::system(), WriteBackend::System);
+        unsafe { std::env::remove_var("QOS_IMAGER_ALLOW_WRITE") };
+        assert_eq!(WriteBackend::system(), WriteBackend::Simulated);
     }
 
     #[test]
@@ -414,6 +432,7 @@ mod tests {
 
     #[test]
     fn begin_planned_path_touches_no_device_with_gate_off() {
+        let _g = ENV_LOCK.lock().unwrap();
         // With the gate off, a fully-armed request validates to Started — the
         // planned/dry-run path — and selects the simulated backend, so nothing
         // is ever written.
