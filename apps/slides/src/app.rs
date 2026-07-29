@@ -510,6 +510,10 @@ pub struct SlidesApp {
     /// frame (once the rail geometry is known) so a headless capture shows the
     /// floating ghost + reflow gap. Never set on a live launch.
     demo_reorder: bool,
+    /// `--shots`-only: stage a thumbnail drag dropped over the red dashed
+    /// delete zone on the first drawn frame, so a headless capture shows the
+    /// armed "Drop to delete" target. Never set on a live launch.
+    demo_delete_zone: bool,
 }
 
 /// Which context menu a `--shots` scenario should pop open for its capture.
@@ -647,6 +651,7 @@ impl SlidesApp {
                 .with_id("slides-title"),
             demo_menu: None,
             demo_reorder: false,
+            demo_delete_zone: false,
         }
     }
 
@@ -799,6 +804,31 @@ impl SlidesApp {
                 self.cur_slide = 0;
                 self.sel = None;
                 self.demo_reorder = true;
+                self.bootstrapped = true;
+            }
+            // An on-canvas text box in edit mode with a live selection over the
+            // first word — proves the shared caret / selection core: the
+            // highlight is painted behind the glyphs and the caret sits at the
+            // selection edge.
+            "edit_text" => {
+                self.cur_slide = 1;
+                self.sel = self.deck.slides.get(1).and_then(|s| {
+                    s.elements.iter().find(|e| e.kind == ElementKind::Text).map(|e| e.id.clone())
+                });
+                self.editing_text = true;
+                let text = self.selected_element().map(|e| e.text.clone()).unwrap_or_default();
+                let (a, b) = word_boundaries_chars(&text, 0);
+                self.sel_anchor = a;
+                self.caret = b;
+                self.bootstrapped = true;
+            }
+            // A slide thumbnail dragged onto the red dashed delete zone at the
+            // foot of the rail (armed) — proves the drag-to-delete affordance.
+            // Staged on the first drawn frame (see `draw`).
+            "delete_zone" => {
+                self.cur_slide = 0;
+                self.sel = None;
+                self.demo_delete_zone = true;
                 self.bootstrapped = true;
             }
             // The inspector with the font-size NumberInput (text selected) and
@@ -2780,9 +2810,16 @@ impl SlidesApp {
             chrome::fill_rect(scene, t, chrome.rail, c.surfaces.raised);
             stroke_line(scene, t, chrome.rail.x1, chrome.rail.y0, chrome.rail.x1, chrome.rail.y1, div);
         }
-        // Fixed rail chrome (SLIDES header + Add/Dup/Del) — never scrolls.
+        // Fixed rail chrome (SLIDES header + Add/Dup/Del) — never scrolls. While
+        // a thumbnail is being dragged, the pinned action row is replaced by the
+        // red "drop to delete" zone drawn below, so suppress the buttons it
+        // covers (otherwise they bleed through the zone's translucent fill).
+        let drag_zone =
+            self.page_sidebar.is_dragging().then(|| self.slide_delete_zone(chrome.rail));
         for b in &chrome.buttons {
-            if in_rail(b.rect.center()) {
+            if in_rail(b.rect.center())
+                && !drag_zone.is_some_and(|z| z.contains(b.rect.center()))
+            {
                 self.draw_button(scene, t, tr, theme, &pal, b);
             }
         }
@@ -2814,7 +2851,7 @@ impl SlidesApp {
             // thumbnail here removes that slide.
             if self.page_sidebar.is_dragging() {
                 let zone = self.slide_delete_zone(chrome.rail);
-                let armed = zone.contains(self.last_mouse);
+                let armed = self.over_delete_zone();
                 let danger = c.semantic.danger;
                 if armed {
                     chrome::fill_rrect(scene, t, zone, 10.0, render::with_alpha(danger, 40));
@@ -4511,6 +4548,19 @@ impl Widget for SlidesApp {
                 self.last_mouse = target;
                 self.page_sidebar.on_press(start);
                 self.page_sidebar.on_motion(target);
+                let _ = self.page_sidebar.take_events();
+            }
+        }
+        // `--shots`-only: stage a thumbnail dragged onto the delete zone so the
+        // capture shows the armed red dashed "Drop to delete" target.
+        if std::mem::take(&mut self.demo_delete_zone) {
+            let thumbs = self.rail_thumb_rects();
+            if thumbs.len() > 1 {
+                let start = thumbs[1].1.center();
+                let drop = self.slide_delete_zone(self.rail_rect()).center();
+                self.last_mouse = drop;
+                self.page_sidebar.on_press(start);
+                self.page_sidebar.on_motion(drop);
                 let _ = self.page_sidebar.take_events();
             }
         }
