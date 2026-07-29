@@ -8937,6 +8937,189 @@ mod tests {
         }
     }
 
+    /// Paint one frame, which is what populates every cached hit rect.
+    fn paint(h: &mut Harness) {
+        let theme = Theme::dark();
+        let mut scene = Scene::new();
+        let mut tr = TextRenderer::new();
+        let presence = PresenceCtx::empty();
+        h.host
+            .draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+    }
+
+    /// The sheet lays out inside the viewport and derives its rows from the
+    /// room document the chrome is actually holding — not from a seeded list.
+    #[test]
+    fn room_activity_sheet_shows_the_live_rooms_history() {
+        let mut h = build_harness();
+        h.chrome.borrow_mut().overlays.room_activity = true;
+        h.host.force_room_activity_settled();
+        paint(&mut h);
+
+        let sheet = h.host.room_activity().rect();
+        assert!(sheet.area() > 0.0, "the sheet laid out");
+        assert!(sheet.x1 <= 1600.0 && sheet.y1 <= 900.0, "inside the viewport");
+        assert!(
+            !h.host.room_activity().entries().is_empty(),
+            "a bootstrapped workspace tree has already written to its room document"
+        );
+        let names: Vec<&str> = h
+            .host
+            .room_activity()
+            .entries()
+            .iter()
+            .map(|e| e.summary.as_str())
+            .collect();
+        assert!(
+            names.iter().any(|s| !s.is_empty()),
+            "rows carry real summaries: {names:?}"
+        );
+    }
+
+    /// Hover has to reach the timeline inside the sheet — it is what reveals
+    /// a row's `[Revert]`. The generic absorb gate would otherwise eat it.
+    #[test]
+    fn pointer_over_the_sheet_reaches_the_timeline() {
+        let mut h = build_harness();
+        h.chrome.borrow_mut().overlays.room_activity = true;
+        h.host.force_room_activity_settled();
+        paint(&mut h);
+
+        let rows = h.host.room_activity().timeline().rect();
+        assert!(rows.area() > 0.0);
+        let row0 = h
+            .host
+            .room_activity()
+            .timeline()
+            .row_rect(0)
+            .expect("the room has at least one row laid out");
+        let mods = Modifiers::default();
+        let handled = pump(&mut h, &cursor_moved_at(row0.center()), &mods);
+        assert!(handled, "the sheet claims pointer events over itself");
+        assert_eq!(
+            h.host.room_activity().timeline().hover_row(),
+            Some(0),
+            "the hover landed on the row under the cursor"
+        );
+    }
+
+    /// The visible affordance: the collaborator dropdown answers "who is in
+    /// this room", and its foot opens "what happened in this room".
+    #[test]
+    fn collaborator_dropdown_row_opens_the_sheet() {
+        let mut h = build_harness();
+        h.chrome.borrow_mut().overlays.collaborators = true;
+        paint(&mut h);
+
+        let row = h.host.collab_activity_row_rect;
+        assert!(row.area() > 0.0, "the footer row painted a hit target");
+        assert_eq!(
+            row,
+            h.host.collaborators_activity_row_rect(),
+            "the cached hit rect is the one that was drawn"
+        );
+
+        let mods = Modifiers::default();
+        let _ = pump(&mut h, &cursor_moved_at(row.center()), &mods);
+        let handled = pump(&mut h, &left_button_pressed(), &mods);
+        assert!(handled);
+        assert!(
+            h.chrome.borrow().overlays.room_activity,
+            "the row opened the sheet"
+        );
+        assert!(
+            !h.chrome.borrow().overlays.collaborators,
+            "the dropdown closed behind it rather than sitting on top"
+        );
+    }
+
+    /// The footer rect must not survive the dropdown closing, or a click in
+    /// empty space where it used to be would open the sheet.
+    #[test]
+    fn collaborator_footer_rect_is_cleared_when_the_dropdown_closes() {
+        let mut h = build_harness();
+        h.chrome.borrow_mut().overlays.collaborators = true;
+        paint(&mut h);
+        assert!(h.host.collab_activity_row_rect.area() > 0.0);
+
+        h.chrome.borrow_mut().overlays.collaborators = false;
+        paint(&mut h);
+        assert_eq!(
+            h.host.collab_activity_row_rect,
+            Rect::ZERO,
+            "a stale footer rect is a click target the user cannot see"
+        );
+    }
+
+    #[test]
+    fn escape_closes_the_room_activity_sheet() {
+        let mut h = build_harness();
+        h.chrome.borrow_mut().overlays.room_activity = true;
+        h.host.force_room_activity_settled();
+        paint(&mut h);
+
+        let mods = Modifiers::default();
+        let handled = pump(&mut h, &key_press(Key::Named(NamedKey::Escape)), &mods);
+        assert!(handled);
+        assert!(
+            !h.chrome.borrow().overlays.room_activity,
+            "Escape dismisses the sheet"
+        );
+    }
+
+    #[test]
+    fn clicking_outside_the_sheet_closes_it() {
+        let mut h = build_harness();
+        h.chrome.borrow_mut().overlays.room_activity = true;
+        h.host.force_room_activity_settled();
+        paint(&mut h);
+
+        let sheet = h.host.room_activity().rect();
+        let outside = Point::new(sheet.x0 / 2.0, sheet.center().y);
+        assert!(!sheet.contains(outside));
+        let mods = Modifiers::default();
+        let _ = pump(&mut h, &cursor_moved_at(outside), &mods);
+        let handled = pump(&mut h, &left_button_pressed(), &mods);
+        assert!(handled, "the click is swallowed, not passed to the desktop");
+        assert!(!h.chrome.borrow().overlays.room_activity);
+    }
+
+    /// Typing narrows by contributor while the sheet has the keyboard, but
+    /// Escape still belongs to the dismissal ladder.
+    #[test]
+    fn typing_filters_by_contributor_without_stealing_escape() {
+        let mut h = build_harness();
+        h.chrome.borrow_mut().overlays.room_activity = true;
+        h.host.force_room_activity_settled();
+        paint(&mut h);
+        assert!(h.host.room_activity().visible_len() > 0);
+
+        let mods = Modifiers::default();
+        let handled = pump(
+            &mut h,
+            &key_press(Key::Character("z".into())),
+            &mods,
+        );
+        assert!(handled, "the sheet took the keystroke");
+        assert_eq!(
+            h.host.room_activity().timeline().author_query(),
+            "z",
+            "the typeahead echoes what was typed"
+        );
+        assert_eq!(
+            h.host.room_activity().visible_len(),
+            0,
+            "no contributor in this room is named 'z'"
+        );
+
+        let handled = pump(&mut h, &key_press(Key::Named(NamedKey::Escape)), &mods);
+        assert!(handled);
+        assert!(
+            !h.chrome.borrow().overlays.room_activity,
+            "Escape closed the sheet rather than being eaten by the typeahead"
+        );
+    }
+
     /// Stuff a non-empty query into the palette before opening it,
     /// then assert that the open transition both focuses the input
     /// AND clears the query. Drives the production Ctrl+K path
