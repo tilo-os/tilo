@@ -1508,6 +1508,7 @@ mod tests {
             artifact_kind: ArtifactKind::Note,
             timestamp: SystemTime::UNIX_EPOCH + Duration::from_secs(ts),
             summary: format!("op {} by {}", id, author),
+            text_delta: Some((1, 0)),
             diff_payload: None,
             redaction: None,
         }

@@ -846,6 +846,7 @@ mod tests {
             artifact_kind: ArtifactKind::Note,
             timestamp: SystemTime::UNIX_EPOCH + Duration::from_secs(id as u64 * 60),
             summary: format!("op {}", id),
+            text_delta: Some((1, 0)),
             diff_payload: None,
             redaction: None,
         }
