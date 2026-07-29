@@ -1401,6 +1401,7 @@ pub fn draw_members_pane(
     transform: Affine,
     pane_rect: Rect,
     ws: &Workspace,
+    local_user: &UserId,
     is_owner: bool,
     text_renderer: &mut TextRenderer,
     theme: &Theme,
@@ -1457,8 +1458,26 @@ pub fn draw_members_pane(
             theme,
         );
 
+        // Which row is you. You need that before you reach for Remove,
+        // and a name alone does not tell you — person ids are hex keys.
+        let mut text_limit = row.role_rect.x0 - 12.0;
+        if &row.user == local_user {
+            let you = draw_pill(
+                scene,
+                transform,
+                text_limit,
+                row.row_rect.center().y,
+                "You",
+                colors.accent[5],
+                1.0,
+                text_renderer,
+                theme,
+            );
+            text_limit = you.x0 - 8.0;
+        }
+
         let text_x = avatar.x1 + 12.0;
-        let text_max = row.role_rect.x0 - 12.0 - text_x;
+        let text_max = text_limit - text_x;
         let title_size = tokens.typography.scale.sm;
         let title_text = elide(&name, title_size, text_max, text_renderer);
         text_renderer.draw_text(
@@ -2432,6 +2451,7 @@ mod members_pane_tests {
             Affine::IDENTITY,
             pane,
             &Workspace::new(WorkspaceId::default(), "empty"),
+            &OWNER.to_string(),
             true,
             &mut tr,
             &theme,
@@ -2442,6 +2462,7 @@ mod members_pane_tests {
             Affine::IDENTITY,
             pane,
             &ws_with_two_members(),
+            &OWNER.to_string(),
             true,
             &mut tr,
             &theme,
@@ -2463,6 +2484,7 @@ mod members_pane_tests {
             Affine::IDENTITY,
             Rect::new(100.0, 100.0, 100.0, 100.0),
             &ws,
+            &OWNER.to_string(),
             true,
             &mut tr,
             &theme,
