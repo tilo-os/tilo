@@ -86,6 +86,21 @@ overtake a frame already queued.
 (`QOS_FRAME_TRACE`, `QOS_FRAME_SUMMARY`); `scripts/perf/frame-loop-bench.py`
 drives a measured run and diffs two of them.
 
+**Known residual: client dispatch is the next thing on the logic
+thread.** With presentation moved off, `dispatch_clients` is the largest
+remaining phase there — 16.8% of wall time under a client committing at
+163 fps, against 1.9% for scene building and 0.8% for the submit
+hand-off. It is also where the pacing tail comes from: on a nested run
+at 92.5% on-cadence, the off-cadence spans carry a median 4.1 ms of
+client dispatch against 2.5 ms for the on-cadence ones, and the worst
+gaps (77 ms, 57 ms, 45 ms) are 23-25 ms of client dispatch each. The
+cause is per-commit buffer capture (`foreign::ForeignFrameStore::capture_commit`
+copies an SHM buffer, or reads back a dma-buf) running inline on the
+logic thread, so a client that commits faster than the compositor
+presents makes the compositor late. Moving capture off the logic thread,
+or coalescing commits so only the newest buffer per surface is imported
+per frame, is the follow-up — and the frame trace already measures it.
+
 **What is verified, and what isn't.** The loop demonstrably holds the
 cadence it is configured for — including non-60 rates, via the
 `QOS_REFRESH_HZ` override. That is a statement about the *loop*. It is
