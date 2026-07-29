@@ -33,8 +33,10 @@ pub mod fullscreen;
 pub mod mpris;
 pub mod nav_stack;
 pub mod portal;
+pub mod reader_hud;
 
 pub use app::App;
+pub use reader_hud::{HudAction, HudSwatch, MarkerDrag, ReaderHudStyle, SelectionHud};
 pub use color_compat::ColorCompat;
 pub use doc::{TextEdit, put_if_changed, put_text_diffed, splice_text_diffed};
 pub use state::{State, UndoEntry};
