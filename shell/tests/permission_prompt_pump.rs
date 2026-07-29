@@ -80,6 +80,15 @@ fn dispatch(p: &mut PermissionPrompt, event: &WindowEvent) {
 /// Build a minimal chrome holding a single workspace + the requested
 /// app's pending grant. Returns the chrome handle and the workspace's
 /// id so the test can assert on the post-pump grants map.
+///
+/// The workspace is handed to the local user, because that is the only
+/// state the compositor ever runs in: a room with no recorded owner has
+/// no administrators — deliberately, so a workspace a peer shared with
+/// you cannot be administered by you — and both paths that mint a
+/// workspace (boot, and the wheel disc's "+") call
+/// `adopt_ownerless_workspaces` for exactly that reason. A fixture that
+/// pushes a bare `Workspace::new` and skips it is testing a room nobody
+/// can govern, where "Always" is correctly refused.
 fn chrome_with_pending_grant(
     app_id: &str,
     capability: Capability,
@@ -91,6 +100,8 @@ fn chrome_with_pending_grant(
     let chrome = ChromeState::new(tree);
     {
         let mut st = chrome.borrow_mut();
+        let owner = st.local_user_id.clone();
+        st.tree_mut().adopt_ownerless_workspaces(&owner);
         st.pending_grants
             .push_back((app_id.to_string(), capability));
     }
@@ -249,14 +260,22 @@ fn pump_persists_always_grant_with_filesystem_capability() {
     // Sanity that the scope-replacement helper round-trips a non-
     // Camera variant — Filesystem carries `path` + `mode` fields the
     // pump must preserve while flipping the scope.
+    let granted_path = PathBuf::from("/home/u/work");
     let (chrome, _ws_id) = chrome_with_pending_grant(
         "org.gnome.gedit",
         Capability::Filesystem {
-            path: PathBuf::from("/home/u/work"),
+            path: granted_path.clone(),
             mode: FsMode::ReadWrite,
             scope: GRANT_ONCE,
         },
     );
+    // "Always" means "still granted after a reboot", so point the tree
+    // at a state file and read it back at the end. Without this the test
+    // only proves the grant reached memory, which is the half of the
+    // promise that was never the hard part.
+    let state_file = scratch_dir().join("state.json");
+    chrome.borrow().tree_mut().persist_path = Some(state_file.clone());
+
     let mut host = host_with_chrome(chrome.clone());
 
     host.tick_permission_prompt_for_tests();
@@ -264,7 +283,9 @@ fn pump_persists_always_grant_with_filesystem_capability() {
         let prompt = host
             .permission_prompt_mut_for_tests()
             .expect("prompt latched");
-        // is_owner defaults to true via `is_active_workspace_owner`.
+        // Only an administrator of the room may grant permanently, and
+        // the fixture handed the workspace to the local user, so the
+        // Always button is live.
         assert!(prompt.is_owner);
         prompt.set_rect(Rect::new(0.0, 0.0, 600.0, 80.0));
         let center = prompt.always_rect().center();
@@ -274,25 +295,64 @@ fn pump_persists_always_grant_with_filesystem_capability() {
     }
     host.tick_permission_prompt_for_tests();
 
-    let st = chrome.borrow();
-    let tree = st.tree();
-    let ws = tree.active_workspace().expect("active workspace");
-    let view = ws.grants();
-    let caps = view.get("org.gnome.gedit").expect("grant persisted");
-    assert_eq!(caps.len(), 1);
-    assert!(
-        matches!(
-            &caps[0],
-            Capability::Filesystem {
-                mode: FsMode::ReadWrite,
-                scope: GRANT_ALWAYS,
-                ..
-            }
-        ),
-        "filesystem always grant must preserve mode + path while \
-         flipping scope — got {:?}",
-        caps[0],
-    );
+    let expect_grant = |ws: &Workspace, where_: &str| {
+        let view = ws.grants();
+        let caps = view
+            .get("org.gnome.gedit")
+            .unwrap_or_else(|| panic!("no grant {where_}"));
+        assert_eq!(caps.len(), 1, "one grant {where_}, got {caps:?}");
+        assert!(
+            matches!(
+                &caps[0],
+                Capability::Filesystem {
+                    path,
+                    mode: FsMode::ReadWrite,
+                    scope: GRANT_ALWAYS,
+                } if path == &granted_path
+            ),
+            "filesystem always grant must preserve mode + path while \
+             flipping scope ({where_}) — got {:?}",
+            caps[0],
+        );
+    };
+
+    {
+        let st = chrome.borrow();
+        let tree = st.tree();
+        expect_grant(
+            tree.active_workspace().expect("active workspace"),
+            "on the active workspace",
+        );
+    }
+
+    // The compositor can be killed rather than asked to exit, so the
+    // write is eager: by the time the pump returns the grant is already
+    // on disk. Reload it the way the boot path does.
+    let reloaded = shell::shell::persist::load_tree_from(&state_file)
+        .expect("the pump must have written the state file");
+    let ws = reloaded
+        .workspaces
+        .iter()
+        .find(|w| w.id == WorkspaceId::from(1))
+        .expect("the workspace survives the reload");
+    expect_grant(ws, "after reloading the state file");
+}
+
+/// Per-test scratch directory under `target/`, so a state file written
+/// here never lands in the user's real config dir and parallel workers
+/// don't stomp on each other.
+fn scratch_dir() -> PathBuf {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static COUNTER: AtomicU32 = AtomicU32::new(0);
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let base = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."))
+        .join("target")
+        .join("permission-prompt-pump")
+        .join(format!("{}-{n}", std::process::id()));
+    std::fs::create_dir_all(&base).expect("create scratch dir");
+    base
 }
 
 #[test]
