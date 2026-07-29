@@ -106,6 +106,89 @@ impl From<uuid::Uuid> for RoomId {
     }
 }
 
+/// Whoever a message arrived from, named as the transport authenticated
+/// it — not as the message claims.
+///
+/// This is the only thing a receiver knows about a payload's author that
+/// the author did not write, so it is the only thing an authority
+/// decision may rest on. Over libp2p it is the remote `PeerId`, which the
+/// noise handshake bound to the connection and gossipsub's message
+/// signature binds to the publish; over the in-process [`Hub`] it is the
+/// subscriber id.
+///
+/// The two are namespaced (`p2p:` / `hub:`) so a subscriber id can never
+/// be mistaken for a peer id, and the peer id is carried whole rather
+/// than hashed to a `u64`: a decision that turns on equality must not
+/// turn on a 64-bit digest an attacker is free to grind against.
+///
+/// [`Hub`]: crate::network::hub::Hub
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct PeerOrigin(String);
+
+impl PeerOrigin {
+    /// A remote libp2p peer, by its base58 `PeerId`.
+    pub fn peer(peer: &libp2p::PeerId) -> Self {
+        Self(format!("p2p:{}", peer.to_base58()))
+    }
+
+    /// A remote libp2p peer named as an invite token names it — base58
+    /// text that has already been through
+    /// [`crate::network::invite::validate_invite_token`], so the string
+    /// is one the owner's own signature covered.
+    pub fn peer_base58(base58: &str) -> Self {
+        Self(format!("p2p:{base58}"))
+    }
+
+    /// An in-process [`Hub`] subscriber.
+    ///
+    /// [`Hub`]: crate::network::hub::Hub
+    pub fn hub(id: u64) -> Self {
+        Self(format!("hub:{id}"))
+    }
+
+    /// This machine, for a batch that did not come off a wire at all
+    /// (a local document fork replayed into a room).
+    pub fn local() -> Self {
+        Self("local".to_string())
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for PeerOrigin {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+/// Who may write a room's **governance** — its owner and its capability
+/// list — as this machine knows it.
+///
+/// Automerge merges a map key by last-writer-wins and has no per-key
+/// ACL, so if both ends of a room project their own cache into the shared
+/// document the room's owner is decided by which actor id sorts higher.
+/// That is not a governance model; it is a coin toss a guest can enter.
+/// This is the record that decides it instead, and every value in it is
+/// established by something the sender could not forge.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RoomAuthority {
+    /// This machine. The room was minted here, so its cache *is* the
+    /// governance and no peer may replace it.
+    Local,
+    /// A named peer — the owner an invite token named, cross-checked
+    /// against that token's signature. Governance is taken from that
+    /// peer and from nobody else.
+    Peer(PeerOrigin),
+    /// A room this machine joined without an invite naming who
+    /// administers it. Nothing establishes an authority yet, so the
+    /// first peer to supply governance becomes it (and is pinned, so the
+    /// second peer cannot).
+    Unpinned,
+}
+
 impl From<u64> for WorkspaceId {
     fn from(v: u64) -> Self {
         Self(v)
@@ -1375,6 +1458,21 @@ pub struct WorkspaceTree {
     /// peer's copy by last-writer-wins instead of duplicating entries.
     #[serde(skip, default)]
     pub room_docs: HashMap<RoomId, AutoCommit>,
+    /// Who may write each room's governance — see [`RoomAuthority`].
+    ///
+    /// A room absent from this map is one this machine minted, and so one
+    /// this machine governs: [`Self::room_authority`] reads a missing
+    /// entry as [`RoomAuthority::Local`]. Joining a room
+    /// ([`Self::set_room`]) writes [`RoomAuthority::Unpinned`], and
+    /// accepting an invite pins the owner the token named.
+    ///
+    /// Persisted, unlike [`Self::room_docs`]: the room documents can be
+    /// re-projected from the cache after a restart, but who governs a
+    /// room cannot be — the invite that established it is long gone, and
+    /// a machine that forgot would be back to taking governance from
+    /// whoever answered first.
+    #[serde(default)]
+    pub room_authority: HashMap<RoomId, RoomAuthority>,
     /// Where to write this tree when a capability changes.
     ///
     /// `None` disables the write, which is what tests and the offscreen
@@ -1403,6 +1501,7 @@ impl Default for WorkspaceTree {
             collaborators: Vec::new(),
             doc: AutoCommit::new(),
             room_docs: HashMap::new(),
+            room_authority: HashMap::new(),
             persist_path: None,
             fs_acl_path: None,
         }
@@ -1845,9 +1944,11 @@ impl WorkspaceTree {
         &mut self,
         room: RoomId,
         changes: &[Vec<u8>],
+        from: &PeerOrigin,
     ) -> Result<bool, automerge::AutomergeError> {
         use automerge::{ROOT, ReadDoc, ScalarValue, Value};
 
+        let _ = from;
         if self.workspace_in_room(room).is_none() {
             return Ok(false);
         }

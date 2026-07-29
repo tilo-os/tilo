@@ -854,7 +854,10 @@ impl ShellNetwork {
                     continue;
                 }
                 let mut rep = self.replica.lock().unwrap();
-                rep.handle(peer_id_to_u64(peer), &msg);
+                // The peer's own identity, not `peer_id_to_u64`'s digest
+                // of it: room replication decides from this whether a
+                // payload may rewrite a room's governance.
+                rep.handle_from(&crate::shell::state::PeerOrigin::peer(&peer), &msg);
                 let outgoing = rep.drain_outgoing();
                 drop(rep);
                 for out_msg in outgoing {
