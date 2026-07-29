@@ -758,4 +758,36 @@ mod tests {
             s.card_heights[0]
         );
     }
+
+    /// A surface formula taller than even the generous card max (a
+    /// fraction-over-fraction, the 3D analogue of the 2D case): the card clamps
+    /// to the max and the field scrolls within it rather than clipping the
+    /// formula behind the card edge. Mirrors the 2D coverage so the "grow to a
+    /// max then scroll, never clip" rule is proven for surfaces too, on the real
+    /// measure → layout → set-rect path.
+    #[test]
+    fn oversized_surface_card_grows_to_max_then_scrolls() {
+        let mut tr = TextRenderer::new();
+        let mut s = Graph3dScreen::default();
+        let mut m = CalcModel::default();
+        m.surfaces = vec![PlotFn { expr: "(1/x)/(1/y)".into(), visible: true }];
+        m.active_surface = 0;
+        s.measure_cards(&m, &mut tr);
+        s.layout(Rect::new(0.0, 0.0, 1000.0, 700.0), &m);
+        let expected = crate::mathfield::CARD_MAX_H + 2.0 * CARD_PAD_Y;
+        assert!(
+            (s.card_heights[0] - expected).abs() < 1e-6,
+            "an oversized surface card must clamp to the max ({expected}), got {}",
+            s.card_heights[0]
+        );
+        // Taller than the maxed field → the formula scrolls (never clips).
+        let content_h = s.fields[0].content_height(&mut tr);
+        assert!(
+            content_h > s.edit_rects[0].height() + 0.5,
+            "an oversized surface must overflow its maxed field vertically (scroll, not clip): content {content_h} vs field {}",
+            s.edit_rects[0].height()
+        );
+        s.fields[0].set_rect(s.edit_rects[0], &mut tr);
+        assert!(s.fields[0].overflows(), "the maxed surface field must report overflow");
+    }
 }
