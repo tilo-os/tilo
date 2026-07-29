@@ -1008,6 +1008,43 @@ impl BooksApp {
                 self.view = View::Reader;
                 self.type_popover = true;
             }
+            "continuous" => {
+                // The continuous vertical-scroll mode, parked mid-chapter so the
+                // shot shows the flow crossing the page with no page break.
+                self.view = View::Reader;
+                self.shot_settings = Some(Settings { mode: ReadMode::Continuous, ..Settings::default() });
+                self.scroll_y = 520.0;
+            }
+            "continuous-select" => {
+                // Continuous scroll with a live selection so the shared selection
+                // HUD floats over the scrolling column.
+                self.demo = false;
+                self.view = View::Reader;
+                self.shot_settings = Some(Settings { mode: ReadMode::Continuous, ..Settings::default() });
+                self.scroll_y = 120.0;
+                self.sel = Some(TextSel {
+                    anchor: DocPos { block: 1, ch: 6 },
+                    head: DocPos { block: 2, ch: 54 },
+                });
+                self.selected_block = Some(1);
+            }
+            "two-up" | "spread" => {
+                // The two-page spread — two facing pages side by side.
+                self.view = View::Reader;
+                self.shot_settings = Some(Settings { mode: ReadMode::TwoUp, ..Settings::default() });
+            }
+            "two-up-select" | "spread-select" => {
+                // A selection on the spread, proving the shared HUD + column-aware
+                // hit-testing work across the two facing pages.
+                self.demo = false;
+                self.view = View::Reader;
+                self.shot_settings = Some(Settings { mode: ReadMode::TwoUp, ..Settings::default() });
+                self.sel = Some(TextSel {
+                    anchor: DocPos { block: 2, ch: 0 },
+                    head: DocPos { block: 2, ch: 60 },
+                });
+                self.selected_block = Some(2);
+            }
             _ => self.view = View::Reader,
         }
     }

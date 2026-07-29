@@ -521,6 +521,26 @@ impl PdfApp {
         self.show_rail = true;
     }
 
+    /// Screenshot-only: stage a settled text selection over page 1 (a synthetic
+    /// glyph layer so it needs no native pdfium) so a still frame shows the
+    /// shared selection HUD — highlight swatches + Copy + Note — over the page.
+    pub fn arm_shots_selection(&mut self) {
+        let text = "the keeper climbed the iron stair and set the great wick alight";
+        let cols = 30usize;
+        let glyphs: Vec<(char, PtRect)> = text
+            .chars()
+            .enumerate()
+            .map(|(i, c)| {
+                let (row, col) = (i / cols, i % cols);
+                (c, PtRect::new(70.0 + col as f64 * 12.5, 150.0 + row as f64 * 22.0, 10.5, 15.0))
+            })
+            .collect();
+        let n = glyphs.len();
+        self.raster_text.insert(1, std::sync::Arc::new(PageText::from_glyphs(glyphs)));
+        self.selection = Some(TextSelection { page: 1, anchor: 0, caret: n.saturating_sub(1), dragging: false });
+        self.show_sidebar = true;
+    }
+
     /// Screenshot / demo helper: import a distinctive generated image as a new
     /// page after the current one, so a still frame shows an imported image page
     /// in the rail + canvas. No-op on the text backend.
