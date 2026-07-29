@@ -177,9 +177,7 @@ pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), StorageError> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| StorageError::Io(e.to_string()))?;
     }
-    let tmp = path.with_extension("tmp");
-    std::fs::write(&tmp, bytes).map_err(|e| StorageError::Io(format!("write tmp: {e}")))?;
-    std::fs::rename(&tmp, path).map_err(|e| StorageError::Io(format!("rename: {e}")))?;
+    atomic_file::write(path, bytes).map_err(|e| StorageError::Io(e.to_string()))?;
     Ok(())
 }
 

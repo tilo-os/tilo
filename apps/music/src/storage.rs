@@ -12,7 +12,6 @@
 //! ([`crate::relay`]) uses to load and atomically persist its authoritative
 //! copy.
 
-use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use automerge::AutoCommit;
@@ -57,13 +56,7 @@ pub fn save_to(path: &Path, doc: &mut AutoCommit) -> std::io::Result<()> {
         std::fs::create_dir_all(parent)?;
     }
     let bytes = doc.save();
-    let tmp = path.with_extension("automerge.tmp");
-    {
-        let mut f = std::fs::File::create(&tmp)?;
-        f.write_all(&bytes)?;
-        f.sync_all()?;
-    }
-    std::fs::rename(&tmp, path)?;
+    atomic_file::write(path, &bytes)?;
     Ok(())
 }
 

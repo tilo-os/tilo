@@ -331,9 +331,8 @@ fn persist_now(namespace: &Arc<Mutex<Namespace>>, path: &Path) {
     let bytes = {
         namespace.lock().unwrap().save()
     };
-    let tmp = path.with_extension("tmp");
-    if std::fs::write(&tmp, &bytes).is_ok() {
-        let _ = std::fs::rename(&tmp, path);
+    if let Err(e) = atomic_file::write(path, &bytes) {
+        eprintln!("namespace persist to {} failed: {e}", path.display());
     }
 }
 

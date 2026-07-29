@@ -1,31 +1,24 @@
-//! Disk persistence for the chat workspace.
+//! Where an older release of Chat kept its workspace.
 //!
-//! The entire convergent document — workspaces, categories, channels,
-//! messages, reactions, edit history, members, and voice membership — is
-//! saved as the raw Automerge bytes to a single file:
+//! The whole convergent document — workspaces, categories, channels,
+//! messages, reactions, edit history, members, voice membership — was saved
+//! as raw Automerge bytes to a single file:
 //!
 //! ```text
 //! $XDG_DATA_HOME/qos-chat/workspace.automerge   (≈ ~/.local/share/qos-chat/…)
 //! ```
 //!
-//! Saving the unmodified Automerge save (not a lossy JSON projection) means
-//! a reload is a faithful restore and a future peer can merge against the
-//! file directly. Writes are debounced on a background thread and committed
-//! atomically (temp file + rename) so a crash mid-write can't corrupt the
-//! store.
+//! That file is where existing users' history lives, so this module still
+//! resolves it: `main` hands the path to `ui::persist::open_migrating`, which
+//! merges it into the shared store once and leaves the original alone.
 //!
-//! This module predates `ui::persist`, which now persists the app's
-//! `ui::State::doc` for every app from one place. It is kept because the
-//! file it wrote is where existing users' chat history lives: `main`
-//! passes that path to `ui::persist::open_migrating`, which merges it into
-//! the shared store on first launch. Nothing writes through here any more.
+//! Nothing writes through here. The debounced background saver this module
+//! used to own was a second live writer alongside `app-state`'s — two files,
+//! both updated on every edit, on two independent 400 ms timers, free to
+//! disagree after a crash. The saver is gone; `app-state` is the writer.
 
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{self, Receiver, Sender};
-use std::sync::{Arc, Mutex};
-use std::thread;
-use std::time::{Duration, Instant};
 
 /// File name of the Automerge save inside the data directory.
 pub const WORKSPACE_FILE: &str = "workspace.automerge";
@@ -54,112 +47,6 @@ pub fn load_bytes(dir: &Path) -> io::Result<Option<Vec<u8>>> {
     }
 }
 
-/// Write the Automerge bytes atomically (temp + rename).
-pub fn save_bytes(dir: &Path, bytes: &[u8]) -> io::Result<()> {
-    std::fs::create_dir_all(dir)?;
-    let dest = workspace_path(dir);
-    let tmp = dest.with_extension("automerge.tmp");
-    std::fs::write(&tmp, bytes)?;
-    std::fs::rename(&tmp, &dest)?;
-    Ok(())
-}
-
-/// A debounced background saver for the document bytes. The UI thread calls
-/// [`Saver::request`] with the latest `doc.save()` after each mutation; the
-/// worker coalesces a burst of edits and writes once the user pauses.
-pub struct Saver {
-    tx: Sender<Msg>,
-    _join: Option<thread::JoinHandle<()>>,
-}
-
-enum Msg {
-    Save(Vec<u8>),
-    Flush,
-    Stop,
-}
-
-impl Saver {
-    /// Spawn the saver targeting `dir` with the given debounce window.
-    /// Returns `None` if the data directory can't be resolved — the app
-    /// keeps working purely in memory.
-    pub fn spawn(dir: PathBuf, debounce: Duration) -> Self {
-        let (tx, rx) = mpsc::channel::<Msg>();
-        let pending: Arc<Mutex<Option<Vec<u8>>>> = Arc::new(Mutex::new(None));
-        let join = thread::Builder::new()
-            .name("chat-saver".into())
-            .spawn(move || saver_loop(rx, pending, dir, debounce))
-            .expect("spawn chat saver thread");
-        Self { tx, _join: Some(join) }
-    }
-
-    /// Request a save of `bytes`; the write lands after the debounce window
-    /// elapses without further requests.
-    pub fn request(&self, bytes: Vec<u8>) {
-        let _ = self.tx.send(Msg::Save(bytes));
-    }
-
-    /// Force an immediate flush of any pending bytes.
-    pub fn flush(&self) {
-        let _ = self.tx.send(Msg::Flush);
-    }
-}
-
-impl Drop for Saver {
-    fn drop(&mut self) {
-        let _ = self.tx.send(Msg::Flush);
-        let _ = self.tx.send(Msg::Stop);
-        if let Some(j) = self._join.take() {
-            let _ = j.join();
-        }
-    }
-}
-
-fn saver_loop(
-    rx: Receiver<Msg>,
-    pending: Arc<Mutex<Option<Vec<u8>>>>,
-    dir: PathBuf,
-    debounce: Duration,
-) {
-    let mut last_request: Option<Instant> = None;
-    loop {
-        let timeout = match (last_request, pending.lock().unwrap().is_some()) {
-            (Some(t), true) => {
-                let elapsed = t.elapsed();
-                if elapsed >= debounce { Duration::ZERO } else { debounce - elapsed }
-            }
-            _ => Duration::from_secs(60 * 60),
-        };
-        let msg = if timeout == Duration::ZERO {
-            match rx.try_recv() {
-                Ok(m) => Some(m),
-                Err(mpsc::TryRecvError::Empty) => None,
-                Err(mpsc::TryRecvError::Disconnected) => return,
-            }
-        } else {
-            match rx.recv_timeout(timeout) {
-                Ok(m) => Some(m),
-                Err(mpsc::RecvTimeoutError::Timeout) => None,
-                Err(mpsc::RecvTimeoutError::Disconnected) => return,
-            }
-        };
-        match msg {
-            Some(Msg::Save(bytes)) => {
-                *pending.lock().unwrap() = Some(bytes);
-                last_request = Some(Instant::now());
-            }
-            Some(Msg::Stop) => return,
-            Some(Msg::Flush) | None => {
-                let to_write = pending.lock().unwrap().take();
-                if let Some(bytes) = to_write {
-                    if let Err(e) = save_bytes(&dir, &bytes) {
-                        tracing::error!(error = %e, "chat: workspace save failed");
-                    }
-                }
-                last_request = None;
-            }
-        }
-    }
-}
 
 #[cfg(test)]
 mod tests {
@@ -173,19 +60,35 @@ mod tests {
     }
 
     #[test]
-    fn save_then_load_roundtrips_bytes() {
+    fn the_legacy_document_is_readable_from_its_directory() {
+        // This is the whole remaining job: hand `open_migrating` a path it
+        // can read an older release's Automerge save from.
         let tmp = TempDir::new().unwrap();
         let bytes = b"automerge-save-bytes".to_vec();
-        save_bytes(tmp.path(), &bytes).unwrap();
-        let back = load_bytes(tmp.path()).unwrap().expect("present");
-        assert_eq!(back, bytes);
+        std::fs::write(workspace_path(tmp.path()), &bytes).unwrap();
+        assert_eq!(load_bytes(tmp.path()).unwrap().unwrap(), bytes);
     }
 
     #[test]
-    fn save_overwrites_in_place() {
-        let tmp = TempDir::new().unwrap();
-        save_bytes(tmp.path(), b"v1").unwrap();
-        save_bytes(tmp.path(), b"v2").unwrap();
-        assert_eq!(load_bytes(tmp.path()).unwrap().unwrap(), b"v2");
+    fn the_workspace_file_name_is_the_one_older_releases_wrote() {
+        // Changing this silently orphans every existing user's history.
+        let p = workspace_path(Path::new("/data/qos-chat"));
+        assert_eq!(p, Path::new("/data/qos-chat/workspace.automerge"));
+    }
+
+    #[test]
+    fn this_module_no_longer_writes() {
+        // A guard against the dual-write coming back: the only reason this
+        // module still exists is to point `open_migrating` at the legacy
+        // file. The needles are assembled at runtime so this assertion does
+        // not match itself.
+        let src = include_str!("storage.rs");
+        for needle in [["fs::", "write("].concat(), ["fs::", "rename("].concat()] {
+            assert!(
+                !src.contains(&needle),
+                "storage.rs regained `{needle}` — app-state owns persistence, \
+                 and a second writer here is what made two files disagree"
+            );
+        }
     }
 }
