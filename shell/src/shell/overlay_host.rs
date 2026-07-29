@@ -6966,6 +6966,7 @@ impl ShellOverlayHost {
                         transform,
                         body_rect,
                         ws,
+                        &state.local_user_id,
                         is_owner,
                         text_renderer,
                         theme,
