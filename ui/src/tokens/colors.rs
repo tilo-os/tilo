@@ -199,6 +199,7 @@ mod tests {
     //! `Colors::dark()` directly, so they are cheap to run via
     //! `cargo test -p quick-ui --lib tokens`.
     use super::*;
+    use crate::color_compat::ColorCompat;
 
     fn rgb(c: Color) -> [u8; 3] {
         // peniko 0.1.x exposes straight (non-premultiplied) u8
