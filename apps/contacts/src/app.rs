@@ -28,7 +28,7 @@ use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
-use ui::widget::{Link, TextInput, Widget};
+use ui::widget::{Avatar, Link, TextInput, Widget};
 
 use crate::date;
 use crate::doc::ContactsDoc;
@@ -2606,23 +2606,10 @@ fn draw_checkbox(scene: &mut Scene, t: Affine, theme: &Theme, rect: Rect, checke
 }
 
 fn draw_avatar(scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, rect: Rect, initials: &str) {
-    let ramp = &theme.tokens.colors.accent;
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    std::hash::Hash::hash(initials, &mut hasher);
-    let idx = (std::hash::Hasher::finish(&hasher) as usize) % ramp.len();
-    let bg = ramp[idx];
-    let radius = rect.width().min(rect.height()) / 2.0;
-    scene.fill(Fill::NonZero, t, bg, None, &Circle::new(rect.center(), radius));
-    let size = (rect.width() * 0.4) as f32;
-    let (tw, th) = tr.measure(initials, size, None);
-    tr.draw_text(
-        scene,
-        initials,
-        size,
-        Color::WHITE,
-        t * Affine::translate((rect.center().x - tw as f64 / 2.0, rect.center().y - th as f64 / 2.0)),
-        None,
-    );
+    // Coloured initials disc sourced from the shared toolkit avatar so the
+    // hue/shape/placement stay consistent with every other app's roster.
+    let color = Avatar::color_for_initials(initials, theme);
+    Avatar::draw_at(scene, t, rect, initials, color, theme, tr);
 }
 
 fn draw_star(scene: &mut Scene, t: Affine, center: Point, r: f64, color: Color, filled: bool) {

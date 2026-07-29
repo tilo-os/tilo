@@ -1968,23 +1968,11 @@ fn draw_caret(scene: &mut Scene, base: Affine, tr: &mut TextRenderer, color: Col
 }
 
 fn draw_avatar(scene: &mut Scene, base: Affine, tr: &mut TextRenderer, theme: &Theme, name: &str, center: Point, radius: f64) {
-    // deterministic colour from the name
-    let mut h: u32 = 2166136261;
-    for byte in name.bytes() {
-        h = (h ^ byte as u32).wrapping_mul(16777619);
-    }
-    let ramp = &theme.tokens.colors.accent;
-    let col = ramp[(3 + (h as usize % 4)) % ramp.len()];
-    scene.fill(Fill::NonZero, base, col, None, &Circle::new(center, radius));
-    let initial = name.chars().next().unwrap_or('?').to_uppercase().to_string();
-    let (iw, _) = tr.measure(&initial, 10.0, None);
-    tr.draw_text_weighted(
-        scene,
-        &initial,
-        10.0,
-        Color::WHITE,
-        base * Affine::translate((center.x - iw as f64 / 2.0, center.y - 6.5)),
-        None,
-        TextWeight::Bold,
-    );
+    // Single-initial commenter disc, painted by the shared toolkit avatar so
+    // the hue (deterministic per initial) + shape + centred glyph stay
+    // consistent with every other app's roster.
+    let rect = Rect::new(center.x - radius, center.y - radius, center.x + radius, center.y + radius);
+    let initial: String = name.chars().next().map(|c| c.to_string()).unwrap_or_else(|| "?".to_string());
+    let color = Avatar::color_for_initials(&initial, theme);
+    Avatar::draw_at(scene, base, rect, &initial, color, theme, tr);
 }
