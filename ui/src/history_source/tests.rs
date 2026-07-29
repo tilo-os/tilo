@@ -13,6 +13,7 @@ use collab_types::OpClass;
 
 use super::*;
 use crate::permissions::UserId;
+use crate::widget::history::HistoryAuthor;
 use crate::state::State;
 use crate::widget::{ActivityTimeline, HistoryFilter};
 
