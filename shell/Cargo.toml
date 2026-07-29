@@ -168,6 +168,11 @@ png = "0.18.1"
 # via `NeighbourMsg::AppCrdtIncrementalSigned`. The contract types and
 # the validator live in `qos-collab-types`.
 collab-types = { path = "../crates/collab/collab-types" }
+# The reusable video-streaming stack (H.264 encode/decode, per-share frame
+# transport substrate, throttle). `network::{encoder,surface_stream,streaming}`
+# re-export from here so the compositor's surface streaming and the chat call
+# app share a single copy of the codec + wire format.
+qos-callstream = { path = "../crates/collab/qos-callstream" }
 # `firstboot` provisions a fresh single-device identity at first login
 # via `threshold-identity::ThresholdIdentity::bootstrap_single_device_seed`,
 # which yields the raw dalek-compatible seed + pubkey that the
