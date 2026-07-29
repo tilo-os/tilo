@@ -238,6 +238,40 @@ impl FrameClock {
             .min(self.interval)
     }
 
+    /// How long the loop should park at the bottom of a tick.
+    ///
+    /// The question this answers is about the *deadline*, not about
+    /// whether this tick painted:
+    ///
+    /// * Deadline still ahead — park the remainder of the interval, so
+    ///   the next tick starts on it. This covers a tick that presented
+    ///   (its deadline was just advanced) **and** a tick that woke early
+    ///   and declined to paint.
+    /// * Deadline already behind — nothing was presented for it, because
+    ///   there was nothing to show or no room in the pipe. Parking on a
+    ///   stale deadline would return a zero budget and spin the loop at
+    ///   100% CPU, so park a whole interval: the loop still wakes at
+    ///   display rate to poll input and protocol traffic, it just doesn't
+    ///   render.
+    ///
+    /// Deciding this on "did this tick paint" instead is a real bug, and
+    /// it shipped: a tick woken mid-interval by the render thread
+    /// retiring a frame doesn't paint (it isn't due yet), and would then
+    /// park a *whole* interval measured from that wakeup — overshooting
+    /// the deadline by however far into the interval it happened to wake.
+    /// Measured on a nested run under load, that put 343 of 462
+    /// non-painting ticks to sleep for a full 16.7 ms each, burning 5.73 s
+    /// of an 8.49 s run and stretching the paint period from 16.67 ms to
+    /// 22.88 ms. It was invisible on the headless backend, which has no
+    /// render thread and so nothing to wake it early.
+    pub fn park(&self, now: Instant) -> Duration {
+        if self.due(now) {
+            self.interval
+        } else {
+            self.budget(now)
+        }
+    }
+
     /// Record that a frame reached the display at `at`, and advance the
     /// deadline series.
     ///
@@ -470,6 +504,101 @@ mod tests {
             frozen.interval(),
             Duration::from_nanos(1_000_000_000 / MIN_REFRESH_HZ as u64),
             "an absurd interval must clamp to the slowest supported rate"
+        );
+    }
+
+    #[test]
+    fn a_wakeup_that_does_not_paint_must_not_push_the_deadline_out() {
+        // The regression this pins shipped and was measured. After
+        // presenting at T the next deadline is T + interval. Something
+        // wakes the loop at T + 2ms — on the threaded path, the render
+        // thread retiring a frame — and it declines to paint because it
+        // isn't due yet. It must park 14.67ms, landing exactly on the
+        // deadline. Parking a whole interval instead lands at T + 18.67ms,
+        // and since every early wakeup does it again the paint period
+        // walks away from the target: measured at 22.88ms against a
+        // 16.67ms goal, with 0% of frames on cadence.
+        let t0 = Instant::now();
+        let interval = Duration::from_micros(16_667);
+        let mut clock = FrameClock::new(interval, t0);
+        clock.note_presented(t0);
+        let woken_early = t0 + Duration::from_millis(2);
+        assert!(
+            !clock.due(woken_early),
+            "2ms into a 16.67ms interval is not a presentation opportunity"
+        );
+        assert_eq!(
+            clock.park(woken_early),
+            interval - Duration::from_millis(2),
+            "an early wakeup must park only the remainder of the interval; \
+             parking a whole one from the wakeup overshoots the deadline by \
+             however far in it woke"
+        );
+        // And the landing point is the deadline itself, not past it.
+        assert_eq!(
+            woken_early + clock.park(woken_early),
+            clock.next_deadline(),
+            "parking must land exactly on the pending deadline"
+        );
+    }
+
+    #[test]
+    fn park_falls_back_to_a_whole_interval_only_once_the_deadline_is_stale() {
+        // The other half: when the deadline has passed and nothing was
+        // presented for it (nothing to show, or no room in the pipe),
+        // `budget` is zero and parking on it would spin the loop at 100%
+        // CPU. That case — and only that case — parks an interval.
+        let t0 = Instant::now();
+        let interval = Duration::from_micros(16_667);
+        let mut clock = FrameClock::new(interval, t0);
+        clock.note_presented(t0);
+        let stale = t0 + Duration::from_millis(20);
+        assert!(clock.due(stale));
+        assert_eq!(
+            clock.budget(stale),
+            Duration::ZERO,
+            "the premise: a stale deadline yields no budget"
+        );
+        assert_eq!(
+            clock.park(stale),
+            interval,
+            "a stale deadline must park a whole interval rather than spin"
+        );
+    }
+
+    #[test]
+    fn repeated_early_wakeups_do_not_accumulate_drift() {
+        // Simulate the nested-under-load pattern: every interval gets one
+        // paint plus a spurious wakeup partway through. The presentation
+        // instants must stay exactly on the grid. Under the shipped bug
+        // each spurious wakeup added its own offset to the next paint, so
+        // this walks off the grid immediately.
+        let t0 = Instant::now();
+        let interval = Duration::from_micros(16_667);
+        let mut clock = FrameClock::new(interval, t0);
+        let work = Duration::from_micros(3_000);
+        let mut now = t0;
+        let mut presents = Vec::new();
+        for i in 0..200u32 {
+            // Paint.
+            now += work;
+            presents.push(now);
+            clock.note_presented(now);
+            now += clock.park(now);
+            // A wakeup partway through the next interval that paints
+            // nothing. Vary the offset so this isn't tuned to one phase.
+            let offset = Duration::from_micros(500 + (i as u64 % 7) * 1_500);
+            let spurious = now.min(clock.next_deadline() - Duration::from_micros(1)) + offset;
+            if spurious < clock.next_deadline() {
+                now = spurious + clock.park(spurious);
+            }
+        }
+        let gaps: Vec<Duration> = presents.windows(2).map(|w| w[1] - w[0]).collect();
+        assert!(
+            gaps.iter().all(|g| *g == interval),
+            "every paint must stay one interval apart despite the spurious \
+             wakeups; got {:?}…",
+            &gaps[..5.min(gaps.len())]
         );
     }
 
