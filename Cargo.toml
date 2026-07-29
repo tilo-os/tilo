@@ -407,9 +407,34 @@ proptest = "1"
 # debug=line-tables-only is deliberately kept — cheap on disk, needed
 # for perf/BOLT flamegraphs to attribute samples to lines.
 #
-# `[profile.dev]` is intentionally NOT overridden. Local iteration
-# stays at cargo defaults so the inner loop is fast; these settings
-# only fire under `--release`.
+# Debug builds carry line tables, not full DWARF.
+#
+# A `target/` here reaches 150+ GB, and it is not the object code: of one
+# measured 154 GB tree, 103 GB was `deps/` and 77 GB of that was binaries
+# and objects rather than rlibs. This workspace has 97 members and builds
+# on the order of 200 test binaries, and cargo's default `debug = true`
+# copies full DWARF — every type, every variable, every inlined frame —
+# into each of them. Multiplied across per-worktree targets (which cannot
+# be shared: cargo's artifact key omits the package path, so worktrees of
+# one repo collide) that is what fills a 2.7 TB disk.
+#
+# `line-tables-only` keeps the part anyone actually reads: a panic still
+# names the file and line, backtraces still resolve, and profilers still
+# attribute samples. What it drops is variable and type inspection in a
+# debugger. If you need that for a session, override it for the one crate
+# you are stepping through rather than paying for it across the fleet.
+#
+# Compile time is unaffected or slightly better; this is a size setting.
+#
+# Note `target/debug/incremental` is a further ~45 GB and is pure cache —
+# it can be deleted at any time and costs only one slower rebuild.
+[profile.dev]
+debug = "line-tables-only"
+
+# Test binaries are the bulk of the count, so they get the same treatment.
+[profile.test]
+debug = "line-tables-only"
+
 [profile.release]
 opt-level = 3
 lto = "fat"
