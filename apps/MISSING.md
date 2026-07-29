@@ -454,6 +454,32 @@ verified by an offscreen shot (header gone, functional controls intact) + tests:
 
 ---
 
+## snippets — real CRDT snippet manager; live now starts empty (§7 CLEAR)
+- [x] Live launch was fabricating a 15-snippet starter library in
+      `SnippetsApp::new()` and mirroring it into the real persisted CRDT store
+      (`ui::persist::open("dev.qos.snippets")`) — a fresh install wrote sample
+      content it kept. Fixed: `new()` starts on an **empty** library; the starter
+      set moved behind `new_demo()` (used by `for_shot`/`app_root_for_shot`), and
+      `sync_library` now writes nothing into the shared doc when local is empty.
+      Asserted by `live_app_starts_empty` + `empty_live_app_does_not_seed_the_shared_doc`;
+      the seeding path is proven by `demo_seeds_and_opens_a_snippet` /
+      `sync_seeds_into_empty_doc` on `new_demo()`.
+- [x] Composed honest empty state: a genuinely empty library renders an inviting
+      onboarding (glyph tile, "No snippets yet", a primary **New snippet** CTA, and
+      a search-grammar tip) instead of the bare "No snippets match." line; a
+      filtered-empty result gets a "No snippets match" note with a Clear-search
+      button. Detail pane reads "Your snippets will appear here." when empty.
+- [x] §7: fixed the top-left toggle overlapping the title in the narrow layouts —
+      the overlay sidebar's "Snippets" title and the push-detail's snippet title
+      now indent past the close-X / Back chevron so glyphs never collide.
+- Everything else was already real and strong: three-pane search/list/editor,
+      syntax-aware highlighted body with a line gutter, language sigil badges +
+      per-language tints, favorites/most-used smart folders, `language:`/`tag:`
+      search, `${placeholder}` fill-and-copy expand flow, real copy-to-clipboard
+      (bumps usage), duplicate/delete/star, diff-spliced Text CRDT persistence
+      (bounded-churn tests), and a shared responsive flap sidebar. Verified on
+      populated + empty + narrow-overlay + push-detail shots.
+
 ## honesty pass — live path starts real/empty, samples gated to `--shots`
 
 Live launches must show real (or honestly empty) data; fabricated sample
