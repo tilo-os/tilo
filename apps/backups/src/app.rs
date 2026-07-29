@@ -35,7 +35,7 @@ use ui::{card_column_width, card_columns};
 use crate::doc::{BackupsDoc, PolicyField};
 use crate::model::{
     Catalog, DestKind, Destination, Health, Retention, RetentionPolicy, SnapStatus, SnapType,
-    Snapshot, Source, SourceKind, View, human_bytes,
+    Snapshot, Source, SourceKind, View,
 };
 use crate::paint;
 
@@ -450,7 +450,7 @@ impl BackupsApp {
         let right = format!(
             "{} snapshots · {} protected",
             self.catalog.total_snapshots(),
-            human_bytes(self.catalog.total_protected())
+            ui::format::bytes(self.catalog.total_protected())
         );
         paint::text_right(scene, tr, t, &right, 12.0, c.text_dim, bar.x1 - PAD, cy - 6.0);
         if self.rect.width() >= 900.0 {
@@ -597,7 +597,7 @@ impl BackupsApp {
         let sub = format!("{} · {} snapshots", src.cadence.label(), count);
         paint::text(scene, tr, t, &sub, 11.0, c.text_dim, ix + 18.0, row.y0 + 28.0);
         // Right column: protected size + health dot.
-        paint::text_right(scene, tr, t, &human_bytes(self.catalog.protected_bytes(&src.id)), 11.5, c.text_dim, row.x1 - 14.0, row.y0 + 9.0);
+        paint::text_right(scene, tr, t, &ui::format::bytes(self.catalog.protected_bytes(&src.id)), 11.5, c.text_dim, row.x1 - 14.0, row.y0 + 9.0);
         paint::dot(scene, t, Point::new(row.x1 - 18.0, row.y0 + 33.0), 3.5, Self::health_color(theme, src.health));
         self.hits.push((row, Hit::Source(Some(src.id.clone()))));
         *y += h + 4.0;
@@ -617,7 +617,7 @@ impl BackupsApp {
         let bar = Rect::new(ix, row.y0 + 26.0, row.x1 - 12.0, row.y0 + 32.0);
         let barcol = if frac > 0.85 { c.semantic.warning } else { theme.accent_primary };
         paint::bar(scene, t, bar, frac, barcol, c.neutral[2]);
-        let usage = format!("{} / {}", human_bytes(d.used_bytes), human_bytes(d.total_bytes));
+        let usage = format!("{} / {}", ui::format::bytes(d.used_bytes), ui::format::bytes(d.total_bytes));
         paint::text(scene, tr, t, &usage, 10.5, c.text_dim, ix, row.y0 + 35.0);
         self.hits.push((row, Hit::Dest(d.id.clone())));
         *y += h + 2.0;
@@ -640,7 +640,7 @@ impl BackupsApp {
         let failed = self.catalog.snapshots.iter().filter(|s| s.status == SnapStatus::Failed).count();
         let last = if failed == 0 { "OK · 2h ago".to_string() } else { "1 failed".to_string() };
         let tiles: [(&str, String, Color); 4] = [
-            ("Protected", human_bytes(self.catalog.total_protected()), theme.accent_primary),
+            ("Protected", ui::format::bytes(self.catalog.total_protected()), theme.accent_primary),
             ("Snapshots", format!("{}", self.catalog.total_snapshots()), c.semantic.info),
             ("Next run", next_run, c.semantic.success),
             ("Last backup", last, if failed == 0 { c.semantic.success } else { c.semantic.warning }),
@@ -767,8 +767,8 @@ impl BackupsApp {
         }
         // Right side: files changed, delta, total.
         let total_x = row.x1 - 16.0;
-        paint::text_right(scene, tr, t, &human_bytes(s.size_bytes), 13.0, c.text_primary, total_x, cy - 8.0);
-        let meta = format!("+{} · {} files", human_bytes(s.delta_bytes), s.files_changed);
+        paint::text_right(scene, tr, t, &ui::format::bytes(s.size_bytes), 13.0, c.text_primary, total_x, cy - 8.0);
+        let meta = format!("+{} · {} files", ui::format::bytes(s.delta_bytes), s.files_changed);
         paint::text_right(scene, tr, t, &meta, 10.5, c.text_dim, total_x, cy + 7.0);
     }
 
@@ -780,7 +780,7 @@ impl BackupsApp {
         let dest_kind = dest.map(|d| d.kind.label()).unwrap_or("");
         paint::text(scene, tr, t, &format!("Stored on {dest_name}  ·  {dest_kind}"), 12.0, c.text_dim, det.x0 + 16.0, det.y0 + 12.0);
         let enc = if dest.map(|d| d.encrypted).unwrap_or(false) { "encrypted" } else { "plaintext" };
-        paint::text(scene, tr, t, &format!("{} files · {} changed · {}", s.files_changed, human_bytes(s.delta_bytes), enc), 11.5, c.text_dim, det.x0 + 16.0, det.y0 + 33.0);
+        paint::text(scene, tr, t, &format!("{} files · {} changed · {}", s.files_changed, ui::format::bytes(s.delta_bytes), enc), 11.5, c.text_dim, det.x0 + 16.0, det.y0 + 33.0);
 
         // Action buttons, right-aligned.
         let btns: [(&str, Hit, Color); 3] = [
@@ -843,7 +843,7 @@ impl BackupsApp {
                     "{} · {} snapshots · {}",
                     src.cadence.label(),
                     self.catalog.count_for(&src.id),
-                    human_bytes(self.catalog.protected_bytes(&src.id)),
+                    ui::format::bytes(self.catalog.protected_bytes(&src.id)),
                 );
                 paint::text(scene, tr, t, &stats, 12.0, c.text_dim, ix + 28.0, card.y0 + 60.0);
             } else {
@@ -857,7 +857,7 @@ impl BackupsApp {
                 let col2 = card.x0 + card.width() * 0.78;
                 stat(scene, tr, col0, "CADENCE", src.cadence.label(), c.text_primary);
                 stat(scene, tr, col1, "SNAPSHOTS", &format!("{}", self.catalog.count_for(&src.id)), c.semantic.info);
-                stat(scene, tr, col2, "PROTECTED", &human_bytes(self.catalog.protected_bytes(&src.id)), theme.accent_primary);
+                stat(scene, tr, col2, "PROTECTED", &ui::format::bytes(self.catalog.protected_bytes(&src.id)), theme.accent_primary);
             }
 
             // Health + next-run + enable toggle.
@@ -907,7 +907,7 @@ impl BackupsApp {
             if narrow {
                 paint::dot(scene, t, Point::new(region.x0 + 22.0, ry + 12.0), 4.0, Self::status_color(theme, s.status));
                 paint::text(scene, tr, t, &when, 12.5, c.text_primary, region.x0 + 36.0, ry + 4.0);
-                paint::text_right(scene, tr, t, &human_bytes(s.delta_bytes), 12.0, c.text_dim, region.x1 - 18.0, ry + 4.0);
+                paint::text_right(scene, tr, t, &ui::format::bytes(s.delta_bytes), 12.0, c.text_dim, region.x1 - 18.0, ry + 4.0);
                 paint::text(scene, tr, t, &action, 11.5, c.text_dim, region.x0 + 36.0, ry + 24.0);
             } else {
                 let cy = ry + row_h / 2.0;
@@ -922,7 +922,7 @@ impl BackupsApp {
                     SnapStatus::Failed => "failed",
                 };
                 paint::text_right(scene, tr, t, status, 11.5, Self::status_color(theme, s.status), region.x1 - 110.0, cy - 6.0);
-                paint::text_right(scene, tr, t, &human_bytes(s.delta_bytes), 12.0, c.text_dim, region.x1 - 18.0, cy - 7.0);
+                paint::text_right(scene, tr, t, &ui::format::bytes(s.delta_bytes), 12.0, c.text_dim, region.x1 - 18.0, cy - 7.0);
             }
             if i + 1 < events.len() && ry + row_h * 2.0 <= region.y1 - 8.0 {
                 paint::hline(scene, t, region.x0 + 18.0, region.x1 - 18.0, ry + row_h, c.border_white_10, 1.0);
@@ -973,7 +973,7 @@ impl BackupsApp {
         paint::text_bold(scene, tr, t, "Total capacity", 13.5, c.text_primary, content.x0, ay);
         let bar = Rect::new(content.x0, ay + 24.0, content.x1, ay + 38.0);
         paint::bar(scene, t, bar, used as f64 / total as f64, theme.accent_primary, c.neutral[2]);
-        paint::text(scene, tr, t, &format!("{} used of {} across {} destinations", human_bytes(used), human_bytes(total), self.catalog.destinations.len()), 11.5, c.text_dim, content.x0, ay + 44.0);
+        paint::text(scene, tr, t, &format!("{} used of {} across {} destinations", ui::format::bytes(used), ui::format::bytes(total), self.catalog.destinations.len()), 11.5, c.text_dim, content.x0, ay + 44.0);
 
         // Distribution: where the snapshots actually live.
         self.draw_dest_distribution(scene, t, tr, theme, content, ay + 76.0);
@@ -1011,9 +1011,9 @@ impl BackupsApp {
         // Used / free figures.
         let fy = card.y0 + 184.0;
         paint::text(scene, tr, t, "Used", 11.0, c.text_dim, card.x0 + 24.0, fy);
-        paint::text_right(scene, tr, t, &human_bytes(d.used_bytes), 12.5, c.text_primary, card.x1 - 24.0, fy);
+        paint::text_right(scene, tr, t, &ui::format::bytes(d.used_bytes), 12.5, c.text_primary, card.x1 - 24.0, fy);
         paint::text(scene, tr, t, "Free", 11.0, c.text_dim, card.x0 + 24.0, fy + 18.0);
-        paint::text_right(scene, tr, t, &human_bytes(d.total_bytes - d.used_bytes), 12.5, c.semantic.success, card.x1 - 24.0, fy + 18.0);
+        paint::text_right(scene, tr, t, &ui::format::bytes(d.total_bytes - d.used_bytes), 12.5, c.semantic.success, card.x1 - 24.0, fy + 18.0);
 
         // Footer chips: encryption + last sync.
         let mut chx = card.x0 + 24.0;
@@ -1043,7 +1043,7 @@ impl BackupsApp {
         let bar = Rect::new(card.x0 + 22.0, card.y0 + 60.0, card.x1 - 22.0, card.y0 + 70.0);
         let barcol = if frac > 0.85 { c.semantic.warning } else { theme.accent_primary };
         paint::bar(scene, t, bar, frac, barcol, c.neutral[2]);
-        paint::text(scene, tr, t, &format!("{} of {}", human_bytes(d.used_bytes), human_bytes(d.total_bytes)), 11.5, c.text_dim, card.x0 + 22.0, card.y0 + 80.0);
+        paint::text(scene, tr, t, &format!("{} of {}", ui::format::bytes(d.used_bytes), ui::format::bytes(d.total_bytes)), 11.5, c.text_dim, card.x0 + 22.0, card.y0 + 80.0);
         let mut chx = card.x1 - 22.0;
         // Trailing chips, laid right-to-left.
         let sync = format!("sync {}", d.last_sync);
@@ -1346,7 +1346,7 @@ impl BackupsApp {
         // Size summary.
         paint::hline(scene, t, opt.x0, opt.x1, opt.y1 - 40.0, c.border_white_10, 1.0);
         paint::text(scene, tr, t, "Estimated restore", 11.0, c.text_dim, opt.x0, opt.y1 - 30.0);
-        paint::text_right(scene, tr, t, &human_bytes(snap.size_bytes), 14.0, c.text_primary, opt.x1, opt.y1 - 32.0);
+        paint::text_right(scene, tr, t, &ui::format::bytes(snap.size_bytes), 14.0, c.text_primary, opt.x1, opt.y1 - 32.0);
 
         // Footer buttons.
         let by = m.y1 - 56.0;
