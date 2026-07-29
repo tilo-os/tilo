@@ -203,6 +203,10 @@ pub struct ActivityTimeline {
     /// and the widget renders them in the filter summary.
     time_range_label: Option<String>,
     on_clear_filters: Option<ClearFiltersCallback>,
+    /// Whether to paint the widget's own card. `false` when the host has
+    /// already drawn a surface underneath — two nested cards eight pixels
+    /// apart read as a rendering mistake, not as depth.
+    draws_own_surface: bool,
     dirty: bool,
 }
 
@@ -234,6 +238,7 @@ impl ActivityTimeline {
             clear_chip_rect: Rect::ZERO,
             time_range_label: None,
             on_clear_filters: None,
+            draws_own_surface: true,
             dirty: true,
         }
     }
@@ -311,6 +316,16 @@ impl ActivityTimeline {
     pub fn on_clear_filters<F: FnMut() + 'static>(mut self, f: F) -> Self {
         self.on_clear_filters = Some(Box::new(f));
         self
+    }
+
+    /// Suppress the widget's own card, for a host that has already painted a
+    /// surface behind it. The rows, the chip strip and the empty state are
+    /// unaffected — only the background fill and border are dropped.
+    pub fn set_draws_own_surface(&mut self, draws: bool) {
+        if self.draws_own_surface != draws {
+            self.draws_own_surface = draws;
+            self.dirty = true;
+        }
     }
 
     /// Name the time range the host installed on the filter, in the words the
@@ -919,7 +934,7 @@ impl ActivityTimeline {
         // first so the chips lay out into what is actually left rather than
         // sliding underneath it on a narrow pane.
         let author_label = if self.author_query.is_empty() {
-            "author:\u{2026}".to_string()
+            "author:any".to_string()
         } else {
             format!("author:{}", self.author_query)
         };
@@ -1126,22 +1141,25 @@ impl Widget for ActivityTimeline {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
-        // Pane surface — raised card on the shell background.
-        let shape = RoundedRect::from_rect(self.rect, theme.tokens.radii.md as f64);
-        scene.fill(
-            vello::peniko::Fill::NonZero,
-            transform,
-            theme.tokens.colors.surfaces.raised,
-            None,
-            &shape,
-        );
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            theme.tokens.colors.border_standard,
-            None,
-            &shape,
-        );
+        // Pane surface — raised card on the shell background. Skipped when the
+        // host has already drawn one.
+        if self.draws_own_surface {
+            let shape = RoundedRect::from_rect(self.rect, theme.tokens.radii.md as f64);
+            scene.fill(
+                vello::peniko::Fill::NonZero,
+                transform,
+                theme.tokens.colors.surfaces.raised,
+                None,
+                &shape,
+            );
+            scene.stroke(
+                &Stroke::new(1.0),
+                transform,
+                theme.tokens.colors.border_standard,
+                None,
+                &shape,
+            );
+        }
 
         self.draw_filter_strip(scene, transform, text_renderer, theme);
 
