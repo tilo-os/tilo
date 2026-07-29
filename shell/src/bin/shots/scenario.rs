@@ -29,9 +29,15 @@ use shell::shell::quick_settings::QsLevel;
 use super::driver::ShellDriver;
 
 /// One step in a scenario.
+///
+/// `ClickNamed`, `Modifiers`, `SetWsSettings` and `PushQsLevel` are
+/// currently unconstructed: `run_action` implements all four, but no
+/// scenario in `catalogue()` reaches for them yet. They are the DSL's
+/// surface, not dead branches — deleting them would take
+/// `resolve_named_rect`-based click targeting out of reach of the next
+/// scenario that needs it.
 #[derive(Debug, Clone)]
-#[allow(dead_code)] // some variants are part of the public Action API but not
-// used by every built-in scenario in `catalogue()`.
+#[allow(dead_code)]
 pub enum Action {
     /// Click at raw screen coordinates (cursor-move + press + release).
     ClickAt(Point),

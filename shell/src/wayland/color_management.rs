@@ -303,14 +303,6 @@ impl ParametricBuilder {
             inner.consumed = true;
         }
     }
-
-    #[allow(dead_code)]
-    fn is_consumed(&self) -> bool {
-        self.inner
-            .lock()
-            .map(|inner| inner.consumed)
-            .unwrap_or(true)
-    }
 }
 
 fn primaries_named_to_color(p: Primaries) -> Option<ColorPrimaries> {
@@ -465,6 +457,11 @@ pub fn surface_current_colorimetry(
 /// colorimetry.
 #[derive(Debug, Clone)]
 pub struct ColorManagementOutputData {
+    // Retained, not yet read: the compositor still answers
+    // `get_image_description` from a synthesised profile. Reading the
+    // real panel needs `wayland::edid::parse_hdr_display_info` on the
+    // DRM connector, which is where the resource this handle names
+    // becomes the input.
     #[allow(dead_code)]
     output: WlOutput,
     /// Colorimetry the compositor tells clients this output actually
@@ -486,8 +483,6 @@ impl ColorManagementOutputData {
             hdr: Arc::new(Mutex::new(None)),
         }
     }
-
-    #[allow(dead_code)]
     pub fn set_display_color(&self, color: Colorimetry, hdr: Option<Hdr10Metadata>) {
         if let Ok(mut g) = self.color.lock() {
             *g = color;
@@ -513,6 +508,12 @@ impl ColorManagementOutputData {
 /// which surface to mutate.
 #[derive(Debug, Clone)]
 pub struct ColorManagementSurfaceUserData {
+    // Retained, not yet read: the compositor still answers
+    // `get_image_description` from a synthesised profile. Reading the
+    // real panel needs `wayland::edid::parse_hdr_display_info` on the
+    // DRM connector, which is where the resource this handle names
+    // becomes the input.
+    #[allow(dead_code)]
     surface: WlSurface,
 }
 
@@ -527,6 +528,11 @@ impl ColorManagementSurfaceUserData {
 /// back the compositor's preferred description.
 #[derive(Debug, Clone)]
 pub struct ColorManagementSurfaceFeedbackData {
+    // Retained, not yet read: the compositor still answers
+    // `get_image_description` from a synthesised profile. Reading the
+    // real panel needs `wayland::edid::parse_hdr_display_info` on the
+    // DRM connector, which is where the resource this handle names
+    // becomes the input.
     #[allow(dead_code)]
     surface: WlSurface,
 }

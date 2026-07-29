@@ -360,45 +360,49 @@ mod tests {
         // 127 — checksum (uncomputed; parser doesn't verify).
         //
         // Extension block (offset 128..256) ---------------------------
-        edid[128] = 0x02; // CTA-861 tag
-        edid[129] = 3; // CTA-861 revision 3
-        edid[130] = 4; // DTD offset = 4 → no DTD payload block; block
-        // collection runs bytes 4..(dtd_offset=4). We
-        // want data blocks, so set the DTD offset just
-        // past our blocks.
+        edid[128] = 0x02; // ext[0] — CTA-861 tag
+        edid[129] = 3; // ext[1] — CTA-861 revision 3
+        //
+        // ext[2] is the DTD offset and ext[3] is the flags byte (native
+        // format count / IT-underscan / basic-audio / YCbCr support).
+        // The data-block collection therefore starts at ext[4], NOT
+        // ext[3] — omitting the flags byte shifts every block one byte
+        // early and the parser reads the extended-tag payloads as block
+        // headers, silently yielding an SDR result for an HDR panel.
         //
         // Block 1: Colorimetry Data Block (extended tag 5).
         // Header byte = (tag 7 << 5) | len. len = 3 (extended-tag byte
-        // + 2 colorimetry bytes) → header = 0xE3.
+        // + 2 colorimetry bytes) → header = 0xE3. Occupies ext[4..8].
         //
         // Block 2: HDR Static Metadata Data Block (extended tag 6).
         // Payload = 1 (ext tag) + 5 (metadata) = 6 → header = 0xE6.
+        // Occupies ext[8..15].
         //
-        // Total data-block bytes: 4 (col) + 7 (hdr) = 11.
-        // DTD offset must point past these = 4 + 11 = 15.
+        // DTD offset must point just past both = 15.
         edid[130] = 15;
+        edid[131] = 0x00; // ext[3] — flags; zero for this synthetic panel
         //
-        // Colorimetry block: bytes 132..136 (header + 3 payload).
-        edid[131] = 0xE3;
-        edid[132] = 0x05; // extended tag 5
-        edid[133] = 0b1110_0000; // BT2020RGB + BT2020YCC + BT2020cYCC
-        edid[134] = 0x00;
+        // Colorimetry block: ext[4..8] = edid[132..136].
+        edid[132] = 0xE3;
+        edid[133] = 0x05; // extended tag 5
+        edid[134] = 0b1110_0000; // BT2020RGB + BT2020YCC + BT2020cYCC
+        edid[135] = 0x00;
         //
-        // HDR Static Metadata: bytes 135..142 (header + 6 payload).
-        edid[135] = 0xE6;
-        edid[136] = 0x06; // extended tag 6
+        // HDR Static Metadata: ext[8..15] = edid[136..143].
+        edid[136] = 0xE6;
+        edid[137] = 0x06; // extended tag 6
         // EOTF: SDR (bit 0) + PQ (bit 2) + HLG (bit 3).
-        edid[137] = 0b0000_1101;
-        edid[138] = 0x01; // Static Metadata Type 1 supported.
+        edid[138] = 0b0000_1101;
+        edid[139] = 0x01; // Static Metadata Type 1 supported.
         // max_luminance_code such that 50 * 2^(code/32) ≈ 1000.
         // code = 32 * log2(1000/50) ≈ 32 * 4.322 ≈ 138.
-        edid[139] = 138;
+        edid[140] = 138;
         // frame-average ≈ 400 → code = 32 * log2(400/50) ≈ 32 * 3 = 96.
-        edid[140] = 96;
+        edid[141] = 96;
         // min_luminance: 0.05 cd/m² given max=1000 →
         // min = max * (code/255)^2 / 100 → 0.05 = 1000 * (code/255)^2 / 100
         // → (code/255)^2 = 0.005 → code/255 ≈ 0.0707 → code ≈ 18.
-        edid[141] = 18;
+        edid[142] = 18;
 
         edid
     }

@@ -458,24 +458,6 @@ pub struct CollaborationManager {
     /// `SyncIncremental` frames and the broker fans them out without
     /// validation.
     identity: Option<SigningIdentity>,
-    /// User-identity loaded from the on-disk record the launcher
-    /// points at (via `QOS_USER_IDENTITY`). Its pubkey bytes are
-    /// forwarded to `join_channel` so presence and role lookups can
-    /// attribute events to a real caller — the previous behaviour
-    /// (empty identity bytes on every join) left presence unauthored
-    /// and signed-op provenance ungrounded.
-    ///
-    /// `None` in three cases:
-    /// - The app is running outside qOS (env var unset).
-    /// - The pointed-at file is missing / unreadable.
-    /// - Parsing failed. See `runtime_identity::load`'s
-    ///   [`runtime_portal::NotAvailable`] variants for the split.
-    ///
-    /// Kept alive on the manager so future signed-op paths that
-    /// prefer this identity over the widget-bound [`SigningIdentity`]
-    /// can reach for it without re-reading disk.
-    #[allow(dead_code)]
-    runtime_identity: Option<runtime_identity::SigningIdentity>,
 }
 
 impl CollaborationManager {
@@ -521,7 +503,6 @@ impl CollaborationManager {
             }
         };
         let identity_bytes = runtime_identity
-            .as_ref()
             .map(|id| id.group_public_key().to_vec())
             .unwrap_or_default();
 
@@ -534,7 +515,6 @@ impl CollaborationManager {
                         rbuf: Vec::new(),
                     }),
                     identity: None,
-                    runtime_identity,
                 };
                 let (app_id, cluster_id) = auto_hello_env();
                 manager.send(CollabRequest::Hello { app_id, cluster_id });
@@ -547,7 +527,6 @@ impl CollaborationManager {
                 let mut manager = Self {
                     backend: Backend::Sdk(sdk),
                     identity: None,
-                    runtime_identity,
                 };
                 let (app_id, cluster_id) = auto_hello_env();
                 manager.send(CollabRequest::Hello { app_id, cluster_id });
@@ -556,7 +535,6 @@ impl CollaborationManager {
             Err(_) => Self {
                 backend: Backend::Disabled,
                 identity: None,
-                runtime_identity,
             },
         }
     }
@@ -596,7 +574,6 @@ impl CollaborationManager {
                 _task: AbortOnDrop(task),
             }),
             identity: None,
-            runtime_identity: None,
         }
     }
 
@@ -628,7 +605,6 @@ impl CollaborationManager {
         let mut manager = Self {
             backend: Backend::Sdk(sdk),
             identity: None,
-            runtime_identity: None,
         };
         manager.send(CollabRequest::Hello {
             app_id: app_id.to_owned(),
