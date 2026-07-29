@@ -1,7 +1,8 @@
-//! A realistic offline ruleset used to populate the `--shots` screenshot
-//! (and as the seed when the live app starts with an empty document and
-//! `firewall-cmd` is unavailable). Models a typical laptop/workstation
-//! firewalld configuration with `public` as the active zone.
+//! A realistic offline ruleset used solely to populate the `--shots`
+//! screenshot / demo build. The live app never uses this — it reads the
+//! real firewall via `firewall-cmd` (see [`crate::backend::import`]) and
+//! shows an honest unavailable state when firewalld can't be read. Models a
+//! typical laptop/workstation firewalld configuration with `public` active.
 
 use crate::model::{
     Action, FirewallConfig, Matcher, Proto, Rule, Target, Zone, ZoneKind,

@@ -2,8 +2,11 @@
 //!
 //! Modes:
 //!   * default        — run the live winit event loop via `ui::App`.
-//!   * `--shots PATH` — render one offscreen frame to a PNG and exit
-//!                       (headless screenshot; identical passes to the live app).
+//!   * `--shots PATH` — render one offscreen frame to a PNG and exit. By
+//!                       default this captures the LIVE state (empty on a
+//!                       fresh machine). Set `QOS_VPN_SAMPLE=1` to render the
+//!                       populated sample instead, for the screenshot gallery.
+//!   * `--viewport WxH` — pair with `--shots` to render at a specific size.
 
 use std::collections::HashMap;
 
@@ -25,7 +28,17 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let args: Vec<String> = std::env::args().collect();
     if let Some(out) = parse_shots_arg(&args) {
-        render_shot_to_png(vpn::app_root(), DEFAULT_SHOTS_VIEWPORT, &out)?;
+        let viewport = parse_value_arg(&args, "--viewport")
+            .and_then(|s| parse_viewport(&s))
+            .unwrap_or(DEFAULT_SHOTS_VIEWPORT);
+        // Default `--shots` renders the live/empty state; the sample fleet is
+        // only used when the gallery explicitly asks for it.
+        let root = if std::env::var("QOS_VPN_SAMPLE").as_deref() == Ok("1") {
+            vpn::app_root_demo()
+        } else {
+            vpn::app_root()
+        };
+        render_shot_to_png(root, viewport, &out)?;
         return Ok(());
     }
 
@@ -53,6 +66,27 @@ fn parse_shots_arg(args: &[String]) -> Option<std::path::PathBuf> {
         }
     }
     None
+}
+
+/// Parse a `--key VALUE` or `--key=VALUE` flag.
+fn parse_value_arg(args: &[String], key: &str) -> Option<String> {
+    let prefix = format!("{key}=");
+    let mut iter = args.iter().skip(1);
+    while let Some(arg) = iter.next() {
+        if arg == key {
+            return iter.next().cloned();
+        }
+        if let Some(rest) = arg.strip_prefix(&prefix) {
+            return Some(rest.to_string());
+        }
+    }
+    None
+}
+
+/// Parse a `WIDTHxHEIGHT` viewport spec (e.g. `1280x800`).
+fn parse_viewport(s: &str) -> Option<(u32, u32)> {
+    let (w, h) = s.split_once(['x', 'X'])?;
+    Some((w.trim().parse().ok()?, h.trim().parse().ok()?))
 }
 
 /// Run one offscreen frame against `widget` and write RGBA to `out` as PNG.

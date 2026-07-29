@@ -1,10 +1,13 @@
-//! Rendering for the conferencing layers: the docked call "huddle" PiP,
-//! the expanded 2x2 call overlay, and the two floating popovers (emoji
-//! picker + edit history). The host tile is a real [`ui::widget::VideoPlayer`]
-//! laid out by the app; everything here is the chrome around it.
+//! Rendering for the conferencing layers: the docked call "huddle" PiP, the
+//! expanded call overlay (a responsive participant grid, or — while someone is
+//! screen-sharing — a featured screen tile above a participant filmstrip), and
+//! the two floating popovers (emoji picker + edit history). The host tile is a
+//! real [`ui::widget::VideoPlayer`] laid out by the app; everything here is the
+//! chrome around it.
 //!
-//! Screenshare is intentionally absent: peers share the workspace spatially
-//! rather than watching a video of a screen, so there is no screen-feed tile.
+//! Screen-share honesty: the featured tile shows a peer's real decoded screen
+//! frame when one has arrived (`remote_screens`) and an honest "connecting"
+//! placeholder — a drawn monitor, never a fabricated picture — until then.
 
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -26,6 +29,16 @@ struct Participant {
     talking: bool,
     muted: bool,
     audio_only: bool,
+    sharing: bool,
+}
+
+/// How the expanded call overlay tiles the surface. A plain call packs every
+/// participant into a uniform [`CallStage::Grid`]; once someone shares their
+/// screen it promotes to a [`CallStage::Share`] presentation stage — one large
+/// featured screen tile above a single-row participant filmstrip.
+pub(crate) enum CallStage {
+    Grid(Vec<Rect>),
+    Share { screen: Rect, strip: Vec<Rect> },
 }
 
 impl ChatApp {
@@ -40,6 +53,7 @@ impl ChatApp {
             talking: !self.call.muted,
             muted: self.call.muted,
             audio_only: self.call.audio_only,
+            sharing: self.call.sharing,
         });
         for m in members {
             if m.user == self.me.id {
@@ -50,6 +64,7 @@ impl ChatApp {
                 talking: m.talking && !m.muted,
                 muted: m.muted,
                 audio_only: m.audio_only,
+                sharing: m.sharing,
             });
         }
         out
@@ -245,27 +260,146 @@ impl ChatApp {
         let (tw, _) = tr.measure(&title, 20.0, None);
         text(scene, tr, tf, &title, 20.0, c.text_primary, self.rect.center().x - tw as f64 / 2.0, self.rect.y0 + 28.0, TextWeight::Bold, None);
         let parts = self.call_participants();
-        let sub = format!("{} in the call", parts.len());
+        let sharer = self.screen_sharer();
+        // Subtitle carries the headcount and, when someone is presenting, whose
+        // screen is on the stage — surfaced the instant the shared voice
+        // membership records a share, before any frame arrives.
+        let sub = match &sharer {
+            Some(id) => {
+                let who = if *id == self.me.id { "You are".to_string() } else { format!("{} is", self.user_name(id)) };
+                format!("{} in the call · {who} sharing a screen", parts.len())
+            }
+            None => format!("{} in the call", parts.len()),
+        };
         let (sw, _) = tr.measure(&sub, 12.0, None);
         label(scene, tr, tf, &sub, 12.0, c.text_dim, self.rect.center().x - sw as f64 / 2.0, self.rect.y0 + 56.0);
 
-        // Host + remotes share one responsive grid that fills the whole band
-        // between the header and the controls bar, so there is never dead
-        // space beneath or beside the host at any width — the host is simply
-        // the first cell. The VideoPlayer surface is drawn by the app on top
-        // of the host cell.
-        let tiles = self.overlay_tiles();
-        if let Some(&host) = tiles.first() {
-            if !self.call.muted {
-                stroke_round(scene, tf, host, 14.0, c.semantic.success, 2.5);
-            } else {
-                stroke_round(scene, tf, host, 14.0, c.border_white_20, 1.5);
+        // The host active-speaker treatment is shared by both layouts: a bright
+        // ring while transmitting, a hairline otherwise.
+        let (ring_col, ring_w) = if !self.call.muted {
+            (c.semantic.success, 2.5)
+        } else {
+            (c.border_white_20, 1.5)
+        };
+        match self.overlay_stage() {
+            // No share: host + remotes share one responsive grid that fills the
+            // whole band between the header and the controls bar — the host is
+            // simply the first cell. The VideoPlayer surface is drawn by the app
+            // on top of the host cell.
+            CallStage::Grid(tiles) => {
+                if let Some(&host) = tiles.first() {
+                    stroke_round(scene, tf, host, 14.0, ring_col, ring_w);
+                }
+                for (p, rect) in parts.iter().skip(1).zip(tiles.iter().skip(1)) {
+                    self.draw_member_tile(scene, tf, tr, theme, *rect, p);
+                }
+            }
+            // Someone is presenting: a large featured screen tile fills the band
+            // above a single-row participant filmstrip. The host keeps its own
+            // (camera) cell as the first strip tile; remotes follow.
+            CallStage::Share { screen, strip } => {
+                if let Some(sharer) = &sharer {
+                    self.draw_screen_tile(scene, tf, tr, theme, screen, sharer);
+                }
+                if let Some(&host) = strip.first() {
+                    stroke_round(scene, tf, host, 12.0, ring_col, ring_w);
+                }
+                for (p, rect) in parts.iter().skip(1).zip(strip.iter().skip(1)) {
+                    self.draw_member_tile(scene, tf, tr, theme, *rect, p);
+                }
             }
         }
-        for (p, rect) in parts.iter().skip(1).zip(tiles.iter().skip(1)) {
-            self.draw_member_tile(scene, tf, tr, theme, *rect, p);
-        }
         let _ = hits;
+    }
+
+    /// The featured presentation tile: a peer's real decoded screen frame when
+    /// one has arrived, and an honest "connecting" placeholder — a drawn monitor
+    /// with the sharer's name, never a fabricated picture — until then. A live
+    /// pill marks the tile as the active share.
+    fn draw_screen_tile(
+        &self,
+        scene: &mut Scene,
+        tf: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        rect: Rect,
+        sharer: &str,
+    ) {
+        let c = &theme.tokens.colors;
+        let name = self.user(sharer).map(|u| u.name.clone()).unwrap_or_else(|| sharer.to_string());
+        let is_me = sharer == self.me.id;
+        let radius = 16.0;
+
+        // A real decoded screen frame from the sharer takes over the tile. This
+        // slot is only ever filled by the live media pump with a genuinely
+        // decoded frame, so when present it is an honest live view of the shared
+        // screen; otherwise we fall through to the drawn placeholder.
+        if let Some(img) = self.remote_screens.get(sharer) {
+            fill_round(scene, tf, rect, radius, Color::from_rgba8(0, 0, 0, 255));
+            ui::image_store::paint_image_cover(scene, tf, rect, img, radius);
+            self.screen_live_pill(scene, tf, tr, theme, rect, &name, is_me);
+            stroke_round(scene, tf, rect, radius, c.accent[5], 2.0);
+            return;
+        }
+
+        // Honest placeholder — no fabricated screen pixels. A deep neutral tile
+        // with a soft accent-tinted inner panel for depth, a crisply drawn
+        // monitor glyph, and truthful status text.
+        fill_round(scene, tf, rect, radius, c.neutral[1]);
+        let margin = (rect.width().min(rect.height()) * 0.14).min(90.0);
+        let inner = rect.inflate(-margin, -margin);
+        fill_round(scene, tf, inner, radius, c.surface_white_5);
+        stroke_round(scene, tf, inner, radius, c.border_white_10, 1.0);
+
+        // Drawn monitor icon, centred a touch above the middle.
+        let gw = (rect.height() * 0.20).clamp(44.0, 120.0);
+        let gh = gw * 0.62;
+        let gcx = rect.center().x;
+        let gcy = rect.center().y - gh * 0.5;
+        let screen_r = Rect::new(gcx - gw / 2.0, gcy - gh / 2.0, gcx + gw / 2.0, gcy + gh / 2.0);
+        fill_round(scene, tf, screen_r, 8.0, c.neutral[3]);
+        stroke_round(scene, tf, screen_r, 8.0, c.accent[5], 2.0);
+        // Stand: a small neck + base bar beneath the screen.
+        let neck = Rect::new(gcx - gw * 0.06, screen_r.y1, gcx + gw * 0.06, screen_r.y1 + gh * 0.16);
+        fill_round(scene, tf, neck, 2.0, c.neutral[3]);
+        let base = Rect::new(gcx - gw * 0.22, neck.y1, gcx + gw * 0.22, neck.y1 + gh * 0.09);
+        fill_round(scene, tf, base, 3.0, c.neutral[3]);
+
+        // Status text below the glyph.
+        let head = if is_me { "You're sharing your screen".to_string() } else { format!("{name} is sharing a screen") };
+        let (hw, _) = tr.measure(&head, 15.0, None);
+        text(scene, tr, tf, &head, 15.0, c.text_primary, gcx - hw as f64 / 2.0, base.y1 + 18.0, TextWeight::Bold, None);
+        // Honest status: the local sharer is the source; a remote tile is
+        // waiting on the first decoded frame (this branch only runs with no
+        // frame present, so it never claims to be showing video it lacks).
+        let sub = if is_me { "Everyone in the call sees your screen" } else { "Connecting to the shared screen…" };
+        let (subw, _) = tr.measure(sub, 12.0, None);
+        label(scene, tr, tf, sub, 12.0, c.text_dim, gcx - subw as f64 / 2.0, base.y1 + 40.0);
+
+        self.screen_live_pill(scene, tf, tr, theme, rect, &name, is_me);
+        stroke_round(scene, tf, rect, radius, c.accent[5], 2.0);
+    }
+
+    /// A small "● Live · <name>" pill in the top-left of the featured screen
+    /// tile, marking which peer's screen is on the stage.
+    fn screen_live_pill(
+        &self,
+        scene: &mut Scene,
+        tf: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        rect: Rect,
+        name: &str,
+        is_me: bool,
+    ) {
+        let c = &theme.tokens.colors;
+        let who = if is_me { "Your screen".to_string() } else { format!("{name}'s screen") };
+        let txt = format!("Live · {who}");
+        let (lw, _) = tr.measure(&txt, 11.5, None);
+        let pill = Rect::new(rect.x0 + 12.0, rect.y0 + 12.0, rect.x0 + 12.0 + lw as f64 + 34.0, rect.y0 + 12.0 + 24.0);
+        fill_round(scene, tf, pill, 12.0, Color::from_rgba8(0, 0, 0, 150));
+        fill_circle(scene, tf, Point::new(pill.x0 + 14.0, pill.center().y), 4.0, c.semantic.danger);
+        label(scene, tr, tf, &txt, 11.5, Color::WHITE, pill.x0 + 24.0, pill.center().y - 8.0);
     }
 
     pub(crate) fn draw_call_overlay_fg(
@@ -316,12 +450,54 @@ impl ChatApp {
         grid_rects(self.overlay_content_region(), n)
     }
 
-    /// The host tile rect in the expanded overlay (the first grid cell).
+    /// The user id of whoever is sharing their screen into the current call, if
+    /// anyone. This peer's own share wins the featured tile; otherwise the first
+    /// remote member the shared voice membership marks as sharing. This is the
+    /// switch between the uniform grid and the featured presentation stage.
+    pub(crate) fn screen_sharer(&self) -> Option<String> {
+        if self.call.sharing {
+            return Some(self.me.id.clone());
+        }
+        self.voice_in(&self.call.channel)
+            .iter()
+            .find(|m| m.sharing && m.user != self.me.id)
+            .map(|m| m.user.clone())
+    }
+
+    /// The expanded overlay's layout for the current call: a uniform participant
+    /// grid, or — while someone is screen-sharing — a large featured screen tile
+    /// above a single-row participant filmstrip. Deterministic (no text
+    /// measurement) so the tile geometry, the host [`VideoPlayer`] node built in
+    /// `build_layout`, and every draw pass resolve identically on one frame.
+    pub(crate) fn overlay_stage(&self) -> CallStage {
+        let region = self.overlay_content_region();
+        let n = self.call_participants().len().max(1);
+        if self.screen_sharer().is_some() {
+            let gap = 14.0;
+            // The screen dominates; participants ride a strip beneath it whose
+            // height eases up a little with the headcount but stays a minority
+            // of the surface. Clamped so a short window still leaves a usable
+            // strip and a tall one doesn't over-grow it.
+            let strip_h = (region.height() * 0.24).clamp(88.0, 190.0).min(region.height() * 0.4);
+            let screen_bottom = (region.y1 - strip_h - gap).max(region.y0 + 1.0);
+            let screen = Rect::new(region.x0, region.y0, region.x1, screen_bottom);
+            let strip_region = Rect::new(region.x0, screen.y1 + gap, region.x1, region.y1);
+            CallStage::Share { screen, strip: filmstrip_rects(strip_region, n) }
+        } else {
+            CallStage::Grid(self.overlay_tiles())
+        }
+    }
+
+    /// The host tile rect in the expanded overlay: the first grid cell, or — in
+    /// the presentation stage — the host's first filmstrip cell. The single
+    /// source of truth the host [`VideoPlayer`] surface tracks in both modes.
     pub(crate) fn overlay_host_rect(&self) -> Rect {
-        self.overlay_tiles()
-            .into_iter()
-            .next()
-            .unwrap_or_else(|| self.overlay_content_region())
+        match self.overlay_stage() {
+            CallStage::Grid(tiles) => {
+                tiles.into_iter().next().unwrap_or_else(|| self.overlay_content_region())
+            }
+            CallStage::Share { strip, screen } => strip.into_iter().next().unwrap_or(screen),
+        }
     }
 
     /// Lay out the expanded-overlay control buttons, wrapping onto extra rows
@@ -424,6 +600,9 @@ impl ChatApp {
             }
             let name = u.map(|u| u.name.clone()).unwrap_or_default();
             self.name_plate(scene, tf, tr, theme, rect, &name, p.muted);
+            if p.sharing {
+                self.presenter_badge(scene, tf, theme, rect);
+            }
             stroke_round(scene, tf, rect, 14.0, c.border_white_10, 1.0);
             return;
         }
@@ -447,7 +626,26 @@ impl ChatApp {
         }
         let name = u.map(|u| u.name.clone()).unwrap_or_default();
         self.name_plate(scene, tf, tr, theme, rect, &name, p.muted);
+        if p.sharing {
+            self.presenter_badge(scene, tf, theme, rect);
+        }
         stroke_round(scene, tf, rect, 14.0, c.border_white_10, 1.0);
+    }
+
+    /// A small monitor badge in a participant tile's top-right marking them as
+    /// the one presenting, so the filmstrip communicates who is on the stage.
+    fn presenter_badge(&self, scene: &mut Scene, tf: Affine, theme: &Theme, rect: Rect) {
+        let c = &theme.tokens.colors;
+        let s = 12.0;
+        let cx = rect.x1 - 8.0 - s / 2.0;
+        let cy = rect.y0 + 8.0 + s / 2.0;
+        let chip = Rect::new(cx - s / 2.0 - 4.0, cy - s / 2.0 - 4.0, cx + s / 2.0 + 4.0, cy + s / 2.0 + 4.0);
+        fill_round(scene, tf, chip, 6.0, c.accent[5]);
+        // A tiny drawn monitor: screen rect + base bar.
+        let screen = Rect::new(cx - s / 2.0, cy - s / 2.0, cx + s / 2.0, cy + s / 2.0 - 3.0);
+        stroke_round(scene, tf, screen, 2.0, Color::WHITE, 1.4);
+        let base = Rect::new(cx - 3.0, screen.y1 + 0.5, cx + 3.0, screen.y1 + 2.0);
+        fill_round(scene, tf, base, 1.0, Color::WHITE);
     }
 
     /// Bottom-left name plate over a tile: name + mic state.
@@ -649,6 +847,31 @@ fn overlay_button_width(label: &str) -> f64 {
     label.chars().count() as f64 * 8.0 + 26.0
 }
 
+/// Lay `n` participant tiles into a single centred row filling `region`'s
+/// height — the presentation-stage filmstrip beneath the featured screen. Each
+/// tile is landscape-ish (capped at an equal share of the row width) and every
+/// returned rect stays inside `region`, so the strip never spills past the
+/// window at any headcount.
+fn filmstrip_rects(region: Rect, n: usize) -> Vec<Rect> {
+    if n == 0 || region.width() <= 1.0 || region.height() <= 1.0 {
+        return vec![];
+    }
+    let gap = 12.0;
+    let h = region.height();
+    // An equal share of the row is the ceiling; prefer a landscape tile but
+    // never wider than that share, so the row always fits.
+    let share = ((region.width() - (n as f64 - 1.0) * gap) / n as f64).max(1.0);
+    let w = share.min(h * 1.5).max(1.0);
+    let row_w = n as f64 * w + (n as f64 - 1.0) * gap;
+    let x0 = region.x0 + (region.width() - row_w) / 2.0;
+    (0..n)
+        .map(|i| {
+            let x = x0 + i as f64 * (w + gap);
+            Rect::new(x, region.y0, x + w, region.y0 + h)
+        })
+        .collect()
+}
+
 /// Pack `n` tiles into `region`, choosing the column count that yields
 /// the largest, most camera-shaped uniform tiles. Every returned rect is
 /// contained within `region`, so the grid can never spill past the window at
@@ -707,11 +930,44 @@ fn grid_rects(region: Rect, n: usize) -> Vec<Rect> {
 
 #[cfg(test)]
 mod tests {
-    use super::{grid_rects, member_tile_caption, Participant};
+    use super::{filmstrip_rects, grid_rects, member_tile_caption, Participant};
     use vello::kurbo::Rect;
 
+    /// The presentation-stage filmstrip must lay every participant in a single
+    /// centred row that stays inside its region, at any headcount — the
+    /// invariant the screen-share stage leans on so the strip never spills.
+    #[test]
+    fn filmstrip_is_a_single_centred_row_inside_its_region() {
+        for &(w, h) in &[(1200.0_f64, 180.0_f64), (700.0, 150.0), (500.0, 120.0)] {
+            let region = Rect::new(40.0, 600.0, 40.0 + w, 600.0 + h);
+            for n in 1..=8 {
+                let tiles = filmstrip_rects(region, n);
+                assert_eq!(tiles.len(), n, "n={n}: wrong tile count");
+                for t in &tiles {
+                    assert!(
+                        t.x0 >= region.x0 - 0.5 && t.x1 <= region.x1 + 0.5,
+                        "n={n} w={w}: tile escaped the strip horizontally"
+                    );
+                    // One row: every tile spans the full strip height.
+                    assert!((t.y0 - region.y0).abs() < 0.5 && (t.y1 - region.y1).abs() < 0.5,
+                        "n={n}: strip tiles are not a single full-height row");
+                    assert!(t.width() > 0.0, "n={n}: degenerate strip tile");
+                }
+                // Centred: equal slack on both sides of the row.
+                let left = tiles.first().unwrap().x0 - region.x0;
+                let right = region.x1 - tiles.last().unwrap().x1;
+                assert!((left - right).abs() < 1.0, "n={n} w={w}: strip is not centred");
+            }
+        }
+    }
+
+    #[test]
+    fn filmstrip_is_empty_for_no_participants() {
+        assert!(filmstrip_rects(Rect::new(0.0, 0.0, 400.0, 120.0), 0).is_empty());
+    }
+
     fn participant(audio_only: bool) -> Participant {
-        Participant { user: "u_x".into(), talking: false, muted: false, audio_only }
+        Participant { user: "u_x".into(), talking: false, muted: false, audio_only, sharing: false }
     }
 
     /// Defect regression: remote tiles must be honest — never present a

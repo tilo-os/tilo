@@ -23,6 +23,7 @@ pub mod model;
 pub mod net;
 pub mod sample;
 pub mod tiles;
+pub mod traffic;
 
 pub use app::MapsApp;
 pub use model::{Category, LatLon, MapModel, Panel, Place, Route, TransitJourney, TravelMode};

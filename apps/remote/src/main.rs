@@ -2,8 +2,10 @@
 //!
 //! Modes:
 //!   * default        — run the live winit event loop via `ui::App`.
-//!   * `--shots PATH` — render one offscreen frame to a PNG and exit
-//!                       (headless screenshot; identical passes to the live app).
+//!   * `--shots PATH` — render one offscreen frame to a PNG and exit. By
+//!                       default this captures the LIVE state (empty on a
+//!                       fresh machine). Set `QOS_REMOTE_SAMPLE=1` to render
+//!                       the populated sample list, for the gallery.
 //!
 //! `--shots` flags for capturing responsive states headlessly:
 //!   * `--viewport WxH`  — render at a custom size (e.g. `--viewport 640x900`
@@ -34,7 +36,14 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         let viewport = parse_value_arg(&args, "--viewport")
             .and_then(|s| parse_viewport(&s))
             .unwrap_or(DEFAULT_SHOTS_VIEWPORT);
-        render_shot_to_png(remote::app_root_for_shot(&scenario), viewport, &out)?;
+        // Default `--shots` captures the live/empty state; the sample list is
+        // only used when the gallery explicitly asks for it.
+        let root = if std::env::var("QOS_REMOTE_SAMPLE").as_deref() == Ok("1") {
+            remote::app_root_for_shot_demo(&scenario)
+        } else {
+            remote::app_root_for_shot(&scenario)
+        };
+        render_shot_to_png(root, viewport, &out)?;
         return Ok(());
     }
 

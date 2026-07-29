@@ -825,18 +825,11 @@ impl Widget for ThemesApp {
         draw::fill_rect(scene, t, tb, theme.bg_primary);
         draw::line(scene, t, Point::new(tb.x0, tb.y1), Point::new(tb.x1, tb.y1), theme.border_standard, 1.0);
 
-        // Hamburger / close toggle (overlay only) sits at the far left and
-        // shifts the logo right to make room.
-        let logo_x = if self.show_toggle() {
+        // Hamburger / close toggle (overlay only) sits at the far left. The OS
+        // owns the window title/app-name/logo, so the app draws no wordmark.
+        if self.show_toggle() {
             self.draw_toggle(scene, t, tr, theme, tb);
-            tb.x0 + 16.0 + TOGGLE_SIZE + 12.0
-        } else {
-            tb.x0 + 16.0
-        };
-        draw::circle(scene, t, Point::new(logo_x + 10.0, tb.center().y), 9.0, theme.accent_primary);
-        draw::circle(scene, t, Point::new(logo_x + 10.0, tb.center().y), 4.0, ui_on_accent(theme));
-        draw::text_w(tr, scene, t, "Themes", 18.0, theme.text_primary, logo_x + 30.0, tb.y0 + 11.0, TextWeight::Bold);
-        draw::text(tr, scene, t, "Theme studio", 11.0, theme.text_dim, logo_x + 30.0, tb.y0 + 33.0);
+        }
 
         for b in &mut self.topbar_buttons {
             b.draw(scene, t, tr, theme, p);

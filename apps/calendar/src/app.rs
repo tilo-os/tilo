@@ -4295,6 +4295,49 @@ mod tests {
     }
 
     #[test]
+    fn month_week_agenda_grid_reflows_on_resize() {
+        // Beyond the panel breakpoints, the *grid inside a view* must also
+        // re-derive its cell geometry from the current width on every frame —
+        // "lays out once, breaks after resize" is the reported bug. Both widths
+        // here sit ABOVE every panel breakpoint (>= SIDEBAR_PERSISTENT_MIN), so a
+        // change in cell width can only be the grid itself reflowing, not a
+        // breakpoint flip. Measured on the real path: the hit rects that live
+        // clicks resolve against, populated by driving `draw` through `Harness`.
+        fn widest_cell(app: &CalendarApp, view: View) -> f64 {
+            app.hits
+                .iter()
+                .filter(|(_, a)| match view {
+                    View::Month => matches!(a, Action::PickDate(_)),
+                    View::Week | View::Day => matches!(a, Action::OpenDay(_)),
+                    View::Agenda => matches!(a, Action::OpenEvent(_) | Action::OpenTask(_)),
+                })
+                .map(|(r, _)| r.width())
+                .fold(0.0f64, f64::max)
+        }
+
+        for view in [View::Month, View::Week, View::Agenda] {
+            let mut hn = Harness::new(1280, 800);
+            hn.app.detail_open = false;
+            hn.app.view = view;
+            hn.relayout();
+            let wide = widest_cell(&hn.app, view);
+            assert!(wide > 0.0, "{view:?}: expected grid cells in the hit map");
+
+            // Resize narrower — still wide enough that the sidebar stays docked,
+            // isolating the grid's own reflow from any breakpoint change.
+            assert!(1000.0 >= SIDEBAR_PERSISTENT_MIN);
+            hn.w = 1000;
+            hn.relayout();
+            assert_eq!(hn.app.sidebar_mode, SidebarMode::Persistent);
+            let narrow = widest_cell(&hn.app, view);
+            assert!(
+                narrow + 1.0 < wide,
+                "{view:?} grid must reflow narrower on resize (was {wide:.1}, now {narrow:.1}) — not laid out once"
+            );
+        }
+    }
+
+    #[test]
     fn week_range_short_keeps_both_endpoints() {
         // The compact week title (used when the topbar is tight) must still show
         // start AND end — the clip bug lost the end date entirely.

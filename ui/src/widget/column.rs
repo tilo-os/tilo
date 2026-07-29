@@ -16,6 +16,7 @@ pub struct Column {
     presence_path: Vec<PathSegment>,
     permission_scope: Option<PermissionScope>,
     extra_left_padding: f32,
+    extra_top_padding: f32,
     extra_bottom_padding: f32,
     no_padding: bool,
     /// When `Some(px)`, override the column's default top + bottom
@@ -74,6 +75,7 @@ impl Column {
             presence_path: Vec::new(),
             permission_scope: None,
             extra_left_padding: 0.0,
+            extra_top_padding: 0.0,
             extra_bottom_padding: 0.0,
             no_padding: false,
             vertical_padding_override: None,
@@ -114,6 +116,16 @@ impl Column {
     /// shifting the surrounding chrome.
     pub fn with_extra_left_padding(mut self, px: f32) -> Self {
         self.extra_left_padding = px;
+        self
+    }
+
+    /// Add extra padding on the top edge on top of the column's default
+    /// vertical padding. Used to reserve room for a floating affordance the
+    /// column doesn't own — e.g. the responsive shell's Back chip, which is
+    /// painted over the top-left of the detail pane, so the content below it
+    /// must start clear of the chip rather than under it.
+    pub fn with_extra_top_padding(mut self, px: f32) -> Self {
+        self.extra_top_padding = px;
         self
     }
 
@@ -227,7 +239,7 @@ impl Widget for Column {
                     taffy::Rect {
                         left: length(left),
                         right: length(right),
-                        top: length(vert),
+                        top: length(vert + self.extra_top_padding),
                         bottom: length(vert + self.extra_bottom_padding),
                     }
                 },

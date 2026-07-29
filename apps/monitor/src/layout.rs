@@ -193,6 +193,18 @@ pub const COL_THR_W: f64 = 64.0;
 /// Inner horizontal padding inside the table card.
 pub const TABLE_PAD: f64 = 12.0;
 
+/// The table's content width at or above which **all six** columns — USER
+/// included — fit without a horizontal scroll: the sum of every column's
+/// minimum width.
+pub const ALL_COLUMNS_MIN_W: f64 =
+    COL_PID_W + COL_NAME_MIN_W + COL_USER_W + COL_CPU_W + COL_MEM_W + COL_THR_W;
+
+/// The table's content width at or above which the five **essential** columns
+/// (PID / NAME / CPU% / MEM / THR — USER dropped) fit without a horizontal
+/// scroll. Below this even the essentials overflow and the table scrolls.
+pub const ESSENTIAL_COLUMNS_MIN_W: f64 =
+    COL_PID_W + COL_NAME_MIN_W + COL_CPU_W + COL_MEM_W + COL_THR_W;
+
 /// One resolved process-table column.
 #[derive(Clone, Copy, Debug)]
 pub struct Column {
@@ -213,30 +225,49 @@ impl Column {
     }
 }
 
-/// Resolve the six process-table columns for a content area `avail_w` wide
+/// Resolve the process-table columns for a content area `avail_w` wide
 /// (already padding-inset). The NAME column flexes to fill slack, but every
-/// column keeps its minimum width — so when the window is too narrow for all
-/// six minimums the total content width *exceeds* `avail_w` and the table
-/// must scroll horizontally rather than overlap its border.
-pub fn process_columns(avail_w: f64) -> [Column; 6] {
-    let fixed = COL_PID_W + COL_USER_W + COL_CPU_W + COL_MEM_W + COL_THR_W;
+/// column keeps its minimum width.
+///
+/// **Column priority.** PID / NAME / CPU% / MEM / THR are the essential
+/// process signals and are always shown; USER is the one droppable text
+/// column. When the table is too narrow to seat all six minimums we hide USER
+/// rather than push THR — a core numeric column — off the right edge into
+/// scrollable space. So THR stays fully readable *without* a horizontal
+/// scroll all the way down to [`ESSENTIAL_COLUMNS_MIN_W`]; only below that do
+/// the five essentials themselves overflow and the table scrolls.
+pub fn process_columns(avail_w: f64) -> Vec<Column> {
+    let show_user = avail_w >= ALL_COLUMNS_MIN_W;
+    let fixed = COL_PID_W
+        + COL_CPU_W
+        + COL_MEM_W
+        + COL_THR_W
+        + if show_user { COL_USER_W } else { 0.0 };
     // NAME takes the slack but never drops below its minimum; when there is
     // no slack the columns sum past `avail_w` and the table scrolls.
     let name_w = (avail_w - fixed).max(COL_NAME_MIN_W);
+
+    // (key, header, width, right-aligned). USER is included only when there is
+    // room for every column.
+    let mut specs: Vec<(SortKey, &'static str, f64, bool)> = Vec::with_capacity(6);
+    specs.push((SortKey::Pid, "PID", COL_PID_W, true));
+    specs.push((SortKey::Name, "NAME", name_w, false));
+    if show_user {
+        specs.push((SortKey::User, "USER", COL_USER_W, false));
+    }
+    specs.push((SortKey::Cpu, "CPU%", COL_CPU_W, true));
+    specs.push((SortKey::Mem, "MEM", COL_MEM_W, true));
+    specs.push((SortKey::Threads, "THR", COL_THR_W, true));
+
     let mut x = 0.0;
-    let mut col = |key: SortKey, header: &'static str, w: f64, right: bool| {
-        let c = Column { key, header, x0: x, w, right };
-        x += w;
-        c
-    };
-    [
-        col(SortKey::Pid, "PID", COL_PID_W, true),
-        col(SortKey::Name, "NAME", name_w, false),
-        col(SortKey::User, "USER", COL_USER_W, false),
-        col(SortKey::Cpu, "CPU%", COL_CPU_W, true),
-        col(SortKey::Mem, "MEM", COL_MEM_W, true),
-        col(SortKey::Threads, "THR", COL_THR_W, true),
-    ]
+    specs
+        .into_iter()
+        .map(|(key, header, w, right)| {
+            let c = Column { key, header, x0: x, w, right };
+            x += w;
+            c
+        })
+        .collect()
 }
 
 /// Total width every process column occupies — the table's intrinsic
@@ -337,9 +368,10 @@ mod tests {
 
     #[test]
     fn process_columns_never_overlap_within_their_width() {
-        // Wide: NAME flexes, every column right edge ≤ next column left edge,
-        // and the total fits the available width.
+        // Wide: all six columns, NAME flexes, every column right edge ≤ next
+        // column left edge, and the total fits the available width.
         let cols = process_columns(900.0);
+        assert_eq!(cols.len(), 6, "wide table shows every column");
         for w in cols.windows(2) {
             assert!(
                 w[0].x1() <= w[1].x0 + 0.001,
@@ -355,16 +387,64 @@ mod tests {
     }
 
     #[test]
-    fn narrow_table_overflows_so_it_must_scroll_not_overlap() {
-        // Too narrow for all six minimums: NAME pins to its minimum and the
-        // total exceeds the width — the renderer must scroll, not squeeze
-        // THR over the border.
+    fn narrow_hides_user_so_threads_reads_without_hscroll() {
+        // Between the five-essential minimum and the all-six minimum the table
+        // hides USER (the droppable text column) so PID / NAME / CPU% / MEM /
+        // THR all fit WITHOUT a horizontal scroll. THR is a core numeric
+        // column and must never be the one pushed off the right edge — the
+        // "THR clipped to 'T' at 560px" defect.
+        for &avail in &[
+            ESSENTIAL_COLUMNS_MIN_W,
+            460.0,
+            500.0, // ≈ a 552px window's table band (window − 52px chrome)
+            508.0, // ≈ a 560px window's table band
+            ALL_COLUMNS_MIN_W - 1.0,
+        ] {
+            let cols = process_columns(avail);
+            assert!(
+                !cols.iter().any(|c| c.key == SortKey::User),
+                "USER hidden at avail={avail} (too narrow for all six)"
+            );
+            let thr = cols
+                .iter()
+                .find(|c| c.key == SortKey::Threads)
+                .expect("THR is always shown");
+            assert_eq!(thr.w, COL_THR_W, "THR keeps its full width at avail={avail}");
+            // The whole table fits: THR's right edge is inside the viewport, so
+            // its header reads in full with no horizontal scroll.
+            assert!(
+                process_columns_total_w(&cols) <= avail + 0.001,
+                "table fits without h-scroll at avail={avail}: total={} thr.x1={}",
+                process_columns_total_w(&cols),
+                thr.x1()
+            );
+        }
+    }
+
+    #[test]
+    fn wide_shows_user_column() {
+        for &avail in &[ALL_COLUMNS_MIN_W, 720.0, 1200.0] {
+            let cols = process_columns(avail);
+            assert!(
+                cols.iter().any(|c| c.key == SortKey::User),
+                "USER shown when the table is wide enough (avail={avail})"
+            );
+            assert_eq!(cols.len(), 6, "all six columns at avail={avail}");
+        }
+    }
+
+    #[test]
+    fn very_narrow_table_overflows_so_it_must_scroll_not_overlap() {
+        // Too narrow for even the five essential minimums: NAME pins to its
+        // minimum and the total exceeds the width — the renderer must scroll,
+        // not squeeze THR over the border. (USER is already dropped here.)
         let avail = 300.0;
+        assert!(avail < ESSENTIAL_COLUMNS_MIN_W, "chosen width is below the essentials");
         let cols = process_columns(avail);
         let total = process_columns_total_w(&cols);
         assert!(
             total > avail,
-            "narrow columns must overflow the width ({total} vs {avail}) so a \
+            "very-narrow columns must overflow the width ({total} vs {avail}) so a \
              horizontal scrollbar appears instead of THR overlapping the border"
         );
         // Even overflowing, columns stay in order and don't overlap each
@@ -374,6 +454,10 @@ mod tests {
         }
         // THR keeps its full minimum width (it isn't the column that gets
         // squeezed — NAME absorbs/pins the slack).
-        assert_eq!(cols[5].w, COL_THR_W, "THR keeps its width under overflow");
+        let thr = cols
+            .iter()
+            .find(|c| c.key == SortKey::Threads)
+            .expect("THR is always shown");
+        assert_eq!(thr.w, COL_THR_W, "THR keeps its width under overflow");
     }
 }
