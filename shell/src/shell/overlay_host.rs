@@ -3282,6 +3282,22 @@ const OVERVIEW_DOT_OFFSET_PX: f64 = 35.0;
 /// (`left-8` - card offset). The rail sits behind the dot column.
 const OVERVIEW_RAIL_OFFSET_PX: f64 = 35.0;
 const OVERVIEW_RAIL_WIDTH_PX: f64 = 2.0;
+/// How far past the overview column the scroll viewport's clip reaches.
+/// Has to clear everything a row paints outside its own rect — the rail
+/// dot (`OVERVIEW_DOT_OFFSET_PX` out, half a dot wide) and the active
+/// card's accent glow ([`OVERVIEW_ROW_GLOW_SPREAD_PX`]) — or the clip
+/// crops the very indicators that say which workspace is current.
+const OVERVIEW_SCROLL_GUTTER_PX: f64 = {
+    let dot_reach = OVERVIEW_DOT_OFFSET_PX + OVERVIEW_DOT_SIZE_PX / 2.0;
+    if dot_reach > OVERVIEW_ROW_GLOW_SPREAD_PX {
+        dot_reach + 4.0
+    } else {
+        OVERVIEW_ROW_GLOW_SPREAD_PX + 4.0
+    }
+};
+/// Spread of the selected workspace card's accent glow. Concept
+/// `shadow-[0_0_40px_-10px_rgba(99,102,241,0.3)]`.
+const OVERVIEW_ROW_GLOW_SPREAD_PX: f64 = 40.0;
 
 impl Widget for ShellOverlayHost {
     fn sync(&mut self, s: &mut AutoCommit, p: &ObjId) {
@@ -6075,13 +6091,20 @@ impl ShellOverlayHost {
         // the space BELOW the header — so a row that's been scrolled
         // upward past `overview_first_row_top()` doesn't bleed onto the
         // "Workspaces" title. Top edge sits just above the first row's
-        // resting Y; bottom + sides match the overview column so the
-        // card shadows extending past the column still get trimmed at
-        // the gutter.
+        // resting Y; the bottom is the viewport edge the list scrolls
+        // under.
+        //
+        // The horizontal edges are a *gutter*, not the column itself:
+        // the rail's active-indicator dot and the selected card's accent
+        // glow both paint outside a row's own rect, and a clip drawn at
+        // the column edge sliced the dots down to slivers — the overview
+        // lost the affordance that says which workspace you are in. The
+        // gutter is only ever cropping horizontally-static chrome, so
+        // widening it costs nothing the vertical clip was buying.
         let scroll_clip = Rect::new(
-            col.x0 - 32.0,
+            col.x0 - OVERVIEW_SCROLL_GUTTER_PX,
             col.y0 + OVERVIEW_HEADER_HEIGHT_PX + OVERVIEW_HEADER_MARGIN_BOTTOM_PX - 8.0,
-            col.x1 + 32.0,
+            col.x1 + OVERVIEW_SCROLL_GUTTER_PX,
             col.y1,
         );
         scene.push_layer(
@@ -6120,7 +6143,15 @@ impl ShellOverlayHost {
             let card = RoundedRect::from_rect(rect, OVERVIEW_ROW_RADIUS_PX);
             if is_active {
                 let indigo = colors.accent[5];
-                ui::surface::soft_shadow(scene, card_xform, rect, indigo, 40.0, 0.0, 0.35);
+                ui::surface::soft_shadow(
+                    scene,
+                    card_xform,
+                    rect,
+                    indigo,
+                    OVERVIEW_ROW_GLOW_SPREAD_PX,
+                    0.0,
+                    0.35,
+                );
                 scene.fill(
                     Fill::NonZero,
                     card_xform,
