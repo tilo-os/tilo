@@ -1810,6 +1810,10 @@ impl BooksApp {
         self.fonts
             .iter()
             .find(|f| f.id == want)
+            // Nothing chosen (a fresh reader, or a stale id): default to the
+            // serif book face — books read best in serif — before the first
+            // registered font.
+            .or_else(|| self.fonts.iter().find(|f| f.id == "serif"))
             .or_else(|| self.fonts.first())
             .cloned()
             .unwrap_or_else(|| default_fonts()[0].clone())
@@ -6838,6 +6842,77 @@ mod interaction_tests {
             "position advanced from ch{c0}/pg{p0} to ch{}/pg{}",
             app.chapter,
             app.page
+        );
+    }
+
+    #[test]
+    fn continuous_mode_scrolls_the_flow_and_persists() {
+        let mut app = app_with_sample();
+        let mut doc = AutoCommit::new();
+        frame(&mut app, &mut doc, 1000.0, 700.0);
+        // Switch to continuous scroll through the real command path.
+        app.dispatch(Action::SetMode(ReadMode::Continuous), &mut doc);
+        frame(&mut app, &mut doc, 1000.0, 700.0);
+        assert_eq!(app.settings.mode, ReadMode::Continuous, "mode switched");
+        assert_eq!(BooksDoc::read_settings(&doc).mode, ReadMode::Continuous, "mode persisted");
+        // A downward wheel scrolls the flow (rolls chapters at the ends) rather
+        // than snapping whole pages.
+        let before = (app.chapter, app.scroll_y);
+        assert!(wheel(&mut app, &mut doc, -6.0), "continuous wheel handled");
+        frame(&mut app, &mut doc, 1000.0, 700.0);
+        assert_ne!((app.chapter, app.scroll_y), before, "continuous scroll moved the reading position");
+        // Progress persisted for the shelf bar.
+        let id = app.book_id();
+        assert!(BooksDoc::read_progress(&doc, &id).fraction >= 0.0, "progress recorded in continuous mode");
+    }
+
+    #[test]
+    fn two_up_shows_two_columns_and_turns_by_two() {
+        let mut app = app_with_sample();
+        let mut doc = AutoCommit::new();
+        frame(&mut app, &mut doc, 1280.0, 820.0);
+        app.dispatch(Action::SetMode(ReadMode::TwoUp), &mut doc);
+        frame(&mut app, &mut doc, 1280.0, 820.0);
+        assert_eq!(app.settings.mode, ReadMode::TwoUp);
+        // A spread aligns to an even left page.
+        assert_eq!(app.page % 2, 0, "the spread's left page is even");
+        // The two facing pages paint into two columns on the real draw path.
+        if app.cur_page_count >= 2 {
+            let cols: std::collections::HashSet<u8> = app.sel_runs.iter().map(|r| r.col).collect();
+            assert!(cols.contains(&0) && cols.contains(&1), "the spread paints two facing columns");
+        }
+        // A page turn advances by a whole spread (two pages), or rolls chapter.
+        let (c0, p0) = (app.chapter, app.page);
+        app.dispatch(Action::NextPage, &mut doc);
+        frame(&mut app, &mut doc, 1280.0, 820.0);
+        if app.chapter == c0 {
+            assert_eq!(app.page, p0 + 2, "a spread turns two pages at once");
+        } else {
+            assert_eq!(app.chapter, c0 + 1, "or rolls to the next chapter");
+        }
+    }
+
+    #[test]
+    fn shared_selection_hud_shows_in_continuous_mode() {
+        let mut app = app_with_sample();
+        let mut doc = AutoCommit::new();
+        app.dispatch(Action::SetMode(ReadMode::Continuous), &mut doc);
+        frame(&mut app, &mut doc, 1000.0, 700.0);
+        // Seed a live selection near the top of the flow and redraw.
+        app.sel = Some(TextSel {
+            anchor: DocPos { block: 1, ch: 0 },
+            head: DocPos { block: 1, ch: 24 },
+        });
+        app.selected_block = Some(1);
+        frame(&mut app, &mut doc, 1000.0, 700.0);
+        // The shared HUD registered its Copy + a swatch control as clickable hits.
+        assert!(
+            find_hit(&app, |a| matches!(a, Action::CopySelection)).is_some(),
+            "the shared selection HUD floats over the continuous flow"
+        );
+        assert!(
+            find_hit(&app, |a| matches!(a, Action::SetColor(_))).is_some(),
+            "the HUD offers highlight swatches"
         );
     }
 

@@ -780,9 +780,10 @@ impl Default for Settings {
         Self {
             font_scale: 1.0,
             line_spacing: 1.2,
-            // Books read best in a serif face, so the reader opens in the serif
-            // book font; the font picker offers the sans "Default" and monospace.
-            font_id: "serif".to_string(),
+            // Empty means "the reader's default reading face" — which resolves to
+            // the serif book font (see `BooksApp::active_font`), because books
+            // read best in serif. The picker offers the sans "Default" + mono.
+            font_id: String::new(),
             theme: ReadTheme::Sepia,
             scheme_id: String::new(),
             mode: ReadMode::Paged,
