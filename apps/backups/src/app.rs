@@ -1266,7 +1266,9 @@ impl BackupsApp {
         let body_y = m.y0 + 74.0;
         let body_bottom = m.y1 - 76.0;
         let (tree, opt) = if narrow_modal {
-            let mid = body_y + (body_bottom - body_y) * 0.56;
+            // Give the options column enough height for its four rows + the
+            // estimate line, so nothing overlaps.
+            let mid = body_y + (body_bottom - body_y) * 0.46;
             (
                 Rect::new(m.x0 + 24.0, body_y, m.x1 - 24.0, mid - 8.0),
                 Rect::new(m.x0 + 24.0, mid + 10.0, m.x1 - 24.0, body_bottom),
