@@ -119,12 +119,7 @@ impl WorkspaceStore {
         if !self.pinned {
             return Ok(());
         }
-        let final_path = self.root.join(SNAPSHOT_FILE);
-        let tmp = self
-            .root
-            .join(format!(".{SNAPSHOT_FILE}.tmp"));
-        fs::write(&tmp, bytes)?;
-        fs::rename(&tmp, final_path)?;
+        atomic_file::write(&self.root.join(SNAPSHOT_FILE), bytes)?;
         Ok(())
     }
 
@@ -156,11 +151,11 @@ impl WorkspaceStore {
         fs::create_dir_all(&pending_dir)?;
         let filename = format!("{:016x}.delta", seq);
         let path = pending_dir.join(filename);
-        // Write via tempfile + rename so a crash mid-write does not
-        // leave a truncated delta for the peer to receive.
-        let tmp = pending_dir.join(".partial");
-        fs::write(&tmp, bytes)?;
-        fs::rename(&tmp, &path)?;
+        // A crash mid-write must not leave a truncated delta for the peer to
+        // receive. The temp file is process-scoped, so two writers filling the
+        // same peer's queue cannot publish each other's half-written bytes —
+        // the fixed `.partial` name this used to use could.
+        atomic_file::write(&path, bytes)?;
         Ok(path)
     }
 
@@ -235,14 +230,7 @@ pub fn load_or_create_iroh_secret(state_root: &Path) -> Result<[u8; 32], StoreEr
     use rand::RngCore;
     let mut secret = [0u8; 32];
     rand::thread_rng().fill_bytes(&mut secret);
-    let tmp = state_root.join(".iroh-secret.tmp");
-    fs::write(&tmp, secret)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&tmp, fs::Permissions::from_mode(0o600))?;
-    }
-    fs::rename(&tmp, &path)?;
+    atomic_file::write_with_mode(&path, &secret, 0o600)?;
     Ok(secret)
 }
 

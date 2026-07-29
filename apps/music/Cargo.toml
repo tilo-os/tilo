@@ -26,7 +26,7 @@ streaming = ["dep:reqwest"]
 #                   media controls drive playback (see `src/mpris.rs`);
 #   * `ashpd`/`url` — the native XDG file-chooser portal for picking a
 #                   playlist cover image (see `src/portal.rs`).
-audio = ["dep:gstreamer", "dep:zbus", "dep:ashpd", "dep:tokio"]
+audio = ["dep:gstreamer", "dep:zbus", "dep:tokio", "ui/portal"]
 # Real YouTube-Music streaming via the pure-Rust `rustypipe` InnerTube client:
 # real search (`music_search_tracks`) and real audio-stream resolution
 # (`player`, which returns a directly-playable googlevideo URL). Off by default
@@ -45,6 +45,8 @@ lyrics = ["dep:reqwest"]
 p2p = ["dep:iroh", "dep:tokio"]
 
 [dependencies]
+# Crash-safe file replacement (temp + fsync + rename + dir fsync).
+atomic-file = { path = "../../crates/system/atomic-file" }
 ui = { path = "../../ui" }
 automerge.workspace = true
 serde.workspace = true
@@ -70,10 +72,8 @@ zbus = { workspace = true, optional = true, features = ["p2p"], default-features
 # Native XDG file-chooser portal for the playlist-cover picker (same crate +
 # version as `apps/contacts`/`apps/maps`, so the picker matches the host desktop
 # and hosts the sandbox file-access prompt). `url` maps the returned file URIs.
-ashpd = { workspace = true, optional = true }
 # `url` maps the portal's returned file URIs; kept non-optional so the pure
 # mapping + its tests build in the default (hermetic) configuration too.
-url.workspace = true
 iroh = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true, features = ["rt", "rt-multi-thread", "macros", "time"] }
 # Pure-Rust InnerTube (YouTube / YouTube Music) client: search + stream

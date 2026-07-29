@@ -17,6 +17,8 @@ default-members = [
     "crates/system/tts",
     "crates/system/accounts",
     "crates/system/app-state",
+    "crates/system/settings-store",
+    "crates/system/atomic-file",
     "crates/system/power",
     "crates/doc/qdoc",
     "crates/text/spellcheck",
@@ -213,6 +215,8 @@ members = [
     # so it is compiled only via `--profile thin-app`, never by a bare
     # `cargo build`. See crates/runtime/runtime-dylib/Cargo.toml.
     "crates/runtime/runtime-dylib",
+    "crates/system/settings-store",
+    "crates/system/atomic-file",
 ]
 resolver = "2"
 

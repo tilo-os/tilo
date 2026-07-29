@@ -17,7 +17,6 @@
 //!   * `$XDG_DATA_HOME/qos-contacts/addressbook.automerge`.
 //!   * `$HOME/.local/share/qos-contacts/addressbook.automerge`.
 
-use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use automerge::AutoCommit;
@@ -81,13 +80,7 @@ pub fn save(path: &Path, contacts: &[Contact]) -> std::io::Result<()> {
         ContactsDoc::upsert_contact(&mut doc, c);
     }
     let bytes = doc.save();
-    let tmp = path.with_extension("automerge.tmp");
-    {
-        let mut f = std::fs::File::create(&tmp)?;
-        f.write_all(&bytes)?;
-        f.sync_all()?;
-    }
-    std::fs::rename(&tmp, path)?;
+    atomic_file::write(path, &bytes)?;
     Ok(())
 }
 

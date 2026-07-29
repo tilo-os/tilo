@@ -13,7 +13,7 @@ name = "word-processor"
 path = "src/main.rs"
 
 [dependencies]
-ui = { path = "../../ui" }
+ui = { path = "../../ui", features = ["portal"] }
 qdoc = { path = "../../crates/doc/qdoc" }
 spellcheck = { path = "../../crates/text/spellcheck" }
 qdoc-pdf = { path = "../../crates/doc/qdoc-pdf" }
@@ -33,6 +33,3 @@ unic-langid.workspace = true
 # Host-native image open through the XDG Desktop Portal (FileChooser). The
 # portal round-trip runs on a worker thread; the chosen path comes back over a
 # channel drained each frame — the UI thread never blocks.
-ashpd.workspace = true
-tokio = { workspace = true, features = ["rt", "rt-multi-thread", "net", "time"] }
-url.workspace = true

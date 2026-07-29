@@ -191,7 +191,7 @@ impl PlayerApp {
         let mut chosen: Option<PathBuf> = None;
         if let Some(rx) = self.portal_rx.as_ref() {
             match rx.try_recv() {
-                Ok(OpenOutcome::Chosen(p)) => {
+                Ok(OpenOutcome::Opened(p)) => {
                     chosen = Some(p);
                     clear = true;
                 }
@@ -499,7 +499,7 @@ mod tests {
     #[test]
     fn portal_outcome_opens_the_chosen_file() {
         let mut app = PlayerApp::new();
-        app.portal_rx = Some(portal::inject_for_test(OpenOutcome::Chosen(PathBuf::from(
+        app.portal_rx = Some(portal::inject_for_test(OpenOutcome::Opened(PathBuf::from(
             "/tmp/Chosen.webm",
         ))));
         app.drain_portal();
