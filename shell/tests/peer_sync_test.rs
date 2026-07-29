@@ -144,9 +144,10 @@ async fn two_actors_exchange_a_workspace_append_change() {
         loop {
             match ev_rx_b.recv().await {
                 Some(NetEvent::Msg {
+                    peer,
                     msg: NeighbourMsg::SyncResp { changes, room },
                     ..
-                }) => return Some((changes, room)),
+                }) => return Some((changes, room, peer)),
                 Some(_) => continue,
                 None => return None,
             }
@@ -155,7 +156,7 @@ async fn two_actors_exchange_a_workspace_append_change() {
     .await
     .expect("SyncResp within 10 s")
     .expect("event channel still open");
-    let (received_changes, received_room) = received;
+    let (received_changes, received_room, sender) = received;
     assert_eq!(
         received_room,
         room.to_string(),

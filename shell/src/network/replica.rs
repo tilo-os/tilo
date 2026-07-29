@@ -44,7 +44,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::network::hub::TopicSubscriber;
 use crate::network::protocol::NeighbourMsg;
-use crate::shell::state::RoomId;
+use crate::shell::state::{PeerOrigin, RoomId};
 #[cfg(test)]
 use crate::shell::state::WorkspaceTree;
 use crate::shell::state::WorkspaceTreeHandle;
@@ -134,6 +134,24 @@ impl TopicSubscriber for WorkspaceTreeReplica {
     }
 
     fn handle(&mut self, sender: u64, msg: &NeighbourMsg) {
+        self.handle_from(&PeerOrigin::hub(sender), msg);
+    }
+}
+
+impl WorkspaceTreeReplica {
+    /// [`TopicSubscriber::handle`], but with the sender named as the
+    /// transport authenticated it rather than as a hub subscriber id.
+    ///
+    /// The room-replication path decides whether a payload may rewrite a
+    /// room's governance, and that decision turns on **who** the bytes
+    /// came from. `sender: u64` cannot carry that: in production it was a
+    /// `DefaultHasher` digest of the peer id, which is fine for
+    /// echo-suppression and not fine for an authority check. So the live
+    /// wiring calls this with the peer's own identity
+    /// ([`PeerOrigin::peer`]) and the hub's `handle` supplies its
+    /// subscriber id, namespaced apart.
+    pub fn handle_from(&mut self, from: &PeerOrigin, msg: &NeighbourMsg) {
+        let sender = from;
         match msg {
             NeighbourMsg::SyncReq { since, room } => {
                 // A request that names no room is the transport's
@@ -191,15 +209,15 @@ impl TopicSubscriber for WorkspaceTreeReplica {
                 let Some(room_id) = RoomId::parse(room).filter(|r| !r.is_nil()) else {
                     tracing::warn!(
                         target: "shell::network::replica",
-                        sender,
+                        sender = %sender,
                         "SyncResp names no room; dropped",
                     );
                     return;
                 };
-                if let Err(err) = self.tree.write().apply_room_changes(room_id, changes) {
+                if let Err(err) = self.tree.write().apply_room_changes(room_id, changes, from) {
                     tracing::error!(
                         target: "shell::network::replica",
-                        sender,
+                        sender = %sender,
                         room = %room_id,
                         change_count = changes.len(),
                         ?err,
