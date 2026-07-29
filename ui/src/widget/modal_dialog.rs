@@ -86,6 +86,13 @@ pub struct ModalDialog<C: Widget> {
     on_dismiss: Option<Box<dyn FnMut()>>,
     open: bool,
     viewport: Rect,
+    /// Max box width / height in logical px. Default to the brief's
+    /// [`MAX_DIALOG_WIDTH`]×[`MAX_DIALOG_HEIGHT`]; a host can override via
+    /// [`with_max_size`](Self::with_max_size) when its content wants a wider or
+    /// shorter box than the 480×320 default (e.g. a single labelled field reads
+    /// as unbalanced in a 320-tall box).
+    max_w: f64,
+    max_h: f64,
     /// Resolved dialog rect — recomputed each `apply_layout` (and on the
     /// fly when the viewport changes via [`with_viewport`]).
     rect: Rect,
@@ -121,6 +128,8 @@ impl<C: Widget> ModalDialog<C> {
             on_dismiss: None,
             open: false,
             viewport: Rect::ZERO,
+            max_w: MAX_DIALOG_WIDTH,
+            max_h: MAX_DIALOG_HEIGHT,
             rect: Rect::ZERO,
             primary_rect: Rect::ZERO,
             secondary_rect: Rect::ZERO,
@@ -181,6 +190,29 @@ impl<C: Widget> ModalDialog<C> {
         self
     }
 
+    /// Override the box's maximum width / height in logical px (still clamped
+    /// to the viewport). Use it when the default 480×320 box reads as
+    /// unbalanced for the content — e.g. a single labelled field wants a wider,
+    /// shorter box. The box is re-centered immediately.
+    pub fn with_max_size(mut self, max_w: f64, max_h: f64) -> Self {
+        self.max_w = max_w.max(1.0);
+        self.max_h = max_h.max(1.0);
+        self.recompute_layout();
+        self
+    }
+
+    /// Borrow the inner content widget (e.g. to read an embedded field's value
+    /// on submit). Pairs with [`content_mut`](Self::content_mut).
+    pub fn content(&self) -> &C {
+        &self.content
+    }
+
+    /// Mutably borrow the inner content widget (e.g. to focus an embedded field
+    /// when the dialog opens, or reset it between uses).
+    pub fn content_mut(&mut self) -> &mut C {
+        &mut self.content
+    }
+
     /// Override the viewport rect outside a taffy pass. The dialog box is
     /// re-centered immediately so tests / hosts that paint the dialog as
     /// an absolutely-positioned overlay don't have to spin up a taffy
@@ -202,8 +234,8 @@ impl<C: Widget> ModalDialog<C> {
         // its requested max in almost every case (viewports are sized
         // for ≥720p windows); the clamp is a safety net for tiny tablet
         // chrome.
-        let w = MAX_DIALOG_WIDTH.min(self.viewport.width());
-        let h = MAX_DIALOG_HEIGHT.min(self.viewport.height());
+        let w = self.max_w.min(self.viewport.width());
+        let h = self.max_h.min(self.viewport.height());
         let cx = self.viewport.x0 + (self.viewport.width() - w) / 2.0;
         let cy = self.viewport.y0 + (self.viewport.height() - h) / 2.0;
         self.rect = Rect::new(cx, cy, cx + w, cy + h);
