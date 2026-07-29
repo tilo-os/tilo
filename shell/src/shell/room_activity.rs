@@ -324,9 +324,11 @@ impl RoomActivityPane {
             .collect();
         // A contributor filter naming someone who no longer appears would hide
         // everything with no way back except clearing it, so drop it.
-        if let Some(a) = &self.author
-            && !self.contributors.iter().any(|c| c == a)
-        {
+        let stale_author = self
+            .author
+            .as_ref()
+            .is_some_and(|a| !self.contributors.iter().any(|c| c == a));
+        if stale_author {
             self.author = None;
         }
 
@@ -365,12 +367,13 @@ impl RoomActivityPane {
         // chip rows. On a very short viewport the chip rows are dropped before
         // the row list is, because a pane with filters and no rows is worse
         // than one with rows and no filters.
-        let rows_y0 = self.sheet.y0 + self.chrome_height();
+        let rows_y0 = (self.sheet.y0 + self.chrome_height()).min(self.sheet.y1);
+        let rows_y1 = (self.sheet.y1 - 8.0).max(rows_y0);
         self.timeline.set_rect(Rect::new(
             self.sheet.x0 + 8.0,
-            rows_y0.min(self.sheet.y1),
-            self.sheet.x1 - 8.0,
-            self.sheet.y1 - 8.0,
+            rows_y0,
+            (self.sheet.x1 - 8.0).max(self.sheet.x0 + 8.0),
+            rows_y1,
         ));
     }
 
@@ -694,9 +697,17 @@ fn describe_room_changes(doc: &mut automerge::AutoCommit, entries: &mut [History
     if entries.is_empty() {
         return;
     }
-    // One pass over the change list. A change's own `deps` are the document
+    // One pass over the change list, indexed so a long-lived room does not
+    // pay a linear scan per change. A change's own `deps` are the document
     // heads immediately before it, so diffing `deps -> [hash]` isolates
-    // exactly that change without having to rebuild a prefix per entry.
+    // exactly that change without having to rebuild a prefix per entry — and
+    // the diff only runs for changes that have a row, which is what keeps the
+    // cost proportional to what is on screen rather than to the whole graph.
+    let mut by_id: std::collections::HashMap<HistoryEntryId, usize> =
+        std::collections::HashMap::with_capacity(entries.len());
+    for (i, e) in entries.iter().enumerate() {
+        by_id.insert(e.id, i);
+    }
     let changes: Vec<(HistoryEntryId, Vec<ChangeHash>, ChangeHash)> = doc
         .get_changes(&[])
         .into_iter()
@@ -710,13 +721,13 @@ fn describe_room_changes(doc: &mut automerge::AutoCommit, entries: &mut [History
         .collect();
 
     for (id, deps, hash) in changes {
-        let Some(entry) = entries.iter_mut().find(|e| e.id == id) else {
+        let Some(&i) = by_id.get(&id) else {
             continue;
         };
         let patches = doc.diff(&deps, &[hash]);
         if let Some((summary, op_class)) = describe_patches(&patches) {
-            entry.summary = summary;
-            entry.op_class = op_class;
+            entries[i].summary = summary;
+            entries[i].op_class = op_class;
         }
     }
 }
@@ -726,7 +737,7 @@ fn describe_room_changes(doc: &mut automerge::AutoCommit, entries: &mut [History
 fn describe_patches(patches: &[automerge::Patch]) -> Option<(String, OpClass)> {
     let mut grants: Vec<String> = Vec::new();
     let mut revokes = 0usize;
-    let mut renamed: Option<String> = None;
+    let mut names: Vec<String> = Vec::new();
     let mut owner_set = false;
     let mut room_set = false;
     let mut tabs_added = 0usize;
@@ -754,7 +765,9 @@ fn describe_patches(patches: &[automerge::Patch]) -> Option<(String, OpClass)> {
             }
             (automerge::PatchAction::DeleteMap { .. }, "capabilities") => revokes += 1,
             (automerge::PatchAction::PutMap { key, value, .. }, _) if key == "name" => {
-                renamed = Some(scalar_string(&value.0).unwrap_or_default());
+                if let Some(n) = scalar_string(&value.0) {
+                    names.push(n);
+                }
             }
             (automerge::PatchAction::PutMap { key, .. }, _) if key == "owner" => owner_set = true,
             (automerge::PatchAction::PutMap { key, .. }, _) if key == "room" => room_set = true,
@@ -810,20 +823,11 @@ fn describe_patches(patches: &[automerge::Patch]) -> Option<(String, OpClass)> {
         };
         return Some((s, OpClass::Govern));
     }
-    if owner_set {
-        return Some(("Set the room owner".to_string(), OpClass::Govern));
-    }
-    if room_set {
-        return Some(("Assigned the room identity".to_string(), OpClass::Govern));
-    }
-    if let Some(name) = renamed {
-        let s = if name.is_empty() {
-            "Renamed the workspace".to_string()
-        } else {
-            format!("Named the workspace \u{201c}{name}\u{201d}")
-        };
-        return Some((s, OpClass::EditMeta));
-    }
+    // A whole-list rewrite is the shell flushing its cached tree back into the
+    // document (`seed_doc_from_cache`). Every field in it is touched, so
+    // reporting one of them — "assigned the room identity", say — would be
+    // technically true and completely misleading. Name the workspaces it
+    // wrote instead, which is what the change is about.
     if workspaces_removed > 0 && workspaces_added == 0 {
         return Some((
             plural(workspaces_removed, "workspace", "Removed"),
@@ -831,18 +835,27 @@ fn describe_patches(patches: &[automerge::Patch]) -> Option<(String, OpClass)> {
         ));
     }
     if workspaces_added > 0 {
-        // A fresh seed writes the whole tree at once; naming the windows it
-        // brought with it is more use than counting list elements.
-        let s = if tab_titles.is_empty() {
-            plural(workspaces_added, "workspace", "Added")
-        } else {
-            format!(
-                "{} \u{00b7} {}",
-                plural(workspaces_added, "workspace", "Added"),
-                join_titles(&tab_titles)
-            )
+        let s = match names.len() {
+            0 => plural(workspaces_added, "workspace", "Recorded"),
+            1 => format!("Recorded workspace \u{201c}{}\u{201d}", names[0]),
+            n => format!("Recorded {n} workspaces"),
         };
         return Some((s, OpClass::Splice));
+    }
+    if owner_set {
+        return Some(("Set the room owner".to_string(), OpClass::Govern));
+    }
+    if room_set {
+        return Some(("Assigned the room identity".to_string(), OpClass::Govern));
+    }
+    if !names.is_empty() {
+        let name = &names[0];
+        let s = if name.is_empty() {
+            "Renamed the workspace".to_string()
+        } else {
+            format!("Named the workspace \u{201c}{name}\u{201d}")
+        };
+        return Some((s, OpClass::EditMeta));
     }
     if tabs_added > 0 {
         let s = if tab_titles.is_empty() {
@@ -1425,6 +1438,40 @@ mod tests {
             !pane.contributors().iter().any(|c| c == "Never Edited"),
             "a peer who never wrote must not be listed: {:?}",
             pane.contributors()
+        );
+    }
+
+    #[test]
+    fn a_long_lived_room_stays_bounded() {
+        // Well past the producer's ceiling, all of it real: each iteration is
+        // the same mirror the drop handler calls when a file is dropped into
+        // a workspace. The pane must show the recent end of the history
+        // rather than growing without limit.
+        let mut tree = WorkspaceTree::bootstrap_default();
+        for i in 0..240u64 {
+            assert!(tree.doc_append_tab_to_first_group_of_active_workspace(
+                50_000 + i,
+                format!("Window {i}"),
+                b"{}".to_vec(),
+            ));
+            tree.commit_room_change();
+        }
+        let pane = pane_over(&mut tree);
+        assert!(
+            pane.entries().len() <= ui::history_source::DEFAULT_MAX_ENTRIES,
+            "the pane derived {} rows from a 240-change room",
+            pane.entries().len()
+        );
+        assert!(
+            pane.entries().len() > 100,
+            "and it is showing a real window of them, not a token few"
+        );
+        // The newest change is the one that must survive the cap.
+        assert!(
+            pane.entries()
+                .iter()
+                .any(|e| e.summary.contains("Window 239")),
+            "the most recent change is inside the window"
         );
     }
 
