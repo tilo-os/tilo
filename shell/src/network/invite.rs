@@ -36,7 +36,7 @@ use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64;
 use serde::{Deserialize, Serialize};
 
-use crate::shell::state::{RoomId, Workspace, WorkspaceId, WorkspaceTree};
+use crate::shell::state::{PeerOrigin, RoomId, Workspace, WorkspaceId, WorkspaceTree};
 
 /// Signed invite issued by a workspace owner so a remote peer can dial
 /// in and replicate the tree. Round-trips through
@@ -269,6 +269,15 @@ pub fn validate_invite_token(token_str: &str) -> Result<PeerInviteToken, String>
 /// after a restart — an invite you have to re-accept every boot is not
 /// membership.
 ///
+/// Accepting also records **who administers the room**
+/// ([`WorkspaceTree::pin_room_authority`]). The token is what makes that
+/// checkable rather than merely asserted: the room id and the owner's
+/// peer id are both inside the ed25519 signature ([`canonical_payload`]),
+/// so only the holder of the owner's key could have produced a token
+/// binding the two. Afterwards the invitee accepts the room's owner and
+/// capability list from that peer and from nobody else — including from
+/// other guests of the same room, who are in it but do not govern it.
+///
 /// Returns `Err` when the token does not verify or names no workspace
 /// this tree has. Deliberately takes the *token string*, not a parsed
 /// token, so there is no way to reach this having skipped validation.
@@ -287,6 +296,7 @@ pub fn accept_invite_into(
         ));
     }
     tree.set_room(local, room);
+    tree.pin_room_authority(room, PeerOrigin::peer_base58(&token.owner_peer_id));
     Ok(room)
 }
 

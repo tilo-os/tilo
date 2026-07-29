@@ -6,15 +6,25 @@
 //! so subscriber implementations are transport-agnostic.
 
 use crate::network::protocol::NeighbourMsg;
+use crate::shell::state::PeerOrigin;
 
 /// Anything that wants to receive broadcast traffic.
 ///
 /// `id()` is the subscriber's identity and is also used to suppress echo —
 /// a [`Hub::broadcast`] call with `from == sub.id()` will skip that
 /// subscriber.
+///
+/// `origin()` is the *transport* identity messages from this subscriber
+/// carry, which is what a receiver may base an authority decision on. It
+/// defaults to the subscriber id because an in-process subscriber has no
+/// other identity; a subscriber standing in for a real peer overrides it
+/// with that peer's [`PeerOrigin`].
 pub trait TopicSubscriber {
     fn id(&self) -> u64;
-    fn handle(&mut self, sender: u64, msg: &NeighbourMsg);
+    fn origin(&self) -> PeerOrigin {
+        PeerOrigin::hub(self.id())
+    }
+    fn handle(&mut self, sender: &PeerOrigin, msg: &NeighbourMsg);
 }
 
 /// Synchronous broadcast bus.
@@ -39,10 +49,22 @@ impl Hub {
     }
 
     /// Deliver `msg` to every subscriber whose id is not `from`.
+    ///
+    /// The sender is named to receivers by its own
+    /// [`TopicSubscriber::origin`] rather than by the raw `from` id, so a
+    /// subscriber standing in for a real peer delivers under that peer's
+    /// identity. A `from` that is not attached is named by its id, which
+    /// is the only thing known about it.
     pub fn broadcast(&mut self, from: u64, msg: NeighbourMsg) {
+        let origin = self
+            .subscribers
+            .iter()
+            .find(|s| s.id() == from)
+            .map(|s| s.origin())
+            .unwrap_or_else(|| PeerOrigin::hub(from));
         for sub in self.subscribers.iter_mut() {
             if sub.id() != from {
-                sub.handle(from, &msg);
+                sub.handle(&origin, &msg);
             }
         }
     }
@@ -61,15 +83,15 @@ mod tests {
 
     struct RecordingSub {
         id: u64,
-        recv: Vec<(u64, NeighbourMsg)>,
+        recv: Vec<(PeerOrigin, NeighbourMsg)>,
     }
 
     impl TopicSubscriber for RecordingSub {
         fn id(&self) -> u64 {
             self.id
         }
-        fn handle(&mut self, sender: u64, msg: &NeighbourMsg) {
-            self.recv.push((sender, msg.clone()));
+        fn handle(&mut self, sender: &PeerOrigin, msg: &NeighbourMsg) {
+            self.recv.push((sender.clone(), msg.clone()));
         }
     }
 
@@ -80,7 +102,10 @@ mod tests {
         fn id(&self) -> u64 {
             self.0.lock().unwrap().id()
         }
-        fn handle(&mut self, sender: u64, msg: &NeighbourMsg) {
+        fn origin(&self) -> PeerOrigin {
+            self.0.lock().unwrap().origin()
+        }
+        fn handle(&mut self, sender: &PeerOrigin, msg: &NeighbourMsg) {
             self.0.lock().unwrap().handle(sender, msg);
         }
     }
@@ -110,8 +135,11 @@ mod tests {
         hub.broadcast(1, msg.clone());
 
         assert!(a.lock().unwrap().recv.is_empty(), "sender must not echo");
-        assert_eq!(b.lock().unwrap().recv, vec![(1, msg.clone())]);
-        assert_eq!(c.lock().unwrap().recv, vec![(1, msg)]);
+        assert_eq!(
+            b.lock().unwrap().recv,
+            vec![(PeerOrigin::hub(1), msg.clone())]
+        );
+        assert_eq!(c.lock().unwrap().recv, vec![(PeerOrigin::hub(1), msg)]);
     }
 
     #[test]
@@ -133,6 +161,6 @@ mod tests {
             a.lock().unwrap().recv.is_empty(),
             "the sender (id=10) must not receive its own broadcast"
         );
-        assert_eq!(b.lock().unwrap().recv, vec![(10, msg)]);
+        assert_eq!(b.lock().unwrap().recv, vec![(PeerOrigin::hub(10), msg)]);
     }
 }
