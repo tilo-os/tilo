@@ -271,7 +271,6 @@ pub fn apply_workspace_drop_from_path(tree: &mut WorkspaceTree, path: &Path) -> 
 /// Silence the unused-import warning when `RuntimeStrip` is only used
 /// in doctests / docs (above). Keeps the symbol available so future
 /// reworks of the module don't have to re-add the import.
-#[allow(dead_code)]
 fn _use_runtime_strip(_s: &RuntimeStrip) {}
 
 /// Pick a tab label for a dropped item. Mirrors the concept's

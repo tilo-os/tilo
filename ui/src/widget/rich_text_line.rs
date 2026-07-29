@@ -1440,15 +1440,12 @@ mod tests {
     /// so we can't synthesise a Ctrl-down modifier in unit tests; the
     /// Ctrl-B / Ctrl-I / Ctrl-E paths are exercised through
     /// `toggle_mark` directly above.
-    #[allow(dead_code)]
     fn _placeholder_for_modifiers_state() -> ModifiersState {
         ModifiersState::default()
     }
-    #[allow(dead_code)]
     fn _placeholder_for_modifiers_key_state() -> ModifiersKeyState {
         ModifiersKeyState::Unknown
     }
-    #[allow(dead_code)]
     fn _placeholder_for_ctrl_modifiers() -> Modifiers {
         ctrl_modifiers()
     }

@@ -15,7 +15,7 @@ use chrono::Local;
 use taffy::{Dimension, Display, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
-use vello::peniko::{Brush, ColorStop, ColorStops, Extend, Fill, Gradient, GradientKind};
+use vello::peniko::{Brush, ColorStop, Extend, Fill, Gradient};
 use winit::event::WindowEvent;
 
 use ui::presence::{PresenceCtx, parse_hex_color, user_color};

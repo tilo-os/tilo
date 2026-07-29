@@ -151,69 +151,6 @@ impl Toolbar {
         self.overflow_open
     }
 
-    /// Measure a button label's extent along the orientation axis. Used
-    /// by `build_layout` to compute `visible_count` before Taffy has any
-    /// idea about per-item widths. Matches the `tabs.rs` approximation
-    /// so a Toolbar reads at the same density as a TabBar in isolation.
-    fn measure_button_axis(&self, label: &str, theme: &Theme) -> f64 {
-        let pad_axis = match self.orientation {
-            // Horizontal pad on each side is `tokens.spacing.s3`; vertical
-            // (cross-axis) padding doesn't affect the orientation extent.
-            Orientation::Horizontal => 2.0 * theme.tokens.spacing.s3 as f64,
-            // For vertical toolbars the orientation axis is height, so
-            // `s2` (vertical pad) is what we double up.
-            Orientation::Vertical => 2.0 * theme.tokens.spacing.s2 as f64,
-        };
-        let text_axis = match self.orientation {
-            Orientation::Horizontal => label.chars().count() as f64 * APPROX_CHAR_W,
-            // Vertical labels still read horizontally; height is
-            // ~font-size + a bit of slack.
-            Orientation::Vertical => theme.tokens.typography.scale.sm as f64 * 1.4,
-        };
-        (text_axis + pad_axis).max(theme.tokens.spacing.s8 as f64)
-    }
-
-    /// Extent of a non-spacer item along the orientation axis. Spacers
-    /// return 0 because they soak residual space rather than consuming
-    /// a fixed amount.
-    fn measure_item_axis(&self, item: &ToolbarItem, theme: &Theme) -> f64 {
-        match item {
-            ToolbarItem::Button { label, .. } => self.measure_button_axis(label, theme),
-            ToolbarItem::Separator => SEPARATOR_LINE_PX + 2.0 * theme.tokens.spacing.s2 as f64,
-            ToolbarItem::Spacer => 0.0,
-        }
-    }
-
-    /// Compute `visible_count` from the available axis extent. Items
-    /// beyond the first one that would push the cumulative extent past
-    /// the limit collapse into the overflow chip; the chip itself
-    /// reserves `OVERFLOW_CHIP_AXIS_PX` on the trailing edge.
-    fn recompute_visible(&mut self, available: f64, theme: &Theme) {
-        let total: f64 = self
-            .items
-            .iter()
-            .map(|it| self.measure_item_axis(it, theme))
-            .sum();
-        if total <= available {
-            self.visible_count = self.items.len();
-            return;
-        }
-        // Doesn't fit — reserve room for the overflow chip and pack
-        // items in order until the next one would push us past the
-        // adjusted budget.
-        let budget = (available - OVERFLOW_CHIP_AXIS_PX).max(0.0);
-        let mut used = 0.0;
-        let mut count = 0;
-        for it in &self.items {
-            let w = self.measure_item_axis(it, theme);
-            if used + w > budget {
-                break;
-            }
-            used += w;
-            count += 1;
-        }
-        self.visible_count = count;
-    }
 }
 
 impl Widget for Toolbar {
