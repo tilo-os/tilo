@@ -82,6 +82,10 @@ pub struct ShellOverlayHost {
     /// returns. Populated during draw so `handle_event` can hit-test
     /// without recomputing geometry.
     search_chip_rects: Vec<Rect>,
+    /// Rect of the leading "All" chip that clears the kind filter.
+    /// Cached from the draw pass so the click hit-test uses exactly the
+    /// geometry that was painted.
+    search_all_chip_rect: Rect,
     /// Set to `true` whenever [`Self::refresh_search_results`] rewrites
     /// the palette's entry list. The next `take_structure_dirty` folds
     /// it in so the taffy layout pass rebuilds the palette node with
@@ -89,6 +93,9 @@ pub struct ShellOverlayHost {
     /// pinned at whatever the empty-entries first paint computed, and
     /// only the first ~1 result is visible.
     palette_layout_dirty: bool,
+    /// Host width the palette's taffy style was last computed against.
+    /// See the sizing comment in `build_layout`.
+    palette_layout_host_w: f64,
     // Child node ids are captured once during `build_layout` so we can
     // forward layout/draw/event calls without re-walking the tree.
     content_node: Option<NodeId>,
@@ -305,6 +312,63 @@ pub enum PeerSyncAction {
 /// `overview_t` ∈ [0, 1] into two halves inside the draw path: the first
 /// half shrinks/fades the desktop out, the second half grows/fades the
 /// overview in.
+/// Rows the palette asks the registry for, shared round-robin between
+/// the matching kinds. See
+/// [`crate::shell::search::SearchRegistry::query_grouped`].
+const PALETTE_ROW_BUDGET: usize = 16;
+
+/// Glyph that stands for a result kind in the palette. Giving each kind
+/// a picture is what replaced the bracketed kind literal the shell used
+/// to prepend to every subtitle.
+fn icon_for_kind(kind: &crate::shell::search::ResourceKind) -> ui::icons::Icon {
+    use crate::shell::search::ResourceKind as K;
+    use ui::icons::Icon;
+    match kind {
+        K::Action => Icon::Settings2,
+        K::Application => Icon::LayoutGrid,
+        K::Note => Icon::FileText,
+        K::File => Icon::File,
+        K::Folder => Icon::Folder,
+        K::Creator => Icon::Star,
+        K::Video => Icon::Film,
+        K::Playlist => Icon::List,
+        K::Custom(_) => Icon::Search,
+    }
+}
+
+/// Gap between a segmented control's outer track and its segments.
+const SEGMENT_INSET_PX: f64 = 2.0;
+
+/// One pill in the search card's filter band. Shared by the kind chips
+/// and the "All" reset chip so they cannot drift apart.
+#[allow(clippy::too_many_arguments)]
+fn draw_filter_chip(
+    scene: &mut Scene,
+    transform: Affine,
+    text_renderer: &mut TextRenderer,
+    rect: Rect,
+    label: &str,
+    text_size: f32,
+    fill: vello::peniko::Color,
+    text_color: vello::peniko::Color,
+) {
+    let shape = RoundedRect::from_rect(rect, rect.height() / 2.0);
+    scene.fill(vello::peniko::Fill::NonZero, transform, fill, None, &shape);
+    let (lw, lh) = text_renderer.measure(label, text_size, None);
+    text_renderer.draw_text(
+        scene,
+        label,
+        text_size,
+        text_color,
+        transform
+            * Affine::translate((
+                rect.x0 + (rect.width() - lw as f64) / 2.0,
+                rect.y0 + (rect.height() - lh as f64) / 2.0,
+            )),
+        None,
+    );
+}
+
 const OVERVIEW_TRANSITION_MS: u64 = 400;
 
 /// Vertical inset below the top bar where the floating sidebar wheel
@@ -428,7 +492,9 @@ impl ShellOverlayHost {
         // resource-kind chips automatically.
         let mut palette = CommandPalette::new();
         palette.set_bypass_fuzzy(true);
-        palette.set_hide_filter_strip(true);
+        // The shell paints scope + kind controls into the palette's own
+        // reserved filter band, inside the card.
+        palette.set_host_filter_strip(true);
         let mut search_registry = crate::shell::search::SearchRegistry::new();
         search_registry.register(std::rc::Rc::new(
             crate::shell::search::providers::ActionsProvider::new(),
@@ -453,7 +519,9 @@ impl ShellOverlayHost {
             last_search_query: String::new(),
             active_kind_filter: Vec::new(),
             search_chip_rects: Vec::new(),
+            search_all_chip_rect: Rect::ZERO,
             palette_layout_dirty: false,
+            palette_layout_host_w: f64::NAN,
             content_node: None,
             palette_node: None,
             sidebar_node: None,
@@ -1895,9 +1963,9 @@ impl ShellOverlayHost {
             let active_provider = active_tab_provider_id(&st, &self.search_registry);
             (scope, active_provider)
         };
-        let results = {
+        let groups = {
             let st = chrome.borrow();
-            self.search_registry.query(
+            self.search_registry.query_grouped(
                 &current_query,
                 scope,
                 active_provider.as_deref(),
@@ -1905,24 +1973,33 @@ impl ShellOverlayHost {
                 &st,
                 doc,
                 root,
+                PALETTE_ROW_BUDGET,
             )
         };
 
-        let mut entries: Vec<CommandEntry> = results
-            .iter()
-            .enumerate()
-            .map(|(i, r)| {
-                // Prefix the description with the kind label so users can
-                // eyeball "which bucket did this come from" without a
-                // dedicated column. Falls back to the raw subtitle when
-                // no kind label is needed (Custom(_) with an empty tag).
-                let subtitle = match (&r.subtitle, r.kind.label()) {
-                    (Some(sub), kind_label) => format!("[{}] {}", kind_label, sub),
-                    (None, kind_label) => format!("[{}]", kind_label),
-                };
-                CommandEntry::new(format!("result:{}", i), r.title.clone()).description(subtitle)
-            })
-            .collect();
+        // Flatten the groups into palette rows. The kind travels as the
+        // row's *section* and its *glyph*, not as a `[Files]` literal
+        // glued onto every subtitle — that literal was debug output
+        // rendered as UI, it repeated identically down the whole list,
+        // and it pushed the part of the path that actually distinguishes
+        // one hit from another off the right edge.
+        let mut results: Vec<crate::shell::search::SearchResult> = Vec::new();
+        let mut entries: Vec<CommandEntry> = Vec::new();
+        for group in &groups {
+            let label = group.kind.label().to_string();
+            for r in &group.results {
+                let idx = results.len();
+                let mut e = CommandEntry::new(format!("result:{idx}"), r.title.clone())
+                    .group(label.clone())
+                    .group_total(group.total)
+                    .icon(icon_for_kind(&r.kind));
+                if let Some(sub) = &r.subtitle {
+                    e = e.description(sub.clone());
+                }
+                entries.push(e);
+                results.push(r.clone());
+            }
+        }
 
         // Peer-sync entries are grafted here so they always land next to
         // the current search hits rather than sitting statically at the
@@ -2149,6 +2226,14 @@ impl ShellOverlayHost {
         self.palette_visible
     }
 
+    /// Focus the palette's query field. The live open path
+    /// ([`Self::open_palette_with_scope`]) does this; screenshot
+    /// harnesses that force `palette_visible` need it too or they
+    /// capture the unfocused field.
+    pub fn set_palette_focus(&mut self, focused: bool) {
+        self.palette.set_focus(focused);
+    }
+
     /// Force-set the palette visibility. Lets headless screenshot
     /// harnesses (e.g. `bin/shots`) drive the palette scene without
     /// staging a synthetic Ctrl+K key event through `handle_event`.
@@ -2166,6 +2251,11 @@ impl ShellOverlayHost {
         doc: &mut automerge::AutoCommit,
         root: &ObjId,
     ) {
+        // Drop the no-op short-circuit first. `last_search_query` starts
+        // empty, so an empty-query scene matched it and returned without
+        // ever running a provider — every "palette just opened" shot was
+        // of a palette that had not searched.
+        self.last_search_query = "\u{0}not-yet-refreshed\u{0}".to_string();
         self.refresh_search_results(doc, root);
     }
 
@@ -2561,34 +2651,19 @@ impl ShellOverlayHost {
         )
     }
 
-    /// Rect for the search-scope banner — sits 8 px above the palette with
-    /// the same horizontal extent. Computed from the palette's post-layout
-    /// rect so the banner tracks the palette even at different DPIs.
+    /// The band the scope + kind controls are painted into.
+    ///
+    /// This is the palette's *own* reserved filter band, not a separate
+    /// surface floating above the card. Reading it from the palette is
+    /// what keeps the controls on the same left edge as the query field
+    /// and the rows below them; the previous banner computed its own
+    /// insets and so lined up with neither.
     fn search_banner_rect(&self) -> Rect {
         let p = self.palette.get_rect();
         if p.width() <= 0.0 {
             return Rect::ZERO;
         }
-        // Tall enough for scope pills (top row) + kind-chip strip
-        // (bottom row) + padding. 64 px = 20 (scope row) + 8 (gap) +
-        // 20 (chip row) + 8*2 (banner padding). Sits FLUSH on top of the
-        // palette (no gap) so the two compose into one search surface —
-        // the unified background + soft shadow behind them is painted in
-        // the palette draw block.
-        let h = 64.0_f64;
-        Rect::new(p.x0, p.y0 - h, p.x1, p.y0)
-    }
-
-    /// The banner + palette drawn as one surface — from the banner top
-    /// to the palette bottom. The unified background and drop shadow use
-    /// this so the search chrome reads as a single card, not two.
-    fn search_surface_rect(&self) -> Rect {
-        let p = self.palette.get_rect();
-        let b = self.search_banner_rect();
-        if p.width() <= 0.0 {
-            return p;
-        }
-        Rect::new(p.x0, b.y0, p.x1, p.y1)
+        self.palette.filter_strip_rect()
     }
 
     /// Full ordered list of scopes shown in the banner. Includes
@@ -2648,33 +2723,54 @@ impl ShellOverlayHost {
         }
     }
 
-    /// Individual scope-pill rect inside the banner. `idx` indexes into
-    /// [`Self::search_scope_list`], so the ActiveApp pill (when present)
-    /// is idx 0. Hit-test and draw consume this same helper. Widths are
-    /// fixed at [`Self::SCOPE_PILL_WIDTH_PX`] so the layout stays stable
-    /// across frames even when the ActiveApp label changes length.
+    /// Individual scope-segment rect inside the filter band. `idx`
+    /// indexes into [`Self::search_scope_list`], so the ActiveApp
+    /// segment (when present) is idx 0.
+    ///
+    /// The three scopes are one segmented control anchored to the right
+    /// end of the band, not three loose pills after a "Search in:"
+    /// label: they are mutually exclusive, so they should look like one
+    /// switch rather than three independent toggles sitting next to a
+    /// row of multi-select kind chips that look exactly the same.
+    /// Hit-test and draw consume this same helper.
     fn search_scope_pill_rect(&self, idx: usize) -> Rect {
         let b = self.search_banner_rect();
         if b.width() <= 0.0 {
             return Rect::ZERO;
         }
-        let label_w = 96.0_f64; // "Search in:" prefix
-        let pill_w = Self::SCOPE_PILL_WIDTH_PX;
-        let pill_gap = 8.0_f64;
-        let pill_h = 22.0_f64;
-        // Scope pills sit in the top row of the banner. Kind chips get
-        // the bottom row (see `draw_search_banner`). 12 px top padding
-        // centres the pill row vertically inside the top half.
-        let row_y = b.y0 + 12.0;
-        let cy = row_y + pill_h / 2.0;
-        let start = b.x0 + 16.0 + label_w;
-        let x0 = start + idx as f64 * (pill_w + pill_gap);
-        Rect::new(x0, cy - pill_h / 2.0, x0 + pill_w, cy + pill_h / 2.0)
+        let count = self.search_scope_list().len().max(1);
+        let track = self.search_scope_track_rect();
+        let seg_w = (track.width() - 2.0 * SEGMENT_INSET_PX) / count as f64;
+        let x0 = track.x0 + SEGMENT_INSET_PX + idx as f64 * seg_w;
+        Rect::new(
+            x0,
+            track.y0 + SEGMENT_INSET_PX,
+            x0 + seg_w,
+            track.y1 - SEGMENT_INSET_PX,
+        )
     }
 
-    /// Uniform pill width used by [`Self::search_scope_pill_rect`]. Wide
-    /// enough to hold ~14 chars of a truncated app title without cramping.
-    const SCOPE_PILL_WIDTH_PX: f64 = 110.0;
+    /// Outer track of the scope segmented control — the rounded body the
+    /// individual segments sit inside.
+    fn search_scope_track_rect(&self) -> Rect {
+        let b = self.search_banner_rect();
+        if b.width() <= 0.0 {
+            return Rect::ZERO;
+        }
+        let count = self.search_scope_list().len().max(1);
+        let w = (Self::SCOPE_SEGMENT_WIDTH_PX * count as f64 + 2.0 * SEGMENT_INSET_PX)
+            .min(b.width() * 0.55);
+        let h = Self::FILTER_CONTROL_HEIGHT_PX;
+        let cy = (b.y0 + b.y1) / 2.0;
+        Rect::new(b.x1 - w, cy - h / 2.0, b.x1, cy + h / 2.0)
+    }
+
+    /// Width of one scope segment. Wide enough to hold a truncated app
+    /// title without cramping.
+    const SCOPE_SEGMENT_WIDTH_PX: f64 = 88.0;
+    /// Shared height for every control in the filter band, so the chips
+    /// and the scope switch sit on one baseline.
+    const FILTER_CONTROL_HEIGHT_PX: f64 = 24.0;
 
     /// Geometry of the overview's centered content column. Concept wraps
     /// everything in a `max-w-5xl w-full` column with `p-12` outer padding,
@@ -2991,6 +3087,13 @@ impl Widget for ShellOverlayHost {
         // `shots --sweep` on 2026-06-27 — the fixed 640 was clipping
         // hard against the 800×600 viewport's right edge.
         let palette_target_w = (self.rect.width() * 0.7).clamp(560.0, 640.0);
+        // `self.rect` is last frame's post-layout rect, so the very
+        // first layout sizes the card off a zero-width host and lands on
+        // the 560 floor. Remember what we sized against; `apply_layout`
+        // re-dirties the tree if the host turned out to be a different
+        // width, so the card converges on its real size instead of
+        // keeping whichever width the first frame happened to see.
+        self.palette_layout_host_w = self.rect.width();
         palette_style.size = Size {
             width: Dimension::length(palette_target_w as f32),
             height: palette_style.size.height,
@@ -3073,6 +3176,13 @@ impl Widget for ShellOverlayHost {
             origin.x + l.location.x as f64 + l.size.width as f64,
             origin.y + l.location.y as f64 + l.size.height as f64,
         );
+        // Did the card get sized against a stale host width? Ask for one
+        // more layout pass; the check is a float compare against the
+        // exact value `build_layout` stored, so it settles in a single
+        // extra frame and then stops.
+        if self.palette_layout_host_w != self.rect.width() {
+            self.palette_layout_dirty = true;
+        }
         // Push the current wheel-disc slot width (plus a small
         // breathing-room gap) into every GroupRow's `leading_inset`
         // BEFORE the content tree lays out, so the strip reserves the
@@ -3563,19 +3673,13 @@ impl Widget for ShellOverlayHost {
             } else {
                 transform
             };
-            // The banner + palette compose into ONE surface. Draw a
-            // single unified background card spanning both, with a soft
-            // shadow behind it, so there's no seam between "Search in:"
-            // and the input. The banner then draws its content directly
-            // on this background (no card of its own) and the palette
-            // widget's own opaque card paints over the lower region in
-            // the same colour.
-            let surface_rect = self.search_surface_rect();
-            let radius = theme.tokens.radii.xl as f64;
+            // One card. The filter controls live in a band the palette
+            // itself reserves, so there is no second surface to stitch
+            // on and no seam to hide.
             ui::surface::soft_shadow(
                 scene,
                 palette_xform,
-                surface_rect,
+                palette_rect,
                 theme.tokens.colors.neutral[0],
                 44.0,
                 14.0,
@@ -3588,14 +3692,6 @@ impl Widget for ShellOverlayHost {
             // theme whose `surfaces.raised` is pre-tinted rather than
             // reaching inside the shared widget to plumb an override.
             let palette_theme = palette_surface_theme(theme, MODAL_SURFACE_ALPHA);
-            let unified = RoundedRect::from_rect(surface_rect, radius);
-            scene.fill(
-                vello::peniko::Fill::NonZero,
-                palette_xform,
-                palette_theme.tokens.colors.surfaces.raised,
-                None,
-                &unified,
-            );
             self.palette.draw(
                 scene,
                 palette_xform,
@@ -3603,9 +3699,9 @@ impl Widget for ShellOverlayHost {
                 &palette_theme,
                 presence,
             );
-            // Banner content (label + scope pills + kind chips) painted
-            // directly on the unified background — no card of its own.
-            self.draw_search_banner(scene, palette_xform, text_renderer, theme);
+            // Filter band content, painted into the palette's reserved
+            // band so it shares the card's content inset.
+            self.draw_search_banner(scene, palette_xform, text_renderer, &palette_theme);
             if in_flight {
                 scene.pop_layer();
             }
@@ -4221,8 +4317,7 @@ impl Widget for ShellOverlayHost {
                         }
                     }
                     let palette_rect = self.palette.get_rect();
-                    let banner_rect = self.search_banner_rect();
-                    if !palette_rect.contains(p) && !banner_rect.contains(p) {
+                    if !palette_rect.contains(p) {
                         self.palette_visible = false;
                         *handled = true;
                         return;
@@ -4744,6 +4839,20 @@ impl Widget for ShellOverlayHost {
             } = event
             {
                 if let Some(p) = self.last_cursor {
+                    // "All" clears the kind filter outright — the state
+                    // where nothing is selected needs a control that
+                    // *reaches* it, not just a way to untick five chips.
+                    if self.search_all_chip_rect.area() > 0.0
+                        && self.search_all_chip_rect.contains(p)
+                    {
+                        if !self.active_kind_filter.is_empty() {
+                            self.active_kind_filter.clear();
+                            self.last_search_query.clear(); // force a refresh
+                            self.refresh_search_results(state, path);
+                        }
+                        *handled = true;
+                        return;
+                    }
                     let kinds = self.search_registry.registered_kinds();
                     for (idx, rect) in self.search_chip_rects.iter().enumerate() {
                         if rect.contains(p) {
@@ -6784,10 +6893,15 @@ impl ShellOverlayHost {
         }
     }
 
-    /// Scope banner drawn above the palette while ⌘K is open. Shows a
-    /// "Search in:" label and two toggleable pills ("Workspace" / "All").
-    /// The active pill uses the indigo accent fill so it reads as
-    /// "selected"; the inactive pill sits on the raised surface.
+    /// The filter band inside the search card: multi-select kind chips
+    /// on the left, the mutually-exclusive scope switch on the right.
+    ///
+    /// One row, on the card's own content inset, so it lines up with the
+    /// query field above it and the result rows below it. The band it
+    /// paints into belongs to the palette
+    /// ([`ui::widget::command_palette::CommandPalette::filter_strip_rect`]),
+    /// which is why the alignment holds without the shell re-deriving
+    /// any insets.
     fn draw_search_banner(
         &mut self,
         scene: &mut Scene,
@@ -6797,111 +6911,126 @@ impl ShellOverlayHost {
     ) {
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
-        let banner = self.search_banner_rect();
-        if banner.width() <= 0.0 {
+        let band = self.search_banner_rect();
+        if band.width() <= 0.0 {
+            self.search_chip_rects.clear();
             return;
         }
 
-        // The banner has no card of its own — it sits on the unified
-        // search-surface background painted by the palette draw block,
-        // so "Search in:" and the input read as one panel. A faint 1px
-        // divider under the banner separates the scope/chip controls
-        // from the query input below.
-        let divider_y = banner.y1;
-        scene.stroke(
-            &vello::kurbo::Stroke::new(1.0),
-            transform,
-            colors.border_standard.with_alpha_factor(0.5),
-            None,
-            &vello::kurbo::Line::new(
-                Point::new(banner.x0 + 12.0, divider_y),
-                Point::new(banner.x1 - 12.0, divider_y),
-            ),
-        );
+        let chip_text_size = (tokens.typography.scale.xs).max(10.0);
+        let idle_fill = colors.surface_white_5;
+        let active_fill = colors.accent[5];
+        let active_text = colors.text_primary;
+        let idle_text = colors.text_dim;
+        let control_h = Self::FILTER_CONTROL_HEIGHT_PX;
+        let cy = (band.y0 + band.y1) / 2.0;
 
-        // "Search in:" label
-        let label_size = tokens.typography.scale.sm;
-        let (_lw, lh) = text_renderer.measure("Search in:", label_size, None);
-        let label_y = (banner.y0 + banner.y1) / 2.0 - lh as f64 / 2.0;
-        text_renderer.draw_text(
-            scene,
-            "Search in:",
-            label_size,
-            colors.text_dim,
-            transform * Affine::translate((banner.x0 + 16.0, label_y)),
-            None,
-        );
-
-        // Active scope from chrome state (defaults to Workspace if the
-        // overlay host was built without chrome — we still want the banner
-        // to render sensibly for tests).
+        // --- Scope switch (right-anchored) -----------------------------
         let active = self
             .chrome
             .as_ref()
             .map(|c| c.borrow().search_scope)
             .unwrap_or_default();
-
+        let track = self.search_scope_track_rect();
+        let track_shape = RoundedRect::from_rect(track, track.height() / 2.0);
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            transform,
+            colors.surface_white_5,
+            None,
+            &track_shape,
+        );
+        scene.stroke(
+            &vello::kurbo::Stroke::new(1.0),
+            transform,
+            colors.border_white_10,
+            None,
+            &track_shape,
+        );
         let scopes = self.search_scope_list();
-        for (idx, scope) in scopes.into_iter().enumerate() {
-            let pill = self.search_scope_pill_rect(idx);
-            let is_active = scope == active;
-            let (fill, border) = ui::surface::chip_colors(theme, is_active);
-            ui::surface::pill(scene, transform, pill, fill, border, None);
-
-            let text = self.search_scope_pill_label(scope);
-            let (tw, th) = text_renderer.measure(&text, tokens.typography.scale.sm, None);
-            let tx = (pill.x0 + pill.x1) / 2.0 - tw as f64 / 2.0;
-            let ty = (pill.y0 + pill.y1) / 2.0 - th as f64 / 2.0;
+        for (idx, scope) in scopes.iter().enumerate() {
+            let seg = self.search_scope_pill_rect(idx);
+            let is_active = *scope == active;
+            if is_active {
+                let shape = RoundedRect::from_rect(seg, seg.height() / 2.0);
+                scene.fill(
+                    vello::peniko::Fill::NonZero,
+                    transform,
+                    active_fill,
+                    None,
+                    &shape,
+                );
+            }
+            let text = self.search_scope_pill_label(*scope);
+            let text =
+                text_renderer.elide_to_width(&text, chip_text_size, (seg.width() - 10.0) as f32);
+            let (tw, th) = text_renderer.measure(&text, chip_text_size, None);
             text_renderer.draw_text(
                 scene,
                 &text,
-                tokens.typography.scale.sm,
-                colors.text_primary,
-                transform * Affine::translate((tx, ty)),
+                chip_text_size,
+                if is_active { active_text } else { idle_text },
+                transform
+                    * Affine::translate((
+                        (seg.x0 + seg.x1) / 2.0 - tw as f64 / 2.0,
+                        (seg.y0 + seg.y1) / 2.0 - th as f64 / 2.0,
+                    )),
                 None,
             );
         }
 
-        // Resource-kind chip strip. Painted as a second row of pills
-        // inside the same banner, offset below the scope pills. Chips
-        // are dynamic — one per kind any registered provider exposes,
-        // so a new provider gets a chip for free. Multi-select: click
-        // toggles the kind in `active_kind_filter`; empty filter means
-        // "everything shows".
+        // --- Kind chips (left, multi-select) ---------------------------
+        // Dynamic: one chip per kind any registered provider exposes, so
+        // a new provider gets a chip for free. Empty selection means
+        // "everything shows", which the leading "All" chip states rather
+        // than leaving the strip looking like nothing is on.
         let kinds = self.search_registry.registered_kinds();
-        if !kinds.is_empty() {
-            let chip_h = 20.0;
-            let chip_gap = 6.0;
-            // Bottom row of the banner. Scope pills own the top 12+22
-            // px; chips start 8 px below with 12 px bottom padding.
-            let chip_row_y = banner.y0 + 12.0 + 22.0 + 8.0;
-            let mut chip_rects: Vec<Rect> = Vec::with_capacity(kinds.len());
-            let mut x = banner.x0 + 16.0;
-            for kind in &kinds {
-                let label = kind.label();
-                let (lw, _) = text_renderer.measure(label, tokens.typography.scale.xs, None);
-                let chip_w = (lw as f64) + 20.0;
-                let rect = Rect::new(x, chip_row_y, x + chip_w, chip_row_y + chip_h);
-                let is_active = self.active_kind_filter.contains(kind);
-                let (fill, border) = ui::surface::chip_colors(theme, is_active);
-                ui::surface::pill(scene, transform, rect, fill, border, None);
-                let (_, th) = text_renderer.measure(label, tokens.typography.scale.xs, None);
-                let ty = (rect.y0 + rect.y1) / 2.0 - th as f64 / 2.0;
-                text_renderer.draw_text(
-                    scene,
-                    label,
-                    tokens.typography.scale.xs,
-                    colors.text_primary,
-                    transform * Affine::translate((rect.x0 + 10.0, ty)),
-                    None,
-                );
-                chip_rects.push(rect);
-                x += chip_w + chip_gap;
+        let mut chip_rects: Vec<Rect> = Vec::with_capacity(kinds.len());
+        let budget_x1 = track.x0 - 10.0;
+        let mut x = band.x0;
+
+        let all_active = self.active_kind_filter.is_empty();
+        let (aw, _) = text_renderer.measure("All", chip_text_size, None);
+        let all_rect = Rect::new(x, cy - control_h / 2.0, x + aw as f64 + 18.0, cy + control_h / 2.0);
+        draw_filter_chip(
+            scene,
+            transform,
+            text_renderer,
+            all_rect,
+            "All",
+            chip_text_size,
+            if all_active { active_fill } else { idle_fill },
+            if all_active { active_text } else { idle_text },
+        );
+        self.search_all_chip_rect = all_rect;
+        x = all_rect.x1 + 6.0;
+
+        for kind in &kinds {
+            let label = kind.label();
+            let (lw, _) = text_renderer.measure(label, chip_text_size, None);
+            let chip_w = lw as f64 + 18.0;
+            if x + chip_w > budget_x1 {
+                // Stop rather than paint a chip under the scope switch.
+                // An unpainted chip is not in `search_chip_rects`, so it
+                // cannot be clicked either.
+                break;
             }
-            self.search_chip_rects = chip_rects;
-        } else {
-            self.search_chip_rects.clear();
+            let rect = Rect::new(x, cy - control_h / 2.0, x + chip_w, cy + control_h / 2.0);
+            let is_active = self.active_kind_filter.contains(kind);
+            draw_filter_chip(
+                scene,
+                transform,
+                text_renderer,
+                rect,
+                label,
+                chip_text_size,
+                if is_active { active_fill } else { idle_fill },
+                if is_active { active_text } else { idle_text },
+            );
+            chip_rects.push(rect);
+            x += chip_w + 6.0;
         }
+        self.search_chip_rects = chip_rects;
     }
 
     fn draw_quick_settings(

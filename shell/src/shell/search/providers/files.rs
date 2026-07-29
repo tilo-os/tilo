@@ -160,8 +160,22 @@ impl SearchProvider for FilesProvider {
         let mut out: Vec<SearchResult> = Vec::new();
 
         // Filename hits from the in-memory index.
+        //
+        // Score the whole index, then keep the best `MAX_RESULTS` — not
+        // the first `MAX_RESULTS` the walker happened to reach. Stopping
+        // at the first N made the ranking depend on directory traversal
+        // order: a query answered by a hundred equally-scoring files
+        // showed whichever hundred sat alphabetically first under
+        // whichever tree the walk entered first, and any better hit
+        // further down the walk was simply never scored. Ranking is only
+        // ranking if every candidate is in the comparison.
+        //
+        // Ranking the candidates by (score, path) instead of collecting
+        // `SearchResult`s keeps this cheap: no callback allocation and
+        // no `PathBuf` clone for the entries that lose.
         if let Ok(guard) = self.name_index.lock() {
-            for entry in &guard.entries {
+            let mut ranked: Vec<(i32, usize, usize)> = Vec::new();
+            for (i, entry) in guard.entries.iter().enumerate() {
                 if entry.is_dir && !want_folder {
                     continue;
                 }
@@ -171,11 +185,23 @@ impl SearchProvider for FilesProvider {
                 let Some(score) = name_score(&needle_lower, &entry.lower) else {
                     continue;
                 };
+                ranked.push((score, path_depth(&entry.lower), i));
+            }
+            // Best score first; among equals the shallower path wins.
+            // Equally-good name matches are genuinely tied on relevance,
+            // so the tiebreak has to come from somewhere — and depth is
+            // the one signal that tracks how much the file belongs to
+            // the user rather than to something they cloned: `~/notes`
+            // over `~/src/vendor/pkg/dist/generated`.
+            ranked.sort_by(|a, b| {
+                b.0.cmp(&a.0)
+                    .then_with(|| a.1.cmp(&b.1))
+                    .then_with(|| guard.entries[a.2].lower.cmp(&guard.entries[b.2].lower))
+            });
+            for (score, _, i) in ranked.into_iter().take(MAX_RESULTS) {
+                let entry = &guard.entries[i];
                 seen.insert(entry.path.clone());
                 out.push(make_result(entry, score, None));
-                if out.len() >= MAX_RESULTS {
-                    break;
-                }
             }
         }
 
@@ -221,9 +247,21 @@ impl SearchProvider for FilesProvider {
             }
         }
 
-        // Final sort by score desc — the registry re-sorts across
-        // providers by kind first, but within a kind higher scores win.
-        out.sort_by(|a, b| b.score.cmp(&a.score));
+        // Final ordering across both backends: score first, then the
+        // shallower path. Content hits arrive from the index clamped
+        // into a narrow band, so a query answered mostly by content ties
+        // almost everything — and a tie the provider leaves unordered
+        // becomes an arbitrary order somewhere downstream. Sort it here,
+        // where the paths are still at hand.
+        out.sort_by(|a, b| {
+            b.score
+                .cmp(&a.score)
+                // `id` is the absolute path; the subtitle is not always
+                // one (a content hit shows its snippet when the index
+                // produced one).
+                .then_with(|| path_depth(&a.id).cmp(&path_depth(&b.id)))
+                .then_with(|| a.id.cmp(&b.id))
+        });
         out
     }
 
@@ -288,6 +326,12 @@ fn name_score(needle_lower: &str, hay_lower: &str) -> Option<i32> {
         return Some(20);
     }
     None
+}
+
+/// Number of path components, used as the tiebreak between two files
+/// that matched the needle equally well.
+fn path_depth(display_lower: &str) -> usize {
+    display_lower.bytes().filter(|b| *b == b'/').count()
 }
 
 fn fuzzy_subsequence(needle: &str, hay: &str) -> bool {
