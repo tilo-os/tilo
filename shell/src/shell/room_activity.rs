@@ -972,3 +972,468 @@ fn join_titles(titles: &[String]) -> String {
         n => format!("{}, {} and {} more", titles[0], titles[1], n - 2),
     }
 }
+
+// =====================================================================
+// Tests
+// =====================================================================
+
+#[cfg(test)]
+mod tests {
+    //! Every fixture below mutates the room through the *production*
+    //! mirrors — `adopt_ownerless_workspaces`, `grant_in_workspace`,
+    //! `revoke_in_workspace`, `doc_append_tab_to_first_group_of_active_workspace`
+    //! — and then reads the pane back. Nothing writes a synthetic
+    //! `HistoryEntry`: if the shell stopped recording a room change, or
+    //! recorded it without a timestamp, these fail.
+
+    use super::*;
+    use crate::shell::state::{WorkspaceId, WorkspaceTree};
+    use collab_types::caps::{CapOverride, Scope, Subject, Verb};
+    use ui::widget::op_class_is_revertible;
+
+    /// A room with an owner, one grant, one revoke, one renamed workspace and
+    /// one window opened — a plausible half-hour in a workspace.
+    fn busy_room() -> (WorkspaceTree, WorkspaceId, String) {
+        let mut tree = WorkspaceTree::bootstrap_default();
+        let user: String = "test-owner".to_string();
+        tree.adopt_ownerless_workspaces(&user);
+        let ws_id = tree.active;
+
+        let granted = tree
+            .grant_in_workspace(
+                ws_id,
+                &user,
+                CapOverride::grant(
+                    Subject::app("files"),
+                    Scope::FsPath("/home/user/notes".to_string()),
+                    Verb::Read,
+                ),
+            )
+            .expect("the owner may grant in their own room");
+        tree.grant_in_workspace(
+            ws_id,
+            &user,
+            CapOverride::grant(
+                Subject::app("terminal"),
+                Scope::Device("camera".to_string()),
+                Verb::Read,
+            ),
+        )
+        .expect("the owner may grant in their own room");
+        assert!(tree.revoke_in_workspace(ws_id, &user, &granted));
+
+        if let Some(ws) = tree.workspaces.iter_mut().find(|w| w.id == ws_id) {
+            ws.name = "Design review".to_string();
+        }
+        tree.seed_doc_from_cache();
+        (tree, ws_id, user)
+    }
+
+    fn pane_over(tree: &mut WorkspaceTree) -> RoomActivityPane {
+        let mut pane = RoomActivityPane::new();
+        pane.layout(Rect::new(0.0, 0.0, 1600.0, 900.0));
+        pane.refresh(tree);
+        pane
+    }
+
+    #[test]
+    fn rows_come_from_the_rooms_own_change_graph() {
+        let (mut tree, _, _) = busy_room();
+        let pane = pane_over(&mut tree);
+        assert!(
+            pane.entries().len() >= 4,
+            "bootstrap + owner + two grants + a revoke is at least four changes, got {}",
+            pane.entries().len()
+        );
+        let summaries: Vec<&str> = pane.entries().iter().map(|e| e.summary.as_str()).collect();
+        assert!(
+            summaries.iter().any(|s| s.contains("/home/user/notes")),
+            "the filesystem grant is named by the path it granted: {summaries:?}"
+        );
+        assert!(
+            summaries.iter().any(|s| s.starts_with("Revoked")),
+            "the revoke is its own row: {summaries:?}"
+        );
+        assert!(
+            summaries
+                .iter()
+                .any(|s| s.contains("Design review")),
+            "the rename names the new name: {summaries:?}"
+        );
+    }
+
+    #[test]
+    fn every_row_carries_a_real_timestamp() {
+        // The whole date filter rests on this. Automerge leaves a change's
+        // advisory time at zero unless the committer supplies one, and a row
+        // at the epoch is a row no date range can ever select.
+        let (mut tree, _, _) = busy_room();
+        let pane = pane_over(&mut tree);
+        assert!(!pane.entries().is_empty());
+        for e in pane.entries() {
+            assert!(
+                e.timestamp > SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000_000),
+                "row {:?} is stamped at {:?} — the room's commits are not carrying a clock",
+                e.summary,
+                e.timestamp
+            );
+        }
+    }
+
+    #[test]
+    fn date_range_filter_partitions_the_real_history() {
+        // One change deliberately stamped a week back through the same
+        // `commit_stamped_at` the FS layer uses when it replays a durable
+        // chain, the rest at now. "Today" must keep the recent ones and drop
+        // the old one; "30 days" must keep everything.
+        let mut tree = WorkspaceTree::bootstrap_default();
+        let user: String = "test-owner".to_string();
+        tree.adopt_ownerless_workspaces(&user);
+        let ws_id = tree.active;
+
+        let week_ago = SystemTime::now() - Duration::from_secs(7 * 24 * 3600);
+        let week_ago_secs = week_ago
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        assert!(tree.doc_append_tab_to_first_group_of_active_workspace(
+            9001,
+            "Last week's window".to_string(),
+            b"{}".to_vec(),
+        ));
+        qdoc::history::commit_stamped_at(&mut tree.doc, week_ago_secs)
+            .expect("the append left a transaction to stamp");
+
+        tree.grant_in_workspace(
+            ws_id,
+            &user,
+            CapOverride::grant(
+                Subject::app("files"),
+                Scope::FsPath("/home/user/today".to_string()),
+                Verb::Read,
+            ),
+        )
+        .expect("owner may grant");
+
+        let mut pane = pane_over(&mut tree);
+        let all = pane.visible_len();
+        assert!(all >= 3, "expected the full history, got {all}");
+
+        pane.set_period(Period::Today);
+        let today = pane.visible_len();
+        assert!(today > 0, "today's changes must survive the day filter");
+        assert!(
+            today < all,
+            "the week-old change must be filtered out: {today} of {all} survived"
+        );
+        assert!(
+            !pane
+                .timeline()
+                .entries()
+                .is_empty(),
+            "filtering hides rows, it does not discard them"
+        );
+        for i in 0..pane.visible_len() {
+            let e = pane.visible_entry(i).unwrap();
+            assert!(
+                !e.summary.contains("Last week"),
+                "the week-old row leaked through the day filter: {}",
+                e.summary
+            );
+        }
+
+        pane.set_period(Period::Month);
+        assert_eq!(
+            pane.visible_len(),
+            all,
+            "a 30-day window covers a change from seven days ago"
+        );
+    }
+
+    #[test]
+    fn contributor_filter_narrows_to_one_person() {
+        // Two actors write into the same room document — the local one and a
+        // peer whose changes merged in. The people row must list both, and
+        // picking one must hide the other's rows.
+        let (mut tree, _, _) = busy_room();
+
+        let mut peer = automerge::AutoCommit::new();
+        peer.set_actor(automerge::ActorId::from("bob".as_bytes()));
+        peer.apply_changes(
+            tree.export_changes_since(&[])
+                .iter()
+                .map(|b| automerge::Change::try_from(b.as_slice()).unwrap())
+                .collect::<Vec<_>>(),
+        )
+        .unwrap();
+        {
+            use automerge::transaction::Transactable;
+            let (_, ws_entry) = peer
+                .get(&peer.get(&automerge::ROOT, "workspaces").unwrap().unwrap().1, 0_usize)
+                .unwrap()
+                .unwrap();
+            peer.put(&ws_entry, "name", "Bob's rename").unwrap();
+        }
+        qdoc::history::commit_stamped(&mut peer).expect("the peer's edit commits");
+        let blobs: Vec<Vec<u8>> = peer
+            .get_changes(&tree.doc.get_heads())
+            .into_iter()
+            .map(|c| c.raw_bytes().to_vec())
+            .collect();
+        tree.apply_changes(&blobs).unwrap();
+
+        let mut pane = pane_over(&mut tree);
+        assert!(
+            pane.contributors().len() >= 2,
+            "two actors wrote to this room; contributors = {:?}",
+            pane.contributors()
+        );
+        let bob = pane
+            .contributors()
+            .iter()
+            .find(|c| c.as_str() == "bob")
+            .cloned()
+            .expect("the peer's self-declared handle resolves to a contributor");
+
+        let everyone = pane.visible_len();
+        pane.set_author_filter(Some(bob.clone()));
+        let just_bob = pane.visible_len();
+        assert!(just_bob > 0, "bob authored at least one row");
+        assert!(
+            just_bob < everyone,
+            "filtering to bob must hide the local actor's rows: {just_bob} of {everyone}"
+        );
+        for i in 0..pane.visible_len() {
+            assert_eq!(pane.visible_entry(i).unwrap().author.name, bob);
+        }
+
+        pane.set_author_filter(None);
+        assert_eq!(pane.visible_len(), everyone, "clearing restores every row");
+    }
+
+    #[test]
+    fn action_type_chips_narrow_by_op_class() {
+        use ui::widget::activity_timeline::ChipKind;
+        let (mut tree, _, _) = busy_room();
+        let mut pane = pane_over(&mut tree);
+        let all = pane.visible_len();
+
+        pane.timeline_mut().set_active_chip(ChipKind::Governance);
+        let gov = pane.visible_len();
+        assert!(
+            gov > 0,
+            "grants and revokes are governance; the room has some"
+        );
+        assert!(gov < all, "governance is a subset: {gov} of {all}");
+        for i in 0..pane.visible_len() {
+            assert_eq!(
+                pane.visible_entry(i).unwrap().op_class,
+                OpClass::Govern,
+                "the Governance chip must only show governance rows"
+            );
+        }
+
+        pane.timeline_mut().set_active_chip(ChipKind::All);
+        assert_eq!(pane.visible_len(), all);
+    }
+
+    #[test]
+    fn reverting_a_row_writes_a_new_forward_change() {
+        // The covenant for history: a revert appends. The reverted-past
+        // version must still be in the graph afterwards, and the room's
+        // readable state must be what it was at the target.
+        let (mut tree, ws_id, user) = busy_room();
+        let mut pane = pane_over(&mut tree);
+
+        let before_name = tree
+            .workspaces
+            .iter()
+            .find(|w| w.id == ws_id)
+            .map(|w| w.name.clone())
+            .unwrap();
+        assert_eq!(before_name, "Design review");
+        let versions_before = pane.entries().len();
+
+        // Rename again, so there is something to revert back across.
+        if let Some(ws) = tree.workspaces.iter_mut().find(|w| w.id == ws_id) {
+            ws.name = "Renamed by mistake".to_string();
+        }
+        tree.seed_doc_from_cache();
+        pane.refresh(&mut tree);
+        assert!(pane.entries().len() > versions_before);
+
+        // Revert to the version the mistake was made on top of.
+        let target = pane.entries()[versions_before - 1].id;
+        assert!(pane.revert_to(&mut tree, &target), "the revert wrote something");
+
+        assert_eq!(
+            tree.workspaces
+                .iter()
+                .find(|w| w.id == ws_id)
+                .map(|w| w.name.as_str()),
+            Some("Design review"),
+            "the room is back to the state the row named"
+        );
+        assert!(
+            pane.entries().len() > versions_before + 1,
+            "the revert is a new row on top, not a rewind: {} rows",
+            pane.entries().len()
+        );
+        assert!(
+            pane.entries().iter().any(|e| e.id == target),
+            "the version reverted to is still in the graph"
+        );
+        let _ = user;
+    }
+
+    #[test]
+    fn reverting_an_unknown_row_is_a_no_op() {
+        let (mut tree, _, _) = busy_room();
+        let mut pane = pane_over(&mut tree);
+        let before = tree.doc.get_heads();
+        assert!(!pane.revert_to(&mut tree, &HistoryEntryId([0x5a; 16])));
+        assert_eq!(tree.doc.get_heads(), before, "nothing was written");
+    }
+
+    #[test]
+    fn governance_rows_never_offer_revert() {
+        // A grant or a revoke is countered, not rewound. The pane must not
+        // paint a chip that would silently undo someone's authority.
+        let (mut tree, _, _) = busy_room();
+        let mut pane = pane_over(&mut tree);
+        pane.timeline_mut()
+            .set_active_chip(ui::widget::activity_timeline::ChipKind::Governance);
+        assert!(pane.visible_len() > 0);
+        for i in 0..pane.visible_len() {
+            let e = pane.visible_entry(i).unwrap();
+            assert!(
+                !op_class_is_revertible(e.op_class),
+                "{:?} offered a revert chip",
+                e.summary
+            );
+            assert!(
+                pane.timeline().revert_chip_rect(i).is_none(),
+                "row {i} ({:?}) laid out a revert chip",
+                e.summary
+            );
+        }
+    }
+
+    #[test]
+    fn a_capability_is_described_in_the_rooms_vocabulary() {
+        let (mut tree, _, _) = busy_room();
+        let pane = pane_over(&mut tree);
+        let grant = pane
+            .entries()
+            .iter()
+            .find(|e| e.summary.contains("/home/user/notes"))
+            .expect("the filesystem grant has a row");
+        assert!(
+            grant.summary.starts_with("Granted read on /home/user/notes to files"),
+            "the grant names verb, scope and subject: {:?}",
+            grant.summary
+        );
+        assert_eq!(grant.op_class, OpClass::Govern);
+    }
+
+    #[test]
+    fn an_empty_room_and_a_filtered_one_do_not_read_the_same() {
+        let mut empty = WorkspaceTree::default();
+        let pane = pane_over(&mut empty);
+        let (title, detail) = pane.timeline().empty_state_lines();
+        assert_eq!(title, "No activity yet");
+        assert!(detail.is_none(), "nothing to explain when nothing happened");
+
+        let (mut tree, _, _) = busy_room();
+        let mut pane = pane_over(&mut tree);
+        pane.set_author_filter(Some("nobody-by-that-name".to_string()));
+        assert_eq!(pane.visible_len(), 0);
+        let (title, detail) = pane.timeline().empty_state_lines();
+        assert_eq!(title, "No activity matches these filters");
+        let detail = detail.expect("a filtered-empty list must explain itself");
+        assert!(
+            detail.contains("nobody-by-that-name"),
+            "the explanation names the filter doing the hiding: {detail}"
+        );
+        assert!(
+            detail.contains(&pane.entries().len().to_string()),
+            "the explanation says how many rows are hidden: {detail}"
+        );
+    }
+
+    #[test]
+    fn the_sheet_is_a_side_panel_when_wide_and_full_bleed_when_narrow() {
+        let mut pane = RoomActivityPane::new();
+
+        pane.layout(Rect::new(0.0, 0.0, 1920.0, 1080.0));
+        let wide = pane.rect();
+        assert!(
+            wide.width() <= SHEET_MAX_W,
+            "a 1920 px viewport must not get a 700 px sheet: {}",
+            wide.width()
+        );
+        assert!(
+            wide.x0 > 1920.0 * 0.5,
+            "the sheet is anchored right, leaving the room visible behind it"
+        );
+
+        pane.layout(Rect::new(0.0, 0.0, 640.0, 480.0));
+        let narrow = pane.rect();
+        assert!(
+            narrow.width() > 640.0 * 0.9,
+            "under {FULL_BLEED_UNDER} px the sheet takes the viewport: {}",
+            narrow.width()
+        );
+        assert!(narrow.x0 < 32.0, "full bleed starts at the left inset");
+    }
+
+    #[test]
+    fn a_short_viewport_drops_the_chip_rows_before_the_row_list() {
+        let mut pane = RoomActivityPane::new();
+        pane.layout(Rect::new(0.0, 0.0, 1280.0, 720.0));
+        assert!(pane.shows_chip_rows(), "a normal viewport affords the filters");
+        let tall_rows = pane.timeline().rect().height();
+
+        pane.layout(Rect::new(0.0, 0.0, 1280.0, 220.0));
+        assert!(
+            !pane.shows_chip_rows(),
+            "a 220 px viewport must spend its height on rows, not chips"
+        );
+        assert!(
+            pane.timeline().rect().height() > 0.0,
+            "the row list survives even when the filters do not"
+        );
+        assert!(tall_rows > pane.timeline().rect().height());
+    }
+
+    #[test]
+    fn contributors_are_only_people_who_actually_did_something() {
+        // The room has collaborators recorded on the tree who have never
+        // touched the document. They must not appear as contributors — the
+        // people row answers "who changed this", not "who is in the room".
+        let (mut tree, _, _) = busy_room();
+        tree.collaborators.push(crate::shell::state::Collaborator {
+            id: "ghost".into(),
+            name: "Never Edited".into(),
+            active_tab: None,
+            cursor_color: None,
+            avatar: None,
+            role_id: None,
+        });
+        let pane = pane_over(&mut tree);
+        assert!(
+            !pane.contributors().iter().any(|c| c == "Never Edited"),
+            "a peer who never wrote must not be listed: {:?}",
+            pane.contributors()
+        );
+    }
+
+    #[test]
+    fn period_windows_are_half_open_and_all_time_is_unbounded() {
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_800_000_000);
+        assert!(Period::AllTime.range(now).is_none());
+        let (start, end) = Period::Week.range(now).unwrap();
+        assert_eq!(now.duration_since(start).unwrap(), Duration::from_secs(7 * 24 * 3600));
+        assert!(end > now, "a change committed this instant is inside the window");
+    }
+}
