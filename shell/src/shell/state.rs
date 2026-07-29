@@ -1624,18 +1624,29 @@ impl WorkspaceTree {
     /// replication document, writing only what differs.
     ///
     /// The projection is deliberately narrow: the room's identity, its
-    /// name, its owner and its capabilities. That is what a peer in the
-    /// room needs in order to know whose room it is and who may do what
-    /// in it, and it is exactly the set [`Self::rebuild_cache_from_doc`]
-    /// reads back — the strips, groups and tabs the tree document also
-    /// carries have never been read back out of it on the receiving side,
-    /// so shipping them would send a peer the host's window titles to no
-    /// effect.
+    /// name, its owner and its capabilities — who the room is, and who may
+    /// do what in it. The room's *contents* (its strips, window groups and
+    /// tabs, which the tree document also carries and which
+    /// [`Self::rebuild_cache_from_doc`] does read back) are not here yet;
+    /// replicating a room's layout is real work with its own questions —
+    /// two machines' window geometry is not one thing, and the ids in it
+    /// are minted per peer — and doing it badly would be worse than not
+    /// yet doing it. What is here is what the invite is *about*: the room
+    /// and its governance.
+    ///
+    /// Everything projected is a map key rather than a list element. That
+    /// is what lets a room document be re-projected under a fresh actor
+    /// after a restart and still merge into a peer's copy by
+    /// last-writer-wins, instead of duplicating list entries — and it is
+    /// why the room documents can stay out of the state file for now.
     ///
     /// Values are compared before they are written so that an export does
     /// not manufacture a change. A revoked capability is deleted from the
-    /// map rather than left behind, which is what makes a revocation
-    /// reach a peer that already holds the grant.
+    /// map rather than left behind, which is what makes a revocation reach
+    /// a peer that already holds the grant. Across a restart that deletion
+    /// is lost with the lineage that carried it, so a revoke that never
+    /// reached a peer before the host restarted has to be re-issued —
+    /// which is the strongest argument for persisting these next.
     ///
     /// No-op when this machine is not in `room`.
     pub fn sync_room_doc(&mut self, room: RoomId) {
