@@ -100,23 +100,6 @@ verified by an offscreen shot (header gone, functional controls intact) + tests:
       workflow's verify agent crashed on an API drop, so I rendered + checked the
       shots myself).
 
-## file-explorer — CLEAR (sidebar unified onto ui::NavShell, §7-graded)
-- [x] Was a hand-rolled fixed-width `[ places | file view ]` split with **no**
-      width reactivity + 2 dead sidebar modules. Now the split is the shared
-      **ui::NavShell**: wide docks the places list beside the file view; narrow
-      (<640 px) collapses to one pane — places list full-screen → tap a place →
-      the file view pushes in with a ‹ Back arrow (Esc/Back returns). The
-      `PlacesSidebar` (drag-reorder favourites + workspace mounts) is kept as the
-      overview pane. Deleted dead `sidebar_row.rs` (348 LOC). Verified with
-      `--shots` at wide (populated + empty) and narrow (places list + pushed
-      detail), opened + graded against HIG §7: docked sidebar, one-line toolbar
-      with a wide search, tabular size/date columns; narrow wraps the toolbar to
-      two rows, full-width places list, and reserves the Back chip. `-p ui --lib`
-      1333 green + file-explorer suite green.
-- [ ] Empty-folder content area is a bare header + blank (a §7 zero-state is
-      missing) — pre-existing to the list view (`views/list_view`), not the
-      sidebar; worth a composed empty state.
-
 ## chat — UI defects CLEAR; deeper FEATURE gaps below (audit 2026-07-04)
 - [x] Call-overlay tiles packed into a bounded region (grid picks the column count
       that fits N; partial last row centred) — no right-edge overflow at any width
@@ -248,20 +231,11 @@ verified by an offscreen shot (header gone, functional controls intact) + tests:
 - [x] Vault encrypted at rest → fixed.
 
 ## settings — CLEAR (every pane shot + inspected, controls driven against the real stores)
-- [x] Added the two control-center surfaces qOS was missing: **Notifications**
-      (Do Not Disturb, banners, message previews, sounds, lock-screen mirror —
-      a new `NotificationPrefs` section persisted to the shared settings.json,
-      read by the compositor's notification layer) and **Accessibility** (a
-      dedicated Universal-Access panel: vision comforts that fold into the
-      shared appearance section, plus pointer size / sticky & slow keys /
-      on-screen keyboard / visual alerts / screen reader in a new
-      `AccessibilityPrefs` section). Both are driven end-to-end by the
-      per-category click-nav test and have per-pane seed/adopt/persist tests.
 - [x] Sidebar is HIG §1 correct and stays that way: when it fits it is docked
       flush-left with the search field pinned on top and NO collapse button; when
       it doesn't fit (narrow) the list and content become SEPARATE full-screen
       screens with a top-left back arrow — never an overlay/scrim over content.
-      Verified all 18 panes wide + the narrow list and narrow content screens.
+      Verified all 16 panes wide + the narrow list and narrow content screens.
 - [x] Cards sit on one aligned grid in every pane (consistent left/right inset and
       gap) — no "weird rounded cards that don't line up". Verified across all panes.
 - [x] Wi-Fi signal icon was a tofu box → fixed: the Unicode block-element bars
@@ -506,61 +480,16 @@ shot-inspected (empty state and demo).
       (mirroring `h`=highlight / `m`=note), and Copy keeps the selection so the
       reader can still highlight/note it. Verified on the wide + narrow selection
       shots; asserted by `copy_action_copies_the_full_selected_passage` /
-      `copy_key_shortcut_targets_the_active_selection`. (a6f661bc)
-- [x] ebook — **continuous-scroll + two-up spread reading modes** (the deferred
-      large refactor). The single-page reader draw was generalised into a
-      per-column `draw_pane` pass over a list of flow windows: paged draws one
-      page slice, two-up draws two facing columns (each half-width, page count
-      doubles, spreads align to even pages, column-aware pointer hit-testing),
-      continuous draws one clipped window scrolled by pixels that rolls into the
-      neighbouring chapter at the ends. Selection bands, ranged highlights,
-      note/bookmark margins, the progress bar, per-book progress persistence and
-      the shared selection HUD all work in every mode. A LAYOUT segmented control
-      in the reading popover switches modes (persisted in the CRDT `Settings`).
-      Serif is the default reading face (resolved as a fallback). Proven on the
-      `serif` / `continuous` / `two-up` / `select-drag` / `two-up-select`
-      `--shots`; asserted by `continuous_mode_scrolls_the_flow_and_persists`,
-      `two_up_shows_two_columns_and_turns_by_two`,
-      `shared_selection_hud_shows_in_continuous_mode`. (8dee525e, a6f661bc)
-- [x] ebook + pdf_viewer — the selection HUD is now **one shared `ui` component**
-      (`ui::SelectionHud` / `reader_hud`): the floating highlight-swatches + Copy
-      + Note bar both readers draw. The ebook reader routes its emitted actions to
-      its `HiColor` model; the pdf reader (which had text selection + keyboard
-      copy but no HUD) now shows the identical bar over a selection — a swatch
-      highlights the run, Note attaches a sticky note, Copy writes to the
-      clipboard (`ui::clipboard_copy`). **Draggable annotation markers**: pdf
-      sticky notes drag to a new anchor (`ui::MarkerDrag` + the new
-      `PdfDoc::set_annotation_position`), moved live and persisted on release.
-      Proven on the `pdf-selection-hud` shot; asserted by the pdf
-      `hud_highlight_action` / `hud_note_action` / `hud_copy_action` /
-      `dragging_a_note_marker_repositions_and_persists` tests and the shared
-      `ui::reader_hud` unit tests. (d82fa2b1, 2439a23d)
+      `copy_key_shortcut_targets_the_active_selection`. (Text selection / drag-
+      select / highlight / annotate / comments already existed; continuous-scroll
+      and two-up spread remain — a large refactor of the single-page reader draw,
+      deferred.)
 - [x] software_store — the constructor always loaded `sample_catalog()`
       (GIMP/Blender with fabricated star ratings), shown live, while the real
       popular-collection fetch landed unused in `live_apps`. A live worker now
       starts with an empty catalog and Browse renders the real Flathub popular
       set (ordered) with a "Loading apps from Flathub…" state; the sample stays
       offline/`--shots` only. (bd2f320c)
-
-## db_client — real PostgreSQL & MySQL drivers (CLEAR)
-
-- [x] pg/mysql were non-connecting stubs (`engine.rs` said the live connection
-      was "unimplemented"; the session gated remote engines behind a fake
-      "network grant"). Wired the sync `postgres` and `mysql` crates behind a
-      `LiveEngine` enum so SQLite, PostgreSQL and MySQL share one session path.
-      Each network engine opens a real TCP connection from a host/port/user/
-      password/database profile, introspects the live catalog
-      (`information_schema` + `pg_catalog` / MySQL `statistics`) for tables,
-      columns, primary/foreign keys, indexes and row counts, and runs real
-      queries returning real rows; a refused socket or a bad password surfaces
-      the driver's own error, never a fabricated success. Password is held in
-      memory only (`#[serde(skip)]`) — never written to the on-disk profile;
-      the connect modal gained a masked password field. Proven with a real
-      CREATE/INSERT/SELECT + introspection round-trip through the production
-      session path against rootless-podman `postgres:16` and `mariadb:11`
-      (unit tests cover connection-string building + row/column mapping for
-      both engines; the live round-trip is env-gated). Empty state recomposed
-      per HIG §7 (database mark + primary "New connection" action).
 
 ## video_editor — real import / decode / export (a real editing engine, now with real media)
 
@@ -676,49 +605,49 @@ default build never touches the network and keeps the honest surface.
       a system `sshd` / external VNC server is the remaining nice-to-have (the
       loopback round-trips already exercise the full real transport).
 
-## imager (Image Writer) — a real media-writer wizard (source → drive → write → verify)
+## firewall — responsive reflow + §7 CLEAR (verified wide/medium/narrow, shots)
 
-Was a dense three-column dashboard that conflated writing an ISO with installing
-qOS. Rebuilt as a linear wizard (Fedora Media Writer / balenaEtcher shaped) with
-clear labels: **Image Writer** writes a disk image to a USB drive; installing qOS
-onto an internal disk stays the separate `qos-installer` job. Real enumeration,
-real gated write, honest empty/progress/verify states.
+Was a fixed three-rail immediate-mode painter (214px zone rail + rules table +
+form + a fixed ~300px services panel) with zero width reactivity — crushed at
+phone widths.
 
-- [x] Wizard flow with a persistent step breadcrumb (Source → Drive → Customize →
-      Write) and a Back / single-primary footer per step. Verify is a phase
-      within the Write step (write bar + read-back verify bar), so the crumb
-      stays short. Each step graded against HIG §7 on offscreen shots (source
-      pick, drive select, drive **empty**, customize, review+confirm, progress,
-      verify/done) — spacing, typographic hierarchy, visible selected/armed/
-      progress/error state, one clear primary action per screen.
-- [x] Real drive enumeration: `lsblk -J -b` parsed into removable/fixed block
-      devices (`RM`/`ROTA`/`TRAN`, size, model, partitions, mountpoint→system-disk
-      flag). The Drive step shows removable drives only; internal disks require an
-      explicit "Show internal disks (dangerous)" opt-in. No drives → an honest,
-      composed empty state ("Insert a USB drive", Rescan) — never a fabricated
-      list. Parser tested on real `lsblk` JSON fixtures (usb+nvme, string-flag
-      variants, zero-size/non-disk skipping).
-- [x] Source via the host XDG portal (`ui::portal`, HIG §5) — a picked `.iso`/
-      `.img` is inspected for its real size (`stat`) and ISO-9660 volume label
-      (PVD at 0x8000, `CD001` magic, volume id at offset 40) to populate the
-      source card; no bespoke in-app file dialog. Portal drain + ISO-label parse
-      tested (real PVD fixture, foreign-ISO fallback, non-image rejection).
-- [x] Real, byte-for-byte write + read-back verify engine (`stream_copy` +
-      `verify_readback` in 4 MiB chunks, fsync between). Doubly gated: a typed
-      device-name confirmation unlocks the primary, and the *real* block-device
-      backend is only selected with `QOS_IMAGER_ALLOW_WRITE=1` (VPN's
-      `QOS_VPN_ALLOW_EXEC` precedent). With the gate off — tests, `--shots`,
-      normal runs — a simulated worker drives the identical progress UI and
-      **touches no device**. Engine proven against temp files (multi-chunk copy
-      is byte-exact, verify flags the first differing offset, end-to-end
-      Writing→Verifying→Success, bad-dest → WriteFailed); the gated-off planned
-      path and the honest empty state are asserted, and no test ever writes a
-      disk. (42 tests green: fd98087b, d784d187, b3d36768)
-- [x] Guided customization reuses the existing `InstallProfile` (hostname, first
-      user, region, options) which doubles as an exportable unattended-install
-      config; a plain ISO skips the step and is written as-is.
-- [ ] The live progress worker streams `Progress` over a channel drained per
-      animation frame; the real `run_system_job` path needs a privileged run
-      (root / a polkit helper) to exercise end-to-end on hardware — verified so
-      far against files, not a physical stick. Fetching a not-yet-local qOS
-      release (the "download" rows) is still a stub.
+- [x] The zone rail is now the shared `ui::SidebarDrawer`: docked beside the
+      content on wide windows (with an in-rail collapse toggle), a summoned
+      overlay drawer with a dismiss scrim when narrow (hamburger in the header).
+- [x] Progressive breakpoints so content reflows, not just the rail: the
+      services panel collapses below 1000px (the rules table takes the whole
+      centre); below 720px the rules table switches to two-line rows, the
+      add-rule form stacks its controls onto four lines, and the summary stat
+      chips wrap. The header status line + backend chip drop at narrow (the
+      enable pill + red "Panic ON" button already carry that state) so nothing
+      wraps over the summary.
+- [x] Honesty preserved: the live app still reads the real firewalld config and
+      shows an honest "firewalld unavailable" card when it can't — never a
+      fabricated ruleset. Sample ruleset stays behind `--shots`/`new_demo()`.
+- [x] Verified by offscreen shots at 1280 / 900 / 440 (populated) + the drawer
+      open + the live unavailable state; 32 tests green.
+
+## backups — responsive reflow + §7 CLEAR (verified every view wide + narrow, shots)
+
+Was a fixed 256px floating-card rail (Timeline) plus fixed multi-column tile /
+card grids that crushed at narrow widths.
+
+- [x] The Timeline source rail is now `ui::SidebarDrawer` (docked wide, overlay
+      drawer + scrim when narrow; hamburger in the top bar, in-rail collapse
+      when docked).
+- [x] Tile/card grids reflow by width: the summary tiles re-column 4→2→1 via the
+      shared `card_columns`/`card_column_width`; the destination repository
+      cards reflow into an aligned grid and become compact single-column cards
+      when narrow (no crushed ring gauge); the schedules editor + its summary
+      stack vertically when narrow; the distribution legend wraps; the recent-
+      activity feed folds to two lines.
+- [x] Top-bar chrome compacts (icon-only primary action, tabs clamp + abbreviate
+      before they collide, wordmark drops); the restore sheet clamps to the
+      window and stacks its columns; the status bar's three texts no longer
+      overlap.
+- [x] Honesty preserved: live still starts on an empty catalog with the "No
+      backups configured yet" onboarding; the populated sample stays behind
+      `--shots`/`new_demo()`.
+- [x] Verified by offscreen shots of Timeline / Sources / Destinations /
+      Schedules / Restore at wide + narrow (+ the empty onboarding + the overlay
+      rail open); 12 tests green.
