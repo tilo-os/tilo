@@ -231,6 +231,9 @@ mod tests {
     fn empty_needle_returns_everything() {
         let p = ActionsProvider::new();
         let c = chrome_rc();
+        // Every action, peer-sync included, so "everything" means the
+        // whole table rather than the subset a default session offers.
+        c.borrow_mut().peer_sync_enabled = true;
         let cs = c.borrow();
         let doc = AutoCommit::new();
         let out = p.query(SearchContext {
@@ -242,6 +245,62 @@ mod tests {
         });
         assert_eq!(out.len(), Action::ALL.len());
         assert!(out.iter().all(|r| r.score == 0));
+    }
+
+    /// The peer-sync rows are offered only by a session that is running
+    /// peer sync — there is nothing to invite anyone into otherwise —
+    /// and when they are offered, naming one selects it.
+    ///
+    /// The second half is the property that was missing: the rows used
+    /// to be appended to the palette's entry list after the ranked
+    /// search hits, so they sorted below every result and typing
+    /// "invite" put a file whose name contained the word on the row
+    /// Enter activates.
+    #[test]
+    fn peer_sync_rows_appear_only_with_peer_sync_and_lead_when_named() {
+        let p = ActionsProvider::new();
+        let doc = AutoCommit::new();
+        let query = |chrome: &ChromeState, needle: &str| {
+            p.query(SearchContext {
+                needle,
+                wanted: &[ResourceKind::Action],
+                chrome,
+                doc: &doc,
+                doc_root: &automerge::ROOT,
+            })
+        };
+
+        let off = chrome_rc();
+        {
+            let cs = off.borrow();
+            assert!(
+                query(&cs, "invite").is_empty(),
+                "a session without peer sync must not offer to invite anyone",
+            );
+        }
+
+        let on = chrome_rc();
+        on.borrow_mut().peer_sync_enabled = true;
+        let cs = on.borrow();
+        let mut hits = query(&cs, "invite");
+        hits.sort_by_key(|r| -r.score);
+        assert_eq!(
+            hits.first().map(|r| r.id.as_str()),
+            Some("peer.invite"),
+            "typing \"invite\" must rank the invite command first, got {:?}",
+            hits.iter().map(|r| (&r.id, r.score)).collect::<Vec<_>>(),
+        );
+        assert_eq!(
+            hits[0].score, 100,
+            "a label-prefix match is the top of this provider's scale, which \
+             is what puts the row above hits from other providers",
+        );
+        let mut connect = query(&cs, "connect");
+        connect.sort_by_key(|r| -r.score);
+        assert_eq!(
+            connect.first().map(|r| r.id.as_str()),
+            Some("peer.connect"),
+        );
     }
 
     #[test]
