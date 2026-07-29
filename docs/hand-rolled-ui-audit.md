@@ -87,8 +87,8 @@ calibration exemplar is feeds' `Modal::AddSubscription`.
 | file:symbol | app | evidence | blocked on | effort | risk |
 |---|---|---|---|---|---|
 | `apps/db_client/src/connect_modal.rs:36-42` `ConnectModal` | db_client | **7** hand-rolled Strings (name/host/port/db/user/**password unmasked**/file) `field_mut(f).push_str(t)` (`:224`) | multiline not needed, but wants secret mode + dynamic field set | L | HIGH |
-| `apps/imager/src/app.rs:1367` `type_into_field` | imager | one splicer feeding **7** fields incl. **masked password** (`secret=true` `:957`); `set_profile` rewrites whole CRDT each keystroke | secret `TextInput` mode | L | HIGH |
-| `apps/mail/src/compose.rs:874` `plain_body`, `wysiwyg.rs:740` | mail | comment (`:177`): *"a single-line `TextInput` can't hold a multi-line body"*; `Wysiwyg` is a full forked rich editor (own `caret`, insert/backspace/split/select) | multiline `TextInput` / reusable rich editor | M/L | HIGH |
+| `apps/imager/src/app.rs:1367` `type_into_field` | imager | ~~one splicer feeding **7** fields incl. **masked password**~~ **password field DONE** — migrated to secret `TextInput`; the other 6 fields + whole-CRDT-per-keystroke rewrite remain | secret `TextInput` mode (gap 5) | L | HIGH |
+| `apps/mail/src/compose.rs` `plain_body`, `wysiwyg.rs:740` | mail | **plain body DONE** — the hand-rolled multiline `String` is now a multiline `TextInput`. `Wysiwyg` (HTML mode) is still a forked rich editor (own `caret`, insert/backspace/split/select) | multiline `TextInput` (gap 1) done; rich editor = gap 3 | M/L | HIGH |
 | `apps/chat/src/events.rs:676` composer, `:737` inline edit | chat | `insert_text` splices into Automerge + tracks `caret: usize` (`app.rs:242`) by hand; zero `TextInput` | multiline CRDT-bound composer | L | HIGH |
 | `apps/slides/src/app.rs:2310` `insert_text`, `:5742` backspace | slides | canvas text elements + speaker-notes box, hand-rolled caret/selection/splice | multiline canvas text editor | M | HIGH |
 | `apps/sheets/src/grid.rs:48` `EditState{chars,caret,sel}` | sheets | cell/formula body editor fully reimplements caret+selection; formula bar is a 2nd view | formula-aware single-line editor | L | HIGH |
@@ -279,10 +279,19 @@ Cases where an app hand-rolls because the shared widget is genuinely **missing a
 capability**. Extend the one `ui` widget so every app inherits the accessible,
 themed, clipboard-correct version — do **not** keep forking.
 
-1. **Multiline `TextInput` / `TextArea`.** `TextInput` is single-line only. mail
-   (`compose.rs:177` comment), chat composer, and slides speaker-notes each fork
-   a multiline `String`/CRDT buffer. **Highest leverage** — unblocks the most
-   HIGH-risk offenders. Add a multiline mode (soft-wrap, up/down caret, growable).
+1. **Multiline `TextInput` / `TextArea`. — DONE.** `TextInput` now has a
+   `multiline(true)` mode on the same caret/`text_selection`/clipboard/CRDT
+   core: soft-wrap at the field width, `Up`/`Down` caret motion by visual line
+   with a preserved goal column, per-visual-line `Home`/`End`, real newline
+   insertion on `Enter` (with `with_enter_submits(true)` for single-line and
+   chat-style hosts where Enter submits and Shift+Enter splits), cross-line
+   selection, newline-aware paste, vertical scroll following the caret, and a
+   content-height `measure` for auto-grow. It reports
+   `AccessState::multiline`. **Adopter:** mail's compose body
+   (`compose.rs`) — the hand-rolled `plain_body: String` (with its
+   `handle_plain_key`/`draw_plain_body`) is deleted and replaced by a multiline
+   `TextInput`. Remaining forks to migrate onto it: chat composer, slides
+   speaker-notes.
 
 2. **Shared multiline code editor** (gutter + syntax-highlight hook, caret/
    selection). `code_editor/editor_view.rs` (1999 LOC), `typst_editor/editor.rs`
@@ -299,9 +308,16 @@ themed, clipboard-correct version — do **not** keep forking.
    `EditState{chars,caret,sel}` + point-mode is a second full editor; the formula
    bar is a third view. A `TextInput` variant with cell-reference point-mode.
 
-5. **Masked / secret `TextInput` mode.** `imager` (`secret=true` `app.rs:957`) and
-   `db_client` (unmasked password today) hand-roll password fields. Add a
-   password/obscure mode with reveal toggle and clipboard suppression.
+5. **Masked / secret `TextInput` mode. — DONE.** `TextInput::with_secret(true)`
+   renders the value as `•` bullets while the model keeps the real text; the
+   plaintext is kept out of the a11y tree (`protected`, `None` value) and
+   `text_review`, and copy/cut/caret still operate on the real bytes. A reveal
+   toggle (`with_reveal`/`set_reveal`/`toggle_reveal`) shows the glyphs on
+   screen without ever leaking to a11y. **Adopter:** imager's password field
+   (`app.rs`) — the `Field::Password` char-splice and the manual bullet-mask +
+   fake caret in `draw_field` are gone; it now uses a secret `TextInput` whose
+   value mirrors `profile.user.password`. Remaining fork to migrate: db_client's
+   connect-modal password (unmasked today).
 
 6. **Typeable `ComboBox`.** Free-text value + filtered suggestion dropdown.
    `containers/combobox.rs` documents this exact gap ("belongs in `ui` next to
