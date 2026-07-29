@@ -31,6 +31,7 @@ use collab_types::{
     CompactionCheckpoint, Ed25519PublicKey, OpClass, Role, RoleAttestation, Signature, SignedOp,
     encode_compaction_payload, generate_keypair, hash_op_prefix, sign_event, sign_op,
 };
+use collab_fixtures::{role_attestation, signed_op};
 use ed25519_dalek::SigningKey;
 use shell::shell::collab_broker;
 use ui::collaboration::{CollabEvent, CollabRequest};
@@ -123,54 +124,6 @@ fn wait_for_broker(socket: &PathBuf) -> UnixStream {
 
 // ---------- attestation / op factories ----------
 
-fn make_role_attestation(
-    issuer_sk: &SigningKey,
-    issuer_pk: Ed25519PublicKey,
-    subject: Ed25519PublicKey,
-    channel: ChannelId,
-    role: Role,
-) -> RoleAttestation {
-    let now = SystemTime::now();
-    let mut att = Attestation {
-        id: AttestationId::new(),
-        issued_by: issuer_pk,
-        subject,
-        claims: vec![],
-        valid_from: now - Duration::from_secs(365 * 24 * 3600),
-        valid_until: now + Duration::from_secs(10 * 365 * 24 * 3600),
-        signature: Signature::from_bytes([0u8; 64]),
-    };
-    let sb = att.signing_bytes().expect("att signing");
-    att.signature = sign_event(&sb, issuer_sk).expect("sign att");
-    RoleAttestation {
-        channel,
-        role,
-        attestation: att,
-    }
-}
-
-fn build_signed_op(
-    sk: &SigningKey,
-    pk: Ed25519PublicKey,
-    artifact: ArtifactId,
-    att_id: AttestationId,
-    op_class: OpClass,
-    payload: Vec<u8>,
-    seq: u64,
-) -> SignedOp {
-    let mut op = SignedOp::new_unsigned(
-        payload,
-        artifact,
-        pk,
-        att_id,
-        op_class,
-        SystemTime::now(),
-        seq,
-    );
-    sign_op(&mut op, sk).expect("sign");
-    op
-}
-
 /// Build a channel state populated with `signers` as the
 /// authorised-signers list, one Editor attestation for `editor_pk`
 /// signed by the first owner in `signers`, and one Note artifact.
@@ -182,9 +135,9 @@ fn channel_state_with(
     artifact: ArtifactId,
 ) -> (ChannelState, AttestationId, AttestationId) {
     // Owner's own attestation underwriting their own compaction ops.
-    let owner_ra = make_role_attestation(owner_sk, owner_pk, owner_pk, channel, Role::Owner);
+    let owner_ra = role_attestation(owner_sk, owner_pk, owner_pk, channel, Role::Owner);
     let owner_att_id = owner_ra.attestation.id;
-    let editor_ra = make_role_attestation(owner_sk, owner_pk, editor_pk, channel, Role::Editor);
+    let editor_ra = role_attestation(owner_sk, owner_pk, editor_pk, channel, Role::Editor);
     let editor_att_id = editor_ra.attestation.id;
 
     let mut state = ChannelState::default();
@@ -226,7 +179,7 @@ fn peer_can_fetch_recent_scrollback() {
 
     // Editor publishes 5 valid signed ops; each fans out to the observer.
     for seq in 1..=5_u64 {
-        let op = build_signed_op(
+        let op = signed_op(
             &editor_sk,
             editor_pk,
             artifact,
@@ -362,7 +315,7 @@ fn scrollback_paging_respects_max() {
     }
     wait_for_announced(&handle, 2);
     for seq in 1..=10_u64 {
-        let op = build_signed_op(
+        let op = signed_op(
             &editor_sk,
             editor_pk,
             artifact,
@@ -435,7 +388,7 @@ fn compaction_evicts_log_then_scrollback_returns_exhausted() {
     // Editor publishes 5 ops.
     let mut ops: Vec<SignedOp> = Vec::new();
     for seq in 1..=5_u64 {
-        let op = build_signed_op(
+        let op = signed_op(
             &editor_sk,
             editor_pk,
             artifact,
@@ -464,7 +417,7 @@ fn compaction_evicts_log_then_scrollback_returns_exhausted() {
         prefix_hash: hash_op_prefix(&prefix).expect("hash"),
     };
     let cp_bytes = encode_compaction_payload(&cp).expect("encode cp");
-    let comp_op = build_signed_op(
+    let comp_op = signed_op(
         &owner_sk,
         owner_pk,
         artifact,
@@ -568,7 +521,7 @@ fn compaction_op_class_rejected_for_editor() {
         prefix_hash: hash_op_prefix(&[]).expect("hash"),
     };
     let bytes = encode_compaction_payload(&cp).expect("encode");
-    let bad_op = build_signed_op(
+    let bad_op = signed_op(
         &editor_sk,
         editor_pk,
         artifact,
@@ -679,7 +632,7 @@ fn cooperative_scrollback_round_trip() {
     // in v1; the signature lives on the SignedOp and the receiving
     // app validates on render — out of scope here).
     let synthetic_ops = vec![
-        Box::new(build_signed_op(
+        Box::new(signed_op(
             &owner_sk,
             owner_pk,
             artifact,
@@ -688,7 +641,7 @@ fn cooperative_scrollback_round_trip() {
             b"older-op-1".to_vec(),
             1,
         )),
-        Box::new(build_signed_op(
+        Box::new(signed_op(
             &owner_sk,
             owner_pk,
             artifact,
@@ -843,7 +796,7 @@ fn cooperative_responder_answers_when_log_has_match() {
         },
     );
     for seq in 1..=3_u64 {
-        let op = build_signed_op(
+        let op = signed_op(
             &editor_sk,
             editor_pk,
             artifact,

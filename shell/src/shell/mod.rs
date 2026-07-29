@@ -24,6 +24,7 @@ pub mod browser_stub;
 pub mod chrome_state;
 pub mod collab_broker;
 pub mod collab_broker_capnp;
+pub mod crdt_text;
 pub mod cursor_interp;
 pub mod desktop_backdrop;
 pub mod doc_open;
@@ -34,7 +35,6 @@ pub mod hdr_tonemap;
 pub mod identity_provisioning;
 pub mod launcher;
 pub mod network;
-pub mod nirios_tokens;
 pub mod notes_app;
 pub mod notification;
 pub mod overlay_host;
@@ -46,7 +46,6 @@ pub mod qs_actions;
 pub mod quick_settings;
 pub mod remote_cursors;
 pub mod room_activity;
-pub mod roster_panel;
 pub mod search;
 pub mod sidebar_wheel;
 pub mod sidebar_wheel_chrome;
@@ -58,7 +57,6 @@ pub mod test_support;
 pub mod tile;
 pub mod topbar;
 pub mod topbar_chrome;
-pub mod typing_indicator;
 pub mod workspace_drop;
 pub mod workspace_settings;
 
@@ -68,18 +66,13 @@ use ui::widget::{
     TileContent as UiTile, Widget, WindowGroup as UiGroup, WindowWidth as UiWidth, WorkspaceView,
     context_menu::{ContextMenu, MenuItem},
     toast::ToastStack,
-    tooltip::Tooltip,
 };
 
 use crate::shell::browser_stub::BrowserStubWidget;
 use crate::shell::editor_app::EditorApp;
 use crate::shell::global_search::GlobalSearch;
 use crate::shell::notes_app::NotesApp;
-use crate::shell::overview::OverviewView;
-use crate::shell::quick_settings::QuickSettings;
-use crate::shell::remote_cursors::{RemoteCursorOverlay, SimulatedFeed};
 use crate::shell::sidebar_wheel::SidebarWheel;
-use crate::shell::system_monitor::SystemMonitor;
 use crate::shell::tile::{
     Strip as RuntimeStrip, Tab as RuntimeTab, TileContent as RuntimeTile,
     WindowGroup as RuntimeGroup, Workspace as RuntimeWorkspace, WorkspaceTree as RuntimeTree,
@@ -120,38 +113,14 @@ pub struct Shell {
     /// Left-edge vertical strip wheel + management button + overscroll
     /// (creates a new workspace past threshold).
     sidebar: SidebarWheel,
-    /// Overview grid of workspace cards. Hidden unless `overview_visible`.
-    /// T27 only allocates it; T28 wires the Cmd+Tab toggle that renders it.
-    #[allow(dead_code)]
-    overview: OverviewView,
     /// Global command palette (Cmd+K). Hidden unless `search_visible`.
     search: GlobalSearch,
-    /// Quick-settings popover (wifi / brightness / volume / …).
-    /// T27 allocates it; T28+ wires the tray-gear click path.
-    #[allow(dead_code)]
-    quick_settings: QuickSettings,
     /// Workspace settings modal (General / Roles / Files / …).
     ws_settings: WorkspaceSettings,
-    /// Fills the active tile and draws peer carets above app content.
-    remote_overlay: RemoteCursorOverlay,
     /// Top-right notification stack (workspace created / renamed / …).
     toasts: ToastStack,
     /// Right-click / secondary-tap menu (closed until opened).
     ctx_menu: ContextMenu,
-    /// Hover-reveal helper; shell exposes it as a generic primitive so any
-    /// chrome surface can drive it in later tasks.
-    tooltip: Tooltip,
-    /// Rolling CPU / memory samples used by the topbar's sparkline center
-    /// variant. Owned here so the shell's tick hook can push a sample per
-    /// frame without threading another handle through topbar. T27 only
-    /// allocates it; the tick-hook wiring lands with main.rs in a later task.
-    #[allow(dead_code)]
-    system_monitor: SystemMonitor,
-    /// Deterministic fake remote-cursor feed used by the demo workspace;
-    /// the real compositor path replaces this with a libp2p presence feed.
-    /// T27 only allocates it; the per-frame `tick` wiring lands in T28+.
-    #[allow(dead_code)]
-    cursor_feed: SimulatedFeed,
 
     // --- overlay visibility flags ---
     /// Whether the overview grid is currently covering the workspace area.
@@ -210,18 +179,12 @@ impl Shell {
             state: ui::state::State::new(),
             topbar: TopBar::new(),
             sidebar: SidebarWheel::new(),
-            overview: OverviewView::new(),
             search: GlobalSearch::new(),
-            quick_settings: QuickSettings::new(),
             ws_settings: WorkspaceSettings::new(active_ws_id),
-            remote_overlay: RemoteCursorOverlay::new(),
             toasts: ToastStack::new(),
             ctx_menu: ContextMenu::new(),
-            tooltip: Tooltip::new("Open workspace settings"),
-            system_monitor: SystemMonitor::new(DEFAULT_SPARK_SAMPLES),
             // Pin the demo peer to `alice` so the cursor paints pink-500
             // from the concept palette, not a seed-hashed colour.
-            cursor_feed: SimulatedFeed::new_with_user_id("alice", "Alice"),
             overview_visible: false,
             search_visible: false,
             quick_settings_visible: false,
@@ -379,49 +342,6 @@ impl Shell {
     /// Borrow the sidebar-wheel chrome (read-only). Primarily for tests.
     pub fn sidebar_wheel(&self) -> &SidebarWheel {
         &self.sidebar
-    }
-
-    /// Did construction populate the TopBar chrome? Always `true` for a
-    /// real [`Shell`]; the accessor exists so T27 can assert wiring
-    /// without depending on internal representation.
-    pub fn has_topbar(&self) -> bool {
-        // Every chrome accessor returns `true` for a constructed Shell —
-        // the fields are not `Option`al. We still expose the predicate so
-        // the wiring test reads naturally and future refactors that make
-        // a piece optional can flip the return value without breaking
-        // callers.
-        let _ = &self.topbar;
-        true
-    }
-
-    /// Did construction populate the SidebarWheel chrome?
-    pub fn has_sidebar_wheel(&self) -> bool {
-        let _ = &self.sidebar;
-        true
-    }
-
-    /// Did construction populate the RemoteCursorOverlay chrome?
-    pub fn has_remote_cursor_overlay(&self) -> bool {
-        let _ = &self.remote_overlay;
-        true
-    }
-
-    /// Did construction populate the ToastStack chrome?
-    pub fn has_toast_stack(&self) -> bool {
-        let _ = &self.toasts;
-        true
-    }
-
-    /// Did construction populate the ContextMenu chrome?
-    pub fn has_context_menu(&self) -> bool {
-        let _ = &self.ctx_menu;
-        true
-    }
-
-    /// Did construction populate the Tooltip chrome?
-    pub fn has_tooltip(&self) -> bool {
-        let _ = &self.tooltip;
-        true
     }
 
     /// Whether the overview grid is currently covering the workspace area.
@@ -939,10 +859,6 @@ impl Shell {
     }
 }
 
-/// Default number of rolling sparkline samples kept by the shell's
-/// [`SystemMonitor`]. Sized to match the topbar's center-cluster width at
-/// the default theme spacing; larger gives diminishing returns.
-const DEFAULT_SPARK_SAMPLES: usize = 64;
 
 /// Builder output for the default demo workspace. Carries the tab list plus
 /// test-only raw pointers to the concrete `TerminalWidget` /

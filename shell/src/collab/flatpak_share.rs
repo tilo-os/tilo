@@ -106,12 +106,6 @@ use crate::network::surface_stream::SurfaceStreamSender;
 use smithay::backend::allocator::Buffer as _;
 use smithay::backend::allocator::dmabuf::Dmabuf;
 
-/// v1 codec label — kept for tests that still assert on the pre-HDR
-/// wire shape. Runtime `stream_start_msg` derives the label from the
-/// codec chosen by the HDR config.
-#[allow(dead_code)]
-const CODEC_LABEL: &str = "h264";
-
 /// Software-encoder-imposed frame-rate ceiling. See the module doc.
 const SOFTWARE_FPS_CEILING: u32 = 30;
 

@@ -43,6 +43,7 @@ use collab_types::{
     Signature, SignedOp, encode_compaction_payload, generate_keypair, hash_op_prefix, sign_event,
     sign_op,
 };
+use collab_fixtures::{role_attestation};
 use ed25519_dalek::SigningKey;
 use rand_08::SeedableRng;
 use rand_chacha::ChaCha20Rng;
@@ -168,32 +169,6 @@ fn threshold_sign(
 
 // ---- attestation fixture ----
 
-fn make_role_attestation(
-    issuer_sk: &SigningKey,
-    issuer_pk: Ed25519PublicKey,
-    subject: Ed25519PublicKey,
-    channel: ChannelId,
-    role: Role,
-) -> RoleAttestation {
-    let now = SystemTime::now();
-    let mut att = Attestation {
-        id: AttestationId::new(),
-        issued_by: issuer_pk,
-        subject,
-        claims: vec![],
-        valid_from: now - Duration::from_secs(365 * 24 * 3600),
-        valid_until: now + Duration::from_secs(10 * 365 * 24 * 3600),
-        signature: Signature::from_bytes([0u8; 64]),
-    };
-    let sb = att.signing_bytes().unwrap();
-    att.signature = sign_event(&sb, issuer_sk).unwrap();
-    RoleAttestation {
-        channel,
-        role,
-        attestation: att,
-    }
-}
-
 #[test]
 fn threshold_signed_mls_encrypted_op_traverses_broker_then_compaction_evicts() {
     // === 1. Olga owns the channel; one Note artifact. ===
@@ -217,13 +192,13 @@ fn threshold_signed_mls_encrypted_op_traverses_broker_then_compaction_evicts() {
     // === 4. Olga mints Editor attestations for Alice's threshold key
     //         and Bob's plain key. ===
     let alice_att =
-        make_role_attestation(&olga_sk, olga_pk, alice_group_pk, channel_id, Role::Editor);
-    let bob_att = make_role_attestation(&olga_sk, olga_pk, bob_pk, channel_id, Role::Editor);
+        role_attestation(&olga_sk, olga_pk, alice_group_pk, channel_id, Role::Editor);
+    let bob_att = role_attestation(&olga_sk, olga_pk, bob_pk, channel_id, Role::Editor);
     let alice_att_id = alice_att.attestation.id;
     let bob_att_id = bob_att.attestation.id;
 
     // Olga also self-attests as Owner so she can sign compaction ops.
-    let olga_att = make_role_attestation(&olga_sk, olga_pk, olga_pk, channel_id, Role::Owner);
+    let olga_att = role_attestation(&olga_sk, olga_pk, olga_pk, channel_id, Role::Owner);
     let olga_att_id = olga_att.attestation.id;
 
     // === 5. MLS group: Olga creates, Alice joins, Bob joins. ===
