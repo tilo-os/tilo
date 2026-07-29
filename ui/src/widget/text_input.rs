@@ -461,6 +461,20 @@ impl TextInput {
         &self.text
     }
 
+    /// Insert `s` at the caret (replacing any active selection) as if the user
+    /// had typed it, marking the field dirty so a host observing
+    /// [`take_dirty`] picks the edit up. This is the programmatic sibling of a
+    /// keystroke, for hosts that splice non-keyboard text into a **local-mode**
+    /// field — e.g. a chat composer receiving an emoji picked from a palette.
+    /// In CRDT-bound mode prefer routing a real key event so the splice lands
+    /// in the document with authorship marks.
+    pub fn insert_at_cursor(&mut self, s: &str) {
+        // A throwaway sink: `insert_str` only touches the CRDT when given an
+        // object id, so a local field mutates `self.text` alone.
+        let mut sink = AutoCommit::new();
+        self.insert_str(s, &mut sink, None);
+    }
+
     /// Current caret position as a byte index into [`value`]. Guaranteed
     /// to land on a UTF-8 char boundary. Used by wrapper widgets (like
     /// `RichTextLine`) that need to know where to split / merge / decide
