@@ -134,9 +134,7 @@ impl Registry {
         });
         let text = toml::to_string_pretty(&file)
             .map_err(|e| RegistryError::Toml(e.to_string()))?;
-        let tmp = path.with_extension("toml.tmp");
-        fs::write(&tmp, text.as_bytes())?;
-        fs::rename(&tmp, path)?;
+        atomic_file::write(path, text.as_bytes())?;
         Ok(())
     }
 

@@ -19,6 +19,8 @@ thiserror = "1"
 tracing = "0.1"
 # `flock(2)` for the single-writer guard around the actor sidecar.
 libc = "0.2"
+# Crash-safe file replacement (temp + fsync + rename + dir fsync).
+atomic-file = { path = "../../../crates/system/atomic-file" }
 
 [dev-dependencies]
 tempfile = "3"

@@ -19,6 +19,8 @@ libc = "0.2.186"
 moka = { version = "0.12.15", features = ["sync"] }
 serde = "1.0.228"
 serde_json = "1.0"
+# Crash-safe file replacement (temp + fsync + rename + dir fsync).
+atomic-file = { path = "../crates/system/atomic-file" }
 tempfile = "3.27.0"
 tokio = { version = "1.52.3", features = ["full"] }
 hex = "0.4.3"

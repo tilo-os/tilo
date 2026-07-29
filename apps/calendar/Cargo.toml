@@ -22,6 +22,8 @@ chrono = { version = "0.4", default-features = false, features = ["std", "clock"
 automerge = "0.8.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+# Crash-safe file replacement (temp + fsync + rename + dir fsync).
+atomic-file = { path = "../../crates/system/atomic-file" }
 uuid = { version = "1.23.1", features = ["v4", "serde"] }
 tracing = "0.1"
 tracing-subscriber = "0.3"
