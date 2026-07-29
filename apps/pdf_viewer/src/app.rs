@@ -2966,7 +2966,7 @@ mod tests {
         let (mut app, mut st) = app_with_state();
         // Type a real name into the signer identity field and commit it.
         app.begin_edit(EditTarget::Signer, app.signer_name.clone());
-        app.editing.as_mut().unwrap().buffer = "Grace Hopper".into();
+        app.editing.as_mut().unwrap().input.set_text("Grace Hopper");
         app.commit_edit(&mut st.doc);
         assert!(app.editing.is_none(), "committing closes the editor");
         assert_eq!(app.signer_name, "Grace Hopper", "signer name updates from the editor");
@@ -2975,7 +2975,7 @@ mod tests {
         assert_eq!(app.signatures.iter().find(|s| s.page == 4).unwrap().signer, "Grace Hopper");
         // Committing an empty name falls back to the app author identity.
         app.begin_edit(EditTarget::Signer, "whatever".into());
-        app.editing.as_mut().unwrap().buffer = "   ".into();
+        app.editing.as_mut().unwrap().input.set_text("   ");
         app.commit_edit(&mut st.doc);
         assert_eq!(app.signer_name, app.author, "an empty signer name falls back to the author");
     }
@@ -3364,7 +3364,7 @@ mod tests {
         });
         app.commit_drag(&mut st.doc);
         app.create_note(&mut st.doc, 1, (120.0, 300.0));
-        app.edit_insert("Check this claim");
+        app.editing.as_mut().unwrap().input.insert_at_cursor("Check this claim");
         app.commit_edit(&mut st.doc);
         app.signer_name = "Grace Hopper".into();
         app.place_signature(&mut st.doc, 1, (360.0, 520.0));

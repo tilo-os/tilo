@@ -1200,7 +1200,7 @@ impl PdfApp {
 
     // ---- sidebar ----------------------------------------------------
 
-    fn draw_sidebar(&self, scene: &mut Scene, base: Affine, tr: &mut TextRenderer, theme: &Theme, edit_rect: &mut Rect) -> Vec<(SidebarHit, Rect)> {
+    fn draw_sidebar(&mut self, scene: &mut Scene, base: Affine, tr: &mut TextRenderer, theme: &Theme, edit_rect: &mut Rect) -> Vec<(SidebarHit, Rect)> {
         let mut hits = Vec::new();
         if !self.show_sidebar {
             return hits;
@@ -1379,13 +1379,16 @@ impl PdfApp {
         self.sidebar_scroll = self.sidebar_scroll.clamp(0.0, max_scroll);
     }
 
-    fn draw_comments(&self, scene: &mut Scene, base: Affine, tr: &mut TextRenderer, theme: &Theme, body: Rect, hits: &mut Vec<(SidebarHit, Rect)>, edit_rect: &mut Rect) {
+    fn draw_comments(&mut self, scene: &mut Scene, base: Affine, tr: &mut TextRenderer, theme: &Theme, body: Rect, hits: &mut Vec<(SidebarHit, Rect)>, edit_rect: &mut Rect) {
         let c = &theme.tokens.colors;
         let pad = 14.0;
         let inner_w = body.width() - 2.0 * pad;
         let header_y = body.y0 + 12.0;
         // Scrollable region starts below the fixed header line.
         let mut y = body.y0 + 12.0 + 22.0 - self.sidebar_scroll;
+        // Snapshot the comment cache so the loop can borrow `self.editing`
+        // mutably (to draw the inline editor) without aliasing `self.comments`.
+        let comments = self.comments.clone();
 
         let total = self.comments.len();
         let open = self.comments.iter().filter(|c| !c.resolved).count();
@@ -1403,7 +1406,7 @@ impl PdfApp {
             None,
         );
 
-        for cm in &self.comments {
+        for cm in &comments {
             let selected = self
                 .selected_anno
                 .as_deref()
@@ -1476,25 +1479,25 @@ impl PdfApp {
             let body_top = hdr.body_top;
             let body_wrap = inner_w as f32 - 16.0;
             let editing_body = self.is_editing(&EditTarget::CommentBody(cm.id.clone()));
-            let shown: &str = self
-                .editing
-                .as_ref()
-                .filter(|_| editing_body)
-                .map(|e| e.buffer.as_str())
-                .unwrap_or(cm.body.as_str());
             let body_hit = Rect::new(body_x - 4.0, body_top - 4.0, card.x1 - 10.0, body_top + m.body_h + 6.0);
             if editing_body {
                 scene.stroke(&Stroke::new(1.5), base, theme.border_focus, None, &RoundedRect::from_rect(body_hit, theme.tokens.radii.sm as f64));
                 *edit_rect = body_hit;
-            }
-            if shown.is_empty() {
+                // The shared multiline TextInput owns the text, caret, and
+                // selection while this comment is focused. It's positioned so
+                // its text baseline lands where the static body draws (the
+                // widget insets its content by ML_PAD 10×8 px).
+                draw_inline_editor(
+                    &mut self.editing.as_mut().unwrap().input,
+                    scene, base, tr, theme,
+                    Point::new(body_x, body_top),
+                    body_wrap,
+                    m.body_h,
+                );
+            } else if cm.body.is_empty() {
                 tr.draw_text(scene, "Write a comment…", 12.0, theme.text_dim, base * Affine::translate((body_x, body_top)), Some(body_wrap));
             } else {
-                tr.draw_text(scene, shown, 12.0, theme.text_primary, base * Affine::translate((body_x, body_top)), Some(body_wrap));
-            }
-            if editing_body {
-                let caret = self.editing.as_ref().map(|e| e.caret).unwrap_or(0);
-                draw_caret(scene, base, tr, theme.accent_primary, shown, 12.0, body_wrap, Point::new(body_x, body_top), caret);
+                tr.draw_text(scene, &cm.body, 12.0, theme.text_primary, base * Affine::translate((body_x, body_top)), Some(body_wrap));
             }
             hits.push((SidebarHit::EditComment(cm.id.clone()), body_hit));
 
@@ -1534,17 +1537,17 @@ impl PdfApp {
                 scene.fill(Fill::NonZero, base, c.surfaces.raised, None, &RoundedRect::from_rect(field, theme.tokens.radii.sm as f64));
                 scene.stroke(&Stroke::new(1.5), base, theme.border_focus, None, &RoundedRect::from_rect(field, theme.tokens.radii.sm as f64));
                 *edit_rect = field;
-                let rbuf = self.editing.as_ref().map(|e| e.buffer.as_str()).unwrap_or("");
                 let rwrap = (field.width() - 20.0) as f32;
                 let tx = field.x0 + 10.0;
                 let ty = field.y0 + 8.0;
-                if rbuf.is_empty() {
-                    tr.draw_text(scene, "Reply…", 11.5, theme.text_dim, base * Affine::translate((tx, ty)), Some(rwrap));
-                } else {
-                    tr.draw_text(scene, rbuf, 11.5, theme.text_primary, base * Affine::translate((tx, ty)), Some(rwrap));
-                }
-                let caret = self.editing.as_ref().map(|e| e.caret).unwrap_or(0);
-                draw_caret(scene, base, tr, theme.accent_primary, rbuf, 11.5, rwrap, Point::new(tx, ty), caret);
+                // The shared TextInput draws the reply text + caret + selection.
+                draw_inline_editor(
+                    &mut self.editing.as_mut().unwrap().input,
+                    scene, base, tr, theme,
+                    Point::new(tx, ty),
+                    rwrap,
+                    field.height() - 16.0,
+                );
                 hits.push((SidebarHit::ReplyField(cm.id.clone()), field));
             } else {
                 let btn = Rect::new(card.x0 + 12.0, compose_top, card.x1 - 12.0, compose_top + 22.0);
@@ -1611,7 +1614,7 @@ impl PdfApp {
         }
     }
 
-    fn draw_signatures(&self, scene: &mut Scene, base: Affine, tr: &mut TextRenderer, theme: &Theme, body: Rect, hits: &mut Vec<(SidebarHit, Rect)>, edit_rect: &mut Rect) {
+    fn draw_signatures(&mut self, scene: &mut Scene, base: Affine, tr: &mut TextRenderer, theme: &Theme, body: Rect, hits: &mut Vec<(SidebarHit, Rect)>, edit_rect: &mut Rect) {
         let c = &theme.tokens.colors;
         let pad = 14.0;
         let mut y = body.y0 + 12.0;
@@ -1624,27 +1627,31 @@ impl PdfApp {
         tr.draw_text(scene, "SIGNING AS", 9.0, theme.text_dim, base * Affine::translate((id_card.x0 + 12.0, id_card.y0 + 9.0)), None);
 
         let editing_signer = self.is_editing(&EditTarget::Signer);
-        let name_shown: &str = self
-            .editing
-            .as_ref()
-            .filter(|_| editing_signer)
-            .map(|e| e.buffer.as_str())
-            .unwrap_or(self.signer_name.as_str());
         let name_x = id_card.x0 + 12.0;
         let name_y = id_card.y0 + 22.0;
         let name_hit = Rect::new(id_card.x0 + 8.0, id_card.y0 + 19.0, id_card.x1 - 100.0, id_card.y1 - 6.0);
+        // The signer preview + non-editing label read the resolved name; while
+        // editing, the live value drives the preview.
+        let name_shown: String = if editing_signer {
+            self.editing.as_ref().map(|e| e.text().to_string()).unwrap_or_default()
+        } else {
+            self.signer_name.clone()
+        };
         if editing_signer {
             scene.stroke(&Stroke::new(1.5), base, theme.border_focus, None, &RoundedRect::from_rect(name_hit, theme.tokens.radii.sm as f64));
             *edit_rect = name_hit;
-        }
-        if name_shown.is_empty() {
+            // The shared TextInput draws the name text + caret + selection.
+            draw_inline_editor(
+                &mut self.editing.as_mut().unwrap().input,
+                scene, base, tr, theme,
+                Point::new(name_x, name_y),
+                (name_hit.width() - 6.0) as f32,
+                18.0,
+            );
+        } else if name_shown.is_empty() {
             tr.draw_text(scene, "Your name", 13.0, theme.text_dim, base * Affine::translate((name_x, name_y)), None);
         } else {
-            tr.draw_text_weighted(scene, name_shown, 13.0, theme.text_primary, base * Affine::translate((name_x, name_y)), Some((name_hit.width() - 6.0) as f32), TextWeight::Semibold);
-        }
-        if editing_signer {
-            let caret = self.editing.as_ref().map(|e| e.caret).unwrap_or(0);
-            draw_caret(scene, base, tr, theme.accent_primary, name_shown, 13.0, (name_hit.width() - 6.0) as f32, Point::new(name_x, name_y), caret);
+            tr.draw_text_weighted(scene, &name_shown, 13.0, theme.text_primary, base * Affine::translate((name_x, name_y)), Some((name_hit.width() - 6.0) as f32), TextWeight::Semibold);
         }
         hits.push((SidebarHit::EditSigner, name_hit));
 
@@ -1652,7 +1659,7 @@ impl PdfApp {
         // uses, so the card previews the exact stroke that will be stamped and
         // it updates live while the name is being edited.
         let prev = Rect::new(id_card.x1 - 96.0, id_card.y0 + 8.0, id_card.x1 - 12.0, id_card.y1 - 10.0);
-        render::draw_signature_preview(scene, base, render::ink(), prev, signature_style_for(name_shown));
+        render::draw_signature_preview(scene, base, render::ink(), prev, signature_style_for(&name_shown));
         y += 70.0;
 
         // Add-field button.
@@ -1951,20 +1958,34 @@ fn draw_chevron(scene: &mut Scene, base: Affine, btn: Rect, color: Color, left: 
     scene.stroke(&Stroke::new(2.0), base, color, None, &p);
 }
 
-/// Draw a thin text caret after `text[..caret]`, wrapped the same way the
-/// text itself is drawn. Uses the toolkit's measure convention (a wrapped
-/// measure returns the *last line's* width and the total height), so the
-/// caret lands where the next glyph would be typed on multi-line fields.
-fn draw_caret(scene: &mut Scene, base: Affine, tr: &mut TextRenderer, color: Color, text: &str, size: f32, wrap: f32, origin: Point, caret: usize) {
-    let caret = caret.min(text.len());
-    let prefix = &text[..caret];
-    let line_h = tr.measure("M", size, None).1.max(size) as f64;
-    let (last_w, total_h) = tr.measure(prefix, size, Some(wrap));
-    let n_lines = if line_h > 0.0 { (total_h as f64 / line_h).round().max(1.0) } else { 1.0 };
-    let cx = if prefix.is_empty() { origin.x } else { origin.x + last_w as f64 };
-    let cy = origin.y + (n_lines - 1.0) * line_h;
-    let bar = Rect::new(cx, cy + 1.0, cx + 1.5, cy + line_h - 1.0);
-    scene.fill(Fill::NonZero, base, color, None, &bar);
+/// Draw the active inline-editor [`TextInput`] so its wrapped text lands at
+/// `text_origin` with wrap width `wrap`. The multiline widget insets its
+/// content by ML_PAD (10px horizontal, 8px vertical), so the field rect is
+/// expanded by that inset to align the first glyph with where the static text
+/// draws. The widget renders its own caret + selection highlight; the app
+/// draws the surrounding focus box.
+fn draw_inline_editor(
+    input: &mut TextInput,
+    scene: &mut Scene,
+    base: Affine,
+    tr: &mut TextRenderer,
+    theme: &Theme,
+    text_origin: Point,
+    wrap: f32,
+    text_h: f64,
+) {
+    // Mirror `ui::widget::text_input`'s multiline content inset so the widget's
+    // first glyph aligns with the static text position.
+    const ML_PAD_X: f64 = 10.0;
+    const ML_PAD_Y: f64 = 8.0;
+    let rect = Rect::new(
+        text_origin.x - ML_PAD_X,
+        text_origin.y - ML_PAD_Y,
+        text_origin.x + wrap as f64 + ML_PAD_X,
+        text_origin.y + text_h.max(15.0) + ML_PAD_Y,
+    );
+    input.apply_layout_external(rect);
+    input.draw(scene, base, tr, theme, &PresenceCtx::empty());
 }
 
 fn draw_avatar(scene: &mut Scene, base: Affine, tr: &mut TextRenderer, theme: &Theme, name: &str, center: Point, radius: f64) {

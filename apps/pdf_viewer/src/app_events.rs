@@ -821,7 +821,6 @@ impl PdfApp {
     ) {
         let mods = modifiers.state();
         let ctrl = mods.control_key() || mods.super_key();
-        let _ = ctrl;
 
         // While an inline text field is focused it owns the keyboard, so tool
         // hotkeys and page navigation don't fire mid-sentence. The field is a
@@ -1394,14 +1393,22 @@ mod event_tests {
     /// public fields — the same trick the terminal + modal_dialog tests use.
     fn key_event(key: winit::keyboard::Key) -> winit::event::WindowEvent {
         use winit::event::{ElementState, KeyEvent};
-        use winit::keyboard::{KeyLocation, NativeKeyCode, PhysicalKey};
+        use winit::keyboard::{Key, KeyLocation, NamedKey, NativeKeyCode, PhysicalKey};
+        // Real winit reports the committed text alongside a printable key; the
+        // shared TextInput inserts from that `text` field, so mirror it (named
+        // keys other than Space carry no text).
+        let text = match &key {
+            Key::Character(s) => Some(s.clone()),
+            Key::Named(NamedKey::Space) => Some(winit::keyboard::SmolStr::new(" ")),
+            _ => None,
+        };
         let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
         ev.logical_key = key;
         ev.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
         ev.location = KeyLocation::Standard;
         ev.state = ElementState::Pressed;
         ev.repeat = false;
-        ev.text = None;
+        ev.text = text;
         WindowEvent::KeyboardInput { device_id: dummy_device_id(), event: ev, is_synthetic: false }
     }
 
@@ -1551,7 +1558,7 @@ mod event_tests {
         let cid = app.comments[0].id.clone();
         let replies_before = app.comments[0].replies.len();
         app.begin_edit(EditTarget::Reply(cid.clone()), String::new());
-        app.edit_insert("Looks good");
+        app.editing.as_mut().unwrap().input.insert_at_cursor("Looks good");
         app.commit_edit(&mut st.doc);
         let after = app.comments.iter().find(|c| c.id == cid).unwrap();
         assert_eq!(after.replies.len(), replies_before + 1, "reply landed in the thread");
@@ -1867,6 +1874,13 @@ mod event_tests {
 
         let cid = app.comments[0].id.clone();
         app.begin_edit(EditTarget::CommentBody(cid), "hello".into());
+        // Select the whole field first (Ctrl+A) so copy/cut act on the text —
+        // the shared TextInput has a real selection model, unlike the old
+        // whole-buffer hack.
+        let ev = key_event(winit::keyboard::Key::Character("a".into()));
+        let mut handled = false;
+        let mut focus = None;
+        app.handle_event(&ev, 1.0, &ctrl, &mut st.doc, &st.root, &mut handled, &mut focus, node, &taffy);
 
         // Ctrl+C is a clipboard chord, not a keystroke: the field stays "hello".
         let ev = key_event(winit::keyboard::Key::Character("c".into()));
@@ -1874,15 +1888,14 @@ mod event_tests {
         let mut focus = None;
         app.handle_event(&ev, 1.0, &ctrl, &mut st.doc, &st.root, &mut handled, &mut focus, node, &taffy);
         assert!(handled, "the editor consumes the chord");
-        assert_eq!(app.editing.as_ref().unwrap().buffer, "hello", "Ctrl+C does not type a literal 'c'");
+        assert_eq!(app.editing.as_ref().unwrap().text(), "hello", "Ctrl+C does not type a literal 'c'");
 
-        // Ctrl+X cuts: the whole field clears.
+        // Ctrl+X cuts the selection: the whole field clears.
         let ev = key_event(winit::keyboard::Key::Character("x".into()));
         let mut handled = false;
         let mut focus = None;
         app.handle_event(&ev, 1.0, &ctrl, &mut st.doc, &st.root, &mut handled, &mut focus, node, &taffy);
-        assert_eq!(app.editing.as_ref().unwrap().buffer, "", "Ctrl+X clears the field");
-        assert_eq!(app.editing.as_ref().unwrap().caret, 0, "and resets the caret");
+        assert_eq!(app.editing.as_ref().unwrap().text(), "", "Ctrl+X clears the selected field");
     }
 
     /// Paste inserts the system clipboard's text at the caret via the real
@@ -1898,18 +1911,26 @@ mod event_tests {
     #[test]
     #[serial]
     fn editor_paste_inserts_clipboard_text_at_caret() {
-        let (mut app, _st) = app();
+        let (mut app, mut st) = app();
         let cid = app.comments[0].id.clone();
         app.begin_edit(EditTarget::CommentBody(cid), "AB".into()); // caret at end
 
-        ui::clipboard_copy("XY");
-        // Paste reads the clipboard and inserts it at the caret (end of "AB").
-        app.edit_clipboard_paste();
-        let after = app.editing.as_ref().unwrap().buffer.clone();
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let node = taffy.new_leaf(Style::default()).unwrap();
+        let ctrl = ctrl_mods();
 
-        // What paste actually inserts is the clipboard's current text with
-        // control chars stripped (matching `edit_insert`). Read it back — no
-        // other test writes it under `#[serial]`, so this equals what paste saw.
+        ui::clipboard_copy("XY");
+        // Ctrl+V through the real event path: the shared TextInput reads the
+        // clipboard and inserts it at the caret (end of "AB").
+        let ev = key_event(winit::keyboard::Key::Character("v".into()));
+        let mut handled = false;
+        let mut focus = None;
+        app.handle_event(&ev, 1.0, &ctrl, &mut st.doc, &st.root, &mut handled, &mut focus, node, &taffy);
+        let after = app.editing.as_ref().unwrap().text().to_string();
+
+        // The pasted text is the clipboard's current content (control chars
+        // stripped). Read it back — no other test writes it under `#[serial]`,
+        // so this equals what paste saw.
         let clip: String = ui::clipboard_paste()
             .unwrap_or_default()
             .chars()
@@ -1919,7 +1940,7 @@ mod event_tests {
         if clip.is_empty() {
             assert_eq!(after, "AB", "paste with no clipboard is a safe no-op");
         } else {
-            assert_eq!(after, format!("AB{clip}"), "paste inserts the clipboard text at the caret");
+            assert_eq!(after, format!("AB{clip}"), "Ctrl+V inserts the clipboard text at the caret");
             // Where a working clipboard round-trips our own write, it is "XY".
             if ui::clipboard_paste().as_deref() == Some("XY") {
                 assert_eq!(after, "ABXY", "the pasted text is exactly what was copied");
