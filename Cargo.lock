@@ -12946,6 +12946,7 @@ version = "0.1.0"
 dependencies = [
  "accounts",
  "automerge",
+ "collab-types",
  "dirs 6.0.0",
  "mail",
  "media",

@@ -263,8 +263,23 @@ verified by an offscreen shot (header gone, functional controls intact) + tests:
 - [ ] Follow-up (not a defect): the committed `apps/settings/shots/*.png` fixtures
       are stale (predate the search-on-top sidebar) — regenerate in a personal-data
       -free environment (they must not bake in a real box's Wi-Fi/BT/email).
-- [ ] Follow-up: Permissions & Roles is an honest read-only overview; the embedded
-      role/permission editor is still gated on the permissions service.
+- [x] Permissions & Roles now renders the **real** per-workspace app grants the
+      compositor persists to `~/.config/qos/state.json`, not a hand-mirrored
+      description. The pane depends on the shareable `collab-types` types crate
+      (NOT the compositor) to deserialise each workspace's `capabilities`
+      (`CapOverride`) and groups them per workspace → app → capability, with a
+      meaning-carrying tinted pill per kind (Files/Camera/Microphone/Screen
+      sharing/Remote control/Network) and a trailing lifetime chip
+      (Always / Until log out / Once / Temporary). Read-only by design (granting
+      is the compositor's consent prompt; revoking is done in the owning
+      workspace) so it still ships zero dead buttons. Honest empty state when no
+      app holds an out-of-sandbox grant (or the compositor hasn't written its
+      state file yet) — never a fabricated permission. Verified on populated +
+      empty shots; asserted by the projection/render tests (real `CapOverride`
+      fixtures, `no dead buttons`, `a pill per grant`, `honest empty`).
+- [ ] Follow-up (unchanged): in-pane granting/revoking is still deferred — that
+      needs a write path back to the compositor's grant model, out of scope for a
+      read-only Settings pane.
 
 ## slides (presentation) — CLEAR (verified, committed 6c2e54b)
 - [x] Thumbnail body-text garble, present counter/hint overlap, overview badge
