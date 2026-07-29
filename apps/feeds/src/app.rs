@@ -3998,6 +3998,77 @@ mod tests {
         assert_eq!(a.back_rect.area(), 0.0, "no Back affordance in the docked layout");
     }
 
+    /// The middle tier: the sidebar stays docked + fixed while exactly ONE
+    /// content pane (the list here, since nothing is pushed) shares the rest of
+    /// the width. No overlay chrome, no collapse toggle — the sidebar is fixed.
+    #[test]
+    fn middle_docks_sidebar_and_shows_a_single_content_pane() {
+        let mut a = app();
+        lay_out(&mut a, 820.0, 800.0);
+        assert_eq!(a.tier(), Tier::Middle);
+        assert_eq!(a.nav_layout(), SplitLayout::Docked, "the sidebar is docked, not an overlay");
+        // Sidebar docked at full width, fixed (no collapse toggle, no scrim).
+        assert!((a.sidebar_rect.width() - SIDEBAR_W).abs() < 0.5, "sidebar docked at full width");
+        assert_eq!(a.hamburger_rect.area(), 0.0, "the middle-tier sidebar is fixed (no toggle)");
+        assert_eq!(a.scrim_rect.area(), 0.0, "a docked sidebar shows no scrim");
+        // A single content pane fills the width right of the sidebar; with
+        // nothing pushed it is the article list, and the reader is parked off.
+        assert!(!a.detail_pushed, "the middle tier opens on the list");
+        assert!((a.list_rect.x0 - a.sidebar_rect.x1).abs() < 0.5, "list starts at the sidebar edge");
+        assert!((a.list_rect.x1 - a.rect.x1).abs() < 0.5, "list fills to the right edge");
+        assert!(a.reader_rect.x0 >= a.rect.x1 - 0.5, "the reader is parked off-pane to the right");
+        assert_eq!(a.back_rect.area(), 0.0, "no Back affordance while the list is showing");
+    }
+
+    /// The middle tier's master→detail: selecting pushes the reader into the
+    /// single content pane with a top-left Back button; Back returns to the
+    /// list. Driven entirely through the real selection + click paths + state.
+    #[test]
+    fn middle_back_button_navigates_detail_to_list() {
+        let mut a = app();
+        let mut doc = AutoCommit::new();
+        a.sync(&mut doc, &automerge::ROOT);
+        lay_out(&mut a, 820.0, 800.0);
+        assert_eq!(a.tier(), Tier::Middle);
+        assert!(!a.detail_pushed, "opens on the list");
+
+        // Select an article: the reader is pushed into the single content pane.
+        let id = a.store.articles_for(Filter::All)[0].id;
+        a.select_article(id, &mut doc);
+        assert!(a.detail_pushed, "selecting pushes the reader in at the middle tier");
+        lay_out_keep(&mut a, 820.0, 800.0);
+        // Reader now fills the content pane; the list is parked off to the left.
+        assert!((a.reader_rect.x0 - a.sidebar_rect.x1).abs() < 0.5, "reader fills the content pane");
+        assert!((a.reader_rect.x1 - a.rect.x1).abs() < 0.5);
+        assert!(a.list_rect.x1 <= a.sidebar_rect.x1 + 0.5, "the list is parked off-pane to the left");
+        // A top-left Back affordance is offered inside the reader pane.
+        assert!(a.back_rect.area() > 0.0, "the pushed reader offers a Back button");
+        assert!(a.back_rect.x0 >= a.sidebar_rect.x1 - 0.5, "Back sits at the content pane's top-left");
+
+        // Clicking Back returns to the list on real state.
+        let p = a.back_rect.center();
+        assert!(a.click(p, &mut doc), "Back click is consumed");
+        assert!(!a.detail_pushed, "Back returns the single pane to the list");
+        lay_out_keep(&mut a, 820.0, 800.0);
+        assert!((a.list_rect.x1 - a.rect.x1).abs() < 0.5, "the list fills the content pane again");
+        assert_eq!(a.back_rect.area(), 0.0, "no Back affordance once back on the list");
+        // The sidebar stayed docked + fixed throughout.
+        assert!((a.sidebar_rect.width() - SIDEBAR_W).abs() < 0.5);
+        assert_eq!(a.scrim_rect.area(), 0.0);
+    }
+
+    /// Crossing the tier boundaries flips the sidebar between docked (wide +
+    /// middle) and an overlay drawer (narrow) — proven off the width alone.
+    #[test]
+    fn tier_resolves_from_width() {
+        assert_eq!(Tier::from_width(1280.0), Tier::Wide);
+        assert_eq!(Tier::from_width(1000.0), Tier::Wide, "wide boundary is inclusive");
+        assert_eq!(Tier::from_width(999.0), Tier::Middle);
+        assert_eq!(Tier::from_width(640.0), Tier::Middle, "middle boundary is inclusive");
+        assert_eq!(Tier::from_width(639.0), Tier::Narrow);
+        assert_eq!(Tier::from_width(400.0), Tier::Narrow);
+    }
+
     /// Re-run geometry without re-settling the flap (so an explicit
     /// snap/toggle survives), mirroring a post-interaction draw frame.
     fn lay_out_keep(app: &mut FeedsApp, w: f64, h: f64) {
