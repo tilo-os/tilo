@@ -223,18 +223,21 @@ class Compositor:
         return False
 
     def open_palette_and_launch(self, short_name: str) -> None:
-        """Ctrl+K, type the app's name, activate the top row.
+        """Super+K, type the app's name, activate the top row.
 
-        Exactly what a person does, with nothing in between. This used to
-        need two chip clicks first, because Ctrl+K seeded the scope to
-        the focused document and that scope never consults the
-        Applications provider — the palette offered nothing and Enter did
-        nothing. A harness needing a workaround to launch an installed
-        app is a harness reporting a product bug; the workaround is gone
-        because the bug is.
+        Exactly what a person does, with nothing in between — and Super+K
+        is the chord for it. The two chords ask different questions:
+        Ctrl+K searches within the app you are looking at, Super+K
+        searches the machine, and only the latter offers to launch
+        something you do not already have open.
+
+        This drove Ctrl+K once and worked, which was the bug rather than
+        the feature: the palette was seeding a workspace-wide scope from
+        a chord specified to scope to the focused app. Launching an app
+        that isn't running was never Ctrl+K's job.
         """
-        call(self.sock, {"op": "modifiers", "ctrl": True, "shift": False,
-                         "alt": False, "logo": False})
+        call(self.sock, {"op": "modifiers", "ctrl": False, "shift": False,
+                         "alt": False, "logo": True})
         call(self.sock, {"op": "key", "key": "k"})
         call(self.sock, {"op": "modifiers", "ctrl": False, "shift": False,
                          "alt": False, "logo": False})
