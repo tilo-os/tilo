@@ -116,6 +116,14 @@ pub enum Icon {
     Calendar,
     Ban,
     Download,
+    // --- On-screen-keyboard set (action keys) ---
+    /// Block up-arrow — the Shift key. Rendered filled for a latched
+    /// Caps-Lock (see [`Icon::draw_filled`]).
+    ArrowBigUp,
+    /// Backspace / delete-left key glyph (a leftward tag with an ✕).
+    Delete,
+    /// Return / Enter key glyph (a down-then-left corner arrow).
+    CornerDownLeft,
 }
 
 /// Lucide's fixed viewBox. Every stored path assumes this coordinate
@@ -566,6 +574,23 @@ pub(crate) fn icon_subpaths(icon: Icon) -> Vec<BezPath> {
             path_from_d("m7 10 5 5 5-5"),
             path_from_d("M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"),
         ],
+        // ArrowBigUp: a single closed block up-arrow — shaft x=9..15 under a
+        // wide head (base y=12, apex at 12,5). One closed path so `draw_filled`
+        // yields the solid caps-lock silhouette.
+        Icon::ArrowBigUp => vec![path_from_d("M9 18v-6H5l7-7 7 7h-4v6z")],
+        // Delete (backspace): the leftward tag body + the ✕ inside it.
+        Icon::Delete => vec![
+            path_from_d(
+                "M10 5a2 2 0 0 0-1.344.519l-6.328 5.74a1 1 0 0 0 0 1.481l6.328 5.741A2 2 0 0 0 10 19h10a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2z",
+            ),
+            path_from_d("m12 9 6 6"),
+            path_from_d("m18 9-6 6"),
+        ],
+        // CornerDownLeft (enter): the hook + the down-left arrowhead.
+        Icon::CornerDownLeft => vec![
+            path_from_d("M20 4v7a4 4 0 0 1-4 4H4"),
+            path_from_d("M9 10 4 15l5 5"),
+        ],
     }
 }
 
@@ -838,6 +863,9 @@ mod tests {
             Icon::Folder,
             Icon::ChevronRight,
             Icon::MoreHorizontal,
+            Icon::ArrowBigUp,
+            Icon::Delete,
+            Icon::CornerDownLeft,
         ] {
             let sub = icon_subpaths(icon);
             assert!(!sub.is_empty(), "{icon:?} produced no subpaths");
@@ -887,6 +915,9 @@ mod tests {
         assert_eq!(icon_subpaths(Icon::Folder).len(), 1, "folder = 1 outline");
         assert_eq!(icon_subpaths(Icon::ChevronRight).len(), 1, "chevron-right = 1 path");
         assert_eq!(icon_subpaths(Icon::MoreHorizontal).len(), 3, "more = 3 dots");
+        assert_eq!(icon_subpaths(Icon::ArrowBigUp).len(), 1, "arrow-big-up = 1 closed arrow");
+        assert_eq!(icon_subpaths(Icon::Delete).len(), 3, "delete = tag body + 2 ✕ strokes");
+        assert_eq!(icon_subpaths(Icon::CornerDownLeft).len(), 2, "corner-down-left = hook + head");
     }
 
     /// The mail glyph set must transcribe into non-empty subpaths so the
