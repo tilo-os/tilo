@@ -101,6 +101,24 @@ struct Layout {
     content: Rect,
 }
 
+/// The exact rects of the Customize step, computed once and shared by
+/// `layout_customize` (hit-testing) and `draw_customize_step` (painting) so the
+/// two can never drift out of alignment.
+struct CustomizeGeom {
+    identity_label_y: f64,
+    hostname: Rect,
+    full_name: Rect,
+    username: Rect,
+    password: Rect,
+    timezone: Rect,
+    region_label_y: f64,
+    keyboard: Rect,
+    autologin: Rect,
+    encrypt: Rect,
+    persist: Rect,
+    export: Rect,
+}
+
 pub struct ImagerApp {
     // ---- CRDT-backed (cached each `sync`) ----
     source: Option<Source>,
@@ -497,43 +515,68 @@ impl ImagerApp {
         hits.push((tr, Hit::ToggleInternal));
     }
 
+    /// Shared geometry for the Customize step. Uses a deliberate vertical
+    /// rhythm so section labels, field labels and inputs never overlap.
+    fn customize_geom(&self, content: Rect) -> CustomizeGeom {
+        let x0 = content.x0;
+        let x1 = content.x1;
+        let fw = (content.width() - 16.0) / 2.0;
+        let fh = 38.0;
+        let row_pitch = fh + 40.0; // input + label + gap
+        // Identity block: label, then hostname, then two field rows.
+        let identity_label_y = content.y0 + 52.0;
+        let host_y = content.y0 + 92.0;
+        let hostname = Rect::new(x0, host_y, x1, host_y + fh);
+        let r2 = host_y + row_pitch;
+        let full_name = Rect::new(x0, r2, x0 + fw, r2 + fh);
+        let username = Rect::new(x0 + fw + 16.0, r2, x1, r2 + fh);
+        let r3 = r2 + row_pitch;
+        let password = Rect::new(x0, r3, x0 + fw, r3 + fh);
+        let timezone = Rect::new(x0 + fw + 16.0, r3, x1, r3 + fh);
+        // Region & options block (same label→field rhythm as Identity above).
+        let region_label_y = r3 + fh + 26.0;
+        let kb_y = region_label_y + 40.0;
+        let keyboard = Rect::new(x0, kb_y, x0 + fw, kb_y + fh);
+        let tog_y = kb_y + fh + 22.0;
+        let th = 46.0;
+        let autologin = Rect::new(x0, tog_y, x0 + fw, tog_y + th);
+        let encrypt = Rect::new(x0 + fw + 16.0, tog_y, x1, tog_y + th);
+        let p_y = tog_y + th + 12.0;
+        let persist = Rect::new(x0, p_y, x0 + fw, p_y + th);
+        let export = Rect::new(x1 - 250.0, p_y + 8.0, x1, p_y + 8.0 + 32.0);
+        CustomizeGeom {
+            identity_label_y,
+            hostname,
+            full_name,
+            username,
+            password,
+            timezone,
+            region_label_y,
+            keyboard,
+            autologin,
+            encrypt,
+            persist,
+            export,
+        }
+    }
+
     fn layout_customize(&self, content: Rect, hits: &mut Vec<(Rect, Hit)>) {
         if !self.customizable() {
             return; // informational only
         }
-        let x0 = content.x0;
-        let w = content.width();
-        let fw = (w - 16.0) / 2.0;
-        let mut y = content.y0 + 46.0;
-        // Identity: hostname (full width), then full name / username, then password.
-        let host = Rect::new(x0, y, content.x1, y + 38.0);
-        hits.push((host, Hit::Field(Field::Hostname)));
-        y += 38.0 + 40.0;
-        for row in [[Field::FullName, Field::Username], [Field::Password, Field::Timezone]] {
-            for (col, f) in row.iter().enumerate() {
-                let fx = x0 + col as f64 * (fw + 16.0);
-                let r = Rect::new(fx, y, fx + fw, y + 38.0);
-                hits.push((r, Hit::Field(*f)));
-            }
-            y += 38.0 + 40.0;
-        }
-        // Keyboard field (left) — region.
-        let kb = Rect::new(x0, y, x0 + fw, y + 38.0);
-        hits.push((kb, Hit::Field(Field::Keyboard)));
-        y += 38.0 + 30.0;
-        // Toggles row: autologin, encrypt.
-        let t1 = Rect::new(x0, y, x0 + fw, y + 46.0);
-        let t2 = Rect::new(x0 + fw + 16.0, y, content.x1, y + 46.0);
-        hits.push((t1, Hit::ToggleAutologin));
-        hits.push((t2, Hit::ToggleEncrypt));
-        y += 46.0 + 12.0;
-        // Persistence toggle (USB only) + export.
+        let g = self.customize_geom(content);
+        hits.push((g.hostname, Hit::Field(Field::Hostname)));
+        hits.push((g.full_name, Hit::Field(Field::FullName)));
+        hits.push((g.username, Hit::Field(Field::Username)));
+        hits.push((g.password, Hit::Field(Field::Password)));
+        hits.push((g.timezone, Hit::Field(Field::Timezone)));
+        hits.push((g.keyboard, Hit::Field(Field::Keyboard)));
+        hits.push((g.autologin, Hit::ToggleAutologin));
+        hits.push((g.encrypt, Hit::ToggleEncrypt));
         if self.target().map(|d| d.removable).unwrap_or(false) {
-            let t3 = Rect::new(x0, y, x0 + fw, y + 46.0);
-            hits.push((t3, Hit::TogglePersist));
+            hits.push((g.persist, Hit::TogglePersist));
         }
-        let ex = Rect::new(content.x1 - 250.0, y + 8.0, content.x1, y + 8.0 + 32.0);
-        hits.push((ex, Hit::ExportConfig));
+        hits.push((g.export, Hit::ExportConfig));
     }
 
     fn layout_write(&self, content: Rect, hits: &mut Vec<(Rect, Hit)>) {
@@ -746,7 +789,7 @@ impl ImagerApp {
         // qOS releases.
         self.section_label(scene, tr, theme, "OR CHOOSE A qOS RELEASE", content.x0, y);
         y += 22.0;
-        for (i, rel) in self.releases().iter().enumerate() {
+        for rel in self.releases().iter() {
             let r = Rect::new(content.x0, y, content.x1, y + 54.0);
             let selected = self.source.as_ref().map(|s| s.kind == SourceKind::QosImage && s.name == format!("{} {}", rel.name, rel.version)).unwrap_or(false);
             let hov = r.contains(self.last_mouse);
@@ -906,41 +949,27 @@ impl ImagerApp {
         }
         self.draw_step_title(scene, tr, theme, content, "Customize (optional)", "Pre-configure the written media so it boots ready to use.");
 
-        let x0 = content.x0;
-        let w = content.width();
-        let fw = (w - 16.0) / 2.0;
-        let mut y = content.y0 + 46.0;
+        let g = self.customize_geom(content);
+        self.section_label(scene, tr, theme, "IDENTITY", content.x0, g.identity_label_y);
+        self.draw_field(scene, tr, theme, t, g.hostname, Field::Hostname, "Hostname", &self.profile.hostname, false);
+        self.draw_field(scene, tr, theme, t, g.full_name, Field::FullName, "Full name", &self.profile.user.full_name, false);
+        self.draw_field(scene, tr, theme, t, g.username, Field::Username, "Username", &self.profile.user.username, false);
+        self.draw_field(scene, tr, theme, t, g.password, Field::Password, "Password", &self.profile.user.password, true);
+        self.draw_field(scene, tr, theme, t, g.timezone, Field::Timezone, "Time zone", &self.profile.timezone, false);
 
-        self.section_label(scene, tr, theme, "IDENTITY", x0, y - 20.0);
-        // Hostname (full width).
-        self.draw_field(scene, tr, theme, t, Rect::new(x0, y, content.x1, y + 38.0), Field::Hostname, "Hostname", &self.profile.hostname, false);
-        y += 38.0 + 40.0;
-        // Full name / username.
-        self.draw_field(scene, tr, theme, t, Rect::new(x0, y, x0 + fw, y + 38.0), Field::FullName, "Full name", &self.profile.user.full_name, false);
-        self.draw_field(scene, tr, theme, t, Rect::new(x0 + fw + 16.0, y, content.x1, y + 38.0), Field::Username, "Username", &self.profile.user.username, false);
-        y += 38.0 + 40.0;
-        // Password / timezone.
-        self.draw_field(scene, tr, theme, t, Rect::new(x0, y, x0 + fw, y + 38.0), Field::Password, "Password", &self.profile.user.password, true);
-        self.draw_field(scene, tr, theme, t, Rect::new(x0 + fw + 16.0, y, content.x1, y + 38.0), Field::Timezone, "Time zone", &self.profile.timezone, false);
-        y += 38.0 + 40.0;
-
-        self.section_label(scene, tr, theme, "REGION & OPTIONS", x0, y - 20.0);
-        self.draw_field(scene, tr, theme, t, Rect::new(x0, y, x0 + fw, y + 38.0), Field::Keyboard, "Keyboard", &self.profile.keyboard, false);
-        y += 38.0 + 30.0;
-        // Toggles.
-        self.draw_toggle(scene, tr, theme, t, Rect::new(x0, y, x0 + fw, y + 46.0), "Auto-login", "Sign in without a password prompt", self.profile.user.autologin);
-        self.draw_toggle(scene, tr, theme, t, Rect::new(x0 + fw + 16.0, y, content.x1, y + 46.0), "Encrypt storage", "Protect user data with LUKS", self.profile.encrypt);
-        y += 46.0 + 12.0;
+        self.section_label(scene, tr, theme, "REGION & OPTIONS", content.x0, g.region_label_y);
+        self.draw_field(scene, tr, theme, t, g.keyboard, Field::Keyboard, "Keyboard", &self.profile.keyboard, false);
+        self.draw_toggle(scene, tr, theme, t, g.autologin, "Auto-login", "Sign in without a password prompt", self.profile.user.autologin);
+        self.draw_toggle(scene, tr, theme, t, g.encrypt, "Encrypt storage", "Protect user data with LUKS", self.profile.encrypt);
         if self.target().map(|d| d.removable).unwrap_or(false) {
             let persist = self.profile.mode == InstallMode::Persistent;
-            self.draw_toggle(scene, tr, theme, t, Rect::new(x0, y, x0 + fw, y + 46.0), "Persistent storage", "Keep changes across reboots on the stick", persist);
+            self.draw_toggle(scene, tr, theme, t, g.persist, "Persistent storage", "Keep changes across reboots on the stick", persist);
         }
         // Export config (secondary).
-        let ex = Rect::new(content.x1 - 250.0, y + 8.0, content.x1, y + 8.0 + 32.0);
-        let hov = ex.contains(self.last_mouse);
-        Self::fill_rr(scene, t, ex, 9.0, if hov { c.neutral[3] } else { c.neutral[2] });
-        Self::stroke_rr(scene, t, ex, 9.0, c.accent[6], 1.0);
-        self.txt_center(scene, tr, "⤓ Export unattended config", 12.0, c.accent[7], (ex.x0 + ex.x1) / 2.0, ex.y0 + 8.0, TextWeight::Semibold);
+        let hov = g.export.contains(self.last_mouse);
+        Self::fill_rr(scene, t, g.export, 9.0, if hov { c.neutral[3] } else { c.neutral[2] });
+        Self::stroke_rr(scene, t, g.export, 9.0, c.accent[6], 1.0);
+        self.txt_center(scene, tr, "⤓ Export unattended config", 12.0, c.accent[7], (g.export.x0 + g.export.x1) / 2.0, g.export.y0 + 8.0, TextWeight::Semibold);
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1472,7 +1501,7 @@ impl Widget for ImagerApp {
     ) -> NodeId {
         let node = taffy
             .new_leaf(Style {
-                size: taffy::Size { width: percent(1.0), height: percent(1.0) },
+                size: taffy::Size { width: percent(1.0_f32), height: percent(1.0_f32) },
                 flex_grow: 1.0,
                 ..Default::default()
             })
