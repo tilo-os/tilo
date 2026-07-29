@@ -264,11 +264,11 @@ async fn always_grant_skips_prompt_queue() {
     // the queue entirely, so the queue stays at 0 and the call
     // resolves with response=0.
     let mut ws = empty_workspace(104, "ws");
-    ws.grants().insert(
-        "org.example.always".into(),
-        vec![Capability::Camera {
+    ws.grant_app(
+        "org.example.always",
+        &Capability::Camera {
             scope: GRANT_ALWAYS,
-        }],
+        },
     );
     let (store, ws_id) = GrantStoreHandle::test_with_workspace(ws);
     let queue = PromptQueueHandle::new(PromptResolver::Channel);
@@ -418,11 +418,11 @@ async fn screencast_start_provisions_pipewire_stream() {
     // provisioner regardless of whether the consent came via fast or
     // slow path; this just avoids needing to fulfil a queued prompt
     // from the test harness.
-    ws.grants().insert(
-        "org.example.cast".into(),
-        vec![Capability::Screencast {
+    ws.grant_app(
+        "org.example.cast",
+        &Capability::Screencast {
             scope: GRANT_ALWAYS,
-        }],
+        },
     );
     let (store, ws_id) = GrantStoreHandle::test_with_workspace(ws);
     let queue = PromptQueueHandle::new(PromptResolver::Channel);
@@ -482,13 +482,13 @@ fn capability_kind_round_trips_through_grant_store() {
     // round-trip the public types — guards against a stray re-export
     // miss that would silently break the test harness.
     let mut ws = empty_workspace(107, "ws");
-    ws.grants().insert(
-        "x".into(),
-        vec![Capability::Filesystem {
+    ws.grant_app(
+        "x",
+        &Capability::Filesystem {
             path: "/work/a.txt".into(),
             mode: FsMode::Read,
             scope: GRANT_ONCE,
-        }],
+        },
     );
     let (store, id) = GrantStoreHandle::test_with_workspace(ws);
     let caller = PortalCaller::new(id, "x");
