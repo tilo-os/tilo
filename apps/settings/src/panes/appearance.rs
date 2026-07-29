@@ -49,8 +49,9 @@ pub const TEXT_SIZES: &[(&str, f64)] = &[
 ];
 
 /// Map a text-scale factor to the closest offered label (defaults to
-/// "Default").
-fn text_size_label(scale: f64) -> &'static str {
+/// "Default"). Shared with the Accessibility pane, which offers the same
+/// text-size control over the same [`AppearancePrefs::text_scale`] field.
+pub fn text_size_label(scale: f64) -> &'static str {
     TEXT_SIZES
         .iter()
         .min_by(|(_, a), (_, b)| {
@@ -60,8 +61,9 @@ fn text_size_label(scale: f64) -> &'static str {
         .unwrap_or("Default")
 }
 
-/// Map a text-size label back to its scale factor, if recognised.
-fn text_size_scale(label: &str) -> Option<f64> {
+/// Map a text-size label back to its scale factor, if recognised. Shared with
+/// the Accessibility pane.
+pub fn text_size_scale(label: &str) -> Option<f64> {
     TEXT_SIZES
         .iter()
         .find(|(l, _)| *l == label)

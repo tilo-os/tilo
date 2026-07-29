@@ -216,6 +216,8 @@ impl SettingsApp {
             Category::Printers => panes::printers::build(),
             Category::Power => panes::power::build(),
             Category::Appearance => panes::appearance::build(),
+            Category::Accessibility => panes::accessibility::build(),
+            Category::Notifications => panes::notifications::build(),
             Category::ExternalAccounts => panes::accounts::build(),
             Category::RegionFormats => panes::region::build(),
             Category::Permissions => panes::permissions::build(),
