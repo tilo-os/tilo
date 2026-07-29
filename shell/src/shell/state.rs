@@ -366,79 +366,6 @@ impl Strip {
     }
 }
 
-/// **Displaced vocabulary — presentation only, enforces nothing.**
-///
-/// [`Role`], [`RolePermissions`], [`AppPerm`], [`FilePerm`] and
-/// [`WorkspaceFile`] are the compositor's original permission model.
-/// They are superseded by [`Workspace::capabilities`] and are retained
-/// solely because the Workspace Settings "Roles" tab still renders
-/// tables over them.
-///
-/// Nothing in this vocabulary is consulted by any enforcement point.
-/// No decision anywhere reads `RolePermissions`; `Workspace::roles` and
-/// `Workspace::workspace_files` are `vec![]` in every production
-/// construction, so the tab is a UI over two empty vectors.
-///
-/// The replacements, all in the one model:
-/// - a member's role → the verb on their membership capability,
-///   [`Workspace::role_of`]
-/// - `per_app` → a capability scoped to [`Scope::App`]
-/// - `per_file` → a capability scoped to [`Scope::FsPath`], which
-///   inherits down the tree and is enforced by both the compositor and
-///   the filesystem
-///
-/// Do not add call sites. Porting the Roles tab onto
-/// [`Workspace::roster`] + [`Workspace::shares_of`] retires these
-/// types entirely.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Role {
-    pub id: String,
-    pub name: String,
-    pub permissions: RolePermissions,
-}
-
-/// Displaced vocabulary — see [`Role`]. Read by no enforcement point.
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
-pub struct RolePermissions {
-    pub can_invite: bool,
-    pub can_edit_files: bool,
-    /// Keyed by `AppKind::as_str()` (serde-friendly string key).
-    pub per_app: HashMap<String, AppPerm>,
-    /// Keyed by `WorkspaceFile.id`.
-    pub per_file: HashMap<String, FilePerm>,
-}
-
-/// Displaced vocabulary — see [`Role`]. Superseded by a capability
-/// scoped to [`Scope::App`].
-#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
-pub enum AppPerm {
-    #[default]
-    None,
-    View,
-    Edit,
-    Admin,
-}
-
-/// Displaced vocabulary — see [`Role`]. Superseded by a capability
-/// scoped to [`Scope::FsPath`], which inherits down the tree and is
-/// enforced by the compositor and the filesystem alike.
-#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
-pub enum FilePerm {
-    #[default]
-    None,
-    Read,
-    Write,
-}
-
-/// Displaced vocabulary — see [`Role`]. `Workspace::workspace_files`
-/// is `vec![]` in every production construction.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct WorkspaceFile {
-    pub id: String,
-    pub name: String,
-    pub mime: String,
-}
-
 #[derive(Clone, Debug, Serialize, Deserialize, Default, PartialEq, Eq)]
 pub struct Collaborator {
     pub id: String,
@@ -464,10 +391,9 @@ pub struct Collaborator {
     /// not yet wired to a bitmap loader.
     #[serde(default)]
     pub avatar: Option<String>,
-    /// Role this peer plays in the workspace. References
-    /// [`Role::id`](Role) in the owning workspace's role table.
-    /// Permission checks read from `WorkspaceFile`; this field drives
-    /// the top-bar role chip + concept's roster dropdown.
+    /// Display-only role chip for the top bar and the roster dropdown.
+    /// Authority comes from [`Workspace::role_of`], which reads the
+    /// member's membership capability — never from this field.
     #[serde(default)]
     pub role_id: Option<String>,
 }
@@ -609,8 +535,6 @@ pub struct Workspace {
     pub room: RoomId,
     pub name: String,
     pub strips: Vec<Strip>,
-    pub roles: Vec<Role>,
-    pub workspace_files: Vec<WorkspaceFile>,
     #[serde(default)]
     pub collaborators: Vec<Collaborator>,
     /// Who owns this room.
@@ -1164,8 +1088,8 @@ impl Workspace {
     }
 
     /// Build an empty workspace with the given id and name. The workspace
-    /// starts with no strips, roles, files, collaborators, or grants —
-    /// those are populated by the compositor or the persistence layer.
+    /// starts with no strips, collaborators, or capabilities — those are
+    /// populated by the compositor or the persistence layer.
     pub fn new(id: WorkspaceId, name: impl Into<String>) -> Self {
         Self {
             id,
@@ -1176,8 +1100,6 @@ impl Workspace {
             room: RoomId::new(),
             name: name.into(),
             strips: Vec::new(),
-            roles: Vec::new(),
-            workspace_files: Vec::new(),
             collaborators: Vec::new(),
             owner: None,
             capabilities: Vec::new(),
@@ -1299,8 +1221,6 @@ impl Default for Workspace {
             room: RoomId::new(),
             name: String::new(),
             strips: Vec::new(),
-            roles: Vec::new(),
-            workspace_files: Vec::new(),
             collaborators: Vec::new(),
             owner: None,
             capabilities: Vec::new(),
@@ -2098,8 +2018,8 @@ impl WorkspaceTree {
     ///
     /// To preserve strips that the cache built locally (e.g. tests that
     /// construct a literal tree, then receive a doc update from a
-    /// peer), each rebuilt workspace tries to inherit `strips`,
-    /// `roles`, `workspace_files`, and `collaborators` from the
+    /// peer), each rebuilt workspace tries to inherit `strips` and
+    /// `collaborators` from the
     /// existing cache entry that shares its id. A workspace that
     /// arrived purely from the doc starts with empty nested vecs.
     fn rebuild_cache_from_doc(&mut self) {
@@ -3322,8 +3242,6 @@ impl WorkspaceTree {
                     maximized: false,
                 }],
             }],
-            roles: vec![],
-            workspace_files: vec![],
             // Home is active on first boot; seed one demo peer so
             // the top-bar avatar stack paints immediately.
             // `TopBarChrome::sync_from_tree` prefers the active
@@ -3410,8 +3328,6 @@ impl WorkspaceTree {
                 name: "Main".into(),
                 window_groups: vec![],
             }],
-            roles: vec![],
-            workspace_files: vec![],
             collaborators: vec![],
             owner: None,
             capabilities: Vec::new(),
@@ -4507,8 +4423,6 @@ mod active_group_tests {
             room: RoomId::new(),
             name: "Test".into(),
             strips: vec![strip],
-            roles: vec![],
-            workspace_files: vec![],
             collaborators: vec![],
             owner: None,
             capabilities: Vec::new(),
@@ -4871,8 +4785,6 @@ mod active_workspace_peer_count_tests {
                 name: "Main".into(),
                 window_groups: vec![],
             }],
-            roles: vec![],
-            workspace_files: vec![],
             collaborators: collabs,
             owner: None,
             capabilities: Vec::new(),
@@ -5077,8 +4989,6 @@ mod capability_tests {
             "id": 1,
             "name": "Old",
             "strips": [],
-            "roles": [],
-            "workspace_files": []
         }"#;
         let ws: Workspace = serde_json::from_str(legacy).expect("legacy compat");
         assert!(ws.capabilities.is_empty());
@@ -5228,8 +5138,6 @@ mod capability_tests {
             "id": 1,
             "name": "Old",
             "strips": [],
-            "roles": [],
-            "workspace_files": [],
             "grants": {}
         }"#;
         let ws: Workspace = serde_json::from_str(legacy).expect("legacy compat");
