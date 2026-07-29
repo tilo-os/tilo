@@ -195,8 +195,11 @@ version = "1"
 features = ["serde_derive"]
 optional = true
 
+# Tracks the smol_str that automerge and cosmic-text resolve to, so the
+# `SmolStr` winit hands out in key events is the same type the rest of the
+# toolkit uses rather than a second copy of the crate.
 [dependencies.smol_str]
-version = "0.2.0"
+version = "0.3"
 
 [dependencies.tracing]
 version = "0.1.40"

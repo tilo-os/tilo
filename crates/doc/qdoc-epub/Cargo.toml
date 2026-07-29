@@ -12,4 +12,4 @@ qdoc-html = { path = "../qdoc-html" }
 # ZIP container for the EPUB OCF package. Pinned to the version already in the
 # workspace lockfile (qdoc's docx/odt codecs use it) so adding qdoc-epub does not
 # churn the resolve.
-zip = "2"
+zip.workspace = true

@@ -39,52 +39,52 @@ path = "src/admin.rs"
 #   iroh endpoint so the integration tests spin up two relays + N
 #   peers without any external service.
 [dependencies]
-# Iroh 0.96.x — pinned to the same versions the `fs/` crate uses so
+# Iroh 1.0.x — pinned to the same versions the `fs/` crate uses so
 # they share a single build of the transport across the workspace.
 # iroh gives us stable node ids + NAT hole punching + n0-hosted relay
 # fallback out of the box, so the relay is reachable from any device
 # without extra infrastructure. `fs/` already depends on iroh-blobs, so
 # unifying on iroh here means one transport stack across CRDT-op fanout
 # and content hydration.
-iroh = "0.96.1"
-iroh-base = "0.96.1"
+iroh.workspace = true
+iroh-base.workspace = true
 
 # Identity + workspace directory + cert-chain verification.
 qos-user-identity = { path = "../../identity/qos-user-identity" }
 
 # Workspace CRDT (same version as identity + shell).
-automerge = "0.8.0"
+automerge.workspace = true
 
 # Wire encoding — postcard for the framed messages exchanged over
 # the ALPN. Same encoding the identity crate uses so byte layouts
 # stay compatible.
-serde = { version = "1", features = ["derive"] }
-serde_bytes = "0.11"
-serde_json = "1"
-postcard = { version = "1", features = ["use-std"] }
-bytes = "1"
+serde.workspace = true
+serde_bytes.workspace = true
+serde_json.workspace = true
+postcard = { workspace = true, features = ["use-std"] }
+bytes.workspace = true
 
 # Signing / hashing — reused for the connection-level nonce challenge.
-ed25519-dalek = { version = "2", features = ["serde", "rand_core"] }
-rand = "0.8"
-blake3 = "1"
-hex = "0.4"
+ed25519-dalek = { workspace = true, features = ["serde", "rand_core"] }
+rand.workspace = true
+blake3.workspace = true
+hex.workspace = true
 
 # Runtime + config.
-tokio = { version = "1", features = ["full"] }
-futures-lite = "2"
-clap = { version = "4", features = ["derive"] }
-toml = "0.8"
-anyhow = "1"
-thiserror = "1"
+tokio = { workspace = true, features = ["full"] }
+futures-lite.workspace = true
+clap.workspace = true
+toml.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
 
 # Observability.
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing.workspace = true
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
 
 # Systemd sd_notify for `Type=notify` — best-effort, silently no-ops
 # outside a systemd session.
-sd-notify = "0.4"
+sd-notify.workspace = true
 
 [dev-dependencies]
-tempfile = "3"
+tempfile.workspace = true

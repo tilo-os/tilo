@@ -19,7 +19,7 @@ operate it. Companion to `docs/superpowers/specs/2026-06-30-qos-security-archite
 - **Reproducible builds (verified).** Two independent builds of the same commit
   produce a **byte-identical image** (confirmed: built twice, same image ID).
   Achieved by: base pinned by **digest** (both stages), Rust resolve pinned
-  (`os/Cargo.lock.pinned`), a deterministic compile (`CARGO_INCREMENTAL=0`,
+  (the tracked `Cargo.lock`), a deterministic compile (`CARGO_INCREMENTAL=0`,
   `--remap-path-prefix=/build=.`, `LC_ALL=C.UTF-8`, `TZ=UTC`), and a
   `SOURCE_DATE_EPOCH` derived from the HEAD commit time with layer/image
   timestamps clamped to it (`podman --source-date-epoch --rewrite-timestamp`;

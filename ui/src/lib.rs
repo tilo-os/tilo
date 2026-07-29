@@ -1,3 +1,33 @@
+//! The qOS UI toolkit: retained-mode, CRDT-native widgets.
+//!
+//! # Reach for the toolkit's stack through the toolkit
+//!
+//! An app that uses `ui` cannot avoid touching `vello`, `taffy`, `winit` and
+//! `automerge` — it hands scenes to a widget tree, sizes nodes in the same
+//! Taffy tree, receives the same winit events, and mutates the same Automerge
+//! document. Each of those is re-exported here, and an app should prefer
+//! `ui::vello` over declaring its own `vello` dependency.
+//!
+//! This is not a style preference. Cargo will happily resolve two
+//! semver-incompatible copies of a crate into one binary, and for `vello` and
+//! `winit` that is fatal rather than merely wasteful: `vello::Scene` from one
+//! copy is a *different type* from `vello::Scene` in the other, so a widget
+//! tree built against the toolkit's copy cannot be handed a scene built
+//! against the app's. The failure is a type error at best and a confusing one
+//! at that ("expected `Scene`, found `Scene`"). Going through `ui::` makes the
+//! version question unaskable — there is exactly one copy, and it is the one
+//! the widget tree was compiled against.
+//!
+//! ```ignore
+//! use ui::vello::kurbo::{Affine, Rect};   // not `use vello::kurbo::...`
+//! use ui::winit::event::WindowEvent;
+//! ```
+//!
+//! Apps that already declare these directly keep working — the workspace
+//! pins every member to one version, so they resolve to the same crate. The
+//! re-exports are what lets new code get it right by default, and what lets an
+//! app drop the direct dependency when it is next touched.
+
 pub mod a11y;
 pub mod accesskit_bridge;
 pub mod screen_reader;
@@ -35,6 +65,16 @@ pub mod webview;
 pub mod fullscreen;
 pub mod mpris;
 pub mod nav_stack;
+
+// The toolkit's own stack, re-exported so an app never has to name a version.
+// See the crate-level note above for why this matters for `vello` and `winit`
+// in particular. `kurbo` and `peniko` come through `vello`, which is where the
+// geometry and paint types in every `draw` signature actually live.
+pub use automerge;
+pub use taffy;
+pub use vello;
+pub use vello::{kurbo, peniko};
+pub use winit;
 
 pub use app::App;
 pub use color_compat::ColorCompat;

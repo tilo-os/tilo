@@ -67,45 +67,45 @@ qos-relay = { path = "../crates/hosting/qos-relay" }
 # each app is what makes persistence a three-line change in an app's `main`
 # instead of a bespoke storage module per app.
 app-state = { path = "../crates/system/app-state" }
-automerge = "0.8.0"
+automerge.workspace = true
 # Diagnostic event/handler tracing. Off by default at WARN; turn up with
 # `RUST_LOG=ui=debug` to see every MouseInput, CursorMoved, KeyboardInput
 # entering App::window_event + dispatch results. Lets a maintainer
 # diagnose interaction bugs in hosted mode without source-reading.
-tracing = "0.1"
+tracing.workspace = true
 cosmic-text = { version = "0.19.0", default-features = false, features = ["swash", "std"] }
-pollster = "0.4.0"
-rand = "0.10.1"
+pollster.workspace = true
+
 # Raw-Vulkan interop for the WebView DMA-BUF zero-copy import (feature
 # `webview-wpe`). Version tracks what wgpu-hal 29 resolves so the `vk::*`
 # handles passed through `create_texture_from_hal` are ABI-identical.
 ash = { version = "0.38", optional = true }
-taffy = { version = "0.10.1", features = ["content_size"] }
-tokio = { version = "1.52.3", features = ["full"] }
-vello = "0.9"
-wgpu = "29"
-winit = "0.30.13"
-fluent = "0.17.0"
-unic-langid = "0.9.6"
-once_cell = "1.21.4"
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-uuid = { version = "1.23.1", features = ["v4", "serde"] }
-png = "0.18.1"
+taffy = { workspace = true, features = ["content_size"] }
+tokio = { workspace = true, features = ["full"] }
+vello.workspace = true
+wgpu.workspace = true
+winit.workspace = true
+fluent.workspace = true
+unic-langid.workspace = true
+once_cell.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+png.workspace = true
 # Multi-format decode (JPEG/PNG/WebP) for the async remote-image cache
 # (`image_store`): system apps display real CDN artwork. Default features are
 # off so we pull only the decoders we need, not the whole codec zoo.
-image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
+image = { workspace = true, features = ["jpeg", "png", "webp"] }
 # Date / time picker widgets (`widget::date_picker`, `widget::time_picker`) use
 # `chrono` for NaiveDate arithmetic. shell already pulls chrono
 # transitively but this is a direct dep so the picker widgets compile in
 # isolation.
-chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+chrono = { workspace = true, features = ["clock", "std"] }
 # VideoPlayer widget (`widget::video_player`) decodes H.264 NAL units in-process.
 # `source` feature compiles the pure-C reference implementation so we don't
 # rely on a runtime-installed `libopenh264.so` — same pin as `shell`'s
 # screencast pipeline.
-openh264 = { version = "0.9", features = ["source"] }
+openh264.workspace = true
 # Shared qOS media layer. The `VideoPlayer` widget owns a `media::MediaEngine`
 # and pulls frames from it; `media`'s default (no `decode`) build carries no
 # gstreamer dependency, so `ui`'s hermetic build / `--shots` / CI stay green.
@@ -115,19 +115,19 @@ media = { path = "../crates/media" }
 # feature). Pinned to 4.4 with `p2p` to match `apps/music` + `apps/chat`, so the
 # workspace resolves a single zbus 4.4 copy (the hermetic p2p round-trip test
 # also uses the `p2p` transport).
-zbus = { version = "4.4", optional = true, features = ["p2p"] }
+zbus = { workspace = true, optional = true, features = ["p2p"], default-features = true }
 # System clipboard access for TextInput's Ctrl+C / Ctrl+V / Ctrl+X.
 # Wayland uses `wl_data_device`; X11 uses the selection protocol —
 # `arboard` wraps both. The "wayland-data-control" feature lets us
 # talk to the data-control compositor extension when available
 # (kanshi / GNOME / KDE), falling back to the seat-driven protocol
 # otherwise.
-arboard = { version = "3.6.1", default-features = false, features = ["wayland-data-control", "image-data"] }
+arboard = { workspace = true, features = ["image-data"] }
 # The `Link` widget hands its URL to the OS's registered handler (xdg-open /
 # the desktop portal on Linux) when activated. Same crate + pin the file
 # explorer already uses to open files with the desktop default; already
 # resolved in the workspace lockfile, so this adds no registry fetch.
-open = "5.3.5"
+open.workspace = true
 # Shared collaboration-types crate. Phase 1 widgets
 # (`widget::activity_timeline`, `widget::history_scrubber`,
 # `widget::conflict_picker`, `widget::channel_browser`) read `OpClass`
@@ -146,7 +146,7 @@ qdoc = { path = "../crates/doc/qdoc" }
 # the toolkit can name `SigningKey` in `collaboration::SigningIdentity`
 # without reaching into the qos-collab-types private module path. Pinned
 # to the same major as `qos-collab-types`.
-ed25519-dalek = { version = "2", features = ["rand_core"] }
+ed25519-dalek = { workspace = true, features = ["rand_core"] }
 # Phase 8 identity-flow widgets: FROST threshold identity engine. The
 # screens in `widget::identity_flow` drive `ThresholdIdentity::bootstrap_single_device`,
 # `begin_enrolment`, `adopt_dkg_outcome`, and `export_recovery_share`.
@@ -155,41 +155,40 @@ threshold-identity = { path = "../crates/collab/threshold-identity" }
 # pairing-channel JSON payload (screen 3) and the `qos://invite/...`
 # URL (screen 5). `qrcode` is a small (no transitive deps), pure-Rust
 # QR encoder that produces a module-matrix we paint with Vello.
-qrcode = { version = "0.14", default-features = false }
+qrcode.workspace = true
 # Phase 8 invite encoding: the `qos://invite/<base32>` URL packs a
 # postcard-encoded payload as base32 (RFC 4648 alphabet, no padding)
 # so it stays URL-safe and case-insensitive when read aloud.
-base32 = "0.5"
+base32.workspace = true
 # Phase 8 pairing one-time MAC: derived from the 6-digit code so the
 # host can authenticate the pairer's DKG round-2 reply without a
 # pre-shared long-term key. SHA-512 is already a transitive via
 # `qos-threshold-identity`, so direct pin keeps the lock single-copy.
-sha2 = "0.10"
+sha2.workspace = true
 # Phase 8 pairing-channel encryption (placeholder; in-memory shim for
 # the v1 widget tests). HMAC is used as a one-time pairing MAC over
 # the round-1 broadcast keyed by the 6-digit code's full nonce.
-hmac = "0.12"
+hmac.workspace = true
 # Identity-flow encode helpers — canonical-bytes for the invite
 # envelope's owner signature view, hex for the pairing-channel JSON
 # payload's binary fields, serde_bytes for the postcard-friendly
 # delegation-secret representation, thiserror for the flow-local
 # error type.
-postcard = { version = "1", features = ["alloc", "use-std"] }
-hex = "0.4"
-serde_bytes = "0.11"
-thiserror = "1"
+postcard = { workspace = true, features = ["alloc", "use-std"] }
+hex.workspace = true
+serde_bytes.workspace = true
+thiserror.workspace = true
 # `widget::identity_flow::recovery_share` generates a deterministic
 # placeholder mnemonic on first-run (single-device mode has no real
 # recovery share — see the module-level note). Already a transitive
 # via `qos-threshold-identity`; the direct pin keeps Cargo collapsing
 # to a single copy.
-bip39 = "2"
-# Phase 8 identity-flow needs a `CryptoRng + RngCore` compatible with
-# `frost-ed25519` 3.x (which still consumes `rand_core` 0.6). ui's
-# top-level `rand` dep is on 0.10 and dropped the OsRng re-export, so
-# the identity_flow screens depend on `rand_core` 0.6 directly for
-# `OsRng`.
-rand_core = { version = "0.6", features = ["getrandom"] }
+bip39.workspace = true
+# The identity-flow screens need a `CryptoRng + RngCore` compatible with
+# `frost-ed25519` 3.x, which consumes `rand_core` 0.6. Depending on it
+# directly (rather than reaching through `rand`) keeps the requirement
+# visible at the manifest level.
+rand_core = { workspace = true, features = ["getrandom"] }
 # Accessibility: AccessKit is the cross-platform a11y schema; the winit
 # adapter bridges our exported tree into the event loop and, via its default
 # `accesskit_unix` feature on Linux, publishes it over AT-SPI2 so standard ATs
@@ -211,31 +210,31 @@ tts = { path = "../crates/system/tts" }
 pkg-config = "0.3"
 
 [dev-dependencies]
-regex = "1"
+regex.workspace = true
 # Inspect Vello scene encodings (draw tags) in widget tests so we can pin
 # end-to-end paint contracts (e.g. `tabs::active_pill_emits_more_color_\
 # fills_than_inactive_siblings`) without rendering pixels.
-vello_encoding = "0.9"
+vello_encoding.workspace = true
 # `widget::file_picker::tests` build a real on-disk tree to exercise the
 # `std::fs::read_dir` path. Already pulled in by shell as a regular
 # dev-dep; pinning here for the leaf-test build.
-tempfile = "3"
+tempfile.workspace = true
 # The `collaboration` shim tests stand up a fake capnp broker on one end
 # of a `UnixStream::pair()` and drive `CollaborationManager` against it.
 # Same pin runtime-collab tests use.
-capnp = "0.26"
-capnp-rpc = "0.26"
-tokio-util = { version = "0.7", features = ["compat"] }
+capnp.workspace = true
+capnp-rpc.workspace = true
+tokio-util.workspace = true
 # The `Backend::Relay` integration test stands up a real in-process
 # workspace host (`qos_relay::Relay`) + two iroh clients and drives two
 # `CollaborationManager`s through it — the same host path the relay
 # crate's own `coedit_through_host` test exercises, but end-to-end
 # through the toolkit. Identity material is minted with
 # `qos-user-identity`; the iroh endpoints dial the host over the pinned
-# 0.96 stack the rest of the tree resolves.
+# 1.0 stack the rest of the tree resolves.
 qos-user-identity = { path = "../crates/identity/qos-user-identity" }
-iroh = "0.96.1"
-iroh-base = "0.96.1"
+iroh.workspace = true
+iroh-base.workspace = true
 
 # Runtime probe for the DMA-BUF zero-copy import (needs the WPE engine).
 [[example]]

@@ -23,16 +23,16 @@ threshold-identity = { path = "../../collab/threshold-identity" }
 # signed-bytes shape matches the rest of qOS's signed wire types.
 collab-types           = { path = "../../collab/collab-types" }
 
-blake3       = "1.8.5"
-ed25519-dalek = { version = "2", features = ["serde", "rand_core"] }
-hex          = "0.4.3"
-rand         = "0.8"
-semver       = "1"
-serde        = { version = "1", features = ["derive"] }
-serde_bytes  = "0.11"
-thiserror    = "1"
-toml         = "0.8"
-walkdir      = "2"
+blake3.workspace = true
+ed25519-dalek = { workspace = true, features = ["serde", "rand_core"] }
+hex.workspace = true
+rand.workspace = true
+semver.workspace = true
+serde.workspace = true
+serde_bytes.workspace = true
+thiserror.workspace = true
+toml.workspace = true
+walkdir.workspace = true
 
 [dev-dependencies]
-tempfile = "3"
+tempfile.workspace = true

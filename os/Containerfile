@@ -141,19 +141,20 @@ COPY --from=wpe-builder /wpe/ /
 # are cp'd to /out (a real path) in the same RUN for the final stage to COPY.
 #
 # Two CI guards (the image builds under buildkit, not just podman/buildah):
-#  - Seed the resolve from a committed pinned lock (os/Cargo.lock.pinned, kept
-#    in sync from a known-good build): without it a fresh CI resolve picks
-#    incompatible transitive versions (e.g. ed25519-dalek vs ed25519/pkcs8).
-#    `cargo build` (not --locked) lets it adjust conservatively for submodule
-#    drift while keeping the good pins.
+#  - The resolve comes from the tracked `Cargo.lock`, which is why that file is
+#    committed: a fresh resolve picks incompatible transitive versions (iroh
+#    pulls a pre-release ed25519-dalek that does not compile against current
+#    `signature`), and the failure surfaces inside a dependency rather than
+#    anywhere this image touches. `cargo build` (not --locked) still lets the
+#    resolve adjust conservatively where a manifest here differs, while keeping
+#    the good pins.
 #  - Brace the trailing sccache stat so a failing `cargo build` fails the RUN
 #    instead of being swallowed by `|| true` (which masked a cargo failure as a
 #    confusing downstream "COPY --from /out: not found").
 RUN --mount=type=cache,target=/build/.cargo-home \
     --mount=type=cache,target=/build/target \
     --mount=type=cache,target=/build/.sccache \
-    cp os/Cargo.lock.pinned Cargo.lock \
-    && cargo build --release \
+    cargo build --release \
         -p shell -p fs -p terminal -p file-explorer -p greeter -p installer \
         -p runtime-bundle -p launcher -p qos-power \
         -p browser --features browser/wpe \

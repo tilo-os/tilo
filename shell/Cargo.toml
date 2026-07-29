@@ -32,22 +32,22 @@ nvenc = ["ffmpeg-next"]
 hdr-decode = ["ffmpeg-next"]
 
 [dependencies]
-tokio = { version = "1.52.3", features = ["full"] }
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-toml = "0.8"
-tracing = "0.1"
-tracing-subscriber = "0.3"
-once_cell = "1.21.4"
-chrono = "0.4"
-uuid = { version = "1.23.1", features = ["v4", "serde"] }
+tokio = { workspace = true, features = ["full"] }
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+once_cell.workspace = true
+chrono = { workspace = true, default-features = true }
+uuid.workspace = true
 # `dirs-next` is deprecated; `dirs` 6 is the maintained drop-in. The
 # `home_dir`/`config_dir`/`cache_dir` API is identical.
-dirs = "6.0.0"
+dirs.workspace = true
 smithay-client-toolkit = "0.20.0"
-wayland-client = "0.31.14"
+wayland-client.workspace = true
 wayland-protocols = "0.32.12"
-libp2p = { version = "0.56", features = ["tcp", "dns", "websocket", "noise", "yamux", "mdns", "gossipsub", "tokio", "macros"] }
+libp2p.workspace = true
 smithay = { version = "0.7", default-features = false, features = [
     "wayland_frontend",
     "backend_winit",
@@ -68,9 +68,9 @@ smithay = { version = "0.7", default-features = false, features = [
 # Bubbles up clean error messages to the binary entry point instead of
 # panicking — the host machine (Gnome already holds the seat) needs the
 # `--backend drm` path to fail cleanly with a useful diagnostic.
-thiserror = "2.0.18"
+thiserror.workspace = true
 calloop-wayland-source = "0.4.1"
-rand = "0.10.1"
+
 ui = { path = "../ui" }
 terminal = { path = "../apps/terminal" }
 file-explorer = { path = "../apps/file-explorer" }
@@ -91,53 +91,53 @@ qos-power-mgmt = { path = "../crates/system/power" }
 # (`greetd_client::verify_password` — verify credentials without starting a
 # session) so login and unlock share one non-leaky auth path.
 greeter = { path = "../crates/session/greeter" }
-winit = "0.30.13"
+winit.workspace = true
 # Compositor Phase 4 follow-up: the native winit backend bypasses smithay's
 # glow renderer in favor of vello-on-wgpu directly (`backend/winit.rs`).
 # Vello's `RenderContext::create_surface` is async, so we need a blocking
 # executor inside the synchronous `WinitBackend::new`. `pollster` is already
 # pulled in as a dev-dep at the same version, so Cargo collapses to a single
 # copy in the lock.
-pollster = "0.4.0"
-sysinfo = "0.32"
+pollster.workspace = true
+sysinfo.workspace = true
 # Direct deps needed by in-shell widgets (browser_stub, etc.) that implement
 # `ui::widget::Widget`. Versions are pinned to match ui's Cargo.toml.
-automerge = "0.8.0"
-taffy = "0.10.1"
-vello = "0.9"
+automerge.workspace = true
+taffy.workspace = true
+vello.workspace = true
 # C-3 WorkspaceTreeHandle unification: shared `Arc<parking_lot::RwLock<WorkspaceTree>>`
 # across compositor / portal / peer-sync (one source of truth, no diverging clones).
 # Already a transitive via wgpu — pinning here is one-line and keeps Cargo
 # collapsed to a single copy in the workspace lock.
 qos-startup-metrics = { path = "../crates/system/qos-startup-metrics" }
-parking_lot = "0.12.5"
+parking_lot.workspace = true
 # Phase 2 of `docs/superpowers/plans/2026-05-02-per-workspace-sandbox-permissions.md`:
 # host-side compiler for the per-workspace seccomp-bpf deny-list. Pinned to the
 # latest 0.5.x to track upstream sock_filter / TargetArch shape (x86_64,
 # aarch64, riscv64). Linux-only crate — sandbox callers gate at runtime.
-seccompiler = "0.5"
+seccompiler.workspace = true
 # Direct libc dep so we can name the SYS_* and AF_PACKET constants required by
 # the deny-list filter without going through seccompiler's re-export. ui
 # already pulls libc transitively, so Cargo collapses to one copy in the lock.
-libc = "0.2.186"
+libc.workspace = true
 # Landlock per-capability in-kernel FS/net enforcement (`plan/security.md`
 # §7.1). Applied by the `__sandbox-exec` launcher shim AFTER bwrap sets up
 # the namespace, so it layers on top of bwrap + seccomp + netns. Linux-only;
 # best-effort at runtime (degrades silently on kernels without Landlock).
-landlock = "0.4"
+landlock.workspace = true
 # Phase 3 Task 3.3 of `docs/superpowers/plans/2026-05-02-peer-sync-end-to-end.md`:
 # `network::invite` encodes / decodes signed peer-invite tokens as base64-url
 # wrapped JSON, with the owner's libp2p PeerId rendered as base58. Both crates
 # are already pulled in transitively by libp2p; pinning them here is a one-line
 # Cargo edit and avoids relying on transitive re-exports of unrelated deps.
-base64 = "0.22.1"
+base64.workspace = true
 bs58 = "0.5.1"
 # Phase 4 of `docs/superpowers/plans/2026-05-02-peer-sync-end-to-end.md`:
 # software H.264 encode/decode for foreign-surface streaming between peers.
 # `source` feature builds Cisco's OpenH264 in-tree (vs. dlopen'ing the system
 # copy), which keeps the test image self-contained — bootc is immutable so we
 # can't rely on a runtime-installed `libopenh264.so`.
-openh264 = { version = "0.9", features = ["source"] }
+openh264.workspace = true
 # Hardware H.264 encode (VA-API / NVENC) via libavcodec. Opt-in behind
 # the `vaapi` / `nvenc` features. `default-features = false` +
 # `features = ["codec", "software-scaling"]` pulls only libavcodec +
@@ -159,13 +159,13 @@ ffmpeg-next = { version = "8", optional = true, default-features = false, featur
 # `4` because `dark-light` (a transitive of `iced`) already locks zbus to
 # 4.4.x — staying on the same major avoids a duplicate compile + runtime
 # copy of the entire async-task stack zbus drags in.
-zbus = { version = "4", default-features = false, features = ["tokio", "p2p"] }
+zbus = { workspace = true, features = ["tokio", "p2p"] }
 # Real-input e2e Phase 4: `test_control::Command::Snapshot` encodes the
 # `OffscreenRenderer::render_rgba` result as a PNG on disk. Previously a
 # dev-dep used by `tests/e2e_shell_flows.rs`; the snapshot executor is in
 # the runtime path so we promote it. Cargo collapses to a single copy
 # either way — moving the entry is zero compile-time cost.
-png = "0.18.1"
+png.workspace = true
 # Phase 3 of `2026-06-29-spaces-channels-and-cryptographic-roles.md`:
 # the broker validates inbound `SignedOp` envelopes against the
 # channel's role table before fan-out; the libp2p actor carries them
@@ -180,7 +180,7 @@ threshold-identity = { path = "../crates/collab/threshold-identity" }
 # `firstboot` calls `rand_core::OsRng` for identity key generation.
 # Version matched to `threshold-identity`'s direct dep (rand_core 0.6,
 # which frost-ed25519 consumes) so the workspace collapses to one copy.
-rand_core = { version = "0.6", features = ["getrandom"] }
+rand_core = { workspace = true, features = ["getrandom"] }
 # The shell serves the SDK-facing Cap'n Proto broker interface
 # natively. `runtime-collab` provides the generated schema types and
 # the SDK-side client wrappers we reuse in tests; `runtime-portal`
@@ -203,20 +203,20 @@ qos-user-identity = { path = "../crates/identity/qos-user-identity" }
 # against a peer's device pubkey (as recovered from their
 # DeviceCert). Same version + features shape as the dev-deps entry
 # below so cargo collapses to one copy in the lockfile.
-ed25519-dalek = { version = "2", features = ["rand_core"] }
-capnp = "0.26"
-capnp-rpc = "0.26"
-tokio-util = { version = "0.7", features = ["compat"] }
-futures = "0.3"
+ed25519-dalek = { workspace = true, features = ["rand_core"] }
+capnp.workspace = true
+capnp-rpc.workspace = true
+tokio-util.workspace = true
+futures = { workspace = true, default-features = true }
 # The shell re-serialises signed op envelopes and presence keys onto
 # the capnp wire; `postcard` matches what apps and the ui toolkit
 # already use for the same envelopes / keys.
-postcard = { version = "1", features = ["alloc"] }
+postcard = { workspace = true, features = ["alloc"] }
 
 # Search infrastructure.
 # `walkdir` powers the files provider's name-index walker + the tantivy
 # content indexer.
-walkdir = "2.5"
+walkdir.workspace = true
 # tantivy is the BM25 content index behind the files provider's
 # full-text search. `mmap` avoids reading the whole segment file into
 # RAM for each query; disabling default features drops the parquet
@@ -225,13 +225,13 @@ walkdir = "2.5"
 tantivy = { version = "0.22", default-features = false, features = ["mmap"] }
 
 [dev-dependencies]
-wayland-client = "0.31"
+wayland-client.workspace = true
 tokio-test = "0.4"
 # Canonical-bytes encoder for Phase 3 wire-format round-trip tests in
 # `src/network/protocol.rs`. `qos-collab-types` already uses this for
 # signing; the test verifies `NeighbourMsg::AppCrdtIncrementalSigned`
 # survives the same codec.
-postcard = { version = "1", features = ["alloc"] }
+postcard = { workspace = true, features = ["alloc"] }
 # `ed25519-dalek` is now pulled in as a top-level dep (see above),
 # for the `network::identity` module. Broker integration tests use
 # the same lockfile copy for their `SigningKey` fixtures.
@@ -241,13 +241,12 @@ postcard = { version = "1", features = ["alloc"] }
 # the broker, validated, decrypted, then compacted.
 channel-crypto = { path = "../crates/collab/channel-crypto" }
 # Deterministic RNG used by the FROST signing fixture in
-# `tests/everything_composes.rs`. Pinned to the same major as
-# `qos-threshold-identity`'s direct dep so the FROST primitives
-# Cargo-collapse to one copy across the workspace. (Shell's runtime
-# `rand = "0.10.1"` stays untouched — it's a separate compilation
-# unit for the production code path.)
+# `tests/everything_composes.rs`. The alias is historical: it was added
+# when shell also carried a `rand = "0.10.1"` runtime dep. That dep was
+# never used and has been dropped, so this now resolves to the same
+# `rand` 0.8 the rest of the workspace signs with.
 rand_08 = { package = "rand", version = "0.8" }
-rand_chacha = "0.3"
+rand_chacha.workspace = true
 # Test-only: exercise a round-trip through the on-disk identity
 # schema `runtime-identity::load` reads. Not a runtime dep — the
 # firstboot provisioning path writes JSON directly to avoid pulling
@@ -255,26 +254,26 @@ rand_chacha = "0.3"
 runtime-identity = { path = "../crates/runtime/runtime-identity" }
 # Offscreen headless renderer used by `tests/e2e_shell_flows.rs`. Versions
 # mirror ui so Cargo collapses to a single copy in the workspace lock.
-pollster = "0.4.0"
-wgpu = "29"
+pollster.workspace = true
+wgpu.workspace = true
 # Scene-encoding inspection used by `tests/concept_parity_spec.rs` to walk
 # `Scene::encoding().draw_data` for solid-colour brushes and image-paint
 # tags without round-tripping pixels through wgpu. Same minor version as
 # the `vello = "0.2.1"` runtime dep; Cargo collapses to a single copy.
-vello_encoding = "0.9"
+vello_encoding.workspace = true
 # Tempdir helper for `network::behaviour::load_or_create_keypair` tests so we
 # never write a real key to `/var/lib/qos-fs/peer-key` from the test suite.
-tempfile = "3"
+tempfile.workspace = true
 # `tests/portal_test.rs` joins the server- and client-side handshake of an
 # in-process p2p zbus pair via `futures_util::try_join!`. Already pulled in
 # transitively (libp2p, zbus, tokio) — pinning it here is just for the
 # `try_join!` macro at the test-fixture call site.
-futures-util = "0.3"
+futures-util.workspace = true
 # Serializes the 8 `apply_grants`-calling tests in `sandbox::profile`
 # that share a process-wide `SCAN_MEMO` static. Without this, parallel
 # `cargo test` races on the memo's walk-counter and surfaces as a
 # flaky `apply_grants_dev_scan_is_memoised` failure.
-serial_test = "3"
+serial_test.workspace = true
 # Naga is the WGSL parser/validator wgpu already pulls in transitively.
 # `tests/hdr_tonemap_shader.rs` uses it to spot-check the tone-map
 # WGSL kernel at test time so a shader edit doesn't silently break the

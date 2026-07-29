@@ -17,20 +17,20 @@ ui = { path = "../../ui" }
 # email accounts from here (Settings owns the write lifecycle); credentials
 # are sealed in the vault, never in the plaintext store.
 accounts = { path = "../../crates/system/accounts" }
-automerge = "0.8.0"
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-uuid = { version = "1.23.1", features = ["v4", "serde"] }
+automerge.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
 # A throwaway config directory for the sample / `--shots` / test constructors,
 # so account add/edit/remove in those modes can exercise the real persist path
 # without ever touching the user's real account store under `~/.config/qos`.
-tempfile = "3"
-tracing = "0.1"
-tracing-subscriber = "0.3"
-vello = "0.9"
-winit = "0.30.13"
-taffy = "0.10.1"
-anyhow = "1.0"
+tempfile.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+vello.workspace = true
+winit.workspace = true
+taffy.workspace = true
+anyhow.workspace = true
 # Real MIME parsing (incoming) + MIME building (outgoing). Both are pure
 # Rust with no native/TLS/async deps, so the headless build stays green and
 # fast. The bundled sample corpus is genuinely parsed by mail-parser, and
@@ -49,16 +49,16 @@ lettre = { version = "0.11", optional = true, default-features = false, features
 # Real HTTP for sender avatars (Gravatar) through the shared `ui::ImageStore`.
 # Optional + gated behind `live`; the default build injects a no-op fetcher so
 # avatars render as initials and `--shots` never opens a socket.
-reqwest = { version = "0.12", optional = true, default-features = false, features = ["blocking", "rustls-tls"] }
+reqwest = { workspace = true, optional = true, features = ["blocking", "rustls-tls"] }
 # The async runtime + TLS the engine worker drives async-imap/lettre on. The
 # worker thread owns a Tokio runtime and `block_on`s each request; TLS is
 # rustls (matching lettre/reqwest) with the bundled Mozilla roots so no OS
 # trust-store or OpenSSL dependency is needed. All `live`-only.
-tokio = { version = "1", optional = true, default-features = false, features = ["rt", "rt-multi-thread", "net", "io-util", "time", "macros"] }
-tokio-rustls = { version = "0.26", optional = true, default-features = false, features = ["ring"] }
-rustls = { version = "0.23", optional = true, default-features = false, features = ["ring", "std", "tls12"] }
+tokio = { workspace = true, optional = true, features = ["rt", "rt-multi-thread", "net", "io-util", "time", "macros"] }
+tokio-rustls = { workspace = true, optional = true }
+rustls = { workspace = true, optional = true, features = ["std", "tls12"] }
 webpki-roots = { version = "0.26", optional = true }
-futures = { version = "0.3", optional = true, default-features = false, features = ["std"] }
+futures = { workspace = true, optional = true, features = ["std"] }
 
 [features]
 # Compile the real IMAP/SMTP engine backend + remote avatar fetch. Requires

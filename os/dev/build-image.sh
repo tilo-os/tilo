@@ -38,7 +38,7 @@ done
 # Reproducible builds: derive a deterministic SOURCE_DATE_EPOCH from the HEAD
 # commit time (same commit -> same value), pass it through to the build, and
 # clamp layer + image timestamps to it. With the base pinned by digest and the
-# Rust resolve pinned (os/Cargo.lock.pinned), two builds of the same commit
+# Rust resolve pinned (the tracked Cargo.lock), two builds of the same commit
 # yield the same image (modulo dnf package drift over time — see
 # docs/supply-chain.md). Override via $SOURCE_DATE_EPOCH.
 SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-$(git -C "$QOS_REPO" log -1 --format=%ct 2>/dev/null || echo 0)}"

@@ -8,12 +8,12 @@ name = "accounts"
 path = "src/lib.rs"
 
 [dependencies]
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-tracing = "0.1"
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
 # Resolves the per-user config root ($XDG_CONFIG_HOME/qos) the same way the
 # Settings app does, so every app agrees on one directory.
-dirs = "6.0"
+dirs.workspace = true
 
 # --- Encryption-at-rest for the secret vault --------------------------
 # Credentials are long-lived bearer secrets, so the vault is sealed on disk
@@ -24,9 +24,9 @@ dirs = "6.0"
 # already resolved in the shared workspace lockfile, so this adds no
 # registry fetch. default-features are off so chacha's optional RNG surface
 # is not pulled — randomness comes from `getrandom` directly.
-chacha20poly1305 = { version = "0.10", default-features = false, features = ["alloc"] }
-getrandom = "0.2"
-zeroize = "1"
+chacha20poly1305.workspace = true
+getrandom.workspace = true
+zeroize.workspace = true
 
 [dev-dependencies]
-uuid = { version = "1.23.1", features = ["v4"] }
+uuid.workspace = true

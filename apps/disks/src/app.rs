@@ -12,13 +12,13 @@ use std::collections::HashMap;
 use std::sync::mpsc;
 use std::thread;
 
-use automerge::{AutoCommit, ObjId};
-use taffy::{NodeId, Style, TaffyTree};
-use taffy::style_helpers::percent;
-use vello::Scene;
-use vello::kurbo::{Affine, Line, Point, Rect, RoundedRect, Stroke};
-use vello::peniko::{Color, Fill};
-use winit::event::WindowEvent;
+use ui::automerge::{AutoCommit, ObjId};
+use ui::taffy::{NodeId, Style, TaffyTree};
+use ui::taffy::style_helpers::percent;
+use ui::vello::Scene;
+use ui::vello::kurbo::{Affine, Line, Point, Rect, RoundedRect, Stroke};
+use ui::vello::peniko::{Color, Fill};
+use ui::winit::event::WindowEvent;
 
 use ui::ColorCompat;
 use ui::permissions::PermissionContext;
@@ -691,7 +691,7 @@ impl DisksApp {
 
         // Rows, clipped to the scrolling body so a long list can't spill over
         // the header or the window edge.
-        scene.push_layer(Fill::NonZero, vello::peniko::BlendMode::default(), 1.0, t, &lay.list_body);
+        scene.push_layer(Fill::NonZero, ui::vello::peniko::BlendMode::default(), 1.0, t, &lay.list_body);
         for (i, drive) in self.topo.drives.iter().enumerate() {
             let Some(&r) = lay.cards.get(i) else { continue };
             if r.y1 < lay.list_body.y0 || r.y0 > lay.list_body.y1 {
@@ -1735,7 +1735,7 @@ impl Widget for DisksApp {
     ) -> NodeId {
         let node = taffy
             .new_leaf(Style {
-                size: taffy::Size {
+                size: ui::taffy::Size {
                     width: percent(1.0),
                     height: percent(1.0),
                 },
@@ -1822,7 +1822,7 @@ impl Widget for DisksApp {
             let ct = transform * Affine::translate((0.0, -self.content_scroll));
             let natural_bottom = (lay.content.y0 + self.content_h).max(lay.content.y1);
             let ext = Rect::new(lay.content.x0, lay.content.y0, lay.content.x1, natural_bottom);
-            scene.push_layer(Fill::NonZero, vello::peniko::BlendMode::default(), 1.0, transform, &lay.content);
+            scene.push_layer(Fill::NonZero, ui::vello::peniko::BlendMode::default(), 1.0, transform, &lay.content);
             match self.tab {
                 Tab::Overview => self.draw_overview(scene, tr, theme, ct, &lay, drive),
                 Tab::Smart => self.draw_smart_tab(scene, tr, theme, ct, ext, drive),
@@ -1871,7 +1871,7 @@ impl Widget for DisksApp {
         &mut self,
         event: &WindowEvent,
         scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
+        _modifiers: &ui::winit::event::Modifiers,
         state: &mut AutoCommit,
         _path: &ObjId,
         handled: &mut bool,
@@ -1879,8 +1879,8 @@ impl Widget for DisksApp {
         _node_id: NodeId,
         _taffy: &TaffyTree<()>,
     ) {
-        use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta};
-        use winit::keyboard::{Key, NamedKey};
+        use ui::winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta};
+        use ui::winit::keyboard::{Key, NamedKey};
 
         let lay = self.compute_layout();
 
@@ -2224,7 +2224,7 @@ mod tests {
     fn seeded_app() -> (DisksApp, AutoCommit) {
         let mut app = DisksApp::new();
         let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
+        let root = ui::automerge::ROOT;
         app.sync(&mut doc, &root);
         (app, doc)
     }
@@ -2244,7 +2244,7 @@ mod tests {
         assert_eq!(DisksDoc::selected(&doc), 2);
         // A fresh app syncing the same doc adopts the selection.
         let mut app2 = DisksApp::new();
-        let root = automerge::ROOT;
+        let root = ui::automerge::ROOT;
         app2.sync(&mut doc, &root);
         assert_eq!(app2.selected, 2);
     }
@@ -2317,9 +2317,9 @@ mod tests {
         taffy
             .compute_layout(
                 node,
-                taffy::Size {
-                    width: taffy::AvailableSpace::Definite(width as f32),
-                    height: taffy::AvailableSpace::Definite(800.0),
+                ui::taffy::Size {
+                    width: ui::taffy::AvailableSpace::Definite(width as f32),
+                    height: ui::taffy::AvailableSpace::Definite(800.0),
                 },
             )
             .unwrap();
@@ -2396,8 +2396,8 @@ mod tests {
     // `Widget::handle_event` path (real clicks / wheel), not shortcuts.
     // ================================================================
 
-    use winit::dpi::PhysicalPosition;
-    use winit::event::{DeviceId, ElementState, Modifiers, MouseButton, MouseScrollDelta, WindowEvent};
+    use ui::winit::dpi::PhysicalPosition;
+    use ui::winit::event::{DeviceId, ElementState, Modifiers, MouseButton, MouseScrollDelta, WindowEvent};
 
     fn device_id() -> DeviceId {
         // winit exposes no public constructor; the all-zero pattern is inert
@@ -2435,9 +2435,9 @@ mod tests {
                 .taffy
                 .new_with_children(
                     Style {
-                        size: taffy::Size {
-                            width: taffy::Dimension::length(self.w as f32),
-                            height: taffy::Dimension::length(self.h as f32),
+                        size: ui::taffy::Size {
+                            width: ui::taffy::Dimension::length(self.w as f32),
+                            height: ui::taffy::Dimension::length(self.h as f32),
                         },
                         ..Default::default()
                     },
@@ -2447,9 +2447,9 @@ mod tests {
             self.taffy
                 .compute_layout(
                     root,
-                    taffy::Size {
-                        width: taffy::AvailableSpace::Definite(self.w as f32),
-                        height: taffy::AvailableSpace::Definite(self.h as f32),
+                    ui::taffy::Size {
+                        width: ui::taffy::AvailableSpace::Definite(self.w as f32),
+                        height: ui::taffy::AvailableSpace::Definite(self.h as f32),
                     },
                 )
                 .unwrap();
@@ -2471,7 +2471,7 @@ mod tests {
             let mods = Modifiers::default();
             let mut handled = false;
             let mut focus = None;
-            self.app.handle_event(event, 1.0, &mods, &mut self.doc, &automerge::ROOT, &mut handled, &mut focus, self.node, &self.taffy);
+            self.app.handle_event(event, 1.0, &mods, &mut self.doc, &ui::automerge::ROOT, &mut handled, &mut focus, self.node, &self.taffy);
             handled
         }
 
@@ -2486,7 +2486,7 @@ mod tests {
 
         fn wheel(&mut self, p: Point, lines: f32) {
             self.move_to(p);
-            self.dispatch(&WindowEvent::MouseWheel { device_id: device_id(), delta: MouseScrollDelta::LineDelta(0.0, lines), phase: winit::event::TouchPhase::Moved });
+            self.dispatch(&WindowEvent::MouseWheel { device_id: device_id(), delta: MouseScrollDelta::LineDelta(0.0, lines), phase: ui::winit::event::TouchPhase::Moved });
         }
 
         fn lay(&self) -> Layout {
@@ -2606,7 +2606,7 @@ mod tests {
         let mut h = Harness::new(1280.0, 800.0);
         let live = if let Some(topo) = crate::probe::probe() {
             DisksDoc::write_topology(&mut h.doc, &topo);
-            h.app.sync(&mut h.doc, &automerge::ROOT);
+            h.app.sync(&mut h.doc, &ui::automerge::ROOT);
             h.relayout();
             true
         } else {
@@ -2665,7 +2665,7 @@ mod tests {
         // target must exist.
         let (mut app, mut doc) = seeded_app();
         DisksDoc::write_topology(&mut doc, &Topology::default());
-        app.sync(&mut doc, &automerge::ROOT);
+        app.sync(&mut doc, &ui::automerge::ROOT);
         assert!(app.topo.drives.is_empty(), "empty topology stays empty — no sample");
         assert!(app.drive().is_none());
         app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);

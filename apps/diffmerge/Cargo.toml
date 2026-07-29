@@ -13,16 +13,16 @@ path = "src/main.rs"
 
 [dependencies]
 ui = { path = "../../ui" }
-automerge = "0.8.0"
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-uuid = { version = "1.23.1", features = ["v4", "serde"] }
-tracing = "0.1"
-tracing-subscriber = "0.3"
-vello = "0.9"
-winit = "0.30.13"
-taffy = "0.10.1"
-anyhow = "1.0"
+automerge.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+vello.workspace = true
+winit.workspace = true
+taffy.workspace = true
+anyhow.workspace = true
 similar = "2.6"
 # Host-native file open through the XDG Desktop Portal
 # (org.freedesktop.portal.FileChooser). On GNOME the user sees GNOME's file
@@ -30,6 +30,6 @@ similar = "2.6"
 # portal call runs off the UI thread on its own small Tokio runtime and the
 # chosen path is delivered back over a channel (see `app::portal`). An app
 # never draws its own file picker (HIG §5).
-ashpd = { version = "0.9", default-features = false, features = ["tokio"] }
-tokio = { version = "1", features = ["rt", "rt-multi-thread", "net", "time"] }
-url = "2"
+ashpd.workspace = true
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "net", "time"] }
+url.workspace = true

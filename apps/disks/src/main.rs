@@ -14,10 +14,10 @@ use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::Widget;
-use taffy::prelude::*;
-use vello::Scene;
-use vello::kurbo::{Affine, Point};
-use vello::peniko::Color;
+use ui::taffy::prelude::*;
+use ui::vello::Scene;
+use ui::vello::kurbo::{Affine, Point};
+use ui::vello::peniko::Color;
 
 const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1280, 800);
 /// A phone-width capture used to exercise the responsive overlay flap. Below
@@ -203,7 +203,7 @@ fn render_shot_to_png(
         let tr = &mut text_renderer;
         taffy.compute_layout_with_measure(
             root,
-            taffy::Size {
+            ui::taffy::Size {
                 width: AvailableSpace::Definite(w as f32),
                 height: AvailableSpace::Definite(h as f32),
             },
@@ -211,7 +211,7 @@ fn render_shot_to_png(
                 if let Some(&ptr) = measure_map.get(&node_id) {
                     unsafe { (*ptr).measure(known, available, tr) }
                 } else {
-                    taffy::Size::ZERO
+                    ui::taffy::Size::ZERO
                 }
             },
         )?;

@@ -13,44 +13,30 @@ path = "src/main.rs"
 
 [dependencies]
 ui = { path = "../../ui" }
-automerge = "0.8.0"
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-uuid = { version = "1.23.1", features = ["v4", "serde"] }
-tracing = "0.1"
-tracing-subscriber = "0.3"
-vello = "0.9"
-winit = "0.30.13"
-taffy = "0.10.1"
-anyhow = "1.0"
+automerge.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+vello.workspace = true
+winit.workspace = true
+taffy.workspace = true
+anyhow.workspace = true
 
 # --- Feed reading stack ---------------------------------------------------
 # Real RSS/Atom/JSON-feed parsing; pure-Rust TLS so we don't drag in a
 # system OpenSSL build dep inside the distrobox.
 feed-rs = "2"
-reqwest = { version = "0.12", default-features = false, features = [
-    "rustls-tls",
-    "gzip",
-    "brotli",
-] }
-tokio = { version = "1", features = [
-    "rt",
-    "rt-multi-thread",
-    "net",
-    "time",
-    "io-util",
-    "sync",
-    "macros",
-] }
+reqwest = { workspace = true, features = ["rustls-tls", "gzip", "brotli"] }
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "net", "time", "io-util", "sync", "macros"] }
 # org.freedesktop.portal.FileChooser (via ashpd) — an app never draws its own
 # file picker; OPML import goes through the host portal so the compositor's
 # picker + per-cluster sandbox prompt is the security boundary. The D-Bus call
 # runs off the UI thread on its own small Tokio runtime and the chosen path is
 # handed back over a channel.
-ashpd = { version = "0.9", default-features = false, features = ["tokio"] }
-url = "2"
-chrono = { version = "0.4", default-features = false, features = ["clock", "std", "alloc"] }
+ashpd.workspace = true
+url.workspace = true
+chrono = { workspace = true, features = ["clock", "std", "alloc"] }
 # Raw TLS for the gemini:// fetcher (TOFU, accepts self-signed certs).
-tokio-rustls = { version = "0.26", default-features = false, features = [
-    "ring",
-] }
+tokio-rustls.workspace = true

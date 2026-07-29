@@ -273,7 +273,7 @@ fn parse_content(xml: &str) -> Option<Deck> {
             Ok(Event::Empty(e)) => (e, false),
             Ok(Event::Text(t)) => {
                 if in_text_p {
-                    p_buf.push_str(&t.unescape().unwrap_or_default());
+                    p_buf.push_str(&t.xml10_content().unwrap_or_default());
                 }
                 continue;
             }

@@ -29,20 +29,20 @@ media = { path = "../../crates/media" }
 # Trait passes (`sync`, `build_layout`, `handle_event`) mention these crates
 # in their signatures; we re-export them at the same versions the sibling
 # native apps pin so a shared `target/` cache hits across crates.
-automerge = "0.8.0"
-vello = "0.9"
-winit = "0.30.13"
-taffy = "0.10.1"
-tracing = "0.1"
-tracing-subscriber = "0.3"
+automerge.workspace = true
+vello.workspace = true
+winit.workspace = true
+taffy.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
 # The shared account + region/format stores Settings owns are plain
 # serde-serialisable JSON documents that other apps (Mail, Calendar,
 # Sheets, Weather) read. serde/serde_json render them; dirs resolves the
 # per-user config root; uuid mints stable account ids.
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-dirs = "6.0"
-uuid = { version = "1.23.1", features = ["v4", "serde"] }
+serde.workspace = true
+serde_json.workspace = true
+dirs.workspace = true
+uuid.workspace = true
 
 [dev-dependencies]
 # The persistence tests read the shared account store + vault back to prove

@@ -212,11 +212,12 @@ fn slice(bytes: &[u8], offset: u64, size: u64) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use iroh::endpoint::presets;
     use iroh::protocol::Router;
 
     #[tokio::test]
     async fn reads_local_content_without_peers() {
-        let endpoint = Endpoint::bind().await.unwrap();
+        let endpoint = Endpoint::bind(presets::N0).await.unwrap();
         let store = Arc::new(ContentStore::memory());
         let hash = store.write_content(b"hello local").await.unwrap().unwrap();
 
@@ -231,7 +232,7 @@ mod tests {
 
     #[tokio::test]
     async fn chunked_large_file_ranged_reads() {
-        let endpoint = Endpoint::bind().await.unwrap();
+        let endpoint = Endpoint::bind(presets::N0).await.unwrap();
         let store = Arc::new(ContentStore::memory());
         // A multi-chunk buffer (well over MAX_CHUNK).
         let data: Vec<u8> = (0..300_000u32)
@@ -256,7 +257,7 @@ mod tests {
 
     #[tokio::test]
     async fn missing_blob_with_no_peers_errors() {
-        let endpoint = Endpoint::bind().await.unwrap();
+        let endpoint = Endpoint::bind(presets::N0).await.unwrap();
         let store = Arc::new(ContentStore::memory());
         let hydrator = Hydrator::new(endpoint, store);
         let absent = Hash::from([9u8; 32]);
@@ -265,7 +266,7 @@ mod tests {
 
     #[tokio::test]
     async fn sync_state_is_local_when_manifest_and_chunks_are_present() {
-        let endpoint = Endpoint::bind().await.unwrap();
+        let endpoint = Endpoint::bind(presets::N0).await.unwrap();
         let store = Arc::new(ContentStore::memory());
         // A multi-chunk file so we exercise the per-chunk presence check.
         let data: Vec<u8> = (0..250_000u32).map(|i| (i.wrapping_mul(2_654_435_761) >> 11) as u8).collect();
@@ -276,7 +277,7 @@ mod tests {
 
     #[tokio::test]
     async fn sync_state_is_projected_when_content_is_not_local() {
-        let endpoint = Endpoint::bind().await.unwrap();
+        let endpoint = Endpoint::bind(presets::N0).await.unwrap();
         let store = Arc::new(ContentStore::memory());
         let hyd = Hydrator::new(endpoint, store);
         // A manifest hash the store never ingested: exactly what a freshly-joined
@@ -289,7 +290,7 @@ mod tests {
     async fn sync_state_is_projected_when_a_chunk_is_missing() {
         // Manifest present locally, but one referenced chunk was never stored:
         // the file is partially projected (the state after a torn/partial fetch).
-        let endpoint = Endpoint::bind().await.unwrap();
+        let endpoint = Endpoint::bind(presets::N0).await.unwrap();
         let store = Arc::new(ContentStore::memory());
         let present = store.ingest(Bytes::from_static(b"chunk that exists")).await.unwrap();
         let missing = Hash::from([9u8; 32]);
@@ -310,7 +311,7 @@ mod tests {
 
     #[tokio::test]
     async fn sync_state_reports_downloading_while_a_fetch_is_in_flight() {
-        let endpoint = Endpoint::bind().await.unwrap();
+        let endpoint = Endpoint::bind(presets::N0).await.unwrap();
         let store = Arc::new(ContentStore::memory());
         // Ingest a real file (so absent state would otherwise be Local)...
         let data: Vec<u8> = (0..200_000u32).map(|i| (i.wrapping_mul(40_503) >> 9) as u8).collect();
@@ -338,7 +339,7 @@ mod tests {
     #[tokio::test]
     async fn hydrates_real_bytes_from_a_peer() {
         // --- node A: serve a blob over iroh-blobs ---
-        let server_ep = Endpoint::bind().await.unwrap();
+        let server_ep = Endpoint::bind(presets::N0).await.unwrap();
         let server_store = ContentStore::memory();
         let payload = Bytes::from_static(b"collaborative filesystem payload");
         let hash = server_store.write_content(payload.as_ref()).await.unwrap().unwrap();
@@ -348,7 +349,7 @@ mod tests {
         let server_addr = server_ep.addr();
 
         // --- node B: empty store, must hydrate from A ---
-        let client_ep = Endpoint::bind().await.unwrap();
+        let client_ep = Endpoint::bind(presets::N0).await.unwrap();
         let client_store = Arc::new(ContentStore::memory());
         let hydrator = Hydrator::new(client_ep, client_store.clone());
 

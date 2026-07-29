@@ -16,12 +16,12 @@ path = "src/main.rs"
 # (file-explorer / terminal): the toolkit plus the trait crates its
 # `Widget` impls reference directly.
 ui = { path = "../../../ui" }
-automerge = "0.8.0"
-vello = "0.9"
-winit = "0.30.13"
-taffy = "0.10.1"
-tracing = "0.1"
-tracing-subscriber = "0.3"
+automerge.workspace = true
+vello.workspace = true
+winit.workspace = true
+taffy.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
 # greetd's wire protocol. `sync-codec` pulls in the blocking
 # `SyncCodec` (`Request::write_to` / `Response::read_from` over
 # `std::io::{Read,Write}`) — no async runtime needed for a login box.

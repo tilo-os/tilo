@@ -54,7 +54,7 @@ pub(super) fn import_meta(xml: &[u8], doc: &mut DocMut) {
             }
             Ok(Event::Text(t)) => {
                 if current.is_some() {
-                    if let Ok(s) = t.unescape() {
+                    if let Ok(s) = t.xml10_content() {
                         text.push_str(&s);
                     }
                 }

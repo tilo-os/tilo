@@ -30,38 +30,38 @@ frost-ed25519 = { version = "3", features = ["serialization"] }
 # RNG primitives. `rand` 0.8 because frost-ed25519 3.0 still consumes
 # `rand_core` 0.6. `rand_chacha` provides a deterministic ChaCha RNG
 # used in the tests' fixed-seed setup.
-rand = "0.8"
-rand_chacha = "0.3"
-rand_core = "0.6"
+rand.workspace = true
+rand_chacha.workspace = true
+rand_core.workspace = true
 
 # Standard wire-serialisation stack (mirrors qos-collab-types).
-serde = { version = "1", features = ["derive"] }
-serde_bytes = "0.11"
-postcard = { version = "1", features = ["alloc"] }
+serde.workspace = true
+serde_bytes.workspace = true
+postcard = { workspace = true, features = ["alloc"] }
 
 # Error plumbing.
-thiserror = "1"
+thiserror.workspace = true
 
 # Defence-in-depth: explicit zeroize on secret-material drop. The
 # `frost-core::SigningKey`/`SecretShare` types already implement
 # `ZeroizeOnDrop`, but we add a `Drop` for the public wrapper so the
 # whole `SecretShare` newtype is wiped even if the consumer somehow
 # memcpys it.
-zeroize = { version = "1", features = ["derive"] }
+zeroize = { workspace = true, features = ["derive"] }
 
 # BIP39 mnemonic encoder/decoder for the paper recovery share. Default
 # wordlist is English (2048 words, 11 bits/word; 24 words → 256 bits
 # of entropy + 8-bit checksum). Fixed at 2.x to avoid breaking changes.
-bip39 = "2"
+bip39.workspace = true
 
 # Hex encoding for the public-metadata part of the recovery share
 # card. Tiny dep; pinned to a stable major.
-hex = "0.4"
+hex.workspace = true
 
 # SHA-512 for the pairing-transcript hash (matches the hash
 # function used in FROST(Ed25519, SHA-512), which is already a
 # transitive dep via frost-ed25519).
-sha2 = "0.10"
+sha2.workspace = true
 
 # `ed25519-dalek` is used for the on-disk-format single-device
 # bootstrap helper (`bootstrap_single_device_seed`). The frost
@@ -72,9 +72,9 @@ sha2 = "0.10"
 # different signing scalars and produced sigs stop verifying. The
 # helper below generates a real dalek seed + derives the matching
 # verifying key so the JSON record round-trips cleanly.
-ed25519-dalek = { version = "2", features = ["serde", "rand_core"] }
+ed25519-dalek = { workspace = true, features = ["serde", "rand_core"] }
 
 [dev-dependencies]
 # Same dep that qos-collab-types uses for ArtifactId / ChannelId /
 # SpaceId UUIDs; we mint a few in the SignedOp interop test.
-uuid = { version = "1", features = ["v4", "serde"] }
+uuid.workspace = true

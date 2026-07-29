@@ -15,18 +15,18 @@ path = "src/lib.rs"
 [dependencies]
 # Pinned: capnp 0.26 ships with capnp-rpc 0.26 and capnpc 0.26. The
 # whole 0.26 line shares a generator + RPC ABI.
-capnp = "0.26"
-capnp-rpc = "0.26"
+capnp.workspace = true
+capnp-rpc.workspace = true
 # tokio 1.x. We use the runtime + net + io + macros features only;
 # heavy features like `signal` or `full` belong in the binary.
-tokio = { version = "1", features = ["rt", "net", "io-util", "macros", "sync"] }
-tokio-util = { version = "0.7", features = ["compat"] }
+tokio = { workspace = true, features = ["rt", "net", "io-util", "macros", "sync"] }
+tokio-util.workspace = true
 # nix gives us `fcntl(F_GETFD)` so we can probe whether a fd is open
 # before we hand it to tokio. 0.30 is the latest line already in the
 # workspace's lock file (transitive via shell).
 nix = { version = "0.30", features = ["fs"] }
-thiserror = "1"
-futures = "0.3"
+thiserror.workspace = true
+futures = { workspace = true, default-features = true }
 
 [dev-dependencies]
-tokio = { version = "1", features = ["rt", "rt-multi-thread", "net", "io-util", "macros", "sync", "time"] }
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "net", "io-util", "macros", "sync", "time"] }

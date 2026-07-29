@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use iroh::endpoint::{Endpoint, RecvStream, SendStream};
+use iroh::endpoint::{Endpoint, RecvStream, SendStream, presets};
 use iroh::protocol::{AcceptError, ProtocolHandler, Router};
 use iroh_base::{EndpointAddr, PublicKey};
 use tokio::sync::Mutex as AsyncMutex;
@@ -117,7 +117,7 @@ impl Relay {
         let secret_bytes = load_or_create_iroh_secret(&cfg.state_root)?;
         let secret = iroh::SecretKey::from_bytes(&secret_bytes);
 
-        let endpoint = Endpoint::builder()
+        let endpoint = Endpoint::builder(presets::N0)
             .secret_key(secret)
             .bind()
             .await

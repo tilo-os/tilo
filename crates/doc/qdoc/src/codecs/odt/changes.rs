@@ -65,7 +65,7 @@ pub(super) fn import_tracked_changes(raw: &str) -> Vec<ImportedChange> {
                 _ => {}
             },
             Event::Text(t) => {
-                if let (Some(is_author), Ok(txt)) = (collecting, t.unescape()) {
+                if let (Some(is_author), Ok(txt)) = (collecting, t.xml10_content()) {
                     if is_author {
                         author.push_str(&txt);
                     } else {

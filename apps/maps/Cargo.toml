@@ -13,27 +13,27 @@ path = "src/main.rs"
 
 [dependencies]
 ui = { path = "../../ui" }
-automerge = "0.8.0"
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-uuid = { version = "1.23.1", features = ["v4", "serde"] }
-tracing = "0.1"
-tracing-subscriber = "0.3"
-vello = "0.9"
-winit = "0.30.13"
-taffy = "0.10.1"
-anyhow = "1.0"
-reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+automerge.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+vello.workspace = true
+winit.workspace = true
+taffy.workspace = true
+anyhow.workspace = true
+reqwest = { workspace = true, features = ["blocking", "json", "rustls-tls"] }
 # Explicit rustls ring provider so we can install_default() at startup — the tree
 # has both ring + aws-lc-rs, which rustls 0.23 won't auto-disambiguate.
-rustls = { version = "0.23", default-features = false, features = ["ring"] }
-png = "0.18.1"
+rustls.workspace = true
+png.workspace = true
 # Device location through the XDG Desktop Portal (org.freedesktop.portal.Location,
 # GeoClue2 behind it). Runs off the UI thread on its own small Tokio runtime; the
 # fix is delivered back over a channel (see `location`). Honest failure states —
 # never a fabricated position.
-ashpd = { version = "0.9", default-features = false, features = ["tokio"] }
-tokio = { version = "1", features = ["rt", "rt-multi-thread", "net", "time"] }
-futures-util = "0.3"
+ashpd.workspace = true
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "net", "time"] }
+futures-util.workspace = true
 # RFC-3339 timestamps for the transit depart/arrive time picker.
-chrono = "0.4"
+chrono = { workspace = true, default-features = true }

@@ -22,7 +22,7 @@ thin = ["dep:runtime-dylib"]
 
 [dependencies]
 cli    = { path = "../../runtime/cli" }
-anyhow = "1"
-clap   = { version = "4", features = ["derive"] }
+anyhow.workspace = true
+clap.workspace = true
 # Only pulled in under `--features thin`; see the `thin` feature above.
 runtime-dylib = { path = "../../runtime/runtime-dylib", optional = true }

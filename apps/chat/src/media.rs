@@ -411,7 +411,7 @@ mod live {
             );
             let (inbound_tx, inbound_rx) = mpsc::unbounded_channel();
             let (endpoint, router, ticket) = rt.block_on(async move {
-                let endpoint = iroh::Endpoint::builder().bind().await.ok()?;
+                let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::N0).bind().await.ok()?;
                 let router = iroh::protocol::Router::builder(endpoint.clone())
                     .accept(MEDIA_ALPN, MediaProtocol { inbound: inbound_tx })
                     .spawn();

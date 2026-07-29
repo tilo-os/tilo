@@ -23,10 +23,95 @@ pub trait Backend {
     fn submit_frame(&mut self, scene: &vello::Scene, output: OutputId);
     fn poll_events(&mut self, callback: impl FnMut(BackendEvent));
     fn outputs(&self) -> &[Output];
+    fn set_dpms(&mut self, on: bool) {}
+    /// The display's presentation interval — what the loop paces to.
+    fn refresh_interval(&self) -> Option<Duration> { None }
+    /// Hand the presentation half over to a dedicated render thread.
+    fn take_presenter(&mut self) -> Option<Box<dyn Presenter>> { None }
 }
 ```
 
 `drm` Phase 5.3 (vello → DMA-BUF direct interop, zero-copy GPU scanout) is deferred — see the compositor plan's Phase 5 notes. The current DRM path renders via wgpu's GL fallback into a GBM buffer.
+
+## Presentation: cadence and threading
+
+Two modules own the presentation path's timing.
+
+**`compositor::pacing`** — the presentation clock. The loop paces to the
+display's real interval, taken from `Backend::refresh_interval`:
+
+- `drm` derives it from the connector's raw mode timing (pixel clock over
+  htotal×vtotal), so a 59.94 Hz panel is paced at 59.94 rather than a
+  rounded 60. Multi-output paces to the fastest connected mode, because
+  the compositor paints one scene across the combined geometry and there
+  is only one cadence to pick.
+- `winit` reports the host monitor's rate — what a nested client can
+  actually present at.
+- `headless` reports `None`. It has no display, so it falls back to 60 Hz
+  rather than acquiring a fake one; this is the same decoupling that lets
+  the Wayland state run without a GPU.
+
+`FrameClock::due` gates the paint (protocol traffic and input wake the
+loop off-cadence; presenting then submits frames inside a refresh
+interval that the display discards) and `FrameClock::budget` is the event
+loop's dispatch timeout — the *remainder* of the interval, so a tick that
+worked for 6 ms parks for the other 10.7. Deadlines advance in whole
+intervals from the previous deadline, so a late frame doesn't drag the
+grid, and a frame that overruns several intervals skips them rather than
+queueing a burst.
+
+**`compositor::present`** — presentation off the input thread. Backends
+that can be split hand a `Presenter` (their render state) to a
+`PresentPipe`, which owns a `qos-present` thread. The seam is the
+finished `vello::Scene`: an owned encoding that borrows nothing from the
+Automerge document, the widget tree or the text renderer, so the logic
+thread keeps sole ownership of the CRDT and `ui`'s "widgets mutate the
+document in `handle_event`" model is untouched.
+
+- `winit` and `drm` split. For DRM only the scanouts and the vello bridge
+  move; libseat/udev/libinput and the hardware cursor plane stay on the
+  loop thread (the cursor owns its own dup of the card fd, so pointer
+  motion is now genuinely decoupled from paint).
+- `headless` deliberately does not: the test-control `snapshot` command
+  reads its rendered bytes back immediately after the submit, and an
+  asynchronous present would make every headless harness racy.
+
+The pipe admits one frame beyond the one being presented. When it is full
+the paint gate declines to build — capping input-to-photon at two frame
+intervals — rather than growing a queue the display can never drain.
+Resize and DPMS travel the same channel as frames, so a blank cannot
+overtake a frame already queued.
+
+`shell/src/compositor/metrics.rs` instruments all of it
+(`QOS_FRAME_TRACE`, `QOS_FRAME_SUMMARY`); `scripts/perf/frame-loop-bench.py`
+drives a measured run and diffs two of them.
+
+**Known residual: client dispatch is the next thing on the logic
+thread.** With presentation moved off, `dispatch_clients` is the largest
+remaining phase there — 16.8% of wall time under a client committing at
+163 fps, against 1.9% for scene building and 0.8% for the submit
+hand-off. It is also where the pacing tail comes from: on a nested run
+at 92.5% on-cadence, the off-cadence spans carry a median 4.1 ms of
+client dispatch against 2.5 ms for the on-cadence ones, and the worst
+gaps (77 ms, 57 ms, 45 ms) are 23-25 ms of client dispatch each. The
+cause is per-commit buffer capture (`foreign::ForeignFrameStore::capture_commit`
+copies an SHM buffer, or reads back a dma-buf) running inline on the
+logic thread, so a client that commits faster than the compositor
+presents makes the compositor late. Moving capture off the logic thread,
+or coalescing commits so only the newest buffer per surface is imported
+per frame, is the follow-up — and the frame trace already measures it.
+
+**What is verified, and what isn't.** The loop demonstrably holds the
+cadence it is configured for — including non-60 rates, via the
+`QOS_REFRESH_HZ` override. That is a statement about the *loop*. It is
+not a statement about frames landing on a real panel's vblank: nothing in
+this design consumes hardware presentation feedback (DRM page-flip
+completion timestamps, or a `presentation-time` protocol event from a
+nested parent). `FrameClock::note_presented` is called at submit, so the
+deadline series is anchored on production, not on photons. Closing that
+loop — feeding real flip timestamps back into `note_presented`, which the
+clock is already shaped to accept — is the next step, and it needs
+hardware to be worth anything.
 
 ## Event loop + state
 
@@ -54,7 +139,46 @@ The frame builder (`shell/src/compositor/frame.rs`) produces one `vello::Scene` 
 
 1. Drive the shell-chrome widget tree (`ShellOverlayHost`) into the scene — top bar, wheel disc, palette, modals.
 2. For each foreign Wayland surface visible in the active workspace, look up its committed buffer (stored on the surface user-data in `CompositorHandler::commit`) and draw it into the scene at the tab's content-area rect. SHM buffers are converted ARGB8888 → RGBA8888 and rendered as `peniko::Image`. dmabuf foreign buffers are also supported via wgpu native textures.
-3. Submit the scene to the backend; the backend either presents into a winit window (winit backend) or schedules a page flip on the DRM output (drm backend).
+3. Hand the scene to the presenter — the render thread where the backend
+   supports one, inline otherwise. It either presents into a winit window
+   (winit backend) or schedules a page flip on the DRM output (drm backend).
+
+### No fullscreen fast path — none of it exists
+
+**There is no direct scanout in this compositor, in any partial form.** A
+fullscreen client pays exactly the same cost as a windowed one: its
+buffer is imported to bytes, drawn into the scene as a full-viewport
+image, and the whole scene is rendered and presented. If you are here
+because you expect a fast path to exist and be disabled, or half-wired,
+or gated behind a flag — it is none of those. Nothing was started.
+
+**What is absent, concretely.** There is no dmabuf→KMS import anywhere in
+`shell/src/compositor/backend/drm/`. `add_framebuffer` is called in
+exactly one place — `scanout.rs`, on the two dumb buffers the backend
+allocates for itself at modeset — and nowhere else. The compositor never
+hands a client's buffer to KMS. `compositor::gpu_import` does import
+client dma-bufs, but via EGL into a GL texture that it *reads back to
+CPU bytes*; that is a path to `peniko::ImageBrush`, the opposite
+direction from scanout.
+
+**What building it entails.** Importing a client dmabuf as a KMS
+framebuffer (`drmModeAddFB2WithModifiers`); negotiating format and
+modifier against the primary plane's advertised set, and re-negotiating
+when the client's allocation changes; holding the buffer alive and
+un-released until the flip that shows it retires, or the client
+overwrites a buffer mid-scanout; and a tested fallback for every case
+where the plane refuses — wrong format, wrong modifier, scaling needed,
+a flip that fails at commit time. It is a project, not a branch in
+`submit_frame`.
+
+**No qualification logic is wired either**, deliberately. Deciding
+"does this frame qualify for the short route" (one visible surface,
+covering the output, no chrome overlay, not locked, no notifications, no
+remote cursors) is tractable on its own and tempting to land early. It
+was left out because a decision with no route behind it is a switch
+wired to nothing: it reads as progress, it accumulates callers, and the
+first person to implement scanout has to re-derive whether the existing
+predicate was ever right. The decision and the route land together.
 
 The same `FrameBuilder` is used by `cargo run --bin shots -- --mode offscreen|recording` — that's how scenario screenshots and recordings stay byte-identical to the live binary. See `plan/architecture.md` for the e2e infrastructure overview.
 

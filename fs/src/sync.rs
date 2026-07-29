@@ -17,7 +17,7 @@ use anyhow::Result;
 use bytes::Bytes;
 use futures_lite::StreamExt;
 use iroh::address_lookup::memory::MemoryLookup;
-use iroh::endpoint::{Connection, Endpoint, RecvStream, SendStream};
+use iroh::endpoint::{Connection, Endpoint, RecvStream, SendStream, presets};
 use iroh::protocol::{AcceptError, ProtocolHandler, Router};
 use iroh_base::EndpointAddr;
 use iroh_gossip::api::{Event, GossipReceiver, GossipSender};
@@ -88,7 +88,7 @@ impl Ticket {
 /// we learn about by id). Returns both so callers can register peer addresses.
 pub async fn bind_endpoint() -> Result<(Endpoint, MemoryLookup)> {
     let lookup = MemoryLookup::new();
-    let endpoint = Endpoint::builder()
+    let endpoint = Endpoint::builder(presets::N0)
         .address_lookup(lookup.clone())
         .bind()
         .await?;

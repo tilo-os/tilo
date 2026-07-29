@@ -235,7 +235,7 @@ pub(super) fn import_region(xml: &[u8], region: Region, doc: &mut DocMut) {
                 _ => {}
             },
             Event::Text(t) => {
-                let Ok(txt) = t.unescape() else { continue };
+                let Ok(txt) = t.xml10_content() else { continue };
                 if in_instr {
                     if field_in_progress && is_page_instr(&txt) {
                         field_pending = true;

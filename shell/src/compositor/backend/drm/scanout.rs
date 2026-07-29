@@ -430,6 +430,29 @@ impl DrmScanout {
     }
 
     /// Mode dimensions — callers size their paint buffer to this.
+    /// This output's presentation interval, derived from the active
+    /// mode's raw timing (`pixel_clock / (htotal * vtotal)`).
+    ///
+    /// Preferred over `Mode::vrefresh()`, which is rounded to whole
+    /// hertz: the very common 59.94 Hz modes report `60`, and pacing a
+    /// deadline series at 60.000 Hz against a 59.94 Hz panel walks a full
+    /// frame out of phase every ~16 seconds. Returns `None` when the mode
+    /// advertises timings that can't be a display (virtual connectors
+    /// report zeroes), so the caller falls back instead of adopting a
+    /// nonsense cadence.
+    pub fn refresh_interval(&self) -> Option<std::time::Duration> {
+        let (_, _, htotal) = self.mode.hsync();
+        let (_, _, vtotal) = self.mode.vsync();
+        crate::compositor::pacing::interval_from_mode_timing(
+            self.mode.clock(),
+            htotal as u32,
+            vtotal as u32,
+        )
+        // Fall back to the rounded rate if the raw timing is unusable but
+        // the mode still advertises a plausible refresh.
+        .or_else(|| crate::compositor::pacing::interval_from_hz(self.mode.vrefresh()))
+    }
+
     pub fn size(&self) -> (u32, u32) {
         (self.width, self.height)
     }

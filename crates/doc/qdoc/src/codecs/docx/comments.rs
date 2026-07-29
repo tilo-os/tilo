@@ -107,7 +107,7 @@ fn import_one_comment(raw: &str, author: &str, date: &str, doc: &mut DocMut) -> 
                 _ => {}
             },
             Event::Text(t) if in_t => {
-                if let Ok(txt) = t.unescape() {
+                if let Ok(txt) = t.xml10_content() {
                     if !txt.is_empty() {
                         append(doc, &cur, &mut cur_len, &txt);
                     }

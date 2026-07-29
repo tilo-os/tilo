@@ -290,7 +290,50 @@ impl ShellDriver {
     pub fn paint_settled(&mut self) -> Scene {
         self.fb.paint_settled()
     }
+}
 
+/// Append a tab to the first window group of the first workspace, straight
+/// into a forked document.
+///
+/// The peer in the `room-activity` scene has no `WorkspaceTree` of its own —
+/// it is a bare document, exactly like a remote replica that has only ever
+/// received change blobs. So it writes the same shape
+/// `WorkspaceTree::doc_append_tab_to_first_group_of_active_workspace` writes,
+/// by hand. Returns whether anything was written.
+fn peer_append_tab(doc: &mut automerge::AutoCommit, title: &str) -> bool {
+    use automerge::transaction::Transactable;
+    use automerge::{ObjType, ROOT, ReadDoc, ScalarValue};
+    let Ok(Some((_, workspaces))) = doc.get(&ROOT, "workspaces") else {
+        return false;
+    };
+    let Ok(Some((_, ws))) = doc.get(&workspaces, 0_usize) else {
+        return false;
+    };
+    let Ok(Some((_, strips))) = doc.get(&ws, "strips") else {
+        return false;
+    };
+    let Ok(Some((_, strip))) = doc.get(&strips, 0_usize) else {
+        return false;
+    };
+    let Ok(Some((_, groups))) = doc.get(&strip, "window_groups") else {
+        return false;
+    };
+    let Ok(Some((_, group))) = doc.get(&groups, 0_usize) else {
+        return false;
+    };
+    let Ok(Some((_, tabs))) = doc.get(&group, "tabs") else {
+        return false;
+    };
+    let at = doc.length(&tabs);
+    let Ok(entry) = doc.insert_object(&tabs, at, ObjType::Map) else {
+        return false;
+    };
+    let _ = doc.put(&entry, "id", ScalarValue::Uint(70_000 + at as u64));
+    let _ = doc.put(&entry, "title", title.to_string());
+    true
+}
+
+impl ShellDriver {
     /// Apply the named "scene" mutation set (the legacy `--scenes`
     /// catalogue). Each scene is a one-shot mutation — call on a fresh
     /// driver per scene if a clean slate is required.
@@ -363,6 +406,110 @@ impl ShellDriver {
                     st.ws_settings_tab = WsTab::Files;
                 });
                 self.fb.host_mut().force_ws_settings_settled();
+            }
+            "room-activity" => {
+                // Drive the room through the *production* mirrors first, so
+                // the pane has a history to show that the shell actually
+                // recorded. Nothing here seeds a `HistoryEntry`: these are the
+                // same calls the portal, the permission prompt, the drop
+                // handler and the settings modal make.
+                use shell::shell::state::{CapOverride, Scope, Subject, Verb};
+                let handle = self.chrome_handle();
+                let owner = {
+                    let st = handle.borrow();
+                    st.local_user_id.clone()
+                };
+                {
+                    let st = handle.borrow();
+                    let mut tree = st.tree_mut();
+                    tree.adopt_ownerless_workspaces(&owner);
+                    let ws_id = tree.active;
+                    tree.grant_in_workspace(
+                        ws_id,
+                        &owner,
+                        CapOverride::grant(
+                            Subject::app("Files"),
+                            Scope::FsPath("/var/workspace/design".to_string()),
+                            Verb::Write,
+                        ),
+                    );
+                    let temp = tree.grant_in_workspace(
+                        ws_id,
+                        &owner,
+                        CapOverride::grant(
+                            Subject::app("Terminal"),
+                            Scope::Device("camera".to_string()),
+                            Verb::Read,
+                        ),
+                    );
+                    tree.doc_append_tab_to_first_group_of_active_workspace(
+                        90_001,
+                        "Release notes".to_string(),
+                        b"{}".to_vec(),
+                    );
+                    tree.commit_room_change();
+                    if let Some(cap_id) = temp {
+                        tree.revoke_in_workspace(ws_id, &owner, &cap_id);
+                    }
+                    if let Some(ws) = tree.active_workspace_mut() {
+                        ws.name = "Design review".to_string();
+                    }
+                    tree.seed_doc_from_cache();
+
+                    // A second person, and a history that is not all one
+                    // second old. The peer forks the document under its own
+                    // actor, makes a real change, and merges back — the same
+                    // shape a remote replica's sync round has — and the
+                    // commits are stamped across the past fortnight through
+                    // the clock the FS layer uses when it replays a durable
+                    // chain. Without this the scene exercises neither the
+                    // author directory nor the date filter.
+                    let base: Vec<automerge::Change> = tree
+                        .export_changes_since(&[])
+                        .iter()
+                        .filter_map(|b| automerge::Change::try_from(b.as_slice()).ok())
+                        .collect();
+                    let mut peer = automerge::AutoCommit::new();
+                    peer.set_actor(automerge::ActorId::from("ada".as_bytes()));
+                    if peer.apply_changes(base).is_ok() {
+                        let now = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|d| d.as_secs() as i64)
+                            .unwrap_or(0);
+                        const DAY: i64 = 86_400;
+                        for (days_ago, title) in
+                            [(11_i64, "Q3 budget"), (5, "Onboarding notes"), (1, "Retro")]
+                        {
+                            if peer_append_tab(&mut peer, title) {
+                                qdoc::history::commit_stamped_at(
+                                    &mut peer,
+                                    now - days_ago * DAY,
+                                );
+                            }
+                        }
+                        let blobs: Vec<Vec<u8>> = peer
+                            .get_changes(&tree.doc.get_heads())
+                            .into_iter()
+                            .map(|c| c.raw_bytes().to_vec())
+                            .collect();
+                        let _ = tree.apply_changes(&blobs);
+                    }
+                }
+                self.with_chrome(|st| st.overlays.room_activity = true);
+                self.fb.host_mut().force_room_activity_settled();
+            }
+            "room-activity-all" => {
+                // The same room, widened to the whole tree — which is what
+                // the document actually holds. Every row now says which
+                // workspace it happened in.
+                self.scene_setup("room-activity")?;
+                let handle = self.chrome_handle();
+                let st = handle.borrow();
+                let tree = st.tree();
+                self.fb.host_mut().room_activity_mut().set_scope(
+                    shell::shell::room_activity::RoomScope::AllWorkspaces,
+                    &tree,
+                );
             }
             "ws-settings-permissions" => {
                 self.with_chrome(|st| {
@@ -511,6 +658,8 @@ impl ShellDriver {
         "notifications",
         "notifications-one",
         "notifications-dnd",
+        "room-activity",
+        "room-activity-all",
     ];
 
     /// Resolve a "named" UI target (button, pill, tab) to its on-screen

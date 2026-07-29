@@ -263,6 +263,21 @@ pub struct ShellOverlayHost {
     /// assert that clicks routed through the popover translate into
     /// the expected shell-outs without actually invoking `nmcli` etc.
     qs_actions: Box<dyn crate::shell::qs_actions::QsActions>,
+    /// Room-activity sheet — the workspace's own change history. Held rather
+    /// than drawn immediate-mode because the timeline it wraps is a real
+    /// `Widget` with its own hover, scroll and filter state; it is placed by
+    /// hand (`RoomActivityPane::layout`) rather than through taffy, the same
+    /// way the notification stack is.
+    room_activity: crate::shell::room_activity::RoomActivityPane,
+    /// Open/close curve for the room-activity sheet.
+    room_activity_transition: ui::Transition,
+    /// Whether the sheet was open on the previous frame, so the rising edge
+    /// can invalidate the derived rows.
+    room_activity_was_open: bool,
+    /// Hit rect of the "Room activity" row at the foot of the collaborator
+    /// dropdown. Populated by `draw_collaborators` and zeroed whenever the
+    /// dropdown is not painted, so a click during the close cannot trip it.
+    collab_activity_row_rect: Rect,
 }
 
 /// Action emitted from the palette into [`ShellOverlayHost::peer_sync_actions`]
@@ -356,6 +371,10 @@ const MODAL_OPEN_ANIM_MS: u64 = 220;
 
 /// Alpha applied to the collaborator and QuickSettings popover surfaces.
 /// Concept §1.1 / §3.1 specifies `bg-slate-900/80`.
+/// Height of the "Room activity" row at the foot of the collaborator
+/// dropdown, including the separator above it.
+const COLLAB_FOOTER_H: f64 = 40.0;
+
 pub const POPOVER_SURFACE_ALPHA: f32 = 0.80;
 
 /// Alpha applied to the GlobalSearch palette and Workspace-Settings modal
@@ -468,6 +487,10 @@ impl ShellOverlayHost {
             notification_stack: None,
             last_chrome_revision: u64::MAX,
             qs_actions: Box::new(crate::shell::qs_actions::RealQsActions),
+            room_activity: crate::shell::room_activity::RoomActivityPane::new(),
+            room_activity_transition: ui::Transition::closed(),
+            room_activity_was_open: false,
+            collab_activity_row_rect: Rect::ZERO,
         }
     }
 
@@ -2435,10 +2458,68 @@ impl ShellOverlayHost {
             .map(|c| c.borrow().tree().collaborators.len())
             .unwrap_or(0);
         let rows = peers.max(1) as f64;
-        let popover_h: f64 = 48.0 + rows * 36.0 + 16.0;
+        // + COLLAB_FOOTER_H for the "Room activity" row: the dropdown answers
+        // "who is in this room", and "what has happened in this room" is the
+        // question you ask next.
+        let popover_h: f64 = 48.0 + rows * 36.0 + 16.0 + COLLAB_FOOTER_H;
         let x1 = self.rect.x1 - 16.0;
         let y0 = self.rect.y0 + 48.0;
-        Rect::new(x1 - popover_w, y0, x1, y0 + popover_h.min(420.0))
+        Rect::new(
+            x1 - popover_w,
+            y0,
+            x1,
+            y0 + popover_h.min(420.0 + COLLAB_FOOTER_H),
+        )
+    }
+
+    /// Rect of the "Room activity" row at the foot of the collaborator
+    /// dropdown, mirroring what `draw_collaborators` paints.
+    fn collaborators_activity_row_rect(&self) -> Rect {
+        let r = self.collaborators_rect();
+        Rect::new(r.x0 + 8.0, r.y1 - COLLAB_FOOTER_H + 4.0, r.x1 - 8.0, r.y1 - 8.0)
+    }
+
+    /// Lay the room-activity sheet out and re-derive its rows from the room
+    /// document.
+    ///
+    /// Placed by hand rather than through taffy — the sheet floats over the
+    /// desktop like the other overlays, and giving it a layout node would
+    /// make it participate in the strip's sizing. The viewport starts below
+    /// the top bar so the sheet never covers the workspace pill that says
+    /// which room this is.
+    fn refresh_room_activity(&mut self) {
+        let viewport = Rect::new(
+            self.rect.x0,
+            self.rect.y0 + self.sidebar_top_y as f64,
+            self.rect.x1,
+            self.rect.y1,
+        );
+        self.room_activity.layout(viewport);
+        if let Some(chrome) = self.chrome.clone() {
+            let st = chrome.borrow();
+            let mut tree = st.tree_mut();
+            self.room_activity.refresh(&mut tree);
+        }
+    }
+
+    /// The room-activity sheet, for tests and for the shots driver.
+    pub fn room_activity(&self) -> &crate::shell::room_activity::RoomActivityPane {
+        &self.room_activity
+    }
+
+    /// Mutable handle to the room-activity sheet, so a test can pin its clock
+    /// or drive a filter without synthesising a click.
+    pub fn room_activity_mut(&mut self) -> &mut crate::shell::room_activity::RoomActivityPane {
+        &mut self.room_activity
+    }
+
+    /// Skip the room-activity sheet's open animation so a screenshot or a
+    /// click-driven test sees the settled panel rather than a frame of its
+    /// entry curve. Mirrors [`Self::force_ws_settings_settled`].
+    pub fn force_room_activity_settled(&mut self) {
+        self.room_activity_transition = ui::Transition::open();
+        self.room_activity_was_open = true;
+        self.refresh_room_activity();
     }
 
     /// Name-input rect inside the ws-settings modal. Matches the drawn
@@ -2695,6 +2776,7 @@ impl ShellOverlayHost {
             || (f.collaborators && self.collaborators_rect().contains(p))
             || (f.quick_settings && self.quick_settings_rect().contains(p))
             || (f.ws_settings && self.ws_settings_rect().contains(p))
+            || (f.room_activity && self.room_activity.rect().contains(p))
     }
 }
 
@@ -2859,6 +2941,14 @@ impl Widget for ShellOverlayHost {
         } else {
             false
         };
+        // Close whatever the frame's `doc_*` mirrors left open on the room
+        // document, stamping it with the wall clock. Automerge would
+        // otherwise close it implicitly at the next read with a zero
+        // timestamp, and a room whose every change reads as the Unix epoch
+        // cannot be filtered by date. Free when nothing is pending.
+        if let Some(chrome) = self.chrome.as_ref() {
+            chrome.borrow().tree_mut().commit_room_change();
+        }
         a || b || c || d || launch_dirty || chrome_dirty
     }
 
@@ -3370,6 +3460,65 @@ impl Widget for ShellOverlayHost {
         // "open peer list" affordance).
         if flags.collaborators {
             self.draw_collaborators(scene, transform, text_renderer, theme);
+        } else {
+            self.collab_activity_row_rect = Rect::ZERO;
+        }
+
+        // Room-activity sheet. Above the dropdowns (it is a surface you read,
+        // not a menu you pick from) and below the palette (the palette is how
+        // you got here and must always be reachable on top).
+        if flags.room_activity && !self.room_activity_was_open {
+            // Rising edge: the room may have changed while the sheet was
+            // closed, so drop the derived rows rather than showing a stale
+            // list for one frame.
+            self.room_activity.invalidate();
+        }
+        self.room_activity_was_open = flags.room_activity;
+        self.room_activity_transition.set_open(
+            flags.room_activity,
+            Duration::from_millis(MODAL_OPEN_ANIM_MS),
+            ui::Curve::EaseOut,
+        );
+        let ra_now = Instant::now();
+        if self.room_activity_transition.is_visible(ra_now) {
+            self.refresh_room_activity();
+            let openness = self.room_activity_transition.value(ra_now);
+            draw_modal_scrim_at(scene, transform, self.rect, openness);
+            let alpha = openness;
+            let in_flight = alpha < 1.0;
+            let sheet = self.room_activity.rect();
+            if in_flight {
+                scene.push_layer(
+                    vello::peniko::Fill::NonZero,
+                    BlendMode::default(),
+                    alpha,
+                    transform,
+                    &self.rect,
+                );
+            }
+            // A side sheet slides in from the edge it is anchored to rather
+            // than scaling about its centre — scaling a full-height panel
+            // reads as the whole desktop breathing.
+            let slide = (1.0 - openness as f64) * (sheet.width() * 0.25);
+            let sheet_xform = if slide > 0.0 {
+                transform * Affine::translate((slide, 0.0))
+            } else {
+                transform
+            };
+            ui::surface::soft_shadow(
+                scene,
+                sheet_xform,
+                sheet,
+                theme.tokens.colors.neutral[0],
+                40.0,
+                16.0,
+                0.55 * alpha,
+            );
+            self.room_activity
+                .draw(scene, sheet_xform, text_renderer, theme, presence);
+            if in_flight {
+                scene.pop_layer();
+            }
         }
 
         // Command palette / global search — concept `GlobalSearch.tsx:109-113`
@@ -3537,6 +3686,66 @@ impl Widget for ShellOverlayHost {
                     return;
                 }
                 _ => {}
+            }
+        }
+
+        // Room-activity sheet. Routed BEFORE the absorb gate because the
+        // timeline inside it wants exactly the events that gate swallows —
+        // hover to reveal a row's `[Revert]`, wheel to scroll the list. The
+        // gate still catches anything the sheet does not claim, so the
+        // desktop underneath stays inert.
+        if self.overlay_flags().room_activity
+            && matches!(
+                event,
+                WindowEvent::CursorMoved { .. }
+                    | WindowEvent::MouseWheel { .. }
+                    | WindowEvent::MouseInput { .. }
+                    | WindowEvent::KeyboardInput { .. }
+            )
+        {
+            let sheet = self.room_activity.rect();
+            let pointer_inside = self.last_cursor.map(|p| sheet.contains(p)).unwrap_or(false);
+            let is_key = matches!(event, WindowEvent::KeyboardInput { .. });
+            // Escape belongs to the ladder below, which owns overlay
+            // dismissal ordering; every other key is the sheet's contributor
+            // typeahead.
+            let is_escape = matches!(
+                event,
+                WindowEvent::KeyboardInput {
+                    event: KeyEvent {
+                        logical_key: Key::Named(NamedKey::Escape),
+                        ..
+                    },
+                    ..
+                }
+            );
+            if (pointer_inside || (is_key && !is_escape))
+                && let Some(chrome) = self.chrome.clone()
+            {
+                let cursor = self.last_cursor;
+                let outcome = {
+                    let st = chrome.borrow();
+                    let mut tree = st.tree_mut();
+                    self.room_activity
+                        .handle_event(event, scale_factor, modifiers, cursor, &mut tree)
+                };
+                if outcome.reverted {
+                    let mut st = chrome.borrow_mut();
+                    st.bump();
+                    st.push_notification(
+                        "Reverted a room change",
+                        "Written forward: the version you reverted from is still in the history.",
+                    );
+                }
+                // Pointer events over the sheet are absorbed whether or not it
+                // used them, so the desktop underneath stays inert. Keys are
+                // absorbed only when the sheet actually consumed them —
+                // otherwise an arrow key pressed with the cursor resting over
+                // the sheet would vanish instead of reaching the shell.
+                if outcome.handled || (pointer_inside && !is_key) {
+                    *handled = true;
+                    return;
+                }
             }
         }
 
@@ -3796,6 +4005,12 @@ impl Widget for ShellOverlayHost {
                         *handled = true;
                         return;
                     }
+                    if st.overlays.room_activity {
+                        st.overlays.room_activity = false;
+                        st.bump();
+                        *handled = true;
+                        return;
+                    }
                     if st.overlays.collaborators {
                         st.overlays.collaborators = false;
                         st.bump();
@@ -4009,7 +4224,27 @@ impl Widget for ShellOverlayHost {
                     }
                 }
                 let flags = self.overlay_flags();
+                if flags.room_activity && !self.room_activity.rect().contains(p) {
+                    if let Some(chrome) = self.chrome.clone() {
+                        let mut st = chrome.borrow_mut();
+                        st.overlays.room_activity = false;
+                        st.bump();
+                    }
+                    *handled = true;
+                    return;
+                }
                 if flags.collaborators {
+                    let row = self.collab_activity_row_rect;
+                    if row.area() > 0.0 && row.contains(p) {
+                        if let Some(chrome) = self.chrome.clone() {
+                            let mut st = chrome.borrow_mut();
+                            st.overlays.room_activity = true;
+                            st.overlays.collaborators = false;
+                            st.bump();
+                        }
+                        *handled = true;
+                        return;
+                    }
                     let co_rect = self.collaborators_rect();
                     if !co_rect.contains(p) {
                         if let Some(chrome) = self.chrome.clone() {
@@ -4772,6 +5007,7 @@ impl Widget for ShellOverlayHost {
         let qs_in_flight = self.qs_transition.is_animating(now);
         let ws_settings_in_flight = self.ws_settings_transition.is_animating(now);
         let palette_in_flight = self.palette_transition.is_animating(now);
+        let room_activity_in_flight = self.room_activity_transition.is_animating(now);
         let sidebar_frame = self
             .sidebar
             .as_ref()
@@ -4782,6 +5018,7 @@ impl Widget for ShellOverlayHost {
             || qs_in_flight
             || ws_settings_in_flight
             || palette_in_flight
+            || room_activity_in_flight
             || self.content.needs_animation_frame()
             || sidebar_frame
     }
@@ -7394,6 +7631,7 @@ impl ShellOverlayHost {
                 transform * Affine::translate((rect.x0 + 16.0, rect.y0 + 56.0)),
                 None,
             );
+            self.draw_collaborators_footer(scene, transform, text_renderer, theme);
             return;
         }
 
@@ -7427,6 +7665,73 @@ impl ShellOverlayHost {
                 None,
             );
         }
+        self.draw_collaborators_footer(scene, transform, text_renderer, theme);
+    }
+
+    /// "Room activity" row at the foot of the collaborator dropdown.
+    ///
+    /// The dropdown's subject is the room's people; its history is the same
+    /// subject over time, so this is where a user already looking at "who is
+    /// here" will look for "what happened". It is the visible counterpart to
+    /// the palette's `Show room activity` — the palette is how you reach it
+    /// when you know it exists, this is how you find out that it does.
+    fn draw_collaborators_footer(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        let tokens = &theme.tokens;
+        let colors = &tokens.colors;
+        let row = self.collaborators_activity_row_rect();
+        self.collab_activity_row_rect = row;
+        let sep = vello::kurbo::Line::new(
+            Point::new(row.x0, row.y0 - 4.0),
+            Point::new(row.x1, row.y0 - 4.0),
+        );
+        scene.stroke(
+            &vello::kurbo::Stroke::new(1.0),
+            transform,
+            colors.border_standard,
+            None,
+            &sep,
+        );
+        let shape = RoundedRect::from_rect(row, tokens.radii.sm as f64);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            colors.surface_white_5,
+            None,
+            &shape,
+        );
+        let size = tokens.typography.scale.sm;
+        let (_, lh) = text_renderer.measure("Room activity", size, None);
+        text_renderer.draw_text(
+            scene,
+            "Room activity",
+            size,
+            colors.text_primary,
+            transform
+                * Affine::translate((row.x0 + 12.0, row.center().y - lh as f64 / 2.0)),
+            None,
+        );
+        // A right-pointing guillemet reads as "opens a surface" without
+        // reaching for a pictographic emoji.
+        let chevron = "\u{203a}";
+        let (cw, ch) = text_renderer.measure(chevron, size, None);
+        text_renderer.draw_text(
+            scene,
+            chevron,
+            size,
+            colors.text_dim,
+            transform
+                * Affine::translate((
+                    row.x1 - 12.0 - cw as f64,
+                    row.center().y - ch as f64 / 2.0,
+                )),
+            None,
+        );
     }
 
     /// Slider bar rect for the i-th quick-settings slider (0 = Brightness,
@@ -8635,6 +8940,189 @@ mod tests {
             state: ElementState::Pressed,
             button: MouseButton::Left,
         }
+    }
+
+    /// Paint one frame, which is what populates every cached hit rect.
+    fn paint(h: &mut Harness) {
+        let theme = Theme::dark();
+        let mut scene = Scene::new();
+        let mut tr = TextRenderer::new();
+        let presence = PresenceCtx::empty();
+        h.host
+            .draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+    }
+
+    /// The sheet lays out inside the viewport and derives its rows from the
+    /// room document the chrome is actually holding — not from a seeded list.
+    #[test]
+    fn room_activity_sheet_shows_the_live_rooms_history() {
+        let mut h = build_harness();
+        h.chrome.borrow_mut().overlays.room_activity = true;
+        h.host.force_room_activity_settled();
+        paint(&mut h);
+
+        let sheet = h.host.room_activity().rect();
+        assert!(sheet.area() > 0.0, "the sheet laid out");
+        assert!(sheet.x1 <= 1600.0 && sheet.y1 <= 900.0, "inside the viewport");
+        assert!(
+            !h.host.room_activity().entries().is_empty(),
+            "a bootstrapped workspace tree has already written to its room document"
+        );
+        let names: Vec<&str> = h
+            .host
+            .room_activity()
+            .entries()
+            .iter()
+            .map(|e| e.summary.as_str())
+            .collect();
+        assert!(
+            names.iter().any(|s| !s.is_empty()),
+            "rows carry real summaries: {names:?}"
+        );
+    }
+
+    /// Hover has to reach the timeline inside the sheet — it is what reveals
+    /// a row's `[Revert]`. The generic absorb gate would otherwise eat it.
+    #[test]
+    fn pointer_over_the_sheet_reaches_the_timeline() {
+        let mut h = build_harness();
+        h.chrome.borrow_mut().overlays.room_activity = true;
+        h.host.force_room_activity_settled();
+        paint(&mut h);
+
+        let rows = h.host.room_activity().timeline().rect();
+        assert!(rows.area() > 0.0);
+        let row0 = h
+            .host
+            .room_activity()
+            .timeline()
+            .row_rect(0)
+            .expect("the room has at least one row laid out");
+        let mods = Modifiers::default();
+        let handled = pump(&mut h, &cursor_moved_at(row0.center()), &mods);
+        assert!(handled, "the sheet claims pointer events over itself");
+        assert_eq!(
+            h.host.room_activity().timeline().hover_row(),
+            Some(0),
+            "the hover landed on the row under the cursor"
+        );
+    }
+
+    /// The visible affordance: the collaborator dropdown answers "who is in
+    /// this room", and its foot opens "what happened in this room".
+    #[test]
+    fn collaborator_dropdown_row_opens_the_sheet() {
+        let mut h = build_harness();
+        h.chrome.borrow_mut().overlays.collaborators = true;
+        paint(&mut h);
+
+        let row = h.host.collab_activity_row_rect;
+        assert!(row.area() > 0.0, "the footer row painted a hit target");
+        assert_eq!(
+            row,
+            h.host.collaborators_activity_row_rect(),
+            "the cached hit rect is the one that was drawn"
+        );
+
+        let mods = Modifiers::default();
+        let _ = pump(&mut h, &cursor_moved_at(row.center()), &mods);
+        let handled = pump(&mut h, &left_button_pressed(), &mods);
+        assert!(handled);
+        assert!(
+            h.chrome.borrow().overlays.room_activity,
+            "the row opened the sheet"
+        );
+        assert!(
+            !h.chrome.borrow().overlays.collaborators,
+            "the dropdown closed behind it rather than sitting on top"
+        );
+    }
+
+    /// The footer rect must not survive the dropdown closing, or a click in
+    /// empty space where it used to be would open the sheet.
+    #[test]
+    fn collaborator_footer_rect_is_cleared_when_the_dropdown_closes() {
+        let mut h = build_harness();
+        h.chrome.borrow_mut().overlays.collaborators = true;
+        paint(&mut h);
+        assert!(h.host.collab_activity_row_rect.area() > 0.0);
+
+        h.chrome.borrow_mut().overlays.collaborators = false;
+        paint(&mut h);
+        assert_eq!(
+            h.host.collab_activity_row_rect,
+            Rect::ZERO,
+            "a stale footer rect is a click target the user cannot see"
+        );
+    }
+
+    #[test]
+    fn escape_closes_the_room_activity_sheet() {
+        let mut h = build_harness();
+        h.chrome.borrow_mut().overlays.room_activity = true;
+        h.host.force_room_activity_settled();
+        paint(&mut h);
+
+        let mods = Modifiers::default();
+        let handled = pump(&mut h, &key_press(Key::Named(NamedKey::Escape)), &mods);
+        assert!(handled);
+        assert!(
+            !h.chrome.borrow().overlays.room_activity,
+            "Escape dismisses the sheet"
+        );
+    }
+
+    #[test]
+    fn clicking_outside_the_sheet_closes_it() {
+        let mut h = build_harness();
+        h.chrome.borrow_mut().overlays.room_activity = true;
+        h.host.force_room_activity_settled();
+        paint(&mut h);
+
+        let sheet = h.host.room_activity().rect();
+        let outside = Point::new(sheet.x0 / 2.0, sheet.center().y);
+        assert!(!sheet.contains(outside));
+        let mods = Modifiers::default();
+        let _ = pump(&mut h, &cursor_moved_at(outside), &mods);
+        let handled = pump(&mut h, &left_button_pressed(), &mods);
+        assert!(handled, "the click is swallowed, not passed to the desktop");
+        assert!(!h.chrome.borrow().overlays.room_activity);
+    }
+
+    /// Typing narrows by contributor while the sheet has the keyboard, but
+    /// Escape still belongs to the dismissal ladder.
+    #[test]
+    fn typing_filters_by_contributor_without_stealing_escape() {
+        let mut h = build_harness();
+        h.chrome.borrow_mut().overlays.room_activity = true;
+        h.host.force_room_activity_settled();
+        paint(&mut h);
+        assert!(h.host.room_activity().visible_len() > 0);
+
+        let mods = Modifiers::default();
+        let handled = pump(
+            &mut h,
+            &key_press(Key::Character("z".into())),
+            &mods,
+        );
+        assert!(handled, "the sheet took the keystroke");
+        assert_eq!(
+            h.host.room_activity().timeline().author_query(),
+            "z",
+            "the typeahead echoes what was typed"
+        );
+        assert_eq!(
+            h.host.room_activity().visible_len(),
+            0,
+            "no contributor in this room is named 'z'"
+        );
+
+        let handled = pump(&mut h, &key_press(Key::Named(NamedKey::Escape)), &mods);
+        assert!(handled);
+        assert!(
+            !h.chrome.borrow().overlays.room_activity,
+            "Escape closed the sheet rather than being eaten by the typeahead"
+        );
     }
 
     /// Stuff a non-empty query into the palette before opening it,

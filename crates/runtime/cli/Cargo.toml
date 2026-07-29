@@ -21,12 +21,12 @@ runtime-fs       = { path = "../runtime-fs" }
 runtime-collab   = { path = "../runtime-collab" }
 runtime-identity = { path = "../runtime-identity" }
 
-anyhow = "1"
-clap   = { version = "4", features = ["derive"] }
-thiserror = "1"
-serde  = { version = "1", features = ["derive"] }
-tokio  = { version = "1", features = ["rt", "rt-multi-thread", "macros", "net"] }
+anyhow.workspace = true
+clap.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "net"] }
 
 [dev-dependencies]
-tempfile     = "3"
-serial_test  = "3"
+tempfile.workspace = true
+serial_test.workspace = true

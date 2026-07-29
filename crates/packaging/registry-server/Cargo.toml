@@ -20,24 +20,24 @@ path = "src/main.rs"
 [dependencies]
 registry-types = { path = "../registry-types" }
 
-tokio        = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "sync", "fs", "time", "io-util"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "signal", "sync", "fs", "time", "io-util"] }
 hyper        = { version = "1", features = ["server", "http1"] }
 hyper-util   = { version = "0.1", features = ["tokio", "server-auto"] }
 http-body-util = "0.1"
 
-serde        = { version = "1", features = ["derive"] }
-serde_json   = "1"
-toml         = "0.8"
-clap         = { version = "4", features = ["derive"] }
-ed25519-dalek = { version = "2", features = ["serde", "rand_core"] }
-hex          = "0.4"
-thiserror    = "1"
-tracing      = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-bytes        = "1"
-anyhow       = "1"
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+clap.workspace = true
+ed25519-dalek = { workspace = true, features = ["serde", "rand_core"] }
+hex.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+bytes.workspace = true
+anyhow.workspace = true
 
 [dev-dependencies]
-tempfile = "3"
-rand     = "0.8"
-reqwest  = { version = "0.12", default-features = false, features = ["json"] }
+tempfile.workspace = true
+rand.workspace = true
+reqwest = { workspace = true, features = ["json"] }

@@ -5,7 +5,7 @@
 use std::path::PathBuf;
 
 use ed25519_dalek::SigningKey;
-use iroh::endpoint::Endpoint;
+use iroh::endpoint::{Endpoint, presets};
 use tempfile::TempDir;
 
 use qos_user_identity::{
@@ -130,7 +130,7 @@ pub async fn spawn_relay_on(
 
 /// Bind a plain iroh endpoint the tests can use to dial a relay.
 pub async fn client_endpoint() -> Endpoint {
-    Endpoint::builder().bind().await.unwrap()
+    Endpoint::builder(presets::N0).bind().await.unwrap()
 }
 
 /// Poll `cond` up to `attempts * 20ms` waiting for it to return

@@ -15,6 +15,7 @@
 use anyhow::{Context, Result, anyhow, bail};
 use bytes::Bytes;
 use iroh::Endpoint;
+use iroh::endpoint::presets;
 use iroh::protocol::Router;
 use iroh_base::EndpointAddr;
 use iroh_blobs::api::Store;
@@ -65,7 +66,7 @@ impl BlobNode {
     }
 
     async fn spawn(backend: Backend) -> Result<Self> {
-        let endpoint = Endpoint::bind().await.map_err(|e| anyhow!("bind endpoint: {e}"))?;
+        let endpoint = Endpoint::bind(presets::N0).await.map_err(|e| anyhow!("bind endpoint: {e}"))?;
         let protocol = BlobsProtocol::new(backend.store(), None);
         let router = Router::builder(endpoint.clone())
             .accept(iroh_blobs::ALPN, protocol)
@@ -118,7 +119,7 @@ impl BlobNode {
 
 /// Bind a fresh client endpoint for fetching (no serving).
 pub async fn client_endpoint() -> Result<Endpoint> {
-    Endpoint::bind().await.map_err(|e| anyhow!("bind client endpoint: {e}"))
+    Endpoint::bind(presets::N0).await.map_err(|e| anyhow!("bind client endpoint: {e}"))
 }
 
 /// Fetch the blob named by `ticket` from its node, requiring the

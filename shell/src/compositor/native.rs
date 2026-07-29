@@ -26,7 +26,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use automerge::{AutoCommit, ObjId};
-use smithay::reexports::calloop::EventLoop;
+use smithay::reexports::calloop::{self, EventLoop};
 use smithay::reexports::wayland_server::Display;
 use smithay::wayland::socket::ListeningSocketSource;
 use taffy::NodeId;
@@ -46,6 +46,9 @@ use crate::compositor::idle::{IdleConfig, SessionManager, SessionTransition};
 use crate::compositor::lock_auth;
 use crate::compositor::lock_controller::{LockController, LockKey, UnlockOutcome};
 use crate::compositor::lock_screen::{self, LockView};
+use crate::compositor::metrics;
+use crate::compositor::pacing;
+use crate::compositor::present;
 use crate::compositor::state::{ClientState, State};
 use crate::compositor::test_control::{
     self, ControlState, KeyTag, NamedKeyTag, PlannedAction, parse_command, serialise_response,
@@ -218,6 +221,7 @@ impl<'a> ControlState for FrameBuilderControlState<'a> {
                 "quick_settings": overlays.quick_settings,
                 "ws_settings": overlays.ws_settings,
                 "collaborators": overlays.collaborators,
+                "room_activity": overlays.room_activity,
             },
             "search_scope": format!("{:?}", chrome.search_scope),
             "ws_settings_tab": format!("{:?}", chrome.ws_settings_tab),
@@ -676,14 +680,21 @@ fn pump_test_control_conn(
     session: &mut SessionManager,
     lock: &mut LockController,
     backend: &mut dyn Backend,
+    pipe: Option<&present::PresentPipe>,
     state: &mut State,
-) {
+) -> bool {
+    // Whether any command on this connection produced a `PlannedAction`
+    // — i.e. synthesised input the next painted frame has to reflect.
+    // The frame-loop instrumentation uses it to start an input-latency
+    // measurement, so a socket-driven harness measures the same
+    // input-to-present path a physical keystroke takes.
+    let mut injected_input = false;
     loop {
         let mut line = String::new();
         match read_bounded_line(&mut conn.reader, &mut line, TEST_CONTROL_MAX_LINE_BYTES) {
             Ok(None) => {
                 conn.closed = true;
-                return;
+                return injected_input;
             }
             Ok(Some(())) => {
                 let (resp, actions) = match parse_command(&line) {
@@ -700,7 +711,7 @@ fn pump_test_control_conn(
                         // to the password field, never to the hidden chrome.
                         if execute_locked_action(action, lock) == UnlockOutcome::Unlocked {
                             for t in session.request_unlock(Instant::now()) {
-                                apply_session_transition(t, backend);
+                                apply_session_transition(t, backend, pipe);
                             }
                         }
                     } else {
@@ -714,6 +725,7 @@ fn pump_test_control_conn(
                 // next command sees stale rects from the previous
                 // frame.
                 if !actions.is_empty() {
+                    injected_input = true;
                     frame_builder.relayout();
                 }
                 let mut out = serialise_response(&resp);
@@ -721,21 +733,21 @@ fn pump_test_control_conn(
                 if let Err(e) = conn.reader.get_mut().write_all(out.as_bytes()) {
                     eprintln!("nirios compositor: test_control write: {e}");
                     conn.closed = true;
-                    return;
+                    return injected_input;
                 }
             }
             Err(ReadLineError::TooLarge) => {
                 tracing::warn!("test_control: client sent oversized line; dropping connection");
                 conn.closed = true;
-                return;
+                return injected_input;
             }
             Err(ReadLineError::Io(e)) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                return;
+                return injected_input;
             }
             Err(ReadLineError::Io(e)) => {
                 eprintln!("nirios compositor: test_control read: {e}");
                 conn.closed = true;
-                return;
+                return injected_input;
             }
         }
     }
@@ -746,10 +758,31 @@ fn pump_test_control_conn(
 /// `Blanked` / `Woke` drive the backend's DPMS (no-op on winit /
 /// headless); `Locked` / `Unlocked` are pure state the paint path reads
 /// via `SessionManager::is_locked`, so they need no backend call here.
-fn apply_session_transition(transition: SessionTransition, backend: &mut dyn Backend) {
+/// When presentation has been split onto a render thread, the display
+/// hardware went with it, so `pipe` is where the DPMS change has to land.
+/// It is sent on the same channel as frames, so a blank can never
+/// overtake a frame already queued — the panel cannot light up showing
+/// content the session believes it suppressed. The backend call is kept
+/// for the inline path (and for the parts of a split backend that stayed
+/// behind).
+fn apply_session_transition(
+    transition: SessionTransition,
+    backend: &mut dyn Backend,
+    pipe: Option<&present::PresentPipe>,
+) {
     match transition {
-        SessionTransition::Blanked => backend.set_dpms(false),
-        SessionTransition::Woke => backend.set_dpms(true),
+        SessionTransition::Blanked => {
+            backend.set_dpms(false);
+            if let Some(p) = pipe {
+                p.set_dpms(false);
+            }
+        }
+        SessionTransition::Woke => {
+            backend.set_dpms(true);
+            if let Some(p) = pipe {
+                p.set_dpms(true);
+            }
+        }
         // Lock/Unlock are reflected via `SessionManager::is_locked`;
         // Suspend is gated by the inhibitor registry + issued through the
         // power service at the call site, never here.
@@ -1137,7 +1170,61 @@ pub fn run() -> ! {
     }
 
     let mut close_requested = false;
-    let frame_period = Duration::from_millis(16);
+
+    // Presentation cadence. The loop used to park a hard-coded 16 ms
+    // *after* each tick's work, so the real period was `work + 16 ms`
+    // (measured: 21.9 ms, i.e. 45.6 Hz) and no display's actual rate ever
+    // entered into it. `FrameClock` replaces both halves: the interval
+    // comes from the backend's display, and the park is the remainder of
+    // the interval rather than a fresh one. See `compositor::pacing`.
+    // `QOS_REFRESH_HZ` overrides the display's rate. Diagnostic only —
+    // it is what makes "does the loop hold a 144 Hz cadence" measurable
+    // on a machine with no 144 Hz panel attached.
+    let refresh_override = pacing::refresh_override_from_env();
+    let mut frame_clock = match refresh_override.or_else(|| backend.refresh_interval()) {
+        Some(interval) => {
+            eprintln!(
+                "nirios compositor: pacing to {:.3} Hz",
+                1.0 / interval.as_secs_f64()
+            );
+            pacing::FrameClock::new(interval, Instant::now())
+        }
+        None => {
+            // No display to follow — the headless backend, or a host that
+            // won't say. Fall back rather than invent a rate.
+            eprintln!(
+                "nirios compositor: backend reports no refresh rate; pacing to {:.3} Hz",
+                1.0 / pacing::FALLBACK_INTERVAL.as_secs_f64()
+            );
+            pacing::FrameClock::fallback(Instant::now())
+        }
+    };
+    let frame_period = frame_clock.interval();
+
+    // Move presentation onto its own thread where the backend supports
+    // it (winit, drm). The headless backend deliberately declines — its
+    // rendered bytes are read back synchronously by the test-control
+    // `snapshot` command — and then `backend.submit_frame` keeps running
+    // inline exactly as before. See `compositor::present`.
+    let mut present_pipe = backend.take_presenter().map(|p| {
+        eprintln!("nirios compositor: presenting on a dedicated render thread");
+        // Wake the loop when a frame retires. Without this a tick that
+        // declined to paint for lack of pipe capacity would park out the
+        // whole frame interval, even though the GPU freed up microseconds
+        // later — which halves throughput on a GPU-bound frame. The ping
+        // is a calloop source, so the wakeup lands in the same
+        // `event_loop.dispatch` the loop was already parked in.
+        let (ping, ping_source) =
+            calloop::ping::make_ping().expect("create present-retire ping");
+        event_loop
+            .handle()
+            .insert_source(ping_source, |_, _, _| {
+                // Waking is the whole effect: the loop re-evaluates its
+                // paint gate on the next iteration and now finds room.
+            })
+            .expect("insert present-retire ping source");
+        present::PresentPipe::spawn(p, Box::new(move || ping.ping()))
+    });
     // Reused per-iteration scratch so backend events can be processed
     // *after* `poll_events` returns — the input arm needs `&mut backend`
     // (for `set_dpms`) which can't be borrowed inside the poll closure.
@@ -1166,12 +1253,26 @@ pub fn run() -> ! {
     // main-thread stall (e.g. a synchronous drop/detach handler) shows up
     // as an actual measurement instead of a guess.
     let loop_timing = std::env::var("QOS_LOOP_TIMING").is_ok();
+    // Frame-loop instrumentation (`QOS_FRAME_TRACE` / `QOS_FRAME_SUMMARY`).
+    // Disabled — and free — when neither env var is set. See
+    // `compositor::metrics`.
+    let mut metrics = metrics::FrameRecorder::from_env();
+    metrics.set_target_period(frame_period);
+    // Bench hook: shut the loop down cleanly after N seconds so the
+    // frame trace and summary are flushed by the normal exit path rather
+    // than lost to a SIGKILL. Unset in production, where the loop runs
+    // until the session ends.
+    let run_deadline = metrics::run_seconds_from_env().map(|d| {
+        eprintln!("nirios compositor: {}={:?}; will exit cleanly after that", metrics::RUN_SECONDS_ENV, d);
+        Instant::now() + d
+    });
     let mut stats_since = Instant::now();
     let (mut frames_total, mut frames_painted) = (0u32, 0u32);
     let (mut cause_events, mut cause_revision, mut cause_anim) = (0u32, 0u32, 0u32);
     let (mut cause_session, mut cause_keepalive) = (0u32, 0u32);
     while !close_requested {
         let iter_t0 = Instant::now();
+        metrics.begin_tick(iter_t0);
         backend.poll_events(&mut |event| pending_events.push(event));
         let had_backend_events = !pending_events.is_empty();
         let mut session_changed = false;
@@ -1190,13 +1291,44 @@ pub fn run() -> ! {
                         // Keep the size used for fullscreen configures in sync
                         // so a fullscreened client fills the current output.
                         state.output_size = (size.0 as i32, size.1 as i32);
+                        // The swap chain lives on the render thread now, so
+                        // the reconfigure travels with the frames rather
+                        // than happening inline in the backend's event
+                        // handler — that keeps it ordered against any frame
+                        // already queued at the old size.
+                        if let Some(pipe) = present_pipe.as_ref() {
+                            pipe.resize(size);
+                        }
+                        // A resize is also how the compositor learns the
+                        // window moved to a different monitor, or that a
+                        // mode changed. Re-ask the backend what it is
+                        // presenting to and retarget the clock, so
+                        // "pace to the display" keeps being true after
+                        // startup rather than only at it. The env
+                        // override still wins — it exists precisely to
+                        // pin a rate the hardware isn't offering.
+                        if refresh_override.is_none() {
+                            if let Some(interval) = backend.refresh_interval() {
+                                if frame_clock.set_interval(interval) {
+                                    eprintln!(
+                                        "nirios compositor: display changed; now pacing to {:.3} Hz",
+                                        1.0 / interval.as_secs_f64()
+                                    );
+                                    metrics.set_target_period(interval);
+                                }
+                            }
+                        }
                     }
                 }
                 BackendEvent::Input(wev) => {
+                    // Instrumentation: the clock starts when the loop takes
+                    // the event off the backend. The first painted frame
+                    // after this closes the input-to-present measurement.
+                    metrics.note_input(Instant::now());
                     // Track D2: any input is activity — reset the idle
                     // timer and wake the display if it was blanked.
                     for t in session.note_activity(Instant::now()) {
-                        apply_session_transition(t, backend.as_mut());
+                        apply_session_transition(t, backend.as_mut(), present_pipe.as_ref());
                     }
 
                     if session.is_locked() {
@@ -1210,7 +1342,7 @@ pub fn run() -> ! {
                         let key = winit_event_to_lock_key(&wev);
                         if lock.handle_key(key) == UnlockOutcome::Unlocked {
                             for t in session.request_unlock(Instant::now()) {
-                                apply_session_transition(t, backend.as_mut());
+                                apply_session_transition(t, backend.as_mut(), present_pipe.as_ref());
                             }
                         }
                         // Any keystroke changes the masked field / error, so
@@ -1228,7 +1360,7 @@ pub fn run() -> ! {
                             }
                             Some(qos_power_mgmt::PowerAction::Lock) => {
                                 for t in session.request_lock(Instant::now()) {
-                                    apply_session_transition(t, backend.as_mut());
+                                    apply_session_transition(t, backend.as_mut(), present_pipe.as_ref());
                                 }
                             }
                             Some(qos_power_mgmt::PowerAction::Ignore) | None => {}
@@ -1236,7 +1368,7 @@ pub fn run() -> ! {
                     } else if is_lock_chord(&wev, &test_control_ctx.modifiers) {
                         // Super+L locks immediately.
                         for t in session.request_lock(Instant::now()) {
-                            apply_session_transition(t, backend.as_mut());
+                            apply_session_transition(t, backend.as_mut(), present_pipe.as_ref());
                         }
                     } else {
                         // Backends that don't pair a `ModifiersChanged`
@@ -1289,6 +1421,7 @@ pub fn run() -> ! {
             }
         }
         let t_input_done = iter_t0.elapsed();
+        metrics.mark_input(t_input_done);
 
         // Track D2: advance the idle timers and apply any timeout-driven
         // transitions (blank, auto-lock, suspend) for this tick.
@@ -1311,7 +1444,7 @@ pub fn run() -> ! {
                     power_bridge.request_suspend();
                 }
             } else {
-                apply_session_transition(t, backend.as_mut());
+                apply_session_transition(t, backend.as_mut(), present_pipe.as_ref());
             }
             // Any session transition (blank / lock / suspend) changes what
             // should be on screen, so force this tick to repaint.
@@ -1326,14 +1459,14 @@ pub fn run() -> ! {
             match sig {
                 qos_power_mgmt::PowerSignal::Lock => {
                     for t in session.request_lock(Instant::now()) {
-                        apply_session_transition(t, backend.as_mut());
+                        apply_session_transition(t, backend.as_mut(), present_pipe.as_ref());
                     }
                 }
                 qos_power_mgmt::PowerSignal::ResumedFromSleep => {
                     // Reset the idle timer so a stale pre-sleep timestamp does
                     // not immediately re-blank/re-suspend on resume.
                     for t in session.note_activity(Instant::now()) {
-                        apply_session_transition(t, backend.as_mut());
+                        apply_session_transition(t, backend.as_mut(), present_pipe.as_ref());
                     }
                 }
                 qos_power_mgmt::PowerSignal::Notify(n) => {
@@ -1354,13 +1487,13 @@ pub fn run() -> ! {
         if state.session_lock.take_lock_requested() {
             session_changed = true;
             for t in session.request_lock(Instant::now()) {
-                apply_session_transition(t, backend.as_mut());
+                apply_session_transition(t, backend.as_mut(), present_pipe.as_ref());
             }
         }
         if state.session_lock.take_unlock_requested() {
             session_changed = true;
             for t in session.request_unlock(Instant::now()) {
-                apply_session_transition(t, backend.as_mut());
+                apply_session_transition(t, backend.as_mut(), present_pipe.as_ref());
             }
         }
 
@@ -1426,9 +1559,9 @@ pub fn run() -> ! {
         // fullscreen mirror above). Skipping `relayout` + `paint` entirely
         // on idle frames is what lets the loop fall to near-zero CPU at
         // rest instead of burning a core re-laying-out an unchanged tree.
-        // Hit-testing stays correct because input is only dispatched on
-        // ticks that carry a backend event, and those force a repaint (and
-        // thus a relayout) below.
+        // Hit-testing stays correct because a tick that dispatched input
+        // always relayouts — either as part of the paint below, or
+        // explicitly afterwards when the cadence gate deferred the paint.
         // Pump the widget tree's per-frame state (sync + update) before
         // deciding whether to paint. This is what drains a hosted terminal's
         // PTY into its grid; without it a live app that produces output
@@ -1440,13 +1573,36 @@ pub fn run() -> ! {
         let revision_changed = revision != last_revision;
         let animating = frame_builder.needs_animation_frame();
         let keepalive_due = last_paint.elapsed() >= keepalive;
-        let should_paint = force_first_paint
+        metrics.mark_pump(iter_t0.elapsed() - t_input_done);
+        // Is there anything new to show? This is the redraw gating that
+        // lets a static desktop idle at near-zero CPU; it is orthogonal
+        // to *when* a frame may be shown, which is the clock's job below.
+        let content_changed = force_first_paint
             || had_backend_events
             || session_changed
             || revision_changed
             || animating
             || apps_changed
             || keepalive_due;
+        // May a frame be shown yet? Protocol traffic, test-control
+        // commands and input all wake the loop off-cadence; presenting
+        // on those wakeups would submit frames inside a refresh interval
+        // that the display simply discards — and, with a render thread,
+        // would fill the queue with them. The first frame is exempt so
+        // startup isn't delayed by an interval.
+        let cadence_due = force_first_paint || frame_clock.due(iter_t0);
+        // Is there room in the pipe? When presentation runs on its own
+        // thread and the GPU is behind, building another scene would only
+        // grow the queue — and with it the input-to-photon path. Declining
+        // here caps that at `QUEUE_DEPTH + 1` frames; the tick still
+        // services input and clients, it just doesn't render.
+        let pipe_ready = present_pipe.as_ref().is_none_or(|p| p.has_capacity());
+        if content_changed && cadence_due && !pipe_ready {
+            if let Some(p) = present_pipe.as_mut() {
+                p.note_backpressure();
+            }
+        }
+        let should_paint = content_changed && cadence_due && pipe_ready;
 
         // Diagnostic: `QOS_PAINT_STATS=1` logs, every ~2 s, how many
         // frames painted vs idled and which condition forced the repaints.
@@ -1478,7 +1634,14 @@ pub fn run() -> ! {
                 eprintln!(
                     "paint-stats: {frames_painted}/{frames_total} painted | \
                      events={cause_events} revision={cause_revision} anim={cause_anim} \
-                     session={cause_session} keepalive={cause_keepalive}"
+                     session={cause_session} keepalive={cause_keepalive} | \
+                     {:.3} Hz target | present={} backpressure={}",
+                    1.0 / frame_clock.interval().as_secs_f64(),
+                    present_pipe
+                        .as_ref()
+                        .map(|p| p.presented().to_string())
+                        .unwrap_or_else(|| "inline".to_string()),
+                    present_pipe.as_ref().map(|p| p.backpressured()).unwrap_or(0),
                 );
                 frames_total = 0;
                 frames_painted = 0;
@@ -1495,7 +1658,11 @@ pub fn run() -> ! {
             // Lay out only when we're about to paint. Any structural change
             // (spliced group, tab switch, resize) is applied here, right
             // before the scene is built.
+            let t_layout_start = Instant::now();
             frame_builder.relayout();
+            let layout_took = t_layout_start.elapsed();
+            metrics.mark_layout(layout_took);
+            let t_scene_start = Instant::now();
             // When locked, paint the compositor-owned lock overlay instead
             // of the chrome — app content is never submitted while locked.
             let scene = if session.is_locked() {
@@ -1524,7 +1691,42 @@ pub fn run() -> ! {
             } else {
                 frame_builder.paint()
             };
-            backend.submit_frame(&scene, OutputId(0));
+            metrics.mark_scene(t_scene_start.elapsed());
+            let t_submit_start = Instant::now();
+            let mut render_thread_lost = false;
+            let async_present = match present_pipe.as_mut() {
+                Some(pipe) => {
+                    render_thread_lost = !pipe.submit(scene, OutputId(0));
+                    true
+                }
+                None => {
+                    backend.submit_frame(&scene, OutputId(0));
+                    false
+                }
+            };
+            if render_thread_lost {
+                // Presentation is dead but the session isn't: clients stay
+                // served and the compositor keeps its protocol state, which
+                // is a far better failure mode than tearing the seat down.
+                eprintln!(
+                    "nirios compositor: render thread gone; presentation stopped \
+                     (clients keep running)"
+                );
+                present_pipe = None;
+            }
+            let submit_done = Instant::now();
+            metrics.mark_submit(
+                submit_done.saturating_duration_since(t_submit_start),
+                async_present,
+                submit_done,
+            );
+            // Advance the deadline series off the moment the frame was
+            // handed to the display. On the inline path that is the
+            // present itself; on the threaded path it is the hand-off,
+            // which is the last instant the logic thread can observe —
+            // the clock's job is to pace *production*, and the render
+            // thread's own vsync wait paces consumption behind it.
+            frame_clock.note_presented(submit_done);
             last_paint = Instant::now();
             // Re-read after `relayout`: its `resync_strips_from_tree` pass
             // can bump the revision, and we must capture that post-paint
@@ -1538,6 +1740,15 @@ pub fn run() -> ! {
             // external client is connected.
             foreign::flush_configures(&mut state);
             foreign::release_frame_throttle(&mut state);
+        } else if had_backend_events {
+            // Input was dispatched but the frame was deferred (waiting for
+            // the next presentation deadline, or for the render thread to
+            // drain). Lay out anyway so the *next* event hit-tests against
+            // rects that reflect what this one did — a click that opens an
+            // overlay must not be followed by a click resolved against the
+            // pre-overlay tree. Layout is ~0.01 ms; deferring it to save
+            // that would be trading correctness for nothing.
+            frame_builder.relayout();
         }
         let t_paint_done = iter_t0.elapsed();
 
@@ -1577,19 +1788,31 @@ pub fn run() -> ! {
                 }
             }
             for conn in test_control_conns.iter_mut() {
-                pump_test_control_conn(
+                let injected = pump_test_control_conn(
                     conn,
                     &mut frame_builder,
                     &mut test_control_ctx,
                     &mut session,
                     &mut lock,
                     backend.as_mut(),
+                    present_pipe.as_ref(),
                     &mut state,
                 );
+                if injected {
+                    // Socket-driven input starts the same latency clock a
+                    // hardware event does, so a headless harness measures
+                    // the real input-to-present path. The socket is
+                    // serviced *after* this tick's paint gate, so the
+                    // frame reflecting it is the next one — which is
+                    // exactly the latency a caller experiences, and is
+                    // what the measurement should report.
+                    metrics.note_input(Instant::now());
+                }
             }
             test_control_conns.retain(|c| !c.closed);
         }
         let t_testctl_done = iter_t0.elapsed();
+        metrics.mark_testctl(t_testctl_done - t_paint_done);
 
         // Phase 7 fix: drain wayland client traffic + push pending
         // protocol updates back out. `dispatch_clients` advances each
@@ -1606,6 +1829,7 @@ pub fn run() -> ! {
             break;
         }
         let t_work_done = iter_t0.elapsed();
+        metrics.mark_clients(t_work_done - t_testctl_done);
         if loop_timing && t_work_done > Duration::from_millis(100) {
             eprintln!(
                 "SLOW-ITER total_work={:?} | input={:?} paint=+{:?} testctl=+{:?} dispatch_clients=+{:?}",
@@ -1621,9 +1845,24 @@ pub fn run() -> ! {
         // included) and sleep up to one frame. The calloop loop itself
         // dispatches sources on each iteration; this is what lets
         // newly-accepted connections fan out into `insert_client` calls.
-        if let Err(err) = event_loop.dispatch(frame_period, &mut state) {
+        // Park until the next presentation deadline. See
+        // `FrameClock::park` for why this is a question about the
+        // deadline rather than about whether this tick painted: anything
+        // that wakes the loop mid-interval (the render thread retiring a
+        // frame, protocol traffic, input) must not be able to push the
+        // next frame past its deadline.
+        let park = frame_clock.park(Instant::now());
+        let t_sleep_start = Instant::now();
+        if let Err(err) = event_loop.dispatch(park, &mut state) {
             eprintln!("nirios compositor: event loop dispatch error: {err}");
             break;
+        }
+        metrics.mark_sleep(t_sleep_start.elapsed());
+        metrics.end_tick();
+        if let Some(deadline) = run_deadline {
+            if Instant::now() >= deadline {
+                close_requested = true;
+            }
         }
         let _ = &state.display_handle;
 
@@ -1645,6 +1884,17 @@ pub fn run() -> ! {
             }
         }
     }
+
+    // Stop the render thread and wait for the frame in flight, so a
+    // half-presented frame can't outlive the device it was rendering
+    // into. `process::exit` below skips destructors, so this is explicit.
+    if let Some(mut pipe) = present_pipe.take() {
+        pipe.shutdown();
+    }
+
+    // Flush the frame trace / write the summary before `process::exit`
+    // skips destructors. A no-op unless instrumentation was enabled.
+    metrics.finish();
 
     // `event_loop.run` only returns when the loop is asked to stop; we never
     // do that today, but keep an explicit exit so the function's `!` return
@@ -2204,10 +2454,10 @@ mod tests {
         }
 
         let mut backend = SpyBackend::default();
-        apply_session_transition(SessionTransition::Blanked, &mut backend);
-        apply_session_transition(SessionTransition::Woke, &mut backend);
-        apply_session_transition(SessionTransition::Locked, &mut backend);
-        apply_session_transition(SessionTransition::Unlocked, &mut backend);
+        apply_session_transition(SessionTransition::Blanked, &mut backend, None);
+        apply_session_transition(SessionTransition::Woke, &mut backend, None);
+        apply_session_transition(SessionTransition::Locked, &mut backend, None);
+        apply_session_transition(SessionTransition::Unlocked, &mut backend, None);
         // Blanked → set_dpms(false), Woke → set_dpms(true); Locked /
         // Unlocked produce no backend calls.
         assert_eq!(backend.dpms_calls, vec![false, true]);

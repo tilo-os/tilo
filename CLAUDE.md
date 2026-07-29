@@ -163,17 +163,24 @@ All components (`ui`, `shell`, `fs`, `apps/*`, `os`, and the top-level crates)
 live in this **single repository** — commit normally, no submodule pointer dance.
 Prefer explicit paths over `git add -A` so you only stage what you intend.
 
-### Cargo.lock + worktrees
+### Cargo.lock is committed — do not regenerate it casually
 
-`Cargo.lock` is gitignored at the workspace root. `git worktree add` does NOT copy
-ignored files — so a fresh worktree has no `Cargo.lock` and `cargo build` will
-either error (offline) or churn through a fresh resolve. Copy it explicitly:
+`Cargo.lock` is tracked, and it has to be. A fresh resolve does not currently
+produce a working tree: `iroh` pulls a **pre-release** `ed25519-dalek 3.0.0-pre.1`
++ `curve25519-dalek 5.0.0-pre.1` + `signature 3.0.0-rc.10` for its own node
+identity, and against newer transitive versions that stack fails to compile. So
+`cargo generate-lockfile` will hand you a repository that does not build, and the
+failure appears inside a dependency rather than anywhere you touched.
 
-```bash
-cp /var/home/quinten/Development/quickdesktop/Cargo.lock .claude/worktrees/<name>/Cargo.lock
-```
+That also means the lock is the only thing pinning a pre-release crypto stack in
+an OS image, so treat a lock change as a real change: read the diff, and rebuild
+the workspace before pushing it. `--locked` is the safe default for CI and for any
+build whose result you intend to trust.
 
-(Or run `cargo generate-lockfile` once. The copy is faster on a hot cache.)
+qOS's own identities never touch dalek 3 — every signing path resolves to the
+stable `ed25519-dalek 2.2.0` → `curve25519-dalek 4.1.3` → `rand_core 0.6.4`. That
+is why `rand` is pinned to 0.8 in `[workspace.dependencies]` rather than current:
+rand 0.9+ expose a `rand_core` shape that does not satisfy dalek 2's bound.
 
 ### NEVER `git worktree remove --force` before committing untracked files
 

@@ -13,32 +13,32 @@ path = "src/main.rs"
 
 [dependencies]
 ui = { path = "../../ui" }
-automerge = "0.8.0"
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-uuid = { version = "1.23.1", features = ["v4", "serde"] }
-tracing = "0.1"
-tracing-subscriber = "0.3"
-vello = "0.9"
-winit = "0.30.13"
-taffy = "0.10.1"
-anyhow = "1.0"
+automerge.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+vello.workspace = true
+winit.workspace = true
+taffy.workspace = true
+anyhow.workspace = true
 # EPUB container = a ZIP of XHTML + an OPF manifest. We parse it ourselves
 # with these two pure-Rust crates (both already in the workspace cache) rather
 # than the `epub` crate, to keep the build hermetic and dodge the 2.1.x API
 # churn. `deflate` covers real-world epubs; our bundled sample is stored.
-zip = { version = "4.6", default-features = false, features = ["deflate"] }
+zip.workspace = true
 roxmltree = "0.20"
 # Real cover art: EPUBs embed a raster cover (usually JPEG, sometimes PNG).
 # We decode + downscale it once at load so the shelf shows the actual artwork
 # rather than a generated spine. Already in the workspace graph, so no new
 # compilation beyond feature unification.
-image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+image = { workspace = true, features = ["jpeg", "png"] }
 
 [dev-dependencies]
 # Serialises the handful of tests that set the process-wide `EBOOK_LIBRARY_DIR`
 # env var (library discovery + the empty-shelf reload) so cargo's default
 # parallel runner can't race them.
-serial_test = "3"
+serial_test.workspace = true
 # Real temp directories for the on-disk library-discovery tests.
-tempfile = "3"
+tempfile.workspace = true

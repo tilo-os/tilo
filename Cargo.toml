@@ -216,6 +216,183 @@ members = [
 ]
 resolver = "2"
 
+# Every dependency shared by two or more workspace members is pinned here, and
+# the members inherit it with `dep.workspace = true`. This is the one file to
+# edit to bump a shared version — before it existed, `vello` was spelled out in
+# 49 separate manifests and any one of them could silently drift.
+#
+# Reading the entries:
+#
+#   * The version here is the floor for the whole workspace. A member may not
+#     override it; that is the point.
+#   * `features` here are the ones nearly every member wants. A member adds its
+#     own on top (`features = [...]` alongside `workspace = true`); features are
+#     additive, so the member gets the union.
+#   * `default-features = false` here is a floor too, and it only travels one
+#     way: a member can turn defaults back **on** with `default-features = true`,
+#     but a member can never turn them off if this table leaves them on. So any
+#     dependency where even one member wants defaults off is declared off here.
+[workspace.dependencies]
+
+# ---------------------------------------------------------------------------
+# UI toolkit stack
+#
+# `ui` re-exports vello, taffy, winit and automerge (see `ui/src/lib.rs`). An
+# app should reach for `ui::vello` rather than declaring its own copy: two vello
+# versions in one process means two incompatible `Scene` types, and a widget
+# tree that cannot be handed a scene it can draw into. These entries exist so
+# the crates that legitimately need a direct dependency all get the same one.
+# ---------------------------------------------------------------------------
+vello = "0.9"
+vello_encoding = "0.9"
+wgpu = "29"
+taffy = "0.10.1"
+winit = "0.30.13"
+automerge = "0.8.0"
+pollster = "0.4.0"
+
+# ---------------------------------------------------------------------------
+# Async runtime and networking
+# ---------------------------------------------------------------------------
+# tokio declares `default = []`, so there is nothing to switch off; members
+# carry their own runtime features (`rt`, `net`, `macros`, ...) since those
+# genuinely differ per crate.
+tokio = "1.52.3"
+tokio-util = { version = "0.7.18", features = ["compat"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring"] }
+futures = { version = "0.3", default-features = false }
+futures-lite = "2"
+futures-util = "0.3"
+# Defaults off keeps the native-tls/OpenSSL backend out of the tree; every
+# member picks rustls explicitly.
+reqwest = { version = "0.12", default-features = false }
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
+url = "2"
+
+# ---------------------------------------------------------------------------
+# Serialisation and encoding
+# ---------------------------------------------------------------------------
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0"
+serde_bytes = "0.11"
+# Canonical wire encoding for everything that gets signed — little-endian,
+# varint, no field-reorder leeway, so signatures reproduce byte-for-byte.
+postcard = "1.1.3"
+toml = "0.8"
+quick-xml = "0.38.4"
+capnp = "0.26"
+capnp-rpc = "0.26"
+capnp-futures = "0.26"
+capnpc = "0.26"
+base64 = "0.22.1"
+base32 = "0.5"
+hex = "0.4.3"
+bytes = "1.11.1"
+flate2 = "1"
+zip = { version = "4.6", default-features = false, features = ["deflate"] }
+tar = "0.4"
+
+# ---------------------------------------------------------------------------
+# Cryptography and identity
+#
+# The Ed25519 stack is deliberately conservative. Every qOS signing path
+# (`collab-types`, `qos-user-identity`, `threshold-identity`, `app-registry`,
+# `pkg`, `runtime-identity`) is on ed25519-dalek 2.x, which consumes `rand_core`
+# 0.6 — and `rand` 0.8 is the only release that hands out a 0.6-shaped `OsRng`.
+# That is why `rand` is pinned to 0.8 rather than the current 0.10: bumping it
+# would not typecheck against `SigningKey::generate`. iroh drags in a *second*
+# Ed25519 implementation (ed25519-dalek 3.x) for its own node identity; that is
+# iroh's business and must not become ours.
+# ---------------------------------------------------------------------------
+ed25519-dalek = "2"
+rand = "0.8"
+rand_core = "0.6"
+rand_chacha = "0.3"
+getrandom = "0.2"
+sha2 = "0.10"
+hmac = "0.12"
+blake3 = "1.8.5"
+chacha20poly1305 = { version = "0.10", default-features = false, features = ["alloc"] }
+zeroize = "1"
+bip39 = "2"
+
+# ---------------------------------------------------------------------------
+# Peer-to-peer transport and content addressing
+# ---------------------------------------------------------------------------
+iroh = "1.0.3"
+iroh-base = "1.0.3"
+iroh-blobs = "0.103.0"
+iroh-gossip = "0.101.0"
+libp2p = { version = "0.56", features = [
+    "dns",
+    "gossipsub",
+    "macros",
+    "mdns",
+    "noise",
+    "tcp",
+    "tokio",
+    "websocket",
+    "yamux",
+] }
+
+# ---------------------------------------------------------------------------
+# Media: images, codecs, capture and playback
+#
+# The gstreamer crates are optional everywhere — the hermetic build, `--shots`
+# and CI must never need the gstreamer-1.0 dev stack.
+# ---------------------------------------------------------------------------
+image = { version = "0.25", default-features = false }
+png = "0.18.1"
+qrcode = { version = "0.14", default-features = false }
+rqrr = { version = "0.10", default-features = false }
+openh264 = { version = "0.9", features = ["source"] }
+gstreamer = "0.24"
+gstreamer-app = "0.24"
+gstreamer-video = "0.24"
+rustypipe = { version = "0.11", default-features = false }
+
+# ---------------------------------------------------------------------------
+# Desktop and platform integration
+# ---------------------------------------------------------------------------
+wayland-client = "0.31.14"
+ashpd = { version = "0.9", default-features = false, features = ["tokio"] }
+zbus = { version = "4.4", default-features = false }
+arboard = { version = "3.6.1", default-features = false, features = ["wayland-data-control"] }
+fuser = "0.17.0"
+notify = { version = "8", default-features = false }
+landlock = "0.4"
+seccompiler = "0.5"
+sd-notify = "0.4"
+sysinfo = "0.32"
+open = "5.3.5"
+libc = "0.2.186"
+
+# ---------------------------------------------------------------------------
+# Diagnostics, CLI and the long tail
+# ---------------------------------------------------------------------------
+tracing = "0.1"
+tracing-subscriber = "0.3"
+anyhow = "1.0.102"
+thiserror = "2"
+clap = { version = "4.6.1", features = ["derive"] }
+uuid = { version = "1.23.1", features = ["serde", "v4"] }
+chrono = { version = "0.4", default-features = false }
+dirs = "6.0.0"
+walkdir = "2.5.0"
+regex = "1"
+semver = "1"
+once_cell = "1.21.4"
+parking_lot = "0.12.5"
+fluent = "0.17.0"
+unic-langid = "0.9.6"
+
+# ---------------------------------------------------------------------------
+# Test-only
+# ---------------------------------------------------------------------------
+tempfile = "3.27.0"
+serial_test = "3.4.0"
+proptest = "1"
+
 # Aggressive release profile. Fat LTO across the workspace + a single
 # codegen unit unlock cross-crate inlining — meaningful for the shell
 # because most of the hot path (widget draw → wgpu submit, CRDT apply,

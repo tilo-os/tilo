@@ -328,6 +328,8 @@ pub fn chrome_state_json(driver: &ShellDriver) -> String {
     out.push(',');
     push_kv_bool(&mut out, "overlay_collaborators", st.overlays.collaborators);
     out.push(',');
+    push_kv_bool(&mut out, "overlay_room_activity", st.overlays.room_activity);
+    out.push(',');
     push_kv_str(&mut out, "qs_level", qs_level);
     out.push(',');
     push_kv_str(&mut out, "ws_settings_tab", ws_tab);
@@ -486,7 +488,31 @@ pub fn catalogue() -> Vec<Scenario> {
         strip_horizontal_scroll(),
         notes_click_and_type(),
         cycle_all_tabs(),
+        room_activity_from_palette(),
     ]
+}
+
+/// The palette route to the room-activity sheet, end to end: open the
+/// palette, type the words a person would type, pick the result, and let the
+/// sheet settle. In headless mode the state dump proves `overlay_room_activity`
+/// flipped; in offscreen mode it is the picture of the pane over the room's
+/// real history.
+fn room_activity_from_palette() -> Scenario {
+    Scenario {
+        name: "room_activity_from_palette",
+        description: "Search 'room activity' in the palette and open the sheet from the result.",
+        actions: vec![
+            Action::Snapshot("01-desktop"),
+            Action::OpenPalette,
+            Action::Wait(2),
+            Action::Type("room activity".into()),
+            Action::Wait(2),
+            Action::Snapshot("02-palette-result"),
+            Action::Key(Key::Named(NamedKey::Enter)),
+            Action::Wait(20),
+            Action::Snapshot("03-room-activity-open"),
+        ],
+    }
 }
 
 /// Repro for "apps render but can't be interacted with". Click in the
