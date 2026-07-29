@@ -1492,6 +1492,28 @@ mod tests {
         }
     }
 
+    /// Build a `KeyEvent` over a zeroed buffer — winit 0.30's `KeyEventExtra`
+    /// is `pub(crate)`, so a struct literal is not available. Only the pub
+    /// fields the widget reads are overwritten.
+    fn key_press(logical_key: winit::keyboard::Key) -> WindowEvent {
+        // SAFETY: every pub field of `KeyEvent` tolerates the all-zero bit
+        // pattern — `logical_key` is overwritten below and `text` is an
+        // `Option` whose niche-optimised `None` is all-zero.
+        let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
+        ev.logical_key = logical_key;
+        ev.physical_key =
+            winit::keyboard::PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
+        ev.location = winit::keyboard::KeyLocation::Standard;
+        ev.state = ElementState::Pressed;
+        ev.repeat = false;
+        ev.text = None;
+        WindowEvent::KeyboardInput {
+            device_id: unsafe { std::mem::zeroed() },
+            event: ev,
+            is_synthetic: false,
+        }
+    }
+
     fn mouse_press() -> WindowEvent {
         WindowEvent::MouseInput {
             device_id: unsafe { std::mem::zeroed() },
@@ -1720,6 +1742,178 @@ mod tests {
             ChipKind::All,
             "click in the gap between chips is a no-op",
         );
+    }
+
+    #[test]
+    fn only_the_visible_window_of_a_huge_list_is_touched_per_frame() {
+        // Ten thousand rows in a 600 px viewport. The paint and hit-test
+        // paths must look at the fifteen-odd rows on screen, not at all ten
+        // thousand — this is the difference between a room-scale history
+        // that scrolls and one that drops frames.
+        let entries: Vec<HistoryEntry> = (0..10_000)
+            .map(|i| entry(OpClass::Splice, "Alice", i as u64, (i % 251) as u8))
+            .collect();
+        let t = timeline_at(Rect::new(0.0, 0.0, 600.0, 600.0), entries);
+        assert_eq!(t.visible_len(), 10_000, "every row passes the filter");
+
+        let range = t.visible_row_range();
+        let viewport_rows = (t.viewport_height() / ROW_HEIGHT).ceil() as usize;
+        assert!(
+            range.len() <= viewport_rows + 2,
+            "painted {} rows for a viewport that holds {}",
+            range.len(),
+            viewport_rows
+        );
+        assert_eq!(range.start, 0, "unscrolled, the window starts at the top");
+
+        // Every row inside the window lays out; the first one past it does not.
+        for i in range.clone() {
+            assert!(t.row_rect(i).is_some(), "row {i} is on screen");
+        }
+        assert!(
+            t.row_rect(range.end + 4).is_none(),
+            "a row well past the window must not lay out"
+        );
+    }
+
+    #[test]
+    fn row_at_agrees_with_row_rect_at_the_boundaries() {
+        // `row_at` no longer scans; it computes. The two must still answer
+        // the same question, including one pixel either side of a seam.
+        let entries: Vec<HistoryEntry> = (0..40)
+            .map(|i| entry(OpClass::Splice, "Alice", i as u64, i as u8))
+            .collect();
+        let t = timeline_at(Rect::new(0.0, 0.0, 500.0, 500.0), entries);
+        for i in 0..8 {
+            let r = t.row_rect(i).unwrap();
+            assert_eq!(t.row_at(r.center()), Some(i));
+            assert_eq!(t.row_at(Point::new(r.center().x, r.y0 + 0.5)), Some(i));
+            assert_eq!(
+                t.row_at(Point::new(r.center().x, r.y1 - 0.5)),
+                Some(i),
+                "the bottom edge of row {i} still belongs to it"
+            );
+        }
+        // Left of the row list's inset, and below the last row.
+        let r0 = t.row_rect(0).unwrap();
+        assert_eq!(t.row_at(Point::new(r0.x0 - 4.0, r0.center().y)), None);
+        assert_eq!(t.row_at(Point::new(250.0, 499.9)), None);
+    }
+
+    #[test]
+    fn an_empty_history_and_a_filtered_one_explain_themselves_differently() {
+        let empty = timeline_at(Rect::new(0.0, 0.0, 400.0, 300.0), vec![]);
+        let (title, detail) = empty.empty_state_lines();
+        assert_eq!(title, "No activity yet");
+        assert!(detail.is_none(), "nothing happened; nothing to explain");
+        assert!(!empty.is_filtered());
+
+        let mut t = timeline_at(
+            Rect::new(0.0, 0.0, 400.0, 300.0),
+            vec![
+                entry(OpClass::Splice, "Alice", 1, 1),
+                entry(OpClass::Splice, "Bob", 2, 2),
+            ],
+        );
+        t.set_active_chip(ChipKind::Comments);
+        assert_eq!(t.visible_len(), 0);
+        assert!(t.is_filtered());
+        let (title, detail) = t.empty_state_lines();
+        assert_eq!(title, "No activity matches these filters");
+        let detail = detail.expect("a filtered-empty list must say why");
+        assert!(detail.contains("2 hidden"), "counts what it is hiding: {detail}");
+        assert!(detail.contains("COMMENTS"), "names the filter: {detail}");
+    }
+
+    #[test]
+    fn a_host_time_range_is_named_in_the_explanation() {
+        // The widget cannot put a `SystemTime` pair into the user's words, so
+        // the host labels it. Without the label the row would read "a date
+        // range", which is still honest but less use.
+        let mut t = timeline_at(
+            Rect::new(0.0, 0.0, 400.0, 300.0),
+            vec![entry(OpClass::Splice, "Alice", 1, 1)],
+        );
+        t.set_filter(HistoryFilter {
+            time_range: Some((
+                SystemTime::UNIX_EPOCH + Duration::from_secs(500),
+                SystemTime::UNIX_EPOCH + Duration::from_secs(600),
+            )),
+            ..Default::default()
+        });
+        assert_eq!(t.visible_len(), 0);
+        assert!(t.active_filter_summary().contains("a date range"));
+        t.set_time_range_label(Some("Last 7 days".to_string()));
+        assert!(
+            t.active_filter_summary().contains("Last 7 days"),
+            "got {:?}",
+            t.active_filter_summary()
+        );
+    }
+
+    #[test]
+    fn clear_filters_resets_the_widget_and_tells_the_host() {
+        let entries = vec![
+            entry(OpClass::Splice, "Alice", 1, 1),
+            entry(OpClass::Comment, "Bob", 2, 2),
+        ];
+        let cleared = Rc::new(RefCell::new(0usize));
+        let c = cleared.clone();
+        let mut t = ActivityTimeline::with_entries(entries).on_clear_filters(move || {
+            *c.borrow_mut() += 1;
+        });
+        t.set_rect(Rect::new(0.0, 0.0, 400.0, 300.0));
+        t.set_active_chip(ChipKind::Governance);
+        t.set_author_query("zzz");
+        assert_eq!(t.visible_len(), 0);
+
+        t.clear_filters();
+        assert_eq!(t.active_chip(), ChipKind::All);
+        assert_eq!(t.author_query(), "");
+        assert_eq!(t.visible_len(), 2, "every row is back");
+        assert_eq!(
+            *cleared.borrow(),
+            1,
+            "the host is told so it can drop the filters it owns"
+        );
+    }
+
+    #[test]
+    fn typing_narrows_by_author_and_backspace_widens_again() {
+        let entries = vec![
+            entry(OpClass::Splice, "Alice", 1, 1),
+            entry(OpClass::Splice, "Bob", 2, 2),
+        ];
+        let mut t = timeline_at(Rect::new(0.0, 0.0, 400.0, 300.0), entries);
+        dispatch(&mut t, &key_press(winit::keyboard::Key::Character("b".into())));
+        assert_eq!(t.author_query(), "b");
+        assert_eq!(t.visible_len(), 1);
+        assert_eq!(t.visible_entry(0).unwrap().author.name, "Bob");
+        dispatch(&mut t, &key_press(winit::keyboard::Key::Named(NamedKey::Backspace)));
+        assert_eq!(t.author_query(), "");
+        assert_eq!(t.visible_len(), 2);
+    }
+
+    #[test]
+    fn narrow_panes_shrink_the_trailing_slots_rather_than_overlapping_them() {
+        // On a narrow pane the revert chip must still sit inside the row and
+        // leave the summary somewhere to go.
+        let entries = vec![entry(OpClass::Splice, "Alice", 1, 1)];
+        let wide = timeline_at(Rect::new(0.0, 0.0, 700.0, 300.0), entries.clone());
+        let narrow = timeline_at(Rect::new(0.0, 0.0, 300.0, 300.0), entries);
+
+        let wide_chip = wide.revert_chip_rect(0).unwrap();
+        let narrow_chip = narrow.revert_chip_rect(0).unwrap();
+        assert!(
+            narrow_chip.width() < wide_chip.width(),
+            "the chip gives width back on a narrow pane"
+        );
+        let narrow_row = narrow.row_rect(0).unwrap();
+        assert!(
+            narrow_chip.x0 > narrow_row.x0 + narrow.author_slot_w(),
+            "the chip must not overlap the author cluster"
+        );
+        assert!(narrow_chip.x1 <= narrow_row.x1, "and must stay inside the row");
     }
 
     #[test]
