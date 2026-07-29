@@ -277,16 +277,28 @@ pub use pkg::manifest::PortalPolicy;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Net {
-    /// "off" → no network (`--unshare-all` with NO `--share-net`).
-    /// Anything else gets the host network shared in.
+    /// - `"off"` → no network (`--unshare-all` with NO `--share-net`).
+    /// - `"allowlist"` → only [`Net::hosts`], brokered through the
+    ///   egress gate.
+    /// - anything else → the host network is shared in.
     #[serde(default = "default_net_mode")]
     pub mode: String,
+    /// Endpoints the package declared for `mode = "allowlist"`.
+    ///
+    /// This field was previously not decoded at all, so a manifest that
+    /// enumerated its endpoints was read as "not off" and got
+    /// unrestricted access — the packager's allowlist reached nothing.
+    /// [`crate::netgate::EgressDecision::resolve`] now makes it the
+    /// ceiling for the app, and the gate enforces it.
+    #[serde(default)]
+    pub hosts: Vec<String>,
 }
 
 impl Default for Net {
     fn default() -> Self {
         Self {
             mode: default_net_mode(),
+            hosts: Vec::new(),
         }
     }
 }
