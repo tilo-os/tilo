@@ -224,6 +224,28 @@ verified by an offscreen shot (header gone, functional controls intact) + tests:
 - [x] Toasts auto-dismiss → fixed.
 - [x] Detail-pane name no longer truncates at 800px → fixed.
 
+## osk (on-screen keyboard) — verified real; §7 tofu fix
+- [x] Real key output: taps/swipes emit `KeyAction`s that a real
+      `virtual-keyboard-v1` injector types into the focused surface (synthetic
+      XKB keymap over a memfd), or commit via `input-method-v2` in auto-show
+      mode. Verified: the generated keymap compiles with libxkbcommon and each
+      keycode resolves to the intended keysym; pointer tap → 'q' typed; shift /
+      caps / symbols / backspace / space all drive the real text path (not a
+      dead grid). Injection degrades to a null recorder only when no compositor
+      protocol is present.
+- [x] Real FUTO swipe: the geometric SHARK² decoder ships as the default and a
+      real `FutoSwipeModel` (ExecuTorch over the `swipe` crate FFI) is used
+      automatically when its libs + models are present — same `SwipeModel`
+      seam, honest fallback. Next-word + completion suggestions are a real
+      offline n-gram predictor (the bar shows cold-start "the/of/and/to").
+- [x] §7 key grid: the ⇧ / ⌫ / ⏎ modifier keys rendered as `.notdef` tofu boxes
+      (their Unicode symbols have no glyph in the shipped UI font). Replaced
+      with vector lucide icons (`arrow-big-up` / `delete` / `corner-down-left`,
+      added to `ui::icons`); the Shift icon fills solid while Caps-Lock is
+      latched so a sticky upper-case reads differently from a one-shot shift.
+      Verified on the QWERTY/phone/pin shots (icons crisp, no tofu); asserted by
+      `modifier_and_edit_keys_carry_icons` on the production layout data.
+
 ## totp
 - [x] QR-image import wired to a real picker → fixed. (Follow-up: it must go
       through the XDG portal per HIG §5 — audit in the picker sweep.)

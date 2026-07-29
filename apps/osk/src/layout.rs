@@ -10,6 +10,7 @@
 //! (later) swipe decoding. [`key_rects`] is that single geometry pass;
 //! a swipe decoder can normalise its output rects into 0..1 space.
 
+use ui::icons::Icon;
 use vello::kurbo::Rect;
 
 /// What a key emits / does when activated. The text-producing variants
@@ -51,6 +52,13 @@ pub struct Key {
     /// wide (e.g. 5.0); Shift / Backspace are often 1.5. Geometry divides
     /// the row's available width by the sum of weights — see [`key_rects`].
     pub width: f32,
+    /// An optional vector glyph to render on the keycap instead of [`label`].
+    /// Used for the modifier/edit keys whose conventional symbols (⇧ ⌫ ⏎)
+    /// have no glyph in the shipped UI font and would otherwise render as a
+    /// `.notdef` box. The `label` is kept as the accessible/testable name.
+    ///
+    /// [`label`]: Key::label
+    pub icon: Option<Icon>,
 }
 
 impl Key {
@@ -61,6 +69,7 @@ impl Key {
             label: c.to_string(),
             action: KeyAction::Char(c.to_string()),
             width: 1.0,
+            icon: None,
         }
     }
 
@@ -70,6 +79,7 @@ impl Key {
             label: s.to_string(),
             action: KeyAction::Char(s.to_string()),
             width: 1.0,
+            icon: None,
         }
     }
 
@@ -85,12 +95,21 @@ impl Key {
             label: label.to_string(),
             action,
             width,
+            icon: None,
         }
     }
 
     /// Override this key's width weight (builder).
     pub fn with_width(mut self, width: f32) -> Self {
         self.width = width;
+        self
+    }
+
+    /// Render this key with a vector [`Icon`] instead of its text label
+    /// (the label is retained as the accessible/testable name). Used for the
+    /// ⇧ / ⌫ / ⏎ keys, whose symbol glyphs are absent from the UI font.
+    pub fn with_icon(mut self, icon: Icon) -> Self {
+        self.icon = Some(icon);
         self
     }
 
@@ -207,9 +226,9 @@ impl KeyboardLayout {
         rows.push(letters[0].chars().map(Key::letter).collect());
         rows.push(letters[1].chars().map(Key::letter).collect());
         // Row 2: Shift, letters, Backspace.
-        let mut r3 = vec![Key::action("⇧", KeyAction::Shift, 1.5)];
+        let mut r3 = vec![Key::action("⇧", KeyAction::Shift, 1.5).with_icon(Icon::ArrowBigUp)];
         r3.extend(letters[2].chars().map(Key::letter));
-        r3.push(Key::action("⌫", KeyAction::Backspace, 1.5));
+        r3.push(Key::action("⌫", KeyAction::Backspace, 1.5).with_icon(Icon::Delete));
         rows.push(r3);
         // Row 3: function row.
         rows.push(vec![
@@ -217,7 +236,7 @@ impl KeyboardLayout {
             Key::ch(","),
             Key::action("space", KeyAction::Space, 5.0),
             Key::ch("."),
-            Key::action("⏎", KeyAction::Enter, 1.5),
+            Key::action("⏎", KeyAction::Enter, 1.5).with_icon(Icon::CornerDownLeft),
         ]);
         Self {
             name: name.to_string(),
@@ -255,7 +274,7 @@ impl KeyboardLayout {
             vec![Key::ch("*"), Key::ch("0"), Key::ch("#")],
             vec![
                 Key::ch("+"),
-                Key::action("⌫", KeyAction::Backspace, 2.0),
+                Key::action("⌫", KeyAction::Backspace, 2.0).with_icon(Icon::Delete),
             ],
         ];
         Self {
@@ -268,7 +287,7 @@ impl KeyboardLayout {
     /// has no `.`, `-`, `*`, or `#` — a secret numeric code is just digits, and
     /// extra symbols would only invite mistakes.
     pub fn pin() -> Self {
-        Self::digit_pad("pin", vec![Key::action("⌫", KeyAction::Backspace, 1.0), Key::ch("0"), Key::action("⏎", KeyAction::Enter, 1.0)])
+        Self::digit_pad("pin", vec![Key::action("⌫", KeyAction::Backspace, 1.0).with_icon(Icon::Delete), Key::ch("0"), Key::action("⏎", KeyAction::Enter, 1.0).with_icon(Icon::CornerDownLeft)])
     }
 
     /// Build a numeric pad: three rows of `1-9`, a custom bottom row, and a
@@ -293,14 +312,14 @@ impl KeyboardLayout {
             vec![
                 {
                     let mut r = "123".chars().map(Key::ch_char).collect::<Vec<_>>();
-                    r.push(Key::action("⌫", KeyAction::Backspace, 1.0));
+                    r.push(Key::action("⌫", KeyAction::Backspace, 1.0).with_icon(Icon::Delete));
                     r
                 },
                 "456".chars().map(Key::ch_char).collect::<Vec<_>>(),
                 "789".chars().map(Key::ch_char).collect::<Vec<_>>(),
                 {
                     let mut r = bottom;
-                    r.push(Key::action("⏎", KeyAction::Enter, 1.0));
+                    r.push(Key::action("⏎", KeyAction::Enter, 1.0).with_icon(Icon::CornerDownLeft));
                     r
                 },
             ]
@@ -324,7 +343,7 @@ impl KeyboardLayout {
                 Key::ch("."),
                 Key::action("space", KeyAction::Space, 3.5),
                 Key::ch(".com").with_width(1.5),
-                Key::action("⏎", KeyAction::Enter, 1.5),
+                Key::action("⏎", KeyAction::Enter, 1.5).with_icon(Icon::CornerDownLeft),
             ],
         )
     }
@@ -344,7 +363,7 @@ impl KeyboardLayout {
                 // but is labelled "no space" to discourage the habit.
                 Key::action("no space", KeyAction::Space, 3.5),
                 Key::ch(".com").with_width(1.5),
-                Key::action("⏎", KeyAction::Enter, 1.5),
+                Key::action("⏎", KeyAction::Enter, 1.5).with_icon(Icon::CornerDownLeft),
             ],
         )
     }
@@ -357,9 +376,9 @@ impl KeyboardLayout {
         let mut rows: Vec<Vec<Key>> = Vec::new();
         rows.push(letters[0].chars().map(Key::letter).collect());
         rows.push(letters[1].chars().map(Key::letter).collect());
-        let mut r3 = vec![Key::action("⇧", KeyAction::Shift, 1.5)];
+        let mut r3 = vec![Key::action("⇧", KeyAction::Shift, 1.5).with_icon(Icon::ArrowBigUp)];
         r3.extend(letters[2].chars().map(Key::letter));
-        r3.push(Key::action("⌫", KeyAction::Backspace, 1.5));
+        r3.push(Key::action("⌫", KeyAction::Backspace, 1.5).with_icon(Icon::Delete));
         rows.push(r3);
         rows.push(bottom);
         Self {
@@ -377,7 +396,7 @@ impl KeyboardLayout {
             {
                 let mut r = vec![Key::action("=\\<", KeyAction::SymbolsToggle, 1.5)];
                 r.extend("*\"':;!?".chars().map(Key::letter));
-                r.push(Key::action("⌫", KeyAction::Backspace, 1.5));
+                r.push(Key::action("⌫", KeyAction::Backspace, 1.5).with_icon(Icon::Delete));
                 r
             },
             vec![
@@ -385,7 +404,7 @@ impl KeyboardLayout {
                 Key::ch(","),
                 Key::action("space", KeyAction::Space, 5.0),
                 Key::ch("."),
-                Key::action("⏎", KeyAction::Enter, 1.5),
+                Key::action("⏎", KeyAction::Enter, 1.5).with_icon(Icon::CornerDownLeft),
             ],
         ];
         Self {
@@ -737,6 +756,58 @@ mod tests {
     fn by_name_rejects_unknown() {
         assert!(KeyboardLayout::by_name("dvorak").is_none());
         assert_eq!(KeyboardLayout::by_name("phone").unwrap().name, "phone");
+    }
+
+    /// The ⇧ / ⌫ / ⏎ action keys must carry a vector icon on every layout
+    /// that exposes them — their Unicode symbols have no glyph in the shipped
+    /// UI font and would render as `.notdef` boxes otherwise. This asserts the
+    /// production layout data (what the widget draws), not a helper.
+    #[test]
+    fn modifier_and_edit_keys_carry_icons() {
+        fn icon_for_action(l: &KeyboardLayout, action: &KeyAction) -> Option<Icon> {
+            l.rows
+                .iter()
+                .flatten()
+                .find(|k| &k.action == action)
+                .and_then(|k| k.icon)
+        }
+        // Every layout that has Shift/Backspace/Enter must icon it.
+        for l in [
+            KeyboardLayout::qwerty(),
+            KeyboardLayout::azerty(),
+            KeyboardLayout::email(),
+            KeyboardLayout::url(),
+            KeyboardLayout::symbols(),
+            KeyboardLayout::numeric(),
+            KeyboardLayout::decimal(),
+            KeyboardLayout::phone(),
+            KeyboardLayout::pin(),
+        ] {
+            if has_action(&l, &KeyAction::Shift) {
+                assert_eq!(
+                    icon_for_action(&l, &KeyAction::Shift),
+                    Some(Icon::ArrowBigUp),
+                    "{} shift key needs an icon",
+                    l.name
+                );
+            }
+            if has_action(&l, &KeyAction::Backspace) {
+                assert_eq!(
+                    icon_for_action(&l, &KeyAction::Backspace),
+                    Some(Icon::Delete),
+                    "{} backspace key needs an icon",
+                    l.name
+                );
+            }
+            if has_action(&l, &KeyAction::Enter) {
+                assert_eq!(
+                    icon_for_action(&l, &KeyAction::Enter),
+                    Some(Icon::CornerDownLeft),
+                    "{} enter key needs an icon",
+                    l.name
+                );
+            }
+        }
     }
 
     #[test]
