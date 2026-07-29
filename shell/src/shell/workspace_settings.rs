@@ -1667,12 +1667,12 @@ fn listed_capabilities(ws: &Workspace) -> Vec<(GrantSubject, &CapOverride)> {
     out
 }
 
-/// Lay out the Permissions pane against `pane_rect` for `draft`.
-pub fn permissions_pane_layout(
-    ws: &Workspace,
-    pane_rect: Rect,
-    draft: &GrantDraft,
-) -> PermissionsPaneLayout {
+/// Lay out the Permissions pane against `pane_rect`.
+///
+/// The geometry does not depend on the draft — which subject or expiry
+/// is selected changes what the controls *say*, never where they are —
+/// so the click router can resolve a point without knowing the draft.
+pub fn permissions_pane_layout(ws: &Workspace, pane_rect: Rect) -> PermissionsPaneLayout {
     let mut layout = PermissionsPaneLayout::default();
     if pane_rect.width() <= 0.0 || pane_rect.height() <= 0.0 {
         return layout;
@@ -1785,7 +1785,7 @@ pub fn draw_permissions_pane(
     }
     let tokens = &theme.tokens;
     let colors = &tokens.colors;
-    let layout = permissions_pane_layout(ws, pane_rect, draft);
+    let layout = permissions_pane_layout(ws, pane_rect);
 
     // ---- Composer -------------------------------------------------
     draw_section_header(
@@ -2129,7 +2129,7 @@ mod tab_tests {
         assert!(!ws.has_app_grants());
         assert!(WsTab::all().contains(&WsTab::Permissions));
         let pane = Rect::new(0.0, 0.0, 640.0, 480.0);
-        let layout = permissions_pane_layout(&ws, pane, &GrantDraft::default());
+        let layout = permissions_pane_layout(&ws, pane);
         assert!(
             layout.choice_rect.area() > 0.0,
             "the capability picker must be laid out even with zero grants"
@@ -2487,7 +2487,7 @@ mod permissions_pane_tests {
     #[test]
     fn rows_are_one_per_granted_capability() {
         let ws = ws_with_grants();
-        let layout = permissions_pane_layout(&ws, pane(), &GrantDraft::default());
+        let layout = permissions_pane_layout(&ws, pane());
         assert_eq!(layout.rows.len(), 2);
         for row in &layout.rows {
             assert_eq!(row.subject.kind, SubjectKind::App);
@@ -2506,7 +2506,7 @@ mod permissions_pane_tests {
         // Members tab renders as a role. Listing it here too would show
         // one fact twice in two vocabularies.
         let ws = ws_with_grants();
-        let layout = permissions_pane_layout(&ws, pane(), &GrantDraft::default());
+        let layout = permissions_pane_layout(&ws, pane());
         assert!(
             layout
                 .rows
@@ -2539,7 +2539,7 @@ mod permissions_pane_tests {
             ),
         )
         .expect("owner grants");
-        let layout = permissions_pane_layout(&ws, pane(), &GrantDraft::default());
+        let layout = permissions_pane_layout(&ws, pane());
         let kinds: Vec<SubjectKind> = layout.rows.iter().map(|r| r.subject.kind).collect();
         assert!(kinds.contains(&SubjectKind::App));
         assert!(kinds.contains(&SubjectKind::Member));
@@ -2564,7 +2564,7 @@ mod permissions_pane_tests {
             .expiring(Expiry::EndOfSession),
         )
         .expect("owner grants");
-        let layout = permissions_pane_layout(&ws, pane(), &GrantDraft::default());
+        let layout = permissions_pane_layout(&ws, pane());
         let row = &layout.rows[0];
         assert_eq!(row.allows, "Edit · files under /var/workspace");
         assert_eq!(row.expiry, "Session");
@@ -2672,7 +2672,7 @@ mod permissions_pane_tests {
     #[test]
     fn revoking_a_row_stops_the_capability_working() {
         let mut ws = ws_with_grants();
-        let layout = permissions_pane_layout(&ws, pane(), &GrantDraft::default());
+        let layout = permissions_pane_layout(&ws, pane());
         let camera_row = layout
             .rows
             .iter()
@@ -2689,19 +2689,19 @@ mod permissions_pane_tests {
             "the revoked capability must stop working, not merely stop rendering"
         );
         // The other grant survives.
-        let after = permissions_pane_layout(&ws, pane(), &GrantDraft::default());
+        let after = permissions_pane_layout(&ws, pane());
         assert_eq!(after.rows.len(), 1);
     }
 
     #[test]
     fn a_non_owner_cannot_revoke() {
         let mut ws = ws_with_grants();
-        let layout = permissions_pane_layout(&ws, pane(), &GrantDraft::default());
+        let layout = permissions_pane_layout(&ws, pane());
         let target = layout.rows[0].cap_id.clone();
         let edit = apply_revoke(&mut ws, &"someone-else".to_string(), &target);
         assert!(edit.is_empty());
         assert_eq!(
-            permissions_pane_layout(&ws, pane(), &GrantDraft::default())
+            permissions_pane_layout(&ws, pane())
                 .rows
                 .len(),
             2
@@ -2839,7 +2839,7 @@ mod permissions_pane_tests {
             .expect("owner grants");
         }
         let short_pane = Rect::new(0.0, 0.0, 660.0, 300.0);
-        let layout = permissions_pane_layout(&ws, short_pane, &GrantDraft::default());
+        let layout = permissions_pane_layout(&ws, short_pane);
         assert!(layout.rows.len() < 12);
         assert_eq!(layout.rows.len() + layout.overflow, 12);
         for row in &layout.rows {
@@ -2853,7 +2853,7 @@ mod permissions_pane_tests {
     #[test]
     fn expiry_segments_are_laid_out_in_picker_order_without_overlap() {
         let ws = ws_with_grants();
-        let layout = permissions_pane_layout(&ws, pane(), &GrantDraft::default());
+        let layout = permissions_pane_layout(&ws, pane());
         for i in 1..3 {
             assert!(layout.expiry_rects[i].x0 >= layout.expiry_rects[i - 1].x1 - f64::EPSILON);
         }
