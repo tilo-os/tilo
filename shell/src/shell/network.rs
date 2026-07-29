@@ -989,7 +989,22 @@ mod tests {
             "the guest's workspace now addresses the inviter's room",
         );
 
-        // And the catch-up went out, naming that room and no other.
+        // Two commands, in this order: dial the address the token named,
+        // then ask that room for a catch-up. The dial is what makes the
+        // address in an invite mean anything — mdns finds peers on a
+        // LAN, but a guest handed directions should not have to wait for
+        // discovery to find the host it was pointed at.
+        let dial = cmd_rx
+            .try_recv()
+            .expect("accepting an invite must dial the address it named");
+        match dial {
+            NetCmd::Connect { addr } => assert_eq!(
+                addr.to_string(),
+                "/ip4/127.0.0.1/tcp/4001",
+                "the dial must go to the address inside the token",
+            ),
+            other => panic!("expected NetCmd::Connect, got {other:?}"),
+        }
         let cmd = cmd_rx
             .try_recv()
             .expect("accepting an invite must ask the room for a catch-up");
