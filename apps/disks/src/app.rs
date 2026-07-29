@@ -199,8 +199,15 @@ impl ActionKind {
             ActionKind::Eject => format!("Eject {target}?"),
         }
     }
-    fn confirm_body(&self, target: &str) -> String {
+    fn confirm_body(&self, target: &str, live: bool) -> String {
         match self {
+            // In the live binary Format really erases the device; only the
+            // hermetic demo/--shots build is a no-op, so the "nothing is
+            // written" reassurance must never appear when we can actually
+            // destroy data.
+            ActionKind::Format if live => format!(
+                "Formatting erases ALL data on {target}. This cannot be undone."
+            ),
             ActionKind::Format => format!(
                 "Formatting erases ALL data on {target}. This cannot be undone. \
                  (Demo build — no changes are written to disk.)"
@@ -1276,7 +1283,7 @@ impl DisksApp {
         let danger = pending.action.destructive();
         let title_c = if danger { c.semantic.danger } else { c.text_primary };
         self.txt(scene, tr, &pending.action.confirm_title(&target), 19.0, title_c, card.x0 + 22.0, card.y0 + 22.0, None, TextWeight::Bold);
-        self.txt(scene, tr, &pending.action.confirm_body(&target), 13.0, c.text_dim, card.x0 + 22.0, card.y0 + 54.0, Some((card.width() - 44.0) as f32), TextWeight::Regular);
+        self.txt(scene, tr, &pending.action.confirm_body(&target, self.live), 13.0, c.text_dim, card.x0 + 22.0, card.y0 + 54.0, Some((card.width() - 44.0) as f32), TextWeight::Regular);
 
         // Type-to-confirm gate: the user must type the device name exactly.
         let expected = self.pending_target_leaf(pending);
@@ -2585,6 +2592,27 @@ mod tests {
         assert_eq!(DisksDoc::pending(&h.doc), "format:0:2");
         // The modal is now part of the layout and blocks the app.
         assert!(h.lay().modal.is_some());
+    }
+
+    #[test]
+    fn format_confirm_body_is_honest_about_live_vs_demo() {
+        // The reassurance that nothing is written must appear ONLY in the
+        // hermetic demo/--shots build. In the live binary Format really
+        // erases the device, so the confirm must never claim it is inert.
+        let demo = ActionKind::Format.confirm_body("/dev/sdz1", false);
+        assert!(
+            demo.contains("no changes are written to disk"),
+            "the demo build reassures the reader it is inert: {demo}"
+        );
+        let live = ActionKind::Format.confirm_body("/dev/sdz1", true);
+        assert!(
+            !live.contains("no changes are written to disk"),
+            "the live build must not claim the format is inert: {live}"
+        );
+        assert!(
+            live.contains("erases ALL data") && live.contains("cannot be undone"),
+            "the live build still warns the format is destructive: {live}"
+        );
     }
 
     #[test]

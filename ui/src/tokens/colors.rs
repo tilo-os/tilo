@@ -200,6 +200,7 @@ mod tests {
     //! `cargo test -p quick-ui --lib tokens`.
     use crate::color_compat::ColorCompat;
     use super::*;
+    use crate::color_compat::ColorCompat;
 
     fn rgb(c: Color) -> [u8; 3] {
         // peniko 0.1.x exposes straight (non-premultiplied) u8

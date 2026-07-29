@@ -874,13 +874,19 @@ impl GitClientApp {
         // seg; the click handler flips the layout.
         self.settings_seg = seg;
 
-        // Syntax-highlight pill toggle.
+        // Syntax-highlight pill toggle. Labelled with the universal `</>`
+        // code glyph rather than a cryptic word-fragment, centred in the pill.
         let hx = seg.x1 + 10.0;
-        let hl = Rect::new(hx, y, hx + 50.0, y + 32.0);
+        let hl = Rect::new(hx, y, hx + 46.0, y + 32.0);
         let on = self.settings.syntax_highlight;
         draw::fill_round(scene, t, hl, 9.0, if on { theme.accent_primary } else { c.surfaces.base });
         let hlfg = if on { Color::WHITE } else { c.text_dim };
-        draw::text_weighted(scene, tr, t, "Syn", 12.0, hlfg, hx + 13.0, y + 8.0, None, TextWeight::Medium);
+        let glyph = "</>";
+        let gw = tr.measure_weighted(glyph, 12.5, None, TextWeight::Medium).0 as f64;
+        draw::text_weighted(
+            scene, tr, t, glyph, 12.5, hlfg,
+            hl.x0 + (hl.width() - gw) / 2.0, y + 8.0, None, TextWeight::Medium,
+        );
         self.settings_syn = hl;
     }
 

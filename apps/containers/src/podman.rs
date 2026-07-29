@@ -6,10 +6,12 @@
 //! native rootless install or a `podman machine` connection — both expose
 //! the same CLI.
 //!
-//! When no engine is reachable (headless `--shots`, CI, or a host without
-//! podman installed) every read falls back to [`crate::model::sample_engine`]
-//! so the UI always has something coherent to render, and lifecycle actions
-//! become no-ops rather than errors.
+//! When no engine is reachable (CI, or a host without podman installed) the
+//! live read returns an honest *empty* snapshot flagged `live = false`, and
+//! lifecycle actions become no-ops rather than errors — the UI renders a real
+//! "no engine" zero-state, never fabricated containers. The bundled
+//! [`crate::model::sample_engine`] is reserved for the headless `--shots`
+//! renderer alone.
 
 use std::io::{BufRead, BufReader};
 use std::process::{Command, Stdio};
@@ -81,12 +83,21 @@ pub fn engine_available() -> bool {
         .unwrap_or(false)
 }
 
-/// Collect a full snapshot from the live engine, or the bundled sample when
-/// none is reachable. Never returns an error — the worst case is sample data.
+/// Collect a full snapshot from the live engine, or an honest empty snapshot
+/// when none is reachable. Never returns an error, and never fabricates
+/// containers: an unreachable engine yields an empty [`Engine`] flagged
+/// `live = false` so the UI renders a real "no engine" zero-state rather than
+/// bundled sample data (which belongs only to `--shots`).
 pub fn probe() -> Probe {
     match probe_live() {
         Some(engine) => Probe { engine },
-        None => Probe { engine: crate::model::sample_engine() },
+        None => Probe {
+            engine: Engine {
+                connection: "No container engine — is podman installed?".into(),
+                live: false,
+                ..Engine::default()
+            },
+        },
     }
 }
 
