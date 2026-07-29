@@ -1,10 +1,10 @@
-//! Live-looking throughput model + dual sparkline renderer.
+//! Dual sparkline renderer for REAL throughput.
 //!
-//! The rate series are generated deterministically from a time phase so
-//! the chart is fully populated on a single offscreen frame (`--shots`)
-//! yet animates smoothly in the live loop. Nothing here touches the
-//! network — it shapes a believable waveform around each connection's
-//! baseline rate.
+//! This module only *plots* rate series it is handed; it never generates
+//! them. The series come from real, measured kernel byte counters
+//! (`wg show <iface> transfer` / `/sys/class/net/<iface>/statistics/`),
+//! differenced over time in [`crate::app`]. Nothing here fabricates a
+//! waveform — an empty slice draws an empty (honest) chart.
 
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Line, Point, Rect, RoundedRect, Stroke};
@@ -12,51 +12,8 @@ use vello::peniko::{Color, Fill};
 
 use crate::model::human_rate;
 
-/// Number of points plotted across the chart.
+/// Maximum number of measured points retained / plotted across the chart.
 pub const SAMPLES: usize = 56;
-/// Seconds between samples (controls horizontal time window).
-const DT: f64 = 0.25;
-
-/// Generates a believable transfer-rate series in **bytes/sec**.
-#[derive(Clone, Copy, Debug)]
-pub struct ThroughputModel {
-    /// Per-direction salt so up/down don't move in lockstep.
-    salt: f64,
-}
-
-impl ThroughputModel {
-    pub fn new(salt: f64) -> Self {
-        Self { salt }
-    }
-
-    /// Smooth pseudo-random scalar in roughly `[0,1]` for a continuous time.
-    fn wave(&self, t: f64) -> f64 {
-        let s = self.salt;
-        let base = 0.5
-            + 0.26 * (t * 0.9 + s).sin()
-            + 0.14 * (t * 2.3 + s * 2.0).sin()
-            + 0.08 * (t * 5.1 + s * 0.7).sin();
-        base.clamp(0.04, 1.0)
-    }
-
-    /// The full series ending "now". `base_mbps` is the mean rate; the
-    /// returned values are bytes/sec. `now_secs` lets the window scroll.
-    pub fn series(&self, base_mbps: f64, now_secs: f64) -> Vec<f64> {
-        let base_bps = base_mbps * 1024.0 * 1024.0;
-        (0..SAMPLES)
-            .map(|i| {
-                let age = (SAMPLES - 1 - i) as f64 * DT;
-                let t = now_secs - age;
-                base_bps * self.wave(t)
-            })
-            .collect()
-    }
-
-    /// The current (most-recent) rate in bytes/sec.
-    pub fn current(&self, base_mbps: f64, now_secs: f64) -> f64 {
-        base_mbps * 1024.0 * 1024.0 * self.wave(now_secs)
-    }
-}
 
 /// Draw a dual-series area sparkline (download + upload) inside `rect`.
 ///
@@ -177,20 +134,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn series_is_populated_and_bounded() {
-        let m = ThroughputModel::new(1.0);
-        let s = m.series(6.4, 12.0);
-        assert_eq!(s.len(), SAMPLES);
-        // All non-negative, and the mean is within a believable band of base.
-        let base_bps = 6.4 * 1024.0 * 1024.0;
-        let mean: f64 = s.iter().sum::<f64>() / s.len() as f64;
-        assert!(s.iter().all(|&v| v >= 0.0));
-        assert!(mean > base_bps * 0.2 && mean < base_bps * 1.2, "mean={mean}");
+    fn rate_label_formats_bytes_per_sec() {
+        assert_eq!(rate_label(6_710_886.0), "6.4 MB/s");
+        assert_eq!(rate_label(0.0), "0.0 B/s");
     }
 
     #[test]
-    fn current_is_deterministic_for_same_time() {
-        let m = ThroughputModel::new(2.0);
-        assert_eq!(m.current(3.0, 5.0), m.current(3.0, 5.0));
+    fn empty_series_plots_without_panicking() {
+        // An empty measured series must render a blank chart, never a curve.
+        let mut scene = Scene::new();
+        // A trivial theme suffices; draw_chart reads only tokens/colors.
+        let theme = crate::Theme::default();
+        let rect = Rect::new(0.0, 0.0, 200.0, 100.0);
+        draw_chart(&mut scene, Affine::IDENTITY, rect, &theme, &[], &[], false);
     }
 }

@@ -40,50 +40,113 @@ pub struct LockView<'a> {
     pub date: &'a str,
     /// Active notification count (count-only — never content).
     pub notification_count: usize,
+    /// A credential verification is running on the worker thread
+    /// ([`crate::compositor::lock_controller::LockController::is_verifying`]).
+    /// Renders a "Verifying…" state and suppresses the empty-field
+    /// placeholder so the screen reads as "checking", not "type here".
+    pub verifying: bool,
 }
 
-/// Build the lock-screen scene at `viewport` size, themed via `theme`,
-/// using `text` for the glyph-shaped labels, from the live [`LockView`].
+/// One output the lock overlay must cover, in the compositor's combined
+/// coordinate space. The overlay draws its interactive widget (padlock,
+/// clock, password field) **centred within each output's rectangle**, so a
+/// two-monitor setup shows a usable lock on every screen rather than one
+/// widget stranded across the bezel. For a single output at the origin this
+/// is exactly the old single-viewport behaviour.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LockOutput {
+    /// Top-left of this output in the combined space.
+    pub origin: (f64, f64),
+    /// Output size in pixels.
+    pub size: (f64, f64),
+}
+
+impl LockOutput {
+    /// The centre point of this output, where its lock widget is anchored.
+    pub fn center(&self) -> (f64, f64) {
+        (
+            self.origin.0 + self.size.0 / 2.0,
+            self.origin.1 + self.size.1 / 2.0,
+        )
+    }
+}
+
+/// Bounding box `(w, h)` covering every output, i.e. the size of the single
+/// scene the compositor paints. `(0, 0)` for an empty list.
+fn combined_extent(outputs: &[LockOutput]) -> (f64, f64) {
+    let mut w = 0.0_f64;
+    let mut h = 0.0_f64;
+    for o in outputs {
+        w = w.max(o.origin.0 + o.size.0);
+        h = h.max(o.origin.1 + o.size.1);
+    }
+    (w.max(0.0), h.max(0.0))
+}
+
+/// Build the lock-screen scene spanning every output in `outputs`, themed via
+/// `theme`, using `text` for the glyph-shaped labels, from the live
+/// [`LockView`].
 ///
-/// The overlay is fully opaque and fills the viewport, so app/chrome content
-/// is hidden behind it. `view.notification_count`, when non-zero, shows
-/// "N notifications" so the user knows something arrived **without** leaking
-/// any app name, summary, or body (lock-suppression — bodies are never
-/// rendered here).
+/// The overlay is fully opaque and fills the **combined** geometry of all
+/// outputs, so app/chrome content is hidden behind it on every screen — each
+/// output presents its own sub-rect of this one scene (see
+/// [`crate::compositor::backend::combined_geometry`]). The interactive widget
+/// (clock, padlock, password field) is drawn **once per output, centred on
+/// that output**, so a multi-monitor session shows a usable lock on each
+/// screen rather than one widget stranded across the seam. A single output at
+/// the origin yields exactly the previous single-viewport layout.
+///
+/// `view.notification_count`, when non-zero, shows "N notifications" so the
+/// user knows something arrived **without** leaking any app name, summary, or
+/// body (lock-suppression — bodies are never rendered here).
 ///
 /// Returns a fresh [`Scene`] the backend can submit exactly like a chrome
 /// frame — no special-casing downstream.
 pub fn draw_lock_scene(
-    viewport: (f64, f64),
+    outputs: &[LockOutput],
     theme: &Theme,
     text: &mut TextRenderer,
     view: &LockView<'_>,
 ) -> Scene {
     let mut scene = Scene::new();
-    let (w, h) = viewport;
 
-    // 1. Opaque backdrop covering the whole output — hides everything
-    //    behind it. Use the app background so the lock screen reads as
-    //    part of the same desktop.
-    let backdrop = Rect::new(0.0, 0.0, w, h);
-    scene.fill(
-        Fill::NonZero,
-        Affine::IDENTITY,
-        theme.bg_app,
-        None,
-        &backdrop,
-    );
+    // 1. Opaque backdrop covering the combined geometry of every output —
+    //    hides everything behind it on all screens. Use the app background so
+    //    the lock screen reads as part of the same desktop. Painting the full
+    //    bounding box (not just per-output rects) guarantees no gap between
+    //    outputs ever shows app content.
+    let (ext_w, ext_h) = combined_extent(outputs);
+    if ext_w > 0.0 && ext_h > 0.0 {
+        let backdrop = Rect::new(0.0, 0.0, ext_w, ext_h);
+        scene.fill(Fill::NonZero, Affine::IDENTITY, theme.bg_app, None, &backdrop);
+    }
 
-    let cx = w / 2.0;
-    let cy = h / 2.0;
+    // 2. One interactive lock widget per output, centred on that output.
+    for output in outputs {
+        draw_lock_widget(&mut scene, output.center(), theme, text, view);
+    }
 
+    scene
+}
+
+/// Draw the interactive lock widget — clock, padlock glyph, masked password
+/// field, status line, and the count-only notification summary — centred at
+/// `(cx, cy)`. Factored out of [`draw_lock_scene`] so it can be stamped once
+/// per output; it draws no backdrop of its own.
+fn draw_lock_widget(
+    scene: &mut Scene,
+    (cx, cy): (f64, f64),
+    theme: &Theme,
+    text: &mut TextRenderer,
+    view: &LockView<'_>,
+) {
     // 2. Clock + date, centred in the upper third — the ambient info a
     //    lock screen shows before you authenticate.
     if !view.clock.is_empty() {
         let clock_size = 64.0_f32;
         let (cw, _) = text.measure(view.clock, clock_size, None);
         text.draw_text(
-            &mut scene,
+            scene,
             view.clock,
             clock_size,
             theme.text_primary,
@@ -95,7 +158,7 @@ pub fn draw_lock_scene(
         let date_size = 18.0_f32;
         let (dw, _) = text.measure(view.date, date_size, None);
         text.draw_text(
-            &mut scene,
+            scene,
             view.date,
             date_size,
             theme.text_dim,
@@ -147,7 +210,7 @@ pub fn draw_lock_scene(
     let (tw, _) = text.measure(title, title_size, None);
     let title_y = body_y + bh + 30.0;
     text.draw_text(
-        &mut scene,
+        scene,
         title,
         title_size,
         theme.text_primary,
@@ -178,13 +241,17 @@ pub fn draw_lock_scene(
         None,
         &field,
     );
-    if view.password_len == 0 {
+    if view.verifying {
+        // Verifying: the buffer has been handed to the worker, so the field
+        // shows no dots and no placeholder — the status line below reads
+        // "Verifying…".
+    } else if view.password_len == 0 {
         // Placeholder prompt when empty.
         let ph = "Enter password";
         let ph_size = 15.0_f32;
         let (pw, ph_h) = text.measure(ph, ph_size, None);
         text.draw_text(
-            &mut scene,
+            scene,
             ph,
             ph_size,
             theme.text_dim,
@@ -215,13 +282,26 @@ pub fn draw_lock_scene(
         }
     }
 
-    // 8. Error line (danger colour) or the neutral hint under the field.
+    // 8. Status line under the field: "Verifying…" while a check runs, else
+    //    the last error (danger colour), else the neutral hint.
     let line_y = field_y + field_h + 26.0;
-    if let Some(err) = view.error {
+    if view.verifying {
+        let verifying = "Verifying…";
+        let v_size = 14.0_f32;
+        let (vw, _) = text.measure(verifying, v_size, None);
+        text.draw_text(
+            scene,
+            verifying,
+            v_size,
+            theme.text_dim,
+            Affine::translate((cx - vw as f64 / 2.0, line_y)),
+            None,
+        );
+    } else if let Some(err) = view.error {
         let err_size = 14.0_f32;
         let (ew, _) = text.measure(err, err_size, None);
         text.draw_text(
-            &mut scene,
+            scene,
             err,
             err_size,
             theme.tokens.colors.semantic.danger,
@@ -233,7 +313,7 @@ pub fn draw_lock_scene(
         let hint_size = 13.0_f32;
         let (hw, _) = text.measure(hint, hint_size, None);
         text.draw_text(
-            &mut scene,
+            scene,
             hint,
             hint_size,
             theme.text_dim,
@@ -249,7 +329,7 @@ pub fn draw_lock_scene(
         let label_size = 14.0_f32;
         let (lw, _) = text.measure(&label, label_size, None);
         text.draw_text(
-            &mut scene,
+            scene,
             &label,
             label_size,
             theme.text_dim,
@@ -257,8 +337,6 @@ pub fn draw_lock_scene(
             None,
         );
     }
-
-    scene
 }
 
 /// Lock-screen count label: "N notifications" (or empty for zero). Kept
@@ -280,6 +358,15 @@ mod tests {
         }
     }
 
+    /// A single output at the origin of size `w`x`h` — the winit / headless
+    /// (and single-monitor DRM) case.
+    fn single(w: f64, h: f64) -> [LockOutput; 1] {
+        [LockOutput {
+            origin: (0.0, 0.0),
+            size: (w, h),
+        }]
+    }
+
     /// The lock scene must encode *something* (backdrop + glyph + text).
     /// A blank scene would mean the overlay never paints and app content
     /// would leak through — the whole point of the lock is defeated.
@@ -287,7 +374,7 @@ mod tests {
     fn lock_scene_is_non_empty() {
         let theme = Theme::dark();
         let mut text = TextRenderer::new();
-        let scene = draw_lock_scene((1600.0, 900.0), &theme, &mut text, &view());
+        let scene = draw_lock_scene(&single(1600.0, 900.0), &theme, &mut text, &view());
         assert!(
             !scene.encoding().is_empty(),
             "lock overlay must produce a non-empty scene so it hides app content"
@@ -304,7 +391,17 @@ mod tests {
             notification_count: 3,
             ..view()
         };
-        let _ = draw_lock_scene((1.0, 1.0), &theme, &mut text, &v);
+        let _ = draw_lock_scene(&single(1.0, 1.0), &theme, &mut text, &v);
+    }
+
+    /// An empty output list must not panic and produces an empty scene
+    /// (the caller falls back to a default viewport before this is hit).
+    #[test]
+    fn lock_scene_with_no_outputs_is_empty_not_a_panic() {
+        let theme = Theme::dark();
+        let mut text = TextRenderer::new();
+        let scene = draw_lock_scene(&[], &theme, &mut text, &view());
+        assert!(scene.encoding().is_empty());
     }
 
     /// The password field renders both empty (placeholder) and populated
@@ -319,7 +416,7 @@ mod tests {
                 password_len: len,
                 ..view()
             };
-            let scene = draw_lock_scene((1600.0, 900.0), &theme, &mut text, &v);
+            let scene = draw_lock_scene(&single(1600.0, 900.0), &theme, &mut text, &v);
             assert!(!scene.encoding().is_empty());
         }
     }
@@ -334,7 +431,20 @@ mod tests {
             error: Some("Incorrect username or password"),
             ..view()
         };
-        let scene = draw_lock_scene((1600.0, 900.0), &theme, &mut text, &v);
+        let scene = draw_lock_scene(&single(1600.0, 900.0), &theme, &mut text, &v);
+        assert!(!scene.encoding().is_empty());
+    }
+
+    /// The "Verifying…" state paints without panicking.
+    #[test]
+    fn lock_scene_renders_verifying_state() {
+        let theme = Theme::dark();
+        let mut text = TextRenderer::new();
+        let v = LockView {
+            verifying: true,
+            ..view()
+        };
+        let scene = draw_lock_scene(&single(1600.0, 900.0), &theme, &mut text, &v);
         assert!(!scene.encoding().is_empty());
     }
 
@@ -357,7 +467,75 @@ mod tests {
             notification_count: 5,
             ..view()
         };
-        let scene = draw_lock_scene((1600.0, 900.0), &theme, &mut text, &v);
+        let scene = draw_lock_scene(&single(1600.0, 900.0), &theme, &mut text, &v);
         assert!(!scene.encoding().is_empty());
+    }
+
+    // ---- multi-output ---------------------------------------------------
+
+    /// Each output's widget is anchored at that output's centre. A second
+    /// monitor at `(1920, 0)` centres its widget at `(2560, 512)`, not at the
+    /// combined-space centre — so the lock is usable on every screen instead
+    /// of being stranded across the bezel.
+    #[test]
+    fn output_center_is_the_middle_of_each_output() {
+        let primary = LockOutput {
+            origin: (0.0, 0.0),
+            size: (1920.0, 1080.0),
+        };
+        assert_eq!(primary.center(), (960.0, 540.0));
+        let secondary = LockOutput {
+            origin: (1920.0, 0.0),
+            size: (1280.0, 1024.0),
+        };
+        assert_eq!(secondary.center(), (2560.0, 512.0));
+    }
+
+    /// The backdrop spans the bounding box of every output, so no gap between
+    /// screens can ever show app content.
+    #[test]
+    fn combined_extent_covers_all_outputs() {
+        let outs = [
+            LockOutput {
+                origin: (0.0, 0.0),
+                size: (1920.0, 1080.0),
+            },
+            LockOutput {
+                origin: (1920.0, 0.0),
+                size: (1280.0, 1024.0),
+            },
+        ];
+        assert_eq!(combined_extent(&outs), (3200.0, 1080.0));
+        assert_eq!(combined_extent(&single(1600.0, 900.0)), (1600.0, 900.0));
+        assert_eq!(combined_extent(&[]), (0.0, 0.0));
+    }
+
+    /// Two outputs must stamp a widget on **each** — proven by strictly more
+    /// draw operations than the single-output scene (a per-output widget adds
+    /// its glyphs + shapes on top of the shared backdrop).
+    #[test]
+    fn multi_output_draws_a_widget_per_output() {
+        let theme = Theme::dark();
+        let mut text = TextRenderer::new();
+
+        let one = draw_lock_scene(&single(1920.0, 1080.0), &theme, &mut text, &view());
+        let two_outs = [
+            LockOutput {
+                origin: (0.0, 0.0),
+                size: (1920.0, 1080.0),
+            },
+            LockOutput {
+                origin: (1920.0, 0.0),
+                size: (1920.0, 1080.0),
+            },
+        ];
+        let two = draw_lock_scene(&two_outs, &theme, &mut text, &view());
+
+        let one_ops = one.encoding().draw_tags.len();
+        let two_ops = two.encoding().draw_tags.len();
+        assert!(
+            two_ops > one_ops,
+            "two outputs must draw more than one (per-output widget): {two_ops} vs {one_ops}"
+        );
     }
 }

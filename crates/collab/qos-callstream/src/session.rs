@@ -1,0 +1,283 @@
+//! The clean send/receive seam over the streaming stack.
+//!
+//! [`VideoStreamSender`] composes the [`crate::throttle::StreamingThrottle`]
+//! + [`crate::encoder::H264Encoder`] and emits [`crate::stream::SurfaceFrame`]
+//! bytes (sequence + keyframe flag) ready to hand to any byte transport.
+//! [`VideoStreamReceiver`] composes a [`crate::stream::SurfaceStreamReceiver`]
+//! framer + [`crate::decoder::H264Decoder`] and turns wire bytes back into
+//! [`crate::decoder::DecodedFrame`]s for a call tile.
+//!
+//! This is the exact composition the compositor's
+//! `collab::flatpak_share::SharedFlatpakSession` performs for a shared
+//! Wayland surface (throttle → collab encoder → `SurfaceStreamSender`
+//! frame; and on the peer, `SurfaceStreamReceiver` → decoder → paint).
+//! The chat call app drives these directly: it captures a
+//! portal-selected ScreenCast source into RGBA and feeds it to a
+//! [`VideoStreamSender`], and decodes the frames a remote peer sent
+//! through a [`VideoStreamReceiver`] into its featured call tile — reusing
+//! the same encode/transport/decode code instead of a second codec.
+
+use std::time::Instant;
+
+use crate::decoder::{DecodedFrame, H264Decoder};
+use crate::encoder::{EncodeError, H264Encoder};
+use crate::stream::{ReceiverEvent, SurfaceFrame, SurfaceStreamReceiver};
+use crate::throttle::StreamingThrottle;
+
+/// Scan `nalus` for an H.264 IDR NAL unit — `nal_unit_type == 5`.
+///
+/// Walks Annex-B start-codes (`00 00 01` or `00 00 00 01`) and reads the
+/// following byte's low 5 bits. Returns `false` for a byte stream without
+/// a start-code — safer to treat "unknown" as non-keyframe so a
+/// late-joining viewer waits for the next detectable IDR. This is the
+/// same keyframe probe the compositor's share session uses to set the
+/// `SurfaceFrame` keyframe flag.
+pub fn is_h264_keyframe(nalus: &[u8]) -> bool {
+    let mut i = 0usize;
+    // The loop bound guarantees indices `i..=i+3` exist, so the 3-byte
+    // start code's header byte (at `i+3`) is always in range; the 4-byte
+    // case guards its header (at `i+4`) explicitly.
+    while i + 3 < nalus.len() {
+        // 4-byte start code `00 00 00 01`, NAL header at `i+4`.
+        if nalus[i] == 0 && nalus[i + 1] == 0 && nalus[i + 2] == 0 && nalus[i + 3] == 1 {
+            if i + 4 < nalus.len() && (nalus[i + 4] & 0x1f) == 5 {
+                return true;
+            }
+            i += 4;
+            continue;
+        }
+        // 3-byte start code `00 00 01`, NAL header at `i+3`.
+        if nalus[i] == 0 && nalus[i + 1] == 0 && nalus[i + 2] == 1 {
+            if (nalus[i + 3] & 0x1f) == 5 {
+                return true;
+            }
+            i += 3;
+            continue;
+        }
+        i += 1;
+    }
+    false
+}
+
+/// Send half of a video stream: throttle + H.264 encode → framed
+/// [`SurfaceFrame`] bytes.
+///
+/// Own one per outgoing source (a screen-share, or a camera). Feed it
+/// captured RGBA via [`Self::offer_frame`]; it returns the on-wire bytes
+/// to publish, or `None` when the throttle rejected the frame this tick
+/// or the encoder emitted nothing.
+pub struct VideoStreamSender {
+    encoder: H264Encoder,
+    throttle: StreamingThrottle,
+    sequence: u64,
+    width: u32,
+    height: u32,
+}
+
+impl VideoStreamSender {
+    /// Build a sender encoding `width × height` at up to `fps` frames per
+    /// second (the throttle enforces the real cadence).
+    pub fn new(width: u32, height: u32, fps: u32) -> Result<Self, EncodeError> {
+        let interval = std::time::Duration::from_micros((1_000_000 / fps.max(1) as u64).max(1));
+        Ok(Self {
+            encoder: H264Encoder::new(width, height, fps)?,
+            throttle: StreamingThrottle::with_interval(interval),
+            sequence: 0,
+            width,
+            height,
+        })
+    }
+
+    /// Configured width in pixels.
+    pub fn width(&self) -> u32 {
+        self.width
+    }
+
+    /// Configured height in pixels.
+    pub fn height(&self) -> u32 {
+        self.height
+    }
+
+    /// Offer a captured RGBA frame (`width * height * 4` bytes) at wall
+    /// clock `now`.
+    ///
+    /// Returns `Some(bytes)` — the [`SurfaceFrame`]-framed encoded access
+    /// unit to publish over the transport — when the throttle admits the
+    /// frame and the encoder produced a non-empty NALU payload. Returns
+    /// `None` when throttled, when the buffer size mismatched, or when the
+    /// encoder emitted nothing this tick.
+    pub fn offer_frame(&mut self, rgba: &[u8], now: Instant) -> Option<Vec<u8>> {
+        if !self.throttle.should_encode(now) {
+            return None;
+        }
+        let nalus = self.encoder.encode(rgba).ok()?;
+        if nalus.is_empty() {
+            return None;
+        }
+        self.throttle.mark_encoded(now);
+        let keyframe = is_h264_keyframe(&nalus);
+        let frame = SurfaceFrame {
+            sequence: self.sequence,
+            keyframe,
+            payload: nalus,
+        };
+        self.sequence = self.sequence.wrapping_add(1);
+        Some(frame.encode())
+    }
+
+    /// The next sequence number this sender will mint. Diagnostic.
+    pub fn next_sequence(&self) -> u64 {
+        self.sequence
+    }
+}
+
+/// Receive half of a video stream: [`SurfaceFrame`] reframing + H.264
+/// decode → RGBA [`DecodedFrame`]s.
+///
+/// Own one per incoming source (keyed by sender + track). Feed it the
+/// bytes a [`VideoStreamSender::offer_frame`] produced (carried over any
+/// transport) via [`Self::push`]; it returns every frame that became
+/// decodable. Sequence gaps are counted (a hint the paint side dropped
+/// frames) via [`Self::dropped_count`].
+pub struct VideoStreamReceiver {
+    framer: SurfaceStreamReceiver,
+    decoder: H264Decoder,
+}
+
+impl VideoStreamReceiver {
+    /// Empty receiver.
+    pub fn new() -> Self {
+        Self {
+            framer: SurfaceStreamReceiver::new(),
+            decoder: H264Decoder::new(),
+        }
+    }
+
+    /// Push wire `bytes` (one or more [`SurfaceFrame`]-framed payloads,
+    /// possibly split across calls) and return every decoded RGBA frame
+    /// that became available. A frame whose NALU the decoder can't yet
+    /// turn into a picture (still buffering, or a non-keyframe before the
+    /// first keyframe) simply produces no output for that frame.
+    pub fn push(&mut self, bytes: &[u8]) -> Vec<DecodedFrame> {
+        self.framer.push_bytes(bytes);
+        let events = match self.framer.drain() {
+            Ok(ev) => ev,
+            // A corrupt length header can't be recovered mid-stream;
+            // yield nothing this call and let the next bytes reframe.
+            Err(_) => return Vec::new(),
+        };
+        let mut out = Vec::new();
+        for ev in events {
+            if let ReceiverEvent::Frame(frame) = ev {
+                if let Some(decoded) = self.decoder.decode(&frame.payload) {
+                    out.push(decoded);
+                }
+            }
+        }
+        out
+    }
+
+    /// Cumulative count of frames the receiver detected as missing from
+    /// the sequence.
+    pub fn dropped_count(&self) -> u64 {
+        self.framer.dropped_count()
+    }
+}
+
+impl Default for VideoStreamReceiver {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    fn gradient(width: u32, height: u32) -> Vec<u8> {
+        let mut out = Vec::with_capacity((width * height * 4) as usize);
+        for y in 0..height {
+            for x in 0..width {
+                out.push(((x * 255) / width.max(1)) as u8);
+                out.push(((y * 255) / height.max(1)) as u8);
+                out.push(128);
+                out.push(255);
+            }
+        }
+        out
+    }
+
+    /// The headline reuse contract: a captured RGBA frame runs the full
+    /// shared stack — throttle + encoder → framed `SurfaceFrame` bytes on
+    /// the send side, and reframe + decoder → RGBA on the receive side —
+    /// and lands as a same-sized decoded frame. This is exactly the path
+    /// a chat screen-share tile runs, on the same code the compositor's
+    /// surface streaming uses.
+    #[test]
+    fn captured_rgba_streams_end_to_end_through_the_shared_stack() {
+        const W: u32 = 128;
+        const H: u32 = 96;
+        let mut sender = VideoStreamSender::new(W, H, 30).expect("sender");
+        let now = Instant::now();
+        let wire = sender
+            .offer_frame(&gradient(W, H), now)
+            .expect("throttle admits first frame + encoder emits a NALU");
+        assert!(wire.len() > crate::stream::FRAME_HEADER_LEN, "framed bytes");
+
+        let mut receiver = VideoStreamReceiver::new();
+        let frames = receiver.push(&wire);
+        assert_eq!(frames.len(), 1, "one frame decoded off the wire");
+        assert_eq!((frames[0].width, frames[0].height), (W, H));
+        assert_eq!(frames[0].rgba.len(), (W * H * 4) as usize);
+    }
+
+    #[test]
+    fn throttle_rejects_a_second_frame_within_the_interval() {
+        const W: u32 = 32;
+        const H: u32 = 32;
+        let mut sender = VideoStreamSender::new(W, H, 30).expect("sender");
+        let now = Instant::now();
+        assert!(sender.offer_frame(&gradient(W, H), now).is_some());
+        // 1 ms later — inside the ~33 ms interval — must be throttled.
+        assert!(
+            sender
+                .offer_frame(&gradient(W, H), now + Duration::from_millis(1))
+                .is_none()
+        );
+        // Past the interval, accepts again.
+        assert!(
+            sender
+                .offer_frame(&gradient(W, H), now + Duration::from_millis(40))
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn first_frame_is_flagged_a_keyframe() {
+        const W: u32 = 64;
+        const H: u32 = 64;
+        let mut sender = VideoStreamSender::new(W, H, 30).expect("sender");
+        let wire = sender.offer_frame(&gradient(W, H), Instant::now()).expect("frame");
+        let (frame, _) = SurfaceFrame::decode(&wire).expect("decode").expect("whole");
+        assert!(frame.keyframe, "the first H.264 access unit is an IDR keyframe");
+        assert_eq!(frame.sequence, 0);
+    }
+
+    #[test]
+    fn wrong_sized_buffer_yields_no_frame() {
+        let mut sender = VideoStreamSender::new(32, 32, 30).expect("sender");
+        // RGB (3 bytes/px), not RGBA — size mismatch folds to None.
+        assert!(sender.offer_frame(&vec![0u8; 32 * 32 * 3], Instant::now()).is_none());
+    }
+
+    #[test]
+    fn keyframe_probe_detects_idr_and_rejects_non_idr() {
+        // 4-byte start code + nal_unit_type 5 (IDR).
+        assert!(is_h264_keyframe(&[0, 0, 0, 1, 0x65]));
+        // 3-byte start code + nal_unit_type 1 (non-IDR slice).
+        assert!(!is_h264_keyframe(&[0, 0, 1, 0x41]));
+        // No start code.
+        assert!(!is_h264_keyframe(&[0xAA, 0xBB, 0xCC]));
+    }
+}

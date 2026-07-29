@@ -11,9 +11,11 @@
 //! held in widget fields, matching the toolkit's per-peer-view convention.
 
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use automerge::{AutoCommit, ObjId};
+use uuid::Uuid;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Circle, Line, Point, Rect, RoundedRect, Stroke};
@@ -32,8 +34,10 @@ use crate::doc::VideoDoc;
 use crate::export::{
     begin_export, Container, ExportSettings, ExportStatus, FrameRate, Resolution,
 };
-use crate::model::{Clip, ClipId, Filters, MediaId, MediaKind, Project, TrackId, TrackKind, Transition};
+use crate::model::{Clip, ClipId, Filters, MediaId, MediaItem, MediaKind, Project, TrackId, TrackKind, Transition};
+use crate::portal::{self, ImportChannel, ImportOutcome};
 use crate::preview::{self, CompositedFrame, Rgb};
+use crate::probe;
 use crate::timecode::{clock, frame_step, snap_to_frame, timecode};
 
 // ---- layout constants ----------------------------------------------------
@@ -65,6 +69,7 @@ struct Regions {
     menu_btn: Rect,
     export_btn: Rect,
     split_btn: Rect,
+    import_btn: Rect,
     bin: Rect,
     preview: Rect,
     canvas: Rect,
@@ -145,12 +150,33 @@ pub struct VideoEditorApp {
     show_export: bool,
     export: ExportSettings,
     export_status: ExportStatus,
+    /// A media-import portal request in flight, drained each `sync`.
+    import_rx: Option<ImportChannel>,
+    /// A short, honest status line shown after an import attempt (how many
+    /// clips landed, or why the picker was unavailable). Never a fake success.
+    import_notice: Option<String>,
+    /// A file queued to import on the next `sync` (deterministic `--shots` /
+    /// tests seed a real clip here instead of opening the portal).
+    pending_imports: Vec<PathBuf>,
+    /// When set, a queued import is also dropped onto the timeline (creating a
+    /// track if the blank project has none) and the playhead parked inside it —
+    /// so a `--shots` capture / preload shows the clip in the preview, not just
+    /// the bin. Off for a plain portal import (which lands in the bin only).
+    auto_place_imports: bool,
+    /// Real preview decoder. Only driven under `--features decode`, where it
+    /// decodes the true frame of the clip under the playhead through GStreamer.
+    #[cfg(feature = "decode")]
+    preview_decoder: preview::PreviewDecoder,
     drag: Option<Drag>,
     last_mouse: Point,
     hover_clip: Option<ClipId>,
     hover_media: Option<MediaId>,
     last_click_media: Option<(MediaId, Instant)>,
     seeded: bool,
+    /// When true this is the hermetic `--shots`/demo build: the first sync
+    /// seeds the bundled sample project into an empty document. The live app
+    /// leaves this false and never fabricates a project — it opens blank.
+    seed_demo: bool,
     initialised_selection: bool,
     last_tick: Instant,
     rect: Rect,
@@ -202,12 +228,19 @@ impl VideoEditorApp {
             show_export: std::env::var_os("QOS_VE_EXPORT").is_some(),
             export: ExportSettings::default(),
             export_status: ExportStatus::Idle,
+            import_rx: None,
+            import_notice: None,
+            pending_imports: Vec::new(),
+            auto_place_imports: false,
+            #[cfg(feature = "decode")]
+            preview_decoder: preview::PreviewDecoder::new(),
             drag: None,
             last_mouse: Point::ZERO,
             hover_clip: None,
             hover_media: None,
             last_click_media: None,
             seeded: false,
+            seed_demo: false,
             initialised_selection: false,
             last_tick: Instant::now(),
             rect: Rect::ZERO,
@@ -220,20 +253,63 @@ impl VideoEditorApp {
         }
     }
 
+    /// The hermetic `--shots`/demo build: seeds the bundled sample project on
+    /// the first sync. This is the sole source of sample media/clips — the
+    /// live app never fabricates a project.
+    pub fn new_demo() -> Self {
+        let mut app = Self::new();
+        app.seed_demo = true;
+        app
+    }
+
     /// Construct the editor pre-arranged for a deterministic `--shots`
     /// capture scenario (see [`ShotScenario`]). The scenario is applied once
     /// during the first `sync`, after the sample project loads.
     pub fn new_for_shot(scenario: ShotScenario) -> Self {
-        let mut app = Self::new();
+        let mut app = Self::new_demo();
         app.shot_scenario = scenario;
         app
+    }
+
+    /// Build a blank live app that imports `paths` on its first `sync` (as
+    /// real clips, probed for real metadata). Used by `--shots`/tests to seed a
+    /// real imported clip deterministically without opening the portal — the
+    /// same code path a portal pick drives.
+    pub fn new_import(paths: Vec<PathBuf>) -> Self {
+        let mut app = Self::new();
+        app.pending_imports = paths;
+        app
+    }
+
+    /// Like [`Self::new_import`] but also drops the first imported clip onto the
+    /// timeline (creating a track if needed) and parks the playhead inside it,
+    /// so the preview has real content to decode/composite for a `--shots`
+    /// capture or a `--import` preload.
+    pub fn new_import_placed(paths: Vec<PathBuf>) -> Self {
+        let mut app = Self::new_import(paths);
+        app.auto_place_imports = true;
+        app
+    }
+
+    /// Whether the real preview decoder currently has a decoded frame on the
+    /// canvas. The `--shots` decode path pumps `sync` until this is true so an
+    /// asynchronously-prerolled frame is captured, not a blank one.
+    pub fn has_preview_frame(&self) -> bool {
+        #[cfg(feature = "decode")]
+        {
+            self.preview_decoder.frame().is_some()
+        }
+        #[cfg(not(feature = "decode"))]
+        {
+            false
+        }
     }
 
     /// Like [`Self::new`] but with the media bin flap snapped fully open, for
     /// a deterministic narrow-window `--shots` capture that shows the overlay
     /// sidebar revealed in a single frame.
     pub fn new_with_bin_open() -> Self {
-        let mut app = Self::new();
+        let mut app = Self::new_demo();
         app.bin_flap.snap(true);
         // Pre-settled: the explicit open snap is authoritative, so the first
         // laid-out frame must not re-snap it to the width's default.
@@ -257,6 +333,7 @@ impl VideoEditorApp {
         let topbar = Rect::new(r.x0, r.y0, r.x1, r.y0 + TOPBAR_H);
         let export_btn = Rect::new(r.x1 - 124.0, r.y0 + 9.0, r.x1 - 14.0, r.y0 + 39.0);
         let split_btn = Rect::new(r.x1 - 244.0, r.y0 + 9.0, r.x1 - 134.0, r.y0 + 39.0);
+        let import_btn = Rect::new(r.x1 - 366.0, r.y0 + 9.0, r.x1 - 254.0, r.y0 + 39.0);
         // The hamburger replaces the static app glyph slot when the bin is an
         // overlay, so the user can summon the collapsed bin.
         let menu_btn = if overlay {
@@ -295,7 +372,7 @@ impl VideoEditorApp {
         let gutter = Rect::new(timeline.x0, timeline.y0 + RULER_H, timeline.x0 + GUTTER_W, timeline.y1);
         let lanes = Rect::new(timeline.x0 + GUTTER_W, timeline.y0 + RULER_H, timeline.x1, timeline.y1);
         Regions {
-            topbar, menu_btn, export_btn, split_btn, bin, preview, canvas, transport,
+            topbar, menu_btn, export_btn, split_btn, import_btn, bin, preview, canvas, transport,
             inspector, timeline, ruler, gutter, lanes, scrim, bin_overlay: overlay,
         }
     }
@@ -631,6 +708,142 @@ impl VideoEditorApp {
         }
     }
 
+    // ---- media import ----------------------------------------------------
+    /// Open the host file picker to import media (a real XDG portal on
+    /// `--features portal`, otherwise an honest "unavailable" notice — never a
+    /// fake success).
+    fn trigger_import(&mut self) {
+        self.import_notice = Some("Choose media to import…".to_string());
+        self.import_rx = Some(portal::request_import());
+    }
+
+    /// Drain any pending imports (queued deterministic files first, then a
+    /// portal outcome), bringing each chosen file into the bin as a real clip.
+    fn drain_import(&mut self, doc: &mut AutoCommit) {
+        if !self.pending_imports.is_empty() {
+            let paths = std::mem::take(&mut self.pending_imports);
+            let n = self.import_files(doc, &paths);
+            self.import_notice = Some(import_summary(n, paths.len()));
+            if self.auto_place_imports {
+                if let Some(mid) = self.selected_media {
+                    self.ensure_track_and_place(doc, mid);
+                }
+            }
+        }
+        let mut clear = false;
+        let mut outcome = None;
+        if let Some(rx) = self.import_rx.as_ref() {
+            match rx.try_recv() {
+                Ok(o) => {
+                    outcome = Some(o);
+                    clear = true;
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => clear = true,
+            }
+        }
+        if clear {
+            self.import_rx = None;
+        }
+        match outcome {
+            Some(ImportOutcome::Chosen(paths)) => {
+                let n = self.import_files(doc, &paths);
+                self.import_notice = Some(import_summary(n, paths.len()));
+            }
+            Some(ImportOutcome::Cancelled) => self.import_notice = None,
+            Some(ImportOutcome::Failed(reason)) => self.import_notice = Some(reason),
+            None => {}
+        }
+    }
+
+    /// Import a batch of files, returning how many became real clips.
+    fn import_files(&mut self, doc: &mut AutoCommit, paths: &[PathBuf]) -> usize {
+        paths.iter().filter(|p| self.import_one(doc, p)).count()
+    }
+
+    /// Import one file: probe **real** metadata from the container and add it to
+    /// the media bin as a real [`MediaItem`], replicated through the CRDT. The
+    /// stored path is workspace-relative for a file under the FUSE mount (so it
+    /// replicates to peers) or absolute for an imported local file.
+    fn import_one(&mut self, doc: &mut AutoCommit, path: &Path) -> bool {
+        let probed = match probe::probe_file(path) {
+            Ok(p) => p,
+            Err(_) => return false,
+        };
+        let resolved = crate::media::resolve(&path.to_string_lossy());
+        let stored = crate::media::stored_path_for_import(&resolved.abs_path);
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| stored.clone());
+        let palette = (self.project.media.len() as u8) % 7;
+        let item = MediaItem {
+            id: Uuid::new_v4(),
+            name,
+            kind: probed.kind,
+            duration: probed.duration,
+            width: probed.width,
+            height: probed.height,
+            fps: if probed.fps > 0.0 { probed.fps } else { 30.0 },
+            palette,
+            path: stored,
+            hydration: resolved.hydration,
+        };
+        let id = item.id;
+        self.project.media.push(item.clone());
+        VideoDoc::upsert_media(doc, &item);
+        self.selected_media = Some(id);
+        self.needs_commit = true;
+        true
+    }
+
+    /// Drop `media_id` onto the timeline (creating a track of the right kind if
+    /// the blank project has none) and park the playhead inside the new clip.
+    /// Used by the `--shots`/preload placed-import path so the preview shows the
+    /// clip; a normal portal import lands in the bin only.
+    fn ensure_track_and_place(&mut self, doc: &mut AutoCommit, media_id: MediaId) {
+        let Some(m) = self.project.media(media_id).cloned() else { return };
+        let kind = if m.kind.is_visual() { TrackKind::Video } else { TrackKind::Audio };
+        if !self.project.tracks.iter().any(|t| t.kind == kind) {
+            let track = crate::model::Track {
+                id: Uuid::new_v4(),
+                name: if kind == TrackKind::Video { "V1" } else { "A1" }.into(),
+                kind,
+                index: 1,
+                muted: false,
+                locked: false,
+            };
+            VideoDoc::upsert_track(doc, &track);
+            self.project.tracks.push(track);
+        }
+        self.add_media_to_timeline(doc, media_id);
+        // Park the playhead inside the placed clip so the preview has content.
+        if let Some(cid) = self.selected {
+            if let Some(c) = self.project.clip(cid) {
+                let inside = c.start + (c.duration() * 0.4);
+                self.playhead = inside.clamp(c.start, (c.end() - 0.05).max(c.start));
+            }
+        }
+    }
+
+    /// The clickable "Import media" button drawn in the empty-bin state, if the
+    /// bin is on-screen and has no media yet.
+    fn empty_bin_import_rect(&self, r: &Regions) -> Option<Rect> {
+        if !self.project.media.is_empty() {
+            return None;
+        }
+        let cx = r.bin.center().x;
+        let cy = r.bin.y0 + 150.0;
+        Some(Rect::new(cx - 92.0, cy, cx + 92.0, cy + 34.0))
+    }
+
+    /// Pump the real preview decoder for the clip under the playhead. No-op
+    /// build carries no decoder; the decode build seeks + decodes the frame.
+    #[cfg(feature = "decode")]
+    fn pump_preview_decode(&mut self) {
+        self.preview_decoder.update(&self.project, self.playhead);
+    }
+
     fn zoom_by(&mut self, factor: f64) {
         self.zoom = (self.zoom * factor).clamp(6.0, 220.0);
     }
@@ -801,12 +1014,17 @@ struct ExportLayout {
 impl Widget for VideoEditorApp {
     fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
         if !self.seeded {
-            if VideoDoc::is_empty(state) {
+            // The live app opens on a blank project; only the hermetic demo
+            // build seeds the bundled sample project into a fresh document.
+            if self.seed_demo && VideoDoc::is_empty(state) {
                 VideoDoc::seed_sample(state);
             }
             self.seeded = true;
         }
         self.project = VideoDoc::load_project(state);
+        // Bring in any pending / portal-picked media as real clips (this pushes
+        // straight into `self.project.media` and the CRDT).
+        self.drain_import(state);
         // Drop a stale selection if the clip vanished (e.g. remote delete).
         if let Some(id) = self.selected {
             if self.project.clip(id).is_none() {
@@ -821,16 +1039,25 @@ impl Widget for VideoEditorApp {
             self.apply_shot_scenario(state);
             self.shot_applied = true;
         }
+        // Keep the real preview decoder tracking the clip under the playhead so
+        // the `--shots` warm-up (which pumps `sync`) captures a decoded frame.
+        #[cfg(feature = "decode")]
+        self.pump_preview_decode();
     }
 
     fn needs_idle_sync(&self) -> bool {
-        // Keep syncing until the sample/shared project is loaded so a
-        // freshly-spawned, input-free instance still seeds + paints.
-        !self.seeded || self.project.clips.is_empty()
+        // Keep syncing until the demo/shared project is loaded so a
+        // freshly-spawned, input-free instance still seeds + paints. The live
+        // app opens blank, so once seeded it must not idle-sync forever. Also
+        // keep syncing while an import is pending so its outcome is drained.
+        !self.seeded
+            || (self.seed_demo && self.project.clips.is_empty())
+            || self.import_rx.is_some()
+            || !self.pending_imports.is_empty()
     }
 
     fn needs_animation_frame(&self) -> bool {
-        self.playing || self.shuttle != 0.0 || self.flap_animating()
+        self.playing || self.shuttle != 0.0 || self.flap_animating() || self.import_rx.is_some()
     }
 
     fn build_layout(
@@ -872,6 +1099,9 @@ impl Widget for VideoEditorApp {
     ) {
         self.advance_playback();
         self.advance_flap();
+        // Track the decoded frame to the (possibly advancing) playhead.
+        #[cfg(feature = "decode")]
+        self.pump_preview_decode();
         let r = self.regions();
         self.draw_chrome(scene, transform, tr, theme, &r);
         // Editor body. When the bin is docked it draws in its column; when
@@ -1060,6 +1290,11 @@ impl VideoEditorApp {
                 let _ = r;
                 true
             }
+            // Ctrl+O opens the host file picker to import real media.
+            Key::Character(c) if ctrl && c.eq_ignore_ascii_case("o") => {
+                self.trigger_import();
+                true
+            }
             Key::Character(c) if ctrl && c.eq_ignore_ascii_case("c") => {
                 self.copy_selected();
                 true
@@ -1144,9 +1379,20 @@ impl VideoEditorApp {
             self.show_export = true;
             return;
         }
+        if r.import_btn.contains(p) {
+            self.trigger_import();
+            return;
+        }
         if r.split_btn.contains(p) {
             self.split_selected(state);
             return;
+        }
+        // Empty-bin "Import media" affordance.
+        if let Some(btn) = self.empty_bin_import_rect(r) {
+            if btn.contains(p) {
+                self.trigger_import();
+                return;
+            }
         }
         // While the bin is an open overlay, a click on the scrim (anywhere
         // outside the flap and the topbar toggle) dismisses it — matching the
@@ -1497,19 +1743,12 @@ impl VideoEditorApp {
         // Top bar.
         fill_rect(scene, tf, c.surfaces.raised, r.topbar);
         stroke_line(scene, tf, c.border_standard, r.topbar.x0, r.topbar.y1, r.topbar.x1, r.topbar.y1, 1.0);
-        // Leading slot: the accent app glyph when the bin is docked, or a
-        // hamburger toggle when the bin is collapsed to an overlay flap.
-        let title_x = if r.bin_overlay {
+        // Leading slot: a hamburger toggle when the bin is collapsed to an
+        // overlay flap. The OS owns the window title/app-name/logo, so the app
+        // draws no glyph or wordmark here.
+        if r.bin_overlay {
             self.draw_hamburger(scene, tf, theme, r.menu_btn);
-            r.menu_btn.x1 + 12.0
-        } else {
-            let glyph = RoundedRect::new(r.topbar.x0 + 14.0, r.topbar.y0 + 12.0, r.topbar.x0 + 38.0, r.topbar.y0 + 36.0, 6.0);
-            scene.fill(Fill::NonZero, tf, c.accent[5], None, &glyph);
-            let tri = triangle(r.topbar.x0 + 21.0, r.topbar.y0 + 18.0, 12.0);
-            scene.fill(Fill::NonZero, tf, Color::WHITE, None, &tri);
-            r.topbar.x0 + 48.0
-        };
-        text_w(scene, tr, tf, "Video Editor", 16.0, c.text_primary, title_x, r.topbar.y0 + 15.0, TextWeight::Semibold);
+        }
         // Project meta, centered-ish.
         let meta = format!(
             "{}   ·   {}×{}   ·   {:.0} fps   ·   {}",
@@ -1522,6 +1761,7 @@ impl VideoEditorApp {
         let (mw, _) = tr.measure(&meta, 13.0, None);
         text(scene, tr, tf, &meta, 13.0, c.text_dim, (self.rect.x0 + self.rect.x1) / 2.0 - mw as f64 / 2.0, r.topbar.y0 + 17.0);
         // Buttons.
+        draw_button(scene, tf, tr, theme, r.import_btn, "Import…", false);
         draw_button(scene, tf, tr, theme, r.split_btn, "Split  (S)", false);
         draw_button(scene, tf, tr, theme, r.export_btn, "Export…", true);
     }
@@ -1563,6 +1803,24 @@ impl VideoEditorApp {
 
         // Clip bin content so a long list can't bleed over the timeline.
         scene.push_layer(Fill::NonZero, vello::peniko::BlendMode::default(), 1.0, tf, &Rect::new(r.bin.x0, r.bin.y0 + 30.0, r.bin.x1, r.bin.y1));
+        if self.project.media.is_empty() {
+            // Empty state: a real "Import media" affordance (the button opens the
+            // host file picker) plus an honest status line.
+            let cx = r.bin.center().x;
+            let cy = r.bin.y0 + 120.0;
+            let line1 = "No media yet";
+            let (w1, _) = tr.measure(line1, 14.0, None);
+            text(scene, tr, tf, line1, 14.0, c.text_primary, cx - w1 as f64 / 2.0, cy);
+            if let Some(btn) = self.empty_bin_import_rect(r) {
+                draw_button(scene, tf, tr, theme, btn, "Import media", true);
+            }
+            // Show the last import status (why the picker is unavailable on a
+            // hermetic build, or how many clips landed) — never a fake success.
+            if let Some(notice) = &self.import_notice {
+                let (nw, _) = tr.measure(notice, 10.5, None);
+                text(scene, tr, tf, notice, 10.5, c.text_dim, cx - nw as f64 / 2.0, r.bin.y0 + 200.0);
+            }
+        }
         for (mid, rect) in self.bin_item_rects(r) {
             let Some(m) = self.project.media(mid) else { continue };
             let selected = self.selected_media == Some(mid);
@@ -1623,21 +1881,38 @@ impl VideoEditorApp {
         // use. The representative frame is a graded gradient; with --features
         // decode and hydrated bytes the canvas instead blits a real frame.
         let frame = preview::composite(&self.project, self.playhead);
+        // Did the real decoder land a frame for the clip under the playhead?
+        // Only true under `--features decode` with hydrated bytes.
+        #[allow(unused_mut)]
+        let mut showed_real = false;
         match frame {
             CompositedFrame::Clip { media, base, envelope, flash, decoded } => {
-                let _ = decoded; // real-blit path lands when the decode feature is on
-                // `base` is already graded + faded; build a representative
-                // two-band gradient from it so grading is visibly reflected.
-                let col = rgb_to_color(base);
-                fill_rect(scene, tf, darken(col, 0.18), canvas);
-                let upper = Rect::new(canvas.x0, canvas.y0, canvas.x1, canvas.center().y);
-                fill_rect(scene, tf, with_alpha(lighten(col, 0.18), 0.55), upper);
-                let band = Rect::new(canvas.x0, canvas.y0 + canvas.height() * 0.62, canvas.x1, canvas.y0 + canvas.height() * 0.72);
-                fill_rect(scene, tf, with_alpha(darken(col, 0.15), 0.6), band);
-                stroke_rrect(scene, tf, with_alpha(Color::BLACK, 0.5), canvas.inset(2.0), 2.0, 18.0);
-                if let Some(m) = self.project.media(media) {
-                    let (nw, _) = tr.measure_weighted(&m.name, 22.0, None, TextWeight::Semibold);
-                    text_w(scene, tr, tf, &m.name, 22.0, with_alpha(Color::WHITE, 0.92), canvas.center().x - nw as f64 / 2.0, canvas.center().y - 16.0, TextWeight::Semibold);
+                let _ = decoded;
+                // Blit the real decoded frame when the decode pipeline has one
+                // for this clip; otherwise the representative two-band gradient.
+                #[cfg(feature = "decode")]
+                {
+                    if self.preview_decoder.frame_media() == Some(media) {
+                        if let Some(f) = self.preview_decoder.frame() {
+                            blit_frame(scene, tf, f, canvas);
+                            showed_real = true;
+                        }
+                    }
+                }
+                if !showed_real {
+                    // `base` is already graded + faded; build a representative
+                    // two-band gradient from it so grading is visibly reflected.
+                    let col = rgb_to_color(base);
+                    fill_rect(scene, tf, darken(col, 0.18), canvas);
+                    let upper = Rect::new(canvas.x0, canvas.y0, canvas.x1, canvas.center().y);
+                    fill_rect(scene, tf, with_alpha(lighten(col, 0.18), 0.55), upper);
+                    let band = Rect::new(canvas.x0, canvas.y0 + canvas.height() * 0.62, canvas.x1, canvas.y0 + canvas.height() * 0.72);
+                    fill_rect(scene, tf, with_alpha(darken(col, 0.15), 0.6), band);
+                    stroke_rrect(scene, tf, with_alpha(Color::BLACK, 0.5), canvas.inset(2.0), 2.0, 18.0);
+                    if let Some(m) = self.project.media(media) {
+                        let (nw, _) = tr.measure_weighted(&m.name, 22.0, None, TextWeight::Semibold);
+                        text_w(scene, tr, tf, &m.name, 22.0, with_alpha(Color::WHITE, 0.92), canvas.center().x - nw as f64 / 2.0, canvas.center().y - 16.0, TextWeight::Semibold);
+                    }
                 }
                 // The fade/opacity envelope dims the whole frame toward black.
                 if envelope < 0.999 {
@@ -1659,9 +1934,18 @@ impl VideoEditorApp {
         let res = format!("{}×{}", self.project.width, self.project.height);
         let (rw, _) = tr.measure(&res, 12.0, None);
         text(scene, tr, tf, &res, 12.0, with_alpha(Color::WHITE, 0.7), canvas.x1 - 10.0 - rw as f64, canvas.y0 + 8.0);
-        // Decode-mode badge so the gated-vs-real state is legible in a shot.
-        let badge = if cfg!(feature = "decode") { "DECODE" } else { "PREVIEW" };
-        text(scene, tr, tf, badge, 9.5, with_alpha(Color::WHITE, 0.45), canvas.x0 + 10.0, canvas.y1 - 18.0);
+        // Decode-mode badge so the gated-vs-real state is legible in a shot:
+        // LIVE when a real decoded frame is on the canvas, DECODE when the
+        // pipeline is compiled but has no hydrated frame, PREVIEW otherwise.
+        let badge = if showed_real {
+            "LIVE"
+        } else if cfg!(feature = "decode") {
+            "DECODE"
+        } else {
+            "PREVIEW"
+        };
+        let badge_col = if showed_real { c.semantic.success } else { with_alpha(Color::WHITE, 0.45) };
+        text(scene, tr, tf, badge, 9.5, badge_col, canvas.x0 + 10.0, canvas.y1 - 18.0);
         // Safe-area guide.
         stroke_rrect(scene, tf, with_alpha(Color::WHITE, 0.12), canvas.inset(-canvas.width() * 0.05), 0.0, 1.0);
     }
@@ -2047,26 +2331,67 @@ impl VideoEditorApp {
                 fill_rrect(scene, tf, c.neutral[3], bar, 4.0);
                 let f = Rect::new(bar.x0, bar.y0, bar.x0 + bar.width() * progress.max(0.04), bar.y1);
                 fill_rrect(scene, tf, c.accent[5], f, 4.0);
-                text(scene, tr, tf, "Rendering… (pipeline gated — see export.rs TODO)", 10.5, c.semantic.warning, x0, card.y1 - 62.0);
+                text(scene, tr, tf, "Rendering…", 10.5, c.text_dim, x0, card.y1 - 62.0);
             }
             ExportStatus::Done { path } => {
                 text(scene, tr, tf, &format!("Done: {path}"), 11.0, c.semantic.success, x0, card.y1 - 68.0);
             }
             ExportStatus::Failed { reason } => {
-                text(scene, tr, tf, &format!("Export gated: {reason}"), 10.5, c.text_dim, x0, card.y1 - 68.0);
+                text(scene, tr, tf, reason, 10.5, c.semantic.warning, x0, card.y1 - 68.0);
             }
             ExportStatus::Idle => {
-                text(scene, tr, tf, "GStreamer encode runs behind the `gst` build feature.", 10.5, c.text_dim, x0, card.y1 - 68.0);
+                text(scene, tr, tf, "Export isn't available yet — video encoding is coming soon.", 10.5, c.text_dim, x0, card.y1 - 68.0);
             }
         }
-        draw_button(scene, tf, tr, theme, l.cancel, "Cancel", false);
-        draw_button(scene, tf, tr, theme, l.confirm, "Start Export", true);
+        draw_button(scene, tf, tr, theme, l.cancel, "Close", false);
+        draw_button(scene, tf, tr, theme, l.confirm, "Export", true);
     }
 }
 
 // ==========================================================================
 // Free drawing utilities
 // ==========================================================================
+/// Honest, human-readable summary of an import batch. Never claims a success
+/// that did not happen.
+fn import_summary(added: usize, total: usize) -> String {
+    if added == 0 {
+        "No media could be imported".to_string()
+    } else if added == total {
+        format!("Imported {added} clip{}", if added == 1 { "" } else { "s" })
+    } else {
+        format!("Imported {added} of {total} files")
+    }
+}
+
+/// Blit a decoded RGBA frame into `canvas`, scaled to fit (letterboxed),
+/// centred. Only used under `--features decode` where the preview shows the
+/// clip's real picture.
+#[cfg(feature = "decode")]
+fn blit_frame(scene: &mut Scene, tf: Affine, frame: &::media::VideoFrame, canvas: Rect) {
+    use vello::peniko::{Blob, ImageAlphaType, ImageBrush, ImageData, ImageFormat};
+    let iw = frame.width as f64;
+    let ih = frame.height as f64;
+    if iw <= 0.0 || ih <= 0.0 || canvas.width() <= 0.0 || canvas.height() <= 0.0 {
+        return;
+    }
+    let img = ImageData {
+        data: Blob::new(frame.rgba.clone()),
+        format: ImageFormat::Rgba8,
+        alpha_type: ImageAlphaType::Alpha,
+        width: frame.width,
+        height: frame.height,
+    };
+    let scale = (canvas.width() / iw).min(canvas.height() / ih);
+    let dw = iw * scale;
+    let dh = ih * scale;
+    let dx = canvas.x0 + (canvas.width() - dw) * 0.5;
+    let dy = canvas.y0 + (canvas.height() - dh) * 0.5;
+    let dest = Rect::new(dx, dy, dx + dw, dy + dh);
+    let brush_tf = Affine::translate((dx, dy)) * Affine::scale_non_uniform(scale, scale);
+    let brush = ImageBrush::new(img);
+    scene.fill(Fill::NonZero, tf, &brush, Some(brush_tf), &dest);
+}
+
 fn fill_rect(scene: &mut Scene, tf: Affine, color: Color, rect: Rect) {
     scene.fill(Fill::NonZero, tf, color, None, &rect);
 }
@@ -2255,6 +2580,100 @@ mod tests {
         let app = app_with_sample();
         assert_eq!(app.project.clips.len(), 7);
         assert!(app.selected.is_some(), "a clip should be auto-selected");
+    }
+
+    #[test]
+    fn live_new_over_fresh_doc_stays_empty() {
+        // The live constructor must not fabricate a project: synced against a
+        // fresh (empty) document it opens blank — no media, no clips.
+        let mut app = VideoEditorApp::new();
+        app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        let mut doc = AutoCommit::new();
+        app.sync(&mut doc, &automerge::ROOT);
+        assert!(app.project.clips.is_empty(), "no fabricated clips on the live path");
+        assert!(app.project.media.is_empty(), "no fabricated media on the live path");
+        assert!(app.selected.is_none(), "nothing selected in a blank project");
+    }
+
+    #[test]
+    fn demo_build_seeds_a_project() {
+        // The demo builder is the sole source of the sample project.
+        let mut app = VideoEditorApp::new_demo();
+        app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        let mut doc = AutoCommit::new();
+        app.sync(&mut doc, &automerge::ROOT);
+        assert!(!app.project.clips.is_empty(), "demo build seeds sample clips");
+        assert!(!app.project.media.is_empty(), "demo build seeds sample media");
+    }
+
+    /// Write a real PNG (crafted header, known dimensions) to a temp file so a
+    /// probe/import test operates on real bytes, not a mock.
+    fn write_real_png(w: u32, h: u32) -> std::path::PathBuf {
+        let mut png = Vec::new();
+        png.extend_from_slice(b"\x89PNG\r\n\x1a\n");
+        png.extend_from_slice(&13u32.to_be_bytes());
+        png.extend_from_slice(b"IHDR");
+        png.extend_from_slice(&w.to_be_bytes());
+        png.extend_from_slice(&h.to_be_bytes());
+        png.extend_from_slice(&[8, 2, 0, 0, 0]);
+        let f = std::env::temp_dir()
+            .join(format!("qos-ve-import-app-{}-{}.png", std::process::id(), w));
+        std::fs::write(&f, &png).unwrap();
+        f
+    }
+
+    #[test]
+    fn importing_a_picked_file_adds_a_real_clip_to_the_bin() {
+        // A real file on disk (not a mock) becomes a real MediaItem with real,
+        // probed metadata, replicated into the CRDT.
+        let f = write_real_png(320, 240);
+        let mut app = VideoEditorApp::new_import(vec![f.clone()]);
+        app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        let mut doc = AutoCommit::new();
+        app.sync(&mut doc, &automerge::ROOT);
+
+        assert_eq!(app.project.media.len(), 1, "the picked file is now in the bin");
+        let m = &app.project.media[0];
+        assert_eq!(m.name, f.file_name().unwrap().to_string_lossy());
+        assert_eq!(m.kind, MediaKind::Image);
+        assert_eq!((m.width, m.height), (320, 240), "real probed dimensions");
+        assert!(
+            (m.duration - crate::probe::DEFAULT_IMAGE_DURATION).abs() < 1e-9,
+            "a still gets the default timeline duration",
+        );
+        assert!(m.hydration.is_local(), "the imported bytes are local/decodable");
+        // It replicated through the document (a peer would load it).
+        let reloaded = VideoDoc::load_project(&doc);
+        assert_eq!(reloaded.media.len(), 1);
+        assert_eq!(reloaded.media[0].width, 320);
+        std::fs::remove_file(&f).ok();
+    }
+
+    #[test]
+    fn placed_import_puts_the_clip_on_the_timeline_under_the_playhead() {
+        // The `--shots`/preload placed import also lands the clip on a freshly
+        // created track with the playhead inside it, so the preview has content.
+        let f = write_real_png(640, 360);
+        let mut app = VideoEditorApp::new_import_placed(vec![f.clone()]);
+        app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        let mut doc = AutoCommit::new();
+        app.sync(&mut doc, &automerge::ROOT);
+
+        assert_eq!(app.project.media.len(), 1);
+        assert_eq!(app.project.tracks.len(), 1, "a track was created for the clip");
+        assert_eq!(app.project.clips.len(), 1, "the clip is on the timeline");
+        let clip = &app.project.clips[0];
+        assert!(
+            app.playhead > clip.start && app.playhead < clip.end(),
+            "playhead {} parked inside the clip [{}, {}]",
+            app.playhead, clip.start, clip.end(),
+        );
+        // The preview composites the placed clip (not Empty) at the playhead.
+        assert!(
+            matches!(preview::composite(&app.project, app.playhead), CompositedFrame::Clip { .. }),
+            "the preview has a clip to render",
+        );
+        std::fs::remove_file(&f).ok();
     }
 
     #[test]

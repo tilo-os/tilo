@@ -377,29 +377,22 @@ impl AuthenticatorApp {
         text_renderer: &mut TextRenderer,
         theme: &Theme,
     ) {
-        // Title.
-        text_renderer.draw_text_weighted(
-            scene,
-            "Authenticator",
-            26.0,
-            theme.tokens.colors.text_primary,
-            transform * Affine::translate((self.rect.x0 + OUTER_PAD, self.rect.y0 + 20.0)),
-            None,
-            TextWeight::Bold,
-        );
+        // The OS owns the window title/app-name — the header shows only the
+        // contextual account count (functional status, not an app wordmark).
         let count = self.vault.len();
         let subtitle = match count {
             0 => "No accounts".to_string(),
             1 => "1 account".to_string(),
             n => format!("{n} accounts"),
         };
-        text_renderer.draw_text(
+        text_renderer.draw_text_weighted(
             scene,
             &subtitle,
-            13.0,
-            theme.tokens.colors.text_dim,
-            transform * Affine::translate((self.rect.x0 + OUTER_PAD, self.rect.y0 + 50.0)),
+            15.0,
+            theme.tokens.colors.text_primary,
+            transform * Affine::translate((self.rect.x0 + OUTER_PAD, self.rect.y0 + 34.0)),
             None,
+            TextWeight::Medium,
         );
 
         // Add button.

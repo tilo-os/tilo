@@ -8,8 +8,9 @@
 //! `firewall-cmd` (gated, see [`backend`]); `--shots` bundles a realistic
 //! sample ruleset so the headless screenshot is fully populated offline.
 //!
-//! `app_root()` is the single integration point used by both the live event
-//! loop and the `--shots` offscreen renderer.
+//! `app_root()` is the live integration point (reads the real firewall via
+//! `firewall-cmd`); `app_root_demo()` is the sample-seeded build used by the
+//! `--shots` renderer so the headless screenshot is populated offline.
 
 pub mod app;
 pub mod backend;
@@ -22,7 +23,15 @@ pub use app::FirewallApp;
 
 use ui::widget::Widget;
 
-/// Build and return the app's root widget tree.
+/// Build the live app: read the host's real firewalld configuration. On a
+/// machine without firewalld it starts on an honest unavailable state — it
+/// never fabricates a ruleset.
 pub fn app_root() -> Box<dyn Widget> {
     Box::new(FirewallApp::new())
+}
+
+/// Build the sample-seeded app for the hermetic `--shots` / demo path. This
+/// is the ONLY entry point that fabricates a ruleset.
+pub fn app_root_demo() -> Box<dyn Widget> {
+    Box::new(FirewallApp::new_demo())
 }

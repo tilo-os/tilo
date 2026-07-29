@@ -242,14 +242,13 @@ pub fn render_for_path(out: &Path) -> Result<(), Box<dyn std::error::Error>> {
     render_to_path(Box::new(scenario.app()), scenario.viewport(), out)
 }
 
-/// Render `widget` at `viewport` size into a PNG at `out`. Mirrors the
+/// Build the `Scene` for `widget` at `viewport` size. Mirrors the
 /// `sync → build_layout → compute_layout → apply_layout → draw` cycle
-/// `ui::App` runs for a single redraw.
-pub fn render_to_path(
-    mut widget: Box<dyn Widget>,
-    viewport: (u32, u32),
-    out: &Path,
-) -> Result<(), Box<dyn std::error::Error>> {
+/// `ui::App` runs for a single redraw, but stops at the CPU-side `Scene` so a
+/// caller can rasterise many scenes through **one** reused
+/// [`OffscreenRenderer`] (which amortises the expensive vello shader
+/// compilation over every pane instead of paying it per process).
+pub fn build_widget_scene(mut widget: Box<dyn Widget>, viewport: (u32, u32)) -> Scene {
     let (w, h) = viewport;
     let theme = Theme::dark();
     let presence = PresenceCtx::empty();
@@ -259,52 +258,42 @@ pub fn render_to_path(
     let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
 
     let mut state = ui::State::new();
-    // First sync seeds the CRDT keys the panes drive their controls from.
     widget.sync(&mut state.doc, &state.root);
-
     let child = widget.build_layout(&mut taffy, &theme, &mut node_map);
-    // Second sync — what the live `ui::App` does after a structural rebuild
-    // (see `App::rebuild_structure`): the widgets built above are fresh
-    // instances, so this sync seeds their CRDT keys and lets a top-level pane's
-    // leaf controls read them back. (A pane rendered directly, e.g. `netdemo`,
-    // has its composition built here, so this alone settles its toggles.)
     widget.sync(&mut state.doc, &state.root);
-    let root = taffy.new_with_children(
-        Style {
-            size: Size {
-                width: Dimension::length(w as f32),
-                height: Dimension::length(h as f32),
+    let root = taffy
+        .new_with_children(
+            Style {
+                size: Size {
+                    width: Dimension::length(w as f32),
+                    height: Dimension::length(h as f32),
+                },
+                ..Default::default()
             },
-            ..Default::default()
-        },
-        &[child],
-    )?;
-
+            &[child],
+        )
+        .expect("root node");
     {
         let measure_map = node_map.clone();
         let tr = &mut text_renderer;
-        taffy.compute_layout_with_measure(
-            root,
-            taffy::Size {
-                width: AvailableSpace::Definite(w as f32),
-                height: AvailableSpace::Definite(h as f32),
-            },
-            |known, available, node_id, _, _| {
-                if let Some(&ptr) = measure_map.get(&node_id) {
-                    unsafe { (*ptr).measure(known, available, tr) }
-                } else {
-                    taffy::Size::ZERO
-                }
-            },
-        )?;
+        taffy
+            .compute_layout_with_measure(
+                root,
+                taffy::Size {
+                    width: AvailableSpace::Definite(w as f32),
+                    height: AvailableSpace::Definite(h as f32),
+                },
+                |known, available, node_id, _, _| {
+                    if let Some(&ptr) = measure_map.get(&node_id) {
+                        unsafe { (*ptr).measure(known, available, tr) }
+                    } else {
+                        taffy::Size::ZERO
+                    }
+                },
+            )
+            .expect("layout");
     }
     widget.apply_layout(&taffy, child, Point::ORIGIN);
-
-    // Settling sync AFTER layout: the earlier sync seeded the panes' CRDT
-    // keys, and this pass lets the freshly-built leaf controls (a pane's
-    // toggles / sliders) read those seeded values so they render their real
-    // state instead of their constructed default. The live app reaches the
-    // same state after a couple of frames; a single shot needs it explicitly.
     widget.sync(&mut state.doc, &state.root);
 
     let mut scene = Scene::new();
@@ -316,6 +305,19 @@ pub fn render_to_path(
         &presence,
         &permission,
     );
+    scene
+}
+
+/// Render `widget` at `viewport` size into a PNG at `out`. Mirrors the
+/// `sync → build_layout → compute_layout → apply_layout → draw` cycle
+/// `ui::App` runs for a single redraw.
+pub fn render_to_path(
+    widget: Box<dyn Widget>,
+    viewport: (u32, u32),
+    out: &Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let (w, h) = viewport;
+    let scene = build_widget_scene(widget, viewport);
 
     if let Some(parent) = out.parent() {
         std::fs::create_dir_all(parent).ok();

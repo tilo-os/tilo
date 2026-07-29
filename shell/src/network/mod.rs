@@ -22,5 +22,5 @@ pub use invite::{PeerInviteToken, accept_invite_into, make_invite_token, validat
 pub use protocol::{NeighbourMsg, PeerId as MsgPeerId, PresenceKey, SurfaceId};
 pub use replica::WorkspaceTreeReplica;
 pub use streaming::{
-    InputEvent, RemoteInputSink, ShareRegistry, StreamingShare, StreamingThrottle,
+    InputEvent, RemoteAction, RemoteInputSink, ShareRegistry, StreamingShare, StreamingThrottle,
 };

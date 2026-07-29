@@ -15,7 +15,9 @@
 
 use std::process::Command;
 
-use crate::model::{Action, FirewallConfig, Matcher, Zone};
+use crate::model::{
+    Action, FirewallConfig, Matcher, Proto, Rule, Target, Zone, ZoneKind,
+};
 
 /// How the backend will treat apply requests.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -85,6 +87,164 @@ impl Backend {
 fn which_firewall_cmd() -> bool {
     let Ok(path) = std::env::var("PATH") else { return false };
     std::env::split_paths(&path).any(|p| p.join("firewall-cmd").is_file())
+}
+
+/// Run a read-only `firewall-cmd` query and return its trimmed stdout.
+/// Every argument set passed here is a query (`--get-*`, `--list-all`,
+/// `--query-*`, `--state`) — never a mutation — so importing the live
+/// firewall has no side effects and needs no elevation on a normal
+/// polkit-configured host.
+fn query(args: &[&str]) -> Result<String, String> {
+    let out = Command::new("firewall-cmd")
+        .args(args)
+        .output()
+        .map_err(|e| format!("spawn firewall-cmd: {e}"))?;
+    if !out.status.success() {
+        return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+/// Read the **real** current firewall from the host via `firewall-cmd`.
+///
+/// Returns `None` when firewalld is not installed or not running — the
+/// caller then shows an honest "unavailable" state rather than any
+/// fabricated ruleset. When firewalld is running this reflects exactly what
+/// the host has configured: the default zone, panic mode, and — for each of
+/// the nine stock zones that exists — its interfaces, services, simple
+/// port openings, masquerade flag, and rich rules.
+pub fn import() -> Option<FirewallConfig> {
+    if !which_firewall_cmd() {
+        return None;
+    }
+    // firewalld must actually be running; `--state` prints "running".
+    if query(&["--state"]).ok().as_deref() != Some("running") {
+        return None;
+    }
+
+    let default_name = query(&["--get-default-zone"]).ok()?;
+    let default_zone = ZoneKind::from_name(&default_name).unwrap_or(ZoneKind::Public);
+    let panic_mode = query(&["--query-panic"]).map(|s| s == "yes").unwrap_or(false);
+
+    let zone_names = query(&["--get-zones"]).unwrap_or_default();
+    let mut zones = Vec::new();
+    for name in zone_names.split_whitespace() {
+        let Some(kind) = ZoneKind::from_name(name) else { continue };
+        if let Ok(text) = query(&["--zone", name, "--list-all"]) {
+            zones.push(parse_list_all(kind, &text));
+        }
+    }
+
+    Some(FirewallConfig {
+        enabled: true,
+        panic_mode,
+        default_zone,
+        zones,
+    })
+}
+
+/// Parse the block emitted by `firewall-cmd --zone=<z> --list-all` into a
+/// [`Zone`]. Pure — no IO — so it is unit-testable against captured output.
+pub fn parse_list_all(kind: ZoneKind, text: &str) -> Zone {
+    let mut zone = Zone::new(kind, Target::Default);
+    let mut in_rich = false;
+    for raw in text.lines() {
+        // Rich-rule lines are indented under the `rich rules:` header; once
+        // we've seen that header every subsequent `rule ...` line is one.
+        let trimmed = raw.trim();
+        if in_rich {
+            if let Some(rule) = parse_rich_rule(trimmed) {
+                zone.rules.push(rule);
+                continue;
+            }
+            // A non-rule, non-empty line ends the rich-rule block.
+            if !trimmed.is_empty() && !trimmed.starts_with("rule ") {
+                in_rich = false;
+            }
+        }
+        let Some((key, value)) = trimmed.split_once(':') else { continue };
+        let key = key.trim();
+        let value = value.trim();
+        match key {
+            "target" => zone.target = parse_target(value),
+            "interfaces" => {
+                zone.interfaces = value.split_whitespace().map(str::to_string).collect()
+            }
+            "services" => {
+                zone.services = value.split_whitespace().map(str::to_string).collect()
+            }
+            "ports" => {
+                for spec in value.split_whitespace() {
+                    if let Some(m) = parse_port_spec(spec) {
+                        zone.rules.push(Rule::new(m, Action::Allow, ""));
+                    }
+                }
+            }
+            "masquerade" => zone.masquerade = value == "yes",
+            "rich rules" => in_rich = true,
+            _ => {}
+        }
+    }
+    zone
+}
+
+/// Map a firewalld target string to a [`Target`].
+fn parse_target(s: &str) -> Target {
+    match s {
+        "ACCEPT" => Target::Accept,
+        "DROP" => Target::Drop,
+        "%%REJECT%%" | "REJECT" => Target::Reject,
+        _ => Target::Default,
+    }
+}
+
+/// Parse a `port/proto` spec (e.g. `8080/tcp`) into a [`Matcher::Port`].
+fn parse_port_spec(spec: &str) -> Option<Matcher> {
+    let (port, proto) = spec.split_once('/')?;
+    let proto = match proto {
+        "udp" => Proto::Udp,
+        _ => Proto::Tcp,
+    };
+    Some(Matcher::Port { port: port.to_string(), proto })
+}
+
+/// Parse a single firewalld rich-rule line into a [`Rule`]. Understands the
+/// subset the app can represent: an accept/reject verb, an optional
+/// `source address`, and either a `service name` or a `port`/`protocol`.
+/// Returns `None` for rich rules outside that subset (e.g. masquerade or
+/// icmp-type rules) so they're skipped rather than misrepresented.
+pub fn parse_rich_rule(line: &str) -> Option<Rule> {
+    if !line.starts_with("rule ") {
+        return None;
+    }
+    let action = if line.contains(" accept") {
+        Action::Allow
+    } else if line.contains(" reject") || line.contains(" drop") {
+        Action::Deny
+    } else {
+        return None;
+    };
+    let source = quoted_after(line, "source address=").unwrap_or_default();
+    let matcher = if let Some(svc) = quoted_after(line, "service name=") {
+        Matcher::Service(svc)
+    } else if let Some(port) = quoted_after(line, "port port=") {
+        let proto = match quoted_after(line, "protocol=").as_deref() {
+            Some("udp") => Proto::Udp,
+            _ => Proto::Tcp,
+        };
+        Matcher::Port { port, proto }
+    } else {
+        return None;
+    };
+    Some(Rule::new(matcher, action, source))
+}
+
+/// Read the double-quoted value immediately following `needle` in `hay`.
+fn quoted_after(hay: &str, needle: &str) -> Option<String> {
+    let rest = &hay[hay.find(needle)? + needle.len()..];
+    let rest = rest.strip_prefix('"')?;
+    let end = rest.find('"')?;
+    Some(rest[..end].to_string())
 }
 
 /// Build the ordered list of `firewall-cmd` commands that would realise
@@ -221,6 +381,74 @@ mod tests {
         let mut out = Vec::new();
         plan_zone(&z, &mut out);
         assert!(out.iter().any(|l| l.contains("--add-masquerade")));
+    }
+
+    const LIST_ALL: &str = "\
+public (active)
+  target: default
+  icmp-block-inversion: no
+  interfaces: wlan0 eth0
+  sources:
+  services: dhcpv6-client mdns ssh
+  ports: 8080/tcp 51820/udp
+  protocols:
+  masquerade: no
+  forward-ports:
+  source-ports:
+  icmp-blocks:
+  rich rules:
+\trule family=\"ipv4\" source address=\"192.168.1.0/24\" service name=\"https\" accept
+\trule family=\"ipv4\" port port=\"23\" protocol=\"tcp\" reject
+";
+
+    #[test]
+    fn parse_list_all_reads_real_zone_fields() {
+        let z = parse_list_all(ZoneKind::Public, LIST_ALL);
+        assert_eq!(z.target, Target::Default);
+        assert_eq!(z.interfaces, vec!["wlan0", "eth0"]);
+        assert_eq!(z.services, vec!["dhcpv6-client", "mdns", "ssh"]);
+        assert!(!z.masquerade);
+        // Two simple ports become allow-from-anywhere rules...
+        assert!(z.rules.iter().any(|r| r.matcher
+            == Matcher::Port { port: "8080".into(), proto: Proto::Tcp }
+            && r.action == Action::Allow
+            && r.source.is_empty()));
+        assert!(z.rules.iter().any(|r| r.matcher
+            == Matcher::Port { port: "51820".into(), proto: Proto::Udp }));
+        // ...plus the two rich rules.
+        assert!(z.rules.iter().any(|r| r.matcher == Matcher::Service("https".into())
+            && r.action == Action::Allow
+            && r.source == "192.168.1.0/24"));
+        assert!(z.rules.iter().any(|r| r.matcher
+            == Matcher::Port { port: "23".into(), proto: Proto::Tcp }
+            && r.action == Action::Deny));
+    }
+
+    #[test]
+    fn parse_rich_rule_service_accept_with_source() {
+        let r = parse_rich_rule(
+            "rule family=\"ipv4\" source address=\"10.8.0.0/24\" service name=\"cockpit\" accept",
+        )
+        .unwrap();
+        assert_eq!(r.matcher, Matcher::Service("cockpit".into()));
+        assert_eq!(r.action, Action::Allow);
+        assert_eq!(r.source, "10.8.0.0/24");
+    }
+
+    #[test]
+    fn parse_rich_rule_skips_unrepresentable() {
+        // A masquerade rich rule has no accept/reject verb we model.
+        assert!(parse_rich_rule("rule family=\"ipv4\" masquerade").is_none());
+        // Non-rule lines are ignored.
+        assert!(parse_rich_rule("  services: ssh").is_none());
+    }
+
+    #[test]
+    fn parse_target_maps_firewalld_strings() {
+        assert_eq!(parse_target("ACCEPT"), Target::Accept);
+        assert_eq!(parse_target("DROP"), Target::Drop);
+        assert_eq!(parse_target("%%REJECT%%"), Target::Reject);
+        assert_eq!(parse_target("default"), Target::Default);
     }
 
     #[test]

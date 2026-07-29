@@ -35,19 +35,23 @@
 pub mod app;
 pub mod doc;
 pub mod model;
+pub mod rfb;
 pub mod session;
+pub mod ssh;
+pub mod vnc;
+pub mod vt;
 mod theme_ext;
 
 use ui::widget::Widget;
 
-/// Build and return the app's root widget tree. Single integration point
-/// used by both the live event loop and the `--shots` offscreen renderer.
+/// Build the live app: it starts empty and shows only the user's real saved
+/// connections. It never fabricates a machine list.
 pub fn app_root() -> Box<dyn Widget> {
     Box::new(app::RemoteApp::new())
 }
 
-/// Like [`app_root`] but staged with a named scenario for a headless
-/// screenshot. An empty/unknown name yields the default frame.
+/// Build the live app staged with a named `--shots` scenario. Empty on a
+/// fresh machine — the responsive-layout scenarios still apply.
 ///
 /// Recognised scenarios:
 /// * `"narrow"` — collapse the navigation rail into its closed overlay flap,
@@ -55,5 +59,17 @@ pub fn app_root() -> Box<dyn Widget> {
 pub fn app_root_for_shot(scenario: &str) -> Box<dyn Widget> {
     let mut app = app::RemoteApp::new();
     app.dev_shot_scenario(scenario);
+    Box::new(app)
+}
+
+/// Build the sample-seeded demo app staged with a `--shots` scenario. This
+/// is the ONLY entry point that fabricates a connection list — used by the
+/// screenshot gallery so a populated frame is captured.
+pub fn app_root_for_shot_demo(scenario: &str) -> Box<dyn Widget> {
+    let mut app = app::RemoteApp::new_demo();
+    // Responsive-rail scenarios and screen scenarios are both dispatched by
+    // name; each ignores a name it doesn't recognise.
+    app.dev_shot_scenario(scenario);
+    app.dev_set_screen(scenario);
     Box::new(app)
 }

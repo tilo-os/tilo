@@ -13,7 +13,26 @@ empty state proves nothing. (I violated this by showing pdf_viewer from an empty
 
 ---
 
+## chrome consistency — the OS owns window chrome (fleet, HIG)
+The compositor draws the window title/app-name/logo; an app must not paint its own
+app-name/logo strip (and video must be immersive, §1e). Swept this pass — each
+verified by an offscreen shot (header gone, functional controls intact) + tests:
+- [x] Dropped the app-drawn name/logo header from calculator, monitor,
+      software_store, themes, video_editor, tube, disks, firewall, logs, totp —
+      keeping functional toolbars and promoting any real status line (drive
+      summary / firewall state / account count) to primary.
+- [x] video-player: edge-to-edge immersive; the persistent 48px bar is replaced by
+      a floating title+Open overlay that auto-hides with the controls.
+- [ ] Follow-up: route each app's title into OS chrome via `AppWidget::app_title`
+      (blocked: the standalone `ui::App` runner doesn't consume it yet; only the
+      compositor does, and these apps don't implement `AppWidget`).
+- [ ] Follow-up: software_store still shows an app tile+"Software" wordmark inside
+      its overlay nav drawer; tube keeps a small play-glyph brand at the nav-rail
+      head. Minor, drawer/rail-local — revisit if tightening further.
+
 ## calculator
+- [x] OS owns window chrome: dropped the "=" logo + "Calculator" wordmark from the
+      topbar; mode + RAD/DEG controls take the full width → fixed.
 - [x] Cards grow-to-fit (up to 96px max) then scroll; fractions + 3D default show
       in full, list reflows, never clips → fixed.
 - [x] Real CRDT editor: Text-backed diff-splice buffer, undo/redo via ui::State,
@@ -93,28 +112,60 @@ empty state proves nothing. (I violated this by showing pdf_viewer from an empty
 - [x] Emoji reactions — REAL (model + Automerge CRDT + UI, cross-peer convergence
       tested). Image attachments — REAL (ui::ImageStore + real FUSE fs.read; the
       synthesized `qos-demo://` images are shots-only). No action.
-- [ ] CALLING IS UI-ONLY (not real): the overlay is view-state + a join/leave beep.
-      NO camera/mic capture, NO opus/H.264 codec, NO transport — IrohTransport
-      never binds an endpoint (media.rs:232), connect()=false, send() loops back
-      in-process, so no peer ever receives a frame. request_screencast() is a None
-      stub (media.rs:189). To make it real: (a) capture via portal ScreenCast +
-      a pipewire/GStreamer mic source; (b) opus (audio) + H.264 (video) codec;
-      (c) transport — EITHER reuse the compositor's REAL H.264 pipeline
-      (shell/src/network/encoder.rs + peer_view.rs over gossipsub, already has
-      host-wins arbitration + signed invite tokens) OR bind the iroh QUIC seam —
-      pick ONE and wire it end-to-end.
+- [~] CALLING media pipeline is REAL behind `--features live-media`: GStreamer
+      mic → Opus and camera/screen → H.264 (in-tree openh264 source), shipped over
+      a bound iroh-QUIC transport; the ScreenCast portal (ashpd) is wired; remote
+      NALUs decode into per-peer tiles. Join publishes each peer's dialable ticket
+      into the shared voice-membership map (the signalling channel, riding the same
+      collab transport as the messages), so peers dial each other with no extra
+      round-trip. The default/`--shots` build carries none of that stack and runs
+      the call UI against a simulated local bus. REMAINING: a dedicated MoQ-over-iroh
+      framing (the transport is raw iroh QUIC today, not MoQ), and end-to-end proof
+      of real frames flowing on a live install (unverifiable headlessly).
+- [x] VOICE CHANNELS you JOIN (Discord-style): join/leave writes the local member
+      into the channel's shared voice membership (CRDT); mute/deafen/audio-only
+      toggle real state and mirror into that membership so peers see it; the
+      expanded overlay is a responsive participant grid (host-first, reflows by
+      count) with per-participant speaking rings, avatars, mic/camera state, and
+      the live P2P-vs-host routing surfaced. Runs fully against the simulated bus
+      in the default/`--shots` build; real mic flows behind `--features live-media`.
+- [x] SCREEN SHARE is a first-class featured stage — REAL: a "Share screen" control
+      requests a source through the `ScreenPortal` seam (real xdg-desktop-portal
+      ScreenCast via ashpd behind `live-media`; honest `None` in the default build,
+      so it never fakes a stream). A granted share flips `call.sharing` and mirrors
+      into the shared voice membership (`voice_set_sharing`), so every peer promotes
+      the overlay to a presentation stage: a large featured screen tile above a
+      single-row participant filmstrip, with a presenter badge on the sharer's tile.
+      Remote screen frames route to a dedicated `remote_screens` slot (separate from
+      camera), and the featured tile shows a real decoded frame when present, an
+      honest drawn-monitor "connecting" placeholder otherwise — never a fabricated
+      picture. Proven by tests: `share_screen_gates_on_the_portal_and_mirrors_into_voice_membership`
+      (inject a fake portal → share + CRDT mirror; system portal declines → honest
+      gating), `a_remote_screen_share_promotes_the_overlay_to_the_presentation_stage`,
+      `share_control_reads_the_live_share_state`, `voice_screen_share_round_trips_through_the_shared_membership`,
+      and the `filmstrip_rects`/stage geometry tests. Visual proof: the `share`
+      `--shots` scenario captures the featured stage + filmstrip + controls.
 - [ ] P2P-by-default + APPOINTED-HOST routing does not exist. User's model: direct
       P2P by default, but route a workspace through an appointed host (e.g. a home
       server also running qOS) when one exists. Foundation exists in the compositor
       (session-host designation + "host always wins" for surface sharing); needs a
       persistent self-hosted workspace-host / relay concept built on top.
-- [ ] Message EDITING has no user entry point: the CRDT writer `edit_message` +
-      the read-only "(edited) · view history" popover exist, but nothing calls
-      edit_message outside tests/seed (doc.rs:1143). Add a context-menu "Edit" /
-      ArrowUp-to-edit-last-message that calls ChatDoc::edit_message (doc.rs:593).
-- [ ] VIDEO attachments ABSENT: Attachment is only Image|File (model.rs:140); a
-      shared video renders as a plain file chip — no poster, no inline playback.
-      Add a Video variant + inline player (depends on the ui video core below).
+- [x] Message EDITING now has a user entry point — REAL: right-click your own
+      message → "Edit message", or ArrowUp from an empty composer, opens an inline
+      editor; commit writes through `ChatDoc::edit_message`, which archives the
+      prior body into the message's history list and flags it `edited`. Only your
+      own messages are editable. Covered by `edit_via_menu_writes_through_edit_message`,
+      `arrow_up_in_empty_composer_edits_last_own_message`, `edit_escape_discards_without_writing`,
+      `cannot_edit_another_authors_message`, and a two-peer convergence test
+      (`an_edit_and_its_history_converge_across_two_participants`) that proves the
+      edited body AND its archived history reach the other peer over the incremental
+      delta the broker ships.
+- [x] VIDEO attachments — REAL: `Attachment::Video { name, path, w, h, size }` is
+      shared by reference (the FUSE path, never the bytes) and renders as an inline
+      poster/play card with the real resolution + size. Full frame decode still
+      needs the `live-media` media engine, but the share, persistence, and CRDT
+      round-trip are real (`video_attachment_round_trips_through_the_crdt`,
+      `attaching_a_video_posts_an_inline_video_card`).
 
 ## video playback (ui layer) — REAL but SILOED (audit 2026-07-04)
 - [ ] The working decode (NoFlush single persistent decoder) lives ONLY in tube
@@ -144,6 +195,18 @@ empty state proves nothing. (I violated this by showing pdf_viewer from an empty
       (org.freedesktop.portal.Location) + transit time picker → fixed (6a9ad41).
       (Location's real coords depend on the host location service + permission —
       wiring is real + unit-tested; live fix unverifiable headlessly.)
+- [x] Real-time traffic layer (product.md's "crowdsourced real-time traffic over
+      OSM"): a togglable congestion overlay in the immersive chrome (a traffic-light
+      control in the floating stack — NO sidebar) that colours road segments green →
+      amber → orange → red by a `Congestion` signal, with a bottom-left legend
+      (per-level counts + provenance). There is no turnkey free real-time-traffic
+      feed to wire, so the model is honest: the LIVE app has no peer reports and
+      shows "No traffic data" (never fabricated congestion); the `--shots` / sample
+      cartography path colours its roads from a deterministic sample set (sub-
+      segmented so congestion varies along a road, class-weighted so arterials run
+      busy) purely to exercise the rendering, labelled "sample data". Verified on
+      the populated 1280px overlay + the empty-state shots; asserted by the
+      `traffic::` model tests + the app toggle / honest-empty / click-target tests.
 
 ## typst_editor
 - [x] Horizontal scroll / keep caret in view → fixed.
@@ -167,6 +230,42 @@ empty state proves nothing. (I violated this by showing pdf_viewer from an empty
 - [x] Advanced options scroll into view → fixed.
 - [x] Vault encrypted at rest → fixed.
 
+## settings — CLEAR (every pane shot + inspected, controls driven against the real stores)
+- [x] Sidebar is HIG §1 correct and stays that way: when it fits it is docked
+      flush-left with the search field pinned on top and NO collapse button; when
+      it doesn't fit (narrow) the list and content become SEPARATE full-screen
+      screens with a top-left back arrow — never an overlay/scrim over content.
+      Verified all 16 panes wide + the narrow list and narrow content screens.
+- [x] Cards sit on one aligned grid in every pane (consistent left/right inset and
+      gap) — no "weird rounded cards that don't line up". Verified across all panes.
+- [x] Wi-Fi signal icon was a tofu box → fixed: the Unicode block-element bars
+      (▁▂▄▆█) have no glyph in the shipped fonts and fell back to a `.notdef`
+      box; replaced with the MDI `wifi-strength-{outline,1,2,3,4}` family the
+      sidebar's own Network icon uses. Verified by re-render (real signal arcs, no
+      tofu) + a unit test pinning the glyph mapping to the MDI range.
+- [x] External Accounts no longer leaks the on-disk store path in the UI (the
+      "Accounts store: ~/.config/qos/accounts/store.json" caption is removed) —
+      HIG §4. Verified by re-render.
+- [x] No fabricated sample data in the live app: Users reads the real /etc/passwd
+      roster (no Ada-Lovelace fallback) and External Accounts starts empty (no
+      illustrative ada@example.com rows) — honest empty states; the sample is kept
+      only for tests/--shots. Verified: the live `new()` path over an empty store
+      renders empty (unit test with a redirected config dir) and the production
+      roster never returns the sample.
+- [x] Every pane reads/writes real state, driven and asserted (no mocks):
+      Appearance / Region & Formats / Power / Display / Mouse & Keyboard / Updates
+      persist to the shared settings.json (prefs_persistence + per-pane sync
+      tests); Network / Bluetooth / Sound / Time & Date drive real nmcli /
+      bluetoothctl / wpctl / timedatectl through os-actions; External Accounts
+      add/remove writes the shared AccountStore + SecretVault (accounts_mail_loop
+      end-to-end); About / Users / Printers / Displays read real /proc, /etc, /sys,
+      and DRM connectors.
+- [ ] Follow-up (not a defect): the committed `apps/settings/shots/*.png` fixtures
+      are stale (predate the search-on-top sidebar) — regenerate in a personal-data
+      -free environment (they must not bake in a real box's Wi-Fi/BT/email).
+- [ ] Follow-up: Permissions & Roles is an honest read-only overview; the embedded
+      role/permission editor is still gated on the permissions service.
+
 ## slides (presentation) — CLEAR (verified, committed 6c2e54b)
 - [x] Thumbnail body-text garble, present counter/hint overlap, overview badge
       overlap → fixed.
@@ -185,6 +284,54 @@ empty state proves nothing. (I violated this by showing pdf_viewer from an empty
       hook, so present returns false = wait-for-input rather than an autonomous
       1 Hz tick; correct per "not every vsync").
 - [x] Crate stays named `slides`.
+- [x] On-canvas text + speaker-notes editing adopt the shared `ui`
+      caret/selection core (`ui::text_selection`): shift+arrow extends,
+      ctrl+arrow is word-wise, Ctrl+A selects all, Ctrl+C/X/V use the shared
+      clipboard, Delete forward-deletes, typing/paste replace the selection —
+      all splicing the real CRDT (no per-app text buffer). Click-to-place caret,
+      double-click word-select and drag-select on the canvas text box; selection
+      highlight rendered. Undo/redo already handled by the toolkit. Tests assert
+      each on the real key path into the CRDT.
+- [x] Drag-to-delete: a red dashed "Drop to delete" zone pinned to the bottom of
+      the slide rail, live only while a thumbnail is dragged; dropping there
+      removes that slide from the CRDT (test drives on_press → drag → release).
+      Slide reorder + context menu (add/duplicate/move/delete) already via the
+      shared `PageSidebar`.
+- [x] Present mode is genuine borderless fullscreen via `ui::fullscreen`
+      (`FullscreenRequest::distinct(Largest)`); the App drives
+      `set_fullscreen(Borderless)` and drops present mode on a compositor-side
+      un-fullscreen. Verified in shots (present / presenter / notes / white-out).
+- [x] §7 visual pass on the editor, filmstrip and present surfaces (spacing,
+      typographic hierarchy, visible selection/active state, honest empty state).
+
+## camera
+- [x] Killed the left desktop nav rail (Camera/Scan/Gallery/Settings + app
+      aperture logo). The camera is now an immersive, full-bleed app: the
+      viewfinder fills the window edge-to-edge and every control floats over it —
+      capture-setting pills (MP/HDR/Timer/grid) top-left, a settings gear
+      top-right, a Photo/Video/Scan switcher bottom-centre, the shutter, a
+      last-shot thumbnail bottom-left (tap → Gallery), and a lens flip
+      bottom-right. Gallery is a push with a ‹ back button; Settings is an
+      overlay sheet — neither is persistent rail chrome. Verified on the camera,
+      scanner, gallery and settings shots (1280×800).
+- [x] No fake content in the live path: the disk-backed library starts EMPTY
+      ("No photos yet — Take a photo and it'll show up here"); the 9 sample
+      photos exist only behind `--shots`/`--emit-photos` (Storage::Sample).
+      Verified: live empty-dir gallery shot shows the empty state, hermetic shot
+      shows the grid + detail laying out. (`disk_source_starts_empty_and_seeds_no_content`.)
+- [x] Settings is a proper centred overlay sheet (scrim + close + Escape),
+      full-width grouped rows (Capture / Composition / Privacy & camera) on a
+      base-surface sheet with raised cards — no longer a narrow centred column
+      stranded in an empty pane. Scrolls on short windows (verified 900×560).
+- [x] Live v4l2 capture unchanged: `capture.rs` untouched; the
+      `#[cfg(feature = "live-capture")]` poll/enumerate/lens-selector path in
+      `app.rs` references only stable APIs and was not modified. (Could not
+      compile-check the `live-capture` feature in this box — gstreamer/glib
+      devel not provisioned — but the code path is byte-for-byte unchanged.)
+- [x] Codified the lesson in `ui/HIG.md` §1e: an immersive / full-bleed app
+      class (camera, video player, maps, games) that does NOT get the content-app
+      sidebar — edge-to-edge surface, floating/overlay controls, sheet-based
+      secondary screens.
 
 ---
 
@@ -239,22 +386,62 @@ empty state proves nothing. (I violated this by showing pdf_viewer from an empty
 - [ ] Polish across widths (review at several widths).
 
 ### sheets
-- [ ] No right-click context menu on the sheet TABS at the bottom.
+- [x] Right-click context menu on the sheet TABS: Rename / Duplicate / Insert
+      sheet / Move left / Move right / Delete + a tab-colour palette → done
+      (verified on the `tabmenu` shot; opens on the Budget tab with all rows +
+      the colour swatches).
+- [x] Excel-style multi-range cell selection: Ctrl+click / Ctrl+drag build a
+      discontiguous selection, drag selects a rectangle, Shift+click extends; the
+      status bar aggregates Sum/Avg/Count over the *whole* multi-range and the
+      name box shows an "N cells" count → done (verified live: B2:B6 + E2:E7 =
+      11 cells, status bar Sum $14,750.00 · Avg $1,340.91 · Count 11; tests
+      `multi_range_selection_aggregates_numeric_cells_over_the_real_pointer_path`
+      drives the real ctrl-drag pointer path and
+      `multi_range_selection_summary_aggregates_both_ranges` asserts the
+      status-bar summary).
 - [ ] Implement a large subset of Excel/LibreOffice FORMULAS (needn't be 1:1; can
-      improve where sensible).
-- [ ] Reference-coloring only shows while EDITING a cell — should also show when a
-      formula cell is just SELECTED.
-- [ ] The top formula edit bar has no caret / text selection — give it a real
-      editable field (shared caret core).
+      improve where sensible). (The engine is already broad — `formula.rs` — but
+      not yet audited for Excel/Calc parity; left open.)
+- [x] Reference-coloring also shows when a formula cell is just SELECTED, not only
+      while editing → done (verified: E2 selected shows `=SUM(B2:D2)` with `B2:D2`
+      tinted in the formula bar AND the B2:D2 range outlined on the grid;
+      `selected_formula_bar_shows_colored_body`).
+- [x] The top formula edit bar is a real editable field with caret + text
+      selection → done (verified on the `fbarselect` shot: the focused formula bar
+      shows a selected `B2:D2` reference with the range highlighted on the grid).
+
+## word-processor
+- [x] Real Save / Save As / Open via the XDG portal (`ui::portal`). Ctrl+S saves
+      to the current path, or — for an untitled document — opens the host Save-As
+      picker instead of silently writing `~/Untitled.md`; Ctrl+Shift+S is always
+      Save As; Ctrl+O opens a document in place. The chosen extension picks the
+      qdoc codec (.docx/.odt/.md/.rtf/.html/…), so a docx opened → edited →
+      saved-as writes a real .docx that round-trips → done (test
+      `save_as_writes_a_real_docx_that_round_trips` proves the PK/OOXML signature
+      + round-trip; `open_pick_replaces_the_document_in_place` proves in-place
+      Open). Retired the bespoke image-only portal module for the shared
+      `ui::portal` primitive (open + save + filters), dropping the app's direct
+      ashpd/tokio/url deps.
 
 ## monitor — remaining (overlap + responsive strip already fixed)
-- [ ] "Copy PID" context-menu action is a no-op stub — reports "PID N copied" but
-      writes to NO system clipboard. Wire a real clipboard write (or remove the lie).
-- [ ] Narrow (≤680px) Processes detail push-pane wastes ~70% vertical height: the
-      96px-strip draw_detail is handed a full-height rect (name/PID top, chips+Kill
-      bottom, huge void between). Give it a proper full-height narrow layout.
-- [ ] Narrow 560 THR column header clipped to "T" (needs h-scroll to read) — a core
-      column; widen/prioritise it at narrow.
+- [x] "Copy PID" context-menu action writes the real PID to the OS clipboard via
+      `ui::clipboard_copy` (arboard, wayland-data-control) — the toast reads "PID N
+      copied to clipboard" and mirrors a genuine clipboard write (silent no-op only
+      in a headless/locked-down session). Verified in `apply_action` + the context
+      menu shot; asserted by `context_menu_copy_pid_records_pid` /
+      `copy_pid_records_and_shows_expiring_toast`.
+- [x] Narrow Processes detail push-pane fills the full height: the pushed pane
+      renders the command line, an identity line, a large live CPU sparkline and a
+      six-cell stat grid (Memory/Virtual/Threads/Open files/Status/Running-for) with
+      Stop + Kill pinned to a reserved bottom bar — no void. Verified on the 560px
+      `--scenario detail` shot.
+- [x] Narrow THR column reads without a horizontal scroll: PID/NAME/CPU%/MEM/THR are
+      the essential columns and USER (the droppable text column) is hidden once the
+      table can't seat all six — so THR, a core numeric column, is never pushed off
+      the right edge. Below even the five essentials the table still overflows and
+      scrolls (honest fallback). Verified on the 560px table shot; asserted by
+      `narrow_hides_user_so_threads_reads_without_hscroll` / `wide_shows_user_column`
+      / `very_narrow_table_overflows_so_it_must_scroll_not_overlap`.
 
 ## chat — remaining (call-overlay void + first-run flash already fixed)
 - [ ] Floating call-huddle title ("Design Huddle") overlaps the presence dot +
@@ -264,3 +451,222 @@ empty state proves nothing. (I violated this by showing pdf_viewer from an empty
 - [ ] Minor perf: ChatApp::needs_redraw() returns true unconditionally → a full
       re-render on every CursorMoved even when no hover/selection changed. Gate it
       on actual state change (not an idle spin, but wasteful under pointer motion).
+
+---
+
+## honesty pass — live path starts real/empty, samples gated to `--shots`
+
+Live launches must show real (or honestly empty) data; fabricated sample
+content is reserved for `--shots`/demo builders. Each item build + tested +
+shot-inspected (empty state and demo).
+
+- [x] store — the shopfront search box was a dead styled `Container` and the
+      source-filter chips were an inert `ToggleGroup` (`on_change` no-op). The
+      search box is now a real `TextInput` bound to a CRDT `Text` that filters
+      the catalog; the chips are wired through a shared cell that `sync` adopts
+      into `active_filter`. Removed the `[All]` bracket rendering on category
+      chips and the stray tiny "update" label under cards. Tests drive both the
+      typed query and a chip click through the real `sync`. (322a44f5)
+- [x] tube — removed the dead "Invidious instance" control: the selected
+      instance was discarded in `Request::Search` (real search runs through the
+      yt-dlp/InnerTube backend; media resolution uses its own instance list).
+      Dropped the row + its "a real control, not a dead ornament" comment, the
+      cycle action, the `INSTANCES` table, the Settings "Source" card + field,
+      the "sample data" wording on the offline label, and "across your instance"
+      copy. Live already starts empty. (818ff6cc)
+- [x] chat — live already seeds an honest minimal starter (My Workspace +
+      #general + Lounge, local user only), never the fabricated "Acme Design"
+      demo. Fixed the guardrail test to pin `QOS_CHAT_DATA` at a temp dir so it
+      exercises the fresh first-run seed instead of adopting (or overwriting) an
+      on-disk store. (7ab4fc18)
+- [x] backups — the constructor loaded `Catalog::sample()` unconditionally
+      (58 GB / Seagate / Backblaze / a week of snapshots on live launch). Live
+      now starts on an empty catalog with a "No backups configured yet"
+      onboarding; the sample moved behind `new_demo()`/`app_root_demo()` for
+      `--shots`. Real btrfs/restic backend still a later task. (834b9f49)
+- [x] calendar — live already starts empty on the real persisted store
+      (`Model::default()`, `demo`-gated seed); the "Design review / Team standup"
+      + Work/Personal/Health sample is `new_demo()`/`--shots` only. Verified the
+      empty onboarding ("No events yet") renders. (no code change)
+- [x] ebook — `load_library()` no longer falls back to the bundled sample book
+      ("The Lantern-Keeper's Almanac") when the reader has no epubs; a fresh
+      shelf is empty and lands on the existing "No books yet" onboarding. The
+      bundled EPUB + multi-book sample stay in the `--shots`/test path. (e73ca2d8)
+- [x] ebook — the floating text-selection HUD (already had highlight swatches +
+      Note) now has a **Copy** action: it writes the FULL selected passage to the
+      OS clipboard via `ui::clipboard_copy` (same primitive pdf_viewer uses), not
+      the 160-char annotation excerpt. A bare `c` copies the live selection too
+      (mirroring `h`=highlight / `m`=note), and Copy keeps the selection so the
+      reader can still highlight/note it. Verified on the wide + narrow selection
+      shots; asserted by `copy_action_copies_the_full_selected_passage` /
+      `copy_key_shortcut_targets_the_active_selection`. (Text selection / drag-
+      select / highlight / annotate / comments already existed; continuous-scroll
+      and two-up spread remain — a large refactor of the single-page reader draw,
+      deferred.)
+- [x] software_store — the constructor always loaded `sample_catalog()`
+      (GIMP/Blender with fabricated star ratings), shown live, while the real
+      popular-collection fetch landed unused in `live_apps`. A live worker now
+      starts with an empty catalog and Browse renders the real Flathub popular
+      set (ordered) with a "Loading apps from Flathub…" state; the sample stays
+      offline/`--shots` only. (bd2f320c)
+
+## video_editor — real import / decode / export (a real editing engine, now with real media)
+
+The timeline/CRDT editing engine (split/trim/ripple/snap/grade/fade, all
+tested) was real, but it could not import real media, never showed real video,
+and could not export. Those three seams are now real; each headless-gated part
+is honestly gated and proven.
+
+- [x] Real media import — added an "Import…" action (topbar + empty-bin button
+      + Ctrl+O) that opens the XDG FileChooser portal (`ashpd`, `portal`
+      feature) and brings picked video/audio/image files into the bin as real
+      clips. A dependency-free container probe (`src/probe.rs`) reads **real**
+      metadata with no decoder — ISOBMFF duration/dimensions/codec/fps (`mvhd`
+      /`tkhd`/`stsd`/`stsz`/`hdlr`), WAV channels/rate/duration, PNG/JPEG dims —
+      so the default build gets real numbers, not placeholders. Files under the
+      `/var/workspace` FUSE mount store a workspace-relative reference (they
+      replicate to peers); a local import stores an absolute path. `media::
+      resolve` now handles absolute paths. Tests: crafted-byte probe tests
+      (mp4/wav/png/jpeg + honest-degrade), and an app test that drives a real
+      PNG through `sync` → a real `MediaItem` in the bin with real dims/duration,
+      replicated into the CRDT. The old "Media import isn't wired up yet" leak
+      is gone.
+- [x] Real preview decode — replaced the always-synthesized gradient (and the
+      broken openh264-fed-raw-bytes stub) with a `PreviewDecoder` on the shared
+      `media::MediaEngine`: it seeks the clip's source time, plays a frame to
+      the sink, and pauses to hold it. Behind `--features decode` (→
+      `media/decode`) the engine is a real GStreamer `playbin`; the canvas blits
+      the true frame (green "LIVE" badge) and falls back to the representative
+      frame for an un-hydrated reference. Proven: a hermetic synth-backed seam
+      test (top-clip → resolve → hydration-gate → seek/poll → frame), and — with
+      `decode`+`gst` — a real round-trip that encodes an H.264 clip in-process
+      and decodes a true 192×108 frame back. Visually verified: `--import` a real
+      SMPTE clip and the preview shows the real colour bars, not a gradient.
+- [x] Real export — `export.rs`'s `gst` path returned "not yet wired". It now
+      builds a real `appsrc → videoconvert → encoder → mux → filesink` pipeline
+      (`--features gst`), pushing the composited timeline frames (the same
+      grade/fade math the preview shows) and writing a real file: MP4/MOV via
+      `openh264enc`, WebM via `vp8enc`. It never reports success unless a
+      non-empty file exists. The default build stays honest — a "needs the
+      GStreamer build" status, no fake progress. Tests: pipeline-construction +
+      even-aspect output dims (default build), and a real export that writes a
+      valid `ftyp` MP4 (`gst` feature).
+- Honesty: capabilities that are feature-gated say so plainly (the import
+      notice, the "needs the GStreamer build" export status); nothing fabricates
+      progress or a written file. Real gst dep: `gstreamer1-devel` +
+      `-plugins-base-devel` + `-plugins-good` + `-plugin-openh264` +
+      `-plugin-libav` (dev headers + codec/mux plugins) — installed in
+      `my-distrobox`; the default build needs none of it.
+
+## vpn — real WireGuard/OpenVPN transport (connect, status, throughput)
+
+The app already started empty with real `.conf`/`.ovpn` parsers and a portal
+import, but Connect was a gated no-op, status was a stored toggle, and the
+throughput chart was a synthesized waveform. The transport is now real; the
+mutating path stays behind `QOS_VPN_ALLOW_EXEC` and the UI never claims
+Connected unless a real command succeeded and the kernel confirms the interface.
+
+- [x] Real bring-up / teardown: importing a `.conf`/`.ovpn` persists the raw
+      file (`0600`) into the app data dir and wires it as the run target, so
+      Connect runs `wg-quick up <config>` / `openvpn --config <config> --daemon`
+      on the exact user config and Disconnect runs the matching teardown. Connect
+      only shows Connected after the command exits 0 AND the interface probes up.
+- [x] Real status: each frame reconciles the stored status against the true
+      interface/process state — `ip link show <iface>` (UP flag) for WireGuard,
+      `pgrep -f <config>` for the OpenVPN daemon — throttled to ~1 Hz and gated
+      on the exec opt-in, so a tunnel that drops out-of-band flips back to
+      Disconnected on its own.
+- [x] Real throughput: connected tunnels poll real kernel byte counters
+      (`wg show <iface> transfer`, falling back to
+      `/sys/class/net/<iface>/statistics/`) and the chart plots rates differenced
+      from consecutive real samples. Removed the fabricated waveform generator;
+      with no live data the chart is empty with an honest note (never a curve).
+- [x] Proven: unit tests for the wg-quick/openvpn argv from a profile, the
+      import→persist→bring-up wiring, `wg show transfer` / `ip link` / sysfs
+      parsing on real command-output fixtures, real reads against the loopback
+      interface, and a real dummy-interface bring-up (netlink status Connected →
+      teardown → Disconnected) gated on the exec env var and honest when the box
+      lacks the privilege/tools. (bbf44657, 335c9933, 078358e6)
+- [ ] OpenVPN throughput is best-effort (kernel-assigned tun device); Tor
+      chaining and a live management-socket status remain later work.
+
+## remote — real SSH + VNC transport (Connect actually connects)
+
+The honesty pass already made the live app start empty and show an honest "not
+connected" card. The transport itself is now **real** — Connect opens a genuine
+session, and on failure shows the real error, never a fabricated terminal or
+desktop. A live connection stays gated behind `REMOTE_LIVE_SESSIONS`; the
+default build never touches the network and keeps the honest surface.
+
+- [x] Real SSH — `src/ssh.rs` drives a `russh` client on a background tokio
+      runtime: real TCP connect, real key exchange, real auth (password via
+      `REMOTE_SSH_PASSWORD`, or a private key via `REMOTE_SSH_KEY` /
+      `~/.ssh/id_*`), and a real interactive PTY channel. Output is parsed by a
+      compact VT/ANSI emulator (`src/vt.rs`, over `vte`) into the terminal grid
+      the surface renders; keystrokes flow back into the PTY. Proven by a real
+      round-trip test that stands up a `russh` **server** on a loopback socket
+      and drives the production client through it (connect → password auth →
+      shell banner into the grid → an upstream keystroke echoed back).
+- [x] Real VNC — `src/rfb.rs` is a from-scratch RFB (RFC 6143) codec:
+      version + security negotiation, `None` and `VNC Authentication` (single
+      DES, cross-checked against openssl/pyDes), true-colour pixel formats, and
+      the `Raw`/`CopyRect`/`RRE` encodings — decoders take any `Read`, so the
+      same path runs on fixtures and on the live socket. `src/vnc.rs` drives it
+      over TCP on a background thread into a shared RGBA framebuffer the surface
+      paints, with pointer/keyboard injected back. Proven by a real round-trip
+      against a loopback RFB server (handshake → decode a known 4×2 framebuffer,
+      pixel-exact) plus an honest-failure test (refused connection → `Failed`).
+- Honesty: connecting/failed/closed states each render the real status; the old
+      fabricated sample transcript + synthetic desktop are deleted. Secrets are
+      read from the environment at connect time and never stored in the CRDT.
+      Deps (`russh`, `tokio`, `vte`, `des`) build in the default profile; a live
+      session still requires the runtime opt-in. Cross-host verification against
+      a system `sshd` / external VNC server is the remaining nice-to-have (the
+      loopback round-trips already exercise the full real transport).
+
+## firewall — responsive reflow + §7 CLEAR (verified wide/medium/narrow, shots)
+
+Was a fixed three-rail immediate-mode painter (214px zone rail + rules table +
+form + a fixed ~300px services panel) with zero width reactivity — crushed at
+phone widths.
+
+- [x] The zone rail is now the shared `ui::SidebarDrawer`: docked beside the
+      content on wide windows (with an in-rail collapse toggle), a summoned
+      overlay drawer with a dismiss scrim when narrow (hamburger in the header).
+- [x] Progressive breakpoints so content reflows, not just the rail: the
+      services panel collapses below 1000px (the rules table takes the whole
+      centre); below 720px the rules table switches to two-line rows, the
+      add-rule form stacks its controls onto four lines, and the summary stat
+      chips wrap. The header status line + backend chip drop at narrow (the
+      enable pill + red "Panic ON" button already carry that state) so nothing
+      wraps over the summary.
+- [x] Honesty preserved: the live app still reads the real firewalld config and
+      shows an honest "firewalld unavailable" card when it can't — never a
+      fabricated ruleset. Sample ruleset stays behind `--shots`/`new_demo()`.
+- [x] Verified by offscreen shots at 1280 / 900 / 440 (populated) + the drawer
+      open + the live unavailable state; 32 tests green.
+
+## backups — responsive reflow + §7 CLEAR (verified every view wide + narrow, shots)
+
+Was a fixed 256px floating-card rail (Timeline) plus fixed multi-column tile /
+card grids that crushed at narrow widths.
+
+- [x] The Timeline source rail is now `ui::SidebarDrawer` (docked wide, overlay
+      drawer + scrim when narrow; hamburger in the top bar, in-rail collapse
+      when docked).
+- [x] Tile/card grids reflow by width: the summary tiles re-column 4→2→1 via the
+      shared `card_columns`/`card_column_width`; the destination repository
+      cards reflow into an aligned grid and become compact single-column cards
+      when narrow (no crushed ring gauge); the schedules editor + its summary
+      stack vertically when narrow; the distribution legend wraps; the recent-
+      activity feed folds to two lines.
+- [x] Top-bar chrome compacts (icon-only primary action, tabs clamp + abbreviate
+      before they collide, wordmark drops); the restore sheet clamps to the
+      window and stacks its columns; the status bar's three texts no longer
+      overlap.
+- [x] Honesty preserved: live still starts on an empty catalog with the "No
+      backups configured yet" onboarding; the populated sample stays behind
+      `--shots`/`new_demo()`.
+- [x] Verified by offscreen shots of Timeline / Sources / Destinations /
+      Schedules / Restore at wide + narrow (+ the empty onboarding + the overlay
+      rail open); 12 tests green.

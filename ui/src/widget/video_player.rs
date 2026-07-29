@@ -733,6 +733,15 @@ impl VideoPlayer {
         }
     }
 
+    /// Whether the auto-hiding controls overlay is currently on screen (the
+    /// reveal timeout is live, or a settings menu is open). An app that floats
+    /// its own affordance over the video (e.g. an Open button) reads this so its
+    /// overlay hides in lockstep with the player's controls — keeping the video
+    /// truly edge-to-edge during immersive playback.
+    pub fn controls_visible(&self) -> bool {
+        self.controls_visible_now() || self.open_menu.is_some()
+    }
+
     fn show_controls(&mut self) {
         self.controls_visible_until = Some(Instant::now() + CONTROLS_AUTO_HIDE);
     }
