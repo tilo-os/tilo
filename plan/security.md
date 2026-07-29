@@ -133,8 +133,23 @@ Per request:
 ### Network
 
 - `unshare(CLONE_NEWNET)` isolates per-workspace.
-- A `Network::Always { hosts: Some(["github.com"]) }` grant wires per-workspace `nftables` rules allowing only those hosts. Network isolation is optional via a helper that's a no-op if `nftables` is missing.
 - Owner workspace defaults to "no isolation"; invited-peer workspaces default to "isolated".
+
+**Per-host egress** (`crates/packaging/launcher/src/netgate.rs`). A grant naming specific hosts does *not* share the network namespace. The namespace stays empty and the app's only route out is an `AF_UNIX` socket bind-mounted from the launcher, which speaks SOCKS5 and enforces the allowlist. A grant for `*` still shares the host network — there is no allowlist to enforce, so there is nothing to broker.
+
+Three properties make that a boundary rather than a convention:
+
+- **An app that ignores the gate is offline, not unfiltered.** An unshared namespace has no route, so there is no fallback path to fall back to. `crates/packaging/launcher/tests/netgate_egress.rs` asserts this against a real sandbox.
+- **The allowlist is matched against the host *name*,** taken from the SOCKS request, before that name is resolved. So a rotating CDN works, a DNS record that changes mid-session is just two resolutions, and no address is ever pinned.
+- **An address literal never satisfies a hostname entry.** Otherwise an app could resolve an allowed name itself and then ask for the address — and anyone controlling a DNS answer would turn a name-scoped grant into an any-host grant.
+
+DNS is treated as egress. An app with no grant reaches no resolver; an app with an allowlist needs none, because the gate resolves on its behalf after the name has passed the policy. So an app cannot make the gate resolve a name it was not allowed to reach, and cannot signal through query contents because it emits no query.
+
+This needs no privilege and no kernel feature `bwrap` does not already require. Earlier drafts of this document described per-workspace `nftables` rules; that was never implemented, and it would not have worked as described — a rule set is written against addresses and cannot express a hostname, and installing one needs `CAP_NET_ADMIN` the launcher does not have.
+
+Not constrained: **ports** (a `NetHost` scope names a host and carries no port) and **content** (the gate relays TCP and deliberately does not terminate TLS).
+
+If the gate cannot start, the launch is **refused** rather than downgraded — sharing the network would apply "this host" as "every host". `QOS_LAUNCHER_NET_GATE=off` takes the unfiltered path deliberately and logs it.
 
 ### Hardware
 
@@ -175,6 +190,7 @@ When a peer publishes `RemoteInput { peer, surface, event }`:
 | Clipboard data leak        | `wl_data_device` blocked at bridge v1                   | `compositor/bridge.rs`             |
 | Input injection (remote)   | Region + Z-order + scrubber + rate limit                | `compositor/state.rs`              |
 | Sandbox escape via syscall | seccomp-bpf blocklist                                   | `sandbox/seccomp.rs`               |
+| Network exfil to an ungranted host | Empty netns + name-matched SOCKS5 egress gate   | `packaging/launcher/netgate.rs`    |
 | Clickjacking               | Z-order verification before remote input inject         | compositor scene graph             |
 | Privilege escalation       | Owner-only grant authority + CRDT-persisted grants       | `shell/state.rs::Workspace.grants` |
 | Traffic snoop              | noise / TLS 1.3 end-to-end                              | libp2p, iroh                       |
