@@ -250,34 +250,6 @@ pub fn sample_vault() -> Vault {
 // Formatting helpers (pure).
 // ----------------------------------------------------------------------
 
-/// Human byte total, e.g. `4.8 GB`.
-pub fn human_bytes(bytes: u64) -> String {
-    const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
-    let mut v = bytes as f64;
-    let mut u = 0;
-    while v >= 1024.0 && u < UNITS.len() - 1 {
-        v /= 1024.0;
-        u += 1;
-    }
-    if u == 0 {
-        format!("{} {}", bytes, UNITS[u])
-    } else {
-        format!("{:.1} {}", v, UNITS[u])
-    }
-}
-
-/// Human transfer rate from bytes/sec, e.g. `6.4 MB/s`.
-pub fn human_rate(bytes_per_sec: f64) -> String {
-    const UNITS: [&str; 4] = ["B/s", "KB/s", "MB/s", "GB/s"];
-    let mut v = bytes_per_sec.max(0.0);
-    let mut u = 0;
-    while v >= 1024.0 && u < UNITS.len() - 1 {
-        v /= 1024.0;
-        u += 1;
-    }
-    format!("{:.1} {}", v, UNITS[u])
-}
-
 /// Compact "time ago" for a seconds delta, e.g. `34s ago`, `4m ago`.
 pub fn human_ago(secs: u64) -> String {
     if secs < 60 {
@@ -310,9 +282,10 @@ mod tests {
 
     #[test]
     fn byte_and_rate_formatting() {
-        assert_eq!(human_bytes(512), "512 B");
-        assert_eq!(human_bytes(4_812_330_000), "4.5 GB");
-        assert_eq!(human_rate(6_710_886.0), "6.4 MB/s");
+        // Transfer counters are base-1024, so they wear IEC binary units.
+        assert_eq!(ui::format::bytes(512), "512 B");
+        assert_eq!(ui::format::bytes(4_812_330_000), "4.5 GiB");
+        assert_eq!(ui::format::rate(6_710_886.0), "6.4 MiB/s");
         assert_eq!(human_ago(34), "34s ago");
         assert_eq!(human_ago(240), "4m ago");
     }

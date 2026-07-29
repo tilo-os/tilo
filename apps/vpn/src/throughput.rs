@@ -10,7 +10,6 @@ use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Line, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{Color, Fill};
 
-use crate::model::human_rate;
 
 /// Maximum number of measured points retained / plotted across the chart.
 pub const SAMPLES: usize = 56;
@@ -126,7 +125,7 @@ fn plot_series(
 
 /// Format a rate for the legend chip.
 pub fn rate_label(bytes_per_sec: f64) -> String {
-    human_rate(bytes_per_sec)
+    ui::format::rate(bytes_per_sec)
 }
 
 #[cfg(test)]
@@ -135,8 +134,9 @@ mod tests {
 
     #[test]
     fn rate_label_formats_bytes_per_sec() {
-        assert_eq!(rate_label(6_710_886.0), "6.4 MB/s");
-        assert_eq!(rate_label(0.0), "0.0 B/s");
+        // base-1024 rate → IEC binary units.
+        assert_eq!(rate_label(6_710_886.0), "6.4 MiB/s");
+        assert_eq!(rate_label(0.0), "0 B/s");
     }
 
     #[test]
