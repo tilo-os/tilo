@@ -63,7 +63,10 @@ use crate::widget::history::{
     HistoryAuthor, HistoryEntry, HistoryEntryId, HistoryFilter, format_relative_time, hue_to_rgb,
     op_class_glyph, op_class_is_revertible,
 };
-use crate::widget::history_group::{GroupingConfig, HistoryGroup, NamedRange, group_entries};
+use crate::widget::history_group::{
+    GroupNameRequest, GroupingConfig, HistoryGroup, NamedRange, group_entries,
+};
+use crate::widget::name_field::{NameField, NameFieldOutcome, fit as fit_text};
 
 use collab_types::OpClass;
 
@@ -182,24 +185,6 @@ pub type RevertCallback = Box<dyn FnMut(&HistoryEntryId)>;
 /// itself (a date range, say) so "clear" clears everything the user can see.
 pub type ClearFiltersCallback = Box<dyn FnMut()>;
 
-/// What the host must write when the user names, renames, or un-names a run of
-/// changes.
-///
-/// An empty `label` is a request to **remove** the name: clearing the field and
-/// pressing Enter is how a user takes a name back off, and the host maps that
-/// onto `ui::history_source::groups::clear_name`.
-#[derive(Clone, Debug, PartialEq)]
-pub struct GroupNameRequest {
-    /// The naming record being replaced, when one already exists.
-    pub record_id: Option<String>,
-    /// First change covered.
-    pub start: HistoryEntryId,
-    /// Last change covered.
-    pub end: HistoryEntryId,
-    /// What the user typed, trimmed.
-    pub label: String,
-}
-
 /// Callback fired when the user commits a name.
 pub type NameGroupCallback = Box<dyn FnMut(&GroupNameRequest)>;
 
@@ -251,7 +236,7 @@ enum NameTarget {
 #[derive(Clone, Debug)]
 struct NamingState {
     target: NameTarget,
-    buffer: String,
+    field: NameField,
 }
 
 /// Scrolling, filterable, groupable activity pane. See module-level docs.
@@ -688,7 +673,7 @@ impl ActivityTimeline {
         let seed = self.row_groups[g].name.clone().unwrap_or_default();
         self.naming = Some(NamingState {
             target: NameTarget::Group(g),
-            buffer: seed,
+            field: NameField::new(seed),
         });
         self.dirty = true;
         true
@@ -702,7 +687,7 @@ impl ActivityTimeline {
         }
         self.naming = Some(NamingState {
             target: NameTarget::Selection,
-            buffer: String::new(),
+            field: NameField::new(""),
         });
         self.dirty = true;
         true
@@ -710,7 +695,7 @@ impl ActivityTimeline {
 
     /// The text currently being typed into a name field, if any.
     pub fn naming_buffer(&self) -> Option<&str> {
-        self.naming.as_ref().map(|n| n.buffer.as_str())
+        self.naming.as_ref().map(|n| n.field.text())
     }
 
     /// True while a name field has the keyboard. A host that routes keys by
@@ -738,7 +723,7 @@ impl ActivityTimeline {
             return false;
         };
         self.dirty = true;
-        let label = state.buffer.trim().to_string();
+        let label = state.field.text().trim().to_string();
         let req = match state.target {
             NameTarget::Group(g) => {
                 let Some(rg) = self.row_groups.get(g) else {
@@ -1266,73 +1251,7 @@ enum Member<'a> {
     Entry(usize),
 }
 
-/// Shorten `s` until it fits `budget` pixels at `size`, appending an ellipsis
-/// when anything was dropped.
-///
-/// Binary chop on the char index; `measure` is cheap and the common case (a
-/// short summary in a wide row) exits on the first measurement. Returns an
-/// empty string when not even one character fits, which is the honest answer
-/// for a slot that has been squeezed to nothing.
-fn fit_text(tr: &mut TextRenderer, s: &str, size: f32, budget: f64) -> String {
-    if budget <= 0.0 {
-        return String::new();
-    }
-    if tr.measure(s, size, None).0 as f64 <= budget {
-        return s.to_string();
-    }
-    const ELLIPSIS: &str = "\u{2026}";
-    let ell_w = tr.measure(ELLIPSIS, size, None).0 as f64;
-    if ell_w > budget {
-        return String::new();
-    }
-    let inner = budget - ell_w;
-    let mut lo = 0usize;
-    let mut hi = s.chars().count();
-    while lo < hi {
-        let mid = (lo + hi).div_ceil(2);
-        let candidate: String = s.chars().take(mid).collect();
-        if tr.measure(&candidate, size, None).0 as f64 <= inner {
-            lo = mid;
-        } else {
-            hi = mid - 1;
-        }
-    }
-    if lo == 0 {
-        return ELLIPSIS.to_string();
-    }
-    let mut out: String = s.chars().take(lo).collect();
-    out.push_str(ELLIPSIS);
-    out
-}
 
-/// Keep the **tail** of `s`. What a person is typing is at the end, so a name
-/// field that has run out of room drops the beginning, not the caret.
-fn fit_text_tail(tr: &mut TextRenderer, s: &str, size: f32, budget: f64) -> String {
-    if budget <= 0.0 {
-        return String::new();
-    }
-    if tr.measure(s, size, None).0 as f64 <= budget {
-        return s.to_string();
-    }
-    const ELLIPSIS: &str = "\u{2026}";
-    let ell_w = tr.measure(ELLIPSIS, size, None).0 as f64;
-    if ell_w > budget {
-        return String::new();
-    }
-    let inner = budget - ell_w;
-    let chars: Vec<char> = s.chars().collect();
-    let mut take = 0usize;
-    while take < chars.len() {
-        let candidate: String = chars[chars.len() - take - 1..].iter().collect();
-        if tr.measure(&candidate, size, None).0 as f64 > inner {
-            break;
-        }
-        take += 1;
-    }
-    let mut out = ELLIPSIS.to_string();
-    out.extend(chars[chars.len() - take..].iter());
-    out
-}
 
 /// Paint a pill with a centred label. `accent` fills it with the accent colour
 /// (the affirmative action); otherwise it is a quiet outlined chip.
@@ -1641,7 +1560,7 @@ impl ActivityTimeline {
         full_row: Rect,
         gi: usize,
         is_hovered: bool,
-        naming: Option<&str>,
+        naming: Option<&NameField>,
         now: SystemTime,
     ) {
         let rg = &self.row_groups[gi];
@@ -1727,60 +1646,16 @@ impl ActivityTimeline {
         };
         let title_budget = (row.x1 - actions_w - title_x - 8.0).max(0.0);
 
-        if let Some(buffer) = naming {
+        if let Some(field) = naming {
             // The field replaces the title in place, so the name is typed where
             // it will live.
-            let field = Rect::new(
+            let box_rect = Rect::new(
                 title_x - 4.0,
                 row.y0 + 4.0,
                 (row.x1 - actions_w).max(title_x + 40.0),
                 row.y0 + 24.0,
             );
-            let fshape = RoundedRect::from_rect(field, theme.tokens.radii.sm as f64);
-            scene.fill(
-                vello::peniko::Fill::NonZero,
-                transform,
-                colors.surfaces.overlay,
-                None,
-                &fshape,
-            );
-            scene.stroke(
-                &Stroke::new(1.0),
-                transform,
-                colors.border_focus,
-                None,
-                &fshape,
-            );
-            let (text, color) = if buffer.is_empty() {
-                ("Name this version\u{2026}".to_string(), colors.text_dim)
-            } else {
-                (buffer.to_string(), colors.text_primary)
-            };
-            let shown = fit_text_tail(tr, &text, title_size, field.width() - 14.0);
-            tr.draw_text(
-                scene,
-                &shown,
-                title_size,
-                color,
-                transform
-                    * Affine::translate((
-                        field.x0 + 7.0,
-                        field.center().y - title_size as f64 / 2.0,
-                    )),
-                None,
-            );
-            let (w, _) = tr.measure(&shown, title_size, None);
-            let caret_x = (field.x0 + 8.0 + w as f64).min(field.x1 - 4.0);
-            scene.stroke(
-                &Stroke::new(1.5),
-                transform,
-                colors.accent[4],
-                None,
-                &Line::new(
-                    Point::new(caret_x, field.y0 + 4.0),
-                    Point::new(caret_x, field.y1 - 4.0),
-                ),
-            );
+            field.draw(scene, transform, tr, theme, box_rect, title_size);
         } else {
             let title = fit_text(tr, &rg.title, title_size, title_budget);
             tr.draw_text(
@@ -2090,53 +1965,9 @@ impl ActivityTimeline {
                 bar.center().y + 12.0,
             );
             if field.width() > 40.0 {
-                let fshape = RoundedRect::from_rect(field, theme.tokens.radii.sm as f64);
-                scene.fill(
-                    vello::peniko::Fill::NonZero,
-                    transform,
-                    colors.surfaces.raised,
-                    None,
-                    &fshape,
-                );
-                scene.stroke(
-                    &Stroke::new(1.0),
-                    transform,
-                    colors.border_focus,
-                    None,
-                    &fshape,
-                );
-                let buffer = self
-                    .naming
-                    .as_ref()
-                    .map(|s| s.buffer.clone())
-                    .unwrap_or_default();
-                let (text, color) = if buffer.is_empty() {
-                    ("Name this version\u{2026}".to_string(), colors.text_dim)
-                } else {
-                    (buffer, colors.text_primary)
-                };
-                let shown = fit_text_tail(tr, &text, size, field.width() - 14.0);
-                tr.draw_text(
-                    scene,
-                    &shown,
-                    size,
-                    color,
-                    transform
-                        * Affine::translate((field.x0 + 7.0, field.center().y - size as f64 / 2.0)),
-                    None,
-                );
-                let (w, _) = tr.measure(&shown, size, None);
-                let caret_x = (field.x0 + 8.0 + w as f64).min(field.x1 - 4.0);
-                scene.stroke(
-                    &Stroke::new(1.5),
-                    transform,
-                    colors.accent[4],
-                    None,
-                    &Line::new(
-                        Point::new(caret_x, field.y0 + 4.0),
-                        Point::new(caret_x, field.y1 - 4.0),
-                    ),
-                );
+                if let Some(state) = self.naming.as_ref() {
+                    state.field.draw(scene, transform, tr, theme, field, size);
+                }
             }
         } else {
             let action = Rect::new(
@@ -2290,8 +2121,8 @@ impl Widget for ActivityTimeline {
         // scroll offset, so a room with ten thousand entries costs the same per
         // frame as one with ten.
         let now = self.now();
-        let naming_group = match self.naming.as_ref().map(|n| (&n.target, &n.buffer)) {
-            Some((NameTarget::Group(g), b)) => Some((*g, b.clone())),
+        let naming_group = match self.naming.as_ref().map(|n| (&n.target, &n.field)) {
+            Some((NameTarget::Group(g), f)) => Some((*g, f.clone())),
             _ => None,
         };
         let selection = self.selection;
@@ -2319,10 +2150,7 @@ impl Widget for ActivityTimeline {
             let is_hovered = self.hover_row == Some(i);
             match self.rows[i] {
                 VisualRow::Group(g) => {
-                    let naming = naming_group
-                        .as_ref()
-                        .filter(|(ng, _)| *ng == g)
-                        .map(|(_, b)| b.as_str());
+                    let naming = naming_group.as_ref().filter(|(ng, _)| *ng == g).map(|(_, f)| f);
                     self.draw_group_row(
                         scene, transform, text_renderer, theme, row, g, is_hovered, naming, now,
                     );
@@ -2381,41 +2209,26 @@ impl Widget for ActivityTimeline {
                 && !modifiers.state().control_key()
                 && !modifiers.state().super_key() =>
             {
-                match logical_key {
-                    Key::Named(NamedKey::Enter) => {
+                let _ = logical_key;
+                let outcome = self
+                    .naming
+                    .as_mut()
+                    .map(|n| n.field.handle_event(event, modifiers))
+                    .unwrap_or(NameFieldOutcome::Ignored);
+                match outcome {
+                    NameFieldOutcome::Commit(_) => {
                         self.commit_naming();
                         *handled = true;
                     }
-                    Key::Named(NamedKey::Escape) => {
+                    NameFieldOutcome::Cancel => {
                         self.cancel_naming();
                         *handled = true;
                     }
-                    Key::Named(NamedKey::Backspace) => {
-                        if let Some(n) = self.naming.as_mut()
-                            && n.buffer.pop().is_some()
-                        {
-                            self.dirty = true;
-                        }
+                    NameFieldOutcome::Edited => {
+                        self.dirty = true;
                         *handled = true;
                     }
-                    Key::Named(NamedKey::Space) => {
-                        if let Some(n) = self.naming.as_mut() {
-                            n.buffer.push(' ');
-                            self.dirty = true;
-                        }
-                        *handled = true;
-                    }
-                    Key::Character(c) => {
-                        let text: String = c.chars().filter(|ch| !ch.is_control()).collect();
-                        if !text.is_empty()
-                            && let Some(n) = self.naming.as_mut()
-                        {
-                            n.buffer.push_str(&text);
-                            self.dirty = true;
-                        }
-                        *handled = true;
-                    }
-                    _ => {}
+                    NameFieldOutcome::Ignored => {}
                 }
             }
             // Author typeahead. Printable characters and Backspace narrow the
