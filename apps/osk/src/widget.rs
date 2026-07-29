@@ -723,6 +723,7 @@ fn draw_cell(
     pressed: bool,
     accent: bool,
     font_scale: f64,
+    icon_filled: bool,
 ) {
     let t = &theme.tokens;
     // Inset so adjacent cells have a visible gutter.
@@ -767,14 +768,21 @@ fn draw_cell(
         let s = (cell.height() * 0.5).clamp(14.0, 26.0);
         let ix = cell.center().x - s / 2.0;
         let iy = cell.center().y - s / 2.0;
-        icons::draw_icon(
-            scene,
-            transform,
-            Rect::new(ix, iy, ix + s, iy + s),
-            icon,
-            fg,
-            icons::LUCIDE_DEFAULT_STROKE_PX,
-        );
+        let icon_rect = Rect::new(ix, iy, ix + s, iy + s);
+        if icon_filled {
+            // A latched state (e.g. Caps-Lock's Shift key) reads as a solid
+            // glyph, distinct from the outline of the momentary state.
+            icon.draw_filled(scene, transform, icon_rect, fg);
+        } else {
+            icons::draw_icon(
+                scene,
+                transform,
+                icon_rect,
+                icon,
+                fg,
+                icons::LUCIDE_DEFAULT_STROKE_PX,
+            );
+        }
         return;
     }
 
@@ -972,6 +980,7 @@ impl Widget for OskWidget {
                 pressed,
                 false,
                 0.34,
+                false,
             );
         }
 
@@ -1018,18 +1027,23 @@ impl Widget for OskWidget {
             let pressed = self.pressed_key == Some(*id);
             // Letters get a larger glyph; multi-char action labels smaller.
             let font_scale = if Key::is_letter(key) { 0.42 } else { 0.30 };
+            // The Shift key's icon fills solid while Caps-Lock is latched, so a
+            // sticky upper-case reads differently from a one-shot shift.
+            let icon_filled =
+                matches!(&key.action, KeyAction::Shift) && shift == ShiftState::CapsLock;
             draw_cell(
                 scene,
                 transform,
                 text_renderer,
                 theme,
                 *rect,
-                None,
+                key.icon,
                 &label,
                 hovered,
                 pressed,
                 is_action || shift_active,
                 font_scale,
+                icon_filled,
             );
         }
     }
