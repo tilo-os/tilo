@@ -604,3 +604,50 @@ default build never touches the network and keeps the honest surface.
       session still requires the runtime opt-in. Cross-host verification against
       a system `sshd` / external VNC server is the remaining nice-to-have (the
       loopback round-trips already exercise the full real transport).
+
+## imager (Image Writer) — a real media-writer wizard (source → drive → write → verify)
+
+Was a dense three-column dashboard that conflated writing an ISO with installing
+qOS. Rebuilt as a linear wizard (Fedora Media Writer / balenaEtcher shaped) with
+clear labels: **Image Writer** writes a disk image to a USB drive; installing qOS
+onto an internal disk stays the separate `qos-installer` job. Real enumeration,
+real gated write, honest empty/progress/verify states.
+
+- [x] Wizard flow with a persistent step breadcrumb (Source → Drive → Customize →
+      Write) and a Back / single-primary footer per step. Verify is a phase
+      within the Write step (write bar + read-back verify bar), so the crumb
+      stays short. Each step graded against HIG §7 on offscreen shots (source
+      pick, drive select, drive **empty**, customize, review+confirm, progress,
+      verify/done) — spacing, typographic hierarchy, visible selected/armed/
+      progress/error state, one clear primary action per screen.
+- [x] Real drive enumeration: `lsblk -J -b` parsed into removable/fixed block
+      devices (`RM`/`ROTA`/`TRAN`, size, model, partitions, mountpoint→system-disk
+      flag). The Drive step shows removable drives only; internal disks require an
+      explicit "Show internal disks (dangerous)" opt-in. No drives → an honest,
+      composed empty state ("Insert a USB drive", Rescan) — never a fabricated
+      list. Parser tested on real `lsblk` JSON fixtures (usb+nvme, string-flag
+      variants, zero-size/non-disk skipping).
+- [x] Source via the host XDG portal (`ui::portal`, HIG §5) — a picked `.iso`/
+      `.img` is inspected for its real size (`stat`) and ISO-9660 volume label
+      (PVD at 0x8000, `CD001` magic, volume id at offset 40) to populate the
+      source card; no bespoke in-app file dialog. Portal drain + ISO-label parse
+      tested (real PVD fixture, foreign-ISO fallback, non-image rejection).
+- [x] Real, byte-for-byte write + read-back verify engine (`stream_copy` +
+      `verify_readback` in 4 MiB chunks, fsync between). Doubly gated: a typed
+      device-name confirmation unlocks the primary, and the *real* block-device
+      backend is only selected with `QOS_IMAGER_ALLOW_WRITE=1` (VPN's
+      `QOS_VPN_ALLOW_EXEC` precedent). With the gate off — tests, `--shots`,
+      normal runs — a simulated worker drives the identical progress UI and
+      **touches no device**. Engine proven against temp files (multi-chunk copy
+      is byte-exact, verify flags the first differing offset, end-to-end
+      Writing→Verifying→Success, bad-dest → WriteFailed); the gated-off planned
+      path and the honest empty state are asserted, and no test ever writes a
+      disk. (42 tests green: fd98087b, d784d187, b3d36768)
+- [x] Guided customization reuses the existing `InstallProfile` (hostname, first
+      user, region, options) which doubles as an exportable unattended-install
+      config; a plain ISO skips the step and is written as-is.
+- [ ] The live progress worker streams `Progress` over a channel drained per
+      animation frame; the real `run_system_job` path needs a privileged run
+      (root / a polkit helper) to exercise end-to-end on hardware — verified so
+      far against files, not a physical stick. Fetching a not-yet-local qOS
+      release (the "download" rows) is still a stub.
