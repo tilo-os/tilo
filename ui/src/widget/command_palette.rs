@@ -1870,10 +1870,12 @@ impl Widget for CommandPalette {
             &field_shape,
         );
         // Focus reads as the OS accent at low weight rather than a
-        // 2 px form-field blue: this is the palette's only input, it is
-        // always focused, and a heavy ring around it just drew a box.
+        // 2 px form-field blue. This is the palette's only input and it
+        // is focused the entire time the palette is open, so a loud ring
+        // is permanent noise rather than information — the field's own
+        // darker fill is what says "type here".
         let (ring, ring_w) = if self.is_focused {
-            (colors.accent[5].with_alpha_factor(0.75), 1.5)
+            (colors.accent[5].with_alpha_factor(0.45), 1.0)
         } else {
             (colors.border_standard, 1.0)
         };
