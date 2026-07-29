@@ -57,12 +57,20 @@ pub enum StreamUpdate {
     ResolveFailed { track_id: String, error: String },
     /// The real Home page landed.
     Home { content: Box<HomeContent> },
+    /// The Home fetch could not complete (offline build, geo-block, network
+    /// error). The UI stops the loading skeleton and shows its honest empty
+    /// Home rather than shimmering forever.
+    HomeUnavailable,
     /// A real artist page landed.
     Artist { page: Box<ArtistPage> },
     /// A real album page landed.
     Album { page: Box<AlbumPage> },
     /// A real playlist page landed.
     Playlist { page: Box<PlaylistPage> },
+    /// A requested detail page (artist / album / playlist) could not be
+    /// fetched. Carries the id so the UI stops that page's skeleton and shows
+    /// an honest "couldn't load" state instead of an endless shimmer.
+    PageUnavailable { id: String },
     /// A non-fatal note for the status log / a toast.
     Note(String),
 }
@@ -144,6 +152,7 @@ impl StreamWorker {
                             }
                             Err(e) => {
                                 let _ = up_tx.send(StreamUpdate::Note(format!("home: {e}")));
+                                let _ = up_tx.send(StreamUpdate::HomeUnavailable);
                             }
                         },
                         StreamRequest::Artist(id) => match backend.artist(&id) {
@@ -152,6 +161,7 @@ impl StreamWorker {
                             }
                             Err(e) => {
                                 let _ = up_tx.send(StreamUpdate::Note(format!("artist: {e}")));
+                                let _ = up_tx.send(StreamUpdate::PageUnavailable { id });
                             }
                         },
                         StreamRequest::Album(id) => match backend.album(&id) {
@@ -160,6 +170,7 @@ impl StreamWorker {
                             }
                             Err(e) => {
                                 let _ = up_tx.send(StreamUpdate::Note(format!("album: {e}")));
+                                let _ = up_tx.send(StreamUpdate::PageUnavailable { id });
                             }
                         },
                         StreamRequest::Playlist(id) => match backend.playlist(&id) {
@@ -168,6 +179,7 @@ impl StreamWorker {
                             }
                             Err(e) => {
                                 let _ = up_tx.send(StreamUpdate::Note(format!("playlist: {e}")));
+                                let _ = up_tx.send(StreamUpdate::PageUnavailable { id });
                             }
                         },
                     }
