@@ -1,0 +1,21 @@
+[package]
+name = "collab-fixtures"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "collab_fixtures"
+path = "src/lib.rs"
+
+# Signed test fixtures for `collab-types`. Every integration test that
+# needs a valid `RoleAttestation` or `SignedOp` has to mint one the same
+# way production does — build the struct, canonicalise it, sign it. That
+# is a dozen lines of exact ceremony, and it was copy-pasted into six
+# test files that then drifted apart. This crate is the one copy.
+#
+# Depend on it from `[dev-dependencies]` only: nothing here belongs in a
+# shipped binary.
+
+[dependencies]
+collab-types = { path = "../collab-types" }
+ed25519-dalek = { workspace = true, features = ["serde", "rand_core"] }
