@@ -405,6 +405,18 @@ impl PdfApp {
                 let p = Point::new(position.x / scale_factor, position.y / scale_factor);
                 self.last_mouse = p;
 
+                // Route motion to the inline editor so its hover tracks (for a
+                // click-to-caret) and a press-drag extends its selection.
+                // Consume the move while it is actively drag-selecting so the
+                // page doesn't pan under the selection.
+                if self.editing.is_some() {
+                    self.drive_editor(event, scale_factor, modifiers, state);
+                    if self.editing.as_ref().map(|e| e.input.is_dragging()).unwrap_or(false) {
+                        self.dirty = true;
+                        return;
+                    }
+                }
+
                 // Dragging a sticky-note marker: move it live (local only; the
                 // CRDT is written once on release so a drag is one undo step).
                 if let Some(mut mdrag) = self.marker_drag.take() {
@@ -505,6 +517,10 @@ impl PdfApp {
                 // the click still performs its normal action.
                 if self.editing.is_some() {
                     if self.edit_rect.contains(p) {
+                        // Place the caret (or begin a drag-selection) in the
+                        // inline editor at the click point.
+                        self.drive_editor(event, scale_factor, modifiers, state);
+                        self.dirty = true;
                         *handled = true;
                         return;
                     }
@@ -594,6 +610,13 @@ impl PdfApp {
                 button: MouseButton::Left,
                 ..
             } => {
+                // End an inline-editor drag-selection.
+                if self.editing.as_ref().map(|e| e.input.is_dragging()).unwrap_or(false) {
+                    self.drive_editor(event, scale_factor, modifiers, state);
+                    self.dirty = true;
+                    *handled = true;
+                    return;
+                }
                 // End a sticky-note marker drag: persist the new anchor once (a
                 // no-move release is a plain select, already applied on press).
                 if let Some(mdrag) = self.marker_drag.take() {
@@ -757,52 +780,67 @@ impl PdfApp {
             WindowEvent::KeyboardInput { event: key_event, .. }
                 if key_event.state == ElementState::Pressed =>
             {
-                self.on_key(key_event, modifiers, state, handled);
+                self.on_key(event, key_event, modifiers, scale_factor, state, handled);
             }
 
             _ => {}
         }
     }
 
+    /// Feed one raw winit event into the active inline-editor [`TextInput`].
+    /// The editor lives outside the taffy tree (drawn by hand into the
+    /// sidebar), so a throwaway leaf node satisfies the `Widget` signature; the
+    /// field is local-mode, so the passed document is never written.
+    fn drive_editor(
+        &mut self,
+        event: &WindowEvent,
+        scale: f64,
+        modifiers: &winit::event::Modifiers,
+        state: &mut AutoCommit,
+    ) {
+        if let Some(e) = self.editing.as_mut() {
+            let mut taffy: TaffyTree<()> = TaffyTree::new();
+            let node = taffy.new_leaf(Style::default()).unwrap();
+            let mut handled = false;
+            let mut ft: Option<NodeId> = None;
+            e.input.handle_event(
+                event, scale, modifiers, state, &automerge::ROOT, &mut handled, &mut ft, node,
+                &taffy,
+            );
+        }
+    }
+
     fn on_key(
         &mut self,
+        event: &WindowEvent,
         key_event: &winit::event::KeyEvent,
         modifiers: &winit::event::Modifiers,
+        scale: f64,
         state: &mut AutoCommit,
         handled: &mut bool,
     ) {
         let mods = modifiers.state();
         let ctrl = mods.control_key() || mods.super_key();
+        let _ = ctrl;
 
         // While an inline text field is focused it owns the keyboard, so tool
-        // hotkeys and page navigation don't fire mid-sentence.
+        // hotkeys and page navigation don't fire mid-sentence. The field is a
+        // shared TextInput: Escape cancels; every other key routes to the
+        // widget — caret motion, selection (shift+arrows), clipboard
+        // (Ctrl+C/V/X), and Enter (which submits → commit).
         if self.editing.is_some() {
-            match &key_event.logical_key {
-                Key::Named(NamedKey::Escape) => self.cancel_edit(),
-                Key::Named(NamedKey::Enter) => self.commit_edit(state),
-                Key::Named(NamedKey::Backspace) => self.edit_backspace(),
-                Key::Named(NamedKey::Space) => self.edit_insert(" "),
-                Key::Named(NamedKey::ArrowLeft) => self.edit_move(-1),
-                Key::Named(NamedKey::ArrowRight) => self.edit_move(1),
-                Key::Named(NamedKey::Home) => self.edit_home_end(false),
-                Key::Named(NamedKey::End) => self.edit_home_end(true),
-                Key::Character(c) => {
-                    if ctrl {
-                        // Real clipboard chords against the field's text. The
-                        // hand-rolled editor has no selection, so copy/cut act
-                        // on the whole buffer and paste inserts at the caret.
-                        match c.as_str() {
-                            "c" | "C" => self.edit_clipboard_copy(),
-                            "x" | "X" => self.edit_clipboard_cut(),
-                            "v" | "V" => self.edit_clipboard_paste(),
-                            _ => {}
-                        }
-                    } else {
-                        self.edit_insert(c.as_str());
-                    }
-                }
-                _ => {}
+            if matches!(&key_event.logical_key, Key::Named(NamedKey::Escape)) {
+                self.cancel_edit();
+                *handled = true;
+                return;
             }
+            self.drive_editor(event, scale, modifiers, state);
+            let submitted =
+                self.editing.as_mut().map(|e| e.input.take_submit()).unwrap_or(false);
+            if submitted {
+                self.commit_edit(state);
+            }
+            self.dirty = true;
             *handled = true;
             return;
         }

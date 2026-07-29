@@ -1285,7 +1285,7 @@ impl PdfApp {
     fn comment_metrics(&self, tr: &mut TextRenderer, cm: &Comment, inner_w: f64) -> CommentMetrics {
         // The body shows the live edit buffer while this comment is focused.
         let editing_body = self.editing.as_ref().filter(|e| e.target == EditTarget::CommentBody(cm.id.clone()));
-        let body_text = editing_body.map(|e| e.buffer.as_str()).unwrap_or(cm.body.as_str());
+        let body_text = editing_body.map(|e| e.text()).unwrap_or(cm.body.as_str());
         let body_probe = if body_text.is_empty() { "M" } else { body_text };
         let (_, bh) = tr.measure(body_probe, 12.0, Some(inner_w as f32 - 16.0));
         // Header band (avatar + name + chips) is 24px, then a 6px gap, the body,
@@ -1300,7 +1300,7 @@ impl PdfApp {
         // Reply-compose row: a slim "Reply" affordance, or the open field.
         let composing = self.editing.as_ref().filter(|e| e.target == EditTarget::Reply(cm.id.clone()));
         let compose_h = if let Some(e) = composing {
-            let probe = if e.buffer.is_empty() { "M" } else { e.buffer.as_str() };
+            let probe = if e.text().is_empty() { "M" } else { e.text() };
             let (_, fh) = tr.measure(probe, 11.5, Some(inner_w as f32 - 40.0));
             8.0 + (fh as f64).max(15.0) + 16.0
         } else {
