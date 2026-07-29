@@ -211,11 +211,55 @@ kill $COMP_PID
 rm -f $QOS_TEST_CONTROL
 ```
 
+## Measuring the frame loop
+
+The compositor carries per-tick instrumentation — cadence, per-phase
+durations, input-to-present latency — behind env vars, and a harness that
+drives a measured run:
+
+```bash
+# 8s idle run on the headless backend; prints the frame-time distribution.
+scripts/perf/frame-loop-bench.py --seconds 8
+
+# Under load from a client that commits a new buffer every frame,
+# with a click injected every 50 ms so latency is measured.
+scripts/perf/frame-loop-bench.py --seconds 8 --load fullscreen --input-hz 20
+
+# The nested-Wayland backend, inside a headless `cage` so no window
+# appears on your desktop. This is the only local way to exercise the
+# render thread — the headless backend deliberately presents inline.
+scripts/perf/frame-loop-bench.py --seconds 8 --backend winit --nested
+
+# Force a non-60 Hz cadence when no such panel is attached.
+scripts/perf/frame-loop-bench.py --seconds 8 --refresh-hz 144
+
+# Diff two runs, or re-read a recorded trace after changing the warmup.
+scripts/perf/frame-loop-bench.py --compare before.stats.json after.stats.json
+scripts/perf/frame-loop-bench.py --resummarize target/frame-bench/run.csv
+```
+
+| Env var | Effect |
+|---|---|
+| `QOS_FRAME_TRACE=/path.csv` | one row per loop tick |
+| `QOS_FRAME_SUMMARY=/path.json` | percentile summary on clean exit |
+| `QOS_FRAME_WARMUP_MS` | samples excluded from the summary (default 1500) |
+| `QOS_RUN_SECONDS` | exit cleanly after N seconds, flushing both |
+| `QOS_REFRESH_HZ` | force the presentation rate (diagnostic) |
+| `QOS_PAINT_STATS=1` | 2-second painted-vs-idled counter on stderr |
+| `QOS_LOOP_TIMING=1` | log any tick over 100 ms with a phase breakdown |
+
+`QOS_RUN_SECONDS` matters for a scripted run: the trace and summary are
+written by the normal exit path, so a `SIGKILL`ed compositor loses them.
+
 ## Where to look in source
 
 | What | Where |
 |---|---|
 | `shots` binary | `shell/src/bin/shots/` |
+| Frame-loop metrics | `shell/src/compositor/metrics.rs` |
+| Presentation clock | `shell/src/compositor/pacing.rs` |
+| Render thread | `shell/src/compositor/present.rs` |
+| Load-generator client | `shell/src/bin/qos-loadclient.rs` |
 | Scenario catalogue | `shell/src/bin/shots/scenario.rs::catalogue()` |
 | Offscreen renderer | `ui/src/offscreen.rs` |
 | `QOS_TEST_CONTROL` protocol | `shell/src/compositor/test_control.rs` |
