@@ -148,6 +148,22 @@ impl SearchField {
         self.input.value()
     }
 
+    /// Seed the query programmatically (e.g. from a selection, a recent search,
+    /// or the shell handing off the text that opened the palette). Goes through
+    /// the shared text core, so caret/selection stay consistent.
+    pub fn set_query(&mut self, text: &str) {
+        self.input.set_text(text);
+    }
+
+    /// Focus (or blur) the embedded input, so a host can raise the field ready
+    /// to type without a click. Never focuses a launcher pill (it is not
+    /// editable).
+    pub fn set_focused(&mut self, on: bool) {
+        if !self.opens_palette {
+            self.input.set_focus(on);
+        }
+    }
+
     /// Whether the query is empty.
     pub fn is_empty(&self) -> bool {
         self.input.value().is_empty()
