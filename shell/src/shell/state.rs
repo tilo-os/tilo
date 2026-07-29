@@ -3118,12 +3118,36 @@ impl WorkspaceTree {
     /// Returns the new capability's id, or `None` when the grantor
     /// lacked the authority to delegate it — the check that makes
     /// ownership mean something.
+    ///
+    /// Refuses outright in a room whose governance is written elsewhere
+    /// ([`Self::room_authority`]), whatever the local cache says about who
+    /// owns it. Otherwise a machine could hold a grant its own sandbox
+    /// honours while the room it belongs to has never heard of it: nothing
+    /// would carry it (a machine that does not govern a room projects no
+    /// governance into it) and the next sync from the room's authority
+    /// would drop it. A grant nobody but the grantor can see is not a
+    /// grant, it is a local escalation.
+    ///
+    /// Deliberately not symmetric with [`Self::revoke_in_workspace`],
+    /// which stays open: widening your own access in someone else's room is
+    /// the thing to refuse, and narrowing it — the Revoke button, the kill
+    /// switch — has to work locally whoever governs the room.
     pub fn grant_in_workspace(
         &mut self,
         workspace_id: WorkspaceId,
         grantor: &UserId,
         cap: CapOverride,
     ) -> Option<String> {
+        let room = self.room_of(workspace_id)?;
+        if !room.is_nil() && !self.governs_room(room) {
+            tracing::warn!(
+                target: "shell::state",
+                room = %room,
+                grantor = %grantor,
+                "grant refused: this machine does not administer the room",
+            );
+            return None;
+        }
         let ws = self.workspaces.iter_mut().find(|w| w.id == workspace_id)?;
         let id = ws.grant_as(grantor, cap)?;
         let stored = ws.capabilities.iter().find(|c| c.id == id).cloned()?;
@@ -4892,6 +4916,87 @@ mod automerge_foundation_tests {
         assert!(
             !ws.may_administer(&ROOM_GUEST.to_string()),
             "and joining a room must not make the joiner its administrator",
+        );
+    }
+
+    /// The local grant path has to agree with the replication path.
+    ///
+    /// If a machine could grant in a room it does not administer, the grant
+    /// would be honoured by its own sandbox while the room had never heard
+    /// of it: a machine that does not govern a room projects no governance,
+    /// so nothing carries the grant, and the next sync from the room's
+    /// authority drops it. That is a local escalation dressed as a grant,
+    /// and a stale cache — a state file written before the room was
+    /// joined — is what would otherwise leave it reachable.
+    #[test]
+    fn a_machine_cannot_grant_in_a_room_it_does_not_administer() {
+        let (_host, _host_ws, room) = host_owning_a_room();
+
+        let mut guest = WorkspaceTree::default();
+        let guest_ws = guest.append_empty_workspace("Mine");
+        assert!(guest.set_room(guest_ws, room), "the guest joins the room");
+        // A cache that still names the local user as owner — what an
+        // upgrade from a state file written before joining looks like. The
+        // ownership check alone would say yes here.
+        guest
+            .workspaces
+            .iter_mut()
+            .find(|w| w.id == guest_ws)
+            .expect("the guest's workspace")
+            .set_owner(ROOM_GUEST.to_string());
+        assert!(
+            guest
+                .workspaces
+                .iter()
+                .find(|w| w.id == guest_ws)
+                .expect("the guest's workspace")
+                .may_administer(&ROOM_GUEST.to_string()),
+            "precondition: the cache says the guest administers it, so the \
+             refusal below is the room's write authority and not ownership",
+        );
+
+        let granted = guest.grant_in_workspace(
+            guest_ws,
+            &ROOM_GUEST.to_string(),
+            CapOverride::grant(
+                Subject::app("rogue"),
+                Scope::FsPath(ROGUE_GRANT_PATH.to_string()),
+                Verb::Write,
+            ),
+        );
+        assert!(
+            granted.is_none(),
+            "a grant in a room administered elsewhere must be refused",
+        );
+        assert!(
+            !guest
+                .workspaces
+                .iter()
+                .find(|w| w.id == guest_ws)
+                .expect("the guest's workspace")
+                .capabilities
+                .iter()
+                .any(|c| matches!(&c.scope, Scope::FsPath(p) if p == ROGUE_GRANT_PATH)),
+            "and must record nothing",
+        );
+
+        // The control: the same call in a room this machine minted is
+        // allowed, so the refusal above is about the room and not the call.
+        let mut own = WorkspaceTree::default();
+        let own_ws = own.append_empty_workspace("Mine");
+        own.adopt_ownerless_workspaces(&ROOM_GUEST.to_string());
+        assert!(
+            own.grant_in_workspace(
+                own_ws,
+                &ROOM_GUEST.to_string(),
+                CapOverride::grant(
+                    Subject::app("files"),
+                    Scope::FsPath(OWNER_GRANT_PATH.to_string()),
+                    Verb::Read,
+                ),
+            )
+            .is_some(),
+            "granting in a room this machine administers must still work",
         );
     }
 
