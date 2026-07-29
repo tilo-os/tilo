@@ -295,22 +295,6 @@ impl Engine {
     }
 }
 
-/// Format a byte count with a binary unit suffix (KiB/MiB/GiB).
-pub fn human_bytes(bytes: u64) -> String {
-    const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
-    let mut value = bytes as f64;
-    let mut unit = 0;
-    while value >= 1024.0 && unit < UNITS.len() - 1 {
-        value /= 1024.0;
-        unit += 1;
-    }
-    if unit == 0 {
-        format!("{} {}", bytes, UNITS[unit])
-    } else {
-        format!("{:.1} {}", value, UNITS[unit])
-    }
-}
-
 // =====================================================================
 // Sample data (for --shots and as a graceful offline fallback)
 // =====================================================================
@@ -714,11 +698,12 @@ mod tests {
     }
 
     #[test]
-    fn human_bytes_scales_units() {
-        assert_eq!(human_bytes(512), "512 B");
-        assert_eq!(human_bytes(2048), "2.0 KiB");
-        assert_eq!(human_bytes(5 * 1024 * 1024), "5.0 MiB");
-        assert_eq!(human_bytes(3 * 1024 * 1024 * 1024), "3.0 GiB");
+    fn mem_bytes_render_with_iec_binary_units() {
+        // Container memory is base-1024, so it must wear IEC binary units.
+        assert_eq!(ui::format::bytes(512), "512 B");
+        assert_eq!(ui::format::bytes(2048), "2.0 KiB");
+        assert_eq!(ui::format::bytes(5 * 1024 * 1024), "5.0 MiB");
+        assert_eq!(ui::format::bytes(3 * 1024 * 1024 * 1024), "3.0 GiB");
     }
 
     #[test]
