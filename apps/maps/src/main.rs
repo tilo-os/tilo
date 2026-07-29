@@ -40,6 +40,9 @@ struct ShotArgs {
     search: bool,
     /// Demo the live POI marker layer with an open info card.
     pois: bool,
+    /// Turn the real-time traffic overlay on (sample congestion, or the honest
+    /// "No traffic data" state when combined with `--empty`).
+    traffic: bool,
 }
 
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -83,6 +86,9 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         if shot.pois {
             app.set_demo_pois();
         }
+        if shot.traffic {
+            app.set_demo_traffic();
+        }
         render_shot_to_png(Box::new(app), shot.viewport, &shot.out)?;
         return Ok(());
     }
@@ -111,6 +117,7 @@ fn parse_shots(args: &[String]) -> Option<ShotArgs> {
     let mut transit_arrive = false;
     let mut search = false;
     let mut pois = false;
+    let mut traffic = false;
     let mut iter = args.iter().skip(1);
     while let Some(arg) = iter.next() {
         if arg == "--shots" {
@@ -137,6 +144,8 @@ fn parse_shots(args: &[String]) -> Option<ShotArgs> {
             search = true;
         } else if arg == "--pois" {
             pois = true;
+        } else if arg == "--traffic" {
+            traffic = true;
         } else if arg == "--panel" {
             if let Some(s) = iter.next() {
                 apply_panel(s, &mut panel, &mut transit_mode);
@@ -156,6 +165,7 @@ fn parse_shots(args: &[String]) -> Option<ShotArgs> {
         transit_arrive,
         search,
         pois,
+        traffic,
     })
 }
 

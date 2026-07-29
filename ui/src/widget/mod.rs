@@ -586,6 +586,7 @@ pub mod search_field;     pub use search_field::SearchField;
 pub mod stat_tile;        pub use stat_tile::{StatTile, Trend};
 pub mod banner;           pub use banner::{Banner, BannerKind};
 pub mod chip;             pub use chip::Chip;
+pub mod card;             pub use card::{Card, CardGrid, card_columns, card_column_width};
 
 // === Phase 1: Audit timeline + history scrubber =====================
 // Pure widget + types work in `ui/` — no shell wiring yet. See

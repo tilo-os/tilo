@@ -25,70 +25,17 @@ use crate::network::encoder::{EncodeError, H264Encoder};
 use crate::network::protocol::{PeerId, SurfaceId};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::time::{Duration, Instant};
-
-/// Minimum gap between two consecutive encodes on a shared surface.
-///
-/// 33 ms ≈ 30 fps cap. Phase 4 v1 caps at 30 because openh264 software
-/// can't sustain higher rates on a typical laptop without burning the
-/// peer-sync thread; hardware encode lifts this in a follow-up.
-const ENCODE_INTERVAL_MS: u64 = 33;
+use std::time::Instant;
 
 /// Damage-aware encode throttle.
 ///
-/// One instance per shared surface; the streaming task threads it through
-/// the per-frame commit handler. `should_encode(now)` returns `true` when
-/// the configured minimum interval has elapsed since the previous
-/// accepted encode, `false` otherwise. The throttle does not enforce a
-/// frame queue — by design, callers either encode synchronously and ship
-/// the bytes or drop the frame.
-#[derive(Debug)]
-pub struct StreamingThrottle {
-    last_encode: Option<Instant>,
-    interval: Duration,
-}
-
-impl StreamingThrottle {
-    /// Construct a throttle gated at 30 fps.
-    pub fn new() -> Self {
-        Self::with_interval(Duration::from_millis(ENCODE_INTERVAL_MS))
-    }
-
-    /// Construct a throttle with a caller-chosen minimum encode interval.
-    /// Used by the test suite to feed a synthetic clock.
-    pub fn with_interval(interval: Duration) -> Self {
-        Self {
-            last_encode: None,
-            interval,
-        }
-    }
-
-    /// Should the caller encode *now*? Returns `true` if the throttle's
-    /// last-accepted timestamp is unset or strictly older than `interval`,
-    /// `false` otherwise. The caller is responsible for then calling
-    /// [`Self::mark_encoded`] when (and only when) it actually performs
-    /// the encode — so callers that gate on `should_encode` for telemetry
-    /// without actually encoding don't poison the throttle.
-    pub fn should_encode(&self, now: Instant) -> bool {
-        match self.last_encode {
-            None => true,
-            Some(prev) => now.duration_since(prev) >= self.interval,
-        }
-    }
-
-    /// Mark a successful encode at `now`. Cementing this in a separate
-    /// call (vs. `should_encode_and_mark`) lets the caller skip the
-    /// stamp on encode failure without manual state surgery.
-    pub fn mark_encoded(&mut self, now: Instant) {
-        self.last_encode = Some(now);
-    }
-}
-
-impl Default for StreamingThrottle {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+/// Now lives in the standalone [`qos_callstream`] crate (its `throttle`
+/// module) so the compositor's surface streaming and the chat call app
+/// share one copy. Re-exported here under its historical path so
+/// [`encode_tick`] and the flatpak-share session keep compiling
+/// unchanged: one instance per shared surface, `should_encode(now)`
+/// gates the 30-fps cap, `mark_encoded(now)` stamps a successful encode.
+pub use qos_callstream::throttle::StreamingThrottle;
 
 /// Wire-format input event a peer publishes to drive the owner's seat.
 ///
@@ -156,6 +103,45 @@ pub enum InputEvent {
 /// free of a cross-module dependency; equal to
 /// [`crate::network::protocol::SurfaceId`].
 pub type SurfaceIdWire = crate::network::protocol::SurfaceId;
+
+/// A single decoded `org.freedesktop.impl.portal.RemoteDesktop` `Notify*`
+/// action.
+///
+/// Unlike [`InputEvent`] — which is the *peer-sync* wire format keyed to a
+/// `(peer, surface)` share — a `RemoteAction` is a *local* portal request:
+/// an app the compositor is hosting asked (via `RemoteDesktop`) to inject
+/// input into whatever surface currently holds seat focus. The portal
+/// backend decodes each `Notify*` D-Bus call into one of these and hands it
+/// to a [`RemoteInputInjector`](crate::portal::RemoteInputInjector); the
+/// compositor's event loop drains them and calls
+/// [`crate::compositor::state::State::apply_remote_desktop_action`], which
+/// drives the real smithay `Seat`.
+///
+/// Coordinate spaces mirror the RemoteDesktop spec: relative motion is a
+/// `(dx, dy)` delta in the stream's logical space; absolute motion is a
+/// point in the stream's logical space. Button / keycode use Linux evdev
+/// codes; `state` is the freedesktop `0 = released, 1 = pressed` convention,
+/// captured here as a `bool`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum RemoteAction {
+    /// Relative pointer motion (`NotifyPointerMotion`).
+    PointerMotionRelative { dx: f64, dy: f64 },
+    /// Absolute pointer motion (`NotifyPointerMotionAbsolute`). `stream` is
+    /// the PipeWire node id the coordinate is relative to.
+    PointerMotionAbsolute { stream: u32, x: f64, y: f64 },
+    /// Pointer button (`NotifyPointerButton`). `button` is an evdev code
+    /// (e.g. `BTN_LEFT` = 272).
+    PointerButton { button: i32, pressed: bool },
+    /// Smooth scroll (`NotifyPointerAxis`).
+    PointerAxis { dx: f64, dy: f64 },
+    /// Discrete scroll (`NotifyPointerAxisDiscrete`). `axis` is `0`
+    /// (vertical) or `1` (horizontal) per the spec.
+    PointerAxisDiscrete { axis: u32, steps: i32 },
+    /// Key press/release by evdev keycode (`NotifyKeyboardKeycode`).
+    KeyboardKeycode { keycode: i32, pressed: bool },
+    /// Key press/release by keysym (`NotifyKeyboardKeysym`).
+    KeyboardKeysym { keysym: i32, pressed: bool },
+}
 
 /// Sink the owner's compositor exposes to receive remote-input events.
 ///
@@ -359,54 +345,11 @@ pub(crate) mod test_support {
 mod tests {
     use super::*;
     use crate::network::streaming::test_support::RecordingSink;
+    use std::time::Duration;
 
-    /// Phase 4 Task 4.2 — required test. Drive 100 simulated damage
-    /// commits across one wall-clock second through a fake clock; assert
-    /// the throttle accepts at most 30. Hand-rolled clock so the test
-    /// doesn't actually sleep.
-    #[test]
-    fn damage_loop_throttles_to_30fps() {
-        let start = Instant::now();
-        let mut throttle = StreamingThrottle::new();
-        let mut encoded = 0u32;
-        for i in 0..100 {
-            // 100 commits evenly spaced across 1.0 s = one every 10 ms.
-            let now = start + Duration::from_millis(i * 10);
-            if throttle.should_encode(now) {
-                throttle.mark_encoded(now);
-                encoded += 1;
-            }
-        }
-        // 33 ms interval over 990 ms of synthesized commits accepts
-        // 30 frames (0, 33, 66, …, 957 = 1 + 957/33 = 30 events). The
-        // upper bound is the contract; the lower bound is "did we even
-        // encode anything" — guard against an off-by-one that mutes the
-        // throttle entirely.
-        assert!(
-            encoded <= 30,
-            "throttle accepted {encoded} encodes — must cap at 30 fps"
-        );
-        assert!(encoded > 0, "throttle muted every encode — interval bug");
-    }
-
-    #[test]
-    fn throttle_first_call_always_accepts() {
-        let now = Instant::now();
-        let throttle = StreamingThrottle::new();
-        assert!(throttle.should_encode(now));
-    }
-
-    #[test]
-    fn throttle_rejects_back_to_back() {
-        let now = Instant::now();
-        let mut throttle = StreamingThrottle::new();
-        assert!(throttle.should_encode(now));
-        throttle.mark_encoded(now);
-        // 1 ms later — well inside the 33 ms interval — must reject.
-        assert!(!throttle.should_encode(now + Duration::from_millis(1)));
-        // Past the interval, accepts again.
-        assert!(throttle.should_encode(now + Duration::from_millis(40)));
-    }
+    // The `StreamingThrottle` unit tests (30-fps cap, first-call-accepts,
+    // rejects-back-to-back) moved with the type into the `qos_callstream`
+    // crate's `throttle` module.
 
     /// Phase 4 Task 4.4 — required test. A synthesised `RemoteInput`
     /// reaches the seat when the share is read/write; it's dropped when
@@ -852,5 +795,117 @@ mod tests {
         // Crucially: the tracker slot is still full because the
         // throttle blocked `take_latest` from running.
         assert!(!tracker.is_empty_for(SURFACE));
+    }
+
+    /// A RemoteDesktop `NotifyPointerMotionAbsolute` decoded into a
+    /// [`RemoteAction`] must reach the real smithay seat — proven by the
+    /// pointer's logical location, the same observable
+    /// `apply_remote_input_pointer_motion_reaches_seat` uses. This is the
+    /// portal `RemoteDesktop` counterpart of that peer-sync test.
+    #[test]
+    fn apply_remote_desktop_absolute_motion_reaches_seat() {
+        use crate::compositor::state::State;
+        use crate::network::streaming::RemoteAction;
+        use smithay::reexports::calloop::EventLoop;
+        use smithay::reexports::wayland_server::Display;
+
+        let event_loop: EventLoop<'static, State> =
+            EventLoop::try_new().expect("calloop event loop");
+        let display: Display<State> = Display::new().expect("wayland display");
+        let mut state = State::new(event_loop.handle(), display.handle());
+
+        let applied = state.apply_remote_desktop_action(
+            RemoteAction::PointerMotionAbsolute {
+                stream: 1,
+                x: 200.0,
+                y: 150.0,
+            },
+        );
+        assert!(applied, "absolute motion must reach the seat pointer");
+        let loc = state.seat.get_pointer().unwrap().current_location();
+        assert_eq!((loc.x, loc.y), (200.0, 150.0));
+
+        // Relative motion accumulates on top of the current location.
+        let _ = state.apply_remote_desktop_action(RemoteAction::PointerMotionRelative {
+            dx: -50.0,
+            dy: 25.0,
+        });
+        let loc2 = state.seat.get_pointer().unwrap().current_location();
+        assert_eq!((loc2.x, loc2.y), (150.0, 175.0));
+    }
+
+    /// A RemoteDesktop `NotifyKeyboardKeycode` reaches the seat keyboard —
+    /// the keycode appears in `pressed_keys()` after a press and clears on
+    /// release.
+    #[test]
+    fn apply_remote_desktop_keycode_reaches_keyboard() {
+        use crate::compositor::state::State;
+        use crate::network::streaming::RemoteAction;
+        use smithay::reexports::calloop::EventLoop;
+        use smithay::reexports::wayland_server::Display;
+
+        let event_loop: EventLoop<'static, State> =
+            EventLoop::try_new().expect("calloop event loop");
+        let display: Display<State> = Display::new().expect("wayland display");
+        let mut state = State::new(event_loop.handle(), display.handle());
+
+        let kc: i32 = 30; // 'a' keycode
+        assert!(state.apply_remote_desktop_action(RemoteAction::KeyboardKeycode {
+            keycode: kc,
+            pressed: true,
+        }));
+        {
+            let kb = state.seat.get_keyboard().expect("keyboard on seat");
+            assert!(
+                kb.pressed_keys().iter().any(|k| u32::from(*k) == kc as u32),
+                "keycode did not reach the seat keyboard",
+            );
+        }
+        let _ = state.apply_remote_desktop_action(RemoteAction::KeyboardKeycode {
+            keycode: kc,
+            pressed: false,
+        });
+        let kb = state.seat.get_keyboard().expect("keyboard on seat");
+        assert!(
+            !kb.pressed_keys().iter().any(|k| u32::from(*k) == kc as u32),
+            "release must clear the pressed key",
+        );
+    }
+
+    /// End-to-end production path: a [`ChannelInjector`] carries a decoded
+    /// action to the compositor loop, which drains it into
+    /// `apply_remote_desktop_action` and drives the real seat. This is the
+    /// wiring `serve()` uses for RemoteDesktop in the hosted compositor.
+    #[test]
+    fn remote_desktop_channel_injector_drives_the_seat() {
+        use crate::compositor::state::State;
+        use crate::network::streaming::RemoteAction;
+        use crate::portal::{ChannelInjector, RemoteInputInjector};
+        use smithay::reexports::calloop::EventLoop;
+        use smithay::reexports::wayland_server::Display;
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let injector = ChannelInjector::new(tx);
+        // The portal `Notify*` handler side: forward the decoded action.
+        assert!(injector.inject(RemoteAction::PointerMotionAbsolute {
+            stream: 1,
+            x: 77.0,
+            y: 88.0,
+        }));
+
+        // The compositor-loop side: drain + apply to the live seat.
+        let event_loop: EventLoop<'static, State> =
+            EventLoop::try_new().expect("calloop event loop");
+        let display: Display<State> = Display::new().expect("wayland display");
+        let mut state = State::new(event_loop.handle(), display.handle());
+        while let Ok(action) = rx.try_recv() {
+            state.apply_remote_desktop_action(action);
+        }
+        let loc = state.seat.get_pointer().unwrap().current_location();
+        assert_eq!(
+            (loc.x, loc.y),
+            (77.0, 88.0),
+            "channel injector → loop drain → seat must move the pointer"
+        );
     }
 }

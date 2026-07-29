@@ -193,9 +193,12 @@ pub struct SoftwareStore {
     /// `--shots`, where the sample remotes below stand in).
     remotes: Vec<Remote>,
     /// Live catalog entries merged in from the Flathub API (search +
-    /// collections + detail fetches), keyed by app-id. The bundled sample
-    /// catalog is the floor; these augment it for the live app.
+    /// collections + detail fetches), keyed by app-id. On the live path the
+    /// curated sample is absent, so these are the only Browse/search data.
     live_apps: HashMap<String, AppEntry>,
+    /// App-ids of the "popular" Flathub collection, in fetch order — the
+    /// ordering the live Browse grid uses (the `live_apps` map is unordered).
+    popular_ids: Vec<String>,
     /// The search query the worker last fetched results for, plus the time
     /// the current query last changed — used to debounce live search so we
     /// don't fire a request on every keystroke.
@@ -235,8 +238,18 @@ impl SoftwareStore {
 
     /// Construct the store with an explicit [`Worker`] (live or offline).
     pub fn with_worker(probe: Option<ProbeResult>, worker: Worker) -> Self {
+        // The live app shows REAL Flathub data only: it starts with an empty
+        // catalog and fills it from the popular-collection / search fetches (see
+        // `browse_apps`), so the fabricated-rating sample never reaches a real
+        // user. The offline `--shots`/test path keeps the curated sample so
+        // screenshots + tests stay populated without a network.
+        let catalog = if worker.is_live() {
+            Catalog::new(Vec::new())
+        } else {
+            Catalog::new(sample_catalog())
+        };
         Self {
-            catalog: Catalog::new(sample_catalog()),
+            catalog,
             snapshot: InstallSnapshot::default(),
             tab: Tab::Browse,
             detail: None,
@@ -255,6 +268,7 @@ impl SoftwareStore {
             initial_kicked: false,
             remotes: Vec::new(),
             live_apps: HashMap::new(),
+            popular_ids: Vec::new(),
             search_dispatched: String::new(),
             search_changed_at: None,
             pending_ref: None,
@@ -791,6 +805,7 @@ impl SoftwareStore {
         // shared state) and apply the &mut-self ones afterward.
         let mut new_remotes: Option<Vec<Remote>> = None;
         let mut new_live: Vec<AppEntry> = Vec::new();
+        let mut new_popular: Option<Vec<String>> = None;
         let mut installed_updates: Vec<(String, String)> = Vec::new();
         let mut removed: Vec<String> = Vec::new();
         let mut errors: Vec<String> = Vec::new();
@@ -803,7 +818,12 @@ impl SoftwareStore {
                 }
             }
             WorkerMsg::Remotes(rs) => new_remotes = Some(rs.clone()),
-            WorkerMsg::Collection { apps, .. } => new_live.extend(apps.iter().cloned()),
+            WorkerMsg::Collection { name, apps } => {
+                if name == "popular" {
+                    new_popular = Some(apps.iter().map(|a| a.id.clone()).collect());
+                }
+                new_live.extend(apps.iter().cloned());
+            }
             WorkerMsg::SearchResults { apps, .. } => new_live.extend(apps.iter().cloned()),
             WorkerMsg::Detail(app) => new_live.push((**app).clone()),
             WorkerMsg::ActionDone { target, kind, outcome } => {
@@ -822,6 +842,9 @@ impl SoftwareStore {
 
         if let Some(rs) = new_remotes {
             self.remotes = rs;
+        }
+        if let Some(p) = new_popular {
+            self.popular_ids = p;
         }
         for app in new_live {
             // Merge live entries that aren't already in the curated catalog
@@ -944,6 +967,35 @@ impl SoftwareStore {
             .or_else(|| self.live_apps.get(id).cloned())
     }
 
+    /// The pool of apps the Browse home renders. On the live path this is the
+    /// real Flathub set — the popular collection (in fetch order) plus any
+    /// other fetched apps — never the curated sample. Offline / `--shots` uses
+    /// the sample catalog so screenshots stay populated without a network.
+    fn browse_apps(&self) -> Vec<&AppEntry> {
+        if !self.worker.is_live() {
+            return self.catalog.apps.iter().collect();
+        }
+        let mut seen = std::collections::HashSet::new();
+        let mut out: Vec<&AppEntry> = Vec::new();
+        for id in &self.popular_ids {
+            if let Some(a) = self.live_apps.get(id) {
+                if seen.insert(a.id.as_str()) {
+                    out.push(a);
+                }
+            }
+        }
+        // Anything fetched outside the popular collection (e.g. a detail view)
+        // trails after, alphabetised, so nothing real is hidden.
+        let mut extras: Vec<&AppEntry> = self
+            .live_apps
+            .values()
+            .filter(|a| !seen.contains(a.id.as_str()))
+            .collect();
+        extras.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        out.extend(extras);
+        out
+    }
+
     /// Confirm the pending `.flatpakref` install: dispatch the gated action
     /// to the worker, start the local progress animation, and dismiss the
     /// sheet.
@@ -1021,15 +1073,16 @@ impl SoftwareStore {
         );
 
         let cy = header.center().y;
-        let mut x = header.x0 + BODY_PAD_X;
+        let x = header.x0 + BODY_PAD_X;
         let narrow = self.is_narrow();
 
         // Narrow: a hamburger summons the navigation drawer in place of the
         // inline tabs. The Back chevron, when in detail, takes precedence —
         // detail is the single-pane "push" view, so its Back affordance leads.
+        // (Toggle and Back are mutually exclusive on `detail`, so both anchor at
+        // the same left origin.)
         if narrow && self.detail.is_none() {
             self.draw_nav_toggle(scene, t, theme, targets);
-            x = self.nav_toggle_rect().x1 + 14.0;
         }
 
         // Back chevron when in detail view.
@@ -1039,15 +1092,9 @@ impl SoftwareStore {
             draw::fill_round(scene, t, back_rect, 8.0, if hov { c.surface_white_10 } else { c.surfaces.raised });
             draw::text_w(scene, tr, t, "‹  Back", theme.tokens.typography.scale.sm, TextWeight::Medium, c.text_primary, x + 12.0, cy - 8.0, None);
             targets.push(HitTarget { rect: back_rect, action: Action::Back });
-            x = back_rect.x1 + 14.0;
         }
 
-        // Wordmark: an accent app-tile + "Software".
-        let tile = Rect::new(x, cy - 14.0, x + 28.0, cy + 14.0);
-        draw::fill_round(scene, t, tile, 8.0, c.accent[5]);
-        draw::text_w(scene, tr, t, "◍", 16.0, TextWeight::Bold, Color::WHITE, tile.center().x - 6.0, tile.center().y - 9.0, None);
-        let name_x = tile.x1 + 10.0;
-        draw::text_w(scene, tr, t, "Software", theme.tokens.typography.scale.lg, TextWeight::Bold, c.text_primary, name_x, cy - 11.0, None);
+        // The OS owns the window title/app-name/logo — no wordmark drawn here.
 
         // Right cluster: nav tabs (wide only), then search pill.
         let pad_r = header.x1 - BODY_PAD_X;
@@ -1114,10 +1161,11 @@ impl SoftwareStore {
             origin
         };
 
-        // Search pill, to the left of the tabs.
+        // Search pill, to the left of the tabs. Draw it only while it clears the
+        // left cluster (nav toggle / Back chevron) rather than the old wordmark.
         let search_w = 280.0_f64;
         let search_r = Rect::new(tabs_origin - GAP - search_w, cy - 16.0, tabs_origin - GAP, cy + 16.0);
-        if search_r.x0 > name_x + 120.0 {
+        if search_r.x0 > self.rect.x0 + BODY_PAD_X + 80.0 {
             self.draw_search_bar(scene, tr, t, theme, targets, search_r);
         }
     }
@@ -1663,12 +1711,30 @@ impl SoftwareStore {
         y = self.draw_chips(scene, tr, t, theme, targets, x0, y);
         y += 22.0;
 
-        // Featured heroes (only when no category filter).
-        if self.active_category.is_none() {
+        let pool = self.browse_apps();
+
+        // Live path with nothing fetched yet: an honest loading / empty state
+        // rather than a bare page (the offline sample is never shown here).
+        if self.worker.is_live() && pool.is_empty() {
+            let loading = self.worker.inflight().contains("collection:popular");
+            let msg = if loading {
+                "Loading apps from Flathub…"
+            } else {
+                "No apps to show yet — check your network and Flathub remote."
+            };
+            y = self.section(scene, tr, t, theme, x0, y, msg);
+            return (y + self.scroll) - body.y0 + 12.0;
+        }
+
+        // Featured heroes: curated "Editor's Choice" only (offline sample has a
+        // `featured` flag; live Flathub data carries no editorial curation, so
+        // the heroes section is simply absent there).
+        let featured: Vec<&AppEntry> =
+            pool.iter().copied().filter(|a| a.featured).collect();
+        if self.active_category.is_none() && !featured.is_empty() {
             y = self.section(scene, tr, t, theme, x0, y, "Editor's Choice");
             y += 4.0;
-            let featured = self.catalog.featured();
-            let n = featured.len().min(3).max(1);
+            let n = featured.len().min(3);
             let hero_w = (width - GAP * (n as f64 - 1.0)) / n as f64;
             let hero_h = 188.0;
             for (i, app) in featured.iter().take(n).enumerate() {
@@ -1685,7 +1751,8 @@ impl SoftwareStore {
             None => Category::ALL.to_vec(),
         };
         for cat in cats {
-            let apps = self.catalog.in_category(cat);
+            let apps: Vec<&AppEntry> =
+                pool.iter().copied().filter(|a| a.category == cat).collect();
             if apps.is_empty() {
                 continue;
             }
@@ -2982,6 +3049,25 @@ mod tests {
 
     fn store() -> SoftwareStore {
         SoftwareStore::new(None)
+    }
+
+    #[test]
+    fn live_constructor_shows_no_fabricated_catalog() {
+        // With a live worker, Browse starts from real Flathub data only — never
+        // the curated sample with its fabricated star ratings + descriptions.
+        let store = SoftwareStore::with_worker(None, Worker::spawn());
+        assert!(store.catalog.is_empty(), "live catalog starts empty; real Flathub fills it");
+        assert!(store.live_apps.is_empty(), "no apps until the worker responds");
+        assert!(store.browse_apps().is_empty(), "Browse shows nothing fabricated on cold start");
+    }
+
+    #[test]
+    fn offline_constructor_keeps_the_sample_catalog() {
+        // The --shots / test path keeps the curated sample so screenshots and
+        // the rest of the suite stay populated without a network.
+        let store = SoftwareStore::new(None);
+        assert!(!store.catalog.is_empty(), "offline keeps the sample catalog");
+        assert!(!store.browse_apps().is_empty(), "offline Browse renders the sample");
     }
 
     // -------------------------------------------------------------------

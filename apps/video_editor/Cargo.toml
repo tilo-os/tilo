@@ -28,15 +28,22 @@ anyhow.workspace = true
 # `gst` feature so the default fleet build (and `--shots`) compiles without
 # the gstreamer-1.0 dev headers present. ffmpeg is intentionally NOT a dep.
 gstreamer = { workspace = true, optional = true }
+media = { path = "../../crates/media" }
+ashpd = { version = "0.9", default-features = false, features = ["tokio"], optional = true }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros"], optional = true }
+gstreamer-app = { version = "0.24", optional = true }
 
 [features]
 default = []
-# Real H.264 decode for the preview canvas, via `ui::VideoPlayer` (openh264).
-# The default fleet build (and `--shots`) leaves this off so the preview shows
-# a representative composited frame without touching a decoder — the headless
-# CI box has no real media pipeline. Turning it on lets the preview decode the
-# nearest keyframe of the clip under the playhead when its bytes are hydrated.
-decode = []
-# Real encode/decode through GStreamer (export muxing). Heavier; needs the
-# gstreamer-1.0 dev headers, so it stays opt-in and off the default build.
-gst = ["dep:gstreamer"]
+# Real decode for the preview canvas, via the shared `media::MediaEngine`
+# (GStreamer `playbin`). The default fleet build (and `--shots`) leaves this off
+# so the preview shows a representative composited frame without a decoder — the
+# headless CI box needs no media pipeline. With it on, the preview decodes the
+# real frame of the clip under the playhead (seeking to its source time) and
+# blits it; an un-hydrated reference falls back to the representative frame.
+decode = ["media/decode"]
+# Real export through GStreamer (encode + mux to a real file). Heavier; needs
+# the gstreamer-1.0 dev headers, so it stays opt-in and off the default build.
+gst = ["dep:gstreamer", "dep:gstreamer-app"]
+# Real host-native file import via the XDG desktop portal.
+portal = ["dep:ashpd", "dep:tokio"]

@@ -47,6 +47,16 @@ pub struct MapPalette {
     pub substrate: Color,
     /// The faint grid-line tint drawn over the loading substrate.
     pub substrate_grid: Color,
+    /// Traffic-congestion signal ramp (free → standstill), pulled from the
+    /// theme's semantic palette so it tracks the OS colours. A fixed green →
+    /// amber → orange → red ramp, the universally-read traffic convention.
+    pub traffic_free: Color,
+    pub traffic_moderate: Color,
+    pub traffic_heavy: Color,
+    pub traffic_severe: Color,
+    /// Dark casing drawn under a traffic segment so the signal colour reads on
+    /// the light cartographic land.
+    pub traffic_casing: Color,
 }
 
 impl MapPalette {
@@ -90,7 +100,25 @@ impl MapPalette {
                 theme.tokens.colors.surfaces.raised,
                 0.9,
             ),
+            // Saturated signal colours (not white-mixed like the roads) so they
+            // pop as an overlay over the light land.
+            traffic_free: sem.success,
+            traffic_moderate: sem.warning,
+            traffic_heavy: draw::mix(sem.warning, sem.danger, 0.55),
+            traffic_severe: sem.danger,
+            traffic_casing: draw::mix(land, k, 0.42),
         }
+    }
+}
+
+/// The signal colour for a congestion level, resolved from the palette.
+pub fn traffic_color(pal: &MapPalette, level: crate::traffic::Congestion) -> Color {
+    use crate::traffic::Congestion::*;
+    match level {
+        Free => pal.traffic_free,
+        Moderate => pal.traffic_moderate,
+        Heavy => pal.traffic_heavy,
+        Severe => pal.traffic_severe,
     }
 }
 
@@ -383,6 +411,48 @@ pub fn draw_route(
     draw::stroke_circle(scene, t, start, 7.0, 3.0, pal.route);
     draw::fill_circle(scene, t, end, 7.0, pal.route);
     draw::stroke_circle(scene, t, end, 7.0, 2.5, pal.marker_ring);
+}
+
+/// Paint the traffic overlay: each road segment as a dark casing under a
+/// signal-coloured line (green → red by congestion). Drawn over the basemap /
+/// tiles but under the active route + markers so navigation stays legible.
+/// Empty data draws nothing — the caller shows the "No traffic data" state.
+pub fn draw_traffic(
+    scene: &mut Scene,
+    t: Affine,
+    proj: &Projection,
+    traffic: &crate::traffic::TrafficData,
+    pal: &MapPalette,
+) {
+    use crate::traffic::Congestion;
+    // Ribbon width scales with zoom (same growth as the roads) and with
+    // congestion — free flow is a subtle line, a standstill is a fat one, so
+    // the eye is drawn to the jams the way a real traffic layer works.
+    let k = ((proj.zoom() - 12.0).max(0.0)) * 0.35 + 1.0;
+    let width = |level: Congestion| {
+        k * match level {
+            Congestion::Free => 2.2,
+            Congestion::Moderate => 2.7,
+            Congestion::Heavy => 3.1,
+            Congestion::Severe => 3.4,
+        }
+    };
+    // Casing pass first (a thin dark outline so the signal fills read on the
+    // light land and adjacent ribbons stay distinct), then the coloured fills.
+    for seg in &traffic.segments {
+        let pts = project_pts(proj, &seg.geometry);
+        if pts.len() < 2 {
+            continue;
+        }
+        draw::polyline(scene, t, &pts, width(seg.level) + 2.0, pal.traffic_casing);
+    }
+    for seg in &traffic.segments {
+        let pts = project_pts(proj, &seg.geometry);
+        if pts.len() < 2 {
+            continue;
+        }
+        draw::polyline(scene, t, &pts, width(seg.level), traffic_color(pal, seg.level));
+    }
 }
 
 /// Per-mode colour for a public-transport leg, resolved from theme tokens (no

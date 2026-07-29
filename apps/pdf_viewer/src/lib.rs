@@ -55,6 +55,14 @@ pub fn app_root_sample_editing() -> Box<dyn Widget> {
     Box::new(PdfApp::sample_editing())
 }
 
+/// Screenshot-only: the sample document with a settled text selection, so a
+/// still frame shows the shared selection HUD (highlight / Copy / Note).
+pub fn app_root_selection_hud() -> Box<dyn Widget> {
+    let mut app = PdfApp::sample();
+    app.arm_shots_selection();
+    Box::new(app)
+}
+
 /// Screenshot-only: open `path` (a real PDF) with a live page-rail reorder drag
 /// staged, so a still frame shows the left sidebar mid-reorder.
 pub fn app_root_reorder_demo(path: Option<&std::path::Path>) -> Box<dyn Widget> {

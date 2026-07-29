@@ -3733,6 +3733,26 @@ mod tests {
         assert!(matches!(snap.fmt.get(&(2, 1)), Some(CellFormat::Currency(_))));
     }
 
+    /// The status-bar summary aggregates Sum/Avg/Count over a *discontiguous*
+    /// multi-range selection — the real `selection_summary` → `selected_cells`
+    /// path the status bar draws each frame. Column B (Jan) sums to 2040 and
+    /// column D (Mar) to 2180 in the seed, so the two-range total is 4220 over
+    /// 10 numeric cells.
+    #[test]
+    fn multi_range_selection_summary_aggregates_both_ranges() {
+        let (mut app, _doc) = seeded_app();
+        app.grid.select_range_public((1, 1), (1, 5)); // B2:B6
+        app.grid.add_range_public((3, 1), (3, 5)); // D2:D6 (discontiguous)
+        assert!(app.grid.is_multi_range(), "two ranges are selected");
+
+        let s = app
+            .selection_summary()
+            .expect("a numeric multi-range selection has a status-bar summary");
+        assert_eq!(s.count, 10, "5 cells from B2:B6 + 5 from D2:D6");
+        assert!((s.sum - 4220.0).abs() < 1e-6, "sum over both ranges, got {}", s.sum);
+        assert!((s.avg - 422.0).abs() < 1e-6, "avg = 4220 / 10, got {}", s.avg);
+    }
+
     /// The real export → import path for a workbook of formulas: the active
     /// sheet is exported to a `.xlsx`, read back, and imported into a fresh
     /// document. Formula cells restore their formula *text* (not a frozen
