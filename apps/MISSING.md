@@ -734,3 +734,59 @@ card grids that crushed at narrow widths.
 - [x] Verified by offscreen shots of Timeline / Sources / Destinations /
       Schedules / Restore at wide + narrow (+ the empty onboarding + the overlay
       rail open); 12 tests green.
+
+## containers — real zero-state + §7 CLEAR (verified list/images/empty shots, live drive)
+
+Reviewed this cycle. The manager already drives real rootless podman (containers,
+images, volumes, distroboxes via `podman ps/images/volume ls/stats` + real
+start/stop/restart/pause/rm, `rmi`/tag/inspect, streaming pull, `exec` attach).
+One real defect fixed; the rest verified fine.
+
+- [x] No fabricated state: `podman::probe()` fell back to the bundled
+      `sample_engine()` whenever podman was unreachable, so the *live* app showed
+      seven fake containers you could "stop". It now returns an empty engine
+      flagged not-live; the sample is reserved for `--shots`.
+- [x] Honest, composed zero-state: the container list shows "No container engine"
+      (podman absent) or "No containers yet" (engine up, none created) — a title
+      over an explanatory line, not a lone grey sentence.
+- [x] Verified: list + images + volumes populated shots read genuinely nice
+      (status pills, inline lifecycle actions, tabbed detail, live logs); the
+      empty-engine shot is honest; a live headless drive stands the app up against
+      the real backend and a section switch persists. Real `podman ps --all
+      --format json` confirmed returning real containers. 35 tests green.
+
+## logs — real zero-state + §7 CLEAR (verified stream/empty shots, live journal drive)
+
+Reviewed this cycle. The viewer already parses real `journalctl -o json` (severity
+colouring, unit/boot/priority filters, free-text search, live-tail, a full-field
+detail pane). One real defect fixed.
+
+- [x] No fabricated logs: the live app fell back to the bundled `sample_entries()`
+      whenever the journal read came back empty/unreadable, surfacing invented log
+      lines. It now shows the real journal only; empty/unreadable renders an honest
+      "No journal entries" zero-state (title + explanation). Sample stays behind
+      `--shots`.
+- [x] Verified: the populated stream reads nicely (tabular time, severity dots +
+      tags, detail grid, legend); the empty shot is honest; a live headless drive
+      against **real journalctl** loaded real entries and a typed search filter
+      persisted to the CRDT (`search: "shell"`). 12 tests green.
+
+## hex_editor — real open/save + honest empty + width-fit grid (verified shots + e2e)
+
+Reviewed this cycle. Had real byte editing into the CRDT but three gaps: it opened
+onto a fabricated sample buffer by default, had no in-app Open (only a CLI path)
+and **no Save to disk at all**, and stranded 16 columns in a band of dead space.
+
+- [x] Real file lifecycle: Open (Ctrl+O / empty-state button) and Save (Ctrl+S)
+      go through the host XDG file portal (`ui::portal`); Ctrl+S on a path-backed
+      buffer writes straight back and clears the dirty markers, with a status flash.
+- [x] Honest empty state: with no file the live app shows a composed zero-state
+      (title, one-line explanation, a single Open action) — never a fake buffer;
+      an unreadable path yields the same. Sample buffer reserved for `--shots`.
+- [x] §7 grid: the byte columns auto-fit the viewport width (24/row at 1280) and
+      the data inspector sits directly beside the ASCII column, so the surface
+      fills the window instead of stranding a fixed 16 columns.
+- [x] Proven end-to-end (`tests/open_save.rs`): a real file opens through the
+      portal drain path, and an edit saved with Ctrl+S lands on disk (dirty
+      cleared). Verified shots: sample (width-fit), a real ELF opened live, and
+      the empty state. 45 tests green.
