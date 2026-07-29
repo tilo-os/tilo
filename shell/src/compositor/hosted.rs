@@ -9,7 +9,7 @@
 use std::sync::Arc;
 
 use crate::network::behaviour::{load_or_create_keypair, peer_salt_from_keypair};
-use crate::shell::network::{DEFAULT_KEYPAIR_PATH, ShellNetwork};
+use crate::shell::network::{ShellNetwork, peer_key_path};
 use crate::shell::state::WorkspaceTree;
 use crate::shell::{
     build_nirios_overlay_host_with_handle, persist, seed_demo_editor_presence,
@@ -58,6 +58,11 @@ pub struct HostedOptions {
 /// Tasks 3.2 + 3.3. v1 default OFF — passing `false` (or omitting
 /// `--enable-peer-sync` on the CLI) preserves the existing behaviour
 /// bit-for-bit.
+/// How long an invite minted from the palette stays valid. One hour —
+/// long enough to hand a token to someone in the same room, short
+/// enough that a token left in a chat log stops working.
+const INVITE_EXPIRY_SECONDS: u64 = 3600;
+
 pub fn run_with_options(enable_peer_sync: bool) {
     run_with_full_options(HostedOptions {
         enable_peer_sync,
@@ -97,7 +102,7 @@ pub fn run_with_full_options(opts: HostedOptions) {
     // 0x0002, …` id sequence. The salt-0 default is the explicit
     // back-compat contract.
     if enable_peer_sync {
-        match load_or_create_keypair(std::path::Path::new(DEFAULT_KEYPAIR_PATH)) {
+        match load_or_create_keypair(&peer_key_path()) {
             Ok(kp) => {
                 let salt = peer_salt_from_keypair(&kp);
                 tree.set_peer_salt(salt);
@@ -175,7 +180,7 @@ pub fn run_with_full_options(opts: HostedOptions) {
     let peer_sync: Option<Arc<ShellNetwork>> = if enable_peer_sync {
         match ShellNetwork::spawn(
             tree_handle.clone(),
-            std::path::Path::new(DEFAULT_KEYPAIR_PATH),
+            &peer_key_path(),
         ) {
             Ok(handle) => {
                 // Subscribe to the default workspace topic so the
@@ -198,6 +203,27 @@ pub fn run_with_full_options(opts: HostedOptions) {
     let state = State::new();
     let (host, _chrome) =
         build_nirios_overlay_host_with_handle(tree_handle.clone(), enable_peer_sync);
+    // Give the palette's `/invite` and `/connect` rows something that
+    // actually performs them. Without this the host records an intent
+    // and drops it, which is what both commands did before: reachable
+    // in the palette, inert in a running session.
+    let host = match peer_sync.as_ref() {
+        Some(net) => {
+            let net = Arc::clone(net);
+            let tree_for_bridge = tree_handle.clone();
+            host.with_peer_sync_bridge(std::rc::Rc::new(move |req| match req {
+                crate::shell::overlay_host::PeerSyncRequest::IssueInvite => {
+                    let active = tree_for_bridge.read().active;
+                    net.issue_invite(active, INVITE_EXPIRY_SECONDS)
+                }
+                crate::shell::overlay_host::PeerSyncRequest::AcceptInvite(token) => {
+                    let active = tree_for_bridge.read().active;
+                    net.accept_invite(active, &token).map(|room| room.to_string())
+                }
+            }))
+        }
+        None => host,
+    };
     let root: Box<dyn Widget> = Box::new(host) as Box<dyn Widget>;
     qos_startup_metrics::mark("hosted-app-new-start");
     let mut app = App::new(state, root);

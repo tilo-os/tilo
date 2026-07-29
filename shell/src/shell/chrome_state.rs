@@ -311,6 +311,21 @@ pub struct ChromeState {
     /// expanded window covers the whole output (wheel included) exactly like a
     /// client-driven fullscreen surface does.
     maximized_group: Option<u64>,
+    /// The invite token the local user last minted with `/invite`.
+    ///
+    /// Shown on screen so the user can read it back — a token that only
+    /// ever reached the clipboard is invisible to anyone checking that
+    /// the command did anything, and a headless session has no
+    /// clipboard at all.
+    pub peer_sync_invite_token: Option<String>,
+    /// In-progress token entry for `/connect`. `Some` means the prompt
+    /// is open; the string is what has been typed so far. An overlay
+    /// rather than a widget because it owns the keyboard outright while
+    /// it is up.
+    pub peer_sync_connect_input: Option<String>,
+    /// Last thing the peer-sync layer said back — the room joined, or
+    /// why the token was refused. Rendered under the prompt.
+    pub peer_sync_status: Option<String>,
 }
 
 impl ChromeState {
@@ -348,6 +363,9 @@ impl ChromeState {
             session_locked: false,
             fullscreen_group: None,
             maximized_group: None,
+            peer_sync_invite_token: None,
+            peer_sync_connect_input: None,
+            peer_sync_status: None,
         }))
     }
 
