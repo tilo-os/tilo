@@ -2,9 +2,8 @@
 //!
 //! The editor surface is a single custom-drawn [`HexView`] that fills the
 //! window; this module is the thin entry point that decides what buffer to
-//! open onto. With no file argument it opens the bundled sample so the app
-//! starts on real, recognisable bytes (a PNG header) instead of a blank
-//! canvas.
+//! open onto. The live app with no file argument opens the honest empty state
+//! ([`HexView::empty`]); the bundled sample buffer is reserved for `--shots`.
 
 use std::path::Path;
 
@@ -23,9 +22,10 @@ pub fn sample_view() -> HexView {
         .with_cursor(0x10)
 }
 
-/// Construct the editor opened on a file's bytes, falling back to the
-/// bundled sample if the path can't be read. The display name is the
-/// file's final path component.
+/// Construct the editor opened on a file's bytes. The display name is the
+/// file's final path component, and the path is remembered so `Ctrl+S` writes
+/// straight back. An unreadable path yields the honest empty state — never a
+/// fabricated buffer.
 pub fn view_for_path(path: &Path) -> HexView {
     match std::fs::read(path) {
         Ok(bytes) => {
@@ -33,9 +33,9 @@ pub fn view_for_path(path: &Path) -> HexView {
                 .file_name()
                 .map(|s| s.to_string_lossy().into_owned())
                 .unwrap_or_else(|| "untitled".to_string());
-            HexView::new(bytes, name)
+            HexView::new(bytes, name).with_path(path.to_path_buf())
         }
-        Err(_) => sample_view(),
+        Err(_) => HexView::empty(),
     }
 }
 
@@ -54,8 +54,9 @@ mod tests {
     }
 
     #[test]
-    fn view_for_missing_path_falls_back_to_sample() {
+    fn view_for_missing_path_is_the_empty_state_not_a_fake_buffer() {
         let v = view_for_path(Path::new("/nonexistent/definitely-not-here.bin"));
-        assert_eq!(&v.model().bytes()[..2], &[0x89, 0x50]);
+        assert!(!v.has_file(), "an unreadable path must not fabricate a buffer");
+        assert!(v.model().is_empty());
     }
 }
