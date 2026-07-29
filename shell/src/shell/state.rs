@@ -4988,7 +4988,7 @@ mod capability_tests {
         let legacy = r#"{
             "id": 1,
             "name": "Old",
-            "strips": [],
+            "strips": []
         }"#;
         let ws: Workspace = serde_json::from_str(legacy).expect("legacy compat");
         assert!(ws.capabilities.is_empty());
