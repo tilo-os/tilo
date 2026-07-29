@@ -583,9 +583,13 @@ impl RoomActivityPane {
             return false;
         }
         ui::state::write_revert_patches(&mut tree.doc, &current, &target);
-        let before = tree.doc.get_heads();
+        // `current` was read before the patches were written, and reading heads
+        // is what closes an automerge transaction — asking for them again here
+        // would commit the revert *unstamped* and then compare the result
+        // against itself. Commit deliberately, then compare against the heads
+        // from before the write.
         tree.commit_room_change();
-        if tree.doc.get_heads() == before {
+        if tree.doc.get_heads() == current {
             // The patch set was empty — nothing was actually different.
             return false;
         }
@@ -810,7 +814,27 @@ fn describe_patches(patches: &[automerge::Patch]) -> Option<(String, OpClass)> {
         }
     }
 
-    // Governance first: a change that handed out or took away authority is
+    // A whole-list rewrite is the shell flushing its cached tree back into the
+    // document (`seed_doc_from_cache`). It touches every field of every
+    // workspace — including the capability map — so it has to be recognised
+    // *before* the individual-field cases, or a flush that granted nothing
+    // reads as "granted 4 capabilities".
+    if workspaces_removed > 0 && workspaces_added == 0 {
+        return Some((
+            plural(workspaces_removed, "workspace", "Removed"),
+            OpClass::Tombstone,
+        ));
+    }
+    if workspaces_added > 0 {
+        let s = match names.len() {
+            0 => plural(workspaces_added, "workspace", "Recorded"),
+            1 => format!("Recorded workspace \u{201c}{}\u{201d}", names[0]),
+            n => format!("Recorded {n} workspaces: {}", join_titles(&names)),
+        };
+        return Some((s, OpClass::Splice));
+    }
+
+    // Governance next: a change that handed out or took away authority is
     // that, whatever else it also touched. It is also the class the user is
     // most likely to be looking for when they open this pane.
     if !grants.is_empty() {
@@ -828,25 +852,6 @@ fn describe_patches(patches: &[automerge::Patch]) -> Option<(String, OpClass)> {
             format!("Revoked {revokes} capabilities")
         };
         return Some((s, OpClass::Govern));
-    }
-    // A whole-list rewrite is the shell flushing its cached tree back into the
-    // document (`seed_doc_from_cache`). Every field in it is touched, so
-    // reporting one of them — "assigned the room identity", say — would be
-    // technically true and completely misleading. Name the workspaces it
-    // wrote instead, which is what the change is about.
-    if workspaces_removed > 0 && workspaces_added == 0 {
-        return Some((
-            plural(workspaces_removed, "workspace", "Removed"),
-            OpClass::Tombstone,
-        ));
-    }
-    if workspaces_added > 0 {
-        let s = match names.len() {
-            0 => plural(workspaces_added, "workspace", "Recorded"),
-            1 => format!("Recorded workspace \u{201c}{}\u{201d}", names[0]),
-            n => format!("Recorded {n} workspaces"),
-        };
-        return Some((s, OpClass::Splice));
     }
     if owner_set {
         return Some(("Set the room owner".to_string(), OpClass::Govern));
@@ -963,14 +968,18 @@ fn describe_principal(p: &Principal) -> String {
     }
 }
 
-/// Keys are 64 hex characters; a row is 40 px tall. Show the prefix a person
-/// can actually compare against another one.
+/// A person id is either a readable account name or a 64-character public key.
+/// Show the first whole, and enough of the second to compare against another
+/// one — chopping every id to eight characters turned `test-owner` into
+/// `test-own`.
 fn short(id: &str) -> String {
-    if id.len() > 8 {
-        id.chars().take(8).collect()
-    } else {
-        id.to_string()
+    const READABLE_MAX: usize = 24;
+    if id.chars().count() <= READABLE_MAX {
+        return id.to_string();
     }
+    let mut out: String = id.chars().take(12).collect();
+    out.push('\u{2026}');
+    out
 }
 
 fn plural(n: usize, noun: &str, verb: &str) -> String {
@@ -1073,11 +1082,16 @@ mod tests {
             summaries.iter().any(|s| s.starts_with("Revoked")),
             "the revoke is its own row: {summaries:?}"
         );
+        // The rename reaches the document through `seed_doc_from_cache`, which
+        // rewrites the whole workspace list — so the row is the flush, and it
+        // has to name what it wrote or it says nothing at all.
         assert!(
-            summaries
-                .iter()
-                .any(|s| s.contains("Design review")),
-            "the rename names the new name: {summaries:?}"
+            summaries.iter().any(|s| s.contains("Design review")),
+            "the flush that carried the rename names it: {summaries:?}"
+        );
+        assert!(
+            !summaries.iter().any(|s| s == &"Granted 4 capabilities"),
+            "a flush that granted nothing must not read as a grant: {summaries:?}"
         );
     }
 
