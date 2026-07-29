@@ -124,12 +124,16 @@ own. **Worst bespoke offenders (fix first):**
 - **camera** — a *floating* rounded "glass" nav rail inset 14px, no collapse
   affordance, never becomes a separate screen when narrow. Should adopt
   `NavShell`.
-- **backups** — the rail is literally a floating `card`, no responsive handling.
-  Adopt `NavSplit`.
+- **backups** ✅ DONE — the Timeline source rail now uses `SidebarDrawer`
+  (docked wide / overlay drawer + scrim when narrow), and the tile/card grids
+  reflow (summary tiles 4→2→1 via `card_columns`, destination cards regrid +
+  compact, schedules stack, top bar compacts). Both immediate-mode painters, so
+  the *headless* `SidebarDrawer` (not the `Widget` `NavSplit`) is the right fit.
 - **file-explorer** — 1122 LOC of bespoke places-sidebar, fixed 180px, no narrow
   behaviour. Adopt `NavSplit` for the frame.
-- **firewall** — fixed 214px zone rail, zero responsive behaviour. Adopt
-  `NavSplit`.
+- **firewall** ✅ DONE — the zone rail now uses `SidebarDrawer` (docked/overlay),
+  plus progressive breakpoints (services panel collapses, rules table → two-line
+  rows, add-rule form stacks). Also an immediate-mode painter → `SidebarDrawer`.
 - Duplication tail (behave OK, just re-implement the flap): api_tester, chat,
   calendar, db_client, code_editor, snippets, containers, disks, feeds, remote,
   contacts, git_client, monitor, software_store, themes.

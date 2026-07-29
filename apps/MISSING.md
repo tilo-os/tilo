@@ -604,3 +604,50 @@ default build never touches the network and keeps the honest surface.
       session still requires the runtime opt-in. Cross-host verification against
       a system `sshd` / external VNC server is the remaining nice-to-have (the
       loopback round-trips already exercise the full real transport).
+
+## firewall — responsive reflow + §7 CLEAR (verified wide/medium/narrow, shots)
+
+Was a fixed three-rail immediate-mode painter (214px zone rail + rules table +
+form + a fixed ~300px services panel) with zero width reactivity — crushed at
+phone widths.
+
+- [x] The zone rail is now the shared `ui::SidebarDrawer`: docked beside the
+      content on wide windows (with an in-rail collapse toggle), a summoned
+      overlay drawer with a dismiss scrim when narrow (hamburger in the header).
+- [x] Progressive breakpoints so content reflows, not just the rail: the
+      services panel collapses below 1000px (the rules table takes the whole
+      centre); below 720px the rules table switches to two-line rows, the
+      add-rule form stacks its controls onto four lines, and the summary stat
+      chips wrap. The header status line + backend chip drop at narrow (the
+      enable pill + red "Panic ON" button already carry that state) so nothing
+      wraps over the summary.
+- [x] Honesty preserved: the live app still reads the real firewalld config and
+      shows an honest "firewalld unavailable" card when it can't — never a
+      fabricated ruleset. Sample ruleset stays behind `--shots`/`new_demo()`.
+- [x] Verified by offscreen shots at 1280 / 900 / 440 (populated) + the drawer
+      open + the live unavailable state; 32 tests green.
+
+## backups — responsive reflow + §7 CLEAR (verified every view wide + narrow, shots)
+
+Was a fixed 256px floating-card rail (Timeline) plus fixed multi-column tile /
+card grids that crushed at narrow widths.
+
+- [x] The Timeline source rail is now `ui::SidebarDrawer` (docked wide, overlay
+      drawer + scrim when narrow; hamburger in the top bar, in-rail collapse
+      when docked).
+- [x] Tile/card grids reflow by width: the summary tiles re-column 4→2→1 via the
+      shared `card_columns`/`card_column_width`; the destination repository
+      cards reflow into an aligned grid and become compact single-column cards
+      when narrow (no crushed ring gauge); the schedules editor + its summary
+      stack vertically when narrow; the distribution legend wraps; the recent-
+      activity feed folds to two lines.
+- [x] Top-bar chrome compacts (icon-only primary action, tabs clamp + abbreviate
+      before they collide, wordmark drops); the restore sheet clamps to the
+      window and stacks its columns; the status bar's three texts no longer
+      overlap.
+- [x] Honesty preserved: live still starts on an empty catalog with the "No
+      backups configured yet" onboarding; the populated sample stays behind
+      `--shots`/`new_demo()`.
+- [x] Verified by offscreen shots of Timeline / Sources / Destinations /
+      Schedules / Restore at wide + narrow (+ the empty onboarding + the overlay
+      rail open); 12 tests green.
