@@ -487,6 +487,16 @@ impl FeedsApp {
         self.stage_menu_shot = true;
     }
 
+    /// Open the Add-subscription dialog with `url` pre-typed into the field, so
+    /// a `--shots` capture shows the real modal + focused TextInput with a caret
+    /// (the single-frame renderer can't reach it through live input).
+    pub fn stage_add_subscription(&mut self, url: &str) {
+        self.open_add_subscription();
+        if let Some(m) = self.modal.as_mut() {
+            m.dialog.content_mut().set_value(url);
+        }
+    }
+
     /// Merge the bundled sample OPML into the store so a `--shots` capture shows
     /// the sidebar right after an import — the freshly-created folder and its
     /// feeds folded in (the shot renders straight from the store).
@@ -3953,6 +3963,48 @@ mod tests {
             button: MouseButton::Left,
         }
     }
+    /// A `Character` key press carrying `s` as both the logical key and text —
+    /// the shape winit delivers for a typed character. Zeroed base then the
+    /// inspected fields overwritten (winit's `KeyEventExtra` is `pub(crate)`),
+    /// same pattern the toolkit's own widget tests use.
+    fn char_key(s: &str) -> WindowEvent {
+        let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
+        ev.logical_key = Key::Character(s.into());
+        ev.physical_key =
+            winit::keyboard::PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
+        ev.location = winit::keyboard::KeyLocation::Standard;
+        ev.state = ElementState::Pressed;
+        ev.repeat = false;
+        ev.text = Some(s.into());
+        WindowEvent::KeyboardInput { device_id: synth_device(), event: ev, is_synthetic: false }
+    }
+    fn named_key(k: NamedKey) -> WindowEvent {
+        let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
+        ev.logical_key = Key::Named(k);
+        ev.physical_key =
+            winit::keyboard::PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
+        ev.location = winit::keyboard::KeyLocation::Standard;
+        ev.state = ElementState::Pressed;
+        ev.repeat = false;
+        ev.text = None;
+        WindowEvent::KeyboardInput { device_id: synth_device(), event: ev, is_synthetic: false }
+    }
+    /// Dispatch an event with explicit modifiers held (for Ctrl+V etc).
+    fn dispatch_mods(
+        a: &mut FeedsApp,
+        doc: &mut AutoCommit,
+        event: &WindowEvent,
+        mods: &winit::event::Modifiers,
+    ) -> bool {
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let node = taffy.new_leaf(Style::default()).unwrap();
+        let mut handled = false;
+        let mut focus_target = None;
+        a.handle_event(
+            event, 1.0, mods, doc, &automerge::ROOT, &mut handled, &mut focus_target, node, &taffy,
+        );
+        handled
+    }
     /// Drive the app's real `handle_event` dispatch (same path the winit loop
     /// uses), returning whether the event was consumed.
     fn dispatch(a: &mut FeedsApp, doc: &mut AutoCommit, event: &WindowEvent) -> bool {
@@ -4281,5 +4333,101 @@ mod tests {
             .articles
             .iter()
             .any(|x| x.id == art.id && !x.blocks.is_empty()));
+    }
+
+    // --- add-subscription dialog (real ModalDialog + real TextInput) -------
+
+    /// The add-subscription dialog hosts a real [`ui::widget::TextInput`], so
+    /// the shared clipboard core works: seed the clipboard, paste with Ctrl+V
+    /// through the app's real event path, and the URL lands in the field.
+    /// Submitting then runs the real `subscribe` path. This is the proof the
+    /// hand-rolled fake field (no clipboard, "Press enter to add") is gone.
+    #[test]
+    fn add_subscription_modal_pastes_url_and_subscribes() {
+        use winit::event::Modifiers;
+        use winit::keyboard::ModifiersState;
+
+        let mut a = app();
+        let mut doc = AutoCommit::new();
+        a.sync(&mut doc, &automerge::ROOT);
+        // A thread-less worker so `subscribe` enqueues without any network.
+        let _tx = a.install_test_worker();
+
+        // Open the dialog through the real toolbar action path, then lay it out.
+        lay_out(&mut a, 1280.0, 800.0);
+        a.open_add_subscription();
+        a.layout_modal();
+        assert_eq!(
+            a.modal.as_ref().map(|m| m.intent),
+            Some(ModalIntent::AddSubscription),
+            "the Add-subscription dialog is open"
+        );
+        assert!(
+            a.modal.as_ref().unwrap().dialog.content().value().is_empty(),
+            "the URL field starts empty"
+        );
+
+        // Seed the clipboard, then paste with Ctrl+V through `handle_event`.
+        let url = "https://blog.rust-lang.org/feed.xml";
+        ui::text_selection::clipboard_copy(url);
+        let ctrl = Modifiers::from(ModifiersState::CONTROL);
+        assert!(
+            dispatch_mods(&mut a, &mut doc, &char_key("v"), &ctrl),
+            "Ctrl+V is consumed by the dialog"
+        );
+        assert_eq!(
+            a.modal.as_ref().unwrap().dialog.content().value(),
+            url,
+            "Ctrl+V pasted the clipboard URL into the real TextInput"
+        );
+
+        // Enter submits: the real `subscribe` runs and the dialog closes.
+        assert!(dispatch(&mut a, &mut doc, &named_key(NamedKey::Enter)));
+        assert!(a.modal.is_none(), "submitting closes the dialog");
+        let toast = a.toast.as_ref().map(|(m, _)| m.clone()).unwrap_or_default();
+        assert!(
+            toast.contains(url),
+            "submit ran the real subscribe path for the pasted URL (toast: {toast:?})"
+        );
+    }
+
+    /// Esc cancels the dialog without subscribing, and typing then Ctrl+A +
+    /// typing edits the field — exercising the shared caret/selection core
+    /// rather than a per-app buffer.
+    #[test]
+    fn add_subscription_modal_esc_cancels_and_typing_edits() {
+        use winit::event::Modifiers;
+        use winit::keyboard::ModifiersState;
+
+        let mut a = app();
+        let mut doc = AutoCommit::new();
+        a.sync(&mut doc, &automerge::ROOT);
+        let _tx = a.install_test_worker();
+        lay_out(&mut a, 1280.0, 800.0);
+
+        a.open_add_subscription();
+        a.layout_modal();
+        // Type two characters into the real field.
+        let none = Modifiers::from(ModifiersState::empty());
+        dispatch_mods(&mut a, &mut doc, &char_key("h"), &none);
+        dispatch_mods(&mut a, &mut doc, &char_key("i"), &none);
+        assert_eq!(a.modal.as_ref().unwrap().dialog.content().value(), "hi");
+        // Select-all + replace, proving the selection core is live.
+        let ctrl = Modifiers::from(ModifiersState::CONTROL);
+        dispatch_mods(&mut a, &mut doc, &char_key("a"), &ctrl);
+        dispatch_mods(&mut a, &mut doc, &char_key("x"), &none);
+        assert_eq!(
+            a.modal.as_ref().unwrap().dialog.content().value(),
+            "x",
+            "Ctrl+A then a keystroke replaces the whole selection"
+        );
+
+        // Esc cancels — no dialog, no subscription toast.
+        assert!(dispatch(&mut a, &mut doc, &named_key(NamedKey::Escape)));
+        assert!(a.modal.is_none(), "Esc closes the dialog");
+        assert!(
+            a.toast.is_none(),
+            "cancelling must not run subscribe"
+        );
     }
 }
