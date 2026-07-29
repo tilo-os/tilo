@@ -495,6 +495,29 @@ verified by an offscreen shot (header gone, functional controls intact) + tests:
       (bounded-churn tests), and a shared responsive flap sidebar. Verified on
       populated + empty + narrow-overlay + push-detail shots.
 
+## themes — real OS theme studio that actually applies (§7 CLEAR)
+- [x] Apply is real: it persists the selected `ThemeSpec` into the shared
+      `~/.config/qos/settings.json` `appearance` section — the same file the
+      compositor and every system app read at session start — via a
+      non-destructive merge that preserves foreign sections. Proven end-to-end
+      by `apply_command_writes_the_active_theme_to_the_shared_store` (drives
+      Apply through the real sync, then reads the id + full spec back off disk).
+- [x] Honesty: the live catalog no longer seeds a fabricated "Sunset (custom)"
+      user theme. `default_catalog()` is now the built-in **presets only** (the
+      OS's shipped themes — real product content, not user content); the editable
+      custom theme moved to `demo_catalog()` used by `--shots`/tests. Live focuses
+      the first preset (read-only customizer, "Duplicate to edit"); the user
+      authors their own via New/Duplicate and they persist in the CRDT. Asserted
+      by `live_seed_is_presets_only_and_selects_a_preset` +
+      `live_default_catalog_is_presets_only_no_fabricated_custom`.
+- Everything else was already strong and stayed: a live preview pane rendering
+      real widgets (typography specimen, buttons, controls, presence list,
+      badges, charts) under the selected theme; a two-way-reconciled customizer
+      (accent hue/RGB picker, radius/spacing sliders, font family) editing real
+      tokens with bounded-churn CRDT persistence; New/Duplicate/Delete/Reset/
+      Export JSON; the shared responsive flap gallery. Verified on live (8
+      presets), demo (editable custom), font, and sidebar-menu shots.
+
 ## honesty pass — live path starts real/empty, samples gated to `--shots`
 
 Live launches must show real (or honestly empty) data; fabricated sample

@@ -30,11 +30,17 @@ pub fn app_root() -> Box<dyn Widget> {
 /// from `width` here and the gallery flap is snapped to its endpoint. A narrow
 /// width therefore captures the collapsed gallery floating over its scrim.
 pub fn app_root_for_shot(width: u32) -> Box<dyn Widget> {
-    let mut app = ThemesApp::new();
     // Optional scenario for the capture (sidebar menu, narrow scroll, font
     // change), selected via the `QOS_THEMES_SHOT` env var so a single binary
-    // renders every review still.
+    // renders every review still. `live` captures the honest live default (the
+    // presets-only catalog, no fabricated custom theme); every other scenario
+    // uses the seeded demo catalog so the customizer shows real editing.
     let scenario = std::env::var("QOS_THEMES_SHOT").unwrap_or_default();
+    let mut app = if scenario == "live" {
+        ThemesApp::new()
+    } else {
+        ThemesApp::new_demo()
+    };
     app.seed_shot(width as f64, &scenario);
     Box::new(app)
 }
