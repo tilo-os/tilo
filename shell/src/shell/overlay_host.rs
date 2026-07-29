@@ -5017,12 +5017,39 @@ impl Widget for ShellOverlayHost {
                                         let mut st = chrome.borrow_mut();
                                         let revoked = {
                                             let mut tree = st.tree_mut();
-                                            if let Some(ws) = tree.active_workspace_mut() {
-                                                crate::shell::workspace_settings::revoke_grant(
-                                                    ws, app_id, *cap_index,
-                                                )
-                                            } else {
-                                                false
+                                            // The id has to be read before the
+                                            // removal, because after it there is
+                                            // nothing at that index to name.
+                                            let target = tree.active_workspace().and_then(|ws| {
+                                                let id =
+                                                    crate::shell::workspace_settings::revoke_grant_id(
+                                                        ws, app_id, *cap_index,
+                                                    )?;
+                                                Some((ws.id, id))
+                                            });
+                                            match target {
+                                                Some((ws_id, cap_id)) => {
+                                                    let gone = tree
+                                                        .active_workspace_mut()
+                                                        .is_some_and(|ws| {
+                                                            ws.revoke_capability(&cap_id)
+                                                        });
+                                                    if gone {
+                                                        // Mirror it and write it
+                                                        // down. Without these the
+                                                        // button only edited the
+                                                        // in-memory cache: the
+                                                        // room's own history never
+                                                        // recorded the revocation,
+                                                        // and the next boot read the
+                                                        // grant back off disk and
+                                                        // handed it out again.
+                                                        tree.doc_revoke_capability(ws_id, &cap_id);
+                                                        tree.flush_to_disk();
+                                                    }
+                                                    gone
+                                                }
+                                                None => false,
                                             }
                                         };
                                         if revoked {
