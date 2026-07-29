@@ -55,6 +55,7 @@ use crate::compositor::test_control::{
     self, ControlState, KeyTag, NamedKeyTag, PlannedAction, parse_command, serialise_response,
 };
 use crate::compositor::{BackendKind, parse_backend_from_args};
+use crate::shell::overlay_host::PeerSyncRequest;
 
 /// Env-var name for the Phase 7 CI test introspection hook. When set to a
 /// writable path, [`run`] serializes the shell `WorkspaceTree` to that path
@@ -378,8 +379,27 @@ impl<'a> ControlState for FrameBuilderControlState<'a> {
                 "connect_input": chrome.peer_sync_connect_input,
                 "status": chrome.peer_sync_status,
             },
+            "palette": palette_json(self.fb),
         })
     }
+}
+
+/// The command palette's live state, for `state_dump`.
+///
+/// Which row Enter would activate is the whole content of "what does
+/// this keystroke do next", and a socket-driven harness cannot see it
+/// any other way.
+fn palette_json(fb: &FrameBuilder) -> serde_json::Value {
+    let (visible, query, selected, rows) = fb.host().palette_snapshot();
+    serde_json::json!({
+        "visible": visible,
+        "query": query,
+        "selected_id": selected,
+        "rows": rows
+            .into_iter()
+            .map(|(id, label)| serde_json::json!({ "id": id, "label": label }))
+            .collect::<Vec<_>>(),
+    })
 }
 
 /// Stash of per-process state the test-control wire needs in order to
@@ -1031,6 +1051,68 @@ fn winit_event_to_lock_key(event: &WindowEvent) -> LockKey {
 /// error is `panic`-ed via `expect`; this is a top-level binary entry point,
 /// so an `unwrap`-style style is appropriate (and matches smithay's own
 /// examples).
+/// How long an invite minted from the palette stays valid.
+const INVITE_EXPIRY_SECONDS: u64 = 3600;
+
+/// Load this machine's desktop state and bring it up to the invariants
+/// every later stage assumes: a persist path to write back to, a
+/// durable room identity per workspace, and an owner per room.
+///
+/// Shares the shape of the hosted entry point's bootstrap, and for the
+/// same reasons: an unowned room has no administrators, and a room
+/// whose identity is re-minted each boot is a different room every
+/// morning.
+fn load_session_tree(enable_peer_sync: bool) -> crate::shell::state::WorkspaceTreeHandle {
+    use crate::shell::persist;
+
+    let path = persist::state_json_path();
+    let mut tree = persist::load_or_default(&path);
+
+    // Two peers minting ids from the same counter produce colliding
+    // ids, and CRDT sync then folds two distinct workspaces into one
+    // row. The salt is derived from the libp2p keypair, so it has to be
+    // set before the id counter is seeded off what is already in the
+    // tree — hence the re-seed.
+    if enable_peer_sync {
+        match crate::network::behaviour::load_or_create_keypair(
+            &crate::shell::network::peer_key_path(),
+        ) {
+            Ok(kp) => {
+                let salt = crate::network::behaviour::peer_salt_from_keypair(&kp);
+                tree.set_peer_salt(salt);
+                tree.seed_next_id_from_self();
+                tracing::info!("peer-sync: id salt set to 0x{:04x}", salt);
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "peer-sync: keypair load failed ({e}); ids remain unsalted \
+                     (cross-peer collisions possible)"
+                );
+            }
+        }
+    }
+
+    tree.persist_path = Some(path);
+    tree.fs_acl_path = Some(persist::fs_capability_export_path());
+
+    let roomless = tree.adopt_roomless_workspaces();
+    if !roomless.is_empty() {
+        tracing::info!(
+            "collaboration: minted a room identity for {} workspace(s)",
+            roomless.len()
+        );
+    }
+    let local_user = crate::shell::state::local_user_id();
+    let adopted = tree.adopt_ownerless_workspaces(&local_user);
+    if !adopted.is_empty() {
+        tracing::info!(
+            "capabilities: {} workspace(s) adopted by {local_user}",
+            adopted.len()
+        );
+    }
+    tree.shared()
+}
+
 pub fn run() -> ! {
     // Calloop drives the whole compositor; smithay is callback-oriented and
     // expects every wakeup to fan out from a single `EventLoop::<State>`.
@@ -1116,7 +1198,60 @@ pub fn run() -> ! {
         (0, 0) => (1600, 900),
         size => size,
     };
-    let mut frame_builder = FrameBuilder::new(initial_size);
+    let enable_peer_sync = crate::compositor::peer_sync_enabled_from_env_or_marker();
+
+    // The desktop's own state, loaded from disk rather than bootstrapped
+    // fresh. Everything the room model rests on — a workspace's durable
+    // room identity, its owner, its capability list — is a fact about
+    // *this* machine that has to survive a restart, and until now this
+    // entry point had none of it: `FrameBuilder::new` handed the
+    // compositor `WorkspaceTree::bootstrap_default()`, so every boot was
+    // a new desktop with unowned rooms and nothing was ever written back.
+    let tree_handle = load_session_tree(enable_peer_sync);
+    let mut frame_builder = FrameBuilder::with_handle(
+        tree_handle.clone(),
+        enable_peer_sync,
+        initial_size,
+    );
+
+    // Peer sync. Constructed here rather than only in the hosted entry
+    // point because this is the compositor that boots as the qOS
+    // session: a collaboration stack wired into the other one is a
+    // collaboration stack no session runs.
+    let peer_sync: Option<Arc<crate::shell::network::ShellNetwork>> = if enable_peer_sync {
+        match crate::shell::network::ShellNetwork::spawn(
+            tree_handle.clone(),
+            &crate::shell::network::peer_key_path(),
+        ) {
+            Ok(handle) => {
+                let _ = handle.join_default_workspace();
+                tracing::info!("peer-sync: actor spawned, default workspace joined");
+                let net = Arc::new(handle);
+                let bridge_net = Arc::clone(&net);
+                let bridge_tree = tree_handle.clone();
+                frame_builder.host_mut().set_peer_sync_bridge(std::rc::Rc::new(
+                    move |req| {
+                        let active = bridge_tree.read().active;
+                        match req {
+                            PeerSyncRequest::IssueInvite => {
+                                bridge_net.issue_invite(active, INVITE_EXPIRY_SECONDS)
+                            }
+                            PeerSyncRequest::AcceptInvite(token) => bridge_net
+                                .accept_invite(active, &token)
+                                .map(|room| room.to_string()),
+                        }
+                    },
+                ));
+                Some(net)
+            }
+            Err(e) => {
+                tracing::warn!("peer-sync: spawn failed ({e}); continuing without sync");
+                None
+            }
+        }
+    } else {
+        None
+    };
     // Seed the size used for fullscreen configures so an early
     // `set_fullscreen` request fills the output even before the first resize.
     state.output_size = (initial_size.0 as i32, initial_size.1 as i32);
@@ -1725,6 +1860,14 @@ pub fn run() -> ! {
         // PTY into its grid; without it a live app that produces output
         // asynchronously would sit frozen on its empty state. Returns true
         // when something actually changed, which is itself a paint reason.
+        // Drain the network actor into the replica. Peer changes land
+        // in the shared tree, so a room's new name or a capability the
+        // owner just revoked is folded in before this frame's pump
+        // reads it — and the revision bump that follows is what makes
+        // the frame repaint.
+        if let Some(net) = peer_sync.as_ref() {
+            net.tick();
+        }
         let apps_changed =
             frame_builder.pump_apps(&mut test_control_ctx.doc, &test_control_ctx.root_obj);
         let revision = frame_builder.chrome_revision();

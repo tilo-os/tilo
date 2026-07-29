@@ -84,7 +84,31 @@ impl FrameBuilder {
     /// used by `bin/shots`'s `window` pre-roll path (which loads tree
     /// state from disk first).
     pub fn with_tree(tree: WorkspaceTree, viewport: (u32, u32)) -> Self {
-        let (host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
+        Self::from_parts(build_nirios_overlay_host_with_chrome(&tree), viewport)
+    }
+
+    /// Build a frame builder over a *shared* [`WorkspaceTreeHandle`],
+    /// with the peer-sync palette rows on or off.
+    ///
+    /// The compositor needs this rather than [`Self::with_tree`]
+    /// because peer-sync writes into the same tree the chrome reads:
+    /// a replica applying a peer's change and the strip that paints it
+    /// have to be looking at one `Arc<RwLock<_>>`, not two copies.
+    pub fn with_handle(
+        tree: crate::shell::state::WorkspaceTreeHandle,
+        enable_peer_sync: bool,
+        viewport: (u32, u32),
+    ) -> Self {
+        Self::from_parts(
+            crate::shell::build_nirios_overlay_host_with_handle(tree, enable_peer_sync),
+            viewport,
+        )
+    }
+
+    fn from_parts(
+        (host, chrome): (ShellOverlayHost, Chrome),
+        viewport: (u32, u32),
+    ) -> Self {
         let theme = Theme::dark();
         let mut builder = Self {
             host,
@@ -408,7 +432,59 @@ impl FrameBuilder {
         let mut out = HashMap::new();
         let mut sibling_counts: HashMap<String, usize> = HashMap::new();
         walk_widget(&self.host, "", &mut sibling_counts, &mut out);
+        self.register_chrome_rects(&mut out);
         out
+    }
+
+    /// Register the chrome affordances that are painted by the overlay
+    /// host rather than by a child widget, so they can be clicked by
+    /// name.
+    ///
+    /// These are drawn straight into the scene and hit-tested from
+    /// cached rects, so a tree walk cannot see them: the overview's
+    /// add-workspace tile, its workspace cards, the workspace-settings
+    /// tab pills and name field, the Permissions tab's Revoke buttons,
+    /// the connect prompt's buttons. `ShellDriver` had a hand-curated
+    /// table covering three of them; a rect that only one of the two
+    /// harnesses can address is a rect only half the tests can reach,
+    /// so the list lives here and both read it.
+    ///
+    /// Zero-area rects are skipped, which is what makes a name mean
+    /// "on screen now" — the overview's tile is unaddressable while the
+    /// overview is closed rather than clickable at the origin.
+    fn register_chrome_rects(&self, out: &mut HashMap<String, vello::kurbo::Rect>) {
+        use crate::shell::chrome_state::WsTab;
+        let host = &self.host;
+        let mut put = |name: String, rect: vello::kurbo::Rect| {
+            if rect.area() > 0.0 {
+                out.insert(name, rect);
+            }
+        };
+        put("add_workspace".into(), host.add_workspace_rect_for_tests());
+        for (key, tab) in [
+            ("general", WsTab::General),
+            ("roles", WsTab::Roles),
+            ("files", WsTab::Files),
+            ("permissions", WsTab::Permissions),
+        ] {
+            put(
+                format!("ws_settings_tab[{key}]"),
+                host.ws_settings_tab_pill_rect(tab),
+            );
+        }
+        put(
+            "ws_settings_name_input".into(),
+            host.ws_settings_name_rect_for_tests(),
+        );
+        for (idx, rect) in host.overview_row_rects_for_tests().into_iter().enumerate() {
+            put(format!("overview_card[{idx}]"), rect);
+        }
+        for (app, index, rect) in host.permissions_revoke_rects() {
+            put(format!("permissions_revoke[{app}][{index}]"), *rect);
+        }
+        for (which, rect) in host.peer_sync_prompt_rects_for_tests() {
+            put(format!("peer_sync_{which}"), rect);
+        }
     }
 }
 

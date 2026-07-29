@@ -64,6 +64,30 @@ impl Action {
                 st.overlays.collaborators = false;
             },
         },
+        // Peer sync. These live here rather than being appended to the
+        // palette's entry list after the ranked hits, which is where
+        // they were: an un-ranked row sits below every search result,
+        // so typing "invite" put a file whose name contains the word on
+        // the row Enter activates and the invite command was
+        // unreachable from the palette it was listed in.
+        Action {
+            id: "peer.invite",
+            label: "Invite peer to workspace",
+            subtitle: "Mint a signed invite token for this room",
+            apply: |st| {
+                st.push_peer_sync_request(crate::shell::overlay_host::PeerSyncAction::IssueInvite);
+            },
+        },
+        Action {
+            id: "peer.connect",
+            label: "Connect to peer workspace",
+            subtitle: "Join a room from an invite token",
+            apply: |st| {
+                st.push_peer_sync_request(
+                    crate::shell::overlay_host::PeerSyncAction::PromptConnect,
+                );
+            },
+        },
         Action {
             id: "notifications.dnd.toggle",
             label: "Toggle Do Not Disturb",
@@ -106,6 +130,11 @@ impl SearchProvider for ActionsProvider {
         let needle_lower = ctx.needle.to_lowercase();
         let mut out = Vec::new();
         for action in Action::ALL {
+            // A session not running peer sync has nothing to invite
+            // anyone into, so it does not offer to.
+            if action.id.starts_with("peer.") && !ctx.chrome.peer_sync_enabled {
+                continue;
+            }
             let label_lower = action.label.to_lowercase();
             let subtitle_lower = action.subtitle.to_lowercase();
             let score = match_score(&needle_lower, &label_lower, &subtitle_lower);

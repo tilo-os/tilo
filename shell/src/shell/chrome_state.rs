@@ -326,6 +326,14 @@ pub struct ChromeState {
     /// Last thing the peer-sync layer said back — the room joined, or
     /// why the token was refused. Rendered under the prompt.
     pub peer_sync_status: Option<String>,
+    /// Whether this session is running peer sync, and so whether the
+    /// palette should offer the invite / connect commands at all.
+    /// Mirrored from the overlay host's own flag.
+    pub peer_sync_enabled: bool,
+    /// Peer-sync commands the user has picked and the shell has not yet
+    /// carried out. Written by the palette's action rows, drained once
+    /// per frame by `ShellOverlayHost::pump_peer_sync`.
+    peer_sync_requests: Vec<crate::shell::overlay_host::PeerSyncAction>,
 }
 
 impl ChromeState {
@@ -366,7 +374,24 @@ impl ChromeState {
             peer_sync_invite_token: None,
             peer_sync_connect_input: None,
             peer_sync_status: None,
+            peer_sync_enabled: false,
+            peer_sync_requests: Vec::new(),
         }))
+    }
+
+    /// Queue a peer-sync command for the shell to carry out.
+    pub fn push_peer_sync_request(
+        &mut self,
+        request: crate::shell::overlay_host::PeerSyncAction,
+    ) {
+        self.peer_sync_requests.push(request);
+    }
+
+    /// Take everything queued since the last call.
+    pub fn take_peer_sync_requests(
+        &mut self,
+    ) -> Vec<crate::shell::overlay_host::PeerSyncAction> {
+        std::mem::take(&mut self.peer_sync_requests)
     }
 
     /// The window group currently promoted to full-output (a surface that
@@ -596,6 +621,13 @@ impl ChromeState {
             let mut tree = self.tree_mut();
             let id = tree.append_empty_workspace(&name.into());
             tree.set_active(id);
+            // A room with no owner has no administrators, so nobody can
+            // grant anything in it — including the person who just made
+            // it. Until now only the boot path filled the owner in, so a
+            // workspace created during a session stayed ungovernable
+            // for the rest of that session. Idempotent: workspaces that
+            // already have an owner are left alone.
+            tree.adopt_ownerless_workspaces(&self.local_user_id);
             id
         };
         self.bump();
