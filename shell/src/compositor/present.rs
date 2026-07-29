@@ -262,15 +262,29 @@ impl PresentPipe {
     /// leaked thread on the way out of a process is a far better outcome
     /// than a compositor that will not exit.
     pub fn shutdown(&mut self) {
+        self.shutdown_with_grace(SHUTDOWN_GRACE);
+    }
+
+    /// [`Self::shutdown`] with an explicit grace period.
+    ///
+    /// Exists so the test that deliberately wedges a presenter can use a
+    /// short grace. With both on the same constant, "the `present` test
+    /// module took exactly `SHUTDOWN_GRACE`" is ambiguous — the tests run
+    /// in parallel, so one test on the timeout path and five on it look
+    /// identical from the outside. Parameterising it means the clean path
+    /// is the only thing that can produce a fast module, and any test
+    /// that regresses onto the timeout path shows up as a two-second
+    /// outlier against neighbours that finish instantly.
+    pub fn shutdown_with_grace(&mut self, grace: Duration) {
         let Some(handle) = self.handle.take() else {
             return;
         };
         let _ = self.tx.send(PresentMsg::Stop);
-        let deadline = Instant::now() + SHUTDOWN_GRACE;
+        let deadline = Instant::now() + grace;
         while !self.finished.load(Ordering::Acquire) {
             if Instant::now() >= deadline {
                 eprintln!(
-                    "nirios compositor: render thread did not stop within {SHUTDOWN_GRACE:?}; \
+                    "nirios compositor: render thread did not stop within {grace:?}; \
                      detaching it rather than blocking shutdown"
                 );
                 return;
@@ -581,13 +595,24 @@ mod tests {
         // — and block on the gate inside `present` — before it can ever
         // see the `Stop` that `shutdown` is about to send. It is therefore
         // guaranteed to be wedged, not merely likely to be.
+        // A short grace, so this test cannot be confused with a
+        // regression: it finishes in a tenth of a second, while anything
+        // that fell back onto the real `SHUTDOWN_GRACE` path stands out as
+        // a two-second outlier.
+        let grace = Duration::from_millis(100);
         let t0 = Instant::now();
-        pipe.shutdown();
+        pipe.shutdown_with_grace(grace);
         let took = t0.elapsed();
         assert!(
-            took < SHUTDOWN_GRACE * 3,
+            took >= grace,
+            "shutdown must actually wait out its grace before giving up; \
+             returning in {took:?} means it never waited for the frame at all, \
+             which would abandon a frame that was about to finish"
+        );
+        assert!(
+            took < Duration::from_millis(1_500),
             "shutdown must give up on a wedged render thread, not block on it; \
-             took {took:?} against a {SHUTDOWN_GRACE:?} grace"
+             took {took:?} against a {grace:?} grace"
         );
         // Releasing afterwards must not panic or double-free anything.
         drop(held);
