@@ -344,14 +344,25 @@ pub struct ChatApp {
     speaker: Option<crate::audio::SpeakerPlayback>,
     #[cfg(feature = "live-media")]
     camera: Option<crate::video::CameraCapture>,
+    // Camera encode reuses the shared qOS video stack's bare H.264 encoder
+    // (raw NALUs: the local self-preview feeds them to `ui`'s VideoPlayer,
+    // and they publish as the camera track). No second in-app codec.
     #[cfg(feature = "live-media")]
-    cam_encoder: Option<crate::video::H264Encoder>,
+    cam_encoder: Option<qos_callstream::H264Encoder>,
     #[cfg(feature = "live-media")]
     screen: Option<crate::video::ScreenCapture>,
+    // Screen-share encode + framing runs the shared stack's throttle +
+    // encoder → `SurfaceFrame` sender seam — the same composition the
+    // compositor's `SharedFlatpakSession` performs for a Wayland surface.
     #[cfg(feature = "live-media")]
-    screen_encoder: Option<crate::video::H264Encoder>,
+    screen_session: Option<qos_callstream::VideoStreamSender>,
+    // Remote **camera** decoders (raw-NALU H.264 → RGBA), keyed by sender.
     #[cfg(feature = "live-media")]
-    remote_decoders: HashMap<String, crate::video::H264FrameDecoder>,
+    remote_decoders: HashMap<String, qos_callstream::H264Decoder>,
+    // Remote **screen-share** receivers (reframe + decode) → featured tile,
+    // keyed by sender. The receive half of the shared stack.
+    #[cfg(feature = "live-media")]
+    remote_screen_rx: HashMap<String, qos_callstream::VideoStreamReceiver>,
     #[cfg(feature = "live-media")]
     media_seq: u64,
 }
@@ -462,9 +473,11 @@ impl ChatApp {
             #[cfg(feature = "live-media")]
             screen: None,
             #[cfg(feature = "live-media")]
-            screen_encoder: None,
+            screen_session: None,
             #[cfg(feature = "live-media")]
             remote_decoders: HashMap::new(),
+            #[cfg(feature = "live-media")]
+            remote_screen_rx: HashMap::new(),
             #[cfg(feature = "live-media")]
             media_seq: 0,
         }
@@ -635,8 +648,9 @@ impl ChatApp {
             self.camera = None;
             self.cam_encoder = None;
             self.screen = None;
-            self.screen_encoder = None;
+            self.screen_session = None;
             self.remote_decoders.clear();
+            self.remote_screen_rx.clear();
             self.remote_frames.clear();
             self.remote_screens.clear();
             return;
@@ -672,14 +686,18 @@ impl ChatApp {
             if self.camera.is_none() {
                 self.camera =
                     crate::video::CameraCapture::new(crate::video::DEFAULT_W, crate::video::DEFAULT_H);
-                self.cam_encoder = crate::video::H264Encoder::new(
+                // Camera encode reuses the shared stack's H.264 encoder.
+                self.cam_encoder = qos_callstream::H264Encoder::new(
                     crate::video::DEFAULT_W,
                     crate::video::DEFAULT_H,
                     crate::video::DEFAULT_FPS,
-                );
+                )
+                .ok();
             }
             let nalus = match (self.camera.as_mut(), self.cam_encoder.as_mut()) {
-                (Some(cam), Some(enc)) => cam.poll().map(|rgba| enc.encode(&rgba)),
+                (Some(cam), Some(enc)) => {
+                    cam.poll().map(|rgba| enc.encode(&rgba).unwrap_or_default())
+                }
                 _ => None,
             };
             if let Some(nalus) = nalus {
@@ -702,22 +720,25 @@ impl ChatApp {
             self.cam_encoder = None;
         }
 
-        // --- Screen capture → H.264 → publish (started via share_screen) ---
-        let screen_nalus = match (self.screen.as_mut(), self.screen_encoder.as_mut()) {
-            (Some(scr), Some(enc)) => scr.poll().map(|rgba| enc.encode(&rgba)),
+        // --- Screen capture → shared stack (throttle + encode → SurfaceFrame)
+        //     → publish (started via share_screen). The `VideoStreamSender`
+        //     seam does the throttling + encode + framing, so a returned
+        //     `Some` is already a wire-ready, rate-capped frame. ---
+        let screen_wire = match (self.screen.as_mut(), self.screen_session.as_mut()) {
+            (Some(scr), Some(session)) => scr
+                .poll()
+                .and_then(|rgba| session.offer_frame(&rgba, std::time::Instant::now())),
             _ => None,
         };
-        if let Some(nalus) = screen_nalus {
-            if !nalus.is_empty() {
-                let seq = self.next_media_seq();
-                self.media.transport_mut().send(MediaObject {
-                    sender: me.clone(),
-                    kind: TrackKind::Screen,
-                    seq,
-                    pts: Duration::from_millis(seq * 33),
-                    payload: nalus,
-                });
-            }
+        if let Some(wire) = screen_wire {
+            let seq = self.next_media_seq();
+            self.media.transport_mut().send(MediaObject {
+                sender: me.clone(),
+                kind: TrackKind::Screen,
+                seq,
+                pts: Duration::from_millis(seq * 33),
+                payload: wire,
+            });
         }
 
         // --- Receive: decode + play what arrived from peers ---
@@ -737,28 +758,31 @@ impl ChatApp {
                         }
                     }
                 }
-                TrackKind::Video | TrackKind::Screen => {
-                    // Camera and screen from one peer are independent H.264
-                    // streams, so each gets its own decoder (keyed by sender +
-                    // track) and its own frame slot — the screen fills the
-                    // featured stage tile, the camera stays in the peer's cell.
-                    let is_screen = o.kind == TrackKind::Screen;
-                    let key = if is_screen {
-                        format!("{}\u{1}screen", o.sender)
-                    } else {
-                        o.sender.clone()
-                    };
-                    let frame = {
-                        let dec = self.remote_decoders.entry(key).or_default();
-                        dec.decode(&o.payload)
-                    };
+                TrackKind::Video => {
+                    // Remote camera: a raw-NALU H.264 stream decoded through
+                    // the shared stack's decoder → the peer's filmstrip cell.
+                    let frame = self
+                        .remote_decoders
+                        .entry(o.sender.clone())
+                        .or_default()
+                        .decode(&o.payload);
                     if let Some(frame) = frame {
-                        let img = rgba_to_image(&frame);
-                        if is_screen {
-                            self.remote_screens.insert(o.sender.clone(), img);
-                        } else {
-                            self.remote_frames.insert(o.sender.clone(), img);
-                        }
+                        self.remote_frames
+                            .insert(o.sender.clone(), rgba_to_image(&frame));
+                    }
+                }
+                TrackKind::Screen => {
+                    // Remote screen-share: reframe + decode through the shared
+                    // stack's receiver (the same `SurfaceFrame` framing the
+                    // compositor's PeerView consumes) → the featured stage tile.
+                    let frames = self
+                        .remote_screen_rx
+                        .entry(o.sender.clone())
+                        .or_default()
+                        .push(&o.payload);
+                    if let Some(frame) = frames.last() {
+                        self.remote_screens
+                            .insert(o.sender.clone(), rgba_to_image(frame));
                     }
                 }
             }
@@ -776,10 +800,16 @@ impl ChatApp {
     /// `ShareScreen` permission, then ask [`self.portal`](Self) for a source
     /// (the real xdg-desktop-portal ScreenCast picker behind `live-media`; an
     /// honest `None` in the default build; an injected fake in tests). On a
-    /// grant, open the PipeWire capture + H.264 encoder and publish the screen
-    /// track (behind `live-media`) and return `true`. Returns `false` — never
-    /// fabricating a share — when permission is denied or the portal grants
-    /// nothing. The caller flips `call.sharing` + the shared voice membership.
+    /// grant, open the PipeWire capture + a shared-stack video sender and
+    /// publish the screen track (behind `live-media`) and return `true`.
+    /// Returns `false` — never fabricating a share — when permission is denied
+    /// or the portal grants nothing. The caller flips `call.sharing` + the
+    /// shared voice membership.
+    ///
+    /// The source selection stays the xdg-desktop-portal ScreenCast picker;
+    /// the encode + framing route through [`qos_callstream::VideoStreamSender`]
+    /// — the same throttle+encoder+`SurfaceFrame` composition the compositor's
+    /// `SharedFlatpakSession` performs — instead of a second in-app codec.
     pub(crate) fn acquire_screen(&mut self) -> bool {
         if !self.call_allows(crate::call::CallAction::ShareScreen) {
             return false;
@@ -791,8 +821,12 @@ impl ChatApp {
         {
             if let Some(scr) = crate::video::ScreenCapture::new(src.node, src.width, src.height) {
                 self.screen = Some(scr);
-                self.screen_encoder =
-                    crate::video::H264Encoder::new(src.width, src.height, crate::video::DEFAULT_FPS);
+                self.screen_session = qos_callstream::VideoStreamSender::new(
+                    src.width,
+                    src.height,
+                    crate::video::DEFAULT_FPS,
+                )
+                .ok();
                 self.media.transport_mut().publish(crate::media::TrackKind::Screen);
             }
         }
@@ -813,7 +847,7 @@ impl ChatApp {
         #[cfg(feature = "live-media")]
         {
             self.screen = None;
-            self.screen_encoder = None;
+            self.screen_session = None;
             self.media.transport_mut().unpublish(crate::media::TrackKind::Screen);
         }
     }
@@ -1513,7 +1547,7 @@ impl ChatApp {
 
 /// Wrap a decoded RGBA frame as a `peniko` image for painting into a call tile.
 #[cfg(feature = "live-media")]
-fn rgba_to_image(frame: &crate::video::DecodedFrame) -> vello::peniko::ImageData {
+fn rgba_to_image(frame: &qos_callstream::DecodedFrame) -> vello::peniko::ImageData {
     use vello::peniko::{Blob, ImageAlphaType, ImageData, ImageFormat};
     ImageData {
         data: Blob::new(std::sync::Arc::new(frame.rgba.clone())),
@@ -1521,5 +1555,84 @@ fn rgba_to_image(frame: &crate::video::DecodedFrame) -> vello::peniko::ImageData
         alpha_type: ImageAlphaType::Alpha,
         width: frame.width,
         height: frame.height,
+    }
+}
+
+/// Screen-share reuse proof: a remote peer's screen frame, encoded through the
+/// shared qOS video-streaming stack, must travel the real receive path into
+/// the featured-tile map. Gated on `live-media` because the video stack (and
+/// the featured-tile decode) only compile there — the default/`--shots` build
+/// carries no codec and shows the honest placeholder.
+#[cfg(all(test, feature = "live-media"))]
+mod screenshare_reuse_tests {
+    use super::*;
+    use crate::media::{MediaEngine, MediaObject, TrackKind};
+    use qos_callstream::VideoStreamSender;
+    use std::time::{Duration, Instant};
+
+    fn gradient(width: u32, height: u32) -> Vec<u8> {
+        let mut out = Vec::with_capacity((width * height * 4) as usize);
+        for y in 0..height {
+            for x in 0..width {
+                out.extend_from_slice(&[
+                    ((x * 255) / width.max(1)) as u8,
+                    ((y * 255) / height.max(1)) as u8,
+                    128,
+                    255,
+                ]);
+            }
+        }
+        out
+    }
+
+    /// A remote screen-share frame encoded on the shared `VideoStreamSender`
+    /// (throttle + H.264 + `SurfaceFrame` framing), delivered as a
+    /// `TrackKind::Screen` `MediaObject`, must decode through the app's real
+    /// `pump_media` receive path and land in `remote_screens` — the featured
+    /// stage tile. This asserts on the production receive path (the same
+    /// `VideoStreamReceiver` + decoder the app runs), proving a decoded frame
+    /// reaches the tile with no second in-app codec.
+    #[test]
+    fn remote_screen_share_frame_reaches_the_featured_tile() {
+        const W: u32 = 96;
+        const H: u32 = 64;
+
+        let mut app = ChatApp::new_ephemeral();
+        // Deterministic in-process loopback transport; no network/devices.
+        app.media = MediaEngine::simulated();
+        app.call.active = true;
+        app.call.audio_only = true; // no camera capture in the pump
+        app.call.muted = true; // no mic capture in the pump
+
+        // A remote peer encodes a screen frame through the SHARED stack.
+        let mut sender = VideoStreamSender::new(W, H, 30).expect("shared-stack sender");
+        let wire = sender
+            .offer_frame(&gradient(W, H), Instant::now())
+            .expect("throttle admits the first frame + encoder emits a NALU");
+        app.media.transport_mut().send(MediaObject {
+            sender: "u_remote".into(),
+            kind: TrackKind::Screen,
+            seq: 0,
+            pts: Duration::from_millis(0),
+            payload: wire,
+        });
+
+        // Honest gating: nothing in the tile until a real frame is pumped.
+        assert!(
+            app.remote_screens.is_empty(),
+            "no fabricated featured-tile frame before the pump"
+        );
+
+        app.pump_media();
+
+        let img = app
+            .remote_screens
+            .get("u_remote")
+            .expect("the decoded screen frame reached the featured tile");
+        assert_eq!(
+            (img.width, img.height),
+            (W, H),
+            "featured-tile image carries the decoded frame's dimensions"
+        );
     }
 }
