@@ -390,7 +390,7 @@ fn save_registry(reg: &Registry) -> Result<(), Error> {
         fs::create_dir_all(parent)?;
     }
     let text = toml::to_string(reg).map_err(|e| Error::RegistryWrite(e.to_string()))?;
-    atomic_file::write(p, text.as_bytes())?;
+    atomic_file::write(&p, text.as_bytes())?;
     Ok(())
 }
 
