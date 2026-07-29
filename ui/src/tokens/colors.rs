@@ -38,6 +38,13 @@ pub struct Surfaces {
     pub base: Color,
     pub raised: Color,
     pub overlay: Color,
+    /// Hue of the dim painted behind a modal surface — a palette, a
+    /// settings sheet, the overview. Opaque: the *strength* of the dim
+    /// belongs to whatever is being lifted (each overlay fades its own
+    /// scrim in with itself), while the hue belongs to the theme, so a
+    /// scrim recedes into the chrome's own colour family instead of
+    /// punching a black hole through it.
+    pub scrim: Color,
     pub glass: Color,
     pub glass_blur_px: f32,
     /// White rounded-3xl card that frames each window tile in the concept
@@ -118,6 +125,10 @@ impl Colors {
                 // bar chrome. `bg-black/80` = alpha 204 (0.8 · 255 ≈ 204);
                 // previous 205 was a one-bit rounding artefact.
                 overlay: Color::from_rgba8(0, 0, 0, 204),   // black/80
+                // slate-950 rather than black: the dim under a palette
+                // is chrome, and every other chrome surface in this
+                // theme is on the slate ramp.
+                scrim: Color::from_rgb8(2, 6, 23),          // slate-950
                 // Overlay-panel "glass" — concept's QuickSettings and
                 // Collaborators popover use `bg-slate-900/80` = alpha 204.
                 // (GlobalSearch + WorkspaceSettings use /70; we pick the
@@ -164,6 +175,10 @@ impl Colors {
                 base: Color::from_rgb8(240, 240, 245),
                 raised: Color::WHITE,
                 overlay: Color::from_rgba8(255, 255, 255, 230),
+                // A scrim darkens in every theme — a light-theme scrim
+                // that brightened would raise the background towards the
+                // surface it is supposed to be pushing away.
+                scrim: Color::from_rgb8(10, 10, 12),
                 glass: Color::from_rgba8(245, 245, 250, 180),
                 glass_blur_px: 24.0,
                 window_card: Color::WHITE,
