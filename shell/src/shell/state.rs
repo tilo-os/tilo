@@ -2111,14 +2111,29 @@ impl WorkspaceTree {
     /// the same authority on the replication path, which a guest could
     /// otherwise use instead.
     ///
-    /// The refusal is of the **whole batch**, not of the offending keys.
-    /// Stripping keys would still merge the rest, which advances this
-    /// machine's heads past changes it did not accept — the sender's next
-    /// export starts after them, and the legitimate content in the batch
-    /// is then unreachable forever. Refusing leaves the heads where they
-    /// were, so the round is simply repeatable: a peer that stops claiming
-    /// the room, or a correction from the room's actual authority, is
-    /// delivered on the next pull.
+    /// The refusal is of the **whole batch**, and nothing about it is
+    /// stored. Two reasons, both about what a partial merge would leave
+    /// behind:
+    ///
+    /// - It would advance this machine's heads past changes it did not
+    ///   accept. The sender's next export starts after them, so whatever
+    ///   was legitimate in the batch becomes unreachable. Refusing leaves
+    ///   the heads where they were, which makes the round repeatable
+    ///   rather than lossy.
+    /// - The refused ops would still be in the document's change graph,
+    ///   and a room document is exported wholesale to the next peer that
+    ///   asks. So merging-then-correcting would relay a claim this machine
+    ///   rejected, and would let any peer in the room grow the room's
+    ///   permanent history at will. A refused write is not part of the
+    ///   room's history.
+    ///
+    /// What it costs: a peer that keeps sending a governance change it is
+    /// not entitled to make keeps being refused, one logged batch per sync
+    /// interval, because its heads and ours never converge. That is the
+    /// right shape for a misbehaving peer. It also catches an honest one
+    /// whose stale lineage would resurrect a capability revoked while it
+    /// was away — refused, correctly, and the revocation still reaches it
+    /// from the authority in the other direction.
     ///
     /// Returns whether the local workspace changed.
     pub fn apply_room_changes(
@@ -2178,30 +2193,22 @@ impl WorkspaceTree {
         // actor, and re-stating a value is not changing it.
         let before = Self::governance_of(self.room_docs.get(&room));
         let after = Self::governance_of(Some(&candidate));
-        let authority = self.room_authority(room);
-        let mut governance_accepted = true;
         if before != after {
-            match &authority {
-                // We hold the room's governance, so no peer is entitled to
-                // replace it. The batch still merges — it may carry
-                // ungoverned content, and refusing it outright would leave
-                // this machine re-refusing the same bytes every round — but
-                // the governed values are re-asserted from our cache
-                // below, which both keeps the cache correct and pushes the
-                // correction back out to whoever sent this.
+            match self.room_authority(room) {
+                // We administer the room, so no peer is entitled to write
+                // its governance.
                 RoomAuthority::Local => {
-                    governance_accepted = false;
                     tracing::warn!(
                         target: "shell::state",
                         room = %room,
                         from = %from,
-                        "room sync: a peer's changes would rewrite the \
-                         governance of a room this machine administers; \
-                         merging the rest and re-asserting ours",
+                        "room sync refused: a peer's changes would rewrite \
+                         the governance of a room this machine administers",
                     );
+                    return Ok(false);
                 }
                 // Someone else's room, and this is not them.
-                RoomAuthority::Peer(pinned) if pinned != from => {
+                RoomAuthority::Peer(pinned) if pinned != *from => {
                     tracing::warn!(
                         target: "shell::state",
                         room = %room,
@@ -2271,34 +2278,23 @@ impl WorkspaceTree {
             ws.name = name;
             changed = true;
         }
-        if governance_accepted {
-            if let Some(owner) = owner
-                && ws.owner.as_deref() != Some(owner.as_str())
-            {
-                ws.owner = Some(owner);
-                changed = true;
-            }
-            // Capabilities are replaced rather than merged: a capability
-            // the peer revoked is simply absent from their document, and
-            // carrying the local list over would let a revoked grant
-            // survive on every machine that already had it.
-            let mut sorted = caps;
-            sorted.sort_by(|a, b| a.id.cmp(&b.id));
-            let mut current = ws.capabilities.clone();
-            current.sort_by(|a, b| a.id.cmp(&b.id));
-            if serde_json::to_vec(&current).ok() != serde_json::to_vec(&sorted).ok() {
-                ws.capabilities = sorted;
-                changed = true;
-            }
+        if let Some(owner) = owner
+            && ws.owner.as_deref() != Some(owner.as_str())
+        {
+            ws.owner = Some(owner);
+            changed = true;
         }
-
-        if !governance_accepted {
-            // Re-assert what this machine administers into the merged
-            // document. The write lands causally after the ops it
-            // supersedes, so the room converges on the authority's values
-            // rather than on whichever actor id sorted higher — and the
-            // correction reaches the peer that sent this on its next pull.
-            self.sync_room_doc(room);
+        // Capabilities are replaced rather than merged: a capability the
+        // peer revoked is simply absent from their document, and carrying
+        // the local list over would let a revoked grant survive on every
+        // machine that already had it.
+        let mut sorted = caps;
+        sorted.sort_by(|a, b| a.id.cmp(&b.id));
+        let mut current = ws.capabilities.clone();
+        current.sort_by(|a, b| a.id.cmp(&b.id));
+        if serde_json::to_vec(&current).ok() != serde_json::to_vec(&sorted).ok() {
+            ws.capabilities = sorted;
+            changed = true;
         }
 
         if changed {
