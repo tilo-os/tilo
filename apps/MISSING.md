@@ -231,11 +231,20 @@ verified by an offscreen shot (header gone, functional controls intact) + tests:
 - [x] Vault encrypted at rest → fixed.
 
 ## settings — CLEAR (every pane shot + inspected, controls driven against the real stores)
+- [x] Added the two control-center surfaces qOS was missing: **Notifications**
+      (Do Not Disturb, banners, message previews, sounds, lock-screen mirror —
+      a new `NotificationPrefs` section persisted to the shared settings.json,
+      read by the compositor's notification layer) and **Accessibility** (a
+      dedicated Universal-Access panel: vision comforts that fold into the
+      shared appearance section, plus pointer size / sticky & slow keys /
+      on-screen keyboard / visual alerts / screen reader in a new
+      `AccessibilityPrefs` section). Both are driven end-to-end by the
+      per-category click-nav test and have per-pane seed/adopt/persist tests.
 - [x] Sidebar is HIG §1 correct and stays that way: when it fits it is docked
       flush-left with the search field pinned on top and NO collapse button; when
       it doesn't fit (narrow) the list and content become SEPARATE full-screen
       screens with a top-left back arrow — never an overlay/scrim over content.
-      Verified all 16 panes wide + the narrow list and narrow content screens.
+      Verified all 18 panes wide + the narrow list and narrow content screens.
 - [x] Cards sit on one aligned grid in every pane (consistent left/right inset and
       gap) — no "weird rounded cards that don't line up". Verified across all panes.
 - [x] Wi-Fi signal icon was a tofu box → fixed: the Unicode block-element bars

@@ -33,7 +33,14 @@
 //!                "keyboard_layout": "us" },
 //!   "updates": { "auto": true, "channel": "Stable", "last_checked": "Never" },
 //!   "appearance": { "theme": "Dark", "high_contrast": false,
-//!                   "reduce_motion": false, "text_scale": 1.0 }
+//!                   "reduce_motion": false, "text_scale": 1.0 },
+//!   "notifications": { "do_not_disturb": false, "show_banners": true,
+//!                      "show_previews": true, "play_sounds": true,
+//!                      "show_on_lock_screen": false },
+//!   "accessibility": { "large_cursor": false, "cursor_size": 24,
+//!                      "screen_reader": false, "on_screen_keyboard": false,
+//!                      "sticky_keys": false, "slow_keys": false,
+//!                      "visual_alerts": false }
 //! }
 //! ```
 //!
@@ -310,7 +317,121 @@ pub fn theme_by_name(name: &str) -> ui::Theme {
     }
 }
 
-/// The five preference sections this store owns. Loaded from and merged
+/// Notification-delivery policy the compositor's notification layer reads
+/// when it decides whether to raise a banner, reveal its contents, sound it,
+/// or mirror it to the lock screen. Every field carries `#[serde(default)]`
+/// so a config written before this section existed still loads.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NotificationPrefs {
+    /// Master "Do Not Disturb": suppress banners and sounds while set.
+    #[serde(default)]
+    pub do_not_disturb: bool,
+    /// Show pop-up banners for incoming notifications.
+    #[serde(default = "default_true")]
+    pub show_banners: bool,
+    /// Reveal the message body in the banner (off shows only the app name,
+    /// for shoulder-surfing privacy).
+    #[serde(default = "default_true")]
+    pub show_previews: bool,
+    /// Play a sound when a notification arrives (gated by Do Not Disturb).
+    #[serde(default = "default_true")]
+    pub play_sounds: bool,
+    /// Mirror notifications onto the lock screen. Off by default — the lock
+    /// screen is the most exposed surface.
+    #[serde(default)]
+    pub show_on_lock_screen: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+impl Default for NotificationPrefs {
+    fn default() -> Self {
+        Self {
+            do_not_disturb: false,
+            show_banners: true,
+            show_previews: true,
+            play_sounds: true,
+            show_on_lock_screen: false,
+        }
+    }
+}
+
+/// Assistive-technology preferences the compositor's input + accessibility
+/// layer reads. The *vision* comforts a low-vision user reaches for first —
+/// high contrast, reduced motion, text size — live in [`AppearancePrefs`]
+/// (the single source of truth the whole system themes against); this section
+/// carries the pointer, typing, hearing, and screen-reader assists that do
+/// not belong to the theme. Every field is `#[serde(default)]` so older
+/// configs load.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AccessibilityPrefs {
+    /// Enlarge the mouse pointer to [`Self::cursor_size`].
+    #[serde(default)]
+    pub large_cursor: bool,
+    /// Pointer size in logical pixels (the compositor's cursor theme size).
+    #[serde(default = "default_cursor_size")]
+    pub cursor_size: u32,
+    /// Run the AT-SPI screen reader.
+    #[serde(default)]
+    pub screen_reader: bool,
+    /// Show the on-screen keyboard for text entry without a physical keyboard.
+    #[serde(default)]
+    pub on_screen_keyboard: bool,
+    /// Latch modifier keys so chords can be typed one key at a time.
+    #[serde(default)]
+    pub sticky_keys: bool,
+    /// Require a key to be held briefly before it registers, ignoring
+    /// accidental brushes.
+    #[serde(default)]
+    pub slow_keys: bool,
+    /// Flash the screen instead of (or alongside) an audible alert.
+    #[serde(default)]
+    pub visual_alerts: bool,
+}
+
+fn default_cursor_size() -> u32 {
+    24
+}
+
+impl Default for AccessibilityPrefs {
+    fn default() -> Self {
+        Self {
+            large_cursor: false,
+            cursor_size: default_cursor_size(),
+            screen_reader: false,
+            on_screen_keyboard: false,
+            sticky_keys: false,
+            slow_keys: false,
+            visual_alerts: false,
+        }
+    }
+}
+
+impl AccessibilityPrefs {
+    /// The offered pointer sizes as `(display label, size px)`. The compositor
+    /// applies [`Self::cursor_size`] as its cursor-theme size when
+    /// [`Self::large_cursor`] is set.
+    pub const CURSOR_SIZES: &'static [(&'static str, u32)] =
+        &[("Default", 24), ("Large", 36), ("Larger", 48), ("Largest", 64)];
+
+    /// Map a cursor size to its closest offered label.
+    pub fn cursor_size_label(size: u32) -> &'static str {
+        Self::CURSOR_SIZES
+            .iter()
+            .min_by_key(|(_, s)| s.abs_diff(size))
+            .map(|(l, _)| *l)
+            .unwrap_or("Default")
+    }
+
+    /// Map a cursor-size label back to its pixel size, if recognised.
+    pub fn cursor_size_px(label: &str) -> Option<u32> {
+        Self::CURSOR_SIZES.iter().find(|(l, _)| *l == label).map(|(_, s)| *s)
+    }
+}
+
+/// The preference sections this store owns. Loaded from and merged
 /// back into the shared `settings.json`.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct SystemPrefs {
@@ -320,6 +441,8 @@ pub struct SystemPrefs {
     pub power: PowerPrefs,
     pub updates: UpdatePrefs,
     pub appearance: AppearancePrefs,
+    pub notifications: NotificationPrefs,
+    pub accessibility: AccessibilityPrefs,
 }
 
 impl SystemPrefs {
@@ -348,6 +471,12 @@ impl SystemPrefs {
             appearance: section("appearance")
                 .and_then(|v| serde_json::from_value(v).ok())
                 .unwrap_or_default(),
+            notifications: section("notifications")
+                .and_then(|v| serde_json::from_value(v).ok())
+                .unwrap_or_default(),
+            accessibility: section("accessibility")
+                .and_then(|v| serde_json::from_value(v).ok())
+                .unwrap_or_default(),
         }
     }
 
@@ -370,6 +499,14 @@ impl SystemPrefs {
         obj.insert(
             "appearance".into(),
             serde_json::to_value(&self.appearance).unwrap_or_default(),
+        );
+        obj.insert(
+            "notifications".into(),
+            serde_json::to_value(self.notifications).unwrap_or_default(),
+        );
+        obj.insert(
+            "accessibility".into(),
+            serde_json::to_value(self.accessibility).unwrap_or_default(),
         );
         serde_json::to_string_pretty(&root).unwrap_or_else(|_| "{}".into())
     }
@@ -483,9 +620,54 @@ mod tests {
         p.appearance.high_contrast = true;
         p.appearance.reduce_motion = true;
         p.appearance.text_scale = 1.25;
+        p.notifications.do_not_disturb = true;
+        p.notifications.show_previews = false;
+        p.accessibility.large_cursor = true;
+        p.accessibility.cursor_size = 48;
+        p.accessibility.screen_reader = true;
         let json = p.to_json_merged("");
         let back = SystemPrefs::from_json(&json);
         assert_eq!(p, back);
+    }
+
+    #[test]
+    fn notification_defaults_are_sensible_and_round_trip() {
+        let n = NotificationPrefs::default();
+        assert!(!n.do_not_disturb, "notifications on by default");
+        assert!(n.show_banners);
+        assert!(n.show_previews);
+        assert!(n.play_sounds);
+        assert!(!n.show_on_lock_screen, "lock screen is the most exposed surface");
+        // An old config without the section loads as defaults.
+        assert_eq!(SystemPrefs::from_json("{}").notifications, n);
+    }
+
+    #[test]
+    fn accessibility_defaults_and_cursor_size_round_trip() {
+        let a = AccessibilityPrefs::default();
+        assert!(!a.large_cursor);
+        assert_eq!(a.cursor_size, 24);
+        assert!(!a.screen_reader);
+        // Label ↔ px mapping is exact for the offered sizes.
+        assert_eq!(AccessibilityPrefs::cursor_size_label(24), "Default");
+        assert_eq!(AccessibilityPrefs::cursor_size_label(48), "Larger");
+        assert_eq!(AccessibilityPrefs::cursor_size_px("Largest"), Some(64));
+        assert_eq!(AccessibilityPrefs::cursor_size_px("nope"), None);
+    }
+
+    #[test]
+    fn merge_preserves_foreign_keys_when_writing_notifications() {
+        // Writing the notifications/accessibility sections must not clobber the
+        // region store's locale or another app's section.
+        let existing = r#"{"version":1,"locale":{"currency":"EUR"},"weather":{"city":"Delft"}}"#;
+        let mut p = SystemPrefs::default();
+        p.notifications.do_not_disturb = true;
+        p.accessibility.screen_reader = true;
+        let out = p.to_json_merged(existing);
+        assert!(out.contains("\"do_not_disturb\": true"), "notifications landed: {out}");
+        assert!(out.contains("\"screen_reader\": true"), "accessibility landed: {out}");
+        assert!(out.contains("\"currency\": \"EUR\""), "locale survived: {out}");
+        assert!(out.contains("Delft"), "foreign key survived: {out}");
     }
 
     #[test]

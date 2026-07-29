@@ -17,6 +17,7 @@
 //!   pane's docstring states which parts are live vs. sample.
 
 pub mod about;
+pub mod accessibility;
 pub mod accounts;
 pub mod appearance;
 pub mod audio;
@@ -25,6 +26,7 @@ pub mod display;
 pub mod keyboard_shortcuts;
 pub mod mouse_keyboard;
 pub mod network;
+pub mod notifications;
 pub mod permissions;
 pub mod power;
 pub mod printers;
