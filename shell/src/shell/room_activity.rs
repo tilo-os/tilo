@@ -60,7 +60,7 @@ use crate::shell::state::WorkspaceTree;
 
 /// Widest the sheet ever gets. Past this the rows stop gaining information
 /// and start becoming hard to scan across.
-const SHEET_MAX_W: f64 = 480.0;
+const SHEET_MAX_W: f64 = 560.0;
 /// Narrowest the sheet gets before it stops being a sheet and takes the whole
 /// viewport instead. Below this a side sheet leaves the content behind it too
 /// thin to be worth preserving, which is the point at which the HIG's
@@ -308,13 +308,32 @@ impl RoomActivityPane {
         }
         self.last_heads = heads;
 
-        // Bind the local automerge actor to the qOS identity on disk so the
-        // user's own rows carry their name. Outside a qOS session there is no
-        // identity file and the actor falls through to the honest
-        // unknown-participant path.
+        // Bind the local automerge actor to whoever is sitting at this machine.
+        //
+        // The qOS identity on disk is preferred — it carries a display name
+        // and an avatar colour the user chose. Failing that (a shell running
+        // outside a provisioned session), the actor is still *this* process's,
+        // and this process writes on behalf of the local user, so it is named
+        // with the same user id the capabilities in these very rows are
+        // granted to. Neither is a guess; what is left unresolved is a peer's
+        // actor, which honestly reads as an unknown participant until the
+        // collaboration layer tells us who they are.
         let actor = tree.doc.get_actor().to_hex_string();
         if !self.source.authors().is_registered(&actor) {
-            self.source.authors_mut().register_local_identity(&actor);
+            let registered = self.source.authors_mut().register_local_identity(&actor);
+            if !registered {
+                let me = crate::shell::state::local_user_id();
+                if !me.is_empty() {
+                    self.source.authors_mut().register(
+                        &actor,
+                        ui::widget::HistoryAuthor::new(
+                            me,
+                            ui::history_source::stable_hue(&actor),
+                            ui::history_source::short_id(&actor),
+                        ),
+                    );
+                }
+            }
         }
 
         let mut entries = self.source.entries(&mut tree.doc);
@@ -1092,6 +1111,30 @@ mod tests {
         assert!(
             !summaries.iter().any(|s| s == &"Granted 4 capabilities"),
             "a flush that granted nothing must not read as a grant: {summaries:?}"
+        );
+    }
+
+    #[test]
+    fn the_local_users_own_rows_are_attributed_to_them() {
+        // A room where every change was made locally must not read as a wall
+        // of unknown participants. The local actor is this process's, and this
+        // process writes for the person at the machine.
+        let (mut tree, _, _) = busy_room();
+        let pane = pane_over(&mut tree);
+        let me = crate::shell::state::local_user_id();
+        assert!(!me.is_empty(), "there is always a local user id");
+        assert!(
+            pane.entries()
+                .iter()
+                .all(|e| e.author.name != ui::history_source::UNKNOWN_AUTHOR_NAME),
+            "local changes resolved to an unknown participant: {:?}",
+            pane.contributors()
+        );
+        assert_eq!(
+            pane.contributors().len(),
+            1,
+            "one person did all of this: {:?}",
+            pane.contributors()
         );
     }
 
