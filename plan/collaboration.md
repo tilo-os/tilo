@@ -27,8 +27,8 @@ The wire format is a serde-encoded enum (`shell/src/network/protocol.rs`):
 
 ```rust
 pub enum NeighbourMsg {
-    SyncReq           { since: Vec<u8> },                 // automerge change-hashes
-    SyncResp          { changes: Vec<Vec<u8>> },          // raw automerge change bytes
+    SyncReq           { since: Vec<u8>, room: String },   // change-hashes + the room asked about
+    SyncResp          { changes: Vec<Vec<u8>>, room: String }, // that room's change bytes
     PresenceMoved     { peer, key, point: (f64, f64), ts },
     PresenceCleared   { peer, key },
     SurfaceFrame      { surface, encoded_h264: Vec<u8>, ts },
@@ -40,21 +40,33 @@ pub enum NeighbourMsg {
 
 Round-trip tests exist for every variant. Bincode is the on-wire encoding.
 
-## 4. CRDT sync (automerge incremental)
+## 4. CRDT sync (automerge incremental) — one document per room
 
-`WorkspaceTree` is backed by an `automerge::AutoCommit` (see `docs/superpowers/specs/2026-05-04-workspace-tree-automerge-design.md`). Three operations drive replication:
+Inviting someone to a workspace grants them **that room**. It does not grant them a directory of every other room on the host: their names, their room ids, their owners, and above all their capability sets, which say which app holds which grant over paths the guest cannot reach.
+
+`WorkspaceTree::doc` cannot express that boundary. It is a single automerge document holding every workspace (see `docs/superpowers/specs/2026-05-04-workspace-tree-automerge-design.md`), and an automerge change graph cannot be served in part: changes form a hash chain, so a subset with another room's changes removed leaves the remaining changes with dependencies the receiver never sees, and automerge parks them unapplied. A filter over the tree document is not a smaller version of this scoping — it is a version of it that does not work, however the attribution is computed.
+
+So the unit of replication is a **room**, and each has its own document, projected from the cache by `sync_room_doc`:
 
 ```rust
-fn current_heads(&self) -> Vec<automerge::ChangeHash>;
-fn export_changes_since(&self, since: &[ChangeHash]) -> Vec<Vec<u8>>;
-fn apply_changes(&mut self, changes: &[Vec<u8>]) -> Result<(), AutomergeError>;
+fn rooms(&self) -> Vec<RoomId>;
+fn room_heads(&mut self, room: RoomId) -> Vec<ChangeHash>;
+fn export_room_changes_since(&mut self, room: RoomId, since: &[ChangeHash]) -> Option<Vec<Vec<u8>>>;
+fn apply_room_changes(&mut self, room: RoomId, changes: &[Vec<u8>]) -> Result<bool, AutomergeError>;
 ```
+
+A room document carries that room's identity, name, owner and capabilities — the set the receiving side actually reads back. `WorkspaceTree::export_changes_since` still exists for local document forks (the history pane's restore, the screenshot driver) and is **not** peer-facing.
 
 A `WorkspaceTreeReplica` wraps the tree and a `Hub` subscriber (the in-process testing scaffold) or the live libp2p actor:
 
-- On `NeighbourMsg::SyncReq { since }` → reply `SyncResp { changes: tree.export_changes_since(since) }`.
-- On `NeighbourMsg::SyncResp { changes }` → `tree.apply_changes(&changes)`.
-- The shell publishes a `SyncReq { since: tree.current_heads() }` heartbeat every 2 s per joined workspace so reconnects converge.
+- On `SyncReq { since, room }` naming a room this machine is in → reply `SyncResp { changes, room }`.
+- On `SyncReq` naming a room this machine is **not** in → no reply at all. Nothing is exported and nothing is said about whether the room exists.
+- On `SyncReq` naming **no** room — the kick the transport broadcasts on peer-join, before it knows what anyone is in — export nothing, and instead publish one `SyncReq` per room this machine is in. A blind join becomes a sync round without any layer holding a list of everybody's rooms.
+- On `SyncResp { changes, room }` → `apply_room_changes`, which refuses a room this machine is not in *before* it stores anything, and refuses a payload whose own room field disagrees with the envelope.
+
+Changes that belong to no single room never cross. The active-workspace pointer is a fact about which of this machine's rooms this machine is looking at and has no meaning on a peer; a whole-tree cache flush decomposes into per-room projections rather than travelling as one unattributable blob.
+
+**What a peer must know to be answered** is the room's id — a random 122-bit uuid minted at workspace creation, carried only inside a signed invite (§7), and now never exported to anyone outside the room. Naming it is the credential, in the same sense that holding the invite is. That is a bearer capability with no revocation and no per-peer binding; binding admission to the accepting peer's identity is the next thing to build here.
 
 The replica path goes through `shell/src/network/replica.rs` and `hub.rs`. The cached-materialisation design means writes go through both the public cache and the backing doc, with `assert_cache_matches_doc()` running under `debug_assertions` to catch drift.
 
