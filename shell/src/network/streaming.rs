@@ -25,70 +25,17 @@ use crate::network::encoder::{EncodeError, H264Encoder};
 use crate::network::protocol::{PeerId, SurfaceId};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::time::{Duration, Instant};
-
-/// Minimum gap between two consecutive encodes on a shared surface.
-///
-/// 33 ms ≈ 30 fps cap. Phase 4 v1 caps at 30 because openh264 software
-/// can't sustain higher rates on a typical laptop without burning the
-/// peer-sync thread; hardware encode lifts this in a follow-up.
-const ENCODE_INTERVAL_MS: u64 = 33;
+use std::time::Instant;
 
 /// Damage-aware encode throttle.
 ///
-/// One instance per shared surface; the streaming task threads it through
-/// the per-frame commit handler. `should_encode(now)` returns `true` when
-/// the configured minimum interval has elapsed since the previous
-/// accepted encode, `false` otherwise. The throttle does not enforce a
-/// frame queue — by design, callers either encode synchronously and ship
-/// the bytes or drop the frame.
-#[derive(Debug)]
-pub struct StreamingThrottle {
-    last_encode: Option<Instant>,
-    interval: Duration,
-}
-
-impl StreamingThrottle {
-    /// Construct a throttle gated at 30 fps.
-    pub fn new() -> Self {
-        Self::with_interval(Duration::from_millis(ENCODE_INTERVAL_MS))
-    }
-
-    /// Construct a throttle with a caller-chosen minimum encode interval.
-    /// Used by the test suite to feed a synthetic clock.
-    pub fn with_interval(interval: Duration) -> Self {
-        Self {
-            last_encode: None,
-            interval,
-        }
-    }
-
-    /// Should the caller encode *now*? Returns `true` if the throttle's
-    /// last-accepted timestamp is unset or strictly older than `interval`,
-    /// `false` otherwise. The caller is responsible for then calling
-    /// [`Self::mark_encoded`] when (and only when) it actually performs
-    /// the encode — so callers that gate on `should_encode` for telemetry
-    /// without actually encoding don't poison the throttle.
-    pub fn should_encode(&self, now: Instant) -> bool {
-        match self.last_encode {
-            None => true,
-            Some(prev) => now.duration_since(prev) >= self.interval,
-        }
-    }
-
-    /// Mark a successful encode at `now`. Cementing this in a separate
-    /// call (vs. `should_encode_and_mark`) lets the caller skip the
-    /// stamp on encode failure without manual state surgery.
-    pub fn mark_encoded(&mut self, now: Instant) {
-        self.last_encode = Some(now);
-    }
-}
-
-impl Default for StreamingThrottle {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+/// Now lives in the standalone [`qos_callstream`] crate (its `throttle`
+/// module) so the compositor's surface streaming and the chat call app
+/// share one copy. Re-exported here under its historical path so
+/// [`encode_tick`] and the flatpak-share session keep compiling
+/// unchanged: one instance per shared surface, `should_encode(now)`
+/// gates the 30-fps cap, `mark_encoded(now)` stamps a successful encode.
+pub use qos_callstream::throttle::StreamingThrottle;
 
 /// Wire-format input event a peer publishes to drive the owner's seat.
 ///
@@ -398,54 +345,11 @@ pub(crate) mod test_support {
 mod tests {
     use super::*;
     use crate::network::streaming::test_support::RecordingSink;
+    use std::time::Duration;
 
-    /// Phase 4 Task 4.2 — required test. Drive 100 simulated damage
-    /// commits across one wall-clock second through a fake clock; assert
-    /// the throttle accepts at most 30. Hand-rolled clock so the test
-    /// doesn't actually sleep.
-    #[test]
-    fn damage_loop_throttles_to_30fps() {
-        let start = Instant::now();
-        let mut throttle = StreamingThrottle::new();
-        let mut encoded = 0u32;
-        for i in 0..100 {
-            // 100 commits evenly spaced across 1.0 s = one every 10 ms.
-            let now = start + Duration::from_millis(i * 10);
-            if throttle.should_encode(now) {
-                throttle.mark_encoded(now);
-                encoded += 1;
-            }
-        }
-        // 33 ms interval over 990 ms of synthesized commits accepts
-        // 30 frames (0, 33, 66, …, 957 = 1 + 957/33 = 30 events). The
-        // upper bound is the contract; the lower bound is "did we even
-        // encode anything" — guard against an off-by-one that mutes the
-        // throttle entirely.
-        assert!(
-            encoded <= 30,
-            "throttle accepted {encoded} encodes — must cap at 30 fps"
-        );
-        assert!(encoded > 0, "throttle muted every encode — interval bug");
-    }
-
-    #[test]
-    fn throttle_first_call_always_accepts() {
-        let now = Instant::now();
-        let throttle = StreamingThrottle::new();
-        assert!(throttle.should_encode(now));
-    }
-
-    #[test]
-    fn throttle_rejects_back_to_back() {
-        let now = Instant::now();
-        let mut throttle = StreamingThrottle::new();
-        assert!(throttle.should_encode(now));
-        throttle.mark_encoded(now);
-        // 1 ms later — well inside the 33 ms interval — must reject.
-        assert!(!throttle.should_encode(now + Duration::from_millis(1)));
-        // Past the interval, accepts again.
-        assert!(throttle.should_encode(now + Duration::from_millis(40)));
-    }
+    // The `StreamingThrottle` unit tests (30-fps cap, first-call-accepts,
+    // rejects-back-to-back) moved with the type into the `qos_callstream`
+    // crate's `throttle` module.
 
     /// Phase 4 Task 4.4 — required test. A synthesised `RemoteInput`
     /// reaches the seat when the share is read/write; it's dropped when
