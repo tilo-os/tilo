@@ -480,10 +480,35 @@ shot-inspected (empty state and demo).
       (mirroring `h`=highlight / `m`=note), and Copy keeps the selection so the
       reader can still highlight/note it. Verified on the wide + narrow selection
       shots; asserted by `copy_action_copies_the_full_selected_passage` /
-      `copy_key_shortcut_targets_the_active_selection`. (Text selection / drag-
-      select / highlight / annotate / comments already existed; continuous-scroll
-      and two-up spread remain — a large refactor of the single-page reader draw,
-      deferred.)
+      `copy_key_shortcut_targets_the_active_selection`. (a6f661bc)
+- [x] ebook — **continuous-scroll + two-up spread reading modes** (the deferred
+      large refactor). The single-page reader draw was generalised into a
+      per-column `draw_pane` pass over a list of flow windows: paged draws one
+      page slice, two-up draws two facing columns (each half-width, page count
+      doubles, spreads align to even pages, column-aware pointer hit-testing),
+      continuous draws one clipped window scrolled by pixels that rolls into the
+      neighbouring chapter at the ends. Selection bands, ranged highlights,
+      note/bookmark margins, the progress bar, per-book progress persistence and
+      the shared selection HUD all work in every mode. A LAYOUT segmented control
+      in the reading popover switches modes (persisted in the CRDT `Settings`).
+      Serif is the default reading face (resolved as a fallback). Proven on the
+      `serif` / `continuous` / `two-up` / `select-drag` / `two-up-select`
+      `--shots`; asserted by `continuous_mode_scrolls_the_flow_and_persists`,
+      `two_up_shows_two_columns_and_turns_by_two`,
+      `shared_selection_hud_shows_in_continuous_mode`. (8dee525e, a6f661bc)
+- [x] ebook + pdf_viewer — the selection HUD is now **one shared `ui` component**
+      (`ui::SelectionHud` / `reader_hud`): the floating highlight-swatches + Copy
+      + Note bar both readers draw. The ebook reader routes its emitted actions to
+      its `HiColor` model; the pdf reader (which had text selection + keyboard
+      copy but no HUD) now shows the identical bar over a selection — a swatch
+      highlights the run, Note attaches a sticky note, Copy writes to the
+      clipboard (`ui::clipboard_copy`). **Draggable annotation markers**: pdf
+      sticky notes drag to a new anchor (`ui::MarkerDrag` + the new
+      `PdfDoc::set_annotation_position`), moved live and persisted on release.
+      Proven on the `pdf-selection-hud` shot; asserted by the pdf
+      `hud_highlight_action` / `hud_note_action` / `hud_copy_action` /
+      `dragging_a_note_marker_repositions_and_persists` tests and the shared
+      `ui::reader_hud` unit tests. (d82fa2b1, 2439a23d)
 - [x] software_store — the constructor always loaded `sample_catalog()`
       (GIMP/Blender with fabricated star ratings), shown live, while the real
       popular-collection fetch landed unused in `live_apps`. A live worker now
