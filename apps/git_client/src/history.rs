@@ -200,7 +200,7 @@ impl HistoryView {
 
         // Author block with avatar.
         let acolor = draw::author_color(theme, &commit.author_email);
-        draw::avatar(scene, tr, t, x, y, 32.0, &commit.author_name, acolor);
+        draw::avatar(scene, tr, t, theme, x, y, 32.0, &commit.author_name, acolor);
         draw::text_weighted(
             scene, tr, t, &commit.author_name, 13.0, c.text_primary, x + 42.0, y, None,
             TextWeight::Medium,
