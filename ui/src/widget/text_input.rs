@@ -2792,6 +2792,19 @@ mod tests {
         assert!(!ti.has_selection());
     }
 
+    /// `insert_at_cursor` splices programmatic text at the caret of a
+    /// local-mode field and marks it dirty — the path a host uses to insert
+    /// non-keyboard text (e.g. a picked emoji) as if typed.
+    #[test]
+    fn insert_at_cursor_splices_and_marks_dirty() {
+        let mut ti = TextInput::local().with_initial_value("hi world");
+        ti.set_cursor_pos(2); // just after "hi"
+        ti.insert_at_cursor(" there");
+        assert_eq!(ti.value(), "hi there world");
+        assert_eq!(ti.cursor_pos(), "hi there".len(), "caret advances past the insert");
+        assert_eq!(ti.take_dirty().as_deref(), Some("hi there world"), "the edit is observable");
+    }
+
     /// `insert_str` over an active selection should *replace* it,
     /// not append. This is the path Ctrl+V uses when pasting over
     /// selected text.
