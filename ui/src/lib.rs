@@ -34,6 +34,7 @@ pub mod mpris;
 pub mod nav_stack;
 pub mod portal;
 pub mod reader_hud;
+pub mod search;
 
 pub use app::App;
 pub use reader_hud::{HudAction, HudSwatch, MarkerDrag, ReaderHudStyle, SelectionHud};
@@ -44,6 +45,7 @@ pub use theme::Theme;
 pub use image_store::{Fetcher, ImageStore};
 pub use nav_stack::{EdgeSwipeBack, NavAction, NavStack};
 pub use portal::{FileDialog, Filter, PortalChannel, PortalOutcome};
+pub use search::{fuzzy_score, FnProvider, SearchGroup, SearchProvider, SearchRegistry, SearchResult};
 pub use caps_lock::CapsLockEstimate;
 pub use selection::SelectionModel;
 
