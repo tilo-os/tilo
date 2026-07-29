@@ -823,6 +823,27 @@ impl PdfApp {
             return;
         }
         let Some(bounds_rect) = self.selection_screen_bounds() else { return };
+        // The selection band is normally painted by `draw_text_overlays` (raster
+        // backend). On the text backend it isn't drawn there, so paint it here
+        // for the seeded screenshot path — a production text-backend document has
+        // no raster text layer, so this only fires for a staged selection.
+        if self.raster.is_none() {
+            let z = self.zoom();
+            let origins = self.page_origins();
+            if let Some(sel) = self.selection {
+                if let Some(origin) = origins.get(sel.page.saturating_sub(1)) {
+                    for r in self.selection_page_bands() {
+                        let sr = Rect::new(
+                            origin.x + r.x * z,
+                            origin.y + r.y * z,
+                            origin.x + (r.x + r.w) * z,
+                            origin.y + (r.y + r.h) * z,
+                        );
+                        scene.fill(Fill::NonZero, base, render::alpha(theme.accent_primary, 70), None, &sr);
+                    }
+                }
+            }
+        }
         // Anchor above the top edge of the selection, horizontally centred on it.
         let anchor = Point::new((bounds_rect.x0 + bounds_rect.x1) / 2.0, bounds_rect.y0);
         let c = &theme.tokens.colors;
