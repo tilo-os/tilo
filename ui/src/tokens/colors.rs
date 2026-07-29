@@ -198,6 +198,7 @@ mod tests {
     //! These tests do not rely on cross-crate state: they exercise
     //! `Colors::dark()` directly, so they are cheap to run via
     //! `cargo test -p quick-ui --lib tokens`.
+    use crate::color_compat::ColorCompat;
     use super::*;
 
     fn rgb(c: Color) -> [u8; 3] {
