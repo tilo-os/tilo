@@ -23,6 +23,10 @@ use ui::icons::{draw_icon, Icon};
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
+use ui::text_selection::{
+    clipboard_copy, clipboard_paste, next_word_boundary_chars, prev_word_boundary_chars,
+    word_boundaries_chars, Selection,
+};
 use ui::theme::Theme;
 use ui::widget::context_menu::{ContextMenu, MenuItem};
 use ui::widget::{
@@ -345,6 +349,14 @@ pub struct SlidesApp {
     caret: usize,
     editing_notes: bool,
     notes_caret: usize,
+    /// Selection anchor (char index) for the active on-canvas text / notes
+    /// editor. `sel_anchor == active_caret()` means "no live selection"; the
+    /// pair is a [`ui::text_selection::Selection`] over the CRDT-backed text, so
+    /// the on-canvas editor gets the same selection semantics as every other
+    /// `ui` text field (shift+arrow, word-wise, drag-select, select-all,
+    /// clipboard) without a per-app text buffer. Reset to the caret whenever an
+    /// editor is (re)entered.
+    sel_anchor: usize,
     /// Inline deck-title rename in progress (toolbar title clicked). Typing
     /// splices into the CRDT title; Enter/Esc/clicking away commits.
     editing_title: bool,
@@ -392,6 +404,18 @@ pub struct SlidesApp {
     /// single press just selects and arms a move, so a selected element drags on
     /// the very first grab.
     last_click: Option<(Id, std::time::Instant, Point)>,
+    /// A pending click that should place (or, when `true`, shift-extend) the
+    /// text caret. Resolved on the next `draw`, where the `TextRenderer` is
+    /// available to hit-test a point against the wrapped text layout. `bool` is
+    /// "extend the current selection" (a shift-click or a live drag).
+    caret_click: Option<(Point, bool)>,
+    /// A live text-selection drag is in progress inside the editing text box
+    /// (mouse held down after a press). While set, cursor motion extends the
+    /// selection from its anchor.
+    text_drag: bool,
+    /// A pending double-click inside the editing text box that should select the
+    /// word under the point. Resolved on the next `draw` (needs text measuring).
+    select_word_click: Option<Point>,
     needs_commit: bool,
 
     /// Responsive slide-rail flap. On a wide window the rail is docked beside
@@ -573,6 +597,7 @@ impl SlidesApp {
             caret: 0,
             editing_notes: false,
             notes_caret: 0,
+            sel_anchor: 0,
             editing_title: false,
             title_caret: 0,
             show_notes: false,
@@ -588,6 +613,9 @@ impl SlidesApp {
             drag: Drag::None,
             page_sidebar: PageSidebar::new(SLIDE_H / SLIDE_W).with_panel(false),
             last_click: None,
+            caret_click: None,
+            text_drag: false,
+            select_word_click: None,
             needs_commit: false,
             rail_flap: FlapState::open_when_docked(),
             inspector_flap: FlapState::open_when_docked(),
@@ -674,6 +702,7 @@ impl SlidesApp {
                     .get(1)
                     .map(|s| s.notes.chars().count())
                     .unwrap_or(0);
+                self.sel_anchor = self.notes_caret;
                 self.bootstrapped = true;
             }
             // The docked, nothing-selected inspector (slide-level properties:
@@ -948,6 +977,21 @@ impl SlidesApp {
         let list_top = rail.y0 + tpad + 20.0;
         let list_bottom = (rail.y1 - tpad - rb_h - 12.0).max(list_top);
         Rect::new(rail.x0, list_top, rail.x1, list_bottom)
+    }
+
+    /// The red dashed "drop to delete" zone, pinned to the bottom of the rail
+    /// over the (drag-irrelevant) action row. Only shown — and only live — while
+    /// a slide thumbnail is being dragged. Dropping a slide here removes it
+    /// instead of reordering it, matching the app-wide drag-to-delete gesture.
+    fn slide_delete_zone(&self, rail: Rect) -> Rect {
+        Rect::new(rail.x0 + 8.0, rail.y1 - 54.0, rail.x1 - 8.0, rail.y1 - 10.0)
+    }
+
+    /// Whether a slide drag is currently hovering the delete zone (for the
+    /// zone's armed highlight).
+    fn over_delete_zone(&self) -> bool {
+        self.page_sidebar.is_dragging()
+            && self.slide_delete_zone(self.rail_rect()).contains(self.last_mouse)
     }
 
     /// Sync the shared page rail to this frame's geometry + scroll before it is
@@ -1805,6 +1849,7 @@ impl SlidesApp {
                 self.editing_notes = true;
                 self.editing_text = false;
                 self.notes_caret = self.slide().map(|s| s.notes.chars().count()).unwrap_or(0);
+                self.sel_anchor = self.notes_caret;
             }
             Hit::ToggleRail => self.rail_flap.toggle(self.rail_layout()),
             Hit::ToggleInspector => self.inspector_flap.toggle(self.inspector_layout()),
@@ -2244,15 +2289,20 @@ impl SlidesApp {
             self.reload(doc);
             return;
         }
+        // Typing over a selection replaces it (delete first, then insert at the
+        // collapsed caret).
+        self.delete_selection(doc);
         if self.editing_notes {
             SlidesDoc::splice_notes(doc, self.cur_slide, self.notes_caret, 0, s);
             self.notes_caret += s.chars().count();
+            self.sel_anchor = self.notes_caret;
             self.reload(doc);
             return;
         }
         if let Some(id) = self.sel.clone() {
             SlidesDoc::splice_element_text(doc, self.cur_slide, &id, self.caret, 0, s);
             self.caret += s.chars().count();
+            self.sel_anchor = self.caret;
             self.reload(doc);
         }
     }
@@ -2267,10 +2317,15 @@ impl SlidesApp {
             }
             return;
         }
+        // A live selection is deleted whole; otherwise delete the char before.
+        if self.delete_selection(doc) {
+            return;
+        }
         if self.editing_notes {
             if self.notes_caret > 0 {
                 SlidesDoc::splice_notes(doc, self.cur_slide, self.notes_caret - 1, 1, "");
                 self.notes_caret -= 1;
+                self.sel_anchor = self.notes_caret;
                 self.mark();
                 self.reload(doc);
             }
@@ -2280,6 +2335,40 @@ impl SlidesApp {
             if self.caret > 0 {
                 SlidesDoc::splice_element_text(doc, self.cur_slide, &id, self.caret - 1, 1, "");
                 self.caret -= 1;
+                self.sel_anchor = self.caret;
+                self.mark();
+                self.reload(doc);
+            }
+        }
+    }
+
+    /// Forward-delete: remove the selection if any, else the char after the
+    /// caret (the `Delete` key inside a text editor).
+    fn forward_delete_text(&mut self, doc: &mut AutoCommit) {
+        if self.editing_title {
+            let len = self.deck.title.chars().count();
+            if self.title_caret < len {
+                SlidesDoc::splice_title(doc, self.title_caret, 1, "");
+                self.mark();
+                self.reload(doc);
+            }
+            return;
+        }
+        if self.delete_selection(doc) {
+            return;
+        }
+        let len = self.cur_text_len();
+        if self.editing_notes {
+            if self.notes_caret < len {
+                SlidesDoc::splice_notes(doc, self.cur_slide, self.notes_caret, 1, "");
+                self.mark();
+                self.reload(doc);
+            }
+            return;
+        }
+        if let Some(id) = self.sel.clone() {
+            if self.caret < len {
+                SlidesDoc::splice_element_text(doc, self.cur_slide, &id, self.caret, 1, "");
                 self.mark();
                 self.reload(doc);
             }
@@ -2421,26 +2510,124 @@ impl SlidesApp {
         }
     }
 
-    /// Move the active caret one char left (`dir < 0`) or right, clamped.
-    fn move_caret(&mut self, dir: i32) {
+    /// The active editor's [`Selection`] (anchor + caret) over the CRDT text,
+    /// clamped to the current text length. Collapsed when nothing is selected.
+    fn selection(&self) -> Selection {
+        let len = self.cur_text_len();
+        Selection { anchor: self.sel_anchor.min(len), cursor: self.active_caret().min(len) }
+    }
+
+    /// Whether the active editor has a non-empty text selection.
+    fn has_text_selection(&self) -> bool {
+        !self.selection().is_collapsed()
+    }
+
+    /// Move the caret to `pos`; unless `extend`, collapse the selection there.
+    fn place_caret(&mut self, pos: usize, extend: bool) {
+        let len = self.cur_text_len();
+        let pos = pos.min(len);
+        self.set_active_caret(pos);
+        if !extend {
+            self.sel_anchor = pos;
+        }
+    }
+
+    /// Collapse the selection to its caret (anchor follows the cursor).
+    fn collapse_selection(&mut self) {
+        self.sel_anchor = self.active_caret();
+    }
+
+    /// Delete the current selection from the CRDT, if any. Returns `true` when
+    /// something was deleted (the caret is left at the deletion point).
+    fn delete_selection(&mut self, doc: &mut AutoCommit) -> bool {
+        let sel = self.selection();
+        if sel.is_collapsed() {
+            return false;
+        }
+        let (a, b) = (sel.min(), sel.max());
+        if self.editing_notes {
+            SlidesDoc::splice_notes(doc, self.cur_slide, a, b - a, "");
+            self.notes_caret = a;
+        } else if let Some(id) = self.sel.clone() {
+            SlidesDoc::splice_element_text(doc, self.cur_slide, &id, a, b - a, "");
+            self.caret = a;
+        } else {
+            return false;
+        }
+        self.sel_anchor = a;
+        self.mark();
+        self.reload(doc);
+        true
+    }
+
+    /// The currently-selected substring of the active editor's text.
+    fn selected_text(&self) -> String {
+        let sel = self.selection();
+        if sel.is_collapsed() {
+            return String::new();
+        }
+        self.cur_edit_text().chars().skip(sel.min()).take(sel.max() - sel.min()).collect()
+    }
+
+    /// Select the whole of the active editor's text.
+    fn select_all_text(&mut self) {
+        let len = self.cur_text_len();
+        self.sel_anchor = 0;
+        self.set_active_caret(len);
+    }
+
+    /// Move the active caret one char left (`dir < 0`) or right. When `extend`
+    /// is false and a selection is live, collapse to the selection edge in that
+    /// direction instead of moving past it (standard editor behaviour).
+    fn move_caret(&mut self, dir: i32, extend: bool) {
+        if !extend && self.has_text_selection() {
+            let sel = self.selection();
+            let edge = if dir < 0 { sel.min() } else { sel.max() };
+            self.place_caret(edge, false);
+            return;
+        }
         let len = self.cur_text_len();
         let cur = self.active_caret().min(len);
         let next = if dir < 0 { cur.saturating_sub(1) } else { (cur + 1).min(len) };
-        self.set_active_caret(next);
+        self.place_caret(next, extend);
+    }
+
+    /// Move the active caret one word left (`dir < 0`) or right, via the shared
+    /// word-boundary walker (`ctrl`+arrow).
+    fn move_caret_word(&mut self, dir: i32, extend: bool) {
+        let text = self.cur_edit_text();
+        let cur = self.active_caret().min(text.chars().count());
+        let next = if dir < 0 {
+            prev_word_boundary_chars(&text, cur)
+        } else {
+            next_word_boundary_chars(&text, cur)
+        };
+        self.place_caret(next, extend);
     }
 
     /// Move the active caret up/down one explicit line, keeping the column.
-    fn move_caret_vertical(&mut self, dir: i32) {
+    fn move_caret_vertical(&mut self, dir: i32, extend: bool) {
         let text = self.cur_edit_text();
         let next = caret_line_move(&text, self.active_caret(), dir);
-        self.set_active_caret(next);
+        self.place_caret(next, extend);
     }
 
     /// Move the active caret to the start (`end=false`) or end of its line.
-    fn move_caret_home_end(&mut self, end: bool) {
+    fn move_caret_home_end(&mut self, end: bool, extend: bool) {
         let text = self.cur_edit_text();
         let next = caret_line_home_end(&text, self.active_caret(), end);
-        self.set_active_caret(next);
+        self.place_caret(next, extend);
+    }
+
+    /// Copy the selection to the clipboard (shared `ui` clipboard). Returns
+    /// `true` when there was a selection to copy.
+    fn copy_selection(&self) -> bool {
+        let s = self.selected_text();
+        if s.is_empty() {
+            return false;
+        }
+        clipboard_copy(&s);
+        true
     }
 
     // --- drawing ------------------------------------------------------------
@@ -2458,6 +2645,11 @@ impl SlidesApp {
         let rail_overlay = chrome.layout == SplitLayout::Overlay;
         let insp_overlay = chrome.inspector_layout == SplitLayout::Overlay;
         let div = c.border_standard;
+
+        // Resolve any pending pointer interaction (click-to-place caret,
+        // double-click word-select, drag-extend) now that the text layout is
+        // measurable, before anything borrows the slide immutably.
+        self.resolve_text_pointer(tr, chrome);
 
         // Panels (base layer). A docked panel is part of the base; an overlay
         // flap is painted later, on top of the dimming scrim.
@@ -2504,6 +2696,7 @@ impl SlidesApp {
                         chrome::stroke_rrect(scene, t, vis, 2.5, sel_col, 1.5);
                     }
                 } else {
+                    self.draw_text_selection(scene, t, tr, &pal, el, er, chrome.scale);
                     self.draw_text_caret(scene, t, tr, &pal, el, er, chrome.scale);
                 }
             }
@@ -2615,6 +2808,48 @@ impl SlidesApp {
                 }
             });
             self.page_sidebar = sb;
+
+            // Drop-to-delete zone: a red dashed target pinned to the bottom of
+            // the rail, revealed only while a slide is being dragged. Dropping a
+            // thumbnail here removes that slide.
+            if self.page_sidebar.is_dragging() {
+                let zone = self.slide_delete_zone(chrome.rail);
+                let armed = zone.contains(self.last_mouse);
+                let danger = c.semantic.danger;
+                if armed {
+                    chrome::fill_rrect(scene, t, zone, 10.0, render::with_alpha(danger, 40));
+                }
+                scene.stroke(
+                    &Stroke::new(if armed { 2.0 } else { 1.5 }).with_dashes(0.0, [6.0, 4.0]),
+                    t,
+                    danger,
+                    None,
+                    &vello::kurbo::RoundedRect::from_rect(zone, 10.0),
+                );
+                let icon_sz = 18.0;
+                let label = "Drop to delete";
+                let lw = chrome::est_width(label, 12.5);
+                let total = icon_sz + 8.0 + lw;
+                let cx = zone.x0 + (zone.width() - total) / 2.0;
+                let cy = zone.y0 + zone.height() / 2.0;
+                draw_icon(
+                    scene,
+                    t,
+                    Rect::new(cx, cy - icon_sz / 2.0, cx + icon_sz, cy + icon_sz / 2.0),
+                    Icon::Trash,
+                    danger,
+                    1.8,
+                );
+                tr.draw_text_weighted(
+                    scene,
+                    label,
+                    12.5,
+                    danger,
+                    t * Affine::translate((cx + icon_sz + 8.0, cy - 8.0)),
+                    None,
+                    TextWeight::Medium,
+                );
+            }
         }
 
         // Inspector group on top: panel fill (overlay only), buttons, notes, labels.
@@ -2998,6 +3233,163 @@ impl SlidesApp {
         (Point::new(cx, cy), line_h)
     }
 
+    /// Inverse of [`Self::caret_geometry`]: the char index whose caret sits
+    /// nearest `p` in the same wrapped layout, for click-to-position and
+    /// drag-select. Scans candidate carets and picks the closest, weighting a
+    /// matching visual line over horizontal distance.
+    #[allow(clippy::too_many_arguments)]
+    fn char_at_point_in_box(
+        &self,
+        tr: &mut TextRenderer,
+        text: &str,
+        er: Rect,
+        font_px: f32,
+        weight: TextWeight,
+        italic: bool,
+        align: TextAlign,
+        center_v: bool,
+        p: Point,
+    ) -> usize {
+        let len = text.chars().count();
+        let mut best = 0usize;
+        let mut best_d = f64::INFINITY;
+        for i in 0..=len {
+            let (pt, line_h) =
+                self.caret_geometry(tr, text, i, er, font_px, weight, italic, align, center_v);
+            let dy = if p.y < pt.y {
+                pt.y - p.y
+            } else if p.y > pt.y + line_h {
+                p.y - (pt.y + line_h)
+            } else {
+                0.0
+            };
+            let dx = (p.x - pt.x).abs();
+            // A caret on the pointer's line always beats one on another line.
+            let d = dy * 100_000.0 + dx;
+            if d < best_d {
+                best_d = d;
+                best = i;
+            }
+        }
+        best
+    }
+
+    /// Selection highlight rectangles for the char range `[min, max)` in `text`,
+    /// tracking the same wrapped layout the caret + painter use. One rect per
+    /// explicit line the selection covers.
+    #[allow(clippy::too_many_arguments)]
+    fn selection_rects_in_box(
+        &self,
+        tr: &mut TextRenderer,
+        text: &str,
+        min: usize,
+        max: usize,
+        er: Rect,
+        font_px: f32,
+        weight: TextWeight,
+        italic: bool,
+        align: TextAlign,
+        center_v: bool,
+    ) -> Vec<Rect> {
+        if min >= max {
+            return Vec::new();
+        }
+        let chars: Vec<char> = text.chars().collect();
+        let starts = line_starts(&chars);
+        let mut rects = Vec::new();
+        for (li, &ls) in starts.iter().enumerate() {
+            let le = if li + 1 < starts.len() { starts[li + 1] - 1 } else { chars.len() };
+            // Portion of this explicit line covered by the selection.
+            let a = min.max(ls);
+            let b = max.min(le);
+            // The line's trailing '\n' is selected when the selection spans past
+            // this line into the next — draw a small trailing sliver so the wrap
+            // reads as selected.
+            let covers_break = li + 1 < starts.len() && max > le && min <= le;
+            if a > b && !covers_break {
+                continue;
+            }
+            let a = a.min(le);
+            let b = b.max(a).min(le);
+            let (pa, lh) =
+                self.caret_geometry(tr, text, a, er, font_px, weight, italic, align, center_v);
+            let (pb, _) =
+                self.caret_geometry(tr, text, b, er, font_px, weight, italic, align, center_v);
+            let x0 = pa.x.min(pb.x);
+            let mut x1 = pa.x.max(pb.x);
+            if covers_break {
+                x1 = x1.max(x0) + font_px as f64 * 0.35;
+            }
+            if x1 - x0 < 1.5 {
+                x1 = x0 + 1.5;
+            }
+            rects.push(Rect::new(x0, pa.y, x1, pa.y + lh));
+        }
+        rects
+    }
+
+    /// Resolve any pending pointer interaction (click-to-place caret,
+    /// double-click word-select, drag-extend) against the live text layout. Runs
+    /// at the top of `draw` where the `TextRenderer` is available. Selection is
+    /// pure per-peer view state, so no CRDT access is needed here.
+    fn resolve_text_pointer(&mut self, tr: &mut TextRenderer, chrome: &Chrome) {
+        if !self.editing_text {
+            // Notes / no editor: drop any element-targeted pointer intent.
+            self.caret_click = None;
+            self.select_word_click = None;
+            return;
+        }
+        let Some(el) = self.selected_element().cloned() else {
+            self.caret_click = None;
+            self.select_word_click = None;
+            return;
+        };
+        if el.kind != ElementKind::Text {
+            return;
+        }
+        let er = render::element_dest(chrome.slide_dest, chrome.scale, &el);
+        let font_px = (el.font_size * chrome.scale).max(1.0) as f32;
+        let weight = if el.bold { TextWeight::Bold } else { TextWeight::Regular };
+        if let Some(p) = self.select_word_click.take() {
+            let idx = self.char_at_point_in_box(
+                tr, &el.text, er, font_px, weight, el.italic, el.align, true, p,
+            );
+            let (a, b) = word_boundaries_chars(&el.text, idx);
+            self.sel_anchor = a;
+            self.caret = b;
+        } else if let Some((p, extend)) = self.caret_click.take() {
+            let idx = self.char_at_point_in_box(
+                tr, &el.text, er, font_px, weight, el.italic, el.align, true, p,
+            );
+            self.place_caret(idx, extend);
+        }
+    }
+
+    /// Paint the on-canvas text selection highlight for the editing element.
+    fn draw_text_selection(
+        &self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        pal: &Palette,
+        el: &Element,
+        er: Rect,
+        s: f64,
+    ) {
+        let sel = self.selection();
+        if sel.is_collapsed() {
+            return;
+        }
+        let font_px = (el.font_size * s).max(1.0) as f32;
+        let weight = if el.bold { TextWeight::Bold } else { TextWeight::Regular };
+        let col = render::with_alpha(pal.accent, 70);
+        for r in self.selection_rects_in_box(
+            tr, &el.text, sel.min(), sel.max(), er, font_px, weight, el.italic, el.align, true,
+        ) {
+            chrome::fill_rrect(scene, t, r, 2.0, col);
+        }
+    }
+
     fn draw_notes(
         &self,
         scene: &mut Scene,
@@ -3043,6 +3435,18 @@ impl SlidesApp {
         // and left-aligned.
         if self.editing_notes {
             let er = Rect::new(nb.x0 + 10.0, nb.y0 + 9.0, nb.x0 + 10.0 + (nb.width() - 24.0), nb.y1 - 9.0);
+            // Selection highlight (same shared caret / selection core as the
+            // canvas text) behind the caret.
+            let sel = self.selection();
+            if !sel.is_collapsed() {
+                let hl = render::with_alpha(self.palette(theme).accent, 70);
+                for r in self.selection_rects_in_box(
+                    tr, notes, sel.min(), sel.max(), er, 12.5, TextWeight::Regular, false,
+                    TextAlign::Left, false,
+                ) {
+                    chrome::fill_rrect(scene, t, r, 2.0, hl);
+                }
+            }
             self.draw_caret_in_box(
                 scene,
                 t,
@@ -4250,6 +4654,11 @@ impl Widget for SlidesApp {
                     // refreshed each frame in `draw` and on press.)
                     self.page_sidebar.on_motion(p);
                     *handled = true;
+                } else if self.text_drag {
+                    // Extend the text selection from its anchor to the pointer
+                    // (resolved against the wrapped layout on the next draw).
+                    self.caret_click = Some((p, true));
+                    *handled = true;
                 } else if self.drag.active() {
                     self.drag_move(p);
                     *handled = true;
@@ -4666,18 +5075,29 @@ impl SlidesApp {
                 self.last_click = Some((id.clone(), std::time::Instant::now(), p));
                 self.editing_notes = false;
 
-                // Already editing this exact text box → a click inside it stays
-                // in edit (never starts a drag), so typing/selection continues.
+                // Already editing this exact text box → a click inside it places
+                // the caret (and arms a selection drag), never starts a box move,
+                // so click-to-position and drag-select work like any text field.
                 if self.editing_text && self.sel.as_deref() == Some(id.as_str()) {
+                    if double {
+                        self.select_word_click = Some(p);
+                    } else {
+                        self.caret_click = Some((p, false));
+                        self.text_drag = true;
+                    }
                     *handled = true;
                     return;
                 }
 
                 self.sel = Some(id.clone());
                 if double && is_text {
-                    // A deliberate double-click opens the text for editing.
+                    // A deliberate double-click opens the text for editing and
+                    // selects the word under the point.
                     self.editing_text = true;
-                    self.caret = self.selected_element().map(|e| e.text.chars().count()).unwrap_or(0);
+                    let len = self.selected_element().map(|e| e.text.chars().count()).unwrap_or(0);
+                    self.caret = len;
+                    self.sel_anchor = len;
+                    self.select_word_click = Some(p);
                 } else {
                     // Single press: select AND arm a move so a selected element
                     // can be dragged on the very first grab (the reported bug was
@@ -4964,12 +5384,33 @@ impl SlidesApp {
     }
 
     fn on_release(&mut self, doc: &mut AutoCommit, handled: &mut bool) {
+        // A text-selection drag ends here (no document write — selection is
+        // per-peer view state).
+        if self.text_drag {
+            self.text_drag = false;
+            *handled = true;
+            return;
+        }
         // A thumbnail drag-to-reorder: the shared rail commits the move (emitting
         // a Reorder we apply to the CRDT) or — if the press never crossed the
         // threshold into a real drag — nothing, in which case it stays a plain
         // select and, on a narrow window, reveals the chosen slide by closing
         // the overlay flap.
         if self.page_sidebar.is_pending_drag() {
+            // Drop onto the red delete zone removes the dragged slide instead of
+            // reordering it (guarded so the deck never drops to zero slides).
+            if self.page_sidebar.is_dragging()
+                && self.slide_delete_zone(self.rail_rect()).contains(self.last_mouse)
+            {
+                if let Some(from) = self.page_sidebar.drag_from() {
+                    self.page_sidebar.on_escape(); // cancel the reorder cleanly
+                    self.page_sidebar.take_events();
+                    self.rail_scroll = self.page_sidebar.scroll();
+                    self.apply_rail_event(doc, PageSidebarEvent::Delete(from));
+                    *handled = true;
+                    return;
+                }
+            }
             let was_click = !self.page_sidebar.is_dragging();
             self.page_sidebar.on_release();
             self.apply_rail_events(doc);
@@ -5231,10 +5672,17 @@ impl SlidesApp {
             return;
         }
 
-        // Text / notes / title editing intercepts most keys.
+        // Text / notes / title editing intercepts most keys. The on-canvas text
+        // and speaker-notes editors share the `ui` caret / selection core:
+        // shift+arrow extends, ctrl+arrow is word-wise, ctrl+A selects all, and
+        // C/X/V go through the shared clipboard — all splicing the real CRDT.
+        // (Title rename is consumed earlier by the shared `TextInput`; it only
+        // reaches here defensively.)
         if self.editing_text || self.editing_notes || self.editing_title {
+            let shift = mods.shift_key();
             match key {
                 Key::Named(NamedKey::Escape) => {
+                    self.collapse_selection();
                     self.editing_text = false;
                     self.editing_notes = false;
                     self.editing_title = false;
@@ -5243,6 +5691,10 @@ impl SlidesApp {
                 }
                 Key::Named(NamedKey::Backspace) => {
                     self.backspace_text(doc);
+                    *handled = true;
+                }
+                Key::Named(NamedKey::Delete) => {
+                    self.forward_delete_text(doc);
                     *handled = true;
                 }
                 Key::Named(NamedKey::Enter) => {
@@ -5261,29 +5713,76 @@ impl SlidesApp {
                     *handled = true;
                 }
                 Key::Named(NamedKey::ArrowLeft) => {
-                    self.move_caret(-1);
+                    if ctrl {
+                        self.move_caret_word(-1, shift);
+                    } else {
+                        self.move_caret(-1, shift);
+                    }
                     *handled = true;
                 }
                 Key::Named(NamedKey::ArrowRight) => {
-                    self.move_caret(1);
+                    if ctrl {
+                        self.move_caret_word(1, shift);
+                    } else {
+                        self.move_caret(1, shift);
+                    }
                     *handled = true;
                 }
                 Key::Named(NamedKey::ArrowUp) => {
-                    self.move_caret_vertical(-1);
+                    self.move_caret_vertical(-1, shift);
                     *handled = true;
                 }
                 Key::Named(NamedKey::ArrowDown) => {
-                    self.move_caret_vertical(1);
+                    self.move_caret_vertical(1, shift);
                     *handled = true;
                 }
                 Key::Named(NamedKey::Home) => {
-                    self.move_caret_home_end(false);
+                    if ctrl {
+                        self.place_caret(0, shift);
+                    } else {
+                        self.move_caret_home_end(false, shift);
+                    }
                     *handled = true;
                 }
                 Key::Named(NamedKey::End) => {
-                    self.move_caret_home_end(true);
+                    if ctrl {
+                        let len = self.cur_text_len();
+                        self.place_caret(len, shift);
+                    } else {
+                        self.move_caret_home_end(true, shift);
+                    }
                     *handled = true;
                 }
+                // Clipboard + select-all, via the shared clipboard core.
+                Key::Character(c) if ctrl && c.eq_ignore_ascii_case("a") => {
+                    self.select_all_text();
+                    *handled = true;
+                }
+                Key::Character(c) if ctrl && c.eq_ignore_ascii_case("c") => {
+                    self.copy_selection();
+                    *handled = true;
+                }
+                Key::Character(c) if ctrl && c.eq_ignore_ascii_case("x") => {
+                    if self.copy_selection() {
+                        self.delete_selection(doc);
+                    }
+                    *handled = true;
+                }
+                Key::Character(c) if ctrl && c.eq_ignore_ascii_case("v") => {
+                    if let Some(s) = clipboard_paste() {
+                        let s = if self.editing_title {
+                            s.replace('\n', " ")
+                        } else {
+                            s
+                        };
+                        if !s.is_empty() {
+                            self.insert_text(doc, &s);
+                        }
+                    }
+                    *handled = true;
+                }
+                // Ctrl+Z / Ctrl+Y (and any other ctrl-combo we don't own) fall
+                // through unhandled so the toolkit's global undo / redo fires.
                 Key::Character(c) if !ctrl => {
                     self.insert_text(doc, c.as_str());
                     *handled = true;
@@ -5319,6 +5818,7 @@ impl SlidesApp {
                 if self.selected_element().map(|e| e.kind == ElementKind::Text).unwrap_or(false) {
                     self.editing_text = true;
                     self.caret = self.selected_element().map(|e| e.text.chars().count()).unwrap_or(0);
+                    self.sel_anchor = self.caret;
                     *handled = true;
                 }
             }
@@ -7165,5 +7665,208 @@ mod tests {
         assert!(handled, "clicking an overview card is handled");
         assert_eq!(app.mode, Mode::Edit, "opening a card returns to the editor");
         assert_eq!(app.cur_slide, idx, "the clicked card's slide is now current");
+    }
+
+    // === shared caret / selection core (HIG §3) ===========================
+
+    fn key_named_mods(
+        app: &mut SlidesApp,
+        doc: &mut AutoCommit,
+        key: NamedKey,
+        state: winit::keyboard::ModifiersState,
+    ) -> bool {
+        let mut h = false;
+        let mods = Modifiers::from(state);
+        app.on_key(doc, &Key::Named(key), None, &mods, &mut h);
+        h
+    }
+    fn key_char_mods(
+        app: &mut SlidesApp,
+        doc: &mut AutoCommit,
+        ch: &str,
+        state: winit::keyboard::ModifiersState,
+    ) -> bool {
+        let mut h = false;
+        let mods = Modifiers::from(state);
+        app.on_key(doc, &Key::Character(ch.into()), Some(ch), &mods, &mut h);
+        h
+    }
+
+    /// Shift+Arrow through the real key path builds a live selection over the
+    /// CRDT-backed text (the shared `ui` selection core, not a per-app buffer).
+    #[test]
+    fn shift_arrow_extends_a_selection_over_the_crdt_text() {
+        use winit::keyboard::ModifiersState;
+        let (mut app, mut doc, _id) = selected_text_app();
+        app.editing_text = true;
+        app.place_caret(app.cur_text_len(), false);
+        assert!(!app.has_text_selection(), "starts with no selection");
+        assert!(key_named_mods(&mut app, &mut doc, NamedKey::ArrowLeft, ModifiersState::SHIFT));
+        assert!(key_named_mods(&mut app, &mut doc, NamedKey::ArrowLeft, ModifiersState::SHIFT));
+        assert!(app.has_text_selection(), "shift+arrow builds a live selection");
+        assert_eq!(app.selected_text(), "Hi", "the selection spans both chars");
+    }
+
+    /// Ctrl+Arrow moves word-wise via the shared word-boundary walker.
+    #[test]
+    fn ctrl_arrow_moves_word_wise() {
+        use winit::keyboard::ModifiersState;
+        let mut s = Slide::new(Layout::Blank);
+        let id = s.add(Element::text("Hello world", 100.0, 100.0, 600.0, 120.0, 40.0));
+        let (mut app, mut doc) = app_doc(s);
+        app.sel = Some(id);
+        app.editing_text = true;
+        app.place_caret(app.cur_text_len(), false);
+        assert!(key_named_mods(&mut app, &mut doc, NamedKey::ArrowLeft, ModifiersState::CONTROL));
+        assert_eq!(app.active_caret(), 6, "ctrl+left jumps to the start of the last word");
+        assert!(!app.has_text_selection(), "a plain word move collapses the selection");
+    }
+
+    /// Ctrl+A then Backspace clears the whole element text in the CRDT.
+    #[test]
+    fn select_all_then_backspace_clears_the_element_text_in_the_crdt() {
+        use winit::keyboard::ModifiersState;
+        let (mut app, mut doc, id) = selected_text_app();
+        app.editing_text = true;
+        app.place_caret(0, false);
+        assert!(key_char_mods(&mut app, &mut doc, "a", ModifiersState::CONTROL));
+        assert_eq!(app.selected_text(), "Hi", "Ctrl+A selects the whole text");
+        assert!(keyn(&mut app, &mut doc, NamedKey::Backspace));
+        assert_eq!(
+            loaded(&doc).slides[0].element(&id).unwrap().text,
+            "",
+            "the selected text was deleted from the CRDT"
+        );
+    }
+
+    /// Typing over a live selection replaces it in the CRDT.
+    #[test]
+    fn typing_over_a_selection_replaces_it_in_the_crdt() {
+        let (mut app, mut doc, id) = selected_text_app();
+        app.editing_text = true;
+        app.select_all_text();
+        assert!(keyc(&mut app, &mut doc, "X"), "a plain char is inserted");
+        assert_eq!(
+            loaded(&doc).slides[0].element(&id).unwrap().text,
+            "X",
+            "the selection was replaced, not appended to"
+        );
+    }
+
+    /// The Delete key forward-deletes the char after the caret in the CRDT.
+    #[test]
+    fn forward_delete_removes_the_char_after_the_caret_in_the_crdt() {
+        let (mut app, mut doc, id) = selected_text_app();
+        app.editing_text = true;
+        app.place_caret(0, false);
+        assert!(keyn(&mut app, &mut doc, NamedKey::Delete));
+        assert_eq!(
+            loaded(&doc).slides[0].element(&id).unwrap().text,
+            "i",
+            "Delete removed the first char"
+        );
+    }
+
+    /// Ctrl+X copies then removes the selection from the CRDT.
+    #[test]
+    fn cut_removes_the_selection_from_the_crdt() {
+        use winit::keyboard::ModifiersState;
+        let (mut app, mut doc, id) = selected_text_app();
+        app.editing_text = true;
+        app.select_all_text();
+        assert!(app.copy_selection(), "there is a selection to cut");
+        assert!(key_char_mods(&mut app, &mut doc, "x", ModifiersState::CONTROL));
+        assert_eq!(
+            loaded(&doc).slides[0].element(&id).unwrap().text,
+            "",
+            "cut removed the selected text from the CRDT"
+        );
+    }
+
+    /// Speaker notes editing shares the same selection / delete core and edits
+    /// the real CRDT notes text.
+    #[test]
+    fn notes_selection_shares_the_caret_core_and_edits_the_crdt() {
+        use winit::keyboard::ModifiersState;
+        let mut s = Slide::new(Layout::TitleContent);
+        s.notes = "abc".into();
+        let (mut app, mut doc) = app_doc(s);
+        app.editing_notes = true;
+        app.notes_caret = 3;
+        app.sel_anchor = 3;
+        assert!(key_char_mods(&mut app, &mut doc, "a", ModifiersState::CONTROL));
+        assert_eq!(app.selected_text(), "abc", "Ctrl+A selects the notes");
+        assert!(keyn(&mut app, &mut doc, NamedKey::Backspace));
+        assert_eq!(
+            loaded(&doc).slides[0].notes,
+            "",
+            "notes use the shared selection/delete path into the CRDT"
+        );
+    }
+
+    /// A press inside the box currently being edited places the caret (and arms
+    /// a selection drag) rather than starting a box move.
+    #[test]
+    fn clicking_inside_the_editing_text_arms_caret_placement_not_a_box_move() {
+        let (mut app, mut doc, _id) = selected_text_app();
+        sized(&mut app, 1280.0, 800.0);
+        app.editing_text = true;
+        let chrome = app.compute_chrome();
+        let er = render::element_dest(
+            chrome.slide_dest,
+            chrome.scale,
+            app.selected_element().unwrap(),
+        );
+        let p = er.center();
+        app.last_mouse = p;
+        let mut h = false;
+        app.on_press(&mut doc, p, &mut h);
+        assert!(h, "the press is handled");
+        assert!(app.text_drag, "a press inside the editing box starts a selection drag");
+        assert!(app.caret_click.is_some(), "the click is queued to place the caret");
+        assert!(!app.drag.active(), "the box is not being moved");
+    }
+
+    // === drag-to-delete zone ==============================================
+
+    /// Dropping a dragged slide thumbnail on the red dashed delete zone removes
+    /// that slide from the CRDT (the whole on_press → drag → on_release path).
+    #[test]
+    fn dropping_a_slide_on_the_delete_zone_removes_it_from_the_crdt() {
+        let (mut app, mut doc) = reorder_app();
+        let victim_id = loaded(&doc).slides[1].id.clone();
+        let before = loaded(&doc).slides.len();
+
+        let start = app.rail_thumb_rects()[1].1.center();
+        app.last_mouse = start;
+        let mut h = false;
+        app.on_press(&mut doc, start, &mut h);
+
+        // Drag down into the delete zone pinned at the bottom of the rail.
+        let drop = app.slide_delete_zone(app.rail_rect()).center();
+        app_dispatch(&mut app, &mut doc, &cursor_ev(drop));
+        assert!(app.page_sidebar.is_dragging(), "the drag is live past the threshold");
+        assert!(app.over_delete_zone(), "the pointer is over the delete drop-zone");
+
+        let mut h2 = false;
+        app.on_release(&mut doc, &mut h2);
+        assert!(h2, "the drop is handled");
+
+        let after = loaded(&doc);
+        assert_eq!(after.slides.len(), before - 1, "the dropped slide was deleted");
+        assert!(
+            !after.slides.iter().any(|s| s.id == victim_id),
+            "the exact dragged slide is gone from the CRDT"
+        );
+        assert!(!app.page_sidebar.is_pending_drag(), "the drag is cleared after the drop");
+    }
+
+    /// The delete zone is only active while a slide is being dragged.
+    #[test]
+    fn delete_zone_is_inert_when_not_dragging() {
+        let (mut app, _doc) = reorder_app();
+        let zone = app.slide_delete_zone(app.rail_rect());
+        app.last_mouse = zone.center();
+        assert!(!app.over_delete_zone(), "no drag in progress → the zone is inert");
     }
 }
