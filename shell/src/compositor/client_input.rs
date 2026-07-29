@@ -581,6 +581,7 @@ pub fn chrome_captures_input(fb: &FrameBuilder) -> bool {
         || chrome.overlays.quick_settings
         || chrome.overlays.ws_settings
         || chrome.overlays.collaborators
+        || chrome.overlays.room_activity
         || chrome.editing_workspace_name.is_some()
         || !chrome.pending_grants.is_empty()
 }
