@@ -65,10 +65,11 @@
 //! worth being explicit about all three failure modes:
 //!
 //! - **Rotating CDN.** The gate never pins an address. It matches the
-//!   *name* carried in the SOCKS5 request against the allowlist and
-//!   only then resolves, per connection. A host that answers from a
-//!   different address on every request works normally, and an
-//!   allowlist entry never goes stale.
+//!   *name* carried in the request — the SOCKS5 domain field or the
+//!   `CONNECT` target — against the allowlist, and only then resolves,
+//!   per connection. A host that answers from a different address on
+//!   every request works normally, and an allowlist entry never goes
+//!   stale.
 //! - **DNS changing mid-session.** Same answer: there is no cached
 //!   address to go stale. Resolution happens at connect time, after the
 //!   policy decision, so a record that changes between two connections
@@ -89,15 +90,26 @@
 //!
 //! ## DNS is egress
 //!
-//! An app with no network capability reaches no resolver: the namespace
-//! is empty and `/etc/resolv.conf` is not bound.
+//! An app with no network capability reaches no resolver, because the
+//! namespace is empty. Note that this is a property of the *route*, not
+//! of the mount: several app manifests do list `/etc/resolv.conf` under
+//! `sandbox.fs.read`, so the file may well be present inside the
+//! sandbox. It is inert — there is no path to any address it names.
 //!
-//! An app with an allowlist also reaches no resolver. It does not need
-//! one — it hands the gate a name and the gate resolves in the host
-//! namespace, on its behalf, *after* the name has passed the policy.
-//! So resolution is not a side channel: an app cannot make the gate
-//! resolve a name it was not allowed to reach, and it cannot exfiltrate
-//! through DNS query contents because it never emits a query.
+//! An app with an allowlist also reaches no resolver, for the same
+//! reason. It does not need one: it hands the gate a name and the gate
+//! resolves in the host namespace, on its behalf, *after* the name has
+//! passed the policy. So resolution is not a side channel — an app
+//! cannot make the gate resolve a name it was not allowed to reach, and
+//! it cannot signal through query contents because it emits no query.
+//!
+//! The one case worth stating precisely, because ports are not
+//! constrained: an app **can** open port 53 on a host it was granted,
+//! and speak DNS-over-TCP to it. That is not an escape. It reaches only
+//! a host the user already allowed, it learns nothing it could not
+//! learn by asking the gate to connect by name, and any answer it gets
+//! is still only usable through the gate — where an address literal is
+//! matched as a literal and refused.
 //!
 //! An app granted `*` keeps `--share-net` and resolves for itself, as
 //! before. There is nothing to filter, so there is nothing to broker.
