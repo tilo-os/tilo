@@ -1165,6 +1165,16 @@ pub fn run_with_captured(
     let identity_host = resolve_identity_host_path(opts);
     let identity_arg = identity_host.as_deref();
     let capabilities = resolve_capabilities(manifest, opts);
+    // Same egress decision as `run_with`, and for the same reason: an
+    // app whose grant names hosts gets an empty namespace, so without
+    // the gate spliced in here too it would be silently offline rather
+    // than filtered. The guard has to outlive the child.
+    //
+    // No shim runs on this path, so there is no loopback relay — the
+    // gate is reachable at `QOS_NET_GATE` but the `ALL_PROXY` endpoint
+    // has nothing listening behind it.
+    let egress = crate::sandbox::egress_decision(manifest, &capabilities);
+    let (net_gate, _gate_guard) = start_egress_gate(&egress)?;
     let mut argv = build_bwrap_argv(
         manifest,
         payload_root,
@@ -1174,6 +1184,11 @@ pub fn run_with_captured(
         identity_arg,
         &capabilities,
     );
+    if let Some(bind) = &net_gate {
+        let entry = argv.pop().expect("argv non-empty after build_bwrap_argv");
+        crate::sandbox::push_net_gate(&mut argv, bind);
+        argv.push(entry);
+    }
     if let Some(workspace_id) = opts.workspace_id.as_deref() {
         let entry = argv.pop().expect("argv non-empty after build_bwrap_argv");
         crate::sandbox::push_workspace_id(&mut argv, workspace_id);

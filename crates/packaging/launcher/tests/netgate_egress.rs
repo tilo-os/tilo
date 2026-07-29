@@ -145,6 +145,22 @@ fn netns_probe() {
         describe(socks_get(&socket, BLOCKED_NAME, 80))
     );
 
+    // The same three, over HTTP CONNECT rather than SOCKS5. This is the
+    // path an HTTP client takes without any opt-in feature, so it is
+    // the one most apps will actually use.
+    println!(
+        "PROBE http_by_name={}",
+        describe(http_connect(&socket, ALLOWED_NAME, allowed_port))
+    );
+    println!(
+        "PROBE http_by_literal={}",
+        describe(http_connect(&socket, "127.0.0.1", allowed_port))
+    );
+    println!(
+        "PROBE http_by_other_name={}",
+        describe(http_connect(&socket, BLOCKED_NAME, 80))
+    );
+
     // The loopback relay — the path an unmodified HTTP client takes via
     // ALL_PROXY. Uses the production `run_relay`.
     if std::env::var(ENV_RELAY).is_ok() {
@@ -222,6 +238,8 @@ enum Outcome {
     Body(String),
     /// The gate refused with this SOCKS5 reply code.
     Refused(u8),
+    /// The gate refused with this HTTP status code.
+    HttpStatus(u16),
     /// Something else went wrong.
     Failed(String),
 }
@@ -230,8 +248,52 @@ fn describe(o: Outcome) -> String {
     match o {
         Outcome::Body(b) => format!("BODY:{b}"),
         Outcome::Refused(code) => format!("REFUSED:{code:#04x}"),
+        Outcome::HttpStatus(code) => format!("STATUS:{code}"),
         Outcome::Failed(e) => format!("ERR:{e}"),
     }
+}
+
+/// HTTP `CONNECT` through the gate, then an HTTP request down the
+/// tunnel. This is what an ordinary HTTP client does with
+/// `HTTPS_PROXY` set, with no SOCKS support compiled in.
+fn http_connect(socket: &str, host: &str, port: u16) -> Outcome {
+    let mut s = match UnixStream::connect(socket) {
+        Ok(s) => s,
+        Err(e) => return Outcome::Failed(format!("connect gate: {:?}", e.kind())),
+    };
+    if s
+        .write_all(format!("CONNECT {host}:{port} HTTP/1.1\r\nHost: {host}\r\n\r\n").as_bytes())
+        .is_err()
+    {
+        return Outcome::Failed("connect write".into());
+    }
+    // Read the proxy's response head.
+    let mut head = Vec::new();
+    let mut byte = [0u8; 1];
+    loop {
+        match s.read(&mut byte) {
+            Ok(0) => break,
+            Ok(_) => {
+                head.push(byte[0]);
+                if head.ends_with(b"\r\n\r\n") {
+                    break;
+                }
+                if head.len() > 4096 {
+                    return Outcome::Failed("proxy head too large".into());
+                }
+            }
+            Err(e) => return Outcome::Failed(format!("proxy head read: {:?}", e.kind())),
+        }
+    }
+    let text = String::from_utf8_lossy(&head).to_string();
+    let status: u16 = match text.split_whitespace().nth(1).and_then(|c| c.parse().ok()) {
+        Some(c) => c,
+        None => return Outcome::Failed(format!("no status in {text:?}")),
+    };
+    if status != 200 {
+        return Outcome::HttpStatus(status);
+    }
+    http_exchange(&mut s)
 }
 
 fn raw_get(port: u16) -> Outcome {
@@ -606,6 +668,27 @@ fn a_grant_naming_one_host_reaches_that_host_and_no_other() {
         "an unlisted host must be refused by the ruleset, not merely fail to resolve"
     );
 
+    // The same three answers over HTTP CONNECT. This is the path a
+    // client with no SOCKS support takes, so a policy that only held
+    // for SOCKS would be a policy most apps never meet.
+    assert_eq!(
+        report.get("http_by_name"),
+        "BODY:ALLOWED-SERVER",
+        "HTTP CONNECT must reach a granted host — it is the only proxy protocol an \
+         unmodified HTTP client speaks without an opt-in feature"
+    );
+    assert_eq!(
+        report.get("http_by_literal"),
+        "STATUS:403",
+        "the literal must be refused over HTTP too, or the SOCKS-side rule is bypassable by \
+         switching protocol"
+    );
+    assert_eq!(
+        report.get("http_by_other_name"),
+        "STATUS:403",
+        "an unlisted host must be refused over HTTP too"
+    );
+
     // No route beside the gate.
     assert_eq!(
         report.get("raw_public"),
@@ -620,13 +703,13 @@ fn a_grant_naming_one_host_reaches_that_host_and_no_other() {
 
     // The gate itself agrees about what it did.
     assert!(
-        gate.stats().allowed() >= 2,
-        "gate should have allowed the two by-name connections, saw {}",
+        gate.stats().allowed() >= 3,
+        "gate should have allowed the by-name connections on both protocols, saw {}",
         gate.stats().allowed()
     );
     assert!(
-        gate.stats().denied() >= 3,
-        "gate should have denied both literals and the unlisted name, saw {}",
+        gate.stats().denied() >= 5,
+        "gate should have denied both literals and the unlisted name over both protocols, saw {}",
         gate.stats().denied()
     );
 }
