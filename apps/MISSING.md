@@ -178,13 +178,40 @@ verified by an offscreen shot (header gone, functional controls intact) + tests:
       Annex-B NALUs), no fetch, no audio, placeholder 60s scrub with the thumb
       pinned to start (video_player.rs:118,336,462). Needs a media-length setter +
       a playhead clock for real seek.
-- [ ] No general video-player app; no inline video in chat or file-explorer preview.
-      Tube's watch page is the only video UI and it's `--features live`-gated +
-      network-dependent (offline/hermetic build shows posters only —
-      OfflineBackend::resolve_video_stream errors, backend/mod.rs:166).
+- [x] There is now a general `video-player` app on the shared `media::MediaEngine`
+      (real GStreamer `playbin`→`appsink` under `--features decode`). It opens a
+      real local/`/var/workspace` file via the XDG portal (or `--open`), demuxes
+      the container, decodes, and plays with real play/pause/seek/volume/mute and
+      a real duration+playhead. Proven: `--features decode` decodes a synthesized
+      real file with advancing PTS and lands a frame on the app's surface
+      (`real_decode.rs`, ran green — not skipped — against GStreamer 1.26), and a
+      `--open realclip.ogv` capture shows genuine decoded SMPTE bars, not the
+      synth gradient. (Inline video in chat / file-explorer preview: still open.)
 - [ ] No AUDIO anywhere in the video stack (tube is video-only by design) — a real
       player needs an audio track + A/V sync. No hardware decode (openh264/CPU only;
       OK for a 144p probe, insufficient for real playback resolutions).
+      (Note: the `media` crate now carries an `audio` module + PipeWire device
+      enumeration; end-to-end A/V-synced playback in the app is still unproven.)
+
+## video-player (local) — CLEAR (real GStreamer decode proven, immersive §1e)
+- [x] Plays a REAL local file: `media::MediaEngine` demuxes + decodes through a
+      GStreamer `playbin`→`appsink` (`--features decode`); the hermetic default
+      build uses a deterministic synthesized backend so `--shots`/tests stay
+      offline. Verified NOT skipped on GStreamer 1.26: `engine_decodes_a_real_
+      file_and_the_pts_advances` + `player_app_pulls_a_real_decoded_frame_onto_
+      its_surface` both bite (real RGBA frames, advancing PTS, 160×120 at the
+      encoded size); a `--open realclip.ogv` capture renders genuine SMPTE bars
+      with a real "0:00 / 0:02" duration — a real decoded frame, not a gradient.
+- [x] Immersive (§1e): edge-to-edge surface, NO persistent chrome bar; the media
+      title + Open pill float over a soft scrim and auto-hide with the controls.
+      Real glass control bar: play/pause, seek scrubber, time, volume + mute,
+      priority setting icons + a gear menu, fullscreen. Open goes through the XDG
+      FileChooser portal (HIG §5), never an app-drawn picker.
+- [x] Honest empty state: the LIVE path (`app_root(None)`) starts on "No media"
+      with no frame — the demo clip is `--shots`/`for_shot` only (unit test
+      `fresh_player_shows_a_clean_empty_state_with_no_frame`). Real controls
+      driven + asserted: seek holds mid-play, volume/mute reach the engine, Space
+      toggles playback through the app's own event path.
 
 ## maps
 - [x] Unbounded failed-tile refetch loop → fixed.
