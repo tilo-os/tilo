@@ -471,39 +471,36 @@ fn build_level(
         if n.start > cursor {
             out.extend(derived_groups(entries, cursor, n.start, depth, cfg));
         }
-        // Inside a named range only *named* sub-ranges become bands. The rest of
-        // it is the group's own rows: someone who named a version said where it
-        // starts and ends, and chopping the inside of it into machine-derived
-        // sub-sessions would bury their name under boundaries they did not draw
-        // — and would put rows three levels deep.
-        let children: Vec<HistoryGroup> = n
-            .children
-            .iter()
-            .map(|c| {
-                finish_group(
-                    entries,
-                    c.start,
-                    c.end,
-                    depth + 1,
-                    Some(c),
-                    Vec::new(),
-                )
-            })
-            .collect();
-        out.push(finish_group(
-            entries,
-            n.start,
-            n.end,
-            depth,
-            Some(n),
-            children,
-        ));
+        out.push(named_group(entries, n, depth));
         cursor = n.end.max(cursor);
     }
     if cursor < hi {
         out.extend(derived_groups(entries, cursor, hi, depth, cfg));
     }
     out
+}
+
+/// Turn a placed named range into a band, recursing into the names inside it
+/// until [`MAX_GROUP_DEPTH`] levels have been rendered.
+///
+/// Inside a named range only *named* sub-ranges become bands. The rest of it is
+/// the group's own rows: someone who named a version said where it starts and
+/// ends, and chopping the inside of it into machine-derived sub-sessions would
+/// bury their name under boundaries they did not draw.
+///
+/// The depth cut lives here and in [`insert_placed`], and both read
+/// `MAX_GROUP_DEPTH` — a rendered cap that disagreed with the constant would
+/// make the constant a lie.
+fn named_group(entries: &[HistoryEntry], n: &Placed, depth: usize) -> HistoryGroup {
+    let children: Vec<HistoryGroup> = if depth + 1 < MAX_GROUP_DEPTH {
+        n.children
+            .iter()
+            .map(|c| named_group(entries, c, depth + 1))
+            .collect()
+    } else {
+        Vec::new()
+    };
+    finish_group(entries, n.start, n.end, depth, Some(n), children)
 }
 
 /// Chop `lo..hi` at the automatic boundaries.
