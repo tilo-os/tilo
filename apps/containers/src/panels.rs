@@ -20,7 +20,7 @@ use crate::app::{
 use crate::combobox;
 use crate::doc::{CreateField, DetailTab, Section, ViewDoc};
 use crate::draw::{self, Icon};
-use crate::model::{human_bytes, Container, ContainerStatus, Stats};
+use crate::model::{Container, ContainerStatus, Stats};
 use crate::podman::{Action, ImageAction};
 
 /// Sizes used across the panels — kept here so the layout reads coherently.
@@ -542,7 +542,7 @@ impl ContainersApp {
         let cpu_bar = Rect::new(at.x, at.y + 14.0, at.x + w, at.y + 19.0);
         draw::usage_bar(scene, theme, cpu_bar, (s.cpu_percent).min(1.0), c.accent[5]);
         // MEM
-        let mem_label = format!("{} MEM", human_bytes(s.mem_bytes));
+        let mem_label = format!("{} MEM", ui::format::bytes(s.mem_bytes));
         draw::text(scene, tr, &mem_label, theme.tokens.typography.scale.xs, c.text_dim, Point::new(at.x, at.y + 24.0), TextWeight::Regular);
         let mem_bar = Rect::new(at.x, at.y + 38.0, at.x + w, at.y + 43.0);
         let mem_color = if s.mem_fraction() > 0.85 { c.semantic.danger } else { c.semantic.info };
@@ -788,19 +788,19 @@ impl ContainersApp {
         gauge(scene, tr, self, "CPU", format!("{:.1}%", s.cpu_percent * 100.0), s.cpu_percent.min(1.0), c.accent[5], y);
         y += 84.0;
         let mem_label = if s.mem_limit_bytes > 0 {
-            format!("{} / {}", human_bytes(s.mem_bytes), human_bytes(s.mem_limit_bytes))
+            format!("{} / {}", ui::format::bytes(s.mem_bytes), ui::format::bytes(s.mem_limit_bytes))
         } else {
-            human_bytes(s.mem_bytes)
+            ui::format::bytes(s.mem_bytes)
         };
         gauge(scene, tr, self, "MEMORY", mem_label, s.mem_fraction(), c.semantic.info, y);
         y += 84.0;
 
         // Network + block IO + pids as a small grid.
         let rows = [
-            ("Network RX", human_bytes(s.net_rx_bytes)),
-            ("Network TX", human_bytes(s.net_tx_bytes)),
-            ("Block read", human_bytes(s.block_read_bytes)),
-            ("Block write", human_bytes(s.block_write_bytes)),
+            ("Network RX", ui::format::bytes(s.net_rx_bytes)),
+            ("Network TX", ui::format::bytes(s.net_tx_bytes)),
+            ("Block read", ui::format::bytes(s.block_read_bytes)),
+            ("Block write", ui::format::bytes(s.block_write_bytes)),
             ("Processes", s.pids.to_string()),
         ];
         let card = Rect::new(body.x0 + PAD, y, body.x0 + PAD + card_w, y + rows.len() as f64 * 30.0 + 12.0);
@@ -940,7 +940,7 @@ impl ContainersApp {
         let disk = format!(
             "{} images · {} on disk",
             self.engine.images.len(),
-            human_bytes(self.engine.image_disk_bytes())
+            ui::format::bytes(self.engine.image_disk_bytes())
         );
         draw::text(scene, tr, &disk, theme.tokens.typography.scale.sm, c.text_dim, Point::new(banner.x0 + 14.0, banner.center().y - 7.0), TextWeight::Medium);
 
@@ -978,7 +978,7 @@ impl ContainersApp {
                 let acts_right = self.draw_image_actions(scene, theme, &image.reference(), row);
                 // right metadata cluster: size, created, in-use chip — left of the actions.
                 let meta_right = acts_right - 12.0;
-                let size = human_bytes(image.size_bytes);
+                let size = ui::format::bytes(image.size_bytes);
                 let (sw, _) = tr.measure_weighted(&size, theme.tokens.typography.scale.base, None, TextWeight::Semibold);
                 draw::text(scene, tr, &size, theme.tokens.typography.scale.base, c.text_primary, Point::new(meta_right - sw as f64, row.center().y - 16.0), TextWeight::Semibold);
                 draw::text(scene, tr, &image.created, theme.tokens.typography.scale.xs, c.text_dim, Point::new(meta_right - 100.0, row.center().y + 4.0), TextWeight::Regular);
@@ -1546,7 +1546,7 @@ impl ContainersApp {
             }
             Hit::SelectImage(idx) => {
                 if let Some(image) = self.engine.images.get(idx) {
-                    self.show_toast(format!("{} · {}", image.reference(), human_bytes(image.size_bytes)), false);
+                    self.show_toast(format!("{} · {}", image.reference(), ui::format::bytes(image.size_bytes)), false);
                 }
             }
             Hit::Action { id, action } => {
