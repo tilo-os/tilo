@@ -1,5 +1,5 @@
 use shell::shell::state::{
-    AppKind, Collaborator, Role, Strip, Tab, TileContent, WindowGroup, WindowWidth, Workspace,
+    AppKind, CapRole, Collaborator, Strip, Tab, TileContent, WindowGroup, WindowWidth, Workspace,
     WorkspaceTree,
 };
 
@@ -51,7 +51,7 @@ fn _type_refs() {
     let _ = std::marker::PhantomData::<Tab>;
     let _ = std::marker::PhantomData::<TileContent>;
     let _ = std::marker::PhantomData::<AppKind>;
-    let _ = std::marker::PhantomData::<Role>;
+    let _ = std::marker::PhantomData::<CapRole>;
     let _ = std::marker::PhantomData::<Collaborator>;
 }
 
