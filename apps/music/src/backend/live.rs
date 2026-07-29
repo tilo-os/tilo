@@ -248,7 +248,7 @@ fn album_home_item(a: AlbumItem) -> HomeItem {
 
 fn artist_home_item(a: ArtistItem) -> HomeItem {
     let subtitle = match a.subscriber_count {
-        Some(n) => format!("{} subscribers", human_count(n)),
+        Some(n) => format!("{} subscribers", ui::format::compact_count(n)),
         None => "Artist".to_string(),
     };
     HomeItem {
@@ -263,16 +263,6 @@ fn artist_home_item(a: ArtistItem) -> HomeItem {
         album_id: String::new(),
         album_title: String::new(),
         duration_s: 0,
-    }
-}
-
-fn human_count(n: u64) -> String {
-    if n >= 1_000_000 {
-        format!("{:.1}M", n as f64 / 1_000_000.0)
-    } else if n >= 1_000 {
-        format!("{:.0}K", n as f64 / 1_000.0)
-    } else {
-        n.to_string()
     }
 }
 

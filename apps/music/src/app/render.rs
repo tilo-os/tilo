@@ -101,16 +101,6 @@ fn vy(top: f64, h: f64, size: f32) -> f64 {
     top + (h - size as f64 * 1.25) / 2.0
 }
 
-fn human_count(n: u64) -> String {
-    if n >= 1_000_000 {
-        format!("{:.1}M", n as f64 / 1_000_000.0)
-    } else if n >= 1_000 {
-        format!("{:.0}K", n as f64 / 1_000.0)
-    } else {
-        n.to_string()
-    }
-}
-
 /// Column x-positions for a single track row within its usable `[left, right]`
 /// span. The duration / download / like controls form a cluster pinned to the
 /// right; the album sits in a *centred* column, clamped so it neither crowds
@@ -1688,7 +1678,7 @@ impl MusicApp {
 
                 // Duration (hidden when unknown — some live sources omit it).
                 if tk.dur > 0 {
-                    let dur = fmt_duration(tk.dur as u64);
+                    let dur = ui::format::timecode(tk.dur as u64);
                     let (dw, _) = tr.measure_weighted(&dur, 13.0, None, TextWeight::Regular);
                     draw_text(tr, scene, t, &dur, dur_x + (48.0 - dw as f64), vy(y, row_h, 13.0), 13.0, c.dim, TextWeight::Regular, None);
                 }
@@ -1930,7 +1920,7 @@ impl MusicApp {
             let albums = self.gather_albums_for_artist(id);
             (name, genre, listeners, top_ids, albums)
         };
-        let subtitle = format!("{genre} · {} monthly listeners", human_count(listeners));
+        let subtitle = format!("{genre} · {} monthly listeners", ui::format::compact_count(listeners));
         let followed = self.lib.is_artist_followed(id);
         let y = self.draw_detail_header(scene, t, tr, c, body, y, id, "ARTIST", &name, &subtitle, top_ids.clone(), true, None, Some((id.to_string(), followed)));
 
@@ -1949,7 +1939,7 @@ impl MusicApp {
         use crate::backend::AlbumKind;
         let pad = 28.0;
         let subtitle = if page.subscriber_count > 0 {
-            format!("{} subscribers", human_count(page.subscriber_count))
+            format!("{} subscribers", ui::format::compact_count(page.subscriber_count))
         } else {
             "Artist".to_string()
         };
@@ -2007,7 +1997,7 @@ impl MusicApp {
                     id: a.id.clone(),
                     name: a.name.clone(),
                     genre: if a.subscriber_count > 0 {
-                        format!("{} subscribers", human_count(a.subscriber_count))
+                        format!("{} subscribers", ui::format::compact_count(a.subscriber_count))
                     } else {
                         "Artist".into()
                     },
@@ -2079,7 +2069,7 @@ impl MusicApp {
             (name, desc, ids)
         };
         let total: u32 = self.gather_tracks(&ids).iter().map(|r| r.dur).sum();
-        let subtitle = format!("{} · {} songs · {}", desc, ids.len(), fmt_duration(total as u64));
+        let subtitle = format!("{} · {} songs · {}", desc, ids.len(), ui::format::timecode(total as u64));
         let mut y = self.draw_detail_header(scene, t, tr, c, body, y, id, "PLAYLIST", &name, &subtitle, ids.clone(), false, None, None);
 
         // Playlist management row: an outlined pill per action.
@@ -2265,7 +2255,7 @@ impl MusicApp {
                     let rh = self.push_hit(square_around(rc, 26.0), Action::RemoveFromQueue(abs));
                     draw_x(scene, t, rc, if rh { c.accent } else { c.dim });
                 }
-                let dur = fmt_duration(tk.dur as u64);
+                let dur = ui::format::timecode(tk.dur as u64);
                 let (dw, _) = tr.measure_weighted(&dur, 13.0, None, TextWeight::Regular);
                 draw_text(tr, scene, t, &dur, dur_x + (40.0 - dw as f64), vy(y, row_h, 13.0), 13.0, c.dim, TextWeight::Regular, None);
             }
@@ -2291,7 +2281,7 @@ impl MusicApp {
         fill_rrect(scene, t, banner, 12.0, c.card);
         icon::draw(scene, t, Icon::Downloaded, Point::new(banner.x0 + 34.0, banner.center().y), 24.0, c.success);
         draw_text(tr, scene, t, &format!("{count} songs kept for offline"), banner.x0 + 60.0, banner.y0 + 14.0, 15.0, c.text, TextWeight::Semibold, None);
-        draw_text(tr, scene, t, &fmt_duration(total_s), banner.x0 + 60.0, banner.y0 + 36.0, 12.0, c.dim, TextWeight::Regular, None);
+        draw_text(tr, scene, t, &ui::format::timecode(total_s), banner.x0 + 60.0, banner.y0 + 36.0, 12.0, c.dim, TextWeight::Regular, None);
         y += 84.0;
 
         if ids.is_empty() {
@@ -2319,7 +2309,7 @@ impl MusicApp {
         scene.pop_layer();
         icon::draw(scene, t, Icon::HeartFilled, Point::new(banner.x0 + 50.0, banner.center().y), 44.0, Color::WHITE);
         draw_text(tr, scene, t, "Liked Songs", banner.x0 + 92.0, banner.y0 + 22.0, 24.0, Color::WHITE, TextWeight::Bold, None);
-        draw_text(tr, scene, t, &format!("{} songs · {}", ids.len(), fmt_duration(total_s)), banner.x0 + 92.0, banner.y0 + 54.0, 14.0, Color::WHITE.multiply_alpha(0.85), TextWeight::Regular, None);
+        draw_text(tr, scene, t, &format!("{} songs · {}", ids.len(), ui::format::timecode(total_s)), banner.x0 + 92.0, banner.y0 + 54.0, 14.0, Color::WHITE.multiply_alpha(0.85), TextWeight::Regular, None);
         // Play-all FAB.
         if !ids.is_empty() {
             let fab = Circle::new(Point::new(banner.x1 - 44.0, banner.center().y), 22.0);
@@ -2584,7 +2574,7 @@ impl MusicApp {
                         id: a.id.clone(),
                         name: a.name.clone(),
                         genre: if a.subscriber_count > 0 {
-                            format!("{} subscribers", human_count(a.subscriber_count))
+                            format!("{} subscribers", ui::format::compact_count(a.subscriber_count))
                         } else {
                             "Artist".into()
                         },
@@ -2699,7 +2689,7 @@ impl MusicApp {
                 id: a.id.clone(),
                 title: a.name.clone(),
                 subtitle: if a.subscriber_count > 0 {
-                    format!("Artist \u{00b7} {} subscribers", human_count(a.subscriber_count))
+                    format!("Artist \u{00b7} {} subscribers", ui::format::compact_count(a.subscriber_count))
                 } else {
                     "Artist".into()
                 },
@@ -3017,8 +3007,8 @@ impl MusicApp {
         let pos = self.playhead_ms.min(dur as f64).max(0.0);
         let frac = if dur > 0 { pos / dur as f64 } else { 0.0 };
         let bar_y = r.y0 + 64.0;
-        let elapsed = fmt_duration((pos / 1000.0) as u64);
-        let total = fmt_duration(dur / 1000);
+        let elapsed = ui::format::timecode((pos / 1000.0) as u64);
+        let total = ui::format::timecode(dur / 1000);
         let (ew, _) = tr.measure_weighted(&elapsed, 11.0, None, TextWeight::Regular);
         let bar_x0 = center.x0 + 48.0;
         let bar_x1 = center.x1 - 48.0;
