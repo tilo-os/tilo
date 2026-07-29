@@ -19,6 +19,7 @@ use vello::peniko::Color;
 use winit::event::{ElementState, KeyEvent, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
+use crate::color_compat::ColorCompat;
 use crate::icons::{self, Icon};
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
@@ -156,6 +157,26 @@ pub struct CommandEntry {
     /// When set, choosing this entry collects a free-text argument before it
     /// completes (see [`ArgumentSpec`]).
     pub argument: Option<ArgumentSpec>,
+    /// Section this row belongs to. Consecutive entries sharing a group
+    /// render under one header; the palette draws a header row whenever
+    /// the group changes. `None` → no header, the row joins whatever
+    /// section precedes it.
+    ///
+    /// Grouping is how a host classifies rows *structurally* instead of
+    /// smuggling a `[Files]` tag into [`Self::description`] — that tag
+    /// was debug output rendered as UI, repeated on every row, and it
+    /// made the subtitle unreadable.
+    pub group: Option<String>,
+    /// Total number of rows the host had for this entry's group before
+    /// any per-group cap. Read off the *first* entry of a group and
+    /// rendered next to the header, so a capped section still tells the
+    /// truth about how much it is hiding. `None` → show the painted
+    /// count.
+    pub group_total: Option<usize>,
+    /// Leading glyph for the row. Gives each result kind a visual
+    /// identity at a glance — the job the bracketed literal was doing
+    /// badly.
+    pub icon: Option<Icon>,
     pub on_select: Option<Arc<SelectFn>>,
 }
 
@@ -167,6 +188,7 @@ impl std::fmt::Debug for CommandEntry {
             .field("description", &self.description)
             .field("keybinding", &self.keybinding)
             .field("argument", &self.argument)
+            .field("group", &self.group)
             .field("on_select", &self.on_select.as_ref().map(|_| "<fn>"))
             .finish()
     }
@@ -180,6 +202,9 @@ impl CommandEntry {
             description: None,
             keybinding: None,
             argument: None,
+            group: None,
+            group_total: None,
+            icon: None,
             on_select: None,
         }
     }
@@ -187,6 +212,25 @@ impl CommandEntry {
     /// Attach a one-line description shown under the label (Commands mode).
     pub fn description(mut self, d: impl Into<String>) -> Self {
         self.description = Some(d.into());
+        self
+    }
+
+    /// Put this row in a named section. See [`Self::group`].
+    pub fn group(mut self, g: impl Into<String>) -> Self {
+        self.group = Some(g.into());
+        self
+    }
+
+    /// Declare how many rows the group actually has, when the host
+    /// capped how many it handed over. See [`Self::group_total`].
+    pub fn group_total(mut self, total: usize) -> Self {
+        self.group_total = Some(total);
+        self
+    }
+
+    /// Attach a leading glyph. See [`Self::icon`].
+    pub fn icon(mut self, icon: Icon) -> Self {
+        self.icon = Some(icon);
         self
     }
 
@@ -248,6 +292,34 @@ impl CommandEntry {
             .map(|d| fuzzy_score(query, d).is_some())
             .unwrap_or(false)
     }
+}
+
+/// Shorten `text` by eating its middle, keeping both ends readable.
+///
+/// The trailing-ellipsis case is [`TextRenderer::elide_to_width`]; this
+/// is the variant paths need, where the head (the root the user
+/// recognises) and the tail (the file's own folder) each carry more
+/// information than the middle does.
+fn elide_middle(tr: &mut TextRenderer, text: &str, size: f32, max_w: f64) -> String {
+    if max_w <= 0.0 || tr.measure(text, size, None).0 as f64 <= max_w {
+        return text.to_string();
+    }
+    let chars: Vec<char> = text.chars().collect();
+    let n = chars.len();
+    // Drop one character at a time from the middle, biased to keep the
+    // tail, until it fits.
+    for drop in 1..n {
+        let keep = n - drop;
+        let tail = (keep * 2) / 3;
+        let head = keep - tail;
+        let candidate: String = chars[..head].iter().collect::<String>()
+            + "\u{2026}"
+            + &chars[n - tail..].iter().collect::<String>();
+        if tr.measure(&candidate, size, None).0 as f64 <= max_w {
+            return candidate;
+        }
+    }
+    "\u{2026}".to_string()
 }
 
 /// Subsequence fuzzy score: `Some(match_count - gap_penalty)` when `query`
@@ -336,6 +408,31 @@ pub struct CommandPalette {
     /// reserved height so the palette rows draw immediately below the
     /// input row.
     hide_filter_strip: bool,
+    /// The host paints the filter band itself. The palette keeps the
+    /// band reserved in its own layout (so the host's chips land inside
+    /// the card, on the card's content inset) but draws nothing there.
+    ///
+    /// This is what replaced the shell's free-floating "Search in:"
+    /// banner above the card: the banner had its own inset arithmetic,
+    /// so its chips never lined up with the field below them, and the
+    /// two surfaces had to be stitched together with a third unified
+    /// background rect.
+    host_filter_strip: bool,
+    /// Visual row plan (headers + entries) rebuilt whenever the entry
+    /// set, query or filter changes. Every geometry accessor reads this
+    /// so hit-testing, scrolling and painting cannot disagree.
+    rows: Vec<VisualRow>,
+}
+
+/// One painted line in the result list: either a section header or an
+/// entry. Headers are not selectable and are skipped by the cursor.
+#[derive(Clone, Debug, PartialEq)]
+enum VisualRow {
+    /// Section label plus the number of rows the section stands for
+    /// (which may exceed the number painted when the host capped it).
+    Header { label: String, total: usize },
+    /// Index into `self.visible` — i.e. a cursor position.
+    Entry(usize),
 }
 
 impl Default for CommandPalette {
@@ -360,6 +457,8 @@ impl CommandPalette {
             outcome: None,
             bypass_fuzzy: false,
             hide_filter_strip: false,
+            host_filter_strip: false,
+            rows: Vec::new(),
         }
     }
 
@@ -450,15 +549,69 @@ impl CommandPalette {
     /// row count. Apps use this to centre the palette via [`set_rect`]; it
     /// matches the size [`build_layout`] requests from taffy.
     pub fn desired_size(&self) -> (f64, f64) {
-        let rows = self.visible.len().clamp(1, self.max_visible_rows()) as f64;
-        let height = PADDING * 2.0
-            + INPUT_HEIGHT
-            + PADDING
-            + self.filter_block()
-            + rows * self.row_height()
-            + PADDING
-            + FOOTER_HEIGHT;
+        // Size to the plan, not to a row count: headers and entries have
+        // different heights, so `rows * row_height` sized the card wrong
+        // the moment grouping landed. Clamped to the list budget so a
+        // 40-hit query doesn't grow a card taller than the screen.
+        let list = if self.rows.is_empty() {
+            // The zero-state is a composed block, not a row — sized to
+            // the row height it would print the empty-state text on top
+            // of its own footer.
+            EMPTY_STATE_HEIGHT
+        } else {
+            self.rows_height().clamp(self.row_height(), self.max_list_height())
+        };
+        let height =
+            PADDING * 2.0 + INPUT_HEIGHT + PADDING + self.filter_block() + list + PADDING + FOOTER_HEIGHT;
         (self.card_width(), height)
+    }
+
+    /// How many results the list stands for, counting what a host
+    /// capped away. Falls back to the painted row count when no host
+    /// declared group totals.
+    ///
+    /// The footer would otherwise contradict the section headers it
+    /// sits under — "7 results" beneath a section reading "40".
+    pub fn result_total(&self) -> usize {
+        if self.rows.iter().any(|r| matches!(r, VisualRow::Header { .. })) {
+            self.rows
+                .iter()
+                .map(|r| match r {
+                    VisualRow::Header { total, .. } => *total,
+                    VisualRow::Entry(_) => 0,
+                })
+                .sum()
+        } else {
+            self.visible.len()
+        }
+    }
+
+    /// Total height of every planned row, headers included.
+    fn rows_height(&self) -> f64 {
+        self.rows.iter().map(|r| self.visual_row_height(r)).sum()
+    }
+
+    /// Painted height of one planned row.
+    fn visual_row_height(&self, row: &VisualRow) -> f64 {
+        match row {
+            VisualRow::Header { .. } => HEADER_HEIGHT,
+            VisualRow::Entry(_) => self.row_height(),
+        }
+    }
+
+    /// Ceiling on the result list, so the card stays a card. Expressed
+    /// in rows rather than pixels so the cap tracks the row height, plus
+    /// room for the headers the plan actually has — reserving header
+    /// space unconditionally would let an ungrouped list paint a ninth
+    /// row into slack meant for something that isn't there.
+    fn max_list_height(&self) -> f64 {
+        let headers = self
+            .rows
+            .iter()
+            .filter(|r| matches!(r, VisualRow::Header { .. }))
+            .count()
+            .min(MAX_HEADERS_IN_VIEW);
+        self.max_visible_rows() as f64 * self.row_height() + headers as f64 * HEADER_HEIGHT
     }
 
     /// Height reserved for the filter strip + its trailing gap (Search only).
@@ -466,33 +619,34 @@ impl CommandPalette {
         if self.hide_filter_strip {
             return 0.0;
         }
+        // A host-painted strip still occupies the band — that is the
+        // whole point of reserving it here rather than letting the host
+        // invent its own rect outside the card.
+        if self.host_filter_strip {
+            return FILTER_STRIP_HEIGHT + PADDING;
+        }
         match self.mode {
             PaletteMode::Search => FILTER_STRIP_HEIGHT + PADDING,
             PaletteMode::Commands => 0.0,
         }
     }
 
-    /// Per-result-row height. Commands rows are taller to fit a
-    /// description; Search rows grow the same way when
-    /// `set_bypass_fuzzy(true)` is enabled AND at least one visible
-    /// entry carries a description — the provider-driven path pushes
-    /// subtitles like `[Files] ~/foo/bar` through `description`, so we
-    /// need the extra vertical room to render them.
+    /// Per-result-row height, uniform across the list.
+    ///
+    /// Two heights only — one line or two — chosen once for the whole
+    /// list rather than per row, because a list whose rows change height
+    /// from one entry to the next reads as ragged even when every row is
+    /// individually well-proportioned.
     fn row_height(&self) -> f64 {
-        let search_row = if self.bypass_fuzzy
-            && self.visible.iter().any(|&i| {
-                self.entries
-                    .get(i)
-                    .map(|e| e.description.is_some())
-                    .unwrap_or(false)
-            }) {
-            CMD_ROW_HEIGHT
-        } else {
-            ROW_HEIGHT
-        };
+        let any_subtitle = self.visible.iter().any(|&i| {
+            self.entries
+                .get(i)
+                .map(|e| e.description.is_some())
+                .unwrap_or(false)
+        });
         match self.mode {
-            PaletteMode::Search => search_row,
-            PaletteMode::Commands => CMD_ROW_HEIGHT,
+            PaletteMode::Search if !any_subtitle => ROW_HEIGHT,
+            _ => TWO_LINE_ROW_HEIGHT,
         }
     }
 
@@ -504,12 +658,11 @@ impl CommandPalette {
         }
     }
 
-    /// Max rows rendered before the list clips.
+    /// Max entry rows the card grows to before the list scrolls.
+    /// Section headers get their own allowance on top (see
+    /// [`Self::max_list_height`]).
     fn max_visible_rows(&self) -> usize {
-        match self.mode {
-            PaletteMode::Search => 10,
-            PaletteMode::Commands => 8,
-        }
+        8
     }
 
     /// Activate whatever row is currently highlighted, exactly as pressing
@@ -751,6 +904,25 @@ impl CommandPalette {
         self.hide_filter_strip = on;
     }
 
+    /// Keep the filter band reserved inside the card but paint nothing
+    /// into it — the host draws its own controls there via
+    /// [`Self::filter_strip_rect`]. See [`Self::host_filter_strip`].
+    pub fn set_host_filter_strip(&mut self, on: bool) {
+        self.host_filter_strip = on;
+        if on {
+            self.hide_filter_strip = false;
+        }
+    }
+
+    /// Left/right inset every band of the card shares — input field,
+    /// filter strip, rows and footer all start here. Hosts painting
+    /// into [`Self::filter_strip_rect`] read this instead of inventing
+    /// their own padding, which is what let the old banner's chips sit
+    /// misaligned with the field under them.
+    pub fn content_inset_px(&self) -> f64 {
+        PADDING
+    }
+
     pub fn set_query(&mut self, q: &str) {
         self.query = q.into();
         // Pin caret to end on programmatic set — preserves the legacy
@@ -820,40 +992,72 @@ impl CommandPalette {
             .map(|&i| self.entries[i].id.as_str())
     }
 
-    /// Index of the first visible entry actually painted, given the cursor and
-    /// the row cap. The list scrolls just enough to keep the highlighted row on
-    /// screen when there are more entries than fit.
-    fn first_visible_row(&self) -> usize {
-        let max = self.max_visible_rows();
-        if self.cursor >= max {
-            self.cursor + 1 - max
-        } else {
-            0
+    /// Position of `visible[entry_i]` in the visual row plan.
+    fn visual_index_of(&self, entry_i: usize) -> Option<usize> {
+        self.rows
+            .iter()
+            .position(|r| matches!(r, VisualRow::Entry(e) if *e == entry_i))
+    }
+
+    /// The half-open range of visual rows currently painted, scrolled
+    /// just far enough to keep the cursor's row inside the card.
+    ///
+    /// Computed from the plan rather than from a row count: with section
+    /// headers interleaved, "ten rows" is not a fixed number of pixels,
+    /// and the old count-based window is what let `draw` and `row_at`
+    /// disagree about which entry sat under the pointer.
+    fn painted_window(&self) -> (usize, usize) {
+        let budget = (self.footer_rect().y0 - PADDING - self.list_top_y()).max(0.0);
+        let target = self
+            .visual_index_of(self.cursor)
+            .unwrap_or(0);
+        let mut start = 0usize;
+        loop {
+            let mut used = 0.0;
+            let mut end = start;
+            while end < self.rows.len() {
+                let h = self.visual_row_height(&self.rows[end]);
+                if used + h > budget {
+                    break;
+                }
+                used += h;
+                end += 1;
+            }
+            if target < end || end >= self.rows.len() || start + 1 >= self.rows.len() {
+                // Never leave a section's rows stranded under a header
+                // that just scrolled away — pull the header back in.
+                if start > 0 && matches!(self.rows[start - 1], VisualRow::Header { .. }) {
+                    start -= 1;
+                }
+                return (start, end.max(start));
+            }
+            start += 1;
         }
     }
 
-    /// Rect of the `i`th *visible* row, in the same coordinate space as
+    /// Rect of the `i`th *visible* entry, in the same coordinate space as
     /// `get_rect()`. Returns `None` when the row is scrolled out of the
     /// currently painted window.
     pub fn row_rect(&self, i: usize) -> Option<Rect> {
         if i >= self.visible.len() {
             return None;
         }
-        let first = self.first_visible_row();
-        if i < first || i >= first + self.max_visible_rows() {
+        let target = self.visual_index_of(i)?;
+        let (start, end) = self.painted_window();
+        if target < start || target >= end {
             return None;
         }
-        let list_top = self.list_top_y();
-        let display = (i - first) as f64;
-        let y0 = list_top + display * self.row_height();
+        let mut y0 = self.list_top_y();
+        for r in &self.rows[start..target] {
+            y0 += self.visual_row_height(r);
+        }
         let y1 = y0 + self.row_height();
-        // The footer + its gap eat into the bottom of the card; cap at
-        // the start of the footer band rather than `rect.y1 - PADDING`.
-        let max_y = self.footer_rect().y0 - PADDING;
-        if y1 > max_y {
-            return None;
-        }
-        Some(Rect::new(self.rect.x0 + PADDING, y0, self.rect.x1 - PADDING, y1))
+        Some(Rect::new(
+            self.rect.x0 + PADDING,
+            y0,
+            self.rect.x1 - PADDING,
+            y1,
+        ))
     }
 
     /// Y coordinate where the result list begins (immediately under the
@@ -889,12 +1093,10 @@ impl CommandPalette {
     /// + input + trailing `⌘K` kbd pill.
     pub fn compute_input_layout(&self, row: Rect) -> InputRowLayout {
         const ICON_W: f64 = 24.0;
-        // Widened from 48 px so the Ctrl+K label doesn't clip. The
-        // concept's ⌘K glyph fit in 48; the qOS binding is Ctrl+K
-        // (Alt+Space as the nested-friendly alt) which is 6 characters.
-        const CHIP_W: f64 = 68.0;
+        // Wide enough for the 6-character `Ctrl+K` binding.
+        const CHIP_W: f64 = 56.0;
         const EDGE: f64 = 12.0;
-        const GAP: f64 = 12.0;
+        const GAP: f64 = 10.0;
         let cy = (row.y0 + row.y1) / 2.0;
         let icon_y0 = cy - ICON_W / 2.0;
         let icon_rect = Rect::new(
@@ -903,7 +1105,7 @@ impl CommandPalette {
             row.x0 + EDGE + ICON_W,
             icon_y0 + ICON_W,
         );
-        let chip_h = (row.height() - EDGE).max(20.0);
+        let chip_h = 20.0_f64.min(row.height() - 8.0).max(14.0);
         let chip_y0 = cy - chip_h / 2.0;
         let kbd_chip_rect = Rect::new(
             row.x1 - EDGE - CHIP_W,
@@ -911,6 +1113,9 @@ impl CommandPalette {
             row.x1 - EDGE,
             chip_y0 + chip_h,
         );
+        // The text slot runs between the two, *inside* the same field —
+        // the icon and the chip are ornaments on one control, not two
+        // more controls flanking a boxed input.
         let input_rect = Rect::new(
             icon_rect.x1 + GAP,
             row.y0,
@@ -1093,9 +1298,13 @@ impl CommandPalette {
         );
     }
 
-    /// Footer paint: `↑↓ Navigate / Enter Select` on the left and the
-    /// active scope label on the right, on top of a `bg-black/20` band
-    /// with a 1 px slate-700 top border.
+    /// Slim hint band at the bottom of the card: keyboard affordances on
+    /// the left, the result count on the right, separated from the list
+    /// by a hairline rather than by a filled band.
+    ///
+    /// The right slot used to repeat the active scope, which the scope
+    /// control two rows up already showed. A count is the thing the
+    /// chips cannot tell you.
     fn draw_footer(
         &self,
         scene: &mut Scene,
@@ -1103,62 +1312,60 @@ impl CommandPalette {
         text_renderer: &mut TextRenderer,
         theme: &Theme,
     ) {
+        let colors = &theme.tokens.colors;
         let footer = self.footer_rect();
-        // `bg-black/20` band — 20% black over the slate surface.
-        let band_body = Color::from_rgba8(0, 0, 0, 51);
-        scene.fill(
-            vello::peniko::Fill::NonZero,
-            transform,
-            band_body,
-            None,
-            &footer,
-        );
-        // 1 px top border (slate-700 ≈ `border_standard`).
-        let border = vello::kurbo::Line::new(
-            (footer.x0, footer.y0),
-            (footer.x1, footer.y0),
-        );
         scene.stroke(
             &Stroke::new(1.0),
             transform,
-            theme.tokens.colors.border_standard,
+            colors.border_standard.with_alpha_factor(0.6),
             None,
-            &border,
+            &vello::kurbo::Line::new(
+                Point::new(footer.x0 + 4.0, footer.y0),
+                Point::new(footer.x1 - 4.0, footer.y0),
+            ),
         );
 
-        let chip_text_size = (theme.tokens.typography.scale.sm - 2.0).max(9.0);
-        let chip_body = Color::from_rgba8(255, 255, 255, 13);  // white/5
-        let chip_border = Color::from_rgba8(255, 255, 255, 26);  // white/10
-        let dim = theme.tokens.colors.text_dim;
-        let chip_h = (footer.height() - 14.0).max(14.0);
+        let size = (theme.tokens.typography.scale.xs).max(9.0);
+        let dim = colors.text_dim;
         let cy = (footer.y0 + footer.y1) / 2.0;
+        let chip_h = (footer.height() - 12.0).max(13.0);
 
-        // Left cluster: kbd chip + label, repeated for ↑↓ / Enter.
-        let mut x = footer.x0 + 4.0;
-        for (key, label) in [("\u{2191}\u{2193}", "Navigate"), ("Enter", "Select")] {
-            let (kw, kh) = text_renderer.measure(key, chip_text_size, None);
-            let chip_w = kw as f64 + 10.0;
-            let chip_rect =
-                Rect::new(x, cy - chip_h / 2.0, x + chip_w, cy + chip_h / 2.0);
+        let mut x = footer.x0 + 6.0;
+        let hints: &[(&str, &str)] = match self.mode {
+            PaletteMode::Search => &[
+                ("\u{2191}\u{2193}", "Navigate"),
+                ("\u{21b5}", "Open"),
+                ("Esc", "Close"),
+            ],
+            PaletteMode::Commands => &[
+                ("\u{2191}\u{2193}", "Navigate"),
+                ("\u{21b5}", "Run"),
+                ("Esc", "Close"),
+            ],
+        };
+        for (key, label) in hints {
+            let (kw, kh) = text_renderer.measure(key, size, None);
+            let chip_w = (kw as f64 + 10.0).max(chip_h);
+            let chip_rect = Rect::new(x, cy - chip_h / 2.0, x + chip_w, cy + chip_h / 2.0);
             let chip_shape = RoundedRect::from_rect(chip_rect, 4.0);
             scene.fill(
                 vello::peniko::Fill::NonZero,
                 transform,
-                chip_body,
+                colors.surface_white_5,
                 None,
                 &chip_shape,
             );
             scene.stroke(
                 &Stroke::new(1.0),
                 transform,
-                chip_border,
+                colors.border_white_10,
                 None,
                 &chip_shape,
             );
             text_renderer.draw_text(
                 scene,
                 key,
-                chip_text_size,
+                size,
                 dim,
                 transform
                     * Affine::translate((
@@ -1168,11 +1375,11 @@ impl CommandPalette {
                 None,
             );
             x = chip_rect.x1 + 4.0;
-            let (lw, lh) = text_renderer.measure(label, chip_text_size, None);
+            let (lw, lh) = text_renderer.measure(label, size, None);
             text_renderer.draw_text(
                 scene,
                 label,
-                chip_text_size,
+                size,
                 dim,
                 transform * Affine::translate((x, cy - lh as f64 / 2.0)),
                 None,
@@ -1180,158 +1387,335 @@ impl CommandPalette {
             x += lw as f64 + 12.0;
         }
 
-        // Right-anchored label. Search shows the active scope; a command
-        // palette shows the dismiss hint instead (scope is meaningless here).
-        let right_label = match self.mode {
-            PaletteMode::Search => match self.search_filter.scope {
-                SearchScope::Workspace => "in Workspace",
-                SearchScope::All => "in All Workspaces",
-            },
-            PaletteMode::Commands => "Esc to close",
-        };
-        let (sw, sh) = text_renderer.measure(right_label, chip_text_size, None);
-        text_renderer.draw_text(
-            scene,
-            right_label,
-            chip_text_size,
-            dim,
-            transform * Affine::translate((
-                footer.x1 - sw as f64 - 4.0,
-                cy - sh as f64 / 2.0,
-            )),
-            None,
-        );
+        let n = self.result_total();
+        if n > 0 {
+            let right = if n == 1 {
+                "1 result".to_string()
+            } else {
+                format!("{n} results")
+            };
+            let (sw, sh) = text_renderer.measure(&right, size, None);
+            text_renderer.draw_text(
+                scene,
+                &right,
+                size,
+                dim,
+                transform
+                    * Affine::translate((footer.x1 - sw as f64 - 6.0, cy - sh as f64 / 2.0)),
+                None,
+            );
+        }
     }
 
-    /// Draw the [`PaletteMode::Commands`] result rows: a highlighted selection
-    /// row, each entry's label, a dimmed one-line description underneath, and
-    /// an optional right-aligned keybinding chip (or a `→` cue for entries that
-    /// take an argument).
-    fn draw_command_rows(
+    /// Paint the result list: a section header wherever the group
+    /// changes, then that group's rows.
+    ///
+    /// One renderer for both modes. Search mode used to have its own
+    /// copy that ignored the scroll window entirely, so pressing Down
+    /// past the tenth hit moved a selection nobody could see while
+    /// `row_at` reported a different row than the one under the cursor.
+    fn draw_result_rows(
         &self,
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        list_top: f64,
-        footer_top: f64,
     ) {
         let colors = &theme.tokens.colors;
-        let label_size = theme.tokens.typography.scale.base;
-        let desc_size = (theme.tokens.typography.scale.sm - 1.0).max(10.0);
+        let label_size = theme.tokens.typography.scale.sm;
+        let desc_size = (theme.tokens.typography.scale.xs).max(10.0);
+        let header_size = (theme.tokens.typography.scale.xs).max(9.0);
         let rh = self.row_height();
-        // Scroll the window so the highlighted row is always painted.
-        let first = self.first_visible_row();
-        let max_rows = self.max_visible_rows();
-        for (i, &entry_idx) in self.visible.iter().enumerate().skip(first).take(max_rows) {
-            let y0 = list_top + ((i - first) as f64) * rh;
-            let y1 = y0 + rh;
-            if y1 > footer_top - PADDING {
-                break;
-            }
-            let row = Rect::new(self.rect.x0 + PADDING, y0, self.rect.x1 - PADDING, y1);
-            let selected = i == self.cursor;
-            if selected {
-                // Concept selected row = fully indigo (accent[5]).
-                let highlight = RoundedRect::from_rect(row, theme.tokens.radii.sm as f64);
-                scene.fill(
-                    vello::peniko::Fill::NonZero,
-                    transform,
-                    colors.accent[5],
-                    None,
-                    &highlight,
-                );
-            }
-            let entry = &self.entries[entry_idx];
-            let has_desc = entry.description.is_some();
-            let lx = row.x0 + 12.0;
+        let x0 = self.rect.x0 + PADDING;
+        let x1 = self.rect.x1 - PADDING;
+        let (start, end) = self.painted_window();
+        let mut y = self.list_top_y();
 
-            // Label.
-            let label_y = if has_desc {
-                row.y0 + 8.0
+        for row in &self.rows[start..end] {
+            match row {
+                VisualRow::Header { label, total } => {
+                    let hy = y + (HEADER_HEIGHT - header_size as f64) / 2.0 + 2.0;
+                    let upper = label.to_uppercase();
+                    text_renderer.draw_text(
+                        scene,
+                        &upper,
+                        header_size,
+                        colors.text_dim,
+                        transform * Affine::translate((x0 + 12.0, hy)),
+                        None,
+                    );
+                    // Right-aligned count. A capped section says how
+                    // much it is holding back instead of silently
+                    // truncating.
+                    let count = total.to_string();
+                    let (cw, _) = text_renderer.measure(&count, header_size, None);
+                    text_renderer.draw_text(
+                        scene,
+                        &count,
+                        header_size,
+                        colors.text_dim,
+                        transform * Affine::translate((x1 - 12.0 - cw as f64, hy)),
+                        None,
+                    );
+                    y += HEADER_HEIGHT;
+                }
+                VisualRow::Entry(entry_i) => {
+                    let row_rect = Rect::new(x0, y, x1, y + rh);
+                    let selected = *entry_i == self.cursor;
+                    let entry = &self.entries[self.visible[*entry_i]];
+                    self.draw_one_row(
+                        scene,
+                        transform,
+                        text_renderer,
+                        theme,
+                        row_rect,
+                        entry,
+                        selected,
+                        label_size,
+                        desc_size,
+                    );
+                    y += rh;
+                }
+            }
+        }
+    }
+
+    /// One result row: selection body, leading kind glyph, title, and a
+    /// dimmed subtitle or right-aligned keybinding.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_one_row(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        row: Rect,
+        entry: &CommandEntry,
+        selected: bool,
+        label_size: f32,
+        desc_size: f32,
+    ) {
+        let colors = &theme.tokens.colors;
+        if selected {
+            // Selection has to survive a glance across a dense list. A
+            // near-invisible grey wash did not: it read as a rendering
+            // artefact rather than "Enter opens this". Accent body plus
+            // an accent rule down the leading edge.
+            let shape = RoundedRect::from_rect(row, theme.tokens.radii.md as f64);
+            scene.fill(
+                vello::peniko::Fill::NonZero,
+                transform,
+                colors.accent[5].with_alpha_factor(0.22),
+                None,
+                &shape,
+            );
+            scene.stroke(
+                &Stroke::new(1.0),
+                transform,
+                colors.accent[5].with_alpha_factor(0.55),
+                None,
+                &shape,
+            );
+            let bar = RoundedRect::from_rect(
+                Rect::new(row.x0 + 1.0, row.y0 + 6.0, row.x0 + 4.0, row.y1 - 6.0),
+                1.5,
+            );
+            scene.fill(
+                vello::peniko::Fill::NonZero,
+                transform,
+                colors.accent[5],
+                None,
+                &bar,
+            );
+        }
+
+        // Leading glyph. The kind is a picture, not a `[Files]` literal
+        // repeated down the left edge of every subtitle.
+        let mut text_x = row.x0 + 12.0;
+        if let Some(icon) = entry.icon {
+            let size = 16.0;
+            let cy = (row.y0 + row.y1) / 2.0;
+            let icon_rect = Rect::new(
+                row.x0 + 12.0,
+                cy - size / 2.0,
+                row.x0 + 12.0 + size,
+                cy + size / 2.0,
+            );
+            let tint = if selected {
+                colors.text_primary
             } else {
-                row.y0 + (row.height() - label_size as f64) / 2.0
+                colors.text_dim
+            };
+            icons::draw_icon(scene, transform, icon_rect, icon, tint, 1.5);
+            text_x = icon_rect.x1 + 10.0;
+        }
+
+        // Reserve the trailing keybinding chip before measuring the
+        // text, so a long title is ellipsised rather than painted under
+        // the chip.
+        let mut text_right = row.x1 - 12.0;
+        if let Some(kb) = &entry.keybinding {
+            let (kw, kh) = text_renderer.measure(kb, desc_size, None);
+            let chip_w = kw as f64 + 14.0;
+            let chip_h = kh as f64 + 8.0;
+            let cy = (row.y0 + row.y1) / 2.0;
+            let chip = Rect::new(
+                row.x1 - chip_w - 8.0,
+                cy - chip_h / 2.0,
+                row.x1 - 8.0,
+                cy + chip_h / 2.0,
+            );
+            let chip_shape = RoundedRect::from_rect(chip, 5.0);
+            scene.fill(
+                vello::peniko::Fill::NonZero,
+                transform,
+                colors.surface_white_5,
+                None,
+                &chip_shape,
+            );
+            scene.stroke(
+                &Stroke::new(1.0),
+                transform,
+                colors.border_white_10,
+                None,
+                &chip_shape,
+            );
+            text_renderer.draw_text(
+                scene,
+                kb,
+                desc_size,
+                colors.text_dim,
+                transform
+                    * Affine::translate((chip.x0 + 7.0, chip.center().y - kh as f64 / 2.0)),
+                None,
+            );
+            text_right = chip.x0 - 8.0;
+        } else if entry.argument.is_some() {
+            let cue = "\u{2192}"; // →
+            let (hw, hh) = text_renderer.measure(cue, label_size, None);
+            let color = if selected {
+                colors.text_primary
+            } else {
+                colors.text_dim
             };
             text_renderer.draw_text(
                 scene,
-                &entry.label,
+                cue,
                 label_size,
-                colors.text_primary,
-                transform * Affine::translate((lx, label_y)),
+                color,
+                transform
+                    * Affine::translate((
+                        row.x1 - hw as f64 - 14.0,
+                        (row.y0 + row.y1) / 2.0 - hh as f64 / 2.0,
+                    )),
                 None,
             );
+            text_right = row.x1 - hw as f64 - 22.0;
+        }
+        let avail = (text_right - text_x).max(0.0);
 
-            // Description (dimmed, second line).
-            if let Some(desc) = &entry.description {
-                let dy = row.y1 - desc_size as f64 - 9.0;
-                let desc_color = if selected {
-                    colors.text_primary
-                } else {
-                    colors.text_dim
-                };
+        match &entry.description {
+            Some(desc) => {
+                let label = text_renderer.elide_to_width(&entry.label, label_size, avail as f32);
+                // A path is most informative at its tail — the file's
+                // own folder — so it loses its middle, not its end.
+                let sub = elide_middle(text_renderer, desc, desc_size, avail);
+                let block = label_size as f64 + 3.0 + desc_size as f64;
+                let ly = row.y0 + (row.height() - block) / 2.0;
                 text_renderer.draw_text(
                     scene,
-                    desc,
+                    &label,
+                    label_size,
+                    colors.text_primary,
+                    transform * Affine::translate((text_x, ly)),
+                    None,
+                );
+                text_renderer.draw_text(
+                    scene,
+                    &sub,
                     desc_size,
-                    desc_color,
-                    transform * Affine::translate((lx, dy)),
+                    colors.text_dim,
+                    transform
+                        * Affine::translate((text_x, ly + label_size as f64 + 3.0)),
                     None,
                 );
             }
-
-            // Right-aligned keybinding chip, or an argument cue.
-            if let Some(kb) = &entry.keybinding {
-                let (kw, kh) = text_renderer.measure(kb, desc_size, None);
-                let chip_w = kw as f64 + 14.0;
-                let chip_h = kh as f64 + 8.0;
-                let cy = (row.y0 + row.y1) / 2.0;
-                let chip = Rect::new(
-                    row.x1 - chip_w - 6.0,
-                    cy - chip_h / 2.0,
-                    row.x1 - 6.0,
-                    cy + chip_h / 2.0,
-                );
-                let chip_shape = RoundedRect::from_rect(chip, 5.0);
-                scene.fill(
-                    vello::peniko::Fill::NonZero,
-                    transform,
-                    Color::from_rgba8(255, 255, 255, 13),
-                    None,
-                    &chip_shape,
-                );
-                scene.stroke(
-                    &Stroke::new(1.0),
-                    transform,
-                    Color::from_rgba8(255, 255, 255, 26),
-                    None,
-                    &chip_shape,
-                );
+            None => {
+                let label = text_renderer.elide_to_width(&entry.label, label_size, avail as f32);
+                let ly = row.y0 + (row.height() - label_size as f64) / 2.0;
                 text_renderer.draw_text(
                     scene,
-                    kb,
-                    desc_size,
-                    colors.text_dim,
-                    transform * Affine::translate((chip.x0 + 7.0, chip.center().y - kh as f64 / 2.0)),
-                    None,
-                );
-            } else if entry.argument.is_some() {
-                let cue = "\u{2192}"; // →
-                let (hw, hh) = text_renderer.measure(cue, label_size, None);
-                let color = if selected { colors.text_primary } else { colors.text_dim };
-                text_renderer.draw_text(
-                    scene,
-                    cue,
+                    &label,
                     label_size,
-                    color,
-                    transform
-                        * Affine::translate((
-                            row.x1 - hw as f64 - 14.0,
-                            (row.y0 + row.y1) / 2.0 - hh as f64 / 2.0,
-                        )),
+                    colors.text_primary,
+                    transform * Affine::translate((text_x, ly)),
                     None,
                 );
             }
         }
+    }
+
+    /// Composed zero-state for a query that matched nothing. Painted in
+    /// the list area so the card keeps its shape instead of collapsing
+    /// to a bare input with a footer stuck to it.
+    fn draw_empty_state(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        let colors = &theme.tokens.colors;
+        let top = self.list_top_y();
+        let bottom = self.footer_rect().y0 - PADDING;
+        if bottom <= top {
+            return;
+        }
+        let cx = (self.rect.x0 + self.rect.x1) / 2.0;
+        let cy = (top + bottom) / 2.0;
+        let icon_size = 24.0;
+        icons::draw_icon(
+            scene,
+            transform,
+            Rect::new(
+                cx - icon_size / 2.0,
+                cy - icon_size - 10.0,
+                cx + icon_size / 2.0,
+                cy - 10.0,
+            ),
+            Icon::Search,
+            colors.text_dim.with_alpha_factor(0.55),
+            1.5,
+        );
+        let title_size = theme.tokens.typography.scale.sm;
+        let title = if self.query.is_empty() {
+            "Nothing to show".to_string()
+        } else {
+            format!("No results for \u{201c}{}\u{201d}", self.query)
+        };
+        let title =
+            text_renderer.elide_to_width(&title, title_size, (self.rect.width() - 48.0) as f32);
+        let (tw, _) = text_renderer.measure(&title, title_size, None);
+        text_renderer.draw_text(
+            scene,
+            &title,
+            title_size,
+            colors.text_primary,
+            transform * Affine::translate((cx - tw as f64 / 2.0, cy)),
+            None,
+        );
+        let hint_size = (theme.tokens.typography.scale.xs).max(10.0);
+        let hint = "Try fewer words, or widen the scope";
+        let (hw, _) = text_renderer.measure(hint, hint_size, None);
+        text_renderer.draw_text(
+            scene,
+            hint,
+            hint_size,
+            colors.text_dim,
+            transform
+                * Affine::translate((cx - hw as f64 / 2.0, cy + title_size as f64 + 6.0)),
+            None,
+        );
     }
 
     fn rebuild(&mut self) {
@@ -1346,24 +1730,64 @@ impl CommandPalette {
         if self.cursor >= self.visible.len() {
             self.cursor = self.visible.len().saturating_sub(1);
         }
+        self.replan_rows();
+    }
+
+    /// Turn the visible entry list into the painted row plan: a header
+    /// wherever the group changes, then that group's entries.
+    fn replan_rows(&mut self) {
+        self.rows.clear();
+        let mut current: Option<&str> = None;
+        for (entry_i, &idx) in self.visible.iter().enumerate() {
+            let entry = &self.entries[idx];
+            if let Some(group) = entry.group.as_deref() {
+                if current != Some(group) {
+                    current = Some(group);
+                    // The host may have handed over fewer rows than the
+                    // group really has; show what it says, and fall back
+                    // to counting the contiguous run when it says nothing.
+                    let total = entry.group_total.unwrap_or_else(|| {
+                        self.visible[entry_i..]
+                            .iter()
+                            .take_while(|&&j| {
+                                self.entries[j].group.as_deref() == Some(group)
+                            })
+                            .count()
+                    });
+                    self.rows.push(VisualRow::Header {
+                        label: group.to_string(),
+                        total,
+                    });
+                }
+            }
+            self.rows.push(VisualRow::Entry(entry_i));
+        }
     }
 }
 
+/// Single-line result row.
 const ROW_HEIGHT: f64 = 32.0;
-/// Taller result row in [`PaletteMode::Commands`] — fits a label plus a
-/// dimmed one-line description underneath.
-const CMD_ROW_HEIGHT: f64 = 50.0;
+/// Row carrying a label plus a dimmed subtitle underneath. Tightened
+/// from 50 px: at 50 the two lines floated in the middle of a band far
+/// taller than the text, which is what made a ten-hit list fill most of
+/// the screen.
+const TWO_LINE_ROW_HEIGHT: f64 = 42.0;
+/// Section header row — the group name plus its count.
+const HEADER_HEIGHT: f64 = 24.0;
+/// How many section headers the card grows to accommodate before the
+/// list starts scrolling instead.
+const MAX_HEADERS_IN_VIEW: usize = 3;
+/// Vertical room the composed zero-state needs: glyph, headline, hint.
+const EMPTY_STATE_HEIGHT: f64 = 104.0;
 const SEARCH_CARD_WIDTH: f64 = 360.0;
 /// Command palettes are wider so descriptions read on one line.
 const CMD_CARD_WIDTH: f64 = 480.0;
-const INPUT_HEIGHT: f64 = 36.0;
+const INPUT_HEIGHT: f64 = 40.0;
 const PADDING: f64 = 8.0;
-/// Concept `GlobalSearch.tsx:184` — a `py-2` strip (≈ 40 px) wrapping
-/// the chip row.
-const FILTER_STRIP_HEIGHT: f64 = 40.0;
-/// Concept `GlobalSearch.tsx:274-280` — a `p-3` band (≈ 36 px) holding
-/// the kbd-chip hints + scope label.
-const FOOTER_HEIGHT: f64 = 36.0;
+/// Band under the input row holding the filter controls.
+const FILTER_STRIP_HEIGHT: f64 = 36.0;
+/// Slim hint band at the bottom of the card.
+const FOOTER_HEIGHT: f64 = 28.0;
 
 impl Widget for CommandPalette {
     fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
@@ -1412,112 +1836,105 @@ impl Widget for CommandPalette {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
-        // Popover-shaped surface with a soft border. Concept's
-        // `rounded-3xl` (= 24 px) lives in [`surface_radius_px`] so the
-        // value is pinned by the radius test and reused here.
+        let colors = &theme.tokens.colors;
         let shape = RoundedRect::from_rect(self.rect, self.surface_radius_px());
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
-            theme.tokens.colors.surfaces.raised,
+            colors.surfaces.raised,
             None,
             &shape,
         );
         scene.stroke(
             &Stroke::new(1.0),
             transform,
-            theme.tokens.colors.border_standard,
+            colors.border_standard,
             None,
             &shape,
         );
 
-        // Split the prompt row into leading-icon / input / trailing
-        // kbd-chip slots — concept `GlobalSearch.tsx:138-153`.
+        // ONE control for the query. The magnifier and the Ctrl+K chip
+        // live inside this field's rounded body; previously the field
+        // was a hard-outlined box with the icon floating to its left and
+        // the chip floating to its right, which read as three separate
+        // widgets that happened to be adjacent.
         let row_rect = self.input_row_rect();
         let layout = self.compute_input_layout(row_rect);
-        let input_shape =
-            RoundedRect::from_rect(layout.input_rect, theme.tokens.radii.sm as f64);
+        let field_shape =
+            RoundedRect::from_rect(row_rect, theme.tokens.radii.lg as f64);
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
-            theme.tokens.colors.surfaces.base,
+            colors.surfaces.base,
             None,
-            &input_shape,
+            &field_shape,
         );
-        let border_color = if self.is_focused {
-            theme.tokens.colors.border_focus
+        // Focus reads as the OS accent at low weight rather than a
+        // 2 px form-field blue. This is the palette's only input and it
+        // is focused the entire time the palette is open, so a loud ring
+        // is permanent noise rather than information — the field's own
+        // darker fill is what says "type here".
+        let (ring, ring_w) = if self.is_focused {
+            (colors.accent[5].with_alpha_factor(0.45), 1.0)
         } else {
-            theme.tokens.colors.border_standard
+            (colors.border_standard, 1.0)
         };
-        scene.stroke(
-            &Stroke::new(if self.is_focused { 2.0 } else { 1.0 }),
-            transform,
-            border_color,
-            None,
-            &input_shape,
-        );
+        scene.stroke(&Stroke::new(ring_w), transform, ring, None, &field_shape);
 
-        // Leading lucide `Search` glyph (slate-400 = `text_dim`). Drawn
-        // unconditionally whenever the palette is open — concept never
-        // hover-gates this affordance.
+        // The glyph sits inside its reserved slot rather than filling
+        // it — a magnifier drawn edge to edge in a 24 px box reads as an
+        // icon button next to the field instead of part of it.
         icons::draw_icon(
             scene,
             transform,
-            layout.icon_rect,
+            layout.icon_rect.inflate(-3.5, -3.5),
             Icon::Search,
-            theme.tokens.colors.text_dim,
+            colors.text_dim,
             1.5,
         );
 
-        // Trailing `⌘K` kbd chip — `bg-white/5 border border-white/10
-        // text-slate-300 font-mono rounded-md`. Body fill + border
-        // stroke + small mono label.
-        let chip_shape = RoundedRect::from_rect(layout.kbd_chip_rect, 6.0);
-        // Concept: `bg-white/5 border border-white/10` — semi-transparent
-        // white at 5% / 10% opacity over the slate-900 surface tint.
-        let chip_body = Color::from_rgba8(255, 255, 255, 13);
-        let chip_border = Color::from_rgba8(255, 255, 255, 26);
+        // Trailing kbd chip, inside the field.
+        let chip_shape = RoundedRect::from_rect(layout.kbd_chip_rect, 5.0);
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
-            chip_body,
+            colors.surface_white_5,
             None,
             &chip_shape,
         );
         scene.stroke(
             &Stroke::new(1.0),
             transform,
-            chip_border,
+            colors.border_white_10,
             None,
             &chip_shape,
         );
-        // qOS binds Ctrl+K (and Alt+Space as the nested-friendly
-        // Super substitute — see shell::overlay_host::open_palette_
-        // with_scope). Show the Ctrl form since the palette lives
-        // atop a Linux compositor, not macOS.
         let chip_text = "Ctrl+K";
-        let chip_text_size = (theme.tokens.typography.scale.sm - 1.0).max(10.0);
+        let chip_text_size = (theme.tokens.typography.scale.xs).max(9.0);
         let (cw, ch) = text_renderer.measure(chip_text, chip_text_size, None);
-        let chip_text_x = (layout.kbd_chip_rect.x0 + layout.kbd_chip_rect.x1) / 2.0
-            - cw as f64 / 2.0;
-        let chip_text_y = (layout.kbd_chip_rect.y0 + layout.kbd_chip_rect.y1) / 2.0
-            - ch as f64 / 2.0;
         text_renderer.draw_text(
             scene,
             chip_text,
             chip_text_size,
-            theme.tokens.colors.text_dim,
-            transform * Affine::translate((chip_text_x, chip_text_y)),
+            colors.text_dim,
+            transform
+                * Affine::translate((
+                    (layout.kbd_chip_rect.x0 + layout.kbd_chip_rect.x1) / 2.0
+                        - cw as f64 / 2.0,
+                    (layout.kbd_chip_rect.y0 + layout.kbd_chip_rect.y1) / 2.0
+                        - ch as f64 / 2.0,
+                )),
             None,
         );
 
-        // Prompt text inside the input slot. While collecting an argument the
-        // slot shows the entry's prompt (dim) followed by the editable buffer
-        // (or its placeholder); otherwise the search query / placeholder.
-        let text_size = theme.tokens.typography.scale.sm;
-        let text_y = layout.input_rect.y0
-            + (layout.input_rect.height() - text_size as f64) / 2.0;
-        let mut tx = layout.input_rect.x0 + 8.0;
+        // Query text inside the field. While collecting an argument the
+        // slot shows the entry's prompt (dim) followed by the editable
+        // buffer (or its placeholder).
+        let text_size = theme.tokens.typography.scale.base;
+        let text_y =
+            layout.input_rect.y0 + (layout.input_rect.height() - text_size as f64) / 2.0;
+        let mut tx = layout.input_rect.x0;
+        let avail = layout.input_rect.width();
         if let Some(arg) = &self.arg_state {
             if !arg.prompt.is_empty() {
                 let heading = format!("{}:  ", arg.prompt);
@@ -1525,7 +1942,7 @@ impl Widget for CommandPalette {
                     scene,
                     &heading,
                     text_size,
-                    theme.tokens.colors.text_dim,
+                    colors.text_dim,
                     transform * Affine::translate((tx, text_y)),
                     None,
                 );
@@ -1533,28 +1950,29 @@ impl Widget for CommandPalette {
                 tx += hw as f64;
             }
             let (body, color) = if arg.buffer.is_empty() {
-                (arg.placeholder.as_str(), theme.tokens.colors.text_dim)
+                (arg.placeholder.as_str(), colors.text_dim)
             } else {
-                (arg.buffer.as_str(), theme.tokens.colors.text_primary)
+                (arg.buffer.as_str(), colors.text_primary)
             };
+            let body = text_renderer.elide_to_width(body, text_size, (layout.input_rect.x1 - tx) as f32);
             text_renderer.draw_text(
                 scene,
-                body,
+                &body,
                 text_size,
                 color,
                 transform * Affine::translate((tx, text_y)),
                 None,
             );
         } else {
-            let display = if self.query.is_empty() { "Search\u{2026}" } else { &self.query };
-            let text_color = if self.query.is_empty() {
-                theme.tokens.colors.text_dim
+            let (display, text_color) = if self.query.is_empty() {
+                ("Search\u{2026}".to_string(), colors.text_dim)
             } else {
-                theme.tokens.colors.text_primary
+                (self.query.clone(), colors.text_primary)
             };
+            let display = text_renderer.elide_to_width(&display, text_size, avail as f32);
             text_renderer.draw_text(
                 scene,
-                display,
+                &display,
                 text_size,
                 text_color,
                 transform * Affine::translate((tx, text_y)),
@@ -1562,85 +1980,24 @@ impl Widget for CommandPalette {
             );
         }
 
-        // Filter strip (Search only) — scope chips, filetype chips, full-text
-        // toggle. Suppressed when a provider host is rendering its own chip
-        // strip above the palette (see `set_hide_filter_strip`).
-        if self.mode == PaletteMode::Search && !self.hide_filter_strip {
+        // Filter strip. Skipped entirely when the host paints its own
+        // controls into the reserved band.
+        if self.mode == PaletteMode::Search
+            && !self.hide_filter_strip
+            && !self.host_filter_strip
+        {
             self.draw_filter_strip(scene, transform, text_renderer, theme);
         }
 
-        // Vertical list of visible entries.
-        let list_top = self.list_top_y();
-        let footer_top = self.footer_rect().y0;
-        match self.mode {
-            PaletteMode::Commands => {
-                self.draw_command_rows(scene, transform, text_renderer, theme, list_top, footer_top);
-            }
-            PaletteMode::Search => {
-                let row_h = self.row_height();
-                for (i, &entry_idx) in self.visible.iter().enumerate() {
-                    let y0 = list_top + (i as f64) * row_h;
-                    let y1 = y0 + row_h;
-                    if y1 > footer_top - PADDING {
-                        break;
-                    }
-                    let entry_rect =
-                        Rect::new(self.rect.x0 + PADDING, y0, self.rect.x1 - PADDING, y1);
-                    if i == self.cursor {
-                        let highlight =
-                            RoundedRect::from_rect(entry_rect, theme.tokens.radii.sm as f64);
-                        scene.fill(
-                            vello::peniko::Fill::NonZero,
-                            transform,
-                            theme.tokens.colors.neutral[4],
-                            None,
-                            &highlight,
-                        );
-                    }
-                    let entry = &self.entries[entry_idx];
-                    let label = &entry.label;
-                    let desc = entry.description.as_deref();
-                    // Two-line layout when a description is present so
-                    // provider hosts can surface a subtitle (kind label
-                    // + path snippet + ...) without switching modes.
-                    if let Some(desc) = desc {
-                        let label_y = entry_rect.y0 + 6.0;
-                        let desc_y = label_y + text_size as f64 + 4.0;
-                        text_renderer.draw_text(
-                            scene,
-                            label,
-                            text_size,
-                            theme.tokens.colors.text_primary,
-                            transform * Affine::translate((entry_rect.x0 + 8.0, label_y)),
-                            None,
-                        );
-                        text_renderer.draw_text(
-                            scene,
-                            desc,
-                            text_size - 2.0,
-                            theme.tokens.colors.text_dim,
-                            transform * Affine::translate((entry_rect.x0 + 8.0, desc_y)),
-                            None,
-                        );
-                    } else {
-                        let label_y = entry_rect.y0 + (entry_rect.height() - text_size as f64) / 2.0;
-                        text_renderer.draw_text(
-                            scene,
-                            label,
-                            text_size,
-                            theme.tokens.colors.text_primary,
-                            transform * Affine::translate((entry_rect.x0 + 8.0, label_y)),
-                            None,
-                        );
-                    }
-                }
-            }
+        if self.visible.is_empty() {
+            self.draw_empty_state(scene, transform, text_renderer, theme);
+        } else {
+            self.draw_result_rows(scene, transform, text_renderer, theme);
         }
 
-        // Footer band: kbd-chip hints on the left + scope label on the
-        // right. Concept `GlobalSearch.tsx:274-280`.
         self.draw_footer(scene, transform, text_renderer, theme);
     }
+
 
     fn handle_event(
         &mut self,
@@ -2431,7 +2788,7 @@ mod tests {
         let cmd = seeded_command_palette();
         let (cw, _) = cmd.desired_size();
         assert_eq!(cw, CMD_CARD_WIDTH);
-        assert_eq!(cmd.row_height(), CMD_ROW_HEIGHT);
+        assert_eq!(cmd.row_height(), TWO_LINE_ROW_HEIGHT);
         assert_eq!(cmd.filter_block(), 0.0, "no filter strip in command mode");
 
         let search = CommandPalette::new();
@@ -2461,6 +2818,172 @@ mod tests {
         p.set_cursor(19);
         assert!(p.row_rect(19).is_some(), "highlighted last row stays visible");
         assert!(p.row_rect(0).is_none(), "the top row scrolled out of view");
+    }
+
+    /// A grouped result set plans one header per group, in the order the
+    /// entries arrived, and never splits a group.
+    #[test]
+    fn grouped_entries_plan_one_header_per_section() {
+        let mut p = CommandPalette::new();
+        p.set_bypass_fuzzy(true);
+        p.set_entries(vec![
+            CommandEntry::new("a", "Open Calculator").group("Applications"),
+            CommandEntry::new("b", "calc.rs").group("Files"),
+            CommandEntry::new("c", "calculator.rs").group("Files"),
+        ]);
+        let headers: Vec<&str> = p
+            .rows
+            .iter()
+            .filter_map(|r| match r {
+                VisualRow::Header { label, .. } => Some(label.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(headers, vec!["Applications", "Files"]);
+        assert_eq!(
+            p.rows.len(),
+            5,
+            "two headers plus three entries: {:?}",
+            p.rows
+        );
+    }
+
+    /// A header reports the group's real size, not the number of rows
+    /// the host handed over, so a trimmed section says what it is
+    /// hiding — and the footer agrees with it.
+    #[test]
+    fn a_trimmed_section_reports_its_untrimmed_count() {
+        let mut p = CommandPalette::new();
+        p.set_bypass_fuzzy(true);
+        p.set_entries(vec![
+            CommandEntry::new("a", "one").group("Files").group_total(40),
+            CommandEntry::new("b", "two").group("Files").group_total(40),
+        ]);
+        match &p.rows[0] {
+            VisualRow::Header { label, total } => {
+                assert_eq!(label, "Files");
+                assert_eq!(*total, 40);
+            }
+            other => panic!("expected a header, got {other:?}"),
+        }
+        assert_eq!(
+            p.result_total(),
+            40,
+            "the footer count must not contradict the section header"
+        );
+    }
+
+    /// Painting and hit-testing must agree about which row is where,
+    /// including once the list has scrolled. Search mode used to paint
+    /// from entry 0 while `row_rect`/`row_at` scrolled with the cursor,
+    /// so past the visible cap a click landed on a different result than
+    /// the one under the pointer.
+    #[test]
+    fn a_scrolled_list_hit_tests_the_row_it_painted() {
+        let mut p = CommandPalette::new();
+        p.set_bypass_fuzzy(true);
+        p.set_entries(
+            (0..30)
+                .map(|i| {
+                    CommandEntry::new(format!("id{i}"), format!("Result {i}"))
+                        .description(format!("~/path/to/{i}"))
+                        .group("Files")
+                })
+                .collect(),
+        );
+        let (w, h) = p.desired_size();
+        p.set_rect(Rect::new(0.0, 0.0, w, h));
+
+        // Scroll to the end.
+        p.set_cursor(29);
+        let painted: Vec<usize> = (0..30).filter(|&i| p.row_rect(i).is_some()).collect();
+        assert!(
+            painted.contains(&29),
+            "the cursor's row must be painted: {painted:?}"
+        );
+        assert!(
+            !painted.contains(&0),
+            "row 0 must have scrolled off: {painted:?}"
+        );
+        // Every painted row answers `row_at` at its own centre, and with
+        // its own index.
+        for i in painted {
+            let r = p.row_rect(i).expect("painted");
+            assert_eq!(
+                p.row_at(r.center()),
+                Some(i),
+                "row {i} painted at {r:?} but hit-tests as {:?}",
+                p.row_at(r.center())
+            );
+        }
+    }
+
+    /// Rows and headers never spill past the footer.
+    #[test]
+    fn no_painted_row_overlaps_the_footer() {
+        let mut p = CommandPalette::new();
+        p.set_bypass_fuzzy(true);
+        p.set_entries(
+            (0..40)
+                .map(|i| {
+                    CommandEntry::new(format!("id{i}"), format!("Result {i}"))
+                        .description("sub")
+                        .group(if i < 3 { "Actions" } else { "Files" })
+                })
+                .collect(),
+        );
+        let (w, h) = p.desired_size();
+        p.set_rect(Rect::new(0.0, 0.0, w, h));
+        let footer_top = p.footer_rect().y0;
+        for i in 0..40 {
+            if let Some(r) = p.row_rect(i) {
+                assert!(
+                    r.y1 <= footer_top,
+                    "row {i} at {r:?} runs into the footer at {footer_top}"
+                );
+                assert!(r.y0 >= p.list_top_y() - 0.01, "row {i} starts above the list");
+            }
+        }
+    }
+
+    /// The zero-state gets real vertical room. Sized off the row height
+    /// it printed its own hint on top of the footer.
+    #[test]
+    fn an_empty_result_set_still_gets_a_readable_card() {
+        let mut p = CommandPalette::new();
+        p.set_bypass_fuzzy(true);
+        p.set_query("nothing matches this");
+        p.set_entries(vec![]);
+        let (_, h) = p.desired_size();
+        p.set_rect(Rect::new(0.0, 0.0, 640.0, h));
+        let room = p.footer_rect().y0 - p.list_top_y();
+        assert!(
+            room >= EMPTY_STATE_HEIGHT - 1.0,
+            "the zero-state needs {EMPTY_STATE_HEIGHT} px of list area, got {room}"
+        );
+    }
+
+    /// A host that paints its own filter controls still gets the band
+    /// reserved inside the card, on the card's own inset — that is what
+    /// keeps its chips aligned with the field above and the rows below.
+    #[test]
+    fn a_host_filter_strip_is_reserved_on_the_cards_inset() {
+        let mut p = CommandPalette::new();
+        p.set_host_filter_strip(true);
+        p.set_rect(Rect::new(0.0, 0.0, 640.0, 400.0));
+        let band = p.filter_strip_rect();
+        let field = p.input_row_rect();
+        assert_eq!(
+            band.x0, field.x0,
+            "the host band must share the field's left edge"
+        );
+        assert_eq!(band.x1, field.x1);
+        assert_eq!(band.x0, p.rect.x0 + p.content_inset_px());
+        assert!(band.y0 >= field.y1, "the band sits under the field");
+        assert!(
+            p.list_top_y() >= band.y1,
+            "rows start below the band, not behind it"
+        );
     }
 
     /// Helper: dispatch one event and surface whether the palette consumed it.

@@ -144,6 +144,71 @@ impl Toolbar {
             .count()
     }
 
+    /// Axis extent one item occupies: a button's label plus padding, a
+    /// separator's hairline plus its surrounding air, and zero for a
+    /// spacer (which is sized from the residual, not measured).
+    ///
+    /// Uses the same `APPROX_CHAR_W` heuristic the module header
+    /// describes, so the pass stays GPU-free and `build_layout` — which
+    /// gets no `TextRenderer` — can call it.
+    fn measure_item_axis(&self, item: &ToolbarItem, theme: &Theme) -> f64 {
+        match item {
+            ToolbarItem::Spacer => 0.0,
+            ToolbarItem::Separator => SEPARATOR_LINE_PX + 2.0 * theme.tokens.spacing.s2 as f64,
+            ToolbarItem::Button { label, .. } => {
+                let pad = 2.0 * theme.tokens.spacing.s3 as f64;
+                let text_axis = match self.orientation {
+                    Orientation::Horizontal => label.chars().count() as f64 * APPROX_CHAR_W,
+                    Orientation::Vertical => theme.tokens.typography.scale.sm as f64,
+                };
+                (text_axis + pad).max(theme.tokens.spacing.s8 as f64)
+            }
+        }
+    }
+
+    /// Decide how many leading items fit inside `axis_extent`, writing
+    /// [`Self::visible_count`] (and therefore [`Self::has_overflow`]).
+    ///
+    /// Greedy from the leading edge: take items while they fit. The
+    /// moment one doesn't, the trailing edge has to give up
+    /// [`OVERFLOW_CHIP_AXIS_PX`] to the `…` chip, so the fit is
+    /// re-checked against the smaller budget — otherwise the last item
+    /// admitted would sit underneath the chip.
+    ///
+    /// Spacers measure zero and are always admitted; they soak the
+    /// residual in `apply_layout`.
+    pub fn recompute_visible(&mut self, axis_extent: f64, theme: &Theme) {
+        if self.items.is_empty() {
+            self.visible_count = 0;
+            return;
+        }
+        let extents: Vec<f64> = self
+            .items
+            .iter()
+            .map(|it| self.measure_item_axis(it, theme))
+            .collect();
+        let total: f64 = extents.iter().sum();
+        if total <= axis_extent {
+            self.visible_count = self.items.len();
+            return;
+        }
+        let budget = (axis_extent - OVERFLOW_CHIP_AXIS_PX).max(0.0);
+        let mut used = 0.0;
+        let mut n = 0usize;
+        for e in &extents {
+            if used + e > budget {
+                break;
+            }
+            used += e;
+            n += 1;
+        }
+        // Collapsing everything leaves a toolbar that is only a `…`
+        // chip. That is the honest answer for a genuinely tiny strip,
+        // but never collapse when the items would have fit without the
+        // chip's own reservation.
+        self.visible_count = n.min(self.items.len().saturating_sub(1));
+    }
+
     /// True while the overflow popover is open. (The popover itself is
     /// not painted by this widget — `WindowGroup`-style hosts paint it
     /// in a later pass.)
@@ -180,13 +245,20 @@ impl Widget for Toolbar {
             })
             .unwrap();
         node_map.insert(node, self as *mut dyn Widget);
-        // Optimistic visibility default — assume every item fits until
-        // a caller drives `recompute_visible` with a real axis budget
-        // (event handling does this when the available width shrinks).
-        // Without this, apply_layout's placement loop iterates 0 items
-        // and the toolbar paints empty even on a freshly-constructed
-        // widget with no overflow pressure.
-        if self.visible_count == 0 {
+        // Measure against whatever axis extent the last layout gave us.
+        // On the very first pass `self.rect` is empty, so fall back to
+        // "everything fits" rather than collapsing the whole strip into
+        // an overflow chip before the toolbar has ever been sized.
+        let axis_extent = match self.orientation {
+            Orientation::Horizontal => self.rect.width(),
+            Orientation::Vertical => self.rect.height(),
+        };
+        if axis_extent > 0.0 {
+            self.recompute_visible(axis_extent, theme);
+        } else if self.visible_count == 0 {
+            // Never laid out and nobody has measured for us: assume
+            // everything fits rather than collapsing the whole strip
+            // into an overflow chip before it has ever been sized.
             self.visible_count = self.items.len();
         }
         node
