@@ -17,25 +17,25 @@ ui = { path = "../../ui" }
 registry-types = { path = "../../crates/packaging/registry-types" }
 runtime = { path = "../../crates/runtime/runtime" }
 runtime-portal = { path = "../../crates/runtime/runtime-portal" }
-automerge = "0.8.0"
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-toml = "0.8"
-uuid = { version = "1.23.1", features = ["v4", "serde"] }
-dirs = "6.0.0"
-tracing = "0.1"
-tracing-subscriber = "0.3"
-vello = "0.9"
-winit = "0.30.13"
-taffy = "0.10.1"
-anyhow = "1.0"
-thiserror = "1"
-hex = "0.4"
-ed25519-dalek = "2"
-reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+automerge.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+uuid.workspace = true
+dirs.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+vello.workspace = true
+winit.workspace = true
+taffy.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+hex.workspace = true
+ed25519-dalek.workspace = true
+reqwest = { workspace = true, features = ["blocking", "json", "rustls-tls"] }
 # Explicit rustls provider — the tree carries both ring + aws-lc-rs and
 # rustls 0.23 won't auto-disambiguate. Matches the sibling maps / feeds apps.
-rustls = { version = "0.23", default-features = false, features = ["ring"] }
+rustls.workspace = true
 
 [dev-dependencies]
-tempfile = "3"
+tempfile.workspace = true
