@@ -1,4 +1,6 @@
-use ui::animation::{Spring, Tween, Ease};
+use std::time::{Duration, Instant};
+
+use ui::animation::{Animated, Curve, Spring};
 use ui::tokens::SpringParams;
 
 #[test]
@@ -20,10 +22,12 @@ fn spring_settled_after_convergence() {
 
 #[test]
 fn tween_interpolates_linearly() {
-    let mut t = Tween::new(0.0, 100.0, 1.0, Ease::Linear);
-    t.advance(0.5);
-    assert!((t.value() - 50.0).abs() < 0.01);
-    t.advance(0.5);
-    assert!(t.done());
-    assert!((t.value() - 100.0).abs() < 0.01);
+    // `Tween`/`Ease` became `Animated`/`Curve`, which are driven by a clock
+    // rather than by `advance(dt)` — so the start instant is pinned and time is
+    // supplied, instead of stepped.
+    let start = Instant::now();
+    let t = Animated::starting_at(0.0f32, 100.0f32, start, Duration::from_secs(1), Curve::Linear);
+    assert!((t.current(start + Duration::from_millis(500)) - 50.0).abs() < 0.01);
+    assert!(t.done(start + Duration::from_secs(1)));
+    assert!((t.current(start + Duration::from_secs(1)) - 100.0).abs() < 0.01);
 }
