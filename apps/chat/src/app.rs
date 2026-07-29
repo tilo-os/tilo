@@ -30,7 +30,7 @@ use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::VideoPlayer;
+use ui::widget::{TextInput, VideoPlayer};
 
 use crate::call::{CallState, OverlayDrag, SoundEngine};
 use crate::doc::ChatDoc;
@@ -232,13 +232,30 @@ pub struct ChatApp {
     /// Voice membership per channel in the active workspace (cached from the
     /// CRDT each reload so the sidebar can show presence without re-reading).
     pub(crate) voice_members: HashMap<Id, Vec<crate::model::VoiceMember>>,
+    /// Cached plain text of the focused drafts, mirrored from the composer
+    /// widgets each `reload`. Kept only so the composer's auto-grow height
+    /// (`composer_height`) and the tests can read the draft without reaching
+    /// into the widget; the editable source of truth is the `TextInput`.
     pub(crate) draft_main: String,
     pub(crate) draft_thread: String,
+
+    /// The message composers — shared multiline [`TextInput`]s (Enter sends,
+    /// Shift+Enter inserts a newline) so the composer gets real caret,
+    /// selection, clipboard (Ctrl+C/V/X), focus ring, a11y, and theming for
+    /// free instead of a hand-rolled `String` + caret index. One per surface:
+    /// the main timeline and the open thread. Both are local-mode; each
+    /// keystroke is written back into the per-channel/thread draft `Text` in
+    /// the CRDT (diff-spliced) so a draft stays collaborative + persistent.
+    pub(crate) composer_main: TextInput,
+    pub(crate) composer_thread: TextInput,
 
     // Per-peer view state.
     pub(crate) active_ws: Id,
     pub(crate) active_channel: Id,
     pub(crate) focus: Focus,
+    /// Caret index for the in-memory inline editors only — the message-edit
+    /// working text (`editing`) and the inline rename (`rename`). The
+    /// composers own their own caret inside their `TextInput`.
     pub(crate) caret: usize,
     pub(crate) scroll: f64,
     pub(crate) thread_open: Option<Id>,
@@ -307,6 +324,10 @@ pub struct ChatApp {
     /// `--shots` only: seed the real minimal starter instead of the demo, so
     /// the honest first-run empty state can be captured.
     shot_starter: bool,
+    /// `--shots` only: a draft to stage into the main composer so a screenshot
+    /// can show the composer mid-compose (caret + wrapped text). `None` in every
+    /// live/interactive path, so production is unaffected.
+    shot_composer_draft: Option<String>,
     /// True for the live binary (`ChatApp::new`). A live instance always seeds
     /// the honest empty starter and never the fabricated demo workspace — even
     /// when nothing is persisting behind it. Only the ephemeral `--shots`/test
@@ -414,6 +435,8 @@ impl ChatApp {
             voice_members: HashMap::new(),
             draft_main: String::new(),
             draft_thread: String::new(),
+            composer_main: Self::new_composer(),
+            composer_thread: Self::new_composer(),
             active_ws: "ws_acme".into(),
             active_channel: "c_crit".into(),
             focus: Focus::Main,
@@ -454,6 +477,7 @@ impl ChatApp {
             relayout: false,
             flap_animating: false,
             shot_starter: false,
+            shot_composer_draft: None,
             is_live: false,
             remote_frames: HashMap::new(),
             remote_screens: HashMap::new(),
@@ -596,6 +620,20 @@ impl ChatApp {
                 ));
                 self.focus = Focus::Main;
                 self.caret = usize::MAX; // clamped to the working text length on reload
+            }
+            "composer" => {
+                // The composer mid-compose: a multi-line draft with the caret,
+                // so the shared TextInput's text + caret + focus ring can be
+                // graded. Thread/call closed to keep the composer prominent.
+                self.right_flap.snap(false);
+                self.thread_open = None;
+                self.call = CallState::default();
+                self.focus = Focus::Main;
+                self.shot_composer_draft = Some(
+                    "Shipping the composer on the shared TextInput — real caret, \
+                     selection, and Ctrl+C/V now.\nEnter sends, Shift+Enter for a new line."
+                        .into(),
+                );
             }
             "msgmenu" => {
                 // The right-click action menu over one of your own messages,
@@ -897,11 +935,43 @@ impl ChatApp {
         v
     }
 
-    pub(crate) fn focused_draft(&self) -> &str {
+    /// Build a composer `TextInput`: multiline (Enter sends, Shift+Enter adds a
+    /// newline), plain chrome (the composer draws its own rounded box around the
+    /// text), sized to match the surrounding chat body.
+    fn new_composer() -> TextInput {
+        let mut t = TextInput::local()
+            .multiline(true)
+            .with_enter_submits(true)
+            .with_font_size(15.0);
+        t.set_plain_chrome(true);
+        t
+    }
+
+    /// The composer for the surface the user is typing in.
+    pub(crate) fn focused_composer(&self) -> &TextInput {
         match self.focus {
-            Focus::Thread if self.thread_open.is_some() => &self.draft_thread,
-            _ => &self.draft_main,
+            Focus::Thread if self.thread_open.is_some() => &self.composer_thread,
+            _ => &self.composer_main,
         }
+    }
+
+    pub(crate) fn focused_composer_mut(&mut self) -> &mut TextInput {
+        match self.focus {
+            Focus::Thread if self.thread_open.is_some() => &mut self.composer_thread,
+            _ => &mut self.composer_main,
+        }
+    }
+
+    /// Point keyboard focus at the composer for the current surface — but only
+    /// when no inline editor / rename is capturing input. Idempotent; called
+    /// from `reload` and after any focus change.
+    pub(crate) fn set_composer_focus(&mut self) {
+        let editing = self.editing.is_some() || self.rename.is_some();
+        let main = matches!(self.focus, Focus::Main) && !editing;
+        let thread =
+            matches!(self.focus, Focus::Thread) && self.thread_open.is_some() && !editing;
+        ui::Widget::set_focus(&mut self.composer_main, main);
+        ui::Widget::set_focus(&mut self.composer_thread, thread);
     }
 
     pub(crate) fn thread_draft_key(&self) -> Option<String> {
@@ -950,18 +1020,41 @@ impl ChatApp {
                 self.voice_members.insert(ch.id.clone(), members);
             }
         }
+        // Load the per-surface drafts from the CRDT into the composer widgets.
+        // `set_text` is a no-op when the value is unchanged, so this preserves
+        // the caret/selection while typing (the draft we just wrote back equals
+        // the widget's value) and only reloads when the surface actually
+        // changed (a channel/thread switch), where a caret reset is correct.
         self.draft_main = ChatDoc::draft_text(doc, &self.active_channel);
+        self.composer_main.set_text(&self.draft_main);
+        let ch_name =
+            self.channel(&self.active_channel).map(|c| c.name.clone()).unwrap_or_default();
+        self.composer_main.set_placeholder(&format!("Message #{ch_name}"));
+        self.composer_main.set_local_author(Some(self.me.id.clone()));
         self.draft_thread = match self.thread_draft_key() {
             Some(k) => ChatDoc::draft_text(doc, &k),
             None => String::new(),
         };
-        // Clamp the caret to whatever text it currently indexes: the inline
-        // message editor when one is open, otherwise the focused draft.
+        self.composer_thread.set_text(&self.draft_thread);
+        self.composer_thread.set_placeholder("Reply…");
+        self.composer_thread.set_local_author(Some(self.me.id.clone()));
+        // `--shots` only: stage a mid-compose draft into the main composer so a
+        // screenshot shows real text + caret. Never set in a live/interactive
+        // run, so this is inert in production.
+        if let Some(draft) = self.shot_composer_draft.clone() {
+            self.composer_main.set_text(&draft);
+            self.composer_main.set_cursor_pos(draft.len());
+            self.draft_main = draft;
+        }
+        self.set_composer_focus();
+        // Clamp the caret to whatever text the inline editor currently indexes
+        // (message-edit working text, or the rename buffer). The composers own
+        // their own caret, so it is not clamped here.
         let max = match &self.editing {
             Some((_, text)) => text.chars().count(),
-            None => self.focused_draft().chars().count(),
+            None => 0,
         };
-        if self.caret > max {
+        if self.editing.is_some() && self.caret > max {
             self.caret = max;
         }
     }
@@ -1380,7 +1473,7 @@ impl Widget for ChatApp {
         crate::paint::push_clip(scene, tf, msg_area);
         self.draw_messages(scene, tf, tr, theme, msg_area, &mut hits);
         scene.pop_layer();
-        self.draw_composer(scene, tf, tr, theme, &mut hits);
+        self.draw_composer(scene, tf, tr, theme, presence, &mut hits);
 
         // Right flap (members / thread). In overlay mode a scrim dims the
         // content behind the floating panel.
@@ -1394,7 +1487,7 @@ impl Widget for ChatApp {
             // when one is up, otherwise the workspace members roster (so the
             // "👥 N" pill always reveals a real panel, never a blank column).
             if self.thread_open.is_some() {
-                self.draw_thread(scene, tf, tr, theme, &mut hits);
+                self.draw_thread(scene, tf, tr, theme, presence, &mut hits);
             } else {
                 self.draw_members(scene, tf, tr, theme, &mut hits);
             }
