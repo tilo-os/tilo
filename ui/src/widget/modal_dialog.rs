@@ -85,6 +85,11 @@ pub struct ModalDialog<C: Widget> {
     secondary_action: Option<DialogAction>,
     on_dismiss: Option<Box<dyn FnMut()>>,
     open: bool,
+    /// When true the primary button paints with the `semantic.danger` token
+    /// instead of the accent — for destructive confirmations (delete / kill /
+    /// erase) where the affirmative action needs a warning colour. Purely
+    /// visual; the callback wiring is unchanged.
+    destructive: bool,
     viewport: Rect,
     /// Max box width / height in logical px. Default to the brief's
     /// [`MAX_DIALOG_WIDTH`]×[`MAX_DIALOG_HEIGHT`]; a host can override via
@@ -127,6 +132,7 @@ impl<C: Widget> ModalDialog<C> {
             secondary_action: None,
             on_dismiss: None,
             open: false,
+            destructive: false,
             viewport: Rect::ZERO,
             max_w: MAX_DIALOG_WIDTH,
             max_h: MAX_DIALOG_HEIGHT,
@@ -187,6 +193,15 @@ impl<C: Widget> ModalDialog<C> {
     /// a backdrop click outside the dialog box.
     pub fn on_dismiss<F: FnMut() + 'static>(mut self, f: F) -> Self {
         self.on_dismiss = Some(Box::new(f));
+        self
+    }
+
+    /// Mark the primary action as destructive so its button paints with the
+    /// `semantic.danger` token instead of the accent. Use for confirmations
+    /// that delete / kill / erase — the affirmative button then reads as a
+    /// warning rather than an ordinary accented action. Chainable.
+    pub fn with_destructive(mut self, on: bool) -> Self {
+        self.destructive = on;
         self
     }
 
@@ -357,11 +372,16 @@ fn draw_action_button(
     rect: Rect,
     label: &str,
     is_primary: bool,
+    destructive: bool,
 ) {
     let radius = theme.tokens.radii.sm as f64;
     let shape = RoundedRect::from_rect(rect, radius);
     let bg = if is_primary {
-        theme.tokens.colors.accent.stops[crate::tokens::colors::ACCENT_PRIMARY_IDX]
+        if destructive {
+            theme.tokens.colors.semantic.danger
+        } else {
+            theme.tokens.colors.accent.stops[crate::tokens::colors::ACCENT_PRIMARY_IDX]
+        }
     } else {
         theme.tokens.colors.surfaces.raised
     };
@@ -510,6 +530,7 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
                 self.primary_rect,
                 &action.label,
                 true,
+                self.destructive,
             );
         }
         if let Some(action) = &self.secondary_action {
@@ -520,6 +541,7 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
                 theme,
                 self.secondary_rect,
                 &action.label,
+                false,
                 false,
             );
         }
@@ -1032,6 +1054,46 @@ mod tests {
         assert_eq!(
             closed_fills, 0,
             "a closed dialog must emit zero COLOR fills; got {closed_fills}",
+        );
+    }
+
+    /// A destructive dialog must paint its primary button with a different
+    /// colour than the ordinary accent primary. We drive the real draw path
+    /// for both variants (identical but for `with_destructive`) and assert the
+    /// encoded fill data differs — the only thing that can change it is the
+    /// primary button's fill colour.
+    #[test]
+    fn destructive_primary_paints_a_different_fill_than_accent() {
+        fn draw_data(destructive: bool) -> Vec<u32> {
+            let mut d = ModalDialog::new("Delete?", TestContent)
+                .open(true)
+                .with_viewport(Rect::new(0.0, 0.0, 800.0, 600.0))
+                .with_destructive(destructive)
+                .primary_action("Delete", || {});
+            let mut taffy = TaffyTree::<()>::new();
+            let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+            let theme = Theme::dark();
+            let node = d.build_layout(&mut taffy, &theme, &mut node_map);
+            taffy
+                .compute_layout(
+                    node,
+                    taffy::Size {
+                        width: taffy::AvailableSpace::Definite(800.0),
+                        height: taffy::AvailableSpace::Definite(600.0),
+                    },
+                )
+                .unwrap();
+            d.apply_layout(&taffy, node, Point::ZERO);
+            let mut tr = TextRenderer::new();
+            let presence = PresenceCtx::default();
+            let mut scene = Scene::new();
+            d.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+            scene.encoding().draw_data.clone()
+        }
+        assert_ne!(
+            draw_data(false),
+            draw_data(true),
+            "a destructive primary must paint a different colour than the accent primary",
         );
     }
 
