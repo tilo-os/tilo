@@ -47,7 +47,10 @@ use crate::shell::notification::NotificationStack;
 use crate::shell::state::{
     Capability, GRANT_ALWAYS, GRANT_ONCE, GRANT_SESSION, GrantScope, GroupId, StripId, WorkspaceId,
 };
-use crate::shell::workspace_settings::{draw_files_pane, draw_roles_pane};
+use crate::shell::workspace_settings::{
+    CapEdit, GrantDraft, draw_members_pane, draw_permissions_pane, members_pane_rows,
+    permissions_pane_layout,
+};
 
 pub struct ShellOverlayHost {
     rect: Rect,
@@ -199,26 +202,24 @@ pub struct ShellOverlayHost {
     /// can't activate it.
     add_workspace_rect: Rect,
     /// Hit rects for the WS-settings tab pills painted by
-    /// `draw_ws_settings` — index order is
-    /// `[General, Roles, Files, Collaborators, Permissions]` (matching
-    /// the on-screen pill strip). The Collaborators slot has no
-    /// `WsTab` variant yet so its click branch is a no-op consumer,
-    /// but its rect is still cached so the click is swallowed instead
-    /// of falling through to the name-input commit path (#6, B-7).
-    /// The Permissions slot (Sandbox Phase 6) is conditional — it only
-    /// holds a non-zero rect when the active workspace has at least
-    /// one entry in [`Workspace::grants`]. All entries are
-    /// `Rect::ZERO` until the first `draw_ws_settings` populates them;
-    /// cleared back to `Rect::ZERO` when the modal closes so a stale
-    /// click during a crossfade can't flip tabs after the modal is
-    /// gone.
-    ws_settings_tab_pill_rects: [Rect; 5],
-    /// Hit rects for Revoke buttons in the Permissions tab body. One
-    /// entry per `(app_id, cap_index)` pair currently rendered.
-    /// Populated by `draw_ws_settings` each frame the Permissions
-    /// tab is active; cleared back to empty whenever any other tab
-    /// is active (or the modal is hidden). Sandbox Phase 6.
-    permissions_revoke_rects: Vec<(crate::shell::state::AppId, usize, Rect)>,
+    /// `draw_ws_settings`, in [`WsTab::all`] order. Every pill is a
+    /// real tab. All entries are `Rect::ZERO` until the first
+    /// `draw_ws_settings` populates them, and are cleared back to
+    /// `Rect::ZERO` when the modal closes so a stale click during a
+    /// crossfade can't flip tabs after the modal is gone.
+    ws_settings_tab_pill_rects: [Rect; 3],
+    /// Cached Revoke-button rects for the Permissions pane, keyed by
+    /// the capability's stable id — the key
+    /// [`crate::shell::state::Workspace::revoke_as`] takes, so a click
+    /// can never revoke a different capability than the row it was
+    /// painted for.
+    permissions_revoke_rects: Vec<(String, Rect)>,
+    /// Cached grant-composer control rects, populated while the
+    /// Permissions tab is drawn and cleared otherwise.
+    grant_composer_rects: Option<GrantComposerRects>,
+    /// Cached per-member control rects for the Members pane:
+    /// `(member, role chip, Remove button)`.
+    member_control_rects: Vec<(crate::shell::state::UserId, Rect, Rect)>,
     /// Vertical inset at which the floating sidebar wheel starts. Defaults
     /// to [`SIDEBAR_TOP_OFFSET_PX`] (matches `TOPBAR_HEIGHT_PX`) but the
     /// real shell wraps its topbar in a padded `Column`/`Container`, so
@@ -626,8 +627,10 @@ impl ShellOverlayHost {
             group_row_ptrs: HashMap::new(),
             last_scrolled_active_group: HashMap::new(),
             add_workspace_rect: Rect::ZERO,
-            ws_settings_tab_pill_rects: [Rect::ZERO; 5],
+            ws_settings_tab_pill_rects: [Rect::ZERO; 3],
             permissions_revoke_rects: Vec::new(),
+            grant_composer_rects: None,
+            member_control_rects: Vec::new(),
             sidebar_top_y: SIDEBAR_TOP_OFFSET_PX,
             permission_prompt: None,
             peer_sync_enabled: false,
@@ -2151,10 +2154,8 @@ impl ShellOverlayHost {
     /// Read-only accessor for the cached WS-settings tab-pill rect for
     /// `tab`. Populated by [`Self::draw_ws_settings`] each frame the
     /// modal is visible and cleared back to `Rect::ZERO` once the modal
-    /// is hidden. The four pills painted in the modal map to
-    /// `[General, Roles, Files, Collaborators]`; only the first three
-    /// have matching `WsTab` variants — Collaborators is visual-only,
-    /// so this accessor only exposes the typed three.
+    /// is hidden. Every pill in the strip is a real tab, so every
+    /// [`WsTab`] has a rect here.
     ///
     /// Concept ref: `WorkspaceSettingsModal.tsx:50-95` — the tab strip
     /// is the modal's only visible nav, and clicking a pill must mutate
@@ -2164,19 +2165,12 @@ impl ShellOverlayHost {
     pub fn ws_settings_tab_pill_rect(&self, tab: WsTab) -> Rect {
         let idx = match tab {
             WsTab::General => 0,
-            WsTab::Roles => 1,
-            WsTab::Files => 2,
-            WsTab::Permissions => 4,
+            WsTab::Members => 1,
+            WsTab::Permissions => 2,
         };
         self.ws_settings_tab_pill_rects[idx]
     }
 
-    /// Read-only accessor for the Permissions-pane Revoke button rects
-    /// painted by [`Self::draw_ws_settings`] when the Permissions tab
-    /// is active. Each entry is `(app_id, cap_index, rect)`. Test-only
-    /// — used by `permissions_tab_test.rs` to synthesize Revoke
-    /// clicks. Returns an empty slice whenever the modal is closed or
-    /// a non-Permissions tab is active.
     /// The workspace-settings name field's rect, for harnesses that
     /// click it by name. Zero-area while the modal is closed.
     pub fn ws_settings_name_rect_for_tests(&self) -> Rect {
@@ -2214,8 +2208,26 @@ impl ShellOverlayHost {
             .collect()
     }
 
-    pub fn permissions_revoke_rects(&self) -> &[(crate::shell::state::AppId, usize, Rect)] {
+    /// Revoke-button rects painted by [`Self::draw_ws_settings`] while
+    /// the Permissions tab is active, each keyed by the capability id it
+    /// revokes. Empty whenever the modal is closed or another tab is
+    /// active.
+    pub fn permissions_revoke_rects(&self) -> &[(String, Rect)] {
         &self.permissions_revoke_rects
+    }
+
+    /// Grant-composer control rects painted while the Permissions tab is
+    /// active: the subject picker, the capability picker, the three
+    /// expiry segments and the Grant button. `None` when the composer
+    /// isn't on screen.
+    pub fn grant_composer_rects(&self) -> Option<&GrantComposerRects> {
+        self.grant_composer_rects.as_ref()
+    }
+
+    /// Per-member control rects painted while the Members tab is active:
+    /// `(member, role chip, Remove button)`.
+    pub fn member_control_rects(&self) -> &[(crate::shell::state::UserId, Rect, Rect)] {
+        &self.member_control_rects
     }
 
     /// Open the palette in the given scope, or toggle it closed when the
@@ -2984,7 +2996,8 @@ impl ShellOverlayHost {
     fn ws_settings_rect(&self) -> Rect {
         let modal_w = 720.0_f64;
         let modal_h = match self.chrome.as_ref().map(|c| c.borrow().ws_settings_tab) {
-            Some(WsTab::Roles) | Some(WsTab::Files) | Some(WsTab::Permissions) => 600.0_f64,
+            Some(WsTab::Permissions) => 640.0_f64,
+            Some(WsTab::Members) => 600.0_f64,
             _ => 440.0_f64,
         };
         let cx = (self.rect.x0 + self.rect.x1) / 2.0;
@@ -3780,8 +3793,10 @@ impl Widget for ShellOverlayHost {
             // (flag already false, modal still painting) can't flip
             // tabs. Mirrors the `add_workspace_rect = Rect::ZERO`
             // pattern above (#6, B-7).
-            self.ws_settings_tab_pill_rects = [Rect::ZERO; 5];
+            self.ws_settings_tab_pill_rects = [Rect::ZERO; 3];
             self.permissions_revoke_rects.clear();
+            self.grant_composer_rects = None;
+            self.member_control_rects.clear();
         }
         self.ws_settings_was_open = flags.ws_settings;
         self.ws_settings_transition.set_open(
