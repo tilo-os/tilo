@@ -14,6 +14,7 @@ pub mod app;
 pub mod doc;
 pub mod inspector;
 pub mod model;
+pub mod portal;
 pub mod sample;
 pub mod search;
 pub mod view;
@@ -25,13 +26,21 @@ pub use view::HexView;
 
 /// Build and return the app's root widget tree.
 ///
-/// Honours a single optional positional argument: a path to open. With no
-/// path (the default, and the `--shots` case) the editor opens onto the
-/// bundled sample buffer so the surface shows real structured data.
+/// Honours a single optional positional argument: a path to open. Otherwise:
+/// `--shots` opens the bundled sample buffer so the headless screenshot shows
+/// real structured data; the live app with no file opens the honest empty
+/// state — it never fabricates a buffer.
 pub fn app_root() -> Box<dyn Widget> {
-    let view = match file_arg() {
-        Some(path) => app::view_for_path(std::path::Path::new(&path)),
-        None => app::sample_view(),
+    if let Some(path) = file_arg() {
+        return Box::new(app::view_for_path(std::path::Path::new(&path)));
+    }
+    let shots_mode = std::env::args().any(|a| a == "--shots" || a.starts_with("--shots="));
+    // A `--shots`-only hook to capture the empty state deterministically.
+    let want_empty = std::env::var("QOS_HEX_DEMO").as_deref() == Ok("empty");
+    let view = if shots_mode && !want_empty {
+        app::sample_view()
+    } else {
+        HexView::empty()
     };
     Box::new(view)
 }

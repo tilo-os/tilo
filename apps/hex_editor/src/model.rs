@@ -168,6 +168,13 @@ impl HexModel {
         self.dirty.len()
     }
 
+    /// Forget every pending edit marker — the buffer now matches what is on
+    /// disk. Called after a successful save so the "changed byte" highlight
+    /// and the edited-count clear.
+    pub fn clear_dirty(&mut self) {
+        self.dirty.clear();
+    }
+
     /// Total number of rows the buffer occupies at the current width.
     /// Always at least 1 so an empty buffer still shows one cursor row.
     pub fn row_count(&self) -> usize {

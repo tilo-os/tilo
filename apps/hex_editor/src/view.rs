@@ -18,6 +18,9 @@
 //! cache, rebuilt from the document in `sync`.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::mpsc::TryRecvError;
+use std::time::Instant;
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -35,7 +38,11 @@ use ui::theme::Theme;
 use crate::doc::HexDoc;
 use crate::inspector::{self, Interpretation};
 use crate::model::{Column, EditMode, HexModel};
+use crate::portal::{self, PortalChannel, PortalOutcome};
 use crate::search::{self, SearchKind};
+
+/// How long a transient status message (Saved / open error) stays up.
+const FLASH_MS: u128 = 3500;
 
 /// Which transient prompt, if any, is capturing keystrokes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -74,6 +81,22 @@ pub struct HexView {
     /// Last pointer position in logical coords, tracked from `CursorMoved`
     /// so a left-click can hit-test the cell under the cursor.
     last_mouse: Point,
+
+    // --- file / portal state ---
+    /// False until a real buffer is loaded — drives the composed empty
+    /// state (no fabricated buffer in the live app).
+    has_file: bool,
+    /// The on-disk path this buffer came from / was last saved to, if any.
+    /// `Ctrl+S` writes straight back here; absent, it opens a Save chooser.
+    path: Option<PathBuf>,
+    /// An in-flight XDG-portal open request, drained once per frame in `sync`.
+    open_rx: Option<PortalChannel>,
+    /// An in-flight XDG-portal save-destination request.
+    save_rx: Option<PortalChannel>,
+    /// A transient status message (e.g. "Saved 4.2 kB") with its birth time.
+    flash: Option<(String, bool, Instant)>,
+    /// Hit rect of the empty-state "Open file…" button, recorded during draw.
+    open_button: Rect,
 }
 
 impl HexView {
@@ -92,12 +115,51 @@ impl HexView {
             seeded: false,
             visible_rows: 1,
             last_mouse: Point::ZERO,
+            has_file: true,
+            path: None,
+            open_rx: None,
+            save_rx: None,
+            flash: None,
+            open_button: Rect::ZERO,
         }
+    }
+
+    /// The editor with no file loaded — the honest live default. Shows a
+    /// composed empty state whose only affordance is opening a file; it never
+    /// fabricates a buffer.
+    pub fn empty() -> Self {
+        let mut v = Self::new(Vec::new(), "No file");
+        v.has_file = false;
+        v
+    }
+
+    /// Record the on-disk path this buffer came from, so `Ctrl+S` writes back
+    /// to it without a chooser.
+    pub fn with_path(mut self, path: PathBuf) -> Self {
+        self.path = Some(path);
+        self
     }
 
     /// Test/read accessor for the decoded model.
     pub fn model(&self) -> &HexModel {
         &self.model
+    }
+
+    /// Whether a real buffer is loaded (false in the empty state).
+    pub fn has_file(&self) -> bool {
+        self.has_file
+    }
+
+    /// The on-disk path currently backing the buffer, if any.
+    pub fn path(&self) -> Option<&std::path::Path> {
+        self.path.as_deref()
+    }
+
+    /// Test hook: feed a portal open/save outcome through the *real* drain
+    /// path, exactly as the worker thread would deliver it. Lets the e2e suite
+    /// exercise the production open flow without a live host file chooser.
+    pub fn inject_open_outcome_for_test(&mut self, outcome: PortalOutcome) {
+        self.open_rx = Some(portal::inject_for_test(outcome));
     }
 
     /// Place the initial cursor at `offset`. Useful for opening a file
@@ -119,6 +181,142 @@ impl HexView {
     fn flush(&mut self, doc: &mut AutoCommit) {
         HexDoc::write_model(doc, &self.model);
         self.dirty = true;
+    }
+
+    // --- file open / save (through the host portal) --------------------
+
+    /// Start the host file chooser to open a file. No-op if one is already in
+    /// flight. The pick arrives over `open_rx`, drained in `sync`.
+    fn begin_open(&mut self) {
+        if self.open_rx.is_none() {
+            self.open_rx = Some(portal::request_open());
+        }
+    }
+
+    /// Save the buffer. With a known path this writes straight back; without
+    /// one (a never-saved buffer) it opens the host Save chooser.
+    fn begin_save(&mut self) {
+        if let Some(path) = self.path.clone() {
+            self.write_to(&path);
+        } else if self.save_rx.is_none() {
+            self.save_rx = Some(portal::request_save(self.suggested_name()));
+        }
+    }
+
+    /// The filename the Save dialog seeds with — the current name, or a
+    /// sensible default for a scratch buffer.
+    fn suggested_name(&self) -> String {
+        if self.file_name.is_empty() || !self.has_file {
+            "untitled.bin".to_string()
+        } else {
+            self.file_name.clone()
+        }
+    }
+
+    /// Write the current bytes to `path`, clearing the dirty markers on
+    /// success and flashing the outcome either way.
+    fn write_to(&mut self, path: &std::path::Path) {
+        match std::fs::write(path, self.model.bytes()) {
+            Ok(()) => {
+                self.model.clear_dirty();
+                self.path = Some(path.to_path_buf());
+                self.flash(format!("Saved {}", human_size(self.model.len())), false);
+            }
+            Err(e) => self.flash(format!("Save failed: {e}"), true),
+        }
+        self.dirty = true;
+    }
+
+    /// Load `path` into the editor, replacing the buffer and persisting it to
+    /// the shared document so collaborators converge on the opened file.
+    fn open_path(&mut self, path: PathBuf, doc: &mut AutoCommit) {
+        match std::fs::read(&path) {
+            Ok(bytes) => {
+                let name = path
+                    .file_name()
+                    .map(|s| s.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| "untitled".to_string());
+                let n = bytes.len();
+                self.model = HexModel::new(bytes);
+                self.file_name = name;
+                self.path = Some(path);
+                self.has_file = true;
+                self.overlay = Overlay::None;
+                self.matches.clear();
+                self.match_idx = None;
+                self.flush(doc);
+                self.flash(format!("Opened {}", human_size(n)), false);
+            }
+            Err(e) => self.flash(format!("Open failed: {e}"), true),
+        }
+    }
+
+    /// Drain any completed portal open/save requests. Called from `sync`, so
+    /// it has the document to persist a freshly-opened buffer into.
+    fn drain_portal(&mut self, doc: &mut AutoCommit) {
+        if let Some(rx) = self.open_rx.as_ref() {
+            match rx.try_recv() {
+                Ok(outcome) => {
+                    self.open_rx = None;
+                    match outcome {
+                        PortalOutcome::Opened(path) => self.open_path(path, doc),
+                        PortalOutcome::Cancelled => {}
+                        PortalOutcome::Failed(reason) => self.flash(reason, true),
+                    }
+                }
+                Err(TryRecvError::Empty) => {}
+                Err(TryRecvError::Disconnected) => self.open_rx = None,
+            }
+        }
+        if let Some(rx) = self.save_rx.as_ref() {
+            match rx.try_recv() {
+                Ok(outcome) => {
+                    self.save_rx = None;
+                    match outcome {
+                        PortalOutcome::Opened(dest) => self.write_to(&dest),
+                        PortalOutcome::Cancelled => {}
+                        PortalOutcome::Failed(reason) => self.flash(reason, true),
+                    }
+                }
+                Err(TryRecvError::Empty) => {}
+                Err(TryRecvError::Disconnected) => self.save_rx = None,
+            }
+        }
+    }
+
+    /// Post a transient status message.
+    fn flash(&mut self, msg: impl Into<String>, error: bool) {
+        self.flash = Some((msg.into(), error, Instant::now()));
+        self.dirty = true;
+    }
+
+    /// True while any portal request is in flight or a status flash is live —
+    /// the app keeps pumping frames so the pick drains and the flash expires.
+    fn is_busy(&self) -> bool {
+        self.open_rx.is_some() || self.save_rx.is_some() || self.flash.is_some()
+    }
+
+    /// The number of byte columns that fills the current width, leaving room
+    /// for the offset gutter, the ASCII column, and a right-hand inspector.
+    /// Recomputed each draw so the grid reflows on resize (best-in-class hex
+    /// editors fill the window rather than stranding a fixed 16 columns in a
+    /// sea of empty space). Snapped to a multiple of 8 and clamped to a sane
+    /// range.
+    fn fit_bytes_per_row(&self) -> usize {
+        let avail = self.rect.width()
+            - GridMetrics::LEFT_PAD
+            - GridMetrics::GUTTER_W
+            - GridMetrics::GUTTER_GAP
+            - GridMetrics::HEX_ASCII_GAP
+            - GridMetrics::INSPECTOR_GAP
+            - GridMetrics::INSPECTOR_MIN;
+        let per_byte = GridMetrics::HEX_COL_W + GridMetrics::CHAR_W;
+        if per_byte <= 0.0 {
+            return 16;
+        }
+        let raw = (avail / per_byte).floor() as i64;
+        let snapped = (raw / 8) * 8;
+        snapped.clamp(8, 32) as usize
     }
 
     /// Recompute match offsets from the current query + kind.
@@ -709,9 +907,25 @@ impl HexView {
             false,
             true,
         );
+        let (left_w, _) = tr.measure(&left, size, None);
+
+        // Middle: a transient status flash (Saved / error), just right of the
+        // cursor read-out.
+        if let Some((msg, error, _)) = &self.flash {
+            let color = if *error { tokens.colors.semantic.danger } else { tokens.colors.semantic.success };
+            tr.draw_text_weighted(
+                scene,
+                msg,
+                size,
+                color,
+                t * Affine::translate((bar.x0 + pad + left_w as f64 + 20.0, cy)),
+                None,
+                TextWeight::Semibold,
+            );
+        }
 
         // Right: keyboard hints.
-        let hints = "Ctrl+F find · Ctrl+G goto · Tab switch col · Ins mode · E endian · R width";
+        let hints = "Ctrl+O open · Ctrl+S save · Ctrl+F find · Ctrl+G goto · Tab col · Ins mode · E endian";
         let (hw, _) = tr.measure(hints, tokens.typography.scale.xs, None);
         tr.draw_text(
             scene,
@@ -724,6 +938,81 @@ impl HexView {
             )),
             None,
         );
+    }
+
+    /// The no-file zero-state: a title, a one-line explanation, and a single
+    /// primary action (Open), centred. Records the button's hit rect.
+    fn draw_empty_state(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        let tokens = &theme.tokens;
+        let c = &tokens.colors;
+        let cx = self.rect.center().x;
+        let cy = self.rect.center().y;
+
+        // Title.
+        let title = "No file open";
+        let tsz = tokens.typography.scale.x2l;
+        let (tw, _) = tr.measure_weighted(title, tsz, None, TextWeight::Semibold);
+        tr.draw_text_weighted(
+            scene, title, tsz, c.text_primary,
+            t * Affine::translate((cx - tw as f64 / 2.0, cy - 78.0)),
+            None, TextWeight::Semibold,
+        );
+
+        // Subtitle.
+        let sub = "Open a file to inspect and edit its bytes.";
+        let ssz = tokens.typography.scale.sm;
+        let (sw, _) = tr.measure(sub, ssz, None);
+        tr.draw_text(
+            scene, sub, ssz, c.text_dim,
+            t * Affine::translate((cx - sw as f64 / 2.0, cy - 40.0)),
+            None,
+        );
+
+        // Primary action: Open file…
+        let label = "Open file…";
+        let bsz = tokens.typography.scale.base;
+        let (lw, _) = tr.measure_weighted(label, bsz, None, TextWeight::Semibold);
+        let bw = lw as f64 + 44.0;
+        let bh = 40.0;
+        let bx0 = cx - bw / 2.0;
+        let by0 = cy - 8.0;
+        let btn = Rect::new(bx0, by0, bx0 + bw, by0 + bh);
+        let accent = c.accent[ui_accent_idx()];
+        scene.fill(Fill::NonZero, t, accent, None, &RoundedRect::from_rect(btn, 10.0));
+        tr.draw_text_weighted(
+            scene, label, bsz, contrast_on(accent),
+            t * Affine::translate((bx0 + (bw - lw as f64) / 2.0, by0 + (bh - bsz as f64) / 2.0)),
+            None, TextWeight::Semibold,
+        );
+        self.open_button = btn;
+
+        // Keyboard hint under the button.
+        let hint = "Ctrl+O";
+        let hsz = tokens.typography.scale.xs;
+        let (hw, _) = tr.measure(hint, hsz, None);
+        tr.draw_text(
+            scene, hint, hsz, c.text_dim,
+            t * Affine::translate((cx - hw as f64 / 2.0, by0 + bh + 16.0)),
+            None,
+        );
+
+        // A pending open error (e.g. unreadable path) surfaces here.
+        if let Some((msg, error, _)) = &self.flash {
+            if *error {
+                let (mw, _) = tr.measure(msg, ssz, None);
+                tr.draw_text(
+                    scene, msg, ssz, c.semantic.danger,
+                    t * Affine::translate((cx - mw as f64 / 2.0, by0 + bh + 44.0)),
+                    None,
+                );
+            }
+        }
     }
 
     fn draw_search_overlay(
@@ -959,19 +1248,47 @@ fn ui_accent_idx() -> usize {
 
 impl Widget for HexView {
     fn sync(&mut self, doc: &mut AutoCommit, _path: &ObjId) {
+        // Drain any completed file open/save picks first, so a freshly opened
+        // buffer is in place before this frame lays out.
+        self.drain_portal(doc);
+
         if !self.seeded {
             if HexDoc::is_seeded(doc) {
-                // Adopt an existing peer's document.
-                if let Some(m) = HexDoc::read_model(doc) {
+                // Adopt an existing peer's document — but only when we opened
+                // no file of our own (an explicit `hex FILE` wins over an empty
+                // shared doc, and seeds the peers instead).
+                if self.has_file {
+                    HexDoc::write_model(doc, &self.model);
+                } else if let Some(m) = HexDoc::read_model(doc) {
                     self.model = m;
+                    self.has_file = true;
+                    self.file_name = "shared buffer".to_string();
                 }
-            } else {
+            } else if self.has_file {
                 // Seed ours.
                 HexDoc::write_model(doc, &self.model);
             }
             self.seeded = true;
             self.dirty = true;
         }
+
+        // Expire a status flash so an idle window settles back to no message.
+        if let Some((_, _, born)) = &self.flash {
+            if born.elapsed().as_millis() > FLASH_MS {
+                self.flash = None;
+                self.dirty = true;
+            }
+        }
+    }
+
+    fn needs_idle_sync(&self) -> bool {
+        self.is_busy()
+    }
+
+    fn needs_animation_frame(&self) -> bool {
+        // Keep frames coming while a portal pick is in flight (so it drains
+        // once the host dialog closes) and while a flash is counting down.
+        self.is_busy()
     }
 
     fn build_layout(
@@ -1019,6 +1336,19 @@ impl Widget for HexView {
             None,
             &self.rect,
         );
+
+        // No file loaded: a composed zero-state, not a fabricated buffer.
+        if !self.has_file {
+            self.draw_empty_state(scene, transform, text_renderer, theme);
+            return;
+        }
+
+        // Reflow the byte grid to fill the current width before laying out.
+        let fit = self.fit_bytes_per_row();
+        if fit != self.model.bytes_per_row() {
+            self.model.set_bytes_per_row(fit);
+        }
+
         let m = self.metrics();
         self.draw_header(scene, transform, text_renderer, theme, &m);
         self.draw_grid(scene, transform, text_renderer, theme, &m);
@@ -1062,6 +1392,14 @@ impl Widget for HexView {
                 button: MouseButton::Left,
                 ..
             } => {
+                // Empty state: the only affordance is the centred Open button.
+                if !self.has_file {
+                    if self.open_button.contains(self.last_mouse) {
+                        self.begin_open();
+                        *handled = true;
+                    }
+                    return;
+                }
                 // Click position is tracked via CursorMoved; recompute on
                 // press from the last known position.
                 if let Some((off, col)) = self.hit_test(self.last_mouse) {
@@ -1092,6 +1430,19 @@ impl Widget for HexView {
                 }
                 let key = &ke.logical_key;
 
+                // Empty state: the only meaningful key action is opening a file.
+                if !self.has_file {
+                    if ctrl {
+                        if let Key::Character(c) = key {
+                            if c.eq_ignore_ascii_case("o") {
+                                self.begin_open();
+                                *handled = true;
+                            }
+                        }
+                    }
+                    return;
+                }
+
                 // Overlay capture takes priority.
                 if self.overlay != Overlay::None {
                     if self.handle_overlay_key(key, ctrl, shift, state) {
@@ -1104,6 +1455,16 @@ impl Widget for HexView {
                 if ctrl {
                     if let Key::Character(c) = key {
                         match c.as_str() {
+                            "o" | "O" => {
+                                self.begin_open();
+                                *handled = true;
+                                return;
+                            }
+                            "s" | "S" => {
+                                self.begin_save();
+                                *handled = true;
+                                return;
+                            }
                             "f" | "F" => {
                                 self.overlay = Overlay::Search;
                                 self.recompute_matches();
@@ -1221,13 +1582,11 @@ impl HexView {
                     return self.model.input_hex_digit(d as u8);
                 }
                 // Non-hex letters act as view shortcuts in the hex column.
+                // (Byte-width is auto-fit to the viewport, so there is no
+                // manual width toggle.)
                 match ch {
                     'e' | 'E' => {
                         self.model.toggle_endian();
-                        true
-                    }
-                    'r' | 'R' => {
-                        self.model.cycle_bytes_per_row();
                         true
                     }
                     _ => false,
@@ -1260,6 +1619,26 @@ struct GridMetrics {
 }
 
 impl GridMetrics {
+    const CELL_FONT: f32 = 14.0;
+    const ROW_H: f64 = 20.0;
+    /// Monospace pitch at [`Self::CELL_FONT`]: roughly 0.6em per glyph.
+    const GLYPH: f64 = Self::CELL_FONT as f64 * 0.6;
+    /// One ASCII glyph.
+    const CHAR_W: f64 = Self::GLYPH;
+    /// Two hex digits plus the inter-byte gap — one byte column's pitch.
+    const HEX_COL_W: f64 = Self::GLYPH * 2.0 + Self::GLYPH * 0.55;
+    /// Eight hex digits of offset.
+    const GUTTER_W: f64 = Self::GLYPH * 8.0;
+    const LEFT_PAD: f64 = 16.0;
+    /// Gap between the offset gutter and the hex columns.
+    const GUTTER_GAP: f64 = 22.0;
+    /// Gap between the hex columns and the ASCII column.
+    const HEX_ASCII_GAP: f64 = 22.0;
+    /// Gap between the ASCII column and the inspector panel.
+    const INSPECTOR_GAP: f64 = 24.0;
+    /// Smallest inspector width the fit calculation keeps room for.
+    const INSPECTOR_MIN: f64 = 300.0;
+
     fn new(rect: Rect, bpr: usize) -> Self {
         let header_bottom = rect.y0 + 44.0;
         let status_h = 28.0;
@@ -1269,24 +1648,22 @@ impl GridMetrics {
         let grid_top = col_header_y + col_header_h;
         let grid_bottom = status_top - 8.0;
 
-        let cell_font = 14.0;
-        let row_h = 20.0;
-        // Monospace pitch at this size: roughly 0.6em per glyph.
-        let glyph = (cell_font as f64) * 0.6;
-        let byte_w = glyph * 2.0; // two hex digits
-        let char_w = glyph; // one ASCII glyph
-        let hex_col_w = byte_w + glyph * 0.55; // inter-byte gap
-        let gutter_w = glyph * 8.0; // 8 hex digits of offset
+        let cell_font = Self::CELL_FONT;
+        let row_h = Self::ROW_H;
+        let byte_w = Self::GLYPH * 2.0;
+        let char_w = Self::CHAR_W;
+        let hex_col_w = Self::HEX_COL_W;
 
-        let left = rect.x0 + 16.0;
-        let gutter_x0 = left;
-        let hex_x0 = gutter_x0 + gutter_w + 22.0;
+        let gutter_x0 = rect.x0 + Self::LEFT_PAD;
+        let hex_x0 = gutter_x0 + Self::GUTTER_W + Self::GUTTER_GAP;
         let hex_x1 = hex_x0 + bpr as f64 * hex_col_w;
-        let ascii_x0 = hex_x1 + 22.0;
+        let ascii_x0 = hex_x1 + Self::HEX_ASCII_GAP;
         let ascii_x1 = ascii_x0 + bpr as f64 * char_w;
 
-        // Inspector gets the remaining width on the right, min 240px.
-        let inspector_x0 = (ascii_x1 + 24.0).max(rect.x1 - 320.0);
+        // The inspector sits directly to the right of the ASCII column and
+        // fills the remaining width — the byte grid auto-fits so this stays a
+        // clean gutter, never a stranded band of empty space.
+        let inspector_x0 = (ascii_x1 + Self::INSPECTOR_GAP).min(rect.x1 - Self::INSPECTOR_MIN);
 
         let visible_rows = ((grid_bottom - grid_top) / row_h).floor().max(1.0) as usize;
 
@@ -1313,6 +1690,22 @@ impl GridMetrics {
 }
 
 // --- small drawing utilities ------------------------------------------
+
+/// A compact human byte count for the save/open flash (`512 B`, `4.2 kB`).
+fn human_size(n: usize) -> String {
+    const UNITS: [&str; 5] = ["B", "kB", "MB", "GB", "TB"];
+    let mut v = n as f64;
+    let mut u = 0;
+    while v >= 1024.0 && u < UNITS.len() - 1 {
+        v /= 1024.0;
+        u += 1;
+    }
+    if u == 0 {
+        format!("{n} B")
+    } else {
+        format!("{v:.1} {}", UNITS[u])
+    }
+}
 
 fn with_alpha(c: Color, a: u8) -> Color {
     let rgba = c.to_rgba8();
