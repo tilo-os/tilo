@@ -1,0 +1,951 @@
+//! Turning a flood of individual changes into a small number of things a
+//! person can name, collapse and restore to.
+//!
+//! A CRDT history is not a list of edits a user recognises. Typing coalesces on
+//! a one-second debounce, so an afternoon's work is several hundred rows of
+//! `+3 -0 chars`. Scrolling that is not reading it. So the surfaces that show
+//! history show **groups**, and expand to the individual changes on demand.
+//!
+//! # What forms a group when nobody named anything
+//!
+//! A boundary is inserted between two consecutive changes when any of these
+//! holds. They are checked against data every change already carries, so the
+//! grouping is a pure function of the change graph — every peer computes the
+//! same groups, which is what makes "restore to the end of this group" mean the
+//! same thing to two people.
+//!
+//! 1. **The author changed.** Attribution is the load-bearing fact in a shared
+//!    history; a block headed "Alice" that quietly contains Bob's deletion is a
+//!    lie, and no amount of expanding fixes a wrong summary.
+//! 2. **The clock jumped by more than [`GroupingConfig::idle_gap`].** This is
+//!    the boundary people actually perceive — "before lunch" and "after lunch"
+//!    are two pieces of work. Five minutes is the default. A change that carries
+//!    no clock at all is not a gap: splitting on it would tear a session at
+//!    whichever change a peer forgot to stamp, and do it differently per peer.
+//! 3. **The kind of change changed.** A capability grant that lands in the
+//!    middle of a typing run is not part of "24 edits", and the timeline's
+//!    filter chips would otherwise gut a group and leave a header claiming a
+//!    count that is no longer on screen. Families here are exactly the chip
+//!    categories, so filtering never disagrees with grouping.
+//! 4. **The group is full.** [`GroupingConfig::max_changes`] caps one group, so
+//!    a machine-generated run of ten thousand changes becomes fifty navigable
+//!    groups rather than one useless one.
+//!
+//! Deliberately *not* used: "a burst of edits to the same region". It needs a
+//! structural diff per change to compute, and — worse — its boundaries move as
+//! the document changes, so two peers looking at the same graph could group it
+//! differently.
+//!
+//! # Names
+//!
+//! A [`NamedRange`] is a user's name over a run of changes, read out of the
+//! document (see `ui::history_source::groups`). A named range is authoritative:
+//! the automatic rules never split it and never extend it. Named ranges may
+//! nest one level ([`MAX_GROUP_DEPTH`]); see [`group_entries`] for exactly what
+//! happens when two people name overlapping runs at the same time.
+
+use std::collections::HashMap;
+use std::time::{Duration, SystemTime};
+
+use collab_types::OpClass;
+
+use crate::widget::history::{HistoryAuthor, HistoryEntry, HistoryEntryId};
+
+/// Idle time that ends a working session. Five minutes is long enough to
+/// survive reading a paragraph before typing the next one, and short enough
+/// that a coffee break shows up as a break.
+pub const DEFAULT_IDLE_GAP: Duration = Duration::from_secs(5 * 60);
+
+/// Ceiling on how many changes one automatic group may hold.
+pub const DEFAULT_MAX_GROUP: usize = 200;
+
+/// How deep named groups nest: a named version may contain named versions, and
+/// that is where it stops. Two levels is what a reader can hold; three is a
+/// tree, and a tree of edit history is a filing system nobody asked for.
+pub const MAX_GROUP_DEPTH: usize = 2;
+
+/// A user's name over a run of history, as stored in the document.
+///
+/// `end` is `None` while the group is still **open** — the prospective case,
+/// where someone said what they were about to do and is still doing it. An open
+/// range absorbs every change after `start` until it is closed.
+#[derive(Clone, Debug, PartialEq)]
+pub struct NamedRange {
+    /// Identity of the naming record in the document. A rename addresses this.
+    pub id: String,
+    /// What the user called it.
+    pub label: String,
+    /// First change covered.
+    pub start: HistoryEntryId,
+    /// Last change covered, or `None` while the group is still open.
+    pub end: Option<HistoryEntryId>,
+    /// Who wrote the name — not necessarily who authored the changes.
+    pub named_by: Option<HistoryAuthor>,
+    /// When the name was written.
+    pub created: SystemTime,
+}
+
+/// Knobs for the automatic grouping. The defaults are the documented rules.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GroupingConfig {
+    pub idle_gap: Duration,
+    pub max_changes: usize,
+}
+
+impl Default for GroupingConfig {
+    fn default() -> Self {
+        Self {
+            idle_gap: DEFAULT_IDLE_GAP,
+            max_changes: DEFAULT_MAX_GROUP,
+        }
+    }
+}
+
+/// The chip-level family a change belongs to. Grouping never mixes two, so a
+/// filter chip can never empty a group while leaving its header claiming rows
+/// that are no longer shown.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OpFamily {
+    Edit,
+    Comment,
+    Governance,
+    Deletion,
+}
+
+impl OpFamily {
+    pub fn of(op: OpClass) -> Self {
+        match op {
+            OpClass::Splice | OpClass::Move | OpClass::EditMeta => OpFamily::Edit,
+            OpClass::Comment => OpFamily::Comment,
+            OpClass::Govern | OpClass::Compaction | OpClass::Redact => OpFamily::Governance,
+            OpClass::Tombstone | OpClass::Restore => OpFamily::Deletion,
+        }
+    }
+
+    /// Plural noun for a run of this family. Singular is handled by the caller.
+    fn plural(self) -> &'static str {
+        match self {
+            OpFamily::Edit => "edits",
+            OpFamily::Comment => "comments",
+            OpFamily::Governance => "permission changes",
+            OpFamily::Deletion => "deletions",
+        }
+    }
+}
+
+/// One collapsible band in a history surface.
+///
+/// `start..end` are indices into the entry slice the group was built from, in
+/// the producer's causal order. `children` are named sub-ranges; entries inside
+/// `start..end` that no child covers are the group's own rows.
+#[derive(Clone, Debug, PartialEq)]
+pub struct HistoryGroup {
+    /// Stable identity, so expand/collapse survives a refresh. Derived from the
+    /// group's first change (which does not move as the group grows).
+    pub key: String,
+    /// The user's name, when someone gave this range one.
+    pub name: Option<String>,
+    /// Record id of the naming, so a rename can address it.
+    pub record_id: Option<String>,
+    /// Who wrote the name.
+    pub named_by: Option<HistoryAuthor>,
+    /// True while the range is still absorbing new changes.
+    pub open: bool,
+    /// Half-open index range into the entry slice.
+    pub start: usize,
+    pub end: usize,
+    /// Named sub-ranges, at most [`MAX_GROUP_DEPTH`] deep in total.
+    pub children: Vec<HistoryGroup>,
+    /// 0 for a top-level group.
+    pub depth: usize,
+    /// Distinct authors, in first-seen order.
+    pub authors: Vec<HistoryAuthor>,
+    /// Distinct op families present, in first-seen order.
+    pub families: Vec<OpFamily>,
+    /// Earliest / latest recorded change time in the range. Both are
+    /// `UNIX_EPOCH` when no change in the range carried a clock.
+    pub first_time: SystemTime,
+    pub last_time: SystemTime,
+    /// Characters inserted / deleted across the range, when every change in it
+    /// reported a count. `None` when at least one did not — a partial total
+    /// would read as a complete one.
+    pub text_delta: Option<(usize, usize)>,
+    /// First and last change in the range. The last one is the restore target:
+    /// "restore to the end of this version".
+    pub first_entry: HistoryEntryId,
+    pub last_entry: HistoryEntryId,
+}
+
+impl HistoryGroup {
+    /// Number of changes in the range, including those inside children.
+    pub fn len(&self) -> usize {
+        self.end - self.start
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.end <= self.start
+    }
+
+    /// True when this band is a single unnamed change — the surfaces render
+    /// those as a plain row rather than as a group with one thing in it.
+    pub fn is_bare_change(&self) -> bool {
+        self.name.is_none() && self.len() == 1 && self.children.is_empty()
+    }
+
+    /// The line a reader scans: the user's name, or an honest description of
+    /// what the range contains.
+    ///
+    /// The derived form never claims more than it counted. It says how many
+    /// changes and, when the range spans a minute or more, over how long.
+    pub fn title(&self, entries: &[HistoryEntry]) -> String {
+        if let Some(name) = &self.name {
+            return name.clone();
+        }
+        if self.len() == 1 {
+            return entries
+                .get(self.start)
+                .map(|e| e.summary.clone())
+                .unwrap_or_default();
+        }
+        let noun = match self.families.as_slice() {
+            [only] => only.plural(),
+            _ => "changes",
+        };
+        let mut s = format!("{} {noun}", self.len());
+        if let Some(span) = self.span_label() {
+            s.push_str(" over ");
+            s.push_str(&span);
+        }
+        s
+    }
+
+    /// The dim second line: who, and how much moved.
+    pub fn subtitle(&self, entries: &[HistoryEntry]) -> String {
+        let mut parts: Vec<String> = Vec::new();
+        if self.name.is_some() {
+            let noun = if self.len() == 1 { "change" } else { "changes" };
+            let mut count = format!("{} {noun}", self.len());
+            if let Some(span) = self.span_label() {
+                count.push_str(" over ");
+                count.push_str(&span);
+            }
+            parts.push(count);
+        }
+        let who = self.authors_label();
+        if !who.is_empty() {
+            parts.push(who);
+        }
+        if let Some((ins, del)) = self.text_delta
+            && (ins > 0 || del > 0)
+        {
+            parts.push(format!("+{ins} \u{2212}{del} chars"));
+        } else if self.name.is_none()
+            && self.len() > 1
+            && let Some(first) = entries.get(self.start)
+        {
+            // No character counts to aggregate (a run of governance acts, say):
+            // name the first thing that happened rather than padding the row.
+            parts.push(format!("from \u{201c}{}\u{201d}", first.summary));
+        }
+        if let Some(by) = &self.named_by
+            && self.name.is_some()
+        {
+            parts.push(format!("named by {}", by.name));
+        }
+        parts.join(" \u{00b7} ")
+    }
+
+    /// "Alice", "Alice and Bob", "Alice and 4 others".
+    pub fn authors_label(&self) -> String {
+        match self.authors.len() {
+            0 => String::new(),
+            1 => self.authors[0].name.clone(),
+            2 => format!("{} and {}", self.authors[0].name, self.authors[1].name),
+            n => format!("{} and {} others", self.authors[0].name, n - 1),
+        }
+    }
+
+    /// How long the range took, in the coarsest unit that is still true, or
+    /// `None` when it is under a minute or no change carried a clock.
+    pub fn span_label(&self) -> Option<String> {
+        let span = self.last_time.duration_since(self.first_time).ok()?;
+        let secs = span.as_secs();
+        if secs < 60 {
+            return None;
+        }
+        let mins = secs / 60;
+        if mins < 60 {
+            return Some(format!("{mins} min"));
+        }
+        let hours = mins / 60;
+        if hours < 24 {
+            return Some(format!("{hours} h"));
+        }
+        Some(format!("{} d", hours / 24))
+    }
+
+    /// Index ranges of this group's own rows — everything in `start..end` that
+    /// no child covers. In ascending order.
+    pub fn direct_spans(&self) -> Vec<std::ops::Range<usize>> {
+        let mut out = Vec::new();
+        let mut cursor = self.start;
+        for c in &self.children {
+            if c.start > cursor {
+                out.push(cursor..c.start);
+            }
+            cursor = c.end.max(cursor);
+        }
+        if cursor < self.end {
+            out.push(cursor..self.end);
+        }
+        out
+    }
+
+    /// Every group in this subtree, self first, then children. Used by the
+    /// surfaces to flatten a forest into a row list.
+    pub fn walk<'a>(&'a self, out: &mut Vec<&'a HistoryGroup>) {
+        out.push(self);
+        for c in &self.children {
+            c.walk(out);
+        }
+    }
+}
+
+/// A resolved named range, before it is placed in the forest.
+#[derive(Clone, Debug)]
+struct Placed {
+    id: String,
+    label: String,
+    named_by: Option<HistoryAuthor>,
+    start: usize,
+    end: usize,
+    open: bool,
+    children: Vec<Placed>,
+}
+
+/// Group `entries` (oldest first, in the producer's causal order).
+///
+/// # Concurrent naming
+///
+/// Two people naming ranges at the same time is a real case and it resolves
+/// here, at read time, identically on every peer — the inputs are the document
+/// and nothing else.
+///
+/// * **The same range, twice.** The two writes land on the same document key
+///   (the key is derived from the range's first change), so automerge's own
+///   map-conflict rule picks one deterministically and the other name stays
+///   recoverable in the change graph. Only one arrives here.
+/// * **One range inside another.** The inner one becomes a child of the outer
+///   one, up to [`MAX_GROUP_DEPTH`]. A range that would land deeper than that
+///   is not rendered as a group; its name is still in the document, and it
+///   reappears as a group as soon as an enclosing name is removed.
+/// * **Ranges that partly overlap.** The one that starts earlier keeps its
+///   whole range; the later one is clipped to the part that is left. Clipping
+///   rather than dropping means neither user loses their name to a race. A
+///   range clipped to nothing is not rendered.
+///
+/// A named range whose first change is not in `entries` is skipped: the surface
+/// cannot honestly show a band whose contents it does not have.
+pub fn group_entries(
+    entries: &[HistoryEntry],
+    named: &[NamedRange],
+    cfg: &GroupingConfig,
+) -> Vec<HistoryGroup> {
+    if entries.is_empty() {
+        return Vec::new();
+    }
+    let index: HashMap<HistoryEntryId, usize> = entries
+        .iter()
+        .enumerate()
+        .map(|(i, e)| (e.id, i))
+        .collect();
+
+    // Resolve names to index ranges, dropping the ones this surface cannot
+    // place.
+    let mut resolved: Vec<Placed> = Vec::new();
+    for r in named {
+        let Some(&start) = index.get(&r.start) else {
+            continue;
+        };
+        let (end, open) = match r.end {
+            None => (entries.len(), true),
+            // An end anchor we do not hold means the range runs past the window
+            // we loaded. Clamp rather than guess; it is not open, it is longer
+            // than what is on screen.
+            Some(e) => (index.get(&e).map(|i| i + 1).unwrap_or(entries.len()), false),
+        };
+        if end <= start {
+            continue;
+        }
+        resolved.push(Placed {
+            id: r.id.clone(),
+            label: r.label.clone(),
+            named_by: r.named_by.clone(),
+            start,
+            end,
+            open,
+            children: Vec::new(),
+        });
+    }
+    // Outermost first at a given start, then by record id so two peers order
+    // identically.
+    resolved.sort_by(|a, b| {
+        a.start
+            .cmp(&b.start)
+            .then(b.end.cmp(&a.end))
+            .then(a.id.cmp(&b.id))
+    });
+
+    let mut forest: Vec<Placed> = Vec::new();
+    for r in resolved {
+        insert_placed(&mut forest, r, 1);
+    }
+
+    build_level(entries, &forest, 0, entries.len(), 0, cfg)
+}
+
+/// Insert `r` into `nodes` (siblings sorted by start), nesting or clipping as
+/// documented on [`group_entries`]. `depth` is the depth `r` would occupy.
+fn insert_placed(nodes: &mut Vec<Placed>, mut r: Placed, depth: usize) -> bool {
+    if let Some(last) = nodes.last_mut() {
+        if r.start < last.end {
+            if r.end <= last.end {
+                // Contained: nest it, or refuse if that would be too deep.
+                if depth < MAX_GROUP_DEPTH {
+                    return insert_placed(&mut last.children, r, depth + 1);
+                }
+                return false;
+            }
+            // Partial overlap: the earlier range keeps what it has.
+            r.start = last.end;
+            if r.start >= r.end {
+                return false;
+            }
+        }
+    }
+    nodes.push(r);
+    true
+}
+
+/// Build the groups covering `lo..hi`: the named ranges in `named`, and derived
+/// groups over whatever is between them.
+fn build_level(
+    entries: &[HistoryEntry],
+    named: &[Placed],
+    lo: usize,
+    hi: usize,
+    depth: usize,
+    cfg: &GroupingConfig,
+) -> Vec<HistoryGroup> {
+    let mut out: Vec<HistoryGroup> = Vec::new();
+    let mut cursor = lo;
+    for n in named {
+        if n.start >= hi {
+            break;
+        }
+        if n.start > cursor {
+            out.extend(derived_groups(entries, cursor, n.start, depth, cfg));
+        }
+        // Inside a named range only *named* sub-ranges become bands. The rest of
+        // it is the group's own rows: someone who named a version said where it
+        // starts and ends, and chopping the inside of it into machine-derived
+        // sub-sessions would bury their name under boundaries they did not draw
+        // — and would put rows three levels deep.
+        let children: Vec<HistoryGroup> = n
+            .children
+            .iter()
+            .map(|c| {
+                finish_group(
+                    entries,
+                    c.start,
+                    c.end,
+                    depth + 1,
+                    Some(c),
+                    Vec::new(),
+                )
+            })
+            .collect();
+        out.push(finish_group(
+            entries,
+            n.start,
+            n.end,
+            depth,
+            Some(n),
+            children,
+        ));
+        cursor = n.end.max(cursor);
+    }
+    if cursor < hi {
+        out.extend(derived_groups(entries, cursor, hi, depth, cfg));
+    }
+    out
+}
+
+/// Chop `lo..hi` at the automatic boundaries.
+fn derived_groups(
+    entries: &[HistoryEntry],
+    lo: usize,
+    hi: usize,
+    depth: usize,
+    cfg: &GroupingConfig,
+) -> Vec<HistoryGroup> {
+    let mut out = Vec::new();
+    let mut start = lo;
+    for i in (lo + 1)..hi {
+        let prev = &entries[i - 1];
+        let cur = &entries[i];
+        let author_changed = author_key(prev) != author_key(cur);
+        let family_changed = OpFamily::of(prev.op_class) != OpFamily::of(cur.op_class);
+        // A change with no recorded clock is not evidence of a gap. Splitting on
+        // it would tear a session in half at whichever change a peer forgot to
+        // stamp — and, worse, do it differently on two peers. A clock that runs
+        // backwards (a skewed peer, merged late) likewise reads as no gap rather
+        // than as a negative one.
+        let timed = prev.timestamp != SystemTime::UNIX_EPOCH
+            && cur.timestamp != SystemTime::UNIX_EPOCH;
+        let gap = cur
+            .timestamp
+            .duration_since(prev.timestamp)
+            .unwrap_or_default();
+        let idle = timed && gap > cfg.idle_gap;
+        let full = i - start >= cfg.max_changes;
+        if author_changed || family_changed || idle || full {
+            out.push(finish_group(entries, start, i, depth, None, Vec::new()));
+            start = i;
+        }
+    }
+    if start < hi {
+        out.push(finish_group(entries, start, hi, depth, None, Vec::new()));
+    }
+    out
+}
+
+/// The identity two consecutive changes are compared on. The short identity
+/// hash is included so two different people who chose the same display name are
+/// still two groups.
+fn author_key(e: &HistoryEntry) -> (&str, &str) {
+    (
+        e.author.name.as_str(),
+        e.author.identity_short.as_str(),
+    )
+}
+
+fn finish_group(
+    entries: &[HistoryEntry],
+    start: usize,
+    end: usize,
+    depth: usize,
+    named: Option<&Placed>,
+    children: Vec<HistoryGroup>,
+) -> HistoryGroup {
+    let slice = &entries[start..end];
+    let mut authors: Vec<HistoryAuthor> = Vec::new();
+    let mut families: Vec<OpFamily> = Vec::new();
+    let mut first_time = SystemTime::UNIX_EPOCH;
+    let mut last_time = SystemTime::UNIX_EPOCH;
+    let mut seen_time = false;
+    let mut ins = 0usize;
+    let mut del = 0usize;
+    let mut all_counted = true;
+    for e in slice {
+        if !authors
+            .iter()
+            .any(|a| a.name == e.author.name && a.identity_short == e.author.identity_short)
+        {
+            authors.push(e.author.clone());
+        }
+        let f = OpFamily::of(e.op_class);
+        if !families.contains(&f) {
+            families.push(f);
+        }
+        // A change with no recorded clock (`UNIX_EPOCH`) must not drag the span
+        // back to 1970 — it is unknown, not ancient.
+        if e.timestamp != SystemTime::UNIX_EPOCH {
+            if !seen_time || e.timestamp < first_time {
+                first_time = e.timestamp;
+            }
+            if !seen_time || e.timestamp > last_time {
+                last_time = e.timestamp;
+            }
+            seen_time = true;
+        }
+        match e.text_delta {
+            Some((a, b)) => {
+                ins += a;
+                del += b;
+            }
+            None => all_counted = false,
+        }
+    }
+    let key = match named {
+        Some(n) => format!("n:{}", n.id),
+        None => format!("d:{}", hex16(&entries[start].id)),
+    };
+    HistoryGroup {
+        key,
+        name: named.map(|n| n.label.clone()),
+        record_id: named.map(|n| n.id.clone()),
+        named_by: named.and_then(|n| n.named_by.clone()),
+        open: named.map(|n| n.open).unwrap_or(false),
+        start,
+        end,
+        children,
+        depth,
+        authors,
+        families,
+        first_time,
+        last_time,
+        text_delta: if all_counted { Some((ins, del)) } else { None },
+        first_entry: entries[start].id,
+        last_entry: entries[end - 1].id,
+    }
+}
+
+/// Lower-case hex of an entry id. Also the document key a name is stored under,
+/// which is why it lives here rather than in the persistence layer.
+pub fn hex16(id: &HistoryEntryId) -> String {
+    let mut s = String::with_capacity(32);
+    for b in id.as_bytes() {
+        s.push_str(&format!("{b:02x}"));
+    }
+    s
+}
+
+/// Parse the hex produced by [`hex16`] back into an id. `None` on anything that
+/// is not exactly 32 hex characters, so a corrupted document key is skipped
+/// rather than silently resolving to a wrong change.
+pub fn from_hex16(s: &str) -> Option<HistoryEntryId> {
+    if s.len() != 32 {
+        return None;
+    }
+    let bytes = s.as_bytes();
+    let mut out = [0u8; 16];
+    for (i, slot) in out.iter_mut().enumerate() {
+        let hi = (bytes[i * 2] as char).to_digit(16)?;
+        let lo = (bytes[i * 2 + 1] as char).to_digit(16)?;
+        *slot = (hi * 16 + lo) as u8;
+    }
+    Some(HistoryEntryId(out))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use collab_types::ArtifactKind;
+    use std::time::Duration;
+
+    fn entry(id: u8, author: &str, secs: u64, op: OpClass) -> HistoryEntry {
+        let mut bytes = [0u8; 16];
+        bytes[0] = id;
+        HistoryEntry {
+            id: HistoryEntryId(bytes),
+            author: HistoryAuthor::new(author, 120.0, "aaaaaaaa"),
+            op_class: op,
+            artifact_kind: ArtifactKind::Note,
+            timestamp: SystemTime::UNIX_EPOCH + Duration::from_secs(secs),
+            summary: format!("op {id}"),
+            text_delta: Some((3, 0)),
+            diff_payload: None,
+            redaction: None,
+        }
+    }
+
+    fn ids(g: &HistoryGroup) -> (usize, usize) {
+        (g.start, g.end)
+    }
+
+    #[test]
+    fn a_typing_run_by_one_person_is_one_group() {
+        // Ten changes a second apart by one author: exactly the shape a
+        // debounced editor produces, and exactly what must not be ten rows.
+        let entries: Vec<HistoryEntry> = (0..10)
+            .map(|i| entry(i, "Alice", 1000 + i as u64, OpClass::Splice))
+            .collect();
+        let groups = group_entries(&entries, &[], &GroupingConfig::default());
+        assert_eq!(groups.len(), 1, "got {:?}", groups.iter().map(ids).collect::<Vec<_>>());
+        assert_eq!(groups[0].len(), 10);
+        assert_eq!(groups[0].title(&entries), "10 edits");
+        assert_eq!(groups[0].subtitle(&entries), "Alice \u{00b7} +30 \u{2212}0 chars");
+    }
+
+    #[test]
+    fn a_five_minute_gap_ends_the_session() {
+        let mut entries: Vec<HistoryEntry> = (0..3)
+            .map(|i| entry(i, "Alice", 1000 + i as u64, OpClass::Splice))
+            .collect();
+        // Six minutes later, same person, same kind of change.
+        entries.extend((3..6).map(|i| entry(i, "Alice", 1000 + 360 + i as u64, OpClass::Splice)));
+        let groups = group_entries(&entries, &[], &GroupingConfig::default());
+        assert_eq!(groups.len(), 2);
+        assert_eq!(ids(&groups[0]), (0, 3));
+        assert_eq!(ids(&groups[1]), (3, 6));
+        // The second group spans six minutes from the first change of the day,
+        // but only its own three seconds — the label must describe the group,
+        // not the document.
+        assert_eq!(groups[1].span_label(), None, "three seconds is not 'over 6 min'");
+    }
+
+    #[test]
+    fn a_different_author_always_starts_a_new_group() {
+        // One second apart, same op class — only the author differs. The
+        // grouping must still split, or the header's attribution is a lie.
+        let entries = vec![
+            entry(0, "Alice", 1000, OpClass::Splice),
+            entry(1, "Alice", 1001, OpClass::Splice),
+            entry(2, "Bob", 1002, OpClass::Splice),
+            entry(3, "Alice", 1003, OpClass::Splice),
+        ];
+        let groups = group_entries(&entries, &[], &GroupingConfig::default());
+        assert_eq!(groups.len(), 3);
+        assert_eq!(groups[0].authors_label(), "Alice");
+        assert_eq!(groups[1].authors_label(), "Bob");
+        assert!(groups[1].is_bare_change(), "one change, unnamed: renders as a row");
+    }
+
+    #[test]
+    fn a_governance_act_is_not_swallowed_by_a_typing_run() {
+        let entries = vec![
+            entry(0, "Alice", 1000, OpClass::Splice),
+            entry(1, "Alice", 1001, OpClass::Govern),
+            entry(2, "Alice", 1002, OpClass::Splice),
+        ];
+        let groups = group_entries(&entries, &[], &GroupingConfig::default());
+        assert_eq!(groups.len(), 3, "the grant is its own thing");
+        assert_eq!(groups[1].families, vec![OpFamily::Governance]);
+    }
+
+    #[test]
+    fn a_group_never_grows_past_the_cap() {
+        let entries: Vec<HistoryEntry> = (0..250)
+            .map(|i| entry((i % 251) as u8, "Alice", 1000 + i as u64, OpClass::Splice))
+            .collect();
+        let cfg = GroupingConfig { max_changes: 100, ..Default::default() };
+        let groups = group_entries(&entries, &[], &cfg);
+        assert_eq!(groups.len(), 3);
+        assert!(groups.iter().all(|g| g.len() <= 100));
+        assert_eq!(groups.iter().map(|g| g.len()).sum::<usize>(), 250);
+    }
+
+    #[test]
+    fn a_name_overrides_the_automatic_boundaries_in_both_directions() {
+        // Six changes that would automatically split three ways (author changes
+        // twice). One name over all six must produce one group.
+        let entries = vec![
+            entry(0, "Alice", 1000, OpClass::Splice),
+            entry(1, "Bob", 1001, OpClass::Splice),
+            entry(2, "Alice", 1002, OpClass::Splice),
+            entry(3, "Alice", 1003, OpClass::Splice),
+            entry(4, "Bob", 1004, OpClass::Splice),
+            entry(5, "Alice", 1005, OpClass::Splice),
+        ];
+        let auto = group_entries(&entries, &[], &GroupingConfig::default());
+        assert!(auto.len() > 1, "the fixture must split without a name");
+
+        let named = vec![NamedRange {
+            id: "r1".into(),
+            label: "Intro rewrite".into(),
+            start: entries[0].id,
+            end: Some(entries[5].id),
+            named_by: Some(HistoryAuthor::new("Alice", 120.0, "aaaaaaaa")),
+            created: SystemTime::UNIX_EPOCH,
+        }];
+        let groups = group_entries(&entries, &named, &GroupingConfig::default());
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].name.as_deref(), Some("Intro rewrite"));
+        assert_eq!(groups[0].len(), 6);
+        assert_eq!(groups[0].authors_label(), "Alice and Bob");
+    }
+
+    #[test]
+    fn an_open_group_absorbs_everything_after_its_start() {
+        let entries: Vec<HistoryEntry> = (0..5)
+            .map(|i| entry(i, "Alice", 1000 + i as u64 * 1000, OpClass::Splice))
+            .collect();
+        let named = vec![NamedRange {
+            id: "r1".into(),
+            label: "Working".into(),
+            start: entries[1].id,
+            end: None,
+            named_by: None,
+            created: SystemTime::UNIX_EPOCH,
+        }];
+        let groups = group_entries(&entries, &named, &GroupingConfig::default());
+        // Change 0 is outside; 1..5 are inside the open group even though the
+        // gaps between them are far past the idle threshold.
+        assert_eq!(groups.len(), 2);
+        assert!(groups[0].is_bare_change());
+        assert!(groups[1].open);
+        assert_eq!(ids(&groups[1]), (1, 5));
+    }
+
+    #[test]
+    fn a_name_inside_a_name_nests_one_level() {
+        let entries: Vec<HistoryEntry> = (0..8)
+            .map(|i| entry(i, "Alice", 1000 + i as u64, OpClass::Splice))
+            .collect();
+        let named = vec![
+            NamedRange {
+                id: "outer".into(),
+                label: "Q3 release".into(),
+                start: entries[0].id,
+                end: Some(entries[7].id),
+                named_by: None,
+                created: SystemTime::UNIX_EPOCH,
+            },
+            NamedRange {
+                id: "inner".into(),
+                label: "Intro rewrite".into(),
+                start: entries[2].id,
+                end: Some(entries[4].id),
+                named_by: None,
+                created: SystemTime::UNIX_EPOCH,
+            },
+        ];
+        let groups = group_entries(&entries, &named, &GroupingConfig::default());
+        assert_eq!(groups.len(), 1);
+        let outer = &groups[0];
+        assert_eq!(outer.name.as_deref(), Some("Q3 release"));
+        assert_eq!(outer.children.len(), 1);
+        assert_eq!(outer.children[0].name.as_deref(), Some("Intro rewrite"));
+        assert_eq!(outer.children[0].depth, 1);
+        // The parent's own rows are what the child does not cover.
+        assert_eq!(outer.direct_spans(), vec![0..2, 5..8]);
+    }
+
+    #[test]
+    fn a_third_level_of_naming_is_not_rendered_as_a_group() {
+        let entries: Vec<HistoryEntry> = (0..8)
+            .map(|i| entry(i, "Alice", 1000 + i as u64, OpClass::Splice))
+            .collect();
+        let named = vec![
+            NamedRange {
+                id: "a".into(),
+                label: "outer".into(),
+                start: entries[0].id,
+                end: Some(entries[7].id),
+                named_by: None,
+                created: SystemTime::UNIX_EPOCH,
+            },
+            NamedRange {
+                id: "b".into(),
+                label: "middle".into(),
+                start: entries[1].id,
+                end: Some(entries[6].id),
+                named_by: None,
+                created: SystemTime::UNIX_EPOCH,
+            },
+            NamedRange {
+                id: "c".into(),
+                label: "inner".into(),
+                start: entries[2].id,
+                end: Some(entries[5].id),
+                named_by: None,
+                created: SystemTime::UNIX_EPOCH,
+            },
+        ];
+        let groups = group_entries(&entries, &named, &GroupingConfig::default());
+        let mut flat: Vec<&HistoryGroup> = Vec::new();
+        for g in &groups {
+            g.walk(&mut flat);
+        }
+        let names: Vec<&str> = flat.iter().filter_map(|g| g.name.as_deref()).collect();
+        assert_eq!(names, vec!["outer", "middle"], "the third level is not shown");
+        assert!(flat.iter().all(|g| g.depth < MAX_GROUP_DEPTH));
+    }
+
+    #[test]
+    fn two_people_naming_overlapping_runs_converge_on_one_layout() {
+        // Alice names 0..5, Bob names 3..8 — a genuine concurrent case. The
+        // earlier start keeps its range; the later one is clipped to the tail.
+        // Both peers see the same thing whichever order the names merged in.
+        let entries: Vec<HistoryEntry> = (0..9)
+            .map(|i| entry(i, "Alice", 1000 + i as u64, OpClass::Splice))
+            .collect();
+        let alice = NamedRange {
+            id: "alice".into(),
+            label: "Intro".into(),
+            start: entries[0].id,
+            end: Some(entries[4].id),
+            named_by: None,
+            created: SystemTime::UNIX_EPOCH,
+        };
+        let bob = NamedRange {
+            id: "bob".into(),
+            label: "Body".into(),
+            start: entries[3].id,
+            end: Some(entries[7].id),
+            named_by: None,
+            created: SystemTime::UNIX_EPOCH,
+        };
+        let one = group_entries(&entries, &[alice.clone(), bob.clone()], &GroupingConfig::default());
+        let other = group_entries(&entries, &[bob, alice], &GroupingConfig::default());
+        let shape = |gs: &[HistoryGroup]| -> Vec<(Option<String>, usize, usize)> {
+            gs.iter().map(|g| (g.name.clone(), g.start, g.end)).collect()
+        };
+        assert_eq!(shape(&one), shape(&other), "merge order must not change the layout");
+        assert_eq!(
+            shape(&one),
+            vec![
+                (Some("Intro".to_string()), 0, 5),
+                (Some("Body".to_string()), 5, 8),
+                (None, 8, 9),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_name_whose_first_change_is_missing_is_skipped_not_guessed() {
+        let entries: Vec<HistoryEntry> = (0..3)
+            .map(|i| entry(i, "Alice", 1000 + i as u64, OpClass::Splice))
+            .collect();
+        let named = vec![NamedRange {
+            id: "ghost".into(),
+            label: "From another document".into(),
+            start: HistoryEntryId([0x5a; 16]),
+            end: None,
+            named_by: None,
+            created: SystemTime::UNIX_EPOCH,
+        }];
+        let groups = group_entries(&entries, &named, &GroupingConfig::default());
+        assert_eq!(groups.len(), 1);
+        assert!(groups[0].name.is_none(), "no band is invented for a range we cannot place");
+    }
+
+    #[test]
+    fn an_unclocked_change_does_not_drag_the_span_back_to_1970() {
+        let mut entries: Vec<HistoryEntry> = (0..3)
+            .map(|i| entry(i, "Alice", 100_000 + i as u64 * 120, OpClass::Splice))
+            .collect();
+        entries[1].timestamp = SystemTime::UNIX_EPOCH;
+        let groups = group_entries(&entries, &[], &GroupingConfig::default());
+        let g = groups.last().unwrap();
+        assert_eq!(
+            g.span_label().as_deref(),
+            Some("4 min"),
+            "the span is over the changes that actually carried a clock"
+        );
+    }
+
+    #[test]
+    fn a_partial_character_count_is_not_reported_as_a_total() {
+        let mut entries: Vec<HistoryEntry> = (0..3)
+            .map(|i| entry(i, "Alice", 1000 + i as u64, OpClass::Splice))
+            .collect();
+        entries[1].text_delta = None;
+        let groups = group_entries(&entries, &[], &GroupingConfig::default());
+        assert_eq!(groups[0].text_delta, None);
+        assert!(
+            !groups[0].subtitle(&entries).contains("chars"),
+            "got {:?}",
+            groups[0].subtitle(&entries)
+        );
+    }
+
+    #[test]
+    fn hex_round_trips_and_rejects_junk() {
+        let id = HistoryEntryId([0xab; 16]);
+        assert_eq!(from_hex16(&hex16(&id)), Some(id));
+        assert_eq!(from_hex16("nope"), None);
+        assert_eq!(from_hex16(&"z".repeat(32)), None);
+    }
+}

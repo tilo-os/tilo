@@ -594,6 +594,7 @@ pub mod card;             pub use card::{Card, CardGrid, card_columns, card_colu
 // `docs/superpowers/specs/2026-06-29-spaces-channels-and-cryptographic-roles.md`
 // Phase 1 ("Audit timeline + soft-delete + restore-from-history").
 pub mod history;
+pub mod history_group;
 pub mod activity_timeline;
 pub mod history_scrubber;
 pub use history::{
