@@ -37,6 +37,32 @@ pub const DEFAULT_WS_TOPIC: u64 = 0;
 /// mount covers both.
 pub const DEFAULT_KEYPAIR_PATH: &str = "/var/lib/qos-fs/peer-key";
 
+/// Where this session's libp2p keypair lives.
+///
+/// [`DEFAULT_KEYPAIR_PATH`] unless `QOS_PEER_KEY_PATH` names somewhere
+/// else. The override is what makes two sessions on one machine two
+/// *peers*: the keypair is the shell's network identity and also the
+/// seed for the id salt that keeps their minted ids disjoint, so two
+/// processes reading one key file are one peer talking to itself.
+pub fn peer_key_path() -> std::path::PathBuf {
+    match std::env::var("QOS_PEER_KEY_PATH") {
+        Ok(v) if !v.is_empty() => std::path::PathBuf::from(v),
+        _ => std::path::PathBuf::from(DEFAULT_KEYPAIR_PATH),
+    }
+}
+
+/// Transport addresses the swarm binds on startup.
+///
+/// Loopback is listed first so a two-session demonstration on one
+/// machine has a dialable address that does not depend on which
+/// interface is up; the wildcard covers the LAN case.
+const LISTEN_ADDRS: [&str; 2] = ["/ip4/127.0.0.1/tcp/0", "/ip4/0.0.0.0/tcp/0"];
+
+/// How often a shell asks the rooms it is in for anything it is
+/// missing. Room replication has no push side, so this interval is the
+/// upper bound on how stale a guest's view of a room can be.
+const SYNC_KICK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
+
 /// Shell-side handle for the peer-sync subsystem.
 ///
 /// Owns the tokio runtime that hosts the [`Actor`], the per-workspace
@@ -69,6 +95,20 @@ pub struct ShellNetwork {
     /// Cached once at spawn so per-pointer-move publishes don't redo
     /// the hash work for every cursor delta.
     local_peer_hash: u64,
+    /// This shell's libp2p identity. Held because an invite is a
+    /// *signed* statement by the inviting owner — [`Self::issue_invite`]
+    /// signs with it, and the receiver verifies against the public half
+    /// carried in the token.
+    keypair: libp2p::identity::Keypair,
+    /// `PeerId` derived from [`Self::keypair`], appended to the listen
+    /// address so an invite carries a fully-qualified `/p2p/…` dial
+    /// target rather than a bare transport address.
+    local_peer_id: libp2p::PeerId,
+    /// Addresses the swarm reported binding, filled by the actor.
+    listen_addrs: Arc<Mutex<Vec<libp2p::Multiaddr>>>,
+    /// When [`Self::kick_periodic_sync`] last asked. `None` until the
+    /// first tick, so the first frame after startup kicks a round.
+    last_sync_kick: Mutex<Option<std::time::Instant>>,
     /// Buffer of inbound presence updates pushed by [`Self::tick`] when
     /// a `NeighbourMsg::PresenceMoved` arrives. The shell's frame-tick
     /// hook drains this into `PresenceCtx::remote_cursors` once per
@@ -221,13 +261,14 @@ impl ShellNetwork {
         // `build_swarm` test helper but uses the persistent keypair so
         // the shell's `PeerId` is stable across restarts.
         let keypair = load_or_create_keypair(keypair_path)?;
+        let local_peer_id = keypair.public().to_peer_id();
         // Cache the hashed peer id once so per-pointer-move
         // `publish_presence` doesn't redo the hash every frame.
         // Mirrors the same hash function `tick`'s receive path uses,
         // so a peer's own publishes hash to the same `peer` u64 on
         // both sides of the wire.
         let local_peer_hash = peer_id_to_u64(keypair.public().to_peer_id());
-        let swarm = SwarmBuilder::with_existing_identity(keypair.clone())
+        let mut swarm = SwarmBuilder::with_existing_identity(keypair.clone())
             .with_tokio()
             .with_tcp(
                 Default::default(),
@@ -239,7 +280,20 @@ impl ShellNetwork {
             .map_err(|e| std::io::Error::other(format!("behaviour wrap: {e:?}")))?
             .build();
 
-        let (cmd_tx, _join) = Actor::spawn(swarm);
+        // Without this the swarm has no transport address: mdns
+        // advertises nothing, an invite can carry no dialable address,
+        // and no peer can ever reach this shell. Everything downstream
+        // of it — the invite, the sync round, the capability that has to
+        // reach the guest — depends on the socket actually being bound.
+        for addr in LISTEN_ADDRS {
+            let addr: libp2p::Multiaddr = addr.parse().map_err(std::io::Error::other)?;
+            if let Err(e) = swarm.listen_on(addr.clone()) {
+                tracing::warn!(%addr, "peer-sync: listen failed ({e})");
+            }
+        }
+
+        let listen_addrs: Arc<Mutex<Vec<libp2p::Multiaddr>>> = Arc::new(Mutex::new(Vec::new()));
+        let (cmd_tx, _join) = Actor::spawn_reporting_addrs(swarm, Arc::clone(&listen_addrs));
 
         // Replica owns the tree-side reactions to `NetEvent::Msg`.
         // Peer id `1` here is the replica-side identity used by
@@ -261,6 +315,10 @@ impl ShellNetwork {
             event_rx: Mutex::new(event_rx),
             runtime: Some(runtime),
             local_peer_hash,
+            keypair,
+            local_peer_id,
+            listen_addrs,
+            last_sync_kick: Mutex::new(None),
             inbound_presence: Arc::new(Mutex::new(Vec::new())),
             inbound_app_crdt: Arc::new(Mutex::new(Vec::new())),
             inbound_app_crdt_signed: Arc::new(Mutex::new(Vec::new())),
@@ -544,6 +602,49 @@ impl ShellNetwork {
             .is_ok()
     }
 
+    /// The dial address this shell publishes in an invite.
+    ///
+    /// The first address the swarm bound, with this peer's id appended
+    /// so the receiver dials a specific peer rather than whatever
+    /// answers on that port. `None` until the swarm has reported a
+    /// listen address — an invite issued before then would name nothing.
+    pub fn dial_addr(&self) -> Option<String> {
+        let addrs = self.listen_addrs.lock().ok()?;
+        let base = addrs.first()?.clone();
+        Some(format!("{base}/p2p/{}", self.local_peer_id))
+    }
+
+    /// Mint a signed invite to the workspace `local`, valid for
+    /// `expiry_seconds_from_now`.
+    ///
+    /// The half of the invite flow that had no implementation: the
+    /// palette's `/invite` row named this function in a doc comment and
+    /// nothing defined it, so there was no way to produce a token
+    /// outside a unit test. Signs with this shell's own libp2p keypair
+    /// and embeds the address the swarm actually bound, so the token the
+    /// user copies is one a peer can act on.
+    pub fn issue_invite(
+        &self,
+        local: crate::shell::state::WorkspaceId,
+        expiry_seconds_from_now: u64,
+    ) -> Result<String, String> {
+        let addr = self
+            .dial_addr()
+            .ok_or_else(|| "peer-sync is not listening yet; try again in a moment".to_string())?;
+        let replica = self
+            .replica
+            .lock()
+            .map_err(|_| "peer-sync replica lock poisoned".to_string())?;
+        let tree = replica.tree.read();
+        let ws = tree
+            .workspaces
+            .iter()
+            .find(|w| w.id == local)
+            .ok_or_else(|| format!("no workspace {} to invite into", local.raw()))?;
+        crate::network::invite::make_invite_token(&self.keypair, ws, &addr, expiry_seconds_from_now)
+            .map_err(|e| e.to_string())
+    }
+
     /// Accept an invite token into `local`, then immediately ask the
     /// room it named to catch us up.
     ///
@@ -572,6 +673,17 @@ impl ShellNetwork {
             let mut tree = replica.tree.write();
             accept_invite_into(&mut tree, local, token)?
         };
+        // Dial what the token named. mdns finds peers on a LAN, but an
+        // invite that carries an address and never uses it leaves the
+        // guest waiting on discovery for a host it was handed directions
+        // to. `validate_invite_token` has already run inside
+        // `accept_invite_into`, so re-reading the token here cannot let
+        // an unverified address through.
+        if let Ok(parsed) = crate::network::invite::validate_invite_token(token)
+            && let Ok(addr) = parsed.owner_addr.parse::<libp2p::Multiaddr>()
+        {
+            let _ = self.cmd_tx.try_send(NetCmd::Connect { addr });
+        }
         replica.request_sync();
         let outgoing = replica.drain_outgoing();
         drop(replica);
@@ -584,6 +696,41 @@ impl ShellNetwork {
         Ok(room)
     }
 
+    /// Ask every room this machine is in for whatever it is missing,
+    /// and publish the requests.
+    pub fn publish_sync_requests(&self) {
+        let Ok(replica) = self.replica.lock() else {
+            return;
+        };
+        replica.request_sync();
+        let outgoing = replica.drain_outgoing();
+        drop(replica);
+        for msg in outgoing {
+            let _ = self.cmd_tx.try_send(NetCmd::Publish {
+                ws: DEFAULT_WS_TOPIC,
+                msg,
+            });
+        }
+    }
+
+    /// [`Self::publish_sync_requests`], rate-limited to
+    /// [`SYNC_KICK_INTERVAL`]. Called from every frame tick, which runs
+    /// far more often than a room changes.
+    fn kick_periodic_sync(&self) {
+        let Ok(mut last) = self.last_sync_kick.lock() else {
+            return;
+        };
+        let now = std::time::Instant::now();
+        if let Some(prev) = *last
+            && now.duration_since(prev) < SYNC_KICK_INTERVAL
+        {
+            return;
+        }
+        *last = Some(now);
+        drop(last);
+        self.publish_sync_requests();
+    }
+
     /// Drive a single tick: drain pending [`NetEvent`]s from the actor
     /// and forward `Msg` variants into the replica's `handle`. Each
     /// resulting outbound message is published via `cmd_tx` so peers
@@ -594,6 +741,14 @@ impl ShellNetwork {
     /// directly from tests. Non-blocking — uses `try_recv` /
     /// `try_send` so a starved channel never stalls the render loop.
     pub fn tick(&self) {
+        // Room replication is pull-only: a host answers `SyncReq` and
+        // never announces. So without something asking on a cadence, a
+        // guest sees the room exactly as it was the moment they joined —
+        // a capability the owner grants or revokes afterwards never
+        // arrives, which is the difference between a snapshot and
+        // collaboration. Ask periodically; a round with nothing to send
+        // produces no reply at all.
+        self.kick_periodic_sync();
         // Hold the receiver lock for the whole drain so a concurrent
         // frame-tick (e.g. one queued from a redraw inside the very
         // same wakeup) doesn't see half-merged events. The lock has
@@ -604,6 +759,14 @@ impl ShellNetwork {
             .lock()
             .expect("event_rx mutex must not be poisoned");
         while let Ok(event) = event_rx.try_recv() {
+            // A peer arriving is the one moment we know for certain
+            // there is someone new to be caught up by. Documented in
+            // `plan/collaboration.md` §5 and previously not done —
+            // `PeerJoined` fell through the `if let` below unhandled.
+            if let NetEvent::PeerJoined { .. } = event {
+                self.publish_sync_requests();
+                continue;
+            }
             if let NetEvent::Msg { ws: _, peer, msg } = event {
                 // Presence updates skip the replica entirely — they're
                 // ephemeral overlay state, not CRDT state — and land
@@ -749,6 +912,10 @@ fn shell_network_for_test(
         event_rx: Mutex::new(event_rx),
         runtime: None,
         local_peer_hash,
+        keypair: libp2p::identity::Keypair::generate_ed25519(),
+        local_peer_id: libp2p::PeerId::random(),
+        listen_addrs: Arc::new(Mutex::new(Vec::new())),
+        last_sync_kick: Mutex::new(None),
         inbound_presence: Arc::new(Mutex::new(Vec::new())),
         inbound_app_crdt: Arc::new(Mutex::new(Vec::new())),
         inbound_app_crdt_signed: Arc::new(Mutex::new(Vec::new())),
@@ -822,7 +989,22 @@ mod tests {
             "the guest's workspace now addresses the inviter's room",
         );
 
-        // And the catch-up went out, naming that room and no other.
+        // Two commands, in this order: dial the address the token named,
+        // then ask that room for a catch-up. The dial is what makes the
+        // address in an invite mean anything — mdns finds peers on a
+        // LAN, but a guest handed directions should not have to wait for
+        // discovery to find the host it was pointed at.
+        let dial = cmd_rx
+            .try_recv()
+            .expect("accepting an invite must dial the address it named");
+        match dial {
+            NetCmd::Connect { addr } => assert_eq!(
+                addr.to_string(),
+                "/ip4/127.0.0.1/tcp/4001",
+                "the dial must go to the address inside the token",
+            ),
+            other => panic!("expected NetCmd::Connect, got {other:?}"),
+        }
         let cmd = cmd_rx
             .try_recv()
             .expect("accepting an invite must ask the room for a catch-up");
