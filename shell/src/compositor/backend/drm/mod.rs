@@ -54,6 +54,7 @@ use vello::Scene;
 use paint::swizzle_subrect_rgba_to_xrgb8888;
 
 use super::{Backend, BackendEvent, Output, OutputId, combined_geometry};
+use crate::compositor::present::Presenter;
 pub use runtime::DrmBackendError;
 
 /// Public-facing handle. Wraps [`runtime::DrmRuntime`] which owns the
@@ -74,6 +75,15 @@ pub struct DrmBackend {
     /// no present) until [`Backend::set_dpms`] turns it back on. Avoids
     /// racing a frame against the disabled CRTC.
     blanked: bool,
+    /// Presentation interval of the fastest connected mode, computed at
+    /// construction.
+    ///
+    /// Cached rather than derived on demand because
+    /// [`Backend::take_presenter`] moves the scanouts to the render
+    /// thread — a `refresh_interval` that read them would start returning
+    /// `None` the moment the split happened, silently dropping the
+    /// compositor back to the 60 Hz fallback on a 144 Hz panel.
+    refresh: Option<std::time::Duration>,
 }
 
 impl DrmBackend {
@@ -85,11 +95,31 @@ impl DrmBackend {
     pub fn new() -> Result<Self, Box<dyn std::error::Error>> {
         let inner = runtime::DrmRuntime::new()?;
         let outputs = Self::refresh_outputs(&inner);
+        // Pace to the *fastest* connected mode: the compositor paints one
+        // scene across the combined geometry, so there is a single cadence
+        // to pick, and a slower output showing every Nth frame beats
+        // throttling the fast panel to the slow one's rate.
+        let refresh = inner
+            .scanouts
+            .iter()
+            .filter_map(|e| e.scanout.refresh_interval())
+            .min();
+        match refresh {
+            Some(d) => tracing::info!(
+                hz = 1.0 / d.as_secs_f64(),
+                "DRM backend: pacing to the connector's mode timing"
+            ),
+            None => tracing::warn!(
+                "DRM backend: no connector reported a usable mode refresh; \
+                 the compositor will fall back to its default cadence"
+            ),
+        }
         Ok(Self {
             inner,
             outputs,
             paint: None,
             blanked: false,
+            refresh,
         })
     }
 
@@ -103,7 +133,137 @@ impl DrmBackend {
     }
 }
 
+/// The presentation half of [`DrmBackend`]: the per-connector scanouts
+/// plus the vello→XRGB8888 bridge, moved onto the render thread by
+/// [`Backend::take_presenter`].
+///
+/// # Why this split is safe
+///
+/// The scanouts are the *only* part of the DRM runtime the frame path
+/// touches (`grep '\.scanouts'` finds them in `submit_frame`,
+/// `set_dpms`, and their construction, nowhere else). Everything the
+/// input path needs stays on the loop thread:
+///
+/// * libseat/udev/libinput and the runtime's inner calloop —
+///   `poll_events` still drives them from the loop thread.
+/// * the hardware cursor. [`CursorPlanes`](super::scanout::CursorPlanes)
+///   owns its own dup of the card fd, so pointer motion keeps moving the
+///   KMS cursor plane at input rate, now genuinely decoupled from paint.
+///
+/// The card fds are plain file descriptors and are usable from any
+/// thread; page-flip completions are read here and nowhere else, so no
+/// other thread can steal them.
+pub struct DrmPresenter {
+    scanouts: Vec<runtime::ScanoutEntry>,
+    outputs: Vec<Output>,
+    /// Pointer position in combined coordinates, for the software-cursor
+    /// fallback only. Updated from the loop thread through
+    /// [`Presenter::set_pointer`]-equivalent messages; when the hardware
+    /// cursor plane is active this is unused.
+    pointer: (f64, f64),
+    paint: Option<paint::VelloDrmBridge>,
+    blanked: bool,
+}
+
+impl DrmPresenter {
+    /// Frame-production body, identical to the pre-split `submit_frame`.
+    fn render(&mut self, scene: &Scene) {
+        if self.blanked || self.scanouts.is_empty() {
+            return;
+        }
+        let target_size = combined_geometry(&self.outputs);
+        if target_size.0 == 0 || target_size.1 == 0 {
+            return;
+        }
+        if self.paint.is_none() {
+            match paint::VelloDrmBridge::new(target_size.0, target_size.1) {
+                Ok(b) => self.paint = Some(b),
+                Err(e) => {
+                    tracing::error!("DRM backend: VelloDrmBridge::new: {e}");
+                    return;
+                }
+            }
+        }
+        {
+            let bridge = self.paint.as_mut().expect("paint just initialised");
+            if bridge.size() != target_size {
+                if let Err(e) = bridge.resize(target_size.0, target_size.1) {
+                    tracing::error!("DRM backend: VelloDrmBridge::resize: {e}");
+                    return;
+                }
+            }
+        }
+
+        if self.scanouts.len() == 1 {
+            let bridge = self.paint.as_mut().expect("paint allocated above");
+            let cursor = Some(self.pointer);
+            self.scanouts[0]
+                .scanout
+                .present_into(cursor, |dst, pitch| {
+                    if let Err(e) = bridge.paint_into_xrgb8888(scene, dst, pitch) {
+                        tracing::error!("DRM backend: paint_into_xrgb8888: {e}");
+                    }
+                });
+            return;
+        }
+
+        let completed = self.scanouts[0].scanout.poll_flip_completions();
+        for c in &completed {
+            for e in self.scanouts.iter_mut() {
+                e.scanout.mark_flip_complete(*c);
+            }
+        }
+
+        let bridge = self.paint.as_mut().expect("paint allocated above");
+        let rgba = match bridge.paint(scene) {
+            Ok(b) => b,
+            Err(e) => {
+                tracing::error!("DRM backend: paint (combined): {e}");
+                return;
+            }
+        };
+        let pointer = self.pointer;
+        let (cw, ch) = (target_size.0 as usize, target_size.1 as usize);
+        for e in self.scanouts.iter_mut() {
+            let (px, py) = e.position;
+            let (ow, oh) = e.scanout.size();
+            let local_cursor = if pointer.0 >= px as f64
+                && pointer.0 < (px + ow as i32) as f64
+                && pointer.1 >= py as f64
+                && pointer.1 < (py + oh as i32) as f64
+            {
+                Some((pointer.0 - px as f64, pointer.1 - py as f64))
+            } else {
+                None
+            };
+            let sx = px.max(0) as usize;
+            let sy = py.max(0) as usize;
+            e.scanout.present_no_drain(local_cursor, |dst, pitch| {
+                swizzle_subrect_rgba_to_xrgb8888(
+                    rgba, cw, ch, sx, sy, dst, pitch, ow as usize, oh as usize,
+                );
+            });
+        }
+    }
+}
+
+impl Presenter for DrmPresenter {
+    fn present(&mut self, scene: &Scene, _output: OutputId) {
+        self.render(scene);
+    }
+
+    fn set_dpms(&mut self, on: bool) {
+        self.blanked = !on;
+        for e in self.scanouts.iter_mut() {
+            e.scanout.set_dpms(on);
+        }
+    }
+}
+
 impl Backend for DrmBackend {
+    /// Inline presentation. Only reached when the presenter has *not*
+    /// been split off (the compositor takes it at startup); kept so a
+    /// caller that never splits still paints.
     fn submit_frame(&mut self, scene: &Scene, _output: OutputId) {
         // Track D2: while blanked the CRTCs are disabled — painting +
         // presenting would either be wasted work or re-light the panels
@@ -237,6 +397,38 @@ impl Backend for DrmBackend {
 
     fn outputs(&self) -> &[Output] {
         &self.outputs
+    }
+
+    /// The primary connector's mode, converted from its raw timing
+    /// (pixel clock over htotal×vtotal) rather than the rounded
+    /// `vrefresh`, so a 59.94 Hz panel is paced at 59.94 and not at 60.
+    ///
+    /// Multi-output: the compositor paints one scene across every output,
+    /// so there is a single cadence to pick. We pace to the *fastest*
+    /// connected mode — a slower output then simply shows every Nth
+    /// frame, whereas pacing to the slowest would throttle the fast panel
+    /// to the slow one's rate. Per-output cadence needs per-output scene
+    /// submission, which the single-combined-scene model does not have.
+    fn refresh_interval(&self) -> Option<std::time::Duration> {
+        self.refresh
+    }
+
+    fn take_presenter(&mut self) -> Option<Box<dyn Presenter>> {
+        if self.inner.scanouts.is_empty() {
+            // Modeset failed for every connector: there is nothing to
+            // present into and the compositor runs headless-on-DRM. Keep
+            // it on the inline path rather than spawning a thread that
+            // would only ever early-return.
+            return None;
+        }
+        let scanouts = std::mem::take(&mut self.inner.scanouts);
+        Some(Box::new(DrmPresenter {
+            scanouts,
+            outputs: self.outputs.clone(),
+            pointer: self.inner.dispatch.pointer,
+            paint: self.paint.take(),
+            blanked: self.blanked,
+        }))
     }
 
     /// Track D2: power **every** connected output on / off. Delegates to

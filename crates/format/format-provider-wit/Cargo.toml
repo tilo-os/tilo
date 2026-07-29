@@ -5,7 +5,7 @@ edition = "2021"
 description = "WIT interface + shared Rust mirror types for qOS format providers (WASM Component Model)."
 
 [dependencies]
-serde = { version = "1", features = ["derive"] }
+serde.workspace = true
 
 # The on-disk WIT files travel as crate assets so dependent crates can consume
 # them at build time via the `WIT_DIR` env var set in build.rs (see README).

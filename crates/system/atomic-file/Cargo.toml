@@ -13,4 +13,4 @@ path = "src/lib.rs"
 # std-only leaf.
 
 [dev-dependencies]
-tempfile = "3"
+tempfile.workspace = true

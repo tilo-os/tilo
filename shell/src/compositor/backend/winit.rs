@@ -33,6 +33,7 @@ use winit::platform::pump_events::{EventLoopExtPumpEvents, PumpStatus};
 use winit::window::{Window, WindowAttributes, WindowId};
 
 use super::{Backend, BackendEvent, Output, OutputId};
+use crate::compositor::present::Presenter;
 
 /// Initial host-window size — matches the `shots` default so a fresh
 /// `--mode native` launch is comparable to a `cargo run --bin shots`
@@ -94,7 +95,7 @@ impl WinitBackend {
             (INITIAL_WIDTH, INITIAL_HEIGHT),
             1.0,
         )];
-        Ok(Self {
+        let mut me = Self {
             event_loop,
             inner: Inner {
                 window: None,
@@ -104,7 +105,44 @@ impl WinitBackend {
                 base_color: FALLBACK_BG,
                 closed: false,
             },
-        })
+        };
+        me.pump_until_resumed();
+        Ok(me)
+    }
+
+    /// Pump the event loop until winit delivers `resumed` and the window
+    /// + render state exist.
+    ///
+    /// The window is created lazily because `ActiveEventLoop` semantics
+    /// forbid creating one before the loop has run an iteration. That
+    /// laziness used to leak into everything the compositor asks a
+    /// backend at startup: `outputs()` returned the placeholder size
+    /// rather than the real window's, `refresh_interval()` had no monitor
+    /// to ask, and `take_presenter()` found no render state and silently
+    /// left presentation on the loop thread — a threaded compositor that
+    /// wasn't. Draining the first `resumed` here makes construction mean
+    /// "ready", so none of those three has a lazy case to get wrong.
+    ///
+    /// Bounded: if the platform never delivers `resumed` we return anyway
+    /// and the backend behaves as it did before (lazy init on the first
+    /// `poll_events`), rather than hanging the compositor at startup.
+    fn pump_until_resumed(&mut self) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while self.inner.window.is_none() && std::time::Instant::now() < deadline {
+            let status = self
+                .event_loop
+                .pump_app_events(Some(Duration::from_millis(4)), &mut self.inner);
+            if let PumpStatus::Exit(_) = status {
+                self.inner.closed = true;
+                return;
+            }
+        }
+        if self.inner.window.is_none() {
+            eprintln!(
+                "nirios compositor: winit did not deliver `resumed` within 2s; \
+                 falling back to lazy window creation"
+            );
+        }
     }
 
     /// Override the per-frame clear color. The compositor calls this
@@ -115,12 +153,31 @@ impl WinitBackend {
     }
 }
 
-impl Backend for WinitBackend {
-    fn submit_frame(&mut self, scene: &Scene, _output: OutputId) {
-        let inner = &mut self.inner;
-        let Some(render) = inner.render.as_mut() else {
-            return;
-        };
+/// The presentation half of [`WinitBackend`], moved onto the render
+/// thread by [`Backend::take_presenter`].
+///
+/// Everything here is `Send`: the wgpu device/queue/surface and the
+/// `Arc<Window>` all are. What is *not* `Send` — winit's `EventLoop`,
+/// which must be pumped from the thread that created it — stays behind on
+/// the backend, which is why the split is at the [`RenderState`] boundary
+/// rather than at the whole backend.
+pub struct WinitPresenter {
+    render: RenderState,
+    base_color: Color,
+}
+
+impl WinitPresenter {
+    /// Render one frame into the swap chain and present it.
+    ///
+    /// Extracted verbatim from the old inline `submit_frame` so the
+    /// pixels are unchanged by the move; only the thread it runs on
+    /// differs. The blocking `device.poll` at the end is what paces this
+    /// thread to the surface's `AutoVsync` present mode — and, now that
+    /// it is off the input thread, blocking there costs a frame of
+    /// throughput instead of a keystroke of latency.
+    fn render_and_present(&mut self, scene: &Scene) {
+        let base_color = self.base_color;
+        let render = &mut self.render;
         let width = render.surface.config.width;
         let height = render.surface.config.height;
         let device_handle = &render.render_cx.devices[render.surface.dev_id];
@@ -135,7 +192,7 @@ impl Backend for WinitBackend {
             scene,
             &render.surface.target_view,
             &RenderParams {
-                base_color: inner.base_color,
+                base_color,
                 width,
                 height,
                 antialiasing_method: AaConfig::Area,
@@ -189,6 +246,84 @@ impl Backend for WinitBackend {
         let _ = device_handle
             .device
             .poll(wgpu::PollType::wait_indefinitely());
+    }
+}
+
+impl Presenter for WinitPresenter {
+    fn present(&mut self, scene: &Scene, _output: OutputId) {
+        self.render_and_present(scene);
+    }
+
+    /// Reconfigure the swap chain for a new window size.
+    ///
+    /// With the render state moved onto the render thread, the resize can
+    /// no longer happen inline in `Inner::window_event` — the surface
+    /// isn't there any more. It arrives here through the same channel as
+    /// frames, so a resize can never be applied out of order with respect
+    /// to a frame already queued at the old size.
+    fn resize(&mut self, size: (u32, u32)) {
+        if size.0 == 0 || size.1 == 0 {
+            return;
+        }
+        self.render
+            .render_cx
+            .resize_surface(&mut self.render.surface, size.0, size.1);
+    }
+}
+
+impl Backend for WinitBackend {
+    /// Inline presentation. Only reached when [`Backend::take_presenter`]
+    /// was not called (or already handed the render state away) — the
+    /// compositor normally submits through the render thread instead.
+    fn submit_frame(&mut self, scene: &Scene, output: OutputId) {
+        let base_color = self.inner.base_color;
+        let Some(render) = self.inner.render.take() else {
+            return;
+        };
+        let mut presenter = WinitPresenter { render, base_color };
+        presenter.present(scene, output);
+        self.inner.render = Some(presenter.render);
+    }
+
+    /// The host monitor's refresh rate. The nested-development backend is
+    /// a Wayland *client* of the parent compositor, so what it can
+    /// actually pace to is the parent's output — which is what
+    /// `current_monitor` reports. When the parent doesn't publish a rate
+    /// (some nested/headless parents don't), we report `None` and the
+    /// compositor falls back rather than inventing one.
+    fn refresh_interval(&self) -> Option<std::time::Duration> {
+        let window = self.inner.window.as_ref()?;
+        // Ask the monitor the window is on, then the primary, then any
+        // monitor that publishes a rate. Parents differ in which of these
+        // they populate — a nested headless `cage` publishes none of them,
+        // which is why a nested run falls back rather than pacing to a
+        // real panel.
+        window
+            .current_monitor()
+            .into_iter()
+            .chain(window.primary_monitor())
+            .chain(window.available_monitors())
+            .find_map(|m| m.refresh_rate_millihertz())
+            .and_then(crate::compositor::pacing::interval_from_millihertz)
+    }
+
+    fn take_presenter(&mut self) -> Option<Box<dyn Presenter>> {
+        let Some(render) = self.inner.render.take() else {
+            // Construction is supposed to have drained `resumed`, so
+            // there is no legitimate path here. Say so rather than
+            // quietly leaving the GPU submit on the input thread — a
+            // compositor that thinks it is threaded and isn't is the
+            // worst of both.
+            eprintln!(
+                "nirios compositor: winit backend has no render state to hand \
+                 to the render thread; presenting inline"
+            );
+            return None;
+        };
+        Some(Box::new(WinitPresenter {
+            render,
+            base_color: self.inner.base_color,
+        }))
     }
 
     fn poll_events(&mut self, callback: &mut dyn FnMut(BackendEvent)) {
@@ -306,6 +441,11 @@ impl ApplicationHandler for Inner {
                 if size.width == 0 || size.height == 0 {
                     return;
                 }
+                // Only reachable on the inline path. Once the render
+                // state has moved to the render thread this is `None`
+                // and the resize travels through the present pipe
+                // instead (`Presenter::resize`), which keeps it ordered
+                // against frames already queued at the old size.
                 if let Some(render) = self.render.as_mut() {
                     render
                         .render_cx

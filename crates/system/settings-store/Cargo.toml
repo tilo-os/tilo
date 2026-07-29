@@ -8,14 +8,14 @@ name = "settings_store"
 path = "src/lib.rs"
 
 [dependencies]
-serde_json = "1.0"
-tracing = "0.1"
+serde_json.workspace = true
+tracing.workspace = true
 # Resolves `$HOME` for the XDG fallback. `dirs::config_dir()` is deliberately
 # NOT used to locate the config root — see the module docs for why its
 # handling of a relative `XDG_CONFIG_HOME` differs from the XDG basedir spec.
-dirs = "6.0"
+dirs.workspace = true
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
 atomic-file = { path = "../../../crates/system/atomic-file" }
 
 [dev-dependencies]
-serial_test = "3"
+serial_test.workspace = true
