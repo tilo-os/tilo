@@ -204,6 +204,134 @@ impl<'a> ControlState for FrameBuilderControlState<'a> {
         serde_json::Value::Array(frames)
     }
 
+    /// Grant on the active workspace, on behalf of the user sitting
+    /// here, through `Workspace::grant_as`.
+    ///
+    /// `grant_as` is the authority check: it refuses a grantor who
+    /// neither owns the room nor holds `Admin` over it. The refusal
+    /// surfaces to the caller as an error — this op cannot widen
+    /// anyone's access past what the person driving it already holds.
+    fn grant_capability(
+        &self,
+        subject: &str,
+        scope: &str,
+        verb: &str,
+        id: Option<&str>,
+    ) -> Result<serde_json::Value, String> {
+        use crate::shell::state::CapOverride;
+        let chrome = self.fb.chrome();
+        let user = chrome.local_user_id.clone();
+        let mut tree = chrome.tree_mut();
+        let ws_id = tree
+            .active_workspace()
+            .map(|w| w.id)
+            .ok_or_else(|| "no active workspace".to_string())?;
+        let room_key = ws_id.raw().to_string();
+        let subject = test_control::parse_subject(subject)?;
+        let scope = test_control::parse_scope(scope, &room_key)?;
+        let verb = test_control::parse_verb(verb)?;
+        let mut cap = CapOverride::grant(subject, scope, verb);
+        if let Some(id) = id {
+            cap = cap.with_id(id);
+        }
+        let ws = tree
+            .workspaces
+            .iter_mut()
+            .find(|w| w.id == ws_id)
+            .ok_or_else(|| "no active workspace".to_string())?;
+        let granted = ws.grant_as(&user, cap).ok_or_else(|| {
+            format!("{user} may not administer this room, so nothing was granted")
+        })?;
+        let written = ws
+            .capabilities
+            .iter()
+            .find(|c| c.id == granted)
+            .cloned()
+            .ok_or_else(|| "grant recorded but not readable back".to_string())?;
+        tree.doc_insert_capability(ws_id, &written);
+        tree.flush_to_disk();
+        Ok(serde_json::json!({ "granted": granted, "grantor": user }))
+    }
+
+    /// Revoke on the active workspace through `Workspace::revoke_as` —
+    /// the same authority check as a grant.
+    fn revoke_capability(&self, id: &str) -> Result<serde_json::Value, String> {
+        let chrome = self.fb.chrome();
+        let user = chrome.local_user_id.clone();
+        let mut tree = chrome.tree_mut();
+        let ws_id = tree
+            .active_workspace()
+            .map(|w| w.id)
+            .ok_or_else(|| "no active workspace".to_string())?;
+        let ws = tree
+            .workspaces
+            .iter_mut()
+            .find(|w| w.id == ws_id)
+            .ok_or_else(|| "no active workspace".to_string())?;
+        // Distinguish the two failures. `revoke_as` returns false both
+        // for "you may not" and for "no such capability", and a harness
+        // that read one as the other would call an unauthorised revoke
+        // a successful no-op.
+        let may = ws.may_administer(&user);
+        if !may {
+            return Err(format!(
+                "{user} may not administer this room, so nothing was revoked"
+            ));
+        }
+        let removed = ws.revoke_as(&user, id);
+        if removed {
+            tree.doc_revoke_capability(ws_id, id);
+            tree.flush_to_disk();
+        }
+        Ok(serde_json::json!({ "revoked": removed, "revoker": user, "id": id }))
+    }
+
+    /// Answer the in-app action gate for the live workspace.
+    fn check_action(
+        &self,
+        actor: &str,
+        app: &str,
+        action: &str,
+        verb: &str,
+        destructive: bool,
+    ) -> Result<serde_json::Value, String> {
+        use crate::shell::actions::{ActionDecl, ActionRegistry, check_action};
+        use crate::shell::state::ResourceRef;
+        let chrome = self.fb.chrome();
+        let tree = chrome.tree();
+        let ws = tree
+            .active_workspace()
+            .ok_or_else(|| "no active workspace".to_string())?;
+        let verb = test_control::parse_verb(verb)?;
+        let actor = match actor.split_once(':') {
+            Some(("person", id)) => ws.actor_for_person(&id.to_string()),
+            Some(("app", id)) => ws.actor_for_app(id),
+            Some(("agent", id)) => ws.actor_for_agent(id),
+            _ => {
+                return Err(format!(
+                    "actor must be person:<id>, app:<id> or agent:<id>, got `{actor}`"
+                ));
+            }
+        };
+        let mut registry = ActionRegistry::new();
+        let mut decl = ActionDecl::new(app, action, verb);
+        if destructive {
+            decl = decl.destructive();
+        }
+        registry.declare(decl);
+        let resource = ResourceRef::Action {
+            app: app.to_string(),
+            action: action.to_string(),
+        };
+        let outcome = check_action(ws, &registry, &actor, app, action, &resource);
+        Ok(serde_json::json!({
+            "outcome": format!("{outcome:?}"),
+            "permitted": outcome.is_permitted(),
+            "workspace": ws.id.raw(),
+            "room": ws.room.to_string(),
+        }))
+    }
+
     /// Build a structured view of [`ChromeState`] for the
     /// `state_dump` response. We construct the object manually rather
     /// than `derive(Serialize)` on `ChromeState` because the chrome
@@ -232,6 +360,24 @@ impl<'a> ControlState for FrameBuilderControlState<'a> {
             // Mirrored from the compositor's SessionManager each tick; lets a
             // headless test observe lock/unlock transitions over the wire.
             "session_locked": chrome.session_locked(),
+            // Who this session is, and whether they may administer the
+            // room they are looking at. Both are read straight off the
+            // production helpers — a harness must not have to guess
+            // either from the workspace's owner field.
+            "local_user_id": chrome.local_user_id,
+            "may_administer_active": chrome
+                .tree()
+                .active_workspace()
+                .map(|ws| ws.may_administer(&chrome.local_user_id))
+                .unwrap_or(false),
+            // The peer-sync card's contents. The invite token is on
+            // screen for the user to read; exposing it here is the same
+            // fact in a form a script can act on.
+            "peer_sync": {
+                "invite_token": chrome.peer_sync_invite_token,
+                "connect_input": chrome.peer_sync_connect_input,
+                "status": chrome.peer_sync_status,
+            },
         })
     }
 }
