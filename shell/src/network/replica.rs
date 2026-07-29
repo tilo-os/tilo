@@ -67,6 +67,17 @@ pub struct WorkspaceTreeReplica {
     pub id: u64,
     pub tree: WorkspaceTreeHandle,
     pub pending_outgoing: Arc<Mutex<Vec<NeighbourMsg>>>,
+    /// The transport identity this replica's messages arrive under.
+    ///
+    /// Only meaningful when the replica is driven through a [`Hub`],
+    /// which has no peer identities of its own: the live wiring calls
+    /// [`Self::handle_from`] with the authenticated `PeerId` directly and
+    /// never consults this. A hub-driven replica standing in for a peer —
+    /// the one that issued an invite, say — sets it so the receiving side
+    /// sees the identity the invite named.
+    ///
+    /// [`Hub`]: crate::network::hub::Hub
+    pub origin: PeerOrigin,
 }
 
 impl WorkspaceTreeReplica {
@@ -75,7 +86,14 @@ impl WorkspaceTreeReplica {
             id,
             tree,
             pending_outgoing: Arc::new(Mutex::new(Vec::new())),
+            origin: PeerOrigin::hub(id),
         }
+    }
+
+    /// Deliver this replica's messages under `origin`.
+    pub fn with_origin(mut self, origin: PeerOrigin) -> Self {
+        self.origin = origin;
+        self
     }
 
     /// Stash one `SyncReq` per room this machine is in, each carrying that
@@ -133,23 +151,26 @@ impl TopicSubscriber for WorkspaceTreeReplica {
         self.id
     }
 
-    fn handle(&mut self, sender: u64, msg: &NeighbourMsg) {
-        self.handle_from(&PeerOrigin::hub(sender), msg);
+    fn origin(&self) -> PeerOrigin {
+        self.origin.clone()
+    }
+
+    fn handle(&mut self, sender: &PeerOrigin, msg: &NeighbourMsg) {
+        self.handle_from(sender, msg);
     }
 }
 
 impl WorkspaceTreeReplica {
-    /// [`TopicSubscriber::handle`], but with the sender named as the
-    /// transport authenticated it rather than as a hub subscriber id.
+    /// [`TopicSubscriber::handle`] under the name the live transport
+    /// authenticated, which is what an authority decision may rest on.
     ///
     /// The room-replication path decides whether a payload may rewrite a
     /// room's governance, and that decision turns on **who** the bytes
-    /// came from. `sender: u64` cannot carry that: in production it was a
-    /// `DefaultHasher` digest of the peer id, which is fine for
-    /// echo-suppression and not fine for an authority check. So the live
-    /// wiring calls this with the peer's own identity
-    /// ([`PeerOrigin::peer`]) and the hub's `handle` supplies its
-    /// subscriber id, namespaced apart.
+    /// came from. The `u64` the hub used to pass cannot carry that: in
+    /// production it was a `DefaultHasher` digest of the peer id, fine for
+    /// echo-suppression and not fine for an equality check an attacker
+    /// gets to aim at. So the live wiring calls this with the peer's own
+    /// identity ([`PeerOrigin::peer`]).
     pub fn handle_from(&mut self, from: &PeerOrigin, msg: &NeighbourMsg) {
         let sender = from;
         match msg {
@@ -253,7 +274,10 @@ mod tests {
         fn id(&self) -> u64 {
             self.0.lock().unwrap().id()
         }
-        fn handle(&mut self, sender: u64, msg: &NeighbourMsg) {
+        fn origin(&self) -> PeerOrigin {
+            self.0.lock().unwrap().origin()
+        }
+        fn handle(&mut self, sender: &PeerOrigin, msg: &NeighbourMsg) {
             self.0.lock().unwrap().handle(sender, msg);
         }
     }
@@ -450,7 +474,16 @@ mod tests {
             accept_invite_into(&mut guest_tree, guest_ws, &token).expect("the guest accepts it");
         assert_eq!(joined, room_a, "the invite names room A");
 
-        let host = Arc::new(Mutex::new(WorkspaceTreeReplica::new(1, host_tree.shared())));
+        // The host replica delivers under the identity its own invite
+        // named. That is what the guest pinned as room A's governance
+        // authority when it accepted, and it is why the round below is
+        // answered rather than refused: a guest takes a room's owner and
+        // capabilities from the peer whose signature admitted it.
+        let host = Arc::new(Mutex::new(
+            WorkspaceTreeReplica::new(1, host_tree.shared()).with_origin(PeerOrigin::peer(
+                &owner_key.public().to_peer_id(),
+            )),
+        ));
         let guest_handle = guest_tree.shared();
         let guest = Arc::new(Mutex::new(WorkspaceTreeReplica::new(
             2,
@@ -536,7 +569,7 @@ mod tests {
         let mut host = WorkspaceTreeReplica::new(1, host_tree.shared());
 
         host.handle(
-            9,
+            &PeerOrigin::hub(9),
             &NeighbourMsg::SyncReq {
                 since: serde_json::to_vec(&Vec::<automerge::ChangeHash>::new()).unwrap(),
                 room: stranger_room.to_string(),
@@ -561,7 +594,7 @@ mod tests {
         let mut host = WorkspaceTreeReplica::new(1, host_tree.shared());
 
         host.handle(
-            9,
+            &PeerOrigin::hub(9),
             &NeighbourMsg::SyncReq {
                 since: Vec::new(),
                 room: String::new(),
@@ -779,7 +812,7 @@ mod tests {
         // causing `apply_room_changes` to return `Err`.
         let garbage = vec![0xDE, 0xAD, 0xBE, 0xEF];
         rep.handle(
-            7,
+            &PeerOrigin::hub(7),
             &NeighbourMsg::SyncResp {
                 changes: vec![garbage],
                 room: room.to_string(),
@@ -807,7 +840,7 @@ mod tests {
         let mut rep = WorkspaceTreeReplica::new(7, tree);
 
         rep.handle(
-            1,
+            &PeerOrigin::hub(1),
             &NeighbourMsg::PresenceCleared {
                 peer: 1,
                 key: "cursor".into(),
