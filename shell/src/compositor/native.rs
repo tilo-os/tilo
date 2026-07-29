@@ -1636,7 +1636,7 @@ pub fn run() -> ! {
                 if let Err(e) =
                     atomic_file::write_creating_parent(std::path::Path::new(path), &json)
                 {
-                    tracing::warn!(error = %e, path, "workspace tree save failed");
+                    tracing::warn!(error = %e, path = ?path, "workspace tree save failed");
                 }
             }
         }
