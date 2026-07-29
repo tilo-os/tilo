@@ -415,22 +415,8 @@ impl DocStore {
     pub(crate) fn write_full(&self, bytes: &[u8]) -> Result<(), StoreError> {
         fs::create_dir_all(&self.dir)
             .map_err(|e| io_err(format!("creating {}", self.dir.display()), e))?;
-        let tmp = self.document.with_extension("automerge.tmp");
-        {
-            let mut f = File::create(&tmp)
-                .map_err(|e| io_err(format!("creating {}", tmp.display()), e))?;
-            f.write_all(bytes)
-                .map_err(|e| io_err(format!("writing {}", tmp.display()), e))?;
-            f.sync_all()
-                .map_err(|e| io_err(format!("syncing {}", tmp.display()), e))?;
-        }
-        fs::rename(&tmp, &self.document).map_err(|e| {
-            io_err(
-                format!("renaming {} to {}", tmp.display(), self.document.display()),
-                e,
-            )
-        })?;
-        Ok(())
+        atomic_file::write(&self.document, bytes)
+            .map_err(|e| io_err(format!("writing {}", self.document.display()), e))
     }
 }
 
@@ -468,17 +454,8 @@ fn load_or_create_actor(path: &Path) -> Result<ActorId, StoreError> {
     let actor = ActorId::random();
     // Atomic so a crash here can't leave a truncated hex string that would
     // silently downgrade every future launch to a new identity.
-    let tmp = path.with_extension("tmp");
-    {
-        let mut f =
-            File::create(&tmp).map_err(|e| io_err(format!("creating {}", tmp.display()), e))?;
-        f.write_all(actor.to_hex_string().as_bytes())
-            .map_err(|e| io_err(format!("writing {}", tmp.display()), e))?;
-        f.sync_all()
-            .map_err(|e| io_err(format!("syncing {}", tmp.display()), e))?;
-    }
-    fs::rename(&tmp, path)
-        .map_err(|e| io_err(format!("renaming {} to {}", tmp.display(), path.display()), e))?;
+    atomic_file::write(path, actor.to_hex_string().as_bytes())
+        .map_err(|e| io_err(format!("writing {}", path.display()), e))?;
     Ok(actor)
 }
 

@@ -378,7 +378,6 @@ impl ChatApp {
         // the user navigates elsewhere.
         self.mark_active_read(doc);
         self.reload(doc);
-        self.persist(doc);
     }
 
     // --- voice / call wiring ---------------------------------------------
@@ -491,7 +490,6 @@ impl ChatApp {
             }
         }
         self.reload(doc);
-        self.persist(doc);
     }
 
     fn apply_channel_action(&mut self, id: &str, action: MenuAction, doc: &mut AutoCommit) {
@@ -508,7 +506,6 @@ impl ChatApp {
             _ => {}
         }
         self.reload(doc);
-        self.persist(doc);
     }
 
     fn apply_category_action(&mut self, id: &str, action: MenuAction, doc: &mut AutoCommit) {
@@ -528,7 +525,6 @@ impl ChatApp {
             _ => {}
         }
         self.reload(doc);
-        self.persist(doc);
     }
 
     /// Open the inline rename editor for a target, seeded with its current
@@ -557,7 +553,6 @@ impl ChatApp {
             }
             self.caret = 0;
             self.reload(doc);
-            self.persist(doc);
         }
     }
 
@@ -804,7 +799,6 @@ impl ChatApp {
         }
         ChatDoc::edit_message(doc, &self.active_channel, &id, &text, now_secs());
         self.reload(doc);
-        self.persist(doc);
     }
 
     /// Discard the inline message editor without writing.
@@ -840,7 +834,6 @@ impl ChatApp {
             self.scroll = 0.0;
         }
         self.reload(doc);
-        self.persist(doc);
     }
 
     /// Open the workspace file picker (the composer "+"). Lists the real
@@ -897,7 +890,6 @@ impl ChatApp {
         );
         self.scroll = 0.0;
         self.reload(doc);
-        self.persist(doc);
         true
     }
 }
@@ -939,7 +931,7 @@ mod tests {
     fn live_sync_seeds_empty_starter_never_the_demo() {
         use ui::Widget;
         // Drive the real production `sync` for a live instance that has no
-        // persistence (no data dir → no saver). It must scaffold the honest
+        // persistence behind it. It must scaffold the honest
         // empty starter — one local user, a `#general` with no messages — and
         // never the fabricated demo (its people, channels, and the screenshare
         // conversation thread).

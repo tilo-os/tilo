@@ -152,15 +152,12 @@ pub fn update_section_at(
     write_atomic(path, &Value::Object(doc))
 }
 
+/// Serialise and replace the document. `atomic_file` does the crash-safe
+/// part: a truncated `settings.json` would reset every pane at once.
 fn write_atomic(path: &Path, doc: &Value) -> std::io::Result<()> {
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
     let mut body = serde_json::to_string_pretty(doc).map_err(std::io::Error::other)?;
     body.push('\n');
-    let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, body.as_bytes())?;
-    std::fs::rename(&tmp, path)
+    atomic_file::write_creating_parent(path, body.as_bytes())
 }
 
 /// Read a `f64` at `section.key`, clamped into `range`, falling back to
