@@ -52,9 +52,8 @@ pub use app::ChatApp;
 
 use ui::widget::Widget;
 
-/// Build and return the app's root widget tree (live event loop). Loads the
-/// persisted workspace from disk if one exists and wires up the background
-/// saver so subsequent edits persist.
+/// Build and return the app's root widget tree (live event loop). The
+/// document behind it is loaded and written by `app-state`; see `main`.
 pub fn app_root() -> Box<dyn Widget> {
     Box::new(ChatApp::new())
 }

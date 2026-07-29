@@ -665,8 +665,7 @@ impl ChatDoc {
         let _ = doc.put(&h, "text", old.as_str());
 
         let text = get_or_text(doc, &block, "text");
-        let cur = doc.text(&text).unwrap_or_default();
-        let _ = doc.splice_text(&text, 0, cur.chars().count() as isize, new_text);
+        ui::doc::splice_text_diffed(doc, &text, new_text);
         let _ = doc.put(&block, "edited", true);
     }
 
@@ -686,8 +685,7 @@ impl ChatDoc {
 
     pub fn clear_draft(doc: &mut AutoCommit, channel: &str) {
         let obj = Self::draft_obj(doc, channel);
-        let cur = doc.text(&obj).unwrap_or_default();
-        let _ = doc.splice_text(&obj, 0, cur.chars().count() as isize, "");
+        ui::doc::splice_text_diffed(doc, &obj, "");
     }
 
     // -----------------------------------------------------------------------
@@ -1330,6 +1328,57 @@ mod tests {
         assert_eq!(m.text, "Edited body.");
         assert!(m.edited);
         assert_eq!(m.history.len(), 1, "previous body archived");
+    }
+
+    #[test]
+    fn editing_a_long_message_splices_only_the_changed_span() {
+        // Editing a message re-sends its whole body. Deleting and reinserting
+        // it tombstones every character on every edit, so a message that is
+        // corrected a few times costs many times its own length forever.
+        let mut doc = seeded();
+        let body = "The deploy finished at 14:02 and the canary is green across \
+                    all three regions; rolling the rest of the fleet now."
+            .to_string();
+        ChatDoc::edit_message(&mut doc, "c_crit", "m_me1", &body, NOW);
+        let baseline = doc.save().len();
+
+        // 30 corrections, each touching only the last word.
+        for i in 0..30 {
+            let edited = format!("{body} v{i}");
+            ChatDoc::edit_message(&mut doc, "c_crit", "m_me1", &edited, NOW + i as i64);
+        }
+        let grown = doc.save().len() - baseline;
+
+        let msgs = ChatDoc::list_messages(&doc, "c_crit");
+        let m = msgs.iter().find(|m| m.id == "m_me1").unwrap();
+        assert_eq!(m.text, format!("{body} v29"), "the last edit must be the body");
+        // Each edit legitimately archives the previous body into `history`, so
+        // the bound is against the archive cost, not zero. A full rewrite would
+        // add the body a second time per edit on top of that.
+        assert!(
+            grown < 30 * body.len() * 3 / 2,
+            "30 one-word edits grew the document by {grown} bytes for a {}-char \
+             body — edit_message is rewriting the whole text",
+            body.len()
+        );
+    }
+
+    #[test]
+    fn clearing_an_unset_draft_is_free() {
+        let mut doc = seeded();
+        ChatDoc::draft_obj(&mut doc, "c_crit");
+        let before = doc.save().len();
+
+        for _ in 0..20 {
+            ChatDoc::clear_draft(&mut doc, "c_crit");
+        }
+
+        assert_eq!(ChatDoc::draft_text(&doc, "c_crit"), "");
+        assert_eq!(
+            doc.save().len(),
+            before,
+            "clearing an already-empty draft must not grow the document"
+        );
     }
 
     #[test]

@@ -297,7 +297,11 @@ pub fn parse_otpauth_uri(uri: &str, new_id: AccountId) -> Result<Account, String
         Some((l, q)) => (l, q),
         None => (after_type, ""),
     };
-    let label = percent_decode(label_raw);
+    // `otpauth://` is a URI, not a form submission: the label is a *path*
+    // segment, so RFC 3986 applies and `+` is a literal plus. Decoding it as a
+    // space would rename `Google+` to `Google ` and mangle a leading `+` on a
+    // phone-number account name.
+    let label = ui::uri::decode(label_raw);
 
     // Query params.
     let mut secret = String::new();
@@ -311,7 +315,7 @@ pub fn parse_otpauth_uri(uri: &str, new_id: AccountId) -> Result<Account, String
         }
         let (k, v) = pair.split_once('=').unwrap_or((pair, ""));
         let key = k.to_ascii_lowercase();
-        let val = percent_decode(v);
+        let val = ui::uri::decode(v);
         match key.as_str() {
             "secret" => secret = normalise_secret(&val),
             "issuer" => issuer_param = val,
@@ -358,47 +362,6 @@ pub fn normalise_secret(s: &str) -> String {
         .to_uppercase()
 }
 
-/// Minimal RFC 3986 percent-decoder (also maps `+` → space, matching how
-/// authenticator QR codes encode labels). Invalid escapes are passed
-/// through verbatim rather than erroring — robustness over strictness.
-fn percent_decode(s: &str) -> String {
-    let bytes = s.as_bytes();
-    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        match bytes[i] {
-            b'%' if i + 2 < bytes.len() => {
-                let hi = hex_val(bytes[i + 1]);
-                let lo = hex_val(bytes[i + 2]);
-                if let (Some(h), Some(l)) = (hi, lo) {
-                    out.push(h << 4 | l);
-                    i += 3;
-                } else {
-                    out.push(bytes[i]);
-                    i += 1;
-                }
-            }
-            b'+' => {
-                out.push(b' ');
-                i += 1;
-            }
-            b => {
-                out.push(b);
-                i += 1;
-            }
-        }
-    }
-    String::from_utf8_lossy(&out).into_owned()
-}
-
-fn hex_val(b: u8) -> Option<u8> {
-    match b {
-        b'0'..=b'9' => Some(b - b'0'),
-        b'a'..=b'f' => Some(b - b'a' + 10),
-        b'A'..=b'F' => Some(b - b'A' + 10),
-        _ => None,
-    }
-}
 
 /// The per-account colour palette, sourced entirely from the active
 /// [`Theme`]'s tokens — no hard-coded literals — so it tracks the OS
@@ -480,6 +443,24 @@ mod tests {
         assert_eq!(acc.algorithm, Algorithm::Sha1);
         assert_eq!(acc.digits, 6);
         assert_eq!(acc.period, 30);
+    }
+
+    #[test]
+    fn a_plus_in_a_label_or_issuer_stays_a_plus() {
+        // `otpauth://` is a URI, so RFC 3986 governs both the label path
+        // segment and the query values: `+` is a literal plus, not a space.
+        // A space is spelled `%20`, as `parse_uri_issuer_from_label_prefix`
+        // shows. Reading `+` as a space renamed `Google+` to `Google `.
+        let uri = "otpauth://totp/Google+:a%2B1%40example.com?secret=JBSWY3DPEHPK3PXP&issuer=Notion+";
+        let acc = parse_otpauth_uri(uri, Uuid::new_v4()).unwrap();
+        assert_eq!(acc.issuer, "Notion+", "an explicit issuer param keeps its plus");
+        assert_eq!(acc.label, "a+1@example.com", "%2B decodes, the bare + stays");
+
+        // And with no issuer param, the label prefix supplies it — also intact.
+        let uri = "otpauth://totp/Google+:ada?secret=JBSWY3DPEHPK3PXP";
+        let acc = parse_otpauth_uri(uri, Uuid::new_v4()).unwrap();
+        assert_eq!(acc.issuer, "Google+");
+        assert_eq!(acc.label, "ada");
     }
 
     #[test]

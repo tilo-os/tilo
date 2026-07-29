@@ -49,7 +49,16 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::process::exit(ui::headless::run(spec, chat::app_root(), "dev.qos.chat"));
     }
 
-    let (state, autosave) = ui::persist::open("dev.qos.chat");
+    // An older release kept the workspace in its own file. Hand that path to
+    // `open_migrating` so existing history is merged into the shared store on
+    // first launch rather than orphaned; the merge is idempotent.
+    let (state, autosave) = match chat::storage::data_dir() {
+        Some(dir) => ui::persist::open_migrating(
+            "dev.qos.chat",
+            &chat::storage::workspace_path(&dir),
+        ),
+        None => ui::persist::open("dev.qos.chat"),
+    };
     let app = ui::App::new(state, chat::app_root()).with_autosave(autosave);
     app.run();
     Ok(())

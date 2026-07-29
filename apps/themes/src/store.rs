@@ -58,16 +58,10 @@ use crate::model::ThemeSpec;
 /// The section key this store owns inside the shared settings document.
 pub const SECTION: &str = "appearance";
 
-/// Resolve the shared settings path: `$XDG_CONFIG_HOME/qos/settings.json`,
-/// falling back to `~/.config/qos/settings.json`. `None` only when neither
-/// `XDG_CONFIG_HOME` nor `HOME` is set. Mirrors the resolution the Settings
-/// app's region/prefs stores use so both write the same file.
+/// Resolve the shared settings path. Delegating to [`settings_store`] is what
+/// keeps this in step with the Settings app rather than by hand.
 pub fn store_path() -> Option<PathBuf> {
-    let base = std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .filter(|p| !p.as_os_str().is_empty())
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))?;
-    Some(base.join("qos").join("settings.json"))
+    settings_store::settings_path()
 }
 
 /// Merge `spec` into `existing` (the current settings-document text, or

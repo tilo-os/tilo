@@ -55,8 +55,6 @@ pub fn write_index(dir: &Path, index: &RegistryIndex) -> Result<()> {
     std::fs::create_dir_all(dir).with_context(|| format!("create {dir:?}"))?;
     let bytes = index.to_json().context("encode index.json")?;
     let target = index_path(dir);
-    let tmp = target.with_extension("json.tmp");
-    std::fs::write(&tmp, &bytes).with_context(|| format!("write {tmp:?}"))?;
-    std::fs::rename(&tmp, &target).with_context(|| format!("rename into {target:?}"))?;
+    atomic_file::write(&target, &bytes).with_context(|| format!("write {target:?}"))?;
     Ok(())
 }
