@@ -79,16 +79,14 @@ impl Default for AccountsPane {
 
 impl AccountsPane {
     pub fn new() -> Self {
-        let real = AccountDirectory::load();
-        let is_sample = real.is_empty();
-        let dir = if is_sample {
-            crate::accounts::sample_directory()
-        } else {
-            real
-        };
+        // The live pane shows the *real* stores — empty until the user adds an
+        // account. It never substitutes illustrative sample accounts: showing
+        // fabricated `ada@example.com` rows would present made-up data on an
+        // empty state. The deterministic `--shots`/tests use
+        // `from_dir(sample_directory(), true)` for a rich still instead.
         Self {
-            dir,
-            is_sample,
+            dir: AccountDirectory::load(),
+            is_sample: false,
             form_open: false,
             removed: Vec::new(),
             structure_dirty: false,
@@ -144,13 +142,13 @@ impl AccountsPane {
                 "You have no accounts yet. The entries below are examples of \
                  what you can add — use \u{201c}Add\u{201d} to create a real one.",
             ));
+        } else if self.dir.is_empty() {
+            // The live empty state: honest, no fabricated rows.
+            intro.push(caption(
+                "You have no accounts yet. Use \u{201c}Add\u{201d} to connect \
+                 your first account.",
+            ));
         }
-        intro.push(caption(&format!(
-            "Accounts store: {}",
-            accounts::store_path()
-                .map(|p| p.display().to_string())
-                .unwrap_or_else(|| "~/.config/qos/accounts/store.json".into())
-        )));
         panel.push(card("External accounts", rows(intro)));
 
         if self.form_open {
@@ -292,15 +290,11 @@ impl AccountsPane {
         )
     }
 
-    /// Reload the real directory after a mutation and recompute `is_sample`.
+    /// Reload the real directory after a mutation. The live pane never
+    /// substitutes the sample, so `is_sample` stays as constructed (always
+    /// `false` for the live pane).
     fn reload(&mut self) {
-        let real = AccountDirectory::load();
-        self.is_sample = real.is_empty();
-        self.dir = if self.is_sample {
-            crate::accounts::sample_directory()
-        } else {
-            real
-        };
+        self.dir = AccountDirectory::load();
     }
 
     /// Persist a new mail account from the form fields. Returns whether an
@@ -686,6 +680,25 @@ mod tests {
         let _ = doc.put(&root, FORM_CANCEL_KEY, true);
         pane.sync(&mut doc, &root);
         assert!(!pane.form_open(), "Cancel closes the form");
+    }
+
+    /// The live pane (`new()`, over an empty store) must NOT fabricate the
+    /// illustrative sample — it renders an honest empty state, mirroring the
+    /// Printers pane's no-fabrication rule. Asserts the real production path,
+    /// with `XDG_CONFIG_HOME` redirected to an empty temp dir.
+    #[test]
+    fn live_pane_over_empty_store_does_not_fabricate_sample() {
+        let _cfg = crate::prefs::test_env::ConfigGuard::new("accounts_empty_live");
+        let pane = AccountsPane::new();
+        assert!(!pane.is_sample(), "the live pane never flags the sample");
+        assert!(
+            pane.directory().is_empty(),
+            "an empty store renders empty — no fabricated ada@example.com rows"
+        );
+        // And no account of any kind leaked in from the sample.
+        for kind in [AccountKind::Mail, AccountKind::CalDav, AccountKind::WebDav, AccountKind::Nextcloud] {
+            assert!(pane.directory().views_of(kind).is_empty(), "{kind:?} must be empty");
+        }
     }
 
     #[test]

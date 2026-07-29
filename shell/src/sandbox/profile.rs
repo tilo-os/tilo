@@ -268,12 +268,23 @@ impl SandboxProfile {
 
     /// Walk a workspace's `grants` slice for one app and apply each
     /// granted capability to this profile. Handles `Camera` /
-    /// `Microphone` (Phase 5 Task 5.3), `Always`-scoped `Filesystem`
-    /// grants (Phase 5 Task 5.1), and `Always`-scoped `Network` grants
-    /// (Phase 5 Task 5.2). `Once` / `Session` filesystem grants are
-    /// routed through the portal at runtime (it returns an open fd via
-    /// cap-std, no bind-mount needed). `Screencast` is a no-op here and
-    /// lands in the portal screencast follow-up.
+    /// `Microphone`, `Filesystem` grants scoped `Always` or `Session`,
+    /// and `Always`-scoped `Network` grants.
+    ///
+    /// Filesystem delivery by scope:
+    /// * `Always` — persists across restarts; bound into the sandbox.
+    /// * `Session` — held for the current shell session; also bound. The
+    ///   sandbox process lifetime is bounded by the session, and a
+    ///   `Session` grant is cleared from the workspace's grant map on
+    ///   shell restart, so a re-spawn in a fresh session won't re-bind
+    ///   it — that gives the bind exactly session lifetime.
+    /// * `Once` — one-shot; **not** bound. Binding a path into a sandbox
+    ///   that outlives the single request would over-persist the access,
+    ///   so `Once` grants are delivered as an open fd through the runtime
+    ///   portal (cap-std) instead.
+    ///
+    /// `Screencast` is a no-op here and lands in the portal screencast
+    /// follow-up.
     ///
     /// The plan says the policy is "without a grant, the device socket
     /// simply isn't bound" — so the contract is additive: this method
@@ -281,17 +292,25 @@ impl SandboxProfile {
     /// strictly minimal profile should start from
     /// [`for_workspace_test`] and pass an empty grants slice.
     pub fn apply_grants(&mut self, grants: &[crate::shell::state::Capability]) {
-        use crate::shell::state::{Capability, GRANT_ALWAYS, GRANT_ONCE, GRANT_SESSION};
+        use crate::shell::state::{Capability, Expiry};
         for cap in grants {
             match cap {
                 Capability::Camera { .. } => self.grant_camera(),
                 Capability::Microphone { .. } => self.grant_microphone(),
                 Capability::Filesystem { path, mode, scope } => {
-                    // Only `Always`-scoped grants persist as bind-mounts;
-                    // `Once` and `Session` are handled by the runtime
-                    // portal (it returns an open fd via cap-std, no
-                    // bind-mount needed).
-                    if scope.persists_across_restart() {
+                    // A grant that outlives its request is delivered as a
+                    // bind-mount; only the one-shot stays portal-fd.
+                    //
+                    // `EndOfSession` binds too, and must: it is the scope a
+                    // dropped file records, and refusing it leaves the grant
+                    // recorded while the app can never read the file. The
+                    // bind then has exactly session lifetime — it is rebuilt
+                    // from the capability list on every spawn, and an
+                    // `EndOfSession` capability is never written to disk, so
+                    // a restart is what ends it. `AfterUse` stays fd-only:
+                    // binding a one-shot into a longer-lived sandbox would
+                    // over-persist it past the request that justified it.
+                    if !matches!(scope, Expiry::AfterUse) {
                         self.grant_filesystem_path(path, mode.clone());
                     }
                 }
@@ -691,22 +710,89 @@ mod tests {
 
     #[test]
     #[serial(scan_memo)]
-    fn apply_grants_with_filesystem_session_scope_does_not_bind() {
-        use crate::shell::state::{Capability, FsMode, GRANT_ALWAYS, GRANT_ONCE, GRANT_SESSION};
-        let mut p =
-            SandboxProfile::for_workspace_test(Path::new("/tmp/ws"), Path::new("/tmp/cache"));
+    fn apply_grants_with_filesystem_session_scope_binds_for_the_session() {
+        use crate::shell::state::{Capability, Expiry, FsMode};
+        let mut p = SandboxProfile::for_workspace_test(
+            Path::new("/tmp/ws"),
+            Path::new("/tmp/cache"),
+        );
+        // A Session-scoped grant (the scope a dropped file records) must
+        // make the path reachable inside the sandbox — otherwise the
+        // grant is recorded but the app can never read the file. The
+        // bind has session lifetime: it's rebuilt from the grant map on
+        // every spawn, and the grant is cleared on shell restart.
+        let granted = std::path::Path::new("/home/u/dropped");
+        let grants = vec![Capability::Filesystem {
+            path: granted.to_path_buf(),
+            mode: FsMode::ReadWrite,
+            scope: Expiry::EndOfSession,
+        }];
+        p.apply_grants(&grants);
+        assert!(
+            p.binds_rw.iter().any(|(src, dst)| src == granted && dst == granted),
+            "Session-scoped ReadWrite grant must bind the path into the \
+             sandbox for the session; binds_rw = {:?}",
+            p.binds_rw
+        );
+    }
+
+    #[test]
+    #[serial(scan_memo)]
+    fn apply_grants_with_filesystem_session_scope_read_binds_read_only() {
+        use crate::shell::state::{Capability, Expiry, FsMode};
+        let mut p = SandboxProfile::for_workspace_test(
+            Path::new("/tmp/ws"),
+            Path::new("/tmp/cache"),
+        );
+        // A dropped file records a `Read` + `Session` grant. It must land
+        // in the *read-only* bind set — least privilege — not read-write.
+        let granted = std::path::Path::new("/home/u/notes.ts");
         let before_rw = p.binds_rw.len();
+        let grants = vec![Capability::Filesystem {
+            path: granted.to_path_buf(),
+            mode: FsMode::Read,
+            scope: Expiry::EndOfSession,
+        }];
+        p.apply_grants(&grants);
+        assert!(
+            p.binds_ro.iter().any(|(src, _)| src == granted),
+            "Session-scoped Read grant must appear in binds_ro; got {:?}",
+            p.binds_ro
+        );
+        assert_eq!(
+            p.binds_rw.len(),
+            before_rw,
+            "a Read grant must not add a read-write bind: {:?}",
+            p.binds_rw
+        );
+    }
+
+    #[test]
+    #[serial(scan_memo)]
+    fn apply_grants_with_filesystem_once_scope_does_not_bind() {
+        use crate::shell::state::{Capability, Expiry, FsMode};
+        let mut p = SandboxProfile::for_workspace_test(
+            Path::new("/tmp/ws"),
+            Path::new("/tmp/cache"),
+        );
+        // `Once` is one-shot: it must NOT bind into the sandbox (which
+        // outlives the single request). It's delivered as a portal fd
+        // instead. Binding it would over-persist the access.
+        let before_rw = p.binds_rw.len();
+        let before_ro = p.binds_ro.len();
         let grants = vec![Capability::Filesystem {
             path: "/home/u/secret".into(),
             mode: FsMode::ReadWrite,
-            scope: GRANT_SESSION,
+            scope: Expiry::AfterUse,
         }];
         p.apply_grants(&grants);
         assert_eq!(
             p.binds_rw.len(),
             before_rw,
-            "Session-scoped grants don't bind-mount; runtime portal handles them"
+            "Once-scoped grants must not bind-mount; the runtime portal \
+             hands the app a single fd instead"
         );
+        assert_eq!(p.binds_ro.len(), before_ro);
     }
 
     #[test]

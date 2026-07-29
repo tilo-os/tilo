@@ -2,12 +2,13 @@
 //!
 //! At runtime the shelf is the reader's *own* books: every `.epub` found under
 //! their library directories is parsed by the real container reader. When no
-//! books are present yet, a single bundled EPUB ships as a starter so the app
-//! opens onto a genuine reading page instead of a blank shelf.
+//! books are present yet the shelf is genuinely empty — the app opens onto the
+//! "no books yet" onboarding rather than a book the reader never added.
 //!
-//! The multi-book **sample** library (bundled EPUB + two authored volumes) is
-//! reserved for the hermetic `--shots`/test path, so screenshots exercise a
-//! populated shelf without fabricating content into a real user's library.
+//! The bundled EPUB + the multi-book **sample** library (bundled EPUB + two
+//! authored volumes) are reserved for the hermetic `--shots`/test path, so
+//! screenshots exercise a populated shelf without fabricating content into a
+//! real user's library.
 
 use std::path::{Path, PathBuf};
 
@@ -15,9 +16,10 @@ use crate::epub::parse_epub;
 use crate::model::{Book, Chapter};
 use crate::xhtml::parse_xhtml;
 
-/// The bundled EPUB, parsed by the real container reader. Ships as the starter
-/// book so a first-run library is never empty.
-const SAMPLE_EPUB: &[u8] = include_bytes!("../assets/sample.epub");
+/// The bundled EPUB, parsed by the real container reader. Used only by the
+/// `--shots`/test sample library and as test-fixture epub bytes — never seeded
+/// onto the live shelf.
+pub(crate) const SAMPLE_EPUB: &[u8] = include_bytes!("../assets/sample.epub");
 
 /// Environment override (`:`-separated absolute paths) for the directories
 /// scanned for `.epub` files. Lets the OS point the reader at a synced library
@@ -25,20 +27,16 @@ const SAMPLE_EPUB: &[u8] = include_bytes!("../assets/sample.epub");
 const LIBRARY_DIR_ENV: &str = "EBOOK_LIBRARY_DIR";
 
 /// The runtime library: the reader's real `.epub` files, discovered on disk.
-/// Falls back to the bundled starter book when none are found, so the reader is
-/// usable out of the box without pretending the user owns books they don't.
+/// Returns an empty shelf when none are found — the app must never present a
+/// bundled sample book as if the user owned it. The empty case is handled by
+/// the library view's "no books yet" onboarding.
 pub fn load_library() -> Vec<Book> {
-    let mut books = discover_epubs(&library_roots());
-    if books.is_empty() {
-        if let Some(b) = bundled_sample() {
-            books.push(b);
-        }
-    }
-    books
+    discover_epubs(&library_roots())
 }
 
-/// Parse the bundled starter EPUB. `None` only if the embedded asset ever fails
-/// to parse (a build-time invariant, not a runtime condition).
+/// Parse the bundled sample EPUB. `None` only if the embedded asset ever fails
+/// to parse (a build-time invariant, not a runtime condition). Used only by the
+/// `--shots`/test sample library, never on the live shelf.
 pub fn bundled_sample() -> Option<Book> {
     match parse_epub(SAMPLE_EPUB, 5, "Fable") {
         Ok(b) => Some(b),
@@ -268,12 +266,14 @@ mod tests {
 
     #[test]
     #[serial]
-    fn empty_library_dir_falls_back_to_the_bundled_starter() {
+    fn empty_library_dir_yields_an_empty_shelf() {
+        // The live shelf must never fabricate a book: with no epubs on disk the
+        // library is genuinely empty and the app shows its onboarding state.
         let tmp = tempfile::tempdir().unwrap();
         unsafe { std::env::set_var(LIBRARY_DIR_ENV, tmp.path()) };
         let lib = load_library();
         unsafe { std::env::remove_var(LIBRARY_DIR_ENV) };
-        assert_eq!(lib.len(), 1, "no epubs on disk -> just the bundled starter");
+        assert!(lib.is_empty(), "no epubs on disk -> an empty shelf, no bundled book");
     }
 
     #[test]

@@ -138,6 +138,15 @@ pub fn active_request() -> Request {
 }
 
 /// A short recent-request history for the History list.
+/// A single blank starter request for the live app — a real Send is what
+/// produces a response; nothing is fabricated.
+pub fn blank_request() -> Request {
+    let mut r = Request::new("New request");
+    r.method = HttpMethod::Get;
+    r.url = String::new();
+    r
+}
+
 pub fn history() -> Vec<HistoryEntry> {
     vec![
         HistoryEntry {

@@ -283,6 +283,10 @@ pub struct FeedsApp {
 
     worker: Option<FetchWorker>,
     synced: bool,
+    /// When true this is the hermetic `--shots`/demo build: it seeds the
+    /// bundled sample subscriptions. The live app leaves this false and never
+    /// fabricates feeds — it starts empty on the user's persisted document.
+    demo: bool,
     now: i64,
 }
 
@@ -293,8 +297,21 @@ impl Default for FeedsApp {
 }
 
 impl FeedsApp {
+    /// The live app: starts empty on the user's persisted subscriptions and
+    /// never fabricates feeds.
     pub fn new() -> Self {
-        let store = sample::store();
+        Self::build(false)
+    }
+
+    /// Fully-populated build used only by the hermetic `--shots`/test path.
+    /// This is the sole source of the bundled sample subscriptions — the live
+    /// app never fabricates content.
+    pub fn new_demo() -> Self {
+        Self::build(true)
+    }
+
+    fn build(demo: bool) -> Self {
+        let store = if demo { sample::store() } else { Store::new() };
         let mut app = Self {
             store,
             filter: Filter::All,
@@ -337,9 +354,12 @@ impl FeedsApp {
             last_frame: Instant::now(),
             worker: None,
             synced: false,
+            demo,
             now: chrono::Utc::now().timestamp(),
         };
-        app.select_featured();
+        if demo {
+            app.select_featured();
+        }
         app
     }
 
@@ -434,6 +454,18 @@ impl FeedsApp {
             .max_by_key(|a| a.blocks.len() + if a.read { 0 } else { 100 })
             .map(|a| a.id);
         self.selected = best;
+    }
+
+    /// The first-run onboarding prompt to show while there are no
+    /// subscriptions, or `None` once the store holds feeds. Returned as
+    /// `(headline, hint)` so the draw path and tests gate on the same real
+    /// state (`self.store.feeds`).
+    pub fn empty_onboarding_prompt(&self) -> Option<(&'static str, &'static str)> {
+        if self.store.feeds.is_empty() {
+            Some((EMPTY_ONBOARDING_TITLE, EMPTY_ONBOARDING_HINT))
+        } else {
+            None
+        }
     }
 
     fn ensure_selection(&mut self) {
@@ -1987,6 +2019,49 @@ fn draw_sidebar(
     }
 }
 
+/// First-run onboarding headline shown when there are no subscriptions yet.
+const EMPTY_ONBOARDING_TITLE: &str = "No feeds yet";
+/// Onboarding hint guiding the user to add their first subscription.
+const EMPTY_ONBOARDING_HINT: &str = "Add one with +, or import an OPML file.";
+
+/// Paint a centered headline + hint over an otherwise-blank content area.
+/// Colours come from the theme so it matches the OS.
+fn draw_centered_onboarding(
+    scene: &mut Scene,
+    t: Affine,
+    tr: &mut TextRenderer,
+    theme: &Theme,
+    area: Rect,
+    title: &str,
+    hint: &str,
+) {
+    let c = &theme.tokens.colors;
+    let title_size = 20.0_f32;
+    let hint_size = 14.0_f32;
+    let gap = 10.0_f64;
+    let title_w = measure_w(tr, title, title_size);
+    let hint_w = measure_w(tr, hint, hint_size);
+    let block_h = title_size as f64 + gap + hint_size as f64;
+    let cx = area.center().x;
+    let top = area.center().y - block_h / 2.0;
+    tr.draw_text(
+        scene,
+        title,
+        title_size,
+        c.text_primary,
+        t * Affine::translate((cx - title_w / 2.0, top)),
+        None,
+    );
+    tr.draw_text(
+        scene,
+        hint,
+        hint_size,
+        c.text_dim,
+        t * Affine::translate((cx - hint_w / 2.0, top + title_size as f64 + gap)),
+        None,
+    );
+}
+
 #[allow(clippy::too_many_arguments)]
 fn draw_list(
     scene: &mut Scene,
@@ -2037,14 +2112,28 @@ fn draw_list(
     let content = Rect::new(rect.x0, header_bottom + strip_h, rect.x1, rect.y1);
 
     if rows.is_empty() {
-        tr.draw_text(
-            scene,
-            "Nothing here — you're all caught up.",
-            14.0,
-            c.text_dim,
-            t * Affine::translate((rect.x0 + 18.0, content.y0 + 24.0)),
-            None,
-        );
+        if store.feeds.is_empty() {
+            // First-run: no subscriptions at all → onboarding prompt.
+            draw_centered_onboarding(
+                scene,
+                t,
+                tr,
+                theme,
+                content,
+                EMPTY_ONBOARDING_TITLE,
+                EMPTY_ONBOARDING_HINT,
+            );
+        } else {
+            // Have feeds, but the current filter yields nothing.
+            tr.draw_text(
+                scene,
+                "Nothing here — you're all caught up.",
+                14.0,
+                c.text_dim,
+                t * Affine::translate((rect.x0 + 18.0, content.y0 + 24.0)),
+                None,
+            );
+        }
         return;
     }
 
@@ -2737,7 +2826,11 @@ impl Widget for FeedsApp {
         self.now = chrono::Utc::now().timestamp();
         if !self.synced {
             if FeedsDoc::is_empty(state) {
-                FeedsDoc::seed(state, &self.store);
+                // The live app starts empty; only the hermetic demo build seeds
+                // the bundled sample subscriptions into a fresh document.
+                if self.demo {
+                    FeedsDoc::seed(state, &self.store);
+                }
             } else {
                 self.store = FeedsDoc::load(state);
                 self.ensure_selection();
@@ -3074,8 +3167,51 @@ mod tests {
     use super::*;
     use uuid::Uuid;
 
+    /// Tests that exercise refresh/render over real subscriptions use the
+    /// demo builder — the only place sample feeds come from. The live `new()`
+    /// path starts empty (asserted by `live_new_starts_empty`).
     fn app() -> FeedsApp {
-        FeedsApp::new()
+        FeedsApp::new_demo()
+    }
+
+    #[test]
+    fn live_new_starts_empty_and_offers_onboarding() {
+        // The live constructor must not fabricate any subscriptions or articles.
+        let app = FeedsApp::new();
+        assert!(app.store.feeds.is_empty(), "no fabricated feeds on the live path");
+        assert!(app.store.folders.is_empty(), "no fabricated folders on the live path");
+        assert!(app.store.articles.is_empty(), "no fabricated articles on the live path");
+        assert!(app.selected.is_none(), "nothing selected on an empty store");
+        let (title, hint) = app
+            .empty_onboarding_prompt()
+            .expect("an empty store surfaces the first-run onboarding prompt");
+        assert_eq!(title, EMPTY_ONBOARDING_TITLE);
+        assert!(!hint.trim().is_empty(), "the hint guides the user to add a feed");
+    }
+
+    #[test]
+    fn live_sync_over_fresh_doc_stays_empty() {
+        // Syncing the live app against a fresh (empty) document must NOT seed
+        // sample content — only the demo build seeds.
+        let mut app = FeedsApp::new();
+        let mut doc = AutoCommit::new();
+        app.sync(&mut doc, &automerge::ROOT);
+        assert!(app.store.feeds.is_empty(), "live sync must not fabricate feeds");
+        assert!(
+            app.empty_onboarding_prompt().is_some(),
+            "the empty store still shows onboarding after a live sync",
+        );
+    }
+
+    #[test]
+    fn demo_build_is_populated_and_hides_onboarding() {
+        // The demo builder is the sole source of sample subscriptions.
+        let app = FeedsApp::new_demo();
+        assert!(!app.store.feeds.is_empty(), "demo build seeds sample feeds");
+        assert!(
+            app.empty_onboarding_prompt().is_none(),
+            "a populated store hides the onboarding prompt",
+        );
     }
 
     /// Run one full headless frame (sync → build_layout → compute → apply →

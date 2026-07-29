@@ -123,8 +123,12 @@ fn content_scroll(app: &SettingsApp) -> (f64, f64, f64) {
 
 #[test]
 fn content_pane_scrolls_with_the_mouse_wheel() {
-    // A tall category on a short, wide (docked-sidebar) window.
-    let mut h = Harness::new(Category::ExternalAccounts, 1100.0, 420.0);
+    // A tall category on a short, wide (docked-sidebar) window. Power has a
+    // fixed four-card structure (battery / profile / idle / behaviour) that
+    // reliably overflows a short viewport by far more than a single wheel
+    // step, so the staged wheel→fling→clamp assertions below don't ride on
+    // one pane's exact pixel height (or on how many accounts a given box has).
+    let mut h = Harness::new(Category::Power, 1100.0, 340.0);
 
     let (offset0, viewport_h, content_h) = content_scroll(&h.app);
     assert!(

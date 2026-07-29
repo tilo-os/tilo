@@ -2109,6 +2109,47 @@ mod tests {
     }
 
     #[test]
+    fn multi_range_selection_aggregates_numeric_cells_over_the_real_pointer_path() {
+        // Two numeric columns with a non-numeric gap between them. Column B
+        // (index 1) holds 100/200/300; column D (index 3) holds 10/20/30; the
+        // gap column C (index 2) holds a label so it must never contribute.
+        let mut g = grid_with(&[
+            ((1, 1), CellValue::Number(100.0)),
+            ((1, 2), CellValue::Number(200.0)),
+            ((1, 3), CellValue::Number(300.0)),
+            ((2, 1), CellValue::Text("label".into())),
+            ((3, 1), CellValue::Number(10.0)),
+            ((3, 2), CellValue::Number(20.0)),
+            ((3, 3), CellValue::Number(30.0)),
+        ]);
+        let mut out = Vec::new();
+        // Drag-select B2:B4 (the first rectangle), then Ctrl+drag D2:D4 to add a
+        // discontiguous second rectangle — the exact production pointer path.
+        g.pointer_down(cell_point(&g, 1, 1), false, false, &mut out);
+        g.pointer_move(cell_point(&g, 1, 3));
+        g.pointer_up();
+        g.pointer_down(cell_point(&g, 3, 1), false, true, &mut out);
+        g.pointer_move(cell_point(&g, 3, 3));
+        g.pointer_up();
+        assert!(g.is_multi_range(), "two discontiguous ranges are selected");
+
+        // Aggregate over the exact methods the status bar's summary consumes:
+        // `selected_cells()` (dedup across ranges) and `cell_value_at()`.
+        let mut sum = 0.0;
+        let mut count = 0usize;
+        for addr in g.selected_cells() {
+            if let Some(CellValue::Number(n)) = g.cell_value_at(addr) {
+                sum += n;
+                count += 1;
+            }
+        }
+        assert_eq!(count, 6, "six numeric cells across both rectangles");
+        assert!((sum - 660.0).abs() < 1e-9, "sum over both ranges = 660, got {sum}");
+        // The gap column's label is inside neither rectangle.
+        assert!(!g.selected_cells().contains(&(2, 1)), "gap column excluded");
+    }
+
+    #[test]
     fn arrow_key_collapses_multi_selection() {
         let mut g = grid_with(&[]);
         let mut out = Vec::new();

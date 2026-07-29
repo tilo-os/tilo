@@ -28,6 +28,10 @@ pub use model::{DiffModel, MergeModel, Resolution};
 use ui::widget::Widget;
 
 /// Build and return the app's root widget tree.
+pub fn app_root_demo() -> Box<dyn Widget> {
+    Box::new(DiffMergeApp::new_demo())
+}
+
 pub fn app_root() -> Box<dyn Widget> {
     Box::new(DiffMergeApp::new())
 }

@@ -5,12 +5,9 @@
 //! status pill) so every panel reads consistently and the panels stay
 //! short. Nothing here is settings-specific beyond the visual grammar.
 //!
-//! ## Known `ui` gaps these helpers work around
-//! - There is no fixed-width container and no per-widget background colour,
-//!   so a "card" is a `Container::with_background()` (theme `bg_primary`)
-//!   and visual width is governed by flex, not a hard pixel value.
-//! - There is no standalone divider widget; section spacing is done with
-//!   headers + cards rather than rules.
+//! Grouped surfaces come from the shared [`ui::widget::Card`], so every card in
+//! the OS reads identically and tracks the theme; the helpers here just bundle
+//! the settings-specific row/section shapes on top of it.
 
 use ui::widget::{Badge, Button, Column, Container, Row, Spacer, Text, Widget};
 
@@ -61,44 +58,18 @@ pub fn cards(items: Vec<El>) -> El {
 
 /// A titled "card": a heading line followed by a bordered, padded surface
 /// holding `body`. The qOS grouping primitive — every panel is a stack of
-/// these. The heading sits *above* the card so the surface reads as one
-/// cohesive group.
+/// these. Delegates to the shared [`ui::widget::Card`] so every card in the OS
+/// reads identically and tracks the theme (radius/border/fill all from
+/// `Theme`); the heading sits inside the surface, above the body.
 pub fn card(title: &str, body: El) -> El {
-    // The title is the first row *inside* the bordered surface, above the
-    // body. Keeping the title within the background `Container` (rather
-    // than as a bare sibling above it) is what makes it render reliably:
-    // a `Container`'s child is always drawn, whereas a `Text` sitting
-    // directly in a column can be dropped by the column's cached draw path.
-    let inner = Column::new()
-        .with_no_padding()
-        .with_intrinsic_height()
-        .push(Box::new(
-            Row::new().push(Box::new(Text::new(title).with_size(15.0))),
-        ))
-        .push(vgap(CARD_TITLE_GAP))
-        .push(body);
-    Box::new(Container::new().with_background().with_child(Box::new(inner)))
+    Box::new(ui::widget::Card::titled(title, body))
 }
 
-/// Vertical gap (logical px) between a card's title and its body, so the
-/// heading clearly sits *above* its group rather than crowding the first
-/// row.
-pub const CARD_TITLE_GAP: f32 = 12.0;
-
 /// A card whose title row also carries a trailing element (e.g. an "Add"
-/// button or a count badge) on the same line as the title.
+/// button or a count badge) on the same line as the title. Delegates to the
+/// shared [`ui::widget::Card`].
 pub fn card_with_action(title: &str, action: El, body: El) -> El {
-    let title_row = Row::new()
-        .push(Box::new(Text::new(title).with_size(15.0)))
-        .push(Box::new(Spacer::new()))
-        .push(action);
-    let inner = Column::new()
-        .with_no_padding()
-        .with_intrinsic_height()
-        .push(Box::new(title_row))
-        .push(vgap(CARD_TITLE_GAP))
-        .push(body);
-    Box::new(Container::new().with_background().with_child(Box::new(inner)))
+    Box::new(ui::widget::Card::titled_with_action(title, action, body))
 }
 
 /// A label-on-the-left, control-on-the-right row — the workhorse settings
@@ -215,7 +186,7 @@ pub fn hero(glyph: &str, title: &str, subtitle: &str) -> El {
         .push(hgap(14.0))
         .push(Box::new(text_block))
         .push(Box::new(Spacer::new()));
-    Box::new(Container::new().with_background().with_child(Box::new(row)))
+    Box::new(ui::widget::Card::new(Box::new(row)))
 }
 
 /// The dim foreground colour. Pulled from the theme at draw time normally,

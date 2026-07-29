@@ -74,6 +74,40 @@ list (overview) + the message (detail).
     overview is full-screen and the detail slides over from the right with a back
     button.
 
+### 1e. Immersive / full-bleed apps  (no sidebar at all)
+
+Some apps are **not** content-and-navigation apps — their primary surface *is*
+the window. A **camera** viewfinder, a **video/media player**, **maps**, a
+**game**: the live surface must fill the window edge-to-edge, uninterrupted.
+These apps are a distinct class and **do not get the content-app sidebar** (§1a)
+or the desktop overview/detail split (§1b).
+
+- **Full-bleed surface.** The viewfinder / video / map fills the window to every
+  edge. Do **not** dock a rail, sidebar, or app-title header beside it, and do
+  **not** draw the app's own logo/brand mark — the OS owns window chrome
+  (see "OS owns window chrome").
+- **Controls float over the surface.** Capture/playback controls are translucent
+  glass overlays anchored to the edges (top strip for capture settings,
+  bottom-centre for the primary action + mode switch, corners for
+  secondary actions), kept legible with a soft scrim rather than an opaque panel.
+  When idle they may fade; they never box the surface in.
+- **Secondary screens are pushes or sheets, not rail destinations.** A library /
+  gallery is **pushed** over the surface with a **back button top-left**
+  (§1b push navigation); settings and pickers are **overlay sheets** with a
+  scrim and a close affordance. They are summoned *from* the surface (a
+  thumbnail, a gear) and dismissed back *to* it — they are never persistent
+  navigation chrome.
+- **A mode switch is not a sidebar.** If the app has peer modes (photo / video /
+  scan; play / browse), express them as a compact bottom-centre segmented
+  switcher over the surface — not as a vertical list of destinations.
+
+> How to tell the classes apart: if the window's job is to *show a live/edge-to-
+> edge surface the user acts through*, it is immersive (§1e). If the window's job
+> is to *navigate between and read destinations/content*, it is a content app
+> (§1a/§1b). A camera with a Camera/Gallery/Settings rail down the left is the
+> canonical mistake — it turns an immersive app into a content app and crowds the
+> viewfinder.
+
 ---
 
 ## 2. Expandable rich-field cards
@@ -145,6 +179,51 @@ If an app hand-rolls text editing, it will get these wrong — use the shared co
 - The compute path (event → laid-out frame) should stay well under one frame
   (~16 ms); if an app feels slow, measure event/layout/draw/present separately
   before blaming app code.
+
+---
+
+## 7. Visual craft & polish (the bar for *every* app)
+
+Working, honest, and consistent is the floor, not the goal. **Every app ships at
+a "genuinely nice to look at and use" bar** — the same craft whether it is chat,
+the calculator, or a system pane. An app that is functionally complete but looks
+cramped, unbalanced, or unfinished is **not done**. Grade every screen against
+this section the way you grade correctness against the tests.
+
+- **Layout breathes.** Deliberate spacing on the `Theme` scale; content is not
+  jammed edge-to-edge, controls are not scattered. A clear reading order and a
+  single primary action per screen. Groups are separated by space and hierarchy,
+  not by hairlines and boxes-within-boxes.
+- **Real typographic hierarchy.** Size / weight / color establish
+  title → section → body → caption; digits that line up use tabular figures. No
+  wall of same-size text; no illegible low-contrast label on a colored fill
+  (the permissions-pane and camera regressions were exactly this).
+- **Content reflows by size, not just shrinks.** Honor the responsive rule (§1):
+  card grids re-column, participant/media grids re-tile by count, panels become
+  separate screens when they no longer fit — measured against window *area*, and
+  **recomputed on resize**, never laid out once.
+- **State reads at a glance.** Selection, focus, active/live, speaking, syncing,
+  error — each has a *visible form* (an emphasis, a ring, a pill, a severity
+  stripe), not only a text label. Empty states are composed and inviting (a real
+  zero-state, per §4 — never fabricated content), loading and error states are
+  designed, not raw.
+- **Motion is purposeful and quiet.** Transitions clarify a change (a panel
+  sliding in, a value settling); they never gate interaction or spin at idle
+  (§6). Reduced-motion is honored.
+- **Interactive things look interactive** and give feedback: hover, press, focus,
+  and disabled are all distinct; a control that does nothing yet is a defect
+  (§ functionality), and a control that *looks* dead is a craft defect.
+- **Theme-driven, pixel-clean.** Every color and metric comes from the `Theme`
+  (§ toolkit) so light/dark and OS accent both look intentional; no hard-coded
+  colors, no 1px seams from mismatched fills, no clipped glyphs or overlapping
+  text.
+
+The proof is visual, not a green build: `--shots` the primary screens (populated,
+empty, and a mid-interaction state), **open the PNGs and look critically** — if a
+screen would embarrass you next to a best-in-class native app, it is not done.
+When a polish pattern recurs (a media/participant grid, a stat tile, a huddle
+overlay, a segmented control), promote it to a `ui` primitive so the *nice*
+version is the default and no app has to re-earn it.
 
 ---
 

@@ -73,6 +73,68 @@ impl CallPermissions for AllowAll {
     }
 }
 
+/// A screen-capture source handed back by the portal: the PipeWire node to
+/// consume plus the capture size to encode at. The single value the share flow
+/// needs from the portal, kept transport-agnostic so a test can mint one
+/// without a real desktop portal.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ScreenSource {
+    /// PipeWire node id to open the capture on.
+    pub node: u32,
+    pub width: u32,
+    pub height: u32,
+}
+
+/// The screen-capture request seam.
+///
+/// A share never invents a stream: it asks a `ScreenPortal` for a source and
+/// only proceeds if one is granted. The real implementation ([`SystemPortal`])
+/// drives the **xdg-desktop-portal ScreenCast** picker via ashpd behind the
+/// `live-media` feature and returns `None` everywhere else (headless, the
+/// default build, a cancelled picker) — so the default build gates honestly.
+/// Tests inject a fake that returns a source, exercising the whole share state
+/// machine + CRDT wiring without a desktop portal.
+pub trait ScreenPortal {
+    /// Request a screen-share source from the user. `None` = no source
+    /// available or the user declined; the share must not start.
+    fn request(&self) -> Option<ScreenSource>;
+}
+
+/// The production portal: a real xdg-desktop-portal ScreenCast request behind
+/// `live-media`, an honest `None` otherwise.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SystemPortal;
+
+impl ScreenPortal for SystemPortal {
+    fn request(&self) -> Option<ScreenSource> {
+        #[cfg(feature = "live-media")]
+        {
+            crate::media::request_screencast().map(|node| ScreenSource {
+                node,
+                width: crate::video::DEFAULT_W * 2,
+                height: crate::video::DEFAULT_H * 2,
+            })
+        }
+        #[cfg(not(feature = "live-media"))]
+        {
+            None
+        }
+    }
+}
+
+/// Test double: a portal that hands back a fixed source (or nothing), so the
+/// whole share state machine + CRDT wiring can be proven without a real
+/// xdg-desktop-portal picker or a capture device.
+#[cfg(test)]
+pub struct FakePortal(pub Option<ScreenSource>);
+
+#[cfg(test)]
+impl ScreenPortal for FakePortal {
+    fn request(&self) -> Option<ScreenSource> {
+        self.0
+    }
+}
+
 /// Per-peer call view state. A fresh app is **not** in a call — the user
 /// joins a voice channel to start one. (The demo screenshot activates a call
 /// explicitly via the shot scenario.)
@@ -97,6 +159,11 @@ pub struct CallState {
     pub deafened: bool,
     /// Camera off / audio-only.
     pub audio_only: bool,
+    /// This peer is sharing its screen into the call. Set only once the portal
+    /// grants a source (see [`crate::app::ChatApp::acquire_screen`]); mirrored
+    /// into the shared voice membership so remote peers reserve the featured
+    /// tile. Never set speculatively — a share the portal declined stays `false`.
+    pub sharing: bool,
 }
 
 impl Default for CallState {
@@ -110,6 +177,7 @@ impl Default for CallState {
             muted: false,
             deafened: false,
             audio_only: false,
+            sharing: false,
         }
     }
 }
@@ -122,6 +190,7 @@ impl CallState {
         self.expanded = false;
         self.overlay_offset = Vec2::ZERO;
         self.deafened = false;
+        self.sharing = false;
     }
 
     /// End the call and clear transient overlay layout.
@@ -129,6 +198,7 @@ impl CallState {
         self.active = false;
         self.expanded = false;
         self.overlay_offset = Vec2::ZERO;
+        self.sharing = false;
     }
 
     /// Toggle mute. Un-muting also un-deafens (you can't speak while
@@ -244,6 +314,37 @@ mod tests {
         c.join("c_warroom");
         assert!(c.active);
         assert_eq!(c.channel, "c_warroom");
+    }
+
+    #[test]
+    fn join_and_leave_clear_the_screen_share_flag() {
+        let mut c = CallState::default();
+        c.join("c_huddle");
+        c.sharing = true;
+        c.leave();
+        assert!(!c.sharing, "leaving a call stops the local screen share");
+        c.sharing = true;
+        c.join("c_other");
+        assert!(!c.sharing, "joining a fresh call starts with no screen share");
+    }
+
+    #[test]
+    fn system_portal_declines_without_a_live_portal() {
+        // The default (non-live-media) build has no desktop portal, so the
+        // production portal grants nothing — the honest-gating contract that
+        // keeps the default build from ever faking a screen share.
+        assert!(
+            SystemPortal.request().is_none() || cfg!(feature = "live-media"),
+            "the system portal must decline when no live portal is compiled in"
+        );
+    }
+
+    #[test]
+    fn fake_portal_hands_back_its_configured_source() {
+        // The test seam the share flow is proven against.
+        let src = ScreenSource { node: 9, width: 640, height: 480 };
+        assert_eq!(FakePortal(Some(src)).request(), Some(src));
+        assert_eq!(FakePortal(None).request(), None);
     }
 }
 

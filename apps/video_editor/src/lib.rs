@@ -25,16 +25,25 @@ pub mod doc;
 pub mod export;
 pub mod media;
 pub mod model;
+pub mod portal;
 pub mod preview;
+pub mod probe;
 pub mod timecode;
 
 pub use app::VideoEditorApp;
 
 use ui::widget::Widget;
 
-/// Build and return the app's root widget tree.
+/// Build the live app: it opens on a blank project and never fabricates
+/// media or clips.
 pub fn app_root() -> Box<dyn Widget> {
     Box::new(VideoEditorApp::new())
+}
+
+/// Build a fully-populated app for the hermetic `--shots`/demo path. This is
+/// the sole source of the bundled sample project — the live app never seeds it.
+pub fn app_root_demo() -> Box<dyn Widget> {
+    Box::new(VideoEditorApp::new_demo())
 }
 
 /// Root tree configured for a deterministic narrow-window `--shots` capture:

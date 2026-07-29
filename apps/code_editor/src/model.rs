@@ -8,6 +8,8 @@
 //! where each caret sits.
 
 use std::collections::BTreeMap;
+use std::io;
+use std::path::{Path, PathBuf};
 
 /// Stable identifier for a node in the project tree (file or folder).
 pub type NodeId = usize;
@@ -134,11 +136,19 @@ pub struct TreeNode {
     /// Depth from the project root (root children are depth 0). Cached so the
     /// flattened render list doesn't have to walk parents every frame.
     pub depth: usize,
+    /// The real filesystem path this node projects, when the project was opened
+    /// from disk (`Project::from_dir` / `open_single_file`). `None` for the
+    /// bundled sample project and freshly-created scratch files, which live
+    /// only in memory until saved. Real file I/O (read/write) uses this path.
+    pub disk_path: Option<PathBuf>,
 }
 
 #[derive(Clone, Debug)]
 pub enum NodeKind {
-    Folder { expanded: bool, children: Vec<NodeId> },
+    /// `loaded` is `false` for a disk-backed folder whose children have not yet
+    /// been read from the filesystem; the first expansion reads them lazily
+    /// (`Project::load_children`). In-memory folders are always `loaded`.
+    Folder { expanded: bool, loaded: bool, children: Vec<NodeId> },
     File { language: Language, seed: String },
 }
 
@@ -175,9 +185,11 @@ impl Project {
                 parent: None,
                 kind: NodeKind::Folder {
                     expanded: true,
+                    loaded: true,
                     children: Vec::new(),
                 },
                 depth: 0,
+                disk_path: None,
             },
         );
         p.root = root;
@@ -190,10 +202,40 @@ impl Project {
         id
     }
 
-    /// Add a folder under `parent`, returning its id.
+    /// Add an in-memory folder under `parent`, returning its id.
     pub fn add_folder(&mut self, parent: NodeId, name: &str) -> NodeId {
+        self.insert_folder(parent, name, None, false)
+    }
+
+    /// Add a file under `parent` with a seed body, inferring the language.
+    pub fn add_file(&mut self, parent: NodeId, name: &str, seed: &str) -> NodeId {
+        self.insert_file(parent, name, seed, None)
+    }
+
+    /// Add a disk-backed folder under `parent`. Its children are read lazily
+    /// from `path` the first time it is expanded (`load_children`).
+    pub fn add_disk_folder(&mut self, parent: NodeId, name: &str, path: &Path) -> NodeId {
+        self.insert_folder(parent, name, Some(path.to_path_buf()), false)
+    }
+
+    /// Add a disk-backed file under `parent`. Its content is read lazily from
+    /// `path` the first time the buffer is opened (`file_seed`).
+    pub fn add_disk_file(&mut self, parent: NodeId, name: &str, path: &Path) -> NodeId {
+        self.insert_file(parent, name, "", Some(path.to_path_buf()))
+    }
+
+    fn insert_folder(
+        &mut self,
+        parent: NodeId,
+        name: &str,
+        disk_path: Option<PathBuf>,
+        expanded: bool,
+    ) -> NodeId {
         let depth = self.nodes.get(&parent).map(|n| n.depth + 1).unwrap_or(0);
         let id = self.alloc();
+        // A disk-backed folder starts unloaded (children read on expand); an
+        // in-memory folder is fully known, so it is `loaded`.
+        let loaded = disk_path.is_none();
         self.nodes.insert(
             id,
             TreeNode {
@@ -201,18 +243,25 @@ impl Project {
                 name: name.to_string(),
                 parent: Some(parent),
                 kind: NodeKind::Folder {
-                    expanded: false,
+                    expanded,
+                    loaded,
                     children: Vec::new(),
                 },
                 depth,
+                disk_path,
             },
         );
         self.attach(parent, id);
         id
     }
 
-    /// Add a file under `parent` with a seed body, inferring the language.
-    pub fn add_file(&mut self, parent: NodeId, name: &str, seed: &str) -> NodeId {
+    fn insert_file(
+        &mut self,
+        parent: NodeId,
+        name: &str,
+        seed: &str,
+        disk_path: Option<PathBuf>,
+    ) -> NodeId {
         let depth = self.nodes.get(&parent).map(|n| n.depth + 1).unwrap_or(0);
         let lang = Language::from_path(name);
         let id = self.alloc();
@@ -227,6 +276,7 @@ impl Project {
                     seed: seed.to_string(),
                 },
                 depth,
+                disk_path,
             },
         );
         self.attach(parent, id);
@@ -258,6 +308,128 @@ impl Project {
         }
     }
 
+    // ---- real filesystem projection ---------------------------------------
+
+    /// Build a project rooted at the real directory `path`, reading its top
+    /// level immediately. Sub-folders are read lazily on first expansion via
+    /// [`Project::load_children`], so opening a large tree is cheap.
+    pub fn from_dir(path: &Path) -> io::Result<Project> {
+        let name = dir_display_name(path);
+        let mut p = Project::new(&name);
+        let root = p.root;
+        // Point the root at the real directory and mark it unloaded so
+        // `load_children` reads it.
+        if let Some(node) = p.nodes.get_mut(&root) {
+            node.disk_path = Some(path.to_path_buf());
+            if let NodeKind::Folder { loaded, expanded, .. } = &mut node.kind {
+                *loaded = false;
+                *expanded = true;
+            }
+        }
+        p.load_children(root)?;
+        Ok(p)
+    }
+
+    /// Build a single-file project: a root folder named after the file's parent
+    /// directory containing just `path`. Returns the project and the file's
+    /// node id (ready to open into a tab). The file's bytes are read lazily
+    /// when the buffer is first opened (see [`Project::file_seed`]).
+    pub fn open_single_file(path: &Path) -> io::Result<(Project, NodeId)> {
+        // Surface an unreadable path up front (permission / not-found) rather
+        // than silently opening an empty tab.
+        let _ = std::fs::metadata(path)?;
+        let file_name = path
+            .file_name()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_else(|| path.display().to_string());
+        let parent_name = path
+            .parent()
+            .map(dir_display_name)
+            .unwrap_or_else(|| "/".to_string());
+        let mut p = Project::new(&parent_name);
+        let root = p.root;
+        let node = p.add_disk_file(root, &file_name, path);
+        Ok((p, node))
+    }
+
+    /// Read a disk-backed folder's children from the filesystem the first time
+    /// it is expanded. Idempotent: a folder with no `disk_path`, or one already
+    /// loaded, is left untouched.
+    pub fn load_children(&mut self, id: NodeId) -> io::Result<()> {
+        let (path, already_loaded) = match self.nodes.get(&id) {
+            Some(TreeNode {
+                disk_path: Some(p),
+                kind: NodeKind::Folder { loaded, .. },
+                ..
+            }) => (p.clone(), *loaded),
+            _ => return Ok(()),
+        };
+        if already_loaded {
+            return Ok(());
+        }
+        for entry in std::fs::read_dir(&path)? {
+            let Ok(entry) = entry else { continue };
+            let name = entry.file_name().to_string_lossy().to_string();
+            let child_path = entry.path();
+            let is_dir = entry
+                .file_type()
+                .map(|t| t.is_dir())
+                .unwrap_or_else(|_| child_path.is_dir());
+            if is_dir {
+                self.add_disk_folder(id, &name, &child_path);
+            } else {
+                self.add_disk_file(id, &name, &child_path);
+            }
+        }
+        if let Some(TreeNode {
+            kind: NodeKind::Folder { loaded, .. },
+            ..
+        }) = self.nodes.get_mut(&id)
+        {
+            *loaded = true;
+        }
+        Ok(())
+    }
+
+    /// The bytes to seed a file buffer with: the in-memory seed if present,
+    /// otherwise the real file read from disk. Returns an empty string for a
+    /// folder, a missing node, or an unreadable disk file.
+    pub fn file_seed(&self, id: NodeId) -> String {
+        match self.nodes.get(&id) {
+            Some(TreeNode {
+                kind: NodeKind::File { seed, .. },
+                disk_path,
+                ..
+            }) => {
+                if !seed.is_empty() {
+                    seed.clone()
+                } else if let Some(path) = disk_path {
+                    std::fs::read_to_string(path).unwrap_or_default()
+                } else {
+                    String::new()
+                }
+            }
+            _ => String::new(),
+        }
+    }
+
+    /// Point a file node at a real path (used by Save As), updating its name
+    /// and inferred language to match. No-op on folders / missing nodes.
+    pub fn set_file_path(&mut self, id: NodeId, path: &Path, name: &str) {
+        if let Some(node) = self.nodes.get_mut(&id) {
+            if let NodeKind::File { language, .. } = &mut node.kind {
+                *language = Language::from_path(name);
+                node.name = name.to_string();
+                node.disk_path = Some(path.to_path_buf());
+            }
+        }
+    }
+
+    /// The real filesystem path a node projects, if any.
+    pub fn disk_path_of(&self, id: NodeId) -> Option<PathBuf> {
+        self.nodes.get(&id).and_then(|n| n.disk_path.clone())
+    }
+
     /// Flatten the visible tree into an ordered list, honouring folder
     /// expansion. Folders sort before files, then alphabetically — the
     /// conventional file-explorer ordering.
@@ -271,7 +443,7 @@ impl Project {
         let Some(node) = self.nodes.get(&parent) else {
             return;
         };
-        let NodeKind::Folder { expanded, children } = &node.kind else {
+        let NodeKind::Folder { expanded, children, .. } = &node.kind else {
             return;
         };
         // Root's own children are the top-level rows; the root itself isn't
@@ -315,6 +487,14 @@ impl Project {
         chain.reverse();
         chain.join("/")
     }
+}
+
+/// A human-friendly name for a directory path — its last component, or the
+/// whole path for a root like `/`. Used to label a project opened from disk.
+fn dir_display_name(path: &Path) -> String {
+    path.file_name()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| path.display().to_string())
 }
 
 /// An open editor buffer: a file the user has opened into a tab. The actual
