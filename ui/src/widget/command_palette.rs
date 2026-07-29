@@ -600,9 +600,18 @@ impl CommandPalette {
     }
 
     /// Ceiling on the result list, so the card stays a card. Expressed
-    /// in rows rather than pixels so the cap tracks the row height.
+    /// in rows rather than pixels so the cap tracks the row height, plus
+    /// room for the headers the plan actually has — reserving header
+    /// space unconditionally would let an ungrouped list paint a ninth
+    /// row into slack meant for something that isn't there.
     fn max_list_height(&self) -> f64 {
-        self.max_visible_rows() as f64 * self.row_height() + 3.0 * HEADER_HEIGHT
+        let headers = self
+            .rows
+            .iter()
+            .filter(|r| matches!(r, VisualRow::Header { .. }))
+            .count()
+            .min(MAX_HEADERS_IN_VIEW);
+        self.max_visible_rows() as f64 * self.row_height() + headers as f64 * HEADER_HEIGHT
     }
 
     /// Height reserved for the filter strip + its trailing gap (Search only).
@@ -1083,7 +1092,7 @@ impl CommandPalette {
     /// Concept ref: `GlobalSearch.tsx:138-153` — leading magnifier glyph
     /// + input + trailing `⌘K` kbd pill.
     pub fn compute_input_layout(&self, row: Rect) -> InputRowLayout {
-        const ICON_W: f64 = 18.0;
+        const ICON_W: f64 = 24.0;
         // Wide enough for the 6-character `Ctrl+K` binding.
         const CHIP_W: f64 = 56.0;
         const EDGE: f64 = 12.0;
@@ -1765,6 +1774,9 @@ const ROW_HEIGHT: f64 = 32.0;
 const TWO_LINE_ROW_HEIGHT: f64 = 42.0;
 /// Section header row — the group name plus its count.
 const HEADER_HEIGHT: f64 = 24.0;
+/// How many section headers the card grows to accommodate before the
+/// list starts scrolling instead.
+const MAX_HEADERS_IN_VIEW: usize = 3;
 /// Vertical room the composed zero-state needs: glyph, headline, hint.
 const EMPTY_STATE_HEIGHT: f64 = 104.0;
 const SEARCH_CARD_WIDTH: f64 = 360.0;
@@ -1867,10 +1879,13 @@ impl Widget for CommandPalette {
         };
         scene.stroke(&Stroke::new(ring_w), transform, ring, None, &field_shape);
 
+        // The glyph sits inside its reserved slot rather than filling
+        // it — a magnifier drawn edge to edge in a 24 px box reads as an
+        // icon button next to the field instead of part of it.
         icons::draw_icon(
             scene,
             transform,
-            layout.icon_rect,
+            layout.icon_rect.inflate(-3.5, -3.5),
             Icon::Search,
             colors.text_dim,
             1.5,
@@ -2771,7 +2786,7 @@ mod tests {
         let cmd = seeded_command_palette();
         let (cw, _) = cmd.desired_size();
         assert_eq!(cw, CMD_CARD_WIDTH);
-        assert_eq!(cmd.row_height(), CMD_ROW_HEIGHT);
+        assert_eq!(cmd.row_height(), TWO_LINE_ROW_HEIGHT);
         assert_eq!(cmd.filter_block(), 0.0, "no filter strip in command mode");
 
         let search = CommandPalette::new();
@@ -2801,6 +2816,172 @@ mod tests {
         p.set_cursor(19);
         assert!(p.row_rect(19).is_some(), "highlighted last row stays visible");
         assert!(p.row_rect(0).is_none(), "the top row scrolled out of view");
+    }
+
+    /// A grouped result set plans one header per group, in the order the
+    /// entries arrived, and never splits a group.
+    #[test]
+    fn grouped_entries_plan_one_header_per_section() {
+        let mut p = CommandPalette::new();
+        p.set_bypass_fuzzy(true);
+        p.set_entries(vec![
+            CommandEntry::new("a", "Open Calculator").group("Applications"),
+            CommandEntry::new("b", "calc.rs").group("Files"),
+            CommandEntry::new("c", "calculator.rs").group("Files"),
+        ]);
+        let headers: Vec<&str> = p
+            .rows
+            .iter()
+            .filter_map(|r| match r {
+                VisualRow::Header { label, .. } => Some(label.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(headers, vec!["Applications", "Files"]);
+        assert_eq!(
+            p.rows.len(),
+            5,
+            "two headers plus three entries: {:?}",
+            p.rows
+        );
+    }
+
+    /// A header reports the group's real size, not the number of rows
+    /// the host handed over, so a trimmed section says what it is
+    /// hiding — and the footer agrees with it.
+    #[test]
+    fn a_trimmed_section_reports_its_untrimmed_count() {
+        let mut p = CommandPalette::new();
+        p.set_bypass_fuzzy(true);
+        p.set_entries(vec![
+            CommandEntry::new("a", "one").group("Files").group_total(40),
+            CommandEntry::new("b", "two").group("Files").group_total(40),
+        ]);
+        match &p.rows[0] {
+            VisualRow::Header { label, total } => {
+                assert_eq!(label, "Files");
+                assert_eq!(*total, 40);
+            }
+            other => panic!("expected a header, got {other:?}"),
+        }
+        assert_eq!(
+            p.result_total(),
+            40,
+            "the footer count must not contradict the section header"
+        );
+    }
+
+    /// Painting and hit-testing must agree about which row is where,
+    /// including once the list has scrolled. Search mode used to paint
+    /// from entry 0 while `row_rect`/`row_at` scrolled with the cursor,
+    /// so past the visible cap a click landed on a different result than
+    /// the one under the pointer.
+    #[test]
+    fn a_scrolled_list_hit_tests_the_row_it_painted() {
+        let mut p = CommandPalette::new();
+        p.set_bypass_fuzzy(true);
+        p.set_entries(
+            (0..30)
+                .map(|i| {
+                    CommandEntry::new(format!("id{i}"), format!("Result {i}"))
+                        .description(format!("~/path/to/{i}"))
+                        .group("Files")
+                })
+                .collect(),
+        );
+        let (w, h) = p.desired_size();
+        p.set_rect(Rect::new(0.0, 0.0, w, h));
+
+        // Scroll to the end.
+        p.set_cursor(29);
+        let painted: Vec<usize> = (0..30).filter(|&i| p.row_rect(i).is_some()).collect();
+        assert!(
+            painted.contains(&29),
+            "the cursor's row must be painted: {painted:?}"
+        );
+        assert!(
+            !painted.contains(&0),
+            "row 0 must have scrolled off: {painted:?}"
+        );
+        // Every painted row answers `row_at` at its own centre, and with
+        // its own index.
+        for i in painted {
+            let r = p.row_rect(i).expect("painted");
+            assert_eq!(
+                p.row_at(r.center()),
+                Some(i),
+                "row {i} painted at {r:?} but hit-tests as {:?}",
+                p.row_at(r.center())
+            );
+        }
+    }
+
+    /// Rows and headers never spill past the footer.
+    #[test]
+    fn no_painted_row_overlaps_the_footer() {
+        let mut p = CommandPalette::new();
+        p.set_bypass_fuzzy(true);
+        p.set_entries(
+            (0..40)
+                .map(|i| {
+                    CommandEntry::new(format!("id{i}"), format!("Result {i}"))
+                        .description("sub")
+                        .group(if i < 3 { "Actions" } else { "Files" })
+                })
+                .collect(),
+        );
+        let (w, h) = p.desired_size();
+        p.set_rect(Rect::new(0.0, 0.0, w, h));
+        let footer_top = p.footer_rect().y0;
+        for i in 0..40 {
+            if let Some(r) = p.row_rect(i) {
+                assert!(
+                    r.y1 <= footer_top,
+                    "row {i} at {r:?} runs into the footer at {footer_top}"
+                );
+                assert!(r.y0 >= p.list_top_y() - 0.01, "row {i} starts above the list");
+            }
+        }
+    }
+
+    /// The zero-state gets real vertical room. Sized off the row height
+    /// it printed its own hint on top of the footer.
+    #[test]
+    fn an_empty_result_set_still_gets_a_readable_card() {
+        let mut p = CommandPalette::new();
+        p.set_bypass_fuzzy(true);
+        p.set_query("nothing matches this");
+        p.set_entries(vec![]);
+        let (_, h) = p.desired_size();
+        p.set_rect(Rect::new(0.0, 0.0, 640.0, h));
+        let room = p.footer_rect().y0 - p.list_top_y();
+        assert!(
+            room >= EMPTY_STATE_HEIGHT - 1.0,
+            "the zero-state needs {EMPTY_STATE_HEIGHT} px of list area, got {room}"
+        );
+    }
+
+    /// A host that paints its own filter controls still gets the band
+    /// reserved inside the card, on the card's own inset — that is what
+    /// keeps its chips aligned with the field above and the rows below.
+    #[test]
+    fn a_host_filter_strip_is_reserved_on_the_cards_inset() {
+        let mut p = CommandPalette::new();
+        p.set_host_filter_strip(true);
+        p.set_rect(Rect::new(0.0, 0.0, 640.0, 400.0));
+        let band = p.filter_strip_rect();
+        let field = p.input_row_rect();
+        assert_eq!(
+            band.x0, field.x0,
+            "the host band must share the field's left edge"
+        );
+        assert_eq!(band.x1, field.x1);
+        assert_eq!(band.x0, p.rect.x0 + p.content_inset_px());
+        assert!(band.y0 >= field.y1, "the band sits under the field");
+        assert!(
+            p.list_top_y() >= band.y1,
+            "rows start below the band, not behind it"
+        );
     }
 
     /// Helper: dispatch one event and surface whether the palette consumed it.
