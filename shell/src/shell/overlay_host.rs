@@ -526,11 +526,10 @@ pub const POPOVER_SURFACE_ALPHA: f32 = 0.80;
 /// alpha the palette reads as translucent chrome bleeding through
 /// whatever's underneath — legibility of long rows drops sharply against
 /// a busy desktop backdrop (2026-07-09 user report: "search bar is too
-/// transparent"). We now paint the palette at 0.94 (~"solid-with-a-hint
-/// of the wallpaper's tint") and rely on the scrim below to sell the
-/// "page-on-top-of-page" affordance instead. Same value backs the
-/// workspace-settings modal; app content that inherits this tint (file
-/// viewer, etc.) picks up the same lift for free.
+/// transparent"). We now paint the palette solid and rely on the scrim
+/// below to sell the "page-on-top-of-page" affordance instead. The same
+/// value backs the workspace-settings modal; app content that inherits
+/// this tint (file viewer, etc.) picks up the same lift for free.
 pub const MODAL_SURFACE_ALPHA: f32 = 1.0;
 
 /// Alpha applied to the scrim painted beneath the WorkspaceSettings modal.
@@ -4035,8 +4034,7 @@ impl Widget for ShellOverlayHost {
                 14.0,
                 0.55 * alpha,
             );
-            // Re-theme just the palette surface to the concept's
-            // `bg-slate-900/70` glass tint (visual-gap #3). The
+            // Re-theme just the palette surface to the modal tint. The
             // `CommandPalette` widget lives in `quick-ui` and paints its
             // own surface from `surfaces.raised`, so we hand it a cloned
             // theme whose `surfaces.raised` is pre-tinted rather than
