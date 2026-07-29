@@ -452,6 +452,13 @@ pub struct PdfApp {
     /// Screen rect of the active inline editor, captured during draw so a
     /// click inside it keeps focus while a click outside commits.
     edit_rect: Rect,
+
+    /// The shared reader selection HUD, rebuilt each frame while a text
+    /// selection is live and hit-tested on the next press. The identical bar
+    /// the ebook reader draws — Copy / highlight swatches / Note.
+    sel_hud: Option<ui::SelectionHud>,
+    /// An in-progress drag of a sticky-note marker (reposition), if any.
+    marker_drag: Option<ui::MarkerDrag>,
 }
 
 impl PdfApp {
@@ -622,6 +629,8 @@ impl PdfApp {
             sidebar_hits: Vec::new(),
             search_hits: Vec::new(),
             edit_rect: Rect::ZERO,
+            sel_hud: None,
+            marker_drag: None,
         }
     }
 
@@ -1746,6 +1755,140 @@ impl PdfApp {
         self.dirty = true;
     }
 
+    // ---- draggable annotation markers + selection HUD ---------------
+
+    /// The `(id, x, y)` of a sticky-note marker under page-point `pt`, if one is
+    /// there. Same hit radius as [`Self::select_at`] so grabbing a marker to
+    /// drag it lines up with clicking it to select.
+    fn note_marker_at(&self, page: usize, pt: (f64, f64)) -> Option<(String, f64, f64)> {
+        self.annotations.iter().filter(|a| a.page == page).find_map(|a| match &a.kind {
+            AnnoKind::Note { x, y } if (pt.0 - x).abs() < 24.0 && (pt.1 - y).abs() < 24.0 => {
+                Some((a.id.clone(), *x, *y))
+            }
+            _ => None,
+        })
+    }
+
+    /// The page an annotation (by id) lives on.
+    fn anno_page(&self, id: &str) -> Option<usize> {
+        self.annotations.iter().find(|a| a.id == id).map(|a| a.page)
+    }
+
+    /// The current page-point position of a note (by id).
+    fn note_pos(&self, id: &str) -> Option<(f64, f64)> {
+        self.annotations.iter().find(|a| a.id == id).and_then(|a| match &a.kind {
+            AnnoKind::Note { x, y } => Some((*x, *y)),
+            _ => None,
+        })
+    }
+
+    /// Move a note's *local* cached anchor for live drag feedback (the CRDT is
+    /// only written once, on release, so a drag is a single undo step).
+    fn move_note_local(&mut self, id: &str, x: f64, y: f64) {
+        if let Some(a) = self.annotations.iter_mut().find(|a| a.id == id) {
+            if let AnnoKind::Note { x: nx, y: ny } = &mut a.kind {
+                *nx = x;
+                *ny = y;
+            }
+        }
+        self.dirty = true;
+    }
+
+    /// The live selection's page-point bands (real pdfium glyph boxes), for
+    /// creating highlights from a text selection.
+    fn selection_page_bands(&self) -> Vec<PtRect> {
+        let Some(sel) = self.selection else { return Vec::new() };
+        if !sel.is_active() {
+            return Vec::new();
+        }
+        let Some(layer) = self.raster_text.get(&sel.page) else { return Vec::new() };
+        let (a, b) = sel.range();
+        layer.bands_for_range(a, b)
+    }
+
+    /// The live selection's bands mapped to screen space, for anchoring the HUD.
+    fn selection_screen_bounds(&self) -> Option<Rect> {
+        let sel = self.selection?;
+        if !sel.is_active() {
+            return None;
+        }
+        let origins = self.page_origins();
+        let origin = origins.get(sel.page.saturating_sub(1))?;
+        let z = self.zoom();
+        let mut acc: Option<Rect> = None;
+        for r in self.selection_page_bands() {
+            let sr = Rect::new(
+                origin.x + r.x * z,
+                origin.y + r.y * z,
+                origin.x + (r.x + r.w) * z,
+                origin.y + (r.y + r.h) * z,
+            );
+            acc = Some(match acc {
+                Some(a) => a.union(sr),
+                None => sr,
+            });
+        }
+        acc
+    }
+
+    /// Highlight the live text selection in `swatch` — one highlight annotation
+    /// per selection band — then clear the selection.
+    fn highlight_selection(&mut self, state: &mut AutoCommit, swatch: Swatch) -> bool {
+        let Some(sel) = self.selection else { return false };
+        let bands = self.selection_page_bands();
+        if bands.is_empty() {
+            return false;
+        }
+        let mut last = None;
+        for r in bands {
+            let a = Annotation {
+                id: Annotation::new_id(),
+                page: sel.page,
+                kind: AnnoKind::Highlight { rect: r },
+                color: swatch,
+                author: self.author.clone(),
+            };
+            last = Some(a.id.clone());
+            PdfDoc::add_annotation(state, &a);
+        }
+        self.swatch = swatch;
+        self.selected_anno = last;
+        self.commit_pending = true;
+        self.clear_selection();
+        self.reload(state);
+        self.dirty = true;
+        true
+    }
+
+    /// Attach a sticky note to the start of the live selection and open its
+    /// editor (mirrors the ebook reader's note-from-selection flow).
+    fn note_from_selection(&mut self, state: &mut AutoCommit) -> bool {
+        let bands = self.selection_page_bands();
+        let Some(first) = bands.first().copied() else { return false };
+        let Some(sel) = self.selection else { return false };
+        let page = sel.page;
+        self.clear_selection();
+        self.create_note(state, page, (first.x, first.y));
+        true
+    }
+
+    /// Route a shared-HUD action to this reader's commands.
+    fn apply_hud_action(&mut self, action: ui::HudAction, state: &mut AutoCommit) {
+        match action {
+            ui::HudAction::Copy => {
+                self.copy_selection();
+            }
+            ui::HudAction::Highlight(i) => {
+                let sw = Swatch::ALL[i.min(Swatch::ALL.len() - 1)];
+                self.highlight_selection(state, sw);
+            }
+            ui::HudAction::Note => {
+                self.note_from_selection(state);
+            }
+            ui::HudAction::Delete => {}
+        }
+    }
+
     /// Zoom keeping the viewport centre fixed (used by the +/- buttons and
     /// Ctrl +/-). Pins the fit intent to the resulting custom zoom.
     fn zoom_by(&mut self, factor: f64) {
@@ -2360,6 +2503,88 @@ mod tests {
         let n = app.annotations.len();
         app.sync(&mut st.doc, &st.root);
         assert_eq!(app.annotations.len(), n, "re-sync must not re-seed");
+    }
+
+    /// A synthetic single-line text layer over page 1 + a settled selection,
+    /// so the shared-HUD tests need no native pdfium.
+    fn seed_selection(app: &mut PdfApp, chars: &str, upto: usize) {
+        let glyphs: Vec<(char, PtRect)> = chars
+            .chars()
+            .enumerate()
+            .map(|(i, c)| (c, PtRect::new(72.0 + i as f64 * 9.0, 120.0, 8.0, 12.0)))
+            .collect();
+        app.raster_text.insert(1, std::sync::Arc::new(PageText::from_glyphs(glyphs)));
+        app.selection = Some(TextSelection { page: 1, anchor: 0, caret: upto, dragging: false });
+    }
+
+    #[test]
+    fn hud_highlight_action_highlights_the_text_selection() {
+        let (mut app, mut st) = app_with_state();
+        seed_selection(&mut app, "Hello", 4);
+        let hl = |st: &ui::State| {
+            PdfDoc::list_annotations(&st.doc)
+                .into_iter()
+                .filter(|a| matches!(a.kind, AnnoKind::Highlight { .. }))
+                .count()
+        };
+        let before = hl(&st);
+        // The shared HUD's swatch action highlights the run in that colour.
+        app.apply_hud_action(ui::HudAction::Highlight(1), &mut st.doc);
+        assert!(hl(&st) > before, "highlighting the selection adds a highlight annotation");
+        assert!(app.selection.is_none(), "the selection is consumed by the highlight");
+        assert_eq!(app.swatch, Swatch::ALL[1], "the armed swatch follows the HUD choice");
+    }
+
+    #[test]
+    fn hud_note_action_attaches_a_note_to_the_selection() {
+        let (mut app, mut st) = app_with_state();
+        seed_selection(&mut app, "AB", 1);
+        let notes = |st: &ui::State| {
+            PdfDoc::list_annotations(&st.doc)
+                .into_iter()
+                .filter(|a| matches!(a.kind, AnnoKind::Note { .. }))
+                .count()
+        };
+        let before = notes(&st);
+        app.apply_hud_action(ui::HudAction::Note, &mut st.doc);
+        assert_eq!(notes(&st), before + 1, "a note is attached to the selection");
+        assert!(app.editing.is_some(), "the note's comment editor opens for typing");
+    }
+
+    #[test]
+    fn hud_copy_action_reports_success_on_a_selection() {
+        let (mut app, mut st) = app_with_state();
+        seed_selection(&mut app, "Copyme", 5);
+        assert!(app.selection_text().is_some(), "the synthetic run yields text");
+        app.apply_hud_action(ui::HudAction::Copy, &mut st.doc);
+        assert!(
+            app.status_note.as_deref().unwrap_or("").contains("Copied"),
+            "the HUD Copy action copies + toasts ({:?})",
+            app.status_note
+        );
+    }
+
+    #[test]
+    fn dragging_a_note_marker_repositions_and_persists() {
+        let (mut app, mut st) = app_with_state();
+        // A fresh note at a known page-point.
+        app.create_note(&mut st.doc, 1, (100.0, 100.0));
+        app.reload(&st.doc);
+        let id = app.selected_anno.clone().expect("the new note is selected");
+        // Its marker is grabbable at its anchor (same target as clicking it).
+        assert!(app.note_marker_at(1, (100.0, 100.0)).is_some(), "the marker is grabbable");
+        // Begin → move → the local cache tracks the pointer for live feedback.
+        let mut mdrag = ui::MarkerDrag::begin(id.clone(), (100.0, 100.0), (100.0, 100.0));
+        let (nx, ny) = mdrag.update((180.0, 140.0));
+        assert!(mdrag.moved(), "a real drag latches moved");
+        app.move_note_local(&id, nx, ny);
+        assert_eq!(app.note_pos(&id), Some((nx, ny)), "the marker follows the pointer live");
+        // Release persists the new anchor to the shared document.
+        PdfDoc::set_annotation_position(&mut st.doc, &id, nx, ny);
+        app.reload(&st.doc);
+        let (x, y) = app.note_pos(&id).expect("the note survives the reposition");
+        assert!((x - nx).abs() < 1e-6 && (y - ny).abs() < 1e-6, "the reposition persisted to the CRDT");
+        assert!((x - 100.0).abs() > 1.0, "the note actually moved from its origin");
     }
 
     #[test]

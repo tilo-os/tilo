@@ -314,7 +314,15 @@ impl PdfApp {
                 // (a press that doesn't move is a selection of markup under it; a
                 // press that drags pans the canvas).
                 Tool::Select => {
-                    if self.shift_down && self.raster.is_some() {
+                    if let Some((id, nx, ny)) = self.note_marker_at(page, pt) {
+                        // A press on a sticky-note marker begins a reposition drag
+                        // (draggable annotation markers), taking priority over text
+                        // selection or a pan. A press that doesn't move still just
+                        // selects the note (handled on release).
+                        self.clear_selection();
+                        self.selected_anno = Some(id.clone());
+                        self.marker_drag = Some(ui::MarkerDrag::begin(id, pt, (nx, ny)));
+                    } else if self.shift_down && self.raster.is_some() {
                         // Shift + Select drags a rubber-band image-region marquee
                         // to copy; it never pans or selects text.
                         self.clear_selection();
@@ -396,6 +404,19 @@ impl PdfApp {
             WindowEvent::CursorMoved { position, .. } => {
                 let p = Point::new(position.x / scale_factor, position.y / scale_factor);
                 self.last_mouse = p;
+
+                // Dragging a sticky-note marker: move it live (local only; the
+                // CRDT is written once on release so a drag is one undo step).
+                if let Some(mut mdrag) = self.marker_drag.take() {
+                    if let Some(page) = self.anno_page(&mdrag.id) {
+                        let pt = self.page_point(page, p);
+                        let (nx, ny) = mdrag.update(pt);
+                        self.move_note_local(&mdrag.id, nx, ny);
+                    }
+                    self.marker_drag = Some(mdrag);
+                    self.dirty = true;
+                    return;
+                }
 
                 // Rail resize drag takes priority over everything else.
                 if let Some(grip_x) = self.rail_drag {
@@ -548,6 +569,21 @@ impl PdfApp {
                     *handled = true;
                     return;
                 }
+                // The floating selection HUD (Copy / highlight / Note) intercepts
+                // the click before it reaches the page — the same bar the ebook
+                // reader draws, via the shared `ui` component.
+                if let Some(action) = self.sel_hud.as_ref().and_then(|h| h.hit(p)) {
+                    self.apply_hud_action(action, state);
+                    self.dirty = true;
+                    *handled = true;
+                    return;
+                }
+                if self.sel_hud.as_ref().map(|h| h.contains(p)).unwrap_or(false) {
+                    // A tap on the bar body (between controls) is swallowed so it
+                    // doesn't fall through and clear the selection.
+                    *handled = true;
+                    return;
+                }
                 if self.apply_canvas_press(p, state) {
                     *handled = true;
                 }
@@ -558,6 +594,26 @@ impl PdfApp {
                 button: MouseButton::Left,
                 ..
             } => {
+                // End a sticky-note marker drag: persist the new anchor once (a
+                // no-move release is a plain select, already applied on press).
+                if let Some(mdrag) = self.marker_drag.take() {
+                    if mdrag.moved() {
+                        if let Some((x, y)) = self.note_pos(&mdrag.id) {
+                            PdfDoc::set_annotation_position(state, &mdrag.id, x, y);
+                            self.commit_pending = true;
+                            self.reload(state);
+                        }
+                    } else {
+                        // A tap on the marker reveals its comment thread.
+                        if let Some(c) = self.comments.iter().find(|c| c.anno_id.as_deref() == Some(mdrag.id.as_str())) {
+                            let cid = c.id.clone();
+                            self.focus_sidebar(SidebarTab::Comments, cid);
+                        }
+                    }
+                    self.dirty = true;
+                    *handled = true;
+                    return;
+                }
                 // End an image-region marquee: crop + copy the region.
                 if self.region.is_some() {
                     self.copy_region();
