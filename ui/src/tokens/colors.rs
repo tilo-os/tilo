@@ -1,4 +1,3 @@
-use crate::color_compat::ColorCompat;
 use vello::peniko::Color;
 
 /// Index into the accent ramp that maps to the concept's dominant

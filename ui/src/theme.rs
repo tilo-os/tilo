@@ -1,4 +1,3 @@
-use crate::color_compat::ColorCompat;
 use vello::peniko::Color;
 use crate::tokens::Tokens;
 use crate::tokens::colors::{ACCENT_HOVER_IDX, ACCENT_PRIMARY_IDX};
