@@ -92,6 +92,8 @@ ashpd = { version = "0.9", default-features = false, features = ["tokio"], optio
 # Parses the portal's returned file URIs. Non-optional: `portal::to_local_path`
 # is the file-access rule and must be testable in every build configuration.
 url = "2"
+# Crash-safe file replacement, used by the identity-flow example.
+atomic-file = { path = "../crates/system/atomic-file" }
 # The two halves of `uri`: RFC 3986 percent-decoding and the
 # `application/x-www-form-urlencoded` dialect that additionally reads `+` as a
 # space. Both are already in the graph as `url`'s own dependencies.
