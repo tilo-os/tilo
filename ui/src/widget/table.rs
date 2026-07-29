@@ -222,8 +222,7 @@ pub fn set_cell_text(doc: &mut AutoCommit, t: &ObjId, r: usize, c: usize, s: &st
             Err(_) => return,
         },
     };
-    let cur = doc.text(&obj).unwrap_or_default();
-    let _ = doc.splice_text(&obj, 0, cur.chars().count() as isize, s);
+    crate::doc::splice_text_diffed(doc, &obj, s);
 }
 
 /// Insert a fresh empty row at display index `at` (clamped to `0..=rows`).
@@ -1467,5 +1466,51 @@ mod tests {
         dispatch(&mut table, &taffy, node, &mut doc, &t, &press(), &mods);
 
         assert_eq!(dims(&doc, &t), (1, 1), "empty-add seeds a single cell");
+    }
+
+    #[test]
+    fn typing_into_a_cell_splices_only_the_new_text() {
+        // `set_cell_text` receives the cell's whole contents on every keystroke.
+        // Deleting and reinserting them costs O(len) ops per key and leaves the
+        // tombstones behind forever, so a long cell gets slower as it is typed.
+        let (mut doc, t) = doc_with_table();
+        insert_row(&mut doc, &t, 0);
+        insert_column(&mut doc, &t, 0);
+
+        set_cell_text(&mut doc, &t, 0, 0, "");
+        let baseline = doc.save().len();
+        let mut typed = String::new();
+        for i in 0..300 {
+            typed.push(if i % 9 == 8 { ' ' } else { 'x' });
+            set_cell_text(&mut doc, &t, 0, 0, &typed);
+        }
+        let grown = doc.save().len() - baseline;
+
+        assert_eq!(cell_text(&doc, &t, 0, 0), typed, "cell must hold what was typed");
+        assert!(
+            grown < 12 * typed.len(),
+            "typing {} chars grew the document by {grown} bytes — set_cell_text \
+             is rewriting the cell instead of splicing the diff",
+            typed.len()
+        );
+    }
+
+    #[test]
+    fn rewriting_a_cell_with_its_current_value_is_free() {
+        let (mut doc, t) = doc_with_table();
+        seed(&mut doc, &t, 1, 1);
+        set_cell_text(&mut doc, &t, 0, 0, "steady");
+        let before = doc.save().len();
+
+        for _ in 0..50 {
+            set_cell_text(&mut doc, &t, 0, 0, "steady");
+        }
+
+        assert_eq!(cell_text(&doc, &t, 0, 0), "steady");
+        assert_eq!(
+            doc.save().len(),
+            before,
+            "re-storing an unchanged cell must not grow the document"
+        );
     }
 }

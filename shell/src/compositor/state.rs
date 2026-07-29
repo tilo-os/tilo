@@ -83,13 +83,16 @@ use std::collections::HashMap;
 ///
 /// The Settings app writes `~/.config/qos/settings.json` with a
 /// `"display"` object carrying a `"scale"` number (1.0 = 100 %, 1.5 =
-/// 150 %, …). The compositor reads the same file — the contract is the
-/// JSON on disk, not a shared crate, so the compositor never depends on
-/// the Settings app. Any read/parse failure, a missing file, or a value
-/// outside a sane range falls back to `1.0` so a corrupt config can never
-/// leave the session at an unusable zoom.
+/// 150 %, …). The compositor reads the same file — and resolves its path
+/// through `settings_store`, so it cannot drift from the apps the way it
+/// had: this was the one reader that applied the XDG rule for a relative
+/// `XDG_CONFIG_HOME` while the apps did not, which put them on two
+/// different files. `settings_store` carries no dependency on the Settings
+/// app; the contract is still the JSON on disk. Any read/parse failure, a
+/// missing file, or a value outside a sane range falls back to `1.0` so a
+/// corrupt config can never leave the session at an unusable zoom.
 fn load_display_scale() -> f64 {
-    let Some(path) = dirs::config_dir().map(|d| d.join("qos").join("settings.json")) else {
+    let Some(path) = settings_store::settings_path() else {
         return 1.0;
     };
     let Ok(text) = std::fs::read_to_string(&path) else {

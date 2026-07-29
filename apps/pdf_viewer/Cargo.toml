@@ -12,7 +12,7 @@ name = "pdf_viewer"
 path = "src/main.rs"
 
 [dependencies]
-ui = { path = "../../ui" }
+ui = { path = "../../ui", features = ["portal"] }
 automerge.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -35,9 +35,6 @@ image = { workspace = true, features = ["png", "jpeg"] }
 # chooser; on qOS the compositor's portal backend renders qOS's picker. The
 # portal call runs off the UI thread on its own small Tokio runtime and the
 # chosen path is delivered back over a channel (see `app::portal`).
-ashpd.workspace = true
-tokio = { workspace = true, features = ["rt", "rt-multi-thread", "net", "time"] }
-url.workspace = true
 
 [dev-dependencies]
 # Serialise the tests that touch the shared system clipboard so they never race

@@ -21,7 +21,7 @@ decode = ["media/decode"]
 # Real host-native file picking via the XDG FileChooser portal (ashpd). Off by
 # default so the hermetic build needs no D-Bus / tokio; `--open PATH` opens a
 # file directly without the portal.
-portal = ["dep:ashpd", "dep:tokio"]
+portal = ["ui/portal"]
 
 [dependencies]
 ui = { path = "../../ui" }
@@ -35,5 +35,3 @@ taffy.workspace = true
 anyhow.workspace = true
 
 # Portal-only (feature-gated; never compiled for the default hermetic build).
-ashpd = { workspace = true, optional = true }
-tokio = { workspace = true, optional = true, features = ["rt", "rt-multi-thread", "macros"] }

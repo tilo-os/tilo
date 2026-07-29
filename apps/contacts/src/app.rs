@@ -904,7 +904,7 @@ impl ContactsApp {
         }
         if let Some(rx) = &self.export_rx {
             match rx.try_recv() {
-                Ok(ExportOutcome::Chosen(path)) => {
+                Ok(ExportOutcome::Opened(path)) => {
                     self.export_rx = None;
                     if let Some((ids, version)) = self.pending_export.take() {
                         self.write_export(&ids, version, &path);
@@ -5418,7 +5418,7 @@ mod tests {
 
         // Deliver the destination the Save portal would return, then drain it
         // through one real frame's sync — which writes the file.
-        h.app.export_rx = Some(portal::inject_export_for_test(ExportOutcome::Chosen(vcf.clone())));
+        h.app.export_rx = Some(portal::inject_export_for_test(ExportOutcome::Opened(vcf.clone())));
         h.app.sync(&mut h.doc, &ROOT);
         assert!(h.app.pending_export.is_none(), "the parked selection was consumed");
         assert!(!h.app.portal_in_flight(), "draining clears the request");

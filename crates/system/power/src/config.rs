@@ -37,7 +37,7 @@ pub const DEFAULT_SUSPEND_MINUTES: u32 = 15;
 /// falling back to `~/.config/qos/settings.json`) — the same file the
 /// Settings app and the rest of the compositor read.
 pub fn settings_path() -> Option<PathBuf> {
-    dirs::config_dir().map(|d| d.join("qos").join("settings.json"))
+    settings_store::settings_path()
 }
 
 /// Load the policy from the shared settings file, falling back to the
