@@ -246,6 +246,12 @@ pub fn run_with_full_options(opts: HostedOptions) {
         });
         let recv_net = Arc::clone(net);
         let inbound = recv_net.inbound_presence_handle();
+        // Inbound samples arrive at whatever rate the publisher manages
+        // (~30 Hz) and never carry a "peer left" note, so they are fed
+        // through the interpolator rather than straight onto the overlay:
+        // it eases between consecutive samples and fades a peer's cursor
+        // out once they go quiet. See `shell::shell::cursor_interp`.
+        let mut cursors = crate::shell::cursor_interp::CursorInterpolator::new();
         app.set_frame_tick(move |presence_ctx| {
             // Pump the actor→replica event channel first so any
             // `PresenceMoved` events that arrived since the last
@@ -259,13 +265,16 @@ pub fn run_with_full_options(opts: HostedOptions) {
                 let mut buf = inbound.lock().unwrap();
                 std::mem::take(&mut *buf)
             };
+            let now = std::time::Instant::now();
             for entry in drained {
-                presence_ctx.upsert_remote_cursor(
-                    format!("p{:016x}", entry.peer),
+                cursors.push_sample(
+                    &format!("p{:016x}", entry.peer),
+                    "",
                     [entry.point.0 as f32, entry.point.1 as f32],
-                    None,
+                    now,
                 );
             }
+            cursors.apply_to(presence_ctx, now);
         });
     }
     // Sandbox Phase 4.3 — bring up the xdg-desktop-portal D-Bus

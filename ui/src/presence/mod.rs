@@ -282,13 +282,28 @@ impl PresenceCtx {
         position: [f32; 2],
         display_name: Option<&str>,
     ) {
+        self.upsert_remote_cursor_faded(user_id, position, display_name, 1.0);
+    }
+
+    /// [`Self::upsert_remote_cursor`] with an explicit opacity, so a
+    /// caller that ages remote cursors out (rather than waiting for an
+    /// explicit `Left`) can fade one rather than popping it. `alpha` is
+    /// clamped to `0.0..=1.0` and lands in the cursor colour's alpha
+    /// channel; `1.0` is exactly the plain upsert.
+    pub fn upsert_remote_cursor_faded(
+        &mut self,
+        user_id: String,
+        position: [f32; 2],
+        display_name: Option<&str>,
+        alpha: f32,
+    ) {
         let uid = UserId(user_id.clone());
         let (r, g, b) = self.color_for(&uid);
         let color = [
             r as f32 / 255.0,
             g as f32 / 255.0,
             b as f32 / 255.0,
-            1.0,
+            alpha.clamp(0.0, 1.0),
         ];
         let label = display_name
             .map(|s| s.to_string())
