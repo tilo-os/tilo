@@ -222,3 +222,53 @@ This is the same "recurring pattern → framework" move as `ui::doc` and
 diff-splice write discipline (route model writes through `ui::doc`) so the
 O(n²) `store()` churn can't regress per app. Build it once the write-side sweep
 (item in `apps/MISSING.md`) has a stable set of doc helpers to build on.
+
+---
+
+## 2026-07-29 — comprehensive cross-app redundancy audit
+
+A grep-level sweep of all 47 app crates (plus `crates/`) for the *same thing
+implemented N times*, ranked below. Each row cites `file:symbol` evidence, not
+impressions. The last column flags whether the concurrent **`dedupe-io`** session
+is likely already handling it: that session's landed signature is
+**file/persistence/settings/uri** consolidation — it shipped
+`crates/system/atomic-file` (22 hand-rolled crash-safe writes → one),
+`settings-store` (the shared `settings.json`), `accounts` (Mail/Calendar/Settings
+account model), `app-state` (the canonical Automerge-doc-on-disk home), `power`,
+and a single `uri` percent-decoder. So **value-formatting, avatars, dialogs, icons
+and widget-adoption are NOT in its lane** and are the genuinely-open, highest-
+leverage items here.
+
+### Ranked table (lead with genuinely-open, high-leverage)
+
+| # | Pattern (duplicated code) | Apps duplicating (count + names) | Suggested shared home | Effort | In dedupe-io sweep? |
+|---|---|---|---|---|---|
+| A | **Value formatting** — byte sizes, byte-rate, media timecode, "time ago", compact counts, month/weekday names. No shared home exists (`crates/format/*` is WIT *format-providers*, unrelated). | **byte-size: 13** (`api_tester model.rs:human_size`, `imager model.rs:fmt_size`, `maps app.rs:fmt_bytes`, `backups model.rs:human_bytes`, `camera app.rs:human_size`, `chat render_chat.rs:human_size`, `containers model.rs:human_bytes`, `disks model.rs:fmt_size`, `file-explorer model.rs:human_size`, `hex_editor view.rs:human_size`, `mail model.rs:human_bytes`, `monitor model.rs:fmt_bytes`, `vpn model.rs:human_bytes`+`human_rate`). **timecode: 6** (`music model.rs:fmt_duration`, `tube util.rs:clock`, `video_editor timecode.rs:clock`+`timecode`, `camera app.rs:fmt_dur`, `slides app.rs:present_clock`, `maps geo.rs:fmt_duration`). **relative-time: 8** (`camera app.rs:ago`, `feeds model.rs:relative_time`, `git_client repo.rs:relative_time`, `vpn model.rs:human_ago`, `mail util.rs:format_relative`, `chat model.rs:day_label`, `calendar date.rs:relative_label`, `tube ytdlp.rs`). **compact-count: 5** (`music` ×3: `backend/live.rs:human_count`, `app/render.rs:human_count`, `search_type.rs:compact_count`; `tube util.rs:human_count`; inline in `monitor`/`software_store`). **month/weekday tables: 5** (`calendar`, `logs`, `mail`, `sheets` ×2 `month_abbrev`+`month_abbrev_local`, `tube`). | **New `ui::format`** module: `bytes()`, `rate()`, `duration()`/`timecode()`, `relative()`, `compact_count()`, `month_abbrev()`/`weekday()`. | **M** | **no** — pure formatting, outside dedupe-io's file/persist lane. **Highest leverage + a correctness win:** the copies *disagree* — `mail`/`backups` label base-1024 as `KB/MB/GB`, `containers` as `KiB/MiB/GiB` for the identical math, so the fleet renders the same size two ways today. A shared formatter makes it consistent, not just shorter. |
+| B | **Avatar circle + initials + deterministic color** — hand-drawn, even though `ui::widget::Avatar` already ships `from_initials`, `color_for_initials`, `paint_initials`, `display_initials`. | **8** hand-roll it (only `tube` uses `ui::Avatar`): `chat render_chat.rs:draw_avatar`+`identity.rs:{initials_of,color_from_bytes}`, `contacts app.rs:draw_avatar`+`model.rs:initials`, `git_client draw.rs:avatar`, `mail draw.rs:{draw_avatar,avatar_color}`+`model.rs:initials`, `music app/render.rs:draw_avatar`+`art.rs:initials`, `pdf_viewer app_draw.rs:draw_avatar`, `totp list.rs:draw_avatar`+`model.rs:initials`, `calendar ics.rs:color_from_name`. | **Adopt existing `ui::widget::Avatar`** (extend it with an image-backed variant where needed — `mail`/`music`/`tube` want a photo fallback). | **M** (adoption) | **no** — widget adoption, not persistence. Same "primitive exists, apps re-roll it" shape as the Card sweep. |
+| C | **Confirmation / modal dialogs** hand-painted, though `ui::widget::ModalDialog` exists (6 adopters: db_client, mail, notes, pdf_viewer, terminal, totp). | **~16** hand-draw a confirm/dialog/overlay sheet: browser, code_editor, contacts, disks, file-explorer, git_client, hex_editor, imager, logs, monitor, slides, software_store, themes, vpn, weather, word-processor. | **Adopt `ui::widget::ModalDialog`** (add a `confirm(title, body, destructive)` convenience for the delete/format/discard case that recurs most). | **M** | **no** — not mentioned in this file yet; widget adoption. |
+| D | **Per-app config/state dir + JSON read/write** — each app re-resolves its own `dirs::config_dir()/qos/<app>/…` and hand-writes serde JSON. | **~12**: `file-explorer config.rs`/`favorites.rs`, `db_client session.rs`, `store config.rs`, `settings prefs.rs`/`region.rs`, `totp storage.rs`, `browser settings.rs`/`history.rs`, `vpn config.rs`, `themes app.rs`, `music storage.rs`, `mail account.rs`, `contacts storage.rs`, `chat storage.rs`. | **Extend `crates/system/app-state`** (already the canonical *Automerge-doc* home) with a sibling `app_config::<T: Serialize>` path-resolver + atomic JSON store (built on the new `atomic-file`). | **M** | **maybe** — directly adjacent to dedupe-io's `app-state`/`settings-store`/`atomic-file` work; they may fold this in. Confirm with that session before building. |
+| E | **Icon set fragmentation** — `ui::Icon` (66 named icons) + `IconWidget` exist and 14 apps use them, but two apps declare a *private* `Icon` enum and ~8 hand-draw vector glyphs into the scene. | Private enums: `containers draw.rs:enum Icon`, `music icon.rs:enum Icon`. Hand-drawn vector icons: `camera paint.rs:icon`, `containers draw.rs:icon`, `backups app.rs:draw_{source,dest}_icon`, `code_editor file_tree.rs:draw_{folder,file}_icon`, `contacts app.rs:draw_calendar_glyph`, `maps canvas.rs:draw_category_icon`, `pdf_viewer app_draw.rs`. Emoji/`&'static str` glyph maps: `chat model.rs:glyph`, `db_client model.rs:glyph`+`icon`, `maps model.rs:glyph` (×4), `mail model.rs:icon`, `file-explorer icons.rs:icon_for`. | **Grow `ui::icons`** to cover the missing glyphs (folder/file kinds, category pins, source/dest kinds) so apps drop private enums + bespoke painters. | **M–L** (nuanced; some are genuinely app-specific pictograms) | **no** — but note an *active* thread elsewhere is already replacing emoji glyphs with vector icons (`osk` ⇧/⌫/⏎ landed), so coordinate. Partially overlaps item 5 (StatTile/IconGrid). |
+| F | **Clipboard** — `ui::text_selection::{clipboard_copy,clipboard_paste,clipboard_copy_image,clipboard_copy_primary}` exist and 14 apps use them; `word-processor widget.rs` (4 sites) still instantiates `arboard::Clipboard` directly. | 1 real offender (`word-processor`); `terminal` only in tests. | Route `word-processor` through the shared helpers; consider promoting them out of `text_selection` into a `ui::clipboard` module for discoverability. | **S** | **no** |
+| G | **Remote-image fetch + decode** — `ui::Fetcher` + `ui::ImageStore` exist (adopted by chat, mail, music, slides, tube); three network apps fetch+decode by hand. | **3**: `weather`, `feeds`, `maps` fetch images with `reqwest`/`ureq` and decode without `ImageStore`. | Adopt `ui::ImageStore`/`Fetcher`. | **S–M** | **no** |
+
+### Refresh of existing backlog items (from this sweep)
+
+- **Item 4 (sidebar adoption)** — updated tally: **15 apps now adopt** a shared nav
+  primitive (api_tester, backups, calculator, containers, disks, feeds,
+  file-explorer, firewall, mail, music, pdf_viewer, settings, slides, tube,
+  weather), and **13 still hand-roll** a rail/flap: **calendar, camera, chat,
+  code_editor, db_client, ebook, git_client, monitor, notes, snippets,
+  software_store, themes, video_editor**. `file-explorer` and `firewall`/`backups`
+  called out earlier have since adopted; `camera` remains a bespoke floating rail.
+- **Item 7 (caret core adoption)** — no new *clean* offenders beyond the noted
+  calculator/sheets structured fields; `word-processor`/`typst_editor` carry
+  genuinely bespoke editors (rich-text / code) that are higher-risk migrations,
+  not quick wins.
+
+### Not an extraction — a theme-read fix (HIG §theming), noted for completeness
+
+Hard-coded `Color::rgb*` literals (widgets must read from `Theme`) are heaviest in
+`ebook` (62), `word-processor` (44), `tube` (32), `pdf_viewer` (18), `feeds` (16),
+`terminal` (14), `sheets` (13), `camera` (12), `chat` (11). There is nothing to
+*extract* here — the fix is per-app (route through `Theme`) — but it's the same
+consistency failure the formatting item (A) exposes, and worth a dedicated pass.
