@@ -232,6 +232,41 @@ mod tests {
     }
 
     #[test]
+    fn room_activity_action_opens_the_sheet_on_open() {
+        // The palette is the canonical way to reach a shell surface, so the
+        // action has to be findable by the words a person would type and its
+        // callback has to flip the real flag the overlay host reads.
+        let p = ActionsProvider::new();
+        let c = chrome_rc();
+        let mut doc = AutoCommit::new();
+        let out = {
+            let cs = c.borrow();
+            p.query(SearchContext {
+                needle: "activity",
+                wanted: &[ResourceKind::Action],
+                chrome: &cs,
+                doc: &doc,
+                doc_root: &automerge::ROOT,
+            })
+        };
+        let action = out
+            .iter()
+            .find(|r| r.id == "room.activity.open")
+            .expect("typing 'activity' must surface the room-activity action");
+        assert_eq!(action.title, "Show room activity");
+        assert!(!c.borrow().overlays.room_activity, "starts closed");
+        (action.on_open)(&mut doc, &automerge::ROOT, &c);
+        assert!(
+            c.borrow().overlays.room_activity,
+            "invoking the exported action opened the sheet"
+        );
+        assert!(
+            !c.borrow().overlays.collaborators,
+            "the dropdown the sheet can also be opened from is dismissed with it"
+        );
+    }
+
+    #[test]
     fn dnd_action_toggles_flag_on_open() {
         let p = ActionsProvider::new();
         let c = chrome_rc();
