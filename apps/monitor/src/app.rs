@@ -30,7 +30,9 @@ use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::context_menu::{ContextMenu, MenuItem};
 use ui::widget::popover::Popover;
-use ui::widget::Widget;
+use ui::widget::{ModalDialog, Text, Widget};
+use std::cell::Cell;
+use std::rc::Rc;
 
 use crate::charts::{self, with_alpha, Series};
 use crate::layout;
@@ -179,6 +181,16 @@ enum ScrollDrag {
     Page { grab: f64 },
 }
 
+/// The live stop-confirmation dialog: the shared [`ModalDialog`] plus the
+/// `confirm` / `cancel` cells its action callbacks flip (drained each event by
+/// the host). The message body is a plain [`Text`]; the dialog owns the scrim,
+/// box, footer buttons, Esc, focus trap, and a11y role.
+struct ConfirmDialog {
+    dialog: ModalDialog<Text>,
+    confirm: Rc<Cell<bool>>,
+    cancel: Rc<Cell<bool>>,
+}
+
 /// Hit rectangles recorded during `draw`, consumed by `handle_event`.
 struct Hit {
     tab_proc: Rect,
@@ -199,8 +211,6 @@ struct Hit {
     stop_btn: Rect,
     /// Context-menu item rects, recorded while the menu is open.
     menu_items: Vec<(usize, Rect)>,
-    modal_kill: Rect,
-    modal_cancel: Rect,
     /// Summary-strip stat cells (Processes tab). Clicking one jumps to the
     /// Resources dashboard, where that stat's full gauge/chart lives.
     summary_cells: Vec<Rect>,
@@ -233,8 +243,6 @@ impl Hit {
             kill_btn: Rect::ZERO,
             stop_btn: Rect::ZERO,
             menu_items: Vec::new(),
-            modal_kill: Rect::ZERO,
-            modal_cancel: Rect::ZERO,
             summary_cells: Vec::new(),
             detail_back: Rect::ZERO,
             confirm_toggle: Rect::ZERO,
@@ -272,6 +280,11 @@ pub struct MonitorApp {
     /// A pending confirmation: the process and which stop signal it will get.
     /// Set only for the `Kill` (SIGKILL) path; `Stop` (SIGTERM) never gates.
     confirm_stop: Option<(u32, StopKind)>,
+    /// The live confirmation dialog (shared [`ModalDialog`]) mirroring
+    /// `confirm_stop`. Built lazily when a confirm is pending and dropped when
+    /// it resolves; owns the scrim, centered box, footer buttons, Esc, focus
+    /// trap, and a11y `Dialog` role.
+    confirm_dialog: Option<ConfirmDialog>,
 
     // process tree
     /// Tree view (parent→child with twisties) vs a flat sorted list.
@@ -410,6 +423,7 @@ impl MonitorApp {
             content_h: 0.0,
             viewport_h: 0.0,
             confirm_stop: None,
+            confirm_dialog: None,
             tree_mode: true,
             sum_mode: SumMode::SumSubtree,
             expanded: HashSet::new(),
@@ -626,6 +640,7 @@ impl MonitorApp {
             self.selected_pid = None;
         }
         self.confirm_stop = None;
+        self.confirm_dialog = None;
         self.clamp_scroll();
     }
 
@@ -2090,58 +2105,134 @@ impl MonitorApp {
         );
     }
 
-    fn draw_modal(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, pid: u32, kind: StopKind) {
-        let c = &theme.tokens.colors;
-        // Scrim.
-        scene.fill(Fill::NonZero, t, Color::from_rgba8(0, 0, 0, 150), None, &self.rect);
-        let name = self.model.processes.iter().find(|p| p.pid == pid).map(|p| p.name.clone()).unwrap_or_else(|| "process".into());
-        let (title, signal_name) = match kind {
-            StopKind::Term => ("Stop process?", "SIGTERM"),
-            StopKind::Kill => ("Kill process?", "SIGKILL"),
+    /// The title, one-line body, and affirmative-button label for a pending
+    /// stop confirmation. Shared by the dialog builder so the copy lives in one
+    /// place.
+    fn confirm_copy(&self, pid: u32, kind: StopKind) -> (&'static str, String, &'static str) {
+        let name = self
+            .model
+            .processes
+            .iter()
+            .find(|p| p.pid == pid)
+            .map(|p| p.name.clone())
+            .unwrap_or_else(|| "process".into());
+        let (title, signal_name, confirm_label) = match kind {
+            StopKind::Term => ("Stop process?", "SIGTERM", "Stop"),
+            StopKind::Kill => ("Kill process?", "SIGKILL", "Kill"),
         };
-
-        let w = 400.0;
-        let h = 168.0;
-        let cx = self.rect.center().x;
-        let cy = self.rect.center().y;
-        let dlg = Rect::new(cx - w / 2.0, cy - h / 2.0, cx + w / 2.0, cy + h / 2.0);
-        charts::fill_rrect(scene, t, dlg, theme.tokens.radii.md as f64 + 4.0, c.surfaces.raised);
-        charts::stroke_rrect(scene, t, dlg, theme.tokens.radii.md as f64 + 4.0, c.border_standard, 1.0);
-        let inner = Rect::new(dlg.x0 + 20.0, dlg.y0 + 18.0, dlg.x1 - 20.0, dlg.y1 - 18.0);
-
-        // Danger glyph + title.
-        let icon_r = Rect::new(inner.x0, inner.y0, inner.x0 + 22.0, inner.y0 + 22.0);
-        icons::draw_icon(scene, t, icon_r, Icon::Power, c.semantic.danger, 1.8);
-        tr.draw_text_weighted(scene, title, theme.tokens.typography.scale.lg, c.text_primary, t * Affine::translate((icon_r.x1 + 10.0, inner.y0)), None, TextWeight::Bold);
-        let body = format!("{} (PID {}) will be sent {}. Unsaved work will be lost.", name, pid, signal_name);
-        let body = Self::truncate(tr, &body, theme.tokens.typography.scale.sm, inner.width());
-        tr.draw_text(scene, &body, theme.tokens.typography.scale.sm, c.text_dim, t * Affine::translate((inner.x0, inner.y0 + 36.0)), None);
-
-        // Buttons.
-        let bw = 110.0;
-        let bh = 36.0;
-        let kill_r = Rect::new(inner.x1 - bw, inner.y1 - bh, inner.x1, inner.y1);
-        let cancel_r = Rect::new(kill_r.x0 - bw - 10.0, inner.y1 - bh, kill_r.x0 - 10.0, inner.y1);
-        let radius = theme.tokens.radii.md as f64;
-        // Cancel.
-        charts::fill_rrect(scene, t, cancel_r, radius, c.surface_white_5);
-        charts::stroke_rrect(scene, t, cancel_r, radius, c.border_standard, 1.0);
-        Self::center_label(scene, t, tr, theme, cancel_r, "Cancel", c.text_primary);
-        // Confirm (danger) — labelled for the signal being sent.
-        let confirm_label = match kind {
-            StopKind::Term => "Stop",
-            StopKind::Kill => "Kill",
-        };
-        charts::fill_rrect(scene, t, kill_r, radius, c.semantic.danger);
-        Self::center_label(scene, t, tr, theme, kill_r, confirm_label, Color::WHITE);
-        self.hit.modal_kill = kill_r;
-        self.hit.modal_cancel = cancel_r;
+        let body = format!("{name} (PID {pid}) will be sent {signal_name}. Unsaved work will be lost.");
+        (title, body, confirm_label)
     }
 
-    fn center_label(scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, r: Rect, label: &str, color: Color) {
-        let fs = theme.tokens.typography.scale.sm;
-        let (w, h) = tr.measure_weighted(label, fs, None, TextWeight::Semibold);
-        tr.draw_text_weighted(scene, label, fs, color, t * Affine::translate((r.center().x - w as f64 / 2.0, r.center().y - h as f64 / 2.0)), None, TextWeight::Semibold);
+    /// Build the shared confirm dialog for a pending stop. The affirmative
+    /// button is destructive (danger-coloured); `confirm` / `cancel` cells are
+    /// flipped by the dialog's action callbacks and drained by the host.
+    fn build_confirm_dialog(&self, pid: u32, kind: StopKind) -> ConfirmDialog {
+        let (title, body, confirm_label) = self.confirm_copy(pid, kind);
+        let confirm = Rc::new(Cell::new(false));
+        let cancel = Rc::new(Cell::new(false));
+        let dialog = ModalDialog::new(title, Text::new(&body).with_size(13.5))
+            .open(true)
+            .with_max_size(420.0, 190.0)
+            .with_destructive(true)
+            .primary_action(confirm_label, {
+                let c = confirm.clone();
+                move || c.set(true)
+            })
+            .secondary_action("Cancel", {
+                let c = cancel.clone();
+                move || c.set(true)
+            })
+            .on_dismiss({
+                let c = cancel.clone();
+                move || c.set(true)
+            });
+        ConfirmDialog { dialog, confirm, cancel }
+    }
+
+    /// Ensure the confirm dialog exists while a stop is pending.
+    fn ensure_confirm_dialog(&mut self, pid: u32, kind: StopKind) {
+        if self.confirm_dialog.is_none() {
+            self.confirm_dialog = Some(self.build_confirm_dialog(pid, kind));
+        }
+    }
+
+    /// Lay the confirm dialog out against the app rect so its box + footer
+    /// buttons resolve for hit-testing and paint.
+    fn layout_confirm_dialog(&mut self) {
+        if self.rect.width() <= 0.0 || self.rect.height() <= 0.0 {
+            return;
+        }
+        let Some(cd) = self.confirm_dialog.as_mut() else { return };
+        let theme = Theme::dark();
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let node = cd.dialog.build_layout(&mut taffy, &theme, &mut node_map);
+        let root = taffy
+            .new_with_children(
+                Style {
+                    size: Size {
+                        width: Dimension::length(self.rect.width() as f32),
+                        height: Dimension::length(self.rect.height() as f32),
+                    },
+                    ..Default::default()
+                },
+                &[node],
+            )
+            .unwrap();
+        let _ = taffy.compute_layout(
+            root,
+            Size {
+                width: taffy::AvailableSpace::Definite(self.rect.width() as f32),
+                height: taffy::AvailableSpace::Definite(self.rect.height() as f32),
+            },
+        );
+        cd.dialog
+            .apply_layout(&taffy, node, Point::new(self.rect.x0, self.rect.y0));
+    }
+
+    /// Route an event into the open confirm dialog and act on the flags its
+    /// callbacks set. Enter is a submit convenience; the dialog itself owns
+    /// Escape, the backdrop click, and the footer buttons.
+    fn route_confirm_event(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: &winit::event::Modifiers,
+        doc: &mut AutoCommit,
+        path: &ObjId,
+        handled: &mut bool,
+    ) {
+        let Some((pid, kind)) = self.confirm_stop else { return };
+        if let WindowEvent::KeyboardInput { event: ke, .. } = event {
+            if ke.state == ElementState::Pressed
+                && matches!(ke.logical_key, Key::Named(NamedKey::Enter))
+            {
+                self.do_stop(pid, kind, doc);
+                *handled = true;
+                return;
+            }
+        }
+        self.ensure_confirm_dialog(pid, kind);
+        self.layout_confirm_dialog();
+        let (confirm, cancel) = {
+            let Some(cd) = self.confirm_dialog.as_mut() else { return };
+            let mut taffy: TaffyTree<()> = TaffyTree::new();
+            let node = taffy.new_leaf(Style::default()).unwrap();
+            let mut focus_target = None;
+            cd.dialog.handle_event(
+                event, scale_factor, modifiers, doc, path, handled,
+                &mut focus_target, node, &taffy,
+            );
+            (cd.confirm.replace(false), cd.cancel.replace(false))
+        };
+        if confirm {
+            self.do_stop(pid, kind, doc);
+        } else if cancel {
+            self.confirm_stop = None;
+            self.confirm_dialog = None;
+        }
+        *handled = true;
     }
 
     /// The transient "PID N copied" toast — a small pill centred near the
@@ -2259,19 +2350,9 @@ impl MonitorApp {
     }
 
     fn on_click(&mut self, p: Point, doc: &mut AutoCommit, path: &ObjId, handled: &mut bool) {
-        // Modal takes priority.
-        if let Some((pid, kind)) = self.confirm_stop {
-            if self.hit.modal_kill.contains(p) {
-                self.do_stop(pid, kind, doc);
-                *handled = true;
-            } else if self.hit.modal_cancel.contains(p) {
-                self.confirm_stop = None;
-                *handled = true;
-            } else {
-                *handled = true; // swallow clicks behind the scrim
-            }
-            return;
-        }
+        // The stop-confirmation modal is handled in `handle_event` before
+        // dispatch reaches here (the shared dialog captures all input while
+        // open), so `on_click` never runs with a confirm pending.
 
         // An open interval popover captures clicks: a press on an option row
         // selects that cadence, a press anywhere else dismisses. Either way the
@@ -2542,21 +2623,8 @@ impl MonitorApp {
             return;
         }
 
-        // Modal.
-        if let Some((pid, kind)) = self.confirm_stop {
-            match key {
-                Key::Named(NamedKey::Enter) => {
-                    self.do_stop(pid, kind, doc);
-                    *handled = true;
-                }
-                Key::Named(NamedKey::Escape) => {
-                    self.confirm_stop = None;
-                    *handled = true;
-                }
-                _ => *handled = true,
-            }
-            return;
-        }
+        // The stop-confirmation modal is handled in `handle_event` before
+        // dispatch reaches here, so `on_key` never runs with a confirm pending.
 
         // Search editing.
         if self.search_focused {
@@ -2877,7 +2945,13 @@ impl Widget for MonitorApp {
         self.draw_toast(scene, t, text_renderer, theme);
 
         if let Some((pid, kind)) = self.confirm_stop {
-            self.draw_modal(scene, t, text_renderer, theme, pid, kind);
+            self.ensure_confirm_dialog(pid, kind);
+            self.layout_confirm_dialog();
+            if let Some(cd) = self.confirm_dialog.as_mut() {
+                cd.dialog.draw(scene, t, text_renderer, theme, _presence);
+            }
+        } else {
+            self.confirm_dialog = None;
         }
     }
 
@@ -2893,6 +2967,13 @@ impl Widget for MonitorApp {
         _node_id: NodeId,
         _taffy: &TaffyTree<()>,
     ) {
+        // A pending stop confirmation is modal: while it's up the shared
+        // dialog captures every event (typing, clicks, Esc) and nothing leaks
+        // to the process table behind the scrim.
+        if self.confirm_stop.is_some() {
+            self.route_confirm_event(event, scale_factor, modifiers, doc, path, handled);
+            return;
+        }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
@@ -3799,6 +3880,25 @@ mod tests {
             phase: winit::event::TouchPhase::Moved,
         }
     }
+    /// A synthetic key-press event for a named key. Zeroes the winit
+    /// `KeyEvent` (its `platform_specific` field is crate-private) and
+    /// overwrites the fields the handlers read — same trick the `ui` widget
+    /// tests use.
+    fn synth_key(named: NamedKey) -> WindowEvent {
+        let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
+        ev.logical_key = Key::Named(named);
+        ev.physical_key =
+            winit::keyboard::PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
+        ev.location = winit::keyboard::KeyLocation::Standard;
+        ev.state = ElementState::Pressed;
+        ev.repeat = false;
+        ev.text = None;
+        WindowEvent::KeyboardInput {
+            device_id: winit::event::DeviceId::dummy(),
+            event: ev,
+            is_synthetic: false,
+        }
+    }
 
     /// A quick click (press + prompt release) on the interval pill cycles the
     /// cadence AND persists it to the CRDT — the full `on_click` press →
@@ -4028,20 +4128,22 @@ mod tests {
         assert_eq!(a.confirm_stop, Some((pid, StopKind::Kill)), "Kill button gated → confirm modal");
     }
 
-    /// The confirm modal's Kill button dispatches the signal; its Cancel button
-    /// dismisses without killing — both through the `on_click` confirm branch.
+    /// The shared confirm dialog's destructive primary dispatches the signal;
+    /// its secondary (Cancel) dismisses without killing — both driven through
+    /// the real `handle_event` → `ModalDialog` path (footer button rects
+    /// resolved by a live layout pass, then a click at their centre).
     #[test]
     fn confirm_modal_buttons_confirm_and_cancel() {
         let mut a = app();
         let pid = a.visible_rows()[0].pid;
         a.selected_pid = Some(pid);
         a.confirm_stop = Some((pid, StopKind::Kill));
-        a.hit.modal_kill = Rect::new(0.0, 0.0, 110.0, 36.0);
-        a.hit.modal_cancel = Rect::new(200.0, 0.0, 310.0, 36.0);
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        let mut h = false;
-        a.on_click(Point::new(10.0, 10.0), &mut doc, &root, &mut h);
+        // A real frame builds + lays out the shared dialog so its footer button
+        // rects resolve exactly as the live renderer would.
+        draw_at(&mut a, 900.0, 600.0);
+        let primary = a.confirm_dialog.as_ref().unwrap().dialog.primary_rect();
+        dispatch_ev(&mut a, &synth_cursor(primary.center().x, primary.center().y));
+        let h = dispatch_ev(&mut a, &synth_press());
         assert!(h);
         assert!(a.confirm_stop.is_none(), "modal dismissed after confirm");
         assert!(a.model.processes.iter().all(|p| p.pid != pid), "process killed on confirm");
@@ -4049,25 +4151,23 @@ mod tests {
         let mut b = app();
         let pid2 = b.visible_rows()[0].pid;
         b.confirm_stop = Some((pid2, StopKind::Kill));
-        b.hit.modal_kill = Rect::new(0.0, 0.0, 110.0, 36.0);
-        b.hit.modal_cancel = Rect::new(200.0, 0.0, 310.0, 36.0);
-        let mut h2 = false;
-        b.on_click(Point::new(250.0, 10.0), &mut doc, &root, &mut h2);
+        draw_at(&mut b, 900.0, 600.0);
+        let secondary = b.confirm_dialog.as_ref().unwrap().dialog.secondary_rect();
+        dispatch_ev(&mut b, &synth_cursor(secondary.center().x, secondary.center().y));
+        let h2 = dispatch_ev(&mut b, &synth_press());
         assert!(h2);
         assert!(b.confirm_stop.is_none(), "Cancel dismissed the modal");
         assert!(b.model.processes.iter().any(|p| p.pid == pid2), "Cancel did not kill");
     }
 
-    /// The confirm modal's keyboard: Enter confirms the kill, Escape cancels.
+    /// The confirm dialog's keyboard: Enter confirms the kill, Escape cancels —
+    /// both through the real `handle_event` → `ModalDialog` routing.
     #[test]
     fn confirm_modal_keyboard_enter_confirms_escape_cancels() {
         let mut a = app();
         let pid = a.visible_rows()[0].pid;
         a.confirm_stop = Some((pid, StopKind::Kill));
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        let mut h = false;
-        a.on_key(&Key::Named(NamedKey::Enter), None, false, &mut doc, &root, &mut h);
+        let h = dispatch_ev(&mut a, &synth_key(NamedKey::Enter));
         assert!(h);
         assert!(a.confirm_stop.is_none());
         assert!(a.model.processes.iter().all(|p| p.pid != pid), "Enter confirmed the kill");
@@ -4075,8 +4175,7 @@ mod tests {
         let mut b = app();
         let pid2 = b.visible_rows()[0].pid;
         b.confirm_stop = Some((pid2, StopKind::Kill));
-        let mut h2 = false;
-        b.on_key(&Key::Named(NamedKey::Escape), None, false, &mut doc, &root, &mut h2);
+        let h2 = dispatch_ev(&mut b, &synth_key(NamedKey::Escape));
         assert!(h2);
         assert!(b.confirm_stop.is_none());
         assert!(b.model.processes.iter().any(|p| p.pid == pid2), "Escape cancelled the kill");
