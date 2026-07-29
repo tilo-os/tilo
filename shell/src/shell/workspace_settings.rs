@@ -1317,6 +1317,26 @@ pub struct MemberRow {
     pub remove_rect: Rect,
 }
 
+/// The roster in a stable display order: the workspace owner first, then
+/// everyone else by id.
+///
+/// [`Workspace::roster`] returns members in the order their membership
+/// capabilities happen to sit in the list, and changing someone's role
+/// rewrites their capability — which moved their row while the pointer
+/// was still over it, so a second click landed on a different person.
+/// Ordering here rather than in `roster` keeps the fix in the layer that
+/// has the problem.
+fn ordered_roster(ws: &Workspace) -> Vec<(UserId, CapRole)> {
+    let mut rows = ws.roster();
+    let owner = ws.owner.clone();
+    rows.sort_by(|a, b| {
+        let a_owner = Some(&a.0) == owner.as_ref();
+        let b_owner = Some(&b.0) == owner.as_ref();
+        b_owner.cmp(&a_owner).then_with(|| a.0.cmp(&b.0))
+    });
+    rows
+}
+
 /// Layout the Members pane. Pure geometry — no painting; the rows feed
 /// both the renderer and the click router.
 pub fn members_pane_rows(ws: &Workspace, pane_rect: Rect) -> Vec<MemberRow> {
@@ -1325,7 +1345,7 @@ pub fn members_pane_rows(ws: &Workspace, pane_rect: Rect) -> Vec<MemberRow> {
         return rows;
     }
     let mut cursor_y = pane_rect.y0 + PANE_PAD_TOP + SECTION_HEADER_HEIGHT;
-    for (user, role) in ws.roster() {
+    for (user, role) in ordered_roster(ws) {
         let row_rect = Rect::new(
             pane_rect.x0 + PANE_PAD_X,
             cursor_y,
@@ -1411,7 +1431,7 @@ pub fn draw_members_pane(
         transform,
         Point::new(pane_rect.x0 + PANE_PAD_X, pane_rect.y0 + PANE_PAD_TOP),
         "MEMBERS",
-        ws.roster().len(),
+        ordered_roster(ws).len(),
         text_renderer,
         theme,
     );
@@ -2869,5 +2889,49 @@ mod permissions_pane_tests {
         assert!(shortened.chars().count() <= 11);
         assert!(shortened.ends_with('…'));
         assert_eq!(short_id("quinten"), "quinten");
+    }
+}
+
+#[cfg(test)]
+mod roster_order_tests {
+    //! The Members list must not reorder under the pointer.
+
+    use super::*;
+    use crate::shell::state::WorkspaceId;
+
+    #[test]
+    fn changing_a_role_does_not_move_the_row() {
+        // A role change rewrites the member's membership capability, so
+        // the raw roster order shifts. The pane's order must not: a row
+        // that moves out from under a second click is how one click on
+        // one person became two clicks on two.
+        let mut ws = Workspace::new(WorkspaceId::from(5), "order");
+        ws.set_owner("host");
+        let room = ws.id.raw().to_string();
+        for person in ["ada", "bo", "cy"] {
+            ws.grant_as(
+                &"host".to_string(),
+                CapOverride::membership(Subject::person(person), room.clone(), Verb::Read),
+            )
+            .expect("owner may grant");
+        }
+        let pane = Rect::new(0.0, 0.0, 640.0, 600.0);
+        let before: Vec<UserId> = members_pane_rows(&ws, pane)
+            .into_iter()
+            .map(|r| r.user)
+            .collect();
+        assert_eq!(before, vec!["host", "ada", "bo", "cy"]);
+
+        set_member_role(
+            &mut ws,
+            &"host".to_string(),
+            &"ada".to_string(),
+            CapRole::Editor,
+        );
+        let after: Vec<UserId> = members_pane_rows(&ws, pane)
+            .into_iter()
+            .map(|r| r.user)
+            .collect();
+        assert_eq!(after, before, "the row order must be identical");
     }
 }

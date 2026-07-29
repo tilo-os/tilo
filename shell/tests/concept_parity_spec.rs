@@ -327,115 +327,116 @@ fn workspace_settings_renders_general_tab_with_invite_link() {
 }
 
 // ===========================================================================
-// 2. WorkspaceSettings — Roles tab must render the per-role app grid
+// 2. WorkspaceSettings — the membership tab must render the roster
 // ===========================================================================
 
-/// Audit row: `concept-coverage.md:24,187-191` — "Roles tab not drawn.
-/// `apps_table` + `files_table` exist as `DataTable` state but
-/// `draw_ws_settings` ignores them."
+/// Audit row: `concept-coverage.md:24,187-191` — the per-role tab was
+/// not drawn at all; `apps_table` + `files_table` existed as `DataTable`
+/// state that `draw_ws_settings` ignored.
 ///
-/// Concept ref: `nirios-concept/src/components/WorkspaceSettingsModal.tsx:152-254`
-/// — Roles tab paints a role list with coloured swatches plus a per-role
-/// app-permissions toggle grid (5 apps × on/off).
+/// The tab is now **Members**, and it renders the workspace's real
+/// membership: [`Workspace::roster`] with each member's role from
+/// `role_of`. The tab it replaced read `Workspace::roles`, a vector that
+/// was `vec![]` in every production construction and that no
+/// enforcement point consulted — so the old version of this test could
+/// only ever pin scaffolding that described nothing.
 ///
-/// What this test asserts: switching the chrome's modal-tab indicator to
-/// Roles must change what is drawn. Because the current stub hard-codes
-/// `active = i == 0` in the tab strip and ignores any external "active
-/// tab" signal, the rendered scene is identical regardless of what tab
-/// the user "selected". We pin this by snapshotting the encoded fill-
-/// count for the General-tab open render and the Roles-tab open render
-/// and asserting they differ — the per-role app grid alone should add
-/// dozens of cell rects.
+/// What this test asserts, unchanged in shape and threshold: switching
+/// the chrome's modal-tab indicator away from General must change what
+/// is drawn, by at least 20 solid-colour fills. What changed is where
+/// the content comes from — a seeded roster rather than a hard-coded
+/// five-app grid — so the fills being counted are now fills that stand
+/// for real authority.
 ///
 /// Forbidden: don't change this to "they may be equal — both draw the
 /// same modal". The point of tabs is per-tab content.
 #[test]
-fn workspace_settings_renders_roles_tab_with_per_role_app_grid() {
-    let tree = WorkspaceTree::bootstrap_default();
+fn workspace_settings_renders_members_tab_with_the_real_roster() {
+    let tree = tree_with_seeded_roster();
 
     // Render with modal open + (default) General tab.
     let (general_fills, _) = render_with_ws_settings_tab(&tree, WsTab::General);
-    // Render with modal open + Roles tab.
-    let (roles_fills, _) = render_with_ws_settings_tab(&tree, WsTab::Roles);
+    // Render with modal open + Members tab.
+    let (roles_fills, _) = render_with_ws_settings_tab(&tree, WsTab::Members);
 
-    // Concept's Roles tab adds at minimum: a role list (≥1 row × swatch +
-    // label) + a 5-app permission grid (5 rows × 3 columns of toggle
-    // pills) → ≥ 5+15 = 20 extra solid-colour fills over the General tab.
+    // The Members pane paints, per member: a row card, an avatar disc,
+    // a role chip and a Remove button — four fills minimum — plus the
+    // pane's own header, against a General body that paints none of it.
+    // A three-person roster clears 20 comfortably.
     let diff = roles_fills.abs_diff(general_fills);
     assert!(
         diff >= 20,
-        "Switching to Roles tab must change the rendered output by
-         at least 20 solid-colour fills (role swatches + per-app
-         permission grid per concept TSX WorkspaceSettingsModal.tsx:152-254). \
-         Observed |roles_fills - general_fills| = {diff} (general={general_fills}, \
-         roles={roles_fills}). Audit row `concept-coverage.md:24,187-191`: \
-         `apps_table`/`files_table` are dead state; no per-tab branch in \
-         `draw_ws_settings`. Fix by per-tab branching the modal body."
+        "Switching to the Members tab must change the rendered output by
+         at least 20 solid-colour fills (a row card + avatar + role chip +
+         Remove button per member of the real roster). \
+         Observed |members_fills - general_fills| = {diff} (general={general_fills}, \
+         members={roles_fills}). If this drops to 0 the modal body is not \
+         per-tab branching at all."
     );
 }
 
 // ===========================================================================
-// 3. WorkspaceSettings — Files tab must render the file grid
+// 3. WorkspaceSettings — per-file permissions must render as rows
 // ===========================================================================
 
-/// Audit row: `concept-coverage.md:24,192-196`.
-/// Concept ref: `WorkspaceSettingsModal.tsx:257-303` — Files tab is a
-/// grid of files (icon + name + type badge + assigned-roles avatar pile
-/// + Remove button).
+/// Audit row: `concept-coverage.md:24,192-196` — the Files tab was not
+/// drawn.
 ///
-/// Same shape as the Roles test: switching to Files must change the
-/// rendered fill count by a substantial amount. Currently it doesn't.
+/// The Files tab is gone, and so is `Workspace::workspace_files`: a
+/// vector that was `vec![]` in every production construction, whose
+/// per-file permissions were entries in a `RolePermissions` map that no
+/// enforcement point read. Per-file access in the model that *is*
+/// enforced is a capability scoped to [`Scope::FsPath`] — read by the
+/// compositor's sandbox and by the filesystem alike — and those render
+/// as rows in the Permissions pane.
+///
+/// So the assertion moves to where the content moved, keeping its shape
+/// and its threshold: adding three per-file permissions must add at
+/// least 6 solid-colour fills to the pane that shows them.
 #[test]
-fn workspace_settings_renders_files_tab_with_role_assignments() {
-    let tree = WorkspaceTree::bootstrap_default();
+fn workspace_settings_renders_per_file_capabilities_as_permission_rows() {
+    let tree = tree_with_seeded_roster();
 
     let (general_fills, _) = render_with_ws_settings_tab(&tree, WsTab::General);
-    // The Files tab spec assertion is anchored against the Roles render
-    // (which paints the workspace_files list as part of the per-role
-    // file-permission grid). Once a dedicated Files pane lands, swap
-    // these calls to `WsTab::Files`.
-    let (roles_fills, _) = render_with_ws_settings_tab(&tree, WsTab::Roles);
-    // Concept's Files tab adds a grid of file rows (icon + name + type
-    // badge + Remove pill per row) + section header — ≥ 8 extra fills
-    // for even a single-file workspace, ≥ 20 for a populated one. We
-    // pin against the Roles render so the test isolates "Files-specific
-    // content" from "any non-General content".
-    //
-    // CURRENTLY this assertion fails because *neither* tab renders
-    // anything beyond General — the modal hardcodes `active = i == 0`.
-    let diff_g = roles_fills.abs_diff(general_fills);
+    let (members_fills, _) = render_with_ws_settings_tab(&tree, WsTab::Members);
+    let diff_g = members_fills.abs_diff(general_fills);
     assert!(
         diff_g > 0,
-        "(precondition) Roles and General tabs must produce different
-         renders before we can compare Files; if this assertion fires,
-         the Roles spec test (#2) is the canonical place to fix it."
+        "(precondition) the Members and General tabs must produce
+         different renders before we can compare the Permissions pane; if
+         this assertion fires, the Members spec test (#2) is the
+         canonical place to fix it."
     );
 
-    // The actual Files-tab assertion: building a workspace with N files
-    // should make the Files tab render strictly more than the empty-
-    // workspace case. Concept paints one row per file.
-    let mut tree_with_files = WorkspaceTree::bootstrap_default();
+    let (bare_permissions, _) = render_with_ws_settings_tab(&tree, WsTab::Permissions);
+
+    // Three per-file grants, written through the authority-checked path
+    // the settings panel itself uses.
+    let mut tree_with_files = tree_with_seeded_roster();
+    let owner = shell::shell::state::local_user_id();
     if let Some(active) = tree_with_files.active_workspace_mut() {
         for i in 0..3 {
             active
-                .workspace_files
-                .push(shell::shell::state::WorkspaceFile {
-                    id: format!("f{i}"),
-                    name: format!("doc-{i}.md"),
-                    mime: "text/markdown".into(),
-                });
+                .grant_as(
+                    &owner,
+                    shell::shell::state::CapOverride::grant(
+                        shell::shell::state::Subject::app(format!("app-{i}")),
+                        shell::shell::state::Scope::FsPath(format!("/var/workspace/doc-{i}.md")),
+                        shell::shell::state::Verb::Write,
+                    ),
+                )
+                .expect("the owner may grant");
         }
     }
-    let (files_filled, _) = render_with_ws_settings_tab(&tree_with_files, WsTab::Roles);
-    let added = files_filled.saturating_sub(roles_fills);
+    let (files_filled, _) = render_with_ws_settings_tab(&tree_with_files, WsTab::Permissions);
+    let added = files_filled.saturating_sub(bare_permissions);
     assert!(
         added >= 6,
-        "Files tab must paint per-file rows (concept TSX
-         WorkspaceSettingsModal.tsx:257-303). Adding 3 files to the
-         workspace must add ≥6 extra solid-colour fills (icon + name
-         badge + Remove pill at minimum, per file). Observed +{added}
-         (files_with_3={files_filled}, roles_empty={roles_fills}). \
-         Audit row `concept-coverage.md:24,192-196`: Files tab not drawn."
+        "The Permissions pane must paint a row per per-file capability.
+         Adding 3 path-scoped grants must add ≥6 extra solid-colour fills
+         (row card + avatar + expiry chip + Revoke button at minimum, per
+         grant). Observed +{added} (with_3_files={files_filled},
+         without={bare_permissions})."
     );
 }
 
@@ -459,38 +460,38 @@ fn workspace_settings_renders_files_tab_with_role_assignments() {
 /// `editing_workspace_name` to mean exactly "active Name-input edit
 /// buffer" — never a tab dispatch token.
 ///
-/// This test pins the orthogonality structurally: with `WsTab::Files`
-/// active, the rendered scene must be *invariant* to whatever
+/// This test pins the orthogonality structurally: with a non-General
+/// tab active, the rendered scene must be *invariant* to whatever
 /// `editing_workspace_name` is set to. Pre-migration, the General body
 /// would fall through, the Name input would re-render with the magic
 /// string and the editing-mode caret + thicker stroke would change the
-/// solid-colour-fill count. Post-migration, the Files arm has its own
-/// pane that ignores `editing_workspace_name`, so the two renders
+/// solid-colour-fill count. Post-migration, each non-General tab has its
+/// own pane that ignores `editing_workspace_name`, so the two renders
 /// produce the same fill count.
 #[test]
-fn ws_settings_files_tab_does_not_leak_magic_string_into_name_input() {
+fn ws_settings_members_tab_does_not_leak_the_name_edit_buffer() {
     let tree = WorkspaceTree::bootstrap_default();
 
-    // Render Files-tab + clean buffer. This is the canonical state.
+    // Render Members-tab + clean buffer. This is the canonical state.
     let (mut host_a, chrome_a) = build_nirios_overlay_host_with_chrome(&tree);
     {
         let mut st = chrome_a.borrow_mut();
         st.overlays.ws_settings = true;
-        st.ws_settings_tab = WsTab::Files;
+        st.ws_settings_tab = WsTab::Members;
         st.editing_workspace_name = None;
     }
     let scene_a = render_host_to_scene(&mut host_a);
     let fills_a = collect_solid_colors(&scene_a).len();
 
-    // Render Files-tab + the literal magic string in the Name buffer.
-    // After the typed-field migration, the Files arm must not consult
+    // Render Members-tab + the literal magic string in the Name buffer.
+    // After the typed-field migration, the Members arm must not consult
     // `editing_workspace_name` at all, so this render's solid-colour
     // fill count must match `fills_a` exactly.
     let (mut host_b, chrome_b) = build_nirios_overlay_host_with_chrome(&tree);
     {
         let mut st = chrome_b.borrow_mut();
         st.overlays.ws_settings = true;
-        st.ws_settings_tab = WsTab::Files;
+        st.ws_settings_tab = WsTab::Members;
         st.editing_workspace_name = Some("__files_tab__".into());
     }
     let scene_b = render_host_to_scene(&mut host_b);
@@ -498,22 +499,22 @@ fn ws_settings_files_tab_does_not_leak_magic_string_into_name_input() {
 
     assert_eq!(
         fills_a, fills_b,
-        "Files-tab render must be invariant to `editing_workspace_name` \
+        "Members-tab render must be invariant to `editing_workspace_name` \
          contents — the typed `WsTab` field is the sole tab dispatch surface, \
-         and the Name-input edit buffer must never bleed into the Files pane. \
+         and the Name-input edit buffer must never bleed into the Members pane. \
          Got {fills_a} fills with editing_workspace_name=None vs {fills_b} \
          with editing_workspace_name=Some(\"__files_tab__\"); a difference \
-         indicates the Files arm is still falling back to General body, \
+         indicates the Members arm is still falling back to General body, \
          which paints the magic string into the Name input."
     );
 }
 
 // ===========================================================================
-// 3c. WorkspaceSettings — Roles tab must fully replace the General body
+// 3c. WorkspaceSettings — a non-General tab must fully replace the body
 // ===========================================================================
 
-/// Wave-3 T5 regression pin: when the Roles tab is active, the modal
-/// body region belongs entirely to the Roles pane. Previously the
+/// Regression pin: when a non-General tab is active, the modal body
+/// region belongs entirely to that tab's pane. Previously the
 /// General body (Name input, Invite Link header + dot, URL pill, Copy
 /// button, Collaborators tile row, "Press Esc to close" hint) painted
 /// *under* the Roles pane content because the body block in
@@ -528,31 +529,31 @@ fn ws_settings_files_tab_does_not_leak_magic_string_into_name_input() {
 /// WsTab::General) { return; }` — so the body cannot be reached from
 /// any future tab variant added without a matching arm.
 ///
-/// We pin the property the same way [`ws_settings_files_tab_does_not_leak_magic_string_into_name_input`]
-/// does for the Files tab: render Roles twice with different
+/// We pin the property the same way [`ws_settings_members_tab_does_not_leak_the_name_edit_buffer`]
+/// does for the Members tab: render Permissions twice with different
 /// `editing_workspace_name` contents and assert the fill counts match.
 /// Pre-fix, the General body fall-through would have re-rendered the
 /// Name-input edit buffer (with caret + thicker stroke + the literal
 /// hint text drawn over the Roles pane), changing the fill count.
-/// Post-fix, the Roles pane is invariant to the Name-input buffer
-/// because the General body never runs.
+/// Post-fix, the Permissions pane is invariant to the Name-input
+/// buffer because the General body never runs.
 #[test]
-fn roles_tab_does_not_render_press_esc_to_close_text() {
+fn permissions_tab_body_is_invariant_to_the_name_edit_buffer() {
     let tree = WorkspaceTree::bootstrap_default();
 
-    // Render Roles-tab + clean Name-input buffer.
+    // Render Permissions-tab + clean Name-input buffer.
     let (mut host_a, chrome_a) = build_nirios_overlay_host_with_chrome(&tree);
     {
         let mut st = chrome_a.borrow_mut();
         st.overlays.ws_settings = true;
-        st.ws_settings_tab = WsTab::Roles;
+        st.ws_settings_tab = WsTab::Permissions;
         st.editing_workspace_name = None;
     }
     let scene_a = render_host_to_scene(&mut host_a);
     let fills_a = collect_solid_colors(&scene_a).len();
 
-    // Render Roles-tab + a non-empty Name-input buffer that, if the
-    // General body were still falling through under the Roles pane,
+    // Render Permissions-tab + a non-empty Name-input buffer that, if
+    // the General body were still falling through under the pane,
     // would re-emit the Name-input rect fill, the editing-mode caret
     // fill (`accent[5]`), and a thicker stroke. Any leak shows up as
     // a different solid-colour fill count.
@@ -560,7 +561,7 @@ fn roles_tab_does_not_render_press_esc_to_close_text() {
     {
         let mut st = chrome_b.borrow_mut();
         st.overlays.ws_settings = true;
-        st.ws_settings_tab = WsTab::Roles;
+        st.ws_settings_tab = WsTab::Permissions;
         st.editing_workspace_name = Some("Press Esc to close".into());
     }
     let scene_b = render_host_to_scene(&mut host_b);
@@ -568,17 +569,15 @@ fn roles_tab_does_not_render_press_esc_to_close_text() {
 
     assert_eq!(
         fills_a, fills_b,
-        "Roles-tab render must be invariant to `editing_workspace_name` \
+        "Permissions-tab render must be invariant to `editing_workspace_name` \
          contents — when the Roles tab is active, the General body \
-         (Name input, Invite Link, Copy button, Collaborators row, \
-         'Press Esc to close' hint) must not run. Got {fills_a} fills \
+         (Name input, Invite Link, Copy button, Collaborators row) \
+         must not run. Got {fills_a} fills \
          with editing_workspace_name=None vs {fills_b} with \
          editing_workspace_name=Some(\"Press Esc to close\"); a \
          difference indicates the General body is leaking into the \
-         Roles pane. Audit row: ws-settings-roles.png shows 'Press \
-         Esc to close' + Name label bleeding through under the Roles \
-         content. Fix `draw_ws_settings` so the General body block \
-         only runs in the `WsTab::General` arm."
+         Permissions pane. Fix `draw_ws_settings` so the General body \
+         block only runs in the `WsTab::General` arm."
     );
 }
 
@@ -628,6 +627,32 @@ fn render_host_to_scene<W: Widget + ?Sized>(host: &mut W) -> Scene {
     let presence = PresenceCtx::default();
     host.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
     scene
+}
+
+/// A tree whose active workspace has a real membership: the local user
+/// as owner plus two invited people, written through the
+/// authority-checked `grant_as` path rather than poked into a field.
+///
+/// `bootstrap_default` leaves a workspace ownerless, and an ownerless
+/// workspace has no members and no administrators — which is the correct
+/// fail-closed default, and useless as a fixture for a panel about
+/// membership.
+fn tree_with_seeded_roster() -> WorkspaceTree {
+    use shell::shell::state::{CapOverride, Subject, Verb};
+    let mut tree = WorkspaceTree::bootstrap_default();
+    let owner = shell::shell::state::local_user_id();
+    tree.adopt_ownerless_workspaces(&owner);
+    if let Some(ws) = tree.active_workspace_mut() {
+        let room = ws.id.raw().to_string();
+        for (person, verb) in [("ada", Verb::Write), ("bo", Verb::Read)] {
+            ws.grant_as(
+                &owner,
+                CapOverride::membership(Subject::person(person), room.clone(), verb),
+            )
+            .expect("the owner may write a membership");
+        }
+    }
+    tree
 }
 
 /// Helper for tests #2 and #3: render the host with the modal open at
