@@ -1465,6 +1465,29 @@ impl WorkspaceTree {
         NEXT_ID.fetch_max(max_counter.saturating_add(1), AtomicOrdering::Relaxed);
     }
 
+    /// Close the room document's open transaction, recording when it
+    /// happened.
+    ///
+    /// `AutoCommit` closes a transaction implicitly on the next read and
+    /// leaves the change's advisory timestamp at zero. Automerge stores that
+    /// field verbatim, so a room whose changes all went through the implicit
+    /// path has a change graph that reads as 1 January 1970 from end to end —
+    /// every entry in an activity view lands on the same day, and any
+    /// date-range filter over it either matches everything or nothing. Ending
+    /// each `doc_*` mirror here is what makes a room's history datable.
+    ///
+    /// It also gives each mirrored mutation its own change rather than letting
+    /// an arbitrary run of them coalesce into whatever the next reader
+    /// happened to flush, which is what makes one row mean one thing that
+    /// happened.
+    ///
+    /// Cheap to call when nothing is pending — automerge returns without
+    /// writing a change — so the compositor also calls it once a frame to
+    /// catch the mirrors whose success paths are too branchy to end here.
+    pub fn commit_room_change(&mut self) {
+        let _ = qdoc::history::commit_stamped(&mut self.doc);
+    }
+
     /// Snapshot of the current automerge change-graph heads. Peer-sync
     /// uses this as the baseline when computing what to send to a
     /// remote replica.
@@ -1490,6 +1513,17 @@ impl WorkspaceTree {
             .into_iter()
             .map(|c| c.raw_bytes().to_vec())
             .collect()
+    }
+
+    /// Bring the public cache fields back in line with the room document
+    /// after a *local* rewrite of it.
+    ///
+    /// [`Self::apply_changes`] already does this for changes arriving from a
+    /// peer. A restore-from-history writes into the same document without
+    /// going through that path, so it needs the same reconciliation — without
+    /// it the tree would still be showing the pre-restore state it cached.
+    pub fn resync_cache_from_doc(&mut self) {
+        self.rebuild_cache_from_doc();
     }
 
     /// Apply a batch of opaque change-blobs received from a peer. After
@@ -1633,6 +1667,7 @@ impl WorkspaceTree {
                 }
             }
         }
+        self.commit_room_change();
     }
 
     /// Walk the automerge doc and refresh the public cache fields.
@@ -2270,6 +2305,7 @@ impl WorkspaceTree {
             return;
         };
         let _ = self.doc.put(&ws_entry, "room", room.to_string());
+        self.commit_room_change();
     }
 
     /// Grant a capability in `workspace_id` on behalf of `grantor`,
@@ -2344,6 +2380,7 @@ impl WorkspaceTree {
             return;
         };
         let _ = self.doc.put(&caps_id, &cap.id, ScalarValue::Bytes(blob));
+        self.commit_room_change();
     }
 
     /// Mirror a revocation into the automerge doc.
@@ -2360,6 +2397,7 @@ impl WorkspaceTree {
             return;
         };
         let _ = self.doc.delete(&caps_id, cap_id);
+        self.commit_room_change();
     }
 
     /// Mirror the room's owner into the doc.
@@ -2369,6 +2407,7 @@ impl WorkspaceTree {
             return;
         };
         let _ = self.doc.put(&ws_entry, "owner", owner);
+        self.commit_room_change();
     }
 
     /// Read a workspace's capabilities and owner back out of the doc.
