@@ -366,17 +366,31 @@ fn topbar_chrome_surface_alpha_is_80_percent() {
     );
 }
 
-/// Gap #3: the GlobalSearch palette surface is tinted at `bg-slate-900/70`
-/// (α = 0.70). Same regression-guard contract as the topbar test above —
-/// the `GlobalSearch::surface_alpha` accessor pins the numeric value the
-/// draw path uses so the palette can't silently revert to an opaque fill.
+/// The GlobalSearch palette surface is opaque. It used to be tinted at
+/// the concept's `bg-slate-900/70`, but long result rows read as chrome
+/// bleeding through whatever sat underneath, so the palette now paints
+/// solid and leans on the scrim below it for the "page on top of a page"
+/// depth cue instead.
+///
+/// Same regression-guard contract as the topbar test above: pin the
+/// number the draw path uses, and pin it against
+/// `overlay_host::MODAL_SURFACE_ALPHA` too — the palette and the
+/// workspace-settings modal are documented as sharing one value, and
+/// nothing else makes them drift together.
 #[test]
-fn global_search_surface_alpha_is_70_percent() {
+fn global_search_surface_alpha_is_opaque_and_matches_the_modal_tint() {
     use shell::shell::global_search::GlobalSearch;
+    use shell::shell::overlay_host::MODAL_SURFACE_ALPHA;
     let a = GlobalSearch::surface_alpha();
     assert!(
-        (a - 0.70).abs() < f32::EPSILON,
-        "GlobalSearch surface alpha must be 0.70 per visual-gap #3; got {a}"
+        (a - 1.0).abs() < f32::EPSILON,
+        "GlobalSearch surface alpha must be 1.0 so long result rows stay \
+         legible over a busy desktop; got {a}"
+    );
+    assert!(
+        (a - MODAL_SURFACE_ALPHA).abs() < f32::EPSILON,
+        "the palette tint must stay in step with MODAL_SURFACE_ALPHA \
+         ({MODAL_SURFACE_ALPHA}); got {a}"
     );
 }
 
