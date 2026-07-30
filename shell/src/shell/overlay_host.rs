@@ -1826,6 +1826,15 @@ impl ShellOverlayHost {
             if let Some(&ptr) = self.group_row_ptrs.get(&strip_id) {
                 // SAFETY: see field doc on `group_row_ptrs`.
                 let row: &mut GroupRow = unsafe { &mut *ptr };
+                // A group focused in the same frame it appeared — a freshly
+                // adopted Wayland client is exactly this — has not been through
+                // a layout pass, so it has no rect and the row cannot pan to
+                // it. Latching the memo here would mark the pan done and the
+                // window would stay off the output for good. Leave the memo
+                // alone and retry next frame, once the rect exists.
+                if !row.group_is_laid_out(group_id) {
+                    continue;
+                }
                 row.scroll_group_into_view(group_id);
             }
             self.last_scrolled_active_group.insert(strip_id, group_id);
