@@ -34,6 +34,7 @@ use crate::text_selection::{
 use crate::theme::Theme;
 use crate::presence::{PathSegment, PresenceKey};
 use crate::widget::context_menu::{ContextMenu, MenuItem};
+use crate::widget::code_editor::{token_color, Highlighter, Span};
 
 /// The editing action a [`TextInput`] right-click menu row maps to. The menu's
 /// `MenuItem` callbacks can't mutate the widget (they're `Arc<dyn Fn>`), so the
@@ -72,6 +73,15 @@ const MULTI_CLICK_RADIUS: f64 = 4.0;
 const ML_PAD_X: f64 = 10.0;
 /// Vertical text inset (top/bottom) for the multiline path, in logical px.
 const ML_PAD_Y: f64 = 8.0;
+/// Monospace digit advance as a fraction of the font size, used to size the
+/// code-editor line-number gutter. The gutter offset uses this identically for
+/// geometry (caret/click/selection) and for drawing, so they stay aligned even
+/// if it is only an approximation of the true glyph advance.
+const GUTTER_DIGIT_RATIO: f64 = 0.62;
+/// Left padding inside the code-editor gutter, in logical px.
+const GUTTER_PAD_L: f64 = 8.0;
+/// Right padding (gutter → text) inside the code-editor gutter, in logical px.
+const GUTTER_PAD_R: f64 = 12.0;
 
 /// What unit the in-flight drag snaps to. Set on press based on the
 /// click ladder so a double-click-then-drag extends by whole words
@@ -228,6 +238,30 @@ pub struct TextInput {
     /// Vertical scroll offset in logical px (multiline). Follows the caret so a
     /// body taller than the field stays legible while editing.
     scroll_y: f64,
+    /// Code-editor mode: draw a line-number gutter down the left edge (multiline
+    /// only). Enabled by [`CodeEditor`](crate::widget::CodeEditor); default
+    /// `false` so every existing field is unchanged.
+    gutter: bool,
+    /// Code-editor mode: draw a faint band across the caret's logical line
+    /// (multiline only). Default `false`.
+    highlight_current_line: bool,
+    /// Optional language tokenizer. When `Some`, each visible row's glyph runs
+    /// are coloured by the [`Span`]s it produces (colours resolved from the
+    /// [`Theme`] via `token_color`). `None` renders the whole body in one
+    /// colour, exactly as before. Default `None`.
+    highlighter: Option<Box<dyn Highlighter>>,
+    /// Number of spaces a `Tab` inserts (`Some(0)` inserts a literal `\t`).
+    /// `None` (the default) means the field does not intercept `Tab` at all, so
+    /// the host keeps using it for focus traversal — every existing caller is
+    /// unaffected. `Shift+Tab` outdents by the same width.
+    tab_spaces: Option<usize>,
+    /// Cached per-logical-line highlight spans, rebuilt only when the text
+    /// changes (keyed by `hl_sig`). Empty when no highlighter is set.
+    hl_spans: Vec<Vec<Span>>,
+    /// Start byte of each logical line in `text`, parallel to `hl_spans`.
+    hl_line_starts: Vec<usize>,
+    /// Cheap signature of the text `hl_spans`/`hl_line_starts` were built for.
+    hl_sig: u64,
 }
 
 /// One on-screen row of a multiline [`TextInput`]: either a whole short logical
@@ -301,6 +335,13 @@ impl TextInput {
             lines: Vec::new(),
             goal_x: None,
             scroll_y: 0.0,
+            gutter: false,
+            highlight_current_line: false,
+            highlighter: None,
+            tab_spaces: None,
+            hl_spans: Vec::new(),
+            hl_line_starts: Vec::new(),
+            hl_sig: u64::MAX,
         }
     }
 
@@ -596,7 +637,7 @@ impl TextInput {
             return vec![self.selection_rect(theme, start, end)];
         }
         let lh = self.line_height();
-        let px = ML_PAD_X;
+        let px = self.ml_left();
         let py = ML_PAD_Y;
         let mut out = Vec::new();
         for r in &self.lines {
@@ -703,7 +744,7 @@ impl TextInput {
     fn caret_rect_ml(&self, byte: usize) -> Rect {
         let (i, x) = self.locate_ml(byte);
         let y = self.lines.get(i).map(|r| r.y).unwrap_or(0.0);
-        let cx = self.rect.x0 + ML_PAD_X + x;
+        let cx = self.rect.x0 + self.ml_left() + x;
         let cy = self.rect.y0 + ML_PAD_Y + y - self.scroll_y;
         Rect::new(cx, cy, cx + CARET_WIDTH, cy + self.line_height())
     }
@@ -720,7 +761,7 @@ impl TextInput {
         let mut row = (local_y / lh).floor() as isize;
         row = row.clamp(0, self.lines.len() as isize - 1);
         let r = &self.lines[row as usize];
-        let rel_x = pt.x - (self.rect.x0 + ML_PAD_X);
+        let rel_x = pt.x - (self.rect.x0 + self.ml_left());
         let mut best = 0usize;
         let mut best_d = f64::MAX;
         for (ci, &cx) in r.char_x.iter().enumerate() {
@@ -907,8 +948,11 @@ impl TextInput {
     ) {
         let size = self.effective_font_size();
         let lh = self.line_height();
-        let avail_w = self.rect.width() - ML_PAD_X * 2.0;
+        let left = self.ml_left();
+        let gutter_w = self.code_gutter_w();
+        let avail_w = self.rect.width() - left - ML_PAD_X;
         self.build_lines(tr, avail_w);
+        self.refresh_highlight();
 
         // Vertical scroll follows the caret while focused; otherwise pin to the
         // top so the first line is always visible.
@@ -931,6 +975,59 @@ impl TextInput {
 
         scene.push_layer(vello::peniko::Fill::NonZero, BlendMode::default(), 1.0, transform, shape);
 
+        // Which logical line each visual row belongs to — one shared pass drives
+        // the current-line band and the gutter numbering (a row starts a new
+        // logical line iff the previous row ended at a hard `\n`).
+        let mut line_of_row: Vec<usize> = Vec::with_capacity(self.lines.len());
+        let mut cur_line = 0usize;
+        for i in 0..self.lines.len() {
+            if i > 0 && self.lines[i - 1].hard_break {
+                cur_line += 1;
+            }
+            line_of_row.push(cur_line);
+        }
+        let caret_line = self.text[..self.cursor_pos.min(self.text.len())]
+            .bytes()
+            .filter(|&b| b == b'\n')
+            .count();
+
+        // Gutter background + divider (drawn first, under everything).
+        if gutter_w > 0.0 {
+            let gr = Rect::new(self.rect.x0, self.rect.y0, self.rect.x0 + gutter_w, self.rect.y1);
+            scene.fill(
+                vello::peniko::Fill::NonZero,
+                transform,
+                theme.bg_hover.with_alpha_factor(0.35),
+                None,
+                &gr,
+            );
+            let x = self.rect.x0 + gutter_w;
+            scene.stroke(
+                &Stroke::new(1.0),
+                transform,
+                theme.border_standard,
+                None,
+                &vello::kurbo::Line::new((x, self.rect.y0), (x, self.rect.y1)),
+            );
+        }
+
+        // Current-line band across the content width (behind selection + text).
+        if self.highlight_current_line && self.is_focused && !self.shows_placeholder() {
+            let band_color = theme.bg_hover.with_alpha_factor(0.6);
+            for i in 0..self.lines.len() {
+                if line_of_row[i] != caret_line {
+                    continue;
+                }
+                let top = self.lines[i].y - self.scroll_y;
+                if top + lh < 0.0 || top > view_h {
+                    continue;
+                }
+                let y0 = self.rect.y0 + ML_PAD_Y + top;
+                let band = Rect::new(self.rect.x0 + gutter_w, y0, self.rect.x1, y0 + lh);
+                scene.fill(vello::peniko::Fill::NonZero, transform, band_color, None, &band);
+            }
+        }
+
         // Selection (per visual row), painted under the glyphs.
         if let Some((s, e)) = self.selection_range() {
             let sel_color = theme.accent_primary.with_alpha_factor(0.35);
@@ -942,29 +1039,59 @@ impl TextInput {
         // Placeholder when empty + unfocused.
         if self.shows_placeholder() {
             let origin = transform
-                * Affine::translate((self.rect.x0 + ML_PAD_X, self.rect.y0 + ML_PAD_Y - self.scroll_y));
+                * Affine::translate((self.rect.x0 + left, self.rect.y0 + ML_PAD_Y - self.scroll_y));
             tr.draw_text(scene, &self.placeholder, size, theme.text_dim, origin, None);
         }
 
         let text_color = if self.disabled { theme.text_dim } else { theme.text_primary };
-        // Draw each row at least partly within the viewport. Collect first so
-        // the `self` borrow for `display_slice` ends before the draw borrow.
-        let rows: Vec<(f64, String)> = self
-            .lines
-            .iter()
-            .filter(|r| {
-                let top = r.y - self.scroll_y;
-                top + lh >= 0.0 && top <= view_h
-            })
-            .map(|r| (r.y, self.display_slice(r.start, r.end)))
-            .collect();
-        for (ry, text) in rows {
-            if text.is_empty() {
+        // Collect per-row draw data (owned) so all `self` borrows end before the
+        // draw calls. Each row becomes a list of coloured segments (text, line-
+        // relative x, colour): highlighter spans mapped to theme colours, gaps in
+        // the default text colour. Plus the gutter number of each logical line's
+        // first row.
+        type Seg = (String, f64, vello::peniko::Color);
+        let mut row_draws: Vec<(f64, Vec<Seg>)> = Vec::new();
+        let mut gutter_nums: Vec<(f64, String, bool)> = Vec::new();
+        for i in 0..self.lines.len() {
+            let top = self.lines[i].y - self.scroll_y;
+            if top + lh < 0.0 || top > view_h {
                 continue;
             }
-            let origin = transform
-                * Affine::translate((self.rect.x0 + ML_PAD_X, self.rect.y0 + ML_PAD_Y + ry - self.scroll_y));
-            self.draw_text_run(scene, tr, &text, size, text_color, origin);
+            let li = line_of_row[i];
+            if gutter_w > 0.0 && (i == 0 || self.lines[i - 1].hard_break) {
+                gutter_nums.push((self.lines[i].y, (li + 1).to_string(), li == caret_line));
+            }
+            let segs = self.row_segments(i, li, text_color, theme);
+            if !segs.is_empty() {
+                row_draws.push((self.lines[i].y, segs));
+            }
+        }
+
+        // Gutter line numbers (right-aligned inside the gutter).
+        if gutter_w > 0.0 {
+            for (ry, num, current) in &gutter_nums {
+                let w = self.measure_str(tr, num, size).0 as f64;
+                let x = self.rect.x0 + gutter_w - GUTTER_PAD_R - w;
+                let origin = transform
+                    * Affine::translate((x, self.rect.y0 + ML_PAD_Y + ry - self.scroll_y));
+                let col = if *current { theme.text_primary } else { theme.text_dim };
+                self.draw_text_run(scene, tr, num, size, col, origin);
+            }
+        }
+
+        // Body glyphs.
+        for (ry, segs) in &row_draws {
+            for (text, x, color) in segs {
+                if text.is_empty() {
+                    continue;
+                }
+                let origin = transform
+                    * Affine::translate((
+                        self.rect.x0 + left + x,
+                        self.rect.y0 + ML_PAD_Y + ry - self.scroll_y,
+                    ));
+                self.draw_text_run(scene, tr, text, size, *color, origin);
+            }
         }
 
         if self.is_focused && !self.disabled {
@@ -973,6 +1100,54 @@ impl TextInput {
         }
 
         scene.pop_layer();
+    }
+
+    /// Build the coloured draw segments for visual row `i` (on logical line
+    /// `line_idx`). With no highlighter the whole row is one `default`-coloured
+    /// segment; with one, the row's byte span is split against the logical
+    /// line's [`Span`]s, each coloured via `token_color`, gaps kept `default`.
+    /// Returned `x` is line-relative (add [`ml_left`] + `rect.x0` to place it).
+    fn row_segments(
+        &self,
+        i: usize,
+        line_idx: usize,
+        default: vello::peniko::Color,
+        theme: &Theme,
+    ) -> Vec<(String, f64, vello::peniko::Color)> {
+        // Local newtype-free tuple; caller wraps into `Seg`.
+        let r = &self.lines[i];
+        let (rs, re) = (r.start, r.end);
+        let mut out: Vec<(String, f64, vello::peniko::Color)> = Vec::new();
+        if self.highlighter.is_some()
+            && line_idx < self.hl_spans.len()
+            && line_idx < self.hl_line_starts.len()
+        {
+            let ls = self.hl_line_starts[line_idx];
+            let mut cur = rs;
+            for sp in &self.hl_spans[line_idx] {
+                let ss = ls + sp.range.start;
+                let se = ls + sp.range.end;
+                let a = ss.max(rs).max(cur);
+                let b = se.min(re);
+                if a >= b {
+                    continue;
+                }
+                if a > cur {
+                    out.push((self.text[cur..a].to_string(), self.x_in_row(r, cur), default));
+                }
+                out.push((self.text[a..b].to_string(), self.x_in_row(r, a), token_color(sp.kind, theme)));
+                cur = b;
+            }
+            if cur < re {
+                out.push((self.text[cur..re].to_string(), self.x_in_row(r, cur), default));
+            }
+        } else {
+            let text = self.display_slice(rs, re);
+            if !text.is_empty() {
+                out.push((text, 0.0, default));
+            }
+        }
+        out
     }
 
     /// One-shot read of user edits. Returns `Some(text)` if any
@@ -1076,6 +1251,116 @@ impl TextInput {
     /// Whether this input is in multi-line mode.
     pub fn is_multiline(&self) -> bool {
         self.multiline
+    }
+
+    // ---- code-editor mode (gutter + syntax highlight + soft tabs) ----------
+    // These power [`CodeEditor`](crate::widget::CodeEditor); every setter
+    // defaults off so plain fields are unaffected.
+
+    /// Builder: draw a line-number gutter (multiline only).
+    pub fn with_gutter(mut self, on: bool) -> Self {
+        self.gutter = on;
+        self
+    }
+
+    /// Toggle the line-number gutter after construction.
+    pub fn set_gutter(&mut self, on: bool) {
+        self.gutter = on;
+    }
+
+    /// Whether the line-number gutter is enabled.
+    pub fn has_gutter(&self) -> bool {
+        self.gutter
+    }
+
+    /// Builder: draw a faint band across the caret's logical line.
+    pub fn with_current_line_highlight(mut self, on: bool) -> Self {
+        self.highlight_current_line = on;
+        self
+    }
+
+    /// Toggle the current-line highlight after construction.
+    pub fn set_current_line_highlight(&mut self, on: bool) {
+        self.highlight_current_line = on;
+    }
+
+    /// Builder: install a syntax [`Highlighter`](crate::widget::code_editor::Highlighter).
+    pub fn with_highlighter(mut self, h: Box<dyn Highlighter>) -> Self {
+        self.highlighter = Some(h);
+        self.hl_sig = u64::MAX; // force a rebuild on next draw
+        self
+    }
+
+    /// Install / clear the syntax highlighter after construction.
+    pub fn set_highlighter(&mut self, h: Option<Box<dyn Highlighter>>) {
+        self.highlighter = h;
+        self.hl_sig = u64::MAX;
+    }
+
+    /// Builder: number of spaces `Tab` inserts (`0` = literal `\t`). Enables
+    /// Tab interception; `Shift+Tab` outdents by the same width.
+    pub fn with_tab_width(mut self, n: usize) -> Self {
+        self.tab_spaces = Some(n);
+        self
+    }
+
+    /// Set the soft-tab width after construction (`0` = literal `\t`).
+    pub fn set_tab_width(&mut self, n: usize) {
+        self.tab_spaces = Some(n);
+    }
+
+    /// Width of the line-number gutter in logical px (`0` when disabled). A pure
+    /// function of the logical line count + font size, so it is stable between
+    /// `draw`s and identical for geometry and painting.
+    fn code_gutter_w(&self) -> f64 {
+        if !self.gutter || !self.multiline {
+            return 0.0;
+        }
+        let lines = self.text.bytes().filter(|&b| b == b'\n').count() + 1;
+        let digits = ((lines as f64).log10().floor() as usize + 1).max(2);
+        let adv = self.effective_font_size() as f64 * GUTTER_DIGIT_RATIO;
+        GUTTER_PAD_L + digits as f64 * adv + GUTTER_PAD_R
+    }
+
+    /// Left inset of the multiline text area: the shared pad plus any gutter.
+    /// Every multiline geometry helper (caret, selection, hit-test, draw) reads
+    /// this so the gutter shifts them all consistently.
+    fn ml_left(&self) -> f64 {
+        ML_PAD_X + self.code_gutter_w()
+    }
+
+    /// Rebuild the per-line highlight cache when the text changed and a
+    /// highlighter is installed. Threads the cross-line carry over all lines so
+    /// block comments / fenced code stay coherent.
+    fn refresh_highlight(&mut self) {
+        let Some(hl) = &self.highlighter else {
+            self.hl_spans.clear();
+            self.hl_line_starts.clear();
+            return;
+        };
+        // Cheap signature: length + FNV-1a over the bytes. Recompute only on a
+        // real change (tokenising is skipped otherwise).
+        let mut sig: u64 = 0xcbf29ce484222325;
+        for &b in self.text.as_bytes() {
+            sig ^= b as u64;
+            sig = sig.wrapping_mul(0x100000001b3);
+        }
+        sig ^= self.text.len() as u64;
+        if sig == self.hl_sig && !self.hl_line_starts.is_empty() {
+            return;
+        }
+        self.hl_sig = sig;
+        self.hl_spans.clear();
+        self.hl_line_starts.clear();
+        let mut carry = 0u64;
+        let mut start = 0usize;
+        for line in self.text.split('\n') {
+            self.hl_line_starts.push(start);
+            let ls = hl.spans(line, carry);
+            carry = ls.carry;
+            self.hl_spans.push(ls.spans);
+            start += line.len() + 1; // + '\n'
+        }
     }
 
     /// Builder-style: make a plain `Enter` (no Shift) fire a one-shot submit
@@ -1287,6 +1572,44 @@ impl TextInput {
                 let _ = state.mark(obj_id, mark, automerge::marks::ExpandMark::None);
             }
         }
+        self.goal_x = None;
+        self.last_edit_time = Some(Instant::now());
+        self.dirty = true;
+    }
+
+    /// Outdent the caret's logical line: drop up to `width` leading spaces (or
+    /// a single leading `\t`). Splices through the CRDT exactly like every other
+    /// edit and pulls the caret left by the removed amount. `width` `0` removes
+    /// one leading whitespace. No-op when the line has no leading indent.
+    fn outdent(&mut self, width: usize, state: &mut AutoCommit, obj_id: Option<&ObjId>) {
+        let line_start = self.text[..self.cursor_pos]
+            .rfind('\n')
+            .map(|i| i + 1)
+            .unwrap_or(0);
+        let w = if width == 0 { 1 } else { width };
+        let mut remove = 0usize; // bytes to remove (leading spaces are 1 byte each)
+        for c in self.text[line_start..].chars() {
+            if c == '\t' {
+                remove = 1;
+                break;
+            } else if c == ' ' && remove < w {
+                remove += 1;
+            } else {
+                break;
+            }
+        }
+        if remove == 0 {
+            return;
+        }
+        let del_end = line_start + remove;
+        let char_start = self.text[..line_start].chars().count();
+        let char_count = self.text[line_start..del_end].chars().count();
+        self.text.replace_range(line_start..del_end, "");
+        if let Some(obj_id) = obj_id {
+            let _ = state.splice_text(obj_id, char_start, char_count as isize, "");
+        }
+        self.cursor_pos = self.cursor_pos.saturating_sub(remove).max(line_start);
+        self.selection_anchor = None;
         self.goal_x = None;
         self.last_edit_time = Some(Instant::now());
         self.dirty = true;
@@ -1589,7 +1912,7 @@ impl Widget for TextInput {
             taffy::AvailableSpace::Definite(w) => w,
             _ => 400.0,
         });
-        let avail_w = (width as f64 - ML_PAD_X * 2.0).max(1.0);
+        let avail_w = (width as f64 - self.ml_left() - ML_PAD_X).max(1.0);
         self.build_lines(text_renderer, avail_w);
         taffy::Size { width, height: self.content_height() as f32 }
     }
@@ -2031,6 +2354,21 @@ impl Widget for TextInput {
                             self.insert_str("\n", state, obj_id_opt.as_ref());
                             *handled = true;
                         }
+                    }
+                    // Soft-tab / outdent — only when a tab width was set
+                    // (`with_tab_width`), i.e. code-editor mode. Untouched
+                    // otherwise so the host keeps Tab for focus traversal.
+                    Key::Named(NamedKey::Tab) if self.tab_spaces.is_some() => {
+                        let width = self.tab_spaces.unwrap_or(0);
+                        if shift {
+                            self.outdent(width, state, obj_id_opt.as_ref());
+                        } else if width == 0 {
+                            self.insert_str("\t", state, obj_id_opt.as_ref());
+                        } else {
+                            let spaces = " ".repeat(width);
+                            self.insert_str(&spaces, state, obj_id_opt.as_ref());
+                        }
+                        *handled = true;
                     }
                     Key::Named(NamedKey::Backspace) => {
                         if self.has_selection() {
