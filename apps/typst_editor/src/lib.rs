@@ -13,7 +13,6 @@ pub mod app;
 pub mod compile;
 pub mod diagnostics;
 pub mod editor;
-pub mod highlight;
 pub mod preview;
 pub mod samples;
 pub mod worker;

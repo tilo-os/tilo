@@ -312,6 +312,13 @@ impl CodeEditor {
         self.inner.bind_text(obj);
     }
 
+    /// Pull the latest text from the bound Automerge object — the convenience a
+    /// host outside the taffy tree calls each frame instead of the `Widget::sync`
+    /// pass. No-op until [`bind_text`](CodeEditor::bind_text) is set.
+    pub fn pull(&mut self, doc: &mut AutoCommit) {
+        self.inner.sync(doc, &automerge::ROOT);
+    }
+
     /// Stamp inserted runs with this author id (peer-attribution highlight).
     pub fn set_local_author(&mut self, author: Option<String>) {
         self.inner.set_local_author(author);
@@ -335,6 +342,17 @@ impl CodeEditor {
     /// Move the caret to a byte offset (clamped to a char boundary by the core).
     pub fn set_cursor_pos(&mut self, pos: usize) {
         self.inner.set_cursor_pos(pos);
+    }
+
+    /// Set the selection to span `[anchor, cursor)` (bytes); `anchor == cursor`
+    /// clears it. Used by a host driving click+drag selection.
+    pub fn set_selection(&mut self, anchor: usize, cursor: usize) {
+        self.inner.set_selection(anchor, cursor);
+    }
+
+    /// The active selection's byte range, or `None` when nothing is selected.
+    pub fn selection(&self) -> Option<(usize, usize)> {
+        self.inner.selection_range_public()
     }
 
     /// Move the caret to the start of a 1-based line, clearing the selection.

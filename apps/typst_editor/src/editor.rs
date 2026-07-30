@@ -1,49 +1,45 @@
-//! The source editor pane: a monospace, line-numbered, syntax-highlighted
-//! text view that edits an Automerge `Text` object directly.
+//! The source editor pane.
 //!
-//! State that belongs in the CRDT (the source text) lives there; this struct
-//! holds only ephemeral view state — caret, selection anchor, and scroll
-//! offset. Cut/copy/paste go through the OS-wide system clipboard so text moves
-//! freely between the editor, the rendered preview, and every other app.
-//! Caret/anchor are **char indices** into the text, which is exactly the unit
-//! Automerge's `splice_text` uses, so edits and cursor maths stay in one
-//! coordinate system.
+//! The text-editing surface itself is the shared [`ui::CodeEditor`] — one caret
+//! / selection / clipboard / undo / IME / a11y implementation, a line-number
+//! gutter, and Typst syntax highlighting supplied by the toolkit's built-in
+//! `Language::Typst` highlighter. This module is now a thin shell that owns that
+//! widget and adds only what is genuinely Typst-editor-specific: the inline
+//! compiler-diagnostic overlay (gutter severity markers, wavy squiggles under
+//! error spans, and the hover tooltip), rendered on top of the shared editor
+//! using its public geometry.
+//!
+//! The source text lives in the Automerge `Text` object the editor is bound to;
+//! every edit splices into it through the shared widget.
 
-use automerge::transaction::Transactable;
-use automerge::{AutoCommit, ObjId, ReadDoc};
+use automerge::{AutoCommit, ObjId};
 use vello::Scene;
-use vello::kurbo::{Affine, BezPath, Line, Point, Rect, RoundedRect, Stroke};
+use vello::kurbo::{Affine, BezPath, Circle, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{BlendMode, Fill};
-use winit::event::{ElementState, KeyEvent, Modifiers, WindowEvent};
-use winit::keyboard::{Key, NamedKey};
+use winit::event::{Modifiers, WindowEvent};
 
-use ui::ColorCompat;
-use ui::text_render::{TextRenderer, TextWeight};
+use ui::text_render::TextRenderer;
 use ui::theme::Theme;
+use ui::widget::Widget;
+use ui::widget::code_editor::{CodeEditor, Language};
 
 use crate::compile::{DiagKind, Diagnostic};
-use crate::highlight::{self, Token};
 
 /// Monospace point size of the editor text.
 pub const FONT_SIZE: f32 = 13.0;
-/// Tab expands to this many spaces.
+/// Tab expands to this many spaces (soft tabs).
 const TAB_WIDTH: usize = 2;
 
 pub struct SourceEditor {
-    pub caret: usize,
-    pub anchor: usize,
-    pub scroll_y: f32,
-    /// Horizontal scroll offset in pixels. Source lines are not wrapped — a
-    /// code editor keeps them intact — so the view scrolls sideways instead,
-    /// and the caret is always kept in view horizontally (`ensure_caret_visible`).
-    pub scroll_x: f64,
+    /// The shared code-editing widget — caret, selection, clipboard, undo,
+    /// gutter, and Typst syntax highlighting all live here.
+    code: CodeEditor,
+    /// Whether the source pane holds keyboard focus. Mirrored onto `code` each
+    /// frame so its caret paints and its key routing engages.
     pub focused: bool,
     rect: Rect,
-    /// Cached glyph cell metrics, refreshed each `draw`.
-    char_w: f64,
-    line_h: f64,
-    /// Preferred column for vertical caret motion (sticky across up/down).
-    desired_col: Option<usize>,
+    /// Anchor byte for an in-flight click+drag selection.
+    drag_anchor: Option<usize>,
     /// Last known hover position (window space), or `None` when the pointer is
     /// off the pane. Drives the inline-diagnostic tooltip.
     hover: Option<Point>,
@@ -52,15 +48,13 @@ pub struct SourceEditor {
 impl Default for SourceEditor {
     fn default() -> Self {
         Self {
-            caret: 0,
-            anchor: 0,
-            scroll_y: 0.0,
-            scroll_x: 0.0,
+            code: CodeEditor::local()
+                .with_language(Language::Typst)
+                .with_font_size(FONT_SIZE)
+                .with_tab_width(TAB_WIDTH),
             focused: true,
             rect: Rect::ZERO,
-            char_w: FONT_SIZE as f64 * 0.6,
-            line_h: (FONT_SIZE as f64 * 1.5).round(),
-            desired_col: None,
+            drag_anchor: None,
             hover: None,
         }
     }
@@ -73,6 +67,7 @@ impl SourceEditor {
 
     pub fn set_rect(&mut self, rect: Rect) {
         self.rect = rect;
+        self.code.set_rect(rect);
     }
 
     pub fn rect(&self) -> Rect {
@@ -80,125 +75,86 @@ impl SourceEditor {
     }
 
     pub fn line_height(&self) -> f64 {
-        self.line_h
+        self.code.line_height().max(FONT_SIZE as f64)
     }
 
-    fn selection(&self) -> Option<(usize, usize)> {
-        if self.caret == self.anchor {
-            None
-        } else {
-            Some((self.caret.min(self.anchor), self.caret.max(self.anchor)))
-        }
+    /// Bind the editor to the Automerge `Text` object holding the source and
+    /// pull its current content. Called from the app's `sync`.
+    pub fn bind(&mut self, obj: ObjId, doc: &mut AutoCommit) {
+        self.code.bind_text(obj);
+        self.code.pull(doc);
+    }
+
+    /// The caret's byte offset in the source.
+    pub fn caret(&self) -> usize {
+        self.code.cursor_pos()
+    }
+
+    /// Move the caret to a byte offset (used by the screenshot harness).
+    pub fn set_caret(&mut self, byte: usize) {
+        self.code.set_cursor_pos(byte);
+    }
+
+    /// The current buffer text (mirrors the bound Automerge object).
+    pub fn text(&self) -> &str {
+        self.code.value()
+    }
+
+    /// Programmatically set the buffer (local/unbound use — tests, seeding).
+    pub fn set_text(&mut self, s: &str) {
+        self.code.set_text(s);
+    }
+
+    /// Reset the caret to the document start (used when switching documents).
+    pub fn reset_cursor(&mut self) {
+        self.code.set_cursor_pos(0);
+        self.code.scroll_by(-1.0e9);
     }
 
     /// Place the caret on a specific 1-based line (used when a diagnostic is
-    /// clicked). Scrolls the line into view on the next draw.
-    pub fn goto_line(&mut self, text: &str, line_1based: usize) {
-        let idx = LineIndex::new(text);
-        let line = line_1based.saturating_sub(1).min(idx.line_count().saturating_sub(1));
-        let caret = idx.line_start(line);
-        self.caret = caret;
-        self.anchor = caret;
-        self.desired_col = None;
-        // Centre the target line in the viewport; the line starts at column 0
-        // so the horizontal offset returns to the left edge.
-        let target = line as f64 * self.line_h - self.rect.height() * 0.4;
-        self.scroll_y = target.max(0.0) as f32;
-        self.scroll_x = 0.0;
+    /// clicked). `_text` is unused — the widget holds the source.
+    pub fn goto_line(&mut self, _text: &str, line_1based: usize) {
+        self.code.goto_line(line_1based);
     }
 
     // ----- scrolling -------------------------------------------------------
 
-    pub fn scroll_by(&mut self, dx: f32, dy: f32, text: &str) {
-        self.scroll_y += dy;
-        self.scroll_x += dx as f64;
-        self.clamp_scroll(text);
+    /// Wheel scroll. `dx`/`_text` are unused — the code view soft-wraps, so it
+    /// only scrolls vertically.
+    pub fn scroll_by(&mut self, _dx: f32, dy: f32, _text: &str) {
+        self.code.scroll_by(dy as f64);
     }
 
-    fn clamp_scroll(&mut self, text: &str) {
-        let idx = LineIndex::new(text);
-        let content_h = idx.line_count() as f64 * self.line_h + self.line_h;
-        let max_y = (content_h - self.rect.height()).max(0.0);
-        self.scroll_y = self.scroll_y.clamp(0.0, max_y as f32);
-
-        // Horizontal extent: the longest line plus one cell so the caret can
-        // sit just past the final glyph.
-        let content_w = (self.rect.width() - self.gutter_width(idx.line_count())).max(1.0);
-        let widest = (idx.max_line_len() as f64 + 1.0) * self.char_w;
-        let max_x = (widest - content_w).max(0.0);
-        self.scroll_x = self.scroll_x.clamp(0.0, max_x);
-    }
-
-    /// Public entry to scroll the caret into view (used by the screenshot
-    /// harness to capture a horizontally-scrolled state; the live editor scrolls
-    /// automatically after every edit via `after_edit`).
-    pub fn ensure_visible(&mut self, text: &str) {
-        self.ensure_caret_visible(text);
-    }
-
-    fn ensure_caret_visible(&mut self, text: &str) {
-        let idx = LineIndex::new(text);
-        let (line, col) = idx.line_col(self.caret);
-
-        // Vertical: keep the caret's line inside the viewport.
-        let caret_top = line as f64 * self.line_h;
-        let caret_bot = caret_top + self.line_h;
-        let view_top = self.scroll_y as f64;
-        let view_bot = view_top + self.rect.height();
-        if caret_top < view_top {
-            self.scroll_y = caret_top as f32;
-        } else if caret_bot > view_bot {
-            self.scroll_y = (caret_bot - self.rect.height()) as f32;
-        }
-
-        // Horizontal: keep the caret column inside the content area. Without
-        // this, typing past the pane's right edge would push the caret (and the
-        // text under it) out of sight with no way to scroll back.
-        let content_w = (self.rect.width() - self.gutter_width(idx.line_count())).max(1.0);
-        let caret_x = col as f64 * self.char_w;
-        // A little lookahead so the caret isn't glued to the very edge.
-        let margin = (self.char_w * 3.0).min(content_w * 0.25);
-        if caret_x < self.scroll_x + margin {
-            self.scroll_x = (caret_x - margin).max(0.0);
-        } else if caret_x + self.char_w > self.scroll_x + content_w - margin {
-            self.scroll_x = caret_x + self.char_w - content_w + margin;
-        }
-
-        self.clamp_scroll(text);
-    }
+    /// Scroll the caret into view. The shared widget follows the caret after
+    /// every edit automatically, so this is a no-op kept for call-site parity.
+    pub fn ensure_visible(&mut self, _text: &str) {}
 
     // ----- mouse -----------------------------------------------------------
 
-    /// Map a window-space point to a caret char index.
-    fn caret_at_point(&self, p: Point, text: &str) -> usize {
-        let idx = LineIndex::new(text);
-        let gutter = self.gutter_width(idx.line_count());
-        let rel_y = p.y - self.rect.y0 + self.scroll_y as f64;
-        let line = (rel_y / self.line_h).floor().max(0.0) as usize;
-        let line = line.min(idx.line_count().saturating_sub(1));
-        let content_x = self.rect.x0 + gutter;
-        // Add the horizontal scroll offset so clicks map to the true column
-        // even when the line is scrolled sideways.
-        let col = (((p.x - content_x + self.scroll_x) / self.char_w).round()).max(0.0) as usize;
-        let col = col.min(idx.line_len(line));
-        idx.line_start(line) + col
-    }
-
-    pub fn on_mouse_down(&mut self, p: Point, shift: bool, text: &str) {
+    pub fn on_mouse_down(&mut self, p: Point, shift: bool, _text: &str) {
         self.focused = true;
-        let c = self.caret_at_point(p, text);
-        self.caret = c;
-        if !shift {
-            self.anchor = c;
+        self.code.set_focused(true);
+        let byte = self.code.byte_at_point(p);
+        if shift {
+            let anchor = self.drag_anchor.unwrap_or_else(|| self.code.cursor_pos());
+            self.code.set_selection(anchor, byte);
+            self.drag_anchor = Some(anchor);
+        } else {
+            self.code.set_cursor_pos(byte);
+            self.drag_anchor = Some(byte);
         }
-        self.desired_col = None;
     }
 
-    pub fn on_mouse_drag(&mut self, p: Point, text: &str) {
-        let c = self.caret_at_point(p, text);
-        self.caret = c;
-        self.desired_col = None;
+    pub fn on_mouse_drag(&mut self, p: Point, _text: &str) {
+        if let Some(anchor) = self.drag_anchor {
+            let byte = self.code.byte_at_point(p);
+            self.code.set_selection(anchor, byte);
+        }
     }
+
+    /// End of a click+drag. The anchor is kept so a following Shift+click still
+    /// extends from the original point.
+    pub fn on_mouse_up(&mut self) {}
 
     /// Update the hover position (window space); `None` when the pointer leaves
     /// the pane. Returns whether the tooltip-relevant state changed, so the app
@@ -211,24 +167,11 @@ impl SourceEditor {
         true
     }
 
-    /// 0-based (line, col) for a window-space point, without clamping to a real
-    /// caret — used to hit-test the hovered diagnostic squiggle.
-    fn hover_line_col(&self, p: Point, text: &str) -> (usize, usize) {
-        let idx = LineIndex::new(text);
-        let gutter = self.gutter_width(idx.line_count());
-        let rel_y = p.y - self.rect.y0 - 6.0 + self.scroll_y as f64;
-        let line = (rel_y / self.line_h).floor().max(0.0) as usize;
-        let line = line.min(idx.line_count().saturating_sub(1));
-        let content_x = self.rect.x0 + gutter;
-        let col = (((p.x - content_x + self.scroll_x) / self.char_w).floor()).max(0.0) as usize;
-        (line, col)
-    }
-
     // ----- keyboard --------------------------------------------------------
 
-    /// Handle a keyboard event. Returns true if consumed. `text_id` is the
-    /// Automerge `Text` object holding the source; edits splice into it
-    /// directly. Caller is responsible for re-reading the text afterward.
+    /// Handle a keyboard event through the shared widget. Returns true if
+    /// consumed. `text_id` is the bound source object; the widget is already
+    /// bound to it, so edits splice there.
     pub fn handle_key(
         &mut self,
         event: &WindowEvent,
@@ -236,308 +179,21 @@ impl SourceEditor {
         doc: &mut AutoCommit,
         text_id: &ObjId,
     ) -> bool {
-        let WindowEvent::KeyboardInput {
-            event: KeyEvent { logical_key, state: ElementState::Pressed, text, .. },
-            ..
-        } = event
-        else {
-            return false;
-        };
-        let mods = modifiers.state();
-        let ctrl = mods.control_key() || mods.super_key();
-        let shift = mods.shift_key();
-        let current = doc.text(text_id).unwrap_or_default();
-        let len = current.chars().count();
-
-        // Editing/navigation shortcuts with Ctrl/Cmd.
-        if ctrl {
-            match logical_key {
-                // Word-wise caret motion — the boundary rule is shared with
-                // every other qOS text surface.
-                Key::Named(NamedKey::ArrowLeft) => {
-                    let new = ui::prev_word_boundary_chars(&current, self.caret);
-                    self.caret = new;
-                    if !shift {
-                        self.anchor = new;
-                    }
-                    self.desired_col = None;
-                    self.after_edit(doc, text_id);
-                    return true;
-                }
-                Key::Named(NamedKey::ArrowRight) => {
-                    let new = ui::next_word_boundary_chars(&current, self.caret);
-                    self.caret = new;
-                    if !shift {
-                        self.anchor = new;
-                    }
-                    self.desired_col = None;
-                    self.after_edit(doc, text_id);
-                    return true;
-                }
-                // Word-wise delete: an active selection wins; otherwise chew
-                // back / forward to the nearest word boundary.
-                Key::Named(NamedKey::Backspace) => {
-                    if let Some((lo, hi)) = self.selection() {
-                        self.delete_range(doc, text_id, lo, hi);
-                    } else {
-                        let start = ui::prev_word_boundary_chars(&current, self.caret);
-                        if start < self.caret {
-                            self.delete_range(doc, text_id, start, self.caret);
-                        }
-                    }
-                    self.desired_col = None;
-                    self.after_edit(doc, text_id);
-                    return true;
-                }
-                Key::Named(NamedKey::Delete) => {
-                    if let Some((lo, hi)) = self.selection() {
-                        self.delete_range(doc, text_id, lo, hi);
-                    } else {
-                        let end = ui::next_word_boundary_chars(&current, self.caret);
-                        if end > self.caret {
-                            self.delete_range(doc, text_id, self.caret, end);
-                        }
-                    }
-                    self.desired_col = None;
-                    self.after_edit(doc, text_id);
-                    return true;
-                }
-                Key::Character(c) => {
-                    match c.to_lowercase().as_str() {
-                        "a" => {
-                            self.anchor = 0;
-                            self.caret = len;
-                        }
-                        "c" => self.copy_selection(&current),
-                        "x" => self.cut_selection(doc, text_id, &current),
-                        "v" => self.paste_clipboard(doc, text_id, &current),
-                        _ => return false, // let the app handle other Ctrl combos
-                    }
-                    return true;
-                }
-                _ => return false,
-            }
-        }
-
-        match logical_key {
-            Key::Named(NamedKey::Backspace) => {
-                if let Some((lo, hi)) = self.selection() {
-                    self.delete_range(doc, text_id, lo, hi);
-                } else if self.caret > 0 {
-                    self.delete_range(doc, text_id, self.caret - 1, self.caret);
-                }
-                self.desired_col = None;
-                self.after_edit(doc, text_id);
-                true
-            }
-            Key::Named(NamedKey::Delete) => {
-                if let Some((lo, hi)) = self.selection() {
-                    self.delete_range(doc, text_id, lo, hi);
-                } else if self.caret < len {
-                    self.delete_range(doc, text_id, self.caret, self.caret + 1);
-                }
-                self.desired_col = None;
-                self.after_edit(doc, text_id);
-                true
-            }
-            Key::Named(NamedKey::Enter) => {
-                self.insert_str(doc, text_id, &current, "\n");
-                true
-            }
-            Key::Named(NamedKey::Tab) => {
-                if shift {
-                    self.outdent(doc, text_id, &current);
-                } else {
-                    let spaces = " ".repeat(TAB_WIDTH);
-                    self.insert_str(doc, text_id, &current, &spaces);
-                }
-                true
-            }
-            Key::Named(NamedKey::ArrowLeft) => {
-                self.move_horizontal(-1, len, shift);
-                self.after_edit(doc, text_id);
-                true
-            }
-            Key::Named(NamedKey::ArrowRight) => {
-                self.move_horizontal(1, len, shift);
-                self.after_edit(doc, text_id);
-                true
-            }
-            Key::Named(NamedKey::ArrowUp) => {
-                self.move_vertical(-1, &current, shift);
-                self.after_edit(doc, text_id);
-                true
-            }
-            Key::Named(NamedKey::ArrowDown) => {
-                self.move_vertical(1, &current, shift);
-                self.after_edit(doc, text_id);
-                true
-            }
-            Key::Named(NamedKey::Home) => {
-                let idx = LineIndex::new(&current);
-                let (line, _) = idx.line_col(self.caret);
-                self.caret = idx.line_start(line);
-                if !shift {
-                    self.anchor = self.caret;
-                }
-                self.desired_col = None;
-                self.after_edit(doc, text_id);
-                true
-            }
-            Key::Named(NamedKey::End) => {
-                let idx = LineIndex::new(&current);
-                let (line, _) = idx.line_col(self.caret);
-                self.caret = idx.line_start(line) + idx.line_len(line);
-                if !shift {
-                    self.anchor = self.caret;
-                }
-                self.desired_col = None;
-                self.after_edit(doc, text_id);
-                true
-            }
-            Key::Named(NamedKey::PageUp) => {
-                let page = (self.rect.height() / self.line_h).floor().max(1.0) as i64;
-                self.move_vertical(-page, &current, shift);
-                self.after_edit(doc, text_id);
-                true
-            }
-            Key::Named(NamedKey::PageDown) => {
-                let page = (self.rect.height() / self.line_h).floor().max(1.0) as i64;
-                self.move_vertical(page, &current, shift);
-                self.after_edit(doc, text_id);
-                true
-            }
-            Key::Named(NamedKey::Space) => {
-                self.insert_str(doc, text_id, &current, " ");
-                true
-            }
-            _ => {
-                // Printable text (handles letters, punctuation, IME strings).
-                if let Some(t) = text {
-                    let s: String = t.chars().filter(|c| !c.is_control()).collect();
-                    if !s.is_empty() {
-                        self.insert_str(doc, text_id, &current, &s);
-                        return true;
-                    }
-                }
-                if let Key::Character(c) = logical_key {
-                    let s: String = c.chars().filter(|c| !c.is_control()).collect();
-                    if !s.is_empty() {
-                        self.insert_str(doc, text_id, &current, &s);
-                        return true;
-                    }
-                }
-                false
-            }
-        }
-    }
-
-    // ----- clipboard (system-backed) --------------------------------------
-
-    /// Copy the active selection to the system clipboard. No-op when nothing is
-    /// selected or no clipboard backend is available (e.g. a headless session).
-    fn copy_selection(&self, current: &str) {
-        if let Some((lo, hi)) = self.selection() {
-            ui::clipboard_copy(&substring(current, lo, hi));
-        }
-    }
-
-    /// Cut the active selection: copy it to the system clipboard, then delete it
-    /// through the CRDT.
-    fn cut_selection(&mut self, doc: &mut AutoCommit, text_id: &ObjId, current: &str) {
-        if let Some((lo, hi)) = self.selection() {
-            ui::clipboard_copy(&substring(current, lo, hi));
-            self.delete_range(doc, text_id, lo, hi);
-            self.desired_col = None;
-            self.after_edit(doc, text_id);
-        }
-    }
-
-    /// Paste the system clipboard at the caret, replacing any selection. The
-    /// pasted text is normalised (CRLF → LF, stray control codes dropped) so a
-    /// paste from another app can't inject odd bytes into the source.
-    fn paste_clipboard(&mut self, doc: &mut AutoCommit, text_id: &ObjId, current: &str) {
-        if let Some(raw) = ui::clipboard_paste() {
-            let text = sanitize_paste(&raw);
-            if !text.is_empty() {
-                self.insert_str(doc, text_id, current, &text);
-            }
-        }
-    }
-
-    fn move_horizontal(&mut self, dir: i64, len: usize, shift: bool) {
-        let new = (self.caret as i64 + dir).clamp(0, len as i64) as usize;
-        self.caret = new;
-        if !shift {
-            self.anchor = new;
-        }
-        self.desired_col = None;
-    }
-
-    fn move_vertical(&mut self, dir: i64, text: &str, shift: bool) {
-        let idx = LineIndex::new(text);
-        let (line, col) = idx.line_col(self.caret);
-        let want = self.desired_col.unwrap_or(col);
-        self.desired_col = Some(want);
-        let target = (line as i64 + dir).clamp(0, idx.line_count() as i64 - 1) as usize;
-        let new_col = want.min(idx.line_len(target));
-        self.caret = idx.line_start(target) + new_col;
-        if !shift {
-            self.anchor = self.caret;
-        }
-    }
-
-    fn after_edit(&mut self, doc: &mut AutoCommit, text_id: &ObjId) {
-        let text = doc.text(text_id).unwrap_or_default();
-        self.ensure_caret_visible(&text);
-    }
-
-    /// Replace any active selection with `s`, then advance the caret.
-    fn insert_str(&mut self, doc: &mut AutoCommit, text_id: &ObjId, current: &str, s: &str) {
-        if let Some((lo, hi)) = self.selection() {
-            self.delete_range(doc, text_id, lo, hi);
-        }
-        let _ = doc.splice_text(text_id, self.caret, 0, s);
-        self.caret += s.chars().count();
-        self.anchor = self.caret;
-        self.desired_col = None;
-        let _ = current; // current captured by caller for context only
-        self.after_edit(doc, text_id);
-    }
-
-    fn delete_range(&mut self, doc: &mut AutoCommit, text_id: &ObjId, lo: usize, hi: usize) {
-        if hi <= lo {
-            return;
-        }
-        let _ = doc.splice_text(text_id, lo, (hi - lo) as isize, "");
-        self.caret = lo;
-        self.anchor = lo;
-    }
-
-    /// Shift+Tab: remove up to `TAB_WIDTH` leading spaces from the caret line.
-    fn outdent(&mut self, doc: &mut AutoCommit, text_id: &ObjId, current: &str) {
-        let idx = LineIndex::new(current);
-        let (line, _) = idx.line_col(self.caret);
-        let start = idx.line_start(line);
-        let chars: Vec<char> = current.chars().collect();
-        let mut remove = 0;
-        while remove < TAB_WIDTH && start + remove < chars.len() && chars[start + remove] == ' ' {
-            remove += 1;
-        }
-        if remove > 0 {
-            let _ = doc.splice_text(text_id, start, remove as isize, "");
-            self.caret = self.caret.saturating_sub(remove);
-            self.anchor = self.caret;
-        }
-        self.after_edit(doc, text_id);
+        use taffy::{Style, TaffyTree};
+        self.code.set_focused(self.focused);
+        let mut handled = false;
+        let mut focus_target = None;
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let node = taffy.new_leaf(Style::default()).unwrap();
+        // `text_id` is the object the widget was bound to; pass it as the root so
+        // the resolve falls back to it even if the binding were ever cleared.
+        self.code.handle_event(
+            event, 1.0, modifiers, doc, text_id, &mut handled, &mut focus_target, node, &taffy,
+        );
+        handled
     }
 
     // ----- rendering -------------------------------------------------------
-
-    fn gutter_width(&self, line_count: usize) -> f64 {
-        let digits = line_count.max(1).to_string().len().max(2);
-        digits as f64 * self.char_w + 18.0
-    }
 
     pub fn draw(
         &mut self,
@@ -545,189 +201,82 @@ impl SourceEditor {
         transform: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
-        text: &str,
-        tokens: &[Vec<Token>],
         diags: &[Diagnostic],
     ) {
-        // Refresh cell metrics from the actual monospace face.
-        let (cw, _ch) = tr.measure_styled("M", FONT_SIZE, None, TextWeight::Regular, false, true);
-        if cw > 0.0 {
-            self.char_w = cw as f64;
-        }
-        self.line_h = (FONT_SIZE as f64 * 1.55).round();
-
         let c = &theme.tokens.colors;
         // Pane background (slightly darker than chrome for an "editor" feel).
         scene.fill(Fill::NonZero, transform, c.surfaces.base, None, &self.rect);
 
+        // The shared widget paints the gutter, line numbers, current-line band,
+        // selection, highlighted text, and caret.
+        self.code.set_focused(self.focused);
+        self.code.set_rect(self.rect);
+        self.code.draw_embedded(scene, transform, tr, theme);
+
+        // Diagnostics overlay, drawn on top using the widget's geometry, clipped
+        // to the pane so squiggles/markers never spill past it.
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &self.rect);
-
-        let idx = LineIndex::new(text);
-        let line_count = idx.line_count();
-        let gutter = self.gutter_width(line_count);
-        let content_x = self.rect.x0 + gutter;
-
-        // Gutter background + divider.
-        let gutter_rect = Rect::new(self.rect.x0, self.rect.y0, content_x, self.rect.y1);
-        scene.fill(Fill::NonZero, transform, c.surfaces.raised, None, &gutter_rect);
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            c.border_standard,
-            None,
-            &Line::new(Point::new(content_x, self.rect.y0), Point::new(content_x, self.rect.y1)),
-        );
-
-        let top_pad = 6.0;
-        let first = ((self.scroll_y as f64 - top_pad) / self.line_h).floor().max(0.0) as usize;
-        let visible = (self.rect.height() / self.line_h).ceil() as usize + 2;
-        let last = (first + visible).min(line_count);
-
-        let sel = self.selection();
-        let (caret_line, caret_col) = idx.line_col(self.caret);
-
-        // Per-line worst diagnostic severity — drives the gutter marker and the
-        // inline squiggle colour. Computed once for the whole buffer so the
-        // draw loop is a cheap lookup.
-        let line_severity = worst_severity_by_line(diags);
-
-        // Line numbers live in the fixed gutter — never scrolled sideways — so
-        // they're painted before the horizontally-scrolled content clip.
-        for line in first..last {
-            let y = self.rect.y0 + top_pad + line as f64 * self.line_h - self.scroll_y as f64;
-
-            // Gutter severity marker (a small dot) for lines a diagnostic starts
-            // on, so problems are visible even when scrolled away from the span.
-            if let Some(&kind) = line_severity.get(&line) {
-                let col = diag_color(kind, theme);
-                let cx = self.rect.x0 + 7.0;
-                let cy = y + self.line_h * 0.5;
-                scene.fill(
-                    Fill::NonZero,
-                    transform,
-                    col,
-                    None,
-                    &vello::kurbo::Circle::new(Point::new(cx, cy), 3.0),
-                );
-            }
-
-            let num = (line + 1).to_string();
-            let num_w = num.chars().count() as f64 * self.char_w;
-            let num_x = content_x - 8.0 - num_w;
-            let num_color = if line == caret_line { c.text_primary } else { c.text_dim };
-            tr.draw_text_styled(
-                scene,
-                &num,
-                FONT_SIZE,
-                num_color,
-                transform * Affine::translate((num_x, y)),
-                None,
-                TextWeight::Regular,
-                false,
-                true,
-            );
-        }
-
-        // Text content: clipped to the area right of the gutter and shifted by
-        // the horizontal scroll offset. The clip keeps a long line from
-        // spilling over the gutter as it scrolls sideways.
-        let content_clip = Rect::new(content_x, self.rect.y0, self.rect.x1, self.rect.y1);
-        scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &content_clip);
-        let sx = self.scroll_x;
-
-        for line in first..last {
-            let y = self.rect.y0 + top_pad + line as f64 * self.line_h - self.scroll_y as f64;
-            let line_len = idx.line_len(line);
-
-            // Current-line highlight (focused, no selection). A full-width band,
-            // so it stays put under horizontal scroll.
-            if self.focused && sel.is_none() && line == caret_line {
-                let hl = Rect::new(content_x, y, self.rect.x1, y + self.line_h);
-                scene.fill(Fill::NonZero, transform, c.surface_white_5, None, &hl);
-            }
-
-            // Selection highlight on this line.
-            if let Some((lo, hi)) = sel {
-                let ls = idx.line_start(line);
-                let le = ls + line_len;
-                let sel_lo = lo.max(ls);
-                let sel_hi = hi.min(le + 1); // +1 to include trailing newline visual
-                if sel_hi > sel_lo && lo <= le && hi >= ls {
-                    let c0 = sel_lo.saturating_sub(ls);
-                    let c1 = (sel_hi.saturating_sub(ls)).min(line_len + 1);
-                    let x0 = content_x + c0 as f64 * self.char_w - sx;
-                    let x1 = content_x + c1 as f64 * self.char_w - sx;
-                    let r = Rect::new(x0, y, x1.max(x0 + 2.0), y + self.line_h);
-                    scene.fill(Fill::NonZero, transform, selection_color(theme), None, &r);
-                }
-            }
-
-            // Tokens for this line (skip any scrolled fully out of view).
-            if let Some(line_tokens) = tokens.get(line) {
-                for tok in line_tokens {
-                    if tok.text.trim().is_empty() {
-                        continue;
-                    }
-                    let x = content_x + tok.start as f64 * self.char_w - sx;
-                    let tok_w = tok.text.chars().count() as f64 * self.char_w;
-                    if x + tok_w < content_x || x > self.rect.x1 {
-                        continue;
-                    }
-                    let (color, weight, italic) = highlight::style(tok.cat, theme);
-                    tr.draw_text_styled(
-                        scene,
-                        &tok.text,
-                        FONT_SIZE,
-                        color,
-                        transform * Affine::translate((x, y)),
-                        None,
-                        weight,
-                        italic,
-                        true,
-                    );
-                }
-            }
-
-            // Inline diagnostic squiggles: a wavy underline under every span
-            // that touches this line, at the compiler's reported columns.
-            for d in diags {
-                if let Some((c0, c1)) = diag_cols_on_line(d, line, line_len) {
-                    let x0 = content_x + c0 as f64 * self.char_w - sx;
-                    let x1 = content_x + c1 as f64 * self.char_w - sx;
-                    if x1 < content_x || x0 > self.rect.x1 {
-                        continue;
-                    }
-                    let yb = y + self.line_h - 3.5;
-                    draw_squiggle(scene, transform, x0.max(content_x), x1, yb, diag_color(d.kind, theme));
-                }
-            }
-        }
-
-        // Caret — a steady bar (deliberately non-blinking; see `wants_animation`).
-        if self.focused {
-            let y = self.rect.y0 + top_pad + caret_line as f64 * self.line_h - self.scroll_y as f64;
-            let x = content_x + caret_col as f64 * self.char_w - sx;
-            if y + self.line_h >= self.rect.y0 && y <= self.rect.y1 {
-                let caret = Rect::new(x, y + 1.0, x + 1.5, y + self.line_h - 1.0);
-                scene.fill(Fill::NonZero, transform, theme.accent_primary, None, &caret);
-            }
-        }
-
-        scene.pop_layer(); // content clip
-        scene.pop_layer(); // pane clip
+        self.draw_diagnostics(scene, transform, tr, theme, diags);
+        scene.pop_layer();
 
         // Hover tooltip for a diagnostic squiggle — drawn last and outside the
-        // clips so it floats above the source and can overflow the pane.
+        // clip so it floats above the source and can overflow the pane.
         if let Some(hp) = self.hover {
             if self.rect.contains(hp) {
-                let (hl, hc) = self.hover_line_col(hp, text);
-                let line_len = idx.line_len(hl);
+                let byte = self.code.byte_at_point(hp);
+                let text = self.code.value().to_string();
                 if let Some(d) = diags.iter().find(|d| {
-                    diag_cols_on_line(d, hl, line_len)
-                        .map(|(c0, c1)| hc >= c0 && hc < c1.max(c0 + 1))
+                    diag_byte_span(d, &text)
+                        .map(|(b0, b1)| byte >= b0 && byte < b1.max(b0 + 1))
                         .unwrap_or(false)
                 }) {
                     self.draw_tooltip(scene, transform, tr, theme, hp, d);
+                }
+            }
+        }
+    }
+
+    /// Gutter severity markers + inline squiggles, positioned from the shared
+    /// widget's caret / selection geometry so they track scroll, wrap, and the
+    /// gutter width exactly.
+    fn draw_diagnostics(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        _tr: &mut TextRenderer,
+        theme: &Theme,
+        diags: &[Diagnostic],
+    ) {
+        if diags.is_empty() {
+            return;
+        }
+        let text = self.code.value().to_string();
+        let lh = self.code.line_height();
+
+        // Gutter severity dot on each line a diagnostic starts on.
+        for (line0, kind) in worst_severity_by_line(diags) {
+            let byte = byte_of_line_col(&text, line0, 0);
+            let cr = self.code.caret_rect(theme, byte);
+            if cr.y1 < self.rect.y0 || cr.y0 > self.rect.y1 {
+                continue;
+            }
+            let cx = self.rect.x0 + 7.0;
+            let cy = cr.y0 + lh * 0.5;
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                diag_color(kind, theme),
+                None,
+                &Circle::new(Point::new(cx, cy), 3.0),
+            );
+        }
+
+        // Inline squiggle under every diagnostic span, one segment per visual row.
+        for d in diags {
+            if let Some((b0, b1)) = diag_byte_span(d, &text) {
+                for r in self.code.selection_rects(theme, b0, b1) {
+                    let yb = r.y1 - 3.5;
+                    draw_squiggle(scene, transform, r.x0, r.x1, yb, diag_color(d.kind, theme));
                 }
             }
         }
@@ -755,8 +304,6 @@ impl SourceEditor {
         if let Some(h) = d.hints.first() {
             lines.push((format!("hint: {h}"), true));
         }
-        // Measure each line at the wrap width so a long message that wraps still
-        // gets a correctly-tall card.
         let mut w = 0.0f64;
         let mut total_h = 0.0f64;
         let mut heights = Vec::with_capacity(lines.len());
@@ -770,7 +317,6 @@ impl SourceEditor {
         total_h -= gap;
         let card_w = (w + pad * 2.0).min(max_text_w + pad * 2.0);
         let card_h = total_h + pad * 2.0;
-        // Anchor just below the cursor, nudged to stay inside the pane.
         let mut x0 = at.x + 12.0;
         let mut y0 = at.y + 18.0;
         if x0 + card_w > self.rect.x1 - 4.0 {
@@ -788,7 +334,6 @@ impl SourceEditor {
             &RoundedRect::from_rect(card.inflate(2.0, 2.0), 8.0),
         );
         scene.fill(Fill::NonZero, transform, c.surfaces.raised, None, &RoundedRect::from_rect(card, 7.0));
-        // A severity stripe on the leading edge.
         scene.fill(
             Fill::NonZero,
             transform,
@@ -811,20 +356,11 @@ impl SourceEditor {
         }
     }
 
-    /// Whether the editor needs continuous repaints. The caret is a steady bar
-    /// rather than a blinking one, so a focused-but-idle editor requests **no**
-    /// animation frames — it only repaints in response to real input. A blinking
-    /// caret would force a full scene rebuild every vsync just to toggle a 1.5px
-    /// bar; a steady caret is the same information at zero idle cost.
+    /// The caret is a steady bar, so a focused-but-idle editor needs no
+    /// animation frames.
     pub fn wants_animation(&self) -> bool {
         false
     }
-}
-
-/// Returns the active selection-highlight colour (a translucent accent).
-fn selection_color(theme: &Theme) -> vello::peniko::Color {
-    let a = theme.accent_primary;
-    vello::peniko::Color::from_rgba8(a.r(), a.g(), a.b(), 70)
 }
 
 /// The theme colour a diagnostic severity draws in.
@@ -853,19 +389,36 @@ fn worst_severity_by_line(diags: &[Diagnostic]) -> std::collections::HashMap<usi
     map
 }
 
-/// The 0-based `[c0, c1)` column range a diagnostic covers on 0-based `line`,
-/// or `None` when the span doesn't touch that line. Always at least one column
-/// wide so a zero-width span still gets a visible squiggle.
-fn diag_cols_on_line(d: &Diagnostic, line: usize, line_len: usize) -> Option<(usize, usize)> {
-    let (sl, sc) = (d.line?.saturating_sub(1), d.col?.saturating_sub(1));
-    let (el, ec) = (d.end_line?.saturating_sub(1), d.end_col?.saturating_sub(1));
-    if line < sl || line > el {
-        return None;
+/// The byte offset in `text` of 0-based `(line, col)` (col in chars). Clamps to
+/// the line end / text end for out-of-range inputs.
+fn byte_of_line_col(text: &str, line0: usize, col0: usize) -> usize {
+    let mut byte = 0usize;
+    for (i, l) in text.split('\n').enumerate() {
+        if i == line0 {
+            let add = l
+                .char_indices()
+                .nth(col0)
+                .map(|(o, _)| o)
+                .unwrap_or(l.len());
+            return byte + add;
+        }
+        byte += l.len() + 1; // + '\n'
     }
-    let c0 = if line == sl { sc } else { 0 }.min(line_len);
-    let raw_c1 = if line == el { ec } else { line_len };
-    let c1 = raw_c1.max(c0 + 1);
-    Some((c0, c1))
+    text.len()
+}
+
+/// The byte range `[start, end)` a diagnostic covers, from its 1-based
+/// line/col span, widened to at least one byte so a zero-width span still
+/// underlines. `None` when the diagnostic carries no location.
+fn diag_byte_span(d: &Diagnostic, text: &str) -> Option<(usize, usize)> {
+    let (sl, sc) = (d.line?.saturating_sub(1), d.col?.saturating_sub(1));
+    let (el, ec) = (
+        d.end_line.unwrap_or(d.line?).saturating_sub(1),
+        d.end_col.unwrap_or(d.col? + 1).saturating_sub(1),
+    );
+    let b0 = byte_of_line_col(text, sl, sc);
+    let b1 = byte_of_line_col(text, el, ec).max(b0 + 1).min(text.len().max(b0 + 1));
+    Some((b0, b1.min(text.len())))
 }
 
 /// Stroke a wavy underline (a squiggle) between `x0` and `x1` at baseline `y`.
@@ -888,82 +441,11 @@ fn draw_squiggle(scene: &mut Scene, transform: Affine, x0: f64, x1: f64, y: f64,
     scene.stroke(&Stroke::new(1.3), transform, color, None, &path);
 }
 
-/// Char-index helper over a text split into `\n` lines. Cheap to build, used
-/// for every caret-coordinate conversion.
-struct LineIndex {
-    /// (char_start, char_len) per line, excluding the newline.
-    lines: Vec<(usize, usize)>,
-}
-
-impl LineIndex {
-    fn new(text: &str) -> Self {
-        let mut lines = Vec::new();
-        let mut start = 0usize;
-        let mut len = 0usize;
-        for ch in text.chars() {
-            if ch == '\n' {
-                lines.push((start, len));
-                start += len + 1;
-                len = 0;
-            } else {
-                len += 1;
-            }
-        }
-        lines.push((start, len));
-        Self { lines }
-    }
-
-    fn line_count(&self) -> usize {
-        self.lines.len()
-    }
-
-    fn line_start(&self, line: usize) -> usize {
-        self.lines.get(line).map(|l| l.0).unwrap_or(0)
-    }
-
-    fn line_len(&self, line: usize) -> usize {
-        self.lines.get(line).map(|l| l.1).unwrap_or(0)
-    }
-
-    /// Char length of the longest line — the basis for the horizontal scroll
-    /// extent.
-    fn max_line_len(&self) -> usize {
-        self.lines.iter().map(|l| l.1).max().unwrap_or(0)
-    }
-
-    /// Map a char index to (line, col).
-    fn line_col(&self, caret: usize) -> (usize, usize) {
-        for (i, &(start, len)) in self.lines.iter().enumerate() {
-            if caret <= start + len {
-                return (i, caret.saturating_sub(start));
-            }
-        }
-        let last = self.lines.len().saturating_sub(1);
-        (last, self.line_len(last))
-    }
-}
-
-/// Extract chars `[lo, hi)` from `text` as an owned String.
-fn substring(text: &str, lo: usize, hi: usize) -> String {
-    text.chars().skip(lo).take(hi.saturating_sub(lo)).collect()
-}
-
-/// Normalise pasted text for the source buffer: fold CRLF / lone CR to LF, and
-/// drop other control characters (keeping tabs and newlines) so a paste from
-/// another application can't smuggle control codes into the document.
-fn sanitize_paste(s: &str) -> String {
-    s.replace("\r\n", "\n")
-        .replace('\r', "\n")
-        .chars()
-        .filter(|c| *c == '\n' || *c == '\t' || !c.is_control())
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use automerge::ObjType;
-    use automerge::ROOT;
+    use automerge::transaction::Transactable;
+    use automerge::{ObjType, ReadDoc, ROOT};
 
     fn doc_with(text: &str) -> (AutoCommit, ObjId) {
         let mut doc = AutoCommit::new();
@@ -973,226 +455,108 @@ mod tests {
     }
 
     #[test]
-    fn line_index_maps_caret() {
-        let idx = LineIndex::new("ab\ncde\nf");
-        assert_eq!(idx.line_count(), 3);
-        assert_eq!(idx.line_col(0), (0, 0));
-        assert_eq!(idx.line_col(3), (1, 0));
-        assert_eq!(idx.line_col(6), (1, 3));
-        assert_eq!(idx.line_col(7), (2, 0));
+    fn byte_of_line_col_maps_positions() {
+        let t = "ab\ncde\nf";
+        assert_eq!(byte_of_line_col(t, 0, 0), 0);
+        assert_eq!(byte_of_line_col(t, 1, 0), 3);
+        assert_eq!(byte_of_line_col(t, 1, 2), 5);
+        assert_eq!(byte_of_line_col(t, 2, 0), 7);
     }
 
     #[test]
-    fn insert_advances_caret() {
-        let (mut doc, id) = doc_with("");
-        let mut ed = SourceEditor::new();
-        ed.insert_str(&mut doc, &id, "", "hi");
-        assert_eq!(doc.text(&id).unwrap(), "hi");
-        assert_eq!(ed.caret, 2);
-    }
-
-    #[test]
-    fn backspace_deletes_selection() {
-        let (mut doc, id) = doc_with("hello");
-        let mut ed = SourceEditor::new();
-        ed.anchor = 1;
-        ed.caret = 4; // select "ell"
-        ed.delete_range(&mut doc, &id, 1, 4);
-        assert_eq!(doc.text(&id).unwrap(), "ho");
-        assert_eq!(ed.caret, 1);
-    }
-
-    #[test]
-    fn max_line_len_finds_longest() {
-        let idx = LineIndex::new("ab\ncdef\ng");
-        assert_eq!(idx.max_line_len(), 4);
-    }
-
-    /// Typing past the right edge of a narrow pane must scroll the view
-    /// sideways and keep the caret inside the content area — the previous
-    /// behaviour pushed the caret off-screen with no way back. Exercises the
-    /// real edit path (`insert_str` → `after_edit` → `ensure_caret_visible`)
-    /// that a character keystroke drives.
-    #[test]
-    fn typing_long_line_keeps_caret_visible() {
-        let (mut doc, id) = doc_with("");
-        let mut ed = SourceEditor::new();
-        ed.set_rect(Rect::new(0.0, 0.0, 240.0, 400.0));
-        for _ in 0..80 {
-            ed.insert_str(&mut doc, &id, "", "x");
-        }
-        assert_eq!(ed.caret, 80);
-        assert!(ed.scroll_x > 0.0, "horizontal scroll engaged past the edge");
-
-        let content_w = 240.0 - ed.gutter_width(1);
-        let caret_x = ed.caret as f64 * ed.char_w;
-        let visible = caret_x - ed.scroll_x;
-        assert!(
-            (0.0..=content_w).contains(&visible),
-            "caret stays within the content area (visible={visible}, content_w={content_w})"
-        );
-    }
-
-    /// Moving the caret back to column 0 returns the view to the left edge.
-    #[test]
-    fn scrolling_back_to_line_start_resets_offset() {
-        let (mut doc, id) = doc_with("");
-        let mut ed = SourceEditor::new();
-        ed.set_rect(Rect::new(0.0, 0.0, 240.0, 400.0));
-        for _ in 0..80 {
-            ed.insert_str(&mut doc, &id, "", "x");
-        }
-        assert!(ed.scroll_x > 0.0);
-        ed.caret = 0;
-        ed.anchor = 0;
-        ed.ensure_visible(&doc.text(&id).unwrap());
-        assert_eq!(ed.scroll_x, 0.0, "caret at column 0 scrolls fully back left");
-    }
-
-    /// A focused editor must not request continuous animation frames when idle
-    /// — the caret is a steady bar, so the frame loop can sleep between inputs.
-    #[test]
-    fn focused_editor_is_idle() {
-        let ed = SourceEditor::new();
-        assert!(ed.focused);
-        assert!(!ed.wants_animation(), "steady caret => no idle repaints");
-    }
-
-    fn diag(line: usize, col: usize, end_line: usize, end_col: usize) -> Diagnostic {
-        Diagnostic {
+    fn diag_byte_span_covers_the_reported_span() {
+        // 1-based ln 2 cols 3..6 → 0-based line 1 cols 2..5 → bytes 5..8 in
+        // "ab\ncdefg".
+        let t = "ab\ncdefg";
+        let d = Diagnostic {
             kind: DiagKind::Error,
             message: "boom".into(),
-            line: Some(line),
-            col: Some(col),
-            end_line: Some(end_line),
-            end_col: Some(end_col),
+            line: Some(2),
+            col: Some(3),
+            end_line: Some(2),
+            end_col: Some(6),
             hints: vec![],
-        }
+        };
+        assert_eq!(diag_byte_span(&d, t), Some((5, 8)));
     }
 
-    /// The inline squiggle maps a compiler span (1-based line/col) to the right
-    /// 0-based columns on the covered line, and reports nothing off-span.
     #[test]
-    fn diag_cols_map_to_the_span() {
-        // 1-based ln 2, cols 3..6  →  0-based line 1, cols 2..5.
-        let d = diag(2, 3, 2, 6);
-        assert_eq!(diag_cols_on_line(&d, 1, 40), Some((2, 5)));
-        assert_eq!(diag_cols_on_line(&d, 0, 40), None, "line above the span");
-        assert_eq!(diag_cols_on_line(&d, 2, 40), None, "line below the span");
+    fn diag_zero_width_span_is_widened() {
+        let t = "abc";
+        let d = Diagnostic {
+            kind: DiagKind::Warning,
+            message: "x".into(),
+            line: Some(1),
+            col: Some(2),
+            end_line: Some(1),
+            end_col: Some(2),
+            hints: vec![],
+        };
+        let (b0, b1) = diag_byte_span(&d, t).unwrap();
+        assert!(b1 > b0, "a zero-width span still underlines at least one byte");
     }
 
-    /// A multi-line span underlines from the start column on the first line to
-    /// the end column on the last, full-width in between.
-    #[test]
-    fn diag_cols_span_multiple_lines() {
-        let d = diag(1, 5, 3, 4); // lines 1..3 (0-based 0..2)
-        assert_eq!(diag_cols_on_line(&d, 0, 20), Some((4, 20)), "start line: col→EOL");
-        assert_eq!(diag_cols_on_line(&d, 1, 20), Some((0, 20)), "middle line: whole line");
-        assert_eq!(diag_cols_on_line(&d, 2, 20), Some((0, 3)), "end line: BOL→col");
-    }
-
-    /// A zero-width span still yields a one-column squiggle so it's visible.
-    #[test]
-    fn zero_width_span_is_widened() {
-        let d = diag(1, 3, 1, 3);
-        let (c0, c1) = diag_cols_on_line(&d, 0, 40).unwrap();
-        assert!(c1 > c0, "at least one column wide");
-    }
-
-    /// Error beats warning when both start on the same gutter line.
     #[test]
     fn gutter_severity_prefers_error() {
-        let warn = Diagnostic { kind: DiagKind::Warning, ..diag(2, 1, 2, 2) };
-        let err = diag(2, 4, 2, 6);
+        let warn = Diagnostic {
+            kind: DiagKind::Warning,
+            message: "w".into(),
+            line: Some(2),
+            col: Some(1),
+            end_line: Some(2),
+            end_col: Some(2),
+            hints: vec![],
+        };
+        let err = Diagnostic {
+            kind: DiagKind::Error,
+            message: "e".into(),
+            line: Some(2),
+            col: Some(4),
+            end_line: Some(2),
+            end_col: Some(6),
+            hints: vec![],
+        };
         let map = worst_severity_by_line(&[warn, err]);
         assert_eq!(map.get(&1), Some(&DiagKind::Error));
     }
 
-    /// Ctrl+ArrowRight / ArrowLeft hop the caret a whole word at a time, driven
-    /// through the production `handle_key` path with the Ctrl modifier held.
+    /// Typing through the shell edits the bound Automerge object via the shared
+    /// widget's real key path.
     #[test]
-    fn ctrl_arrows_move_by_word() {
-        use winit::event::Modifiers;
-        use winit::keyboard::ModifiersState;
-        let (mut doc, id) = doc_with("hello world again");
+    fn typing_edits_the_bound_document() {
+        use winit::event::{ElementState, KeyEvent};
+        use winit::keyboard::{Key, SmolStr};
+        let (mut doc, id) = doc_with("");
         let mut ed = SourceEditor::new();
-        ed.set_rect(Rect::new(0.0, 0.0, 400.0, 400.0));
-        let ctrl = Modifiers::from(ModifiersState::CONTROL);
-
-        assert!(ed.handle_key(&named_key(NamedKey::ArrowRight), &ctrl, &mut doc, &id));
-        let after_first = ed.caret;
-        assert!(after_first > 0, "jumped past the first word (caret={after_first})");
-        assert!(after_first <= "hello world".len(), "did not overshoot past a word");
-
-        assert!(ed.handle_key(&named_key(NamedKey::ArrowRight), &ctrl, &mut doc, &id));
-        let after_second = ed.caret;
-        assert!(after_second > after_first, "second word hop advances further");
-        assert!(ed.handle_key(&named_key(NamedKey::ArrowLeft), &ctrl, &mut doc, &id));
-        assert!(ed.caret < after_second, "Ctrl+Left retreats by a word");
-    }
-
-    /// Ctrl+Backspace with no selection deletes the word before the caret via
-    /// the CRDT (the real edit path).
-    #[test]
-    fn ctrl_backspace_deletes_word() {
-        use winit::event::Modifiers;
-        use winit::keyboard::ModifiersState;
-        let (mut doc, id) = doc_with("hello world");
-        let mut ed = SourceEditor::new();
-        ed.set_rect(Rect::new(0.0, 0.0, 400.0, 400.0));
-        ed.caret = 11; // end of "world"
-        ed.anchor = 11;
-        let ctrl = Modifiers::from(ModifiersState::CONTROL);
-        assert!(ed.handle_key(&named_key(NamedKey::Backspace), &ctrl, &mut doc, &id));
-        assert_eq!(doc.text(&id).unwrap(), "hello ", "the trailing word was removed");
-        assert_eq!(ed.caret, 6);
-    }
-
-    /// Paste sanitisation folds CRLF/CR to LF and strips stray control codes
-    /// while keeping tabs and newlines.
-    #[test]
-    fn paste_sanitises_control_chars_and_newlines() {
-        assert_eq!(sanitize_paste("a\r\nb\tc\u{7}d"), "a\nb\tcd");
-        assert_eq!(sanitize_paste("x\ry"), "x\ny");
-    }
-
-    /// Cut then paste round-trips through the **system** clipboard when a
-    /// backend is present; skips cleanly on a headless session (the helper is
-    /// silent on absence). Exercises the production `cut_selection` /
-    /// `paste_clipboard` methods the Ctrl+X / Ctrl+V keys call.
-    #[test]
-    fn cut_paste_round_trips_via_system_clipboard() {
-        ui::clipboard_copy("__qos_probe__");
-        if ui::clipboard_paste().as_deref() != Some("__qos_probe__") {
-            eprintln!("cut_paste_round_trips: no clipboard backend, skipping");
-            return;
+        ed.set_rect(Rect::new(0.0, 0.0, 400.0, 300.0));
+        ed.bind(id.clone(), &mut doc);
+        ed.focused = true;
+        for ch in ["h", "i"] {
+            let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
+            ev.logical_key = Key::Character(SmolStr::new(ch));
+            ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
+                winit::keyboard::NativeKeyCode::Unidentified,
+            );
+            ev.location = winit::keyboard::KeyLocation::Standard;
+            ev.state = ElementState::Pressed;
+            ev.repeat = false;
+            ev.text = Some(SmolStr::new(ch));
+            let event = WindowEvent::KeyboardInput {
+                device_id: unsafe { std::mem::zeroed() },
+                event: ev,
+                is_synthetic: false,
+            };
+            assert!(ed.handle_key(&event, &Modifiers::default(), &mut doc, &id));
         }
-        let (mut doc, id) = doc_with("hello world");
-        let mut ed = SourceEditor::new();
-        ed.set_rect(Rect::new(0.0, 0.0, 400.0, 400.0));
-        ed.anchor = 0;
-        ed.caret = 6; // select "hello "
-        ed.cut_selection(&mut doc, &id, "hello world");
-        assert_eq!(doc.text(&id).unwrap(), "world", "cut removed the selection");
-        let now = doc.text(&id).unwrap();
-        ed.caret = now.chars().count();
-        ed.anchor = ed.caret;
-        ed.paste_clipboard(&mut doc, &id, &now);
-        assert_eq!(doc.text(&id).unwrap(), "worldhello ", "paste re-inserted the cut text");
+        assert_eq!(doc.text(&id).unwrap(), "hi");
     }
 
-    /// Build a Named-key press event for the editor tests.
-    fn named_key(key: NamedKey) -> WindowEvent {
-        use winit::event::DeviceId;
-        use winit::keyboard::{KeyLocation, NativeKeyCode, PhysicalKey};
-        let device_id: DeviceId = unsafe { std::mem::zeroed() };
-        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = Key::Named(key);
-        ev.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
-        ev.location = KeyLocation::Standard;
-        ev.state = ElementState::Pressed;
-        ev.repeat = false;
-        ev.text = None;
-        WindowEvent::KeyboardInput { device_id, event: ev, is_synthetic: false }
+    #[test]
+    fn goto_line_moves_the_caret_to_the_line_start() {
+        let (mut doc, id) = doc_with("one\ntwo\nthree");
+        let mut ed = SourceEditor::new();
+        ed.bind(id, &mut doc);
+        ed.goto_line("", 2);
+        assert_eq!(ed.caret(), 4, "line 2 starts just after the first newline");
     }
 }
