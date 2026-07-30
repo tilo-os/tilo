@@ -60,16 +60,35 @@ fn missing_tools() -> Vec<&'static str> {
 }
 
 /// A free TCP port `n` for which `n + 1` is also free.
+///
+/// Binding to discover a port and then releasing it is inherently racy: two tests
+/// running in parallel can be handed the same pair, and the loser's `swtpm` exits
+/// with "address already in use" while the winner's answers — so the loser's test
+/// talks to another test's TPM, or to nothing, and fails somewhere unrelated. That
+/// is exactly the sporadic, misattributed failure a safety-critical suite must not
+/// have, so the caller retries with a fresh pair and this function keeps
+/// concurrent callers inside one process away from each other.
 fn free_port_pair() -> (u16, u16) {
-    for _ in 0..64 {
+    use std::sync::atomic::{AtomicU16, Ordering};
+    static SKEW: AtomicU16 = AtomicU16::new(0);
+    let skew = SKEW.fetch_add(2, Ordering::Relaxed);
+    for attempt in 0..64u16 {
         let base = {
             let l = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
             l.local_addr().unwrap().port()
         };
-        if base == u16::MAX {
+        // Walk away from the kernel's suggestion by a per-caller amount so two
+        // threads handed adjacent ephemeral ports do not converge on one pair.
+        let base = base
+            .checked_add(skew)
+            .and_then(|b| b.checked_add(attempt * 2))
+            .unwrap_or(base);
+        if base >= u16::MAX - 1 {
             continue;
         }
-        if std::net::TcpListener::bind(("127.0.0.1", base + 1)).is_ok() {
+        let a = std::net::TcpListener::bind(("127.0.0.1", base));
+        let b = std::net::TcpListener::bind(("127.0.0.1", base + 1));
+        if a.is_ok() && b.is_ok() {
             return (base, base + 1);
         }
     }
@@ -94,6 +113,20 @@ impl Tpm {
             );
             return None;
         }
+        // Retry on a fresh port pair: a lost race shows up as an swtpm that exits
+        // immediately, and the alternative to retrying is a test that fails for a
+        // reason that has nothing to do with what it is testing.
+        let mut last = String::new();
+        for _ in 0..8 {
+            match Self::try_start() {
+                Ok(tpm) => return Some(tpm),
+                Err(why) => last = why,
+            }
+        }
+        panic!("could not start swtpm after 8 attempts; last failure: {last}");
+    }
+
+    fn try_start() -> Result<Tpm, String> {
         let state = tempfile::tempdir().expect("tempdir");
         // tpm2-tools' `swtpm:` TCTI takes ONE port and assumes the control
         // channel is at `port + 1`. Allocating two unrelated free ports produces
@@ -127,30 +160,38 @@ impl Tpm {
             ))
             .spawn()
             .expect("spawning swtpm");
-        let tpm = Tpm {
+        let mut tpm = Tpm {
             _state: state,
             port,
             child,
         };
-        // Wait for it to answer.
         let mut last = String::new();
         for _ in 0..60 {
             std::thread::sleep(std::time::Duration::from_millis(100));
-            let r = Command::new("tpm2_getcap")
+            // If it has already exited, the port pair was taken. Retrying with the
+            // same one would just lose the race again.
+            if let Ok(Some(status)) = tpm.child.try_wait() {
+                return Err(format!(
+                    "swtpm on port {port} exited ({status}): {}",
+                    std::fs::read_to_string(&log).unwrap_or_default().trim().to_string()
+                ));
+            }
+            match Command::new("tpm2_getcap")
                 .arg("properties-fixed")
                 .env("TPM2TOOLS_TCTI", tpm.tcti())
-                .output();
-            match r {
-                Ok(o) if o.status.success() => return Some(tpm),
+                .output()
+            {
+                Ok(o) if o.status.success() => return Ok(tpm),
                 Ok(o) => last = String::from_utf8_lossy(&o.stderr).into_owned(),
                 Err(e) => last = format!("could not run tpm2_getcap: {e}"),
             }
         }
-        panic!(
-            "swtpm did not become reachable on port {port}\n--- swtpm log ---\n{}\n             --- swtpm_setup log ---\n{}\n--- last probe error ---\n{last}",
+        Err(format!(
+            "swtpm on port {port} never answered.\n--- swtpm log ---\n{}\n\
+             --- swtpm_setup log ---\n{}\n--- last probe error ---\n{last}",
             std::fs::read_to_string(&log).unwrap_or_default(),
             std::fs::read_to_string(&setup_log).unwrap_or_default(),
-        );
+        ))
     }
 
     fn tcti(&self) -> String {
@@ -476,7 +517,7 @@ fn a_new_signed_prediction_restores_unlock_after_the_measurements_change() {
     let floor = f.floor(0);
     let secret = b"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     let before = f.predict(7, &f.sign_priv, "as built");
-    let token = f.seal_token(7, floor, &[before.clone()], secret, None);
+    let token = f.seal_token(7, floor, std::slice::from_ref(&before), secret, None);
     assert_eq!(
         f.try_unseal(&token, None).expect("initial").as_deref(),
         Some(&secret[..])
