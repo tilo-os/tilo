@@ -28,7 +28,7 @@ first — see [ui gaps](#ui-gaps)).
 | 2. Buttons (MED) | `Button` / `Toolbar` | **~28** (painted-rect + hit-test; 6 converted via `Button::paint`) | ebook, software_store, slides, camera |
 | 3. Modals (MED) | `ModalDialog` | **14** (6 done: monitor, containers, vpn, software_store, music, feeds) | disks, db_client, snippets |
 | 4. Other controls (MED) | `Dropdown`/`Toggle`/`Slider`/`TabBar`/`ContextMenu`/`Popover`/`Chart` | **~22** | tube, music, monitor, logs, camera |
-| 5. Hard-coded colors (LOW) | `Theme` tokens | **35** (≥1 literal) | ebook 62, word-processor 44, tube 32 |
+| 5. Hard-coded colors (LOW) | `Theme` tokens | **35** (≥1 literal); **2 genuine chrome offenders fixed** (diffmerge, sheets) — the high-count apps are already themed, their literals are document/over-media/on-accent/color-math content | ebook 62, word-processor 44, tube 32 *(all defensible — see Category 5)* |
 
 **Structural finding.** `ModalDialog` adoption is now broad after the modals
 wave (monitor, containers, vpn, software_store, music, feeds, mail, notes) — it gained
@@ -303,20 +303,55 @@ dark-mode, high-contrast, and OS-accent. Total per app (production + tests):
 | terminal | 14 (8 tests) | remote | 7 | containers | 3 |
 | | | db_client | 7 | *(≤2: themes, monitor, logs, hex_editor, file-explorer, contacts, calendar, api_tester, software_store, maps, git_client, imager, firewall, disks, music, notes, video-player)* | |
 
-**Not every literal is a violation** — triage before mass-replacing:
+**Status (this wave).** The raw counts badly over-state the debt: on close
+triage the overwhelming majority of these literals are *not* chrome. The
+app chrome (bars, panels, buttons, borders, selection, accents) is already
+theme-driven in every app checked — proven by rendering each in light **and**
+dark and confirming the whole chrome flips while only content stays put
+(`QOS_SHOTS_THEME=light|high-contrast` was added to the `--shots` renderers to
+make this repeatable). What remains hard-coded is legitimately *not* theme-tracking:
 
-- **Genuine chrome violations (fix):** `word-processor/src/widget.rs:100-112`
-  (`PAPER_DEFAULT`/`PAPER_INK`/`PAPER_SELECTION`/`PAPER_CARET` hard-coded paper
-  palette — all 44 are in this one file); `diffmerge/src/merge_view.rs:340-342`
-  (hard-coded green/blue/gray resolution colors — should read theme accents);
-  the bulk of `ebook/src/app.rs` (34).
-- **Defensible but still worth tokenizing:** drop-shadows written as
-  `from_rgba8(0,0,0,α)` (chat, maps, weather, software_store scrims) → a
-  `Theme` shadow/scrim token; domain palettes (feeds/ebook **reader themes**,
-  mail **avatar** colors, tube **thumbnail** placeholders) → theme-derived seeds.
-- **Not violations:** color-math helpers (lerp/alpha/hex-parse) in
-  `calculator/src/draw.rs`, `slides/src/model.rs`, `maps/src/draw.rs`,
-  `tube/src/contrast.rs`; `ColorPicker` seed defaults; test-only literals.
+- **Document / paper palettes** — a page authored for a light sheet with dark
+  ink: `word-processor` `PAPER_*` (documented "paper is always light" + the ink
+  is authored for it), `pdf_viewer/render.rs` `ink*()` on an always-white page
+  (`paper()` = `surfaces.window_card`), `ebook`/`feeds` **reader themes**
+  (`reader_theme.rs` — the user's Light/Sepia/Dark reading mode, deliberately
+  independent of the OS theme). These are content; forcing them to the theme
+  background would make the authored ink unreadable.
+- **Over-media overlays** — controls painted over a video / thumbnail / camera
+  frame, which must stay dark-on-light regardless of OS theme: `tube` (play /
+  duration / progress / DeArrow badges, seed-gradient thumbnails), `camera`
+  (viewfinder scrims + REC red), `chat` (video-call plates).
+- **On-accent / on-color foregrounds** — the near-white label on an accent fill
+  or the dark glyph on a saturated chip: `ebook` `248,248,252`,
+  `word-processor` `on_accent: WHITE`, `diffmerge` selected-chip ink `10,14,22`,
+  `db_client` glyph-on-type-color `20,20,20`. These stay fixed on purpose (they
+  contrast the saturated fill in every theme; flipping them to a theme neutral
+  would *invert* them and lose contrast).
+- **Color-math helpers, picker seeds, categorical / syntax palettes, test
+  literals** — `*/theme_ext.rs` + `tube/contrast.rs` + `slides/model.rs`
+  lerp/darken/hex-parse; `ColorPicker::new(seed)` defaults; `sheets`
+  formula-reference palette (documented syntax-style), `mail` avatar palette
+  (already 6/8 theme tokens + 2 categorical hues); anything under `#[cfg(test)]`.
+- **Drop-shadows / scrims** — `from_rgba8(0,0,0,α)` (ebook, sheets, chat, feeds,
+  camera, db_client, remote). Dark scrim/shadow is conventional in *both*
+  light and dark; there is no `Theme` shadow token yet, so these stay (a future
+  `Theme` shadow/scrim token could fold them in — tracked, not a blocker).
+
+**Converted this wave (genuine "frozen to one theme's token value" chrome):**
+
+| app | converted | left (defensible) |
+|---|---|---|
+| `diffmerge/src/merge_view.rs` | **6** — resolution chips (`Take/is` ours/theirs/both) were frozen to the *dark* theme's `16,185,129`/`96,165,250`/`148,163,184`; now read `semantic.success`/`semantic.info`/`text_dim` (matches the app's own `ColorClass` mapping) → chips retint in light/high-contrast | 4 — selected-chip on-color ink `10,14,22` (must stay dark on the saturated chip); 3× `with_alpha` helper |
+| `sheets/src/grid.rs` | **1** — cell-selection wash was frozen to indigo-500 `99,102,241`@α; now `colors.accent[5].with_alpha_factor(0.15)` (matches the name-box/tab accents) → selection tracks the OS accent | 12 — 4× shadow/scrim `0,0,0,α`; 7× formula-reference syntax palette (documented); 1× dynamic `from_rgb8(r,g,b)` |
+| `ebook` | 0 | 62 — reader palettes (`reader_theme.rs`), annotation/highlight content, on-accent fg, book-cover shadows, HSV picker internals, luminance-picked cover ink. Chrome already themed (proven light+dark). |
+| `word-processor` | 0 | 44 — chrome already themed via `ChromeColors::for_theme` (proven light+dark); rest is the deliberate light-paper palette + on-paper markup (comments/tracked-changes) + style palette + picker + presence + tests |
+| `tube` | 0 | 32 — over-media overlays, DeArrow/SponsorBlock brand hues, `contrast.rs`/`util.rs` color-math, tests. Chrome already themed (proven light+dark). |
+| `pdf_viewer` | 0 | 18 — document ink on the always-white page; `swatch_color` already reads theme tokens |
+| `feeds` | 0 | 16 — reader themes + one scrim + `with_alpha` helper |
+| `camera` | 0 | 12 — over-viewfinder scrims + REC red |
+| `chat` | 0 | 11 — drop-shadows + over-video-call plates |
+| `mail` / `db_client` / `slides` / `remote` | 0 | avatar palette (already tokenised) / on-color inks + scrims / color-math + picker seed / `theme_ext` color-math + tests |
 
 `code_editor`, `snippets`, `settings`, `backups`, `vpn`, `store`, `totp`, `osk`
 are color-clean (0 production literals) — good references.
@@ -470,11 +505,17 @@ gap **8** (Slider segment bands) → tube SeekBar; gap **9** (NumberInput
 drag-step) → ebook.
 
 ### Wave 6 — Theme-color reads (LOW)
-Replace genuine chrome literals with `Theme` tokens, worst-first: word-processor
-(paper palette, `widget.rs:100-112`), diffmerge (`merge_view.rs:340-342`), ebook
-(`app.rs`), pdf_viewer, feeds, camera, chat, sheets. Add `Theme` shadow/scrim
-tokens for the `from_rgba8(0,0,0,α)` cluster. Leave color-math helpers and
-test-only literals alone.
+**Largely a no-op once triaged** (see Category 5 status): the app chrome is
+already theme-driven everywhere checked (proven by light+dark shots). The only
+genuine "frozen to one theme's token value" chrome offenders were **diffmerge**
+(`merge_view.rs` resolution chips → `semantic.*`/`text_dim`) and **sheets**
+(`grid.rs` selection wash → `accent[5]`) — both **DONE**. The high-count apps
+(word-processor paper, ebook reader themes, tube over-media/brand) are document /
+over-media / on-accent / color-math content that must *not* track the OS theme;
+leave them. A future `Theme` shadow/scrim token could fold in the
+`from_rgba8(0,0,0,α)` cluster, but a dark scrim is conventional in both modes so
+it is not a violation. Leave color-math helpers, picker seeds, syntax/categorical
+palettes, and test-only literals alone.
 
 ### Wave 7 — Larger widget builds, then adopt (MED/HIGH)
 The multi-day widget work: gap **2/3** (code editor + rich-text document editor)
