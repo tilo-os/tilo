@@ -96,6 +96,21 @@ impl FrameBuilder {
         Self::from_parts(build_nirios_overlay_host_with_chrome(&tree), viewport)
     }
 
+    /// Optional theme override for offscreen `shots` capture:
+    /// `QOS_SHOTS_THEME=light|high-contrast|dark`. Unset (production) keeps the
+    /// dark default, so this is a no-op off the shots harness. Lets a
+    /// theme-driven chrome change be proven in light + high-contrast, not just
+    /// dark — the renderers under `apps/*` grew the same hook.
+    fn shots_theme_override() -> Option<Theme> {
+        let raw = std::env::var("QOS_SHOTS_THEME").ok()?;
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "light" => Some(Theme::light()),
+            "high-contrast" | "high_contrast" | "hc" => Some(Theme::high_contrast()),
+            "dark" => Some(Theme::dark()),
+            _ => None,
+        }
+    }
+
     /// Build a frame builder over a *shared* [`WorkspaceTreeHandle`],
     /// with the peer-sync palette rows on or off.
     ///
@@ -118,7 +133,7 @@ impl FrameBuilder {
         (host, chrome): (ShellOverlayHost, Chrome),
         viewport: (u32, u32),
     ) -> Self {
-        let theme = Theme::dark();
+        let theme = Self::shots_theme_override().unwrap_or_else(Theme::dark);
         let mut builder = Self {
             host,
             chrome,
