@@ -1211,29 +1211,33 @@ impl PdfApp {
         let div = Rect::new(sb.x0, sb.y0, sb.x0 + 1.0, sb.y1);
         scene.fill(Fill::NonZero, base, c.border_standard, None, &div);
 
-        // Tabs.
-        for (tab, r) in self.sidebar_tab_rects() {
-            let active = tab == self.sidebar_tab;
-            let label = match tab {
+        // Tabs — shared underline segmented control (accent underline under
+        // the active tab; label lifts to the primary colour + semibold).
+        let tab_rects = self.sidebar_tab_rects();
+        let rects: Vec<Rect> = tab_rects.iter().map(|(_, r)| *r).collect();
+        let labels: Vec<&str> = tab_rects
+            .iter()
+            .map(|(tab, _)| match tab {
                 SidebarTab::Comments => "Comments",
                 SidebarTab::Outline => "Contents",
                 SidebarTab::Signatures => "Signatures",
-            };
-            let (lw, _) = tr.measure(label, 11.5, None);
-            let col = if active { theme.text_primary } else { theme.text_dim };
-            tr.draw_text_weighted(
-                scene,
-                label,
-                11.5,
-                col,
-                base * Affine::translate(((r.x0 + r.x1) / 2.0 - lw as f64 / 2.0, vcenter(r, 11.5))),
-                None,
-                if active { TextWeight::Semibold } else { TextWeight::Regular },
-            );
-            if active {
-                let underline = Rect::new(r.x0 + 12.0, r.y1 - 2.0, r.x1 - 12.0, r.y1);
-                scene.fill(Fill::NonZero, base, theme.accent_primary, None, &underline);
-            }
+            })
+            .collect();
+        let selected = tab_rects
+            .iter()
+            .position(|(tab, _)| *tab == self.sidebar_tab)
+            .unwrap_or(0);
+        ToggleGroup::paint(
+            scene,
+            base,
+            tr,
+            theme,
+            &SegmentedFace::new(&rects, &labels, selected)
+                .style(SegmentedStyle::Underline)
+                .text_size(11.5)
+                .weight(TextWeight::Regular),
+        );
+        for (tab, r) in tab_rects {
             hits.push((SidebarHit::Tab(tab), r));
         }
         let tabs_hair = Rect::new(sb.x0, sb.y0 + 38.0 - 1.0, sb.x1, sb.y0 + 38.0);
