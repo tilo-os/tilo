@@ -4598,9 +4598,32 @@ impl Widget for ShellOverlayHost {
                         // into it, so the target group id is resolvable in
                         // the persisted tree.
                         self.harvest_widget_only_groups_into_tree();
-                        chrome
-                            .borrow_mut()
-                            .handle_file_drop_at(path, strip_id, group_id);
+                        // A file an installed app declares is *opened in
+                        // that app*, in the group the user aimed at —
+                        // through the one open path, so it arrives with
+                        // its read grant and with the file loaded. A
+                        // folder, or a type nothing claims, keeps the
+                        // placeholder-tab drop below.
+                        let owned = matches!(
+                            crate::shell::doc_open::resolve(path),
+                            crate::shell::doc_open::DocumentTarget::App { .. }
+                        );
+                        if owned {
+                            if let Err(e) =
+                                crate::shell::doc_open::open_in_group(path, &chrome, group_id)
+                            {
+                                crate::shell::doc_open::report_open_failure(
+                                    &chrome,
+                                    path,
+                                    &e.user_message(),
+                                    None,
+                                );
+                            }
+                        } else {
+                            chrome
+                                .borrow_mut()
+                                .handle_file_drop_at(path, strip_id, group_id);
+                        }
                     }
                 }
             }

@@ -930,7 +930,7 @@ pub fn display_name_for_app_id(app_id: &str) -> Option<String> {
 /// it is the package id's trailing component (`dev.qos.hello` ↔
 /// `hello`) — the same reverse-DNS convention the package ids follow.
 /// Nothing here guesses by timing.
-fn app_id_matches_package(app_id: &str, package_id: &str) -> bool {
+pub(crate) fn app_id_matches_package(app_id: &str, package_id: &str) -> bool {
     let needle = app_id.to_ascii_lowercase();
     let pid = package_id.to_ascii_lowercase();
     pid == needle || pid.rsplit('.').next() == Some(needle.as_str())
