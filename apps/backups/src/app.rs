@@ -29,7 +29,9 @@ use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::{SidebarDrawer, Widget};
+use ui::widget::{
+    SegmentedFace, SidebarDrawer, Toggle, ToggleFace, ToggleGroup, Widget,
+};
 use ui::{card_column_width, card_columns};
 
 use crate::doc::{BackupsDoc, PolicyField};
@@ -394,6 +396,15 @@ impl BackupsApp {
         let seg = Rect::new(seg_x0, cy - TAB_H / 2.0, seg_x0 + seg_total, cy + TAB_H / 2.0);
         paint::fill_rrect(scene, t, seg, 9.0, c.surfaces.raised);
         paint::stroke_rrect(scene, t, seg, 9.0, c.border_white_10, 1.0);
+        // The active tab floats as an inset pill inside the raised track; the
+        // whole strip is one shared segmented control. Abbreviate the labels
+        // once the tabs get too tight so "Destinations"/"Schedules" don't
+        // collide with their neighbours — the abbreviation is content the app
+        // owns; the pill fill + selection palette come from the shared control.
+        let narrow_tabs = tab_w < 96.0;
+        let fs = if narrow_tabs { 12.0_f32 } else { 13.5 };
+        let mut pill_rects: Vec<Rect> = Vec::with_capacity(View::ALL.len());
+        let mut labels: Vec<&str> = Vec::with_capacity(View::ALL.len());
         for (i, v) in View::ALL.iter().enumerate() {
             let tab = Rect::new(
                 seg.x0 + i as f64 * tab_w,
@@ -401,32 +412,32 @@ impl BackupsApp {
                 seg.x0 + (i as f64 + 1.0) * tab_w,
                 seg.y1,
             );
-            let active = self.ui.view == *v;
-            let hovered = self.hover == Some(Hit::Tab(*v));
-            if active {
-                let pill = Rect::new(tab.x0 + 4.0, tab.y0 + 4.0, tab.x1 - 4.0, tab.y1 - 4.0);
-                paint::fill_rrect(scene, t, pill, 7.0, theme.accent_primary);
-            } else if hovered {
-                let pill = Rect::new(tab.x0 + 4.0, tab.y0 + 4.0, tab.x1 - 4.0, tab.y1 - 4.0);
-                paint::fill_rrect(scene, t, pill, 7.0, c.surface_white_5);
-            }
-            let fg = if active { c.text_primary } else { c.text_dim };
-            // Abbreviate the labels once the tabs get too tight for full words,
-            // so "Destinations"/"Schedules" never collide with their neighbours.
-            let (label, fs) = if tab_w < 96.0 {
-                let short = match v {
+            pill_rects.push(Rect::new(tab.x0 + 4.0, tab.y0 + 4.0, tab.x1 - 4.0, tab.y1 - 4.0));
+            labels.push(if narrow_tabs {
+                match v {
                     View::Timeline => "Timeline",
                     View::Sources => "Sources",
                     View::Destinations => "Dests",
                     View::Schedules => "Policy",
-                };
-                (short, 12.0)
+                }
             } else {
-                (v.title(), 13.5)
-            };
-            paint::text_center(scene, tr, t, label, fs, fg, tab.x0, tab.x1, tab.y0 + (TAB_H - fs as f64) / 2.0);
+                v.title()
+            });
             self.hits.push((tab, Hit::Tab(*v)));
         }
+        let selected = View::ALL.iter().position(|v| self.ui.view == *v).unwrap_or(0);
+        let hovered = View::ALL.iter().position(|v| self.hover == Some(Hit::Tab(*v)));
+        ToggleGroup::paint(
+            scene,
+            t,
+            tr,
+            theme,
+            &SegmentedFace::new(&pill_rects, &labels, selected)
+                .pill()
+                .hovered(hovered)
+                .radius(7.0)
+                .text_size(fs),
+        );
     }
 
     fn draw_status_bar(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
@@ -864,13 +875,11 @@ impl BackupsApp {
             paint::dot(scene, t, Point::new(card.x0 + 16.0, card.y0 + card_h - 18.0), 3.5, Self::health_color(theme, src.health));
             paint::text(scene, tr, t, &format!("Next run {}", src.next_run), 11.5, c.text_dim, card.x0 + 28.0, card.y0 + card_h - 24.0);
 
-            // Toggle pill (enabled).
+            // Enable switch (shared Toggle look).
             let tw = 52.0;
             let tog = Rect::new(card.x1 - 22.0 - tw, card.y0 + card_h - 30.0, card.x1 - 22.0, card.y0 + card_h - 30.0 + 22.0);
             let on = src.enabled;
-            paint::fill_rrect(scene, t, tog, 11.0, if on { theme.accent_primary } else { c.neutral[3] });
-            let kx = if on { tog.x1 - 11.0 } else { tog.x0 + 11.0 };
-            paint::dot(scene, t, Point::new(kx, tog.center().y), 8.0, c.text_primary);
+            Toggle::paint(scene, t, theme, &ToggleFace::new(tog, on));
             paint::text_right(scene, tr, t, if on { "Enabled" } else { "Paused" }, 10.5, c.text_dim, tog.x0 - 8.0, tog.center().y - 5.0);
 
             self.hits.push((card, Hit::Source(Some(src.id.clone()))));
