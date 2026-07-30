@@ -15,21 +15,24 @@ use crate::shell::search::{ResourceKind, SearchContext, SearchProvider, SearchRe
 /// The `AppKind::Other` name an Editor tile carries.
 const APP: &str = "editor";
 
-/// Chip / group label for an editor document. Its own kind rather than
-/// `Note`, so the palette's filter strip names it for what it is — the
-/// strip is built from the registry, so the chip appears without any
-/// palette-side change.
-fn kind() -> ResourceKind {
-    ResourceKind::Custom("Documents".to_string())
-}
+/// An editor document rides the existing [`ResourceKind::Note`] — a
+/// document with a title, a body, and an Enter that focuses its tab is
+/// exactly what that kind describes, and the provider id is what tells
+/// the two apart where it matters (`SearchScope::ActiveApp` narrows by
+/// provider, not by kind).
+///
+/// A `Custom("Documents")` kind of its own was the first attempt, and it
+/// looked free because the chip strip is built from the registry. It is
+/// not: the strip stops painting chips before it reaches the scope
+/// switch, and at 1600 px the five existing kinds already fill it — so
+/// the new chip never appeared, which is a filter the user cannot reach.
+const KIND: ResourceKind = ResourceKind::Note;
 
-pub struct EditorProvider {
-    kinds: Vec<ResourceKind>,
-}
+pub struct EditorProvider;
 
 impl EditorProvider {
     pub fn new() -> Self {
-        Self { kinds: vec![kind()] }
+        Self
     }
 }
 
@@ -47,7 +50,7 @@ impl SearchProvider for EditorProvider {
         "Editor"
     }
     fn resource_kinds(&self) -> &[ResourceKind] {
-        &self.kinds
+        &[KIND]
     }
     fn owns_tab(&self, tab_id: u64, chrome: &ChromeState) -> bool {
         super::text_app::owns_tab_of(chrome, tab_id, APP)
@@ -58,7 +61,7 @@ impl SearchProvider for EditorProvider {
     }
 
     fn query(&self, ctx: SearchContext<'_>) -> Vec<SearchResult> {
-        super::text_app::query_text_app(&ctx, APP, BODY_KEY, "editor", kind())
+        super::text_app::query_text_app(&ctx, APP, BODY_KEY, "editor", KIND)
     }
 }
 
@@ -128,7 +131,7 @@ mod tests {
         let provider = EditorProvider::new();
         let out = provider.query(SearchContext {
             needle: "renderscene",
-            wanted: &[kind()],
+            wanted: &[KIND],
             chrome: &chrome_st,
             doc: &doc,
             doc_root: &automerge::ROOT,
@@ -163,7 +166,7 @@ mod tests {
 
         let out = EditorProvider::new().query(SearchContext {
             needle: "xylophone",
-            wanted: &[kind()],
+            wanted: &[KIND],
             chrome: &chrome_st,
             doc: &doc,
             doc_root: &automerge::ROOT,
