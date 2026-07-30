@@ -169,14 +169,12 @@ pub fn compute(upper: &Path, base: Option<&Path>) -> std::io::Result<Diff> {
             // plain host user cannot stat. Skipping them silently would
             // under-report the diff, so surface them as unknown-size additions.
             Err(e) => {
-                if let Some(p) = e.path() {
-                    if let Ok(rel) = p.strip_prefix(upper) {
-                        changes.push(Change {
-                            path: Path::new("/").join(rel),
-                            kind: ChangeKind::Added,
-                            size: None,
-                        });
-                    }
+                if let Some(rel) = e.path().and_then(|p| p.strip_prefix(upper).ok()) {
+                    changes.push(Change {
+                        path: Path::new("/").join(rel),
+                        kind: ChangeKind::Added,
+                        size: None,
+                    });
                 }
                 continue;
             }
