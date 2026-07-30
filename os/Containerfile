@@ -173,6 +173,12 @@ RUN --mount=type=cache,target=/build/.cargo-home \
           /out/ \
     && { sccache --show-stats 2>/dev/null || true; }
 
+# Read the hardening back off the linked binaries. `.cargo/config.toml` sets
+# the flags; this is what proves they survived to the artifacts this image
+# ships — a dropped linker argument or a target change is otherwise invisible
+# until someone runs readelf on a released image. Fails the build, on purpose.
+RUN /build/os/scripts/verify-elf-hardening.sh /out
+
 # ---- Bake a signed runtime bundle from THIS image's rootfs -----------------
 # Runs at image-build time so the produced OS image ships a pre-mounted
 # /usr/lib/qos-runtime/<RUNTIME_VERSION>/ that the launcher can find
@@ -513,6 +519,15 @@ COPY os/usr/lib/bootc/install/40-qos.toml /usr/lib/bootc/install/40-qos.toml
 # randomisation, page-alloc shuffle, vsyscall=none). bootc applies kargs.d at
 # install/upgrade.
 COPY os/usr/lib/bootc/kargs.d/01-hardening.toml /usr/lib/bootc/kargs.d/01-hardening.toml
+
+# Runtime tunables: no cross-process debugging, no kernel pointers or ring
+# buffer for unprivileged readers, no unprivileged BPF, no kexec, no io_uring
+# or userfaultfd, plus the /tmp symlink-race and LAN-spoofing settings. Under
+# /usr/lib because it is part of the image; /etc/sysctl.d/ with a higher number
+# still wins for a machine that needs to differ. The file's header explains why
+# unprivileged user namespaces are NOT disabled — bubblewrap, hence the whole
+# app sandbox, needs them.
+COPY os/usr/lib/sysctl.d/60-qos-hardening.conf /usr/lib/sysctl.d/60-qos-hardening.conf
 
 # hidepid on /proc + the boot self-check that ASSERTS what's actually active.
 COPY os/usr/libexec/qos-security-audit /usr/libexec/qos-security-audit
