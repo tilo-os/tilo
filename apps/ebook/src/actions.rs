@@ -248,12 +248,7 @@ mod tests {
         let mut palette = ui::ActionPalette::new();
         palette.load_open_resources(&resources);
         palette.open();
-        let labels: Vec<String> = palette
-            .palette()
-            .visible_entries()
-            .iter()
-            .map(|e| e.label.clone())
-            .collect();
+        let labels = palette.result_labels();
         assert!(labels.iter().any(|l| l.contains("Delete annotation")), "{labels:?}");
         assert!(labels.iter().any(|l| l.contains("Edit note")));
     }
@@ -271,14 +266,12 @@ mod tests {
         palette.open();
 
         let idx = palette
-            .palette()
-            .visible_entries()
+            .result_labels()
             .iter()
-            .position(|e| e.label.contains("Delete annotation"))
+            .position(|l| l.contains("Delete annotation"))
             .expect("delete row present");
-        let root = ROOT;
-        palette.palette_mut().set_cursor(idx);
-        palette.palette_mut().activate_selected(&mut doc, &root);
+        palette.set_cursor(idx);
+        palette.activate_selected();
         let mut tx = LocalTransport::new();
         let d = palette
             .take_dispatch(&mut doc, &registry(), &mut tx)
