@@ -298,12 +298,7 @@ mod tests {
         let mut palette = ui::ActionPalette::new();
         palette.load_open_resources(&resources);
         palette.open();
-        let labels: Vec<String> = palette
-            .palette()
-            .visible_entries()
-            .iter()
-            .map(|e| e.label.clone())
-            .collect();
+        let labels = palette.result_labels();
         assert!(
             labels.iter().any(|l| l.contains("Like video")),
             "palette lists the video's like action: {labels:?}"
@@ -340,14 +335,12 @@ mod tests {
         needle: &str,
     ) -> qos_actions::Dispatched {
         let idx = palette
-            .palette()
-            .visible_entries()
+            .result_labels()
             .iter()
-            .position(|e| e.label.contains(needle))
+            .position(|l| l.contains(needle))
             .unwrap_or_else(|| panic!("no palette row matching {needle:?}"));
-        let root = automerge::ROOT;
-        palette.palette_mut().set_cursor(idx);
-        palette.palette_mut().activate_selected(doc, &root);
+        palette.set_cursor(idx);
+        palette.activate_selected();
         palette
             .take_dispatch(doc, registry, transport)
             .expect("a selection was pending")
