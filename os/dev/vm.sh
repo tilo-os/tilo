@@ -3,7 +3,8 @@
 # screenshots, pull logs, and shut down. Designed for machines where qemu lives
 # in a distrobox and the host is immutable (see os/dev/_common.sh for config).
 #
-#   ./os/dev/vm.sh boot [--gl] [--disk PATH]   start the VM (detached)
+#   ./os/dev/vm.sh boot [--gl] [--disk PATH] [--tpm] [--attach PATH]
+#                                              start the VM (detached)
 #   ./os/dev/vm.sh boot-installer [--gl]       boot the custom installer + blank /dev/vdb
 #   ./os/dev/vm.sh boot-target [--gl]          boot the installed result (target.qcow2)
 #   ./os/dev/vm.sh wait                        block until the greeter is up
@@ -50,13 +51,23 @@ char_key() {
 vm_running() { [ -f "$QOS_PIDFILE" ] && inenv "kill -0 \$(cat '$QOS_PIDFILE') 2>/dev/null"; }
 
 cmd_boot() {
-  local mode=2d disk="$QOS_DISK"
+  local mode=2d disk="$QOS_DISK" attach=""
   while [ $# -gt 0 ]; do case "$1" in
     --gl) mode=gl;; --2d) mode=2d;; --window) mode=window;; --disk) disk="$2"; shift;;
     --tpm) QOS_TPM=1;; --no-tpm) QOS_TPM=0;;
+    # Attach a SECOND virtio disk (/dev/vdb), creating it blank if absent. Lets a
+    # booted image install onto a fresh disk (encryption tests) without building
+    # the installer medium.
+    --attach) attach="$2"; shift;;
     *) die "boot: unknown arg $1";; esac; shift; done
   [ -f "$disk" ] || die "disk not found: $disk (run os/dev/build-image.sh)"
   vm_running && die "VM already running (pid $(cat "$QOS_PIDFILE")); stop it first"
+  local attach_arg=""
+  if [ -n "$attach" ]; then
+    inenv "test -f '$attach' || qemu-img create -f qcow2 '$attach' '$QOS_TARGET_SIZE'" >/dev/null
+    attach_arg="-drive file=$attach,format=qcow2,if=virtio"
+    msg "attaching $attach as /dev/vdb"
+  fi
 
   local code vars rn display
   code="$(ovmf_code)"
@@ -83,7 +94,7 @@ cmd_boot() {
   local args="-machine q35,accel=kvm -enable-kvm -m $QOS_MEM -cpu host -smp $QOS_SMP \
     -drive if=pflash,format=raw,readonly=on,file=$code \
     -drive if=pflash,format=raw,file=$QOS_RUN/vars.fd \
-    -drive file=$disk,format=qcow2,if=virtio \
+    -drive file=$disk,format=qcow2,if=virtio $attach_arg \
     $display -nic user,model=virtio-net-pci,hostfwd=tcp:127.0.0.1:$QOS_SSH_PORT-:22 -usb -device usb-tablet \
     -monitor unix:$QOS_MON,server,nowait -serial file:$QOS_SERIAL \
     -pidfile $QOS_PIDFILE -name qos"
