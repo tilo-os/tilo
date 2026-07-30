@@ -125,10 +125,12 @@ impl EditorApp {
 
     /// Presence key for the editor body. Widget-level path so `text_input`-
     /// style helpers (peer caret / selection) pick it up.
-    pub(crate) fn body_presence_key() -> PresenceKey {
-        PresenceKey::Widget {
-            path: vec![PathSegment::Field(BODY_KEY.into())],
-        }
+    ///
+    /// Reads through the body because the key names the record the body
+    /// lives in: two Editor tabs are two documents, and a peer's caret
+    /// belongs to one of them.
+    pub(crate) fn body_presence_key(&self) -> PresenceKey {
+        self.body.presence_key()
     }
 }
 
@@ -505,7 +507,7 @@ impl Widget for EditorApp {
         // on top of the locally-rendered text. Char-index is mapped to
         // byte index via `char_indices` so a peer whose caret walks past
         // the text boundary simply lands at end-of-buffer.
-        let key = Self::body_presence_key();
+        let key = self.body.presence_key();
         if let Some(carets) = presence.carets.get(&key) {
             for (user, caret_char) in carets.iter() {
                 let byte_idx = self.body.char_index_to_byte(*caret_char);
@@ -722,6 +724,17 @@ impl Widget for EditorApp {
         "EditorApp"
     }
 
+    /// The record this tab's document is. Folded into the body's presence
+    /// key so a peer's caret arriving for one tab is not drawn in another
+    /// tab of the same app.
+    fn set_record_scope(&mut self, record: &ui::record::RecordId) {
+        self.body.set_record(record);
+    }
+
+    fn presence_key(&self) -> Option<ui::presence::PresenceKey> {
+        Some(self.body.presence_key())
+    }
+
     fn get_rect(&self) -> Rect {
         self.rect
     }
@@ -838,7 +851,7 @@ mod tests {
         // Stable contract: the shell seeds presence state under this
         // exact key, so a peer's caret/selection for the editor body
         // must materialise as `Widget { [Field("editor_body")] }`.
-        let key = EditorApp::body_presence_key();
+        let key = EditorApp::new().body_presence_key();
         match key {
             PresenceKey::Widget { path } => {
                 assert_eq!(path.len(), 1);
