@@ -368,27 +368,37 @@ impl QuickFS {
     /// The check every "make a new name in this directory" operation
     /// runs: `create`, `mkdir`, and the destination half of `rename`.
     ///
-    /// A parent outside the view is `ENOENT`. A name that already exists
-    /// but is outside the view is `EROFS` — refusing is the only option
-    /// that neither reveals it nor writes over it. Otherwise the new
-    /// path must be writable.
+    /// A parent outside the view is `ENOENT`. Otherwise the new path must
+    /// be writable, and **that question is asked before the name is
+    /// looked up**: a name the app may not create there gets the same
+    /// answer whether or not something is already sitting on it. Asking
+    /// the other way round turned `create` into an existence oracle —
+    /// `EROFS` for a taken name against `ENOENT` for a free one.
+    ///
+    /// Only once the app *may* create the name does a collision with
+    /// something outside the view matter, and then it is refused with
+    /// `EROFS` rather than written over. Reaching that needs a grant that
+    /// is writable but not readable, which no capability can express.
     fn check_new_name(&self, parent: u64, name: &str) -> Result<(), i32> {
         let Some((acl, identity)) = &self.enforcement else {
             return Ok(());
         };
-        let (parent_path, taken) = {
-            let mut ns = self.namespace.lock().unwrap();
-            (ns.path_for(parent), ns.lookup(parent, name).is_some())
-        };
-        let parent_path = parent_path.ok_or(ENOENT)?;
+        let parent_path = self
+            .namespace
+            .lock()
+            .unwrap()
+            .path_for(parent)
+            .ok_or(ENOENT)?;
         if !acl.visible(identity, &parent_path) {
             return Err(ENOENT);
         }
         let child = child_path(&parent_path, name);
+        self.check_path(&child, Access::Write)?;
+        let taken = self.namespace.lock().unwrap().lookup(parent, name).is_some();
         if taken && !acl.visible(identity, &child) {
             return Err(EROFS);
         }
-        self.check_path(&child, Access::Write)
+        Ok(())
     }
 
     /// The check for removing or renaming an existing name in `parent`:
