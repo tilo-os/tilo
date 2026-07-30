@@ -9,10 +9,13 @@
 
 pub mod actions;
 pub mod applications;
+pub mod editor;
 pub mod files;
 pub mod notes;
+pub mod text_app;
 
 pub use actions::ActionsProvider;
 pub use applications::ApplicationsProvider;
+pub use editor::EditorProvider;
 pub use files::FilesProvider;
 pub use notes::NotesProvider;
