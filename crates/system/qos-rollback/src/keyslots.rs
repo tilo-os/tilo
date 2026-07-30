@@ -309,21 +309,26 @@ pub fn add_generation_slot(
     device: &Path,
     authorising: &[u8],
     passphrase: &[u8],
+    pbkdf: Option<&crate::Pbkdf>,
 ) -> Result<u32> {
     let before = keyslots_in_use(runner, device)?;
     let auth_file = ws.put("auth.key", authorising)?;
     let new_file = ws.put("new.key", passphrase)?;
-    let r = require(
-        runner,
-        "cryptsetup",
-        &argv![
-            "luksAddKey", "--batch-mode",
-            "--key-file", auth_file.as_os_str(),
-            device.as_os_str(),
-            new_file.as_os_str(),
-        ],
-        "adding a generation keyslot",
-    );
+    let mut args = argv![
+        "luksAddKey", "--batch-mode",
+        "--key-file", auth_file.as_os_str(),
+    ];
+    let iters;
+    if let Some(p) = pbkdf {
+        iters = p.iterations.to_string();
+        args.push(OsStr::new("--pbkdf"));
+        args.push(OsStr::new(&p.algorithm));
+        args.push(OsStr::new("--pbkdf-force-iterations"));
+        args.push(OsStr::new(&iters));
+    }
+    args.push(device.as_os_str());
+    args.push(new_file.as_os_str());
+    let r = require(runner, "cryptsetup", &args, "adding a generation keyslot");
     let _ = std::fs::remove_file(&auth_file);
     let _ = std::fs::remove_file(&new_file);
     r?;
@@ -543,7 +548,7 @@ pub fn enroll_generation(
     let pass = new_passphrase()?;
     let (pu, pr) = seal(runner, ws, &pass, &digest, pin)?;
 
-    let slot = add_generation_slot(runner, ws, device, authorising, &pass)?;
+    let slot = add_generation_slot(runner, ws, device, authorising, &pass, cfg.pbkdf.as_ref())?;
     let token = RollbackToken::new(
         slot,
         generation,
