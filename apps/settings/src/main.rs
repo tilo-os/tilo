@@ -35,6 +35,10 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     // field keeps the caret (it is the first focusable, so focus returns to
     // it by index); without this, typing would drop focus after one letter.
     app.autofocus_on_structure_change = true;
+    // Let the Appearance pane re-scale / re-theme the running window live: the
+    // App polls the tree for the pane's appearance intent each tick and applies
+    // any change (UI scale, text size, theme, contrast, motion) immediately.
+    app.appearance_reconcile = true;
     app.run();
     Ok(())
 }

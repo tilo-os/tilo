@@ -215,6 +215,23 @@ pub(crate) fn fullscreen_request_decision(
     }
 }
 
+/// Depth-first search for the first widget in the tree that expresses an
+/// [`crate::widget::Widget::appearance_intent`]. Used by the App's live
+/// re-theme path so a settings/appearance pane nested anywhere under the root
+/// can drive the running app's global appearance without a back-channel. The
+/// first `Some` wins (a settings app has at most one appearance surface open).
+fn find_appearance_intent(w: &dyn Widget) -> Option<crate::theme::AppearanceIntent> {
+    if let Some(intent) = w.appearance_intent() {
+        return Some(intent);
+    }
+    for child in w.children() {
+        if let Some(intent) = find_appearance_intent(child) {
+            return Some(intent);
+        }
+    }
+    None
+}
+
 #[derive(Debug, Clone, Copy)]
 enum Direction { Up, Down, Left, Right }
 
@@ -268,6 +285,14 @@ pub struct App {
     /// drop the caret). Default `false`: the shell / greeter keep their
     /// existing rebuild-focus behaviour untouched.
     pub autofocus_on_structure_change: bool,
+    /// Opt-in: when set, the App polls the widget tree each tick for a
+    /// [`crate::widget::Widget::appearance_intent`] and re-themes live when the
+    /// user's global-appearance choice (theme / high-contrast / reduced-motion /
+    /// UI-scale / text-scale) changes. Off by default so apps that get their
+    /// theme pushed from the host (the shell) pay nothing and the hot path is
+    /// untouched; the Settings app turns it on so changing UI scale or text size
+    /// re-scales its own window immediately.
+    pub appearance_reconcile: bool,
     modifiers: winit::event::Modifiers,
 
     /// Recognises back/forward navigation gestures (two-finger touchpad
@@ -385,6 +410,14 @@ pub struct App {
     /// theme so every widget that reads its font size from the theme scales
     /// together; layout grows to fit so nothing clips.
     text_scale: f32,
+    /// Global UI-scale multiplier (`1.0` = default) — the user "make everything
+    /// bigger" knob. Folded into the active theme ([`Theme::with_ui_scale`]) so
+    /// spacing, radii, and the type scale all grow together. Composes on top of
+    /// the per-output device scale winit reports: widgets lay out in logical px
+    /// (already multiplied by this factor via the theme) and the render
+    /// transform then rasterises at the device's physical resolution, so the
+    /// result stays crisp at any fractional device scale.
+    ui_scale: f32,
 
     /// The fullscreen state the App last *requested* from the window (its
     /// intent). Compared against the root's
@@ -429,6 +462,7 @@ impl App {
             focusable_order: Vec::new(),
             autofocus_first: false,
             autofocus_on_structure_change: false,
+            appearance_reconcile: false,
             modifiers: winit::event::Modifiers::default(),
             last_stable_focus_idx: None,
             last_stable_metadata: None,
@@ -458,6 +492,7 @@ impl App {
             base_theme: Theme::dark(),
             a11y: crate::a11y::A11ySettings::default(),
             text_scale: 1.0,
+            ui_scale: 1.0,
             fullscreen_requested: false,
             fullscreen_active: false,
             autosave: None,
@@ -470,6 +505,7 @@ impl App {
         app.a11y.reduce_motion = Self::reduce_motion_env_enabled();
         app.a11y.screen_reader = app.screen_reader.is_some();
         app.text_scale = Self::text_scale_env().unwrap_or(1.0);
+        app.ui_scale = Self::ui_scale_env().unwrap_or(1.0);
         app.rebuild_theme();
         app
     }
@@ -479,7 +515,10 @@ impl App {
     /// any of those inputs change so widgets always draw against a theme that
     /// reflects every active preference.
     fn rebuild_theme(&mut self) {
-        self.theme = self.base_theme.clone().with_a11y(&self.a11y, self.text_scale);
+        self.theme = self
+            .base_theme
+            .clone()
+            .with_a11y(&self.a11y, self.text_scale, self.ui_scale);
     }
 
     /// Whether the environment opts the screen reader on at startup. Reads
@@ -541,6 +580,23 @@ impl App {
         None
     }
 
+    /// Global UI-scale factor from the environment (`QOS_UI_SCALE`), or `None`
+    /// if unset / unparseable. The shell mirrors the user's UI-scale preference
+    /// into spawned sandboxes via this var so an app comes up already scaled,
+    /// matching how [`Self::text_scale_env`] handles the text-size preference.
+    fn ui_scale_env() -> Option<f32> {
+        for key in ["QOS_UI_SCALE", "QOS_A11Y_UI_SCALE"] {
+            if let Ok(v) = std::env::var(key) {
+                if let Ok(f) = v.trim().parse::<f32>() {
+                    if f.is_finite() && f > 0.0 {
+                        return Some(f);
+                    }
+                }
+            }
+        }
+        None
+    }
+
     /// The active low-vision preferences (high contrast + reduced motion +
     /// screen reader). The screen-reader flag tracks
     /// [`Self::screen_reader_enabled`].
@@ -562,6 +618,25 @@ impl App {
     /// text-size preference, and by examples/tests via `QOS_A11Y_TEXT_SCALE`.
     pub fn set_text_scale(&mut self, factor: f32) {
         self.text_scale = factor;
+        self.rebuild_theme();
+        self.layout_dirty = true;
+        self.structure_dirty = true;
+    }
+
+    /// The global UI-scale multiplier currently in effect (`1.0` = default).
+    /// This is the user "make everything bigger" knob; it composes with the
+    /// per-output device scale the compositor reports.
+    pub fn ui_scale(&self) -> f32 {
+        self.ui_scale
+    }
+
+    /// Set the global UI-scale multiplier and re-theme. Spacing, radii, and the
+    /// type scale all grow together on the next frame ([`Theme::with_ui_scale`]),
+    /// and layout is marked dirty so the whole interface re-flows live. Used by
+    /// the shell when the user changes the UI-scale preference, and by
+    /// examples/tests via `QOS_UI_SCALE`.
+    pub fn set_ui_scale(&mut self, factor: f32) {
+        self.ui_scale = factor;
         self.rebuild_theme();
         self.layout_dirty = true;
         self.structure_dirty = true;
@@ -889,6 +964,54 @@ impl App {
         self.needs_sync = true;
         self.layout_dirty = true;
         true
+    }
+
+    /// Reconcile the widget tree's desired global appearance with the live
+    /// theme. When [`Self::appearance_reconcile`] is enabled, the App walks the
+    /// tree for an [`crate::widget::Widget::appearance_intent`] and applies any
+    /// field that differs from what is currently in effect — the base colour
+    /// theme, the high-contrast / reduced-motion tracks, the global UI scale,
+    /// and the text scale — then re-themes and marks layout dirty so the whole
+    /// interface re-scales/re-colours on the next frame. Level-triggered and
+    /// idempotent: a no-op on the common frame where the user's choice is
+    /// unchanged. Returns `true` iff anything changed.
+    ///
+    /// Kept split out (and driven off the shared field state) so the reconcile
+    /// decision is unit-testable without a live winit window.
+    pub(crate) fn reconcile_appearance(&mut self) -> bool {
+        if !self.appearance_reconcile {
+            return false;
+        }
+        let Some(intent) = find_appearance_intent(self.root_widget.as_ref()) else {
+            return false;
+        };
+        let mut changed = false;
+        if intent.base_theme.name != self.base_theme.name {
+            self.base_theme = intent.base_theme;
+            changed = true;
+        }
+        if intent.high_contrast != self.a11y.high_contrast {
+            self.a11y.high_contrast = intent.high_contrast;
+            changed = true;
+        }
+        if intent.reduce_motion != self.a11y.reduce_motion {
+            self.a11y.reduce_motion = intent.reduce_motion;
+            changed = true;
+        }
+        if (intent.text_scale - self.text_scale).abs() > f32::EPSILON {
+            self.text_scale = intent.text_scale;
+            changed = true;
+        }
+        if (intent.ui_scale - self.ui_scale).abs() > f32::EPSILON {
+            self.ui_scale = intent.ui_scale;
+            changed = true;
+        }
+        if changed {
+            self.rebuild_theme();
+            self.layout_dirty = true;
+            self.structure_dirty = true;
+        }
+        changed
     }
 
     /// Hit-test the widget tree at `point` (logical coords) and return the
@@ -2462,12 +2585,14 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                         let node_map = &app.node_map;
                         let text_renderer = &mut app.text_renderer;
                         let t0 = std::time::Instant::now();
+                        let (logical_w, logical_h) =
+                            crate::scale::logical_size((width, height), scale_factor as f64);
                         app.taffy
                             .compute_layout_with_measure(
                                 root_node,
                                 taffy::Size {
-                                    width: AvailableSpace::Definite((width as f32) / scale_factor),
-                                    height: AvailableSpace::Definite((height as f32) / scale_factor),
+                                    width: AvailableSpace::Definite(logical_w as f32),
+                                    height: AvailableSpace::Definite(logical_h as f32),
                                 },
                                 |known, available, node_id, _, _| {
                                     if let Some(&widget_ptr) = node_map.get(&node_id) {
@@ -2495,7 +2620,11 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                 }
 
                 let t_draw_start = if perf { Some(std::time::Instant::now()) } else { None };
-                let transform = Affine::scale(scale_factor as f64);
+                // Composite the whole logical scene at the per-output device
+                // scale. Widget rects are logical; Vello rasterises glyphs and
+                // strokes at the physical resolution this transform implies, so
+                // the frame is crisp at any fractional scale (see `crate::scale`).
+                let transform = crate::scale::composite_transform(scale_factor as f64);
                 // Initialise the spatial-culling viewport to the
                 // entire window in *logical* coords (the App's
                 // transform applies a scale_factor at composite
@@ -2504,12 +2633,8 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                 // their child recursion. Restored to `None` after
                 // draw so the bench's offscreen renderer paths
                 // aren't accidentally bound to a stale viewport.
-                let window_rect = vello::kurbo::Rect::new(
-                    0.0,
-                    0.0,
-                    (width as f64) / (scale_factor as f64),
-                    (height as f64) / (scale_factor as f64),
-                );
+                let (vp_w, vp_h) = crate::scale::logical_size((width, height), scale_factor as f64);
+                let window_rect = vello::kurbo::Rect::new(0.0, 0.0, vp_w, vp_h);
                 let prev_vp = app.presence_ctx.push_viewport(window_rect);
                 // No GPU damage clip: vello allocates a fresh `target_texture`
                 // per frame, so any `scene.push_layer` clipping out the static
@@ -3335,6 +3460,16 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         // (and observe compositor-driven fullscreen changes). Level-triggered
         // and idempotent — a no-op on the common frame where nothing changed.
         if app.reconcile_fullscreen(&window) {
+            window.request_redraw();
+        }
+
+        // Reconcile a live global-appearance change (theme / high-contrast /
+        // reduced-motion / UI-scale / text-scale) surfaced by an appearance
+        // pane, so the running app re-scales/re-colours immediately. Opt-in via
+        // `appearance_reconcile`; a cheap no-op otherwise. When it applies a
+        // change it marks layout + structure dirty, so pump a redraw.
+        if app.reconcile_appearance() {
+            app.needs_sync = true;
             window.request_redraw();
         }
 
@@ -4663,6 +4798,134 @@ mod low_vision_tests {
         assert_eq!(a.text_scale(), 1.25);
         // High contrast still wins over the freshly-set light base.
         assert_eq!(a.theme.name, "High Contrast");
+    }
+
+    #[test]
+    fn ui_scale_setter_grows_spacing_radii_and_type_together() {
+        let mut a = app();
+        let base_gap = a.theme.tokens.spacing.s3;
+        let base_radius = a.theme.tokens.radii.md;
+        let base_type = a.theme.tokens.typography.scale.base;
+        a.set_ui_scale(1.5);
+        assert_eq!(a.ui_scale(), 1.5);
+        assert!((a.theme.tokens.spacing.s3 - base_gap * 1.5).abs() < 1e-3, "spacing grows");
+        assert!((a.theme.tokens.radii.md - base_radius * 1.5).abs() < 1e-3, "radii grow");
+        assert!((a.theme.tokens.typography.scale.base - base_type * 1.5).abs() < 1e-3, "type grows");
+        // A UI-scale change must re-run layout so the whole interface re-flows.
+        assert!(a.layout_dirty);
+    }
+
+    #[test]
+    fn ui_scale_and_text_scale_compose_on_the_live_theme() {
+        let mut a = app();
+        let base_type = a.theme.tokens.typography.scale.base;
+        let base_gap = a.theme.tokens.spacing.s3;
+        a.set_ui_scale(1.25);
+        a.set_text_scale(1.2);
+        assert_eq!(a.ui_scale(), 1.25);
+        assert_eq!(a.text_scale(), 1.2);
+        // Type picks up BOTH factors; spacing only the UI factor.
+        assert!((a.theme.tokens.typography.scale.base - base_type * 1.25 * 1.2).abs() < 1e-2);
+        assert!((a.theme.tokens.spacing.s3 - base_gap * 1.25).abs() < 1e-2);
+    }
+
+    #[test]
+    fn ui_scale_survives_a_high_contrast_toggle() {
+        let mut a = app();
+        a.set_ui_scale(1.5);
+        let hc_gap = Theme::high_contrast().tokens.spacing.s3;
+        a.set_high_contrast(true);
+        assert_eq!(a.ui_scale(), 1.5, "UI-scale preference is preserved across the swap");
+        assert!((a.theme.tokens.spacing.s3 - hc_gap * 1.5).abs() < 1e-2);
+        assert_eq!(a.theme.name, "High Contrast");
+    }
+
+    /// A minimal root that expresses a fixed [`AppearanceIntent`], so the App's
+    /// live re-theme reconcile can be exercised without a window.
+    struct AppearanceRoot {
+        intent: crate::theme::AppearanceIntent,
+    }
+
+    impl Widget for AppearanceRoot {
+        fn sync(&mut self, _s: &mut automerge::AutoCommit, _p: &automerge::ObjId) {}
+        fn build_layout(
+            &mut self,
+            taffy: &mut TaffyTree<()>,
+            _theme: &Theme,
+            node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
+        ) -> NodeId {
+            let node = taffy.new_leaf(taffy::Style::default()).unwrap();
+            node_map.insert(node, self as *mut dyn Widget);
+            node
+        }
+        fn apply_layout(&mut self, _t: &TaffyTree<()>, _n: NodeId, _o: Point) {}
+        fn draw(
+            &mut self,
+            _scene: &mut Scene,
+            _transform: Affine,
+            _tr: &mut TextRenderer,
+            _theme: &Theme,
+            _p: &crate::presence::PresenceCtx,
+        ) {}
+        #[allow(clippy::too_many_arguments)]
+        fn handle_event(
+            &mut self,
+            _e: &WindowEvent,
+            _sf: f64,
+            _m: &winit::event::Modifiers,
+            _s: &mut automerge::AutoCommit,
+            _r: &automerge::ObjId,
+            _h: &mut bool,
+            _ft: &mut Option<NodeId>,
+            _n: NodeId,
+            _t: &TaffyTree<()>,
+        ) {}
+        fn appearance_intent(&self) -> Option<crate::theme::AppearanceIntent> {
+            Some(self.intent.clone())
+        }
+        fn name(&self) -> &str { "AppearanceRoot" }
+        fn get_rect(&self) -> vello::kurbo::Rect { vello::kurbo::Rect::ZERO }
+    }
+
+    fn intent(theme: Theme, ui_scale: f32, text_scale: f32, high_contrast: bool) -> crate::theme::AppearanceIntent {
+        crate::theme::AppearanceIntent {
+            base_theme: theme,
+            high_contrast,
+            reduce_motion: false,
+            text_scale,
+            ui_scale,
+        }
+    }
+
+    #[test]
+    fn appearance_reconcile_off_is_a_noop() {
+        let root = AppearanceRoot { intent: intent(Theme::nord(), 1.5, 1.3, true) };
+        let mut a = App::new(State::new(), Box::new(root));
+        // Default: appearance_reconcile is off, so the intent is ignored.
+        assert!(!a.reconcile_appearance());
+        assert_eq!(a.theme.name, "Dark");
+        assert_eq!(a.ui_scale(), 1.0);
+    }
+
+    #[test]
+    fn appearance_reconcile_applies_scale_theme_and_contrast_live() {
+        let base_gap = Theme::high_contrast().tokens.spacing.s3;
+        let base_type = Theme::high_contrast().tokens.typography.scale.base;
+        // Nord base + high_contrast=true → high-contrast track wins; ui 1.5, text 1.2.
+        let root = AppearanceRoot { intent: intent(Theme::nord(), 1.5, 1.2, true) };
+        let mut a = App::new(State::new(), Box::new(root));
+        a.appearance_reconcile = true;
+        assert!(a.reconcile_appearance(), "first reconcile applies the intent");
+        assert_eq!(a.ui_scale(), 1.5);
+        assert_eq!(a.text_scale(), 1.2);
+        assert!(a.high_contrast());
+        assert_eq!(a.theme.name, "High Contrast", "high_contrast overrides the Nord base");
+        // Spacing grew by the UI factor; type by UI × text.
+        assert!((a.theme.tokens.spacing.s3 - base_gap * 1.5).abs() < 1e-1);
+        assert!((a.theme.tokens.typography.scale.base - base_type * 1.5 * 1.2).abs() < 1e-1);
+        assert!(a.layout_dirty, "a live appearance change re-runs layout");
+        // Steady intent → second reconcile is a no-op (level-triggered).
+        assert!(!a.reconcile_appearance(), "unchanged intent does not re-theme");
     }
 }
 

@@ -33,7 +33,7 @@
 //!                "keyboard_layout": "us" },
 //!   "updates": { "auto": true, "channel": "Stable", "last_checked": "Never" },
 //!   "appearance": { "theme": "Dark", "high_contrast": false,
-//!                   "reduce_motion": false, "text_scale": 1.0 },
+//!                   "reduce_motion": false, "text_scale": 1.0, "ui_scale": 1.0 },
 //!   "notifications": { "do_not_disturb": false, "show_banners": true,
 //!                      "show_previews": true, "play_sounds": true,
 //!                      "show_on_lock_screen": false },
@@ -266,8 +266,25 @@ pub struct AppearancePrefs {
     pub high_contrast: bool,
     /// Snap animations to their resting state instead of easing.
     pub reduce_motion: bool,
-    /// UI text-size multiplier (`1.0` = default). Clamped on apply.
+    /// UI text-size multiplier (`1.0` = default). Scales *type only*. Clamped
+    /// on apply.
     pub text_scale: f64,
+    /// Global UI-scale multiplier (`1.0` = default) — the "make everything
+    /// bigger" knob. Scales the *whole* design system (spacing, radii, and the
+    /// type scale) together via [`ui::Theme::with_ui_scale`]. Composes on top of
+    /// the per-output fractional device scale the compositor reports, and text
+    /// additionally picks up `text_scale`. Clamped on apply. Defaults to `1.0`,
+    /// and a settings file written before this field existed loads as `1.0`
+    /// (serde `default`), so older configs keep their look.
+    #[serde(default = "default_ui_scale")]
+    pub ui_scale: f64,
+}
+
+/// Serde default for [`AppearancePrefs::ui_scale`] so a config written before
+/// the field existed deserialises to the neutral `1.0` rather than failing the
+/// whole section.
+fn default_ui_scale() -> f64 {
+    1.0
 }
 
 impl Default for AppearancePrefs {
@@ -277,6 +294,7 @@ impl Default for AppearancePrefs {
             high_contrast: false,
             reduce_motion: false,
             text_scale: 1.0,
+            ui_scale: 1.0,
         }
     }
 }
@@ -298,7 +316,11 @@ impl AppearancePrefs {
         } else {
             theme_by_name(&self.theme)
         };
-        base.with_text_scale(self.text_scale as f32)
+        // UI scale grows the whole system first; text scale then layers extra
+        // type growth on top. Both fold into the same theme the compositor and
+        // every app draw against.
+        base.with_ui_scale(self.ui_scale as f32)
+            .with_text_scale(self.text_scale as f32)
             .with_reduce_motion(self.reduce_motion)
     }
 }
@@ -620,6 +642,7 @@ mod tests {
         p.appearance.high_contrast = true;
         p.appearance.reduce_motion = true;
         p.appearance.text_scale = 1.25;
+        p.appearance.ui_scale = 1.15;
         p.notifications.do_not_disturb = true;
         p.notifications.show_previews = false;
         p.accessibility.large_cursor = true;
@@ -671,6 +694,37 @@ mod tests {
     }
 
     #[test]
+    fn ui_scale_folds_into_the_resolved_theme_and_composes_with_text_scale() {
+        let base = ui::Theme::dark();
+        let base_gap = base.tokens.spacing.s3;
+        let base_type = base.tokens.typography.scale.base;
+        let p = AppearancePrefs {
+            theme: "Dark".into(),
+            high_contrast: false,
+            reduce_motion: false,
+            text_scale: 1.2,
+            ui_scale: 1.25,
+        };
+        let theme = p.resolve_theme();
+        assert_eq!(theme.ui_scale, 1.25, "UI scale folds in");
+        assert_eq!(theme.text_scale, 1.2, "text scale folds in");
+        // Spacing grows by the UI factor only; type by UI × text.
+        assert!((theme.tokens.spacing.s3 - base_gap * 1.25).abs() < 1e-2);
+        assert!((theme.tokens.typography.scale.base - base_type * 1.25 * 1.2).abs() < 1e-2);
+    }
+
+    #[test]
+    fn config_without_ui_scale_loads_as_neutral() {
+        // A settings file written before ui_scale existed must load with the
+        // field defaulted to 1.0 rather than failing the appearance section.
+        let json = r#"{"appearance":{"theme":"Nord","high_contrast":false,"reduce_motion":false,"text_scale":1.15}}"#;
+        let p = SystemPrefs::from_json(json);
+        assert_eq!(p.appearance.theme, "Nord", "the section still parses");
+        assert_eq!(p.appearance.ui_scale, 1.0, "missing ui_scale defaults to neutral");
+        assert_eq!(p.appearance.text_scale, 1.15);
+    }
+
+    #[test]
     fn appearance_defaults_and_resolves_to_a_real_theme() {
         let p = AppearancePrefs::default();
         assert_eq!(p.theme, "Dark");
@@ -690,6 +744,7 @@ mod tests {
             high_contrast: false,
             reduce_motion: true,
             text_scale: 1.5,
+            ui_scale: 1.0,
         };
         let theme = p.resolve_theme();
         assert_eq!(theme.name, "Nord", "the named preset is applied");
@@ -704,6 +759,7 @@ mod tests {
             high_contrast: true,
             reduce_motion: false,
             text_scale: 1.0,
+            ui_scale: 1.0,
         };
         // high_contrast wins over the named preset.
         assert_eq!(p.resolve_theme().name, "High Contrast");

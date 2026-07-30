@@ -41,9 +41,52 @@ pub struct Theme {
     /// sizes, grows to fit so text never clips. Kept here too so a widget can
     /// scale a size it computes itself (a hard-coded glyph metric, say).
     pub text_scale: f32,
+    /// Global UI-scale multiplier applied to the WHOLE design system — spacing,
+    /// radii, and the type scale all grow together — so the entire interface
+    /// gets larger or smaller as one unit (the "make everything bigger" knob,
+    /// distinct from [`Theme::text_scale`] which only touches type). `1.0` is
+    /// the default. Baked into `tokens.spacing`, `tokens.radii`,
+    /// `tokens.typography.scale`, and `font_size_base` by
+    /// [`Theme::with_ui_scale`], and reflected in the legacy
+    /// `padding`/`gap`/`radius` shortcuts, so every widget that sources its
+    /// metrics from the theme scales with no per-widget plumbing.
+    ///
+    /// This is the **user** scale; it composes on top of the per-output
+    /// **device** scale the compositor reports (widgets lay out in logical
+    /// px and the render transform rasterises at the device's physical
+    /// resolution). Effective physical size = logical × `ui_scale` ×
+    /// device-scale, and text additionally × `text_scale`.
+    pub ui_scale: f32,
 }
 
 impl Default for Theme { fn default() -> Self { Self::dark() } }
+
+/// A widget's desired global appearance, polled by [`crate::app::App`] once per
+/// frame (when [`crate::app::App::appearance_reconcile`] is enabled) and
+/// reconciled against the live theme. Mirrors the level-triggered
+/// `fullscreen_intent` contract: returning a *steady* value is correct and
+/// idempotent — the App only re-themes when a field actually differs from what
+/// is currently applied, and a settings pane surfaces the user's live choice by
+/// returning the same intent every frame while it is open.
+///
+/// `base_theme` is the colour theme **only** (no high-contrast track, no
+/// scale folded); the App applies the high-contrast override, the UI scale, and
+/// the text scale on top so the a11y and scale bookkeeping stays in one place.
+#[derive(Clone, Debug)]
+pub struct AppearanceIntent {
+    /// Base colour theme, unscaled and without the a11y track folded in — e.g.
+    /// [`Theme::nord`]. The App layers high-contrast / scale on top itself.
+    pub base_theme: Theme,
+    /// Force the high-contrast accessibility palette.
+    pub high_contrast: bool,
+    /// Snap animations to their resting state.
+    pub reduce_motion: bool,
+    /// Text-size multiplier (type only). `1.0` = default.
+    pub text_scale: f32,
+    /// Global UI-scale multiplier (spacing + radii + type together). `1.0` =
+    /// default.
+    pub ui_scale: f32,
+}
 
 impl Theme {
     fn from_tokens(name: &str, tokens: Tokens) -> Self {
@@ -66,6 +109,7 @@ impl Theme {
             gap_standard: tokens.spacing.s3,
             reduce_motion: false,
             text_scale: 1.0,
+            ui_scale: 1.0,
             tokens,
         }
     }
@@ -193,17 +237,82 @@ impl Theme {
         self
     }
 
+    /// Return this theme scaled uniformly by a global **UI scale** factor
+    /// (`1.0` = unchanged): spacing, radii, the type scale, and the base body
+    /// size are all multiplied together, so the entire interface grows or
+    /// shrinks as one unit. This is the user-facing "make everything bigger /
+    /// smaller" knob, distinct from [`Theme::with_text_scale`] which only
+    /// resizes type.
+    ///
+    /// The legacy `padding_standard` / `gap_standard` / `radius_standard`
+    /// shortcuts are re-derived from the freshly scaled tokens so widgets that
+    /// still read those keep in step. `radii.full` (the pill sentinel) is left
+    /// alone — a fully-round corner stays fully round at any scale.
+    ///
+    /// Clamped to a sane range so a stray setting can't collapse the layout or
+    /// blow it up. Call once on a fresh theme; it is not assumed idempotent on
+    /// top of an already-scaled theme.
+    pub fn with_ui_scale(mut self, factor: f32) -> Self {
+        let factor = factor.clamp(0.5, 3.0);
+        self.ui_scale = factor;
+
+        let sp = &mut self.tokens.spacing;
+        sp.s0 *= factor;
+        sp.s1 *= factor;
+        sp.s2 *= factor;
+        sp.s3 *= factor;
+        sp.s4 *= factor;
+        sp.s6 *= factor;
+        sp.s8 *= factor;
+        sp.s12 *= factor;
+        sp.s16 *= factor;
+
+        let r = &mut self.tokens.radii;
+        r.sm *= factor;
+        r.md *= factor;
+        r.lg *= factor;
+        r.xl *= factor;
+        // `full` is a "make it a pill" sentinel, not a real length — leave it.
+
+        let scale = &mut self.tokens.typography.scale;
+        scale.xs *= factor;
+        scale.sm *= factor;
+        scale.base *= factor;
+        scale.lg *= factor;
+        scale.xl *= factor;
+        scale.x2l *= factor;
+        scale.x3l *= factor;
+        scale.x4l *= factor;
+
+        self.tokens.font_size_base *= factor;
+
+        // Keep the legacy shortcuts consistent with the scaled tokens.
+        self.radius_standard = self.tokens.radii.md as f64;
+        self.padding_standard = self.tokens.spacing.s3;
+        self.gap_standard = self.tokens.spacing.s3;
+
+        self
+    }
+
     /// Apply the user's low-vision preferences to this theme: pick the
-    /// high-contrast colour track when requested, fold in the text-scale
-    /// factor, and carry the reduced-motion flag. One call turns a base theme
-    /// into the themed surface every widget should draw against.
-    pub fn with_a11y(self, settings: &crate::a11y::A11ySettings, text_scale: f32) -> Self {
+    /// high-contrast colour track when requested, fold in the global UI-scale
+    /// and text-scale factors (UI scale first so it grows the whole system,
+    /// then text scale layers additional type growth on top), and carry the
+    /// reduced-motion flag. One call turns a base theme into the themed surface
+    /// every widget should draw against.
+    pub fn with_a11y(
+        self,
+        settings: &crate::a11y::A11ySettings,
+        text_scale: f32,
+        ui_scale: f32,
+    ) -> Self {
         let base = if settings.high_contrast {
             Self::high_contrast()
         } else {
             self
         };
-        base.with_text_scale(text_scale)
+        base.with_ui_scale(ui_scale)
+            .with_text_scale(text_scale)
             .with_reduce_motion(settings.reduce_motion)
     }
 }
@@ -310,7 +419,7 @@ mod tests {
             reduce_motion: true,
             screen_reader: false,
         };
-        let theme = Theme::dark().with_a11y(&settings, 2.0);
+        let theme = Theme::dark().with_a11y(&settings, 2.0, 1.0);
         // High-contrast colours.
         assert_eq!(theme.name, "High Contrast");
         assert!(contrast_ratio(theme.text_primary, theme.bg_app) >= 7.0);
@@ -325,10 +434,68 @@ mod tests {
     fn with_a11y_all_off_keeps_base_colours() {
         use crate::a11y::A11ySettings;
         let off = A11ySettings::default();
-        let theme = Theme::dark().with_a11y(&off, 1.0);
+        let theme = Theme::dark().with_a11y(&off, 1.0, 1.0);
         assert_eq!(theme.name, "Dark", "no high contrast → keep the base theme");
         assert!(!theme.reduce_motion);
         assert_eq!(theme.text_scale, 1.0);
+        assert_eq!(theme.ui_scale, 1.0);
+    }
+
+    #[test]
+    fn ui_scale_multiplies_spacing_radii_and_type_together() {
+        let base = Theme::dark();
+        let bs = base.tokens.spacing.s3;
+        let br = base.tokens.radii.md;
+        let bt = base.tokens.typography.scale.base;
+        let bfull = base.tokens.radii.full;
+
+        let scaled = Theme::dark().with_ui_scale(1.5);
+        assert_eq!(scaled.ui_scale, 1.5);
+        assert!((scaled.tokens.spacing.s3 - bs * 1.5).abs() < 1e-4, "spacing grows");
+        assert!((scaled.tokens.radii.md - br * 1.5).abs() < 1e-4, "radii grow");
+        assert!((scaled.tokens.typography.scale.base - bt * 1.5).abs() < 1e-4, "type grows");
+        // The pill sentinel is left untouched — still fully round.
+        assert_eq!(scaled.tokens.radii.full, bfull, "radii.full is a sentinel, not scaled");
+        // Legacy shortcuts track the scaled tokens.
+        assert!((scaled.padding_standard - bs * 1.5).abs() < 1e-4, "padding shortcut tracks spacing");
+        assert!((scaled.radius_standard - (br as f64) * 1.5).abs() < 1e-4, "radius shortcut tracks radii");
+    }
+
+    #[test]
+    fn ui_scale_of_one_is_identity() {
+        let base = Theme::dark();
+        let same = Theme::dark().with_ui_scale(1.0);
+        assert_eq!(same.ui_scale, 1.0);
+        assert_eq!(same.tokens.spacing.s3, base.tokens.spacing.s3);
+        assert_eq!(same.tokens.typography.scale.base, base.tokens.typography.scale.base);
+    }
+
+    #[test]
+    fn ui_scale_is_clamped_to_a_sane_range() {
+        assert!(Theme::dark().with_ui_scale(0.0).ui_scale >= 0.5);
+        assert!(Theme::dark().with_ui_scale(100.0).ui_scale <= 3.0);
+    }
+
+    #[test]
+    fn ui_scale_and_text_scale_compose_on_type() {
+        // UI scale grows the whole system; text scale layers extra type growth
+        // on top — so a heading ends up at base × ui × text, while spacing only
+        // picks up the UI factor (not the text factor).
+        let base = Theme::dark();
+        let base_type = base.tokens.typography.scale.base;
+        let base_gap = base.tokens.spacing.s3;
+
+        let composed = Theme::dark().with_ui_scale(1.25).with_text_scale(1.2);
+        assert_eq!(composed.ui_scale, 1.25);
+        assert_eq!(composed.text_scale, 1.2);
+        assert!(
+            (composed.tokens.typography.scale.base - base_type * 1.25 * 1.2).abs() < 1e-3,
+            "type = base × ui × text",
+        );
+        assert!(
+            (composed.tokens.spacing.s3 - base_gap * 1.25).abs() < 1e-3,
+            "spacing only picks up the UI factor, not text",
+        );
     }
 
     #[test]

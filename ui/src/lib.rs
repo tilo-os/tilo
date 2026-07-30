@@ -65,6 +65,7 @@ pub mod render_thread;
 pub mod warmup;
 pub mod webview;
 pub mod fullscreen;
+pub mod scale;
 pub mod mpris;
 pub mod format;
 pub mod nav_stack;
@@ -86,7 +87,7 @@ pub use reader_hud::{HudAction, HudSwatch, MarkerDrag, ReaderHudStyle, Selection
 pub use color_compat::ColorCompat;
 pub use doc::{TextEdit, put_if_changed, put_text_diffed, splice_text_diffed};
 pub use state::{State, UndoEntry};
-pub use theme::Theme;
+pub use theme::{AppearanceIntent, Theme};
 pub use image_store::{Fetcher, ImageStore};
 pub use nav_stack::{EdgeSwipeBack, NavAction, NavStack};
 pub use portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
