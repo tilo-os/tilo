@@ -2243,6 +2243,7 @@ mod command_path_tests {
         let mut w = FileExplorerWidget::new();
         w.navigate(d.path().to_path_buf());
 
+        use automerge::ReadDoc;
         let mut doc = automerge::AutoCommit::new();
         let root = automerge::ROOT;
         // First seed creates the object; measure growth from there.
@@ -2634,10 +2635,11 @@ mod command_path_tests {
 
 #[cfg(test)]
 mod responsive_body_tests {
-    //! The places list + file view are unified onto the shared responsive
-    //! `NavShell`: a comfortably-wide window docks them side by side; a narrow
-    //! window collapses to a single pane (places → tap a place → the file view
-    //! pushes in with a Back arrow). Drives the real production path
+    //! The places list is a *navigation* sidebar over the file view, on the
+    //! shared `NavShell`: a comfortably-wide window docks it beside the files;
+    //! a narrow window turns it into an overlay drawer over them. The file
+    //! list is the content at every width — it is never pushed off the window
+    //! to make room for the list of places. Drives the real production path
     //! (`build_layout` → `apply_layout` at a size, then `handle_event`).
     use super::*;
     use std::collections::HashMap;
@@ -2760,47 +2762,107 @@ mod responsive_body_tests {
         assert_eq!(h.w.debug_body_mode(), ShellMode::Wide);
     }
 
+    /// The regression: at ~600 px the window showed the breadcrumb and the
+    /// FAVOURITES / SYSTEM list and **no files at all**, while the footer
+    /// underneath read "27 items". The places list had been declared a content
+    /// overview, so the narrow layout promoted it to the full-screen page and
+    /// pushed the file view off the window.
     #[test]
-    fn narrow_navigation_pushes_the_file_view_then_escape_returns() {
+    fn narrow_shows_the_files_not_the_places_list() {
+        let dir = tempfile::tempdir().unwrap();
+        for i in 0..5 {
+            std::fs::write(dir.path().join(format!("f{i}.txt")), b"x").unwrap();
+        }
+        let mut h = H::new(Some(dir.path()), 600.0, 720.0);
+        assert_eq!(h.w.debug_body_mode(), ShellMode::Narrow);
+
+        assert!(
+            !h.w.debug_places_open(),
+            "the places drawer starts closed, so the files are what you see",
+        );
+        let content = h.w.debug_content_rect();
+        assert_eq!(
+            content.width(),
+            600.0,
+            "the file view must span the whole narrow window; got {content:?}",
+        );
+        assert!(
+            content.x0 >= 0.0 && content.x1 <= 600.0,
+            "and must be inside the window, not pushed off it: {content:?}",
+        );
+    }
+
+    /// The drawer draws *over* the files rather than displacing them, and the
+    /// files stay full-width behind it (HIG §1a).
+    #[test]
+    fn narrow_places_drawer_overlays_the_files_without_displacing_them() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.txt"), b"x").unwrap();
+        let mut h = H::new(Some(dir.path()), 600.0, 720.0);
+        let before = h.w.debug_content_rect();
+
+        h.w.debug_open_places_drawer();
+        h.lay_out(600.0, 720.0);
+        h.w.debug_open_places_drawer();
+        assert!(h.w.debug_places_open(), "the drawer is revealed");
+        assert_eq!(
+            h.w.debug_content_rect(),
+            before,
+            "the file view must not move or shrink when the drawer opens",
+        );
+    }
+
+    /// Picking a destination in the narrow drawer dismisses it, leaving the
+    /// user on the files they navigated to.
+    #[test]
+    fn narrow_navigation_dismisses_the_drawer_and_leaves_the_files_showing() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir(dir.path().join("sub")).unwrap();
         let mut h = H::new(Some(dir.path()), 520.0, 720.0);
         assert_eq!(h.w.debug_body_mode(), ShellMode::Narrow);
-        assert!(!h.w.debug_detail_shown(), "narrow starts on the places list");
+        h.w.debug_open_places_drawer();
+        assert!(h.w.debug_places_open());
 
-        // A place-navigation (what tapping a place in the list emits) must push
-        // the file view in. Inject the command the places list pushes, then
-        // pump an event so `handle_event` drains it + applies the push wiring.
+        // A place-navigation (what tapping a place in the list emits). Inject
+        // the command the places list pushes, then pump an event so
+        // `handle_event` drains it and applies the dismissal wiring.
         crate::command::push(&h.w.cmds, FileCommand::Navigate(dir.path().join("sub")));
         h.cursor(10.0, 10.0);
         assert_eq!(h.w.current_path(), dir.path().join("sub"), "the navigation applied");
         assert!(
-            h.w.debug_detail_shown(),
-            "narrow navigation pushes the file view in over the places list"
+            !h.w.debug_places_open(),
+            "navigating dismisses the drawer so the files are what remains",
         );
-
-        // Escape pops back to the places list (NavShell self-routes it).
-        h.escape();
-        assert!(
-            !h.w.debug_detail_shown(),
-            "Escape returns from the file view to the places list"
+        assert_eq!(
+            h.w.debug_content_rect().width(),
+            520.0,
+            "and the file view still owns the whole window",
         );
     }
 
     #[test]
-    fn wide_navigation_keeps_both_panes_abreast() {
+    fn wide_docks_the_places_list_beside_the_files() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir(dir.path().join("sub")).unwrap();
         let mut h = H::new(Some(dir.path()), 1200.0, 720.0);
         assert_eq!(h.w.debug_body_mode(), ShellMode::Wide);
+        assert!(h.w.debug_places_open(), "wide docks the places list open");
+
+        let content = h.w.debug_content_rect();
+        assert_eq!(
+            content.x1, 1200.0,
+            "the file view runs to the window's right edge",
+        );
+        assert!(
+            content.x0 > 0.0,
+            "and starts after the docked places list: {content:?}",
+        );
 
         crate::command::push(&h.w.cmds, FileCommand::Navigate(dir.path().join("sub")));
         h.cursor(10.0, 10.0);
-        // Wide keeps both panes shown; there is no separate pushed screen, so
-        // the detail is not treated as a pushed pane.
         assert!(
-            !h.w.debug_detail_shown(),
-            "the wide layout shows both panes; navigation does not push a separate screen"
+            h.w.debug_places_open(),
+            "wide navigation leaves the docked list in place — nothing to dismiss",
         );
     }
 }
