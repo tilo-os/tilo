@@ -933,6 +933,22 @@ mod tests {
         let key = RecordId::for_file("/work/../../etc/shadow").storage_key();
         assert!(!key.contains('/'), "key {key} must name one directory");
         assert!(!key.contains(".."), "key {key} must not traverse");
+
+        // Two documents whose paths agree far past the readable part of the
+        // key are still two documents. A key that only sanitises, without
+        // hashing the whole identity, would hand them one file — and one
+        // file for two documents is the loss records exist to prevent.
+        let deep_a = RecordId::for_file(
+            "/work/clients/northwind/2026/contracts/final/appendix-a.odt",
+        );
+        let deep_b = RecordId::for_file(
+            "/work/clients/northwind/2026/contracts/final/appendix-b.odt",
+        );
+        assert_ne!(
+            deep_a.storage_key(),
+            deep_b.storage_key(),
+            "two long paths sharing a prefix must not share a file"
+        );
     }
 
     #[test]
