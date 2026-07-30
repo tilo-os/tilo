@@ -35,14 +35,20 @@ refuses its own boot artefacts. `qos-secureboot enroll` therefore refuses unless
 
 1. the keys exist,
 2. **every** artefact the firmware will check already verifies against `db`,
-3. `qos-secureboot-sign.service` is enabled, so the next OS update cannot stage a
-   kernel that nothing signs, and
+3. `qos-secureboot-sign.path` and `.service` are enabled, so the next OS update
+   cannot stage a kernel that nothing signs, and
 4. the firmware is in **setup mode** — which is the only state that accepts these
    writes, and a state the owner has to reach deliberately.
 
 `sign` is safe at any time: a signature on an artefact the firmware is not
 checking is inert. That asymmetry is why the signing side ships enabled and the
 enrolling side does not.
+
+The path unit is the one that matters in practice. It watches `/boot/ostree`, so
+a hand-run `bootc upgrade` gets its new kernel signed immediately rather than at
+the next boot — which would be the boot the firmware refuses. One gap remains:
+`bootupctl update` replaces the loaders on the ESP with unsigned copies, and
+nothing watches the ESP, so run `qos-secureboot sign` after it.
 
 ```bash
 # On the machine, before touching firmware setup:
