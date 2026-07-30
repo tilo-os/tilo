@@ -192,10 +192,10 @@ fn pump_drains_pending_grant_after_choice() {
     let tree = st.tree();
     let ws = tree.active_workspace().expect("active workspace");
     assert!(
-        ws.grants().get("org.example.app").is_none(),
+        ws.app_grants_snapshot().get("org.example.app").is_none(),
         "Once doesn't persist on the workspace's grants map — \
          got: {:?}",
-        ws.grants().get("org.example.app"),
+        ws.app_grants_snapshot().get("org.example.app"),
     );
 }
 
@@ -225,7 +225,7 @@ fn pump_persists_session_grant_to_workspace_grants_map() {
     assert!(st.pending_grants.is_empty(), "queue must drain");
     let tree = st.tree();
     let ws = tree.active_workspace().expect("active workspace");
-    let view = ws.grants();
+    let view = ws.app_grants_snapshot();
     let caps = view
         .get("org.example.app")
         .expect("Session click must persist a grant on the active workspace");
@@ -277,7 +277,7 @@ fn pump_persists_always_grant_with_filesystem_capability() {
     let st = chrome.borrow();
     let tree = st.tree();
     let ws = tree.active_workspace().expect("active workspace");
-    let view = ws.grants();
+    let view = ws.app_grants_snapshot();
     let caps = view.get("org.gnome.gedit").expect("grant persisted");
     assert_eq!(caps.len(), 1);
     assert!(
@@ -321,9 +321,9 @@ fn pump_deny_drops_pending_grant_without_persisting() {
     let tree = st.tree();
     let ws = tree.active_workspace().expect("active workspace");
     assert!(
-        ws.grants().get("org.example.app").is_none(),
+        ws.app_grants_snapshot().get("org.example.app").is_none(),
         "Deny must not persist any grant — got {:?}",
-        ws.grants().get("org.example.app"),
+        ws.app_grants_snapshot().get("org.example.app"),
     );
 }
 
