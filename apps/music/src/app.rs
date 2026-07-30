@@ -24,7 +24,11 @@ use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::context_menu::{ContextMenu, MenuItem};
-use ui::widget::{SidebarDrawer, SplitLayout, TextInput, Widget};
+use ui::widget::{ModalDialog, PromptBody, SidebarDrawer, SplitLayout, TextInput, Widget};
+use std::cell::Cell;
+use std::rc::Rc;
+use winit::event::{ElementState, WindowEvent};
+use winit::keyboard::{Key, NamedKey};
 use ui::ImageStore;
 
 use crate::art;
@@ -378,10 +382,14 @@ pub struct MusicApp {
     /// queue view (so "Remove from queue" can target it).
     ctx_queue_index: Option<usize>,
 
-    /// An inline name-input overlay (create / rename playlist). When `Some`,
-    /// keystrokes edit `name_input`; Enter commits the captured intent.
+    /// A name-input overlay (create / rename playlist). When `Some`, a shared
+    /// [`ModalDialog`] hosting a real [`TextInput`] is up; `name_input` carries
+    /// the committed value into the `CreatePlaylist` / `CommitRename` handlers.
     name_prompt: Option<NamePrompt>,
     name_input: String,
+    /// The live name-prompt dialog, built lazily from `name_prompt` +
+    /// `name_input` and torn down when it resolves.
+    name_dialog: Option<NameDlg>,
 
     /// Cached lyrics for the current track + the id they were fetched for, so
     /// the lyrics view doesn't re-resolve every frame.
@@ -490,6 +498,15 @@ enum NamePrompt {
     Rename(String),
 }
 
+/// The live name-prompt dialog: the shared [`ModalDialog`] hosting a real
+/// [`PromptBody`]/[`TextInput`] plus the submit / cancel cells its footer
+/// buttons flip (drained each event by the host).
+struct NameDlg {
+    dialog: ModalDialog<PromptBody>,
+    submit: Rc<Cell<bool>>,
+    cancel: Rc<Cell<bool>>,
+}
+
 impl MusicApp {
     pub fn new() -> Self {
         // Optional initial-view override, used by `--shots` to capture
@@ -571,6 +588,7 @@ impl MusicApp {
             ctx_queue_index: None,
             name_prompt: None,
             name_input: String::new(),
+            name_dialog: None,
             lyrics: Vec::new(),
             lyrics_for: None,
             lyrics_synced: false,
@@ -1279,6 +1297,134 @@ impl MusicApp {
         }
     }
 
+    // --- name-prompt dialog (shared ModalDialog + real TextInput) --------
+
+    /// Build the name-prompt dialog from `name_prompt` + the staged
+    /// `name_input` (which seeds the field for a rename or a `--shots` frame).
+    fn ensure_name_dialog(&mut self) {
+        if self.name_dialog.is_some() {
+            return;
+        }
+        let Some(kind) = self.name_prompt.clone() else { return };
+        let (title, primary) = match kind {
+            NamePrompt::NewPlaylist => ("New playlist", "Create"),
+            NamePrompt::Rename(_) => ("Rename playlist", "Save"),
+        };
+        let body = PromptBody::new("", "Playlist name").with_initial(&self.name_input);
+        let submit = Rc::new(Cell::new(false));
+        let cancel = Rc::new(Cell::new(false));
+        let dialog = ModalDialog::new(title, body)
+            .open(true)
+            .with_max_size(420.0, 190.0)
+            .primary_action(primary, {
+                let s = submit.clone();
+                move || s.set(true)
+            })
+            .secondary_action("Cancel", {
+                let c = cancel.clone();
+                move || c.set(true)
+            })
+            .on_dismiss({
+                let c = cancel.clone();
+                move || c.set(true)
+            });
+        self.name_dialog = Some(NameDlg { dialog, submit, cancel });
+    }
+
+    /// Lay the name-prompt dialog out against the app rect so its box + footer
+    /// buttons resolve for hit-testing and paint.
+    fn layout_name_dialog(&mut self) {
+        if self.rect.width() <= 0.0 || self.rect.height() <= 0.0 {
+            return;
+        }
+        let rect = self.rect;
+        let Some(nd) = self.name_dialog.as_mut() else { return };
+        let theme = Theme::dark();
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let node = nd.dialog.build_layout(&mut taffy, &theme, &mut node_map);
+        let root = taffy
+            .new_with_children(
+                Style {
+                    size: Size {
+                        width: Dimension::length(rect.width() as f32),
+                        height: Dimension::length(rect.height() as f32),
+                    },
+                    ..Default::default()
+                },
+                &[node],
+            )
+            .unwrap();
+        let _ = taffy.compute_layout(
+            root,
+            Size {
+                width: taffy::AvailableSpace::Definite(rect.width() as f32),
+                height: taffy::AvailableSpace::Definite(rect.height() as f32),
+            },
+        );
+        nd.dialog.apply_layout(&taffy, node, Point::new(rect.x0, rect.y0));
+    }
+
+    /// Route an event into the open name-prompt dialog, then apply the flags its
+    /// callbacks set (Enter is a submit convenience).
+    fn route_name_event(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: &winit::event::Modifiers,
+        state: &mut AutoCommit,
+        handled: &mut bool,
+    ) {
+        let enter = matches!(
+            event,
+            WindowEvent::KeyboardInput { event: ke, .. }
+                if ke.state == ElementState::Pressed
+                    && matches!(ke.logical_key, Key::Named(NamedKey::Enter))
+        );
+        if enter {
+            self.submit_name_prompt(state);
+            *handled = true;
+            self.dirty = true;
+            return;
+        }
+        self.ensure_name_dialog();
+        self.layout_name_dialog();
+        let (submit, cancel) = {
+            let Some(nd) = self.name_dialog.as_mut() else { return };
+            let mut taffy: TaffyTree<()> = TaffyTree::new();
+            let node = taffy.new_leaf(Style::default()).unwrap();
+            let mut ft = None;
+            nd.dialog.handle_event(
+                event, scale_factor, modifiers, state, &automerge::ROOT, handled, &mut ft, node,
+                &taffy,
+            );
+            (nd.submit.replace(false), nd.cancel.replace(false))
+        };
+        if submit {
+            self.submit_name_prompt(state);
+        } else if cancel {
+            self.dispatch(Action::CloseNamePrompt, state);
+        }
+        *handled = true;
+        self.dirty = true;
+    }
+
+    /// Copy the field value into `name_input` and dispatch the commit action.
+    fn submit_name_prompt(&mut self, state: &mut AutoCommit) {
+        let value = self
+            .name_dialog
+            .as_ref()
+            .map(|nd| nd.dialog.content().value().to_string())
+            .unwrap_or_default();
+        self.name_input = value;
+        let commit = match self.name_prompt.clone() {
+            Some(NamePrompt::NewPlaylist) => Action::CreatePlaylist,
+            Some(NamePrompt::Rename(id)) => Action::CommitRename(id),
+            None => Action::None,
+        };
+        self.dispatch(commit, state);
+    }
+
     fn dispatch(&mut self, action: Action, state: &mut AutoCommit) {
         self.dirty = true;
         match action {
@@ -1559,12 +1705,14 @@ impl MusicApp {
             Action::BeginNewPlaylist => {
                 self.name_prompt = Some(NamePrompt::NewPlaylist);
                 self.name_input = String::new();
+                self.name_dialog = None;
                 self.new_playlist_track = None;
                 self.search_input.set_focus(false);
             }
             Action::BeginNewPlaylistFor(track) => {
                 self.name_prompt = Some(NamePrompt::NewPlaylist);
                 self.name_input = String::new();
+                self.name_dialog = None;
                 self.new_playlist_track = Some(track);
                 self.search_input.set_focus(false);
             }
@@ -1584,6 +1732,7 @@ impl MusicApp {
                 self.reload_library(state);
                 self.name_prompt = None;
                 self.name_input.clear();
+                self.name_dialog = None;
                 self.nav_back.push(self.view.clone());
                 self.view = View::Playlist(id);
                 self.scroll = 0.0;
@@ -1600,6 +1749,7 @@ impl MusicApp {
                 self.name_input =
                     self.lib.playlist(&id).map(|p| p.name.clone()).unwrap_or_default();
                 self.name_prompt = Some(NamePrompt::Rename(id));
+                self.name_dialog = None;
                 self.search_input.set_focus(false);
             }
             Action::CommitRename(id) => {
@@ -1610,6 +1760,7 @@ impl MusicApp {
                 }
                 self.name_prompt = None;
                 self.name_input.clear();
+                self.name_dialog = None;
             }
             Action::DeletePlaylist(id) => {
                 doc::delete_playlist(state, &id);
@@ -1666,6 +1817,7 @@ impl MusicApp {
             Action::CloseNamePrompt => {
                 self.name_prompt = None;
                 self.name_input.clear();
+                self.name_dialog = None;
                 self.new_playlist_track = None;
             }
             Action::None => {}
@@ -2395,6 +2547,7 @@ impl MusicApp {
             ShotStage::NewPlaylistPrompt => {
                 self.name_prompt = Some(NamePrompt::NewPlaylist);
                 self.name_input = "Late Night Coding".to_string();
+                self.name_dialog = None;
             }
             ShotStage::Skeleton => {
                 // Force the loading state offline so the shimmer skeleton renders
@@ -4340,14 +4493,23 @@ mod tests {
     #[test]
     fn name_prompt_typing_and_enter_creates_playlist() {
         let (mut app, mut doc) = app_with_doc();
+        // A real rect so the shared dialog lays out and its embedded field can
+        // take keystrokes (keyboard is forwarded only after `place_content`).
+        app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
         app.dispatch(Action::BeginNewPlaylist, &mut doc);
         assert!(matches!(app.name_prompt, Some(NamePrompt::NewPlaylist)));
+        // Typing routes through the shared ModalDialog into the real TextInput.
         for ch in ["J", "a", "z", "z"] {
             send(&mut app, &char_key(ch), &mut doc);
         }
-        assert_eq!(app.name_input, "Jazz");
+        assert_eq!(
+            app.name_dialog.as_ref().unwrap().dialog.content().value(),
+            "Jazz",
+            "keystrokes land in the dialog's embedded TextInput",
+        );
         send(&mut app, &named_key(NamedKey::Enter), &mut doc);
         assert!(app.name_prompt.is_none(), "Enter commits and closes the prompt");
+        assert!(app.name_dialog.is_none(), "the dialog is torn down after commit");
         let pl = app
             .lib
             .playlists
