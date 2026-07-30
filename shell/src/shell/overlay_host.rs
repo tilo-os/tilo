@@ -10392,7 +10392,7 @@ mod tests {
             "the hit must reach the palette's own rows: {:?}",
             h.host
                 .palette
-                .entries()
+                .visible_entries()
                 .iter()
                 .map(|e| (&e.label, &e.description))
                 .collect::<Vec<_>>()
