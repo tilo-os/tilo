@@ -186,6 +186,17 @@ pub enum NeighbourMsg {
         /// Cluster id from the originating Hello. Second half of the
         /// routing key.
         cluster_id: String,
+        /// Record id from the originating Hello — which *document*
+        /// these changes belong to, empty for an app whose state is
+        /// still one document per `(app, cluster)`.
+        ///
+        /// Carried on the wire because the receiving shell routes on
+        /// it: without it a peer's per-document deltas would arrive
+        /// unattributed and land in whichever document the receiving
+        /// app happened to have open. `#[serde(default)]` so a frame
+        /// from a peer that predates records still parses.
+        #[serde(default)]
+        record_id: String,
         /// Opaque Automerge incremental change blob, passed through
         /// untouched.
         data: Vec<u8>,
@@ -224,6 +235,11 @@ pub enum NeighbourMsg {
         /// routing key; same backward-compatible default.
         #[serde(default)]
         cluster_id: String,
+        /// Record id of the originating document — the third
+        /// component of the routing key. Same backward-compatible
+        /// default; empty means the sender announced no record.
+        #[serde(default)]
+        record_id: String,
         /// The signed-op envelope. The validator on the receiving
         /// shell consults its channel state to decide whether to
         /// fan the payload out to local apps or to drop it with an
@@ -459,6 +475,7 @@ mod tests {
             peer: 0xABCDEF,
             app_id: "terminal".into(),
             cluster_id: "00000000-0000-0000-0000-000000000000".into(),
+            record_id: "file:/work/report.odt".into(),
             data: vec![0x01, 0x02, 0x03, 0x04],
         });
     }
@@ -492,6 +509,7 @@ mod tests {
             peer: 0xABCDEF,
             app_id: "notes".to_string(),
             cluster_id: "11111111-2222-3333-4444-555555555555".to_string(),
+            record_id: "uuid:1c2f".to_string(),
             envelope: dummy_envelope(),
         });
     }
@@ -507,6 +525,7 @@ mod tests {
             peer: 0x1234,
             app_id: "notes".to_string(),
             cluster_id: "11111111-2222-3333-4444-555555555555".to_string(),
+            record_id: "uuid:1c2f".to_string(),
             envelope: dummy_envelope(),
         };
         let bytes = postcard::to_allocvec(&msg).expect("postcard serialize");
