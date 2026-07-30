@@ -28,7 +28,9 @@ use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::{SidebarDrawer, TextInput, Widget};
+use ui::widget::{
+    SegmentedFace, SidebarDrawer, TextInput, Toggle, ToggleFace, ToggleGroup, Widget,
+};
 
 use crate::backend::{Backend, Mode};
 use crate::doc::FirewallDoc;
@@ -1082,16 +1084,7 @@ fn trust_color(theme: &Theme, trust: u8) -> Color {
 }
 
 fn draw_toggle(scene: &mut Scene, t: Affine, theme: &Theme, rect: Rect, on: bool) {
-    let track_color = if on {
-        theme.accent_primary
-    } else {
-        theme.tokens.colors.neutral[3]
-    };
-    paint::fill_rrect(scene, t, rect, rect.height() / 2.0, track_color);
-    let kr = rect.height() / 2.0 - 3.0;
-    let cy = (rect.y0 + rect.y1) / 2.0;
-    let cx = if on { rect.x1 - kr - 3.0 } else { rect.x0 + kr + 3.0 };
-    paint::dot(scene, t, Point::new(cx, cy), kr, Color::WHITE);
+    Toggle::paint(scene, t, theme, &ToggleFace::new(rect, on));
 }
 
 impl FirewallApp {
@@ -1105,22 +1098,15 @@ impl FirewallApp {
         labels: &[&str],
         selected: usize,
     ) {
-        for (i, rect) in rects.iter().enumerate() {
-            let cell = *rect;
-            let sel = i == selected;
-            let bg = if sel {
-                theme.accent_primary
-            } else {
-                theme.tokens.colors.neutral[2]
-            };
-            let body = Rect::new(cell.x0 + 1.0, cell.y0, cell.x1 - 1.0, cell.y1);
-            paint::fill_rrect(scene, t, body, 7.0, bg);
-            let fg = if sel { Color::WHITE } else { theme.text_dim };
-            let label = labels.get(i).copied().unwrap_or("");
-            let w = paint::text_width(tr, label, 13.0);
-            let x = cell.x0 + (cell.width() - w) / 2.0;
-            paint::label_v(tr, scene, t, label, 13.0, fg, x, cell.y0, cell.height(), w + 2.0);
-        }
+        // Shared segmented control: contiguous rects render as one themed
+        // strip (accent-selected + separators + border) via `ToggleGroup::paint`.
+        ToggleGroup::paint(
+            scene,
+            t,
+            tr,
+            theme,
+            &SegmentedFace::new(rects, labels, selected).radius(7.0),
+        );
     }
 
     fn draw_app(
