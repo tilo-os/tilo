@@ -94,6 +94,77 @@ fn bootstrap_single_device_seed_round_trips_via_dalek() {
 }
 
 #[test]
+fn single_device_seed_reconstructs_the_same_identity() {
+    // The persistence round-trip the on-disk identity record depends
+    // on: export the seed, rebuild from it, and the rebuilt identity
+    // must carry the same public key and produce signatures that
+    // verify against it.
+    let mut rng = fixed_rng();
+    let id = ThresholdIdentity::bootstrap_single_device(&mut rng).unwrap();
+    let seed = id.single_device_seed().expect("1-of-1 identity exports a seed");
+
+    let back = ThresholdIdentity::from_single_device_seed(&seed);
+    assert_eq!(back.group_public_key, id.group_public_key);
+    assert!(back.is_single_device());
+
+    let payload: Vec<u8> = b"reconstructed signer".to_vec();
+    let sig = back.sign(&payload, &mut rng).unwrap();
+    verify_event(&payload, &sig, &id.group_public_key)
+        .expect("a rebuilt identity must sign under the original public key");
+}
+
+#[test]
+fn single_device_seed_is_the_dalek_seed_the_disk_record_stores() {
+    // The bytes handed out for persistence must be the bytes
+    // `ed25519_dalek::SigningKey::from_bytes` expands back into the
+    // *same* key — this is the exact property a frost signing scalar
+    // cannot satisfy, and the one whose absence made ceremony-minted
+    // identities unable to sign for themselves.
+    let mut rng = fixed_rng();
+    let id = ThresholdIdentity::bootstrap_single_device(&mut rng).unwrap();
+    let seed = id.single_device_seed().unwrap();
+
+    let dalek = ed25519_dalek::SigningKey::from_bytes(&seed);
+    assert_eq!(
+        &dalek.verifying_key().to_bytes(),
+        id.group_public_key.as_bytes(),
+        "the exported seed must derive the identity's own public key"
+    );
+
+    // …and a signature made by the dalek-side key verifies through
+    // the identity's public key, which is what every app that loads
+    // the record does.
+    use ed25519_dalek::Signer;
+    let payload: Vec<u8> = b"disk round-trip".to_vec();
+    let canon = canonical_bytes(&payload).unwrap();
+    let sig = collab_types::Signature::from_bytes(dalek.sign(&canon).to_bytes());
+    verify_event(&payload, &sig, &id.group_public_key).expect("dalek-signed op must verify");
+}
+
+#[test]
+fn threshold_mode_exports_no_single_device_seed() {
+    // A threshold identity has no whole secret to hand out. The
+    // accessor must say so rather than inventing bytes.
+    let mut rng_a = ChaCha20Rng::from_seed([21u8; 32]);
+    let mut rng_b = ChaCha20Rng::from_seed([22u8; 32]);
+    let mut a = ThresholdIdentity::bootstrap_single_device(&mut rng_a).unwrap();
+    let mut b = ThresholdIdentity::bootstrap_single_device(&mut rng_b).unwrap();
+
+    let (mut s_a, r1_a) = a.begin_enrolment(1, 2, 2, &mut rng_a).unwrap();
+    let (mut s_b, r1_b) = b.begin_enrolment(2, 2, 2, &mut rng_b).unwrap();
+    let r2_a_out = s_a.receive_round1(std::slice::from_ref(&r1_b)).unwrap();
+    let r2_b_out = s_b.receive_round1(std::slice::from_ref(&r1_a)).unwrap();
+    s_a.receive_round2(&[r2_b_out[&1].clone()]).unwrap();
+    s_b.receive_round2(&[r2_a_out[&2].clone()]).unwrap();
+    a.adopt_dkg_outcome(s_a).unwrap();
+    b.adopt_dkg_outcome(s_b).unwrap();
+
+    assert!(!a.is_single_device());
+    assert_eq!(a.single_device_seed(), None);
+    assert_eq!(b.single_device_seed(), None);
+}
+
+#[test]
 fn threshold_signing_calls_error_in_single_device_mode() {
     // The round-1 / round-2 API doesn't apply when the identity
     // is in single-device mode — there is no second signer.
