@@ -25,7 +25,7 @@ first — see [ui gaps](#ui-gaps)).
 | Category | Canonical widget | Apps affected | Worst offenders |
 |---|---|---|---|
 | 1. Text input (HIGH) | `TextInput` / `SearchField` / `NumberInput` / `EditableLabel` | **23** | db_client, imager, pdf_viewer, chat, maps, mail |
-| 2. Buttons (MED) | `Button` / `Toolbar` | **~28** (painted-rect + hit-test) | ebook, software_store, slides, camera, monitor |
+| 2. Buttons (MED) | `Button` / `Toolbar` | **~28** (painted-rect + hit-test; 6 converted via `Button::paint`) | ebook, software_store, slides, camera |
 | 3. Modals (MED) | `ModalDialog` | **14** (6 done: monitor, containers, vpn, software_store, music, feeds) | disks, db_client, snippets |
 | 4. Other controls (MED) | `Dropdown`/`Toggle`/`Slider`/`TabBar`/`ContextMenu`/`Popover`/`Chart` | **~22** | tube, music, monitor, logs, camera |
 | 5. Hard-coded colors (LOW) | `Theme` tokens | **35** (≥1 literal) | ebook 62, word-processor 44, tube 32 |
@@ -33,7 +33,8 @@ first — see [ui gaps](#ui-gaps)).
 **Structural finding.** `ModalDialog` adoption is now broad after the modals
 wave (monitor, containers, vpn, software_store, music, feeds, mail, notes) — it gained
 `with_destructive` (danger primary) and a shared `PromptBody` text-entry body.
-Only nine apps import `Button`. `Slider` is
+Nine apps mount the retained `Button`; the buttons wave added an immediate-mode
+`Button::paint` face now shared by six more (see Category 2). `Slider` is
 used by two apps, `SearchField` by one. Toggle adoption is good. So the debt is
 overwhelmingly concentrated in **text input, buttons, and modals**, and a large
 share of the buttons/modals is the *same* anti-pattern copied across apps: a
@@ -111,10 +112,47 @@ has none; hex_editor's search/goto are flagged above).
 Nearly universal anti-pattern: a painted rect (often collected into a private
 `Vec<(Action, Rect)>` "hit list") tested with `.contains()`. Misses hover/press/
 focus states, Space/Enter activation, a11y role, and `Theme` colors. **Zero
-`ui::Button` in db_client, api_tester, git_client, diffmerge, logs, monitor,
-ebook, tube, music, camera, video_editor, sheets, typst_editor, snippets, disks,
-containers, firewall, vpn, remote, backups, imager, software_store, calculator,
-slides.** Representative helpers:
+`ui::Button` in git_client, logs, ebook, tube, music, camera, video_editor,
+sheets, typst_editor, disks, containers, firewall, vpn, remote, backups, imager,
+software_store, calculator, slides.** Representative helpers:
+
+**Status (this wave):** the standard apps are monolithic *immediate-mode*
+widgets — a single leaf `Widget` that paints its whole surface and hit-tests
+its own rects — so they can't mount the retained `ui::Button` without a
+tree rewrite. To convert them cleanly the toolkit gained an **immediate-mode
+button face**, `ui::widget::Button::paint(&ButtonFace)` (extended, not forked:
+`face_colors` is now the one source of truth for the fill/border/label palette
+per interaction state, shared by the retained widget's look, the file-picker
+footer, and every converted app). `ButtonFace` builds fluently —
+neutral/primary/danger style, hover/press/focus/disabled state, radius, weight,
+leading icon. Apps keep their existing rect hit-test (which already fires the
+action) and now paint the themed, stateful face instead of a hand-rolled rect,
+gaining real hover/press feedback and one consistent button look. Converted:
+**api_tester** (Send), **snippets** (action toolbar + expand Copy/Cancel),
+**db_client** (connect-modal Cancel/Save), **video-player** (floating Open
+pill), **monitor** (detail Stop/Kill, incl. the danger style), **diffmerge**
+(toolbar Open/Load/Next/Prev). Keyboard/AT activation and per-button a11y nodes
+remain bounded by these apps' monolithic immediate-mode architecture (a separate
+retained-tree refactor), not by the button primitive.
+
+Left for later, with the reason each isn't a clean face-swap:
+- **git_client** hunk stage/unstage/discard — a *ghost* style (translucent at
+  rest, accent/danger fill only on hover); needs a `Ghost`/tinted face variant.
+- **notes** new-page chip — a borderless accent-tint icon chip; same ghost gap.
+- **logs** narrow-mode Back — a bespoke translucent pill with a left-aligned
+  chevron (not centred); ghost variant + leading-icon alignment.
+- **backups** "Back up now" — carries a progress sliver + custom `+` glyph; a
+  custom surface, not a plain button.
+- **imager** footer primary — bespoke per-state styling (lightens on hover,
+  muted-danger at rest, flat-grey disabled) that diverges from the shared face
+  on several states; its neutral Back is convertible but the pair is left
+  together.
+
+Out of scope for the Buttons wave (custom interactive surfaces, not action
+buttons): the merge take-ours/theirs/both regions in **diffmerge**
+(`merge_view.rs`), the segmented mode control in diffmerge's toolbar (a Tabs/
+segmented job — Wave 5a), and the painted **calculator** keypad grid (a keypad
+widget, tracked separately).
 
 | file:symbol | app | evidence | ui alt | effort | risk |
 |---|---|---|---|---|---|
@@ -126,23 +164,23 @@ slides.** Representative helpers:
 | `apps/tube/src/widgets/flex.rs:318` `Flex::on_click` | tube | app-wide clickable container (~20 sites); hover+press but no keyboard/focus/a11y | `Button` | L | MED |
 | `apps/software_store/src/app.rs:1362` `fn pill_button` + `BtnStyle` enum | software_store | every install/open/update/back action | `Button` | L | MED |
 | `apps/slides/src/app.rs:271` `struct UiButton{rect,kind,hit}` | slides | every toolbar/inspector button painted + hit-listed | `Button`/`Toolbar` | L | MED |
-| `apps/monitor/src/app.rs:1986` `draw_action_button` | monitor | kill/stop actions | `Button` | M | MED |
-| `apps/db_client/src/connect_modal.rs:50` `cancel_btn`/`save_btn` | db_client | painted rects + manual hit-test | `Button` | M | MED |
+| `apps/monitor/src/app.rs:1986` `draw_action_button` | monitor ✅ | kill/stop actions | `Button` | M | MED |
+| `apps/db_client/src/connect_modal.rs:50` `cancel_btn`/`save_btn` | db_client ✅ | painted rects + manual hit-test | `Button` | M | MED |
 | `apps/git_client/src/diffview.rs:354` `draw_hunk_button` | git_client | stage/unstage/discard hunk buttons | `Button` | M | MED |
-| `apps/diffmerge/src/merge_view.rs:340` take-ours/theirs/both, `app.rs:293` toolbar | diffmerge | painted colored rects, hit-tested `:482` | `Button`/`Toolbar` | M | MED |
+| `apps/diffmerge/src/merge_view.rs:340` take-ours/theirs/both, `app.rs:293` toolbar | diffmerge ✅ (toolbar) | painted colored rects, hit-tested `:482` | `Button`/`Toolbar` | M | MED |
 | `apps/calculator/src/keypad.rs:245` `key_rects` | calculator | painted keypad grid + manual hit-test | `Button` grid (+ keypad widget gap) | L | MED |
 | `apps/sheets/src/app.rs:83` `MenuButton`, `:201` `fx_rect` | sheets | File/Format/Σ menu-bar + fx affordance | `Button`/`Toolbar` | M | MED |
 | `apps/disks/src/app.rs:2047` whole-disk + action pills | disks | painted pills hit-tested | `Button` | M | MED |
 | `apps/vpn/src/app.rs:554` add/connect/footer, `apps/remote/src/app.rs:1438` rail | vpn, remote | `LayoutRects`/`push_hit` painted button rects | `Button` | M | MED |
 | `apps/imager/src/app.rs:421` wizard back/primary | imager | painted rects hit-tested | `Button` | M | MED |
-| `apps/api_tester/src/app.rs:808` `send_label` | api_tester | hand-painted Send button | `Button` | S | MED |
+| `apps/api_tester/src/app.rs:808` `send_label` | api_tester ✅ | hand-painted Send button | `Button` | S | MED |
 | `apps/logs/src/app.rs:873` `draw_back_button` | logs | narrow-mode nav back | `Button` | S | MED |
 | `apps/word-processor/src/widget.rs:2463` `find_buttons`, `:5685` `recovery_buttons` | word-processor | find/replace + recovery-banner painted rects | `Button` | M | MED |
-| `apps/snippets/src/app.rs:1545` `toolbar_button`, `expand.rs:249` copy/cancel | snippets | painted rect + hover-only hit-test | `Button` | S | MED |
+| `apps/snippets/src/app.rs:1545` `toolbar_button`, `expand.rs:249` copy/cancel | snippets ✅ | painted rect + hover-only hit-test | `Button` | S | MED |
 | `apps/backups/src/app.rs:384` `Hit::BackupNow` | backups | "Backup now" painted button | `Button` | S | MED |
 | `apps/notes/src/sidebar.rs:672` button chip | notes | one hand-drawn hover chip (otherwise a model app) | `Button` | S | MED |
 | `apps/containers/src/panels.rs:1280` `draw_confirm` action rects | containers | create/confirm/prompt buttons hit-tested | `Button` | M | MED |
-| `apps/video-player/src/app.rs:375` `open_button_rect` | video-player | floating "Open" pill (only leftover) | `Button` | S | MED |
+| `apps/video-player/src/app.rs:375` `open_button_rect` | video-player ✅ | floating "Open" pill (only leftover) | `Button` | S | MED |
 
 ---
 
@@ -403,14 +441,17 @@ controls inside), git_client (arm-twice → dialog is a behaviour change), sheet
 for now: `containers` create-container, `vpn` add-tunnel.
 
 ### Wave 4 — Buttons sweep (MED, broadest single win)
-Replace painted-rect + hit-test tables with `Button`/`Toolbar`. **Apps (zero
-`ui::Button` today):** db_client, api_tester, git_client, diffmerge, logs,
-monitor, ebook, tube, music, camera, video_editor, sheets, typst_editor,
-snippets, disks, containers, firewall, vpn, remote, backups, imager,
-software_store, calculator, slides; plus leftovers in word-processor,
-pdf_viewer, notes, video-player. Do the large hit-table apps (ebook, music,
-camera, slides, software_store) last — they are `L` because the whole draw layer
-is the table.
+Paint painted-rect + hit-test tables through the immediate-mode
+`ui::widget::Button::paint(&ButtonFace)` face (added this wave), or mount the
+retained `Button`/`Toolbar` where an app already has a widget tree. **Done:**
+api_tester, snippets, db_client, video-player, monitor, diffmerge (see the
+Category 2 status note). **Remaining (still hand-rolled):** git_client, logs,
+ebook, tube, music, camera, video_editor, sheets, typst_editor, disks,
+containers, firewall, vpn, remote, backups, imager, software_store, calculator,
+slides; plus leftovers in word-processor, pdf_viewer, notes. The ghost-styled
+ones (git_client, notes, logs) want a `Ghost`/tinted `ButtonFace` variant first.
+Do the large hit-table apps (ebook, music, camera, slides, software_store)
+last — they are `L` because the whole draw layer is the table.
 
 ### Wave 5a — Controls with an existing widget (MED)
 - **Dropdowns:** api_tester (method/env), logs (unit/boot), ebook (font/sort),
