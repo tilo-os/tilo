@@ -12,6 +12,35 @@
 //! Metal / D3D12 backend shipped today). For a non-aligned width we
 //! allocate the aligned size and strip padding while reading back so
 //! callers see a tight `width * 4` bytes-per-row buffer.
+//!
+//! # Two rasterisations of one scene are not guaranteed bit-identical
+//! Rendering the *same* [`Scene`] twice can return buffers that differ
+//! by one 8-bit step on a handful of antialiased edge pixels. This is a
+//! property of vello's GPU pipeline, not of this harness:
+//!
+//! * `path_count` assigns each path segment its slot inside a tile's
+//!   segment slice with an `atomicAdd`, so the order segments land in
+//!   for a given tile follows GPU workgroup scheduling;
+//! * `fine`'s analytic area antialiasing then accumulates
+//!   `area += a * dy` over that slice, and float addition is not
+//!   associative — a different order can move the coverage by one ulp;
+//! * a pixel whose coverage sits on a quantisation boundary lands one
+//!   step either side of it.
+//!
+//! Measured on this stack: identical `Scene`, ≤4 pixels out of 57 600
+//! affected, always ±1 in a single channel, and the count of pixels
+//! carrying ink never changes. It shows up when several threads in one
+//! process drive the shared device (a fully serial process rendered the
+//! same scene 600 times with no drift; three *separate* processes
+//! rendering concurrently likewise had none), which is why the
+//! screenshot suites mostly do not see it and the parallel test
+//! binaries do.
+//!
+//! Consequences: byte-comparing two renders is not a sound equality
+//! test. Compare with [`OffscreenRenderer::pixels_differing_beyond_aa`],
+//! or compare the `Scene` the draw pass produced, which *is* exact. A
+//! single frame is unaffected — the wobble is invisible (1/255 on an
+//! edge pixel) and never changes what is drawn.
 
 use std::path::Path;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -252,5 +281,71 @@ impl OffscreenRenderer {
     pub fn sample(rgba: &[u8], width: u32, x: u32, y: u32) -> (u8, u8, u8, u8) {
         let idx = ((y * width + x) * 4) as usize;
         (rgba[idx], rgba[idx + 1], rgba[idx + 2], rgba[idx + 3])
+    }
+
+    /// Count the pixels where `a` and `b` differ by more than the
+    /// antialiasing wobble the GPU rasteriser is allowed (see the module
+    /// docs: `atomicAdd`-ordered coverage accumulation can move an edge
+    /// pixel one 8-bit step). Zero means the two buffers are the same
+    /// image; anything above zero is a real difference in what was
+    /// drawn, because a genuine visual change moves pixels by far more
+    /// than one step.
+    ///
+    /// Buffers of different lengths count as differing everywhere they
+    /// do not overlap, so a size mismatch can never read as a match.
+    pub fn pixels_differing_beyond_aa(a: &[u8], b: &[u8]) -> usize {
+        let overlapping = a
+            .chunks_exact(4)
+            .zip(b.chunks_exact(4))
+            .filter(|(x, y)| x.iter().zip(y.iter()).any(|(p, q)| p.abs_diff(*q) > 1))
+            .count();
+        let unmatched = a.len().abs_diff(b.len()).div_ceil(4);
+        overlapping + unmatched
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::OffscreenRenderer;
+
+    /// The frame comparison tolerates exactly the one-step antialiasing
+    /// wobble the rasteriser is allowed and nothing wider. Without this
+    /// guard the tolerance could be widened later — turning "these are
+    /// the same frame" into an assertion that passes on frames that are
+    /// visibly different — with no test noticing.
+    #[test]
+    fn frame_comparison_tolerates_one_step_and_no_more() {
+        let base = [10u8, 20, 30, 255, 40, 50, 60, 255];
+
+        assert_eq!(
+            OffscreenRenderer::pixels_differing_beyond_aa(&base, &base),
+            0,
+            "identical buffers must not report a difference"
+        );
+
+        // Every channel off by one, in both directions: still one frame.
+        let wobbled = [11u8, 19, 31, 254, 39, 51, 59, 255];
+        assert_eq!(
+            OffscreenRenderer::pixels_differing_beyond_aa(&base, &wobbled),
+            0,
+            "a one-step antialiasing wobble must read as the same frame"
+        );
+
+        // Two steps on a single channel of a single pixel is a real
+        // difference.
+        let two_steps = [12u8, 20, 30, 255, 40, 50, 60, 255];
+        assert_eq!(
+            OffscreenRenderer::pixels_differing_beyond_aa(&base, &two_steps),
+            1,
+            "a two-step difference must be reported"
+        );
+
+        // A truncated buffer is never a match, however similar its
+        // overlapping prefix is.
+        assert_eq!(
+            OffscreenRenderer::pixels_differing_beyond_aa(&base, &base[..4]),
+            1,
+            "a size mismatch must count the pixels that have no counterpart"
+        );
     }
 }
