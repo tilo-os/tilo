@@ -872,6 +872,126 @@ mod tests {
         clear_launch_env();
     }
 
+    /// Activating a row in the hosted file explorer opens the document in
+    /// the app that declares its type.
+    ///
+    /// Driven through the explorer's own public activation
+    /// (`open_entry`), with the route the shell installs in production
+    /// ([`crate::shell::install_document_opener`]) — so what is under test
+    /// is the wiring, not a call to `open_in_workspace` this test made
+    /// itself.
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn the_file_explorer_opens_a_document_in_the_app_that_owns_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let apps = tmp.path().join("apps");
+        std::fs::create_dir_all(&apps).unwrap();
+        install(&apps, "dev.qos.word-processor", "Word Processor", &["odt"]);
+        // The directory the explorer lists, kept apart from the fixture
+        // files so the row indices are the documents.
+        let files = tmp.path().join("files");
+        std::fs::create_dir_all(&files).unwrap();
+        let doc = files.join("agenda.odt");
+        std::fs::write(&doc, b"x").unwrap();
+        // SAFETY: guarded by the `process_env` serial group.
+        unsafe { std::env::set_var("QOS_APPS_DATA_DIR", &apps) };
+        let log = install_recording_launcher(tmp.path());
+        reset_session_state();
+
+        let chrome = chrome_with_workspace();
+        crate::shell::install_document_opener(&chrome);
+
+        let mut explorer = file_explorer::FileExplorerWidget::new();
+        explorer.navigate(files.clone());
+        let idx = explorer
+            .displayed_entries()
+            .iter()
+            .position(|e| e.name == "agenda.odt")
+            .expect("the explorer lists the document");
+        let mut runner = file_explorer::files_app::SystemRunner;
+        assert!(
+            explorer.open_entry(idx, &mut runner).unwrap(),
+            "activating a file row hands it off"
+        );
+
+        let commands = launched_commands(&log, 1);
+        assert_eq!(commands.len(), 1, "exactly one launch: {commands:#?}");
+        assert!(
+            commands[0].contains("--app-id dev.qos.word-processor")
+                && commands[0].contains(&format!("--open {}", doc.display())),
+            "the explorer's activation had to reach the owning app with the \
+             document: {}",
+            commands[0]
+        );
+
+        // And the read grant came with it, scoped to the file.
+        {
+            use crate::shell::state::{Effect, Scope, Subject};
+            let st = chrome.borrow();
+            let tree = st.tree();
+            let ws = tree.active_workspace().unwrap();
+            let want = Subject::app("dev.qos.word-processor");
+            let scopes: Vec<&Scope> = ws
+                .capabilities
+                .iter()
+                .filter(|c| c.subject == want && c.effect == Effect::Grant)
+                .map(|c| &c.scope)
+                .collect();
+            assert_eq!(scopes, vec![&Scope::FsPath(doc.display().to_string())]);
+        }
+
+        file_explorer::files_app::clear_document_opener();
+        clear_launch_env();
+    }
+
+    /// A type nothing installed claims is refused in words the explorer
+    /// shows, and nothing is launched.
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn the_file_explorer_reports_a_type_nothing_opens() {
+        let tmp = tempfile::tempdir().unwrap();
+        let apps = tmp.path().join("apps");
+        std::fs::create_dir_all(&apps).unwrap();
+        install(&apps, "dev.qos.word-processor", "Word Processor", &["odt"]);
+        let files = tmp.path().join("files");
+        std::fs::create_dir_all(&files).unwrap();
+        std::fs::write(files.join("archive.zzz"), b"x").unwrap();
+        // SAFETY: guarded by the `process_env` serial group.
+        unsafe { std::env::set_var("QOS_APPS_DATA_DIR", &apps) };
+        let log = install_recording_launcher(tmp.path());
+        reset_session_state();
+
+        let chrome = chrome_with_workspace();
+        crate::shell::install_document_opener(&chrome);
+
+        let mut explorer = file_explorer::FileExplorerWidget::new();
+        explorer.navigate(files);
+        let idx = explorer
+            .displayed_entries()
+            .iter()
+            .position(|e| e.name == "archive.zzz")
+            .expect("the explorer lists the file");
+        let mut runner = file_explorer::files_app::SystemRunner;
+        explorer.open_entry(idx, &mut runner).unwrap();
+
+        let status = explorer
+            .status_line()
+            .unwrap_or_else(|| panic!("the refusal must reach the user"))
+            .to_string();
+        assert!(
+            status.contains("archive.zzz") && status.contains(".zzz"),
+            "the message must name the file and its type: {status}"
+        );
+        assert!(
+            !log.exists(),
+            "nothing may be launched for a type nothing claims: {:?}",
+            std::fs::read_to_string(&log)
+        );
+
+        file_explorer::files_app::clear_document_opener();
+        clear_launch_env();
+    }
+
     /// A document whose window has been closed is not open. The next
     /// activation launches for real rather than focusing nothing.
     #[test]
