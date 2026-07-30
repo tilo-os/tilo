@@ -15,8 +15,9 @@ use winit::keyboard::{Key, NamedKey};
 
 use crate::model::{ConnectionProfile, Engine};
 use crate::theme_ext::ThemeExt;
-use ui::text_render::TextRenderer;
+use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
+use ui::widget::{Button, ButtonFace};
 
 /// Which text field currently has focus.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -358,26 +359,28 @@ impl ConnectModal {
         self.cancel_btn = cancel;
         self.save_btn = save;
 
-        let cancel_bg = if cancel.contains(self.cursor) { p.hover } else { theme.bg_app };
-        scene.fill(Fill::NonZero, t, cancel_bg, None, &cancel.to_rounded_rect(6.0));
-        scene.stroke(&Stroke::new(1.0), t, theme.border_standard, None, &cancel.to_rounded_rect(6.0));
-        tr.draw_text(
+        Button::paint(
             scene,
-            "Cancel",
-            12.5,
-            theme.text_primary,
-            t * Affine::translate((cancel.x0 + 22.0, cancel.y0 + 8.0)),
-            None,
+            t,
+            tr,
+            theme,
+            &ButtonFace::new(cancel, "Cancel")
+                .radius(6.0)
+                .text_size(12.5)
+                .weight(TextWeight::Regular)
+                .hovered(cancel.contains(self.cursor)),
         );
-        let save_bg = if save.contains(self.cursor) { theme.accent_hover } else { theme.accent_primary };
-        scene.fill(Fill::NonZero, t, save_bg, None, &save.to_rounded_rect(6.0));
-        tr.draw_text(
+        Button::paint(
             scene,
-            "Save",
-            12.5,
-            Color::WHITE,
-            t * Affine::translate((save.x0 + 24.0, save.y0 + 8.0)),
-            None,
+            t,
+            tr,
+            theme,
+            &ButtonFace::new(save, "Save")
+                .radius(6.0)
+                .text_size(12.5)
+                .weight(TextWeight::Regular)
+                .hovered(save.contains(self.cursor))
+                .primary(),
         );
     }
 
