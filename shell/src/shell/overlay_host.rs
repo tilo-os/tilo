@@ -3768,12 +3768,27 @@ impl Widget for ShellOverlayHost {
         } else {
             0.0
         };
+        // Re-derive the per-display strip widths now that the host's own
+        // rect is known. This is what makes a host nobody pushed geometry
+        // into converge: `build_layout` runs before the first `apply_layout`,
+        // so on frame 1 it has no viewport to fall back on and the strips
+        // size against the toolkit's default. Pushing again here flags the
+        // rows structurally dirty on any change, so the next layout pass
+        // bakes the real width — the same one-extra-pass convergence the
+        // palette card above uses. When the compositor *has* pushed real
+        // output geometry this is a no-op: the spans come from that, not
+        // from `self.rect`.
+        let settled_spans = self.strip_output_spans();
         for &ptr in self.group_row_ptrs.values() {
             // SAFETY: same contract as the other group_row_ptrs
             // accessors — pointer captured from a `Box<GroupRow>` we
             // own through the content tree; host outlives content;
             // &mut self → unaliased mutable access.
-            unsafe { (&mut *ptr).set_leading_inset(wheel_w) };
+            unsafe {
+                let row = &mut *ptr;
+                row.set_leading_inset(wheel_w);
+                row.set_output_spans(&settled_spans);
+            }
         }
         let children = taffy.children(node).unwrap();
         self.content

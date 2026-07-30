@@ -100,7 +100,26 @@ struct Layout {
     child_node: NodeId,
 }
 
+/// Usable strip width at the fixture's viewport — the window minus the
+/// wheel-disc slot and its wallpaper gutter. Group widths are *fractions* of
+/// this, so a pixel expectation only means anything alongside it. Read off
+/// the live row rather than recomputed here, so the test cannot drift from
+/// what the shell actually reserves.
+fn usable_strip_px(host: &mut ShellOverlayHost, strip_id: StripId) -> f64 {
+    host.group_row_mut_for_tests(strip_id)
+        .expect("strip GroupRow")
+        .usable_at(0.0)
+}
+
 fn lay_out_host(host: &mut ShellOverlayHost) -> Layout {
+    // What the compositor does before every build: tell the host which
+    // display it is painting to, so window-group width fractions resolve
+    // against it rather than against the toolkit's fallback.
+    host.set_output_geometry(&[shell::shell::overlay_host::OutputGeometry {
+        x: 0.0,
+        width: W as f64,
+        height: H as f64,
+    }]);
     let theme = Theme::dark();
     let mut taffy: TaffyTree<()> = TaffyTree::new();
     let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
@@ -209,13 +228,15 @@ fn resize_handle_drag_persists_new_group_widths_into_tree() {
     let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
     let layout = lay_out_host(&mut host);
 
-    // Both groups start at Normal = 600 px in the persisted tree.
+    // Both groups start at Normal — two thirds of the usable strip.
+    let usable = usable_strip_px(&mut host, strip_id);
+    let start_px = WindowWidth::Normal.resolve(usable);
     {
         let st = chrome.borrow();
         let tree = st.tree();
         let g = &tree.workspaces[0].strips[0].window_groups;
-        assert_eq!(g[0].width.pixels(), 600);
-        assert_eq!(g[1].width.pixels(), 600);
+        assert_eq!(g[0].width.resolve(usable), start_px);
+        assert_eq!(g[1].width.resolve(usable), start_px);
     }
 
     // Resolve the inter-group resize handle's centre from live geometry.
@@ -243,29 +264,46 @@ fn resize_handle_drag_persists_new_group_widths_into_tree() {
     let left = groups.iter().find(|g| g.id == ids[0]).unwrap();
     let right = groups.iter().find(|g| g.id == ids[1]).unwrap();
     assert_eq!(
-        left.width.pixels(),
-        640,
+        left.width.resolve(usable),
+        start_px + 40.0,
         "left group must have grown by the +40 px drag delta in the persisted tree",
     );
     assert_eq!(
-        right.width.pixels(),
-        560,
+        right.width.resolve(usable),
+        start_px - 40.0,
         "right group must have shrunk by the same 40 px (no overlap, widths reflow)",
+    );
+    // What is *stored* is the share, not the pixels — so the same tree on a
+    // wider display gives the same proportions rather than the same widths.
+    assert!(
+        matches!(left.width, WindowWidth::Fraction(_)),
+        "a resize persists as a fraction of the strip; got {:?}",
+        left.width,
     );
 }
 
 /// A drag far past a neighbour's minimum width must clamp — the shrinking
-/// group pins at [`WIDTH_MIN_PX`] and the growing group absorbs only the
-/// slack, so the pair sum is preserved (no overlap, no runaway width) and
-/// the clamped widths persist into the tree. Same real host + harvest path
-/// as the linear-reflow test above, just a delta big enough to hit the wall.
+/// group pins at the display's minimum group width and the growing group
+/// absorbs only the slack, so the pair sum is preserved (no overlap, no
+/// runaway width) and the clamped widths persist into the tree. Same real
+/// host + harvest path as the linear-reflow test above, just a delta big
+/// enough to hit the wall.
 #[test]
 fn resize_handle_drag_clamps_at_min_width_and_persists() {
-    let (tree, strip_id, ids) = single_strip_tree(&[100, 200]);
+    let (mut tree, strip_id, ids) = single_strip_tree(&[100, 200]);
+    // Start both groups at Narrow (a third of the strip each). From two
+    // Normals the *right* group cannot reach its minimum at all, because the
+    // left would have to grow past the display to make room — the pair sum
+    // has to leave slack for the clamp to be reachable.
+    for g in tree.workspaces[0].strips[0].window_groups.iter_mut() {
+        g.width = WindowWidth::Narrow;
+    }
     let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
     let layout = lay_out_host(&mut host);
 
-    // Both groups start at Normal = 600 px; pair sum = 1200.
+    let usable = usable_strip_px(&mut host, strip_id);
+    let pair_sum = 2.0 * WindowWidth::Narrow.resolve(usable);
+    let min = ui::widget::min_group_px(usable);
     let handle_rect = host
         .group_row_mut_for_tests(strip_id)
         .expect("strip GroupRow")
@@ -276,8 +314,8 @@ fn resize_handle_drag_clamps_at_min_width_and_persists() {
     let cy = (handle_rect.y0 + handle_rect.y1) / 2.0;
 
     // Drag +5000 px right — far past the right neighbour's min. The right
-    // group can only shrink from 600 to WIDTH_MIN_PX (300), so the left
-    // group grows by that same 300 (to 900), NOT by the requested 5000.
+    // group can only shrink to the display's minimum, so the left group
+    // grows by exactly that slack, NOT by the requested 5000.
     cursor(&mut host, &layout, Point::new(cx, cy));
     press(&mut host, &layout);
     cursor(&mut host, &layout, Point::new(cx + 5000.0, cy));
@@ -291,18 +329,18 @@ fn resize_handle_drag_clamps_at_min_width_and_persists() {
     let left = groups.iter().find(|g| g.id == ids[0]).unwrap();
     let right = groups.iter().find(|g| g.id == ids[1]).unwrap();
     assert_eq!(
-        right.width.pixels(),
-        ui::widget::WIDTH_MIN_PX,
-        "the shrinking (right) group clamps at the minimum width, not below",
+        right.width.resolve(usable),
+        min,
+        "the shrinking (right) group clamps at the display's minimum width, not below",
     );
     assert_eq!(
-        left.width.pixels(),
-        900,
-        "the growing (left) group absorbs only the neighbour's actual slack (300 px)",
+        left.width.resolve(usable),
+        pair_sum - min,
+        "the growing (left) group absorbs only the neighbour's actual slack",
     );
     assert_eq!(
-        left.width.pixels() + right.width.pixels(),
-        1200,
+        left.width.resolve(usable) + right.width.resolve(usable),
+        pair_sum,
         "pair sum is preserved under clamp — no overlap, no runaway width",
     );
 }
@@ -493,12 +531,20 @@ fn group_right_edge_drag_resizes_on_screen_and_persists() {
     let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
     let mut layout = lay_out_host(&mut host);
 
-    let width_in_tree = |chrome: &shell::shell::chrome_state::Chrome| -> u32 {
+    let usable = usable_strip_px(&mut host, strip_id);
+    let width_in_tree = |chrome: &shell::shell::chrome_state::Chrome| -> f64 {
         let st = chrome.borrow();
         let tree = st.tree();
-        tree.workspaces[0].strips[0].window_groups[0].width.pixels()
+        tree.workspaces[0].strips[0].window_groups[0]
+            .width
+            .resolve(usable)
     };
-    assert_eq!(width_in_tree(&chrome), 600, "Normal = 600 px at boot");
+    let boot_px = WindowWidth::Normal.resolve(usable);
+    assert_eq!(
+        width_in_tree(&chrome),
+        boot_px,
+        "Normal is two thirds of the usable strip at boot",
+    );
 
     let rect = host
         .group_at_for_tests(strip_id, 0)
@@ -534,7 +580,7 @@ fn group_right_edge_drag_resizes_on_screen_and_persists() {
     host.tick_pending_width_harvest_for_tests();
     assert_eq!(
         width_in_tree(&chrome),
-        720,
+        boot_px + 120.0,
         "the new width must persist into the tree so it survives a restart",
     );
     let _ = &layout;
