@@ -450,12 +450,13 @@ mod tests {
         // Add a real track to a real playlist.
         let lib = crate::doc::load_library(&a);
         let playlist = lib.playlists.iter().find(|p| !p.track_ids.is_empty()).unwrap();
+        let taken = playlist.track_ids.clone();
         let new_track = lib
             .tracks
             .keys()
-            .find(|t| !playlist.track_ids.contains(t))
-            .unwrap()
-            .clone();
+            .cloned()
+            .find(|t| !taken.contains(t))
+            .expect("a track not already in the playlist");
         let pid = playlist.id.clone();
         let action = add_track_action(&pid, &new_track);
         let encoded = encode(&action);
