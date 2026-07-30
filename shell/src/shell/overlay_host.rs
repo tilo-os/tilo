@@ -355,7 +355,22 @@ pub enum PeerSyncPromptButton {
 /// Rows the palette asks the registry for, shared round-robin between
 /// the matching kinds. See
 /// [`crate::shell::search::SearchRegistry::query_grouped`].
-const PALETTE_ROW_BUDGET: usize = 16;
+///
+/// This has to equal what the card actually paints, or the split that
+/// budget buys is spent on rows nobody sees. `CommandPalette` grows to
+/// eight entry rows (plus a separate allowance for three section
+/// headers) before the list starts scrolling; asking for sixteen meant a
+/// three-group answer put its third header around row eleven, off the
+/// bottom of the card. Typing `workspace` then showed twenty-seven files
+/// and thirteen folders while `Open workspace settings` — the thing that
+/// query is for — was scrolled out of sight, which reads as the action
+/// simply not being found.
+///
+/// Eight rows across three groups is tight, and it is the honest kind of
+/// tight: every group's header is on the card and each one reports the
+/// total it is holding back, so the way to see more of a kind is to click
+/// its chip, which is also the gesture that means "show me all of these".
+const PALETTE_ROW_BUDGET: usize = 8;
 
 /// Glyph that stands for a result kind in the palette. Giving each kind
 /// a picture is what replaced the bracketed kind literal the shell used
@@ -10149,21 +10164,33 @@ mod tests {
             Some("Notes"),
             "fixture precondition: a tab is focused"
         );
-        let pill = h.host.search_scope_pill_label(SearchScope::ActiveApp);
-        assert_eq!(pill, "Notes app");
-        // The collision is with the kind chips, so the pill must not be
-        // any chip's label verbatim.
+        assert_eq!(
+            h.host.search_scope_pill_label(SearchScope::ActiveApp),
+            "Notes app"
+        );
+        // Generalised: the two bands are a filter row (kinds) and a scope
+        // row (places), and *no* label may appear in both. Pinning only
+        // the app pill would have let the next collision through — `All`
+        // was one, sitting under the `All` chip that clears the kind
+        // filter.
         let chips: Vec<String> = h
             .host
             .search_registry
             .registered_kinds()
             .iter()
             .map(|k| k.label().to_string())
+            // The leading reset chip is painted separately from the
+            // registered kinds; see `draw_search_banner`.
+            .chain(std::iter::once("All".to_string()))
             .collect();
-        assert!(
-            !chips.contains(&pill),
-            "the scope pill {pill:?} is also a kind chip label: {chips:?}"
-        );
+        for scope in h.host.search_scope_list() {
+            let pill = h.host.search_scope_pill_label(scope);
+            assert!(
+                !chips.contains(&pill),
+                "the {scope:?} scope pill {pill:?} is also a kind chip label — \
+                 two adjacent controls with one word and two meanings: {chips:?}"
+            );
+        }
         assert!(SearchScope::ActiveApp.narrows_results());
         assert!(!SearchScope::Workspace.narrows_results());
         assert!(!SearchScope::All.narrows_results());
