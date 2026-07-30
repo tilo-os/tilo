@@ -42,6 +42,7 @@ pub mod record;
 pub mod portal;
 pub mod uri;
 pub mod state;
+pub mod view;
 pub mod widget;
 pub mod text_render;
 pub mod richtext;
@@ -90,6 +91,9 @@ pub use color_compat::ColorCompat;
 pub use doc::{TextEdit, put_if_changed, put_text_diffed, splice_text_diffed};
 pub use record::{RecordCheckout, RecordId, RecordKind, RecordRef, RecordSet};
 pub use state::{State, UndoEntry};
+pub use view::{
+    FocusView, FreezeThaw, FrozenApp, ThawError, View, ViewContribution, ViewRect, FROZEN_VERSION,
+};
 pub use theme::{AppearanceIntent, Theme};
 pub use image_store::{Fetcher, ImageStore};
 pub use nav_stack::{EdgeSwipeBack, NavAction, NavStack};
