@@ -43,6 +43,7 @@ pub mod overview;
 pub mod peer_join_toast;
 pub mod peer_view;
 pub mod persist;
+pub mod placement;
 pub mod qs_actions;
 pub mod quick_settings;
 pub mod remote_cursors;
