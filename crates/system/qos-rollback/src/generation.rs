@@ -22,9 +22,32 @@
 //!   needs it fails loudly rather than defaulting to zero. Defaulting to zero
 //!   would seal a token whose floor bound is trivially satisfiable.
 //!
-//! The number itself is monotonic per published image and has no meaning beyond
-//! ordering. Using the build's epoch seconds, or a CI run number, is fine as
-//! long as it never decreases.
+//! # The numbering has to be dense, not merely monotonic
+//!
+//! `+1` per published image. A build timestamp is monotonic and still wrong,
+//! because the retention window is arithmetic on the number: "keep the last three
+//! generations" means `N`, `N-1`, `N-2`, and if `N` is an epoch second then
+//! `N-1` is one second earlier and names nothing. A CI build counter is the
+//! intended source.
+//!
+//! A second, quieter reason: the floor is a TPM NV counter, and moving it from
+//! generation `A` to `B` costs `B - A` `TPM2_NV_Increment` calls. Sparse
+//! numbering turns a one-step advance into millions of NV writes, which
+//! [`crate::counter::MAX_INCREMENTS_PER_ADVANCE`] refuses outright.
+//!
+//! # Where it has to be readable from
+//!
+//! Two places, for two different jobs:
+//!
+//! * `qos.generation=<N>` on the **sealed UKI command line** — the authoritative
+//!   copy, used at unlock and confirmation time. Measured, so it cannot be
+//!   forged.
+//! * `/usr/lib/qos/generation` in the image's filesystem — a plain file holding
+//!   the same number. This is the only way to learn the generation of a *staged*
+//!   deployment, which is needed because the incoming generation's keyslot has to
+//!   be sealed before the reboot that first runs it. It is not trusted for
+//!   anything: at that moment the machine is already unlocked, and the seal it
+//!   produces is bound to the measurements of the image that ships the file.
 
 use anyhow::{Context, Result, bail};
 
