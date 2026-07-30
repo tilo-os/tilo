@@ -81,6 +81,12 @@ COPY os/usr/lib/systemd/system/qos-relay.service /usr/lib/systemd/system/qos-rel
 COPY os/usr/lib/systemd/system/qos-relay-firstboot.service /usr/lib/systemd/system/qos-relay-firstboot.service
 COPY os/usr/libexec/qos-relay-firstboot /usr/libexec/qos-relay-firstboot
 COPY os/usr/lib/tmpfiles.d/qos-host.conf /usr/lib/tmpfiles.d/qos-host.conf
+# The device-trust group owns the identity directory, so it has to exist
+# before tmpfiles-setup runs. No session user joins it on a host image —
+# there is no session — but the group is what the directory is created
+# with, and the identity layout is shared with the desktop image.
+COPY os/usr/lib/sysusers.d/qos-identity.conf /usr/lib/sysusers.d/qos-identity.conf
+RUN systemd-sysusers /usr/lib/sysusers.d/qos-identity.conf
 RUN chmod 0755 /usr/libexec/qos-relay-firstboot
 
 # The first-boot script consumes /etc/qos/enrollment-token.txt (a

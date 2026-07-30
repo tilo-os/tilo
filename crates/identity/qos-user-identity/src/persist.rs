@@ -16,9 +16,13 @@
 //! simple so it can be inspected with `hexdump` and does not depend
 //! on `serde_json` at boot.
 //!
-//! Secret files (`privkey.bin`, `keypair.bin`) MUST be mode 0600.
-//! Everything here checks the mode at read time; a permissive
-//! secret file returns [`PersistError::InsecurePermissions`].
+//! Secret files must not be reachable by users who are not entitled to
+//! them, and the mode is checked at read time — a permissive secret file
+//! returns [`PersistError::InsecurePermissions`] rather than being read.
+//! `privkey.bin` is user-scoped and must be 0600. `keypair.bin` is the
+//! device key, read by two components running as two uids, so it may
+//! additionally be group-readable ([`DEVICE_KEY_MODE`]) but never
+//! reachable by anyone outside that group.
 
 use std::fs;
 use std::io;
@@ -84,10 +88,12 @@ pub enum PersistError {
     /// caller can inspect the ErrorKind.
     #[error("io error: {0}")]
     Io(#[from] io::Error),
-    /// A secret file (`privkey.bin`, `keypair.bin`) was more
-    /// permissive than 0600. Refused to proceed rather than expose
-    /// the key.
-    #[error("secret file {path} has permissions {mode:o}; must be 0600")]
+    /// A secret file was reachable by users not entitled to it.
+    /// Refused to proceed rather than expose the key.
+    #[error(
+        "secret file {path} has permissions {mode:o}; a user-scoped secret must be 0600 and \
+         the device key at most 0640"
+    )]
     InsecurePermissions {
         /// File path that triggered the check.
         path: String,
@@ -127,6 +133,13 @@ pub fn write_public_key(path: &Path, pubkey: &[u8; 32]) -> io::Result<()> {
 /// production path everywhere the compositor ships.
 pub fn read_signing_key(path: &Path) -> Result<SigningKey, PersistError> {
     ensure_secret_mode(path)?;
+    signing_key_from_file(path)
+}
+
+/// The length check and expansion shared by every secret-key reader.
+/// The mode policy is the caller's — see [`read_signing_key`] and
+/// [`read_device_key`].
+fn signing_key_from_file(path: &Path) -> Result<SigningKey, PersistError> {
     let bytes = fs::read(path)?;
     if bytes.len() != 32 {
         return Err(PersistError::WrongKeyLength(bytes.len()));
@@ -144,6 +157,34 @@ pub fn write_signing_key(path: &Path, sk: &SigningKey) -> io::Result<()> {
     path.parent()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "path has no parent"))?;
     atomic_file::write_with_mode(path, &sk.to_bytes(), 0o600)
+}
+
+/// Mode the device key is stored with: owner read/write, group read,
+/// nothing for anyone else.
+///
+/// Group-readable because the device key is read by more than one
+/// process running as more than one uid — the filesystem daemon runs as
+/// root, the compositor in the user's session — and they are the *same*
+/// device, so they must present the same identity. The group is the
+/// device-trust boundary; its membership is the session user, and the
+/// containing directory is `setgid` so the group is inherited whichever
+/// component creates the key first.
+///
+/// `other` gets nothing, and that is enforced on read.
+pub const DEVICE_KEY_MODE: u32 = 0o640;
+
+/// Read the device key, requiring that it not be accessible to users
+/// outside the device-trust group.
+pub fn read_device_key(path: &Path) -> Result<SigningKey, PersistError> {
+    ensure_not_world_accessible(path)?;
+    signing_key_from_file(path)
+}
+
+/// Write the device key with [`DEVICE_KEY_MODE`], atomically.
+pub fn write_device_key(path: &Path, sk: &SigningKey) -> io::Result<()> {
+    path.parent()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "path has no parent"))?;
+    atomic_file::write_with_mode(path, &sk.to_bytes(), DEVICE_KEY_MODE)
 }
 
 /// Whether [`load_or_create_device_key`] found a key or minted one.
@@ -181,11 +222,11 @@ pub fn load_or_create_device_key(
 ) -> Result<(SigningKey, DeviceKeyOutcome), PersistError> {
     let path = paths.device_privkey.as_path();
     match fs::metadata(path) {
-        Ok(_) => Ok((read_signing_key(path)?, DeviceKeyOutcome::Loaded)),
+        Ok(_) => Ok((read_device_key(path)?, DeviceKeyOutcome::Loaded)),
         Err(e) if e.kind() == io::ErrorKind::NotFound => {
             paths.ensure_directories()?;
             let sk = SigningKey::generate(&mut rand::rngs::OsRng);
-            write_signing_key(path, &sk)?;
+            write_device_key(path, &sk)?;
             Ok((sk, DeviceKeyOutcome::Created))
         }
         Err(e) => Err(PersistError::Io(e)),
@@ -212,7 +253,7 @@ pub fn adopt_device_key(
     }
     paths.ensure_directories()?;
     let sk = SigningKey::from_bytes(seed);
-    write_signing_key(path, &sk)?;
+    write_device_key(path, &sk)?;
     Ok(sk)
 }
 
@@ -233,10 +274,20 @@ pub fn write_device_cert(path: &Path, cert: &DeviceCert) -> Result<(), PersistEr
 
 #[cfg(unix)]
 fn ensure_secret_mode(path: &Path) -> Result<(), PersistError> {
+    reject_modes(path, 0o077)
+}
+
+/// Weaker policy, for a secret deliberately shared with a group: no
+/// access at all for users outside it.
+fn ensure_not_world_accessible(path: &Path) -> Result<(), PersistError> {
+    reject_modes(path, 0o007)
+}
+
+fn reject_modes(path: &Path, forbidden: u32) -> Result<(), PersistError> {
     use std::os::unix::fs::PermissionsExt;
     let meta = fs::metadata(path)?;
     let mode = meta.permissions().mode() & 0o777;
-    if mode & 0o077 != 0 {
+    if mode & forbidden != 0 {
         return Err(PersistError::InsecurePermissions {
             path: path.display().to_string(),
             mode,
@@ -335,6 +386,64 @@ mod tests {
         assert_eq!(cert, back);
     }
 
+    /// The device key is deliberately group-readable — two components
+    /// running as two uids present the one device identity — but a user
+    /// outside that group must not be able to read it, and that is
+    /// enforced on every read rather than trusted to whoever set the
+    /// mode.
+    #[cfg(unix)]
+    #[test]
+    fn device_key_permits_the_trust_group_and_nobody_else() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = IdentityPaths::under(tmp.path());
+        let (sk, _) = load_or_create_device_key(&paths).unwrap();
+        let path = &paths.device_privkey;
+
+        let written = fs::metadata(path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(written, DEVICE_KEY_MODE);
+        assert_eq!(written & 0o007, 0, "no bits for users outside the group");
+
+        // Group read: accepted.
+        fs::set_permissions(path, fs::Permissions::from_mode(0o640)).unwrap();
+        assert_eq!(read_device_key(path).unwrap().to_bytes(), sk.to_bytes());
+        // Owner only: also fine.
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600)).unwrap();
+        assert_eq!(read_device_key(path).unwrap().to_bytes(), sk.to_bytes());
+
+        // Any bit for `other`: refused.
+        for mode in [0o644u32, 0o604, 0o601, 0o666] {
+            fs::set_permissions(path, fs::Permissions::from_mode(mode)).unwrap();
+            match read_device_key(path) {
+                Err(PersistError::InsecurePermissions { .. }) => {}
+                other => panic!("mode {mode:o} must be refused, got {other:?}"),
+            }
+        }
+    }
+
+    /// The relaxation is scoped to the device key. A user-scoped secret
+    /// still has to be owner-only — the group that reads the device key
+    /// has no business reading the user's own signing key.
+    #[cfg(unix)]
+    #[test]
+    fn user_scoped_secret_still_refuses_group_read() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("privkey.bin");
+        let sk = SigningKey::from_bytes(&[8u8; 32]);
+        write_signing_key(&path, &sk).unwrap();
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o640)).unwrap();
+        match read_signing_key(&path) {
+            Err(PersistError::InsecurePermissions { mode, .. }) => assert_eq!(mode, 0o640),
+            other => panic!("group-readable user secret must be refused, got {other:?}"),
+        }
+    }
+
     #[test]
     fn device_key_is_created_once_then_reloaded() {
         let tmp = tempfile::tempdir().unwrap();
@@ -394,7 +503,7 @@ mod tests {
             PersistError::Io(e) => assert_eq!(e.kind(), io::ErrorKind::AlreadyExists),
             other => panic!("expected AlreadyExists, got {other:?}"),
         }
-        assert_eq!(read_signing_key(&paths.device_privkey).unwrap().to_bytes(), seed);
+        assert_eq!(read_device_key(&paths.device_privkey).unwrap().to_bytes(), seed);
     }
 
     #[test]
