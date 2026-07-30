@@ -46,35 +46,74 @@ pub struct FloorAttestation {
 
 /// Create (or recreate) the attestation key.
 ///
-/// Deterministic in the same way the sealing parent is: same hierarchy seed,
-/// same template, same key. So there is nothing to persist, and clearing the
-/// endorsement hierarchy is the only thing that changes the identity — which is
-/// the correct semantics for "this machine".
-pub fn attestation_key(runner: &dyn Runner, ws: &Workspace) -> Result<(std::path::PathBuf, Vec<u8>)> {
+/// Returns the loaded key's context path and its public area.
+///
+/// Deterministic in the same way the sealing parent is: same owner-hierarchy
+/// seed, same template, same key. So there is nothing to persist, and clearing
+/// the owner hierarchy is the only thing that changes the identity.
+///
+/// Two deliberate choices, both worth stating because a reader will expect the
+/// conventional ones:
+///
+/// * **The parent is the owner primary, not the EK.** The endorsement primary
+///   carries the standard EK auth policy, so using it as a parent means running
+///   an endorsement-auth policy session for every operation. A production
+///   attestation deployment does want an EK-rooted key bound to a device
+///   certificate by credential activation — that belongs with the attestation
+///   protocol, which is a separate workstream. This key proves "one specific
+///   TPM produced this attestation", which is what the floor statement needs.
+/// * **`restricted` is not optional.** A restricted signing key is one the TPM
+///   refuses to use on externally supplied data beginning with
+///   `TPM_GENERATED_VALUE`. Without it, anyone holding the key could sign a
+///   hand-written structure that looks exactly like a TPM attestation, and a
+///   verifier would have no way to tell. Note that the algorithm specifier has
+///   to name the scheme *and* an explicit null symmetric algorithm
+///   (`ecc256:ecdsa-sha256:null`) — leave the symmetric part off and tpm2-tools
+///   fills in a default that a signing key cannot carry, which the TPM rejects
+///   as "unsupported symmetric algorithm".
+pub fn attestation_key(
+    runner: &dyn Runner,
+    ws: &Workspace,
+) -> Result<(std::path::PathBuf, Vec<u8>)> {
     policy::flush(runner);
-    let ek = ws.path("ek.ctx");
+    let parent = ws.path("attest_parent.ctx");
     require(
         runner,
         "tpm2_createprimary",
-        &argv!["-C", "e", "-g", "sha256", "-G", "ecc", "-c", ek.as_os_str()],
-        "creating the endorsement primary",
+        &argv!["-C", "o", "-g", "sha256", "-G", "ecc", "-c", parent.as_os_str()],
+        "creating the attestation key's parent",
     )?;
     let akpub = ws.path("ak.pub");
     let akpriv = ws.path("ak.priv");
-    let akctx = ws.path("ak.ctx");
     require(
         runner,
         "tpm2_create",
         &argv![
-            "-C", ek.as_os_str(),
-            "-G", "ecc",
+            "-C", parent.as_os_str(),
+            "-G", "ecc256:ecdsa-sha256:null",
             "-g", "sha256",
             "-u", akpub.as_os_str(),
             "-r", akpriv.as_os_str(),
-            "-c", akctx.as_os_str(),
             "-a", "fixedtpm|fixedparent|sensitivedataorigin|userwithauth|restricted|sign",
         ],
         "creating the floor attestation key",
+    )?;
+    // Reload from the blobs rather than reusing tpm2_create's saved context: on a
+    // TPM with no resource manager the parent and the freshly created key already
+    // occupy the transient slots, and the next tool's context load fails with a
+    // message that reads like a corrupt file.
+    policy::flush(runner);
+    let akctx = ws.path("ak.ctx");
+    require(
+        runner,
+        "tpm2_load",
+        &argv![
+            "-C", parent.as_os_str(),
+            "-u", akpub.as_os_str(),
+            "-r", akpriv.as_os_str(),
+            "-c", akctx.as_os_str(),
+        ],
+        "loading the floor attestation key",
     )?;
     let pubbytes =
         std::fs::read(&akpub).with_context(|| format!("reading {}", akpub.display()))?;
