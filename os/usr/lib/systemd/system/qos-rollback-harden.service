@@ -1,0 +1,25 @@
+[Unit]
+Description=Set the TPM dictionary-attack reset authorisation and tighten its parameters
+Documentation=man:qos-rollback(8)
+After=local-fs.target
+ConditionPathExists=/usr/bin/qos-rollback
+# Once the authorisation has been recorded there is nothing left to do.
+ConditionPathExists=!/var/lib/qos/rollback/lockout-auth
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/qos-rollback-harden
+RemainAfterExit=yes
+PrivateTmp=yes
+PrivateNetwork=yes
+ProtectHome=yes
+ProtectKernelModules=yes
+NoNewPrivileges=yes
+RestrictAddressFamilies=AF_UNIX
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+SystemCallArchitectures=native
+ReadWritePaths=/var/lib/qos
+
+[Install]
+WantedBy=multi-user.target
