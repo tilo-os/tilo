@@ -1114,3 +1114,169 @@ async fn a_write_without_read_entry_refuses_rather_than_clobbering() {
         "and nothing about the hidden entry may change"
     );
 }
+
+// =====================================================================
+// Read participation without authorship
+//
+// A shared document is a CRDT, and a change to it is a change *authored*
+// by somebody. Read participation means the app sees the document and
+// cannot originate a change to it — not "its changes are rejected", which
+// still requires something downstream to do the rejecting.
+//
+// In the filesystem that is structural rather than enforced: the only
+// route from an app's bytes into the CRDT is a write buffer, a write
+// buffer is only ever created by `write`, `create` or a truncating
+// `setattr`, and all three are refused for a path the identity may not
+// write. So there is no descriptor, and no sequence of syscalls, through
+// which an authored change can be built.
+// =====================================================================
+
+/// A mounted workspace holding one CRDT-backed document under a granted
+/// subtree, plus the ACL the mount enforces.
+async fn document_fixture(
+    acl: Option<(WorkspaceAcl, [u8; 32])>,
+    name: &str,
+) -> (fuser::BackgroundSession, tempfile::TempDir, Arc<Mutex<Namespace>>) {
+    let endpoint = Endpoint::bind(presets::N0).await.expect("bind endpoint");
+    let store = Arc::new(ContentStore::memory());
+    let namespace = Arc::new(Mutex::new(Namespace::new("doc-view-peer")));
+    {
+        let mut ns = namespace.lock().unwrap();
+        let shared = ns.create_dir(ROOT_INO, "shared", 1).unwrap();
+        let ino = ns.create_document(shared, "notes.md", "md", 1).unwrap();
+        let block = ns
+            .document_insert_block(ino, None, "paragraph")
+            .expect("insert a block");
+        assert!(ns.document_splice(ino, &block, 0, 0, "Shared paragraph"));
+    }
+    let hydrator = Arc::new(Hydrator::new(endpoint, store));
+    let heuristics = Arc::new(Heuristics::new(hydrator.clone(), namespace.clone()));
+    let fs = QuickFS::new(namespace.clone(), hydrator, heuristics);
+    let fs = match acl {
+        Some((a, id)) => fs.with_acl(a, id),
+        None => fs,
+    };
+    let dir = tempdir().unwrap();
+    let mut config = Config::default();
+    config.mount_options = vec![MountOption::FSName(name.to_string())];
+    let session = fuser::spawn_mount2(fs, dir.path(), &config).expect("spawn FUSE session");
+    tokio::time::sleep(Duration::from_millis(1000)).await;
+    (session, dir, namespace)
+}
+
+// A read participant reads the shared document and cannot author it. The
+// CRDT is byte-identical afterwards — not "the change was rejected", but
+// "no change was ever made".
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_read_participant_reads_a_shared_document_and_cannot_author_it() {
+    require_fuse!();
+    let acl = WorkspaceAcl::from_capabilities(
+        ALICE,
+        &[read_cap(ALICE, "/shared")],
+        &[],
+        None,
+    );
+    let (_session, dir, namespace) = document_fixture(Some((acl, ALICE)), "quickfs_doc_ro").await;
+    let doc = dir.path().join("shared/notes.md");
+
+    // Participation: the document is there and it reads.
+    let before = std::fs::read(&doc).expect("a read participant reads the shared document");
+    assert!(
+        String::from_utf8_lossy(&before).contains("Shared paragraph"),
+        "the read must return the real document, not an empty stand-in: {:?}",
+        String::from_utf8_lossy(&before)
+    );
+    let heads_before = namespace.lock().unwrap().heads();
+    let nodes_before = namespace.lock().unwrap().live_node_ids();
+
+    // Authorship: every route by which bytes could become a change.
+    for (what, outcome) in [
+        (
+            "rewrite the document",
+            std::fs::write(&doc, b"# Tampered\n\nMine now\n"),
+        ),
+        (
+            "open it for writing",
+            std::fs::OpenOptions::new()
+                .write(true)
+                .open(&doc)
+                .map(|_| ()),
+        ),
+        (
+            "append to it",
+            std::fs::OpenOptions::new()
+                .append(true)
+                .open(&doc)
+                .map(|_| ()),
+        ),
+        (
+            "truncate it",
+            std::fs::OpenOptions::new()
+                .write(true)
+                .truncate(true)
+                .open(&doc)
+                .map(|_| ()),
+        ),
+        (
+            "replace it with a new document of the same name",
+            std::fs::write(dir.path().join("shared/notes.md"), b"x"),
+        ),
+        (
+            "add a second document beside it",
+            std::fs::write(dir.path().join("shared/mine.md"), b"# Mine\n"),
+        ),
+        ("delete it", std::fs::remove_file(&doc)),
+        (
+            "rename it out of the way",
+            std::fs::rename(&doc, dir.path().join("shared/moved.md")),
+        ),
+    ] {
+        assert_eq!(
+            outcome.err().map(|e| e.raw_os_error().unwrap_or(0)),
+            Some(libc::EROFS),
+            "{what}: a read participant must not be able to originate a change"
+        );
+    }
+
+    // Nothing was authored. Not "the change was refused" — the change
+    // graph did not move, so no change was ever made.
+    assert_eq!(
+        namespace.lock().unwrap().heads(),
+        heads_before,
+        "the CRDT change graph must not have advanced"
+    );
+    assert_eq!(
+        namespace.lock().unwrap().live_node_ids(),
+        nodes_before,
+        "and no node was added or removed"
+    );
+    assert_eq!(
+        std::fs::read(&doc).expect("still readable"),
+        before,
+        "the document reads exactly as it did before"
+    );
+
+    // The negative case is not vacuous: the same document, the same
+    // writes, with a write grant instead of a read grant.
+    let rw = WorkspaceAcl::from_capabilities(
+        BOB,
+        &[CapOverride::new(
+            Subject::User(Ed25519PublicKey(BOB)),
+            Scope::FsPath("/shared".into()),
+            Effect::Grant,
+            Verb::Write,
+        )],
+        &[],
+        None,
+    );
+    let (_s2, dir2, ns2) = document_fixture(Some((rw, BOB)), "quickfs_doc_rw").await;
+    let heads2 = ns2.lock().unwrap().heads();
+    std::fs::write(dir2.path().join("shared/notes.md"), b"# Authored\n\nBy Bob\n")
+        .expect("an authoring participant may write the shared document");
+    assert_ne!(
+        ns2.lock().unwrap().heads(),
+        heads2,
+        "an authored write must move the change graph — otherwise the assertions above prove \
+         nothing about authorship"
+    );
+}
