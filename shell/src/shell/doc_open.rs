@@ -50,11 +50,34 @@
 //! not a promise to let the app write it — an editor that saves will
 //! raise a write prompt, which is the correct place for the user to be
 //! asked.
+//!
+//! ## Opening what is already open
+//!
+//! Activating the same document twice must not start a second copy of
+//! its app, and answering "is this already open?" needs the document to
+//! have an identity. It has one: a file *is* a record whose identity is
+//! its path ([`ui::record::RecordId::for_file`]), so two spellings of
+//! one path are one record and the question is a lookup rather than a
+//! guess from window titles.
+//!
+//! [`OPEN_DOCUMENTS`] is the answer's other half — which window arrived
+//! for which record. A launch and the window it produces are correlated
+//! the same way the placement note is: the launch leaves a note against
+//! the package, and the first toplevel that package adopts claims it
+//! ([`claim_surface_for_document`], called from
+//! [`crate::compositor::tab_binding::adopt_toplevel`]). A record whose
+//! window has since closed is *not* open — the note is dropped and the
+//! next open launches for real.
 
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
+use ui::record::RecordId;
+
+use crate::compositor::tab_binding::Placement;
 use crate::shell::chrome_state::Chrome;
 use crate::shell::launcher::{self, InstalledApp, LaunchError};
+use crate::shell::state::{GroupId, StripId, TabId, TileContent, WorkspaceId, WorkspaceTree};
 
 /// What opening `path` would do.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -79,6 +102,41 @@ pub enum DocumentTarget {
     /// A directory. Not something an app is launched for — the caller
     /// navigates into it.
     Directory,
+}
+
+/// What an open actually did.
+///
+/// Two outcomes, because they are two different things to have happened
+/// to the user's desktop and a caller reporting "opened" for both would
+/// be lying about one of them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Opened {
+    /// A new instance of the app was started with the document.
+    Launched { app: InstalledApp },
+    /// The document was already open here, so its window was focused
+    /// instead of a second copy being started.
+    ///
+    /// `tab` is the tab now in front of the user, or `None` when the
+    /// first open's window has not arrived yet — still not a reason to
+    /// launch again, and still not a launch to report.
+    Focused {
+        app: InstalledApp,
+        tab: Option<TabId>,
+    },
+}
+
+impl Opened {
+    /// The application the document belongs to, either way.
+    pub fn app(&self) -> &InstalledApp {
+        match self {
+            Opened::Launched { app } | Opened::Focused { app, .. } => app,
+        }
+    }
+
+    /// Whether this open started a process.
+    pub fn launched(&self) -> bool {
+        matches!(self, Opened::Launched { .. })
+    }
 }
 
 /// Why an open could not be started.
@@ -155,15 +213,40 @@ pub fn resolve(path: &Path) -> DocumentTarget {
 /// Open `path` in the application that declares its extension, in the
 /// chrome's active workspace.
 ///
-/// Records a session-scoped read capability for the path first, then
-/// launches through [`launcher::launch_document_in_workspace`] — the
-/// same path the palette's Applications rows take, so the app gets the
+/// The one open path. Every surface that activates a file — the search
+/// palette's file rows, the file explorer, a file dropped onto a window
+/// group — comes through here, so a document opened from any of them
+/// lands in the same sandbox with the same capabilities and the same
+/// identity as one opened from any other.
+///
+/// If the document is already open, its window is focused and nothing is
+/// launched (see the module docs). Otherwise a session-scoped read
+/// capability for the path is recorded, and then
+/// [`launcher::launch_document_in_workspace`] starts the app — the same
+/// launch the palette's Applications rows take, so the app gets the
 /// workspace's grants and its collaboration room like any other launch.
 ///
-/// Returns the resolved app on success. `Err(OpenError::NoHandler)`
-/// means nothing is installed that claims the type; callers decide
-/// whether to fall back to the desktop's default handler or to say so.
-pub fn open_in_workspace(path: &Path, chrome: &Chrome) -> Result<InstalledApp, OpenError> {
+/// `Err(OpenError::NoHandler)` means nothing installed claims the type;
+/// callers decide whether to fall back to the desktop's default handler
+/// or to say so.
+pub fn open_in_workspace(path: &Path, chrome: &Chrome) -> Result<Opened, OpenError> {
+    open(path, chrome, None)
+}
+
+/// [`open_in_workspace`] for a caller that already knows which window
+/// group the document belongs to — the group a file was dropped onto.
+///
+/// Placement is otherwise this module's business only in the sense that
+/// it asks for it; see [`placement_for_document_open`].
+pub fn open_in_group(path: &Path, chrome: &Chrome, group: GroupId) -> Result<Opened, OpenError> {
+    open(path, chrome, Some(Placement::TabIn(group)))
+}
+
+fn open(
+    path: &Path,
+    chrome: &Chrome,
+    placement: Option<Placement>,
+) -> Result<Opened, OpenError> {
     let app = match resolve(path) {
         DocumentTarget::App { app, .. } => app,
         DocumentTarget::NoAppForDocument { ext } => {
@@ -180,22 +263,36 @@ pub fn open_in_workspace(path: &Path, chrome: &Chrome) -> Result<InstalledApp, O
         }
     };
 
+    // The document's identity, and with it the answer to "is this
+    // already open". Asked before anything is granted or launched: a
+    // second activation of an open document must change nothing except
+    // which window is in front.
+    let record = RecordId::for_file(path);
+    match existing_window_for(&record, chrome) {
+        Some(Existing::Window(tab)) => {
+            focus(chrome, tab);
+            return Ok(Opened::Focused {
+                app,
+                tab: Some(tab.tab),
+            });
+        }
+        Some(Existing::Starting) => return Ok(Opened::Focused { app, tab: None }),
+        None => {}
+    }
+
     // Grant before launching: `launch_document_in_workspace` publishes
     // the workspace's capability list as it stands at call time, so a
     // grant recorded after this point would not reach this launch.
     grant_read_for_open(&app.package_id, path, chrome)?;
 
-    // A document opened from somewhere else belongs *with* whatever
-    // asked for it — same task, so a tab in the focused group rather
-    // than a new column. A launch from the applications list gets the
-    // default (its own group); see
-    // [`crate::compositor::tab_binding::Placement`].
-    if let Some(group) = focused_group(chrome) {
-        launcher::set_pending_placement(
-            &app.package_id,
-            crate::compositor::tab_binding::Placement::TabIn(group),
-        );
+    if let Some(p) = placement.or_else(|| placement_for_document_open(chrome)) {
+        launcher::set_pending_placement(&app.package_id, p);
     }
+
+    // Note the document as opening *before* the launch: the window can
+    // arrive (and try to claim the note) as soon as the launch thread
+    // starts.
+    note_opening(&record, &app.package_id);
 
     let launched = {
         let st = chrome.borrow();
@@ -204,10 +301,34 @@ pub fn open_in_workspace(path: &Path, chrome: &Chrome) -> Result<InstalledApp, O
             .map(|ws| launcher::launch_document_in_workspace(&app.package_id, ws, Some(path)))
     };
     match launched {
-        Some(Ok(app)) => Ok(app),
-        Some(Err(e)) => Err(OpenError::Launch(e)),
-        None => Err(OpenError::NoWorkspace),
+        Some(Ok(app)) => Ok(Opened::Launched { app }),
+        // A launch that never started leaves no window, so the note
+        // would make the next attempt believe the document was already
+        // opening and refuse to try again.
+        Some(Err(e)) => {
+            forget_document(&record);
+            Err(OpenError::Launch(e))
+        }
+        None => {
+            forget_document(&record);
+            Err(OpenError::NoWorkspace)
+        }
     }
+}
+
+/// Where the window of a document opened from another surface lands.
+///
+/// A document opened from somewhere else belongs *with* whatever asked
+/// for it — same task, so a tab in the focused group rather than a new
+/// column. A launch from the applications list gets the default (its own
+/// group); see [`crate::compositor::tab_binding::Placement`], which is
+/// where that rule is written down.
+///
+/// This is the single place this module decides placement, so when the
+/// window-placement rule moves behind one function it is the only call
+/// site that changes.
+fn placement_for_document_open(chrome: &Chrome) -> Option<Placement> {
+    focused_group(chrome).map(Placement::TabIn)
 }
 
 /// The window group the user is looking at, if any. `None` when the
@@ -230,6 +351,192 @@ fn focused_group(chrome: &Chrome) -> Option<crate::shell::state::GroupId> {
             .and_then(|s| s.window_groups.first())
             .map(|g| g.id)
     })
+}
+
+/// Tell the user, by name, that a file could not be opened.
+///
+/// Every surface that can open a file reports a failed open through here,
+/// because the failure is the same fact wherever the open came from: this
+/// file, and nothing installed opens it. Doing nothing is not an option —
+/// a silent activation is indistinguishable from a broken desktop, and it
+/// is the one outcome the user cannot act on.
+///
+/// `surface` is the part of the desktop the user was in when they asked
+/// (`"Files"` for the palette's file rows), or `None` when the answer is
+/// simply the shell's.
+pub fn report_open_failure(chrome: &Chrome, path: &Path, detail: &str, surface: Option<&str>) {
+    use crate::shell::notification::{Notification, NotificationSeverity};
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| path.display().to_string());
+    let mut n = Notification::new(format!("Couldn't open {name}"), detail.to_string())
+        .with_severity(NotificationSeverity::Error);
+    if let Some(surface) = surface {
+        n = n.with_app_name(surface);
+    }
+    let mut st = chrome.borrow_mut();
+    st.push_notification_full(n);
+    st.bump();
+}
+
+// ---------------------------------------------------------------------
+// Which documents are open, and in which window.
+// ---------------------------------------------------------------------
+
+/// One document this session opened.
+#[derive(Debug, Clone)]
+struct OpenDocument {
+    /// The record the document *is* — `file:<absolute path>`.
+    record: RecordId,
+    /// The package the document was opened in. What correlates the
+    /// launch with the window it produces.
+    package_id: String,
+    /// The wayland surface that arrived for the launch, once one has.
+    /// `None` means the app is still starting.
+    surface: Option<u64>,
+}
+
+/// Documents this session has opened, and the window each landed in.
+///
+/// Process-wide because the fact is process-wide: a document is open in
+/// *this session*, not in one workspace or one widget tree. The same
+/// reason [`launcher::set_pending_placement`] lives beside the launch
+/// rather than in the tree.
+static OPEN_DOCUMENTS: Mutex<Vec<OpenDocument>> = Mutex::new(Vec::new());
+
+/// The four coordinates that address a tab. Focus needs all of them —
+/// setting a subset leaves the user looking at a different workspace
+/// than the tab they asked for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct TabAddress {
+    workspace: WorkspaceId,
+    strip: StripId,
+    group: GroupId,
+    tab: TabId,
+}
+
+/// Whether this session already has a record open, and how far along.
+#[derive(Debug, Clone, Copy)]
+enum Existing {
+    /// A live window shows it, in this tab.
+    Window(TabAddress),
+    /// A launch for it is in flight and its window has not arrived.
+    Starting,
+}
+
+/// Note that `record` is being opened in `package_id`.
+///
+/// Keyed by record, so re-noting the same document replaces rather than
+/// duplicates.
+fn note_opening(record: &RecordId, package_id: &str) {
+    let mut open = OPEN_DOCUMENTS.lock().expect("OPEN_DOCUMENTS poisoned");
+    open.retain(|d| &d.record != record);
+    open.push(OpenDocument {
+        record: record.clone(),
+        package_id: package_id.to_string(),
+        surface: None,
+    });
+}
+
+fn forget_document(record: &RecordId) {
+    OPEN_DOCUMENTS
+        .lock()
+        .expect("OPEN_DOCUMENTS poisoned")
+        .retain(|d| &d.record != record);
+}
+
+/// Drop every note. Used by tests, which share this process-wide state.
+pub fn clear_open_documents() {
+    OPEN_DOCUMENTS
+        .lock()
+        .expect("OPEN_DOCUMENTS poisoned")
+        .clear();
+}
+
+/// Attribute a freshly-adopted toplevel to the document it was launched
+/// for, if it was launched for one.
+///
+/// Called from [`crate::compositor::tab_binding::adopt_toplevel`], beside
+/// the placement lookup, and correlated the same way: by the client's
+/// wayland app-id against the package we launched. The oldest unclaimed
+/// note for that package wins, which is launch order — the best available
+/// answer when one app is opening two documents at once, and a
+/// deterministic one rather than a race.
+///
+/// Idempotent per surface: adoption can run more than once for a window,
+/// and a surface that already holds a note must not steal a second.
+pub fn claim_surface_for_document(app_id: &str, surface_id: u64) {
+    let mut open = OPEN_DOCUMENTS.lock().expect("OPEN_DOCUMENTS poisoned");
+    if open.iter().any(|d| d.surface == Some(surface_id)) {
+        return;
+    }
+    if let Some(d) = open
+        .iter_mut()
+        .find(|d| d.surface.is_none() && launcher::app_id_matches_package(app_id, &d.package_id))
+    {
+        d.surface = Some(surface_id);
+    }
+}
+
+/// Whether `record` is already open, and where.
+///
+/// A note whose window has since closed is not "open": it is dropped
+/// here, so the caller launches for real rather than focusing nothing.
+fn existing_window_for(record: &RecordId, chrome: &Chrome) -> Option<Existing> {
+    let surface = {
+        let open = OPEN_DOCUMENTS.lock().expect("OPEN_DOCUMENTS poisoned");
+        let d = open.iter().find(|d| &d.record == record)?;
+        match d.surface {
+            Some(s) => s,
+            None => return Some(Existing::Starting),
+        }
+    };
+    let found = {
+        let st = chrome.borrow();
+        let tree = st.tree();
+        tab_showing_surface(&tree, surface)
+    };
+    match found {
+        Some(addr) => Some(Existing::Window(addr)),
+        None => {
+            forget_document(record);
+            None
+        }
+    }
+}
+
+/// The tab hosting the foreign client on `surface_id`, anywhere in the
+/// tree.
+///
+/// Searched across every workspace, not just the active one: a document
+/// opened in one workspace and then looked for from another is still
+/// open, and focusing it means switching to where it is.
+fn tab_showing_surface(tree: &WorkspaceTree, surface_id: u64) -> Option<TabAddress> {
+    for w in &tree.workspaces {
+        for s in &w.strips {
+            for g in &s.window_groups {
+                for t in &g.tabs {
+                    if matches!(&t.tile, TileContent::Foreign { surface_id: sid, .. } if *sid == surface_id)
+                    {
+                        return Some(TabAddress {
+                            workspace: w.id,
+                            strip: s.id,
+                            group: g.id,
+                            tab: t.id,
+                        });
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+fn focus(chrome: &Chrome, at: TabAddress) {
+    chrome
+        .borrow_mut()
+        .focus_tab(at.workspace, at.strip, at.group, at.tab);
 }
 
 /// Record "this app may read this file" in the active workspace.
@@ -310,6 +617,308 @@ mod tests {
     fn chrome_with_workspace() -> Chrome {
         let handle: WorkspaceTreeHandle = Arc::new(RwLock::new(WorkspaceTree::bootstrap_default()));
         ChromeState::new_with_handle(handle)
+    }
+
+    /// Put a stand-in `qos-launcher` in `dir` that records the argv it is
+    /// invoked with, and point the shell at it.
+    ///
+    /// `QOS_LAUNCHER_BIN` is the documented seam for exactly this (see
+    /// `launcher::launcher_bin_candidates`), so what the log ends up
+    /// holding is the command the production launch path really ran —
+    /// not a value any code under test returned.
+    ///
+    /// Returns the log path.
+    fn install_recording_launcher(dir: &Path) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let log = dir.join("launched.log");
+        let bin = dir.join("qos-launcher");
+        std::fs::write(
+            &bin,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\n",
+                log.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        // SAFETY: every caller is in the `process_env` serial group.
+        unsafe {
+            std::env::set_var("QOS_LAUNCHER_BIN", &bin);
+            std::env::set_var("XDG_RUNTIME_DIR", dir);
+        }
+        launcher::set_wayland_socket_path(Some(dir.join("wayland-0")));
+        log
+    }
+
+    /// Every launch the shell started, as the argv the launcher saw.
+    /// Waits for at least `want` of them — a launch runs on its own
+    /// thread, so it is not observable the instant `open` returns.
+    fn launched_commands(log: &Path, want: usize) -> Vec<String> {
+        for _ in 0..400 {
+            if let Ok(s) = std::fs::read_to_string(log) {
+                let lines: Vec<String> = s.lines().map(str::to_string).collect();
+                if lines.len() >= want {
+                    return lines;
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        let got = std::fs::read_to_string(log).unwrap_or_default();
+        panic!("expected {want} launch(es); the launcher recorded:\n{got}");
+    }
+
+    /// Reset the process-wide state a launch and an open both write to.
+    fn reset_session_state() {
+        launcher::invalidate_app_cache();
+        launcher::clear_pending_placements();
+        let _ = launcher::drain_events();
+        clear_open_documents();
+    }
+
+    fn clear_launch_env() {
+        // SAFETY: every caller is in the `process_env` serial group.
+        unsafe {
+            std::env::remove_var("QOS_APPS_DATA_DIR");
+            std::env::remove_var("QOS_LAUNCHER_BIN");
+            std::env::remove_var("XDG_RUNTIME_DIR");
+        }
+        launcher::set_wayland_socket_path(None);
+        reset_session_state();
+    }
+
+    /// Three formats, three different owning packages, one open path.
+    ///
+    /// The assertion is on the command the compositor actually executed
+    /// and on the launch events the compositor itself queued — not on
+    /// what `open_in_workspace` handed back.
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn each_format_opens_in_the_package_that_declares_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        install(
+            tmp.path(),
+            "dev.qos.word-processor",
+            "Word Processor",
+            &["odt"],
+        );
+        install(tmp.path(), "dev.qos.pdf-viewer", "PDF Viewer", &["pdf"]);
+        install(tmp.path(), "dev.qos.text-editor", "Text Editor", &["md"]);
+        // SAFETY: guarded by the `process_env` serial group.
+        unsafe { std::env::set_var("QOS_APPS_DATA_DIR", tmp.path()) };
+        let log = install_recording_launcher(tmp.path());
+        reset_session_state();
+
+        let chrome = chrome_with_workspace();
+        let cases = [
+            ("report.odt", "dev.qos.word-processor"),
+            ("manual.pdf", "dev.qos.pdf-viewer"),
+            ("notes.md", "dev.qos.text-editor"),
+        ];
+        for (name, _) in cases {
+            let path = tmp.path().join(name);
+            std::fs::write(&path, b"x").unwrap();
+            let opened = open_in_workspace(&path, &chrome)
+                .unwrap_or_else(|e| panic!("{name} must open: {e}"));
+            assert!(opened.launched(), "{name} had to start its app");
+        }
+
+        let commands = launched_commands(&log, 3);
+        for (name, package) in cases {
+            let want_path = tmp.path().join(name).display().to_string();
+            let hit = commands
+                .iter()
+                .find(|c| c.contains(&format!("--app-id {package}")))
+                .unwrap_or_else(|| {
+                    panic!("no launch of {package}; the launcher ran:\n{commands:#?}")
+                });
+            assert!(
+                hit.contains(&format!("--open {want_path}")),
+                "{package} was launched without the document: {hit}"
+            );
+        }
+
+        // The compositor's own record of what it started.
+        let started: Vec<String> = launcher::drain_events()
+            .into_iter()
+            .filter(|e| matches!(e.kind, launcher::LaunchEventKind::Started { .. }))
+            .map(|e| e.package_id)
+            .collect();
+        for (_, package) in cases {
+            assert!(
+                started.iter().any(|p| p == package),
+                "the compositor did not record starting {package}: {started:?}"
+            );
+        }
+
+        clear_launch_env();
+    }
+
+    /// Opening a document that is already open focuses its window. One
+    /// instance, one launch — asserted against the tree the compositor
+    /// paints and the commands it ran.
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn opening_an_open_document_focuses_it_instead_of_launching_again() {
+        let tmp = tempfile::tempdir().unwrap();
+        install(
+            tmp.path(),
+            "dev.qos.word-processor",
+            "Word Processor",
+            &["odt"],
+        );
+        // SAFETY: guarded by the `process_env` serial group.
+        unsafe { std::env::set_var("QOS_APPS_DATA_DIR", tmp.path()) };
+        let log = install_recording_launcher(tmp.path());
+        reset_session_state();
+
+        let doc = tmp.path().join("report.odt");
+        std::fs::write(&doc, b"x").unwrap();
+        let chrome = chrome_with_workspace();
+
+        assert!(
+            open_in_workspace(&doc, &chrome).unwrap().launched(),
+            "the first open starts the app"
+        );
+        let after_first = launched_commands(&log, 1);
+        assert_eq!(after_first.len(), 1);
+
+        // The app's window arrives, through the production adoption path.
+        const SURFACE: u64 = 4242;
+        let adopted = {
+            let st = chrome.borrow();
+            let mut tree = st.tree_mut();
+            crate::compositor::tab_binding::adopt_toplevel(
+                &mut tree,
+                SURFACE,
+                Some("word-processor".to_string()),
+            )
+        };
+        // Focus something else first, so "it is focused" is a claim about
+        // this open rather than about where the window happened to land.
+        {
+            let st = chrome.borrow();
+            let mut tree = st.tree_mut();
+            let strip = tree.workspaces[0].strips[0].id;
+            let other = tree.workspaces[0].strips[0].window_groups[0].id;
+            let first_tab = tree.workspaces[0].strips[0].window_groups[0].tabs[0].id;
+            tree.set_active_group(strip, other);
+            if let Some(g) = tree.workspaces[0].strips[0].window_groups.first_mut() {
+                g.active_tab = first_tab;
+            }
+        }
+
+        let again = open_in_workspace(&doc, &chrome).expect("the second open must succeed");
+        assert_eq!(
+            again,
+            Opened::Focused {
+                app: match resolve(&doc) {
+                    DocumentTarget::App { app, .. } => app,
+                    other => panic!("expected an owning app, got {other:?}"),
+                },
+                tab: Some(adopted),
+            },
+            "the second open focuses the window the first one produced"
+        );
+
+        // Exactly one window for the document, and it is the one in
+        // front — read out of the tree, not out of the return value.
+        let st = chrome.borrow();
+        let tree = st.tree();
+        let foreign: Vec<u64> = tree
+            .workspaces
+            .iter()
+            .flat_map(|w| w.strips.iter())
+            .flat_map(|s| s.window_groups.iter())
+            .flat_map(|g| g.tabs.iter())
+            .filter_map(|t| match &t.tile {
+                TileContent::Foreign { surface_id, .. } => Some(*surface_id),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            foreign,
+            vec![SURFACE],
+            "a second open must not add a second window"
+        );
+
+        let addr = tab_showing_surface(&tree, SURFACE).expect("the window is in the tree");
+        assert_eq!(tree.active, addr.workspace, "its workspace is active");
+        assert_eq!(
+            tree.active_strip.get(&addr.workspace).copied(),
+            Some(addr.strip),
+            "its strip is active"
+        );
+        assert_eq!(
+            tree.active_group_for(addr.strip),
+            Some(addr.group),
+            "its group is active"
+        );
+        let group = tree.workspaces[0]
+            .strips
+            .iter()
+            .flat_map(|s| s.window_groups.iter())
+            .find(|g| g.id == addr.group)
+            .expect("the group exists");
+        assert_eq!(group.active_tab, adopted, "and its tab is the active one");
+        drop(tree);
+        drop(st);
+
+        assert_eq!(
+            std::fs::read_to_string(&log).unwrap().lines().count(),
+            1,
+            "the second open must not have run the launcher again"
+        );
+
+        clear_launch_env();
+    }
+
+    /// A document whose window has been closed is not open. The next
+    /// activation launches for real rather than focusing nothing.
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn a_closed_window_means_the_document_is_no_longer_open() {
+        let tmp = tempfile::tempdir().unwrap();
+        install(
+            tmp.path(),
+            "dev.qos.word-processor",
+            "Word Processor",
+            &["odt"],
+        );
+        // SAFETY: guarded by the `process_env` serial group.
+        unsafe { std::env::set_var("QOS_APPS_DATA_DIR", tmp.path()) };
+        let log = install_recording_launcher(tmp.path());
+        reset_session_state();
+
+        let doc = tmp.path().join("report.odt");
+        std::fs::write(&doc, b"x").unwrap();
+        let chrome = chrome_with_workspace();
+        open_in_workspace(&doc, &chrome).unwrap();
+        launched_commands(&log, 1);
+        {
+            let st = chrome.borrow();
+            let mut tree = st.tree_mut();
+            crate::compositor::tab_binding::adopt_toplevel(
+                &mut tree,
+                77,
+                Some("word-processor".to_string()),
+            );
+        }
+        {
+            let st = chrome.borrow();
+            let mut tree = st.tree_mut();
+            crate::compositor::tab_binding::close_tab_for_destroyed_surface(&mut tree, 77);
+        }
+
+        let reopened = open_in_workspace(&doc, &chrome).expect("reopening must work");
+        assert!(
+            reopened.launched(),
+            "a document whose window is gone has to be launched again, got {reopened:?}"
+        );
+        // The second launch really ran, and there are exactly two.
+        let commands = launched_commands(&log, 2);
+        assert_eq!(commands.len(), 2, "one launch per activation: {commands:#?}");
+
+        clear_launch_env();
     }
 
     /// `.odt` is a `qdoc` document type. With a package declaring it,
@@ -444,6 +1053,17 @@ mod tests {
             "the grant must name the document's own path, not a directory \
              above it"
         );
+        // Spelled out, because "scoped to the file" is the whole point:
+        // no grant may name the directory the document sits in, which
+        // would hand the app every other file beside it.
+        let parent = doc_path.parent().unwrap().display().to_string();
+        assert!(
+            !ws.capabilities
+                .iter()
+                .any(|c| c.scope == Scope::FsPath(parent.clone())),
+            "the open widened the grant to {parent}: {:?}",
+            ws.capabilities
+        );
         drop(tree);
         drop(st);
 
@@ -463,6 +1083,9 @@ mod tests {
         unsafe { std::env::set_var("QOS_APPS_DATA_DIR", tmp.path()) };
         launcher::invalidate_app_cache();
 
+        let log = install_recording_launcher(tmp.path());
+        reset_session_state();
+
         let chrome = chrome_with_workspace();
         let err =
             open_in_workspace(Path::new("/w/thing.zzz"), &chrome).expect_err("nothing claims .zzz");
@@ -473,7 +1096,17 @@ mod tests {
                 ext: Some("zzz".to_string()),
             }
         );
-        assert!(err.user_message().contains(".zzz"));
+        // The sentence a user is shown has to name the file and say that
+        // nothing opens it — a bare "failed" is not actionable.
+        let message = err.user_message();
+        assert!(
+            message.contains("thing.zzz") && message.contains(".zzz"),
+            "the message must name the file and its type: {message}"
+        );
+        assert!(
+            message.contains("no installed app opens"),
+            "the message must say nothing can open it: {message}"
+        );
         assert!(
             chrome
                 .borrow()
@@ -484,9 +1117,12 @@ mod tests {
                 .is_empty(),
             "a refused open must not leave a grant behind"
         );
+        assert!(
+            !log.exists(),
+            "a refused open must not launch anything: {:?}",
+            std::fs::read_to_string(&log)
+        );
 
-        // SAFETY: guarded by the `process_env` serial group.
-        unsafe { std::env::remove_var("QOS_APPS_DATA_DIR") };
-        launcher::invalidate_app_cache();
+        clear_launch_env();
     }
 }

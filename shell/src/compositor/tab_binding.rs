@@ -96,6 +96,13 @@ pub fn adopt_toplevel(tree: &mut WorkspaceTree, surface_id: u64, app_id: Option<
         .as_deref()
         .and_then(|id| crate::shell::launcher::placement_for_toplevel(id, surface_id))
         .unwrap_or_default();
+    // If this window is the one a document open asked for, that is where
+    // the document now lives — recorded here because this is where the
+    // launch and the window it produced meet, the same correlation the
+    // placement lookup above makes.
+    if let Some(id) = app_id.as_deref() {
+        crate::shell::doc_open::claim_surface_for_document(id, surface_id);
+    }
     adopt_toplevel_at(tree, surface_id, app_id, placement)
 }
 
