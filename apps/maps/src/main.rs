@@ -6,7 +6,9 @@
 //!                       (headless screenshot; identical passes to the live app).
 //!                       `--viewport WxH` sets the frame size and `--nav-closed`
 //!                       forces the overlay drawer shut — both affect only the
-//!                       screenshot path, never the live app.
+//!                       screenshot path, never the live app. Scenario flags
+//!                       (`--pois`, `--search`, `--offline`, `--panel …`, …)
+//!                       stage a specific surface for the shot.
 
 use std::collections::HashMap;
 
@@ -43,6 +45,8 @@ struct ShotArgs {
     /// Turn the real-time traffic overlay on (sample congestion, or the honest
     /// "No traffic data" state when combined with `--empty`).
     traffic: bool,
+    /// Demo the offline-maps overlay with saved, manageable downloaded areas.
+    offline: bool,
 }
 
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -89,6 +93,9 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         if shot.traffic {
             app.set_demo_traffic();
         }
+        if shot.offline {
+            app.set_demo_offline();
+        }
         render_shot_to_png(Box::new(app), shot.viewport, &shot.out)?;
         return Ok(());
     }
@@ -118,6 +125,7 @@ fn parse_shots(args: &[String]) -> Option<ShotArgs> {
     let mut search = false;
     let mut pois = false;
     let mut traffic = false;
+    let mut offline = false;
     let mut iter = args.iter().skip(1);
     while let Some(arg) = iter.next() {
         if arg == "--shots" {
@@ -146,6 +154,8 @@ fn parse_shots(args: &[String]) -> Option<ShotArgs> {
             pois = true;
         } else if arg == "--traffic" {
             traffic = true;
+        } else if arg == "--offline" {
+            offline = true;
         } else if arg == "--panel" {
             if let Some(s) = iter.next() {
                 apply_panel(s, &mut panel, &mut transit_mode);
@@ -166,6 +176,7 @@ fn parse_shots(args: &[String]) -> Option<ShotArgs> {
         search,
         pois,
         traffic,
+        offline,
     })
 }
 

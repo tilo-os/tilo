@@ -9,8 +9,8 @@
 
 use crate::geo::{haversine_m, polyline_length_m};
 use crate::model::{
-    Category, LatLon, MapModel, Maneuver, Panel, Place, Poi, Route, RouteStep, TransitJourney,
-    TransitLeg, TransitMode, TravelMode,
+    Category, DownloadedRegion, LatLon, MapModel, Maneuver, Panel, Place, Poi, Route, RouteStep,
+    TransitJourney, TransitLeg, TransitMode, TravelMode,
 };
 
 /// Road importance class — drives stroke width + colour ramp index.
@@ -376,6 +376,32 @@ pub fn places() -> Vec<Place> {
 /// Origin point for directions ("your location").
 pub fn origin() -> LatLon {
     cell(-6.5, -6.0)
+}
+
+/// A couple of bundled "downloaded areas" so the offline-maps overlay's
+/// managed-region list renders in `--shots`/tests without any real download.
+/// The live app builds these from real viewport downloads instead.
+pub fn regions() -> Vec<DownloadedRegion> {
+    vec![
+        DownloadedRegion {
+            id: "region-demo-1".to_string(),
+            name: "München Altstadt".to_string(),
+            min: cell(-6.0, -6.0),
+            max: cell(6.0, 6.0),
+            z0: 13,
+            z1: 16,
+            tiles: 1148,
+        },
+        DownloadedRegion {
+            id: "region-demo-2".to_string(),
+            name: "Hauptbahnhof".to_string(),
+            min: cell(-11.0, -2.0),
+            max: cell(-6.0, 3.0),
+            z0: 14,
+            z1: 17,
+            tiles: 412,
+        },
+    ]
 }
 
 /// Bundled viewport POIs with rich tags, standing in for a live Overpass reply

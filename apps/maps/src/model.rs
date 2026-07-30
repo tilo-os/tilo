@@ -446,6 +446,28 @@ impl Panel {
     }
 }
 
+/// A map area the user downloaded for offline use. The tiles themselves live
+/// in the on-disk tile cache (`z/x/y.png`); this record is the user-facing
+/// handle to that area — it is what the offline panel lists and what a delete
+/// action targets. Persisted in the CRDT so saved areas survive a restart and
+/// ride undo/redo like the rest of the model.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct DownloadedRegion {
+    /// Stable id (a monotonic timestamp) so the manage-list can target a row.
+    pub id: String,
+    /// Human label — a place inside the area when one is known, else its centre
+    /// coordinate.
+    pub name: String,
+    /// South-west / north-east corners of the downloaded bounding box.
+    pub min: LatLon,
+    pub max: LatLon,
+    /// Inclusive slippy-map zoom range that was fetched.
+    pub z0: u8,
+    pub z1: u8,
+    /// How many tiles the download covered (for the list's size summary).
+    pub tiles: u32,
+}
+
 /// The entire application state. Serialised into the CRDT.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct MapModel {
@@ -494,6 +516,10 @@ pub struct MapModel {
     pub zoom: f64,
     /// One-line network/status message for the status bar.
     pub status: String,
+    /// Map areas saved for offline use. The tiles are persisted in the on-disk
+    /// cache; this is the manageable list of what has been downloaded.
+    #[serde(default)]
+    pub regions: Vec<DownloadedRegion>,
 }
 
 impl Default for MapModel {
@@ -520,6 +546,7 @@ impl Default for MapModel {
             center: LatLon::new(48.1371, 11.5754),
             zoom: 14.4,
             status: String::new(),
+            regions: Vec::new(),
         }
     }
 }
