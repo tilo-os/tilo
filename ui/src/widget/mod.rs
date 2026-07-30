@@ -285,6 +285,26 @@ pub trait Widget {
     fn resources(&self, _doc: &AutoCommit) -> Vec<qos_actions::Resource> {
         Vec::new()
     }
+
+    /// Searchable-content sources this widget folds into the unified Ctrl+K
+    /// palette, alongside its exported [`resources`](Self::resources) actions.
+    /// An app declares what it can *find* (its contacts, its files, …) by
+    /// returning a [`SearchProvider`](crate::search::SearchProvider) per kind;
+    /// their hits appear as navigable result groups. Activating one calls
+    /// [`activate_search_result`](Self::activate_search_result) with the row's
+    /// opaque `action_id`. Default: nothing searchable.
+    fn search_providers(&self) -> Vec<Box<dyn crate::search::SearchProvider>> {
+        Vec::new()
+    }
+
+    /// Navigate to the content a chosen search-provider row identifies. The
+    /// `action_id` is the opaque token the widget's own
+    /// [`SearchProvider`](crate::search::SearchProvider) emitted; the widget
+    /// resolves it back to the record and selects / opens it. This is
+    /// presentation (navigation), not a CRDT action — mutate the doc only if
+    /// selecting genuinely changes shared state. Default: no-op.
+    fn activate_search_result(&mut self, _action_id: &str, _doc: &mut AutoCommit, _path: &ObjId) {}
+
     fn accepts_drop(&self, _payload: &DragPayload) -> bool { false }
     fn on_drop(&mut self, _payload: DragPayload, _state: &mut AutoCommit, _path: &ObjId) {}
     fn wants_pointer_capture(&self) -> bool { false }

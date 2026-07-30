@@ -523,8 +523,10 @@ impl App {
     /// resources + their exported actions. No-op-safe to call repeatedly.
     pub fn open_action_palette(&mut self) {
         let resources = self.collect_resources();
+        let providers = self.root_widget.search_providers();
         let mut palette = crate::action_palette::ActionPalette::new();
         palette.load_open_resources(&resources);
+        palette.set_providers(providers);
         palette.open();
         self.action_palette = Some(palette);
     }
@@ -555,7 +557,7 @@ impl App {
             &mut self.state.doc,
             &root,
         );
-        // A selection may have fired: drain + dispatch it.
+        // An action row may have fired: drain + dispatch it through qos_actions.
         let dispatched = self
             .action_palette
             .as_mut()
@@ -570,6 +572,20 @@ impl App {
                 Ok(_) => {} // submitted to host; no local mutation
                 Err(e) => tracing::warn!(error = %e, "action palette dispatch failed"),
             }
+        }
+        // A content row may have fired: hand its id to the app to navigate. This
+        // is presentation, not an action — record an undo point only if the
+        // navigation genuinely mutated the shared doc.
+        let navigation = self.action_palette.as_mut().and_then(|p| p.take_navigation());
+        if let Some(action_id) = navigation {
+            let nav_before = self.state.doc.get_heads();
+            self.root_widget
+                .activate_search_result(&action_id, &mut self.state.doc, &root);
+            if self.state.doc.get_heads() != nav_before {
+                self.state.record_committed_action(nav_before, None, None);
+            }
+            self.needs_sync = true;
+            self.layout_dirty = true;
         }
         // If the palette closed (Escape, or a non-prompted selection), drop it.
         if self
@@ -2650,13 +2666,12 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                 // The Ctrl+K action palette paints last so it composites above
                 // the whole app. Centered near the top, sized to its content.
                 if let Some(ap) = app.action_palette.as_mut() {
-                    let palette = ap.palette_mut();
-                    let (pw, ph) = palette.desired_size();
                     let win_w = (width as f64) / (scale_factor as f64);
-                    let x0 = ((win_w - pw) / 2.0).max(0.0);
+                    let card_w = (win_w * 0.6).clamp(360.0, 640.0);
+                    let x0 = ((win_w - card_w) / 2.0).max(0.0);
                     let y0 = (height as f64 / (scale_factor as f64) * 0.12).max(24.0);
-                    palette.set_rect(KurboRect::new(x0, y0, x0 + pw, y0 + ph));
-                    palette.draw(
+                    ap.layout(&app.theme, Point::new(x0, y0), card_w);
+                    ap.draw(
                         &mut scene,
                         transform,
                         &mut app.text_renderer,
@@ -4972,8 +4987,25 @@ mod action_palette_tests {
         }
     }
 
+    /// A searchable-content source folded into the unified palette — stands in
+    /// for an app's contacts / files provider.
+    struct PeopleProvider;
+    impl crate::search::SearchProvider for PeopleProvider {
+        fn name(&self) -> &str {
+            "People"
+        }
+        fn search(&self, query: &str) -> Vec<crate::search::SearchResult> {
+            ["Ada Lovelace", "Grace Hopper"]
+                .into_iter()
+                .filter(|n| crate::search::fuzzy_score(query, n).is_some())
+                .map(|n| crate::search::SearchResult::new("People", n, format!("person:{n}")))
+                .collect()
+        }
+    }
+
     /// A root widget that publishes one open resource exporting one immediate
-    /// [`Flip`] action — i.e. exactly what an app instance offers Ctrl+K.
+    /// [`Flip`] action, plus a searchable People provider — i.e. exactly what an
+    /// app instance offers the unified Ctrl+K (actions + findable content).
     struct Publisher;
     impl Widget for Publisher {
         fn sync(&mut self, _s: &mut AutoCommit, _p: &ObjId) {}
@@ -5031,6 +5063,14 @@ mod action_palette_tests {
                 ),
             ]
         }
+        fn search_providers(&self) -> Vec<Box<dyn crate::search::SearchProvider>> {
+            vec![Box::new(PeopleProvider)]
+        }
+        fn activate_search_result(&mut self, action_id: &str, doc: &mut AutoCommit, _p: &ObjId) {
+            // Navigation writes the chosen id into the doc so the test can prove
+            // the app was reached through the real palette path.
+            doc.put(&ROOT, "navigated", ScalarValue::Str(action_id.into())).unwrap();
+        }
     }
 
     /// Synthesise a pressed `Enter` key event. Mirrors the `mem::zeroed`
@@ -5068,19 +5108,19 @@ mod action_palette_tests {
         assert_eq!(res.len(), 1, "one open resource");
         assert_eq!(res[0].kind, "test.obj");
 
-        // Opening Ctrl+K scopes the palette to those resources.
+        // Opening Ctrl+K scopes the palette to those resources AND folds in the
+        // widget's searchable content — one surface, both kinds.
         app.open_action_palette();
         let ap = app.action_palette().expect("palette is open");
         assert!(ap.is_open());
-        let labels: Vec<String> = ap
-            .palette()
-            .visible_entries()
-            .iter()
-            .map(|e| e.label.clone())
-            .collect();
+        let labels = ap.result_labels();
         assert!(
             labels.iter().any(|l| l.contains("Flip it")),
             "palette lists the widget's action: {labels:?}"
+        );
+        assert!(
+            labels.iter().any(|l| l == "Ada Lovelace"),
+            "palette folds in the widget's searchable content: {labels:?}"
         );
 
         // Preconditions: flag unset, nothing recorded to undo.
@@ -5089,7 +5129,7 @@ mod action_palette_tests {
         app.needs_sync = false;
         app.layout_dirty = false;
 
-        // Enter selects the single row and dispatches it through the real path.
+        // Enter selects the top row (the action) and dispatches it, the real path.
         let consumed = app.action_palette_handle_key(&synth_enter());
         assert!(consumed, "the open palette consumed the Enter key");
 
@@ -5111,5 +5151,45 @@ mod action_palette_tests {
         assert!(app.layout_dirty, "dispatch marks the app for relayout");
         // ...and a non-prompted selection closes + drops the palette.
         assert!(app.action_palette().is_none(), "palette closed after selection");
+    }
+
+    /// The other half of the unified surface: a **content** row (from a folded-in
+    /// [`SearchProvider`](crate::search::SearchProvider)) does NOT dispatch — it
+    /// hands its opaque id back through [`Widget::activate_search_result`] so the
+    /// app navigates. Proves the App wiring for the second outcome channel.
+    #[test]
+    fn ctrl_k_content_row_navigates_through_the_app() {
+        let mut app = App::new(State::new(), Box::new(Publisher));
+        app.open_action_palette();
+        // Narrow to a single content hit (the action row does not match "ada").
+        app.action_palette.as_mut().unwrap().set_query("ada");
+        let labels = app.action_palette().unwrap().result_labels();
+        assert!(labels.iter().any(|l| l == "Ada Lovelace"), "content hit present: {labels:?}");
+        assert!(
+            !labels.iter().any(|l| l.contains("Flip it")),
+            "the action row is filtered out by the query: {labels:?}"
+        );
+
+        assert!(app.state.doc.get(&ROOT, "navigated").unwrap().is_none());
+        app.needs_sync = false;
+        app.layout_dirty = false;
+
+        // Enter on the content row navigates (not dispatches).
+        let consumed = app.action_palette_handle_key(&synth_enter());
+        assert!(consumed, "the open palette consumed the Enter key");
+
+        let nav = app
+            .state
+            .doc
+            .get(&ROOT, "navigated")
+            .unwrap()
+            .and_then(|(v, _)| v.to_str().map(str::to_string));
+        assert_eq!(
+            nav,
+            Some("person:Ada Lovelace".to_string()),
+            "the content row's id reached the app to navigate"
+        );
+        assert!(app.action_palette().is_none(), "navigation closes the palette");
+        assert!(app.needs_sync && app.layout_dirty, "navigation marks a redraw");
     }
 }

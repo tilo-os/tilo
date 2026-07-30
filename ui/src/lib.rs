@@ -115,7 +115,7 @@ pub use widget::command_palette::{
 };
 // The qOS ACTION model (re-exported so apps get the whole vocabulary through
 // `ui::` without a second `use qos_actions` line) + the Ctrl+K bridge.
-pub use action_palette::{ActionPalette, GeneralAction};
+pub use action_palette::ActionPalette;
 pub use qos_actions;
 // Phase 1 (Audit timeline) widgets + their shared types. The
 // `collab_types::OpClass` / `ArtifactKind` re-exports flow through
