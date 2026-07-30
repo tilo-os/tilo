@@ -4387,15 +4387,16 @@ mod bootstrap_default_tests {
             .window_groups
             .first()
             .expect("at least one group");
-        let wide_enough = match first_group.width {
-            WindowWidth::Wide => true,
-            WindowWidth::Custom(w) => w >= 900,
-            _ => false,
-        };
+        // Widths are fractions of the strip, so "wide enough" is a share
+        // of the display rather than a pixel count — which is the whole
+        // point: the old `Custom(w) => w >= 900` could not be satisfied at
+        // all on a 4K panel, where 900 px is under a quarter of the screen.
+        let share = first_group.width.permille();
         assert!(
-            wide_enough,
-            "default group should be Wide+ so the white card fills more than \
-             half the viewport; got {:?}",
+            share >= ui::widget::WIDTH_NORMAL_PERMILLE,
+            "default group should fill at least the Normal share of the \
+             strip so the white card dominates the viewport; got {:?} \
+             ({share}/1000)",
             first_group.width
         );
     }
@@ -5119,20 +5120,20 @@ mod automerge_foundation_tests {
 
     #[test]
     fn width_change_propagates_via_apply_changes() {
-        // Unit-C convergence: peer A drags a resize handle, the
-        // harvester writes `WindowWidth::Custom(p)` to the cache and
-        // mirrors `width_pixels: Uint(p)` to the doc; peer B observes
-        // the new pixel value after `apply_changes`.
+        // Peer A drags a resize handle; the harvester writes
+        // `WindowWidth::Fraction(p)` to the cache and mirrors
+        // `width_permille: Uint(p)` to the doc; peer B observes the same
+        // *share* after `apply_changes`.
         //
-        // The `Custom` branch clamps to 300..=1200 inside `pixels()`,
-        // so we pick a value already inside that range to avoid the
-        // clamp masking a propagation bug.
+        // A share rather than a pixel count is the point: B's monitor is
+        // not A's, so replicating pixels would reproduce A's screen on B's.
         let mut tree_a = WorkspaceTree::bootstrap_default();
         let target_group = tree_a.workspaces[0].strips[0].window_groups[0].id;
-        let new_pixels: u32 = 720;
+        let new_share: u16 = 600;
 
-        tree_a.workspaces[0].strips[0].window_groups[0].width = WindowWidth::Custom(new_pixels);
-        tree_a.doc_set_width(target_group, new_pixels);
+        tree_a.workspaces[0].strips[0].window_groups[0].width =
+            WindowWidth::Fraction(new_share);
+        tree_a.doc_set_width(target_group, new_share);
 
         let changes = tree_a.export_changes_since(&[]);
         let mut tree_b = WorkspaceTree::default();
@@ -5149,10 +5150,14 @@ mod automerge_foundation_tests {
             "tree B should observe the window group after sync"
         );
         assert_eq!(
-            target.unwrap().width.pixels(),
-            new_pixels,
-            "width pixels should round-trip via doc"
+            target.unwrap().width,
+            WindowWidth::Fraction(new_share),
+            "the width share should round-trip via doc"
         );
+        // And that share means the same proportion of whatever display B
+        // has, which is the property a pixel count could not carry.
+        assert_eq!(target.unwrap().width.resolve(1600.0), 960.0);
+        assert_eq!(target.unwrap().width.resolve(3840.0), 2304.0);
     }
 
     #[test]
