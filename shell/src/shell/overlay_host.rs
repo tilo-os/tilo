@@ -37,7 +37,7 @@ use ui::presence::{PresenceCtx, PresenceKey};
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::{
-    CrossStripDetach, GroupRow, PROMPT_HEIGHT, PermissionPrompt, PromptChoice, Widget,
+    CrossStripDetach, GroupRow, OutputSpan, PROMPT_HEIGHT, PermissionPrompt, PromptChoice, Widget,
     WindowGroup as UiWindowGroup,
 };
 use ui::{CommandEntry, CommandPalette};
@@ -85,6 +85,12 @@ pub struct ShellOverlayHost {
     /// content, offset below the top bar. Optional so tests can build a
     /// bare host without a wheel; production shells always provide one.
     sidebar: Option<Box<dyn Widget>>,
+    /// Displays the compositor is painting across. Pushed by
+    /// `FrameBuilder` before every `build_layout` so each strip can size
+    /// its groups against the display they sit on. Empty in a bare
+    /// `ui::App` host (`--mode hosted`), where [`Self::strip_output_spans`]
+    /// falls back to treating the window as the one display.
+    outputs: Vec<OutputGeometry>,
     palette: CommandPalette,
     palette_visible: bool,
     /// Registry of every search provider the palette fans out to on
@@ -528,6 +534,26 @@ fn sidebar_width_for_viewport(viewport_h: f32) -> f32 {
     (viewport_h * SIDEBAR_WIDTH_VIEWPORT_FRACTION).clamp(SIDEBAR_WIDTH_MIN_PX, SIDEBAR_WIDTH_MAX_PX)
 }
 
+/// Wallpaper gutter between the wheel disc's right edge and the first
+/// window. 2026-06-24 user feedback: with the strip's leading inset equal
+/// to the wheel width exactly, the radial switcher butted into the first
+/// window; the gap reads as separation between canvas chrome and content.
+const WHEEL_TO_STRIP_GAP_PX: f64 = 28.0;
+
+/// One display the compositor is painting across, in its combined
+/// coordinate space. The compositor renders a single scene spanning the
+/// bounding box of every output (see `compositor::backend::Output`), so the
+/// host has to be told where the seams are: a window group's width is a
+/// fraction of *its* display, and resolving against the combined desktop
+/// would let one window span two monitors.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct OutputGeometry {
+    /// Left edge in combined coordinates.
+    pub x: f64,
+    pub width: f64,
+    pub height: f64,
+}
+
 /// Duration of the vertical workspace-swap slide. Matches the concept's
 /// wheel-spin feel — long enough to register as motion, short enough to
 /// not feel sluggish when rapidly cycling workspaces via keyboard.
@@ -643,6 +669,7 @@ impl ShellOverlayHost {
             rect: Rect::ZERO,
             content,
             sidebar: None,
+            outputs: Vec::new(),
             palette,
             palette_visible: false,
             search_registry,
@@ -1105,6 +1132,64 @@ impl ShellOverlayHost {
     /// `Box::new(strip_row)` and passing the same `Box` into the content
     /// tree — the `Box<T>` -> `Box<dyn Widget>` unsizing coercion keeps
     /// the heap address stable.
+    /// Tell the host which displays it is painting across. The compositor
+    /// calls this through `FrameBuilder` whenever the output set or a mode
+    /// changes; the host forwards the derived per-display strip widths to
+    /// every [`GroupRow`] at the top of `build_layout`.
+    pub fn set_output_geometry(&mut self, outputs: &[OutputGeometry]) {
+        if self.outputs != outputs {
+            self.outputs = outputs.to_vec();
+        }
+    }
+
+    /// The displays the host was last told about.
+    pub fn output_geometry(&self) -> &[OutputGeometry] {
+        &self.outputs
+    }
+
+    /// Per-display strip widths for the [`GroupRow`]s: each display's full
+    /// extent plus the width actually available to window groups on it.
+    ///
+    /// The leftmost display gives up the wheel-disc slot and its wallpaper
+    /// gutter — that region is canvas the strip reserves but never places a
+    /// group in — so a `Wide` group there fills the screen *beside* the
+    /// wheel rather than running off its right edge. Other displays have no
+    /// chrome to reserve and hand over their full width.
+    ///
+    /// Falls back to the host's own rect when the compositor hasn't pushed
+    /// geometry (`--mode hosted`, or before the first push), which treats
+    /// the window as the single display — the right answer in that mode.
+    fn strip_output_spans(&self) -> Vec<OutputSpan> {
+        let outputs: Vec<OutputGeometry> = if self.outputs.is_empty() {
+            vec![OutputGeometry {
+                x: 0.0,
+                width: self.rect.width(),
+                height: self.rect.height(),
+            }]
+        } else {
+            self.outputs.clone()
+        };
+        // The strip's left edge — where the wheel-disc slot is reserved.
+        let strip_left = 0.0_f64;
+        outputs
+            .iter()
+            .filter(|o| o.width > 0.0)
+            .map(|o| {
+                let hosts_chrome = strip_left >= o.x && strip_left < o.x + o.width;
+                let reserved = if hosts_chrome && self.sidebar.is_some() {
+                    sidebar_width_for_viewport(o.height as f32) as f64 + WHEEL_TO_STRIP_GAP_PX
+                } else {
+                    0.0
+                };
+                OutputSpan {
+                    x: o.x,
+                    width: o.width,
+                    usable: (o.width - reserved).max(1.0),
+                }
+            })
+            .collect()
+    }
+
     pub fn with_group_row_ptrs(mut self, ptrs: HashMap<StripId, *mut GroupRow>) -> Self {
         self.group_row_ptrs = ptrs;
         self
@@ -1555,11 +1640,13 @@ impl ShellOverlayHost {
     /// into the persisted [`crate::shell::state::WorkspaceTree`]. Walks
     /// the captured [`GroupRow`] pointers, drains every group's
     /// [`UiWindowGroup::take_pending_width_change`] one-shot, and writes
-    /// the new pixel value into the matching `WindowGroup::width` slot of
-    /// the persisted tree as `WindowWidth::Custom(p)`. The persisted
-    /// model already supports `Custom(u32)` (clamped 300..=1200) so no
-    /// schema change is needed — only the live binding from the widget
-    /// gesture to the data layer.
+    /// the new value into the matching `WindowGroup::width` slot of the
+    /// persisted tree as `WindowWidth::Fraction(per-mille)`.
+    ///
+    /// The gesture is a pixel drag but what gets stored is the share of
+    /// the display it landed on, which is what lets the width survive a
+    /// restart onto a different monitor and replicate to a peer whose
+    /// screen is a different size.
     ///
     /// Without this hook a resize-drag is in-memory only and resets to
     /// the pre-drag width on the next shell restart. Mirrors
@@ -1573,7 +1660,7 @@ impl ShellOverlayHost {
         let Some(chrome) = self.chrome.clone() else {
             return;
         };
-        let mut changes: Vec<(StripId, GroupId, u32)> = Vec::new();
+        let mut changes: Vec<(StripId, GroupId, u16)> = Vec::new();
         for (&strip_id, &ptr) in &self.group_row_ptrs {
             // SAFETY: see field doc on `group_row_ptrs`.
             let row: &mut GroupRow = unsafe { &mut *ptr };
@@ -1592,13 +1679,13 @@ impl ShellOverlayHost {
             for ws in tree.workspaces.iter_mut() {
                 for strip in ws.strips.iter_mut() {
                     if let Some(g) = strip.window_groups.iter_mut().find(|g| g.id == group_id) {
-                        g.width = crate::shell::state::WindowWidth::Custom(new_value);
+                        g.width = crate::shell::state::WindowWidth::Fraction(new_value);
                     }
                 }
             }
-            // Unit C of #157: mirror the width gesture into the
-            // automerge doc as a raw pixel scalar so peer-sync
-            // observes the resize.
+            // Mirror the width gesture into the automerge doc as a
+            // fraction of the strip so peer-sync observes the resize as a
+            // share rather than as this machine's pixel count.
             tree.doc_set_width(group_id, new_value);
         }
     }
@@ -3537,6 +3624,19 @@ impl Widget for ShellOverlayHost {
             .chrome
             .as_ref()
             .is_some_and(|c| c.borrow().is_fullscreen());
+        // Tell every strip which displays it spans BEFORE the content tree
+        // is built, so each window group's width fraction resolves against
+        // the display it sits on in this very pass. Doing it here rather
+        // than in `apply_layout` is what makes a single-frame offscreen
+        // render (a screenshot) show the same geometry as the live shell.
+        let spans = self.strip_output_spans();
+        for &ptr in self.group_row_ptrs.values() {
+            // SAFETY: same contract as every other `group_row_ptrs`
+            // accessor — pointer captured from a `Box<GroupRow>` we own
+            // through the content tree; host outlives content; `&mut self`
+            // → unaliased mutable access.
+            unsafe { (&mut *ptr).set_output_spans(&spans) };
+        }
         let content_node = self.content.build_layout(taffy, theme, node_map);
         let palette_node = self.palette.build_layout(taffy, theme, node_map);
         // Overlay the palette above content: absolute positioning with
@@ -3663,7 +3763,6 @@ impl Widget for ShellOverlayHost {
         // small gap reads as visual separation between the canvas
         // chrome (wheel) and the workspace's actual content. Skipped
         // when there's no sidebar (no wheel ⇒ no gutter to reserve).
-        const WHEEL_TO_STRIP_GAP_PX: f64 = 28.0;
         let wheel_w = if self.sidebar.is_some() {
             sidebar_width_for_viewport(self.rect.height() as f32) as f64 + WHEEL_TO_STRIP_GAP_PX
         } else {
@@ -6028,12 +6127,7 @@ fn build_state_group_from_widget(
         })
         .collect();
     let active_tab = widget.active_tab_id();
-    let width = match widget.width() {
-        ui::widget::WindowWidth::Narrow => StateWidth::Narrow,
-        ui::widget::WindowWidth::Normal => StateWidth::Normal,
-        ui::widget::WindowWidth::Wide => StateWidth::Wide,
-        ui::widget::WindowWidth::Custom(px) => StateWidth::Custom(px),
-    };
+    let width = StateWidth::from_ui(widget.width());
     StateGroup {
         id: widget.id,
         tabs,
