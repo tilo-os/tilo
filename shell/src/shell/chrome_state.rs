@@ -17,6 +17,7 @@ use std::collections::VecDeque;
 use std::rc::Rc;
 
 use parking_lot::{RwLockReadGuard, RwLockWriteGuard};
+use ui::record::RecordStore;
 
 use crate::notifications::{CloseReason, NotificationBridge};
 use crate::shell::notification::{
@@ -343,6 +344,14 @@ pub struct ChromeState {
     /// palette should offer the invite / connect commands at all.
     /// Mirrored from the overlay host's own flag.
     pub peer_sync_enabled: bool,
+    /// The documents the open tabs are showing, one record each.
+    ///
+    /// Held here because the chrome is what everything outside the widget
+    /// tree already reaches through: in-app search reads a tab's body from
+    /// the tab's own document, and it has the chrome, not the tile. Starts
+    /// in-memory so a `ChromeState` built by a test or a headless probe
+    /// writes nothing to disk; the session installs the persistent one.
+    records: RecordStore,
     /// Peer-sync commands the user has picked and the shell has not yet
     /// carried out. Written by the palette's action rows, drained once
     /// per frame by `ShellOverlayHost::pump_peer_sync`.
@@ -400,6 +409,7 @@ impl ChromeState {
             peer_sync_enabled: false,
             peer_sync_requests: Vec::new(),
             strip_viewport: None,
+            records: RecordStore::in_memory(),
         }))
     }
 
@@ -481,6 +491,19 @@ impl ChromeState {
     /// uncontended on `parking_lot::RwLock`).
     pub fn tree(&self) -> RwLockReadGuard<'_, WorkspaceTree> {
         self.tree_handle.read()
+    }
+
+    /// The store holding each open tab's document.
+    pub fn records(&self) -> &RecordStore {
+        &self.records
+    }
+
+    /// Install the session's record store — the persistent one, built once
+    /// as the shell starts. Anything that had already bound a tile to the
+    /// previous (in-memory) store keeps that store, so this is called
+    /// before the window tree is built.
+    pub fn set_records(&mut self, records: RecordStore) {
+        self.records = records;
     }
 
     /// Write-guard accessor for the shared workspace tree. Used by
