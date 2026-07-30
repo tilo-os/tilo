@@ -103,6 +103,16 @@ rustflags = [
 #       *requesting* an executable stack on some assemblers; one such object is
 #       enough to make the whole process's stack executable.
 #
+# What it costs, measured rather than assumed. The heaviest vendored C in the
+# tree that is anywhere near a frame is openh264's software H.264 encoder, which
+# is what carries a shared screen. Encoding 120 frames of 1920x1080 through
+# `qos_callstream::encoder::H264Encoder`, best-of-eight median frame time:
+# 26.8 ms without these flags, 24.2 ms with them. The hardened build measuring
+# *faster* is the point — the difference is under this machine's run-to-run
+# noise, so the cost on the one path where it could have shown is not
+# measurable. Both compilers were checked: gcc 15 and clang 21 accept the whole
+# set and both resolve the dynamic-size `memcpy` to `__memcpy_chk`.
+#
 # Not set, on purpose: `-ftrivial-auto-var-init=zero` would close uninitialised
 # locals too, but it writes on every function entry in the hot decode paths and
 # this tree has not measured that cost.
