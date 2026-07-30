@@ -1,64 +1,118 @@
-//! `ActionPalette` — the bridge from the [`qos_actions`] resource model to the
-//! [`CommandPalette`](crate::widget::CommandPalette) widget, and back.
+//! `ActionPalette` — the one Ctrl+K surface for a `ui::App`.
 //!
-//! It does three things:
+//! The **resource + action model** ([`qos_actions`]) is the foundation: the
+//! focused app instance publishes a tree of open [`Resource`]s, each exporting
+//! [`ActionSpec`](qos_actions::ActionSpec)s — the operations Ctrl+K offers. On
+//! top of that, an app can fold in *searchable content* by handing the palette a
+//! set of [`SearchProvider`](crate::search::SearchProvider)s (contacts, files,
+//! …); their hits appear as navigable result rows in the same surface.
 //!
-//! 1. **Scopes Ctrl+K to open resources.** Given the resource forest the focused
-//!    app instance publishes (`ui::App` collects it each frame), it flattens
-//!    every exported action into a palette row and keeps a parallel `key →
-//!    action` index so a chosen row resolves back to a replayable action.
-//! 2. **Supports a general scope.** The same palette can list the OS-wide
-//!    registry of action *types* (the seam the FS / global-search backend plugs
-//!    into) — [`SearchScope::Workspace`] = this instance's open resources,
-//!    [`SearchScope::All`] = everything registered.
-//! 3. **Executes on select.** Draining the palette outcome, it builds the
-//!    action's [`EncodedAction`] (immediate, or from a typed argument), decodes
-//!    it through the [`ActionRegistry`] — the *same* path a remote peer uses to
-//!    replay — and [`dispatch`](qos_actions::dispatch)es it against the doc +
-//!    transport, honoring the action's [`ExecutionLocus`].
+//! One registry, one renderer, one flow:
+//!
+//! * **Input** is the shared [`SearchField`](crate::widget::SearchField).
+//! * **Results** are rendered by the shared
+//!   [`SearchResultsView`](crate::widget::SearchResultsView), grouped by kind:
+//!   an **Actions** group from the resource tree's `ActionSpec`s, plus one group
+//!   per [`SearchProvider`] (e.g. **Contacts**) for searchable content.
+//! * **Activation** does the right thing per row kind:
+//!     - an **action** row resolves to its [`EncodedAction`] and
+//!       [`dispatch`](qos_actions::dispatch)es through `qos_actions` — the same
+//!       path a remote peer replays — honoring the action's
+//!       [`ExecutionLocus`](qos_actions::ExecutionLocus); a
+//!       [`Prompted`](qos_actions::ActionInput::Prompted) action first collects
+//!       its argument in the field.
+//!     - a **content** (search-provider) row hands its opaque `action_id` back to
+//!       the app so it can navigate to the chosen record — presentation, never a
+//!       CRDT mutation.
+//!
+//! The host ([`crate::app::App`]) drains a completed activation with
+//! [`take_dispatch`](ActionPalette::take_dispatch) (actions) and
+//! [`take_navigation`](ActionPalette::take_navigation) (content).
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use automerge::{AutoCommit, ObjId};
-use winit::event::{Modifiers, WindowEvent};
+use taffy::{AvailableSpace, NodeId, Size, Style, TaffyTree};
+use vello::Scene;
+use vello::kurbo::{Affine, Point, Rect};
+use winit::event::{ElementState, Modifiers, WindowEvent};
+use winit::keyboard::{Key, NamedKey};
 
-use crate::widget::command_palette::{CommandEntry, CommandPalette, SearchScope};
+use crate::presence::PresenceCtx;
+use crate::search::{fuzzy_score, SearchGroup, SearchProvider, SearchResult};
+use crate::text_render::TextRenderer;
+use crate::theme::Theme;
+use crate::widget::{SearchField, SearchResultsView, Widget};
 use qos_actions::{
     dispatch, flatten, ActionInput, ActionRegistry, ActionTransport, Dispatched, EncodedAction,
-    ExecutionLocus, Resource,
+    Resource,
 };
 
-/// A palette row's resolved action: either a ready-to-fire encoded action, or a
-/// builder that turns the user's typed argument into one.
+/// The group header for the focused app's exported actions.
+pub const ACTIONS_KIND: &str = "Actions";
+
+/// Row-id prefix for search-provider (navigable content) rows, so a content
+/// row can never collide with a flattened action key.
+const NAV_PREFIX: &str = "\u{1}nav\u{1f}";
+
+/// Card geometry, matched to the shared search surface (`search_showcase`).
+const FIELD_H: f64 = 38.0;
+const GAP: f64 = 10.0;
+/// Cap per group so one busy provider can't flood the overlay.
+const PER_GROUP_CAP: usize = 8;
+
+/// How activating one row resolves.
 #[derive(Clone)]
-enum Resolved {
+enum RowResolution {
+    /// An exported action — dispatch through `qos_actions`.
+    Dispatch(ActionKind),
+    /// A search-provider hit — hand the opaque id back to the app to navigate.
+    Navigate(String),
+}
+
+/// A resource-scoped action's path to an [`EncodedAction`].
+#[derive(Clone)]
+enum ActionKind {
+    /// Fires immediately with this pre-encoded action.
     Immediate(EncodedAction),
-    Prompted(Arc<dyn Fn(&str) -> EncodedAction + Send + Sync>),
+    /// Collects a free-text argument in the field first, then builds the action.
+    Prompted {
+        prompt: String,
+        build: Arc<dyn Fn(&str) -> EncodedAction + Send + Sync>,
+    },
 }
 
-/// One entry for the general (OS-wide) scope: an action *type* contributed by
-/// some app, not tied to a currently-open resource. This is the seam the global
-/// search / FS backend fills; the palette renders and dispatches them exactly
-/// like open-resource rows.
-#[derive(Clone)]
-pub struct GeneralAction {
-    /// Stable, unique row key.
-    pub key: String,
-    pub label: String,
-    pub description: Option<String>,
-    pub locus: ExecutionLocus,
-    /// How the row produces its encoded action.
-    pub input: ActionInput,
+/// Live state while the field is collecting a prompted action's argument.
+struct ArgState {
+    build: Arc<dyn Fn(&str) -> EncodedAction + Send + Sync>,
 }
 
-/// The Ctrl+K action palette: a [`CommandPalette`] scoped to the focused app
-/// instance's open resources (or the general registry), plus the index needed
-/// to resolve a selection back to a replayable action.
+/// The unified Ctrl+K palette: a [`SearchField`] over a [`SearchResultsView`],
+/// fed by the focused app's resource/action tree plus any folded-in
+/// [`SearchProvider`]s.
 pub struct ActionPalette {
-    palette: CommandPalette,
-    index: HashMap<String, Resolved>,
-    scope: SearchScope,
+    field: SearchField,
+    results: SearchResultsView,
+    /// Row `action_id` → how activating it resolves.
+    index: HashMap<String, RowResolution>,
+    /// The focused instance's open resources (their exported actions are rows).
+    resources: Vec<Resource>,
+    /// Searchable-content sources folded in as navigable result groups.
+    providers: Vec<Box<dyn SearchProvider>>,
+    open: bool,
+    /// `Some` while collecting a prompted action's argument in the field.
+    arg: Option<ArgState>,
+    /// A ready-to-dispatch action, set on activation, drained by `take_dispatch`.
+    pending_dispatch: Option<EncodedAction>,
+    /// A navigation target, set on activation, drained by `take_navigation`.
+    pending_nav: Option<String>,
+    /// The palette's outer rect (field + results), set by `layout`.
+    rect: Rect,
+    /// The field's own layout tree, rebuilt each `layout` so its `handle_event`
+    /// can resolve the inner text input's node.
+    field_taffy: TaffyTree<()>,
+    field_node: Option<NodeId>,
 }
 
 impl Default for ActionPalette {
@@ -68,131 +122,138 @@ impl Default for ActionPalette {
 }
 
 impl ActionPalette {
-    /// A closed command-launcher palette (Commands chrome, focus-trapping).
+    /// A closed palette. Load resources / providers, then `open`.
     pub fn new() -> Self {
-        let mut palette = CommandPalette::commands();
-        palette.close();
         Self {
-            palette,
+            field: SearchField::new().with_placeholder("Search actions and results"),
+            results: SearchResultsView::new()
+                .with_empty_text("No matches")
+                .with_test_id("action-palette-results"),
             index: HashMap::new(),
-            scope: SearchScope::Workspace,
+            resources: Vec::new(),
+            providers: Vec::new(),
+            open: false,
+            arg: None,
+            pending_dispatch: None,
+            pending_nav: None,
+            rect: Rect::ZERO,
+            field_taffy: TaffyTree::new(),
+            field_node: None,
         }
+    }
+
+    /// Populate from the focused instance's open-resource forest. Each exported
+    /// action becomes an **Actions** row; rebuilds the result set + index.
+    pub fn load_open_resources(&mut self, resources: &[Resource]) {
+        self.resources = resources.to_vec();
+        self.rebuild(&self.field.value().to_string());
+    }
+
+    /// Fold in searchable-content sources. Their hits appear as navigable result
+    /// rows, grouped by each provider's kind.
+    pub fn set_providers(&mut self, providers: Vec<Box<dyn SearchProvider>>) {
+        self.providers = providers;
+        self.rebuild(&self.field.value().to_string());
     }
 
     /// Whether the palette is currently open.
     pub fn is_open(&self) -> bool {
-        self.palette.is_open()
+        self.open
     }
 
-    /// Open (focus) the palette. Load entries first.
+    /// Open (focus) the palette: reset the query, argument, and any pending
+    /// outcome, and rebuild the (empty-query) result set.
     pub fn open(&mut self) {
-        self.palette.open();
+        self.open = true;
+        self.arg = None;
+        self.pending_dispatch = None;
+        self.pending_nav = None;
+        self.field = SearchField::new().with_placeholder("Search actions and results");
+        self.field.set_focused(true);
+        self.rebuild("");
     }
 
     /// Close the palette.
     pub fn close(&mut self) {
-        self.palette.close();
+        self.open = false;
+        self.arg = None;
     }
 
-    /// The active scope.
-    pub fn scope(&self) -> SearchScope {
-        self.scope
+    /// The current query text.
+    pub fn query(&self) -> &str {
+        self.field.value()
     }
 
-    /// Read/paint access to the underlying palette (the host draws it).
-    pub fn palette(&self) -> &CommandPalette {
-        &self.palette
-    }
-    pub fn palette_mut(&mut self) -> &mut CommandPalette {
-        &mut self.palette
-    }
-
-    /// Populate from the focused instance's open-resource forest
-    /// ([`SearchScope::Workspace`]). Rebuilds the row list + resolve index.
-    pub fn load_open_resources(&mut self, resources: &[Resource]) {
-        self.scope = SearchScope::Workspace;
-        self.palette.search_filter_mut().set_scope(SearchScope::Workspace);
-        let flat = flatten(resources);
-        let mut entries = Vec::with_capacity(flat.len());
-        let mut index = HashMap::with_capacity(flat.len());
-        for fa in &flat {
-            entries.push(CommandEntry::from_flat_action(fa));
-            let resolved = match &fa.action.input {
-                ActionInput::Immediate(enc) => Resolved::Immediate(enc.clone()),
-                ActionInput::Prompted { build, .. } => Resolved::Prompted(build.clone()),
-            };
-            index.insert(fa.key.clone(), resolved);
-        }
-        self.palette.set_entries(entries);
-        self.index = index;
+    /// Set the query programmatically and rebuild the result set (for tests /
+    /// hand-off from another surface).
+    pub fn set_query(&mut self, q: &str) {
+        self.field.set_query(q);
+        self.rebuild(q);
     }
 
-    /// Populate from the general (OS-wide) action-type registry
-    /// ([`SearchScope::All`]). This is what a global-search host feeds in.
-    pub fn load_general(&mut self, actions: &[GeneralAction]) {
-        self.scope = SearchScope::All;
-        self.palette.search_filter_mut().set_scope(SearchScope::All);
-        let mut entries = Vec::with_capacity(actions.len());
-        let mut index = HashMap::with_capacity(actions.len());
-        for ga in actions {
-            let mut entry = CommandEntry::new(ga.key.clone(), ga.label.clone());
-            if let Some(d) = &ga.description {
-                entry = entry.description(d.clone());
-            }
-            let resolved = match &ga.input {
-                ActionInput::Immediate(enc) => Resolved::Immediate(enc.clone()),
-                ActionInput::Prompted {
-                    prompt,
-                    placeholder,
-                    build,
-                } => {
-                    entry = entry.with_argument(prompt.clone(), placeholder.clone());
-                    Resolved::Prompted(build.clone())
-                }
-            };
-            entries.push(entry);
-            index.insert(ga.key.clone(), resolved);
-        }
-        self.palette.set_entries(entries);
-        self.index = index;
+    /// The labels currently shown, in display order (for tests / diagnostics).
+    pub fn result_labels(&self) -> Vec<String> {
+        self.results
+            .groups()
+            .iter()
+            .flat_map(|g| g.results.iter().map(|r| r.title.clone()))
+            .collect()
     }
 
-    /// Feed a keyboard event to the palette while it is open. Returns whether it
-    /// was consumed (the host should then stop propagating it).
-    pub fn handle_key(
-        &mut self,
-        event: &WindowEvent,
-        modifiers: &Modifiers,
-        doc: &mut AutoCommit,
-        path: &ObjId,
-    ) -> bool {
-        if !self.palette.is_open() {
-            return false;
-        }
-        self.palette.handle_overlay_key(event, modifiers, doc, path)
+    /// Number of selectable rows.
+    pub fn len(&self) -> usize {
+        self.results.len()
     }
 
-    /// Drain a pending selection (if the user pressed Enter) and dispatch its
-    /// action against `doc` + `transport`, honoring its
-    /// [`ExecutionLocus`](qos_actions::ExecutionLocus). Returns the
-    /// [`Dispatched`] outcome, or `None` if nothing was selected.
-    ///
-    /// Executing goes through [`ActionRegistry::decode`] — the identical path a
-    /// remote peer uses to [`replay`](qos_actions::replay) — so "play locally"
-    /// and "replay anywhere" share one code path.
+    /// Whether there are no rows.
+    pub fn is_empty(&self) -> bool {
+        self.results.is_empty()
+    }
+
+    /// Move the highlight to a flat row index (clamped).
+    pub fn set_cursor(&mut self, index: usize) {
+        self.results.set_cursor(index);
+    }
+
+    /// The highlighted flat row index.
+    pub fn cursor(&self) -> usize {
+        self.results.cursor()
+    }
+
+    /// Whether the field is collecting a prompted action's argument.
+    pub fn in_argument_mode(&self) -> bool {
+        self.arg.is_some()
+    }
+
+    /// Activate the highlighted row, exactly as pressing Enter would: an
+    /// immediate action is queued for `take_dispatch`; a prompted action opens
+    /// the argument step; a content row is queued for `take_navigation`.
+    pub fn activate_selected(&mut self) {
+        let Some(id) = self.results.selected_action_id().map(str::to_string) else {
+            return;
+        };
+        self.resolve_activation(&id);
+    }
+
+    /// Drain a completed action activation and dispatch it against `doc` +
+    /// `transport`, honoring its [`ExecutionLocus`](qos_actions::ExecutionLocus).
+    /// Decoding goes through [`ActionRegistry::decode`] — the same path a remote
+    /// peer uses to replay. Returns `None` when no action is pending (e.g. the
+    /// last activation was a navigation, or opened the argument step).
     pub fn take_dispatch(
         &mut self,
         doc: &mut AutoCommit,
         registry: &ActionRegistry,
         transport: &mut dyn ActionTransport,
     ) -> Option<Result<Dispatched, qos_actions::ActionError>> {
-        let outcome = self.palette.take_outcome()?;
-        let resolved = self.index.get(&outcome.id)?.clone();
-        let encoded = match resolved {
-            Resolved::Immediate(enc) => enc,
-            Resolved::Prompted(build) => build(outcome.argument.as_deref().unwrap_or("")),
-        };
+        let encoded = self.pending_dispatch.take()?;
         Some(self.dispatch_encoded(doc, &encoded, registry, transport))
+    }
+
+    /// Drain a completed content activation: the opaque `action_id` of the
+    /// chosen search-provider row, for the app to navigate to.
+    pub fn take_navigation(&mut self) -> Option<String> {
+        self.pending_nav.take()
     }
 
     fn dispatch_encoded(
@@ -205,6 +266,295 @@ impl ActionPalette {
         let action = registry.decode(encoded)?;
         dispatch(doc, action.as_ref(), encoded.clone(), transport)
     }
+
+    /// Resolve a chosen row id into a pending outcome (or the argument step).
+    fn resolve_activation(&mut self, id: &str) {
+        match self.index.get(id).cloned() {
+            Some(RowResolution::Dispatch(ActionKind::Immediate(enc))) => {
+                self.pending_dispatch = Some(enc);
+                self.open = false;
+            }
+            Some(RowResolution::Dispatch(ActionKind::Prompted { prompt, build })) => {
+                // Repurpose the field to collect the argument.
+                self.field = SearchField::new();
+                self.field.set_placeholder(&prompt);
+                self.field.set_focused(true);
+                self.arg = Some(ArgState { build });
+            }
+            Some(RowResolution::Navigate(target)) => {
+                self.pending_nav = Some(target);
+                self.open = false;
+            }
+            None => {}
+        }
+    }
+
+    /// Rebuild the result set for `query`: exported actions (fuzzy-filtered) as
+    /// the **Actions** group, then each provider's hits as its own group. Ranks
+    /// on a shared footing and rebuilds the resolve index.
+    fn rebuild(&mut self, query: &str) {
+        let mut rows: Vec<SearchResult> = Vec::new();
+        let mut index: HashMap<String, RowResolution> = HashMap::new();
+
+        // Actions from the resource forest.
+        for fa in flatten(&self.resources) {
+            let title = format!("{} \u{2014} {}", fa.resource_label, fa.action.label);
+            if fuzzy_score(query, &title).is_none()
+                && fa
+                    .action
+                    .description
+                    .as_deref()
+                    .and_then(|d| fuzzy_score(query, d))
+                    .is_none()
+            {
+                continue;
+            }
+            let mut r = SearchResult::new(ACTIONS_KIND, title, fa.key.clone());
+            if let Some(desc) = &fa.action.description {
+                r = r.with_subtitle(desc.clone());
+            }
+            let kind = match &fa.action.input {
+                ActionInput::Immediate(enc) => ActionKind::Immediate(enc.clone()),
+                ActionInput::Prompted { prompt, build, .. } => ActionKind::Prompted {
+                    prompt: prompt.clone(),
+                    build: build.clone(),
+                },
+            };
+            index.insert(fa.key.clone(), RowResolution::Dispatch(kind));
+            rows.push(r);
+        }
+
+        // Searchable content from folded-in providers (already query-filtered).
+        for provider in &self.providers {
+            for hit in provider.search(query) {
+                let row_id = format!("{NAV_PREFIX}{}", hit.action_id);
+                index.insert(row_id.clone(), RowResolution::Navigate(hit.action_id.clone()));
+                let mut r = SearchResult::new(hit.kind.clone(), hit.title.clone(), row_id)
+                    .with_score(hit.score);
+                if let Some(sub) = &hit.subtitle {
+                    r = r.with_subtitle(sub.clone());
+                }
+                if let Some(icon) = hit.icon {
+                    r = r.with_icon(icon);
+                }
+                rows.push(r);
+            }
+        }
+
+        self.index = index;
+        self.results.set_groups(rank_and_group(query, rows));
+    }
+
+    /// Position the palette at `origin` with the given `width`, laying out the
+    /// field and sizing the results overlay. Called each frame before `draw`.
+    pub fn layout(&mut self, theme: &Theme, origin: Point, width: f64) {
+        // Field: build a fresh 2-node tree so `handle_event` can resolve the
+        // inner text input's node, then place it at the top of the card.
+        let mut tr = TextRenderer::new();
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let node = self.field.build_layout(&mut taffy, theme, &mut node_map);
+        taffy
+            .compute_layout_with_measure(
+                node,
+                Size {
+                    width: AvailableSpace::Definite(width as f32),
+                    height: AvailableSpace::Definite(FIELD_H as f32),
+                },
+                |known, available, id, _, _| {
+                    node_map
+                        .get(&id)
+                        .map(|&p| unsafe { (*p).measure(known, available, &mut tr) })
+                        .unwrap_or(Size::ZERO)
+                },
+            )
+            .expect("field layout");
+        self.field.apply_layout(&taffy, node, origin);
+        self.field_taffy = taffy;
+        self.field_node = Some(node);
+
+        // Results overlay directly under the field.
+        let top = origin.y + FIELD_H + GAP;
+        let h = self.results.desired_height();
+        self.results
+            .set_rect(Rect::new(origin.x, top, origin.x + width, top + h));
+        self.rect = Rect::new(origin.x, origin.y, origin.x + width, top + h);
+    }
+
+    /// The palette's outer rect after the last `layout`.
+    pub fn rect(&self) -> Rect {
+        self.rect
+    }
+
+    /// Draw the field + results overlay. `layout` must have run this frame.
+    pub fn draw(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        self.field.draw(scene, transform, text_renderer, theme, presence);
+        self.results.draw(scene, transform, text_renderer, theme, presence);
+    }
+
+    /// Feed a keyboard event to the open palette. Returns whether it was
+    /// consumed. While open, the palette is modal over the keyboard: it swallows
+    /// every key so nothing leaks to the app behind it. Typing drives the query;
+    /// Up/Down + Enter drive the results; Escape closes (or cancels an argument
+    /// step).
+    pub fn handle_key(
+        &mut self,
+        event: &WindowEvent,
+        modifiers: &Modifiers,
+        doc: &mut AutoCommit,
+        path: &ObjId,
+    ) -> bool {
+        if !self.open {
+            return false;
+        }
+        let WindowEvent::KeyboardInput { event: key, .. } = event else {
+            return false;
+        };
+        if key.state != ElementState::Pressed {
+            // Swallow releases so nothing leaks to the app behind the modal.
+            return true;
+        }
+        // Escape: cancel the argument step, or close the palette.
+        if matches!(&key.logical_key, Key::Named(NamedKey::Escape)) {
+            if self.arg.is_some() {
+                self.exit_argument_mode();
+            } else {
+                self.close();
+            }
+            return true;
+        }
+
+        // Argument step: the field collects the free text; Enter builds +
+        // queues the action; every other key edits the argument buffer.
+        if self.arg.is_some() {
+            if matches!(&key.logical_key, Key::Named(NamedKey::Enter)) {
+                let value = self.field.value().to_string();
+                if let Some(state) = self.arg.take() {
+                    self.pending_dispatch = Some((state.build)(&value));
+                }
+                self.open = false;
+            } else {
+                self.route_to_field(event, modifiers, doc, path);
+            }
+            return true;
+        }
+
+        // Normal step: navigation keys + Enter drive the results view; every
+        // other key edits the query and re-runs the search.
+        let nav = matches!(
+            &key.logical_key,
+            Key::Named(NamedKey::ArrowUp)
+                | Key::Named(NamedKey::ArrowDown)
+                | Key::Named(NamedKey::Enter)
+        );
+        if nav {
+            self.route_to_results(event, modifiers, doc, path);
+            self.poll_view_activation();
+        } else {
+            self.route_to_field(event, modifiers, doc, path);
+            if let Some(q) = self.field.take_dirty() {
+                self.rebuild(&q);
+            }
+        }
+        true
+    }
+
+    /// Drain the results view's latched activation into a pending outcome.
+    fn poll_view_activation(&mut self) {
+        if let Some(id) = self.results.take_activated() {
+            self.resolve_activation(&id);
+        }
+    }
+
+    fn exit_argument_mode(&mut self) {
+        self.arg = None;
+        // Restore the query field and result set.
+        self.field = SearchField::new().with_placeholder("Search actions and results");
+        self.field.set_focused(true);
+        self.rebuild("");
+    }
+
+    fn route_to_field(
+        &mut self,
+        event: &WindowEvent,
+        modifiers: &Modifiers,
+        doc: &mut AutoCommit,
+        path: &ObjId,
+    ) {
+        let Some(node) = self.field_node else { return };
+        let mut handled = false;
+        let mut ft = None;
+        self.field.handle_event(
+            event,
+            1.0,
+            modifiers,
+            doc,
+            path,
+            &mut handled,
+            &mut ft,
+            node,
+            &self.field_taffy,
+        );
+    }
+
+    fn route_to_results(
+        &mut self,
+        event: &WindowEvent,
+        modifiers: &Modifiers,
+        doc: &mut AutoCommit,
+        path: &ObjId,
+    ) {
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let node = taffy.new_leaf(Style::default()).expect("leaf");
+        let mut handled = false;
+        let mut ft = None;
+        self.results.handle_event(
+            event,
+            1.0,
+            modifiers,
+            doc,
+            path,
+            &mut handled,
+            &mut ft,
+            node,
+            &taffy,
+        );
+    }
+}
+
+/// Rank `rows` by fit against `query` and bucket by kind. Groups appear in the
+/// order their best row ranks; within a group, rows stay ranked. Reuses the
+/// shared [`fuzzy_score`] primitive so a hit from one source is comparable to a
+/// hit from another. Caps each group so no single source floods the overlay.
+fn rank_and_group(query: &str, rows: Vec<SearchResult>) -> Vec<SearchGroup> {
+    /// A provider bias notch is worth this many query-match points.
+    const BIAS_WEIGHT: i32 = 4;
+    let key = |r: &SearchResult| -> i32 {
+        let bonus = fuzzy_score(query, &r.title)
+            .or_else(|| r.subtitle.as_deref().and_then(|s| fuzzy_score(query, s)))
+            .unwrap_or(0);
+        r.score * BIAS_WEIGHT + bonus
+    };
+    let mut ranked = rows;
+    ranked.sort_by(|a, b| key(b).cmp(&key(a)));
+    let mut groups: Vec<SearchGroup> = Vec::new();
+    for r in ranked {
+        if let Some(g) = groups.iter_mut().find(|g| g.kind == r.kind) {
+            if g.results.len() < PER_GROUP_CAP {
+                g.results.push(r);
+            }
+        } else {
+            groups.push(SearchGroup { kind: r.kind.clone(), results: vec![r] });
+        }
+    }
+    groups
 }
 
 #[cfg(test)]
@@ -212,101 +562,209 @@ mod tests {
     use super::*;
     use automerge::transaction::Transactable;
     use automerge::{ReadDoc, ScalarValue, ROOT};
-    use qos_actions::{Action, ActionError, ActionRegistry, Doc, LocalTransport};
+    use qos_actions::{
+        Action, ActionError, ActionRegistry, ActionSpec, Doc, ExecutionLocus, LocalTransport,
+    };
     use serde::{Deserialize, Serialize};
+    use winit::event::KeyEvent;
 
-    /// A minimal replayable action: set a boolean flag under a root key.
+    /// A minimal replayable action: set a string under a root key.
     #[derive(Debug, Clone, Serialize, Deserialize)]
-    struct Mark {
+    struct Note {
         key: String,
+        value: String,
     }
-    const MARK_TYPE: &str = "test.mark";
-    impl Action for Mark {
+    const NOTE_TYPE: &str = "test.note";
+    impl Action for Note {
         fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
-            doc.put(&ROOT, self.key.as_str(), ScalarValue::Boolean(true))?;
+            doc.put(&ROOT, self.key.as_str(), ScalarValue::Str(self.value.as_str().into()))?;
             Ok(())
         }
     }
 
     fn registry() -> ActionRegistry {
         let mut r = ActionRegistry::new();
-        r.register::<Mark>(MARK_TYPE);
+        r.register::<Note>(NOTE_TYPE);
         r
     }
 
-    /// The OS-wide (general) scope: an action *type* not tied to any open
-    /// resource — the seam the FS / global-search backend fills — still lists,
-    /// selects, and dispatches through the exact same registry path as a
-    /// resource-scoped action. Proves the seam is real, not merely declared.
-    #[test]
-    fn general_scope_lists_and_dispatches_through_the_real_path() {
-        let immediate = GeneralAction {
-            key: "sys.mark".into(),
-            label: "Mark it".into(),
-            description: Some("set a flag".into()),
-            locus: ExecutionLocus::ClientLocal,
-            input: ActionInput::Immediate(
-                EncodedAction::encode(
-                    MARK_TYPE,
-                    &Mark {
-                        key: "marked".into(),
-                    },
+    /// A resource exporting an immediate and a prompted action.
+    fn thing_resource() -> Resource {
+        Resource::new("test.thing:1", "test.thing", "Thing")
+            .with_action(
+                ActionSpec::immediate(
+                    "mark",
+                    "Mark done",
+                    NOTE_TYPE,
+                    &Note { key: "marked".into(), value: "yes".into() },
                 )
                 .unwrap(),
-            ),
-        };
-        let prompted = GeneralAction {
-            key: "sys.note".into(),
-            label: "Note".into(),
-            description: None,
-            locus: ExecutionLocus::ClientLocal,
-            input: ActionInput::Prompted {
-                prompt: "Text".into(),
-                placeholder: "…".into(),
-                build: Arc::new(|s: &str| {
-                    EncodedAction::encode(MARK_TYPE, &Mark { key: s.to_string() }).unwrap()
-                }),
-            },
-        };
+            )
+            .with_action(ActionSpec::prompted(
+                "rename",
+                "Rename",
+                "New name",
+                "e.g. Widget",
+                ExecutionLocus::ClientLocal,
+                |s: &str| {
+                    EncodedAction::encode(NOTE_TYPE, &Note { key: "name".into(), value: s.into() })
+                        .unwrap()
+                },
+            ))
+    }
 
-        let mut palette = ActionPalette::new();
-        palette.load_general(&[immediate, prompted]);
-        palette.open();
-        assert_eq!(palette.scope(), SearchScope::All, "general scope is OS-wide");
+    /// A provider standing in for a searchable corpus (e.g. contacts).
+    struct People;
+    impl SearchProvider for People {
+        fn name(&self) -> &str {
+            "People"
+        }
+        fn search(&self, query: &str) -> Vec<SearchResult> {
+            ["Ada Lovelace", "Alan Turing"]
+                .into_iter()
+                .filter(|n| fuzzy_score(query, n).is_some())
+                .map(|n| SearchResult::new("People", n, format!("person:{n}")))
+                .collect()
+        }
+    }
 
-        // Both the immediate and the (argument-collecting) prompted type list.
-        let labels: Vec<String> = palette
-            .palette()
-            .visible_entries()
+    /// Both an ACTION (from the resource tree) and a searchable CONTENT hit
+    /// (from a folded-in provider) surface, grouped, for one query.
+    #[test]
+    fn actions_and_content_both_surface_grouped() {
+        let mut p = ActionPalette::new();
+        p.load_open_resources(&[thing_resource()]);
+        p.set_providers(vec![Box::new(People)]);
+        p.open();
+
+        let groups: Vec<String> = p.results.groups().iter().map(|g| g.kind.clone()).collect();
+        assert!(groups.contains(&ACTIONS_KIND.to_string()), "Actions group present: {groups:?}");
+        assert!(groups.contains(&"People".to_string()), "content group present: {groups:?}");
+
+        let labels = p.result_labels();
+        assert!(labels.iter().any(|l| l.contains("Mark done")), "{labels:?}");
+        assert!(labels.iter().any(|l| l == "Ada Lovelace"), "{labels:?}");
+    }
+
+    /// Activating an ACTION row dispatches through `qos_actions` and mutates the
+    /// CRDT — the real replay path.
+    #[test]
+    fn activating_an_action_dispatches_and_mutates() {
+        let mut p = ActionPalette::new();
+        p.load_open_resources(&[thing_resource()]);
+        p.open();
+
+        let idx = p
+            .result_labels()
             .iter()
-            .map(|e| e.label.clone())
-            .collect();
-        assert!(labels.iter().any(|l| l == "Mark it"), "{labels:?}");
-        assert!(labels.iter().any(|l| l == "Note"), "{labels:?}");
+            .position(|l| l.contains("Mark done"))
+            .expect("mark row");
+        p.set_cursor(idx);
+        p.activate_selected();
 
-        // Select + activate the immediate general action, then dispatch it.
         let mut doc = AutoCommit::new();
         assert!(doc.get(&ROOT, "marked").unwrap().is_none());
-        let idx = palette
-            .palette()
-            .visible_entries()
-            .iter()
-            .position(|e| e.label == "Mark it")
-            .expect("mark row present");
-        palette.palette_mut().set_cursor(idx);
-        let root = ROOT;
-        palette.palette_mut().activate_selected(&mut doc, &root);
         let mut tx = LocalTransport::new();
-        let d = palette
+        let d = p
             .take_dispatch(&mut doc, &registry(), &mut tx)
-            .expect("a selection was pending")
-            .expect("dispatch succeeded");
+            .expect("an action was pending")
+            .expect("dispatch ok");
         assert!(matches!(d, Dispatched::AppliedLocal(_)));
         assert_eq!(
-            doc.get(&ROOT, "marked").unwrap().and_then(|(v, _)| v.to_bool()),
-            Some(true),
-            "the general-scope action mutated the CRDT"
+            doc.get(&ROOT, "marked").unwrap().and_then(|(v, _)| v.to_str().map(str::to_string)),
+            Some("yes".to_string()),
         );
-        assert_eq!(tx.replicated.len(), 1, "replicated once for peers to replay");
+        assert!(!p.is_open(), "an immediate action closes the palette");
+        assert!(p.take_navigation().is_none(), "an action is not a navigation");
+    }
+
+    /// Activating a CONTENT row queues a navigation (its opaque id), NOT a
+    /// dispatch.
+    #[test]
+    fn activating_content_navigates_not_dispatches() {
+        let mut p = ActionPalette::new();
+        p.set_providers(vec![Box::new(People)]);
+        p.open();
+        p.set_query("ada");
+
+        let idx = p
+            .result_labels()
+            .iter()
+            .position(|l| l == "Ada Lovelace")
+            .expect("ada row");
+        p.set_cursor(idx);
+        p.activate_selected();
+
+        let mut doc = AutoCommit::new();
+        let mut tx = LocalTransport::new();
+        assert!(
+            p.take_dispatch(&mut doc, &registry(), &mut tx).is_none(),
+            "a content row is not a dispatch"
+        );
+        assert_eq!(
+            p.take_navigation().as_deref(),
+            Some("person:Ada Lovelace"),
+            "the opaque provider id is handed back for navigation"
+        );
+        assert!(!p.is_open(), "navigation closes the palette");
+    }
+
+    /// A PROMPTED action collects its argument in the field, then dispatches the
+    /// action built from the typed text.
+    #[test]
+    fn prompted_action_collects_argument_then_dispatches() {
+        let mut p = ActionPalette::new();
+        p.load_open_resources(&[thing_resource()]);
+        p.open();
+
+        let idx = p
+            .result_labels()
+            .iter()
+            .position(|l| l.contains("Rename"))
+            .expect("rename row");
+        p.set_cursor(idx);
+        p.activate_selected();
+        assert!(p.in_argument_mode(), "a prompted action opens the argument step");
+        assert!(p.is_open(), "still open while collecting the argument");
+
+        // Type the argument into the field and confirm.
+        p.field.set_query("Sprocket");
+        let mut doc = AutoCommit::new();
+        let root = ROOT;
+        let mods = Modifiers::default();
+        p.handle_key(&enter(), &mods, &mut doc, &root);
+
+        let mut tx = LocalTransport::new();
+        let d = p
+            .take_dispatch(&mut doc, &registry(), &mut tx)
+            .expect("prompted action pending")
+            .expect("dispatch ok");
+        assert!(matches!(d, Dispatched::AppliedLocal(_)));
+        assert_eq!(
+            doc.get(&ROOT, "name").unwrap().and_then(|(v, _)| v.to_str().map(str::to_string)),
+            Some("Sprocket".to_string()),
+            "the action carries the typed argument",
+        );
+    }
+
+    fn enter_key() -> KeyEvent {
+        // SAFETY: `handle_key` only reads `logical_key` + `state`.
+        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
+        ev.logical_key = Key::Named(NamedKey::Enter);
+        ev.physical_key =
+            winit::keyboard::PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
+        ev.location = winit::keyboard::KeyLocation::Standard;
+        ev.state = ElementState::Pressed;
+        ev.repeat = false;
+        ev.text = None;
+        ev
+    }
+
+    fn enter() -> WindowEvent {
+        WindowEvent::KeyboardInput {
+            device_id: unsafe { std::mem::zeroed() },
+            event: enter_key(),
+            is_synthetic: false,
+        }
     }
 }
