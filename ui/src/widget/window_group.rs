@@ -171,7 +171,12 @@ impl WindowWidth {
     /// output's right edge.
     pub fn resolve(&self, strip_usable_px: f64) -> f64 {
         let usable = strip_usable_px.max(1.0);
-        (usable * self.fraction()).clamp(min_group_px(usable), max_group_px(usable))
+        // Rounded to whole pixels: a window's geometry is configured to a
+        // Wayland client as integers, and a fractional strip width would
+        // otherwise leave sub-pixel seams between adjacent groups.
+        (usable * self.fraction())
+            .round()
+            .clamp(min_group_px(usable), max_group_px(usable))
     }
 
     /// The width that resolves to `px` in a strip of `strip_usable_px`.
@@ -2061,7 +2066,7 @@ mod tests {
     /// and resets to the pre-drag width across a shell restart.
     /// A resize drag must actually change the group's *laid out* width, not
     /// just its in-memory `width` field. `build_layout` bakes
-    /// `Dimension::length(self.width.pixels())` into the taffy node, so a
+    /// `Dimension::length(self.resolved_width_px())` into the taffy node, so a
     /// width change that doesn't report `take_structure_dirty()` leaves the
     /// stale length in the tree and the window never visibly resizes —
     /// which is exactly how "resizing windows doesn't work" shipped.
@@ -2089,13 +2094,32 @@ mod tests {
             g.get_rect().width()
         }
 
+        // Pin the strip the group thinks it lives in. `Normal` is a
+        // fraction, so it only becomes a pixel count against a basis; 1200
+        // is used throughout these tests because the tiers land on whole
+        // hundreds there (Narrow 400 / Normal 800 / Wide 1200).
+        g.set_strip_usable_px(1200.0);
+        let _ = g.take_structure_dirty();
+
         let before = layout_width(&mut g, &theme);
-        assert_eq!(before, 600.0, "make_group() starts at WindowWidth::Normal");
+        assert_eq!(
+            before, 800.0,
+            "make_group() starts at WindowWidth::Normal — two thirds of a \
+             1200 px strip",
+        );
 
         // Drag the right-edge handle +200 px.
-        g.begin_resize(600.0);
-        g.update_resize(800.0);
-        assert_eq!(g.width().pixels(), 800, "drag updates the width field");
+        g.begin_resize(800.0);
+        g.update_resize(1000.0);
+        assert_eq!(
+            g.resolved_width_px(), 1000.0,
+            "drag updates the width field",
+        );
+        assert_eq!(
+            g.width(), WindowWidth::Fraction(833),
+            "the drag is stored as the fraction it landed on (1000/1200), \
+             not as a pixel count",
+        );
 
         // The width changed, so the group must report structure-dirty; that
         // is the signal `App` / `FrameBuilder` use to re-run `build_layout`.
@@ -2107,7 +2131,7 @@ mod tests {
 
         let after = layout_width(&mut g, &theme);
         assert_eq!(
-            after, 800.0,
+            after, 1000.0,
             "after the rebuild the group must actually be laid out 200 px wider",
         );
     }
@@ -2254,7 +2278,7 @@ mod tests {
         assert!(rect.height() > 0.0, "group must have a real height to hit-test");
         let right_edge = rect.x1;
         let press_y = rect.center().y;
-        let start_w = g.width().pixels();
+        let start_w = g.resolved_width_px();
         // Press 3 px inside the handle zone (still a valid grab) rather than
         // exactly on the edge.
         let press_x = right_edge - 3.0;
@@ -2287,8 +2311,8 @@ mod tests {
         dispatch(&mut g, &move_to(press_x + 100.0), &taffy);
 
         assert_eq!(
-            g.width().pixels(),
-            start_w + 100,
+            g.resolved_width_px(),
+            start_w + 100.0,
             "a 100 px drag from the press point must widen the group by exactly \
              100 px (no jump from anchoring on the group edge)",
         );
@@ -2356,22 +2380,21 @@ mod tests {
     #[test]
     fn take_pending_width_change_drains_after_resize_gesture() {
         let mut g = make_group();
-        // Anchor the rect so begin_resize knows its origin width via
-        // self.width.pixels(). make_group() seeds `WindowWidth::Normal`
-        // = 600 px; we'll confirm both the in-memory width flip and the
-        // one-shot pending value.
-        assert_eq!(g.width().pixels(), 600);
+        // A 1200 px strip: `Normal` (two thirds) resolves to 800 there, and
+        // the bounds are `min_group_px(1200) = 240` .. the strip itself.
+        g.set_strip_usable_px(1200.0);
+        assert_eq!(g.resolved_width_px(), 800.0);
         assert_eq!(
             g.take_pending_width_change(),
             None,
             "no pending width change before any drag",
         );
 
-        // Press at the right edge (pointer x = 600 = current right edge).
-        g.begin_resize(600.0);
-        // Drag +200 px — within MIN..=MAX, so the new width is exactly 800.
-        g.update_resize(800.0);
-        assert_eq!(g.width().pixels(), 800, "drag updates width in-memory");
+        // Press at the right edge (pointer x = 800 = current right edge).
+        g.begin_resize(800.0);
+        // Drag +200 px — inside the strip's bounds, so the new width is 1000.
+        g.update_resize(1000.0);
+        assert_eq!(g.resolved_width_px(), 1000.0, "drag updates width in-memory");
         // Mid-drag must not publish a pending change — only end_resize does,
         // so the shell harvests once per gesture, not once per pixel.
         assert_eq!(
@@ -2383,8 +2406,9 @@ mod tests {
         g.end_resize();
         assert_eq!(
             g.take_pending_width_change(),
-            Some(800),
-            "first poll after release reports the new width",
+            Some(833),
+            "first poll after release reports the new width as a fraction of \
+             the strip (1000/1200), so persisting it is display-independent",
         );
         assert_eq!(
             g.take_pending_width_change(),
@@ -2392,25 +2416,51 @@ mod tests {
             "take-pattern: drained on first poll, second poll is None",
         );
 
-        // Clamping: drag past WIDTH_MAX_PX (1200) must clamp.
-        g.begin_resize(800.0);
+        // Clamping: a drag past the strip's right edge pins at the full
+        // usable width, not at some fixed pixel ceiling.
+        g.begin_resize(1000.0);
         g.update_resize(50_000.0);
         assert_eq!(
-            g.width().pixels(),
-            WIDTH_MAX_PX,
-            "drag past WIDTH_MAX_PX clamps to the upper bound",
+            g.resolved_width_px(),
+            max_group_px(1200.0),
+            "drag past the strip's edge clamps to the strip's usable width",
         );
         g.end_resize();
-        assert_eq!(g.take_pending_width_change(), Some(WIDTH_MAX_PX));
+        assert_eq!(g.take_pending_width_change(), Some(WIDTH_MAX_PERMILLE));
 
-        // Clamping the other way: drag past WIDTH_MIN_PX (300) must clamp.
+        // Clamping the other way: the floor is a fraction of the strip too,
+        // backstopped by the absolute minimum.
         g.begin_resize(0.0);
         g.update_resize(-50_000.0);
         assert_eq!(
-            g.width().pixels(),
-            WIDTH_MIN_PX,
-            "drag past WIDTH_MIN_PX clamps to the lower bound",
+            g.resolved_width_px(),
+            min_group_px(1200.0),
+            "drag past the strip's minimum clamps to the lower bound",
         );
+
+        // Same stored width, wider display: the *fraction* is what
+        // persists, so a group restored onto a 3840 px strip occupies the
+        // same share of it rather than the same pixel count.
+        let mut wide = make_group();
+        wide.set_strip_usable_px(3840.0);
+        assert_eq!(
+            wide.width(),
+            g_normal_width(),
+            "fixture precondition: both groups start on the same tier",
+        );
+        assert_eq!(
+            wide.resolved_width_px(),
+            2561.0,
+            "667/1000 of a 3840 px strip — the same share the 1200 px strip \
+             gave at 800 px, to the 1 px that per-mille quantisation costs \
+             at this size",
+        );
+    }
+
+    /// The tier `make_group()` seeds. Named so the cross-display assertion
+    /// above reads against the fixture rather than restating a literal.
+    fn g_normal_width() -> WindowWidth {
+        WindowWidth::Normal
     }
 
     #[test]
