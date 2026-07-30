@@ -1761,6 +1761,28 @@ mod tests {
         CollaborationManager::new()
     }
 
+    /// Connect a manager announcing a **record** as well as the app and
+    /// cluster — one document's channel. Same env-var mechanism as
+    /// [`connect_manager_as`]; the record is passed to the toolkit
+    /// directly because a process can hold several records at once and
+    /// an environment variable cannot say which of them a given
+    /// connection is for.
+    fn connect_manager_on_record(
+        path: &PathBuf,
+        app_id: &str,
+        cluster_id: &str,
+        record: &ui::record::RecordId,
+    ) -> CollaborationManager {
+        // SAFETY: as `connect_manager_as` — every test here is
+        // `#[serial_test::serial(collab_broker)]`.
+        unsafe {
+            std::env::set_var("QUICK_COLLAB_SOCK", path);
+            std::env::set_var("QUICK_APP_ID", app_id);
+            std::env::set_var("QUICK_CLUSTER_ID", cluster_id);
+        }
+        CollaborationManager::for_record(record)
+    }
+
     /// A fixed cluster uuid the peers in a scenario share. Any valid
     /// uuid works; a constant keeps the scenarios readable.
     const TEST_CLUSTER: &str = "3f2b1c00-0000-4000-8000-000000000001";
@@ -1769,6 +1791,157 @@ mod tests {
     /// cluster — the common case for "N instances of one app".
     fn connect_manager(path: &PathBuf) -> CollaborationManager {
         connect_manager_as(path, "test-app", TEST_CLUSTER)
+    }
+
+    /// Apply every CRDT payload that reached `mgr` into `doc`, the way an
+    /// app's own `ui::App` does (`State::load_incremental` over
+    /// `CollabEvent::CRDTIncremental`). Returns how many payloads landed.
+    ///
+    /// Assertions then read the *receiver's own document*, which is the only
+    /// thing that answers "did this peer get that document's contents".
+    fn absorb(mgr: &mut CollaborationManager, doc: &mut automerge::AutoCommit) -> usize {
+        let mut applied = 0;
+        for event in poll_until(mgr, 1, Duration::from_millis(400)) {
+            if let CollabEvent::CRDTIncremental { data } = event {
+                doc.load_incremental(&data).expect("peer changes apply");
+                applied += 1;
+            }
+        }
+        applied
+    }
+
+    /// Read a root-level string out of a document.
+    fn field(doc: &automerge::AutoCommit, key: &str) -> Option<String> {
+        use automerge::ReadDoc;
+        match doc.get(&automerge::ROOT, key) {
+            Ok(Some((automerge::Value::Scalar(v), _))) => match v.as_ref() {
+                automerge::ScalarValue::Str(s) => Some(s.to_string()),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// A document with one field set, plus the incremental delta that
+    /// produced it — what an app sends after an edit.
+    fn edited(key: &str, value: &str) -> (automerge::AutoCommit, Vec<u8>) {
+        use automerge::transaction::Transactable;
+        let mut doc = automerge::AutoCommit::new();
+        doc.put(&automerge::ROOT, key, value).expect("put");
+        let delta = doc.save_incremental();
+        (doc, delta)
+    }
+
+    /// Two people editing two **different** documents in one room must not
+    /// merge each other's state.
+    ///
+    /// Before records both announced the identical `(app, cluster)` pair, so
+    /// the broker delivered each edit to the other and every keystroke in one
+    /// file landed in the other file's document.
+    #[test]
+    #[serial_test::serial(collab_broker)]
+    fn two_documents_in_one_room_do_not_merge() {
+        let socket_path = temp_sock("record-isolation");
+        let handle = spawn(socket_path.clone()).expect("broker should bind");
+
+        let report = ui::record::RecordId::for_file("/work/report.odt");
+        let minutes = ui::record::RecordId::for_file("/work/minutes.odt");
+        // Same app, same room — only the document differs.
+        let mut alice =
+            connect_manager_on_record(&socket_path, "dev.qos.word-processor", TEST_CLUSTER, &report);
+        let mut bob = connect_manager_on_record(
+            &socket_path,
+            "dev.qos.word-processor",
+            TEST_CLUSTER,
+            &minutes,
+        );
+        wait_for_peers(&handle, 2, Duration::from_millis(500));
+        wait_for_announced(&handle, 2, Duration::from_millis(500));
+        let _ = alice.poll();
+        let _ = bob.poll();
+
+        let (_alice_doc, alice_delta) = edited("body", "the quarterly report");
+        alice.send(CollabRequest::SyncIncremental { data: alice_delta });
+
+        // Bob is editing minutes.odt. Whatever arrives, apply it to his own
+        // document and then ask *his* document what it contains.
+        let (mut bob_doc, _) = edited("body", "the minutes");
+        let applied = absorb(&mut bob, &mut bob_doc);
+        assert_eq!(
+            applied, 0,
+            "no payload from another document should have reached bob"
+        );
+        assert_eq!(
+            field(&bob_doc, "body").as_deref(),
+            Some("the minutes"),
+            "bob's document is still the minutes, not the report"
+        );
+
+        drop(alice);
+        drop(bob);
+        drop(handle);
+    }
+
+    /// Sharing one record shares **only** that record.
+    ///
+    /// The sender holds two documents open — the shape of a reviewer with two
+    /// files, or the PDF reader with two documents' markup. The receiver was
+    /// given a reference to one of them. It must converge on that one and
+    /// never see the other.
+    #[test]
+    #[serial_test::serial(collab_broker)]
+    fn a_peer_given_one_record_receives_only_that_record() {
+        let socket_path = temp_sock("record-share-one");
+        let handle = spawn(socket_path.clone()).expect("broker should bind");
+
+        let shared = ui::record::RecordId::for_file("/work/shared.odt");
+        let private = ui::record::RecordId::for_file("/work/private.odt");
+
+        // One process, two records, two channels.
+        let mut sender_shared =
+            connect_manager_on_record(&socket_path, "dev.qos.word-processor", TEST_CLUSTER, &shared);
+        let mut sender_private = connect_manager_on_record(
+            &socket_path,
+            "dev.qos.word-processor",
+            TEST_CLUSTER,
+            &private,
+        );
+        // The peer the shared record was shared with.
+        let mut receiver =
+            connect_manager_on_record(&socket_path, "dev.qos.word-processor", TEST_CLUSTER, &shared);
+
+        wait_for_peers(&handle, 3, Duration::from_millis(500));
+        wait_for_announced(&handle, 3, Duration::from_millis(500));
+        let _ = sender_shared.poll();
+        let _ = sender_private.poll();
+        let _ = receiver.poll();
+
+        let (_, shared_delta) = edited("shared_body", "everyone may read this");
+        let (_, private_delta) = edited("private_body", "nobody else may read this");
+        sender_shared.send(CollabRequest::SyncIncremental { data: shared_delta });
+        sender_private.send(CollabRequest::SyncIncremental { data: private_delta });
+
+        let mut received = automerge::AutoCommit::new();
+        let applied = absorb(&mut receiver, &mut received);
+        assert_eq!(
+            applied, 1,
+            "exactly the shared record's delta should have arrived"
+        );
+        assert_eq!(
+            field(&received, "shared_body").as_deref(),
+            Some("everyone may read this"),
+            "the receiver converged on the record it was given"
+        );
+        assert_eq!(
+            field(&received, "private_body"),
+            None,
+            "and its document holds nothing from the record it was not given"
+        );
+
+        drop(sender_shared);
+        drop(sender_private);
+        drop(receiver);
+        drop(handle);
     }
 
     #[test]
