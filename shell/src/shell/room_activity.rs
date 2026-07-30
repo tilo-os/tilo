@@ -43,6 +43,19 @@
 //! this shows; per-document history is the app's to present, over its own
 //! document (see `apps/word-processor/src/history_panel.rs`).
 //!
+//! # Grouping and names
+//!
+//! A room's history is a flood like any other CRDT history — a flush that
+//! rewrites the workspace list is a dozen changes on its own — so the pane shows
+//! [`ui::group_entries`]'s bands and expands to individual changes on demand. A
+//! band that nobody named still describes itself honestly ("8 permission changes
+//! over 3 min"); a band someone named shows the name, and says who wrote it.
+//!
+//! Names live in the room document (`ui::history_groups`), beside the changes
+//! they name, so a peer that syncs the room gets the names with it and a name
+//! survives a restart. Two people naming overlapping runs at once converges —
+//! see `ui::widget::history_group::group_entries` for exactly what to.
+//!
 //! # Restore
 //!
 //! A row's `[Revert]` writes the delta from now back to that version as a
@@ -54,7 +67,7 @@
 //! declares non-revertible — an owner counters a governance act with another
 //! one rather than quietly rewinding it — so those rows never offer the chip.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
 use std::rc::Rc;
 use std::time::{Duration, SystemTime};
@@ -65,7 +78,9 @@ use collab_types::caps::{CapOverride, Effect, Principal, Scope, Subject, Verb};
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::widget::{ArtifactKind, HistoryEntry, HistoryEntryId, HistoryFilter};
-use ui::{ActivityTimeline, AuthorDirectory, HistorySource, Theme, Widget};
+use ui::{
+    ActivityTimeline, AuthorDirectory, GroupNameRequest, HistorySource, NamedRange, Theme, Widget,
+};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::Fill;
@@ -170,6 +185,9 @@ pub struct RoomActivityOutcome {
     pub handled: bool,
     /// A row's `[Revert]` wrote a new forward change into the room document.
     pub reverted: bool,
+    /// A band was named, renamed or un-named. That is a document write too, and
+    /// the shell has to redraw and re-derive after it.
+    pub named: bool,
 }
 
 /// The room-activity sheet.
@@ -180,6 +198,11 @@ pub struct RoomActivityPane {
     /// event dispatch and drained immediately after — the callback is an
     /// `FnMut` owned by the widget and cannot reach back into this struct.
     revert_intent: Rc<Cell<Option<HistoryEntryId>>>,
+    /// Band the user named. Same handshake as the revert intent; the payload is
+    /// not `Copy`, so this is a `RefCell`.
+    name_intent: Rc<RefCell<Option<GroupNameRequest>>>,
+    /// Names read out of the room document at the last rebuild.
+    named: Vec<NamedRange>,
     /// Room-document heads at the last rebuild. Re-deriving the timeline every
     /// frame would walk the whole change graph per frame; the graph only moves
     /// when someone commits.
@@ -226,10 +249,14 @@ impl Default for RoomActivityPane {
 impl RoomActivityPane {
     pub fn new() -> Self {
         let revert_intent = Rc::new(Cell::new(None));
+        let name_intent: Rc<RefCell<Option<GroupNameRequest>>> = Rc::new(RefCell::new(None));
         let ri = Rc::clone(&revert_intent);
+        let ni = Rc::clone(&name_intent);
         Self {
             timeline: {
-                let mut t = ActivityTimeline::new().on_revert(move |id| ri.set(Some(*id)));
+                let mut t = ActivityTimeline::new()
+                    .on_revert(move |id| ri.set(Some(*id)))
+                    .on_name_group(move |req| *ni.borrow_mut() = Some(req.clone()));
                 // The sheet is the surface; the timeline sits on it.
                 t.set_draws_own_surface(false);
                 t
@@ -239,6 +266,8 @@ impl RoomActivityPane {
             // document describes, so that is what its rows are tagged with.
             source: HistorySource::new().with_artifact_kind(ArtifactKind::Cluster),
             revert_intent,
+            name_intent,
+            named: Vec::new(),
             last_heads: Vec::new(),
             period: Period::default(),
             derived: Vec::new(),
@@ -402,6 +431,9 @@ impl RoomActivityPane {
         let mut entries = self.source.entries(&mut tree.doc);
         let tags = describe_room_changes(&mut tree.doc, &mut entries);
         self.derived = entries.into_iter().zip(tags).collect();
+        // Names come out of the same document as the changes, so a peer's name
+        // arrives with their edits.
+        self.named = ui::history_groups::read_named_ranges(&tree.doc, self.source.authors());
         self.apply_scope(tree);
     }
 
@@ -460,6 +492,10 @@ impl RoomActivityPane {
         }
 
         self.timeline.set_entries(rows);
+        // A name whose first change is not in this scope cannot be placed, and
+        // `group_entries` drops it rather than guessing — which is the right
+        // answer for a band belonging to another room.
+        self.timeline.set_named_ranges(self.named.clone());
         self.reinstall_filter();
     }
 
@@ -726,6 +762,7 @@ impl RoomActivityPane {
                     return RoomActivityOutcome {
                         handled: true,
                         reverted: false,
+                        named: false,
                     };
                 }
             }
@@ -735,6 +772,7 @@ impl RoomActivityPane {
                     return RoomActivityOutcome {
                         handled: true,
                         reverted: false,
+                        named: false,
                     };
                 }
             }
@@ -744,6 +782,7 @@ impl RoomActivityPane {
                     return RoomActivityOutcome {
                         handled: true,
                         reverted: false,
+                        named: false,
                     };
                 }
             }
@@ -776,7 +815,54 @@ impl RoomActivityPane {
                 out.reverted = true;
             }
         }
+        let name_req = self.name_intent.borrow_mut().take();
+        if let Some(req) = name_req {
+            out.handled = true;
+            if self.apply_name(tree, &req) {
+                out.named = true;
+            }
+        }
         out
+    }
+
+    /// Write (or remove) a name over a run of the room's changes.
+    ///
+    /// An empty label is the request to take the name off; that is what clearing
+    /// the field and pressing Enter means. Either way the write is committed
+    /// through [`WorkspaceTree::commit_room_change`], exactly as a `doc_*` mirror
+    /// would, so it is stamped and reaches peers through the same sync as the
+    /// changes it names.
+    pub fn apply_name(&mut self, tree: &mut WorkspaceTree, req: &GroupNameRequest) -> bool {
+        let before = tree.doc.get_heads();
+        if req.label.is_empty() {
+            let Some(record) = req.record_id.as_deref() else {
+                return false;
+            };
+            if !ui::history_groups::clear_name(&mut tree.doc, record) {
+                return false;
+            }
+        } else {
+            ui::history_groups::name_range(
+                &mut tree.doc,
+                &req.start,
+                Some(&req.end),
+                &req.label,
+            );
+        }
+        tree.commit_room_change();
+        if tree.doc.get_heads() == before {
+            return false;
+        }
+        self.last_heads.clear();
+        self.refresh(tree);
+        true
+    }
+
+    /// True while the pane's name field has the keyboard, so the host routes keys
+    /// (including Escape, which cancels the field rather than closing the sheet)
+    /// here first.
+    pub fn wants_keyboard(&self) -> bool {
+        self.timeline.wants_keyboard()
     }
 
     /// Rewrite the room document to the state it had at `id`, as a **new
@@ -1939,5 +2025,555 @@ mod tests {
         let (start, end) = Period::Week.range(now).unwrap();
         assert_eq!(now.duration_since(start).unwrap(), Duration::from_secs(7 * 24 * 3600));
         assert!(end > now, "a change committed this instant is inside the window");
+    }
+
+    // -----------------------------------------------------------------
+    // Grouping and names
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn the_rooms_history_reads_as_bands_rather_than_one_row_per_change() {
+        let (mut tree, _, _) = busy_room();
+        let pane = pane_over(&mut tree);
+        assert!(pane.entries().len() >= 4);
+        // Bands, not a wall: every rendered line is either a band header or a
+        // change, and there are fewer lines than changes.
+        let bands = (0..pane.timeline().row_count())
+            .filter(|i| pane.timeline().group_at_row(*i).is_some())
+            .count();
+        assert!(
+            bands >= 1,
+            "a room with governance, edits and a deletion must produce at least one band"
+        );
+        // Every band describes itself without a name, and describes itself
+        // honestly — a count it did not measure would be the failure here.
+        for i in 0..pane.timeline().row_count() {
+            if let Some(title) = pane.timeline().group_title_at_row(i) {
+                assert!(!title.is_empty(), "band {i} has no title");
+                assert!(
+                    !title.contains("{}"),
+                    "band {i} rendered a format placeholder: {title:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn naming_a_band_round_trips_through_the_room_document() {
+        let (mut tree, _, _) = busy_room();
+        let mut pane = pane_over(&mut tree);
+        let entries = pane.entries().to_vec();
+        let (start, end) = (entries[1].id, entries[3].id);
+
+        let wrote = pane.apply_name(
+            &mut tree,
+            &GroupNameRequest {
+                record_id: None,
+                start,
+                end,
+                label: "Set up the room".to_string(),
+            },
+        );
+        assert!(wrote, "the name went into the document");
+
+        // It is in the document, not in the widget: a fresh pane over the same
+        // tree finds it.
+        let ranges =
+            ui::history_groups::read_named_ranges(&tree.doc, &AuthorDirectory::new());
+        assert_eq!(ranges.len(), 1);
+        assert_eq!(ranges[0].label, "Set up the room");
+        assert_eq!(ranges[0].start, start);
+        assert_eq!(ranges[0].end, Some(end));
+
+        let mut fresh = RoomActivityPane::new();
+        fresh.layout(Rect::new(0.0, 0.0, 1600.0, 900.0));
+        fresh.refresh(&mut tree);
+        let titles: Vec<&str> = (0..fresh.timeline().row_count())
+            .filter_map(|i| fresh.timeline().group_title_at_row(i))
+            .collect();
+        assert!(
+            titles.contains(&"Set up the room"),
+            "the band is on screen for anyone who opens the pane: {titles:?}"
+        );
+    }
+
+    #[test]
+    fn naming_a_band_does_not_add_a_row_of_its_own() {
+        // The name is already on screen as the band's title. A "1 field" row
+        // directly under it would be noise, so the producer filters the marker
+        // change out — and the change count must not move.
+        let (mut tree, _, _) = busy_room();
+        let mut pane = pane_over(&mut tree);
+        let before = pane.entries().len();
+        let entries = pane.entries().to_vec();
+        pane.apply_name(
+            &mut tree,
+            &GroupNameRequest {
+                record_id: None,
+                start: entries[1].id,
+                end: entries[2].id,
+                label: "A version".to_string(),
+            },
+        );
+        assert_eq!(
+            pane.entries().len(),
+            before,
+            "naming added a row to the history it named"
+        );
+    }
+
+    #[test]
+    fn un_naming_removes_the_band_and_leaves_the_changes_alone() {
+        let (mut tree, _, _) = busy_room();
+        let mut pane = pane_over(&mut tree);
+        let entries = pane.entries().to_vec();
+        let (start, end) = (entries[1].id, entries[3].id);
+        pane.apply_name(
+            &mut tree,
+            &GroupNameRequest {
+                record_id: None,
+                start,
+                end,
+                label: "Temporary".to_string(),
+            },
+        );
+        let record = ui::history_groups::read_named_ranges(&tree.doc, &AuthorDirectory::new())
+            [0]
+            .id
+            .clone();
+        let changes_before = pane.entries().len();
+
+        // An empty label is the request to take the name off.
+        assert!(pane.apply_name(
+            &mut tree,
+            &GroupNameRequest {
+                record_id: Some(record),
+                start,
+                end,
+                label: String::new(),
+            },
+        ));
+        assert!(
+            ui::history_groups::read_named_ranges(&tree.doc, &AuthorDirectory::new()).is_empty(),
+            "the band is gone"
+        );
+        assert_eq!(
+            pane.entries().len(),
+            changes_before,
+            "and the changes it named are all still there"
+        );
+    }
+
+    #[test]
+    fn two_people_naming_the_same_run_converge_on_one_band() {
+        let (mut tree, _, _) = busy_room();
+        let mut pane = pane_over(&mut tree);
+        let entries = pane.entries().to_vec();
+        let (start, end) = (entries[1].id, entries[3].id);
+
+        // A peer forks the room document, names the same run differently, and
+        // syncs back — the shape a remote replica's sync round has.
+        let mut peer = tree.doc.fork();
+        peer.set_actor(automerge::ActorId::from("ada".as_bytes()));
+        ui::history_groups::name_range(&mut peer, &start, Some(&end), "Ada's pass");
+        qdoc::history::commit_stamped(&mut peer);
+
+        pane.apply_name(
+            &mut tree,
+            &GroupNameRequest {
+                record_id: None,
+                start,
+                end,
+                label: "My pass".to_string(),
+            },
+        );
+
+        // Merge each way round and compare. Both sides have to land on the same
+        // single band, whichever order the names arrived in.
+        let mut mine = tree.doc.fork();
+        mine.merge(&mut peer.clone()).expect("peers merge");
+        let mut theirs = peer.fork();
+        theirs.merge(&mut tree.doc.clone()).expect("peers merge");
+
+        let a = ui::history_groups::read_named_ranges(&mine, &AuthorDirectory::new());
+        let b = ui::history_groups::read_named_ranges(&theirs, &AuthorDirectory::new());
+        assert_eq!(a.len(), 1, "one run, one band: {:?}", a);
+        assert_eq!(b.len(), 1);
+        assert_eq!(a[0].label, b[0].label, "both peers read the same winner");
+        assert!(
+            a[0].label == "My pass" || a[0].label == "Ada's pass",
+            "the winner is one of the two names actually written: {:?}",
+            a[0].label
+        );
+        assert_eq!(a[0].start, start);
+        assert_eq!(a[0].end, Some(end));
+    }
+
+    #[test]
+    fn a_peers_name_is_attributed_to_the_peer_not_to_whoever_is_looking() {
+        let (mut tree, _, _) = busy_room();
+        let mut pane = pane_over(&mut tree);
+        let entries = pane.entries().to_vec();
+        let (start, end) = (entries[1].id, entries[3].id);
+
+        let mut peer = tree.doc.fork();
+        peer.set_actor(automerge::ActorId::from("ada".as_bytes()));
+        ui::history_groups::name_range(&mut peer, &start, Some(&end), "Ada's pass");
+        qdoc::history::commit_stamped(&mut peer);
+        tree.doc.merge(&mut peer).expect("peers merge");
+
+        pane.invalidate();
+        pane.refresh(&mut tree);
+        let named = (0..pane.timeline().row_count())
+            .find(|i| pane.timeline().group_title_at_row(*i) == Some("Ada's pass"))
+            .expect("the peer's band is on screen");
+        let sub = pane.timeline().group_subtitle_at_row(named).unwrap();
+        assert!(
+            sub.contains("named by"),
+            "a name someone else wrote must say so: {sub:?}"
+        );
+        assert!(
+            !sub.contains("named by test-owner") && !sub.contains("named by quinten"),
+            "and it must not be attributed to the reader: {sub:?}"
+        );
+    }
+
+    #[test]
+    fn restoring_to_a_band_boundary_lands_on_the_state_at_that_boundary() {
+        // The band header's [Restore] passes the band's last change, so this is
+        // the production path for "restore to the end of this version".
+        let (mut tree, ws_id, _) = busy_room();
+        let mut pane = pane_over(&mut tree);
+
+        // Find the change that named the workspace, and the state just after it.
+        let renamed_at = pane
+            .entries()
+            .iter()
+            .position(|e| e.summary.contains("Design review"))
+            .expect("the fixture renames the workspace");
+        let boundary = pane.entries()[renamed_at].id;
+
+        // Move on: rename again, so the document is no longer in that state.
+        if let Some(ws) = tree.workspaces.iter_mut().find(|w| w.id == ws_id) {
+            ws.name = "Something else".to_string();
+        }
+        tree.seed_doc_from_cache();
+        pane.invalidate();
+        pane.refresh(&mut tree);
+        assert_eq!(
+            tree.workspaces
+                .iter()
+                .find(|w| w.id == ws_id)
+                .map(|w| w.name.clone()),
+            Some("Something else".to_string())
+        );
+
+        assert!(pane.revert_to(&mut tree, &boundary), "the restore wrote something");
+        assert_eq!(
+            tree.workspaces
+                .iter()
+                .find(|w| w.id == ws_id)
+                .map(|w| w.name.clone()),
+            Some("Design review".to_string()),
+            "the room is back in the state that boundary produced"
+        );
+        // Forward, not a rewind: the change we rolled past is still in the graph.
+        assert!(
+            pane.entries().len() > renamed_at + 1,
+            "history was appended to, not rewritten"
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // Naming, driven the way a person drives it
+    // -----------------------------------------------------------------
+    //
+    // Everything above calls `apply_name` directly, which proves the write but
+    // not the chain that reaches it. These drive real `WindowEvent`s into
+    // `handle_event` — move the pointer, press, type, press Enter — and then
+    // read the result out of the **room document**, not out of the widget.
+
+    fn cursor_moved(x: f64, y: f64) -> WindowEvent {
+        WindowEvent::CursorMoved {
+            device_id: unsafe { std::mem::zeroed() },
+            position: winit::dpi::PhysicalPosition::new(x, y),
+        }
+    }
+
+    fn mouse_press() -> WindowEvent {
+        WindowEvent::MouseInput {
+            device_id: unsafe { std::mem::zeroed() },
+            state: winit::event::ElementState::Pressed,
+            button: winit::event::MouseButton::Left,
+        }
+    }
+
+    fn key_press(logical_key: winit::keyboard::Key) -> WindowEvent {
+        // SAFETY: as in `ui`'s own widget tests — every pub field of `KeyEvent`
+        // tolerates the all-zero bit pattern, and winit 0.30 keeps
+        // `KeyEventExtra` crate-private so a struct literal is unavailable.
+        let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
+        ev.logical_key = logical_key;
+        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
+            winit::keyboard::NativeKeyCode::Unidentified,
+        );
+        ev.location = winit::keyboard::KeyLocation::Standard;
+        ev.state = winit::event::ElementState::Pressed;
+        ev.repeat = false;
+        ev.text = None;
+        WindowEvent::KeyboardInput {
+            device_id: unsafe { std::mem::zeroed() },
+            event: ev,
+            is_synthetic: false,
+        }
+    }
+
+    /// Paint the sheet so the rects the click handler reads off the last frame
+    /// are populated exactly as they are live.
+    fn paint(pane: &mut RoomActivityPane) {
+        let mut scene = Scene::new();
+        let mut tr = TextRenderer::new();
+        pane.draw(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut tr,
+            &Theme::dark(),
+            &PresenceCtx::empty(),
+        );
+    }
+
+    /// Click at `p`: move there first so the hover latches, the way a pointer
+    /// does.
+    fn click_at(
+        pane: &mut RoomActivityPane,
+        tree: &mut WorkspaceTree,
+        p: Point,
+    ) -> RoomActivityOutcome {
+        let m = Modifiers::default();
+        pane.handle_event(&cursor_moved(p.x, p.y), 1.0, &m, Some(p), tree);
+        pane.handle_event(&mouse_press(), 1.0, &m, Some(p), tree)
+    }
+
+    fn type_into(pane: &mut RoomActivityPane, tree: &mut WorkspaceTree, text: &str) {
+        let m = Modifiers::default();
+        for ch in text.chars() {
+            let ev = if ch == ' ' {
+                key_press(winit::keyboard::Key::Named(winit::keyboard::NamedKey::Space))
+            } else {
+                key_press(winit::keyboard::Key::Character(ch.to_string().into()))
+            };
+            pane.handle_event(&ev, 1.0, &m, None, tree);
+        }
+    }
+
+    /// The first line of the pane that is a band header.
+    fn first_band(pane: &RoomActivityPane) -> usize {
+        (0..pane.timeline().row_count())
+            .find(|i| pane.timeline().group_at_row(*i).is_some())
+            .expect("the room's history produces at least one band")
+    }
+
+    #[test]
+    fn clicking_name_typing_and_pressing_enter_puts_the_name_in_the_room_document() {
+        let (mut tree, _, _) = busy_room();
+        let mut pane = pane_over(&mut tree);
+        paint(&mut pane);
+
+        let band = first_band(&pane);
+        let (name_chip, _) = pane
+            .timeline()
+            .group_chip_rects(band)
+            .expect("a band header carries a [Name] chip");
+        let entries = pane.entries().to_vec();
+        // What the band under the pointer covers, read before the gesture so the
+        // assertion is against the range the user pointed at rather than whatever
+        // came back. Rows are in display order and groups in causal order, so the
+        // band is found by the key the row carries, not by position.
+        let (first, last) = {
+            let key = pane.timeline().group_at_row(band).unwrap().0.to_string();
+            let mut flat: Vec<&ui::HistoryGroup> = Vec::new();
+            for g in pane.timeline().groups() {
+                g.walk(&mut flat);
+            }
+            let g = flat
+                .iter()
+                .find(|g| g.key == key)
+                .expect("the band the header belongs to");
+            (g.first_entry, g.last_entry)
+        };
+
+        let out = click_at(&mut pane, &mut tree, name_chip.center());
+        assert!(out.handled, "the chip took the click");
+        assert!(
+            pane.wants_keyboard(),
+            "the field is up and owns the keyboard, so the sheet's Escape does not close it"
+        );
+        assert_eq!(pane.timeline().naming_buffer(), Some(""));
+
+        type_into(&mut pane, &mut tree, "Set up the room");
+        assert_eq!(pane.timeline().naming_buffer(), Some("Set up the room"));
+
+        let out = pane.handle_event(
+            &key_press(winit::keyboard::Key::Named(winit::keyboard::NamedKey::Enter)),
+            1.0,
+            &Modifiers::default(),
+            None,
+            &mut tree,
+        );
+        assert!(out.named, "the pane reports a document write");
+        assert!(!pane.wants_keyboard(), "the field is gone");
+
+        // The name is in the room document, over the range the band covered.
+        let ranges = ui::history_groups::read_named_ranges(&tree.doc, &AuthorDirectory::new());
+        assert_eq!(ranges.len(), 1, "one name, from one gesture: {ranges:?}");
+        assert_eq!(ranges[0].label, "Set up the room");
+        assert_eq!(ranges[0].start, first);
+        assert_eq!(ranges[0].end, Some(last));
+        assert!(
+            entries.iter().any(|e| e.id == first),
+            "the range addresses changes this room actually has"
+        );
+
+        // And it is the document's, not the widget's: a pane that never saw the
+        // gesture reads the same band off the same tree.
+        let mut fresh = RoomActivityPane::new();
+        fresh.layout(Rect::new(0.0, 0.0, 1600.0, 900.0));
+        fresh.refresh(&mut tree);
+        let titles: Vec<&str> = (0..fresh.timeline().row_count())
+            .filter_map(|i| fresh.timeline().group_title_at_row(i))
+            .collect();
+        assert!(
+            titles.contains(&"Set up the room"),
+            "the band is not on screen for the next person to open the pane: {titles:?}"
+        );
+    }
+
+    #[test]
+    fn escape_in_the_name_field_writes_nothing_to_the_room_document() {
+        let (mut tree, _, _) = busy_room();
+        let mut pane = pane_over(&mut tree);
+        paint(&mut pane);
+        let heads_before = tree.doc.get_heads();
+
+        let band = first_band(&pane);
+        let (name_chip, _) = pane.timeline().group_chip_rects(band).unwrap();
+        click_at(&mut pane, &mut tree, name_chip.center());
+        type_into(&mut pane, &mut tree, "never mind");
+        assert!(pane.wants_keyboard());
+
+        let out = pane.handle_event(
+            &key_press(winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape)),
+            1.0,
+            &Modifiers::default(),
+            None,
+            &mut tree,
+        );
+        assert!(!out.named);
+        assert!(!pane.wants_keyboard(), "the field is gone");
+        assert!(
+            ui::history_groups::read_named_ranges(&tree.doc, &AuthorDirectory::new()).is_empty(),
+            "Escape wrote a name anyway"
+        );
+        assert_eq!(
+            tree.doc.get_heads(),
+            heads_before,
+            "abandoning a name must not commit anything at all"
+        );
+    }
+
+    #[test]
+    fn clicking_a_band_header_collapses_and_expands_it() {
+        // The disclosure is a click on the header itself, and it must not be
+        // confused with the chips that sit on the same row.
+        let (mut tree, _, _) = busy_room();
+        let mut pane = pane_over(&mut tree);
+        paint(&mut pane);
+
+        let band = first_band(&pane);
+        let (key, expanded) = {
+            let (k, e) = pane.timeline().group_at_row(band).unwrap();
+            (k.to_string(), e)
+        };
+        let header = pane.timeline().row_rect(band).expect("the header lays out");
+        let (name_chip, _) = pane.timeline().group_chip_rects(band).unwrap();
+        // Somewhere on the header that is not a chip: next to the disclosure
+        // triangle.
+        let on_header = Point::new(header.x0 + 60.0, header.center().y);
+        assert!(!name_chip.contains(on_header), "the fixture aims off the chips");
+
+        let lines_before = pane.timeline().row_count();
+        let out = click_at(&mut pane, &mut tree, on_header);
+        assert!(out.handled);
+        assert!(!out.named, "toggling a band is not a document write");
+        assert_eq!(
+            pane.timeline().group_at_row(band).map(|(_, e)| e),
+            Some(!expanded),
+            "the click did not toggle the band"
+        );
+        let lines_after = pane.timeline().row_count();
+        assert_ne!(
+            lines_before, lines_after,
+            "the band's changes neither appeared nor went away"
+        );
+
+        // And back, addressing the same band by the same key.
+        click_at(&mut pane, &mut tree, on_header);
+        assert_eq!(pane.timeline().group_at_row(band).map(|(_, e)| e), Some(expanded));
+        assert_eq!(pane.timeline().row_count(), lines_before);
+        assert_eq!(
+            pane.timeline().group_at_row(band).map(|(k, _)| k),
+            Some(key.as_str()),
+            "the band moved under the toggle"
+        );
+    }
+
+    #[test]
+    fn renaming_through_the_chip_replaces_the_name_rather_than_adding_a_band() {
+        let (mut tree, _, _) = busy_room();
+        let mut pane = pane_over(&mut tree);
+        paint(&mut pane);
+
+        // Name it once, through the gesture.
+        let band = first_band(&pane);
+        let (chip, _) = pane.timeline().group_chip_rects(band).unwrap();
+        click_at(&mut pane, &mut tree, chip.center());
+        type_into(&mut pane, &mut tree, "First try");
+        pane.handle_event(
+            &key_press(winit::keyboard::Key::Named(winit::keyboard::NamedKey::Enter)),
+            1.0,
+            &Modifiers::default(),
+            None,
+            &mut tree,
+        );
+        let record = ui::history_groups::read_named_ranges(&tree.doc, &AuthorDirectory::new())[0]
+            .id
+            .clone();
+
+        // Now rename it. The field seeds from the existing name, and the write
+        // has to land on the record that already exists.
+        paint(&mut pane);
+        let band = (0..pane.timeline().row_count())
+            .find(|i| pane.timeline().group_title_at_row(*i) == Some("First try"))
+            .expect("the named band is on screen");
+        let (chip, _) = pane.timeline().group_chip_rects(band).unwrap();
+        click_at(&mut pane, &mut tree, chip.center());
+        assert_eq!(
+            pane.timeline().naming_buffer(),
+            Some("First try"),
+            "a rename starts from the name that is there"
+        );
+        type_into(&mut pane, &mut tree, " again");
+        pane.handle_event(
+            &key_press(winit::keyboard::Key::Named(winit::keyboard::NamedKey::Enter)),
+            1.0,
+            &Modifiers::default(),
+            None,
+            &mut tree,
+        );
+
+        let ranges = ui::history_groups::read_named_ranges(&tree.doc, &AuthorDirectory::new());
+        assert_eq!(ranges.len(), 1, "a rename must not leave two bands: {ranges:?}");
+        assert_eq!(ranges[0].id, record, "it addressed the record it already had");
+        assert_eq!(ranges[0].label, "First try again");
     }
 }

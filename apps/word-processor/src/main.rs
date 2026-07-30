@@ -107,15 +107,23 @@ fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-/// Give `widget`'s document a short authored history, so `--shots --history`
-/// has something real to draw.
+/// Give `widget`'s document a real authored history, so `--shots --history` has
+/// something worth drawing.
 ///
-/// Every revision goes through the editor's own model and is committed the way
-/// `App::commit_action` commits, and the middle one is authored by a second
-/// identity the way a peer's edit arrives — forked, edited under its own actor,
-/// merged back. Nothing here seeds the history *pane*: it seeds the
-/// **document**, and the pane derives its rows from the resulting change graph
-/// exactly as it does for a document a user typed.
+/// Three working sessions: two by the local author either side of a long break,
+/// one by a collaborator in between — forked, edited under its own actor, merged
+/// back, the shape a sync round has. That is what makes the strip's version band
+/// mean something: the boundaries come from a change of author and a gap in the
+/// clock, not from anything seeded here.
+///
+/// The sessions are committed with explicit wall clocks (the same primitive the
+/// FS layer uses when it replays a durable chain) because the gaps are the point;
+/// the first and last revisions go through the editor's own commit path.
+///
+/// Two of the runs are then **named**, one of them by the collaborator under its
+/// own actor, so the strip shows a name somebody else wrote. Nothing here seeds
+/// the history *pane*: it seeds the document, and the pane derives its band from
+/// the resulting change graph exactly as it does for a document a user typed.
 fn seed_revisions(state: &mut State, wp: &mut WordProcessorWidget) {
     state
         .doc
@@ -134,10 +142,24 @@ fn seed_revisions(state: &mut State, wp: &mut WordProcessorWidget) {
         .insert_str(&mut state.doc, "Revenue held steady through the quarter.");
     state.commit_action(None, None);
 
-    // A collaborator's revision, merged the way a peer's sync arrives.
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let base = now - 5 * 3600;
+
+    // Session one: five more sentences, half a minute apart.
+    for i in 0..5 {
+        wp.model_mut()
+            .insert_str(&mut state.doc, " Margins improved slightly.");
+        qdoc::history::commit_stamped_at(&mut state.doc, base + i * 30);
+    }
+
+    // Session two, an hour later, by a collaborator.
     let mut peer = state.doc.fork();
-    peer.set_actor(automerge::ActorId::from("bob".as_bytes()));
-    {
+    peer.set_actor(automerge::ActorId::from("Bob Chen".as_bytes()));
+    let mut peer_first = None;
+    for i in 0..4 {
         let c = qdoc::model::open(&peer, &state.root).expect("qdoc schema");
         let blocks = qdoc::model::materialize(&peer, &c).blocks;
         let last = blocks.last().expect("a paragraph to append to");
@@ -145,14 +167,44 @@ fn seed_revisions(state: &mut State, wp: &mut WordProcessorWidget) {
         let mut ids = qdoc::IdGen::new(peer.get_actor().to_hex_string());
         let mut dm = qdoc::DocMut { doc: &mut peer, c: &c, ids: &mut ids };
         dm.splice_text(&last.id, at, 0, " Costs fell by four percent.");
+        drop(dm);
+        let hash = qdoc::history::commit_stamped_at(&mut peer, base + 3600 + i * 30);
+        if i == 0 {
+            peer_first = hash;
+        }
     }
-    qdoc::history::commit_stamped(&mut peer);
+    // The collaborator names its own session, in the document, under its own
+    // actor — so everyone else's strip says who wrote the name.
+    if let (Some(first), Some(last)) = (peer_first, peer.get_heads().first().copied()) {
+        let start = ui::history_source::entry_id_from_hash(&first.to_string());
+        let end = ui::history_source::entry_id_from_hash(&last.to_string());
+        ui::history_groups::name_range(&mut peer, &start, Some(&end), "Costs section");
+        qdoc::history::commit_stamped_at(&mut peer, base + 3600 + 150);
+    }
     state.doc.merge(&mut peer).expect("peers merge");
 
+    // Session three, three hours after that, back to the local author.
     wp.sync(&mut state.doc, &state.root);
-    wp.model_mut()
-        .insert_str(&mut state.doc, " Headcount is unchanged.");
-    state.commit_action(None, None);
+    let mut session_three_start = None;
+    for i in 0..6 {
+        wp.model_mut()
+            .insert_str(&mut state.doc, " Headcount is unchanged.");
+        let hash = qdoc::history::commit_stamped_at(&mut state.doc, base + 4 * 3600 + i * 25);
+        if i == 0 {
+            session_three_start = hash;
+        }
+    }
+    // And the local author names theirs.
+    if let (Some(first), Some(last)) = (
+        session_three_start,
+        state.doc.get_heads().first().copied(),
+    ) {
+        let start = ui::history_source::entry_id_from_hash(&first.to_string());
+        let end = ui::history_source::entry_id_from_hash(&last.to_string());
+        ui::history_groups::name_range(&mut state.doc, &start, Some(&end), "Headcount pass");
+        qdoc::history::commit_stamped_at(&mut state.doc, now - 120);
+    }
+
     wp.toggle_history(&mut state.doc);
     wp.sync(&mut state.doc, &state.root);
 }

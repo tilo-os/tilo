@@ -1,34 +1,40 @@
-//! `HistoryScrubber` — Phase 1 history-replay slider widget.
+//! `HistoryScrubber` — the per-document version strip.
 //!
-//! Spec: `docs/superpowers/specs/2026-06-29-spaces-channels-and-cryptographic-roles.md`
-//! Phase 1 ("Audit timeline + soft-delete + restore-from-history").
+//! Lets the user drag a handle through an artifact's `Vec<HistoryEntry>` to
+//! scrub through historical states. Two action buttons sit under the track:
+//! `[Preview]` (fires `on_preview` with the tick's entry id, expecting the host
+//! to mount a preview surface) and `[Restore to this version]` (fires
+//! `on_restore`, expecting the host to write the delta forward).
 //!
-//! Lets the user drag a handle through an artifact's
-//! `Vec<HistoryEntry>` to scrub through historical states. Each tick
-//! on the slider is one entry; the rightmost tick is always the
-//! "current" (live) state. Two action buttons sit under the track:
-//! `[Preview]` (fires `on_preview` with the tick's entry id, expecting
-//! the host to mount a preview surface) and `[Restore to this version]`
-//! (fires `on_restore`, expecting the host to emit a `Restore` op).
+//! The widget owns **scrubbing state only** — `current_tick`, the group segments
+//! it was handed, and whatever name is being typed. It does not mutate the
+//! underlying CRDT; replaying and writing are the host's job. That keeps the
+//! widget portable across artifact kinds (a kanban and a note share the same
+//! scrubber, but their restore wiring differs).
 //!
-//! The widget owns **scrubbing state only** — `current_tick: usize`.
-//! It does not mutate the underlying CRDT; replaying is the host's
-//! job. That keeps the widget portable across artifact kinds (a
-//! kanban + a note share the same scrubber, but their restore wiring
-//! differs).
+//! ## Versions, not keystrokes
+//!
+//! A track with one tick per change is unusable on a real document: a
+//! debounced editor produces hundreds of them, they smear into a grey band, and
+//! "restore to tick 4,182" is not a thing anyone wants. So when the host installs
+//! groups ([`Self::set_groups`]) the track gains a **segment band** above it —
+//! one block per group, named ones accented and labelled — and the handle
+//! **snaps to group boundaries**. Per-change resolution stays one click away
+//! ([`Self::set_snap_to_groups`]).
+//!
+//! With no groups installed the widget is exactly what it was: every change is a
+//! tick and nothing snaps. That is the degenerate case, not a separate mode.
 //!
 //! ## Geometry
 //!
-//! - Track runs across `[x0 + 16, x1 - 16]` to leave breathing room
-//!   for the handle when it sits at the endpoints.
-//! - Each tick is laid out at `x = track.x0 + (i / (n-1)) * track_w`.
-//!   With `n == 1` (a single entry), the handle pins at the right
-//!   edge.
-//! - The popover above the handle shows the entry's summary +
-//!   author + relative time. It sits just above the handle and
+//! - Track runs across `[x0 + 16, x1 - 16]` to leave breathing room for the
+//!   handle at the endpoints.
+//! - Each tick is laid out at `x = track.x0 + (i / (n-1)) * track_w`. With
+//!   `n == 1` the handle pins at the right edge.
+//! - The popover above the handle names the group and describes the change. It
 //!   clamps to stay inside `self.rect`.
-//! - Action buttons sit under the track at fixed widths
-//!   (`PREVIEW_W`, `RESTORE_W`).
+//! - The button row sits under the track and drops its lowest-priority buttons
+//!   rather than overlapping when the strip is narrow.
 
 use std::collections::HashMap;
 use std::time::SystemTime;
@@ -44,18 +50,28 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::Widget;
 use crate::widget::history::{HistoryEntry, HistoryEntryId, format_relative_time};
+use crate::widget::history_group::GroupNameRequest;
+use crate::widget::name_field::{NameField, NameFieldOutcome, fit};
 
 /// Track inset from each side of the rect. Has to be larger than the
 /// handle radius so the handle visually clears the rect edge.
 const TRACK_INSET: f64 = 16.0;
-/// Vertical position of the track inside the rect, measured from
-/// the top. Leaves room above for the popover and below for the
-/// action buttons.
-const TRACK_Y_FROM_TOP: f64 = 56.0;
+/// Vertical position of the track inside the rect when there are no groups —
+/// room above for the popover, below for the buttons.
+const TRACK_Y_PLAIN: f64 = 56.0;
+/// Vertical position of the track when a group band is showing above it.
+const TRACK_Y_GROUPED: f64 = 84.0;
+/// Top of the group band, and its height. Tall enough for a 10 px label.
+const BAND_Y_FROM_TOP: f64 = 50.0;
+const BAND_H: f64 = 20.0;
 /// Track thickness.
 const TRACK_HEIGHT: f64 = 6.0;
 /// Tick mark height (rendered as a 1px-wide notch).
 const TICK_MARK_H: f64 = 12.0;
+/// Below this per-tick spacing the individual notches stop being marks and
+/// become a grey smear, so they are dropped and the group band carries the
+/// structure instead.
+const MIN_TICK_SPACING: f64 = 6.0;
 /// Handle radius. The slider widget uses 10 px; we match for visual
 /// consistency.
 const HANDLE_RADIUS: f64 = 9.0;
@@ -65,19 +81,83 @@ const HANDLE_HIT_RADIUS: f64 = 14.0;
 const PREVIEW_W: f64 = 96.0;
 const RESTORE_W: f64 = 160.0;
 const BUTTON_H: f64 = 28.0;
+/// Width the in-place name field asks for. A version name is a label, so the
+/// field is sized like one: stretching it across a 1000 px button row would be
+/// a metre of empty box for three words.
+const NAME_FIELD_W: f64 = 300.0;
 /// Vertical offset of the action button row from the track.
 const BUTTON_Y_OFFSET: f64 = 24.0;
 /// Popover dimensions.
 const POPOVER_H: f64 = 36.0;
+/// Height the widget asks for in a taffy tree, with and without a group band.
+const NATURAL_H_PLAIN: f64 = 140.0;
+const NATURAL_H_GROUPED: f64 = 168.0;
 
 /// Box-erased callback type. We use `FnMut` so the host can mutate
 /// captured state (e.g. flip a preview-mounted flag) without
 /// needing interior mutability.
 pub type ScrubCallback = Box<dyn FnMut(&HistoryEntryId)>;
 
+/// Callback fired when the user commits a name for a range.
+pub type NameCallback = Box<dyn FnMut(&GroupNameRequest)>;
+
+/// Callback fired when the user opens or closes a prospective version.
+pub type VersionCallback = Box<dyn FnMut(&VersionAction)>;
+
+/// One segment of the track: a run of changes the host has grouped together.
+///
+/// `start` / `end` are **inclusive** tick indices. `label` is `None` for a group
+/// nobody named, in which case `derived` carries the honest description the
+/// popover shows.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ScrubberGroup {
+    pub start: usize,
+    pub end: usize,
+    /// The user's name for this run, when it has one.
+    pub label: Option<String>,
+    /// What the run is, when nobody named it — "12 edits over 4 min".
+    pub derived: String,
+    /// The naming record, so a rename addresses the right one.
+    pub record_id: Option<String>,
+    /// Still absorbing new changes.
+    pub open: bool,
+}
+
+impl ScrubberGroup {
+    /// The line the user reads for this segment.
+    pub fn title(&self) -> &str {
+        self.label.as_deref().unwrap_or(self.derived.as_str())
+    }
+}
+
+/// Opening or closing a prospective named version — the "I am about to do X"
+/// case, as opposed to naming a run after the fact.
+#[derive(Clone, Debug, PartialEq)]
+pub enum VersionAction {
+    /// Start a version at `at` (the newest change), called `label`.
+    Open { at: HistoryEntryId, label: String },
+    /// Close the version `record_id` names, ending at `at`.
+    Close {
+        record_id: String,
+        at: HistoryEntryId,
+    },
+}
+
+/// The buttons under the track, in drop order: the last one listed is the first
+/// to go when the strip is too narrow to hold them all.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ScrubButton {
+    Restore,
+    Preview,
+    Name,
+    Version,
+}
+
 /// Horizontal-slider history scrubber.
 pub struct HistoryScrubber {
     entries: Vec<HistoryEntry>,
+    groups: Vec<ScrubberGroup>,
+    snap_to_groups: bool,
     rect: Rect,
     /// 0-based index of the currently-selected tick. Always in
     /// `0..entries.len()` (or 0 when entries is empty).
@@ -89,18 +169,28 @@ pub struct HistoryScrubber {
     /// Hover state on the handle — drives the slight knob-radius
     /// scale on hover (mirrors `Slider`'s contract).
     is_hovered: bool,
-    /// Hover state on the action buttons. Stored separately so we
-    /// can paint the press affordance even if a future polish adds
-    /// keyboard activation.
-    hover_preview: bool,
-    hover_restore: bool,
+    /// Which button the cursor is over, if any.
+    hover_button: Option<ScrubButton>,
     last_cursor: Point,
     on_preview: Option<ScrubCallback>,
     on_restore: Option<ScrubCallback>,
+    on_name: Option<NameCallback>,
+    on_version: Option<VersionCallback>,
+    /// The name being typed, and whether it is for the current group (a rename)
+    /// or for a version about to be opened.
+    naming: Option<(NameKind, NameField)>,
     /// Pinned "now" for relative-time rendering in the popover. Tests
     /// pin this so the popover label stays stable.
     now_override: Option<SystemTime>,
     dirty: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum NameKind {
+    /// Naming or renaming the group the handle is in.
+    CurrentGroup,
+    /// Opening a prospective version at the newest change.
+    NewVersion,
 }
 
 impl Default for HistoryScrubber {
@@ -117,15 +207,19 @@ impl HistoryScrubber {
         let current = entries.len().saturating_sub(1);
         Self {
             entries,
+            groups: Vec::new(),
+            snap_to_groups: true,
             rect: Rect::ZERO,
             current_tick: current,
             is_dragging: false,
             is_hovered: false,
-            hover_preview: false,
-            hover_restore: false,
+            hover_button: None,
             last_cursor: Point::ZERO,
             on_preview: None,
             on_restore: None,
+            on_name: None,
+            on_version: None,
+            naming: None,
             now_override: None,
             dirty: true,
         }
@@ -139,6 +233,44 @@ impl HistoryScrubber {
         self.dirty = true;
     }
 
+    /// Install the track's segments — one per group the host derived.
+    ///
+    /// Installing a non-empty set is what turns the strip from "one tick per
+    /// change" into "one segment per version": the band appears above the track,
+    /// the strip grows to make room for it, and the handle snaps to boundaries.
+    /// Segments outside the entry range are dropped rather than clamped, because
+    /// a segment that does not describe real ticks would put a label over the
+    /// wrong part of the track.
+    pub fn set_groups(&mut self, groups: Vec<ScrubberGroup>) {
+        let n = self.entries.len();
+        let groups: Vec<ScrubberGroup> = groups
+            .into_iter()
+            .filter(|g| g.start <= g.end && g.end < n)
+            .collect();
+        if self.groups != groups {
+            self.groups = groups;
+            self.dirty = true;
+        }
+    }
+
+    /// The segments currently on the track.
+    pub fn groups(&self) -> &[ScrubberGroup] {
+        &self.groups
+    }
+
+    /// Whether the handle snaps to group boundaries. Ignored while no groups are
+    /// installed — there is nothing to snap to.
+    pub fn set_snap_to_groups(&mut self, snap: bool) {
+        if self.snap_to_groups != snap {
+            self.snap_to_groups = snap;
+            self.dirty = true;
+        }
+    }
+
+    pub fn snaps_to_groups(&self) -> bool {
+        self.snap_to_groups && !self.groups.is_empty()
+    }
+
     /// Mutable handle to the entries list for streaming producers.
     pub fn entries_mut(&mut self) -> &mut Vec<HistoryEntry> {
         &mut self.entries
@@ -149,11 +281,9 @@ impl HistoryScrubber {
         &self.entries
     }
 
-    /// Place the scrubber by hand, for a host that reserves a band out of its
-    /// own layout rather than putting the widget in a taffy tree — an editor
-    /// that opens a history strip under its canvas, or a compositor pane. The
-    /// `Widget::apply_layout` path is unchanged; this is the same assignment it
-    /// makes.
+    /// Place the scrubber by hand, for a host that reserves a band out of its own
+    /// layout rather than putting the widget in a taffy tree — an editor that
+    /// opens a history strip under its canvas, or a compositor pane.
     pub fn set_rect(&mut self, rect: Rect) {
         if self.rect != rect {
             self.rect = rect;
@@ -166,11 +296,31 @@ impl HistoryScrubber {
         self.rect
     }
 
+    /// Height the strip wants, which depends on whether it is showing a band.
+    pub fn natural_height(&self) -> f64 {
+        if self.groups.is_empty() {
+            NATURAL_H_PLAIN
+        } else {
+            NATURAL_H_GROUPED
+        }
+    }
+
     /// True while the handle is latched to the pointer. A host that routes
     /// events by hit-test must keep forwarding to the scrubber while this is
     /// set, or a drag that leaves the strip stops tracking mid-gesture.
     pub fn is_dragging(&self) -> bool {
         self.is_dragging
+    }
+
+    /// True while a name field has the keyboard. A host that routes keys by
+    /// hit-test must send them here regardless of where the pointer is.
+    pub fn wants_keyboard(&self) -> bool {
+        self.naming.is_some()
+    }
+
+    /// The name being typed, if any.
+    pub fn naming_buffer(&self) -> Option<&str> {
+        self.naming.as_ref().map(|(_, f)| f.text())
     }
 
     /// Builder: install a preview callback.
@@ -185,8 +335,19 @@ impl HistoryScrubber {
         self
     }
 
-    /// Pin "now" for the popover's relative-time label. Tests use
-    /// this so the label stays stable across runs.
+    /// Builder: install the callback that persists a name.
+    pub fn on_name<F: FnMut(&GroupNameRequest) + 'static>(mut self, f: F) -> Self {
+        self.on_name = Some(Box::new(f));
+        self
+    }
+
+    /// Builder: install the callback that opens or closes a prospective version.
+    pub fn on_version<F: FnMut(&VersionAction) + 'static>(mut self, f: F) -> Self {
+        self.on_version = Some(Box::new(f));
+        self
+    }
+
+    /// Pin "now" for the popover's relative-time label.
     pub fn set_now_for_test(&mut self, now: SystemTime) {
         self.now_override = Some(now);
     }
@@ -199,6 +360,18 @@ impl HistoryScrubber {
     /// Borrow the entry at the current tick.
     pub fn current_entry(&self) -> Option<&HistoryEntry> {
         self.entries.get(self.current_tick)
+    }
+
+    /// The segment the handle is inside, if the host installed any.
+    pub fn current_group(&self) -> Option<&ScrubberGroup> {
+        self.groups
+            .iter()
+            .find(|g| self.current_tick >= g.start && self.current_tick <= g.end)
+    }
+
+    /// The segment that is still open, if one is.
+    pub fn open_group(&self) -> Option<&ScrubberGroup> {
+        self.groups.iter().find(|g| g.open)
     }
 
     /// Move the handle to `tick`, clamped to `[0, entries.len()-1]`.
@@ -219,13 +392,36 @@ impl HistoryScrubber {
         self.entries.len()
     }
 
+    /// Where the track sits inside the rect, measured from the top.
+    fn track_y_from_top(&self) -> f64 {
+        if self.groups.is_empty() {
+            TRACK_Y_PLAIN
+        } else {
+            TRACK_Y_GROUPED
+        }
+    }
+
     /// Rect of the horizontal track.
     pub fn track_rect(&self) -> Rect {
+        let y = self.rect.y0 + self.track_y_from_top();
         Rect::new(
             self.rect.x0 + TRACK_INSET,
-            self.rect.y0 + TRACK_Y_FROM_TOP - TRACK_HEIGHT / 2.0,
+            y - TRACK_HEIGHT / 2.0,
             self.rect.x1 - TRACK_INSET,
-            self.rect.y0 + TRACK_Y_FROM_TOP + TRACK_HEIGHT / 2.0,
+            y + TRACK_HEIGHT / 2.0,
+        )
+    }
+
+    /// Rect of the group band above the track. `Rect::ZERO` with no groups.
+    pub fn band_rect(&self) -> Rect {
+        if self.groups.is_empty() {
+            return Rect::ZERO;
+        }
+        Rect::new(
+            self.rect.x0 + TRACK_INSET,
+            self.rect.y0 + BAND_Y_FROM_TOP,
+            self.rect.x1 - TRACK_INSET,
+            self.rect.y0 + BAND_Y_FROM_TOP + BAND_H,
         )
     }
 
@@ -241,7 +437,26 @@ impl HistoryScrubber {
         track.x0 + t * track.width()
     }
 
-    /// Nearest tick index to a given x coordinate.
+    /// The ticks the handle is allowed to land on when snapping: the end of every
+    /// segment, plus the very first change so the beginning stays reachable.
+    ///
+    /// Ends rather than starts, because "the state at the end of *Intro rewrite*"
+    /// is the version a person means when they point at a band.
+    pub fn snap_targets(&self) -> Vec<usize> {
+        if self.groups.is_empty() {
+            return Vec::new();
+        }
+        let mut out: Vec<usize> = vec![0];
+        for g in &self.groups {
+            out.push(g.end);
+        }
+        out.sort_unstable();
+        out.dedup();
+        out
+    }
+
+    /// Nearest tick index to a given x coordinate, snapped to a segment boundary
+    /// when the strip is in version mode.
     pub fn tick_at_x(&self, x: f64) -> usize {
         let track = self.track_rect();
         let n = self.entries.len();
@@ -249,7 +464,16 @@ impl HistoryScrubber {
             return 0;
         }
         let t = ((x - track.x0) / track.width()).clamp(0.0, 1.0);
-        (t * ((n - 1) as f64)).round() as usize
+        let raw = (t * ((n - 1) as f64)).round() as usize;
+        if !self.snaps_to_groups() {
+            return raw;
+        }
+        let targets = self.snap_targets();
+        targets
+            .iter()
+            .copied()
+            .min_by_key(|c| c.abs_diff(raw))
+            .unwrap_or(raw)
     }
 
     /// Centre point of the handle at the current tick.
@@ -257,41 +481,165 @@ impl HistoryScrubber {
         Point::new(self.tick_x(self.current_tick), self.track_rect().center().y)
     }
 
+    /// Centre of the dot marking where the live state is, so the user can find
+    /// "now" after scrubbing back.
+    ///
+    /// **Below** the track. Above it are the segment band and the popover, and a
+    /// marker drawn on top of either of those is a marker nobody can see.
+    pub fn live_state_dot_center(&self) -> Point {
+        Point::new(
+            self.tick_x(self.entries.len().saturating_sub(1)),
+            self.track_rect().center().y + 12.0,
+        )
+    }
+
     /// Rect of the popover above the handle.
     pub fn popover_rect(&self) -> Rect {
         let centre = self.handle_center();
-        // Width is generous enough for "summary by Author · 3 min ago"
-        // without a runtime measurement; the renderer truncates
-        // if it overflows.
-        let w = 220.0_f64.min(self.rect.width() - 16.0).max(80.0);
-        let x0 = (centre.x - w / 2.0)
-            .clamp(self.rect.x0 + 8.0, self.rect.x1 - 8.0 - w);
+        // Wide enough for a version name over a change description. The renderer
+        // truncates whatever still overflows.
+        let want: f64 = if self.groups.is_empty() { 220.0 } else { 260.0 };
+        let w = want.min(self.rect.width() - 16.0).max(80.0);
+        let x0 = (centre.x - w / 2.0).clamp(self.rect.x0 + 8.0, self.rect.x1 - 8.0 - w);
         let y0 = self.rect.y0 + 8.0;
         Rect::new(x0, y0, x0 + w, y0 + POPOVER_H)
     }
 
-    /// Rect of the `[Preview]` button under the track.
-    pub fn preview_button_rect(&self) -> Rect {
+    /// The buttons under the track and where they go, highest priority first.
+    ///
+    /// Restore is always there. The rest are dropped from the low-priority end
+    /// rather than allowed to overlap — a control half-under another control is
+    /// worse than a control that is not offered at this width.
+    fn button_layout(&self) -> Vec<(ScrubButton, Rect, &'static str)> {
         let track = self.track_rect();
         let y0 = track.y1 + BUTTON_Y_OFFSET;
-        Rect::new(
-            self.rect.x0 + TRACK_INSET,
-            y0,
-            self.rect.x0 + TRACK_INSET + PREVIEW_W,
-            y0 + BUTTON_H,
-        )
+        let narrow = self.rect.width() < 560.0;
+        let very_narrow = self.rect.width() < 420.0;
+
+        let restore_label = if very_narrow {
+            "Restore"
+        } else if narrow {
+            "Restore version"
+        } else {
+            "Restore to this version"
+        };
+        let restore_w = if very_narrow {
+            88.0
+        } else if narrow {
+            124.0
+        } else {
+            RESTORE_W
+        };
+        let mut out: Vec<(ScrubButton, Rect, &'static str)> = Vec::new();
+        out.push((
+            ScrubButton::Restore,
+            Rect::new(
+                self.rect.x1 - TRACK_INSET - restore_w,
+                y0,
+                self.rect.x1 - TRACK_INSET,
+                y0 + BUTTON_H,
+            ),
+            restore_label,
+        ));
+
+        // Left cluster. Preview keeps the leftmost slot it has always had, so a
+        // host that reserved that geometry still lines up.
+        let mut left: Vec<(ScrubButton, f64, &'static str)> = vec![(
+            ScrubButton::Preview,
+            if very_narrow { 70.0 } else { PREVIEW_W },
+            "Preview",
+        )];
+        if !self.groups.is_empty() {
+            let named = self
+                .current_group()
+                .is_some_and(|g| g.label.is_some());
+            left.push((
+                ScrubButton::Name,
+                if narrow { 78.0 } else { 132.0 },
+                match (named, narrow) {
+                    (true, true) => "Rename",
+                    (true, false) => "Rename this version",
+                    (false, true) => "Name",
+                    (false, false) => "Name this version",
+                },
+            ));
+            let open = self.open_group().is_some();
+            left.push((
+                ScrubButton::Version,
+                if narrow { 74.0 } else { 116.0 },
+                match (open, narrow) {
+                    (true, true) => "Finish",
+                    (true, false) => "Finish version",
+                    (false, true) => "Start",
+                    (false, false) => "Start a version",
+                },
+            ));
+        }
+
+        let limit = out[0].1.x0 - 8.0;
+        let mut x = self.rect.x0 + TRACK_INSET;
+        for (kind, w, label) in left {
+            if x + w > limit {
+                continue;
+            }
+            out.push((kind, Rect::new(x, y0, x + w, y0 + BUTTON_H), label));
+            x += w + 8.0;
+        }
+        out
     }
 
-    /// Rect of the `[Restore to this version]` button under the
-    /// track.
+    fn button_rect(&self, which: ScrubButton) -> Option<Rect> {
+        self.button_layout()
+            .into_iter()
+            .find(|(k, _, _)| *k == which)
+            .map(|(_, r, _)| r)
+    }
+
+    /// Rect of the `[Preview]` button under the track. `Rect::ZERO` when the
+    /// strip is too narrow to offer it.
+    pub fn preview_button_rect(&self) -> Rect {
+        self.button_rect(ScrubButton::Preview).unwrap_or(Rect::ZERO)
+    }
+
+    /// Rect of the `[Restore to this version]` button under the track.
     pub fn restore_button_rect(&self) -> Rect {
-        let track = self.track_rect();
-        let y0 = track.y1 + BUTTON_Y_OFFSET;
+        self.button_rect(ScrubButton::Restore).unwrap_or(Rect::ZERO)
+    }
+
+    /// Rect of the `[Name this version]` button. `Rect::ZERO` when no groups are
+    /// installed (there is nothing to name) or the strip is too narrow.
+    pub fn name_button_rect(&self) -> Rect {
+        self.button_rect(ScrubButton::Name).unwrap_or(Rect::ZERO)
+    }
+
+    /// Rect of the `[Start a version]` / `[Finish version]` button.
+    pub fn version_button_rect(&self) -> Rect {
+        self.button_rect(ScrubButton::Version).unwrap_or(Rect::ZERO)
+    }
+
+    /// Rect of the in-place name field, or `Rect::ZERO` when none is up.
+    ///
+    /// The field grows in the button row, so it sits **on top of** the buttons.
+    /// Paint and hit-test both read this one rect: a field that was drawn over
+    /// `[Restore to this version]` while the button underneath still took the
+    /// click would turn "click in the box to fix a typo" into a document
+    /// rewrite.
+    pub fn name_field_rect(&self) -> Rect {
+        if self.naming.is_none() {
+            return Rect::ZERO;
+        }
+        let layout = self.button_layout();
+        if layout.is_empty() {
+            return Rect::ZERO;
+        }
+        let first = layout.iter().map(|(_, r, _)| r.x0).fold(f64::MAX, f64::min);
+        let last = layout.iter().map(|(_, r, _)| r.x1).fold(0.0_f64, f64::max);
+        let y = layout[0].1.y0;
         Rect::new(
-            self.rect.x1 - TRACK_INSET - RESTORE_W,
-            y0,
-            self.rect.x1 - TRACK_INSET,
-            y0 + BUTTON_H,
+            first,
+            y,
+            first + (last - first).min(NAME_FIELD_W),
+            y + BUTTON_H,
         )
     }
 
@@ -313,20 +661,17 @@ impl HistoryScrubber {
 
     /// Fire `on_restore` with the current tick's entry id.
     ///
-    /// Phase 9: redacted entries are non-restorable — "Restore to
-    /// this version" would re-introduce content the channel owner
-    /// has explicitly removed by policy. The button itself is
-    /// suppressed in the draw path; this is the data-layer
-    /// defence-in-depth so a future keyboard-shortcut path that
-    /// forgets to gate still can't undo a redaction.
+    /// Redacted entries are non-restorable — "restore to this version" would
+    /// re-introduce content the channel owner has explicitly removed by policy.
+    /// The button is suppressed in the draw path; this is the data-layer defence
+    /// so a future keyboard path that forgets to gate still cannot undo a
+    /// redaction.
     fn invoke_restore(&mut self) {
         let Some(entry) = self.entries.get(self.current_tick) else {
             return;
         };
         if entry.redaction.is_some() {
-            tracing::debug!(
-                "history_scrubber: refusing restore across a redaction boundary",
-            );
+            tracing::debug!("history_scrubber: refusing restore across a redaction boundary");
             return;
         }
         let id = entry.id;
@@ -335,11 +680,128 @@ impl HistoryScrubber {
         }
     }
 
-    /// Draw the per-tick notches above the track.
+    /// Open the name field for the group the handle is in.
+    pub fn begin_naming_current_group(&mut self) -> bool {
+        let Some(g) = self.current_group() else {
+            return false;
+        };
+        let seed = g.label.clone().unwrap_or_default();
+        self.naming = Some((NameKind::CurrentGroup, NameField::new(seed)));
+        self.dirty = true;
+        true
+    }
+
+    /// Open the name field for a version starting at the newest change.
+    pub fn begin_new_version(&mut self) -> bool {
+        if self.entries.is_empty() {
+            return false;
+        }
+        self.naming = Some((
+            NameKind::NewVersion,
+            NameField::new("").with_placeholder("What are you about to do?"),
+        ));
+        self.dirty = true;
+        true
+    }
+
+    /// Abandon whatever is being typed.
+    pub fn cancel_naming(&mut self) {
+        if self.naming.take().is_some() {
+            self.dirty = true;
+        }
+    }
+
+    /// Commit the name being typed. Fires `on_name` for a rename, `on_version`
+    /// for a version being opened.
+    pub fn commit_naming(&mut self) -> bool {
+        let Some((kind, field)) = self.naming.take() else {
+            return false;
+        };
+        self.dirty = true;
+        let label = field.text().trim().to_string();
+        match kind {
+            NameKind::CurrentGroup => {
+                let Some(g) = self.current_group().cloned() else {
+                    return false;
+                };
+                let (Some(first), Some(last)) =
+                    (self.entries.get(g.start), self.entries.get(g.end))
+                else {
+                    return false;
+                };
+                if label.is_empty() && g.record_id.is_none() {
+                    return false;
+                }
+                let req = GroupNameRequest {
+                    record_id: g.record_id.clone(),
+                    start: first.id,
+                    end: last.id,
+                    label,
+                };
+                if let Some(cb) = self.on_name.as_mut() {
+                    cb(&req);
+                }
+                true
+            }
+            NameKind::NewVersion => {
+                if label.is_empty() {
+                    return false;
+                }
+                let Some(last) = self.entries.last() else {
+                    return false;
+                };
+                let action = VersionAction::Open {
+                    at: last.id,
+                    label,
+                };
+                if let Some(cb) = self.on_version.as_mut() {
+                    cb(&action);
+                }
+                true
+            }
+        }
+    }
+
+    /// Close the open version at the newest change.
+    pub fn finish_open_version(&mut self) -> bool {
+        let Some(g) = self.open_group().cloned() else {
+            return false;
+        };
+        let Some(record_id) = g.record_id.clone() else {
+            return false;
+        };
+        let Some(last) = self.entries.last() else {
+            return false;
+        };
+        let action = VersionAction::Close {
+            record_id,
+            at: last.id,
+        };
+        if let Some(cb) = self.on_version.as_mut() {
+            cb(&action);
+        }
+        self.dirty = true;
+        true
+    }
+
+    /// Draw the per-tick notches over the track.
+    ///
+    /// Dropped entirely once they would be closer together than
+    /// [`MIN_TICK_SPACING`]: two hundred notches across a 900 px strip is a grey
+    /// smear that reads as a texture, not as marks. The group band above carries
+    /// the structure at those densities.
     fn draw_ticks(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
         let track = self.track_rect();
         let n = self.entries.len();
         if n == 0 {
+            return;
+        }
+        let spacing = if n <= 1 {
+            track.width()
+        } else {
+            track.width() / (n - 1) as f64
+        };
+        if spacing < MIN_TICK_SPACING {
             return;
         }
         let tick_color = theme.tokens.colors.text_dim;
@@ -361,8 +823,118 @@ impl HistoryScrubber {
         }
     }
 
-    /// Paint a single button body + label. Used for both Preview
-    /// and Restore so styling stays uniform.
+    /// Draw the group band: one block per segment, named ones accented and
+    /// labelled, with a boundary mark at each segment's end.
+    fn draw_band(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        let band = self.band_rect();
+        if band.width() <= 0.0 || self.groups.is_empty() {
+            return;
+        }
+        let colors = &theme.tokens.colors;
+        let track = self.track_rect();
+        let size = (theme.tokens.typography.scale.sm - 3.0).max(9.0);
+
+        // Segments abut at the tick each one ends on, so the band tiles the whole
+        // track and every visible edge is a real boundary. Spanning only
+        // first-tick..last-tick instead leaves one tick of nothing between
+        // neighbours — 50 px on a twenty-change document, which reads as a hole.
+        let mut cursor = band.x0;
+        for (i, g) in self.groups.iter().enumerate() {
+            let x0 = cursor;
+            let x1 = if i + 1 == self.groups.len() {
+                band.x1
+            } else {
+                self.tick_x(g.end).clamp(x0, band.x1)
+            };
+            cursor = x1;
+            let seg = Rect::new(x0, band.y0, x1.max(x0 + 2.0).min(band.x1), band.y1);
+            if seg.width() <= 0.0 {
+                continue;
+            }
+            let named = g.label.is_some();
+            let contains_handle = self.current_tick >= g.start && self.current_tick <= g.end;
+            let fill = if named {
+                colors.accent[if contains_handle { 4 } else { 6 }]
+            } else if contains_handle {
+                colors.surface_white_20
+            } else if i % 2 == 0 {
+                colors.surface_white_10
+            } else {
+                colors.surface_white_5
+            };
+            let shape = RoundedRect::from_rect(seg, 3.0);
+            scene.fill(vello::peniko::Fill::NonZero, transform, fill, None, &shape);
+
+            // Every segment says what it is. A block nobody named still knows
+            // ("8 edits over 2 min"), and it goes in the dim ink so a name still
+            // reads as a decision somebody made — where a *blank* grey block
+            // beside two labelled ones reads as a gap in the history rather than
+            // as a version.
+            //
+            // The label only goes in when it genuinely fits: a two-character stub
+            // is worse than the block on its own, which at least reads as
+            // structure.
+            let (label, ink) = match &g.label {
+                Some(l) => (l.as_str(), colors.text_primary),
+                None => (g.derived.as_str(), colors.text_dim),
+            };
+            let budget = seg.width() - 8.0;
+            let shown = fit(tr, label, size, budget);
+            let (lw, lh) = tr.measure(&shown, size, None);
+            if !shown.is_empty() && lw as f64 <= budget && shown.chars().count() > 2 {
+                tr.draw_text(
+                    scene,
+                    &shown,
+                    size,
+                    ink,
+                    transform
+                        * Affine::translate((
+                            seg.x0 + (seg.width() - lw as f64) / 2.0,
+                            seg.center().y - lh as f64 / 2.0,
+                        )),
+                    None,
+                );
+            }
+
+            // Boundary mark, joining the band to the track so a segment's end and
+            // the tick it snaps to read as the same place.
+            let bx = self.tick_x(g.end);
+            scene.stroke(
+                &Stroke::new(if named { 1.5 } else { 1.0 }),
+                transform,
+                if named {
+                    colors.accent[4]
+                } else {
+                    colors.border_white_20
+                },
+                None,
+                &vello::kurbo::Line::new(
+                    Point::new(bx, band.y1),
+                    Point::new(bx, track.center().y - TICK_MARK_H / 2.0),
+                ),
+            );
+            if g.open {
+                // An open segment has no settled end; mark it as live rather than
+                // drawing a boundary that is not one.
+                scene.fill(
+                    vello::peniko::Fill::NonZero,
+                    transform,
+                    colors.accent[4],
+                    None,
+                    &Circle::new(Point::new(bx, band.y0 - 4.0), 2.5),
+                );
+            }
+        }
+    }
+
+    /// Paint a single button body + label. Used for every button so styling
+    /// stays uniform.
     #[allow(clippy::too_many_arguments)]
     fn draw_button(
         &self,
@@ -377,13 +949,16 @@ impl HistoryScrubber {
     ) {
         let shape = RoundedRect::from_rect(rect, theme.tokens.radii.sm as f64);
         let (fill, border, text_color) = if primary {
-            // Restore is the primary action — accent fill.
             let fill = if hovered {
                 theme.tokens.colors.accent[4]
             } else {
                 theme.tokens.colors.accent[5]
             };
-            (fill, theme.tokens.colors.border_focus, theme.tokens.colors.text_primary)
+            (
+                fill,
+                theme.tokens.colors.border_focus,
+                theme.tokens.colors.text_primary,
+            )
         } else if hovered {
             (
                 theme.tokens.colors.surface_white_20,
@@ -397,19 +972,14 @@ impl HistoryScrubber {
                 theme.tokens.colors.text_primary,
             )
         };
-        scene.fill(
-            vello::peniko::Fill::NonZero,
-            transform,
-            fill,
-            None,
-            &shape,
-        );
+        scene.fill(vello::peniko::Fill::NonZero, transform, fill, None, &shape);
         scene.stroke(&Stroke::new(1.0), transform, border, None, &shape);
         let size = theme.tokens.typography.scale.sm;
-        let (w, h) = text_renderer.measure(label, size, None);
+        let shown = fit(text_renderer, label, size, rect.width() - 10.0);
+        let (w, h) = text_renderer.measure(&shown, size, None);
         text_renderer.draw_text(
             scene,
-            label,
+            &shown,
             size,
             text_color,
             transform
@@ -431,11 +1001,12 @@ impl Widget for HistoryScrubber {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        let h = self.natural_height();
         let node = taffy
             .new_leaf(Style {
                 size: Size {
                     width: Dimension::percent(1.0),
-                    height: Dimension::length(140.0),
+                    height: Dimension::length(h as f32),
                 },
                 ..Default::default()
             })
@@ -485,7 +1056,7 @@ impl Widget for HistoryScrubber {
 
         if self.entries.is_empty() {
             // Empty state — centred dim label.
-            let label = "No history";
+            let label = "No history yet";
             let size = theme.tokens.typography.scale.sm;
             let (w, h) = text_renderer.measure(label, size, None);
             text_renderer.draw_text(
@@ -516,12 +1087,7 @@ impl Widget for HistoryScrubber {
         );
 
         // Active band — from leftmost tick up to the current handle.
-        let active = Rect::new(
-            track.x0,
-            track.y0,
-            self.handle_center().x,
-            track.y1,
-        );
+        let active = Rect::new(track.x0, track.y0, self.handle_center().x, track.y1);
         if active.width() > 0.0 {
             let active_shape = RoundedRect::from_rect(active, 3.0);
             scene.fill(
@@ -533,17 +1099,16 @@ impl Widget for HistoryScrubber {
             );
         }
 
-        // Per-tick notches.
+        self.draw_band(scene, transform, text_renderer, theme);
         self.draw_ticks(scene, transform, theme);
 
-        // "Current" indicator — a small caret/diamond at the rightmost
-        // tick so users can spot where the live state lives even when
-        // the handle has scrubbed back.
-        let current_x = self.tick_x(self.entries.len() - 1);
-        let live_dot = Circle::new(
-            Point::new(current_x, track.center().y - 18.0),
-            3.0,
-        );
+        // "Current" indicator — a small dot at the rightmost tick so users can
+        // spot where the live state lives even when the handle has scrubbed back.
+        //
+        // Below the track, not above it: above is where the segment band and the
+        // popover live, and the dot spent both of those sitting invisibly on top
+        // of something else. Below there is only the gap before the button row.
+        let live_dot = Circle::new(self.live_state_dot_center(), 3.0);
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
@@ -577,7 +1142,7 @@ impl Widget for HistoryScrubber {
             &handle_shape,
         );
 
-        // Popover above the handle.
+        // Popover above the handle: the version, then the change.
         let pop = self.popover_rect();
         let pop_shape = RoundedRect::from_rect(pop, theme.tokens.radii.sm as f64);
         scene.fill(
@@ -596,69 +1161,141 @@ impl Widget for HistoryScrubber {
         );
         if let Some(entry) = self.current_entry() {
             let now = self.now();
-            let line = format!(
+            let detail = format!(
                 "{} by {} \u{00b7} {}",
                 entry.summary,
                 entry.author.name,
                 format_relative_time(entry.timestamp, now)
             );
-            let size = (theme.tokens.typography.scale.sm - 1.0).max(10.0);
-            // Truncate to fit. Cheap binary-chop over char count.
-            let budget = pop.width() - 12.0;
-            let (full_w, _) = text_renderer.measure(&line, size, None);
-            let drawn = if full_w as f64 > budget {
-                let mut lo = 0;
-                let mut hi = line.chars().count();
-                while lo < hi {
-                    let mid = (lo + hi).div_ceil(2);
-                    let s: String = line.chars().take(mid).collect();
-                    let (w, _) = text_renderer.measure(&s, size, None);
-                    if w as f64 <= budget {
-                        lo = mid;
-                    } else {
-                        hi = mid - 1;
-                    }
+            // An unnamed segment of one change derives its title *from* that
+            // change, so a two-line popover would print the same words twice —
+            // once as the version and once as the change. Say it once.
+            let group_line = self.current_group().and_then(|g| {
+                let mut s = g.title().to_string();
+                if g.label.is_none() && !g.open && s == entry.summary {
+                    return None;
                 }
-                line.chars().take(lo).collect::<String>()
-            } else {
-                line
-            };
-            let (lw, lh) = text_renderer.measure(&drawn, size, None);
-            text_renderer.draw_text(
-                scene,
-                &drawn,
-                size,
-                theme.tokens.colors.text_primary,
-                transform
-                    * Affine::translate((
-                        pop.x0 + (pop.width() - lw as f64) / 2.0,
-                        pop.y0 + (pop.height() - lh as f64) / 2.0,
-                    )),
-                None,
-            );
+                if g.open {
+                    s.push_str(" \u{00b7} still open");
+                }
+                Some(s)
+            });
+            let budget = pop.width() - 12.0;
+            match group_line {
+                Some(head) => {
+                    // Two lines: what version this is, and what the change did.
+                    let head_size = (theme.tokens.typography.scale.sm - 1.0).max(10.0);
+                    let sub_size = (theme.tokens.typography.scale.sm - 3.0).max(9.0);
+                    let head = fit(
+                        text_renderer,
+                        &head,
+                        head_size,
+                        budget,
+                    );
+                    let (hw, _) = text_renderer.measure(&head, head_size, None);
+                    text_renderer.draw_text(
+                        scene,
+                        &head,
+                        head_size,
+                        theme.tokens.colors.text_primary,
+                        transform
+                            * Affine::translate((
+                                pop.x0 + (pop.width() - hw as f64) / 2.0,
+                                pop.y0 + 5.0,
+                            )),
+                        None,
+                    );
+                    let detail = fit(
+                        text_renderer,
+                        &detail,
+                        sub_size,
+                        budget,
+                    );
+                    let (dw, _) = text_renderer.measure(&detail, sub_size, None);
+                    text_renderer.draw_text(
+                        scene,
+                        &detail,
+                        sub_size,
+                        theme.tokens.colors.text_dim,
+                        transform
+                            * Affine::translate((
+                                pop.x0 + (pop.width() - dw as f64) / 2.0,
+                                pop.y0 + 21.0,
+                            )),
+                        None,
+                    );
+                }
+                None => {
+                    let size = (theme.tokens.typography.scale.sm - 1.0).max(10.0);
+                    let drawn =
+                        fit(text_renderer, &detail, size, budget);
+                    let (lw, lh) = text_renderer.measure(&drawn, size, None);
+                    text_renderer.draw_text(
+                        scene,
+                        &drawn,
+                        size,
+                        theme.tokens.colors.text_primary,
+                        transform
+                            * Affine::translate((
+                                pop.x0 + (pop.width() - lw as f64) / 2.0,
+                                pop.y0 + (pop.height() - lh as f64) / 2.0,
+                            )),
+                        None,
+                    );
+                }
+            }
         }
 
-        // Action buttons.
-        self.draw_button(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            self.preview_button_rect(),
-            "Preview",
-            self.hover_preview,
-            false,
-        );
-        self.draw_button(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            self.restore_button_rect(),
-            "Restore to this version",
-            self.hover_restore,
-            true,
-        );
+        // Action buttons. A name being typed replaces the row it belongs to, so
+        // the field is where the button was.
+        let layout = self.button_layout();
+        let redacted = self
+            .current_entry()
+            .is_some_and(|e| e.redaction.is_some());
+        if let Some((_, field)) = self.naming.as_ref() {
+            let last = layout.iter().map(|(_, r, _)| r.x1).fold(0.0_f64, f64::max);
+            let box_rect = self.name_field_rect();
+            let size = theme.tokens.typography.scale.sm;
+            field.draw(scene, transform, text_renderer, theme, box_rect, size);
+            // The field replaced the buttons, so nothing on screen says how to
+            // finish. Enter and Escape are the only two things it does; say so
+            // where the buttons were, when there is room left over.
+            let hint = "Enter to save \u{00b7} Esc to cancel";
+            let hint_size = (size - 2.0).max(9.0);
+            let (hw, hh) = text_renderer.measure(hint, hint_size, None);
+            if box_rect.x1 + 10.0 + hw as f64 <= last {
+                text_renderer.draw_text(
+                    scene,
+                    hint,
+                    hint_size,
+                    theme.tokens.colors.text_dim,
+                    transform
+                        * Affine::translate((
+                            box_rect.x1 + 10.0,
+                            box_rect.center().y - hh as f64 / 2.0,
+                        )),
+                    None,
+                );
+            }
+        } else {
+            for (kind, rect, label) in &layout {
+                // Restore is the primary action; and it is not offered at all
+                // across a redaction boundary.
+                if *kind == ScrubButton::Restore && redacted {
+                    continue;
+                }
+                self.draw_button(
+                    scene,
+                    transform,
+                    text_renderer,
+                    theme,
+                    *rect,
+                    label,
+                    self.hover_button == Some(*kind),
+                    *kind == ScrubButton::Restore,
+                );
+            }
+        }
 
         self.dirty = false;
     }
@@ -667,7 +1304,7 @@ impl Widget for HistoryScrubber {
         &mut self,
         event: &WindowEvent,
         scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
+        modifiers: &winit::event::Modifiers,
         _state: &mut AutoCommit,
         _root: &ObjId,
         handled: &mut bool,
@@ -675,6 +1312,31 @@ impl Widget for HistoryScrubber {
         node_id: NodeId,
         _taffy: &TaffyTree<()>,
     ) {
+        // A name field owns the keyboard while it is up.
+        if self.naming.is_some() && matches!(event, WindowEvent::KeyboardInput { .. }) {
+            let outcome = self
+                .naming
+                .as_mut()
+                .map(|(_, f)| f.handle_event(event, modifiers))
+                .unwrap_or(NameFieldOutcome::Ignored);
+            match outcome {
+                NameFieldOutcome::Commit(_) => {
+                    self.commit_naming();
+                    *handled = true;
+                }
+                NameFieldOutcome::Cancel => {
+                    self.cancel_naming();
+                    *handled = true;
+                }
+                NameFieldOutcome::Edited => {
+                    self.dirty = true;
+                    *handled = true;
+                }
+                NameFieldOutcome::Ignored => {}
+            }
+            return;
+        }
+
         // Empty scrubbers are inert.
         if self.entries.is_empty() {
             return;
@@ -697,15 +1359,13 @@ impl Widget for HistoryScrubber {
                 }
 
                 // Button hover.
-                let pv = self.preview_button_rect().contains(p);
-                let rs = self.restore_button_rect().contains(p);
-                if pv != self.hover_preview {
-                    self.hover_preview = pv;
-                    self.dirty = true;
-                    *handled = true;
-                }
-                if rs != self.hover_restore {
-                    self.hover_restore = rs;
+                let over = self
+                    .button_layout()
+                    .into_iter()
+                    .find(|(_, r, _)| r.contains(p))
+                    .map(|(k, _, _)| k);
+                if over != self.hover_button {
+                    self.hover_button = over;
                     self.dirty = true;
                     *handled = true;
                 }
@@ -726,14 +1386,45 @@ impl Widget for HistoryScrubber {
                 ..
             } => {
                 if *element_state == ElementState::Pressed {
-                    // Press on a button → fire its callback.
-                    if self.preview_button_rect().contains(self.last_cursor) {
-                        self.invoke_preview();
-                        *handled = true;
+                    // A name field is up, and it is drawn over the button row.
+                    // The buttons under it do not get the click: pressing in the
+                    // field does nothing (there is no caret to place), pressing
+                    // elsewhere on the strip abandons the name the same way
+                    // Escape does. A press outside the strip abandons it too but
+                    // is left for whatever the user actually clicked on.
+                    if self.naming.is_some() {
+                        let field = self.name_field_rect();
+                        if field.contains(self.last_cursor) {
+                            *handled = true;
+                            return;
+                        }
+                        self.cancel_naming();
+                        if self.rect.contains(self.last_cursor) {
+                            *handled = true;
+                            return;
+                        }
                         return;
                     }
-                    if self.restore_button_rect().contains(self.last_cursor) {
-                        self.invoke_restore();
+                    // Press on a button → do its thing.
+                    if let Some((kind, _, _)) = self
+                        .button_layout()
+                        .into_iter()
+                        .find(|(_, r, _)| r.contains(self.last_cursor))
+                    {
+                        match kind {
+                            ScrubButton::Preview => self.invoke_preview(),
+                            ScrubButton::Restore => self.invoke_restore(),
+                            ScrubButton::Name => {
+                                self.begin_naming_current_group();
+                            }
+                            ScrubButton::Version => {
+                                if self.open_group().is_some() {
+                                    self.finish_open_version();
+                                } else {
+                                    self.begin_new_version();
+                                }
+                            }
+                        }
                         *handled = true;
                         return;
                     }
@@ -749,17 +1440,36 @@ impl Widget for HistoryScrubber {
                         return;
                     }
 
-                    // Press on the track → jump the handle to the
-                    // nearest tick and start dragging from there.
+                    // Press on the track, or on the band above it → jump the
+                    // handle. The band is part of the same control: clicking a
+                    // version's block is the most direct way to say "take me
+                    // there".
                     let track = self.track_rect();
-                    let on_track_y =
-                        (self.last_cursor.y - track.center().y).abs() <= TICK_MARK_H;
+                    let band = self.band_rect();
+                    let on_track_y = (self.last_cursor.y - track.center().y).abs() <= TICK_MARK_H;
+                    let in_band = band.area() > 0.0 && band.contains(self.last_cursor);
                     let on_track_x =
                         self.last_cursor.x >= track.x0 && self.last_cursor.x <= track.x1;
-                    if on_track_x && on_track_y {
-                        let tick = self.tick_at_x(self.last_cursor.x);
-                        self.current_tick = tick;
-                        self.is_dragging = true;
+                    if on_track_x && (on_track_y || in_band) {
+                        // A click in a segment goes to that segment's end, which
+                        // is the version it names; a click on the track snaps
+                        // normally.
+                        let tick = if in_band {
+                            let raw = {
+                                let t = ((self.last_cursor.x - track.x0) / track.width())
+                                    .clamp(0.0, 1.0);
+                                (t * ((self.entries.len().max(2) - 1) as f64)).round() as usize
+                            };
+                            self.groups
+                                .iter()
+                                .find(|g| raw >= g.start && raw <= g.end)
+                                .map(|g| g.end)
+                                .unwrap_or_else(|| self.tick_at_x(self.last_cursor.x))
+                        } else {
+                            self.tick_at_x(self.last_cursor.x)
+                        };
+                        self.current_tick = tick.min(self.entries.len() - 1);
+                        self.is_dragging = !in_band;
                         *focus_target = Some(node_id);
                         self.dirty = true;
                         *handled = true;
@@ -774,8 +1484,8 @@ impl Widget for HistoryScrubber {
         }
     }
 
-    /// Drag must continue tracking the cursor even when it leaves
-    /// `rect` — mirrors the slider's contract.
+    /// Drag must continue tracking the cursor even when it leaves `rect` —
+    /// mirrors the slider's contract.
     fn wants_pointer_capture(&self) -> bool {
         self.is_dragging
     }
@@ -784,18 +1494,22 @@ impl Widget for HistoryScrubber {
         "HistoryScrubber"
     }
 
-    /// Accessibility: a scrubber over the document's revision history
-    /// behaves like a slider — `Role::Slider` whose value is the selected
-    /// tick's position ("revision N of M"). Reusing the slider role means an
-    /// AT offers the same increment/decrement affordance the scrubber's drag
-    /// provides.
+    /// Accessibility: a scrubber over the document's revision history behaves
+    /// like a slider — `Role::Slider` whose value is the selected tick's
+    /// position. When the host has installed versions, the value names the
+    /// version too: "revision 84 of 190" tells a screen-reader user nothing they
+    /// can act on, where "Intro rewrite, revision 84 of 190" does.
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
         let total = self.entries.len();
         let value = if total == 0 {
             "empty".to_string()
         } else {
-            format!("revision {} of {}", self.current_tick + 1, total)
+            let pos = format!("revision {} of {}", self.current_tick + 1, total);
+            match self.current_group() {
+                Some(g) => format!("{}, {pos}", g.title()),
+                None => pos,
+            }
         };
         Some(
             AccessNode::new(Role::Slider)
@@ -846,6 +1560,7 @@ mod tests {
             artifact_kind: ArtifactKind::Note,
             timestamp: SystemTime::UNIX_EPOCH + Duration::from_secs(id as u64 * 60),
             summary: format!("op {}", id),
+            text_delta: Some((1, 0)),
             diff_payload: None,
             redaction: None,
         }
@@ -1033,5 +1748,678 @@ mod tests {
         // And past the left.
         dispatch(&mut s, &cursor_moved(-10_000.0, track.center().y));
         assert_eq!(s.current_tick(), 0, "drag past left must saturate at tick 0");
+    }
+}
+
+// =====================================================================
+// Tests: versions on the track
+// =====================================================================
+
+#[cfg(test)]
+mod version_tests {
+    use super::*;
+    use crate::widget::history::HistoryAuthor;
+    use collab_types::{ArtifactKind, OpClass};
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    use std::time::Duration;
+    use winit::event::Modifiers;
+
+    fn entry(id: u8) -> HistoryEntry {
+        let mut bytes = [0u8; 16];
+        bytes[0] = id;
+        HistoryEntry {
+            id: HistoryEntryId(bytes),
+            author: HistoryAuthor::new("Alice", 120.0, "deadbeef"),
+            op_class: OpClass::Splice,
+            artifact_kind: ArtifactKind::Note,
+            timestamp: SystemTime::UNIX_EPOCH + Duration::from_secs(id as u64 * 60),
+            summary: format!("+{} -0 chars", id as usize + 1),
+            text_delta: Some((id as usize + 1, 0)),
+            diff_payload: None,
+            redaction: None,
+        }
+    }
+
+    fn scrubber(w: f64, n: usize) -> HistoryScrubber {
+        let entries: Vec<HistoryEntry> = (0..n as u8).map(entry).collect();
+        let mut s = HistoryScrubber::new(entries);
+        s.set_rect(Rect::new(0.0, 0.0, w, s.natural_height()));
+        s.set_now_for_test(SystemTime::UNIX_EPOCH + Duration::from_secs(100_000));
+        s
+    }
+
+    fn group(start: usize, end: usize, label: Option<&str>) -> ScrubberGroup {
+        ScrubberGroup {
+            start,
+            end,
+            label: label.map(|s| s.to_string()),
+            derived: format!("{} edits", (end + 1).saturating_sub(start)),
+            record_id: label.map(|_| format!("qos:group:{start}")),
+            open: false,
+        }
+    }
+
+    /// Twenty changes cut into four versions, two of them named.
+    fn with_versions(w: f64) -> HistoryScrubber {
+        let mut s = scrubber(w, 20);
+        s.set_groups(vec![
+            group(0, 4, Some("Outline")),
+            group(5, 9, None),
+            group(10, 14, Some("Intro rewrite")),
+            group(15, 19, None),
+        ]);
+        // Re-place: installing versions changes the height the strip wants.
+        s.set_rect(Rect::new(0.0, 0.0, w, s.natural_height()));
+        s
+    }
+
+    fn cursor_moved(x: f64, y: f64) -> WindowEvent {
+        WindowEvent::CursorMoved {
+            device_id: unsafe { std::mem::zeroed() },
+            position: winit::dpi::PhysicalPosition::new(x, y),
+        }
+    }
+
+    fn mouse_press() -> WindowEvent {
+        WindowEvent::MouseInput {
+            device_id: unsafe { std::mem::zeroed() },
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+        }
+    }
+
+    fn mouse_release() -> WindowEvent {
+        WindowEvent::MouseInput {
+            device_id: unsafe { std::mem::zeroed() },
+            state: ElementState::Released,
+            button: MouseButton::Left,
+        }
+    }
+
+    fn key(k: winit::keyboard::Key) -> WindowEvent {
+        // SAFETY: as in the sibling test modules — every pub field of `KeyEvent`
+        // tolerates the all-zero bit pattern, and winit 0.30 keeps
+        // `KeyEventExtra` crate-private so a struct literal is unavailable.
+        let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
+        ev.logical_key = k;
+        ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
+            winit::keyboard::NativeKeyCode::Unidentified,
+        );
+        ev.location = winit::keyboard::KeyLocation::Standard;
+        ev.state = ElementState::Pressed;
+        ev.repeat = false;
+        ev.text = None;
+        WindowEvent::KeyboardInput {
+            device_id: unsafe { std::mem::zeroed() },
+            event: ev,
+            is_synthetic: false,
+        }
+    }
+
+    fn dispatch(s: &mut HistoryScrubber, event: &WindowEvent) {
+        let mut tree = TaffyTree::<()>::new();
+        let node = tree.new_leaf(Style::default()).unwrap();
+        let mut handled = false;
+        let mut focus = None;
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        s.handle_event(
+            event,
+            1.0,
+            &Modifiers::default(),
+            &mut doc,
+            &root,
+            &mut handled,
+            &mut focus,
+            node,
+            &tree,
+        );
+    }
+
+    fn type_str(s: &mut HistoryScrubber, text: &str) {
+        use winit::keyboard::{Key, NamedKey};
+        for ch in text.chars() {
+            if ch == ' ' {
+                dispatch(s, &key(Key::Named(NamedKey::Space)));
+            } else {
+                dispatch(s, &key(Key::Character(ch.to_string().into())));
+            }
+        }
+    }
+
+    fn click(s: &mut HistoryScrubber, p: Point) {
+        dispatch(s, &cursor_moved(p.x, p.y));
+        dispatch(s, &mouse_press());
+    }
+
+    #[test]
+    fn installing_versions_grows_the_strip_and_makes_room_for_the_band() {
+        let plain = scrubber(900.0, 20);
+        assert_eq!(plain.natural_height(), 140.0);
+        assert_eq!(plain.band_rect(), Rect::ZERO, "no versions, no band");
+        let plain_track_y = plain.track_rect().center().y;
+
+        let s = with_versions(900.0);
+        assert_eq!(s.natural_height(), 168.0);
+        let band = s.band_rect();
+        assert!(band.height() > 0.0, "the band is on screen");
+        assert!(
+            band.y1 < s.track_rect().y0,
+            "and it sits above the track rather than over it"
+        );
+        assert!(
+            s.track_rect().center().y > plain_track_y,
+            "the track moved down to make room, it did not lose height"
+        );
+        // Everything still fits inside the strip.
+        assert!(
+            s.restore_button_rect().y1 <= s.rect().y1,
+            "the button row must stay inside the taller strip"
+        );
+    }
+
+    #[test]
+    fn dragging_snaps_to_version_boundaries() {
+        let mut s = with_versions(900.0);
+        assert!(s.snaps_to_groups());
+        assert_eq!(s.snap_targets(), vec![0, 4, 9, 14, 19]);
+
+        s.set_current_tick(0);
+        let y = s.track_rect().center().y;
+        let x0 = s.tick_x(0);
+        dispatch(&mut s, &cursor_moved(x0, y));
+        dispatch(&mut s, &mouse_press());
+        assert!(s.is_dragging());
+
+        // Drag to a point nearer change 11 than any boundary: the handle must
+        // land on the end of the version that contains it, not on 11.
+        let target = { s.tick_x(11) };
+        dispatch(&mut s, &cursor_moved(target, y));
+        assert_eq!(
+            s.current_tick(),
+            9,
+            "snapped to the nearest version boundary, not to keystroke 11"
+        );
+
+        // Drag right of the middle of a version and it takes the next boundary.
+        let target = { s.tick_x(13) };
+        dispatch(&mut s, &cursor_moved(target, y));
+        assert_eq!(s.current_tick(), 14);
+        dispatch(&mut s, &mouse_release());
+    }
+
+    #[test]
+    fn per_change_resolution_is_one_toggle_away() {
+        let mut s = with_versions(900.0);
+        s.set_snap_to_groups(false);
+        assert!(!s.snaps_to_groups());
+        s.set_current_tick(0);
+        let y = s.track_rect().center().y;
+        let (x0, x11) = (s.tick_x(0), s.tick_x(11));
+        dispatch(&mut s, &cursor_moved(x0, y));
+        dispatch(&mut s, &mouse_press());
+        dispatch(&mut s, &cursor_moved(x11, y));
+        assert_eq!(s.current_tick(), 11, "every change is reachable again");
+    }
+
+    #[test]
+    fn a_strip_with_no_versions_snaps_to_nothing() {
+        // The flat case has to keep working exactly as it did: a scrubber that
+        // was never handed groups must not start snapping.
+        let mut s = scrubber(900.0, 20);
+        assert!(!s.snaps_to_groups());
+        assert!(s.snap_targets().is_empty());
+        s.set_current_tick(0);
+        let y = s.track_rect().center().y;
+        let (x0, x7) = (s.tick_x(0), s.tick_x(7));
+        dispatch(&mut s, &cursor_moved(x0, y));
+        dispatch(&mut s, &mouse_press());
+        dispatch(&mut s, &cursor_moved(x7, y));
+        assert_eq!(s.current_tick(), 7);
+    }
+
+    #[test]
+    fn clicking_a_version_block_goes_to_the_end_of_that_version() {
+        let mut s = with_versions(900.0);
+        s.set_current_tick(19);
+        // The middle of the "Intro rewrite" block (changes 10..=14).
+        let band = s.band_rect();
+        let x = (s.tick_x(10) + s.tick_x(14)) / 2.0;
+        click(&mut s, Point::new(x, band.center().y));
+        assert_eq!(
+            s.current_tick(),
+            14,
+            "the version's end is the state that version produced"
+        );
+        assert_eq!(
+            s.current_group().map(|g| g.title()),
+            Some("Intro rewrite"),
+            "and the handle is inside it"
+        );
+        assert!(
+            !s.is_dragging(),
+            "a click on the band is a jump, not the start of a drag"
+        );
+    }
+
+    #[test]
+    fn the_popover_and_the_screen_reader_both_name_the_version() {
+        let mut s = with_versions(900.0);
+        s.set_current_tick(12);
+        assert_eq!(s.current_group().map(|g| g.title()), Some("Intro rewrite"));
+        let node = Widget::accessibility(&s).unwrap();
+        assert_eq!(
+            node.value.as_deref(),
+            Some("Intro rewrite, revision 13 of 20"),
+            "'revision 13 of 20' alone is not something a user can act on"
+        );
+
+        // An unnamed version falls back to its honest derived description.
+        s.set_current_tick(7);
+        let node = Widget::accessibility(&s).unwrap();
+        assert_eq!(node.value.as_deref(), Some("5 edits, revision 8 of 20"));
+    }
+
+    #[test]
+    fn naming_the_current_version_emits_that_versions_whole_range() {
+        let captured: Rc<RefCell<Vec<GroupNameRequest>>> = Rc::new(RefCell::new(Vec::new()));
+        let c = captured.clone();
+        let mut s = with_versions(900.0);
+        s.on_name = Some(Box::new(move |r| c.borrow_mut().push(r.clone())));
+        s.set_current_tick(7); // inside the unnamed 5..=9 run
+
+        let btn = s.name_button_rect();
+        assert!(btn.area() > 0.0, "the strip offers a name button");
+        click(&mut s, btn.center());
+        assert!(s.wants_keyboard());
+        type_str(&mut s, "Second pass");
+        dispatch(&mut s, &key(winit::keyboard::Key::Named(winit::keyboard::NamedKey::Enter)));
+
+        let reqs = captured.borrow();
+        assert_eq!(reqs.len(), 1);
+        let mut start = [0u8; 16];
+        start[0] = 5;
+        let mut end = [0u8; 16];
+        end[0] = 9;
+        assert_eq!(reqs[0].start, HistoryEntryId(start));
+        assert_eq!(reqs[0].end, HistoryEntryId(end));
+        assert_eq!(reqs[0].label, "Second pass");
+        assert_eq!(reqs[0].record_id, None);
+        assert!(!s.wants_keyboard());
+    }
+
+    #[test]
+    fn renaming_a_named_version_addresses_its_existing_record() {
+        let captured: Rc<RefCell<Vec<GroupNameRequest>>> = Rc::new(RefCell::new(Vec::new()));
+        let c = captured.clone();
+        let mut s = with_versions(900.0);
+        s.on_name = Some(Box::new(move |r| c.borrow_mut().push(r.clone())));
+        s.set_current_tick(12); // inside "Intro rewrite"
+
+        let btn = s.name_button_rect();
+        click(&mut s, btn.center());
+        assert_eq!(
+            s.naming_buffer(),
+            Some("Intro rewrite"),
+            "a rename starts from the current name"
+        );
+        type_str(&mut s, "!");
+        dispatch(&mut s, &key(winit::keyboard::Key::Named(winit::keyboard::NamedKey::Enter)));
+        let reqs = captured.borrow();
+        assert_eq!(reqs[0].label, "Intro rewrite!");
+        assert_eq!(reqs[0].record_id.as_deref(), Some("qos:group:10"));
+    }
+
+    #[test]
+    fn starting_a_version_opens_one_and_finishing_closes_it() {
+        let captured: Rc<RefCell<Vec<VersionAction>>> = Rc::new(RefCell::new(Vec::new()));
+        let c = captured.clone();
+        let mut s = with_versions(900.0);
+        s.on_version = Some(Box::new(move |a| c.borrow_mut().push(a.clone())));
+
+        let btn = s.version_button_rect();
+        assert!(btn.area() > 0.0);
+        click(&mut s, btn.center());
+        assert!(s.wants_keyboard(), "it asks what you are about to do");
+        type_str(&mut s, "Rework the intro");
+        dispatch(&mut s, &key(winit::keyboard::Key::Named(winit::keyboard::NamedKey::Enter)));
+        {
+            let acts = captured.borrow();
+            assert_eq!(acts.len(), 1);
+            let mut at = [0u8; 16];
+            at[0] = 19;
+            assert_eq!(
+                acts[0],
+                VersionAction::Open {
+                    at: HistoryEntryId(at),
+                    label: "Rework the intro".to_string()
+                },
+                "a prospective version starts at the newest change"
+            );
+        }
+
+        // The host writes it and hands the groups back with one still open.
+        let mut groups = s.groups().to_vec();
+        groups.last_mut().unwrap().label = Some("Rework the intro".into());
+        groups.last_mut().unwrap().record_id = Some("qos:group:15".into());
+        groups.last_mut().unwrap().open = true;
+        s.set_groups(groups);
+        assert!(s.open_group().is_some());
+
+        let btn = s.version_button_rect();
+        click(&mut s, btn.center());
+        let acts = captured.borrow();
+        assert_eq!(acts.len(), 2);
+        let mut at = [0u8; 16];
+        at[0] = 19;
+        assert_eq!(
+            acts[1],
+            VersionAction::Close {
+                record_id: "qos:group:15".to_string(),
+                at: HistoryEntryId(at)
+            },
+            "finishing closes the open one at the newest change — no typing needed"
+        );
+    }
+
+    #[test]
+    fn an_empty_name_neither_opens_a_version_nor_writes_one() {
+        let names: Rc<RefCell<usize>> = Rc::new(RefCell::new(0));
+        let versions: Rc<RefCell<usize>> = Rc::new(RefCell::new(0));
+        let n = names.clone();
+        let v = versions.clone();
+        let mut s = with_versions(900.0);
+        s.on_name = Some(Box::new(move |_| *n.borrow_mut() += 1));
+        s.on_version = Some(Box::new(move |_| *v.borrow_mut() += 1));
+
+        s.set_current_tick(7); // an unnamed run: nothing to remove
+        let at = s.name_button_rect().center();
+        click(&mut s, at);
+        dispatch(&mut s, &key(winit::keyboard::Key::Named(winit::keyboard::NamedKey::Enter)));
+        assert_eq!(*names.borrow(), 0, "nothing to write and nothing to remove");
+
+        let at = s.version_button_rect().center();
+        click(&mut s, at);
+        dispatch(&mut s, &key(winit::keyboard::Key::Named(winit::keyboard::NamedKey::Enter)));
+        assert_eq!(*versions.borrow(), 0, "an unnamed version is not a version");
+    }
+
+    #[test]
+    fn a_segment_that_does_not_describe_real_changes_is_dropped() {
+        // A label over the wrong part of the track is worse than no label.
+        let mut s = scrubber(900.0, 10);
+        s.set_groups(vec![
+            group(0, 4, Some("Real")),
+            group(8, 40, Some("Runs past the end")),
+            group(6, 5, Some("Backwards")),
+        ]);
+        let titles: Vec<&str> = s.groups().iter().map(|g| g.title()).collect();
+        assert_eq!(titles, vec!["Real"]);
+    }
+
+    #[test]
+    fn the_button_row_drops_buttons_rather_than_overlapping_them() {
+        for w in [900.0, 620.0, 520.0, 420.0, 360.0, 300.0] {
+            let s = with_versions(w);
+            let mut rects: Vec<Rect> = vec![
+                s.restore_button_rect(),
+                s.preview_button_rect(),
+                s.name_button_rect(),
+                s.version_button_rect(),
+            ]
+            .into_iter()
+            .filter(|r| r.area() > 0.0)
+            .collect();
+            assert!(
+                !rects.is_empty(),
+                "at {w} px the strip must still offer something"
+            );
+            assert!(
+                s.restore_button_rect().area() > 0.0,
+                "restore is the primary action and is never dropped ({w} px)"
+            );
+            for r in &rects {
+                assert!(
+                    r.x0 >= s.rect().x0 && r.x1 <= s.rect().x1,
+                    "a button escaped the strip at {w} px: {r:?}"
+                );
+            }
+            rects.sort_by(|a, b| a.x0.partial_cmp(&b.x0).unwrap());
+            for pair in rects.windows(2) {
+                assert!(
+                    pair[0].x1 <= pair[1].x0,
+                    "buttons overlap at {w} px: {:?} then {:?}",
+                    pair[0],
+                    pair[1]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_dense_track_drops_the_per_change_notches_rather_than_smearing() {
+        // Two hundred changes across 900 px is a notch every 4.4 px. Drawing them
+        // produces a grey texture, not marks — so they are dropped and the band
+        // carries the structure. The assertion is on the same predicate the paint
+        // path branches on.
+        let dense = scrubber(900.0, 200);
+        let track = dense.track_rect();
+        let spacing = track.width() / 199.0;
+        assert!(spacing < MIN_TICK_SPACING, "spacing is {spacing}");
+
+        let sparse = scrubber(900.0, 20);
+        let spacing = sparse.track_rect().width() / 19.0;
+        assert!(spacing >= MIN_TICK_SPACING, "spacing is {spacing}");
+    }
+
+    #[test]
+    fn a_one_change_version_still_gets_a_visible_block() {
+        let mut s = scrubber(900.0, 20);
+        s.set_groups(vec![group(7, 7, Some("One change"))]);
+        let g = &s.groups()[0];
+        assert_eq!((g.start, g.end), (7, 7));
+        // The block would be zero-wide at the same tick; the draw path widens it.
+        assert_eq!(s.tick_x(7), s.tick_x(g.end));
+        assert_eq!(s.snap_targets(), vec![0, 7]);
+    }
+
+    /// Render the strip and report how many pixels inside `r` differ from the
+    /// pixel in its top-left corner. A flat fill scores 0; ink drawn on top of it
+    /// scores. Used to assert that a label reached the scene, rather than that a
+    /// helper returned a string the paint path might not use.
+    fn ink_in(s: &mut HistoryScrubber, r: Rect) -> usize {
+        let (w, h) = (s.rect().width() as u32, s.rect().height() as u32);
+        let theme = Theme::dark();
+        let mut scene = Scene::new();
+        let mut tr = TextRenderer::new();
+        s.draw(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut tr,
+            &theme,
+            &PresenceCtx::empty(),
+        );
+        let rgba = crate::offscreen::OffscreenRenderer::new(w, h)
+            .render(&scene, theme.tokens.colors.surfaces.base);
+        let base = crate::offscreen::OffscreenRenderer::sample(&rgba, w, r.x0 as u32, r.y0 as u32);
+        let mut n = 0;
+        for y in (r.y0 as u32)..(r.y1 as u32).min(h) {
+            for x in (r.x0 as u32)..(r.x1 as u32).min(w) {
+                if crate::offscreen::OffscreenRenderer::sample(&rgba, w, x, y) != base {
+                    n += 1;
+                }
+            }
+        }
+        n
+    }
+
+    /// The interior of segment `i`'s block, inset clear of the boundary strokes
+    /// on either edge.
+    fn segment_interior(s: &HistoryScrubber, i: usize) -> Rect {
+        let band = s.band_rect();
+        let x0 = if i == 0 {
+            band.x0
+        } else {
+            s.tick_x(s.groups()[i - 1].end)
+        };
+        let x1 = if i + 1 == s.groups().len() {
+            band.x1
+        } else {
+            s.tick_x(s.groups()[i].end)
+        };
+        Rect::new(x0 + 5.0, band.y0 + 3.0, x1 - 5.0, band.y1 - 3.0)
+    }
+
+    #[test]
+    fn a_version_nobody_named_still_says_what_it_is() {
+        // A grey block with nothing written in it reads as a gap in the history
+        // rather than as a run of changes. The derived description is what that
+        // block is, so it goes in — dimmer than a name, but there.
+        let mut s = with_versions(900.0);
+        let unnamed = segment_interior(&s, 1); // the 5..=9 run, which nobody named
+        assert!(unnamed.width() > 60.0, "the fixture's block has room: {unnamed:?}");
+        assert!(
+            ink_in(&mut s, unnamed) > 0,
+            "the unnamed block is blank grey"
+        );
+
+        // And it is genuinely the segment's own text: blank the description and
+        // the same block goes back to being a flat fill.
+        let mut groups = s.groups().to_vec();
+        groups[1].derived = String::new();
+        s.set_groups(groups);
+        assert_eq!(
+            ink_in(&mut s, unnamed),
+            0,
+            "something other than `derived` is being drawn in there"
+        );
+    }
+
+    #[test]
+    fn escape_abandons_a_name_and_leaves_the_version_alone() {
+        let names: Rc<RefCell<usize>> = Rc::new(RefCell::new(0));
+        let n = names.clone();
+        let mut s = with_versions(900.0);
+        s.on_name = Some(Box::new(move |_| *n.borrow_mut() += 1));
+        s.set_current_tick(12); // inside "Intro rewrite"
+
+        let at = s.name_button_rect().center();
+        click(&mut s, at);
+        type_str(&mut s, "half typed");
+        assert_eq!(s.naming_buffer(), Some("Intro rewritehalf typed"));
+
+        dispatch(&mut s, &key(winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape)));
+        assert!(!s.wants_keyboard(), "the field is gone");
+        assert_eq!(*names.borrow(), 0, "and nothing was written");
+        assert_eq!(
+            s.current_group().and_then(|g| g.label.as_deref()),
+            Some("Intro rewrite"),
+            "the name it started from is untouched"
+        );
+    }
+
+    #[test]
+    fn a_click_in_the_name_field_cannot_reach_the_button_underneath_it() {
+        // The field is drawn over the button row. `[Restore to this version]`
+        // writes the document, so a click that lands in the box the user is
+        // typing into must not reach it — nor must the buttons the field covers
+        // re-open a different field and throw away what was typed.
+        let restores: Rc<RefCell<usize>> = Rc::new(RefCell::new(0));
+        let versions: Rc<RefCell<usize>> = Rc::new(RefCell::new(0));
+        let r = restores.clone();
+        let v = versions.clone();
+        let mut s = with_versions(900.0);
+        s.on_restore = Some(Box::new(move |_| *r.borrow_mut() += 1));
+        s.on_version = Some(Box::new(move |_| *v.borrow_mut() += 1));
+        s.set_current_tick(12);
+
+        let at = s.name_button_rect().center();
+        click(&mut s, at);
+        type_str(&mut s, "Intro");
+        let field = s.name_field_rect();
+        assert!(field.area() > 0.0, "the field has a rect while it is up");
+
+        // Every button the field covers, clicked through the field.
+        for btn in [
+            s.preview_button_rect(),
+            s.name_button_rect(),
+            s.version_button_rect(),
+        ] {
+            if btn.area() > 0.0 && field.contains(btn.center()) {
+                click(&mut s, btn.center());
+                assert!(s.wants_keyboard(), "the field was dismissed by a click inside it");
+                assert_eq!(
+                    s.naming_buffer(),
+                    Some("Intro rewriteIntro"),
+                    "a button under the field restarted the name"
+                );
+            }
+        }
+        assert_eq!(*versions.borrow(), 0, "no version was opened");
+
+        // Restore sits outside the field, so clicking it is a click away from the
+        // field: it abandons the name and does *not* also rewrite the document.
+        let restore = s.restore_button_rect();
+        assert!(!field.contains(restore.center()));
+        click(&mut s, restore.center());
+        assert!(!s.wants_keyboard(), "clicking off the field abandons it");
+        assert_eq!(
+            *restores.borrow(),
+            0,
+            "the click that dismissed the field must not also restore"
+        );
+
+        // And now that the field is gone, the button works again.
+        let at = s.restore_button_rect().center();
+        click(&mut s, at);
+        assert_eq!(*restores.borrow(), 1);
+    }
+
+    #[test]
+    fn the_name_field_is_a_label_box_not_the_whole_button_row() {
+        // A field stretched across a 1000 px strip is a metre of empty box for
+        // three words, and it swallows the row it is drawn in.
+        let mut s = with_versions(1000.0);
+        s.set_current_tick(12);
+        let at = s.name_button_rect().center();
+        click(&mut s, at);
+        let field = s.name_field_rect();
+        assert!(field.width() <= NAME_FIELD_W, "got {}", field.width());
+        assert!(
+            field.x1 < s.restore_button_rect().x0,
+            "the field must not reach the destructive button: {field:?}"
+        );
+    }
+
+    #[test]
+    fn the_live_state_dot_does_not_hide_under_the_band_or_the_popover() {
+        // Both of those live above the track, and the dot spent its life drawn
+        // invisibly on top of one of them.
+        let s = with_versions(900.0);
+        let dot_y = s.live_state_dot_center().y;
+        assert!(dot_y > s.band_rect().y1, "the dot is inside the segment band");
+        assert!(
+            dot_y > s.popover_rect().y1,
+            "the dot is behind the popover"
+        );
+        assert!(
+            dot_y < s.restore_button_rect().y0,
+            "the dot collides with the button row"
+        );
+    }
+
+    #[test]
+    fn an_empty_history_says_so_and_ignores_every_gesture() {
+        let mut s = scrubber(900.0, 0);
+        assert_eq!(s.tick_count(), 0);
+        assert!(s.current_group().is_none());
+        s.set_groups(vec![group(0, 3, Some("Impossible"))]);
+        assert!(s.groups().is_empty(), "no changes, no segments");
+        dispatch(&mut s, &cursor_moved(100.0, 60.0));
+        dispatch(&mut s, &mouse_press());
+        dispatch(&mut s, &mouse_release());
+        assert_eq!(s.current_tick(), 0);
+        assert!(!s.wants_keyboard());
     }
 }
