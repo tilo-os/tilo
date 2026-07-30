@@ -147,7 +147,9 @@ ovmf_vars() {
 # is writable from the guest and enforcement is theatre.
 secboot_qemu_args() {
   [ "$QOS_SECBOOT" = "1" ] || return 0
-  printf -- '-global driver=cfi.pflash01,property=secure,value=on'
+  # disable_s3: the SMM-protected variable store and S3 resume do not coexist in
+  # OVMF, and leaving S3 on makes the firmware complain and fall back.
+  printf -- '-global driver=cfi.pflash01,property=secure,value=on -global ICH9-LPC.disable_s3=1'
 }
 # q35 machine options; SMM is required by the Secure-Boot firmware.
 machine_args() {
