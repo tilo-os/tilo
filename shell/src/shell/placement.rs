@@ -341,6 +341,169 @@ mod tests {
         );
     }
 
+    // -----------------------------------------------------------------
+    // End to end: the note a launch leaves, read back by the adoption
+    // that splices the window in. Same two calls the palette's
+    // Applications row and the compositor's `new_toplevel` make, in the
+    // same order. `PENDING_PLACEMENT` is process-global, so these are
+    // serialised against each other and against the launcher's own tests.
+    // -----------------------------------------------------------------
+
+    /// Adopt a window for `app_id` and report the strip's group ids and
+    /// the group the window landed in.
+    fn launch_and_adopt(
+        tree: &mut WorkspaceTree,
+        package_id: &str,
+        app_id: &str,
+        surface_id: u64,
+        viewport: Option<&StripViewport>,
+    ) -> (Vec<GroupId>, GroupId) {
+        note_placement_for_launch(package_id, tree, viewport);
+        crate::compositor::tab_binding::adopt_toplevel(
+            tree,
+            surface_id,
+            Some(app_id.to_string()),
+        );
+        let landed = tree.workspaces[0].strips[0]
+            .window_groups
+            .iter()
+            .find(|g| {
+                g.tabs.iter().any(|t| {
+                    matches!(
+                        &t.tile,
+                        TileContent::Foreign { surface_id: s, .. } if *s == surface_id
+                    )
+                })
+            })
+            .expect("the adopted window lives in some group")
+            .id;
+        (
+            tree.workspaces[0].strips[0]
+                .window_groups
+                .iter()
+                .map(|g| g.id)
+                .collect(),
+            landed,
+        )
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn a_launch_with_no_selection_lands_at_the_seam_the_user_can_see() {
+        crate::shell::launcher::clear_pending_placements();
+        let mut tree = WorkspaceTree::bootstrap_default();
+        let ids = strip_of(&mut tree, &[1, 1, 1]);
+        let strip_id = tree.workspaces[0].strips[0].id;
+        tree.active_strip.insert(tree.active, strip_id);
+        tree.active_group.remove(&strip_id);
+        // The screen shows canvas 150..280 — the border after group 1 is
+        // on it, the one after group 0 is off the left edge.
+        let view = viewport(strip_id, &ids, (150.0, 280.0));
+
+        let (order, landed) = launch_and_adopt(
+            &mut tree,
+            "dev.qos.seamfixture",
+            "seamfixture",
+            9101,
+            Some(&view),
+        );
+
+        assert_eq!(
+            order,
+            vec![ids[0], ids[1], landed, ids[2]],
+            "the window goes into the space at the visible border, \
+             between the groups that border separates"
+        );
+        crate::shell::launcher::clear_pending_placements();
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn a_launch_with_no_visible_seam_lands_at_the_next_one_rightwards() {
+        crate::shell::launcher::clear_pending_placements();
+        let mut tree = WorkspaceTree::bootstrap_default();
+        let ids = strip_of(&mut tree, &[1, 1, 1]);
+        let strip_id = tree.workspaces[0].strips[0].id;
+        tree.active_strip.insert(tree.active, strip_id);
+        tree.active_group.remove(&strip_id);
+        // A full-width window: the display shows group 0 and nothing
+        // else, so there is no border between windows anywhere on it.
+        let view = viewport(strip_id, &ids, (0.5, 99.5));
+
+        let (order, landed) = launch_and_adopt(
+            &mut tree,
+            "dev.qos.nextseamfixture",
+            "nextseamfixture",
+            9102,
+            Some(&view),
+        );
+
+        assert_eq!(
+            order,
+            vec![ids[0], ids[1], landed, ids[2]],
+            "with no border on screen the window takes the next one \
+             rightwards — after group 1, not before group 1"
+        );
+        crate::shell::launcher::clear_pending_placements();
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn a_launch_beside_a_lone_selected_window_lands_right_of_it() {
+        crate::shell::launcher::clear_pending_placements();
+        let mut tree = WorkspaceTree::bootstrap_default();
+        let ids = strip_of(&mut tree, &[1, 1, 1]);
+        let strip_id = tree.workspaces[0].strips[0].id;
+        tree.active_strip.insert(tree.active, strip_id);
+        tree.set_active_group(strip_id, ids[0]);
+        // A viewport that would send an unselected launch elsewhere, so
+        // the selection is demonstrably what decided this.
+        let view = viewport(strip_id, &ids, (150.0, 280.0));
+
+        let (order, landed) = launch_and_adopt(
+            &mut tree,
+            "dev.qos.besidefixture",
+            "besidefixture",
+            9103,
+            Some(&view),
+        );
+
+        assert_eq!(
+            order,
+            vec![ids[0], landed, ids[1], ids[2]],
+            "a selection outranks the seam: the window opens beside what \
+             the user is in"
+        );
+        crate::shell::launcher::clear_pending_placements();
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn a_launch_from_inside_a_tabbed_group_joins_it_rather_than_the_seam() {
+        crate::shell::launcher::clear_pending_placements();
+        let mut tree = WorkspaceTree::bootstrap_default();
+        let ids = strip_of(&mut tree, &[1, 3, 1]);
+        let strip_id = tree.workspaces[0].strips[0].id;
+        tree.active_strip.insert(tree.active, strip_id);
+        tree.set_active_group(strip_id, ids[1]);
+        let view = viewport(strip_id, &ids, (150.0, 280.0));
+
+        let (order, landed) = launch_and_adopt(
+            &mut tree,
+            "dev.qos.tabbedfixture",
+            "tabbedfixture",
+            9104,
+            Some(&view),
+        );
+
+        assert_eq!(landed, ids[1], "the window joined the selected group");
+        assert_eq!(
+            order, ids,
+            "and the strip did not grow a column to hold it"
+        );
+        crate::shell::launcher::clear_pending_placements();
+    }
+
     #[test]
     fn a_viewport_for_another_strip_is_ignored() {
         let mut tree = WorkspaceTree::bootstrap_default();
