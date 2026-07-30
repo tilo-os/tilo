@@ -24,7 +24,7 @@ use crate::shell::notification::{
 };
 use crate::shell::quick_settings::{BtDevice, PowerProfile, QsLevel, WifiNetwork};
 use crate::shell::state::{
-    AppId, Capability, GroupId, StripId, WorkspaceTree, WorkspaceTreeHandle,
+    AppId, Capability, GroupId, StripId, WorkspaceId, WorkspaceTree, WorkspaceTreeHandle,
 };
 // Re-export WsTab so chrome users can refer to the tab routing enum
 // without reaching into `workspace_settings`. The enum itself lives
@@ -519,6 +519,40 @@ impl ChromeState {
         self.revision = self.revision.wrapping_add(1);
     }
 
+    /// Put `tab` in front of the user: switch to its workspace, its strip
+    /// and its group, and make it the active tab inside that group.
+    ///
+    /// The one way anything in the shell focuses a tab it located by
+    /// walking the tree — a search hit on a note, a document that turns
+    /// out to be open already. Focus is four coordinates, not one, and a
+    /// caller that sets a subset leaves the user looking at a different
+    /// workspace than the tab they asked for; having it in one place is
+    /// what stops each caller getting that wrong differently.
+    pub fn focus_tab(
+        &mut self,
+        workspace: WorkspaceId,
+        strip: StripId,
+        group: GroupId,
+        tab: u64,
+    ) {
+        {
+            let mut tree = self.tree_mut();
+            tree.active = workspace;
+            tree.active_strip.insert(workspace, strip);
+            tree.set_active_group(strip, group);
+            if let Some(g) = tree
+                .workspaces
+                .iter_mut()
+                .find(|w| w.id == workspace)
+                .and_then(|w| w.strips.iter_mut().find(|s| s.id == strip))
+                .and_then(|s| s.window_groups.iter_mut().find(|g| g.id == group))
+            {
+                g.active_tab = tab;
+            }
+        }
+        self.bump();
+    }
+
     /// Route a winit `WindowEvent::DroppedFile` payload into the active
     /// workspace's first strip's first window group via
     /// [`super::workspace_drop::apply_workspace_drop_from_path`]. Bumps
@@ -547,6 +581,12 @@ impl ChromeState {
     /// path has no filename — the caller treats `None` as a defined
     /// no-op (an empty-area drop opens nothing rather than dumping the
     /// file into an arbitrary window). No grant is recorded on `None`.
+    ///
+    /// A file whose type an installed app declares does not reach here at
+    /// all: the drop router opens it *in that app* first (see
+    /// [`crate::shell::doc_open`]). What is left for this path is the
+    /// cases there is no owning app for — folders, and types nothing
+    /// installed claims.
     pub fn handle_file_drop_at(
         &mut self,
         path: &std::path::Path,
