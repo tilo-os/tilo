@@ -247,14 +247,29 @@ pub struct CrdtRoute {
     /// Collaboration cluster id (a uuid rendered as a string on the
     /// legacy dialect, the `channelId` on the capnp one).
     pub cluster_id: String,
+    /// The **record** the sender announced, or empty for an app whose
+    /// state is still one document per `(app, cluster)`.
+    ///
+    /// This is the finest granularity, and the reason it exists is
+    /// that a document is what people share — not an app. Two people
+    /// editing two different files in one room announce the same app
+    /// and the same cluster; only the record tells them apart, and
+    /// without it each was handed the other's document state.
+    ///
+    /// It is a *routing* key and nothing more: the broker still never
+    /// materialises a payload. What it now knows is which stream a
+    /// payload belongs to, because the sender said so.
+    pub record_id: String,
 }
 
 impl CrdtRoute {
-    /// App-scoped route — the addressing every CRDT payload uses.
+    /// App-scoped route — the addressing a CRDT payload from an app
+    /// that has not adopted records uses.
     pub fn app(app_id: impl Into<String>, cluster_id: impl Into<String>) -> Self {
         Self {
             app_id: app_id.into(),
             cluster_id: cluster_id.into(),
+            record_id: String::new(),
         }
     }
 
@@ -263,13 +278,68 @@ impl CrdtRoute {
         Self {
             app_id: String::new(),
             cluster_id: cluster_id.into(),
+            record_id: String::new(),
         }
+    }
+
+    /// Record-scoped route — one document's change stream.
+    pub fn record(
+        app_id: impl Into<String>,
+        cluster_id: impl Into<String>,
+        record_id: impl Into<String>,
+    ) -> Self {
+        Self {
+            app_id: app_id.into(),
+            cluster_id: cluster_id.into(),
+            record_id: record_id.into(),
+        }
+    }
+
+    /// Narrow this route to a record. An empty `record_id` leaves it
+    /// as it was, which is how a connection that announced no record
+    /// keeps the pre-record addressing.
+    pub fn on_record(mut self, record_id: impl Into<String>) -> Self {
+        self.record_id = record_id.into();
+        self
     }
 
     /// Widen an app-scoped route to its cluster. Presence frames from
     /// an app-scoped sender ride this.
-    fn to_cluster_scope(&self) -> Self {
+    ///
+    /// The record is dropped along with the app id, and deliberately:
+    /// "who else is here" is a fact about the room, so a peer editing
+    /// a different document in the same room is still a legitimate
+    /// audience for it. Only *document* payloads are record-scoped.
+    pub(crate) fn to_cluster_scope(&self) -> Self {
         Self::cluster(self.cluster_id.clone())
+    }
+
+    /// The channel this route names, as one string.
+    ///
+    /// The capnp transport subscribes by channel id rather than by
+    /// route fields, so a record-scoped connection has to be able to
+    /// name its channel in the same vocabulary — see
+    /// [`crate::shell::collab_broker_capnp`]. `#` cannot appear in a
+    /// uuid, so the join is unambiguous.
+    pub fn channel_key(&self) -> String {
+        if self.record_id.is_empty() {
+            self.cluster_id.clone()
+        } else {
+            format!("{}#record:{}", self.cluster_id, self.record_id)
+        }
+    }
+
+    /// Split a capnp `channelId` back into its cluster and record.
+    /// The inverse of [`Self::channel_key`].
+    pub fn from_channel_key(key: &str) -> Self {
+        match key.split_once("#record:") {
+            Some((cluster, record)) => Self {
+                app_id: String::new(),
+                cluster_id: cluster.to_string(),
+                record_id: record.to_string(),
+            },
+            None => Self::cluster(key),
+        }
     }
 
     /// Whether a cluster id names a real room.
@@ -293,6 +363,16 @@ impl CrdtRoute {
     /// granularity applies only when both ends announced an app id — a
     /// capnp subscriber (which cannot announce one) stays cluster-scoped
     /// rather than silently receiving nothing.
+    ///
+    /// **Record granularity is the innermost test and it fails closed
+    /// both ways.** Two app-scoped ends agree only when they name the
+    /// same record, and "no record" is a value like any other: a
+    /// converted app's document deltas are not handed to an
+    /// unconverted connection of the same app, and vice versa, because
+    /// those two are not looking at the same document. An app that has
+    /// not adopted records still matches its own kind exactly as
+    /// before (both ends empty), which is what keeps the rest of the
+    /// fleet working untouched.
     pub fn delivers_to(&self, subscriber: &CrdtRoute) -> bool {
         if !Self::is_addressable(&self.cluster_id) || !Self::is_addressable(&subscriber.cluster_id)
         {
@@ -302,9 +382,15 @@ impl CrdtRoute {
             return false;
         }
         if self.app_id.is_empty() || subscriber.app_id.is_empty() {
+            // Cluster-scoped on at least one end: chrome traffic, or a
+            // transport that announces no app identity. Records do not
+            // narrow it — see `to_cluster_scope`.
             return true;
         }
-        self.app_id == subscriber.app_id
+        if self.app_id != subscriber.app_id {
+            return false;
+        }
+        self.record_id == subscriber.record_id
     }
 }
 
@@ -907,15 +993,17 @@ fn reader_loop(
         };
         // Capture the Hello route before translating — the request is
         // consumed by `translate`, and both the local fan-out filter
-        // and the libp2p bridge need the (app_id, cluster_id) pair.
+        // and the libp2p bridge need the announced address.
         if let CollabRequest::Hello {
             ref app_id,
             cluster_id,
-            record: None,
+            ref record,
         } = req
         {
             if let Ok(mut guard) = peer.route.lock() {
-                *guard = Some(CrdtRoute::app(app_id.clone(), cluster_id.to_string()));
+                *guard = Some(CrdtRoute::app(app_id.clone(), cluster_id.to_string()).on_record(
+                    record.clone().unwrap_or_default(),
+                ));
             }
         }
         let src_route = peer.route();
@@ -931,6 +1019,7 @@ fn reader_loop(
                 Some(route) => net.publish_app_crdt_incremental(
                     route.app_id.clone(),
                     route.cluster_id.clone(),
+                    route.record_id.clone(),
                     data.clone(),
                 ),
                 None => {
@@ -1349,7 +1438,11 @@ pub fn spawn_full(
                             // local apps that announced the same pair. No
                             // local peer is skipped by id — the update
                             // originated outside this host.
-                            let route = CrdtRoute::app(entry.app_id, entry.cluster_id);
+                            let route = CrdtRoute::record(
+                                entry.app_id,
+                                entry.cluster_id,
+                                entry.record_id,
+                            );
                             drain_table.fanout_to_route(&event, u64::MAX, &route);
                         }
 
@@ -1403,9 +1496,10 @@ pub fn spawn_full(
                                     // leaves both fields empty, and an
                                     // unaddressed envelope is dropped
                                     // rather than shown to every app.
-                                    let route = CrdtRoute::app(
+                                    let route = CrdtRoute::record(
                                         entry.app_id.clone(),
                                         entry.cluster_id.clone(),
+                                        entry.record_id.clone(),
                                     );
                                     drain_table.fanout_to_route(&event, u64::MAX, &route);
                                 }

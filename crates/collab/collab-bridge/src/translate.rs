@@ -93,7 +93,7 @@ mod tests {
     fn hello_pairs_channel_id_and_identity() {
         let req = hello_from_join("chan-42", b"i");
         match req {
-            CollabRequest::Hello { app_id, cluster_id, record: None } => {
+            CollabRequest::Hello { app_id, cluster_id, .. } => {
                 assert_eq!(app_id, "chan-42");
                 assert_eq!(cluster_id, cluster_id_from_identity(b"i"));
             }

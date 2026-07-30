@@ -1043,7 +1043,7 @@ async fn drive_shovel(
 
     while let Some(req) = outbound_rx.recv().await {
         match req {
-            CollabRequest::Hello { app_id: _, cluster_id, record: None } => {
+            CollabRequest::Hello { app_id: _, cluster_id, record } => {
                 // Ride the identity blob captured at manager
                 // construction — the loaded runtime-identity's raw
                 // pubkey bytes when the on-disk record was reachable,
@@ -1527,7 +1527,7 @@ pub mod broker {
                     // back to `peer-{idx}` and treat the frame as data.
                     match read_frame(&mut stream) {
                         Some(frame) => match serde_json::from_slice::<CollabRequest>(&frame) {
-                            Ok(CollabRequest::Hello { app_id, .., record: None }) => {
+                            Ok(CollabRequest::Hello { app_id, .. }) => {
                                 peers.lock().unwrap().insert(
                                     idx,
                                     Peer { user_id: app_id, write },
