@@ -24,6 +24,18 @@ pub enum CollabRequest {
     Hello {
         app_id: String,
         cluster_id: Uuid,
+        /// Which record this connection carries, mirroring
+        /// `ui::collaboration::CollabRequest::Hello`. A bridged SDK
+        /// client has no record of its own, so `hello_from_join` sends
+        /// `None` — but the field has to exist here or the mirror is no
+        /// longer a mirror and the JSON the broker parses differs from
+        /// the JSON this crate emits.
+        ///
+        /// `#[serde(default)]` for the same reason as upstream: a frame
+        /// from a peer predating records parses as `None` instead of
+        /// being dropped as malformed.
+        #[serde(default)]
+        record: Option<String>,
     },
     SyncCRDT {
         data: Vec<u8>,
