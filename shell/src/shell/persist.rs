@@ -80,7 +80,26 @@ pub fn load_tree_from(path: &Path) -> std::io::Result<WorkspaceTree> {
 pub fn load_or_default(path: &Path) -> WorkspaceTree {
     match load_tree_from(path) {
         Ok(t) => t,
-        Err(_) => WorkspaceTree::bootstrap_default(),
+        Err(e) => {
+            // A missing file is the first boot and expected. Anything
+            // else means a state file exists and could not be read, and
+            // the fallback replaces the person's workspaces with a
+            // freshly bootstrapped demo tree. Doing that in silence is
+            // indistinguishable from having lost their session, so say
+            // so — one field rename in this struct is enough to trigger
+            // it, and the file is left in place to be recovered.
+            if path.exists() {
+                tracing::error!(
+                    path = %path.display(),
+                    error = %e,
+                    "state file exists but could not be read; starting from a \
+                     default tree. The file has not been modified."
+                );
+            } else {
+                tracing::info!(path = %path.display(), "no state file; first boot");
+            }
+            WorkspaceTree::bootstrap_default()
+        }
     }
 }
 
