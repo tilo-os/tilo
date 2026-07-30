@@ -5,7 +5,7 @@ use fs::namespace::ROOT_INO;
 use fs::sync::{self, SyncHandle};
 use fs::{
     ContentStore, Heuristics, Hydrator, IdentityKey, Namespace, QuickFS, Ticket, Workspace,
-    WorkspaceAcl,
+    WorkspaceAcl, identity_paths, load_mount_identity,
 };
 use fuser::*;
 use std::path::{Path, PathBuf};
@@ -143,7 +143,13 @@ fn parse_principal(spec: &str) -> Result<Principal> {
 /// enforcement point exists to prevent. Omitting `--acl` entirely is the
 /// documented opt-out and keeps the pre-existing behaviour, so
 /// single-user mounts are unaffected.
-fn resolve_acl(args: &AclArgs, node_key: IdentityKey) -> Result<Option<(WorkspaceAcl, IdentityKey)>> {
+/// `device_key` is the default subject: this machine's device public
+/// key, which is stable across reboots. A grant written against it
+/// keeps meaning the same thing after a restart.
+fn resolve_acl(
+    args: &AclArgs,
+    device_key: IdentityKey,
+) -> Result<Option<(WorkspaceAcl, IdentityKey)>> {
     let Some(path) = &args.acl else {
         if args.identity.is_some() || !args.principals.is_empty() {
             bail!("--identity/--principal require --acl; without a capability list they enforce nothing");
@@ -153,7 +159,7 @@ fn resolve_acl(args: &AclArgs, node_key: IdentityKey) -> Result<Option<(Workspac
 
     let identity = match &args.identity {
         Some(hex_str) => parse_identity(hex_str)?,
-        None => node_key,
+        None => device_key,
     };
     let principals = args
         .principals
@@ -214,9 +220,10 @@ async fn serve(
     acl_args: AclArgs,
 ) -> Result<()> {
     let np = namespace_path(&cache_dir);
-    let (endpoint, lookup) = sync::bind_endpoint().await?;
-    // This node's own key is the mount's identity unless one is named.
-    let acl = resolve_acl(&acl_args, *endpoint.id().as_bytes())?;
+    let device = load_mount_identity(&identity_paths())?;
+    let (endpoint, lookup) = sync::bind_endpoint_with_key(device.secret.clone()).await?;
+    // This device's own key is the mount's identity unless one is named.
+    let acl = resolve_acl(&acl_args, device.public)?;
     let store = Arc::new(open_store(cache_dir).await?);
     let author = endpoint.id().to_string();
 
@@ -279,8 +286,9 @@ async fn mount(
 ) -> Result<()> {
     let ticket = Ticket::decode(&ticket)?;
     let np = namespace_path(&cache_dir);
-    let (endpoint, lookup) = sync::bind_endpoint().await?;
-    let acl = resolve_acl(&acl_args, *endpoint.id().as_bytes())?;
+    let device = load_mount_identity(&identity_paths())?;
+    let (endpoint, lookup) = sync::bind_endpoint_with_key(device.secret.clone()).await?;
+    let acl = resolve_acl(&acl_args, device.public)?;
     let store = Arc::new(open_store(cache_dir).await?);
     let hydrator = Arc::new(Hydrator::new(endpoint.clone(), store.clone()));
     let author = endpoint.id().to_string();
