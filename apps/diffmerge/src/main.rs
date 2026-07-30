@@ -37,7 +37,10 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let (state, autosave) = ui::persist::open("dev.qos.diffmerge");
-    let app = ui::App::new(state, diffmerge::app_root()).with_autosave(autosave);
+    let mut app = ui::App::new(state, diffmerge::app_root()).with_autosave(autosave);
+    // Register Diff's actions so the shell's Ctrl+K palette can decode + replay
+    // the same conflict-resolution actions the on-panel chips dispatch.
+    diffmerge::actions::register(app.action_registry_mut());
     app.run();
     Ok(())
 }
