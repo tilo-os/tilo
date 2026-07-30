@@ -303,6 +303,57 @@ mod tests {
         );
     }
 
+    /// Two tabs, distinct content, restart: each comes back with its own.
+    ///
+    /// A scratch tab has no file to be found by, so this is the whole of
+    /// whether its content survives being shut down — and it is why the
+    /// tab id, which is persisted with the window tree, is what names the
+    /// record.
+    #[test]
+    #[serial_test::serial(record_state_dir)]
+    fn both_tabs_come_back_with_their_own_content_after_a_restart() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        // SAFETY: serialised on `record_state_dir`; no other thread reads
+        // these between the writes here and the reads below.
+        unsafe {
+            std::env::set_var("XDG_DATA_HOME", tmp.path());
+            std::env::remove_var("QOS_PACKAGE_ID");
+        }
+        const PACKAGE: &str = "dev.qos.test-tab-documents";
+
+        {
+            let store = RecordStore::open(PACKAGE);
+            let mut shared = AutoCommit::new();
+            let mut a = Tile::notes(TAB_A, &store);
+            let mut b = Tile::notes(TAB_B, &store);
+            a.type_str(&mut shared, "first tab");
+            b.type_str(&mut shared, "second tab");
+            store.flush();
+        }
+
+        // A fresh session: same tab ids out of the persisted window tree,
+        // nothing else carried over.
+        let store = RecordStore::open(PACKAGE);
+        let mut shared = AutoCommit::new();
+        let mut a = Tile::notes(TAB_A, &store);
+        let mut b = Tile::notes(TAB_B, &store);
+        a.host.sync(&mut shared, &automerge::ROOT);
+        b.host.sync(&mut shared, &automerge::ROOT);
+
+        assert_eq!(
+            tab_body(&store, TAB_A, BODY_KEY).as_deref(),
+            Some("first tab"),
+            "the first tab came back with its own content",
+        );
+        assert_eq!(
+            tab_body(&store, TAB_B, BODY_KEY).as_deref(),
+            Some("second tab"),
+            "and the second with its own, not the first's",
+        );
+
+        unsafe { std::env::remove_var("XDG_DATA_HOME") };
+    }
+
     /// Two tabs of one app must not report the same presence identity —
     /// a peer's caret is a position in *a* document, and the wrong key
     /// paints it in the wrong tab.
