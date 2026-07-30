@@ -4176,6 +4176,22 @@ impl WordProcessorWidget {
 }
 
 impl Widget for WordProcessorWidget {
+    /// The document being edited is a record, and its identity is its path.
+    ///
+    /// That is the whole of the file/record unification here: two editors on
+    /// two different files in one room now announce two different records, so
+    /// they stop being handed each other's text, and "share this document"
+    /// means the record — not "share the word processor in this room", which
+    /// is all the old addressing could say.
+    ///
+    /// An untitled document names no record and behaves exactly as before,
+    /// until it is saved and has a path to be identified by.
+    fn record_intent(&self) -> Option<ui::RecordCheckout> {
+        self.path.as_ref().map(|p| {
+            ui::RecordCheckout::new(ui::RecordId::for_file(p), ui::RecordKind::new("document"))
+        })
+    }
+
     fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
         self.inner.bind(state, root);
         // Fold in a completed host portal request (open / save / image insert),
@@ -7837,6 +7853,36 @@ mod tests {
     use super::*;
     use taffy::AvailableSpace;
     use ui::permissions::PermissionContext;
+
+    /// Two windows on two files are two records, and each record's identity
+    /// is the file's path.
+    ///
+    /// This is what the broker routes on, so it is also what stops two people
+    /// editing unrelated documents in one room from merging: the addresses
+    /// differ because the documents do.
+    #[test]
+    fn each_open_file_is_its_own_record() {
+        let mut report = WordProcessorWidget::new();
+        assert!(
+            report.record_intent().is_none(),
+            "an untitled document names no record"
+        );
+        report.set_file(PathBuf::from("/work/report.odt"), WpFormat::Markdown);
+
+        let mut minutes = WordProcessorWidget::new();
+        minutes.set_file(PathBuf::from("/work/minutes.odt"), WpFormat::Markdown);
+
+        let a = report.record_intent().expect("an open file names its record");
+        let b = minutes.record_intent().expect("and so does the other");
+        assert_eq!(a.id, ui::RecordId::for_file("/work/report.odt"));
+        assert_eq!(a.kind, ui::RecordKind::new("document"));
+        assert_ne!(a.id, b.id, "two files are never one record");
+        assert_eq!(
+            a.id.file_path().as_deref(),
+            Some(std::path::Path::new("/work/report.odt")),
+            "a file record's identity is the path itself, not a handle to it"
+        );
+    }
 
     pub(super) fn pipeline_draw(wp: &mut WordProcessorWidget, state: &mut ui::State, w: u32, h: u32) {
         pipeline_draw_themed(wp, state, w, h, &Theme::dark());
