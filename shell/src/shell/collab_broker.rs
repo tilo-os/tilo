@@ -911,6 +911,7 @@ fn reader_loop(
         if let CollabRequest::Hello {
             ref app_id,
             cluster_id,
+            record: None,
         } = req
         {
             if let Ok(mut guard) = peer.route.lock() {

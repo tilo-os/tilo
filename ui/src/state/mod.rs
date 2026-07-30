@@ -58,6 +58,25 @@ impl State {
         }
     }
 
+    /// Replace the live document with another one — a different record's.
+    ///
+    /// The undo history goes with it. An [`UndoEntry`] is a pair of change
+    /// hashes in *this* document's graph; carried across a swap it would name
+    /// changes the new document has never seen, and undo would either do
+    /// nothing or revert against the wrong history. Each record's history is
+    /// its own, so the stacks reset rather than travel.
+    ///
+    /// `collab` (remote cursors and presence) is deliberately kept: presence is
+    /// about who else is here, which does not change because the document on
+    /// screen did.
+    pub fn adopt_doc(&mut self, doc: AutoCommit) {
+        self.doc = doc;
+        self.root = automerge::ROOT;
+        self.undo_stack.clear();
+        self.redo_stack.clear();
+        self.last_heads = self.doc.get_heads();
+    }
+
     /// Commit the current transaction and push a change-based undo entry
     /// recording the heads that bracket this action.
     pub fn commit_action(&mut self, focused_node_idx: Option<usize>, metadata: Option<String>) {

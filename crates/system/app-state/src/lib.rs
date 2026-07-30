@@ -92,6 +92,12 @@ pub enum StoreError {
     /// The package id could not be turned into a directory name.
     #[error("invalid package id {0:?}: {1}")]
     PackageId(String, &'static str),
+    /// The record key could not be turned into a directory name. Distinct from
+    /// [`StoreError::PackageId`] so the message names which of the two inputs
+    /// was wrong — they arrive from different places (the launcher vs. the
+    /// app's own record identity).
+    #[error("invalid record key {0:?}: {1}")]
+    RecordKey(String, &'static str),
     /// A filesystem operation failed. The path is in the message.
     #[error("{context}: {source}")]
     Io {
