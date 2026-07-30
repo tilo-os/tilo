@@ -1,0 +1,16 @@
+[Unit]
+Description=Sign a newly staged deployment's kernel
+Documentation=file:///usr/share/doc/qos/secure-boot.md
+# A `bootc upgrade` writes a new deployment directory under /boot/ostree with a
+# kernel nothing has signed. Waiting for the next boot to sign it is too late —
+# that boot is the one the firmware would refuse. Signing on the directory change
+# closes the window whether the update came from the timer or from a hand-run
+# upgrade about to be followed by a reboot.
+ConditionPathExists=/var/lib/qos/secureboot/db.key
+
+[Path]
+PathChanged=/boot/ostree
+Unit=qos-secureboot-sign.service
+
+[Install]
+WantedBy=paths.target
