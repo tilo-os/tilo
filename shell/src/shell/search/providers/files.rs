@@ -28,15 +28,16 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime};
 
-use walkdir::WalkDir;
 
 use crate::shell::chrome_state::{Chrome, ChromeState};
 use crate::shell::search::{ResourceKind, SearchContext, SearchProvider, SearchResult};
 
-/// Skip these directory names anywhere in the tree — they explode the
-/// index without adding user-visible files. `.git` also serves as a
-/// reasonable heuristic for "the user cares about the parent, not the
-/// internals".
+/// Skip these paths anywhere in the tree — they explode the index without
+/// adding user-visible files. `.git` also serves as a reasonable heuristic
+/// for "the user cares about the parent, not the internals".
+///
+/// A pattern with a `/` matches that many consecutive path components; see
+/// [`should_skip`].
 const SKIP_DIRS: &[&str] = &[
     ".git",
     "node_modules",
@@ -57,6 +58,18 @@ const SKIP_DIRS: &[&str] = &[
     "dist",
     "Downloads/tmp",
     ".steam",
+    // Package and SDK caches. Same category as `node_modules` and
+    // `.cargo` above — tens of thousands of paths of somebody else's
+    // code, fetched rather than written, and reachable through the file
+    // explorer for the rare occasion someone wants one. Left in the
+    // index they crowd out the trees the user actually works in: this
+    // machine's Android SDK and Go module cache between them supplied
+    // most of the answers to `open`.
+    "go/pkg/mod",
+    "Android/Sdk",
+    "bin/cache",
+    "site-packages",
+    "dist-packages",
 ];
 
 const MAX_DEPTH: usize = 8;
@@ -417,10 +430,15 @@ const CONTENT_SCORE_MAX: i32 = 40;
 // - **Recency** (0..=16): the file's mtime, in bands. The strongest
 //   real-world relevance signal there is, and bounded low enough that a
 //   freshly-unpacked archive cannot take over the palette.
-// - **Vendored-content penalty** (0..=-28): fonts, packaged data,
-//   compiled objects, lockfiles, minified bundles and copies of other
-//   people's source. A *ranking* signal, never a filter — the floor is
-//   1, so anything that matches at all is still findable.
+// - **Provenance penalty** (0..=-28): fonts, packaged data, compiled
+//   objects, lockfiles, minified bundles and copies of other people's
+//   source.
+// - **Depth penalty** (0..=-15): how far the path is buried, free for
+//   the first few levels. Catches the application payloads no list of
+//   extensions or directory names will ever cover.
+//
+// Both penalties are *ranking* signals, never filters — the floor is 1,
+// so anything that matches at all is still findable.
 
 /// Structural tiers, strongest first. The needle either matched the leaf
 /// (the filename) or, failing that, somewhere up the path.
@@ -461,6 +479,22 @@ const PENALTY_GENERATED_LEAF: i32 = 20;
 /// would take deductions twice and fall below a fuzzy match, which
 /// overstates the case: the file is a poor answer, not a non-answer.
 const PENALTY_MAX: i32 = 28;
+
+/// Path components a file may sit under before depth starts counting
+/// against it, and the deduction per component past that.
+///
+/// Somebody's own work lives a few levels down — `~/Documents/x.md`,
+/// `~/Development/proj/src/x.rs`. An application's payload does not:
+/// `~/Spiele/factorio/data/base/sound/open-close/silo-open.ogg` is seven
+/// levels in, and no extension or directory name marks it as anything but
+/// an ordinary sound file. Depth is the one signal that separates the two
+/// without a list of names to keep up to date, so it is worth a modest
+/// deduction as well as its long-standing job as the tiebreak. Free for
+/// the first [`DEPTH_FREE`] components so ordinary project layouts pay
+/// nothing.
+const DEPTH_FREE: usize = 4;
+const PENALTY_PER_LEVEL: i32 = 3;
+const PENALTY_DEPTH_MAX: i32 = 15;
 
 /// Top of the provider's scale — the value [`SearchProvider::max_score`]
 /// reports and the registry normalises against. Derived from the parts
@@ -544,7 +578,9 @@ pub(crate) struct NameFacts {
     /// Length of the leaf with a recognised extension removed; equal to
     /// the leaf's length when there is none.
     stem_len: u16,
-    vendor_penalty: i32,
+    /// Provenance and depth deductions, summed. Both depend only on the
+    /// path, so both are folded in here once.
+    penalty: i32,
     recency: i32,
 }
 
@@ -559,16 +595,22 @@ impl NameFacts {
         let leaf_orig = leaf_of(display);
         let stem_len = stem_len(&leaf_lower);
         let tokens = tokenize(leaf_orig, &leaf_lower);
-        let vendor_penalty = vendor_penalty(&lower, &leaf_lower, stem_len);
+        let penalty = vendor_penalty(&lower, &leaf_lower, stem_len) + depth_penalty(&lower);
         Self {
             leaf: leaf_lower.into_boxed_str(),
             tokens: tokens.into_boxed_slice(),
             stem_len: stem_len.min(u16::MAX as usize) as u16,
-            vendor_penalty,
+            penalty,
             recency: recency_score(modified),
             lower,
         }
     }
+}
+
+/// Deduction for how far a path is buried. See [`DEPTH_FREE`].
+fn depth_penalty(lower_path: &str) -> i32 {
+    let past = path_depth(lower_path).saturating_sub(DEPTH_FREE) as i32;
+    (past * PENALTY_PER_LEVEL).min(PENALTY_DEPTH_MAX)
 }
 
 fn leaf_of(path: &str) -> &str {
@@ -743,7 +785,7 @@ fn name_score(needle_lower: &str, facts: &NameFacts) -> Option<i32> {
     // against, and "more than all of it" is still just all of it.
     let ratio = (needle_lower.len() as f32 / denom.max(needle_lower.len()) as f32).min(1.0);
     let ratio_bonus = (RATIO_WEIGHT as f32 * ratio).round() as i32;
-    let score = structural + ratio_bonus + facts.recency - facts.vendor_penalty;
+    let score = structural + ratio_bonus + facts.recency - facts.penalty;
     // Floored at 1, not at 0: a penalised match is a bad answer, not a
     // hidden one. Whatever the user typed stays reachable.
     Some(score.clamp(1, MAX_SCORE))
@@ -919,44 +961,29 @@ fn spawn_open(path: &Path, _is_dir: bool) {
         .ok();
 }
 
+/// Build the name index, giving every part of `~` a share of it.
+///
+/// The cap matters more than it looks. A single unpacked game is tens of
+/// thousands of paths — this machine's `~/Spiele` alone walks to 31 168 —
+/// and a straight depth-first walk that stops at [`MAX_ENTRIES`] spent
+/// the whole index on `~/Spiele` and part of `~/Development`, indexing
+/// **none** of the trees the user's own documents live in. The palette
+/// then could not answer with those documents at any score, because they
+/// were never candidates: a query for `open` returned forty game sound
+/// effects while the `openapi.json` the user had edited that week was
+/// not in the index at all. No amount of ranking fixes a candidate set
+/// that excludes the answer.
+///
+/// So the walk is breadth-first: every path at depth *n* is indexed
+/// before any path at depth *n+1*. Depth-first spends the budget on
+/// whichever branch it entered first and never returns; breadth-first
+/// spends it on the shallowest paths in the whole of `~`, which is both
+/// the fair division between trees and the right priority within one —
+/// `~/tupo/epopy/epo-docs/openapi.yaml` is more likely to be what someone
+/// meant than anything eight levels down, which is the same judgement
+/// [`DEPTH_FREE`] encodes in the score.
 fn walk_home(home: &Path, index: Arc<Mutex<NameIndex>>) {
-    let mut entries: Vec<NameEntry> = Vec::new();
-    let mut count = 0usize;
-    for entry in WalkDir::new(home)
-        .max_depth(MAX_DEPTH)
-        .follow_links(false)
-        .into_iter()
-        .filter_entry(|e| !should_skip(e.path(), home))
-    {
-        let Ok(entry) = entry else {
-            continue;
-        };
-        let path = entry.path();
-        let is_dir = entry.file_type().is_dir();
-        // Skip the home directory itself.
-        if path == home {
-            continue;
-        }
-        let display = display_path(home, path);
-        // One stat per entry, on this background thread, so a keystroke
-        // never touches the disk: the mtime band is folded into the
-        // entry's precomputed facts and read as an integer thereafter.
-        let modified = entry.metadata().ok().and_then(|m| m.modified().ok());
-        entries.push(NameEntry {
-            path: path.to_owned(),
-            facts: NameFacts::new(&display, modified),
-            display,
-            is_dir,
-        });
-        count += 1;
-        if count >= MAX_ENTRIES {
-            break;
-        }
-        // Yield periodically so the walker doesn't pin a core.
-        if count % 2_000 == 0 {
-            thread::sleep(Duration::from_millis(2));
-        }
-    }
+    let entries = walk_breadth_first(home, MAX_ENTRIES);
     if let Ok(mut guard) = index.lock() {
         guard.entries = entries;
         guard.ready = true;
@@ -964,22 +991,91 @@ fn walk_home(home: &Path, index: Arc<Mutex<NameIndex>>) {
     }
 }
 
-fn should_skip(path: &Path, home: &Path) -> bool {
-    if let Ok(rel) = path.strip_prefix(home) {
-        for comp in rel.components() {
-            let comp = comp.as_os_str().to_string_lossy();
-            if SKIP_DIRS.iter().any(|s| *s == comp) {
-                return true;
+/// [`walk_home`]'s walk, with the budget as a parameter so a test can
+/// exercise the exhaustion behaviour on a tree it can afford to build.
+fn walk_breadth_first(home: &Path, budget: usize) -> Vec<NameEntry> {
+    let mut entries: Vec<NameEntry> = Vec::new();
+    // Directories still to read, shallowest first.
+    let mut frontier: std::collections::VecDeque<(PathBuf, usize)> =
+        std::collections::VecDeque::new();
+    frontier.push_back((home.to_owned(), 0));
+
+    'walk: while let Some((dir, depth)) = frontier.pop_front() {
+        let Ok(rd) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        // Sorted, so a re-scan of an unchanged tree produces the same
+        // index and the narrowing cache's generation bump is the only
+        // thing that changed.
+        let mut children: Vec<std::fs::DirEntry> = rd.filter_map(Result::ok).collect();
+        children.sort_by_key(|c| c.file_name());
+        for child in children {
+            let path = child.path();
+            if should_skip(&path, home) {
+                continue;
             }
-            if comp.starts_with('.') && comp != "." && comp != ".." {
-                // Hidden files/dirs: skip by default. Users looking for a
-                // dotfile can still reach it via the file-explorer app;
-                // the palette focuses on the mostly-visible surface.
-                return true;
+            // `DirEntry::file_type` is free on Linux (it comes off the
+            // `d_type` the readdir already returned); `metadata` is the
+            // one stat, and it happens here on the background thread so
+            // that a keystroke never touches the disk. The mtime band is
+            // folded into the entry's facts and read as an integer
+            // thereafter.
+            let is_dir = child.file_type().map(|t| t.is_dir()).unwrap_or(false);
+            let modified = child.metadata().ok().and_then(|m| m.modified().ok());
+            if is_dir && depth + 1 < MAX_DEPTH {
+                frontier.push_back((path.clone(), depth + 1));
+            }
+            let display = display_path(home, &path);
+            entries.push(NameEntry {
+                facts: NameFacts::new(&display, modified),
+                path,
+                display,
+                is_dir,
+            });
+            if entries.len() >= budget {
+                break 'walk;
+            }
+            // Yield periodically so the walker doesn't pin a core.
+            if entries.len() % 2_000 == 0 {
+                thread::sleep(Duration::from_millis(2));
             }
         }
     }
-    false
+    entries
+}
+
+/// Does any pattern in [`SKIP_DIRS`] match this path, and is any
+/// component hidden?
+///
+/// Patterns are matched a component at a time, and a pattern containing a
+/// `/` has to match that many consecutive components. The list has always
+/// carried multi-component patterns (`.config/gnome`, `Downloads/tmp`) and
+/// the old single-component equality test could never match one, so they
+/// silently did nothing.
+fn should_skip(path: &Path, home: &Path) -> bool {
+    let Ok(rel) = path.strip_prefix(home) else {
+        return false;
+    };
+    let comps: Vec<String> = rel
+        .components()
+        .map(|c| c.as_os_str().to_string_lossy().into_owned())
+        .collect();
+    for comp in &comps {
+        if comp.starts_with('.') && comp != "." && comp != ".." {
+            // Hidden files/dirs: skip by default. Users looking for a
+            // dotfile can still reach it via the file-explorer app;
+            // the palette focuses on the mostly-visible surface.
+            return true;
+        }
+    }
+    SKIP_DIRS.iter().any(|pattern| {
+        let want: Vec<&str> = pattern.split('/').collect();
+        comps.windows(want.len()).any(|w| {
+            w.iter()
+                .zip(&want)
+                .all(|(have, want)| have.as_str() == *want)
+        })
+    })
 }
 
 fn display_path(home: &Path, path: &Path) -> String {
@@ -1288,6 +1384,97 @@ mod tests {
         assert!(!should_skip(Path::new("/home/x/proj/src/lib.rs"), home));
     }
 
+    /// A pattern with a `/` in it has to match consecutive components.
+    /// The list carried two such patterns from the start and the
+    /// single-component equality test could never match either, so they
+    /// did nothing at all.
+    #[test]
+    fn multi_component_skip_patterns_match() {
+        let home = Path::new("/home/x");
+        assert!(
+            SKIP_DIRS.contains(&"Downloads/tmp"),
+            "fixture precondition: the list still carries a multi-component \
+             pattern"
+        );
+        assert!(should_skip(Path::new("/home/x/Downloads/tmp/a.iso"), home));
+        assert!(should_skip(Path::new("/home/x/go/pkg/mod/rsc.io/quote"), home));
+        assert!(should_skip(Path::new("/home/x/Android/Sdk/platforms"), home));
+        // …and only when the components are adjacent and in order.
+        assert!(!should_skip(Path::new("/home/x/Downloads/keep.iso"), home));
+        assert!(!should_skip(Path::new("/home/x/go/src/mod/thing.go"), home));
+        assert!(!should_skip(Path::new("/home/x/tmp/Downloads/a.iso"), home));
+        // A directory the user might plausibly own, unaffected.
+        assert!(!should_skip(Path::new("/home/x/Android/notes.md"), home));
+    }
+
+    /// How far down a path sits counts against it, so an application's
+    /// payload does not outrank the user's own work on the strength of a
+    /// filename alone. Free for the first few levels.
+    #[test]
+    fn depth_counts_against_a_buried_path() {
+        assert_eq!(depth_penalty("~/report.md"), 0);
+        assert_eq!(depth_penalty("~/dev/proj/src/lib.rs"), 0);
+        let shallow = name_score("open", &facts("~/Dokumente/opening.md")).unwrap();
+        let buried = name_score(
+            "open",
+            &facts("~/Spiele/factorio/data/base/sound/open-close/silo-open.ogg"),
+        )
+        .unwrap();
+        assert!(
+            shallow > buried,
+            "a document two levels down ({shallow}) must outrank a game sound \
+             effect seven levels down ({buried})"
+        );
+        // Bounded: depth alone can never sink a match out of reach.
+        assert_eq!(
+            depth_penalty("~/a/b/c/d/e/f/g/h/i/j/k"),
+            PENALTY_DEPTH_MAX
+        );
+    }
+
+    /// The property a depth-first walk did not have.
+    ///
+    /// With the budget exhausted, a depth-first walk had indexed one
+    /// branch deeply and the rest not at all — on the machine this was
+    /// reported from, `~/Spiele` and part of `~/Development`, and none of
+    /// the trees the user's documents were in. Breadth-first spends the
+    /// same budget on the shallowest paths everywhere, so every top-level
+    /// tree is represented and the answer is at least a candidate.
+    #[test]
+    fn the_walk_indexes_every_tree_before_it_runs_out() {
+        let home = tempfile::tempdir().expect("tempdir");
+        let root = home.path();
+        // One enormous branch and four small ones, laid out so a
+        // depth-first walk meets the big one first.
+        std::fs::create_dir_all(root.join("Aaa-huge")).unwrap();
+        let mut deep = root.join("Aaa-huge");
+        for level in 0..6 {
+            deep = deep.join(format!("level{level}"));
+            std::fs::create_dir_all(&deep).unwrap();
+            for i in 0..40 {
+                std::fs::write(deep.join(format!("filler-{i}.bin")), b"x").unwrap();
+            }
+        }
+        for tree in ["Documents", "Notes", "Projects", "Pictures"] {
+            std::fs::create_dir_all(root.join(tree)).unwrap();
+            std::fs::write(root.join(tree).join("target.md"), b"x").unwrap();
+        }
+
+        // A budget far smaller than the huge branch.
+        let entries = walk_breadth_first(root, 60);
+        assert_eq!(entries.len(), 60, "the budget must be spent in full");
+        for tree in ["Documents", "Notes", "Projects", "Pictures"] {
+            assert!(
+                entries
+                    .iter()
+                    .any(|e| e.display == format!("~/{tree}/target.md")),
+                "~/{tree}/target.md missing — the budget went to one branch \
+                 again. Indexed: {:?}",
+                entries.iter().map(|e| &e.display).collect::<Vec<_>>()
+            );
+        }
+    }
+
     /// Build a provider whose name index is already populated, without
     /// waiting on the background walk or touching the disk.
     fn provider_with_index(entries: Vec<(&str, bool)>) -> FilesProvider {
@@ -1401,11 +1588,12 @@ mod tests {
     fn equal_scores_prefer_the_shallower_path() {
         // Same filename, same age, same (absent) penalty — so the two
         // scores really are equal and depth is the only thing left to
-        // decide with. A vendored path would have been separated by its
-        // penalty instead, and this test would have proved nothing.
+        // decide with. Both sit inside [`DEPTH_FREE`], where depth costs
+        // nothing; a vendored or deeper path would have been separated by
+        // its penalty instead and this test would have proved nothing.
         let p = provider_with_index(vec![
-            ("~/src/project/module/component/deep/todo.md", false),
-            ("~/todo.md", false),
+            ("~/src/project/module/todo.md", false),
+            ("~/src/todo.md", false),
         ]);
         let chrome = empty_chrome();
         let st = chrome.borrow();
@@ -1417,7 +1605,7 @@ mod tests {
             "the fixture must actually tie on score, or the depth tiebreak \
              is not what is being tested: {out:?}"
         );
-        assert_eq!(out[0].id, "/home/tester/todo.md");
+        assert_eq!(out[0].id, "/home/tester/src/todo.md");
     }
 
     /// Build the worst-case index the walker is allowed to produce.
