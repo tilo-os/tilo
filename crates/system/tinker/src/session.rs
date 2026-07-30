@@ -155,6 +155,11 @@ impl SessionSpec {
         push!("--setenv");
         push!("DEBIAN_FRONTEND");
         push!("noninteractive");
+        // The host's locale is meaningless inside a foreign base image and makes
+        // every maintainer script complain about a locale it cannot find.
+        push!("--setenv");
+        push!("LANG");
+        push!("C.UTF-8");
         // So a shell prompt, a build script, or anything else can tell it is in a
         // layer and which one. Being able to see where you are is the difference
         // between confinement and disorientation.

@@ -161,8 +161,32 @@ fn cmd_shell(store: &Store, args: ShellArgs) -> Result<()> {
         );
     }
 
-    // The layer has to exist before the mapped re-exec, so that the name chosen
-    // here is the one the child opens rather than a second fresh one.
+    // `--explain` answers "what would this do" and must not create anything, so
+    // it is served before any state exists and without entering the mapping.
+    if args.explain {
+        let name = args.name.clone().unwrap_or_else(|| "scratch".to_string());
+        let mut spec = SessionSpec::new(
+            store.base_path(&args.base),
+            store.upper_dir(&name),
+            store.work_dir(&name),
+            store.home_dir(&name),
+            &name,
+        );
+        spec.lower_layers = args.on.iter().map(|l| store.upper_dir(l)).collect();
+        spec.network = !args.offline;
+        spec.command = args.command.clone();
+        for s in &args.share {
+            spec.shares.push(parse_share(s)?);
+        }
+        println!("{}", spec.explain());
+        return Ok(());
+    }
+
+    // Enter the id mapping *before* creating anything. Re-execution restarts this
+    // process from its own argv, so any layer created beforehand would be
+    // abandoned and a second one made in the child.
+    idmap::ensure_mapped()?;
+
     let name = match &args.name {
         Some(n) => {
             if store.load(n).is_err() {
@@ -202,12 +226,7 @@ fn cmd_shell(store: &Store, args: ShellArgs) -> Result<()> {
         spec.shares.push(parse_share(s)?);
     }
 
-    if args.explain {
-        println!("{}", spec.explain());
-        return Ok(());
-    }
-
-    with_mapping(|| {
+    {
         let status = Command::new("bwrap")
             .args(spec.to_bwrap_args())
             .status()
@@ -231,7 +250,7 @@ fn cmd_shell(store: &Store, args: ShellArgs) -> Result<()> {
             }
         }
         Ok(())
-    })
+    }
 }
 
 /// What the user sees when a throwaway shell that actually changed something
@@ -247,7 +266,7 @@ fn report_ephemeral_exit(name: &str, d: &Diff) {
     }
     let other = d.substantive().count();
     if other > 0 {
-        eprintln!("  and changed {other} other path(s) — tinker diff {name}");
+        eprintln!("  and {other} change(s) no package accounts for — tinker diff {name}");
     }
     eprintln!();
     eprintln!("  keep it:     tinker keep {name} --as <a-better-name>");
