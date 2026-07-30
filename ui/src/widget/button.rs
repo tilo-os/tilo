@@ -28,6 +28,10 @@ pub struct Button {
     icon: Option<crate::icons::Icon>,
     /// Optional fixed (width, height) override; defaults to 120×40.
     size: Option<(f32, f32)>,
+    /// Visual style: neutral (default), primary (accent CTA), or danger.
+    /// Drives the fill / border / label colours via [`face_colors`], the
+    /// same source of truth the immediate-mode [`Button::paint`] face uses.
+    style: ButtonStyle,
     on_click_path: Option<String>, // Path in CRDT to mutate
     /// Optional imperative click handler, fired on release-while-hovered
     /// *in addition to* any `on_click_path` CRDT mutation. Lets app code
@@ -67,6 +71,7 @@ impl Button {
             is_focused: false,
             icon: None,
             size: None,
+            style: ButtonStyle::Neutral,
             on_click_path: on_click_path.map(|s| s.to_string()),
             on_click: None,
             presence_path: Vec::new(),
@@ -138,6 +143,54 @@ impl Button {
     pub fn set_enabled(&mut self, enabled: bool) {
         if self.enabled != enabled {
             self.enabled = enabled;
+            self.dirty = true;
+        }
+    }
+
+    /// Set the visual [`ButtonStyle`] at build time — `Primary` for the
+    /// accent-filled default action (Send / Save), `Danger` for a
+    /// destructive one. Colours resolve through [`face_colors`], so the
+    /// retained widget and the immediate-mode [`Button::paint`] face stay
+    /// pixel-identical for the same style + interaction state.
+    pub fn with_style(mut self, style: ButtonStyle) -> Self {
+        self.style = style;
+        self
+    }
+
+    /// Shorthand for [`Self::with_style`]`(ButtonStyle::Primary)` — the
+    /// accent-filled primary action.
+    pub fn primary(mut self) -> Self {
+        self.style = ButtonStyle::Primary;
+        self
+    }
+
+    /// Shorthand for [`Self::with_style`]`(ButtonStyle::Danger)` — a
+    /// destructive action.
+    pub fn danger(mut self) -> Self {
+        self.style = ButtonStyle::Danger;
+        self
+    }
+
+    /// Imperatively set the style, invalidating the scene cache so the new
+    /// fill/label is re-emitted next frame.
+    pub fn set_style(&mut self, style: ButtonStyle) {
+        if self.style != style {
+            self.style = style;
+            self.dirty = true;
+        }
+    }
+
+    /// Place the button at an absolute rect without going through taffy —
+    /// the counterpart to [`TextInput::apply_layout_external`] for an app
+    /// that hand-positions a shared control over its own painted chrome. The
+    /// button still owns its focus / a11y / activation contract; only its
+    /// geometry is caller-driven. Marks the cache dirty on a size change so
+    /// the face re-emits at the new dimensions.
+    pub fn apply_layout_external(&mut self, rect: Rect) {
+        let size_changed =
+            rect.width() != self.rect.width() || rect.height() != self.rect.height();
+        self.rect = rect;
+        if size_changed {
             self.dirty = true;
         }
     }
@@ -425,13 +478,21 @@ impl Widget for Button {
         self.cached.reset();
         let scene = &mut self.cached;
         let transform = Affine::IDENTITY;
-        let (bg_color, border_color) = if self.is_pressed {
-            (theme.bg_active, theme.tokens.colors.border_standard)
-        } else if self.is_hovered {
-            (theme.bg_hover, theme.tokens.colors.border_standard)
-        } else {
-            (theme.tokens.colors.surfaces.raised, theme.tokens.colors.border_standard)
-        };
+        // Resolve fill / border / label from the shared `face_colors` source
+        // of truth so `Neutral` matches the historical look exactly and
+        // `Primary`/`Danger` gain the accent / destructive fills. `disabled`
+        // is left false here — the dimmed look is applied by the
+        // `DISABLED_ALPHA` layer around the cache append, not by the colours.
+        let (bg_color, border_opt, fg_color) = face_colors(
+            theme,
+            self.style,
+            ButtonInteract {
+                hovered: self.is_hovered,
+                pressed: self.is_pressed,
+                focused: self.is_focused,
+                disabled: false,
+            },
+        );
 
         let shape = RoundedRect::from_rect(self.rect, theme.tokens.radii.md as f64);
         scene.fill(
@@ -442,19 +503,26 @@ impl Widget for Button {
             &shape,
         );
 
-        let stroke_color = if self.is_focused {
-            theme.border_focus
-        } else {
-            border_color
-        };
-
-        scene.stroke(
-            &vello::kurbo::Stroke::new(if self.is_focused { 2.0 } else { 1.0 }),
-            transform,
-            stroke_color,
-            None,
-            &shape,
-        );
+        // Focus ring wins over the style border; an accent-filled style has
+        // no rest border (its fill is self-defining) so it only strokes when
+        // focused.
+        if self.is_focused {
+            scene.stroke(
+                &vello::kurbo::Stroke::new(2.0),
+                transform,
+                theme.border_focus,
+                None,
+                &shape,
+            );
+        } else if let Some(border_color) = border_opt {
+            scene.stroke(
+                &vello::kurbo::Stroke::new(1.0),
+                transform,
+                border_color,
+                None,
+                &shape,
+            );
+        }
 
         let text_size = 14.0;
         let label = i18n!(&self.label);
@@ -469,7 +537,7 @@ impl Widget for Button {
                     transform,
                     Rect::new(ix, iy, ix + icon_px, iy + icon_px),
                     icon,
-                    theme.tokens.colors.text_primary,
+                    fg_color,
                     crate::icons::LUCIDE_DEFAULT_STROKE_PX,
                 );
             }
@@ -487,7 +555,7 @@ impl Widget for Button {
                         transform,
                         Rect::new(start_x, iy, start_x + icon_px, iy + icon_px),
                         icon,
-                        theme.tokens.colors.text_primary,
+                        fg_color,
                         crate::icons::LUCIDE_DEFAULT_STROKE_PX,
                     );
                 }
@@ -497,7 +565,7 @@ impl Widget for Button {
                     scene,
                     &label,
                     text_size as f32,
-                    theme.tokens.colors.text_primary,
+                    fg_color,
                     transform * Affine::translate((text_x, text_y)),
                     None,
                 );

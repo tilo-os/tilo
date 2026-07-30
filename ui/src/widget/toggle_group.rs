@@ -110,6 +110,61 @@ impl ToggleGroup {
         self.selected
     }
 
+    /// Programmatically set the selected segment (clamped to a valid index),
+    /// e.g. when the app changes the active choice for a reason other than a
+    /// click on this control. Does **not** fire `on_change` (that is reserved
+    /// for user-driven changes); it just keeps the control in step with app
+    /// state. Invalidates the scene cache when the value actually changes.
+    pub fn set_selected(&mut self, selected: usize) {
+        let clamped = selected.min(self.segments.len().saturating_sub(1));
+        if self.selected != clamped {
+            self.selected = clamped;
+            self.cache_dirty = true;
+        }
+    }
+
+    /// Place the control at an absolute rect without going through taffy —
+    /// the counterpart to [`TextInput::apply_layout_external`] for an app
+    /// that hand-positions a shared control over its own painted chrome.
+    /// Repartitions the segment hit-rects from the new box. Focus / a11y /
+    /// selection are unaffected.
+    pub fn apply_layout_external(&mut self, rect: Rect) {
+        self.set_rect_and_partition(rect);
+    }
+
+    /// Set `self.rect` and repartition the equal-width segment hit-rects.
+    /// Shared by the taffy [`Widget::apply_layout`] path and the absolute
+    /// [`Self::apply_layout_external`] path so both compute identical
+    /// geometry. Empty groups paint an empty strip (no segments, no
+    /// separators); a degenerate 1-segment group fills the whole rect.
+    fn set_rect_and_partition(&mut self, rect: Rect) {
+        self.rect = rect;
+        self.segment_rects.clear();
+        let n = self.segments.len();
+        if n == 0 {
+            return;
+        }
+        let total_w = self.rect.width();
+        let seg_w = total_w / n as f64;
+        for i in 0..n {
+            let sx0 = self.rect.x0 + (i as f64) * seg_w;
+            let sx1 = if i == n - 1 {
+                // Floating-point safety: explicitly anchor the last
+                // segment to `rect.x1` so accumulated rounding doesn't
+                // leave a hairline gap on the right edge.
+                self.rect.x1
+            } else {
+                self.rect.x0 + ((i + 1) as f64) * seg_w
+            };
+            self.segment_rects.push(Rect::new(sx0, self.rect.y0, sx1, self.rect.y1));
+        }
+        let size_changed = self.rect.width() != self.cache_rect.width()
+            || self.rect.height() != self.cache_rect.height();
+        if size_changed {
+            self.cache_dirty = true;
+        }
+    }
+
     /// Number of interior separator lines this control will paint —
     /// always `segments.len() - 1` (saturating at zero for an empty or
     /// single-segment group). Exposed so tests can assert the draw pass
@@ -375,36 +430,7 @@ impl Widget for ToggleGroup {
         let y0 = origin.y + layout.location.y as f64;
         let x1 = x0 + layout.size.width as f64;
         let y1 = y0 + layout.size.height as f64;
-        self.rect = Rect::new(x0, y0, x1, y1);
-
-        // Equal-width segments — partition the outer width by segment
-        // count. Empty groups paint an empty strip (no segments, no
-        // separators); a degenerate 1-segment group fills the entire
-        // outer rect with that segment and emits no separators.
-        self.segment_rects.clear();
-        let n = self.segments.len();
-        if n == 0 {
-            return;
-        }
-        let total_w = self.rect.width();
-        let seg_w = total_w / n as f64;
-        for i in 0..n {
-            let sx0 = self.rect.x0 + (i as f64) * seg_w;
-            let sx1 = if i == n - 1 {
-                // Floating-point safety: explicitly anchor the last
-                // segment to `rect.x1` so accumulated rounding doesn't
-                // leave a hairline gap on the right edge.
-                self.rect.x1
-            } else {
-                self.rect.x0 + ((i + 1) as f64) * seg_w
-            };
-            self.segment_rects.push(Rect::new(sx0, self.rect.y0, sx1, self.rect.y1));
-        }
-        let size_changed = self.rect.width() != self.cache_rect.width()
-            || self.rect.height() != self.cache_rect.height();
-        if size_changed {
-            self.cache_dirty = true;
-        }
+        self.set_rect_and_partition(Rect::new(x0, y0, x1, y1));
     }
 
     fn draw(

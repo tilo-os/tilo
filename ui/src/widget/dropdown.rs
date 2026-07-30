@@ -177,6 +177,16 @@ impl Dropdown {
     pub fn selected(&self) -> &str {
         &self.selected
     }
+
+    /// Place the dropdown at an absolute rect without going through taffy —
+    /// the counterpart to [`TextInput::apply_layout_external`] for an app
+    /// that hand-positions a shared control over its own painted chrome. The
+    /// open list still paints in the overlay pass, so only the closed
+    /// control's box is caller-driven. Focus / a11y / CRDT-bound selection
+    /// are unaffected.
+    pub fn apply_layout_external(&mut self, rect: Rect) {
+        self.rect = rect;
+    }
     /// Position (0-based) of the highlighted row in the filtered list.
     pub fn highlight_index(&self) -> usize {
         self.highlight
