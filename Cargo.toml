@@ -13,6 +13,7 @@ exclude = ["crates/doc/qdoc-codec-markdown-wasm", "vendor/winit"]
 # under `--profile thin-app` (`cargo build -p runtime-dylib --profile
 # thin-app`). See its Cargo.toml for the full rationale.
 default-members = [
+    "crates/system/tinker",
     "crates/system/swipe",
     "crates/system/tts",
     "crates/system/accounts",
@@ -118,6 +119,7 @@ default-members = [
     "crates/session/installer",
 ]
 members = [
+    "crates/system/tinker",
     "crates/system/swipe",
     "crates/system/tts",
     "crates/system/accounts",

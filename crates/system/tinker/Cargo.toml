@@ -1,0 +1,24 @@
+[package]
+name = "tinker"
+version = "0.1.0"
+edition = "2024"
+description = "Unprivileged overlay work layers: a real root shell and a real package manager, scoped to a discardable layer instead of the host."
+
+[lib]
+name = "tinker"
+path = "src/lib.rs"
+
+[[bin]]
+name = "tinker"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+clap = { workspace = true }
+libc = { workspace = true }
+serde = { workspace = true }
+toml = { workspace = true }
+walkdir = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
