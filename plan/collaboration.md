@@ -17,7 +17,7 @@ The shell runs a single `Swarm<NiriosBehaviour>` per process (`shell/src/network
 - **noise** — transport encryption. **tcp + yamux** for the transport.
 - **kad** is feature-gated for future relay/NAT-traversal work; off by default.
 
-Identity is an ed25519 keypair stored at `/var/lib/qos-fs/peer-key`, auto-created if missing. The libp2p `PeerId` is the multihash of the protobuf-encoded public key.
+Identity is the machine's one ed25519 device key at `/var/lib/qos/device/keypair.bin`, auto-created if missing and shared with the filesystem so both name the same device. The libp2p `PeerId` is the multihash of the protobuf-encoded public key.
 
 The network actor (`shell/src/network/actor.rs`) owns the swarm on a dedicated tokio task. It exchanges `NetCmd` (commands in) and `NetEvent` (events out) with the shell over `mpsc` channels.
 
