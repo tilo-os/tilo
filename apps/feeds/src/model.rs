@@ -30,6 +30,27 @@ impl FeedKind {
             FeedKind::Gemini => "Gemini",
         }
     }
+
+    /// The wire form persisted in the CRDT (see [`crate::doc`]). Matches the
+    /// `kind` scalar written by `FeedsDoc::upsert_feed`, so it is the form an
+    /// [`crate::actions::FeedsAction`] carries in its payload.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            FeedKind::Rss => "rss",
+            FeedKind::Atom => "atom",
+            FeedKind::Json => "json",
+            FeedKind::Gemini => "gemini",
+        }
+    }
+
+    pub fn from_str(s: &str) -> Self {
+        match s {
+            "atom" => FeedKind::Atom,
+            "json" => FeedKind::Json,
+            "gemini" => FeedKind::Gemini,
+            _ => FeedKind::Rss,
+        }
+    }
 }
 
 /// One rendered content block in an article body. Articles store a small
