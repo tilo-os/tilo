@@ -199,6 +199,15 @@ pub struct PresenceCtx {
     /// needing `&mut PresenceCtx` everywhere; `Rect` is `Copy` so
     /// the Cell access is cheap.
     pub viewport: std::cell::Cell<Option<vello::kurbo::Rect>>,
+    /// Each peer's last broadcast [`ViewSubset`](crate::view::ViewSubset) —
+    /// the region and resource they are looking at (scroll / open resource /
+    /// viewport / view mode), distinct from the point their cursor sits on.
+    /// Seeded from the presence stream by
+    /// [`Self::set_peer_view`]; read by a renderer that wants to show *where*
+    /// a peer is working, and by the App's **attach/follow** to bind the
+    /// local viewport to a chosen peer. Cleared for a peer on
+    /// [`Self::unregister_peer`].
+    views: HashMap<UserId, crate::view::ViewSubset>,
 }
 
 impl PresenceCtx {
@@ -476,6 +485,21 @@ impl PresenceCtx {
         });
     }
 
+    /// Record (replace) a peer's broadcast [`ViewSubset`](crate::view::ViewSubset)
+    /// — the region and resource they are looking at. Fed from the presence
+    /// stream; the View is never merged, only replaced with the peer's
+    /// latest, so a peer's entry is always exactly what they last published.
+    pub fn set_peer_view(&mut self, user: UserId, view: crate::view::ViewSubset) {
+        self.views.insert(user, view);
+    }
+
+    /// A peer's last broadcast [`ViewSubset`](crate::view::ViewSubset), if we
+    /// have one. `None` before the peer has published a View, or after they
+    /// leave. This is what **attach/follow** binds the local viewport to.
+    pub fn peer_view(&self, user: &UserId) -> Option<&crate::view::ViewSubset> {
+        self.views.get(user)
+    }
+
     /// A peer's last-known pointer position in scene space, if we have one
     /// — the target a "follow" action scrolls toward. Reads the same
     /// `remote_cursors` overlay the pointer is drawn from, so following a
@@ -650,6 +674,8 @@ impl PresenceCtx {
         }
         // typing highlighter marks scoped to this peer
         self.typing.retain(|(u, _), _| u != &uid);
+        // broadcast View (region/resource they were looking at)
+        self.views.remove(&uid);
         // roster name
         self.names.remove(&uid);
         // remote cursor stamp

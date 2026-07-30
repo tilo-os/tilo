@@ -96,6 +96,53 @@ pub struct View {
     pub view_mode: Option<String>,
 }
 
+/// The broadcastable subset of a [`View`] — the region and resource a
+/// participant is looking at, minus the caret/selection.
+///
+/// The presence layer publishes this so peers know not just where a
+/// participant's cursor is (that rides the existing caret/selection
+/// presence stream) but *what they are looking at*: the scroll offset(s),
+/// the open resource, the viewport, and the view mode. It is deliberately
+/// small and self-describing so it can travel inside the existing presence
+/// frame, and it is what an **attach/follow** binds the local viewport to.
+///
+/// The caret ([`View::focus`]) is intentionally excluded: it already has a
+/// dedicated presence payload (`Caret` / `Selection`) that lands in the
+/// per-key caret maps, so re-sending it here would double-broadcast and
+/// re-key it away from the widget scopes those renderers read.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct ViewSubset {
+    /// Scroll offset(s) of the participant's scrollable content.
+    pub scroll: Vec<f64>,
+    /// The resource the participant currently has open, if any.
+    pub open_resource: Option<String>,
+    /// The participant's viewport rect in physical pixels.
+    pub viewport: ViewRect,
+    /// The participant's current view mode, if the app has one.
+    pub view_mode: Option<String>,
+}
+
+impl ViewSubset {
+    /// Project a full [`View`] onto the subset presence broadcasts. Drops
+    /// [`View::focus`] (broadcast separately as caret/selection presence).
+    pub fn from_view(view: &View) -> Self {
+        ViewSubset {
+            scroll: view.scroll.clone(),
+            open_resource: view.open_resource.clone(),
+            viewport: view.viewport,
+            view_mode: view.view_mode.clone(),
+        }
+    }
+
+    /// True when this subset carries nothing worth broadcasting — the
+    /// starting point of a freshly-launched app that has not scrolled,
+    /// opened a resource, or been laid out. Lets the broadcaster skip the
+    /// first frame's no-op send.
+    pub fn is_empty(&self) -> bool {
+        *self == ViewSubset::default()
+    }
+}
+
 impl View {
     /// Capture the live [`App`](crate::app::App)'s presentation into a View.
     ///

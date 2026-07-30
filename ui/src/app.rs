@@ -340,6 +340,11 @@ pub struct App {
     /// root widget, diffed to avoid re-sending unchanged presence.
     last_location_presence:
         Option<(PresenceKey, crate::collaboration::PresencePayload)>,
+    /// Last [`ViewSubset`](crate::view::ViewSubset) broadcast to presence —
+    /// the region/resource the local participant is looking at. Diffed so
+    /// [`App::broadcast_view_presence`] only sends when the view actually
+    /// moves, not every frame.
+    last_view_presence: Option<crate::view::ViewSubset>,
     /// Optional out-of-band sink invoked alongside the Unix-socket
     /// `broadcast_presence` send. The shell registers a closure here
     /// when peer-sync is enabled so local cursor moves get fanned out
@@ -504,6 +509,7 @@ impl App {
             last_pointer_broadcast: None,
             last_focus_presence: None,
             last_location_presence: None,
+            last_view_presence: None,
             presence_broadcast_sink: None,
             frame_tick: None,
             current_cursor: CursorIcon::Default,
@@ -1397,6 +1403,89 @@ impl App {
         }
     }
 
+    /// Broadcast the local participant's [`ViewSubset`](crate::view::ViewSubset)
+    /// — scroll / open resource / viewport / view mode — so peers know not
+    /// just where the local cursor is (that rides the caret/selection
+    /// presence stream) but *what region and resource* the participant is
+    /// looking at. Diffed against the last send, so it only fires when the
+    /// view actually moves.
+    ///
+    /// The subset has no `PresencePayload` variant of its own, so it rides
+    /// the existing presence frame carried inside a
+    /// [`PresenceKey::view`](crate::presence::PresenceKey::view) key; the
+    /// paired payload is inert — the receiver recognises the key and stores
+    /// the decoded subset per peer (see [`App::apply_remote_presence`]). No
+    /// new wire variant, no change to the collab transport.
+    ///
+    /// Skipped entirely when nothing is listening (no live broker and no
+    /// out-of-band sink), so the single-user path pays nothing.
+    fn broadcast_view_presence(&mut self) {
+        if !self.collab_manager.is_connected() && self.presence_broadcast_sink.is_none() {
+            return;
+        }
+        let view = <Self as crate::view::FreezeThaw>::capture_view(self);
+        let subset = crate::view::ViewSubset::from_view(&view);
+        if self.last_view_presence.as_ref() == Some(&subset) {
+            return;
+        }
+        self.broadcast_presence(
+            crate::presence::PresenceKey::view(&subset),
+            // Inert carrier: the receiver dispatches on the `View` key
+            // before the payload is ever inspected. `Arrived` is chosen
+            // because the SDK presence transport relays it with the routing
+            // key intact, which is what actually ferries the subset.
+            crate::collaboration::PresencePayload::Arrived,
+        );
+        self.last_view_presence = Some(subset);
+    }
+
+    /// Start following `peer_id`: bind the local viewport to that peer's
+    /// broadcast [`ViewSubset`](crate::view::ViewSubset) so the local view
+    /// scrolls/pans to track where they are looking. Applies immediately if
+    /// the peer has already published a View; following a peer who is not
+    /// present (no broadcast View yet) latches the intent but moves nothing,
+    /// and the viewport snaps to them the moment their first View arrives.
+    ///
+    /// A device is just another participant here — there is no special-casing
+    /// of the user's own devices. Following is opt-in and reversible via
+    /// [`Self::unfollow`].
+    pub fn follow(&mut self, peer_id: impl Into<String>) {
+        self.followed_peer = Some(peer_id.into());
+        self.apply_follow();
+    }
+
+    /// Stop following whoever was being followed, releasing the local
+    /// viewport. Subsequent View broadcasts from that peer no longer move
+    /// the local view. A no-op when not currently following.
+    pub fn unfollow(&mut self) {
+        self.followed_peer = None;
+    }
+
+    /// Bind the local viewport to the followed peer's broadcast View, if
+    /// any. Hands the peer's scroll / view-mode to the root widget so the
+    /// local content pans to match where they are looking. A no-op when not
+    /// following, or when the followed peer has published no View yet — the
+    /// "follow someone who isn't here" case, which must not move the view.
+    fn apply_follow(&mut self) {
+        let Some(id) = self.followed_peer.clone() else {
+            return;
+        };
+        let Some(view) = self
+            .presence_ctx
+            .peer_view(&crate::permissions::UserId(id))
+            .cloned()
+        else {
+            return;
+        };
+        self.root_widget
+            .restore_view_state(&crate::view::ViewContribution {
+                scroll: view.scroll.clone(),
+                view_mode: view.view_mode.clone(),
+            });
+        self.layout_dirty = true;
+        self.needs_sync = true;
+    }
+
     /// Poll the collaboration manager and apply any pending events
     /// (remote cursor moves, remote presence updates). This is the headless
     /// equivalent of the `Event::AboutToWait` branch in [`App::run`] and is
@@ -1690,6 +1779,19 @@ impl App {
     ) {
         use crate::collaboration::PresencePayload::*;
         use crate::permissions::UserId;
+
+        // A View broadcast rides inside the routing key, not the payload
+        // (the subset has no `PresencePayload` variant). Recognise it here,
+        // store the peer's region/resource, and — if we're following them —
+        // move the local viewport to match. The paired payload is inert and
+        // deliberately never reaches the match below.
+        if let Some(subset) = key.as_view() {
+            self.presence_ctx
+                .set_peer_view(UserId(user_id), subset);
+            self.apply_follow();
+            return;
+        }
+
         match payload {
             Pointer { x, y } => {
                 // Populate BOTH presence stores: `pointers` (keyed by
@@ -3692,6 +3794,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                 // Cheap: no-ops when nothing changed or no socket is bound.
                 app.broadcast_focus_presence();
                 app.broadcast_location_presence();
+                app.broadcast_view_presence();
 
                 if let Some(id) = focus_target {
                     app.set_focused_node(Some(id));
@@ -3866,6 +3969,10 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         // post-event broadcast above wouldn't catch. Diffed, so it only
         // sends on an actual change.
         app.broadcast_location_presence();
+        // Same for the participant's View (scroll / open resource / mode):
+        // `sync` can move it (e.g. the initial auto-select), so re-broadcast
+        // the diffed subset here too.
+        app.broadcast_view_presence();
 
         // Keep syncing on idle frames while a collab app is still seeding
         // or adopting the shared document. Without this a first peer with
@@ -5771,5 +5878,266 @@ impl crate::view::FreezeThaw for App {
 
         self.layout_dirty = true;
         self.needs_sync = true;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// View presence: broadcast the local participant's View subset, render peers'
+// Views, and attach/follow. Exercised on the real broadcast/receive path —
+// `broadcast_view_presence` through the presence sink, and
+// `apply_collab_event_for_test` through `apply_remote_presence`.
+// ---------------------------------------------------------------------------
+#[cfg(test)]
+mod view_presence_tests {
+    use super::*;
+    use crate::record::{RecordCheckout, RecordId, RecordKind};
+    use crate::state::State;
+    use crate::view::{FreezeThaw, ViewContribution, ViewSubset};
+    use crate::widget::Widget;
+    use crate::PresenceCtx;
+    use crate::TextRenderer;
+    use crate::Theme;
+    use automerge::{AutoCommit, ObjId};
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex};
+    use taffy::TaffyTree;
+    use vello::kurbo::{Affine, Point, Rect as KurboRect};
+    use vello::Scene;
+    use winit::event::WindowEvent;
+
+    /// A root that carries exactly the presentation a [`ViewSubset`] projects:
+    /// a scroll offset + view mode (via `view_state` / `restore_view_state`)
+    /// and an open resource (via `record_intent`). No focus needed — the
+    /// subset deliberately excludes the caret.
+    struct ViewRoot {
+        scroll: Vec<f64>,
+        mode: Option<String>,
+        resource: Option<String>,
+        rect: KurboRect,
+    }
+
+    impl ViewRoot {
+        fn new() -> Self {
+            Self {
+                scroll: Vec::new(),
+                mode: None,
+                resource: None,
+                rect: KurboRect::ZERO,
+            }
+        }
+    }
+
+    impl Widget for ViewRoot {
+        fn sync(&mut self, _s: &mut AutoCommit, _p: &ObjId) {}
+        fn build_layout(
+            &mut self,
+            taffy: &mut TaffyTree<()>,
+            _theme: &Theme,
+            node_map: &mut HashMap<taffy::NodeId, *mut dyn Widget>,
+        ) -> taffy::NodeId {
+            let node = taffy.new_leaf(taffy::Style::default()).unwrap();
+            node_map.insert(node, self as *mut dyn Widget);
+            node
+        }
+        fn apply_layout(&mut self, _t: &TaffyTree<()>, _n: taffy::NodeId, _o: Point) {}
+        fn draw(
+            &mut self,
+            _s: &mut Scene,
+            _t: Affine,
+            _tr: &mut TextRenderer,
+            _th: &Theme,
+            _p: &PresenceCtx,
+        ) {
+        }
+        #[allow(clippy::too_many_arguments)]
+        fn handle_event(
+            &mut self,
+            _e: &WindowEvent,
+            _sf: f64,
+            _m: &winit::event::Modifiers,
+            _s: &mut AutoCommit,
+            _p: &ObjId,
+            _h: &mut bool,
+            _ft: &mut Option<taffy::NodeId>,
+            _ni: taffy::NodeId,
+            _t: &TaffyTree<()>,
+        ) {
+        }
+        fn name(&self) -> &str {
+            "view-root"
+        }
+        fn get_rect(&self) -> KurboRect {
+            self.rect
+        }
+        fn view_state(&self) -> Option<ViewContribution> {
+            Some(ViewContribution {
+                scroll: self.scroll.clone(),
+                view_mode: self.mode.clone(),
+            })
+        }
+        fn restore_view_state(&mut self, view: &ViewContribution) {
+            self.scroll = view.scroll.clone();
+            self.mode = view.view_mode.clone();
+        }
+        fn record_intent(&self) -> Option<RecordCheckout> {
+            let r = self.resource.as_ref()?;
+            RecordId::parse(r).map(|id| RecordCheckout::new(id, RecordKind::new("document")))
+        }
+    }
+
+    fn app_with_root(root: ViewRoot) -> App {
+        let mut app = App::new(State::new(), Box::new(root));
+        app.init_layout();
+        app
+    }
+
+    /// The View a participant is looking at — scroll, open resource, viewport,
+    /// view mode — is broadcast through the *real* presence path and lands in
+    /// a second peer's `PresenceCtx` as that peer's View, distinct from a
+    /// cursor point. Asserted on the frame that actually leaves the sender
+    /// (captured through the broadcast sink) and on the frame the receiver
+    /// applies (through `apply_remote_presence`).
+    #[test]
+    fn view_subset_broadcasts_through_real_presence_path() {
+        // Sender: scrolled, in "grid" mode, with a resource open, laid out to
+        // a real viewport.
+        let mut sender = app_with_root(ViewRoot {
+            scroll: vec![10.0, 20.0],
+            mode: Some("grid".into()),
+            resource: Some("file:/report.md".into()),
+            rect: KurboRect::ZERO,
+        });
+        sender.last_frame_size = Some(winit::dpi::PhysicalSize::new(1024, 768));
+
+        // Capture what actually leaves the sender via the real broadcast sink
+        // (the same seam the shell's libp2p bridge subscribes to).
+        let captured: Arc<Mutex<Vec<(PresenceKey, PresencePayload)>>> =
+            Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&captured);
+        sender.set_presence_broadcast_sink(move |k, p| {
+            sink.lock().unwrap().push((k.clone(), p.clone()));
+        });
+
+        sender.broadcast_view_presence();
+
+        let frames = captured.lock().unwrap().clone();
+        assert_eq!(frames.len(), 1, "exactly one View frame is broadcast");
+        let (key, _payload) = &frames[0];
+        let sent = key
+            .as_view()
+            .expect("the broadcast key carries a decodable View subset");
+        assert_eq!(sent.scroll, vec![10.0, 20.0], "scroll rode the frame");
+        assert_eq!(
+            sent.open_resource.as_deref(),
+            Some("file:/report.md"),
+            "the open resource rode the frame"
+        );
+        assert_eq!(sent.view_mode.as_deref(), Some("grid"), "view mode rode the frame");
+        assert_eq!(sent.viewport.width, 1024.0, "viewport width rode the frame");
+        assert_eq!(sent.viewport.height, 768.0, "viewport height rode the frame");
+
+        // A second, unrelated participant applies that exact frame through the
+        // real receive path and now knows where the sender is looking.
+        let mut receiver = app_with_root(ViewRoot::new());
+        assert!(
+            receiver
+                .presence_ctx()
+                .peer_view(&crate::permissions::UserId("alice".into()))
+                .is_none(),
+            "no View known for the peer before their broadcast arrives"
+        );
+        receiver.apply_collab_event_for_test(CollabEvent::RemotePresenceUpdate {
+            user_id: "alice".into(),
+            key: key.clone(),
+            payload: PresencePayload::Arrived,
+        });
+
+        let peer_view = receiver
+            .presence_ctx()
+            .peer_view(&crate::permissions::UserId("alice".into()))
+            .expect("the peer's View is stored after their broadcast");
+        assert_eq!(peer_view, &sent, "the receiver stores the peer's exact View subset");
+
+        // The inert carrier payload must NOT have been processed as a real
+        // Arrived — no phantom cursor, no presence registration under the
+        // View key.
+        assert!(
+            receiver.presence_ctx().remote_cursors.is_empty(),
+            "a View frame must not register a phantom cursor"
+        );
+    }
+
+    /// Delivering a peer's View to the receiver, then `follow`ing them, moves
+    /// the local viewport to match their broadcast View; a later View from the
+    /// followed peer keeps tracking; `unfollow` releases so subsequent Views
+    /// no longer move the local view.
+    #[test]
+    fn follow_binds_local_viewport_and_unfollow_releases() {
+        let mut app = app_with_root(ViewRoot::new());
+
+        // Helper: deliver a peer View through the real receive path.
+        fn deliver(app: &mut App, peer: &str, scroll: Vec<f64>, mode: &str) {
+            let subset = ViewSubset {
+                scroll,
+                open_resource: None,
+                viewport: Default::default(),
+                view_mode: Some(mode.into()),
+            };
+            app.apply_collab_event_for_test(CollabEvent::RemotePresenceUpdate {
+                user_id: peer.into(),
+                key: PresenceKey::view(&subset),
+                payload: PresencePayload::Arrived,
+            });
+        }
+
+        // Peer bob is looking at scroll 100 / "list". Before following, the
+        // local view has not moved.
+        deliver(&mut app, "bob", vec![100.0], "list");
+        assert_eq!(
+            <App as FreezeThaw>::capture_view(&app).scroll,
+            Vec::<f64>::new(),
+            "receiving a peer's View must not move the local view on its own"
+        );
+
+        // Follow bob: the local viewport binds to his View.
+        app.follow("bob");
+        let v = <App as FreezeThaw>::capture_view(&app);
+        assert_eq!(v.scroll, vec![100.0], "follow moved the local view to the peer's scroll");
+        assert_eq!(v.view_mode.as_deref(), Some("list"), "follow adopted the peer's view mode");
+
+        // Bob scrolls on; while followed, the local view keeps tracking.
+        deliver(&mut app, "bob", vec![250.0], "board");
+        assert_eq!(
+            <App as FreezeThaw>::capture_view(&app).scroll,
+            vec![250.0],
+            "a followed peer's later View keeps moving the local view"
+        );
+
+        // Unfollow releases: a further View from bob no longer moves us.
+        app.unfollow();
+        deliver(&mut app, "bob", vec![999.0], "grid");
+        assert_eq!(
+            <App as FreezeThaw>::capture_view(&app).scroll,
+            vec![250.0],
+            "after unfollow the local view is released and stops tracking"
+        );
+    }
+
+    /// Following a peer who is not present (has broadcast no View) latches the
+    /// intent but moves nothing — no panic, no spurious scroll.
+    #[test]
+    fn following_absent_peer_is_a_noop() {
+        let mut app = app_with_root(ViewRoot {
+            scroll: vec![7.0],
+            mode: Some("grid".into()),
+            resource: None,
+            rect: KurboRect::ZERO,
+        });
+
+        app.follow("ghost");
+
+        let v = <App as FreezeThaw>::capture_view(&app);
+        assert_eq!(v.scroll, vec![7.0], "following an absent peer leaves the local view untouched");
+        assert_eq!(app.followed_peer(), Some("ghost"), "the follow intent is still latched");
     }
 }
