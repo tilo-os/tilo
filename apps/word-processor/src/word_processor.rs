@@ -1077,6 +1077,83 @@ impl WordProcessor {
             .all(|(b, s, e)| qdoc::model::has_mark_over(state, containers, b, *s, *e, name))
     }
 
+    // ---- action planning (pure reads shared with the action model) ----------
+    //
+    // These expose the selection/mark resolution the private edit ops use, so
+    // the widget can build the matching `WordProcessorAction` and dispatch it
+    // through the qOS executor instead of mutating the document directly. They
+    // never mutate — the action's `apply` performs the write.
+
+    /// The active [`RegionKind`](crate::actions::RegionKind) the caret + edit ops
+    /// address (body / header / footer).
+    pub fn region_kind(&self) -> crate::actions::RegionKind {
+        crate::actions::RegionKind::from_region(self.region)
+    }
+
+    /// The blocks a block-level format targets: the selection, or the caret
+    /// block when there is no selection.
+    pub fn target_block_ids(&self, state: &AutoCommit) -> Vec<String> {
+        self.selected_block_ids(state)
+    }
+
+    /// The blocks a paragraph-style change targets — the selection (or caret
+    /// block), minus table cells (a cell keeps its `cell` kind).
+    pub fn paragraph_style_targets(&self, state: &AutoCommit) -> Vec<String> {
+        let Some(containers) = self.containers.as_ref() else {
+            return Vec::new();
+        };
+        let snap = qdoc::model::materialize(state, containers);
+        self.selected_block_ids(state)
+            .into_iter()
+            .filter(|id| {
+                snap.blocks
+                    .iter()
+                    .find(|b| &b.id == id)
+                    .map(|b| b.kind != "cell")
+                    .unwrap_or(true)
+            })
+            .collect()
+    }
+
+    /// The character ranges a valued/exclusive inline mark covers: the selection
+    /// per-run, or — with no selection — the whole caret block. Empty runs are
+    /// kept for the caller to skip.
+    pub fn format_spans(&self, state: &AutoCommit) -> Vec<(String, usize, usize)> {
+        self.font_ranges(state)
+    }
+
+    /// Plan a **toggle** inline mark (bold/italic/…): the selection spans and
+    /// whether the mark is already active over them (so the caller removes
+    /// rather than adds). Returns `None` when there is no active selection — a
+    /// toggle mark with no selection is a no-op, matching the live editor.
+    pub fn plan_toggle_mark(
+        &self,
+        state: &AutoCommit,
+        name: &str,
+    ) -> Option<(Vec<(String, usize, usize)>, bool)> {
+        let sel = self.selection_blocks(state);
+        if self.containers.is_none() || sel.iter().all(|(_, s, e)| s >= e) {
+            return None;
+        }
+        let all_marked = sel
+            .iter()
+            .filter(|(_, s, e)| s < e)
+            .all(|(b, s, e)| self.region_has_mark_over(state, b, *s, *e, name));
+        Some((sel, all_marked))
+    }
+
+    /// Plan a **mutually-exclusive** toggle mark (super/sub): the ranges (over
+    /// the selection or whole caret block) and whether it is already active.
+    pub fn plan_exclusive_mark(
+        &self,
+        state: &AutoCommit,
+        name: &str,
+    ) -> (Vec<(String, usize, usize)>, bool) {
+        let ranges = self.font_ranges(state);
+        let on = self.mark_over_ranges(state, &ranges, name);
+        (ranges, on)
+    }
+
     /// Toggle a boolean run mark over the selection (per-run), or — with no
     /// selection — the whole caret block. `clears` is a sibling mark removed
     /// whenever this one is turned on, so a pair like `super`/`sub` stays mutually

@@ -17771,6 +17771,7 @@ dependencies = [
  "qdoc-html",
  "qdoc-pdf",
  "qdoc-rtf",
+ "qos-actions",
  "regex",
  "serde",
  "serde_json",
