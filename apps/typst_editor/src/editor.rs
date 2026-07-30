@@ -111,6 +111,17 @@ impl SourceEditor {
         self.code.scroll_by(-1.0e9);
     }
 
+    /// Screenshot harness only: select a couple of source lines so a capture
+    /// shows a real selection band over highlighted code.
+    pub fn demo_select(&mut self) {
+        let text = self.code.value().to_string();
+        let start = byte_of_line_col(&text, 1, 0);
+        let end = byte_of_line_col(&text, 3, 0).min(text.len());
+        let (a, b) = if end > start { (start, end) } else { (0, text.len().min(24)) };
+        self.code.set_selection(a, b);
+        self.focused = true;
+    }
+
     /// Place the caret on a specific 1-based line (used when a diagnostic is
     /// clicked). `_text` is unused — the widget holds the source.
     pub fn goto_line(&mut self, _text: &str, line_1based: usize) {
