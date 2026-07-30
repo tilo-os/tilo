@@ -18,6 +18,12 @@
 //! `shell/src/sandbox/seccomp.rs` — kept independent so the launcher
 //! has zero dep on the compositor.
 //!
+//! The write-xor-execute rules below exist only here, not in that copy.
+//! That is on purpose: the compositor does not spawn applications, it
+//! execs this launcher, and `shell/src/sandbox/mod.rs` says outright that
+//! its own profile is on no launch path. Hardening a filter nothing
+//! installs would read as protection that is not there.
+//!
 //! At runtime the launcher compiles this filter into a BPF blob,
 //! writes it to a temp file, and passes the open fd to `bwrap`'s
 //! `--seccomp <fd>`. (Alternative: build it at *build time* and ship
@@ -252,8 +258,10 @@ pub fn write_baseline_to(dir: &Path, profile: SeccompProfile) -> Result<PathBuf,
 /// time and `<crate_root>/share/qos-default.bpf` at runtime — but in
 /// production the file lives in a fixed location alongside the binary,
 /// so this is a developer convenience only.
-pub fn baked_blob_path() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("share/qos-default.bpf")
+pub fn baked_blob_path(profile: SeccompProfile) -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("share")
+        .join(format!("{}.bpf", profile.as_str()))
 }
 
 #[cfg(test)]
