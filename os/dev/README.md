@@ -23,6 +23,10 @@ distrobox enter my-distrobox -- sudo dnf install -y \
     qemu-system-x86 qemu-img edk2-ovmf virglrenderer socat ImageMagick
 ```
 
+Note that `qemu-img` may resolve to an Android SDK copy earlier on `$PATH`; the
+scripts call it through a login shell inside the box, so check
+`command -v qemu-img` if disk creation behaves oddly.
+
 Host needs: rootless `podman`, **passwordless `sudo`** (for bootc-image-builder
 and offline journal extraction), `/dev/kvm`, and a GPU render node under
 `/dev/dri` (a Mesa iGPU is strongly preferred for GL — see gotchas).
@@ -62,6 +66,25 @@ compositor**, so pick per task:
 
 So: screenshot the **greeter in `--2d`**, screenshot the **desktop in `--gl`**.
 `vm.sh serial` works in both (the image boots with `console=ttyS0`).
+
+## Testing the boot chain (TPM, encryption, Secure Boot)
+
+```bash
+distrobox enter my-distrobox -- sudo dnf install -y swtpm swtpm-tools \
+    sbsigntools efitools
+```
+
+| Flag | Effect |
+|------|--------|
+| `--tpm` | software TPM 2.0 via swtpm; state persists in `$QOS_TPM_DIR`, so a disk enrolled in one boot unlocks in the next |
+| `--secboot` | the Secure-Boot OVMF build, SMM on, pflash marked secure. The variable store starts in **setup mode** with no keys, which is what `qos-secureboot enroll` expects |
+| `--attach PATH` | a blank second virtio disk (`/dev/vdb`), created if missing — lets a booted image install onto a fresh disk without building the installer medium |
+
+The default firmware (`OVMF_CODE.fd`) has no Secure Boot support at all, so an SB
+test against it proves nothing. Use one TPM state dir per scenario
+(`QOS_TPM_DIR=…`) or a second run unseals against the first run's TPM.
+
+See `docs/secure-boot.md` for what these are for.
 
 ## Extracting logs
 
