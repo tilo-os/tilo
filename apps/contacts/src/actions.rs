@@ -35,7 +35,6 @@
 
 use automerge::AutoCommit;
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 
 use qos_actions::{
     Action, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction, ExecutionLocus, Resource,
@@ -329,7 +328,6 @@ mod tests {
     use crate::search_provider::ContactSearchProvider;
     use automerge::ROOT;
     use qos_actions::{ActionInput, LocalTransport};
-    use ui::search::SearchProvider;
     use ui::widget::Widget;
 
     fn registry() -> ActionRegistry {
