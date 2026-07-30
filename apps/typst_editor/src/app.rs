@@ -162,6 +162,8 @@ pub struct TypstApp {
     /// Screenshot-only: on the next layout pass, drop the caret at the end of
     /// the source and scroll it into view. Never set by the live event loop.
     demo_scroll_caret_end: bool,
+    /// Screenshot harness only: select a couple of editor lines for the capture.
+    demo_editor_select: bool,
     /// Screenshot-only: on the next layout pass, zoom the preview in and scroll
     /// it so the capture proves cursor-zoom + scroll-when-zoomed.
     demo_preview_zoom: bool,
@@ -265,6 +267,7 @@ impl TypstApp {
             compact_view: CompactPane::Editor,
             menu_open: false,
             demo_scroll_caret_end: false,
+            demo_editor_select: false,
             demo_preview_zoom: false,
             demo_preview_pan: false,
             demo_preview_select: false,
@@ -311,6 +314,10 @@ impl TypstApp {
                 if let Some(d) = self.documents.get_mut(self.current) {
                     d.source = crate::samples::ERROR_WARNING.to_string();
                 }
+            }
+            "editor-select" => {
+                self.editor.focused = true;
+                self.demo_editor_select = true;
             }
             "preview-zoom" => self.demo_preview_zoom = true,
             "preview-pan" => self.demo_preview_pan = true,
@@ -707,6 +714,10 @@ impl TypstApp {
             let src = self.source_cache.clone();
             self.editor.set_caret(src.len());
             self.editor.ensure_visible(&src);
+        }
+        if self.demo_editor_select && !self.source_cache.is_empty() {
+            self.demo_editor_select = false;
+            self.editor.demo_select();
         }
 
         // Screenshot harness only: now that the preview has a real rect + pages,
