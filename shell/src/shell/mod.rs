@@ -1152,11 +1152,35 @@ pub fn to_ui_window_group(g: &state::WindowGroup) -> UiGroup {
         .with_maximized(g.maximized)
 }
 
+/// Wire the hosted file explorer's document activation to
+/// [`doc_open::open_in_workspace`].
+///
+/// The explorer asks; the compositor answers. Extracted so the wiring is
+/// one named thing rather than a closure buried in the host builder, and
+/// so a test can install it against its own chrome and drive a real row
+/// activation through the real open path.
+pub fn install_document_opener(chrome: &chrome_state::Chrome) {
+    let chrome = chrome.clone();
+    file_explorer::files_app::set_document_opener(move |path| {
+        doc_open::open_in_workspace(path, &chrome)
+            .map(|_| ())
+            .map_err(|e| e.user_message())
+    });
+}
+
 pub fn build_nirios_overlay_host_with_handle(
     tree_handle: state::WorkspaceTreeHandle,
     enable_peer_sync: bool,
 ) -> (overlay_host::ShellOverlayHost, chrome_state::Chrome) {
     let chrome = chrome_state::ChromeState::new_with_handle(tree_handle.clone());
+    // Point every hosted file explorer at the desktop's one open path, so
+    // activating a row there resolves the owning app, grants the read and
+    // focuses an already-open document exactly as a palette hit does. The
+    // route is installed once, on the frame thread, and is picked up by
+    // explorers this host creates later (a tab hydrated on focus, a
+    // group re-materialised on a chrome bump) without threading a handle
+    // through each constructor.
+    install_document_opener(&chrome);
     // Snapshot the tree to walk it without holding the read lock across
     // widget construction (which involves Box-allocs, taffy fills,
     // etc.). The snapshot only feeds the *initial* layout — the live
