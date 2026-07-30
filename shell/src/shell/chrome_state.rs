@@ -89,11 +89,18 @@ impl SearchScope {
     /// Short label shown inside the scope pill. `ActiveApp`'s label
     /// depends on which tab is focused, so callers render that variant
     /// with the tab's title instead of this static string.
+    ///
+    /// These name *places* to search — the focused app, this workspace,
+    /// everywhere. The band above them holds the kind-filter chips, whose
+    /// labels name *sorts of result*, and the two rows must not share a
+    /// word: `All` sat directly under an `All` chip that meant "every
+    /// kind" rather than "everywhere", the same collision as the app pill
+    /// reading `Only Notes` under a `Notes` chip.
     pub fn label(self) -> &'static str {
         match self {
-            SearchScope::ActiveApp => "Only this app",
+            SearchScope::ActiveApp => "This app",
             SearchScope::Workspace => "Workspace",
-            SearchScope::All => "All",
+            SearchScope::All => "Everywhere",
         }
     }
 

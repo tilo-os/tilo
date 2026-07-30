@@ -382,7 +382,22 @@ pub enum PeerSyncPromptButton {
 /// Rows the palette asks the registry for, shared round-robin between
 /// the matching kinds. See
 /// [`crate::shell::search::SearchRegistry::query_grouped`].
-const PALETTE_ROW_BUDGET: usize = 16;
+///
+/// This has to equal what the card actually paints, or the split that
+/// budget buys is spent on rows nobody sees. `CommandPalette` grows to
+/// eight entry rows (plus a separate allowance for three section
+/// headers) before the list starts scrolling; asking for sixteen meant a
+/// three-group answer put its third header around row eleven, off the
+/// bottom of the card. Typing `workspace` then showed twenty-seven files
+/// and thirteen folders while `Open workspace settings` — the thing that
+/// query is for — was scrolled out of sight, which reads as the action
+/// simply not being found.
+///
+/// Eight rows across three groups is tight, and it is the honest kind of
+/// tight: every group's header is on the card and each one reports the
+/// total it is holding back, so the way to see more of a kind is to click
+/// its chip, which is also the gesture that means "show me all of these".
+const PALETTE_ROW_BUDGET: usize = 8;
 
 /// Glyph that stands for a result kind in the palette. Giving each kind
 /// a picture is what replaced the bracketed kind literal the shell used
@@ -570,13 +585,23 @@ pub const MODAL_SURFACE_ALPHA: f32 = 1.0;
 pub const MODAL_SCRIM_ALPHA: f32 = 0.45;
 
 /// Alpha applied to the scrim painted beneath the GlobalSearch palette and
-/// the Overview view. Concept §5.1 uses literal `bg-black/30` here — both
-/// surfaces sit on a stronger glass tint than the WorkspaceSettings modal,
-/// so the un-blurred scrim doesn't need the `MODAL_SCRIM_ALPHA` lift to
-/// compensate. Source-of-truth for the magic byte that
-/// [`draw_scrim`] writes; the chrome-test suite pins it via
-/// `tests::overview_scrim_alpha_matches_concept`.
-pub const PALETTE_SCRIM_ALPHA: f32 = 0.30;
+/// the Overview view. Concept §5.1 specifies `bg-black/30` here too, and
+/// this constant used to take it literally on the grounds that both
+/// surfaces sit on a stronger glass tint than the WorkspaceSettings
+/// modal. That reasoning is about the *card*; the scrim's job is the
+/// *background*, and there it does not hold. A window card in this shell
+/// is `bg-white`, and 0.30 leaves it at 178 grey — a bright field
+/// abutting a slate-900 palette, which is what a 2026-07-30 report
+/// described as the palette having no dim behind it and meeting window
+/// content at a jarring edge.
+///
+/// So this takes the same un-blurred lift [`MODAL_SCRIM_ALPHA`] already
+/// documents, for the same reason: the pinned Vello has no
+/// `push_blur_layer`, so an un-blurred fill has to go heavier to read
+/// like the concept's blurred one. Same value as the modal, because both
+/// are the same gesture — put a page on top of the page.
+/// Pinned by `tests::palette_scrim_alpha_reads_like_the_blurred_concept`.
+pub const PALETTE_SCRIM_ALPHA: f32 = 0.45;
 
 impl ShellOverlayHost {
     /// Display name painted in the General tab's collaborator tile when
@@ -3102,16 +3127,20 @@ impl ShellOverlayHost {
     }
 
     /// Label to render inside the i-th scope pill. For
-    /// [`SearchScope::ActiveApp`] this is the focused tab's title
-    /// (e.g. `Notes`), truncated to `MAX_APP_PILL_CHARS` so a very long
+    /// [`SearchScope::ActiveApp`] this names the focused app (e.g.
+    /// `Notes app`), truncated to `MAX_APP_PILL_CHARS` so a very long
     /// title can't push the sibling pills off the banner. Static labels
     /// fall through to [`SearchScope::label`].
     ///
-    /// The app pill is prefixed with `Only ` rather than showing the
-    /// bare title. A pill reading `Notes` next to `Workspace` and `All`
-    /// looks like a label for what you are in; `Only Notes` says what it
-    /// does, which is the difference between an empty result list that
-    /// explains itself and one that looks like the search is broken.
+    /// The pill names the app *and* says it is an app, because the band
+    /// directly above it is the kind-filter strip and those chips carry
+    /// kind names — `Actions`, `Applications`, `Notes`, `Files`. With
+    /// Notes focused, the strip read `Notes` and the scope control read
+    /// `Only Notes` one row below it: two adjacent controls saying the
+    /// same word for two different things, one filtering to note-shaped
+    /// results and the other narrowing to the app. Naming the app as an
+    /// app is what separates them, and it reads as a place alongside its
+    /// siblings `Workspace` and `All` rather than as a second filter.
     pub(crate) fn search_scope_pill_label(
         &self,
         scope: crate::shell::chrome_state::SearchScope,
@@ -3133,7 +3162,12 @@ impl ShellOverlayHost {
                 } else {
                     raw
                 };
-                format!("Only {title}")
+                // An app already called "… app" doesn't get told twice.
+                if title.to_lowercase().ends_with(" app") {
+                    title
+                } else {
+                    format!("{title} app")
+                }
             }
             other => other.label().to_string(),
         }
@@ -3818,7 +3852,7 @@ impl Widget for ShellOverlayHost {
             // the desktop gradient can bleed through around the edges.
             let slate_950 = theme.tokens.colors.neutral[0];
             if overview_alpha >= 0.999 && (overview_scale - 1.0).abs() <= f64::EPSILON {
-                draw_scrim(scene, transform, self.rect);
+                draw_scrim(scene, transform, self.rect, theme);
                 scene.fill(Fill::NonZero, transform, slate_950, None, &self.rect);
                 self.draw_overview(scene, transform, text_renderer, theme);
             } else {
@@ -3829,7 +3863,7 @@ impl Widget for ShellOverlayHost {
                     transform,
                     &self.rect,
                 );
-                draw_scrim(scene, transform, self.rect);
+                draw_scrim(scene, transform, self.rect, theme);
                 scene.fill(Fill::NonZero, transform, slate_950, None, &self.rect);
                 self.draw_overview(scene, overview_xform, text_renderer, theme);
                 scene.pop_layer();
@@ -3888,6 +3922,7 @@ impl Widget for ShellOverlayHost {
                 transform,
                 self.rect,
                 self.ws_settings_transition.value(now),
+                theme,
             );
             let (alpha, dy, scale) =
                 modal_transition_curve(&self.ws_settings_transition, now, 0.95);
@@ -4036,7 +4071,7 @@ impl Widget for ShellOverlayHost {
         if self.room_activity_transition.is_visible(ra_now) {
             self.refresh_room_activity();
             let openness = self.room_activity_transition.value(ra_now);
-            draw_modal_scrim_at(scene, transform, self.rect, openness);
+            draw_modal_scrim_at(scene, transform, self.rect, openness, theme);
             let alpha = openness;
             let in_flight = alpha < 1.0;
             let sheet = self.room_activity.rect();
@@ -4087,7 +4122,7 @@ impl Widget for ShellOverlayHost {
         let palette_now = Instant::now();
         if self.palette_transition.is_visible(palette_now) {
             let openness = self.palette_transition.value(palette_now);
-            draw_scrim_at(scene, transform, self.rect, openness);
+            draw_scrim_at(scene, transform, self.rect, openness, theme);
             let (alpha, dy, scale) =
                 modal_transition_curve(&self.palette_transition, palette_now, 0.9);
             let in_flight = alpha < 1.0;
@@ -5898,46 +5933,44 @@ fn apply_composer_hit(chrome: &Chrome, hit: ComposerHit) {
     }
 }
 
-fn draw_scrim(scene: &mut Scene, transform: Affine, rect: Rect) {
-    draw_scrim_at(scene, transform, rect, 1.0);
+fn draw_scrim(scene: &mut Scene, transform: Affine, rect: Rect, theme: &Theme) {
+    draw_scrim_at(scene, transform, rect, 1.0, theme);
 }
 
 /// [`draw_scrim`] scaled by `openness` so the palette/overview scrim
 /// fades with its surface.
-fn draw_scrim_at(scene: &mut Scene, transform: Affine, rect: Rect, openness: f32) {
-    // Concept uses `bg-black/30` (≈ alpha 77) on overlay scrims — we were
-    // painting black/60 (alpha 154) which reads too heavy and muddies the
-    // content behind the palette / ws-settings. Centralised on
-    // [`PALETTE_SCRIM_ALPHA`] so a future tweak only edits one constant
-    // and the chrome-test suite has a single source-of-truth to pin.
-    let alpha = (PALETTE_SCRIM_ALPHA * openness.clamp(0.0, 1.0) * 255.0)
-        .round()
-        .clamp(0.0, 255.0) as u8;
-    if alpha == 0 {
-        return;
-    }
-    scene.fill(
-        Fill::NonZero,
-        transform,
-        Color::from_rgba8(0, 0, 0, alpha),
-        None,
-        &rect,
-    );
+fn draw_scrim_at(scene: &mut Scene, transform: Affine, rect: Rect, openness: f32, theme: &Theme) {
+    fill_scrim(scene, transform, rect, PALETTE_SCRIM_ALPHA * openness, theme);
 }
 
-/// [`draw_modal_scrim`] scaled by `openness` in `0.0..=1.0` so the scrim
-/// fades in with the modal opening and out with it closing.
-fn draw_modal_scrim_at(scene: &mut Scene, transform: Affine, rect: Rect, openness: f32) {
-    let alpha = (MODAL_SCRIM_ALPHA * openness.clamp(0.0, 1.0) * 255.0)
-        .round()
-        .clamp(0.0, 255.0) as u8;
+/// The modal scrim, scaled by `openness` in `0.0..=1.0` so it fades in
+/// with the modal opening and out with it closing.
+fn draw_modal_scrim_at(
+    scene: &mut Scene,
+    transform: Affine,
+    rect: Rect,
+    openness: f32,
+    theme: &Theme,
+) {
+    fill_scrim(scene, transform, rect, MODAL_SCRIM_ALPHA * openness, theme);
+}
+
+/// Paint `rect` in the theme's scrim hue at `strength`.
+///
+/// The hue comes from `surfaces.scrim` rather than a literal black: the
+/// dim behind a palette is chrome, and the OS owns what its chrome looks
+/// like. A light theme's scrim is a different colour from a dark theme's,
+/// and neither is `#000`.
+fn fill_scrim(scene: &mut Scene, transform: Affine, rect: Rect, strength: f32, theme: &Theme) {
+    let alpha = (strength.clamp(0.0, 1.0) * 255.0).round().clamp(0.0, 255.0) as u8;
     if alpha == 0 {
         return;
     }
+    let c = theme.tokens.colors.surfaces.scrim.to_rgba8();
     scene.fill(
         Fill::NonZero,
         transform,
-        Color::from_rgba8(0, 0, 0, alpha),
+        Color::from_rgba8(c.r, c.g, c.b, alpha),
         None,
         &rect,
     );
@@ -10285,12 +10318,14 @@ mod tests {
         crate::shell::launcher::invalidate_app_cache();
     }
 
-    /// A scope that can empty the result list has to say so. The app
-    /// pill reads `Only <App>`, not the bare tab title — a pill reading
-    /// `Notes` beside `Workspace` and `All` looks like a caption, and an
-    /// empty result set under it reads as a broken search.
+    /// The app-scope pill has to name the focused app *as an app*, or it
+    /// collides with the kind-filter chip strip painted directly above
+    /// it. With Notes focused the strip carried a `Notes` chip and the
+    /// scope control read `Only Notes` one row below — two adjacent
+    /// controls, same word, different meanings ("results shaped like a
+    /// note" versus "search inside the Notes app").
     #[test]
-    fn narrowing_scope_pill_says_it_narrows() {
+    fn app_scope_pill_names_the_app_as_an_app() {
         use crate::shell::chrome_state::SearchScope;
         let h = build_harness();
         assert_eq!(
@@ -10300,8 +10335,31 @@ mod tests {
         );
         assert_eq!(
             h.host.search_scope_pill_label(SearchScope::ActiveApp),
-            "Only Notes"
+            "Notes app"
         );
+        // Generalised: the two bands are a filter row (kinds) and a scope
+        // row (places), and *no* label may appear in both. Pinning only
+        // the app pill would have let the next collision through — `All`
+        // was one, sitting under the `All` chip that clears the kind
+        // filter.
+        let chips: Vec<String> = h
+            .host
+            .search_registry
+            .registered_kinds()
+            .iter()
+            .map(|k| k.label().to_string())
+            // The leading reset chip is painted separately from the
+            // registered kinds; see `draw_search_banner`.
+            .chain(std::iter::once("All".to_string()))
+            .collect();
+        for scope in h.host.search_scope_list() {
+            let pill = h.host.search_scope_pill_label(scope);
+            assert!(
+                !chips.contains(&pill),
+                "the {scope:?} scope pill {pill:?} is also a kind chip label — \
+                 two adjacent controls with one word and two meanings: {chips:?}"
+            );
+        }
         assert!(SearchScope::ActiveApp.narrows_results());
         assert!(!SearchScope::Workspace.narrows_results());
         assert!(!SearchScope::All.narrows_results());
@@ -10411,28 +10469,67 @@ mod tests {
         );
     }
 
-    /// Issue #127 / polish-sweep pin.
+    /// The palette scrim has to actually dim bright window content.
     ///
-    /// The lighter scrim painted under the GlobalSearch palette and the
-    /// overview is `bg-black/30` per concept §5.1. The byte the magic
-    /// `Color::from_rgba8(0, 0, 0, …)` literal must round to is `77` (because
-    /// `0.30 × 255 ≈ 76.5`). Pinning the constant *and* the rounded byte
-    /// ensures a future tweak to one without the other surfaces here
-    /// rather than as a silent shift in the rendered shadowing.
+    /// Concept §5.1 says `bg-black/30`, and this used to be pinned at a
+    /// literal 0.30. But the concept's scrim is blurred and the pinned
+    /// Vello has no `push_blur_layer`, so an un-blurred fill has to go
+    /// heavier to read the same — exactly the compensation
+    /// [`MODAL_SCRIM_ALPHA`] already documents and is already tested for
+    /// below. At 0.30 a `bg-white` window card behind the palette stays
+    /// at 178 grey; at 0.45 it drops to 141, which is what makes the
+    /// palette read as a page on top of a page rather than a card
+    /// floating on a bright field.
+    ///
+    /// Asserted as a lower bound, matching the modal test's shape: the
+    /// requirement is "enough to dim", and pinning an exact float invites
+    /// the next person to satisfy the letter of it by re-lowering it.
     #[test]
-    fn overview_scrim_alpha_matches_concept() {
+    fn palette_scrim_alpha_reads_like_the_blurred_concept() {
         assert!(
-            (PALETTE_SCRIM_ALPHA - 0.30).abs() < f32::EPSILON,
-            "PALETTE_SCRIM_ALPHA must equal concept §5.1's 0.30 (got {})",
-            PALETTE_SCRIM_ALPHA
+            PALETTE_SCRIM_ALPHA >= 0.45,
+            "PALETTE_SCRIM_ALPHA must be >= 0.45 to compensate for the \
+             missing backdrop blur — below that a white window card behind \
+             the palette stays bright and the card's edge reads as a hard \
+             cut (got {PALETTE_SCRIM_ALPHA})"
         );
-        let byte = (PALETTE_SCRIM_ALPHA * 255.0).round().clamp(0.0, 255.0) as u8;
-        assert_eq!(
-            byte, 77,
-            "0.30 × 255 must round to 77 — the byte literal in `draw_scrim` \
-             tracks this constant exactly so a tweak to one without the other \
-             must surface here"
+        // What the constant is *for*: the brightest thing the shell
+        // paints must come out clearly darker than the palette surface it
+        // sits behind.
+        let card = 255.0;
+        let dimmed = card * (1.0 - PALETTE_SCRIM_ALPHA);
+        assert!(
+            dimmed <= 145.0,
+            "a bg-white window card behind the palette lands at {dimmed} — \
+             still a bright field next to a slate-900 card"
         );
+    }
+
+    /// The scrim's colour is the theme's, not a literal. Both themes
+    /// must darken: a light-theme scrim that brightened would push the
+    /// background *towards* the surface it is meant to be lifting away
+    /// from.
+    #[test]
+    fn scrim_hue_comes_from_the_theme_and_darkens_in_both() {
+        for (name, colors) in [
+            ("dark", ui::tokens::colors::Colors::dark()),
+            ("light", ui::tokens::colors::Colors::light()),
+        ] {
+            let s = colors.surfaces.scrim.to_rgba8();
+            let base = colors.surfaces.base.to_rgba8();
+            let luma = |c: &ui::peniko::color::Rgba8| {
+                0.2126 * c.r as f32 + 0.7152 * c.g as f32 + 0.0722 * c.b as f32
+            };
+            assert!(
+                luma(&s) < luma(&base),
+                "the {name} theme's scrim must be darker than its base \
+                 surface (scrim {:?} vs base {:?})",
+                s,
+                base
+            );
+            assert_eq!(s.a, 255, "the {name} scrim token carries the hue; the \
+                 strength is the overlay's own (got alpha {})", s.a);
+        }
     }
 
     /// Wave 3 / Unit 3-A pin (#5).
