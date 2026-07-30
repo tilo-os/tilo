@@ -51,8 +51,20 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::process::exit(ui::headless::run(spec, build_widget(&args), "dev.qos.pdf-viewer"));
     }
 
-    let (state, autosave) = ui::persist::open("dev.qos.pdf-viewer");
-    let app = ui::App::new(state, build_widget(&args)).with_autosave(autosave);
+    // The package document is this room's *index* — which documents' markup
+    // this room holds. The markup itself lives one document per record, so
+    // opening a second PDF cannot touch the first one's annotations.
+    //
+    // A pre-records install may still have markup at the root of that index
+    // file. It is left where it is rather than migrated: it was keyed by page
+    // number with no record of which file it belonged to (which is the bug
+    // this replaces), so nothing can honestly say which document to attach it
+    // to. It costs a few kilobytes and destroys nothing.
+    let (room, autosave) = ui::persist::open("dev.qos.pdf-viewer");
+    let records = ui::RecordSet::open("dev.qos.pdf-viewer");
+    let app = ui::App::new(ui::State::new(), build_widget(&args))
+        .with_autosave(autosave)
+        .with_records(records, room.doc);
     app.run();
     Ok(())
 }

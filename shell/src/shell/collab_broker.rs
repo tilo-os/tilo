@@ -247,14 +247,29 @@ pub struct CrdtRoute {
     /// Collaboration cluster id (a uuid rendered as a string on the
     /// legacy dialect, the `channelId` on the capnp one).
     pub cluster_id: String,
+    /// The **record** the sender announced, or empty for an app whose
+    /// state is still one document per `(app, cluster)`.
+    ///
+    /// This is the finest granularity, and the reason it exists is
+    /// that a document is what people share — not an app. Two people
+    /// editing two different files in one room announce the same app
+    /// and the same cluster; only the record tells them apart, and
+    /// without it each was handed the other's document state.
+    ///
+    /// It is a *routing* key and nothing more: the broker still never
+    /// materialises a payload. What it now knows is which stream a
+    /// payload belongs to, because the sender said so.
+    pub record_id: String,
 }
 
 impl CrdtRoute {
-    /// App-scoped route — the addressing every CRDT payload uses.
+    /// App-scoped route — the addressing a CRDT payload from an app
+    /// that has not adopted records uses.
     pub fn app(app_id: impl Into<String>, cluster_id: impl Into<String>) -> Self {
         Self {
             app_id: app_id.into(),
             cluster_id: cluster_id.into(),
+            record_id: String::new(),
         }
     }
 
@@ -263,13 +278,68 @@ impl CrdtRoute {
         Self {
             app_id: String::new(),
             cluster_id: cluster_id.into(),
+            record_id: String::new(),
         }
+    }
+
+    /// Record-scoped route — one document's change stream.
+    pub fn record(
+        app_id: impl Into<String>,
+        cluster_id: impl Into<String>,
+        record_id: impl Into<String>,
+    ) -> Self {
+        Self {
+            app_id: app_id.into(),
+            cluster_id: cluster_id.into(),
+            record_id: record_id.into(),
+        }
+    }
+
+    /// Narrow this route to a record. An empty `record_id` leaves it
+    /// as it was, which is how a connection that announced no record
+    /// keeps the pre-record addressing.
+    pub fn on_record(mut self, record_id: impl Into<String>) -> Self {
+        self.record_id = record_id.into();
+        self
     }
 
     /// Widen an app-scoped route to its cluster. Presence frames from
     /// an app-scoped sender ride this.
-    fn to_cluster_scope(&self) -> Self {
+    ///
+    /// The record is dropped along with the app id, and deliberately:
+    /// "who else is here" is a fact about the room, so a peer editing
+    /// a different document in the same room is still a legitimate
+    /// audience for it. Only *document* payloads are record-scoped.
+    pub(crate) fn to_cluster_scope(&self) -> Self {
         Self::cluster(self.cluster_id.clone())
+    }
+
+    /// The channel this route names, as one string.
+    ///
+    /// The capnp transport subscribes by channel id rather than by
+    /// route fields, so a record-scoped connection has to be able to
+    /// name its channel in the same vocabulary — see
+    /// [`crate::shell::collab_broker_capnp`]. `#` cannot appear in a
+    /// uuid, so the join is unambiguous.
+    pub fn channel_key(&self) -> String {
+        if self.record_id.is_empty() {
+            self.cluster_id.clone()
+        } else {
+            format!("{}#record:{}", self.cluster_id, self.record_id)
+        }
+    }
+
+    /// Split a capnp `channelId` back into its cluster and record.
+    /// The inverse of [`Self::channel_key`].
+    pub fn from_channel_key(key: &str) -> Self {
+        match key.split_once("#record:") {
+            Some((cluster, record)) => Self {
+                app_id: String::new(),
+                cluster_id: cluster.to_string(),
+                record_id: record.to_string(),
+            },
+            None => Self::cluster(key),
+        }
     }
 
     /// Whether a cluster id names a real room.
@@ -293,6 +363,16 @@ impl CrdtRoute {
     /// granularity applies only when both ends announced an app id — a
     /// capnp subscriber (which cannot announce one) stays cluster-scoped
     /// rather than silently receiving nothing.
+    ///
+    /// **Record granularity is the innermost test and it fails closed
+    /// both ways.** Two app-scoped ends agree only when they name the
+    /// same record, and "no record" is a value like any other: a
+    /// converted app's document deltas are not handed to an
+    /// unconverted connection of the same app, and vice versa, because
+    /// those two are not looking at the same document. An app that has
+    /// not adopted records still matches its own kind exactly as
+    /// before (both ends empty), which is what keeps the rest of the
+    /// fleet working untouched.
     pub fn delivers_to(&self, subscriber: &CrdtRoute) -> bool {
         if !Self::is_addressable(&self.cluster_id) || !Self::is_addressable(&subscriber.cluster_id)
         {
@@ -302,9 +382,15 @@ impl CrdtRoute {
             return false;
         }
         if self.app_id.is_empty() || subscriber.app_id.is_empty() {
+            // Cluster-scoped on at least one end: chrome traffic, or a
+            // transport that announces no app identity. Records do not
+            // narrow it — see `to_cluster_scope`.
             return true;
         }
-        self.app_id == subscriber.app_id
+        if self.app_id != subscriber.app_id {
+            return false;
+        }
+        self.record_id == subscriber.record_id
     }
 }
 
@@ -907,14 +993,17 @@ fn reader_loop(
         };
         // Capture the Hello route before translating — the request is
         // consumed by `translate`, and both the local fan-out filter
-        // and the libp2p bridge need the (app_id, cluster_id) pair.
+        // and the libp2p bridge need the announced address.
         if let CollabRequest::Hello {
             ref app_id,
             cluster_id,
+            ref record,
         } = req
         {
             if let Ok(mut guard) = peer.route.lock() {
-                *guard = Some(CrdtRoute::app(app_id.clone(), cluster_id.to_string()));
+                *guard = Some(CrdtRoute::app(app_id.clone(), cluster_id.to_string()).on_record(
+                    record.clone().unwrap_or_default(),
+                ));
             }
         }
         let src_route = peer.route();
@@ -930,6 +1019,7 @@ fn reader_loop(
                 Some(route) => net.publish_app_crdt_incremental(
                     route.app_id.clone(),
                     route.cluster_id.clone(),
+                    route.record_id.clone(),
                     data.clone(),
                 ),
                 None => {
@@ -1348,7 +1438,11 @@ pub fn spawn_full(
                             // local apps that announced the same pair. No
                             // local peer is skipped by id — the update
                             // originated outside this host.
-                            let route = CrdtRoute::app(entry.app_id, entry.cluster_id);
+                            let route = CrdtRoute::record(
+                                entry.app_id,
+                                entry.cluster_id,
+                                entry.record_id,
+                            );
                             drain_table.fanout_to_route(&event, u64::MAX, &route);
                         }
 
@@ -1402,9 +1496,10 @@ pub fn spawn_full(
                                     // leaves both fields empty, and an
                                     // unaddressed envelope is dropped
                                     // rather than shown to every app.
-                                    let route = CrdtRoute::app(
+                                    let route = CrdtRoute::record(
                                         entry.app_id.clone(),
                                         entry.cluster_id.clone(),
+                                        entry.record_id.clone(),
                                     );
                                     drain_table.fanout_to_route(&event, u64::MAX, &route);
                                 }
@@ -1666,6 +1761,28 @@ mod tests {
         CollaborationManager::new()
     }
 
+    /// Connect a manager announcing a **record** as well as the app and
+    /// cluster — one document's channel. Same env-var mechanism as
+    /// [`connect_manager_as`]; the record is passed to the toolkit
+    /// directly because a process can hold several records at once and
+    /// an environment variable cannot say which of them a given
+    /// connection is for.
+    fn connect_manager_on_record(
+        path: &PathBuf,
+        app_id: &str,
+        cluster_id: &str,
+        record: &ui::record::RecordId,
+    ) -> CollaborationManager {
+        // SAFETY: as `connect_manager_as` — every test here is
+        // `#[serial_test::serial(collab_broker)]`.
+        unsafe {
+            std::env::set_var("QUICK_COLLAB_SOCK", path);
+            std::env::set_var("QUICK_APP_ID", app_id);
+            std::env::set_var("QUICK_CLUSTER_ID", cluster_id);
+        }
+        CollaborationManager::for_record(record)
+    }
+
     /// A fixed cluster uuid the peers in a scenario share. Any valid
     /// uuid works; a constant keeps the scenarios readable.
     const TEST_CLUSTER: &str = "3f2b1c00-0000-4000-8000-000000000001";
@@ -1674,6 +1791,234 @@ mod tests {
     /// cluster — the common case for "N instances of one app".
     fn connect_manager(path: &PathBuf) -> CollaborationManager {
         connect_manager_as(path, "test-app", TEST_CLUSTER)
+    }
+
+    /// Apply every CRDT payload that reached `mgr` into `doc`, the way an
+    /// app's own `ui::App` does (`State::load_incremental` over
+    /// `CollabEvent::CRDTIncremental`). Returns how many payloads landed.
+    ///
+    /// Assertions then read the *receiver's own document*, which is the only
+    /// thing that answers "did this peer get that document's contents".
+    fn absorb(mgr: &mut CollaborationManager, doc: &mut automerge::AutoCommit) -> usize {
+        absorb_within(mgr, doc, Duration::from_millis(400))
+    }
+
+    /// [`absorb`] with an explicit window — the peer-bridge drain thread runs
+    /// on a 100 ms cadence, so a frame that crossed the wire needs longer than
+    /// one that was fanned out inline.
+    fn absorb_within(
+        mgr: &mut CollaborationManager,
+        doc: &mut automerge::AutoCommit,
+        window: Duration,
+    ) -> usize {
+        let mut applied = 0;
+        for event in poll_until(mgr, 1, window) {
+            if let CollabEvent::CRDTIncremental { data } = event {
+                doc.load_incremental(&data).expect("peer changes apply");
+                applied += 1;
+            }
+        }
+        applied
+    }
+
+    /// Read a root-level string out of a document.
+    fn field(doc: &automerge::AutoCommit, key: &str) -> Option<String> {
+        use automerge::ReadDoc;
+        match doc.get(&automerge::ROOT, key) {
+            Ok(Some((automerge::Value::Scalar(v), _))) => match v.as_ref() {
+                automerge::ScalarValue::Str(s) => Some(s.to_string()),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// A document with one field set, plus the incremental delta that
+    /// produced it — what an app sends after an edit.
+    fn edited(key: &str, value: &str) -> (automerge::AutoCommit, Vec<u8>) {
+        use automerge::transaction::Transactable;
+        let mut doc = automerge::AutoCommit::new();
+        doc.put(&automerge::ROOT, key, value).expect("put");
+        let delta = doc.save_incremental();
+        (doc, delta)
+    }
+
+    /// Two people editing two **different** documents in one room must not
+    /// merge each other's state.
+    ///
+    /// Before records both announced the identical `(app, cluster)` pair, so
+    /// the broker delivered each edit to the other and every keystroke in one
+    /// file landed in the other file's document.
+    #[test]
+    #[serial_test::serial(collab_broker)]
+    fn two_documents_in_one_room_do_not_merge() {
+        let socket_path = temp_sock("record-isolation");
+        let handle = spawn(socket_path.clone()).expect("broker should bind");
+
+        let report = ui::record::RecordId::for_file("/work/report.odt");
+        let minutes = ui::record::RecordId::for_file("/work/minutes.odt");
+        // Same app, same room — only the document differs.
+        let mut alice =
+            connect_manager_on_record(&socket_path, "dev.qos.word-processor", TEST_CLUSTER, &report);
+        let mut bob = connect_manager_on_record(
+            &socket_path,
+            "dev.qos.word-processor",
+            TEST_CLUSTER,
+            &minutes,
+        );
+        wait_for_peers(&handle, 2, Duration::from_millis(500));
+        wait_for_announced(&handle, 2, Duration::from_millis(500));
+        let _ = alice.poll();
+        let _ = bob.poll();
+
+        let (_alice_doc, alice_delta) = edited("body", "the quarterly report");
+        alice.send(CollabRequest::SyncIncremental { data: alice_delta });
+
+        // Bob is editing minutes.odt. Whatever arrives, apply it to his own
+        // document and then ask *his* document what it contains.
+        let (mut bob_doc, _) = edited("body", "the minutes");
+        let applied = absorb(&mut bob, &mut bob_doc);
+        assert_eq!(
+            applied, 0,
+            "no payload from another document should have reached bob"
+        );
+        assert_eq!(
+            field(&bob_doc, "body").as_deref(),
+            Some("the minutes"),
+            "bob's document is still the minutes, not the report"
+        );
+
+        drop(alice);
+        drop(bob);
+        drop(handle);
+    }
+
+    /// The record boundary holds across hosts, not just within one.
+    ///
+    /// Gossipsub is a broadcast: a frame reaches every host on the topic, and
+    /// which of their apps see it is decided entirely by the route. So the
+    /// record has to be *on the wire* — a field of `NeighbourMsg::AppCrdt*` —
+    /// and the receiving host has to rebuild it. This drives the real inbound
+    /// path: a frame queued as if it had just arrived off gossipsub, picked up
+    /// by the broker's drain thread, routed by what the sender stamped.
+    #[test]
+    #[serial_test::serial(collab_broker)]
+    fn a_remote_frame_reaches_only_the_record_it_was_stamped_with() {
+        let socket_path = temp_sock("record-over-the-wire");
+        let tree = crate::shell::state::WorkspaceTree::bootstrap_default().shared();
+        let (net, _cmd_rx) = crate::shell::network::shell_network_for_test(tree, 0xB0BAu64);
+        let net = std::sync::Arc::new(net);
+        let handle = spawn_full(socket_path.clone(), None, Some(Arc::clone(&net)))
+            .expect("broker should bind");
+
+        let theirs = ui::record::RecordId::for_file("/work/theirs.odt");
+        let mine = ui::record::RecordId::for_file("/work/mine.odt");
+        let mut on_theirs =
+            connect_manager_on_record(&socket_path, "dev.qos.word-processor", TEST_CLUSTER, &theirs);
+        let mut on_mine =
+            connect_manager_on_record(&socket_path, "dev.qos.word-processor", TEST_CLUSTER, &mine);
+        wait_for_peers(&handle, 2, Duration::from_millis(500));
+        wait_for_announced(&handle, 2, Duration::from_millis(500));
+        let _ = on_theirs.poll();
+        let _ = on_mine.poll();
+
+        // A frame as it arrives off the wire from another host, stamped with
+        // the record it belongs to. Queued exactly as `ShellNetwork::tick`
+        // queues a received `AppCrdtIncremental`; the drain thread takes it
+        // from here.
+        let (_, delta) = edited("body", "written on another machine");
+        net.handle_app_crdt_message(
+            0xFACEu64,
+            "dev.qos.word-processor".to_string(),
+            TEST_CLUSTER.to_string(),
+            theirs.as_str().to_string(),
+            delta,
+        );
+
+        let mut theirs_doc = automerge::AutoCommit::new();
+        assert_eq!(
+            absorb_within(&mut on_theirs, &mut theirs_doc, Duration::from_millis(2000)),
+            1,
+            "the app on that record receives it"
+        );
+        assert_eq!(
+            field(&theirs_doc, "body").as_deref(),
+            Some("written on another machine")
+        );
+
+        let mut mine_doc = automerge::AutoCommit::new();
+        assert_eq!(
+            absorb_within(&mut on_mine, &mut mine_doc, Duration::from_millis(1000)),
+            0,
+            "the app on a different record receives nothing"
+        );
+        assert_eq!(field(&mine_doc, "body"), None);
+
+        drop(on_theirs);
+        drop(on_mine);
+        drop(handle);
+    }
+
+    /// Sharing one record shares **only** that record.
+    ///
+    /// The sender holds two documents open — the shape of a reviewer with two
+    /// files, or the PDF reader with two documents' markup. The receiver was
+    /// given a reference to one of them. It must converge on that one and
+    /// never see the other.
+    #[test]
+    #[serial_test::serial(collab_broker)]
+    fn a_peer_given_one_record_receives_only_that_record() {
+        let socket_path = temp_sock("record-share-one");
+        let handle = spawn(socket_path.clone()).expect("broker should bind");
+
+        let shared = ui::record::RecordId::for_file("/work/shared.odt");
+        let private = ui::record::RecordId::for_file("/work/private.odt");
+
+        // One process, two records, two channels.
+        let mut sender_shared =
+            connect_manager_on_record(&socket_path, "dev.qos.word-processor", TEST_CLUSTER, &shared);
+        let mut sender_private = connect_manager_on_record(
+            &socket_path,
+            "dev.qos.word-processor",
+            TEST_CLUSTER,
+            &private,
+        );
+        // The peer the shared record was shared with.
+        let mut receiver =
+            connect_manager_on_record(&socket_path, "dev.qos.word-processor", TEST_CLUSTER, &shared);
+
+        wait_for_peers(&handle, 3, Duration::from_millis(500));
+        wait_for_announced(&handle, 3, Duration::from_millis(500));
+        let _ = sender_shared.poll();
+        let _ = sender_private.poll();
+        let _ = receiver.poll();
+
+        let (_, shared_delta) = edited("shared_body", "everyone may read this");
+        let (_, private_delta) = edited("private_body", "nobody else may read this");
+        sender_shared.send(CollabRequest::SyncIncremental { data: shared_delta });
+        sender_private.send(CollabRequest::SyncIncremental { data: private_delta });
+
+        let mut received = automerge::AutoCommit::new();
+        let applied = absorb(&mut receiver, &mut received);
+        assert_eq!(
+            applied, 1,
+            "exactly the shared record's delta should have arrived"
+        );
+        assert_eq!(
+            field(&received, "shared_body").as_deref(),
+            Some("everyone may read this"),
+            "the receiver converged on the record it was given"
+        );
+        assert_eq!(
+            field(&received, "private_body"),
+            None,
+            "and its document holds nothing from the record it was not given"
+        );
+
+        drop(sender_shared);
+        drop(sender_private);
+        drop(receiver);
+        drop(handle);
     }
 
     #[test]
@@ -2234,9 +2579,12 @@ mod tests {
         instance: &str,
     ) -> CollaborationManager {
         let env = sandbox_env_for_launch(dir, package_id, room);
-        // SAFETY: every test in this module is serialised on the
-        // `collab_broker` key, so nothing else reads these between the
-        // writes and the `new()` that consumes them.
+        // SAFETY: the tests that call this hold both the `collab_broker` and
+        // the `process_env` serial keys. The second one matters: these are the
+        // launcher's own variables, and tests elsewhere in the crate (the
+        // document-open handler's, for one) *read* them. Holding only
+        // `collab_broker` serialised this module against itself and left those
+        // readers racing a write from here.
         unsafe {
             std::env::set_var("QUICK_COLLAB_SOCK", sock);
             std::env::set_var("QUICK_APP_ID", instance);
@@ -2281,7 +2629,7 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial(collab_broker)]
+    #[serial_test::serial(collab_broker, process_env)]
     fn apps_launched_into_the_same_workspace_exchange_deltas() {
         let dir = scratch_dir("same-ws");
         let socket_path = temp_sock("same-workspace");
@@ -2322,7 +2670,7 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial(collab_broker)]
+    #[serial_test::serial(collab_broker, process_env)]
     fn apps_launched_into_different_workspaces_do_not_exchange_deltas() {
         // The half that matters. A workspace is a room: an app opened
         // in workspace 7 must never see the document of the same app
@@ -2390,7 +2738,7 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial(collab_broker)]
+    #[serial_test::serial(collab_broker, process_env)]
     fn a_launch_tells_the_app_its_package_and_its_workspace() {
         // The precedence rule read straight off the env the launcher
         // produces: under a session the package id and the workspace
@@ -2498,7 +2846,7 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial(collab_broker)]
+    #[serial_test::serial(collab_broker, process_env)]
     fn a_workspace_is_the_same_room_after_a_restart() {
         // "The workspace I had yesterday is the workspace I have
         // today." A room id that changed on restart would quietly
@@ -2607,7 +2955,7 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial(collab_broker)]
+    #[serial_test::serial(collab_broker, process_env)]
     fn an_invited_host_joins_the_room_and_an_uninvited_one_does_not() {
         // The cross-machine claim. Three hosts, three brokers, three
         // independently-built workspace trees — and, deliberately, the
