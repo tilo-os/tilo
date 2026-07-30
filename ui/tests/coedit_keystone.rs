@@ -17,8 +17,8 @@
 //! The three proofs:
 //!   1. `peer_edit_converges_and_each_renders_the_shared_state_locally`
 //!      — A edits, the delta flows over the wire, B's doc converges, and
-//!      B's *independent local render* of its converged doc is
-//!      byte-identical to A's independent local render of the same state
+//!      B's *independent local render* of its converged doc is the same
+//!      frame as A's independent local render of the same state
 //!      (proving both draw the shared CRDT locally, not a streamed
 //!      pixel buffer), and differs from B's pre-edit render (proving B
 //!      actually re-rendered the change).
@@ -69,17 +69,122 @@ fn text_of(doc: &AutoCommit) -> String {
         .unwrap_or_default()
 }
 
+/// One peer's local frame: what the widget drew, and what the GPU made
+/// of it.
+///
+/// The two halves answer different questions. `drawn` is the exact
+/// output of the production draw pass and is compared with `==`.
+/// `pixels` proves the frame really rasterises, but two rasterisations
+/// of one scene are not guaranteed bit-identical — vello slots path
+/// segments into a tile with an `atomicAdd` and then accumulates
+/// coverage over them in float, so an antialiased edge pixel can land
+/// one 8-bit step either side (see the `ui::offscreen` module docs).
+/// Pixels are therefore compared with
+/// `OffscreenRenderer::pixels_differing_beyond_aa`, which still fails on
+/// any real change — a visible difference moves pixels by far more than
+/// one step — and by ink count, which does not move at all.
+struct LocalRender {
+    drawn: Drawn,
+    pixels: Vec<u8>,
+}
+
+/// The vello `Scene` a draw pass emitted, flattened to bytes so two
+/// frames can be compared exactly: geometry, transforms, styles, the
+/// draw stream, and every positioned glyph. This is what the widget
+/// actually drew from the CRDT, so comparing it is both exact and more
+/// specific than comparing the rasterised image.
+#[derive(PartialEq, Eq)]
+struct Drawn(Vec<u8>);
+
+impl std::fmt::Debug for Drawn {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        self.0.hash(&mut h);
+        write!(f, "Drawn({} bytes, digest {:016x})", self.0.len(), h.finish())
+    }
+}
+
+fn push_u32(out: &mut Vec<u8>, v: u32) {
+    out.extend_from_slice(&v.to_le_bytes());
+}
+
+fn push_f32(out: &mut Vec<u8>, v: f32) {
+    push_u32(out, v.to_bits());
+}
+
+fn drawn_of(scene: &Scene) -> Drawn {
+    let e = scene.encoding();
+    let mut b = Vec::new();
+    for t in &e.path_tags {
+        b.push(t.0);
+    }
+    for v in &e.path_data {
+        push_u32(&mut b, *v);
+    }
+    for t in &e.draw_tags {
+        push_u32(&mut b, t.0);
+    }
+    for v in &e.draw_data {
+        push_u32(&mut b, *v);
+    }
+    for t in &e.transforms {
+        for v in t.matrix {
+            push_f32(&mut b, v);
+        }
+        for v in t.translation {
+            push_f32(&mut b, v);
+        }
+    }
+    for s in &e.styles {
+        push_u32(&mut b, s.flags_and_miter_limit);
+        push_f32(&mut b, s.line_width);
+    }
+    for g in &e.resources.glyphs {
+        push_u32(&mut b, g.id);
+        push_f32(&mut b, g.x);
+        push_f32(&mut b, g.y);
+    }
+    for run in &e.resources.glyph_runs {
+        push_f32(&mut b, run.font_size);
+        push_u32(&mut b, run.font.index);
+        push_u32(&mut b, run.hint as u32);
+        push_u32(&mut b, run.glyphs.start as u32);
+        push_u32(&mut b, run.glyphs.end as u32);
+        for v in run.transform.matrix {
+            push_f32(&mut b, v);
+        }
+        for v in run.transform.translation {
+            push_f32(&mut b, v);
+        }
+    }
+    for v in [
+        e.n_paths,
+        e.n_path_segments,
+        e.n_clips,
+        e.n_open_clips,
+        e.flags,
+    ] {
+        push_u32(&mut b, v);
+    }
+    Drawn(b)
+}
+
 /// Render `input` against `doc` **locally**: run the real `sync` (which
 /// pulls the converged text out of the Automerge doc into the widget),
 /// lay it out, and rasterise, painting `presence` on top.
 ///
 /// This is the "each peer renders from its own converged doc" path:
-/// nothing here consumes a frame from a peer — the pixels are a pure
+/// nothing here consumes a frame from a peer — the frame is a pure
 /// function of the local Automerge state + the shared `Theme` + local
 /// presence. `with_plain_chrome` strips the input's background box so
 /// the rasterised ink is the text/caret geometry itself (a filled box
 /// would swamp any pixel-count comparison).
-fn render_widget(mut input: TextInput, doc: &mut AutoCommit, presence: &PresenceCtx) -> Vec<u8> {
+fn render_widget(
+    mut input: TextInput,
+    doc: &mut AutoCommit,
+    presence: &PresenceCtx,
+) -> LocalRender {
     let theme = Theme::dark();
     let permission = PermissionContext::permissive();
     let mut tr = TextRenderer::new();
@@ -134,13 +239,16 @@ fn render_widget(mut input: TextInput, doc: &mut AutoCommit, presence: &Presence
         &permission,
     );
     let mut renderer = OffscreenRenderer::new(W, H);
-    renderer.render(&scene, Color::BLACK)
+    LocalRender {
+        drawn: drawn_of(&scene),
+        pixels: renderer.render(&scene, Color::BLACK),
+    }
 }
 
 /// Render a `TextInput` bound directly to the shared `Text` object at
 /// `bound`, syncing its content from `doc`. This is the local render of
 /// the converged document content.
-fn render_bound(doc: &mut AutoCommit, bound: &ObjId, presence: &PresenceCtx) -> Vec<u8> {
+fn render_bound(doc: &mut AutoCommit, bound: &ObjId, presence: &PresenceCtx) -> LocalRender {
     let mut input = TextInput::new(Vec::new())
         .with_font_size(28.0)
         .with_plain_chrome();
@@ -151,10 +259,28 @@ fn render_bound(doc: &mut AutoCommit, bound: &ObjId, presence: &PresenceCtx) -> 
 /// Render a path-mode `TextInput` whose presence key is
 /// `Widget { path }` — so a remote caret published under the same key
 /// paints into this widget's local render.
-fn render_presence_probe(path: Vec<PathSegment>, presence: &PresenceCtx) -> Vec<u8> {
+fn render_presence_probe(path: Vec<PathSegment>, presence: &PresenceCtx) -> LocalRender {
     let input = TextInput::new(path).with_font_size(28.0).with_plain_chrome();
     let mut throwaway = AutoCommit::new();
     render_widget(input, &mut throwaway, presence)
+}
+
+/// Assert two local frames are the same image: the same drawing (exact)
+/// and the same rasterisation up to the rasteriser's ±1 antialiasing
+/// wobble.
+#[track_caller]
+fn assert_same_frame(a: &LocalRender, b: &LocalRender, what: &str) {
+    assert_eq!(a.drawn, b.drawn, "{what}: the drawn scene must match");
+    assert_eq!(
+        OffscreenRenderer::pixels_differing_beyond_aa(&a.pixels, &b.pixels),
+        0,
+        "{what}: the rasterised frames must match"
+    );
+    assert_eq!(
+        non_background_pixels(&a.pixels),
+        non_background_pixels(&b.pixels),
+        "{what}: the same drawing must put ink on the same number of pixels"
+    );
 }
 
 /// Count pixels that diverge from the BLACK background — a cheap proxy
@@ -257,7 +383,7 @@ fn peer_edit_converges_and_each_renders_the_shared_state_locally() {
     let empty_presence = PresenceCtx::empty();
     let b_before = render_bound(&mut b_doc, &b_text, &empty_presence);
     assert!(
-        non_background_pixels(&b_before) > 0,
+        non_background_pixels(&b_before.pixels) > 0,
         "B's pre-edit render must show the seeded text"
     );
 
@@ -289,23 +415,24 @@ fn peer_edit_converges_and_each_renders_the_shared_state_locally() {
     // B re-rendered locally: its post-edit frame differs from its
     // pre-edit frame (the change is visible in B's OWN render).
     assert_ne!(
-        b_after, b_before,
+        b_after.drawn, b_before.drawn,
         "B must re-render locally to reflect the converged edit"
     );
     assert!(
-        non_background_pixels(&b_after) > non_background_pixels(&b_before),
+        non_background_pixels(&b_after.pixels) > non_background_pixels(&b_before.pixels),
         "the added text must add drawn pixels in B's local render"
     );
 
     // The keystone assertion: B's independent local render of its own
-    // converged CRDT doc is byte-identical to A's independent local
+    // converged CRDT doc is the same image as A's independent local
     // render of the same shared state. Neither peer streamed pixels to
     // the other — they each drew the shared CRDT locally and arrived at
-    // the same image.
-    assert_eq!(
-        a_after, b_after,
-        "each peer's local render of the shared CRDT state must match; \
-         co-edit is local-render convergence, not frame streaming"
+    // the same frame.
+    assert_same_frame(
+        &a_after,
+        &b_after,
+        "each peer's local render of the shared CRDT state; \
+         co-edit is local-render convergence, not frame streaming",
     );
 
     drop(a);
@@ -366,11 +493,11 @@ fn remote_caret_presence_round_trips_both_ways() {
     let with_caret = render_presence_probe(path, &with_peer);
 
     assert_ne!(
-        baseline, with_caret,
+        baseline.drawn, with_caret.drawn,
         "a remote peer's caret must be drawn into the local render"
     );
     assert!(
-        non_background_pixels(&with_caret) > non_background_pixels(&baseline),
+        non_background_pixels(&with_caret.pixels) > non_background_pixels(&baseline.pixels),
         "the peer caret must add drawn pixels to the local render"
     );
 
@@ -514,11 +641,8 @@ fn signed_edit_is_permission_gated() {
         "base",
         "a rejected op must not mutate the shared doc"
     );
-    assert_eq!(
-        render_bound(&mut peer_doc, &bound, &PresenceCtx::empty()),
-        baseline_render,
-        "a rejected op must not change the local render"
-    );
+    let again = render_bound(&mut peer_doc, &bound, &PresenceCtx::empty());
+    assert_same_frame(&again, &baseline_render, "a rejected op's local render");
 
     // The writer's op validates and is applied via the same
     // `load_incremental` path the App uses for `SignedCRDTIncremental`.
@@ -532,7 +656,12 @@ fn signed_edit_is_permission_gated() {
     );
     let after_render = render_bound(&mut peer_doc, &bound, &PresenceCtx::empty());
     assert_ne!(
-        after_render, baseline_render,
+        after_render.drawn, baseline_render.drawn,
         "the writer's validated edit re-renders locally"
+    );
+    assert!(
+        non_background_pixels(&after_render.pixels)
+            > non_background_pixels(&baseline_render.pixels),
+        "the writer's added text must put ink on more pixels"
     );
 }
