@@ -191,19 +191,17 @@ impl Store {
     /// the note, so `tinker keep` is safe to type twice.
     pub fn promote(&self, name: &str, new_name: Option<&str>, note: Option<&str>) -> Result<Layer> {
         let mut layer = self.load(name)?;
-        if let Some(new) = new_name {
-            if new != name {
-                validate_name(new)?;
-                if self.meta_path(new).exists() {
-                    bail!("cannot rename to '{new}': a layer by that name already exists");
-                }
-                std::fs::rename(self.layer_dir(name), self.layer_dir(new))
-                    .with_context(|| format!("renaming layer '{name}' to '{new}'"))?;
-                // Anything stacked on the old name would now dangle. Rewrite the
-                // references so a rename cannot silently break a stack.
-                self.rewrite_stack_references(name, new)?;
-                layer.name = new.to_string();
+        if let Some(new) = new_name.filter(|n| *n != name) {
+            validate_name(new)?;
+            if self.meta_path(new).exists() {
+                bail!("cannot rename to '{new}': a layer by that name already exists");
             }
+            std::fs::rename(self.layer_dir(name), self.layer_dir(new))
+                .with_context(|| format!("renaming layer '{name}' to '{new}'"))?;
+            // Anything stacked on the old name would now dangle. Rewrite the
+            // references so a rename cannot silently break a stack.
+            self.rewrite_stack_references(name, new)?;
+            layer.name = new.to_string();
         }
         layer.kind = LayerKind::Kept;
         if let Some(n) = note {
