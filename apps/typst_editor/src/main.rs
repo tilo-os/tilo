@@ -33,7 +33,11 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
             Some(scenario) => typst_editor::demo_root_scenario(&scenario),
             None => typst_editor::demo_root(),
         };
-        render_shot_to_png(root, viewport, &out)?;
+        let theme = match parse_theme_arg(&args).as_deref() {
+            Some("light") => Theme::light(),
+            _ => Theme::dark(),
+        };
+        render_shot_to_png(root, viewport, theme, &out)?;
         return Ok(());
     }
 
@@ -83,6 +87,21 @@ fn parse_scenario_arg(args: &[String]) -> Option<String> {
     }
 }
 
+/// Parse an optional `--theme light|dark` (shots-only) so a capture can be
+/// graded in both themes. Never consulted by the live event loop.
+fn parse_theme_arg(args: &[String]) -> Option<String> {
+    let mut iter = args.iter().skip(1);
+    loop {
+        let arg = iter.next()?;
+        if arg == "--theme" {
+            return iter.next().cloned();
+        }
+        if let Some(rest) = arg.strip_prefix("--theme=") {
+            return Some(rest.to_string());
+        }
+    }
+}
+
 fn parse_shots_arg(args: &[String]) -> Option<std::path::PathBuf> {
     let mut iter = args.iter().skip(1);
     while let Some(arg) = iter.next() {
@@ -101,10 +120,10 @@ fn parse_shots_arg(args: &[String]) -> Option<std::path::PathBuf> {
 fn render_shot_to_png(
     mut widget: Box<dyn Widget>,
     viewport: (u32, u32),
+    theme: Theme,
     out: &std::path::Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (w, h) = viewport;
-    let theme = Theme::dark();
     let presence = PresenceCtx::empty();
     let permission = PermissionContext::permissive();
     let mut text_renderer = TextRenderer::new();
