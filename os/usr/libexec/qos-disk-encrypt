@@ -56,6 +56,21 @@ parts_of() {
   lsblk -lnpo NAME,TYPE "$1" 2>/dev/null | awk '$2=="part"{print $1}'
 }
 
+# Unmount the install tree under $1 and close any LUKS mapping backed by a
+# partition of $2. Deepest mount first, and every step tolerant of "not there",
+# so this is usable both as a pre-clean and as a failure path.
+teardown() {
+  local mnt="$1" disk="$2" p uuid
+  umount "$mnt/boot/efi" 2>/dev/null || true
+  umount "$mnt/boot" 2>/dev/null || true
+  umount "$mnt" 2>/dev/null || true
+  for p in $(parts_of "$disk"); do
+    uuid="$(cryptsetup luksUUID "$p" 2>/dev/null || true)"
+    [ -n "$uuid" ] || continue
+    cryptsetup close "luks-$uuid" 2>/dev/null || true
+  done
+}
+
 cmd_prepare() {
   local disk="" fs=btrfs mnt=/run/qos-install/target key=""
   while [ $# -gt 0 ]; do
@@ -76,8 +91,17 @@ cmd_prepare() {
   [ -b "$disk" ] || die "prepare: $disk is not a block device"
   [ "$(lsblk -dno TYPE "$disk" 2>/dev/null)" = "disk" ] \
     || die "prepare: $disk is not a whole disk"
+
+  # A previous attempt that died partway leaves the tree mounted and the mapping
+  # open, and every check below would then refuse. Since this command's whole job
+  # is to overwrite the disk, undoing that state is safe and makes a retry work.
+  teardown "$mnt" "$disk"
+
   lsblk -nro MOUNTPOINT "$disk" 2>/dev/null | grep -q . \
     && die "prepare: $disk (or a partition of it) is mounted"
+  # From here on the disk is being rewritten, so a failure must not leave the
+  # mapping open — otherwise the retry cannot wipe the partition table.
+  trap 'teardown "$mnt" "$disk"' ERR
 
   log "  wiping $disk and writing a GPT (ESP $ESP_SIZE + /boot $BOOT_SIZE + LUKS root)"
   wipefs -a "$disk" >/dev/null
