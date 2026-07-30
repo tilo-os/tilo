@@ -21,6 +21,7 @@ use std::collections::HashMap;
 
 use shell::shell::build_nirios_overlay_host_with_chrome;
 use shell::shell::qs_actions::{PowerProfile, QsActions};
+use shell::shell::quick_settings::WifiNetwork;
 use shell::shell::state::{
     AppKind, GroupId, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace,
     WorkspaceId, WorkspaceTree,
@@ -204,8 +205,17 @@ fn layout_host(host: &mut shell::shell::overlay_host::ShellOverlayHost) -> (Taff
     (taffy, host_node)
 }
 
-/// Drive `CursorMoved` then `MouseInput::Pressed` at `(x, y)` through
-/// the host's `handle_event`. Must be called after [`layout_host`].
+/// Drive a whole click — `CursorMoved`, `Pressed`, `Released` — at
+/// `(x, y)` through the host's `handle_event`. Must be called after
+/// [`layout_host`].
+///
+/// The release matters. Toggle cards and the power chip dispatch on
+/// press, but the sliders deliberately hold their value until the button
+/// comes up: while a drag is live only the fill follows the pointer, and
+/// the value is pushed to the OS once, on release, so dragging the knob
+/// across the bar cannot spawn one `brightnessctl`/`wpctl` per frame. A
+/// press without a release is a grab the user never let go of, and the
+/// panel is right not to commit it.
 fn click_at(
     host: &mut shell::shell::overlay_host::ShellOverlayHost,
     taffy: &TaffyTree<()>,
@@ -233,24 +243,26 @@ fn click_at(
         taffy,
     );
 
-    let mut handled = false;
-    let mut focus_target: Option<NodeId> = None;
-    let pressed = WindowEvent::MouseInput {
-        device_id: unsafe { std::mem::zeroed() },
-        state: ElementState::Pressed,
-        button: MouseButton::Left,
-    };
-    host.handle_event(
-        &pressed,
-        1.0,
-        &winit::event::Modifiers::default(),
-        &mut state,
-        &root_id,
-        &mut handled,
-        &mut focus_target,
-        host_node,
-        taffy,
-    );
+    for button_state in [ElementState::Pressed, ElementState::Released] {
+        let mut handled = false;
+        let mut focus_target: Option<NodeId> = None;
+        let ev = WindowEvent::MouseInput {
+            device_id: unsafe { std::mem::zeroed() },
+            state: button_state,
+            button: MouseButton::Left,
+        };
+        host.handle_event(
+            &ev,
+            1.0,
+            &winit::event::Modifiers::default(),
+            &mut state,
+            &root_id,
+            &mut handled,
+            &mut focus_target,
+            host_node,
+            taffy,
+        );
+    }
 }
 
 #[test]
@@ -392,24 +404,51 @@ fn wifi_drill_in_row_click_routes_to_connect_wifi() {
     let recorder = SharedRecorder::default();
     host = host.with_qs_actions(Box::new(recorder.clone()));
 
-    // Drill into the Wi-Fi list.
+    // Drill into the Wi-Fi list, holding the result of a scan.
+    //
+    // The panel does not invent networks: `wifi_networks` is empty until
+    // `refresh_quick_settings_from_os` fills it from `nmcli` on the
+    // popover's rising edge, and there is no `nmcli` in a test process.
+    // So the fixture writes what a completed scan writes — two rows, the
+    // second one the currently-connected network — and the assertion
+    // below names the SSID of the row it clicked, which is the part of
+    // the routing that can actually be wrong.
+    let scanned = vec![
+        WifiNetwork {
+            ssid: "hallway-2g".into(),
+            signal: 71,
+            secure: true,
+            connected: false,
+        },
+        WifiNetwork {
+            ssid: "studio-5g".into(),
+            signal: 92,
+            secure: true,
+            connected: true,
+        },
+    ];
     {
         let mut st = chrome.borrow_mut();
         st.overlays.quick_settings = true;
         st.quick_settings
             .push_level(shell::shell::quick_settings::QsLevel::Wifi);
+        st.quick_settings.wifi_networks = scanned.clone();
         st.bump();
     }
     host.force_quick_settings_settled();
     let (taffy, host_node) = layout_host(&mut host);
     let rect = host.quick_settings_rect_for_tests();
     let click_x = rect.x0 + rect.width() / 2.0;
+    // Row 0 of the list: header is 56 px tall, rows are 56 px, so +28
+    // lands mid-row.
     let click_y = rect.y0 + 56.0 + 28.0;
     click_at(&mut host, &taffy, host_node, click_x, click_y);
 
     let calls = recorder.0.calls();
     assert!(
-        calls.iter().any(|c| c.starts_with("connect_wifi(")),
-        "expected a connect_wifi call; got {calls:?}"
+        calls.contains(&format!("connect_wifi({})", scanned[0].ssid)),
+        "clicking the first Wi-Fi row must connect to that row's SSID \
+         ({}); got {calls:?}",
+        scanned[0].ssid,
     );
 }
