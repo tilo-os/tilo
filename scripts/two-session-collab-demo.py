@@ -244,9 +244,10 @@ class Session:
     def open_permissions_tab(self) -> bool:
         """Open workspace settings on its Permissions tab.
 
-        Returns whether the tab was reachable: the pill only paints when
-        the room has at least one grant the tab can express, so "no tab"
-        is itself an observation rather than a failure to click.
+        Returns whether the tab was reachable. The pill always paints —
+        a host has to be able to reach the tab that grants before
+        anything has been granted — so a `False` here means the modal
+        itself did not open.
         """
         if not self.chrome()["overlays"]["ws_settings"]:
             self.run_palette_command("workspace settings", expect_id="result:0")
@@ -471,8 +472,11 @@ def run(host: Session, peer: Session, shots: str) -> None:
     claim("the peer's Permissions tab is reachable", peer.open_permissions_tab(), True)
     peer_rows = peer.revoke_rects()
     note(f"peer permissions rows: {peer_rows}")
-    claim("the peer's tab lists the granted app",
-          any(DEMO_APP in r for r in peer_rows), True)
+    # Rows are addressable by the capability id they revoke, which is
+    # the key `revoke_as` takes — so this asserts the peer's screen shows
+    # a row for *this* capability, not merely one mentioning the app.
+    claim("the peer's tab lists the replicated capability",
+          f"permissions_revoke[{fs_cap_id}]" in peer_rows, True)
     peer.snapshot(os.path.join(shots, "07-peer-permissions-after-grant.png"))
     host.open_permissions_tab()
     host.snapshot(os.path.join(shots, "06-host-permissions-after-grant.png"))
@@ -501,8 +505,11 @@ def run(host: Session, peer: Session, shots: str) -> None:
     # the host's own Permissions tab — the affordance a user has.
     host_rows = host.revoke_rects()
     note(f"host permissions rows: {host_rows}")
-    target = next((r for r in host_rows if DEMO_APP in r), None)
-    claim("the host's tab offers a Revoke button for it", bool(target), True)
+    target = f"permissions_revoke[{fs_cap_id}]"
+    claim("the host's tab offers a Revoke button for it",
+          target in host_rows, True)
+    if target not in host_rows:
+        target = None
     if target:
         host.click(target)
         host.settle()
@@ -516,9 +523,9 @@ def run(host: Session, peer: Session, shots: str) -> None:
     host.snapshot(os.path.join(shots, "08b-host-permissions-after-revoke.png"))
     host.close_ws_settings()
 
-    # The workspace-scoped grant has no Permissions-tab row to click —
-    # the tab only renders filesystem / device / network scopes — so it
-    # goes back through `Workspace::revoke_as`.
+    # The workspace-scoped grant is revoked through
+    # `Workspace::revoke_as` rather than by a click, to exercise the same
+    # authority check from the other side of the API.
     revoked = host.revoke(cap_id)
     note(f"host revoke (workspace scope) -> {json.dumps(revoked)}")
     claim("the host's revoke succeeded",
