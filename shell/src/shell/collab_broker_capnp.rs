@@ -1428,6 +1428,7 @@ mod tests {
             &CollabRequest::Hello {
                 app_id: "legacy-editor".into(),
                 cluster_id: cluster,
+                record: None,
             },
         );
 
@@ -1542,6 +1543,7 @@ mod tests {
             &CollabRequest::Hello {
                 app_id: "legacy-observer".into(),
                 cluster_id: cluster,
+                record: None,
             },
         );
 
@@ -1620,6 +1622,7 @@ mod tests {
             &CollabRequest::Hello {
                 app_id: "legacy-cursor-observer".into(),
                 cluster_id: cluster,
+                record: None,
             },
         );
 
@@ -1741,6 +1744,7 @@ mod tests {
             &CollabRequest::Hello {
                 app_id: "writer".into(),
                 cluster_id: uuid::Uuid::new_v4(),
+                record: None,
             },
         );
         for seq in 1..=3 {

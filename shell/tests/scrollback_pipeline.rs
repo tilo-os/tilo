@@ -172,6 +172,7 @@ fn peer_can_fetch_recent_scrollback() {
             &CollabRequest::Hello {
                 app_id: "test".into(),
                 cluster_id: test_cluster(),
+                record: None,
             },
         );
     }
@@ -262,6 +263,7 @@ fn empty_scrollback_returns_exhausted_true() {
         &CollabRequest::Hello {
             app_id: "test".into(),
             cluster_id: test_cluster(),
+            record: None,
         },
     );
 
@@ -310,6 +312,7 @@ fn scrollback_paging_respects_max() {
             &CollabRequest::Hello {
                 app_id: "test".into(),
                 cluster_id: test_cluster(),
+                record: None,
             },
         );
     }
@@ -380,6 +383,7 @@ fn compaction_evicts_log_then_scrollback_returns_exhausted() {
             &CollabRequest::Hello {
                 app_id: "test".into(),
                 cluster_id: test_cluster(),
+                record: None,
             },
         );
     }
@@ -510,6 +514,7 @@ fn compaction_op_class_rejected_for_editor() {
             &CollabRequest::Hello {
                 app_id: "test".into(),
                 cluster_id: test_cluster(),
+                record: None,
             },
         );
     }
@@ -603,6 +608,7 @@ fn cooperative_scrollback_round_trip() {
         &CollabRequest::Hello {
             app_id: "test".into(),
             cluster_id: test_cluster(),
+            record: None,
         },
     );
 
@@ -722,6 +728,7 @@ fn cooperative_request_published_when_local_empty() {
         &CollabRequest::Hello {
             app_id: "test".into(),
             cluster_id: test_cluster(),
+            record: None,
         },
     );
 
@@ -793,6 +800,7 @@ fn cooperative_responder_answers_when_log_has_match() {
         &CollabRequest::Hello {
             app_id: "test".into(),
             cluster_id: test_cluster(),
+            record: None,
         },
     );
     for seq in 1..=3_u64 {
