@@ -303,6 +303,12 @@ if [ "$ENCRYPT" -eq 1 ]; then
   [ -n "$ENC_MNT" ] && [ -n "$ENC_LUKS" ] && [ -n "$ENC_ROOT_UUID" ] && [ -n "$ENC_KARGS" ] \
     || die "encryption: qos-disk-encrypt prepare did not report the volume it made"
 
+  # From here the volume is open and the tree is mounted. If anything below fails
+  # the installer exits without reaching `finish`, so close them on the way out —
+  # otherwise a retry finds a mounted disk it refuses to touch. Key slots are
+  # left alone; only `finish` removes the install key.
+  trap '"$DISK_ENCRYPT" teardown "$DISK" --mnt "$ENC_MNT" >/dev/null 2>&1 || true' EXIT
+
   # Every karg the volume needs becomes a --karg; word-splitting KARGS is
   # intentional (it is a space-separated list this script produced).
   KARG_ARGS=()

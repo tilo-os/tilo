@@ -4,9 +4,10 @@
 #
 # Split out of qos-install so the destructive block work is one testable unit:
 #
-#   qos-disk-encrypt prepare <disk> [--filesystem btrfs|ext4|xfs] [--mnt DIR]
-#   qos-disk-encrypt enrol   <luks-part> [--key-file F] [--pin-file F] [--fido2]
-#   qos-disk-encrypt finish  <luks-part> [--key-file F] [--mnt DIR]
+#   qos-disk-encrypt prepare  <disk> [--filesystem btrfs|ext4|xfs] [--mnt DIR]
+#   qos-disk-encrypt enrol    <luks-part> [--key-file F] [--pin-file F] [--fido2]
+#   qos-disk-encrypt finish   <luks-part> [--key-file F] [--mnt DIR]
+#   qos-disk-encrypt teardown <disk> [--mnt DIR]
 #
 # `prepare` writes a GPT with ESP + /boot + a LUKS2 root, opens the mapping with
 # a throwaway key file, makes the filesystem, mounts the tree under --mnt and
@@ -17,7 +18,8 @@
 #
 # KARGS is what the install has to bake into the boot entry for early userspace
 # to find and open the volume. `enrol` adds the real unlock factors, `finish`
-# drops the throwaway key slot and tears the tree down.
+# drops the throwaway key slot and tears the tree down, and `teardown` is the
+# same tear-down without touching key slots — what an aborted install wants.
 #
 # ## Why the volume is not created by `bootc install --block-setup tpm2-luks`
 #
@@ -303,11 +305,28 @@ cmd_finish() {
   log "  encrypted root closed."
 }
 
+# Public, idempotent cleanup: unmount the tree and close the mapping, leaving the
+# key slots alone. This is what an aborted install wants — `finish` is for the
+# successful path and additionally drops the throwaway slot.
+cmd_teardown() {
+  local disk="" mnt=/run/qos-install/target
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --mnt) mnt="${2:-}"; shift 2 ;;
+      -*) die "teardown: unknown option $1" ;;
+      *) [ -z "$disk" ] || die "teardown: unexpected argument $1"; disk="$1"; shift ;;
+    esac
+  done
+  [ -n "$disk" ] || die "teardown: missing <disk>"
+  teardown "$mnt" "$disk"
+}
+
 sub="${1:-}"; shift || true
 case "$sub" in
   prepare) cmd_prepare "$@" ;;
   enrol|enroll) cmd_enrol "$@" ;;
   finish) cmd_finish "$@" ;;
+  teardown) cmd_teardown "$@" ;;
   -h|--help|"") sed -n '2,40p' "$0" ;;
   *) die "unknown subcommand: $sub (try --help)" ;;
 esac
