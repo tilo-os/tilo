@@ -67,7 +67,31 @@ use tokio::task::LocalSet;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub enum CollabRequest {
-    Hello { app_id: String, cluster_id: Uuid },
+    Hello {
+        app_id: String,
+        cluster_id: Uuid,
+        /// Which **record** this connection carries, when the app has
+        /// one — the third and finest component of its address.
+        ///
+        /// A record is one document with one change graph
+        /// ([`crate::record`]). Announcing it is what makes "share
+        /// this document" expressible: the broker delivers a document
+        /// payload only to connections announcing the *same* record,
+        /// so two people editing two different files in one room stop
+        /// merging each other's state, and a peer given one record
+        /// receives that record and nothing else.
+        ///
+        /// `None` is an app that has not adopted records — its whole
+        /// state is still one document per `(app, room)` pair, which
+        /// is exactly how it behaved before, and it neither receives
+        /// record-scoped traffic nor sends any.
+        ///
+        /// `#[serde(default)]` so a frame from a peer that predates
+        /// records still parses as `None` rather than being dropped
+        /// as malformed.
+        #[serde(default)]
+        record: Option<String>,
+    },
     /// Legacy: unsigned full-document state. Still accepted by the
     /// broker. Apps using this path do not get role enforcement and
     /// surface a "legacy / unsigned" badge in chrome.
@@ -517,7 +541,7 @@ impl CollaborationManager {
                     identity: None,
                 };
                 let (app_id, cluster_id) = auto_hello_env();
-                manager.send(CollabRequest::Hello { app_id, cluster_id });
+                manager.send(CollabRequest::Hello { app_id, cluster_id, record: None });
                 return manager;
             }
         }
@@ -529,7 +553,7 @@ impl CollaborationManager {
                     identity: None,
                 };
                 let (app_id, cluster_id) = auto_hello_env();
-                manager.send(CollabRequest::Hello { app_id, cluster_id });
+                manager.send(CollabRequest::Hello { app_id, cluster_id, record: None });
                 manager
             }
             Err(_) => Self {
@@ -609,6 +633,7 @@ impl CollaborationManager {
         manager.send(CollabRequest::Hello {
             app_id: app_id.to_owned(),
             cluster_id,
+            record: None,
         });
         manager
     }
@@ -1018,7 +1043,7 @@ async fn drive_shovel(
 
     while let Some(req) = outbound_rx.recv().await {
         match req {
-            CollabRequest::Hello { app_id: _, cluster_id } => {
+            CollabRequest::Hello { app_id: _, cluster_id, record: None } => {
                 // Ride the identity blob captured at manager
                 // construction — the loaded runtime-identity's raw
                 // pubkey bytes when the on-disk record was reachable,
@@ -1502,7 +1527,7 @@ pub mod broker {
                     // back to `peer-{idx}` and treat the frame as data.
                     match read_frame(&mut stream) {
                         Some(frame) => match serde_json::from_slice::<CollabRequest>(&frame) {
-                            Ok(CollabRequest::Hello { app_id, .. }) => {
+                            Ok(CollabRequest::Hello { app_id, .., record: None }) => {
                                 peers.lock().unwrap().insert(
                                     idx,
                                     Peer { user_id: app_id, write },
