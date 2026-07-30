@@ -13,6 +13,11 @@ path = "src/main.rs"
 
 [dependencies]
 ui = { path = "../../ui" }
+# The qOS ACTION model: Snippets' `actions` module exports every library
+# mutation as a replayable action the host's Ctrl+K palette dispatches, so a
+# toolbar button and a palette row build the identical action and share one
+# undo boundary.
+qos-actions = { path = "../../crates/collab/actions" }
 automerge.workspace = true
 serde.workspace = true
 serde_json.workspace = true

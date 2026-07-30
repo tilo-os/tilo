@@ -139,6 +139,33 @@ impl SnippetsDoc {
         let _ = doc.delete(&map, key.as_str());
     }
 
+    /// Read a single snippet by id, or `None` if the document has no such row.
+    /// The action layer uses this to read-modify-write one field on the
+    /// authoritative document without touching the rest of the library.
+    pub fn get(doc: &AutoCommit, id: SnippetId) -> Option<Snippet> {
+        let map = match doc.get(&ROOT, "snippets") {
+            Ok(Some((Value::Object(ObjType::Map), id))) => id,
+            _ => return None,
+        };
+        let key = id.to_string();
+        let snip = match doc.get(&map, key.as_str()) {
+            Ok(Some((Value::Object(ObjType::Map), s))) => s,
+            _ => return None,
+        };
+        let language = Language::from_slug(&Self::read_str(doc, &snip, "language"));
+        Some(Snippet {
+            id,
+            title: Self::read_text(doc, &snip, "title"),
+            language,
+            folder: Self::read_str(doc, &snip, "folder"),
+            tags: Self::read_tags(doc, &snip),
+            body: Self::read_text(doc, &snip, "body"),
+            description: Self::read_text(doc, &snip, "description"),
+            favorite: Self::read_bool(doc, &snip, "favorite"),
+            uses: Self::read_int(doc, &snip, "uses"),
+        })
+    }
+
     /// Read every snippet out of the document. Entries whose id key
     /// doesn't parse are skipped.
     pub fn list(doc: &AutoCommit) -> Vec<Snippet> {
