@@ -2723,6 +2723,24 @@ mod responsive_body_tests {
             });
         }
 
+        /// The laid-out rect of a named widget in the live tree. Asserting on
+        /// the *file view's* own rect is what makes the narrow test about the
+        /// files rather than about whichever pane happens to be full-width.
+        fn rect_of(&self, name: &str) -> Option<vello::kurbo::Rect> {
+            fn find(w: &dyn Widget, name: &str) -> Option<vello::kurbo::Rect> {
+                if w.name() == name {
+                    return Some(w.get_rect());
+                }
+                for c in w.children() {
+                    if let Some(r) = find(c, name) {
+                        return Some(r);
+                    }
+                }
+                None
+            }
+            find(&self.w, name)
+        }
+
         fn escape(&mut self) {
             let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
             ev.logical_key = winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape);
@@ -2780,15 +2798,24 @@ mod responsive_body_tests {
             !h.w.debug_places_open(),
             "the places drawer starts closed, so the files are what you see",
         );
-        let content = h.w.debug_content_rect();
-        assert_eq!(
-            content.width(),
-            600.0,
-            "the file view must span the whole narrow window; got {content:?}",
+        // The file view's OWN rect, not "whichever pane is full-width": under
+        // the original bug the places list was the full-width pane and the file
+        // view was laid out off the right edge of the window.
+        let files = h
+            .rect_of("FileView")
+            .expect("the file view must be in the tree at a narrow width");
+        assert!(
+            files.width() > 0.0 && files.height() > 0.0,
+            "the file view must be laid out at a real size; got {files:?}",
         );
         assert!(
-            content.x0 >= 0.0 && content.x1 <= 600.0,
-            "and must be inside the window, not pushed off it: {content:?}",
+            files.x0 >= 0.0 && files.x1 <= 600.0,
+            "and inside the window rather than pushed off it: {files:?}",
+        );
+        assert_eq!(
+            h.w.debug_content_rect().width(),
+            600.0,
+            "the content pane spans the whole narrow window",
         );
     }
 
