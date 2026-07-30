@@ -226,6 +226,7 @@ fn owner_can_redact_a_recent_op() {
             &CollabRequest::Hello {
                 app_id: "test".into(),
                 cluster_id: test_cluster(),
+                record: None,
             },
         );
     }
@@ -344,6 +345,7 @@ fn editor_redact_request_is_rejected() {
             &CollabRequest::Hello {
                 app_id: "test".into(),
                 cluster_id: test_cluster(),
+                record: None,
             },
         );
     }
@@ -435,6 +437,7 @@ fn redaction_persists_through_audit_log_across_compaction() {
             &CollabRequest::Hello {
                 app_id: "test".into(),
                 cluster_id: test_cluster(),
+                record: None,
             },
         );
     }
@@ -551,6 +554,7 @@ fn redacted_op_is_filtered_from_scrollback() {
             &CollabRequest::Hello {
                 app_id: "test".into(),
                 cluster_id: test_cluster(),
+                record: None,
             },
         );
     }
@@ -654,6 +658,7 @@ fn late_arriving_op_with_already_redacted_id_is_dropped() {
             &CollabRequest::Hello {
                 app_id: "test".into(),
                 cluster_id: test_cluster(),
+                record: None,
             },
         );
     }
@@ -764,6 +769,7 @@ fn redaction_of_mls_encrypted_op_succeeds() {
             &CollabRequest::Hello {
                 app_id: "test".into(),
                 cluster_id: test_cluster(),
+                record: None,
             },
         );
     }
@@ -844,6 +850,7 @@ fn recursive_redaction_is_rejected() {
             &CollabRequest::Hello {
                 app_id: "test".into(),
                 cluster_id: test_cluster(),
+                record: None,
             },
         );
     }
@@ -962,6 +969,7 @@ fn audit_entry_carries_reason_and_redactor_pk() {
             &CollabRequest::Hello {
                 app_id: "test".into(),
                 cluster_id: test_cluster(),
+                record: None,
             },
         );
     }
