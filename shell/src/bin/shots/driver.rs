@@ -439,6 +439,26 @@ impl ShellDriver {
                     .host_mut()
                     .refresh_search_results_for_shots(&mut self.state, &root);
             }
+            // Ctrl+K's half of search: scoped to the focused app, with a
+            // query that appears nowhere but the focused Notes tab's own
+            // body. Pumps the apps first — exactly what the live frame
+            // loop does every frame — so the note's text is in the
+            // document and the provider has content to match rather than
+            // a title to fall back on.
+            "palette_in_app_query" => {
+                let root = self.root_obj.clone();
+                self.fb.pump_apps(&mut self.state, &root);
+                self.with_chrome(|st| {
+                    st.search_scope = shell::shell::chrome_state::SearchScope::ActiveApp;
+                });
+                self.fb.host_mut().set_palette_visible(true);
+                self.fb.host_mut().set_palette_focus(true);
+                self.fb.host_mut().force_palette_settled();
+                self.fb.host_mut().set_palette_query("nirios");
+                self.fb
+                    .host_mut()
+                    .refresh_search_results_for_shots(&mut self.state, &root);
+            }
             "palette_typed" => {
                 self.fb.host_mut().set_palette_visible(true);
                 self.fb.host_mut().set_palette_focus(true);
@@ -556,10 +576,7 @@ impl ShellDriver {
                             [(11_i64, "Q3 budget"), (5, "Onboarding notes"), (1, "Retro")]
                         {
                             if peer_append_tab(&mut peer, title) {
-                                qdoc::history::commit_stamped_at(
-                                    &mut peer,
-                                    now - days_ago * DAY,
-                                );
+                                qdoc::history::commit_stamped_at(&mut peer, now - days_ago * DAY);
                             }
                         }
                         let blobs: Vec<Vec<u8>> = peer
@@ -619,10 +636,10 @@ impl ShellDriver {
                 let handle = self.chrome_handle();
                 let st = handle.borrow();
                 let tree = st.tree();
-                self.fb.host_mut().room_activity_mut().set_scope(
-                    shell::shell::room_activity::RoomScope::AllWorkspaces,
-                    &tree,
-                );
+                self.fb
+                    .host_mut()
+                    .room_activity_mut()
+                    .set_scope(shell::shell::room_activity::RoomScope::AllWorkspaces, &tree);
             }
             "ws-settings-permissions" => {
                 self.seed_workspace_permissions();
@@ -762,6 +779,7 @@ impl ShellDriver {
         "overview",
         "palette",
         "palette_typed",
+        "palette_in_app_query",
         "palette_app_query",
         "quick-settings",
         "qs-wifi-drillin",
@@ -847,7 +865,6 @@ impl ShellDriver {
     pub fn resolve_named_centre(&self, name: &str) -> Option<Point> {
         self.resolve_named_rect(name).map(|r| r.center())
     }
-
 }
 
 // ---------- helpers ----------
