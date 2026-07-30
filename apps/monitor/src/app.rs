@@ -1044,6 +1044,15 @@ impl MonitorApp {
                     })
                     .collect();
             }
+            // The shared kill/stop confirm dialog over the process table.
+            "kill-confirm" => {
+                if let Some(pid) = self
+                    .selected_pid
+                    .or_else(|| self.model.processes.first().map(|p| p.pid))
+                {
+                    self.confirm_stop = Some((pid, StopKind::Kill));
+                }
+            }
             _ => {}
         }
     }
