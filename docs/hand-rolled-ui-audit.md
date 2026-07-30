@@ -95,9 +95,9 @@ calibration exemplar is feeds' `Modal::AddSubscription`.
 | `apps/chat/src/events.rs:676` composer, `:737` inline edit | chat | `insert_text` splices into Automerge + tracks `caret: usize` (`app.rs:242`) by hand; zero `TextInput` | multiline CRDT-bound composer | L | HIGH |
 | `apps/slides/src/app.rs:2310` `insert_text`, `:5742` backspace | slides | canvas text elements + speaker-notes box, hand-rolled caret/selection/splice | multiline canvas text editor | M | HIGH |
 | `apps/sheets/src/grid.rs:48` `EditState{chars,caret,sel}` | sheets | cell/formula body editor fully reimplements caret+selection; formula bar is a 2nd view | formula-aware single-line editor | L | HIGH |
-| `apps/code_editor/src/editor_view.rs` (1999 LOC), `command_palette.rs:215` | code_editor | full multiline editor (caret/selection/completion); its own palette `query` String | shared code editor + reuse `ui` command_palette | L | HIGH |
-| `apps/db_client/src/editor.rs:310` SQL editor | db_client | own `caret`+`buffer`, `EditorDoc::insert`, pixel-approx column math | shared code editor | L | HIGH |
-| `apps/typst_editor/src/editor.rs` (1198 LOC) | typst_editor | hand-rolls caret/anchor/selection (correctly splices into Automerge `Text`) | shared code editor | L | HIGH |
+| `apps/code_editor/src/editor_view.rs` (1999 LOC), `command_palette.rs:215` | code_editor | full multiline editor (caret/selection/completion); its own palette `query` String | `ui::CodeEditor` (gap 2, **built**) + reuse `ui` command_palette | L | HIGH |
+| `apps/db_client/src/editor.rs:310` SQL editor | db_client | own `caret`+`buffer`, `EditorDoc::insert`, pixel-approx column math | `ui::CodeEditor` (gap 2, **built**) w/ `Language::Sql` | L | HIGH |
+| ~~`apps/typst_editor/src/editor.rs` (1198 LOC)~~ typst_editor | typst_editor ✅ | **DONE** — migrated onto `ui::CodeEditor` (`Language::Typst`); hand-rolled caret/anchor/selection/gutter/highlight + the per-line lexer deleted (~1100 LOC), thin shell keeps only the diagnostics overlay | `ui::CodeEditor` (gap 2, **built**) | L | HIGH |
 | `apps/calculator/src/model.rs:467` `expr`, `mathfield/mod.rs` | calculator | expression `String` spliced by keypad; `mathfield` is a legit **2D structured** editor | shared `MathField` (mathfield is CRDT-clean already) | M | MED |
 
 **Legitimately app-owned text surfaces (not flagged):** the terminal PTY grid
@@ -418,9 +418,28 @@ themed, clipboard-correct version — do **not** keep forking.
    speaker-notes.
 
 2. **Shared multiline code editor** (gutter + syntax-highlight hook, caret/
-   selection). `code_editor/editor_view.rs` (1999 LOC), `typst_editor/editor.rs`
-   (1198 LOC), and `db_client/editor.rs` all reimplement this; the first two even
-   comment "same rule as `TextInput`". Biggest single body-editor gap.
+   selection). **— BUILT.** `ui::widget::CodeEditor` puts real code editing on the
+   multiline `TextInput` caret/`text_selection`/clipboard/undo/IME/a11y core and
+   adds a line-number gutter with a current-line highlight, a pluggable
+   `Highlighter` trait (`fn spans(&self, line, carry) -> LineSpans` — per-line
+   byte-range spans + cross-line carry for block comments / fenced code) whose
+   `TokenKind`s map to theme colours via `token_color` (resolved from the accent
+   / semantic ramps, so syntax tracks light/dark), soft-tab + Shift+Tab outdent,
+   and wheel scroll. Ships built-in Rust, Typst, and SQL highlighters (plus a
+   generic keyword one); apps supply their own language tokenizer and the widget
+   owns rendering/caret/selection. **Adopter:** `typst_editor` — its 1198-LOC
+   hand-rolled `SourceEditor` (own caret/anchor/selection, insert/delete/word-
+   motion, clipboard, soft-tab/outdent, gutter, and syntax-highlight draw) and
+   its 255-LOC per-line Typst lexer (`highlight.rs`) are deleted; `editor.rs` is
+   now a thin shell that owns a `CodeEditor` (with the built-in `Language::Typst`
+   highlighter) and keeps only the Typst-specific compiler-diagnostic overlay
+   (gutter markers, squiggles, hover tooltip), positioned from the widget's
+   public geometry (`caret_rect` / `selection_rects` / `gutter_width`). ~1100 LOC
+   of duplicated editor/highlighter code removed; real selection/clipboard/undo
+   now for free. **Remaining adopters to migrate:** `code_editor/editor_view.rs`
+   (1999 LOC, + its command palette → reuse `ui` `command_palette`) and
+   `db_client/editor.rs` (SQL editor — use the built-in `Language::Sql`
+   highlighter).
 
 3. **Reusable rich-text document editor.** `BlockEditor` exists (block-structured)
    but is not drop-in for a paged document with running headers
@@ -567,8 +586,10 @@ it is not a violation. Leave color-math helpers, picker seeds, syntax/categorica
 palettes, and test-only literals alone.
 
 ### Wave 7 — Larger widget builds, then adopt (MED/HIGH)
-The multi-day widget work: gap **2/3** (code editor + rich-text document editor)
-→ code_editor, typst_editor, db_client SQL, word-processor, mail, slides; gap
+The multi-day widget work: gap **2** (code editor) **built** as `ui::CodeEditor`
+and adopted by **typst_editor** (its editor + lexer deleted); remaining adopters
+**code_editor** and **db_client** SQL. Gap **3** (rich-text document editor) →
+word-processor, mail, slides; gap
 **4** (formula cell editor) → sheets; gap **12** (Chart/Gauge + virtualized
 DataTable) → monitor, logs; gap **10** (TreeView inline-rename) → notes; gap
 **13** (MathField) → calculator; gap **11** (shared find bar) collapses the
