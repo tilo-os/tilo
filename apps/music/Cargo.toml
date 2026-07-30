@@ -48,6 +48,11 @@ p2p = ["dep:iroh", "dep:tokio"]
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
 atomic-file = { path = "../../crates/system/atomic-file" }
 ui = { path = "../../ui" }
+# The qOS action model: document-mutating library edits (playlist create/rename/
+# delete, add/remove/reorder track, like/save/follow) are replayable actions the
+# Ctrl+K palette and the on-screen affordances both dispatch — one source of
+# truth, one replay path.
+qos-actions = { path = "../../crates/collab/actions" }
 automerge.workspace = true
 serde.workspace = true
 serde_json.workspace = true

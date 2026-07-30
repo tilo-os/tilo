@@ -13,7 +13,8 @@ use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
-use automerge::{AutoCommit, ObjId};
+use automerge::{AutoCommit, ChangeHash, ObjId};
+use qos_actions::{ActionEnvelope, ActionTransport};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Circle, Point, Rect, RoundedRect, Stroke};
@@ -214,6 +215,18 @@ enum Drag {
 struct Hit {
     rect: Rect,
     action: Action,
+}
+
+/// Sink for the local half of an [action](crate::actions) dispatch. A local,
+/// on-screen affordance mutates the document through the qOS action executor
+/// (which pins each action's actor so the change is content-addressed identical
+/// to a peer's replay and dedupes on merge); the peer then receives it through
+/// ordinary CRDT sync, so this side has nothing extra to replicate and drops the
+/// envelope. The Ctrl+K palette dispatches through the host's transport, which a
+/// collaborative session swaps for a peer-aware one.
+struct DiscardTransport;
+impl ActionTransport for DiscardTransport {
+    fn replicate(&mut self, _env: &ActionEnvelope) {}
 }
 
 pub struct MusicApp {
@@ -469,6 +482,19 @@ pub struct MusicApp {
     /// stores just the *terminal* cache states, so an advancing download never
     /// churns the CRDT frame-by-frame.
     downloads: HashMap<String, Instant>,
+
+    /// Document heads captured just before the first [`crate::actions`] action of
+    /// the current event was dispatched. The host drains this via
+    /// [`ui::widget::Widget::take_committed_action`] to record exactly one undo
+    /// boundary bracketing the action(s) — the same undo path the Ctrl+K palette
+    /// takes. `None` when no action-dispatching event is in flight.
+    action_commit_before: Option<Vec<ChangeHash>>,
+
+    /// The last [`EncodedAction`](qos_actions::EncodedAction) an on-screen
+    /// affordance dispatched through [`Self::perform_action`]. Lets a test prove
+    /// a button and the Ctrl+K [`ActionSpec`](qos_actions::ActionSpec) build the
+    /// byte-identical action — one source of truth, not two code paths.
+    last_dispatched: Option<qos_actions::EncodedAction>,
 }
 
 /// How long a simulated offline download takes to complete (seconds). Long
@@ -615,6 +641,8 @@ impl MusicApp {
             search_edit_at: preset_search_at,
             live_query_sent: None,
             downloads: HashMap::new(),
+            action_commit_before: None,
+            last_dispatched: None,
         }
     }
 
@@ -840,6 +868,73 @@ impl MusicApp {
         self.bound_track = self.pb.current.clone();
     }
 
+    // ---- action dispatch --------------------------------------------------
+
+    /// Dispatch one [`MusicAction`](crate::actions::MusicAction) — the single
+    /// CRDT-mutation path shared with the Ctrl+K palette. The action is applied
+    /// through the qOS action executor (a pinned actor + committed change, so it
+    /// replays byte-identically on peers), exactly as the palette does. The
+    /// document heads captured just before the first action of the event are
+    /// stashed so the host records **one** undo boundary bracketing it
+    /// ([`ui::widget::Widget::take_committed_action`]). Callers reload the
+    /// in-memory library from the document afterward for immediate UI feedback;
+    /// `sync` reconciles it again on the next frame (so a palette dispatch shows
+    /// up the same way).
+    fn perform_action(&mut self, state: &mut AutoCommit, action: crate::actions::MusicAction) {
+        if self.action_commit_before.is_none() {
+            // `get_heads` flushes any pending app writes, so the bracket covers
+            // only the action's own change.
+            self.action_commit_before = Some(state.get_heads());
+        }
+        let encoded = crate::actions::encode(&action);
+        self.last_dispatched = Some(encoded.clone());
+        let mut tx = DiscardTransport;
+        if let Err(e) = qos_actions::dispatch(state, &action, encoded, &mut tx) {
+            tracing::warn!(error = %e, "music action dispatch failed");
+        }
+    }
+
+    /// The context Ctrl+K needs to build Music's resource tree: the user's
+    /// playlists and their tracks, read from the in-memory library cache (itself
+    /// re-projected from the document each `sync`). The virtual "Liked Songs"
+    /// playlist is a projection of the like set, not a stored playlist, so it is
+    /// not surfaced here — only real, mutable playlists are.
+    pub(crate) fn music_resource_ctx(&self) -> crate::actions::MusicResourceCtx {
+        let playlists = self
+            .lib
+            .playlists
+            .iter()
+            .map(|p| crate::actions::PlaylistResource {
+                id: p.id.clone(),
+                name: p.name.clone(),
+                tracks: p
+                    .track_ids
+                    .iter()
+                    .map(|tid| crate::actions::TrackRef {
+                        id: tid.clone(),
+                        label: self.track_label(tid),
+                    })
+                    .collect(),
+            })
+            .collect();
+        crate::actions::MusicResourceCtx { playlists }
+    }
+
+    /// A one-line "Title — Artist" label for a track id, for the palette.
+    fn track_label(&self, track_id: &str) -> String {
+        match self.lib.track(track_id) {
+            Some(t) => {
+                let artist = self.lib.artist_name(&t.artist_id);
+                if artist.is_empty() {
+                    t.title.clone()
+                } else {
+                    format!("{} — {artist}", t.title)
+                }
+            }
+            None => track_id.to_string(),
+        }
+    }
+
     fn current_duration_ms(&self) -> u64 {
         self.pb
             .current
@@ -1004,7 +1099,10 @@ impl MusicApp {
                 // Store as a `file://` URL so the image cache (shared with http
                 // covers) can fetch it off disk.
                 let url = format!("file://{}", path.display());
-                doc::set_playlist_cover(state, &playlist_id, &url);
+                // The pick (the file portal) is app-side, non-deterministic work;
+                // the resulting write of the chosen URL is a replayable action so
+                // the cover replicates to peers like any other playlist edit.
+                self.perform_action(state, crate::actions::set_cover_action(&playlist_id, &url));
                 self.reload_library(state);
                 // Overwrite (not `or_insert`) so re-picking a cover replaces the
                 // old one in the image cache.
@@ -1637,8 +1735,9 @@ impl MusicApp {
                 self.persist_playback(state);
             }
             Action::ToggleLike(id) => {
-                let now = doc::toggle_liked(state, &id);
+                self.perform_action(state, crate::actions::toggle_liked_action(&id));
                 self.reload_library(state);
+                let now = self.lib.is_liked(&id);
                 let label = self.lib.track(&id).map(|t| t.title.clone()).unwrap_or_default();
                 self.toast = Some((
                     if now {
@@ -1650,8 +1749,9 @@ impl MusicApp {
                 ));
             }
             Action::ToggleSaveAlbum(id) => {
-                let now = doc::toggle_saved_album(state, &id);
+                self.perform_action(state, crate::actions::toggle_saved_album_action(&id));
                 self.reload_library(state);
+                let now = self.lib.is_album_saved(&id);
                 let label = self.lib.album_title(&id).to_string();
                 self.toast = Some((
                     if now {
@@ -1663,8 +1763,9 @@ impl MusicApp {
                 ));
             }
             Action::ToggleFollow(id) => {
-                let now = doc::toggle_followed_artist(state, &id);
+                self.perform_action(state, crate::actions::toggle_followed_artist_action(&id));
                 self.reload_library(state);
+                let now = self.lib.is_artist_followed(&id);
                 // Prefer a live artist-page name; fall back to the library.
                 let label = self
                     .artist_pages
@@ -1689,17 +1790,17 @@ impl MusicApp {
                 self.request_search_more(tab);
             }
             Action::AddToPlaylist { playlist, track } => {
-                doc::add_track_to_playlist(state, &playlist, &track);
+                self.perform_action(state, crate::actions::add_track_action(&playlist, &track));
                 self.reload_library(state);
                 let pl = self.lib.playlist(&playlist).map(|p| p.name.clone()).unwrap_or_default();
                 self.toast = Some((format!("Added to \u{201c}{pl}\u{201d}"), Instant::now()));
             }
             Action::RemoveFromPlaylist { playlist, track } => {
-                doc::remove_track_from_playlist(state, &playlist, &track);
+                self.perform_action(state, crate::actions::remove_track_action(&playlist, &track));
                 self.reload_library(state);
             }
             Action::MovePlaylistItem { playlist, from, to } => {
-                doc::move_track_in_playlist(state, &playlist, from, to);
+                self.perform_action(state, crate::actions::move_track_action(&playlist, from, to));
                 self.reload_library(state);
             }
             Action::BeginNewPlaylist => {
@@ -1722,12 +1823,16 @@ impl MusicApp {
                 } else {
                     self.name_input.trim().to_string()
                 };
-                let id = doc::create_playlist(state, &name);
+                // Mint the id at authoring time and carry it in the action, so
+                // the create replays deterministically (see `crate::actions`).
+                let id = crate::actions::new_playlist_id();
+                self.perform_action(state, crate::actions::create_playlist_action(&id, &name));
                 // If this create came from "Add to playlist… → New playlist…",
-                // drop the target track into the freshly-created playlist.
+                // drop the target track into the freshly-created playlist — a
+                // second action bracketed into the same undo boundary.
                 let added_track = self.new_playlist_track.take();
                 if let Some(track) = &added_track {
-                    doc::add_track_to_playlist(state, &id, track);
+                    self.perform_action(state, crate::actions::add_track_action(&id, track));
                 }
                 self.reload_library(state);
                 self.name_prompt = None;
@@ -1755,7 +1860,7 @@ impl MusicApp {
             Action::CommitRename(id) => {
                 let name = self.name_input.trim().to_string();
                 if !name.is_empty() {
-                    doc::rename_playlist(state, &id, &name);
+                    self.perform_action(state, crate::actions::rename_playlist_action(&id, &name));
                     self.reload_library(state);
                 }
                 self.name_prompt = None;
@@ -1763,7 +1868,7 @@ impl MusicApp {
                 self.name_dialog = None;
             }
             Action::DeletePlaylist(id) => {
-                doc::delete_playlist(state, &id);
+                self.perform_action(state, crate::actions::delete_playlist_action(&id));
                 self.reload_library(state);
                 // Leave the now-deleted detail page.
                 if self.view == View::Playlist(id.clone()) {
@@ -4678,6 +4783,44 @@ mod tests {
         assert!(
             doc::load_library(&peer).is_liked("tk_g2"),
             "the favourite syncs to another device via the CRDT"
+        );
+    }
+
+    /// Single source of truth on the real click path: clicking a song row's like
+    /// heart dispatches the byte-identical `EncodedAction` the Ctrl+K "Toggle
+    /// like" spec builds for that track — the on-screen affordance and the
+    /// palette are one action, not two code paths. Proven end-to-end through the
+    /// production `handle_event` path.
+    #[test]
+    fn like_heart_click_dispatches_the_action_the_palette_builds() {
+        let (mut app, mut doc) = app_with_doc();
+        app.view = View::Songs;
+        draw_once(&mut app, &mut doc);
+        // Find a real like-heart hit the draw pass registered.
+        let (id, center) = app
+            .hits
+            .iter()
+            .find_map(|h| match &h.action {
+                Action::ToggleLike(id) => Some((id.clone(), h.rect.center())),
+                _ => None,
+            })
+            .expect("a song row registers a like-heart hit");
+        let expected = crate::actions::encode(&crate::actions::toggle_liked_action(&id));
+
+        send(&mut app, &cursor_at(center), &mut doc);
+        send(&mut app, &press(MouseButton::Left), &mut doc);
+
+        assert_eq!(
+            app.last_dispatched.as_ref(),
+            Some(&expected),
+            "the like heart and the palette build the identical EncodedAction"
+        );
+        assert!(doc::load_library(&doc).is_liked(&id), "and it actually liked the track");
+        // The heads captured for the host's undo bracket are armed (the host
+        // drains this via `take_committed_action` to record one undo boundary).
+        assert!(
+            app.action_commit_before.is_some(),
+            "the click armed exactly one undo boundary for the host to record"
         );
     }
 
