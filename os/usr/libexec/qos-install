@@ -308,6 +308,11 @@ if [ "$ENCRYPT" -eq 1 ]; then
   KARG_ARGS=()
   for k in $ENC_KARGS; do KARG_ARGS+=(--karg "$k"); done
 
+  # --skip-finalize because bootc's finalize step remounts the target READ-ONLY,
+  # and the account/hostname/keyboard seeding below writes into the deployment's
+  # /etc on that same mount. qos-disk-encrypt finish unmounts and closes the
+  # volume immediately afterwards, so the step bootc would have performed buys
+  # nothing here.
   step "Installing qOS into the encrypted root"
   podman run --rm --privileged --pid=host --ipc=host \
     -v /var/lib/containers:/var/lib/containers \
@@ -319,6 +324,7 @@ if [ "$ENCRYPT" -eq 1 ]; then
       --root-mount-spec "UUID=$ENC_ROOT_UUID" \
       "${KARG_ARGS[@]}" \
       --target-imgref "$QOS_TARGET_IMGREF" \
+      --skip-finalize \
       /target
 else
   step "Installing qOS onto $DISK (this ERASES the disk; unencrypted)"
