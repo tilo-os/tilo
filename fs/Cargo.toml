@@ -22,6 +22,7 @@ moka = { version = "0.12.15", features = ["sync"] }
 serde.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true
+thiserror.workspace = true
 tokio = { workspace = true, features = ["full"] }
 hex.workspace = true
 blake3.workspace = true

@@ -22,6 +22,14 @@ Type=simple
 # where systemd-tmpfiles-setup hasn't run yet.
 ExecStartPre=/usr/bin/mkdir -p /var/workspace
 ExecStartPre=/usr/bin/mkdir -p /var/cache/quick-fs
+# The capability list the mount enforces. tmpfiles.d seeds it from
+# /usr/share/qos/fs-capabilities.json on first boot; this is the same
+# belt-and-suspenders fallback as the mkdirs above, for the case where
+# systemd-tmpfiles-setup hasn't run. `-n` copies without clobbering an
+# existing (possibly edited) list, and the leading `-` tolerates the
+# whole step failing rather than blocking the mount on it.
+ExecStartPre=/usr/bin/mkdir -p /var/lib/qos
+ExecStartPre=-/usr/bin/cp -n /usr/share/qos/fs-capabilities.json /var/lib/qos/fs-capabilities.json
 # The collaborative `fs` binary is subcommand-based: `serve` hosts a workspace
 # and mounts it locally (what a fresh boot needs — no peer ticket); `mount`
 # joins a peer's workspace via a ticket. `--cache-dir` is the persistent
@@ -30,7 +38,30 @@ ExecStartPre=/usr/bin/mkdir -p /var/cache/quick-fs
 # (Earlier the CLI was a flat `fs --mount-point`; it has since moved to
 # `fs serve --mount-point --cache-dir`. Verified live: mounts /var/workspace,
 # Iroh endpoint up, workspace hosted.)
-ExecStart=/usr/bin/fs serve --mount-point /var/workspace --cache-dir /var/cache/quick-fs
+#
+# `--acl` is what makes the mount an enforcement point rather than a
+# plain FUSE passthrough. Without it every open/read/write short-circuits
+# to "allowed" and the capability model stops at the compositor — a path
+# the permissions UI shows as revoked stays readable through
+# /var/workspace. The list is re-read while the mount is up (see
+# --acl-reload-secs), so a grant or a revocation takes effect without a
+# remount; /var/workspace is mounted once at boot and never again during
+# a session, which is why reading it only at mount time was equivalent to
+# not reading it at all.
+#
+# `--principal person:local` is the subject the shipped list grants to.
+# It has to be a principal rather than a key: the mount's own identity is
+# the iroh endpoint key, which is generated fresh on every start, so no
+# capability file written ahead of time could ever name it.
+#
+# The shipped list grants that principal read+write on the whole
+# workspace — i.e. exactly the access an unenforced mount gave. This
+# change does not narrow the single-user desktop; it makes the
+# enforcement point live so that a restriction added to
+# /var/lib/qos/fs-capabilities.json actually bites, and so a mount joined
+# from a peer's ticket has somewhere to put a narrower policy.
+ExecStart=/usr/bin/fs serve --mount-point /var/workspace --cache-dir /var/cache/quick-fs \
+    --acl /var/lib/qos/fs-capabilities.json --principal person:local
 # `fusermount -u` is preferable to plain `umount` because it doesn't
 # need CAP_SYS_ADMIN. `-z` makes the unmount lazy so a hung client
 # can't block shutdown.
