@@ -183,6 +183,29 @@ firmware update from turning into a recovery-key prompt.
 4. **PCR 7 and 11 measured as usual**, and a prediction for them signed per
    generation.
 
+## Testing it
+
+```bash
+# Mechanism, against an emulated TPM and a real LUKS2 header. No root, no VM.
+cargo test -p qos-rollback
+
+# The shell helpers the systemd units use.
+./os/tests/rollback-wrappers.sh
+
+# Boot-side, inside a booted guest — the only place the rest can be established.
+./os/dev/vm.sh boot --tpm
+#   ... then in the guest:
+sudo /usr/libexec/qos-rollback-boot-check
+```
+
+The boot-side check is the one that establishes what the host cannot: that the
+generation number arrived on the sealed command line, that PCR 7 and 11 hold
+meaningful measurements, that early userspace produced the key file before
+`systemd-cryptsetup` wanted it, and that the units fired. It needs the UKI to carry
+`qos.generation=` and an initramfs hook that calls `qos-rollback unlock`; until
+both exist it reports those as failures, which is the correct answer rather than a
+skip.
+
 ## Recovery
 
 The recovery key is an independent path and nothing here ever touches its keyslot.
