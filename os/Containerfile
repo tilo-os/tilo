@@ -701,5 +701,13 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/frozen-repo \
     test -s "/usr/lib/modules/$kver/initramfs.img"; \
     dnf clean all
 
+# Boot-chain invariants, asserted at BUILD time so the image cannot ship in the
+# state it once did: offering `qos-install --encrypt` while carrying no
+# initramfs, which leaves the kernel able to see the LUKS device and unable to
+# open it. Also bundled so an operator can re-run it on a live machine.
+COPY os/tests/boot_chain_invariants.sh /usr/libexec/qos/boot-chain-test.sh
+RUN chmod 0755 /usr/libexec/qos/boot-chain-test.sh \
+    && OS_ROOT=/ bash /usr/libexec/qos/boot-chain-test.sh
+
 # Validate
 RUN bootc container lint
