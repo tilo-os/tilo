@@ -1,7 +1,21 @@
 use crate::shell::state::WorkspaceTree;
 use std::path::{Path, PathBuf};
 
+/// Where the compositor persists its workspace tree.
+///
+/// `QOS_STATE_PATH` overrides it, and anything driving a compositor that
+/// is not the user's own session should set it. `dirs::config_dir()`
+/// reads `XDG_CONFIG_HOME` but **ignores a relative value**, so a
+/// harness that isolates itself with a relative path gets no isolation
+/// at all and writes into the real `~/.config/qos/state.json` — which is
+/// how a demo's workspaces, owned by identities the person at the
+/// machine cannot administer, ended up in a user's live session.
 pub fn state_json_path() -> PathBuf {
+    if let Ok(v) = std::env::var("QOS_STATE_PATH")
+        && !v.is_empty()
+    {
+        return PathBuf::from(v);
+    }
     dirs::config_dir()
         .map(|c| c.join("qos").join("state.json"))
         .unwrap_or_else(|| PathBuf::from("state.json"))
