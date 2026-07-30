@@ -248,6 +248,21 @@ pub trait Widget {
     /// layout even though the app itself never asked. Default no-op.
     fn on_fullscreen_changed(&mut self, _active: bool) {}
 
+    /// A widget's desired **global appearance** (theme + high-contrast +
+    /// reduced-motion + UI-scale + text-scale), polled by [`crate::app::App`]
+    /// each frame when [`crate::app::App::appearance_reconcile`] is enabled.
+    /// This is how a settings/appearance pane makes the user's choice re-scale
+    /// and re-theme the *running* app live, without the app needing a back-
+    /// channel to the host: the App walks the widget tree once per tick, and
+    /// the first widget returning `Some` wins.
+    ///
+    /// Level-triggered and idempotent — return the same value every frame while
+    /// the choice is unchanged; the App only re-themes when a field actually
+    /// differs from what is currently applied. Default `None` ("no opinion");
+    /// containers do NOT need to forward this — the App recurses through
+    /// [`Self::children`] itself.
+    fn appearance_intent(&self) -> Option<crate::theme::AppearanceIntent> { None }
+
     // --- Collab / DnD contract extensions ---
     /// Stable identity used to look up presence and permissions for this widget.
     /// Default: opt-out (no presence tracking).
