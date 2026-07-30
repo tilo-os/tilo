@@ -8,9 +8,12 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::Color;
 
+use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
+use ui::widget::Avatar;
 use ui::ColorCompat;
+use ui::Widget;
 
 use crate::app::{ChatApp, Hit, MenuTarget, AVATAR};
 use crate::model::{self, Attachment, ChannelKind, Message, Presence};
@@ -29,22 +32,13 @@ pub(crate) fn draw_avatar(
     color_idx: usize,
     status: Option<Presence>,
 ) {
+    // Peer colour comes from the per-peer palette index (deliberately distinct
+    // per identity, and shared with the workspace-tint colouring), so it's
+    // passed straight through; the disc + centred monogram are painted by the
+    // shared toolkit avatar so shape/placement match every other app's roster.
     let bg = palette_color(theme, color_idx);
-    fill_circle(scene, tf, center, r, bg);
-    let size = (r * 0.8) as f32;
-    let (tw, th) = tr.measure_weighted(initials, size, None, TextWeight::Semibold);
-    text(
-        scene,
-        tr,
-        tf,
-        initials,
-        size,
-        Color::WHITE,
-        center.x - tw as f64 / 2.0,
-        center.y - th as f64 / 2.0,
-        TextWeight::Semibold,
-        None,
-    );
+    let rect = Rect::new(center.x - r, center.y - r, center.x + r, center.y + r);
+    Avatar::draw_at(scene, tf, rect, initials, bg, theme, tr);
     if let Some(st) = status {
         let c = &theme.tokens.colors;
         let dot = match st {
@@ -952,26 +946,31 @@ impl ChatApp {
 
     // ------------------------------------------------------------ composer
     pub(crate) fn draw_composer(
-        &self,
+        &mut self,
         scene: &mut Scene,
         tf: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
+        presence: &PresenceCtx,
         hits: &mut Vec<(Rect, Hit)>,
     ) {
         let rect = self.composer_rect(tr);
-        let ch_name = self.channel(&self.active_channel).map(|c| c.name.clone()).unwrap_or_default();
-        let placeholder = format!("Message #{ch_name}");
         // While an inline message edit is in progress the caret lives in the
-        // editor, not the composer — don't paint a second one here.
+        // editor, not the composer.
         let focused = matches!(self.focus, crate::app::Focus::Main) && self.editing.is_none();
-        let caret = if focused { Some(self.caret) } else { None };
-        self.draw_input_box(
-            scene, tf, tr, theme, rect, &self.draft_main, &placeholder, caret, focused,
-            Hit::FocusMain, Hit::Send, Hit::ComposerEmoji(Point::new(rect.x1 - 220.0, rect.y0 - 8.0)), true, hits,
+        let send_enabled = !self.composer_main.value().trim().is_empty();
+        let inner = self.draw_input_box(
+            scene, tf, tr, theme, rect, send_enabled, focused, Hit::FocusMain, true, hits,
         );
+        self.composer_main.apply_layout_external(inner);
+        self.composer_main.set_focus(focused);
+        self.composer_main.draw(scene, tf, tr, theme, presence);
     }
 
+    /// Draw the composer box chrome — the rounded field, the attach `+`, the
+    /// emoji + send buttons — and record their hit regions. Returns the inner
+    /// rect the caller lays the composer [`TextInput`] into; the widget owns
+    /// the text, caret, selection, and placeholder inside it.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn draw_input_box(
         &self,
@@ -980,16 +979,12 @@ impl ChatApp {
         tr: &mut TextRenderer,
         theme: &Theme,
         rect: Rect,
-        value: &str,
-        placeholder: &str,
-        caret: Option<usize>,
+        send_enabled: bool,
         focused: bool,
         focus_hit: Hit,
-        send_hit: Hit,
-        emoji_hit: Hit,
         attach: bool,
         hits: &mut Vec<(Rect, Hit)>,
-    ) {
+    ) -> Rect {
         let c = &theme.tokens.colors;
         fill_round(scene, tf, rect, 14.0, c.neutral[2]);
         stroke_round(scene, tf, rect, 14.0, if focused { c.border_focus } else { c.border_standard }, if focused { 1.6 } else { 1.0 });
@@ -1007,43 +1002,29 @@ impl ChatApp {
 
         // right cluster: emoji + send
         let send = Rect::new(rect.x1 - 56.0, rect.center().y - 16.0, rect.x1 - 12.0, rect.center().y + 16.0);
-        let send_on = !value.trim().is_empty();
-        fill_round(scene, tf, send, 9.0, if send_on { c.accent[5] } else { c.surface_white_5 });
+        fill_round(scene, tf, send, 9.0, if send_enabled { c.accent[5] } else { c.surface_white_5 });
         let (sw, sh) = tr.measure("➤", 16.0, None);
-        text(scene, tr, tf, "➤", 16.0, if send_on { Color::WHITE } else { c.text_dim }, send.center().x - sw as f64 / 2.0, send.center().y - sh as f64 / 2.0, TextWeight::Regular, None);
+        text(scene, tr, tf, "➤", 16.0, if send_enabled { Color::WHITE } else { c.text_dim }, send.center().x - sw as f64 / 2.0, send.center().y - sh as f64 / 2.0, TextWeight::Regular, None);
         ChatApp::push_hit(hits, send, Hit::Send);
 
         let emoji = Rect::new(send.x0 - 40.0, rect.center().y - 16.0, send.x0 - 8.0, rect.center().y + 16.0);
         let (ew, eh) = tr.measure("🙂", 16.0, None);
         text(scene, tr, tf, "🙂", 16.0, c.text_dim, emoji.center().x - ew as f64 / 2.0, emoji.center().y - eh as f64 / 2.0, TextWeight::Regular, None);
         ChatApp::push_hit(hits, emoji, Hit::ComposerEmoji(Point::new(emoji.x0 - 140.0, rect.y0 - 8.0)));
-        let _ = emoji_hit; // anchor encoded above
 
-        // text / placeholder
-        let text_top = rect.y0 + 14.0;
-        let avail = (emoji.x0 - tx - 12.0).max(40.0) as f32;
-        if value.is_empty() {
-            label(scene, tr, tf, placeholder, 15.0, c.text_dim, tx, text_top);
-        } else {
-            text(scene, tr, tf, value, 15.0, c.text_primary, tx, text_top, TextWeight::Regular, Some(avail));
-        }
-        if let Some(ci) = caret {
-            let prefix = &value[..char_to_byte(value, ci)];
-            let cx = tx + tr.measure(prefix, 15.0, None).0 as f64;
-            let cx = cx.min(tx + avail as f64);
-            let car = Rect::new(cx, text_top, cx + 1.6, text_top + 19.0);
-            fill_rect(scene, tf, car, c.border_focus);
-        }
-        let _ = send_hit;
+        // Inner rect for the composer widget: from just after the attach glyph
+        // to just before the emoji button, filling the box vertically.
+        Rect::new(tx - 4.0, rect.y0 + 4.0, emoji.x0 - 8.0, rect.y1 - 4.0)
     }
 
     // ---------------------------------------------------------------- thread
     pub(crate) fn draw_thread(
-        &self,
+        &mut self,
         scene: &mut Scene,
         tf: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
+        presence: &PresenceCtx,
         hits: &mut Vec<(Rect, Hit)>,
     ) {
         let c = &theme.tokens.colors;
@@ -1097,12 +1078,14 @@ impl ChatApp {
 
         // thread composer
         let comp = Rect::new(panel.x0 + 12.0, panel.y1 - 60.0, panel.x1 - 12.0, panel.y1 - 12.0);
-        let focused = matches!(self.focus, crate::app::Focus::Thread);
-        let caret = if focused { Some(self.caret) } else { None };
-        self.draw_input_box(
-            scene, tf, tr, theme, comp, &self.draft_thread, "Reply…", caret, focused,
-            Hit::FocusThread, Hit::Send, Hit::ComposerEmoji(Point::new(comp.x0, comp.y0 - 200.0)), false, hits,
+        let focused = matches!(self.focus, crate::app::Focus::Thread) && self.editing.is_none();
+        let send_enabled = !self.composer_thread.value().trim().is_empty();
+        let inner = self.draw_input_box(
+            scene, tf, tr, theme, comp, send_enabled, focused, Hit::FocusThread, false, hits,
         );
+        self.composer_thread.apply_layout_external(inner);
+        self.composer_thread.set_focus(focused);
+        self.composer_thread.draw(scene, tf, tr, theme, presence);
     }
 
     #[allow(clippy::too_many_arguments)]

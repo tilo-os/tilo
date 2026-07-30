@@ -26,8 +26,13 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
     if let Some(out) = parse_shots_arg(&args) {
         // Headless screenshot: render the deterministic offline snapshot so
-        // the frame is fully populated without touching the engine.
-        render_shot_to_png(containers::app_root_offline(), DEFAULT_SHOTS_VIEWPORT, &out)?;
+        // the frame is fully populated without touching the engine. An optional
+        // `--scenario NAME` seeds a modal (confirm / prompt) into the frame.
+        let root = match parse_scenario_arg(&args) {
+            Some(scenario) => containers::app_root_shot(&scenario),
+            None => containers::app_root_offline(),
+        };
+        render_shot_to_png(root, DEFAULT_SHOTS_VIEWPORT, &out)?;
         return Ok(());
     }
 
@@ -52,6 +57,20 @@ fn parse_shots_arg(args: &[String]) -> Option<std::path::PathBuf> {
         }
         if let Some(rest) = arg.strip_prefix("--shots=") {
             return Some(std::path::PathBuf::from(rest));
+        }
+    }
+    None
+}
+
+/// Parse `--scenario NAME` (or `--scenario=NAME`) for a seeded `--shots` frame.
+fn parse_scenario_arg(args: &[String]) -> Option<String> {
+    let mut iter = args.iter().skip(1);
+    while let Some(arg) = iter.next() {
+        if arg == "--scenario" {
+            return iter.next().cloned();
+        }
+        if let Some(rest) = arg.strip_prefix("--scenario=") {
+            return Some(rest.to_string());
         }
     }
     None

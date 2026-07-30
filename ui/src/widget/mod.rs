@@ -285,6 +285,21 @@ pub trait Widget {
     /// Only the root widget is consulted.
     fn record_intent(&self) -> Option<crate::record::RecordCheckout> { None }
 
+    /// A widget's desired **global appearance** (theme + high-contrast +
+    /// reduced-motion + UI-scale + text-scale), polled by [`crate::app::App`]
+    /// each frame when [`crate::app::App::appearance_reconcile`] is enabled.
+    /// This is how a settings/appearance pane makes the user's choice re-scale
+    /// and re-theme the *running* app live, without the app needing a back-
+    /// channel to the host: the App walks the widget tree once per tick, and
+    /// the first widget returning `Some` wins.
+    ///
+    /// Level-triggered and idempotent — return the same value every frame while
+    /// the choice is unchanged; the App only re-themes when a field actually
+    /// differs from what is currently applied. Default `None` ("no opinion");
+    /// containers do NOT need to forward this — the App recurses through
+    /// [`Self::children`] itself.
+    fn appearance_intent(&self) -> Option<crate::theme::AppearanceIntent> { None }
+
     // --- Collab / DnD contract extensions ---
     /// Stable identity used to look up presence and permissions for this widget.
     /// Default: opt-out (no presence tracking).
@@ -309,6 +324,39 @@ pub trait Widget {
     }
     /// Which permission scope, if any, gates this widget. Default: no gating.
     fn permission_scope(&self) -> Option<PermissionScope> { None }
+
+    /// The tree of [`qos_actions::Resource`]s this widget currently has *open /
+    /// presented*, each with the actions it exports to Ctrl+K. An app's root
+    /// widget implements this to publish e.g. the playing video + its comments,
+    /// or the open book + its annotations; the CRDT `doc` is passed so a
+    /// provider can enumerate resources that live in the document (annotations).
+    ///
+    /// The [`App`](crate::app::App) collects the focused instance's tree each
+    /// frame ([`App::collect_resources`](crate::app::App::collect_resources)) to
+    /// scope its action palette. Default: nothing published.
+    fn resources(&self, _doc: &AutoCommit) -> Vec<qos_actions::Resource> {
+        Vec::new()
+    }
+
+    /// Searchable-content sources this widget folds into the unified Ctrl+K
+    /// palette, alongside its exported [`resources`](Self::resources) actions.
+    /// An app declares what it can *find* (its contacts, its files, …) by
+    /// returning a [`SearchProvider`](crate::search::SearchProvider) per kind;
+    /// their hits appear as navigable result groups. Activating one calls
+    /// [`activate_search_result`](Self::activate_search_result) with the row's
+    /// opaque `action_id`. Default: nothing searchable.
+    fn search_providers(&self) -> Vec<Box<dyn crate::search::SearchProvider>> {
+        Vec::new()
+    }
+
+    /// Navigate to the content a chosen search-provider row identifies. The
+    /// `action_id` is the opaque token the widget's own
+    /// [`SearchProvider`](crate::search::SearchProvider) emitted; the widget
+    /// resolves it back to the record and selects / opens it. This is
+    /// presentation (navigation), not a CRDT action — mutate the doc only if
+    /// selecting genuinely changes shared state. Default: no-op.
+    fn activate_search_result(&mut self, _action_id: &str, _doc: &mut AutoCommit, _path: &ObjId) {}
+
     fn accepts_drop(&self, _payload: &DragPayload) -> bool { false }
     fn on_drop(&mut self, _payload: DragPayload, _state: &mut AutoCommit, _path: &ObjId) {}
     fn wants_pointer_capture(&self) -> bool { false }
@@ -497,11 +545,11 @@ pub trait Widget {
 
 pub type Element = Box<dyn Widget>;
 
-mod button;      pub use button::Button;
+mod button;      pub use button::{Button, ButtonStyle, ButtonInteract, ButtonFace, face_colors};
 mod checkbox;    pub use checkbox::Checkbox;
 mod column;      pub use column::Column;
 mod row;         pub use row::Row;
-mod toggle;      pub use toggle::Toggle;
+mod toggle;      pub use toggle::{Toggle, ToggleFace, ToggleInteract, toggle_face_colors};
 mod stack;       pub use stack::Stack;
 mod container;   pub use container::Container;
 mod divider;     pub use divider::{Divider, DividerAxis};
@@ -544,6 +592,7 @@ mod spacer;      pub use spacer::Spacer;
 mod image;       pub use image::{Image, ImageFit, ImageDecodeError};
 mod slider;      pub use slider::Slider;
 mod text_input;  pub use text_input::TextInput;
+pub mod code_editor; pub use code_editor::{CodeEditor, Highlighter, HlState, Language, LineSpans, Span, TokenKind, token_color};
 mod editable_label; pub use editable_label::{EditableLabel, EditOutcome};
 mod number_input; pub use number_input::NumberInput;
 pub mod marks; pub use marks::{Mark, MarkSpan};
@@ -602,6 +651,7 @@ pub mod color_picker;     pub use color_picker::ColorPicker;
 pub mod popover_widget;   pub use popover_widget::PopoverWidget;
 pub mod popover;          pub use popover::Popover;
 pub mod modal_dialog;     pub use modal_dialog::ModalDialog;
+pub mod modal_prompt;     pub use modal_prompt::PromptBody;
 pub mod toolbar;          pub use toolbar::Toolbar;
 pub mod breadcrumb;       pub use breadcrumb::Breadcrumb;
 pub mod avatar;           pub use avatar::Avatar;
@@ -614,7 +664,7 @@ pub mod video_player;     pub use video_player::VideoPlayer;
 pub mod webview;          pub use webview::WebView;
 pub mod image_viewer;     pub use image_viewer::ImageViewer;
 pub mod tree_view;        pub use tree_view::TreeView;
-pub mod toggle_group;     pub use toggle_group::ToggleGroup;
+pub mod toggle_group;     pub use toggle_group::{ToggleGroup, SegmentedFace, SegmentedStyle, segment_colors};
 
 // === Shared app patterns promoted from the app fleet + new primitives ======
 // Widgets that many apps hand-rolled (empty states, search boxes, stat tiles)

@@ -30,7 +30,7 @@ use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use ui::ColorCompat;
-use ui::widget::{FlapState, PushPane, SplitLayout};
+use ui::widget::{Button, ButtonFace, ButtonStyle, FlapState, PushPane, SplitLayout};
 
 use crate::doc::SnippetsDoc;
 use crate::draw;
@@ -1554,24 +1554,17 @@ impl SnippetsApp {
         primary: bool,
         action: Action,
     ) -> f64 {
-        let c = &theme.tokens.colors;
         let tw = tr.measure(label, 13.0, None).0 as f64;
         let w = tw + 24.0;
         let rect = Rect::new(x, y, x + w, y + 32.0);
         let hovered = rect.contains(self.last_mouse);
-        let (bg, fg) = if primary {
-            (if hovered { c.accent[4] } else { c.accent[5] }, c.text_primary)
-        } else if hovered {
-            (c.surfaces.raised, c.text_primary)
-        } else {
-            (c.neutral[2], c.neutral[7])
-        };
-        draw::fill_round(scene, t, rect, theme.radii_md(), bg);
-        if !primary {
-            draw::stroke_round(scene, t, rect, theme.radii_md(), 1.0, c.border_standard);
-        }
-        let ty = y + (32.0 - 14.0) / 2.0;
-        draw::text(scene, tr, t, label, x + 12.0, ty, 13.0, fg, TextWeight::Semibold);
+        let face = ButtonFace::new(rect, label)
+            .radius(theme.radii_md())
+            .text_size(13.0)
+            .weight(TextWeight::Semibold)
+            .hovered(hovered)
+            .style(if primary { ButtonStyle::Primary } else { ButtonStyle::Neutral });
+        Button::paint(scene, t, tr, theme, &face);
         self.record(rect, action);
         rect.x1 + 8.0
     }

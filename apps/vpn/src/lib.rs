@@ -37,3 +37,11 @@ pub fn app_root() -> Box<dyn Widget> {
 pub fn app_root_demo() -> Box<dyn Widget> {
     Box::new(VpnApp::new_demo())
 }
+
+/// Sample-seeded app with the action confirm dialog open, for a deterministic
+/// `--shots` frame.
+pub fn app_root_demo_confirm() -> Box<dyn Widget> {
+    let mut app = VpnApp::new_demo();
+    app.seed_shot_confirm();
+    Box::new(app)
+}

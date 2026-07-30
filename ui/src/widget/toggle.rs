@@ -88,6 +88,120 @@ impl Toggle {
     }
 }
 
+/// Interaction state for an immediate-mode toggle face. The retained
+/// [`Toggle`] tracks these itself; an immediate-mode caller (a canvas app
+/// that owns its own hit-testing) passes what it knows — usually just
+/// `hovered`, derived from the last cursor position.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct ToggleInteract {
+    pub hovered: bool,
+    pub focused: bool,
+    pub disabled: bool,
+}
+
+/// Resolve the `(track, knob, border, border_width)` colours for a switch in
+/// a given on/off + interaction state. The single source of truth for both
+/// the retained [`Toggle`]'s draw and the immediate-mode [`Toggle::paint`] —
+/// so every switch across the OS shares one palette per state.
+pub fn toggle_face_colors(
+    theme: &Theme,
+    on: bool,
+    interact: ToggleInteract,
+) -> (vello::peniko::Color, vello::peniko::Color, vello::peniko::Color, f64) {
+    let track = if on {
+        // On-state = active fill (indigo-500); indigo-600 is reserved for hover.
+        theme.accent_primary
+    } else {
+        theme.tokens.colors.neutral[3]
+    };
+    let knob = if interact.hovered {
+        theme.text_primary
+    } else {
+        theme.text_dim
+    };
+    let (border, border_w) = if interact.focused {
+        (theme.border_focus, 2.0)
+    } else {
+        (theme.tokens.colors.border_standard, 1.0)
+    };
+    (track, knob, border, border_w)
+}
+
+/// Configuration for [`Toggle::paint`], the immediate-mode switch face.
+/// Built fluently: `ToggleFace::new(rect, on).hovered(hit)`. The knob scales
+/// to the rect height so callers can paint switches of any size while keeping
+/// the retained widget's proportions.
+pub struct ToggleFace {
+    rect: Rect,
+    on: bool,
+    interact: ToggleInteract,
+}
+
+impl ToggleFace {
+    pub fn new(rect: Rect, on: bool) -> Self {
+        Self { rect, on, interact: ToggleInteract::default() }
+    }
+    pub fn hovered(mut self, v: bool) -> Self { self.interact.hovered = v; self }
+    pub fn focused(mut self, v: bool) -> Self { self.interact.focused = v; self }
+    pub fn disabled(mut self, v: bool) -> Self { self.interact.disabled = v; self }
+    /// The resolved `(track, knob, border, border_width)` palette for the
+    /// current state, without painting. Exposed for tests and callers.
+    pub fn colors(&self, theme: &Theme) -> (vello::peniko::Color, vello::peniko::Color, vello::peniko::Color, f64) {
+        toggle_face_colors(theme, self.on, self.interact)
+    }
+}
+
+impl Toggle {
+    /// Immediate-mode paint of a themed switch inside `face.rect`, matching
+    /// the retained [`Toggle`]'s look (track fill on/off, focus ring, knob
+    /// slid to the on/off edge, disabled dim). For canvas/immediate-mode apps
+    /// that own their own rect hit-testing: call this to paint, keep your
+    /// existing hit-test to fire the toggle. Extends the widget rather than
+    /// forking a second painter — the retained draw and every converted app
+    /// now share [`toggle_face_colors`].
+    pub fn paint(
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        face: &ToggleFace,
+    ) {
+        let (track, knob, border, border_w) = toggle_face_colors(theme, face.on, face.interact);
+        let radius = face.rect.height() / 2.0;
+        let track_shape = RoundedRect::from_rect(face.rect, radius);
+        let dim = face.interact.disabled;
+        if dim {
+            scene.push_layer(
+                vello::peniko::Fill::NonZero,
+                vello::peniko::BlendMode::default(),
+                crate::widget::DISABLED_ALPHA,
+                transform,
+                &track_shape,
+            );
+        }
+        scene.fill(vello::peniko::Fill::NonZero, transform, track, None, &track_shape);
+        scene.stroke(&Stroke::new(border_w), transform, border, None, &track_shape);
+        // Knob: radius scaled to the rect with a 2-px edge gap, matching the
+        // retained widget's proportions at its 44×24 default (knob r = 10).
+        let kr = (radius - 2.0).max(1.0);
+        let cy = face.rect.y0 + face.rect.height() / 2.0;
+        let cx = if face.on {
+            face.rect.x1 - kr - 2.0
+        } else {
+            face.rect.x0 + kr + 2.0
+        };
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            transform,
+            knob,
+            None,
+            &Circle::new(Point::new(cx, cy), kr),
+        );
+        if dim {
+            scene.pop_layer();
+        }
+    }
+}
+
 impl Widget for Toggle {
     fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
         if let Ok(Some((val, _))) = state.get(root, self.on_toggle_path.as_str()) {
@@ -129,24 +243,20 @@ impl Widget for Toggle {
             let clip = RoundedRect::from_rect(self.rect, theme.tokens.radii.full as f64);
             scene.push_layer(vello::peniko::Fill::NonZero, vello::peniko::BlendMode::default(), crate::widget::DISABLED_ALPHA, transform, &clip);
         }
-        let track_color = if self.is_checked {
-            // On-state = active fill — concept renders the on-state at
-            // indigo-500 and reserves indigo-600 for hover.
-            theme.accent_primary
-        } else {
-            theme.tokens.colors.neutral[3]
+        // Palette resolved from the shared source of truth so the retained
+        // switch and every immediate-mode `Toggle::paint` caller stay in lock-step.
+        let interact = ToggleInteract {
+            hovered: self.is_hovered,
+            focused: self.is_focused,
+            disabled,
         };
+        let (track_color, knob_color, stroke_color, stroke_w) =
+            toggle_face_colors(theme, self.is_checked, interact);
 
         let track_shape = RoundedRect::from_rect(self.rect, theme.tokens.radii.full as f64);
         scene.fill(vello::peniko::Fill::NonZero, transform, track_color, None, &track_shape);
 
-        let stroke_color = if self.is_focused {
-            theme.border_focus
-        } else {
-            theme.tokens.colors.border_standard
-        };
-
-        scene.stroke(&Stroke::new(if self.is_focused { 2.0 } else { 1.0 }), transform, stroke_color, None, &track_shape);
+        scene.stroke(&Stroke::new(stroke_w), transform, stroke_color, None, &track_shape);
 
         // Knob
         let knob_radius = 10.0;
@@ -156,13 +266,7 @@ impl Widget for Toggle {
             self.rect.x0 + knob_radius + 2.0
         };
         let knob_y = self.rect.y0 + self.rect.height() / 2.0;
-        
-        let knob_color = if self.is_hovered {
-            theme.text_primary
-        } else {
-            theme.text_dim
-        };
-        
+
         let knob_shape = Circle::new(Point::new(knob_x, knob_y), knob_radius);
         scene.fill(vello::peniko::Fill::NonZero, transform, knob_color, None, &knob_shape);
 
@@ -356,6 +460,43 @@ mod tests {
         assert_eq!(
             Widget::accessibility(&named).unwrap().name.as_deref(),
             Some("Airplane mode"),
+        );
+    }
+
+    #[test]
+    fn toggle_face_colors_track_tracks_on_state() {
+        let theme = Theme::dark();
+        let off = toggle_face_colors(&theme, false, ToggleInteract::default());
+        let on = toggle_face_colors(&theme, true, ToggleInteract::default());
+        assert_eq!(on.0, theme.accent_primary, "on-track is the accent fill");
+        assert_eq!(off.0, theme.tokens.colors.neutral[3], "off-track is neutral");
+        assert_ne!(on.0, off.0, "on and off tracks must differ");
+    }
+
+    #[test]
+    fn toggle_face_colors_focus_swaps_border_and_weight() {
+        let theme = Theme::high_contrast();
+        let rest = toggle_face_colors(&theme, true, ToggleInteract::default());
+        let focused = toggle_face_colors(
+            &theme,
+            true,
+            ToggleInteract { focused: true, ..Default::default() },
+        );
+        assert_eq!(focused.2, theme.border_focus, "focused border is the focus ring colour");
+        assert_eq!(focused.3, 2.0, "focused border is 2px");
+        assert_eq!(rest.2, theme.tokens.colors.border_standard);
+        assert_eq!(rest.3, 1.0);
+    }
+
+    #[test]
+    fn toggle_face_matches_shared_colors() {
+        // The immediate-mode face resolves through the same source of truth
+        // as the retained widget, so a face's palette equals the free fn.
+        let theme = Theme::dark();
+        let face = ToggleFace::new(Rect::new(0.0, 0.0, 44.0, 24.0), true).hovered(true);
+        assert_eq!(
+            face.colors(&theme),
+            toggle_face_colors(&theme, true, ToggleInteract { hovered: true, ..Default::default() }),
         );
     }
 
