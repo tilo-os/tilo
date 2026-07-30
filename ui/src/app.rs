@@ -403,6 +403,17 @@ pub struct App {
     /// pre-existing behaviour, kept for examples, tests and the shell's
     /// hosted chrome, none of which own a package id.
     autosave: Option<crate::persist::Autosave>,
+    /// The records this app has open, installed by [`App::with_records`].
+    ///
+    /// When present, the live document is *one record's* document rather
+    /// than the app's whole state, and the root widget names which one via
+    /// [`crate::widget::Widget::record_intent`]. `None` — every app that has
+    /// not adopted records — behaves exactly as before.
+    records: Option<crate::record::RecordSet>,
+    /// The room index that goes with `records`: which records this room
+    /// holds. Kept beside the live document rather than inside it, because it
+    /// is a fact about the room and not about any one record.
+    room_index: Option<automerge::AutoCommit>,
 }
 
 impl App {
@@ -461,6 +472,8 @@ impl App {
             fullscreen_requested: false,
             fullscreen_active: false,
             autosave: None,
+            records: None,
+            room_index: None,
         };
 
         // Seed the low-vision preferences from the environment so a sandbox
@@ -1944,13 +1957,97 @@ impl App {
         self
     }
 
+    /// Make this App's live document a **record's** document.
+    ///
+    /// `records` owns the per-record documents and their persistence;
+    /// `room_index` is the room's list of which records it holds — normally
+    /// the document [`crate::persist::open`] hands back, since that document
+    /// already is per-room state. The root widget names the record it is on
+    /// via [`crate::widget::Widget::record_intent`] and the App checks it out
+    /// before the next `sync`.
+    ///
+    /// Pair it with [`App::with_autosave`] only if the room index itself
+    /// should be persisted — the records persist through `records`, not
+    /// through the App's autosave, so the two are not alternatives.
+    pub fn with_records(
+        mut self,
+        records: crate::record::RecordSet,
+        room_index: automerge::AutoCommit,
+    ) -> Self {
+        self.records = Some(records);
+        self.room_index = Some(room_index);
+        self
+    }
+
+    /// The records this App has open, if it adopted them.
+    pub fn records(&self) -> Option<&crate::record::RecordSet> {
+        self.records.as_ref()
+    }
+
+    /// The room index this App writes record references into.
+    pub fn room_index(&self) -> Option<&automerge::AutoCommit> {
+        self.room_index.as_ref()
+    }
+
+    /// Check out the record the root widget names, if it differs from the
+    /// live one.
+    ///
+    /// Runs once per frame, before `sync`, so a widget that opened a file
+    /// during the previous frame is editing that file's own document by the
+    /// time it next reads state. On a change the collaboration channel is
+    /// re-announced: the record is the routing key, so a checkout is a change
+    /// of address, and continuing to publish this document's deltas under the
+    /// previous record's name is what "opening a second file merged the
+    /// first" was made of.
+    ///
+    /// Returns whether the live document changed.
+    pub fn record_tick(&mut self) -> bool {
+        let Some(set) = self.records.as_mut() else {
+            return false;
+        };
+        let switched = crate::record::tick(
+            set,
+            &mut self.state,
+            self.room_index.as_mut(),
+            &*self.root_widget,
+        );
+        match switched {
+            Some(id) => {
+                self.collab_manager = CollaborationManager::for_record(&id);
+                // The freshly-adopted document has not been through `sync`,
+                // and the widget's caches still describe the outgoing one.
+                self.needs_sync = true;
+                self.layout_dirty = true;
+                true
+            }
+            None => false,
+        }
+    }
+
     /// Offer the current document to the background writer.
     ///
     /// Called once per idle tick. Cheap when nothing changed: comparing two
     /// head vectors, no serialisation and no I/O.
     fn autosave_tick(&mut self) {
-        if let Some(saver) = self.autosave.as_mut() {
-            saver.request(&mut self.state.doc);
+        // With records in play the live document belongs to a record and is
+        // written through that record's own store; the App's autosave (when
+        // installed alongside) writes the room index instead. Sending the
+        // live document to both would put a record's content into the room
+        // index file.
+        match self.records.as_mut() {
+            Some(set) => {
+                set.tick(&mut self.state.doc);
+                if let (Some(saver), Some(room)) =
+                    (self.autosave.as_mut(), self.room_index.as_mut())
+                {
+                    saver.request(room);
+                }
+            }
+            None => {
+                if let Some(saver) = self.autosave.as_mut() {
+                    saver.request(&mut self.state.doc);
+                }
+            }
         }
     }
 
@@ -1958,6 +2055,14 @@ impl App {
     /// event-loop teardown so a `kill` right after the last keystroke still
     /// finds it on disk.
     fn autosave_flush(&mut self) {
+        if let Some(set) = self.records.as_mut() {
+            set.flush(&mut self.state.doc);
+            if let (Some(saver), Some(room)) = (self.autosave.as_mut(), self.room_index.as_mut()) {
+                saver.request(room);
+                saver.flush();
+            }
+            return;
+        }
         if let Some(saver) = self.autosave.as_mut() {
             saver.request(&mut self.state.doc);
             saver.flush();
@@ -2398,6 +2503,11 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                 // produced a `Resized` event, or one that coalesced) and
                 // reflow without waiting on stray input.
                 app.last_frame_size = Some(inner);
+
+                // Records first: if the root widget opened a different
+                // record, the document it is about to sync against is that
+                // record's, not the outgoing one's.
+                app.record_tick();
 
                 if app.needs_sync {
                     app.root_widget.sync(&mut app.state.doc, &app.state.root);
