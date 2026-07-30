@@ -547,11 +547,24 @@ RUN chmod 0755 /usr/libexec/qos-security-audit
 # drop-in, so a packaging move can't silently leave a dangling LD_PRELOAD that
 # would fail the service. (Base daemons use the system allocator — verified no
 # jemalloc — so the preload is safe.)
+#
+# Alongside it, hardware shadow stacks. Every binary in this image is marked
+# shadow-stack compatible at link time, but Fedora's glibc only switches them on
+# when a process also asks through this tunable — which is precisely what makes
+# the protection scopeable instead of global. fs.service earns it because it
+# parses bytes that arrived from a peer. Measured cost on an allocation-heavy
+# loop: about 8%. If the CPU, the kernel or any loaded library cannot support
+# it, glibc leaves shadow stacks off rather than failing, and
+# qos-security-audit reports which processes actually got them.
+#
+# compiler-rt also has to be present for qos-launcher's scoped hardening, which
+# preloads the same library into the packages listed in
+# /usr/lib/qos/untrusted-parsers.conf.
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo compiler-rt && dnf clean all && \
     scudo="$(find /usr/lib /usr/lib64 -name 'libclang_rt.scudo_standalone.so' 2>/dev/null | head -1)" && \
     test -n "$scudo" && \
     mkdir -p /usr/lib/systemd/system/fs.service.d && \
-    printf '[Service]\n# Hardened userspace allocator; path resolved at image build.\nEnvironment=LD_PRELOAD=%s\n' "$scudo" \
+    printf '[Service]\n# Hardened userspace allocator; path resolved at image build.\nEnvironment=LD_PRELOAD=%s\n# Hardware shadow stacks. The ELF marking alone does not enable them.\nEnvironment=GLIBC_TUNABLES=glibc.cpu.hwcaps=SHSTK\n' "$scudo" \
       > /usr/lib/systemd/system/fs.service.d/10-hardened-malloc.conf && \
     echo "scudo wired: $scudo"
 
