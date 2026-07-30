@@ -1150,6 +1150,30 @@ impl TextInput {
         out
     }
 
+    /// Test-only: the coloured draw segments for every visual row, exactly as
+    /// [`draw_multiline_body`] paints them (same `row_segments` + `token_color`
+    /// path). Requires a prior `draw` to have built the visual lines + the
+    /// highlight cache. Lets `CodeEditor`'s tests assert that highlighter spans
+    /// reach the real renderer as themed colours.
+    #[cfg(test)]
+    pub(crate) fn code_row_colors(
+        &self,
+        theme: &Theme,
+    ) -> Vec<(String, vello::peniko::Color)> {
+        let text_color = if self.disabled { theme.text_dim } else { theme.text_primary };
+        let mut cur_line = 0usize;
+        let mut out = Vec::new();
+        for i in 0..self.lines.len() {
+            if i > 0 && self.lines[i - 1].hard_break {
+                cur_line += 1;
+            }
+            for (t, _x, c) in self.row_segments(i, cur_line, text_color, theme) {
+                out.push((t, c));
+            }
+        }
+        out
+    }
+
     /// One-shot read of user edits. Returns `Some(text)` if any
     /// user-initiated edit has landed since the last call, else
     /// `None`. The dirty flag is cleared.
