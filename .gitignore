@@ -31,3 +31,15 @@ keys/*.private.pem
 # runtime CRDT session artifacts (e.g. ui/examples write session.crdt)
 *.crdt
 .claude/test-scratch/
+# Local build infrastructure and feature worktrees. These live under
+# .claude so they travel with the checkout, but none of them belong in
+# history: the sccache alone is ~11 GB, and .claude/qos is a nested
+# clone that a fresh clone of this repo could never populate.
+.claude/qos/
+.claude/qos-sccache/
+.claude/qos-build-sem/
+.claude/qos-target/
+.claude/qos-tools/
+.claude/worktrees/
+.claude/app-status.md
+.claude/*.log
