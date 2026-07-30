@@ -117,7 +117,10 @@ pub fn match_score(
         return Some((0, None));
     }
     if title_lower.starts_with(needle_lower) {
-        return Some((MAX_SCORE, snippet_around(body_raw, body_lower, needle_lower)));
+        return Some((
+            MAX_SCORE,
+            snippet_around(body_raw, body_lower, needle_lower),
+        ));
     }
     if title_lower.contains(needle_lower) {
         return Some((60, snippet_around(body_raw, body_lower, needle_lower)));
@@ -131,6 +134,10 @@ pub fn match_score(
 /// Extract ~60 chars of context around the first `needle` match in the
 /// body. Returns the raw slice, prefixed/suffixed with `…` when the
 /// snippet is windowed.
+///
+/// The body's own line structure is flattened to single spaces — a
+/// paragraph break is two newlines, and passing those through left a
+/// visible gap mid-sentence in the palette row.
 fn snippet_around(body_raw: &str, body_lower: &str, needle: &str) -> Option<String> {
     if body_raw.is_empty() {
         return None;
@@ -143,11 +150,16 @@ fn snippet_around(body_raw: &str, body_lower: &str, needle: &str) -> Option<Stri
     if start > 0 {
         s.push('…');
     }
-    s.push_str(&body_raw[start..end]);
+    s.push_str(
+        &body_raw[start..end]
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" "),
+    );
     if end < body_raw.len() {
         s.push('…');
     }
-    Some(s.replace('\n', " "))
+    Some(s)
 }
 
 fn ceil_char_boundary(s: &str, mut i: usize) -> usize {
@@ -159,13 +171,7 @@ fn ceil_char_boundary(s: &str, mut i: usize) -> usize {
 
 /// Enter on a result: switch workspace, strip and group, and make the
 /// tab the active one.
-fn focus_tab(
-    chrome: &Chrome,
-    workspace: WorkspaceId,
-    strip: StripId,
-    group: GroupId,
-    tab: TabId,
-) {
+fn focus_tab(chrome: &Chrome, workspace: WorkspaceId, strip: StripId, group: GroupId, tab: TabId) {
     let mut st = chrome.borrow_mut();
     {
         let mut tree = st.tree_mut();
