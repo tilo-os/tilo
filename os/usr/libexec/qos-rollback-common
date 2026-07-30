@@ -1,0 +1,87 @@
+#!/usr/bin/bash
+# Shared helpers for the qos-rollback units. Sourced, not executed.
+#
+# Everything here is about answering two questions without guessing:
+#   * which block device holds the encrypted root, and
+#   * is this machine actually healthy enough to discard its fallback.
+
+log()  { printf 'qos-rollback: %s\n' "$*"; }
+warn() { printf 'qos-rollback: WARNING: %s\n' "$*" >&2; }
+die()  { printf 'qos-rollback: %s\n' "$*" >&2; exit 1; }
+
+# The LUKS2 backing device of the root filesystem, or empty when root is not
+# encrypted.
+#
+# Discovery is by content, not by configuration: find the device-mapper name the
+# root filesystem sits on, then ask cryptsetup what is underneath it. Reading
+# /etc/crypttab would tell us what was *intended*; this tells us what is.
+rollback_luks_device() {
+  local src dm base
+  # Under ostree the real root is /sysroot early on and / later; try both.
+  src="$(findmnt -nro SOURCE /sysroot 2>/dev/null | sed 's/\[.*//' | head -1)"
+  [ -n "$src" ] || src="$(findmnt -nro SOURCE / 2>/dev/null | sed 's/\[.*//' | head -1)"
+  [ -n "$src" ] || return 0
+  case "$src" in
+    /dev/mapper/*) dm="${src#/dev/mapper/}" ;;
+    *)
+      # btrfs on a plain partition, or a subvolume of one — not encrypted.
+      return 0
+      ;;
+  esac
+  base="$(cryptsetup status "$dm" 2>/dev/null | awk '$1=="device:"{print $2}')"
+  [ -n "$base" ] || return 0
+  # Confirm it really is LUKS before handing it to anything destructive.
+  cryptsetup isLuks "$base" 2>/dev/null || return 0
+  printf '%s\n' "$base"
+}
+
+# Is there a keyslot on $1 that no qos-rollback token claims?
+#
+# That is the recovery key's slot (and any systemd-cryptenroll slot). Its
+# presence is the precondition for touching the TPM's lockout settings: doing so
+# makes a forgotten PIN unrecoverable without it.
+rollback_has_independent_keyslot() {
+  local dev="$1" all ours
+  all="$(cryptsetup luksDump "$dev" 2>/dev/null | sed -n '/^Keyslots:/,/^Tokens:/p' \
+        | grep -oE '^  [0-9]+:' | tr -d ' :')"
+  ours="$(qos-rollback status --device "$dev" --json 2>/dev/null || true)"
+  [ -n "$all" ] || return 1
+  # A machine with two or more keyslots always has something besides the single
+  # generation slot; with exactly one, it is ours only if a token claims it.
+  local count
+  count="$(printf '%s\n' "$all" | grep -c .)"
+  if [ "$count" -gt 1 ]; then return 0; fi
+  case "$ours" in *'"enrolled_generations":[]'*) return 0 ;; esac
+  return 1
+}
+
+# Refuse to discard the fallback unless the machine is demonstrably usable.
+#
+# Each check exists because a machine that fails it is one you want to be able to
+# roll back FROM. `is-system-running` reporting `degraded` means some unit failed
+# on this boot, which is exactly the situation where the previous generation
+# should stay bootable.
+rollback_system_is_healthy() {
+  local state
+  state="$(systemctl is-system-running 2>/dev/null || true)"
+  case "$state" in
+    running) : ;;
+    *)
+      warn "system state is '$state', not 'running' — not confirming this generation"
+      systemctl --failed --no-legend --plain 2>/dev/null | sed 's/^/qos-rollback:   failed: /'
+      return 1
+      ;;
+  esac
+  if ! systemctl is-active --quiet greetd.service; then
+    warn "greetd is not active — the session never came up, so this generation is not confirmed"
+    return 1
+  fi
+  return 0
+}
+
+# The generation number of the running system, from the sealed command line.
+rollback_running_generation() {
+  local g
+  g="$(tr ' ' '\n' < /proc/cmdline | sed -n 's/^qos\.generation=//p' | head -1)"
+  printf '%s\n' "$g"
+}
