@@ -9,6 +9,10 @@ reference any of this.
 Severity: **P0** = exploitable or silently produces invalid security state. **P1** = a documented
 guarantee is not delivered. **P2** = correctness/hygiene.
 
+Findings that have since been fixed carry a **Resolved** note naming the test that holds the fix
+in place. The description of the defect is left as it was written, so the record still says what
+was wrong.
+
 ---
 
 ## P0-1 — The identity ceremony persists a key that cannot sign
@@ -32,6 +36,15 @@ ceremony-minted identities are not, with the same on-disk format and no way to t
 
 **Fix direction:** add the key-extraction helper to `threshold-identity`, delete the placeholder
 branch, and make the mismatch fatal in `runtime-identity` rather than advisory.
+
+**Resolved.** `ThresholdIdentity` holds the single-device key in dalek form and exports its seed;
+the ceremony persists that seed, and `IdentityRecord::into_threshold_identity` refuses a record
+whose secret does not derive its recorded public key. The mismatch is fatal in `runtime-identity`
+in every build profile. Firstboot now goes through the same encoder, so there is one writer of
+the format. Held by
+`ui/src/widget/identity_flow/mod.rs::tests::ceremony_minted_record_signs_for_its_own_recorded_public_key`
+and
+`crates/runtime/runtime-identity/src/lib.rs::tests::secret_that_does_not_derive_the_recorded_pubkey_is_refused`.
 
 ---
 
@@ -73,6 +86,13 @@ Consequences:
   written against the default subject is dead on the next boot**.
 - The node-id-reuse guard at `fs/src/namespace.rs:147-152` ("a restart with the same author can't
   reuse a node id") never engages, because the author is never the same twice.
+
+**Resolved.** The mount binds under the machine's device key, so the `NodeId` *is* the device's
+Ed25519 public key and is unchanged across a remount; a device key that will not load fails the
+mount rather than falling back to a random one. `bind_endpoint` is split into
+`bind_endpoint_with_key` and `bind_ephemeral_endpoint` so the random-identity path is named at
+every call site. Held by `fs/src/identity.rs::tests::bound_endpoint_is_named_by_the_device_key`
+and `::identity_survives_a_restart`.
 
 ---
 
@@ -176,12 +196,28 @@ public key, and it is used as the `PeerIdentityStore` key. 64 bits is collision-
 newer `PeerOrigin` (`shell/src/shell/state.rs:109-127`) correctly carries the full base58 peer id —
 the fold is the older path.
 
+**Resolved.** `PeerIdentityStore` keys on `PeerOrigin`. The `u64` that remains on the wire is named
+`peer_liveness_handle`, never reaches an authority decision, and has one derivation shared by the
+actor and the shell instead of two copies of `DefaultHasher` — whose output std does not promise
+across Rust releases, so two peers on different toolchains would have stopped recognising each
+other's publishes. Held by
+`shell/src/network/identity.rs::tests::distinct_peers_never_share_an_entry` and
+`shell/src/network/behaviour.rs::tests::peer_liveness_handle_is_pinned_to_the_peer_id`.
+
 ## P2-2 — Corrupt peer-key file silently rotates identity
 
 `shell/src/network/behaviour.rs:122-127` — if `/var/lib/qos-fs/peer-key` exists but does not parse,
 it is overwritten with a fresh keypair rather than raising. Identity loss becomes indistinguishable
 from first run. The same function documents a known TOCTOU window between write and `chmod 0600`
 (`:142-146`).
+
+**Resolved.** An unreadable key file propagates as an error with the bytes left on disk, and the
+compositor leaves peer sync off rather than syncing an unsalted id space. The key itself is now the
+machine's one device key, so the compositor no longer keeps a network identity of its own; an
+existing installation's libp2p keypair is adopted seed-and-all so the machine keeps its `PeerId`.
+The write goes through an atomic write-with-mode, closing the TOCTOU window. Held by
+`shell/src/network/behaviour.rs::tests::unreadable_key_file_raises_instead_of_rotating_identity`
+and `::key_reachable_outside_the_trust_group_raises_instead_of_rotating`.
 
 ## P2-3 — Revocation is modelled but undeliverable
 
