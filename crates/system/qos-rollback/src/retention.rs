@@ -74,27 +74,50 @@ pub fn plan_floor(
     })
 }
 
+/// How many generations *newer* than the running one keep their keyslot.
+///
+/// At least one, always, and this is the sharp edge: staging an update seals the
+/// incoming generation's keyslot before the reboot, so at the moment generation
+/// `N` is confirmed there is normally a sealed keyslot for `N+1` sitting in the
+/// header. Treating "newer than the running generation" as stale — which reads
+/// perfectly reasonably, and is what this code did first — deletes the keyslot the
+/// *next* boot depends on, and that boot lands on the recovery key.
+///
+/// Two rather than one leaves room for a second update staged while the first is
+/// still unconfirmed. Beyond that they are pruned oldest-first: a generation newer
+/// than the running one that is not among the newest two is one that was staged,
+/// superseded, and never booted, and re-staging it would seal a fresh keyslot
+/// anyway.
+pub const RETAINED_NEWER_GENERATIONS: usize = 2;
+
 /// Generations whose sealed keyslot should be kept, newest first, when
-/// generation `current` is enrolled.
+/// generation `current` is enrolled or confirmed.
+///
+/// Two groups, kept for different reasons:
+///
+/// * up to [`RETAINED_NEWER_GENERATIONS`] generations *newer* than `current` —
+///   the staged update whose keyslot the next boot needs;
+/// * the `retained_generations` newest at or below `current` — the rollback
+///   window itself.
 pub fn keep_set(current: u64, present: &[u64], retained_generations: u32) -> Vec<u64> {
-    let mut all: Vec<u64> = present.iter().copied().filter(|g| *g <= current).collect();
+    let mut all: Vec<u64> = present.to_vec();
     if !all.contains(&current) {
         all.push(current);
     }
     all.sort_unstable_by(|a, b| b.cmp(a));
     all.dedup();
-    all.truncate(retained_generations as usize);
-    all
+
+    let mut newer: Vec<u64> = all.iter().copied().filter(|g| *g > current).collect();
+    newer.truncate(RETAINED_NEWER_GENERATIONS);
+    let mut window: Vec<u64> = all.into_iter().filter(|g| *g <= current).collect();
+    window.truncate(retained_generations as usize);
+
+    newer.extend(window);
+    newer
 }
 
-/// Generations whose sealed keyslot should be removed.
-///
-/// Anything outside the keep set: too old, or — importantly — *newer* than the
-/// generation being enrolled. A token for a generation newer than the running
-/// one is the residue of an update that was rolled back; leaving it in the
-/// header is harmless for unsealing (its policy will not be satisfied while an
-/// older generation runs) but it consumes a keyslot and misrepresents the
-/// machine's state to [`crate::confirm`], so it goes.
+/// Generations whose sealed keyslot should be removed: anything outside
+/// [`keep_set`].
 pub fn drop_set(current: u64, present: &[u64], retained_generations: u32) -> Vec<u64> {
     let keep = keep_set(current, present, retained_generations);
     let mut out: Vec<u64> = present
@@ -217,16 +240,25 @@ mod tests {
     }
 
     #[test]
-    fn keep_set_ignores_generations_newer_than_the_current_one() {
-        assert_eq!(keep_set(10, &[9, 10, 11], 3), vec![10, 9]);
+    fn a_staged_generations_keyslot_is_never_dropped() {
+        // Generation 11 has been staged and its keyslot sealed; confirming 10 must
+        // not remove it, or the next boot has nothing to unseal with.
+        assert_eq!(keep_set(10, &[8, 9, 10, 11], 3), vec![11, 10, 9, 8]);
+        assert_eq!(drop_set(10, &[8, 9, 10, 11], 3), Vec::<u64>::new());
+    }
+
+    #[test]
+    fn two_staged_generations_are_kept_and_a_third_is_not() {
+        assert_eq!(keep_set(10, &[10, 11, 12], 3), vec![12, 11, 10]);
+        // 11 and 12 are the newest two; 13 arriving means 11 was superseded
+        // without ever booting, and re-staging it would seal a fresh keyslot.
+        assert_eq!(drop_set(10, &[10, 11, 12, 13], 3), vec![11]);
     }
 
     #[test]
     fn drop_set_is_the_complement() {
         assert_eq!(drop_set(10, &[6, 7, 8, 9, 10], 3), vec![6, 7]);
         assert_eq!(drop_set(10, &[9, 10], 3), Vec::<u64>::new());
-        // A newer, rolled-back generation's token is dropped.
-        assert_eq!(drop_set(10, &[9, 10, 11], 3), vec![11]);
     }
 
     #[test]
