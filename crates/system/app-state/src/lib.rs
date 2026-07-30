@@ -82,6 +82,9 @@ pub const DOCUMENT_FILE: &str = "state.automerge";
 pub const ACTOR_FILE: &str = "actor";
 /// Name of the single-writer lock file.
 pub const LOCK_FILE: &str = "writer.lock";
+/// Directory, inside a package's state directory, holding one subdirectory per
+/// record. See [`DocStore::open_record`].
+pub const RECORDS_DIR: &str = "records";
 
 /// Everything that can go wrong opening, reading or writing a store.
 #[derive(Debug, thiserror::Error)]
@@ -89,6 +92,12 @@ pub enum StoreError {
     /// The package id could not be turned into a directory name.
     #[error("invalid package id {0:?}: {1}")]
     PackageId(String, &'static str),
+    /// The record key could not be turned into a directory name. Distinct from
+    /// [`StoreError::PackageId`] so the message names which of the two inputs
+    /// was wrong — they arrive from different places (the launcher vs. the
+    /// app's own record identity).
+    #[error("invalid record key {0:?}: {1}")]
+    RecordKey(String, &'static str),
     /// A filesystem operation failed. The path is in the message.
     #[error("{context}: {source}")]
     Io {
@@ -144,6 +153,42 @@ fn validate_package_id(id: &str) -> Result<(), StoreError> {
     if id.contains('\0') {
         return Err(StoreError::PackageId(
             id.to_string(),
+            "must not contain a NUL byte",
+        ));
+    }
+    Ok(())
+}
+
+/// Validate a record key as a single directory name.
+///
+/// Same boundary as [`validate_package_id`], and it matters more here: a
+/// record's identity can be a *file path*, so the key derived from it is the
+/// one place where `..` could turn a document identity into a traversal.
+/// Rejected rather than sanitised — a key we would have to rewrite is a key the
+/// caller derived wrongly, and silently redirecting it would make two records
+/// share one file.
+fn validate_record_key(key: &str) -> Result<(), StoreError> {
+    if key.is_empty() {
+        return Err(StoreError::RecordKey(
+            key.to_string(),
+            "must not be empty",
+        ));
+    }
+    if Path::new(key).is_absolute() || key.contains('/') || key.contains('\\') {
+        return Err(StoreError::RecordKey(
+            key.to_string(),
+            "must not contain a path separator",
+        ));
+    }
+    if key == "." || key == ".." {
+        return Err(StoreError::RecordKey(
+            key.to_string(),
+            "must not be a relative directory reference",
+        ));
+    }
+    if key.contains('\0') {
+        return Err(StoreError::RecordKey(
+            key.to_string(),
             "must not contain a NUL byte",
         ));
     }
@@ -207,6 +252,37 @@ impl DocStore {
     pub fn open_for(package_id: &str) -> Result<Self, StoreError> {
         validate_package_id(package_id)?;
         let dir = cli::standalone_state_dir(package_id);
+        Self::open_in(package_id, dir)
+    }
+
+    /// Open the store for **one record** of a package.
+    ///
+    /// A record is the unit of collaboration: one document, one identity, one
+    /// change graph. An automerge change graph cannot be served in part — a
+    /// change names its dependencies by hash, so a filtered stream leaves the
+    /// receiver holding changes whose parents never arrive — so "share this
+    /// document and not that one" has to mean *separate documents*, which
+    /// means separate files.
+    ///
+    /// `record_key` is a filesystem-safe key derived from the record's
+    /// identity by the caller (`ui::record::RecordId::storage_key`), and it is
+    /// validated exactly as strictly as a package id: a record whose identity
+    /// is a *path* must not be able to turn that path into a directory
+    /// traversal.
+    ///
+    /// The bytes land in `<package dir>/records/<record_key>/state.automerge`,
+    /// beside — not inside — the package's own `state.automerge`, which stays
+    /// the room index (which records this room holds).
+    pub fn open_record(package_id: &str, record_key: &str) -> Result<Self, StoreError> {
+        validate_package_id(package_id)?;
+        validate_record_key(record_key)?;
+        let dir = cli::standalone_state_dir(package_id)
+            .join(RECORDS_DIR)
+            .join(record_key);
+        Self::open_in(package_id, dir)
+    }
+
+    fn open_in(package_id: &str, dir: PathBuf) -> Result<Self, StoreError> {
         fs::create_dir_all(&dir)
             .map_err(|e| io_err(format!("creating state directory {}", dir.display()), e))?;
 

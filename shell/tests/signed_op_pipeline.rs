@@ -136,6 +136,7 @@ fn valid_signed_op_reaches_other_peers_invalid_one_is_dropped() {
             &CollabRequest::Hello {
                 app_id: "test".into(),
                 cluster_id: test_cluster(),
+                record: None,
             },
         );
     }
@@ -246,6 +247,7 @@ fn replay_of_same_signed_op_is_dropped() {
             &CollabRequest::Hello {
                 app_id: "test".into(),
                 cluster_id: test_cluster(),
+                record: None,
             },
         );
     }

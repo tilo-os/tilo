@@ -203,9 +203,16 @@ impl CapnpBrokerState {
     /// [`PeerTable::fanout_to_route`] after it has finished writing to
     /// the JSON peers.
     ///
-    /// Only the channel whose id equals `route.cluster_id` is
-    /// considered — subscribers of other channels never observe the
+    /// Only the channel the route names ([`CrdtRoute::channel_key`])
+    /// is considered — subscribers of other channels never observe the
     /// event, and a route with no cluster addresses nothing at all.
+    ///
+    /// One widening: a **cluster-scoped** route (chrome traffic —
+    /// presence, cursors, roster) also reaches the record channels of
+    /// that cluster. "Who else is here" is a fact about the room, so a
+    /// peer looking at a different document in the same room is still
+    /// a legitimate audience; only document payloads are confined to
+    /// one record.
     pub fn fanout_to_route(&self, event: &CollabEvent, except: u64, route: &CrdtRoute) {
         if route.cluster_id.is_empty() {
             return;
@@ -213,13 +220,15 @@ impl CapnpBrokerState {
         let Ok(mut all_channels) = self.channels.lock() else {
             return;
         };
-        let Some(subs) = all_channels.get_mut(&route.cluster_id) else {
-            return;
-        };
-        // Single-entry view so the per-variant bodies below keep
-        // their `for subs in channels.values_mut()` shape while only
-        // ever touching the addressed channel.
-        let channels = std::iter::once(subs);
+        let addressed = route.channel_key();
+        let room_wide = route.record_id.is_empty();
+        let record_prefix = format!("{}#record:", route.cluster_id);
+        let channels = all_channels
+            .iter_mut()
+            .filter(|(k, _)| {
+                k.as_str() == addressed || (room_wide && k.starts_with(&record_prefix))
+            })
+            .map(|(_, subs)| subs);
         // Materialise each event into the transport-native envelope
         // once, then push a clone to every subscriber. Cheaper than
         // re-encoding per subscriber, and the envelopes are shallow
@@ -496,11 +505,15 @@ struct CapnpChannelHandle {
 
 impl CapnpChannelHandle {
     /// The address every event this handle publishes is delivered to.
-    /// Cluster-scoped: `joinChannel` carries a channel id but no app
-    /// identity, and the SDK derives that channel id from the cluster
-    /// uuid it announced on its auto-Hello.
+    ///
+    /// `joinChannel` carries a channel id but no app identity, so the
+    /// route stays cluster-scoped — except that the channel id is where
+    /// a record-scoped connection names its record (the SDK joins
+    /// `<cluster>#record:<id>` for one document's channel). Parsing it
+    /// back out is what keeps one document's deltas out of another's
+    /// subscription on this transport too.
     fn route(&self) -> CrdtRoute {
-        CrdtRoute::cluster(self.channel_id.clone())
+        CrdtRoute::from_channel_key(&self.channel_id)
     }
 }
 
@@ -789,9 +802,13 @@ struct CapnpPresenceHandle {
 }
 
 impl CapnpPresenceHandle {
-    /// Same cluster-scoped address as the owning channel handle.
+    /// The owning channel handle's address, widened to its room.
+    ///
+    /// Presence is room-wide: a peer reading a different document in
+    /// this room is still a legitimate audience for "who else is
+    /// here". Only document payloads are confined to one record.
     fn route(&self) -> CrdtRoute {
-        CrdtRoute::cluster(self.channel_id.clone())
+        CrdtRoute::from_channel_key(&self.channel_id).to_cluster_scope()
     }
 }
 
@@ -1428,6 +1445,7 @@ mod tests {
             &CollabRequest::Hello {
                 app_id: "legacy-editor".into(),
                 cluster_id: cluster,
+                record: None,
             },
         );
 
@@ -1542,6 +1560,7 @@ mod tests {
             &CollabRequest::Hello {
                 app_id: "legacy-observer".into(),
                 cluster_id: cluster,
+                record: None,
             },
         );
 
@@ -1620,6 +1639,7 @@ mod tests {
             &CollabRequest::Hello {
                 app_id: "legacy-cursor-observer".into(),
                 cluster_id: cluster,
+                record: None,
             },
         );
 
@@ -1741,6 +1761,7 @@ mod tests {
             &CollabRequest::Hello {
                 app_id: "writer".into(),
                 cluster_id: uuid::Uuid::new_v4(),
+                record: None,
             },
         );
         for seq in 1..=3 {
