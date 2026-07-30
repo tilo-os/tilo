@@ -414,7 +414,7 @@ pub fn satisfy(
         "loading the PCR prediction public key",
     )?;
     let approved = ws.put("approved.bin", &prediction.approved_policy)?;
-    let mut message = prediction.approved_policy.clone();
+    let mut message = prediction.approved_policy.to_vec();
     message.extend_from_slice(&generation::policy_ref(gen_num));
     let msg = ws.put("verify_msg.bin", &message)?;
     let sig = ws.put("prediction.sig", &marshal_rsassa_sha256(&prediction.signature)?)?;
