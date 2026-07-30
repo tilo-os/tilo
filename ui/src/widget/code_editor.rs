@@ -143,38 +143,39 @@ pub trait Highlighter {
 
 /// Resolve a [`TokenKind`] to a concrete [`Color`] from the OS [`Theme`].
 ///
-/// Colours are drawn from the theme's terminal ANSI ramp (which every theme
-/// defines for light and dark) plus its semantic / text tokens, so syntax
-/// re-colours automatically with the active theme and never hard-codes an RGB.
+/// Colours are drawn from the theme's semantic (success/warning/info/danger),
+/// accent-ramp, and text tokens — all of which the theme redefines for light,
+/// dark, and each preset — so syntax re-colours automatically with the active
+/// theme and never hard-codes an RGB. (The terminal ANSI ramp is deliberately
+/// *not* used: it is shared across light and dark.) This mirrors the palette
+/// `typst_editor` shipped, generalised with distinct keyword / type slots.
 pub fn token_color(kind: TokenKind, theme: &Theme) -> Color {
-    let p = &theme.tokens.terminal_palette;
-    // ANSI indices: 0..7 normal, 8..15 bright. Named for legibility.
-    const MAGENTA: usize = 5;
-    const BLUE: usize = 4;
-    const GREEN: usize = 2;
-    const YELLOW: usize = 3;
-    const CYAN: usize = 6;
-    const RED: usize = 1;
+    let c = &theme.tokens.colors;
+    // Accent ramp indices, named for legibility (the ramp is a monochromatic
+    // indigo scale, so these are lightness steps of the theme accent).
+    const ACCENT_MID: usize = 5; // the dominant accent (indigo-500 in dark)
+    const ACCENT_LIGHT: usize = 7;
+    const ACCENT_LIGHTER: usize = 6;
     match kind {
-        TokenKind::Keyword => p.ansi[MAGENTA],
-        TokenKind::Type => p.ansi[YELLOW],
-        TokenKind::Function => p.ansi[BLUE],
-        TokenKind::Number => p.ansi[CYAN],
-        TokenKind::StringLit => p.ansi[GREEN],
-        TokenKind::CharLit => p.ansi[GREEN],
-        TokenKind::Comment => theme.text_dim,
-        TokenKind::Operator => theme.text_primary,
-        TokenKind::Punctuation => theme.text_dim,
-        TokenKind::Attribute => p.ansi[YELLOW],
-        TokenKind::Preprocessor => p.ansi[RED],
-        TokenKind::Constant => p.ansi[CYAN],
-        TokenKind::Variable => theme.text_primary,
-        TokenKind::Heading => theme.accent_primary,
-        TokenKind::Emphasis => theme.text_primary,
-        TokenKind::Strong => theme.text_primary,
-        TokenKind::Raw => p.ansi[CYAN],
-        TokenKind::Math => p.ansi[MAGENTA],
-        TokenKind::Text => theme.text_primary,
+        TokenKind::Keyword => c.accent.stops[ACCENT_MID],
+        TokenKind::Type => c.semantic.warning,
+        TokenKind::Function => c.semantic.info,
+        TokenKind::Number => c.accent.stops[ACCENT_LIGHT],
+        TokenKind::StringLit => c.semantic.success,
+        TokenKind::CharLit => c.semantic.success,
+        TokenKind::Comment => c.text_dim,
+        TokenKind::Operator => c.text_primary,
+        TokenKind::Punctuation => c.text_dim,
+        TokenKind::Attribute => c.semantic.warning,
+        TokenKind::Preprocessor => c.semantic.danger,
+        TokenKind::Constant => c.semantic.info,
+        TokenKind::Variable => c.text_primary,
+        TokenKind::Heading => c.accent.stops[ACCENT_MID],
+        TokenKind::Emphasis => c.text_primary,
+        TokenKind::Strong => c.text_primary,
+        TokenKind::Raw => c.accent.stops[ACCENT_LIGHT],
+        TokenKind::Math => c.accent.stops[ACCENT_LIGHTER],
+        TokenKind::Text => c.text_primary,
     }
 }
 
@@ -1240,5 +1241,217 @@ mod tests {
         assert!(Language::Sql.highlighter().is_some());
         assert!(Language::Typst.highlighter().is_some());
         assert!(Language::PlainText.highlighter().is_none());
+    }
+
+    // ---- widget-level: the real edit/caret/selection/clipboard/a11y path ----
+
+    use automerge::AutoCommit;
+    use taffy::{Style, TaffyTree};
+    use vello::Scene;
+    use vello::kurbo::Affine;
+    use winit::event::{ElementState, KeyEvent, Modifiers, WindowEvent};
+    use winit::keyboard::{Key, NamedKey};
+
+    fn mods(ctrl: bool, shift: bool) -> Modifiers {
+        use winit::keyboard::ModifiersState;
+        let mut s = ModifiersState::empty();
+        if ctrl {
+            s |= ModifiersState::CONTROL;
+        }
+        if shift {
+            s |= ModifiersState::SHIFT;
+        }
+        Modifiers::from(s)
+    }
+
+    fn char_event(s: &str) -> WindowEvent {
+        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
+        ev.logical_key = Key::Character(winit::keyboard::SmolStr::new(s));
+        ev.physical_key =
+            winit::keyboard::PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
+        ev.location = winit::keyboard::KeyLocation::Standard;
+        ev.state = ElementState::Pressed;
+        ev.repeat = false;
+        ev.text = Some(winit::keyboard::SmolStr::new(s));
+        WindowEvent::KeyboardInput {
+            device_id: unsafe { std::mem::zeroed() },
+            event: ev,
+            is_synthetic: false,
+        }
+    }
+
+    fn named_event(k: NamedKey) -> WindowEvent {
+        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
+        ev.logical_key = Key::Named(k);
+        ev.physical_key =
+            winit::keyboard::PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
+        ev.location = winit::keyboard::KeyLocation::Standard;
+        ev.state = ElementState::Pressed;
+        ev.repeat = false;
+        ev.text = None;
+        WindowEvent::KeyboardInput {
+            device_id: unsafe { std::mem::zeroed() },
+            event: ev,
+            is_synthetic: false,
+        }
+    }
+
+    fn drive(ed: &mut CodeEditor, doc: &mut AutoCommit, ev: &WindowEvent, m: &Modifiers) -> bool {
+        let mut handled = false;
+        let mut focus_target = None;
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let node = taffy.new_leaf(Style::default()).unwrap();
+        ed.handle_event(
+            ev, 1.0, m, doc, &automerge::ROOT, &mut handled, &mut focus_target, node, &taffy,
+        );
+        handled
+    }
+
+    fn draw_once(ed: &mut CodeEditor, theme: &Theme) {
+        let presence = PresenceCtx::default();
+        let mut tr = TextRenderer::new();
+        let mut scene = Scene::new();
+        Widget::draw(ed, &mut scene, Affine::IDENTITY, &mut tr, theme, &presence);
+    }
+
+    use crate::text_render::TextRenderer;
+
+    #[test]
+    fn typing_inserts_on_the_real_key_path() {
+        let mut ed = CodeEditor::local();
+        ed.set_focused(true);
+        ed.set_rect(Rect::new(0.0, 0.0, 400.0, 200.0));
+        let mut doc = AutoCommit::new();
+        for ch in ["f", "n", " ", "x"] {
+            assert!(drive(&mut ed, &mut doc, &char_event(ch), &mods(false, false)));
+        }
+        assert_eq!(ed.value(), "fn x");
+        assert_eq!(ed.cursor_pos(), 4);
+    }
+
+    #[test]
+    fn enter_inserts_a_real_newline_and_gutter_counts_lines() {
+        let mut ed = CodeEditor::local();
+        ed.set_focused(true);
+        ed.set_rect(Rect::new(0.0, 0.0, 400.0, 200.0));
+        let mut doc = AutoCommit::new();
+        for ch in ["a"] {
+            drive(&mut ed, &mut doc, &char_event(ch), &mods(false, false));
+        }
+        drive(&mut ed, &mut doc, &named_event(NamedKey::Enter), &mods(false, false));
+        drive(&mut ed, &mut doc, &char_event("b"), &mods(false, false));
+        assert_eq!(ed.value(), "a\nb");
+        assert_eq!(ed.line_count(), 2, "gutter line count reflects the two logical lines");
+    }
+
+    #[test]
+    fn tab_inserts_soft_spaces_and_shift_tab_outdents() {
+        let mut ed = CodeEditor::local().with_tab_width(4);
+        ed.set_focused(true);
+        ed.set_rect(Rect::new(0.0, 0.0, 400.0, 200.0));
+        let mut doc = AutoCommit::new();
+        assert!(drive(&mut ed, &mut doc, &named_event(NamedKey::Tab), &mods(false, false)));
+        drive(&mut ed, &mut doc, &char_event("x"), &mods(false, false));
+        assert_eq!(ed.value(), "    x", "Tab inserts four spaces");
+        // Shift+Tab removes one indent level.
+        assert!(drive(&mut ed, &mut doc, &named_event(NamedKey::Tab), &mods(false, true)));
+        assert_eq!(ed.value(), "x", "Shift+Tab outdents the leading four spaces");
+    }
+
+    #[test]
+    fn selection_and_cut_run_through_the_real_path() {
+        let mut ed = CodeEditor::local().with_initial_value("abc");
+        ed.set_focused(true);
+        ed.set_rect(Rect::new(0.0, 0.0, 400.0, 200.0));
+        let mut doc = AutoCommit::new();
+        // Select all through the real Ctrl+A path, then confirm a live selection.
+        assert!(drive(&mut ed, &mut doc, &char_event("a"), &mods(true, false)));
+        assert_eq!(
+            ed.inner().selection_range_public(),
+            Some((0, 3)),
+            "Ctrl+A selects the whole buffer on the real path",
+        );
+        // Ctrl+X removes the selection regardless of the clipboard backend.
+        assert!(drive(&mut ed, &mut doc, &char_event("x"), &mods(true, false)));
+        assert_eq!(ed.value(), "", "Ctrl+X cuts the selection through the shared core");
+    }
+
+    #[test]
+    fn shift_arrow_extends_selection_word_wise() {
+        let mut ed = CodeEditor::local().with_initial_value("hello world");
+        ed.set_focused(true);
+        ed.set_rect(Rect::new(0.0, 0.0, 400.0, 200.0));
+        let mut doc = AutoCommit::new();
+        // Caret home, then Ctrl+Shift+Right selects the first word.
+        drive(&mut ed, &mut doc, &named_event(NamedKey::Home), &mods(false, false));
+        drive(&mut ed, &mut doc, &named_event(NamedKey::ArrowRight), &mods(true, true));
+        let sel = ed.inner().selection_range_public().expect("a selection exists");
+        assert_eq!(sel.0, 0);
+        assert!(sel.1 >= 5, "word-wise extend covers at least `hello`: {sel:?}");
+    }
+
+    #[test]
+    fn goto_line_moves_the_caret_to_the_line_start() {
+        let mut ed = CodeEditor::local().with_initial_value("one\ntwo\nthree");
+        ed.goto_line(2);
+        assert_eq!(ed.cursor_pos(), 4, "line 2 starts just after the first newline");
+        assert_eq!(&ed.value()[ed.cursor_pos()..ed.cursor_pos() + 3], "two");
+    }
+
+    #[test]
+    fn accessibility_reports_a_multiline_text_input() {
+        use crate::a11y::Role;
+        let ed = CodeEditor::local().with_initial_value("fn main() {}");
+        let node = ed.accessibility().expect("code editor exposes an a11y node");
+        assert_eq!(node.role, Role::TextInput);
+        assert!(node.state.multiline, "code editor reports a multiline text field");
+        assert_eq!(node.value.as_deref(), Some("fn main() {}"));
+    }
+
+    #[test]
+    fn highlighter_colours_segments_from_the_theme() {
+        use crate::color_compat::ColorCompat;
+        let theme = Theme::dark();
+        let mut ed = CodeEditor::local().with_language(Language::Rust);
+        ed.set_text("let x = 1");
+        ed.set_rect(Rect::new(0.0, 0.0, 400.0, 200.0));
+        // A draw builds the visual lines + highlight cache and runs the real
+        // colouring path (`row_segments` → `token_color`).
+        draw_once(&mut ed, &theme);
+        let segs = ed.inner().code_row_colors(&theme);
+        let rgb = |c: Color| [c.r(), c.g(), c.b()];
+        let kw = segs.iter().find(|(t, _)| t == "let").expect("`let` is a drawn segment");
+        assert_eq!(
+            rgb(kw.1),
+            rgb(token_color(TokenKind::Keyword, &theme)),
+            "the `let` keyword is drawn in the themed keyword colour",
+        );
+        // A default-coloured gap (whitespace / identifier) uses text_primary.
+        assert!(
+            segs.iter().any(|(_, c)| rgb(*c) == rgb(theme.text_primary)),
+            "uncoloured runs fall back to the theme text colour",
+        );
+    }
+
+    #[test]
+    fn no_gutter_offset_when_gutter_disabled() {
+        // With the gutter on, the caret x is pushed right of the plain inset;
+        // turning it off collapses that offset — proves the gutter participates
+        // in the shared caret geometry.
+        let theme = Theme::dark();
+        let mut with_g = CodeEditor::local().with_initial_value("x");
+        with_g.set_rect(Rect::new(0.0, 0.0, 400.0, 200.0));
+        draw_once(&mut with_g, &theme);
+        let caret_with = with_g.inner().caret_rect(&theme, 0).x0;
+
+        let mut without_g = CodeEditor::local().with_gutter(false).with_initial_value("x");
+        without_g.set_rect(Rect::new(0.0, 0.0, 400.0, 200.0));
+        draw_once(&mut without_g, &theme);
+        let caret_without = without_g.inner().caret_rect(&theme, 0).x0;
+
+        assert!(
+            caret_with > caret_without + 10.0,
+            "the gutter shifts the caret right ({caret_with} vs {caret_without})",
+        );
     }
 }
