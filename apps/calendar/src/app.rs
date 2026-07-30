@@ -32,6 +32,8 @@ use vello::peniko::{Color, Fill};
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
+use qos_actions::{ActionEnvelope, ActionTransport};
+
 use ui::Widget;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
@@ -222,6 +224,18 @@ pub enum CalTarget {
     Remote(String),
 }
 
+/// The transport the calendar installs for its own on-screen affordances. Peers
+/// receive events/tasks through ordinary CRDT sync (the executor pins each
+/// action's actor so the change is content-addressed identical to a peer's
+/// replay and dedupes on merge), so the local affordance path has nothing extra
+/// to replicate — this sink drops the envelope. The Ctrl+K palette dispatches
+/// through the host's transport, which a collaborative session swaps for a
+/// peer-aware one.
+struct DiscardTransport;
+impl ActionTransport for DiscardTransport {
+    fn replicate(&mut self, _env: &ActionEnvelope) {}
+}
+
 /// Cached rects for the event form's fields, recomputed every `relayout` from
 /// the detail panel. Kept together so the draw pass, the hit map, and the
 /// embedded widgets' `apply_layout_external` all read the same geometry.
@@ -353,6 +367,24 @@ pub struct CalendarApp {
     /// ticking (`needs_animation_frame`) so the worker's result lands promptly
     /// without waiting for the next unrelated input.
     syncing: bool,
+
+    /// Document heads captured just before the first `qos_actions` action of the
+    /// current event was dispatched. The host drains this via
+    /// [`Widget::take_committed_action`] to record exactly one undo boundary
+    /// bracketing the action(s) — the same undo path the Ctrl+K palette takes.
+    action_commit_before: Option<Vec<ChangeHash>>,
+
+    /// The last [`EncodedAction`](qos_actions::EncodedAction) an on-screen
+    /// affordance dispatched through [`Self::perform_action`]. Lets a test prove
+    /// a button and the Ctrl+K [`ActionSpec`](qos_actions::ActionSpec) build the
+    /// byte-identical action — one source of truth, not two code paths.
+    last_dispatched: Option<qos_actions::EncodedAction>,
+
+    /// The document heads the in-memory [`Model`] was last derived from. When the
+    /// document moves past this out of band — a Ctrl+K palette action, a peer's
+    /// change merged in — the next `sync` re-reads the model so those mutations
+    /// show up in the views, exactly as an on-screen edit already does.
+    model_heads: Vec<ChangeHash>,
 }
 
 impl CalendarApp {
@@ -450,6 +482,9 @@ impl CalendarApp {
             dirty: true,
             sync_rx: None,
             syncing: false,
+            action_commit_before: None,
+            last_dispatched: None,
+            model_heads: Vec::new(),
         }
     }
 
@@ -771,11 +806,15 @@ impl CalendarApp {
         }
         let title = self.title_input.value().to_string();
         let location = self.location_input.value().to_string();
-        if let Some(e) = self.model.event_mut(id) {
+        let snap = if let Some(e) = self.model.event_mut(id) {
             e.title = title;
             e.location = location;
-            let snap = e.clone();
-            CalDoc::update_event(doc, &snap);
+            Some(e.clone())
+        } else {
+            None
+        };
+        if let Some(snap) = snap {
+            self.perform_action(doc, crate::actions::upsert_event_action(&snap));
             self.force_persist = true;
             self.dirty = true;
         }
@@ -828,6 +867,96 @@ impl CalendarApp {
         }
     }
 
+    // --- action dispatch -------------------------------------------------
+
+    /// Dispatch one [`CalendarAction`](crate::actions::CalendarAction) — the
+    /// single CRDT-mutation path shared with the Ctrl+K palette. The action is
+    /// applied through the qOS action executor (a pinned actor + committed
+    /// change, so it replays byte-identically on peers), exactly as the palette
+    /// does. The document heads captured just before the first action of the
+    /// event are stashed so the host records **one** undo boundary bracketing it
+    /// ([`Widget::take_committed_action`]). The in-memory model is updated by the
+    /// caller for immediate UI feedback and reconciled from the document on the
+    /// next `sync`.
+    fn perform_action(&mut self, doc: &mut AutoCommit, action: crate::actions::CalendarAction) {
+        if self.action_commit_before.is_none() {
+            // `get_heads` flushes any pending app writes, so the bracket covers
+            // only the action's own change.
+            self.action_commit_before = Some(doc.get_heads());
+        }
+        let encoded = crate::actions::encode(&action);
+        self.last_dispatched = Some(encoded.clone());
+        let mut tx = DiscardTransport;
+        if let Err(e) = qos_actions::dispatch(doc, &action, encoded, &mut tx) {
+            tracing::warn!(error = %e, "calendar action dispatch failed");
+        }
+    }
+
+    /// The source calendar id to queue a CalDAV delete for when an event is
+    /// removed: `Some` only for a synced event whose calendar is still
+    /// configured (otherwise there is nothing real to address). Shared by the
+    /// trash-button handler and the Ctrl+K "Delete event" spec so both build the
+    /// identical [`CalendarAction`](crate::actions::CalendarAction).
+    fn resolve_remote_delete(&self, id: Id) -> Option<String> {
+        let cid = self.model.event(id).and_then(|e| e.calendar_id.clone())?;
+        self.accounts
+            .accounts
+            .iter()
+            .any(|a| a.calendars.iter().any(|c| c.id == cid))
+            .then_some(cid)
+    }
+
+    /// The context Ctrl+K needs to build the calendar's resource tree: a template
+    /// for a palette-created event (from the current view), and the events +
+    /// top-level tasks currently in the model.
+    pub(crate) fn calendar_resource_ctx(&self) -> crate::actions::CalendarResourceCtx {
+        let start = self
+            .anchor
+            .and_time(NaiveTime::from_hms_opt(12, 0, 0).unwrap());
+        let template = Event {
+            id: Uuid::nil(),
+            title: String::new(),
+            start,
+            end: start + Duration::hours(1),
+            all_day: false,
+            location: String::new(),
+            color: self.model.next_event_order_color(),
+            recurrence: Recurrence::None,
+            reminder_min: Some(10),
+            calendar_id: None,
+            project: None,
+        };
+        let events = self
+            .model
+            .events
+            .iter()
+            .map(|e| crate::actions::EventResource {
+                data: crate::actions::EventData::from_event(e),
+                remote_delete: self.resolve_remote_delete(e.id),
+            })
+            .collect();
+        let tasks = self
+            .model
+            .tasks
+            .iter()
+            .filter(|t| t.parent.is_none())
+            .map(|t| crate::actions::TaskResource {
+                data: crate::actions::TaskData::from_task(t),
+                subtasks: self
+                    .model
+                    .subtasks_of(t.id)
+                    .iter()
+                    .map(|s| s.id.to_string())
+                    .collect(),
+            })
+            .collect();
+        crate::actions::CalendarResourceCtx {
+            new_event: crate::actions::EventData::from_event(&template),
+            events,
+            tasks,
+        }
+    }
+
     // --- mutations -------------------------------------------------------
 
     fn select_event(&mut self, id: Id) {
@@ -860,23 +989,13 @@ impl CalendarApp {
     /// CalDAV delete so the server copy is removed on the next sync. Closes the
     /// editor if the deleted event was the one on screen.
     fn delete_event(&mut self, id: Id, doc: &mut AutoCommit) {
-        let cal_id = self.model.event(id).and_then(|e| e.calendar_id.clone());
+        // Resolve the CalDAV delete target (a synced event on a still-configured
+        // calendar) before the row leaves the model. The action removes the
+        // event, clears any queued upload, and — given a target — queues the
+        // remote delete, so every doc write is one replayable envelope.
+        let remote_delete = self.resolve_remote_delete(id);
         self.model.events.retain(|e| e.id != id);
-        CalDoc::delete_event(doc, id);
-        // A queued upload for a now-deleted event is moot.
-        CalDoc::dequeue_push(doc, id);
-        // Only queue a remote delete for a calendar we still know about;
-        // otherwise there is nothing real to address.
-        if let Some(cid) = cal_id {
-            let known = self
-                .accounts
-                .accounts
-                .iter()
-                .any(|a| a.calendars.iter().any(|c| c.id == cid));
-            if known {
-                CalDoc::enqueue_delete(doc, &cid, id);
-            }
-        }
+        self.perform_action(doc, crate::actions::delete_event_action(id.to_string(), remote_delete));
         if self.selection == Some(Sel::Event(id)) {
             self.close_after_delete();
         }
@@ -888,19 +1007,22 @@ impl CalendarApp {
     /// Delete a task (and any subtasks) from the model + CRDT. Closes the editor
     /// if the deleted task was the one on screen.
     fn delete_task(&mut self, id: Id, doc: &mut AutoCommit) {
-        let victims: Vec<Id> = std::iter::once(id)
-            .chain(
-                self.model
-                    .tasks
-                    .iter()
-                    .filter(|t| t.parent == Some(id))
-                    .map(|t| t.id),
-            )
+        let subtasks: Vec<Id> = self
+            .model
+            .tasks
+            .iter()
+            .filter(|t| t.parent == Some(id))
+            .map(|t| t.id)
             .collect();
+        let victims: Vec<Id> = std::iter::once(id).chain(subtasks.iter().copied()).collect();
         self.model.tasks.retain(|t| !victims.contains(&t.id));
-        for v in &victims {
-            CalDoc::delete_task(doc, *v);
-        }
+        self.perform_action(
+            doc,
+            crate::actions::delete_task_action(
+                id.to_string(),
+                subtasks.iter().map(|s| s.to_string()).collect(),
+            ),
+        );
         if matches!(self.selection, Some(Sel::Task(sel)) if victims.contains(&sel)) {
             self.close_after_delete();
         }
@@ -949,10 +1071,14 @@ impl CalendarApp {
     }
 
     fn toggle_task(&mut self, id: Id, doc: &mut AutoCommit) {
-        if let Some(t) = self.model.task_mut(id) {
+        let exists = if let Some(t) = self.model.task_mut(id) {
             t.done = !t.done;
-            let snap = t.clone();
-            CalDoc::update_task(doc, &snap);
+            true
+        } else {
+            false
+        };
+        if exists {
+            self.perform_action(doc, crate::actions::toggle_task_action(id.to_string()));
             self.dirty = true;
         }
     }
@@ -981,7 +1107,7 @@ impl CalendarApp {
             project: None,
         };
         let id = ev.id;
-        CalDoc::update_event(doc, &ev);
+        self.perform_action(doc, crate::actions::upsert_event_action(&ev));
         // Notes are left EMPTY on purpose — the notes editor paints its
         // placeholder until the user types. Seeding body text here is exactly
         // the "fake content the user must delete" this form avoids.
@@ -1053,7 +1179,7 @@ impl CalendarApp {
                 .map(|c| c.palette()),
             CalTarget::Local => None,
         };
-        if let Some(e) = self.model.event_mut(id) {
+        let snap = if let Some(e) = self.model.event_mut(id) {
             match &target {
                 CalTarget::Local => e.calendar_id = None,
                 CalTarget::Remote(cid) => {
@@ -1063,13 +1189,15 @@ impl CalendarApp {
                     }
                 }
             }
-            let snap = e.clone();
-            CalDoc::update_event(doc, &snap);
-        }
-        // Update the outbox: queue for a remote target, unqueue for local.
-        match target {
-            CalTarget::Local => CalDoc::dequeue_push(doc, id),
-            CalTarget::Remote(_) => CalDoc::enqueue_push(doc, id),
+            Some(e.clone())
+        } else {
+            None
+        };
+        if let Some(snap) = snap {
+            // One action writes the retargeted event AND updates the push queue
+            // (enqueue for a remote target, dequeue for the local one).
+            let enqueue = matches!(target, CalTarget::Remote(_));
+            self.perform_action(doc, crate::actions::set_event_calendar_action(&snap, enqueue));
         }
         self.popover = FormPopover::None;
         self.force_persist = true;
@@ -1402,10 +1530,14 @@ impl CalendarApp {
 
     fn cycle_event<F: Fn(&mut Event)>(&mut self, doc: &mut AutoCommit, f: F) {
         if let Some(Sel::Event(id)) = self.selection {
-            if let Some(e) = self.model.event_mut(id) {
+            let snap = if let Some(e) = self.model.event_mut(id) {
                 f(e);
-                let snap = e.clone();
-                CalDoc::update_event(doc, &snap);
+                Some(e.clone())
+            } else {
+                None
+            };
+            if let Some(snap) = snap {
+                self.perform_action(doc, crate::actions::upsert_event_action(&snap));
                 self.dirty = true;
             }
         }
@@ -3431,6 +3563,21 @@ impl Default for CalendarApp {
 }
 
 impl Widget for CalendarApp {
+    /// Publish the open calendar + its events/tasks so the host's Ctrl+K action
+    /// palette scopes to them. Delegates to the
+    /// [`ResourceProvider`](qos_actions::ResourceProvider) impl in
+    /// [`crate::actions`].
+    fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
+        <Self as qos_actions::ResourceProvider>::resources(self, doc)
+    }
+
+    /// Hand the host the heads captured before an on-screen affordance dispatched
+    /// its calendar action, so it records one undo boundary for it (see
+    /// [`Self::perform_action`]). Rising-edge: cleared on read.
+    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        self.action_commit_before.take()
+    }
+
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
         if !self.seeded {
             // Live app: adopt the user's persisted calendar (empty on a fresh
@@ -3454,6 +3601,7 @@ impl Widget for CalendarApp {
             }
             self.revalidate_selection();
             self.saved_heads = state.get_heads();
+            self.model_heads = state.get_heads();
             self.seeded = true;
         }
         // Drain a finished background CalDAV pull, if one landed since the last
@@ -3465,6 +3613,19 @@ impl Widget for CalendarApp {
             self.new_event(state);
         }
         self.poll_sync(state);
+        // Reconcile the in-memory model with the document when it moved out of
+        // band — a Ctrl+K palette action mutated the CRDT, or a peer's change
+        // merged in — so those events/tasks show up in the views just like an
+        // on-screen edit does. Cheap and idempotent: only when the heads differ
+        // from what the model was last derived from, and events/tasks re-read to
+        // the same values a handler would have set. (Notes live in the document
+        // and are read by the editor directly, so this never disturbs them.)
+        let heads = state.get_heads();
+        if heads != self.model_heads {
+            self.model = CalDoc::read_model(state);
+            self.revalidate_selection();
+            self.model_heads = heads;
+        }
         self.ensure_bound(state);
         // Seed the form's title/location/time widgets from the current event
         // whenever the selection changes.
@@ -6045,6 +6206,29 @@ mod tests {
             .expect("a delete target in the editor");
         h.click(p);
         assert!(h.app.model.event(id).is_none(), "clicking the trash button deleted the event");
+    }
+
+    #[test]
+    fn delete_button_dispatches_the_action_the_palette_builds() {
+        // Single source of truth, proven on the real button path: clicking the
+        // editor's trash button dispatches the byte-identical EncodedAction the
+        // Ctrl+K "Delete event" spec builds for the same event (including the
+        // resolved CalDAV delete target).
+        let mut h = Harness::new(1280, 800);
+        let id = selected_event_id(&h.app);
+        let remote = h.app.resolve_remote_delete(id);
+        let expected =
+            crate::actions::encode(&crate::actions::delete_event_action(id.to_string(), remote));
+        let p = h
+            .hit_center(|a| matches!(a, Action::DeleteEvent(_)))
+            .expect("a delete target in the editor");
+        h.click(p);
+        assert_eq!(
+            h.app.last_dispatched.as_ref(),
+            Some(&expected),
+            "the trash button and the palette build the identical EncodedAction"
+        );
+        assert!(h.app.model.event(id).is_none(), "and it actually deleted the event");
     }
 
     #[test]
