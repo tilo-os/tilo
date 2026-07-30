@@ -2652,16 +2652,36 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             .with_decorations(true)
             .with_visible(false)
             .with_inner_size(winit::dpi::LogicalSize::new(800.0, 600.0));
-        // Give the xdg-toplevel a real app_id. Without one the app_id is
-        // the empty string, and mutter keys window identity, focus /
-        // xdg-activation, and its decoration policy off the app_id — an
-        // empty id is the concrete difference from every GTK / other
-        // Wayland app (all of which come up focused + decorated). Wayland
-        // only; a no-op on other winit backends.
+        // Give the xdg-toplevel a real app_id, and make it *this app's*.
+        //
+        // Without one the app_id is the empty string, and mutter keys
+        // window identity, focus / xdg-activation, and its decoration
+        // policy off the app_id — an empty id is the concrete difference
+        // from every GTK / other Wayland app (all of which come up
+        // focused + decorated).
+        //
+        // A single shared id is nearly as bad, and on qOS it is worse.
+        // The compositor has no other handle on which window belongs to
+        // which launch: it labels the tab from the app_id, matches a
+        // launch's placement note by it, and answers "is this document
+        // already open" by it. With every app announcing `org.qos.app`
+        // those all resolve to the same thing — every tab is called
+        // "app", no placement note is ever claimed, and a document that
+        // is open cannot be recognised as open. `QOS_PACKAGE_ID` is the
+        // identity the launcher already puts in the sandbox for exactly
+        // this reason (see `crate::persist`, `crate::record`), so it is
+        // the id to announce. Outside a sandbox there is no package, and
+        // the generic id is the honest answer.
+        //
+        // Wayland only; a no-op on other winit backends.
         #[cfg(target_os = "linux")]
         {
             use winit::platform::wayland::WindowAttributesExtWayland;
-            window_attributes = window_attributes.with_name("org.qos.app", "");
+            let app_id = std::env::var("QOS_PACKAGE_ID")
+                .ok()
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| "org.qos.app".to_string());
+            window_attributes = window_attributes.with_name(app_id, "");
         }
         let window = Arc::new(event_loop.create_window(window_attributes).unwrap());
 
