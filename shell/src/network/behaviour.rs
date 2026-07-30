@@ -92,6 +92,25 @@ pub fn peer_salt_from_keypair(kp: &libp2p::identity::Keypair) -> u16 {
     h16
 }
 
+/// Fold a `PeerId` to the `u64` the wire carries as an **opaque
+/// liveness handle** — `Heartbeat::peer`, `PresenceMoved::peer`, and the
+/// self-filter on cooperative-scrollback messages.
+///
+/// Never an authority decision. Anything that turns on *who* a peer is
+/// uses [`crate::shell::state::PeerOrigin`], which carries the whole
+/// base58 peer id: an equality check a 64-bit digest can be ground
+/// against is not an identity check.
+///
+/// Both ends of a link must agree on this value, so it uses the same
+/// hand-rolled FNV-1a as the id salt rather than
+/// `std::collections::hash_map::DefaultHasher`, whose output std
+/// explicitly does not promise across Rust versions — two peers built
+/// with different toolchains would compute different handles for the
+/// same peer and each would stop recognising its own publishes.
+pub fn peer_liveness_handle(peer: &libp2p::PeerId) -> u64 {
+    fnv1a_64(&peer.to_bytes())
+}
+
 /// FNV-1a-64 hash. Hand-rolled rather than pulled from a crate because
 /// the algorithm is a 5-line constant-time fold and we don't need any
 /// additional surface area. Standard primes from
@@ -345,6 +364,26 @@ mod tests {
             kp.public().try_into_ed25519().unwrap().to_bytes(),
             dalek.verifying_key().to_bytes()
         );
+    }
+
+    /// Both ends of a link compute the liveness handle independently,
+    /// so it has to be a fixed function of the peer id — not
+    /// `DefaultHasher`, whose value std may change between Rust
+    /// releases. Pinned against a literal: if the derivation moves,
+    /// this fails rather than two toolchains silently disagreeing.
+    #[test]
+    fn peer_liveness_handle_is_pinned_to_the_peer_id() {
+        let kp = Keypair::ed25519_from_bytes([3u8; 32]).unwrap();
+        let id = kp.public().to_peer_id();
+        let h = peer_liveness_handle(&id);
+        assert_eq!(
+            h, 0xa19b_77cb_7c08_58d7_u64,
+            "the liveness handle derivation moved; two peers on different \
+             builds would stop recognising each other's publishes"
+        );
+
+        let other = Keypair::ed25519_from_bytes([4u8; 32]).unwrap();
+        assert_ne!(peer_liveness_handle(&other.public().to_peer_id()), h);
     }
 
     #[test]
