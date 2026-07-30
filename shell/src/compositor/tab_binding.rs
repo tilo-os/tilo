@@ -378,17 +378,44 @@ mod tests {
             .expect("the adopted surface must live in some group")
     }
 
-    /// A launch is a new task, so its window is a new column beside the
-    /// focused one — never a tab buried in whatever group happened to
-    /// have focus.
+    /// The tab the adoption of `surface_id` created, wherever placement
+    /// put it. Same reason as [`group_of`]: never `tabs.last()`, which
+    /// only happens to be the new tab when the rule appends.
+    fn tab_of(tree: &WorkspaceTree, surface_id: u64) -> &crate::shell::state::Tab {
+        group_of(tree, surface_id)
+            .tabs
+            .iter()
+            .find(|t| {
+                matches!(&t.tile, TileContent::Foreign { surface_id: s, .. } if *s == surface_id)
+            })
+            .expect("the group holding the surface holds its tab")
+    }
+
+    /// Cut the bootstrap strip's group down to the one window it is
+    /// showing, and focus it.
+    ///
+    /// Rules 1 and 2 differ on exactly one thing — whether the selection
+    /// is one tab of several — so a fixture for either has to say which
+    /// it is. `bootstrap_default` ships a four-tab group, which is the
+    /// rule-2 shape; this is the rule-1 one.
+    fn focus_lone_window(tree: &mut WorkspaceTree) -> (StripId, GroupId) {
+        let strip_id = tree.workspaces[0].strips[0].id;
+        let group = &mut tree.workspaces[0].strips[0].window_groups[0];
+        group.tabs.truncate(1);
+        group.active_tab = group.tabs[0].id;
+        let group_id = group.id;
+        tree.active_strip.insert(tree.active, strip_id);
+        tree.set_active_group(strip_id, group_id);
+        (strip_id, group_id)
+    }
+
+    /// A window opened while a single window has focus is a new thing
+    /// beside it: its own column, immediately to the right.
     #[test]
-    fn a_launched_app_lands_in_its_own_group_beside_the_focused_one() {
+    fn a_launch_beside_a_lone_window_opens_its_own_group_to_the_right() {
         crate::shell::launcher::clear_pending_placements();
         let mut tree = WorkspaceTree::bootstrap_default();
-        let strip_id = tree.workspaces[0].strips[0].id;
-        let focused = tree.workspaces[0].strips[0].window_groups[0].id;
-        tree.active_strip.insert(tree.active, strip_id);
-        tree.set_active_group(strip_id, focused);
+        let (strip_id, focused) = focus_lone_window(&mut tree);
         let groups_before = tree.workspaces[0].strips[0].window_groups.len();
         let tabs_in_focused = tree.workspaces[0].strips[0].window_groups[0].tabs.len();
 
@@ -416,7 +443,7 @@ mod tests {
             "the newly-opened group takes focus"
         );
         let group = group_of(&tree, 4242);
-        let tab = group.tabs.last().unwrap();
+        let tab = tab_of(&tree, 4242);
         assert_eq!(tab.id, tab_id, "returned tab_id matches the adopted tab");
         assert_eq!(group.active_tab, tab_id, "newly-adopted tab gains focus");
         match &tab.tile {
@@ -428,6 +455,60 @@ mod tests {
         }
     }
 
+    /// Selection inside a group of several tabs means the person is
+    /// working *in* that group, so a window opened from there joins it as
+    /// a tab — immediately right of the tab they were on — rather than
+    /// splitting the layout into another column.
+    #[test]
+    fn a_launch_from_inside_a_tabbed_group_becomes_the_next_tab_in_it() {
+        crate::shell::launcher::clear_pending_placements();
+        let mut tree = WorkspaceTree::bootstrap_default();
+        let strip_id = tree.workspaces[0].strips[0].id;
+        // `bootstrap_default`'s group holds four tabs. Select the second
+        // one, so "immediately right of the selected tab" is a position
+        // distinct from both ends of the bar.
+        let selected_idx = 1usize;
+        let (group_id, selected_tab, tab_ids_before) = {
+            let g = &mut tree.workspaces[0].strips[0].window_groups[0];
+            assert!(g.tabs.len() > 2, "fixture: a genuinely tabbed group");
+            g.active_tab = g.tabs[selected_idx].id;
+            (
+                g.id,
+                g.active_tab,
+                g.tabs.iter().map(|t| t.id).collect::<Vec<_>>(),
+            )
+        };
+        tree.active_strip.insert(tree.active, strip_id);
+        tree.set_active_group(strip_id, group_id);
+        let groups_before = tree.workspaces[0].strips[0].window_groups.len();
+
+        let tab_id = adopt_toplevel(&mut tree, 4343, Some("org.example.joins".into()));
+
+        let strip = &tree.workspaces[0].strips[0];
+        assert_eq!(
+            strip.window_groups.len(),
+            groups_before,
+            "opening from inside a tabbed group must not grow the strip"
+        );
+        assert_eq!(
+            group_of(&tree, 4343).id,
+            group_id,
+            "the new window joins the group the selection was in"
+        );
+        let now: Vec<u64> = strip.window_groups[0].tabs.iter().map(|t| t.id).collect();
+        let mut expected = tab_ids_before.clone();
+        expected.insert(selected_idx + 1, tab_id);
+        assert_eq!(
+            now, expected,
+            "the new tab sits immediately right of the selected one \
+             ({selected_tab:?}), with every other tab in its original order"
+        );
+        assert_eq!(
+            strip.window_groups[0].active_tab, tab_id,
+            "the window you just opened is the one you're looking at"
+        );
+    }
+
     /// The new column goes immediately *right of the focused group*, not
     /// at the end of the strip — so the window you just opened is next
     /// to the one you opened it from and the strip doesn't scroll away.
@@ -436,7 +517,7 @@ mod tests {
         use crate::shell::state::{WindowGroup, WindowWidth, next_id};
         crate::shell::launcher::clear_pending_placements();
         let mut tree = WorkspaceTree::bootstrap_default();
-        let strip_id = tree.workspaces[0].strips[0].id;
+        let (_strip_id, focused) = focus_lone_window(&mut tree);
         // Two more groups after the first, so "beside" and "at the end"
         // are distinguishable positions.
         for _ in 0..2 {
@@ -450,10 +531,7 @@ mod tests {
                     maximized: false,
                 });
         }
-        let focused = tree.workspaces[0].strips[0].window_groups[0].id;
         let last_before = tree.workspaces[0].strips[0].window_groups[2].id;
-        tree.active_strip.insert(tree.active, strip_id);
-        tree.set_active_group(strip_id, focused);
 
         let _ = adopt_toplevel(&mut tree, 5150, Some("org.example.beside".into()));
 
@@ -547,15 +625,27 @@ mod tests {
     #[test]
     fn a_recorded_placement_is_consumed_by_the_matching_adoption() {
         use crate::shell::launcher;
+        use crate::shell::state::{WindowGroup, WindowWidth, next_id};
         launcher::clear_pending_placements();
         let mut tree = WorkspaceTree::bootstrap_default();
-        let strip_id = tree.workspaces[0].strips[0].id;
-        let opener = tree.workspaces[0].strips[0].window_groups[0].id;
-        tree.active_strip.insert(tree.active, strip_id);
-        tree.set_active_group(strip_id, opener);
+        let (strip_id, selected) = focus_lone_window(&mut tree);
+        // A second group the note can name — somewhere the rule would
+        // never send a window, since the selection is elsewhere.
+        let named = {
+            let g = WindowGroup {
+                id: next_id(),
+                tabs: vec![],
+                active_tab: 0,
+                width: WindowWidth::Normal,
+                maximized: false,
+            };
+            let id = g.id;
+            tree.workspaces[0].strips[0].window_groups.push(g);
+            id
+        };
         let groups_before = tree.workspaces[0].strips[0].window_groups.len();
 
-        launcher::set_pending_placement("dev.qos.placefixture", Placement::TabIn(opener));
+        launcher::set_pending_placement("dev.qos.placefixture", Placement::TabIn(named));
         // The client announces the bare trailing component, as the
         // reverse-DNS convention has it.
         let _ = adopt_toplevel(&mut tree, 8080, Some("placefixture".into()));
@@ -564,14 +654,37 @@ mod tests {
             groups_before,
             "the recorded TabIn placement must reach the adoption"
         );
+        assert_eq!(
+            group_of(&tree, 8080).id,
+            named,
+            "and it must reach the group the note named"
+        );
+        let named_tabs = group_of(&tree, 8080).tabs.len();
 
-        // The note belongs to that window: a *second* window from the
-        // same client is a new thing again.
+        // Adopting moved the selection onto the window it just opened —
+        // it has to, that is the window the user is now looking at. Put
+        // the selection back on their own lone window, which is the state
+        // a second launch would actually happen in.
+        tree.set_active_group(strip_id, selected);
+
+        // The note belongs to that first window: a *second* window from
+        // the same client is a new thing again, and takes the rule.
         let _ = adopt_toplevel(&mut tree, 8081, Some("placefixture".into()));
         assert_eq!(
             tree.workspaces[0].strips[0].window_groups.len(),
             groups_before + 1,
             "a claimed placement must not apply to the next window too"
+        );
+        assert_eq!(
+            tree.workspaces[0].strips[0]
+                .window_groups
+                .iter()
+                .find(|g| g.id == named)
+                .expect("the named group is still there")
+                .tabs
+                .len(),
+            named_tabs,
+            "the retired note must not have pulled the second window in too"
         );
         launcher::clear_pending_placements();
     }
@@ -591,11 +704,10 @@ mod tests {
         launcher::clear_pending_placements();
 
         let mut protocol = WorkspaceTree::bootstrap_default();
-        let strip_id = protocol.workspaces[0].strips[0].id;
-        let opener = protocol.workspaces[0].strips[0].window_groups[0].id;
-        let active = protocol.active;
-        protocol.active_strip.insert(active, strip_id);
-        protocol.set_active_group(strip_id, opener);
+        // A lone selected window, so the rule's answer (a column beside
+        // it) differs from the note's (a tab inside it) — without that
+        // the two placements coincide and the test proves nothing.
+        let (_strip_id, opener) = focus_lone_window(&mut protocol);
         // The rendered tree is a clone of the persisted one, so the two
         // share group ids — which is what makes a placement naming a
         // group meaningful across both.
@@ -678,8 +790,7 @@ mod tests {
         let _ = adopt_toplevel(&mut tree, 99, None);
         let renamed = rename_tab_for_app_id(&mut tree, 99, "org.example.late".into());
         assert!(renamed, "rename should report it updated a tab");
-        let group = group_of(&tree, 99);
-        let tab = group.tabs.last().unwrap();
+        let tab = tab_of(&tree, 99);
         match &tab.tile {
             TileContent::Foreign { app_id, surface_id } => {
                 assert_eq!(*surface_id, 99);
@@ -792,18 +903,14 @@ mod tests {
             31338,
             "dev.qos.adoptfixture".into()
         ));
-        let renamed = group_of(&tree, 31338)
-            .tabs
-            .last()
-            .expect("renamed tab present");
-        assert_eq!(renamed.title, "Adopt Fixture");
+        assert_eq!(tab_of(&tree, 31338).title, "Adopt Fixture");
     }
 
     #[test]
     fn anonymous_app_id_falls_back_to_surface_synthetic() {
         let mut tree = WorkspaceTree::bootstrap_default();
         let _ = adopt_toplevel(&mut tree, 7, None);
-        let tab = group_of(&tree, 7).tabs.last().unwrap();
+        let tab = tab_of(&tree, 7);
         match &tab.tile {
             TileContent::Foreign { app_id, surface_id } => {
                 assert_eq!(*surface_id, 7);

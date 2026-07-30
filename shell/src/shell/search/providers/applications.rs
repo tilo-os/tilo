@@ -86,6 +86,16 @@ impl ApplicationsProvider {
                     let launched = {
                         let st = chrome.borrow();
                         let tree = st.tree();
+                        // Where the window goes is decided here, while the
+                        // user's selection and the layout they were looking
+                        // at are both still true — the window itself maps
+                        // seconds later, on another process. See
+                        // `crate::shell::placement`.
+                        crate::shell::placement::note_placement_for_launch(
+                            &package_id,
+                            &tree,
+                            st.strip_viewport(),
+                        );
                         tree.active_workspace().map(|ws| {
                             launcher::set_workspace_capabilities(ws.capabilities.clone());
                             launcher::launch_in_workspace(&package_id, ws)
