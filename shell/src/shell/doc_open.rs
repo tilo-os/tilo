@@ -236,8 +236,10 @@ pub fn open_in_workspace(path: &Path, chrome: &Chrome) -> Result<Opened, OpenErr
 /// [`open_in_workspace`] for a caller that already knows which window
 /// group the document belongs to — the group a file was dropped onto.
 ///
-/// Placement is otherwise this module's business only in the sense that
-/// it asks for it; see [`placement_for_document_open`].
+/// A drop target is the user's own instruction rather than a placement
+/// rule: the pointer named a group, so the document goes in that group.
+/// Every other open has no such target and asks
+/// [`placement_for_document_open`] instead.
 pub fn open_in_group(path: &Path, chrome: &Chrome, group: GroupId) -> Result<Opened, OpenError> {
     open(path, chrome, Some(Placement::TabIn(group)))
 }
@@ -318,15 +320,24 @@ fn open(
 
 /// Where the window of a document opened from another surface lands.
 ///
-/// A document opened from somewhere else belongs *with* whatever asked
-/// for it — same task, so a tab in the focused group rather than a new
-/// column. A launch from the applications list gets the default (its own
-/// group); see [`crate::compositor::tab_binding::Placement`], which is
-/// where that rule is written down.
+/// **This is a seam, not a rule.** Where a window goes is the window
+/// manager's decision and it is being written down in one place
+/// elsewhere (`shell::placement::note_placement_for_launch`, on the
+/// `window-placement` branch). This module needs an answer today, so it
+/// applies the rule already documented on
+/// [`crate::compositor::tab_binding::Placement::TabIn`] — a document
+/// opened from somewhere else belongs *with* whatever asked for it, same
+/// task, so a tab in the focused group rather than a new column.
 ///
-/// This is the single place this module decides placement, so when the
-/// window-placement rule moves behind one function it is the only call
-/// site that changes.
+/// It is deliberately the only place this module decides placement, so
+/// replacing it with the call to the shared rule is a one-function
+/// change:
+///
+/// ```ignore
+/// crate::shell::placement::note_placement_for_launch(&app.package_id, &tree, None);
+/// ```
+///
+/// (in place of the `set_pending_placement` call in [`open`]).
 fn placement_for_document_open(chrome: &Chrome) -> Option<Placement> {
     focused_group(chrome).map(Placement::TabIn)
 }
