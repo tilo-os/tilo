@@ -40,19 +40,24 @@ rollback_luks_device() {
 # That is the recovery key's slot (and any systemd-cryptenroll slot). Its
 # presence is the precondition for touching the TPM's lockout settings: doing so
 # makes a forgotten PIN unrecoverable without it.
+#
+# Each generation this tool enrolls owns exactly one keyslot, so "more keyslots
+# than enrolled generations" is exactly "at least one slot we do not own". Counting
+# is used rather than matching slot numbers because it cannot be fooled by a
+# malformed token that this tool declines to parse — an unparseable token would
+# make its slot look foreign, and this check has to err towards refusing.
 rollback_has_independent_keyslot() {
-  local dev="$1" all ours
-  all="$(cryptsetup luksDump "$dev" 2>/dev/null | sed -n '/^Keyslots:/,/^Tokens:/p' \
-        | grep -oE '^  [0-9]+:' | tr -d ' :')"
-  ours="$(qos-rollback status --device "$dev" --json 2>/dev/null || true)"
-  [ -n "$all" ] || return 1
-  # A machine with two or more keyslots always has something besides the single
-  # generation slot; with exactly one, it is ours only if a token claims it.
-  local count
-  count="$(printf '%s\n' "$all" | grep -c .)"
-  if [ "$count" -gt 1 ]; then return 0; fi
-  case "$ours" in *'"enrolled_generations":[]'*) return 0 ;; esac
-  return 1
+  local dev="$1" slots enrolled
+  slots="$(cryptsetup luksDump "$dev" 2>/dev/null \
+          | sed -n '/^Keyslots:/,/^Tokens:/p' \
+          | grep -cE '^  [0-9]+:')"
+  [ -n "$slots" ] && [ "$slots" -gt 0 ] 2>/dev/null || return 1
+  # `enrolled_generations` is a JSON array of numbers; count its elements.
+  enrolled="$(qos-rollback status --device "$dev" --json 2>/dev/null \
+             | sed -n 's/.*"enrolled_generations":\[\([^]]*\)\].*/\1/p' \
+             | tr ',' '\n' | grep -c '[0-9]')"
+  [ -n "$enrolled" ] || enrolled=0
+  [ "$slots" -gt "$enrolled" ]
 }
 
 # Refuse to discard the fallback unless the machine is demonstrably usable.

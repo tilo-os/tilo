@@ -449,6 +449,8 @@ pub fn run(runner: &dyn Runner, ws: &Workspace, req: &Request<'_>) -> Result<Out
         }
     };
 
+    // The `true` is the independent-unlock-path check at the top of this function:
+    // it bails rather than returning, so reaching here means it passed.
     retention::prune_is_safe(&plan.drop, &[req.generation], true)?;
     let mut dropped = Vec::new();
     for g in &plan.drop {
