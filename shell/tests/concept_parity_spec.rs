@@ -155,12 +155,57 @@ fn render_overlay_host(tree: &WorkspaceTree) -> (Scene, Chrome) {
 /// 0xff, which covers every spec-relevant fill in the shell (we never
 /// pre-blend the indigo accent or the emerald monitor colour against an
 /// alpha < 255 — those compositions happen at the layer level).
+/// How many `u32`s a tag writes into `draw_data`.
+///
+/// **Not** `DrawTag::info_size()`, which is the size of the *info* buffer
+/// — a different stream. The two agree for `COLOR`, which is why walking
+/// `draw_data` by `info_size()` appeared to work, but they diverge badly
+/// elsewhere: `IMAGE` reports 10 and writes 3, `BEGIN_CLIP` reports 1 and
+/// writes 2 (`blend_mode` + `alpha`).
+///
+/// Over-advancing runs the cursor off the end, after which every
+/// remaining colour is silently skipped and a parity test reports "the
+/// widget stopped painting indigo" instead of "the walker lost its
+/// place". That is exactly what happened when `soft_shadow` went from
+/// one image fill to eight.
+///
+/// `None` means a tag this walker has never measured. Callers must treat
+/// that as "cannot decode" rather than guessing, so a new brush kind
+/// fails loudly instead of corrupting every assertion downstream.
+fn draw_data_words(tag: vello_encoding::DrawTag) -> Option<usize> {
+    use vello_encoding::DrawTag;
+    // vello_encoding's own source annotates the two that differ most:
+    // `IMAGE // info: 10, scene: 3` and `BLUR_RECT // info: 11, scene: 5`.
+    // "scene" is this stream. The gradients follow their `Draw*Gradient`
+    // structs: linear `{index, p0[2], p1[2]}`, sweep `{index, p0[2], t0,
+    // t1}`, radial `{index, p0[2], p1[2], r0, r1}`.
+    Some(match tag {
+        DrawTag::COLOR => 1,
+        DrawTag::IMAGE => 3,
+        DrawTag::LINEAR_GRADIENT => 5,
+        DrawTag::SWEEP_GRADIENT => 5,
+        DrawTag::RADIAL_GRADIENT => 7,
+        DrawTag::BLUR_RECT => 5,
+        DrawTag::BEGIN_CLIP => 2,
+        DrawTag::END_CLIP => 0,
+        _ => return None,
+    })
+}
+
 fn collect_solid_colors(scene: &Scene) -> Vec<(u8, u8, u8, u8)> {
     use vello_encoding::DrawTag;
     let enc = scene.encoding();
     let mut out = Vec::new();
     let mut data_cursor = 0usize;
     for tag in enc.draw_tags.iter() {
+        let Some(words) = draw_data_words(*tag) else {
+            panic!(
+                "collect_solid_colors met an unmeasured draw tag ({:#x}); add its \
+                 draw_data word count to `draw_data_words` rather than letting the \
+                 cursor drift and silently corrupt every colour after this point",
+                tag.0
+            );
+        };
         if *tag == DrawTag::COLOR {
             // `draw_data` is `Vec<u32>` in vello_encoding 0.9. Each
             // `DrawColor` is a single packed u32 with red in the low
@@ -173,11 +218,8 @@ fn collect_solid_colors(scene: &Scene) -> Vec<(u8, u8, u8, u8)> {
                 let a = ((packed >> 24) & 0xff) as u8;
                 out.push((r, g, b, a));
             }
-            data_cursor += 1;
-        } else {
-            // info_size is already in u32 words.
-            data_cursor += tag.info_size() as usize;
         }
+        data_cursor += words;
     }
     out
 }
@@ -2131,5 +2173,44 @@ fn overview_avatars_come_from_the_roster_not_the_collaborator_list() {
          avatar disc on its card (listed_only={listed_discs}, \
          with_member={member_discs}); the card's faces have to come from the \
          roster the Members badge counts"
+    );
+}
+
+/// The word table in [`draw_data_words`] must account for **every** word
+/// of a real chrome scene's `draw_data`.
+///
+/// Every colour assertion in this file walks that stream by hand, so a
+/// tag whose size is wrong does not fail loudly — it slides the cursor
+/// and makes later fills decode as neighbouring garbage, or run off the
+/// end and vanish. That is how a long-standing `IMAGE` error (10 words
+/// assumed, 3 actual) stayed hidden until `soft_shadow` went from one
+/// image fill to eight and the drift became fatal.
+///
+/// Walk a full overlay-host render and require the total to land exactly
+/// on `draw_data.len()`. A new brush kind then fails here, once, with a
+/// clear message — instead of quietly weakening every parity assertion.
+#[test]
+fn draw_data_word_table_accounts_for_the_whole_stream() {
+    let tree = WorkspaceTree::bootstrap_default();
+    let (scene, _chrome) = render_overlay_host(&tree);
+    let enc = scene.encoding();
+    let mut walked = 0usize;
+    for tag in enc.draw_tags.iter() {
+        let words = draw_data_words(*tag).unwrap_or_else(|| {
+            panic!(
+                "draw tag {:#x} has no measured draw_data size; add it to \
+                 `draw_data_words` (vello_encoding::draw annotates several \
+                 as `scene: N`) rather than letting the cursor drift",
+                tag.0
+            )
+        });
+        walked += words;
+    }
+    assert_eq!(
+        walked,
+        enc.draw_data.len(),
+        "the draw_data word table must consume the stream exactly; a \
+         mismatch means some tag's size is wrong and every colour decoded \
+         after it is suspect"
     );
 }
