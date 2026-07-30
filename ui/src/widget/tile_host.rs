@@ -226,6 +226,13 @@ struct Binding {
     /// opening a document *is* moving the tab onto that document's record,
     /// and the scratch record it leaves behind is still its own document.
     live: RecordId,
+    /// Whether the app has taken this record's document through a first
+    /// `sync` yet. What that pass writes — the object a body lives in, the
+    /// seed a fresh note carries — is the document's *shape*, not
+    /// something the user did, so the history's baseline is taken after
+    /// it. Otherwise the first Ctrl+Z deletes the body wholesale instead
+    /// of reverting what was typed into it.
+    established: bool,
 }
 
 impl Binding {
@@ -236,6 +243,7 @@ impl Binding {
             if want.id != self.live {
                 self.store.open_record(&want);
                 self.live = want.id;
+                self.established = false;
             }
         }
         self.live.clone()
@@ -304,7 +312,12 @@ impl TileHost {
         }
         store.open_record(&tab);
         let live = tab.id.clone();
-        self.binding = Some(Binding { store, tab, live });
+        self.binding = Some(Binding {
+            store,
+            tab,
+            live,
+            established: false,
+        });
         self.announce_scope();
     }
 
@@ -401,9 +414,15 @@ impl Widget for TileHost {
         let TileContent::App(w) = &mut self.content else {
             return;
         };
-        match (live, &self.binding) {
+        match (live, &mut self.binding) {
             (Some(id), Some(b)) => {
                 b.store.with(&id, |doc| w.sync(doc, &ROOT));
+                if !b.established {
+                    // The document's shape is now established; the user's
+                    // history starts here. See `Binding::established`.
+                    b.store.with_history(&id, |doc, history| history.rebase(doc));
+                    b.established = true;
+                }
             }
             _ => w.sync(s, p),
         }
@@ -550,6 +569,19 @@ impl Widget for TileHost {
         {
             b.store.with_history(&id, |doc, history| {
                 let author = crate::collaboration::local_user_id();
+                // Close whatever burst is still open first, so Ctrl+Z
+                // immediately after typing reverts what was just typed
+                // rather than the action before it. A commit with nothing
+                // in the transaction records nothing, so this is free when
+                // the burst has already closed.
+                if matches!(step, UndoStep::Undo) {
+                    history.commit_action_authored(
+                        doc,
+                        None,
+                        w.get_state(),
+                        Some(author.clone()),
+                    );
+                }
                 match step {
                     UndoStep::Undo => history.undo_as(doc, Some(&author), None, w.get_state()),
                     UndoStep::Redo => history.redo_as(doc, Some(&author), None, w.get_state()),
@@ -560,6 +592,7 @@ impl Widget for TileHost {
                     }
                 })
             });
+            w.on_commit();
             *handled = true;
             return;
         }

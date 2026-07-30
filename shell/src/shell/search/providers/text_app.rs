@@ -14,7 +14,7 @@
 use std::rc::Rc;
 
 use crate::shell::chrome_state::{Chrome, ChromeState};
-use crate::shell::crdt_text::read_body;
+use crate::shell::tab_documents::tab_body;
 use crate::shell::search::{ResourceKind, SearchContext, SearchResult};
 use crate::shell::state::{AppKind, GroupId, StripId, TabId, TileContent, WorkspaceId};
 
@@ -54,8 +54,11 @@ pub fn owns_tab_of(chrome: &ChromeState, tab_id: u64, app: &str) -> bool {
 ///
 /// `body_key` must be the same Automerge key the app's
 /// [`CrdtTextBody`](crate::shell::crdt_text::CrdtTextBody) writes under,
-/// and it is read from `ctx.doc_root` — the root the shell hands its
-/// hosted apps — because that is where the app actually puts it.
+/// and it is read **per tab**, out of that tab's own document, because
+/// that is where the app actually puts it: a tab is an open thing and the
+/// document behind it is its own (see
+/// [`crate::shell::tab_documents`]). Reading one body and scoring every
+/// tab against it is what made two Notes tabs show each other's snippet.
 pub fn query_text_app(
     ctx: &SearchContext<'_>,
     app: &str,
@@ -67,8 +70,6 @@ pub fn query_text_app(
         return Vec::new();
     }
     let needle_lower = ctx.needle.to_lowercase();
-    let body = read_body(ctx.doc, ctx.doc_root, body_key).unwrap_or_default();
-    let body_lower = body.to_lowercase();
     let mut out = Vec::new();
     let tree = ctx.chrome.tree();
     for w in &tree.workspaces {
@@ -79,6 +80,9 @@ pub fn query_text_app(
                         continue;
                     }
                     let title_lower = t.title.to_lowercase();
+                    let body = tab_body(ctx.chrome.records(), t.id, body_key)
+                        .unwrap_or_default();
+                    let body_lower = body.to_lowercase();
                     let Some((score, snippet)) =
                         match_score(&needle_lower, &title_lower, &body_lower, &body)
                     else {
