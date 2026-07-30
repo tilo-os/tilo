@@ -54,6 +54,8 @@ use vello::peniko::{Color, Fill};
 use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
+use ui::a11y::Role;
+use ui::action::{ActionSpec, ResourceNode};
 use ui::color_compat::ColorCompat;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
@@ -96,22 +98,30 @@ enum SendOutcome {
     Err(String),
 }
 
-/// A user action collected from a child widget's callback, applied after the
-/// event has finished routing through the tree. Buttons and rows push these
-/// from their `on_click`/`on_activate` closures; the toggle groups push from
-/// `on_change`. Draining the sink in one place keeps the borrow of the child
-/// widgets and the mutation of the model cleanly separated.
-#[derive(Clone, Debug)]
-enum Cmd {
-    Send,
-    SetTab(usize),
-    SetView(usize),
-    ToggleCollection(usize),
-    LoadRequest(usize, usize),
-    ReplayHistory(usize),
-}
+/// Where a child widget's callback drops the **action id** to dispatch. Every
+/// control — Send, the tab/view toggles, each sidebar row — pushes an id here
+/// from its `on_click`/`on_change`/`on_activate` closure; the container drains
+/// the ids after the event has finished routing and runs each through the one
+/// executor ([`ApiTesterApp::dispatch_action`]). The same executor is what a
+/// command palette, an assistive technology, or the headless harness call to
+/// invoke an action by id — the UI, the keyboard, and the AT share it.
+type Sink = Rc<RefCell<Vec<String>>>;
 
-type Sink = Rc<RefCell<Vec<Cmd>>>;
+/// Action ids the app publishes + dispatches. Kept as `const` so the resource
+/// tree, the widget callbacks, and the executor never drift on a string.
+mod act {
+    pub const SEND: &str = "request.send";
+    /// `request.tab.{index}` — switch the request-builder tab (view only).
+    pub const TAB_PREFIX: &str = "request.tab.";
+    /// `response.view.{index}` — switch the response view (view only).
+    pub const VIEW_PREFIX: &str = "response.view.";
+    /// `collection.toggle.{ci}` — fold/unfold a collection.
+    pub const COLLECTION_TOGGLE_PREFIX: &str = "collection.toggle.";
+    /// `request.load.{ci}.{ri}` — load a saved request into the builder.
+    pub const REQUEST_LOAD_PREFIX: &str = "request.load.";
+    /// `history.replay.{hi}` — replay a history entry into the builder.
+    pub const HISTORY_REPLAY_PREFIX: &str = "history.replay.";
+}
 
 /// Structural signature of the child set. When it changes, the app reports
 /// `take_structure_dirty` so the host rebuilds the taffy tree + focus order.
@@ -206,19 +216,24 @@ pub struct ApiTesterApp {
     seeded: bool,
     adopted: bool,
     dirty: bool,
+    /// Raised when a dispatched action changed persisted state, so
+    /// `needs_commit` reports an undo boundary the host records. Cleared in
+    /// `on_commit`.
+    pending_commit: bool,
     /// Set when the child set changed; drained by `take_structure_dirty`.
     last_sig: ChildSig,
     persisted_once: bool,
 }
 
-/// The data + command for one sidebar row, rebuilt from the model whenever the
+/// The data + action for one sidebar row, rebuilt from the model whenever the
 /// collections / history / selection change.
 #[derive(Clone)]
 struct NavMeta {
     kind: NavKind,
     label: String,
     a11y_name: String,
-    cmd: Cmd,
+    /// The action id this row dispatches when activated.
+    action_id: String,
 }
 
 impl ApiTesterApp {
@@ -271,28 +286,29 @@ impl ApiTesterApp {
         env_options.extend(environments.iter().map(|e| e.name.clone()));
         let env_dropdown = Dropdown::new(env_options, ENV_PATH).with_id("api.env");
 
-        // Send — the accent primary action.
+        // Send — the accent primary action. Its click drops the `request.send`
+        // action id into the sink; the executor runs it.
         let send_sink = sink.clone();
         let send_button = Button::new("api.send", "Send", None)
             .primary()
             .with_size(SEND_W as f32, 36.0)
-            .on_click(move || send_sink.borrow_mut().push(Cmd::Send));
+            .on_click(move || send_sink.borrow_mut().push(act::SEND.to_string()));
 
-        // Request-builder tabs.
+        // Request-builder tabs — each selection dispatches `request.tab.{i}`.
         let tab_sink = sink.clone();
         let request_tabs = ToggleGroup::new(
             RequestTab::ALL.iter().map(|t| Segment::new(t.label())).collect(),
             0,
         )
-        .on_change(move |i| tab_sink.borrow_mut().push(Cmd::SetTab(i)));
+        .on_change(move |i| tab_sink.borrow_mut().push(format!("{}{i}", act::TAB_PREFIX)));
 
-        // Response-view switch.
+        // Response-view switch — dispatches `response.view.{i}`.
         let view_sink = sink.clone();
         let response_view_toggle = ToggleGroup::new(
             ResponseView::ALL.iter().map(|v| Segment::new(v.label())).collect(),
             0,
         )
-        .on_change(move |i| view_sink.borrow_mut().push(Cmd::SetView(i)));
+        .on_change(move |i| view_sink.borrow_mut().push(format!("{}{i}", act::VIEW_PREFIX)));
 
         let mut app = Self {
             collections,
@@ -328,6 +344,7 @@ impl ApiTesterApp {
             seeded: false,
             adopted: false,
             dirty: true,
+            pending_commit: false,
             last_sig: ChildSig::default(),
             persisted_once: false,
         };
@@ -445,6 +462,32 @@ impl ApiTesterApp {
         ApiDoc::set_history(state, root, &self.history);
     }
 
+    /// Re-read the collections + history from the CRDT and rebuild the nav
+    /// rows when they change. Called every `sync`, so an undo or a peer edit
+    /// that reverts/updates the document is reflected in the sidebar. The
+    /// method / environment / URL / body are handled by their own CRDT-bound
+    /// widgets and are not touched here.
+    fn rederive_from_crdt(&mut self, state: &AutoCommit, root: &ObjId) {
+        let mut changed = false;
+        let cols = ApiDoc::collections(state, root);
+        // Guard against an empty read wiping a populated model (only happens
+        // if the doc genuinely holds no collections, e.g. an as-yet-unseeded
+        // peer); the seed baseline keeps undo from reaching that state.
+        if !cols.is_empty() && cols != self.collections {
+            self.collections = cols;
+            changed = true;
+        }
+        let hist = ApiDoc::history(state, root);
+        if hist != self.history {
+            self.history = hist;
+            changed = true;
+        }
+        if changed {
+            self.rebuild_nav();
+            self.dirty = true;
+        }
+    }
+
     /// Adopt a peer's workspace from the shared CRDT.
     fn adopt(&mut self, state: &AutoCommit, root: &ObjId) {
         let cols = ApiDoc::collections(state, root);
@@ -539,9 +582,9 @@ impl ApiTesterApp {
             .enumerate()
             .map(|(i, m)| {
                 let sink = self.sink.clone();
-                let cmd = m.cmd.clone();
+                let action_id = m.action_id.clone();
                 NavRow::new(format!("api.nav.{i}"), m.kind.clone(), m.label.clone(), m.a11y_name.clone())
-                    .on_activate(move || sink.borrow_mut().push(cmd.clone()))
+                    .on_activate(move || sink.borrow_mut().push(action_id.clone()))
             })
             .collect();
     }
@@ -563,7 +606,7 @@ impl ApiTesterApp {
                     col.name,
                     col.requests.len()
                 ),
-                cmd: Cmd::ToggleCollection(ci),
+                action_id: format!("{}{ci}", act::COLLECTION_TOGGLE_PREFIX),
             });
             if col.expanded {
                 for (ri, req) in col.requests.iter().enumerate() {
@@ -574,7 +617,7 @@ impl ApiTesterApp {
                         },
                         label: req.name.clone(),
                         a11y_name: format!("{} {}", req.method.as_str(), req.name),
-                        cmd: Cmd::LoadRequest(ci, ri),
+                        action_id: format!("{}{ci}.{ri}", act::REQUEST_LOAD_PREFIX),
                     });
                 }
             }
@@ -587,7 +630,7 @@ impl ApiTesterApp {
                 },
                 label: short_path(&h.url),
                 a11y_name: format!("{} {} {}", h.method.as_str(), short_path(&h.url), h.status),
-                cmd: Cmd::ReplayHistory(hi),
+                action_id: format!("{}{hi}", act::HISTORY_REPLAY_PREFIX),
             });
         }
         v
@@ -1414,62 +1457,37 @@ impl ApiTesterApp {
     // Command application
     // -------------------------------------------------------------------
 
-    /// Drain the command sink and apply each command, persisting when a
-    /// command changes shared state. Returns `true` if anything was applied.
-    fn drain_commands(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
-        let cmds: Vec<Cmd> = self.sink.borrow_mut().drain(..).collect();
-        if cmds.is_empty() {
+    /// Drain the action-id sink and run each id through the one executor
+    /// ([`Self::dispatch_action`]). Returns `true` if anything was dispatched.
+    fn drain_sink(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
+        let ids: Vec<String> = self.sink.borrow_mut().drain(..).collect();
+        if ids.is_empty() {
             return false;
         }
-        for cmd in cmds {
-            match cmd {
-                Cmd::Send => self.send(),
-                Cmd::SetTab(i) => {
-                    if let Some(&tab) = RequestTab::ALL.get(i) {
-                        self.active_tab = tab;
-                    }
-                }
-                Cmd::SetView(i) => {
-                    if let Some(&v) = ResponseView::ALL.get(i) {
-                        self.response_view = v;
-                    }
-                }
-                Cmd::ToggleCollection(ci) => {
-                    if let Some(col) = self.collections.get_mut(ci) {
-                        col.expanded = !col.expanded;
-                    }
-                    self.rebuild_nav();
-                    self.persist(state, path);
-                }
-                Cmd::LoadRequest(ci, ri) => {
-                    self.load_request(ci, ri);
-                    self.seed_method_env(state, path);
-                    self.persist(state, path);
-                }
-                Cmd::ReplayHistory(hi) => {
-                    if let Some(h) = self.history.get(hi).cloned() {
-                        self.request.method = h.method;
-                        self.url_input.set_text(&h.url);
-                        self.request.url = h.url;
-                        self.seed_method_env(state, path);
-                    }
-                    self.persist(state, path);
-                }
-            }
+        for id in ids {
+            self.dispatch_action(&id, state, path);
         }
-        self.dirty = true;
         true
     }
 
+    /// Mark that a dispatched action mutated persisted state: raise the undo
+    /// boundary the host will commit, and request a redraw.
+    fn mark_state_changed(&mut self) {
+        self.pending_commit = true;
+        self.dirty = true;
+    }
+
     /// Reconcile the model from the CRDT-bound pickers after they may have
-    /// changed the document.
+    /// changed the document. A picker change is a persisted mutation, so it
+    /// also raises an undo boundary — selecting POST or a different
+    /// environment is undoable like any other action.
     fn reconcile_pickers(&mut self) {
         let sel = self.method_dropdown.selected();
         if !sel.is_empty() {
             let m = HttpMethod::from_str(sel);
             if m != self.request.method {
                 self.request.method = m;
-                self.dirty = true;
+                self.mark_state_changed();
             }
         }
         let esel = self.env_dropdown.selected().to_string();
@@ -1481,7 +1499,7 @@ impl ApiTesterApp {
             };
             if new_env != self.active_env {
                 self.active_env = new_env;
-                self.dirty = true;
+                self.mark_state_changed();
             }
         }
     }
@@ -1557,6 +1575,10 @@ impl Widget for ApiTesterApp {
                     self.seeded = true;
                     self.adopted = true;
                     self.persisted_once = true;
+                    // Commit the seed as the undo *baseline* so undoing the
+                    // first real action reverts just that action, not the whole
+                    // workspace into existence.
+                    self.pending_commit = true;
                 }
             } else {
                 self.adopt(state, path);
@@ -1568,6 +1590,14 @@ impl Widget for ApiTesterApp {
             }
         }
 
+        // Re-derive the structural lists from the CRDT every frame so an undo
+        // (or a peer's edit) is reflected — the same way the bound URL / body
+        // TextInputs already track the document. The collections + history are
+        // a projection of the doc; a local action mutates the doc via
+        // `persist`, and this reads the result back. Nav rows rebuild only when
+        // the projection actually changes, so idle frames keep focus.
+        self.rederive_from_crdt(state, path);
+
         // Bind + sync the live text objects.
         let url_obj = ApiDoc::url_text(state, path);
         self.url_input.bind_text(url_obj);
@@ -1576,12 +1606,12 @@ impl Widget for ApiTesterApp {
         self.url_input.sync(state, path);
         self.body_input.sync(state, path);
 
-        // Apply any commands an assistive technology queued by activating a
+        // Run any actions an assistive technology queued by activating a
         // control directly through `perform_action` (which bypasses the
         // container's `handle_event`, where pointer/keyboard activations are
         // drained). Draining here too means Orca / the built-in reader can
         // Send, switch tabs, and open rows just like the keyboard.
-        self.drain_commands(state, path);
+        self.drain_sink(state, path);
 
         // Sync + reconcile the CRDT-bound pickers.
         self.method_dropdown.sync(state, path);
@@ -1710,8 +1740,9 @@ impl Widget for ApiTesterApp {
             }
         }
 
-        // Apply any commands the children queued, then reconcile the pickers.
-        let did = self.drain_commands(state, path);
+        // Run any actions the children queued through the executor, then
+        // reconcile the pickers.
+        let did = self.drain_sink(state, path);
         self.reconcile_pickers();
         if did || *handled {
             self.dirty = true;
@@ -1767,6 +1798,168 @@ impl Widget for ApiTesterApp {
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         self.children_mut_ref()
+    }
+
+    /// The action + resource tree the app publishes — the enumerable command
+    /// surface a Ctrl+K palette / assistive technology lists, and the same
+    /// action ids the controls dispatch. The request is the root resource; its
+    /// collections (and their saved requests) and the history are children.
+    fn resources(&self) -> Option<ResourceNode> {
+        let mut request = ResourceNode::new("request", "Request", Role::Document).with_actions([
+            ActionSpec::view(act::SEND, "Send request").enabled(!self.sending),
+        ]);
+        for (i, tab) in RequestTab::ALL.iter().enumerate() {
+            request = request.with_action(ActionSpec::view(
+                format!("{}{i}", act::TAB_PREFIX),
+                format!("Show {} tab", tab.label()),
+            ));
+        }
+        if self.response.is_some() {
+            for (i, view) in ResponseView::ALL.iter().enumerate() {
+                request = request.with_action(ActionSpec::view(
+                    format!("{}{i}", act::VIEW_PREFIX),
+                    format!("Response: {}", view.label()),
+                ));
+            }
+        }
+
+        let mut root = ResourceNode::new("workspace", "API workspace", Role::Window)
+            .with_child(request);
+
+        for (ci, col) in self.collections.iter().enumerate() {
+            let mut cnode = ResourceNode::new(
+                format!("collection.{ci}"),
+                col.name.clone(),
+                Role::Group,
+            )
+            .with_action(ActionSpec::new(
+                format!("{}{ci}", act::COLLECTION_TOGGLE_PREFIX),
+                if col.expanded { format!("Collapse {}", col.name) } else { format!("Expand {}", col.name) },
+            ));
+            for (ri, req) in col.requests.iter().enumerate() {
+                cnode = cnode.with_child(
+                    ResourceNode::new(
+                        format!("collection.{ci}.request.{ri}"),
+                        req.name.clone(),
+                        Role::Button,
+                    )
+                    .with_action(ActionSpec::new(
+                        format!("{}{ci}.{ri}", act::REQUEST_LOAD_PREFIX),
+                        format!("Load {} {}", req.method.as_str(), req.name),
+                    )),
+                );
+            }
+            root = root.with_child(cnode);
+        }
+
+        if !self.history.is_empty() {
+            let mut hist = ResourceNode::new("history", "History", Role::List);
+            for (hi, h) in self.history.iter().enumerate() {
+                hist = hist.with_child(
+                    ResourceNode::new(
+                        format!("history.{hi}"),
+                        short_path(&h.url),
+                        Role::Button,
+                    )
+                    .with_action(ActionSpec::new(
+                        format!("{}{hi}", act::HISTORY_REPLAY_PREFIX),
+                        format!("Replay {} {}", h.method.as_str(), short_path(&h.url)),
+                    )),
+                );
+            }
+            root = root.with_child(hist);
+        }
+        Some(root)
+    }
+
+    /// The one executor every interaction routes through: a control click, an
+    /// AT `Activate`, and a command-palette pick all land here. View-only
+    /// actions (tab / response-view switches) change local state; the rest
+    /// mutate the persisted CRDT and raise an undo boundary via
+    /// [`ApiTesterApp::mark_state_changed`].
+    fn dispatch_action(&mut self, id: &str, state: &mut AutoCommit, path: &ObjId) -> bool {
+        // --- View-only actions (not undoable) ---
+        if let Some(rest) = id.strip_prefix(act::TAB_PREFIX) {
+            if let Ok(i) = rest.parse::<usize>() {
+                if let Some(&tab) = RequestTab::ALL.get(i) {
+                    self.active_tab = tab;
+                    self.request_tabs.set_selected(i);
+                    self.dirty = true;
+                    return true;
+                }
+            }
+            return false;
+        }
+        if let Some(rest) = id.strip_prefix(act::VIEW_PREFIX) {
+            if let Ok(i) = rest.parse::<usize>() {
+                if let Some(&view) = ResponseView::ALL.get(i) {
+                    self.response_view = view;
+                    self.response_view_toggle.set_selected(i);
+                    self.dirty = true;
+                    return true;
+                }
+            }
+            return false;
+        }
+        if id == act::SEND {
+            self.send();
+            self.dirty = true;
+            return true;
+        }
+
+        // --- State-changing actions (undoable) ---
+        if let Some(rest) = id.strip_prefix(act::COLLECTION_TOGGLE_PREFIX) {
+            if let Ok(ci) = rest.parse::<usize>() {
+                if let Some(col) = self.collections.get_mut(ci) {
+                    col.expanded = !col.expanded;
+                }
+                self.rebuild_nav();
+                self.persist(state, path);
+                self.mark_state_changed();
+                return true;
+            }
+            return false;
+        }
+        if let Some(rest) = id.strip_prefix(act::REQUEST_LOAD_PREFIX) {
+            let mut parts = rest.split('.');
+            let ci = parts.next().and_then(|s| s.parse::<usize>().ok());
+            let ri = parts.next().and_then(|s| s.parse::<usize>().ok());
+            if let (Some(ci), Some(ri)) = (ci, ri) {
+                self.load_request(ci, ri);
+                self.seed_method_env(state, path);
+                self.persist(state, path);
+                self.mark_state_changed();
+                return true;
+            }
+            return false;
+        }
+        if let Some(rest) = id.strip_prefix(act::HISTORY_REPLAY_PREFIX) {
+            if let Ok(hi) = rest.parse::<usize>() {
+                if let Some(h) = self.history.get(hi).cloned() {
+                    self.request.method = h.method;
+                    self.url_input.set_text(&h.url);
+                    self.request.url = h.url;
+                    self.seed_method_env(state, path);
+                    self.persist(state, path);
+                    self.mark_state_changed();
+                    return true;
+                }
+            }
+            return false;
+        }
+        false
+    }
+
+    fn needs_commit(&self) -> bool {
+        // An action raised an undo boundary, or a bound text field batched an
+        // edit — either way the host should record a commit.
+        self.pending_commit || self.url_input.needs_commit() || self.body_input.needs_commit()
+    }
+
+    fn on_commit(&mut self) {
+        self.pending_commit = false;
+        self.url_input.on_commit();
+        self.body_input.on_commit();
     }
 
     fn name(&self) -> &str {

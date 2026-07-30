@@ -135,6 +135,40 @@ pub trait Widget {
         false
     }
 
+    /// The resource + action tree this widget (usually an app root) publishes
+    /// — the enumerable "what can I do here" surface. Defaults to `None`
+    /// (nothing published), so a widget opts in exactly like `accessibility()`.
+    ///
+    /// An app returns a [`ResourceNode`](crate::action::ResourceNode) whose
+    /// [`ActionSpec`](crate::action::ActionSpec)s are the same verbs its
+    /// controls dispatch through [`dispatch_action`](Widget::dispatch_action);
+    /// a command palette (Ctrl+K), an assistive technology, and the headless
+    /// test harness all enumerate this tree and invoke actions by id, so the
+    /// UI, the keyboard, and the AT share one source of truth.
+    fn resources(&self) -> Option<crate::action::ResourceNode> {
+        None
+    }
+
+    /// Execute the action addressed by `id` — the single executor every
+    /// interaction routes through. A control's click/toggle/activation, an AT
+    /// `Activate`, and a command-palette pick all end here, so the effect and
+    /// its undo boundary live in one place instead of being copied across
+    /// per-event handlers.
+    ///
+    /// Like [`handle_event`](Widget::handle_event) it may mutate the CRDT
+    /// directly via `state`/`root`. An action that changes persisted state
+    /// should also raise [`needs_commit`](Widget::needs_commit) so the host
+    /// records an undo boundary (see [`crate::action`]); a pure view change
+    /// need not. Returns `true` if the action was recognised and run.
+    fn dispatch_action(
+        &mut self,
+        _id: &str,
+        _state: &mut AutoCommit,
+        _root: &ObjId,
+    ) -> bool {
+        false
+    }
+
     /// Whether this widget is interactive. The default is `true`.
     ///
     /// A disabled widget (`false`) must be skipped by keyboard focus

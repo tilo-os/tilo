@@ -215,6 +215,15 @@ impl Driver {
             // borrowed here.
             unsafe { (*p).is_focused() }.then_some(n)
         });
+
+        // Mirror the App's per-frame commit poll: a widget that raised an undo
+        // boundary (a committed action, a settled text edit) gets one, so Ctrl+Z
+        // has something to revert. The App does this every frame at
+        // `app.rs`'s `needs_commit` poll; the driver does it after each relayout.
+        if self.root.needs_commit() {
+            self.state.commit_action(None, None);
+            self.root.on_commit();
+        }
     }
 
     /// The keyboard-focusable widgets in tree order — the same DFS
@@ -466,6 +475,45 @@ impl Driver {
                 Ok(())
             }
         }
+    }
+
+    /// The resource + action tree the app publishes from
+    /// [`Widget::resources`](crate::widget::Widget::resources) — the
+    /// enumerable command surface a Ctrl+K palette / AT would list.
+    pub fn resources(&self) -> Option<crate::action::ResourceNode> {
+        self.root.resources()
+    }
+
+    /// Invoke an action by id through the app's single executor
+    /// ([`Widget::dispatch_action`](crate::widget::Widget::dispatch_action)) —
+    /// the same path a command palette or an assistive technology takes. If
+    /// the action raised an undo boundary, it is committed here just as the
+    /// live App's per-frame poll would. Returns whether the action ran.
+    pub fn invoke_action(&mut self, id: &str) -> bool {
+        let ran = self
+            .root
+            .dispatch_action(id, &mut self.state.doc, &self.state.root);
+        if self.root.needs_commit() {
+            self.state.commit_action(None, None);
+            self.root.on_commit();
+        }
+        self.relayout();
+        ran
+    }
+
+    /// Undo the last committed action, mirroring the App's Ctrl+Z. Returns
+    /// whether an entry was popped.
+    pub fn undo(&mut self) -> bool {
+        let did = self.state.undo_as(None, None, None).is_some();
+        self.relayout();
+        did
+    }
+
+    /// Redo the last undone action (Ctrl+Y / Ctrl+Shift+Z).
+    pub fn redo(&mut self) -> bool {
+        let did = self.state.redo_as(None, None, None).is_some();
+        self.relayout();
+        did
     }
 
     /// The document rendered as JSON, for a harness to diff across a

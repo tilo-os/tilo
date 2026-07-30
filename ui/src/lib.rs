@@ -29,6 +29,7 @@
 //! app drop the direct dependency when it is next touched.
 
 pub mod a11y;
+pub mod action;
 pub mod accesskit_bridge;
 pub mod screen_reader;
 pub mod app;
@@ -98,6 +99,7 @@ pub use selection::SelectionModel;
 // through the module path to avoid clashing with `permissions::{Role}` /
 // `permissions::Verb`, which are already re-exported at the crate root.
 pub use a11y::{A11ySettings, AccessNode, AccessState};
+pub use action::{ActionSpec, ResourceNode};
 
 // Built-in screen reader (W6): the first-party narrator over the a11y tree +
 // qos-tts. `describe` is the pure phrase-builder; `ScreenReader` the imperative
