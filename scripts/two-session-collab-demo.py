@@ -408,6 +408,16 @@ def run(host: Session, peer: Session, shots: str) -> None:
     peer.key("Escape")
     peer_ws = peer.active_workspace()
     claim("the peer is now in the host's room", peer_ws["room"], host_ws["room"])
+    # Joining also records who administers the room. The value comes from
+    # the invite's signature, so the peer knows the room's owner and
+    # capabilities may only ever arrive from that peer — including not
+    # from another guest of the same room.
+    claim("the peer records the inviter as the room's governance authority",
+          peer.tree().get("room_authority", {}).get(peer_ws["room"]),
+          {"Peer": f"p2p:{peer_id_of(host)}"})
+    claim("the host still governs the room it made",
+          host.tree().get("room_authority", {}).get(host_ws["room"], "Local"),
+          "Local")
     peer.snapshot(os.path.join(shots, "03-peer-joined.png"))
 
     step("5.", "a change the host makes to the room reaches the peer")
