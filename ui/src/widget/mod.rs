@@ -42,6 +42,25 @@ pub trait Widget {
     /// describing the role, not the widget type (e.g. `command_palette_input`,
     /// not `TextInput`).
     fn test_id(&self) -> Option<&str> { None }
+
+    /// Named hit rects *inside* this widget, for widgets that paint
+    /// several affordances into one rect rather than composing child
+    /// widgets. Same naming convention as [`Widget::test_id`].
+    ///
+    /// A widget that draws its own controls (a chrome bar with a pill, a
+    /// couple of icon buttons and an avatar stack) is otherwise a single
+    /// addressable rect, so a harness can only reach it by guessing
+    /// coordinates — and a test that guesses coordinates stops proving
+    /// anything the moment the layout moves. Returning the rects the
+    /// widget hit-tests against keeps the click target and the painted
+    /// target the same object.
+    ///
+    /// Rects are reported in the same logical space as
+    /// [`Widget::get_rect`]. Zero-area entries are dropped by the
+    /// registry, so a control that is off screen this frame is simply
+    /// not addressable.
+    fn test_rects(&self) -> Vec<(String, vello::kurbo::Rect)> { Vec::new() }
+
     fn get_rect(&self) -> vello::kurbo::Rect;
 
     /// Resolve the OS cursor shape this widget wants while the pointer

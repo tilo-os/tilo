@@ -1383,6 +1383,19 @@ impl Widget for TopBarChrome {
         self.rect
     }
 
+    /// The bar's own affordances, so a harness clicks the pill the
+    /// renderer painted instead of a guessed coordinate.
+    fn test_rects(&self) -> Vec<(String, Rect)> {
+        vec![
+            ("topbar_overview_button".to_string(), self.overview_btn_rect),
+            ("topbar_workspace_up".to_string(), self.up_btn_rect),
+            ("topbar_workspace_down".to_string(), self.down_btn_rect),
+            ("topbar_workspace_pill".to_string(), self.ws_pill_rect),
+            ("topbar_tray_pill".to_string(), self.tray_pill_rect),
+            ("topbar_avatar_stack".to_string(), self.avatar_stack_rect),
+        ]
+    }
+
     /// The top bar reports clean-after-first-frame. Subsequent
     /// invalidations flow through:
     ///   - [`Widget::update`] when the shared `Chrome` revision bumps
