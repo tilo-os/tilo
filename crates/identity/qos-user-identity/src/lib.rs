@@ -69,7 +69,9 @@ pub mod persist;
 pub mod revocation;
 
 pub use canonical::CanonicalError;
-pub use persist::{IdentityPaths, PersistError};
+pub use persist::{
+    DeviceKeyOutcome, IdentityPaths, PersistError, adopt_device_key, load_or_create_device_key,
+};
 pub use cert::{
     DEVCERT_PREIMAGE_TAG, DeviceCapabilities, DeviceCert, DeviceCertError, sign_device_cert,
     verify_device_cert, verify_device_cert_at,
