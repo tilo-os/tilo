@@ -1,0 +1,285 @@
+#!/bin/bash
+# qos-disk-encrypt — build an encrypted root for a qOS install, and enrol the
+# unlock factors on it.
+#
+# Split out of qos-install so the destructive block work is one testable unit:
+#
+#   qos-disk-encrypt prepare <disk> [--filesystem btrfs|ext4|xfs] [--mnt DIR]
+#   qos-disk-encrypt enrol   <luks-part> [--key-file F] [--pin-file F] [--fido2]
+#   qos-disk-encrypt finish  <luks-part> [--key-file F] [--mnt DIR]
+#
+# `prepare` writes a GPT with ESP + /boot + a LUKS2 root, opens the mapping with
+# a throwaway key file, makes the filesystem, mounts the tree under --mnt and
+# prints the facts the caller needs on stdout as `key=value` lines:
+#
+#   MNT=… ESP=… BOOT_PART=… LUKS_PART=… LUKS_UUID=… ROOT_FS_UUID=…
+#   KEY_FILE=… KARGS=…
+#
+# KARGS is what the install has to bake into the boot entry for early userspace
+# to find and open the volume. `enrol` adds the real unlock factors, `finish`
+# drops the throwaway key slot and tears the tree down.
+#
+# ## Why the volume is not created by `bootc install --block-setup tpm2-luks`
+#
+# That option seals the one and only key slot to a TPM, and refuses outright on
+# a machine that has no TPM — so hardware absence turns into no encryption at
+# all, which is the opposite of what it should do. Here the volume is always
+# created with a recovery key, and the TPM (with or without a PIN) and a FIDO2
+# token are *additional* slots layered on top. A machine with no TPM gets the
+# same volume with one fewer convenience factor, and the recovery key is what
+# every configuration falls back to.
+set -euo pipefail
+
+log()  { printf '%s\n' "$*"; }
+die()  { printf 'error: %s\n' "$*" >&2; exit 1; }
+
+# GUIDs, not sfdisk's short aliases, so the partition types do not depend on the
+# util-linux version.
+GUID_ESP=C12A7328-F81F-11D2-BA4B-00A0C93EC93B
+GUID_LINUX=0FC63DAF-8483-4772-8E79-3D69D8477DE4
+
+ESP_SIZE=${QOS_ESP_SIZE:-512MiB}
+BOOT_SIZE=${QOS_BOOT_SIZE:-1GiB}
+
+# `enrol`/`prepare` both need a place for the throwaway key. It is 0600 in a
+# 0700 dir on the installer's tmpfs, never on the target disk, and `finish`
+# removes both it and its key slot.
+default_key_file() { printf '/run/qos-install/luks.key'; }
+
+need() { command -v "$1" >/dev/null 2>&1 || die "missing required tool: $1"; }
+
+# Partitions of $1, in on-disk order, as absolute paths.
+parts_of() {
+  lsblk -lnpo NAME,TYPE "$1" 2>/dev/null | awk '$2=="part"{print $1}'
+}
+
+cmd_prepare() {
+  local disk="" fs=btrfs mnt=/run/qos-install/target key=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --filesystem) fs="${2:-}"; shift 2 ;;
+      --mnt) mnt="${2:-}"; shift 2 ;;
+      --key-file) key="${2:-}"; shift 2 ;;
+      -*) die "prepare: unknown option $1" ;;
+      *) [ -z "$disk" ] || die "prepare: unexpected argument $1"; disk="$1"; shift ;;
+    esac
+  done
+  [ -n "$disk" ] || die "prepare: missing <disk>"
+  [ -n "$key" ] || key="$(default_key_file)"
+  case "$fs" in btrfs|ext4|xfs) : ;; *) die "prepare: unsupported filesystem '$fs'" ;; esac
+
+  for t in sfdisk cryptsetup wipefs blkid lsblk "mkfs.$fs" mkfs.vfat mkfs.ext4; do need "$t"; done
+
+  [ -b "$disk" ] || die "prepare: $disk is not a block device"
+  [ "$(lsblk -dno TYPE "$disk" 2>/dev/null)" = "disk" ] \
+    || die "prepare: $disk is not a whole disk"
+  lsblk -nro MOUNTPOINT "$disk" 2>/dev/null | grep -q . \
+    && die "prepare: $disk (or a partition of it) is mounted"
+
+  log "  wiping $disk and writing a GPT (ESP $ESP_SIZE + /boot $BOOT_SIZE + LUKS root)"
+  wipefs -a "$disk" >/dev/null
+  sfdisk --quiet --wipe always --wipe-partitions always "$disk" <<EOF
+label: gpt
+start=1MiB, size=$ESP_SIZE, type=$GUID_ESP, name="EFI-SYSTEM"
+size=$BOOT_SIZE, type=$GUID_LINUX, name="boot"
+type=$GUID_LINUX, name="root"
+EOF
+  udevadm settle 2>/dev/null || true
+
+  local esp boot_part luks_part
+  esp="$(parts_of "$disk" | sed -n 1p)"
+  boot_part="$(parts_of "$disk" | sed -n 2p)"
+  luks_part="$(parts_of "$disk" | sed -n 3p)"
+  [ -b "$esp" ] && [ -b "$boot_part" ] && [ -b "$luks_part" ] \
+    || die "prepare: expected three partitions on $disk, got: $(parts_of "$disk" | tr '\n' ' ')"
+
+  log "  ESP=$esp  boot=$boot_part  root(LUKS)=$luks_part"
+  mkfs.vfat -n EFI-SYSTEM "$esp" >/dev/null
+  mkfs.ext4 -q -L boot "$boot_part"
+
+  # The throwaway key authorises every enrolment below and is removed by
+  # `finish`. 64 random bytes, so it is never the weakest slot while it exists.
+  install -d -m 0700 "$(dirname "$key")"
+  ( umask 0077; head -c 64 /dev/urandom > "$key" )
+
+  log "  formatting LUKS2 on $luks_part"
+  cryptsetup luksFormat --type luks2 --batch-mode --key-file "$key" "$luks_part"
+  local luks_uuid mapper
+  luks_uuid="$(cryptsetup luksUUID "$luks_part")"
+  [ -n "$luks_uuid" ] || die "prepare: could not read the LUKS UUID"
+  # dracut's own naming for a volume it opens from rd.luks.uuid; using it here
+  # keeps the installer's view and the boot-time view of the mapping identical.
+  mapper="luks-$luks_uuid"
+  cryptsetup open --key-file "$key" "$luks_part" "$mapper"
+  udevadm settle 2>/dev/null || true
+
+  log "  making the $fs root filesystem"
+  case "$fs" in
+    btrfs) mkfs.btrfs -f -L root "/dev/mapper/$mapper" >/dev/null ;;
+    ext4)  mkfs.ext4 -q -L root "/dev/mapper/$mapper" ;;
+    xfs)   mkfs.xfs -q -f -L root "/dev/mapper/$mapper" >/dev/null ;;
+  esac
+  local root_fs_uuid
+  root_fs_uuid="$(blkid -s UUID -o value "/dev/mapper/$mapper")"
+  [ -n "$root_fs_uuid" ] || die "prepare: could not read the root filesystem UUID"
+
+  install -d -m 0755 "$mnt"
+  mount "/dev/mapper/$mapper" "$mnt"
+  # `bootc install to-filesystem` wants an empty root; ext4 arrives with a
+  # lost+found, so clear whatever mkfs left rather than special-casing it.
+  find "$mnt" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+  install -d -m 0755 "$mnt/boot"
+  mount "$boot_part" "$mnt/boot"
+  install -d -m 0755 "$mnt/boot/efi"
+  mount "$esp" "$mnt/boot/efi"
+
+  # Early userspace needs to be told which volume to open and how. tpm2-device
+  # is requested unconditionally: systemd-cryptsetup falls back to asking for a
+  # passphrase when there is no TPM or no TPM slot, so one karg set serves every
+  # factor combination.
+  printf 'MNT=%s\n'          "$mnt"
+  printf 'ESP=%s\n'          "$esp"
+  printf 'BOOT_PART=%s\n'    "$boot_part"
+  printf 'LUKS_PART=%s\n'    "$luks_part"
+  printf 'LUKS_UUID=%s\n'    "$luks_uuid"
+  printf 'MAPPER=%s\n'       "$mapper"
+  printf 'ROOT_FS_UUID=%s\n' "$root_fs_uuid"
+  printf 'KEY_FILE=%s\n'     "$key"
+  printf 'KARGS=rd.luks.uuid=%s rd.luks.options=%s=tpm2-device=auto\n' \
+      "$luks_uuid" "$luks_uuid"
+}
+
+have_tpm2() { [ -e /dev/tpmrm0 ] || [ -e /dev/tpm0 ]; }
+
+cmd_enrol() {
+  local dev="" key="" pin_file="" want_fido2=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --key-file) key="${2:-}"; shift 2 ;;
+      --pin-file) pin_file="${2:-}"; shift 2 ;;
+      --fido2) want_fido2=1; shift ;;
+      -*) die "enrol: unknown option $1" ;;
+      *) [ -z "$dev" ] || die "enrol: unexpected argument $1"; dev="$1"; shift ;;
+    esac
+  done
+  [ -n "$dev" ] || die "enrol: missing <luks-part>"
+  [ -n "$key" ] || key="$(default_key_file)"
+  [ -f "$key" ] || die "enrol: no unlock key file at $key"
+  need systemd-cryptenroll
+  need cryptsetup
+
+  # (1) The recovery key, first and mandatory. Every other factor is a
+  # convenience that can be lost with the hardware; this one is the guarantee,
+  # so a failure here aborts rather than leaving a disk only a TPM can open.
+  log "  enrolling the recovery key…"
+  local rec_out rec_key
+  rec_out="$(systemd-cryptenroll --unlock-key-file="$key" --recovery-key "$dev" 2>&1)" \
+    || die "recovery-key enrolment failed; aborting rather than shipping a disk with no recoverable factor:"$'\n'"$rec_out"
+  rec_key="$(printf '%s\n' "$rec_out" \
+    | grep -oE '[a-z]{6}-[a-z]{6}-[a-z]{6}-[a-z]{6}-[a-z]{6}-[a-z]{6}-[a-z]{6}-[a-z]{6}' \
+    | tail -1)"
+  [ -n "$rec_key" ] || rec_key="$(printf '%s\n' "$rec_out" | tail -1)"
+
+  log ""
+  log "  ============================================================"
+  log "   RECOVERY KEY — write this down / save it off-device NOW."
+  log "   It unlocks the disk when no other factor can."
+  log ""
+  log "       $rec_key"
+  log ""
+  if command -v qrencode >/dev/null 2>&1; then
+    qrencode -t ANSIUTF8 "$rec_key" 2>/dev/null || true
+  fi
+  log "  ============================================================"
+  log ""
+
+  # (2) FIDO2, if a token was asked for. Never fatal: the recovery key (and the
+  # TPM slot below) still open the volume.
+  if [ "$want_fido2" -eq 1 ]; then
+    log "  enrolling a FIDO2 security key (touch it now if prompted)…"
+    if systemd-cryptenroll --unlock-key-file="$key" --fido2-device=auto "$dev"; then
+      log "  FIDO2 key enrolled."
+    else
+      log "  WARNING: FIDO2 enrolment failed (no token?) — continuing."
+    fi
+  fi
+
+  # (3) The quiet-unlock factor. PCR 7 only: it is the Secure Boot policy
+  # register, so the seal breaks if the boot policy changes, while PCR 4 (the
+  # boot artefacts themselves) would break the seal on every OS update and send
+  # the user to the recovery key each time.
+  if have_tpm2; then
+    if [ -n "$pin_file" ]; then
+      log "  enrolling TPM2 with a PIN…"
+      NEWPIN="$(cat "$pin_file")" systemd-cryptenroll --unlock-key-file="$key" \
+        --tpm2-device=auto --tpm2-pcrs=7 --tpm2-with-pin=yes "$dev" \
+        || die "TPM2+PIN enrolment failed (the recovery key still opens the disk, but the requested configuration was not reached)"
+      log "  TPM2+PIN enrolled."
+    else
+      log "  enrolling TPM2 (no PIN)…"
+      systemd-cryptenroll --unlock-key-file="$key" \
+        --tpm2-device=auto --tpm2-pcrs=7 "$dev" \
+        || die "TPM2 enrolment failed (the recovery key still opens the disk, but the requested configuration was not reached)"
+      log "  TPM2 enrolled."
+    fi
+  else
+    log "  no TPM2 device — this machine unlocks by typing a secret, not automatically."
+    if [ -n "$pin_file" ]; then
+      # The PIN the caller collected becomes an ordinary passphrase slot, so the
+      # user has something short to type at boot instead of the recovery key.
+      log "  enrolling the supplied passphrase as a LUKS key slot…"
+      cryptsetup luksAddKey --batch-mode --key-file "$key" "$dev" "$pin_file" \
+        || die "passphrase enrolment failed"
+      log "  passphrase enrolled."
+    else
+      log "  no passphrase was supplied, so the RECOVERY KEY above is the boot"
+      log "  passphrase. Keep it; there is no other way in."
+    fi
+  fi
+}
+
+cmd_finish() {
+  local dev="" key="" mnt=/run/qos-install/target
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --key-file) key="${2:-}"; shift 2 ;;
+      --mnt) mnt="${2:-}"; shift 2 ;;
+      -*) die "finish: unknown option $1" ;;
+      *) [ -z "$dev" ] || die "finish: unexpected argument $1"; dev="$1"; shift ;;
+    esac
+  done
+  [ -n "$dev" ] || die "finish: missing <luks-part>"
+  [ -n "$key" ] || key="$(default_key_file)"
+
+  # Refuse to drop the throwaway slot unless a real factor took its place —
+  # otherwise this step is what destroys the data.
+  local slots
+  slots="$(cryptsetup luksDump "$dev" | grep -cE '^[[:space:]]*[0-9]+: luks2$' || true)"
+  [ "${slots:-0}" -ge 2 ] \
+    || die "finish: $dev has $slots key slot(s); refusing to remove the install key before another factor is enrolled"
+
+  if [ -f "$key" ]; then
+    log "  removing the throwaway install key slot"
+    cryptsetup luksRemoveKey "$dev" --key-file "$key" \
+      || die "finish: could not remove the install key slot"
+    shred -u "$key" 2>/dev/null || rm -f "$key"
+  fi
+
+  # Unmount deepest-first; the tree is ESP under /boot under the root.
+  umount "$mnt/boot/efi" 2>/dev/null || true
+  umount "$mnt/boot" 2>/dev/null || true
+  umount "$mnt" 2>/dev/null || true
+  local mapper
+  mapper="luks-$(cryptsetup luksUUID "$dev")"
+  cryptsetup close "$mapper" 2>/dev/null || true
+  log "  encrypted root closed."
+}
+
+sub="${1:-}"; shift || true
+case "$sub" in
+  prepare) cmd_prepare "$@" ;;
+  enrol|enroll) cmd_enrol "$@" ;;
+  finish) cmd_finish "$@" ;;
+  -h|--help|"") sed -n '2,40p' "$0" ;;
+  *) die "unknown subcommand: $sub (try --help)" ;;
+esac
