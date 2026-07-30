@@ -197,7 +197,7 @@ fn workspace_settings_permissions_tab_lists_granted_capabilities() {
     let row = &layout.rows[0];
     assert_eq!(row.subject.kind, SubjectKind::App);
     assert_eq!(row.subject.id, "Terminal");
-    assert_eq!(row.allows, "Edit · files under /var/workspace");
+    assert_eq!(row.allows, "Edit files under /var/workspace");
     assert_eq!(row.expiry, "Session");
     // The composer is laid out whether or not anything is granted yet.
     assert!(layout.choice_rect.area() > 0.0);
