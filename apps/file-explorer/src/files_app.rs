@@ -2350,7 +2350,6 @@ mod command_path_tests {
 
     #[test]
     fn reseeding_the_rename_field_splices_only_the_changed_span() {
-        use automerge::ReadDoc;
         // Every rename re-seeds the *same* backing Text object with the new
         // entry's name. Clearing and refilling it tombstones the whole name
         // each time, so a session that renames a few dozen files pays for all
