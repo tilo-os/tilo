@@ -26,12 +26,12 @@ first — see [ui gaps](#ui-gaps)).
 |---|---|---|---|
 | 1. Text input (HIGH) | `TextInput` / `SearchField` / `NumberInput` / `EditableLabel` | **23** | db_client, imager, pdf_viewer, chat, maps, mail |
 | 2. Buttons (MED) | `Button` / `Toolbar` | **~28** (painted-rect + hit-test) | ebook, software_store, slides, camera, monitor |
-| 3. Modals (MED) | `ModalDialog` | **14** (5 done: monitor, containers, vpn, software_store, feeds) | disks, db_client, snippets, music |
+| 3. Modals (MED) | `ModalDialog` | **14** (6 done: monitor, containers, vpn, software_store, music, feeds) | disks, db_client, snippets |
 | 4. Other controls (MED) | `Dropdown`/`Toggle`/`Slider`/`TabBar`/`ContextMenu`/`Popover`/`Chart` | **~22** | tube, music, monitor, logs, camera |
 | 5. Hard-coded colors (LOW) | `Theme` tokens | **35** (≥1 literal) | ebook 62, word-processor 44, tube 32 |
 
 **Structural finding.** `ModalDialog` adoption is now broad after the modals
-wave (monitor, containers, vpn, software_store, feeds, mail, notes) — it gained
+wave (monitor, containers, vpn, software_store, music, feeds, mail, notes) — it gained
 `with_destructive` (danger primary) and a shared `PromptBody` text-entry body.
 Only nine apps import `Button`. `Slider` is
 used by two apps, `SearchField` by one. Toggle adoption is good. So the debt is
@@ -171,7 +171,7 @@ also use the widget elsewhere.
 | `apps/feeds/src/app.rs` (was `draw_input_modal`) | feeds | **DONE (prior)** — `ModalDialog<ModalBody>` with a real `TextInput` |
 | `apps/db_client/src/connect_modal.rs:256` | db_client | **DEFER** — declines `ModalDialog` for a dynamic field set + an unmasked password; belongs to the text-input wave (secret `TextInput` + dynamic content) |
 | `apps/disks/src/app.rs:1275` `draw_modal` | disks | **DEFER** — a gated *type-the-device-name-to-confirm* dialog with a locked primary; needs a gated-primary `ModalDialog` capability first |
-| `apps/music/src/app/render.rs:3216` `draw_name_prompt` | music | **REMAINING** — single-field name prompt; `PromptBody` is ready for it, but the ActionBus + `Palette` + multi-module wiring made it higher-risk than the confirm/prompt batch above |
+| `apps/music/src/app/render.rs` `draw_name_prompt` | music | **DONE** — create/rename playlist prompt → `ModalDialog<PromptBody>` (real `TextInput`, kills the hand-rolled `name_input` char-splice); `name_input` kept only as the submit value-carrier |
 | `apps/video_editor/src/app.rs:2292` `draw_export_modal` | video_editor | **DEFER** — embeds interactive segmented controls (resolution/format/fps); belongs with the controls wave (5a), then wrap in `ModalDialog` |
 | `apps/imager/src/app.rs:1578` `export_text` overlay | imager | **REMAINING** — read-only config sheet with per-line syntax colouring; wrap in a no-footer `ModalDialog` + a small coloured-config body |
 | `apps/snippets/src/expand.rs` `ExpandModal` | snippets | **DEFER** — multiple per-variable text fields; belongs with the text-input wave |
@@ -392,10 +392,10 @@ them (`ui/HIG.md` §6).
 ### Wave 3 — Modals (MED)
 Migrate app-drawn confirm/prompt/sheet overlays to `ModalDialog`. **Done:**
 monitor, containers (confirm + prompt), vpn (confirm), software_store (ref
-sheet); feeds landed earlier. The widget was extended additively —
-`with_destructive` (danger primary) and a shared `PromptBody` text-entry body.
-**Remaining:** music (name prompt — `PromptBody` ready), imager (config info
-sheet), notes (shortcuts overlay); **deferred to other waves:** db_client +
+sheet), music (name prompt); feeds landed earlier. The widget was extended
+additively — `with_destructive` (danger primary) and a shared `PromptBody`
+text-entry body. **Remaining:** imager (config info sheet), notes (shortcuts
+overlay); **deferred to other waves:** db_client +
 snippets (text-input wave: dynamic/secret fields, per-variable fields), disks
 (needs a gated-primary capability), video_editor (controls wave — segmented
 controls inside), git_client (arm-twice → dialog is a behaviour change), sheets
