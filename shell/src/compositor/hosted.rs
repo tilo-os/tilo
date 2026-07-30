@@ -201,8 +201,13 @@ pub fn run_with_full_options(opts: HostedOptions) {
 
     qos_startup_metrics::mark("hosted-run-state-build");
     let state = State::new();
-    let (host, _chrome) =
-        build_nirios_overlay_host_with_handle(tree_handle.clone(), enable_peer_sync);
+    // The session keeps each open tab's document on disk — one record per
+    // tab — so a note typed into one is still there next boot.
+    let (host, _chrome) = crate::shell::build_nirios_overlay_host_with_records(
+        tree_handle.clone(),
+        enable_peer_sync,
+        crate::shell::session_record_store(),
+    );
     // Give the palette's `/invite` and `/connect` rows something that
     // actually performs them. Without this the host records an intent
     // and drops it, which is what both commands did before: reachable
@@ -237,7 +242,7 @@ pub fn run_with_full_options(opts: HostedOptions) {
     // collab chrome in `EditorApp::draw` is visible in single-process
     // development. Network traffic replaces this with real peer state
     // when it arrives.
-    seed_demo_editor_presence(app.presence_ctx_mut());
+    seed_demo_editor_presence(&tree_snapshot, app.presence_ctx_mut());
     // Declare the pointer-presence scope so local cursor moves broadcast
     // to every connected peer under the active workspace id. Remote
     // peers receive `CollabEvent::RemotePresenceUpdate` on the same
