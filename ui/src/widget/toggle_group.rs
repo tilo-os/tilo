@@ -134,6 +134,10 @@ pub enum SegmentedStyle {
     /// (subtle hover surface) is filled; unselected pills are transparent.
     /// No outer border, no separators. The tab-strip / mode-switch look.
     Pill,
+    /// Underline tabs — no fill at all; the selected tab carries a short
+    /// accent underline bar along its bottom edge, its label lifting to the
+    /// primary text colour. The document/sidebar tab-strip look.
+    Underline,
 }
 
 /// Resolve the `(fill, label)` colours for one segment given the style and
@@ -163,6 +167,12 @@ pub fn segment_colors(
             } else {
                 (None, colors.text_dim)
             }
+        }
+        SegmentedStyle::Underline => {
+            // No fill; the selected tab's label lifts to the primary colour,
+            // the accent underline (drawn in `paint`) carries the selection.
+            let fg = if selected || hovered { colors.text_primary } else { colors.text_dim };
+            (None, fg)
         }
     }
 }
@@ -287,6 +297,15 @@ impl ToggleGroup {
                             &RoundedRect::from_rect(*seg, face.radius),
                         );
                     }
+                }
+            }
+            SegmentedStyle::Underline => {
+                // No fills; the selected tab gets a short accent underline bar
+                // inset from its edges along the bottom.
+                if let Some(seg) = segs.get(face.selected) {
+                    let inset = 12.0_f64.min((seg.width() / 2.0 - 2.0).max(0.0));
+                    let bar = Rect::new(seg.x0 + inset, seg.y1 - 2.0, seg.x1 - inset, seg.y1);
+                    scene.fill(vello::peniko::Fill::NonZero, transform, theme.accent_primary, None, &bar);
                 }
             }
         }
@@ -860,7 +879,7 @@ mod tests {
             Rect::new(120.0, 0.0, 180.0, 28.0),
         ];
         let labels = ["A", "B", "C"];
-        for style in [SegmentedStyle::Solid, SegmentedStyle::Pill] {
+        for style in [SegmentedStyle::Solid, SegmentedStyle::Pill, SegmentedStyle::Underline] {
             let mut scene = Scene::new();
             ToggleGroup::paint(
                 &mut scene,
