@@ -170,21 +170,10 @@ fn ceil_char_boundary(s: &str, mut i: usize) -> usize {
 }
 
 /// Enter on a result: switch workspace, strip and group, and make the
-/// tab the active one.
+/// tab the active one. Shared with every other surface that focuses a
+/// tab it found by walking the tree — see [`ChromeState::focus_tab`].
 fn focus_tab(chrome: &Chrome, workspace: WorkspaceId, strip: StripId, group: GroupId, tab: TabId) {
-    let mut st = chrome.borrow_mut();
-    {
-        let mut tree = st.tree_mut();
-        tree.active = workspace;
-        tree.active_strip.insert(workspace, strip);
-        tree.active_group.insert(strip, group);
-        if let Some(w) = tree.workspaces.iter_mut().find(|w| w.id == workspace) {
-            if let Some(s) = w.strips.iter_mut().find(|s| s.id == strip) {
-                if let Some(g) = s.window_groups.iter_mut().find(|g| g.id == group) {
-                    g.active_tab = tab;
-                }
-            }
-        }
-    }
-    st.bump();
+    chrome
+        .borrow_mut()
+        .focus_tab(workspace, strip, group, tab);
 }
