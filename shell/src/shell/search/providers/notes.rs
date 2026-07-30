@@ -6,15 +6,16 @@
 //! and active tab pointer). No side-thread — notes live in the same
 //! Automerge doc the palette callback already gets, so the match runs
 //! synchronously against `chrome.tree()`.
+//!
+//! The walk, the scoring and the body read are shared with the Editor
+//! (see [`super::text_app`]); this module is the Notes flavour of it.
 
-use std::rc::Rc;
-
-use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, Value};
-
-use crate::shell::chrome_state::{Chrome, ChromeState};
+use crate::shell::chrome_state::ChromeState;
 use crate::shell::notes_app::BODY_KEY;
 use crate::shell::search::{ResourceKind, SearchContext, SearchProvider, SearchResult};
-use crate::shell::state::{AppKind, GroupId, StripId, TabId, TileContent, WorkspaceId};
+
+/// The `AppKind::Other` name a Notes tile carries.
+const APP: &str = "notes";
 
 pub struct NotesProvider;
 
@@ -41,193 +42,31 @@ impl SearchProvider for NotesProvider {
         &[ResourceKind::Note]
     }
     fn owns_tab(&self, tab_id: u64, chrome: &ChromeState) -> bool {
-        let tree = chrome.tree();
-        for w in &tree.workspaces {
-            for s in &w.strips {
-                for g in &s.window_groups {
-                    for t in &g.tabs {
-                        if t.id == tab_id {
-                            return matches!(tile_notes_kind(&t.tile), Some(true));
-                        }
-                    }
-                }
-            }
-        }
-        false
+        super::text_app::owns_tab_of(chrome, tab_id, APP)
     }
-    /// A title prefix scores 110 - see [`note_match_score`].
+    /// A title prefix scores 110 - see [`super::text_app::match_score`].
     fn max_score(&self) -> i32 {
-        110
+        super::text_app::MAX_SCORE
     }
 
     fn query(&self, ctx: SearchContext<'_>) -> Vec<SearchResult> {
-        if !ctx.wanted.contains(&ResourceKind::Note) {
-            return Vec::new();
-        }
-        let needle_lower = ctx.needle.to_lowercase();
-        let mut out = Vec::new();
-        let tree = ctx.chrome.tree();
-        for w in &tree.workspaces {
-            for s in &w.strips {
-                for g in &s.window_groups {
-                    for t in &g.tabs {
-                        if tile_notes_kind(&t.tile) != Some(true) {
-                            continue;
-                        }
-                        let title_lower = t.title.to_lowercase();
-                        let body = read_note_body(ctx.doc, ctx.doc_root, t.id);
-                        let body_lower = body.to_lowercase();
-                        let Some((score, snippet)) =
-                            note_match_score(&needle_lower, &title_lower, &body_lower, &body)
-                        else {
-                            continue;
-                        };
-                        let workspace_id = w.id;
-                        let strip_id = s.id;
-                        let group_id = g.id;
-                        let tab_id = t.id;
-                        let title = t.title.clone();
-                        out.push(SearchResult {
-                            kind: ResourceKind::Note,
-                            provider_id: "notes".to_string(),
-                            id: format!("{}", tab_id),
-                            title: title.clone(),
-                            subtitle: snippet,
-                            score,
-                            on_open: Rc::new(move |_doc, _root, chrome: &Chrome| {
-                                focus_note_tab(chrome, workspace_id, strip_id, group_id, tab_id);
-                            }),
-                        });
-                    }
-                }
-            }
-        }
-        drop(tree);
-        out
+        super::text_app::query_text_app(&ctx, APP, BODY_KEY, "notes", ResourceKind::Note)
     }
-}
-
-fn tile_notes_kind(tile: &TileContent) -> Option<bool> {
-    match tile {
-        TileContent::AppPlaceholder { kind, .. } | TileContent::Stub { kind, .. } => {
-            Some(matches!(
-                kind,
-                AppKind::Other(name) if name.eq_ignore_ascii_case("notes")
-            ))
-        }
-        _ => None,
-    }
-}
-
-/// Notes tabs stash their body under a per-tab map at the doc root keyed
-/// by the tab's stringified id (see the shell's tile-binding wiring).
-/// The map has one field `BODY_KEY` holding an Automerge `Text` object.
-/// Missing tabs / non-map entries / non-text bodies all return an empty
-/// string so the search just falls back to title-only matching.
-fn read_note_body(doc: &AutoCommit, doc_root: &ObjId, tab_id: TabId) -> String {
-    let key = tab_id.to_string();
-    let Ok(Some((value, obj))) = doc.get(doc_root, &key) else {
-        return String::new();
-    };
-    if !matches!(value, Value::Object(ObjType::Map)) {
-        return String::new();
-    }
-    let Ok(Some((body_val, body_obj))) = doc.get(&obj, BODY_KEY) else {
-        return String::new();
-    };
-    if !matches!(body_val, Value::Object(ObjType::Text)) {
-        return String::new();
-    }
-    doc.text(&body_obj).unwrap_or_default()
-}
-
-fn note_match_score(
-    needle_lower: &str,
-    title_lower: &str,
-    body_lower: &str,
-    body_raw: &str,
-) -> Option<(i32, Option<String>)> {
-    if needle_lower.is_empty() {
-        return Some((0, None));
-    }
-    if title_lower.starts_with(needle_lower) {
-        return Some((110, snippet_around(body_raw, body_lower, needle_lower)));
-    }
-    if title_lower.contains(needle_lower) {
-        return Some((60, snippet_around(body_raw, body_lower, needle_lower)));
-    }
-    if body_lower.contains(needle_lower) {
-        return Some((40, snippet_around(body_raw, body_lower, needle_lower)));
-    }
-    None
-}
-
-/// Extract ~60 chars of context around the first `needle` match in `body`.
-/// Returns the raw slice, prefixed/suffixed with `…` when the snippet is
-/// windowed.
-fn snippet_around(body_raw: &str, body_lower: &str, needle: &str) -> Option<String> {
-    if body_raw.is_empty() {
-        return None;
-    }
-    let hit = body_lower.find(needle)?;
-    let radius = 30usize;
-    let start = ceil_char_boundary(body_raw, hit.saturating_sub(radius));
-    let end = ceil_char_boundary(body_raw, (hit + needle.len() + radius).min(body_raw.len()));
-    let mut s = String::new();
-    if start > 0 {
-        s.push('…');
-    }
-    s.push_str(&body_raw[start..end]);
-    if end < body_raw.len() {
-        s.push('…');
-    }
-    Some(s.replace('\n', " "))
-}
-
-fn ceil_char_boundary(s: &str, mut i: usize) -> usize {
-    while i < s.len() && !s.is_char_boundary(i) {
-        i += 1;
-    }
-    i
-}
-
-fn focus_note_tab(
-    chrome: &Chrome,
-    workspace: WorkspaceId,
-    strip: StripId,
-    group: GroupId,
-    tab: TabId,
-) {
-    let mut st = chrome.borrow_mut();
-    {
-        let mut tree = st.tree_mut();
-        tree.active = workspace;
-        tree.active_strip.insert(workspace, strip);
-        tree.active_group.insert(strip, group);
-        if let Some(w) = tree.workspaces.iter_mut().find(|w| w.id == workspace) {
-            if let Some(s) = w.strips.iter_mut().find(|s| s.id == strip) {
-                if let Some(g) = s.window_groups.iter_mut().find(|g| g.id == group) {
-                    g.active_tab = tab;
-                }
-            }
-        }
-    }
-    st.bump();
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::shell::notes_app::BODY_KEY;
+    use crate::shell::notes_app::NotesApp;
     use crate::shell::state::{
         AppKind, GroupId, Strip, StripId, Tab, TileContent, WindowGroup as StateGroup,
         WindowWidth as StateWidth, Workspace, WorkspaceId, WorkspaceTree, WorkspaceTreeHandle,
     };
     use automerge::AutoCommit;
-    use automerge::transaction::Transactable;
     use parking_lot::RwLock;
     use std::collections::HashMap as StdMap;
     use std::sync::Arc;
+    use ui::widget::Widget;
 
     fn tree_with_note_tab(tab_id: u64, title: &str) -> WorkspaceTreeHandle {
         let ws_id = WorkspaceId::new();
@@ -268,15 +107,13 @@ mod tests {
         Arc::new(RwLock::new(tree))
     }
 
-    fn seed_note_body(doc: &mut AutoCommit, tab_id: u64, body: &str) {
-        let key = tab_id.to_string();
-        let tab_root = doc
-            .put_object(automerge::ROOT, &key, automerge::ObjType::Map)
-            .unwrap();
-        let body_obj = doc
-            .put_object(&tab_root, BODY_KEY, automerge::ObjType::Text)
-            .unwrap();
-        doc.splice_text(&body_obj, 0, 0, body).unwrap();
+    /// Seed the body the way the *app* does: construct the real
+    /// [`NotesApp`] and let its `sync` write into the doc, at the root the
+    /// shell hands its hosted apps. A hand-rolled seed is what let the
+    /// provider read from a path nothing ever wrote to.
+    fn seed_note_body(doc: &mut AutoCommit, body: &str) {
+        let mut app = NotesApp::with_seed(body);
+        app.sync(doc, &automerge::ROOT);
     }
 
     #[test]
@@ -285,7 +122,7 @@ mod tests {
         let chrome = ChromeState::new_with_handle(handle);
         let chrome_st = chrome.borrow();
         let mut doc = AutoCommit::new();
-        seed_note_body(&mut doc, 1, "reminder: nothing about grocery in body");
+        seed_note_body(&mut doc, "reminder: nothing about grocery in body");
         let provider = NotesProvider::new();
         let out = provider.query(SearchContext {
             needle: "grocery",
@@ -306,7 +143,7 @@ mod tests {
         let chrome = ChromeState::new_with_handle(handle);
         let chrome_st = chrome.borrow();
         let mut doc = AutoCommit::new();
-        seed_note_body(&mut doc, 1, "The quick brown fox jumps.");
+        seed_note_body(&mut doc, "The quick brown fox jumps.");
         let provider = NotesProvider::new();
         let out = provider.query(SearchContext {
             needle: "quick brown",
@@ -325,13 +162,55 @@ mod tests {
         );
     }
 
+    /// The reported bug in the words it was reported in: the shell's
+    /// first-boot note reads "Welcome to nirios." and `nir` matches
+    /// nothing else about the tab — not its title, not its label. The
+    /// provider looked for the body under a per-tab map keyed by the tab
+    /// id, a shape the tile wiring never creates, so this found nothing.
+    #[test]
+    fn finds_a_word_that_only_appears_in_the_body_the_app_wrote() {
+        let handle = tree_with_note_tab(7, "Notes");
+        let chrome = ChromeState::new_with_handle(handle);
+        let chrome_st = chrome.borrow();
+        let mut doc = AutoCommit::new();
+        seed_note_body(
+            &mut doc,
+            "Welcome to nirios.\n\nThese notes sync live with anyone \
+             invited to this workspace.",
+        );
+        let provider = NotesProvider::new();
+        let out = provider.query(SearchContext {
+            needle: "nir",
+            wanted: &[ResourceKind::Note],
+            chrome: &chrome_st,
+            doc: &doc,
+            doc_root: &automerge::ROOT,
+        });
+        assert_eq!(
+            out.len(),
+            1,
+            "searching a note's own body must find it; got {:?}",
+            out.iter().map(|r| (&r.title, r.score)).collect::<Vec<_>>()
+        );
+        assert_eq!(out[0].score, 40, "a body hit scores 40");
+        assert!(
+            out[0]
+                .subtitle
+                .as_deref()
+                .unwrap_or_default()
+                .contains("nirios"),
+            "the row must show the matching line: {:?}",
+            out[0].subtitle
+        );
+    }
+
     #[test]
     fn no_hit_when_body_and_title_both_miss() {
         let handle = tree_with_note_tab(1, "Untitled");
         let chrome = ChromeState::new_with_handle(handle);
         let chrome_st = chrome.borrow();
         let mut doc = AutoCommit::new();
-        seed_note_body(&mut doc, 1, "The quick brown fox jumps.");
+        seed_note_body(&mut doc, "The quick brown fox jumps.");
         let provider = NotesProvider::new();
         let out = provider.query(SearchContext {
             needle: "xylophone",
