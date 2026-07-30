@@ -48,7 +48,11 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let (state, autosave) = ui::persist::open("dev.qos.feeds");
-    let app = ui::App::new(state, feeds::app_root()).with_autosave(autosave);
+    let mut app = ui::App::new(state, feeds::app_root()).with_autosave(autosave);
+    // Register Feeds' actions so the shell's Ctrl+K palette can decode + replay
+    // the same subscription / read-state actions the on-screen affordances
+    // dispatch.
+    feeds::actions::register(app.action_registry_mut());
     app.run();
     Ok(())
 }
