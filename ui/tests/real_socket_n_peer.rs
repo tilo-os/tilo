@@ -35,17 +35,28 @@ fn n_peer_fanout_and_per_peer_attribution() {
     // process exits (which kills the thread).
     thread::spawn(move || ui::collaboration::broker::serve(listener));
 
-    // SAFETY: only this thread mutates env, and it does so before
-    // creating any manager. QUICK_APP_ID is left UNSET so each manager
-    // generates a distinct UUID app_id — that's how the broker derives
-    // distinct per-peer user ids without us hard-coding them.
+    // SAFETY: only this thread mutates env, and it does so between
+    // manager constructions — this is the single test in this binary, so
+    // nothing else in the process reads the environment concurrently.
+    //
+    // `QUICK_APP_ID` is the id a launched app announces itself under, and
+    // it has to be set per peer: an app id is a property of the launch,
+    // and a process that does not get one falls back to a *single*
+    // process-wide identity (see `auto_hello_env`) precisely so that two
+    // managers inside one app do not announce as two different people.
+    // Three peers therefore means three launches, i.e. three ids.
     unsafe {
         std::env::set_var("QUICK_COLLAB_SOCK", &socket_path);
     }
 
-    let mut a = CollaborationManager::new();
-    let mut b = CollaborationManager::new();
-    let mut c = CollaborationManager::new();
+    let announce = |id: &str| {
+        // SAFETY: as above.
+        unsafe { std::env::set_var("QUICK_APP_ID", id) };
+        CollaborationManager::new()
+    };
+    let mut a = announce("peer-a");
+    let mut b = announce("peer-b");
+    let mut c = announce("peer-c");
 
     // Give the broker time to register all three Hello handshakes.
     thread::sleep(Duration::from_millis(150));
@@ -95,7 +106,12 @@ fn n_peer_fanout_and_per_peer_attribution() {
     };
     let uid_a = uid_for(&c_evs, "1").expect("C sees A's Workspace-1 presence");
     let uid_b = uid_for(&c_evs, "2").expect("C sees B's Workspace-2 presence");
-    assert!(!uid_a.is_empty() && !uid_b.is_empty(), "user ids must be non-empty");
+    // The broker attributes each frame to the peer that sent it — not to
+    // whichever connection it last read from. Asserting the exact ids the
+    // two peers announced pins that; `uid_a != uid_b` alone would still
+    // pass if the broker swapped them.
+    assert_eq!(uid_a, "peer-a", "A's presence must be attributed to A");
+    assert_eq!(uid_b, "peer-b", "B's presence must be attributed to B");
     assert_ne!(uid_a, uid_b, "A and B must be attributed distinct user ids");
 
     // A must NOT receive its own Workspace-1 presence, but SHOULD see
