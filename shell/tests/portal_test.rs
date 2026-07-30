@@ -264,6 +264,9 @@ async fn always_grant_skips_prompt_queue() {
     // the queue entirely, so the queue stays at 0 and the call
     // resolves with response=0.
     let mut ws = empty_workspace(104, "ws");
+    // Seed through the production granting path. `app_grants_snapshot`
+    // hands back a fresh map by value, so inserting into it stored
+    // nothing and this test used to run against an empty workspace.
     ws.grant_app(
         "org.example.always",
         &Capability::Camera {

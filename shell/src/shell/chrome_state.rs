@@ -30,7 +30,7 @@ use crate::shell::state::{
 // without reaching into `workspace_settings`. The enum itself lives
 // next to the modal widget; the chrome holds a copy of the active tab
 // as a typed field — see `ChromeState::ws_settings_tab`.
-pub use crate::shell::workspace_settings::WsTab;
+pub use crate::shell::workspace_settings::{GrantDraft, WsTab};
 
 /// Snapshot of which shell overlays are currently on screen.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -217,6 +217,12 @@ pub struct ChromeState {
     /// Concept ref: `WorkspaceSettingsModal.tsx:50-95` — the tabs are
     /// independent UI state, never entangled with the name-edit buffer.
     pub ws_settings_tab: WsTab,
+    /// The grant the Permissions tab's composer is composing: who it is
+    /// for, what it allows, and how long it lasts. Lives here rather
+    /// than on the overlay host so it survives a re-render, and holds
+    /// picker indices rather than a resolved capability so a subject
+    /// leaving the workspace can't leave a dangling reference.
+    pub ws_grant_draft: crate::shell::workspace_settings::GrantDraft,
     /// Monotonic counter bumped every time the tree is mutated. Widgets
     /// poll this in `update` to re-sync their caches; cheaper than running
     /// diff logic and easier than an event bus.
@@ -360,6 +366,7 @@ impl ChromeState {
             editing_workspace_name_selection: ui::text_selection::Selection::default(),
             search_scope: SearchScope::default(),
             ws_settings_tab: WsTab::default(),
+            ws_grant_draft: Default::default(),
             revision: 0,
             pending_grants: VecDeque::new(),
             test_only_owner_override: None,
@@ -1238,7 +1245,7 @@ mod active_tab_tests {
 
         let guard = st.tree();
         let ws = guard.workspaces.iter().find(|w| w.id == ws_id).unwrap();
-        let grants = ws.grants();
+        let grants = ws.app_grants_snapshot();
         let caps = grants.get("org.gimp.GIMP").unwrap_or_else(|| {
             panic!(
                 "grant must be keyed by the foreign client's real app-id; \
@@ -1281,7 +1288,7 @@ mod active_tab_tests {
 
         let guard = st.tree();
         let ws = guard.workspaces.iter().find(|w| w.id == ws_id).unwrap();
-        let grants = ws.grants();
+        let grants = ws.app_grants_snapshot();
         assert!(
             grants.contains_key("org.nirios.Editor"),
             "built-in Editor must be keyed by its canonical app-id; \

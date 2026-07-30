@@ -814,7 +814,7 @@ mod tests {
         let tree = st.tree();
         let ws = tree.active_workspace().expect("active workspace exists");
         assert!(
-            ws.grants().contains_key("camera-app"),
+            ws.app_grants_snapshot().contains_key("camera-app"),
             "portal-side grant insert must be visible to the shell chrome \
              (audit C-3: shared WorkspaceTreeHandle ties subsystems together)",
         );
