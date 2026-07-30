@@ -36,7 +36,7 @@ use crate::model::{
 };
 use crate::net::{self, NetMsg};
 use crate::sample::{self, Basemap};
-use crate::tiles::{GeoBounds, TileLayer};
+use crate::tiles::{GeoBounds, TileId, TileLayer};
 use crate::traffic::{Congestion, TrafficData};
 use ui::widget::TextInput;
 
@@ -160,6 +160,8 @@ enum Hit {
     OfflineZoomDelta(i8),
     /// Begin downloading the current viewport region for offline use.
     OfflineDownload,
+    /// Remove one saved offline region (by id) — deletes its tiles from disk.
+    OfflineDeleteRegion(String),
     /// Delete the on-disk tile cache.
     OfflineClearCache,
 }
@@ -409,6 +411,20 @@ impl MapsApp {
         self.model.panel = Panel::Explore;
     }
 
+    /// Screenshot-only hook: open the offline-maps overlay with a couple of
+    /// already-saved regions and a plausible on-disk size, so the download UI
+    /// AND the managed-region list render headlessly. No network, no disk I/O —
+    /// the regions are bundled sample metadata, not real cache entries.
+    pub fn set_demo_offline(&mut self) {
+        self.model.panel = Panel::Explore;
+        self.model.selected = None;
+        self.model.route = None;
+        self.offline_open = true;
+        self.offline_zoom_extra = 2;
+        self.model.regions = sample::regions();
+        self.cache_bytes = 47_542_000;
+    }
+
     /// Screenshot-only hook: open the floating search-results overlay populated
     /// with proximity-ranked matches, so the search-as-you-type dropdown can be
     /// captured headlessly. Offline local data only — no network.
@@ -613,6 +629,80 @@ impl MapsApp {
         let nw = proj.unproject(Point::new(self.rect.x0, self.rect.y0));
         let se = proj.unproject(Point::new(self.rect.x1, self.rect.y1));
         GeoBounds::new(nw, se)
+    }
+
+    // --- offline regions ---------------------------------------------------
+
+    /// The tile ids a saved region covers — used for delete/keep set arithmetic
+    /// so removing one area doesn't drop imagery another still needs.
+    fn region_tile_ids(region: &crate::model::DownloadedRegion) -> Vec<TileId> {
+        GeoBounds::new(region.min, region.max).tiles_in_range(region.z0, region.z1)
+    }
+
+    /// A human label for a downloaded area: a known place inside it when there
+    /// is one (reads nicely, e.g. "Marienplatz"), else its centre coordinate.
+    fn region_name(&self, bounds: GeoBounds) -> String {
+        if let Some(p) = self
+            .model
+            .places
+            .iter()
+            .find(|p| bounds_contains(bounds, GeoBounds::new(p.pos, p.pos)))
+        {
+            return p.name.clone();
+        }
+        let lat = (bounds.min.lat + bounds.max.lat) / 2.0;
+        let lon = (bounds.min.lon + bounds.max.lon) / 2.0;
+        format!("{lat:.3}, {lon:.3}")
+    }
+
+    /// Save (or refresh) the just-requested download as a manageable region.
+    /// Re-downloading the exact same footprint updates the record in place
+    /// instead of stacking a duplicate row.
+    fn record_region(&mut self, bounds: GeoBounds, z0: u8, z1: u8, tiles: u32) {
+        let name = self.region_name(bounds);
+        let id = format!(
+            "region-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_micros())
+                .unwrap_or(0)
+        );
+        self.model.regions.retain(|r| {
+            !(r.z0 == z0
+                && r.z1 == z1
+                && same_coord(r.min, bounds.min)
+                && same_coord(r.max, bounds.max))
+        });
+        self.model.regions.push(crate::model::DownloadedRegion {
+            id,
+            name,
+            min: bounds.min,
+            max: bounds.max,
+            z0,
+            z1,
+            tiles,
+        });
+    }
+
+    /// Remove a saved region: drop its record and delete the tiles no *other*
+    /// saved region still needs, freeing disk. Shared imagery is kept.
+    fn delete_region(&mut self, id: &str) {
+        let Some(pos) = self.model.regions.iter().position(|r| r.id == id) else {
+            return;
+        };
+        let region = self.model.regions.remove(pos);
+        let mut keep: std::collections::HashSet<TileId> = std::collections::HashSet::new();
+        for r in &self.model.regions {
+            keep.extend(Self::region_tile_ids(r));
+        }
+        let doomed: Vec<TileId> = Self::region_tile_ids(&region)
+            .into_iter()
+            .filter(|t| !keep.contains(t))
+            .collect();
+        let freed = self.tiles.delete_tiles(&doomed);
+        self.cache_bytes = self.tiles.cache_bytes();
+        self.model.status = format!("Removed “{}” · {} freed", region.name, fmt_bytes(freed));
+        self.mark_dirty();
     }
 
     // --- actions -----------------------------------------------------------
@@ -1761,15 +1851,28 @@ impl MapsApp {
                 let z1 = (base_z + self.offline_zoom_extra).min(19);
                 let bounds = self.viewport_bounds();
                 let n = self.tiles.start_download(bounds, base_z, z1);
+                // Record the area as a manageable offline region so it appears
+                // in the list and can be removed again.
+                self.record_region(bounds, base_z, z1, n);
                 self.model.status = format!("Downloading {n} tiles for offline use…");
+                self.mark_dirty();
             }
+            Hit::OfflineDeleteRegion(id) => self.delete_region(id),
             Hit::OfflineClearCache => {
                 let freed = self.tiles.clear_cache();
                 self.cache_bytes = 0;
+                self.model.regions.clear();
                 self.model.status = format!("Cleared {} of offline tiles", fmt_bytes(freed));
+                self.mark_dirty();
             }
         }
     }
+}
+
+/// Whether two coordinates are equal to within a sub-tile epsilon (used to
+/// dedupe re-downloads of the same offline region footprint).
+fn same_coord(a: LatLon, b: LatLon) -> bool {
+    (a.lat - b.lat).abs() < 1e-6 && (a.lon - b.lon).abs() < 1e-6
 }
 
 /// Whether `outer` fully contains `inner` (both lat/lon extents).
@@ -2337,17 +2440,34 @@ impl MapsApp {
         }
     }
 
-    /// The offline-download + manage-cache overlay: a centred card with a
-    /// zoom-depth stepper, an estimated-tile/progress readout, and
-    /// download / clear-cache / close actions.
+    /// The offline-download + manage-areas overlay: a centred card with a
+    /// zoom-depth stepper, an estimated-tile/progress readout, a list of the
+    /// areas already saved for offline use (each removable), and
+    /// download / clear-all / close actions.
     fn draw_offline_overlay(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
         let c = &theme.tokens.colors;
         // Scrim — also swallows background clicks.
         draw::fill_rect(scene, t, self.rect, draw::alpha(Color::BLACK, 0.45));
         self.click_targets.push((self.rect, Hit::OfflineClose));
 
-        let w = 420.0_f64.min(self.rect.width() - 40.0);
-        let h = 318.0_f64;
+        // The card grows to fit the saved-areas list (capped so it stays a card,
+        // not a full-height sheet).
+        const MAX_ROWS: usize = 4;
+        let region_row_h = 42.0;
+        let regions = self.model.regions.clone();
+        let n_regions = regions.len();
+        let shown = n_regions.min(MAX_ROWS);
+        let overflow = n_regions > shown;
+        let list_body_h = if n_regions == 0 {
+            22.0
+        } else {
+            shown as f64 * region_row_h + if overflow { 18.0 } else { 0.0 }
+        };
+        // 282 = fixed top section (title → cache line) + list header + gap +
+        // action buttons + bottom padding; the list body is what varies.
+        let content_h = 282.0 + list_body_h;
+        let h = content_h.min(self.rect.height() - 24.0);
+        let w = 440.0_f64.min(self.rect.width() - 40.0);
         let cx = (self.rect.x0 + self.rect.x1) / 2.0;
         let cy = (self.rect.y0 + self.rect.y1) / 2.0;
         let card = Rect::new(cx - w / 2.0, cy - h / 2.0, cx + w / 2.0, cy + h / 2.0);
@@ -2413,7 +2533,44 @@ impl MapsApp {
         draw::text(scene, tr, t, &format!("Cached on disk: {}", fmt_bytes(self.cache_bytes)), x, y, 12.0, theme.text_primary);
         y += 30.0;
 
-        // Action buttons: Download (primary) + Clear cache.
+        // Saved-areas list — each row is one downloaded region, removable via
+        // its trash button. This is the "see/manage downloaded regions" surface.
+        draw::text_w(scene, tr, t, "Downloaded areas", x, y, 13.0, theme.text_primary, TextWeight::Semibold);
+        y += 24.0;
+        if regions.is_empty() {
+            draw::text(scene, tr, t, "No saved areas yet — download the current view to use it offline.", x, y, 11.5, theme.text_dim);
+            y += 22.0;
+        } else {
+            for region in regions.iter().take(shown) {
+                let row = Rect::new(x, y, right, y + region_row_h - 8.0);
+                draw::fill_rrect(scene, t, row, 8.0, c.surfaces.base);
+                // Trash button on the trailing edge.
+                let trash = Rect::new(row.x1 - 34.0, row.center().y - 13.0, row.x1 - 8.0, row.center().y + 13.0);
+                let text_w = (trash.x0 - (row.x0 + 12.0) - 8.0).max(40.0);
+                draw::text_clip(scene, tr, t, &region.name, row.x0 + 12.0, row.y0 + 5.0, 13.0, theme.text_primary, text_w);
+                let meta = format!("z{}–z{} · {} tiles", region.z0, region.z1, region.tiles);
+                draw::text_clip(scene, tr, t, &meta, row.x0 + 12.0, row.y0 + 20.0, 11.0, theme.text_dim, text_w);
+                // Trash icon: a small can (lid + tapered body).
+                draw::fill_rrect(scene, t, trash, 7.0, c.surfaces.raised);
+                draw::stroke_rrect(scene, t, trash, 7.0, 1.0, c.border_standard);
+                let tc = trash.center();
+                let danger = c.semantic.danger;
+                draw::line(scene, t, Point::new(tc.x - 5.0, tc.y - 4.0), Point::new(tc.x + 5.0, tc.y - 4.0), 1.6, danger);
+                draw::line(scene, t, Point::new(tc.x - 2.0, tc.y - 6.5), Point::new(tc.x + 2.0, tc.y - 6.5), 1.6, danger);
+                draw::line(scene, t, Point::new(tc.x - 3.6, tc.y - 3.0), Point::new(tc.x - 2.8, tc.y + 5.0), 1.6, danger);
+                draw::line(scene, t, Point::new(tc.x + 3.6, tc.y - 3.0), Point::new(tc.x + 2.8, tc.y + 5.0), 1.6, danger);
+                draw::line(scene, t, Point::new(tc.x - 2.8, tc.y + 5.0), Point::new(tc.x + 2.8, tc.y + 5.0), 1.6, danger);
+                self.click_targets.push((trash, Hit::OfflineDeleteRegion(region.id.clone())));
+                y += region_row_h;
+            }
+            if overflow {
+                draw::text(scene, tr, t, &format!("+{} more", n_regions - shown), x, y, 11.0, theme.text_dim);
+                y += 18.0;
+            }
+        }
+        y += 12.0;
+
+        // Action buttons: Download (primary) + Clear all.
         let bh = 38.0;
         let gap = 10.0;
         let bw = (right - x - gap) / 2.0;
@@ -2424,7 +2581,7 @@ impl MapsApp {
         self.click_targets.push((dl, Hit::OfflineDownload));
         draw::fill_rrect(scene, t, clr, 9.0, c.surfaces.base);
         draw::stroke_rrect(scene, t, clr, 9.0, 1.0, c.border_standard);
-        draw::text_center(scene, tr, t, "Clear cache", clr.x0, clr.x1, vmid(clr.y0, bh, 13.0), 13.0, c.semantic.danger);
+        draw::text_center(scene, tr, t, "Clear all", clr.x0, clr.x1, vmid(clr.y0, bh, 13.0), 13.0, c.semantic.danger);
         self.click_targets.push((clr, Hit::OfflineClearCache));
     }
 
@@ -5241,5 +5398,114 @@ mod tests {
                 || (a.model.center.lon - center0.lon).abs() > 1e-6,
             "a different itinerary reframes the map"
         );
+    }
+
+    /// A fresh, isolated on-disk cache dir so a delete step never touches the
+    /// user's real tile cache.
+    fn region_test_cache(tag: &str) -> std::path::PathBuf {
+        let n = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("qos-maps-{tag}-{}-{}", std::process::id(), n))
+    }
+
+    /// Starting a download records the chosen viewport as a **manageable
+    /// region** (so it shows in the saved-areas list), and deleting it by id
+    /// removes the record. This is the see/manage-downloaded-regions flow.
+    #[test]
+    fn offline_download_records_and_delete_removes_region() {
+        let mut a = app_at(1280.0, 800.0);
+        // Isolate the on-disk cache so the delete step never touches the user's
+        // real tile cache.
+        let dir = region_test_cache("regtest");
+        a.tiles = TileLayer::offline_with_cache_dir(dir.clone());
+        a.dispatch(&Hit::OfflineOpen);
+        let before = a.model.regions.len();
+        a.dispatch(&Hit::OfflineDownload);
+        assert_eq!(
+            a.model.regions.len(),
+            before + 1,
+            "a downloaded area is recorded as a saved region"
+        );
+        let region = a.model.regions.last().unwrap().clone();
+        assert!(region.tiles > 0, "the region covers real tiles");
+        assert!(region.z1 >= region.z0, "the saved zoom range is well-formed");
+        assert!(!region.name.is_empty(), "the region has a human label");
+
+        // Deleting via its id removes exactly that record.
+        a.dispatch(&Hit::OfflineDeleteRegion(region.id.clone()));
+        assert!(
+            !a.model.regions.iter().any(|r| r.id == region.id),
+            "delete removes the region from the managed list"
+        );
+        assert_eq!(a.model.regions.len(), before, "back to the starting region count");
+        assert!(a.model.status.contains("Removed"), "a status confirms the removal");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Removing one saved area must NOT delete tiles another saved area still
+    /// covers. A nested area's tiles are a subset of the containing area's, so
+    /// deleting the nested one frees nothing; deleting the last owner frees all.
+    #[test]
+    fn delete_region_keeps_tiles_shared_with_another_area() {
+        use crate::model::DownloadedRegion;
+        let dir = region_test_cache("region");
+        let mut a = MapsApp::offline();
+        a.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        a.tiles = TileLayer::offline_with_cache_dir(dir.clone());
+
+        let big = GeoBounds::new(LatLon::new(48.10, 11.55), LatLon::new(48.18, 11.62));
+        let small = GeoBounds::new(LatLon::new(48.13, 11.57), LatLon::new(48.14, 11.58));
+        let (z0, z1) = (14u8, 15u8);
+        let big_ids = big.tiles_in_range(z0, z1);
+        let small_ids = small.tiles_in_range(z0, z1);
+        assert!(!small_ids.is_empty());
+        assert!(
+            small_ids.iter().all(|t| big_ids.contains(t)),
+            "the nested area's tiles are a subset of the containing area's"
+        );
+
+        // Seed the on-disk cache with the containing area's tiles.
+        for id in &big_ids {
+            let p = a.tiles.cache_path(*id);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(&p, b"seed").unwrap();
+        }
+        a.model.regions = vec![
+            DownloadedRegion {
+                id: "big".to_string(),
+                name: "Big".to_string(),
+                min: big.min,
+                max: big.max,
+                z0,
+                z1,
+                tiles: big_ids.len() as u32,
+            },
+            DownloadedRegion {
+                id: "small".to_string(),
+                name: "Small".to_string(),
+                min: small.min,
+                max: small.max,
+                z0,
+                z1,
+                tiles: small_ids.len() as u32,
+            },
+        ];
+
+        // Deleting the nested area removes its record but keeps every tile,
+        // since the containing area still needs them.
+        a.dispatch(&Hit::OfflineDeleteRegion("small".to_string()));
+        assert!(!a.model.regions.iter().any(|r| r.id == "small"));
+        for id in &big_ids {
+            assert!(a.tiles.cache_path(*id).exists(), "a shared tile must be kept: {id:?}");
+        }
+
+        // Deleting the last owner frees all of its tiles.
+        a.dispatch(&Hit::OfflineDeleteRegion("big".to_string()));
+        for id in &big_ids {
+            assert!(!a.tiles.cache_path(*id).exists(), "the last owner's tiles are freed: {id:?}");
+        }
+        std::fs::remove_dir_all(&dir).ok();
     }
 }
