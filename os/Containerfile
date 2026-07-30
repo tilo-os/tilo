@@ -157,6 +157,7 @@ RUN --mount=type=cache,target=/build/.cargo-home \
     cargo build --release \
         -p shell -p fs -p terminal -p file-explorer -p greeter -p installer \
         -p runtime-bundle -p launcher -p qos-power -p qos-unlock-helper \
+        -p qos-rollback \
         -p browser --features browser/wpe \
     && mkdir -p /out \
     && cp target/release/shell \
@@ -170,6 +171,7 @@ RUN --mount=type=cache,target=/build/.cargo-home \
           target/release/qos-launcher \
           target/release/qos-power \
           target/release/qos-unlock-helper \
+          target/release/qos-rollback \
           /out/ \
     && { sccache --show-stats 2>/dev/null || true; }
 
@@ -520,6 +522,51 @@ COPY os/usr/lib/systemd/system/qos-security-audit.service /usr/lib/systemd/syste
 COPY os/usr/lib/systemd/system/qos-hidepid.service /usr/lib/systemd/system/qos-hidepid.service
 RUN chmod 0755 /usr/libexec/qos-security-audit
 
+# ---------------------------------------------------------------------------
+# Bounded rollback protection
+# ---------------------------------------------------------------------------
+# The last few OS generations may unseal the disk; older ones may not. A TPM2 NV
+# monotonic counter holds the OLDEST permitted generation, and each generation's
+# LUKS2 keyslot is sealed to a policy requiring the floor to be at or below it.
+#
+# The generation number this image carries. It MUST be a dense monotonic integer
+# (+1 per published image), because the retention window is arithmetic on it —
+# "the last three generations" is meaningless if the numbering is a timestamp. It
+# MUST also match the `qos.generation=` value on the sealed UKI command line: that
+# is the copy an attacker cannot forge, and the copy every unseal is bound to.
+# The file below exists only so that a *staged* deployment's generation can be
+# read before it has ever booted, which is when its keyslot has to be sealed.
+ARG QOS_GENERATION=0
+RUN install -d -m 0755 /usr/lib/qos \
+ && printf '%s\n' "${QOS_GENERATION}" > /usr/lib/qos/generation
+
+# tpm2-tools: the NV counter, the policy sessions and TPM2_NV_Certify are driven
+# through it. Also reachable from recovery mode, which is where someone will need
+# it when automatic unlock has failed.
+RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
+        tpm2-tools \
+    && dnf clean all && rm -rf /var/cache/dnf /var/log/dnf* /var/lib/dnf
+
+COPY --from=builder /out/qos-rollback /usr/bin/qos-rollback
+COPY os/usr/libexec/qos-rollback-common /usr/libexec/qos-rollback-common
+COPY os/usr/libexec/qos-rollback-confirm /usr/libexec/qos-rollback-confirm
+COPY os/usr/libexec/qos-rollback-harden /usr/libexec/qos-rollback-harden
+COPY os/usr/lib/systemd/system/qos-rollback-confirm.service /usr/lib/systemd/system/qos-rollback-confirm.service
+COPY os/usr/lib/systemd/system/qos-rollback-confirm.timer /usr/lib/systemd/system/qos-rollback-confirm.timer
+COPY os/usr/lib/systemd/system/qos-rollback-harden.service /usr/lib/systemd/system/qos-rollback-harden.service
+RUN chmod 0755 /usr/libexec/qos-rollback-common /usr/libexec/qos-rollback-confirm \
+        /usr/libexec/qos-rollback-harden \
+ && install -d -m 0755 /usr/share/qos/pcr-predictions
+
+# The signed PCR predictions this image was built with go in
+# /usr/share/qos/pcr-predictions/generation-<N>*.json, produced by
+# `qos-rollback sign-prediction` on the build host — the private half of
+# keys/tpm2-pcr-signing.pem is deliberately not in the image, so a device cannot
+# sign its own expected measurements. Until the UKI is built and measured there is
+# nothing meaningful to predict, so the directory ships empty and the enrollment
+# path refuses to seal a keyslot without a prediction rather than sealing one that
+# can never open.
+
 # Hardened userspace allocator (scudo, from compiler-rt) LD_PRELOADed into the
 # trusted-base daemon fs.service. Resolve the lib path at build time and bake a
 # drop-in, so a packaging move can't silently leave a dangling LD_PRELOAD that
@@ -573,7 +620,9 @@ RUN systemctl enable chronyd.service && \
 
 # §11 hardening services: hidepid remount + the boot security self-check.
 RUN systemctl enable qos-hidepid.service && \
-    systemctl enable qos-security-audit.service
+    systemctl enable qos-security-audit.service && \
+    systemctl enable qos-rollback-harden.service && \
+    systemctl enable qos-rollback-confirm.timer
 
 # A3: automatic bootc updates. The timer pulls + applies the image at
 # QOS_TARGET_IMGREF (code.podesta.ai/qos/qos:latest, baked at install by
