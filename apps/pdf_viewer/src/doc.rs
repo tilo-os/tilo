@@ -6,6 +6,13 @@
 //! annotations, threaded comments and signatures. Two peers reviewing the
 //! same PDF converge on the same markup.
 //!
+//! **One document's markup, not the app's.** This is the schema of a
+//! *record* — the annotation-set record derived from the file being read
+//! (`PdfApp::markup_record_for`) — so page numbers, which only mean anything
+//! within one file, are only ever read against the file they came from.
+//! Opening a second document checks out that document's own markup record;
+//! nothing is cleared, because nothing is shared.
+//!
 //! ```text
 //! root
 //! ├── "meta" (Map) { title, author, seeded:bool }
@@ -113,19 +120,6 @@ impl PdfDoc {
         let _ = doc.put(&m, "title", title);
         let _ = doc.put(&m, "author", author);
         let _ = doc.put(&m, "seeded", true);
-    }
-
-    /// Drop every annotation, comment and signature. Used when a different
-    /// file is opened in place so one document's markup never bleeds onto the
-    /// next (annotations are keyed by page number, which is only meaningful
-    /// within a single document).
-    pub fn clear_all(doc: &mut AutoCommit) {
-        for key in ["annotations", "comments", "signatures"] {
-            let list = Self::list(doc, key);
-            while doc.length(&list) > 0 {
-                let _ = doc.delete(&list, 0);
-            }
-        }
     }
 
     // ---- annotations ------------------------------------------------

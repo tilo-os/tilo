@@ -40,3 +40,6 @@ image = { workspace = true, features = ["png", "jpeg"] }
 # Serialise the tests that touch the shared system clipboard so they never race
 # each other for it (arboard talks to the real Wayland/X11 clipboard).
 serial_test.workspace = true
+# Two real files on disk, so "open a second document" is the real thing rather
+# than the same path twice.
+tempfile.workspace = true
