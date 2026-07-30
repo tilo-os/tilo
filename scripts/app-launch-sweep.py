@@ -159,13 +159,15 @@ class Compositor:
     """A headless compositor with its test-control socket, as a context
     manager. Guarantees teardown even when a probe raises."""
 
-    def __init__(self, shell_bin, launcher_bin, logpath, env_extra, startup_timeout):
+    def __init__(self, shell_bin, launcher_bin, logpath, env_extra, startup_timeout,
+                 empty_workspace=False):
         self.sock = f"/tmp/qos-app-sweep-{os.getpid()}.sock"
         # The compositor loads and writes ~/.config/qos/state.json, so an
         # un-isolated sweep inherits whatever workspace the last real session
         # left behind and photographs *that* app instead of the one it just
         # launched. Give every compositor its own config root.
         self.config_home = tempfile.mkdtemp(prefix="qos-sweep-config-")
+        self.empty_workspace = empty_workspace
         self.shell_bin = shell_bin
         self.launcher_bin = launcher_bin
         self.logpath = logpath
@@ -181,6 +183,37 @@ class Compositor:
             os.unlink(self.sock)
         except FileNotFoundError:
             pass
+        if self.empty_workspace:
+            # One workspace, one strip, no window groups. The compositor's
+            # own bootstrap seeds demo tabs (Notes/Files/Terminal/Browser),
+            # which then share the screen with whatever we launch — so a
+            # capture is half someone else's app. Loading a tree instead
+            # means the launched app is the only window on screen.
+            qos_dir = pathlib.Path(self.config_home) / "qos"
+            qos_dir.mkdir(parents=True, exist_ok=True)
+            # Field shapes match `WorkspaceTree`'s serde exactly:
+            # `shared_surfaces`, `active_strip` and `active_group` are
+            # maps, not lists, and `room_authority` has no default. Get
+            # one wrong and the compositor logs a read failure and boots
+            # the demo tree instead, which is what a capture would then
+            # show.
+            (qos_dir / "state.json").write_text(json.dumps({
+                "workspaces": [{
+                    "id": 1,
+                    "room": "00000000-0000-4000-8000-000000000001",
+                    "name": "Apps",
+                    "strips": [{"id": 2, "name": "Main", "window_groups": []}],
+                    "collaborators": [],
+                    "owner": None,
+                    "capabilities": [],
+                    "shared_surfaces": {},
+                }],
+                "active": 1,
+                "active_strip": {"1": 2},
+                "active_group": {},
+                "collaborators": [],
+                "room_authority": {},
+            }))
         env = {**os.environ, "QOS_TEST_CONTROL": self.sock,
                "QOS_LAUNCHER_BIN": str(self.launcher_bin), "RUST_LOG": "info",
                "XDG_CONFIG_HOME": self.config_home}
@@ -337,7 +370,7 @@ def run_one(args, package_id: str, out: pathlib.Path, env_extra: dict) -> dict:
     short = package_id.rsplit(".", 1)[-1]
     adopted, shot, frames = None, None, None
     with Compositor(args.shell, args.launcher, logpath, env_extra,
-                    args.startup_timeout) as comp:
+                    args.startup_timeout, args.empty_workspace) as comp:
         if comp.failure:
             return {"adopted": None, "errors": [comp.failure],
                     "compositor_started": False, "launched": False,
@@ -386,6 +419,9 @@ def main() -> int:
                    help="comma-separated substrings; only matching packages run")
     p.add_argument("--pin", action="store_true",
                    help="export the manual ICD variables (baseline comparison)")
+    p.add_argument("--empty-workspace", action="store_true",
+                   help="boot each compositor with an empty workspace so the "
+                        "launched app is the only window in the capture")
     p.add_argument("--shots", action="store_true",
                    help="hold each adopted app for its first frame and write a PNG")
     p.add_argument("--settle", type=float, default=60.0,
