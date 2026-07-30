@@ -996,13 +996,12 @@ impl Widget for NavShell {
         // Route to children via the inner tree. The overlay drawer (when
         // open) is topmost, so route it first; otherwise route the front
         // content pane first.
-        let (Some(taffy), Some(o_node), Some(d_node)) = (
-            self.inner_taffy.as_ref(),
-            self.overview_node,
-            self.detail_node,
-        ) else {
+        // The detail node is absent for a sidebar-plus-content shell; that
+        // must not stop the sidebar and content panes from being routed to.
+        let (Some(taffy), Some(o_node)) = (self.inner_taffy.as_ref(), self.overview_node) else {
             return;
         };
+        let d_node = self.detail_node;
         let sidebar_first = self.is_sidebar_open()
             && self.sidebar_split_layout() == SplitLayout::Overlay;
 
@@ -1019,12 +1018,16 @@ impl Widget for NavShell {
             }
         }
         // Front content pane first for narrow push; harmless order in wide.
-        if self.pane == NavPane::Detail {
-            order.push((Which::Detail, d_node));
-            order.push((Which::Overview, o_node));
-        } else {
-            order.push((Which::Overview, o_node));
-            order.push((Which::Detail, d_node));
+        match (self.pane, d_node) {
+            (NavPane::Detail, Some(dn)) => {
+                order.push((Which::Detail, dn));
+                order.push((Which::Overview, o_node));
+            }
+            (_, Some(dn)) => {
+                order.push((Which::Overview, o_node));
+                order.push((Which::Detail, dn));
+            }
+            (_, None) => order.push((Which::Overview, o_node)),
         }
         if !sidebar_first {
             if let Some(sn) = self.sidebar_node {
