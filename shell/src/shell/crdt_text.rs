@@ -46,6 +46,24 @@ use vello::kurbo::{Point, Rect};
 /// Keystrokes stop coalescing into a single undo entry after this long idle.
 pub const COMMIT_DEBOUNCE: Duration = Duration::from_millis(800);
 
+/// Read the text a [`CrdtTextBody`] bound to `key` holds under `root`,
+/// without constructing the widget that owns it.
+///
+/// This is the read half of [`CrdtTextBody::sync`]'s layout and it lives
+/// beside it deliberately: anything that wants at a text tile's content —
+/// the shell's in-app search, above all — has to look exactly where the
+/// app puts it. `TileHost` hands every hosted app the *same* document
+/// root, so a body sits at `<root>/<key>`; there is no per-tab map. The
+/// notes search provider used to guess at one keyed by the tab id, found
+/// nothing there, and silently fell back to matching titles — so a query
+/// that only appeared in a note's body returned no results at all.
+pub fn read_body(doc: &AutoCommit, root: &ObjId, key: &str) -> Option<String> {
+    match doc.get(root, key) {
+        Ok(Some((Value::Object(ObjType::Text), id))) => doc.text(&id).ok(),
+        _ => None,
+    }
+}
+
 /// A single Automerge `Text` object plus the mirror and caret arithmetic
 /// around it.
 pub struct CrdtTextBody {

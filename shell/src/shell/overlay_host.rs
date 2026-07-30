@@ -617,7 +617,8 @@ impl ShellOverlayHost {
         // every keystroke (`refresh_search_results`). The registry ships
         // with in-shell providers: `actions` (the old chrome-command
         // rows), `applications` (installed packages — picking a row
-        // launches one), `notes` (per-tab Automerge body search),
+        // launches one), `notes` and `editor` (each text app's own
+        // Automerge body, which is also what `Ctrl+K` narrows to),
         // `files` (walkdir + tantivy content index). New providers slot
         // in via `SearchRegistry::register`; the palette picks up their
         // resource-kind chips automatically.
@@ -635,6 +636,9 @@ impl ShellOverlayHost {
         ));
         search_registry.register(std::rc::Rc::new(
             crate::shell::search::providers::NotesProvider::new(),
+        ));
+        search_registry.register(std::rc::Rc::new(
+            crate::shell::search::providers::EditorProvider::new(),
         ));
         search_registry.register(std::rc::Rc::new(
             crate::shell::search::providers::FilesProvider::new(),
@@ -10316,6 +10320,83 @@ mod tests {
         // SAFETY: guarded by the `process_env` serial group.
         unsafe { std::env::remove_var("QOS_APPS_DATA_DIR") };
         crate::shell::launcher::invalidate_app_cache();
+    }
+
+    /// Ctrl+K searching the focused app has to reach that app's own
+    /// *content*, not just its tab title.
+    ///
+    /// Drives the whole production chain with a document the real
+    /// `NotesApp` wrote: `handle_event` → `open_palette_with_scope` →
+    /// `refresh_search_results` → `SearchRegistry::query` →
+    /// `NotesProvider` → palette rows. `nir` appears nowhere but the
+    /// note's body, and the palette answered it with nothing, because the
+    /// provider looked for the body under a per-tab map keyed by the tab
+    /// id — a shape the tile wiring never creates, since every hosted app
+    /// syncs against the same document root.
+    #[test]
+    fn ctrl_k_finds_a_word_that_only_appears_in_the_notes_body() {
+        use crate::shell::chrome_state::SearchScope;
+        use crate::shell::notes_app::NotesApp;
+
+        let mut h = build_harness();
+        // The document as the app leaves it: `pump_apps` calls exactly
+        // this on every frame of the live compositor.
+        let mut doc = AutoCommit::new();
+        let mut notes = NotesApp::with_seed(
+            "Welcome to nirios.\n\nThese notes sync live with anyone \
+             invited to this workspace.",
+        );
+        notes.sync(&mut doc, &automerge::ROOT);
+
+        let ctrl = Modifiers::from(ModifiersState::CONTROL);
+        assert!(pump(&mut h, &key_press(Key::Character("k".into())), &ctrl));
+        assert_eq!(h.chrome.borrow().search_scope, SearchScope::ActiveApp);
+
+        h.host.palette.set_query("nir");
+        h.host.refresh_search_results(&doc, &automerge::ROOT);
+
+        let hit = h
+            .host
+            .search_results
+            .iter()
+            .find(|r| r.provider_id == "notes")
+            .unwrap_or_else(|| {
+                panic!(
+                    "searching inside Notes for a word from its own body \
+                     must offer the note; got {:?}",
+                    h.host
+                        .search_results
+                        .iter()
+                        .map(|r| (&r.provider_id, &r.title))
+                        .collect::<Vec<_>>()
+                )
+            });
+        assert!(
+            hit.subtitle
+                .as_deref()
+                .unwrap_or_default()
+                .contains("nirios"),
+            "the row must show the matching line, not a bare title: {:?}",
+            hit.subtitle
+        );
+        // And it is a row the palette actually paints, with that snippet
+        // as its description.
+        let painted = h
+            .host
+            .palette
+            .visible_entries()
+            .iter()
+            .any(|e| e.label == hit.title && e.description.as_deref() == hit.subtitle.as_deref());
+        assert!(
+            painted,
+            "the hit must reach the palette's own rows: {:?}",
+            h.host
+                .palette
+                .entries()
+                .iter()
+                .map(|e| (&e.label, &e.description))
+                .collect::<Vec<_>>()
+        );
     }
 
     /// The app-scope pill has to name the focused app *as an app*, or it
