@@ -89,7 +89,7 @@ pub fn certify_floor(
     runner: &dyn Runner,
     ws: &Workspace,
     nv_index: u32,
-    base: u64,
+    base: i64,
     qualification: &[u8],
     scratch: &Path,
 ) -> Result<FloorAttestation> {
@@ -125,6 +125,7 @@ pub fn certify_floor(
         signature: std::fs::read(&sig).with_context(|| format!("reading {}", sig.display()))?,
         key_public,
         counter,
-        floor_generation: counter.saturating_sub(base),
+        floor_generation: u64::try_from((i128::from(counter) - i128::from(base)).max(0))
+            .unwrap_or(u64::MAX),
     })
 }

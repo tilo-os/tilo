@@ -20,11 +20,18 @@
 //! # Floor generation versus counter value
 //!
 //! A freshly created counter does not start at zero — it starts at whatever that
-//! TPM's high-water mark is. So the floor generation is an *offset*:
+//! TPM's high-water mark is, which on a fresh TPM is 1 and on a well-used one can
+//! be anything. So the floor generation is an *offset*:
 //!
 //! ```text
 //! floor_generation = counter_value - base
 //! ```
+//!
+//! `base` is signed, and routinely negative: enrolling generation 500 on a TPM
+//! whose counter reads 1 gives `base = 1 - 498 = -497`. Making it unsigned would
+//! force the counter to be incremented up to the generation number before the
+//! machine could be enrolled at all — hundreds of NV writes on a first install,
+//! and impossible for any generation numbering that is not tiny.
 //!
 //! `base` is fixed when the counter is first materialised and then recorded in
 //! two places: every sealed LUKS2 token, and `/var/lib/qos/rollback/state.json`.
@@ -86,30 +93,27 @@ pub const MAX_INCREMENTS_PER_ADVANCE: u64 = 64;
 pub struct FloorState {
     /// Raw counter value in the TPM.
     pub counter: u64,
-    /// Value corresponding to floor generation 0.
-    pub base: u64,
+    /// Counter value corresponding to floor generation 0. Signed, and usually
+    /// negative — see the module notes.
+    pub base: i64,
 }
 
 impl FloorState {
     pub fn floor_generation(&self) -> u64 {
-        self.counter.saturating_sub(self.base)
+        let f = i128::from(self.counter) - i128::from(self.base);
+        u64::try_from(f.max(0)).unwrap_or(u64::MAX)
     }
 
     /// Absolute `operandB` for `TPM2_PolicyNV` when sealing for generation `g`.
     ///
     /// The policy asserts `counter <= base + g`, i.e. `floor <= g`.
     pub fn operand_for(&self, generation: u64) -> Result<u64> {
-        self.base
-            .checked_add(generation)
-            .context("generation number overflows the NV counter space")
+        operand(self.base, generation)
     }
 
     /// How many `TPM2_NV_Increment` calls move the floor to `target`.
     pub fn increments_to(&self, target_floor: u64) -> Result<u64> {
-        let target_counter = self
-            .base
-            .checked_add(target_floor)
-            .context("target floor overflows the NV counter space")?;
+        let target_counter = self.operand_for(target_floor)?;
         if target_counter < self.counter {
             bail!(
                 "target floor {target_floor} is below the current floor {} — NV counters do not \
@@ -119,6 +123,21 @@ impl FloorState {
         }
         Ok(target_counter - self.counter)
     }
+}
+
+/// The counter value that corresponds to floor generation `generation`.
+///
+/// Shared with the LUKS2 token so that the header and the TPM can never drift
+/// apart on the arithmetic.
+pub fn operand(base: i64, generation: u64) -> Result<u64> {
+    let v = i128::from(base) + i128::from(generation);
+    if v < 0 {
+        bail!(
+            "generation {generation} maps to NV counter value {v}, below zero: this device's \
+             recorded counter base ({base}) does not belong to this generation numbering"
+        );
+    }
+    u64::try_from(v).context("generation number overflows the NV counter space")
 }
 
 fn idx(index: u32) -> String {
@@ -212,10 +231,12 @@ pub fn materialise(
     }
     let counter = read(runner, index, scratch)?
         .context("the rollback floor counter is still unreadable after an increment")?;
-    let base = counter.checked_sub(initial_floor).with_context(|| {
+    // `base` is deliberately allowed to go negative: a fresh TPM's counter reads
+    // 1, and the generation being enrolled is usually much larger than that.
+    let base = i64::try_from(i128::from(counter) - i128::from(initial_floor)).with_context(|| {
         format!(
-            "this TPM's counter high-water mark ({counter}) is below the requested initial floor \
-             ({initial_floor})"
+            "counter {counter} and initial floor {initial_floor} are too far apart to record a \
+             counter base"
         )
     })?;
     Ok(FloorState { counter, base })
@@ -273,6 +294,15 @@ mod tests {
     }
 
     #[test]
+    fn a_negative_base_is_the_normal_case_on_a_fresh_tpm() {
+        // Enrolling generation 500 on a TPM whose counter reads 1.
+        let s = FloorState { counter: 1, base: 1 - 498 };
+        assert_eq!(s.floor_generation(), 498);
+        assert_eq!(s.operand_for(500).unwrap(), 3);
+        assert_eq!(s.operand_for(498).unwrap(), 1);
+    }
+
+    #[test]
     fn a_base_above_the_counter_reads_as_floor_zero_not_a_wrap() {
         let s = FloorState { counter: 3, base: 100 };
         assert_eq!(s.floor_generation(), 0);
@@ -286,10 +316,25 @@ mod tests {
     }
 
     #[test]
+    fn a_generation_that_maps_below_zero_is_refused() {
+        let s = FloorState { counter: 1, base: -400 };
+        let e = s.operand_for(399).unwrap_err().to_string();
+        assert!(e.contains("below zero"), "{e}");
+    }
+
+    #[test]
     fn increments_to_counts_the_gap() {
         let s = FloorState { counter: 105, base: 100 };
         assert_eq!(s.increments_to(5).unwrap(), 0);
         assert_eq!(s.increments_to(8).unwrap(), 3);
+    }
+
+    #[test]
+    fn increments_to_counts_the_gap_with_a_negative_base() {
+        let s = FloorState { counter: 1, base: -497 };
+        assert_eq!(s.floor_generation(), 498);
+        assert_eq!(s.increments_to(498).unwrap(), 0);
+        assert_eq!(s.increments_to(500).unwrap(), 2);
     }
 
     #[test]
@@ -301,8 +346,8 @@ mod tests {
 
     #[test]
     fn operand_overflow_is_an_error() {
-        let s = FloorState { counter: u64::MAX, base: u64::MAX };
-        assert!(s.operand_for(1).is_err());
+        let s = FloorState { counter: u64::MAX, base: i64::MAX };
+        assert!(s.operand_for(u64::MAX).is_err());
     }
 
     #[test]

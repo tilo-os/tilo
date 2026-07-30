@@ -35,7 +35,7 @@
 //! has been applied but not yet rebooted into.
 
 use crate::argv;
-use crate::exec::{Runner, require};
+use crate::exec::{Runner, require, trace_failure};
 use crate::generation;
 use anyhow::{Context, Result, bail};
 use std::ffi::OsStr;
@@ -50,6 +50,29 @@ pub struct Prediction {
     pub signature: Vec<u8>,
     /// Free-text note (`"as built"`, `"post-fwupd"`) for diagnostics only.
     pub label: String,
+}
+
+/// Wrap a raw PKCS#1 v1.5 signature in the `TPMT_SIGNATURE` structure the TPM
+/// expects.
+///
+/// `TPM2_VerifySignature` is what mints the ticket `TPM2_PolicyAuthorize` needs,
+/// and it only runs if the signature is handed over as a TPM structure. Give
+/// `tpm2_verifysignature` the bare OpenSSL output with `--format=rsassa` instead
+/// and it verifies in software, succeeds, and writes no ticket — which then
+/// surfaces one step later as a missing file rather than as "the TPM was never
+/// asked".
+///
+/// Layout: `sigAlg` = `TPM_ALG_RSASSA` (0x0014), `hash` = `TPM_ALG_SHA256`
+/// (0x000B), then a `TPM2B_PUBLIC_KEY_RSA` (big-endian size, then the bytes).
+pub fn marshal_rsassa_sha256(signature: &[u8]) -> Result<Vec<u8>> {
+    let len = u16::try_from(signature.len())
+        .with_context(|| format!("a {}-byte signature does not fit TPM2B_PUBLIC_KEY_RSA", signature.len()))?;
+    let mut out = Vec::with_capacity(signature.len() + 6);
+    out.extend_from_slice(&0x0014u16.to_be_bytes()); // TPM_ALG_RSASSA
+    out.extend_from_slice(&0x000Bu16.to_be_bytes()); // TPM_ALG_SHA256
+    out.extend_from_slice(&len.to_be_bytes());
+    out.extend_from_slice(signature);
+    Ok(out)
 }
 
 /// PCR selection in the form tpm2-tools wants: `sha256:7,11`.
@@ -104,7 +127,12 @@ pub fn key_name(runner: &dyn Runner, ws: &Workspace, public_key_pem: &Path) -> R
     require(
         runner,
         "tpm2_loadexternal",
-        &argv!["-G", "rsa", "-u", public_key_pem.as_os_str(), "-c", ctx.as_os_str()],
+        &argv![
+            "-C", "o",
+            "-G", "rsa",
+            "-u", public_key_pem.as_os_str(),
+            "-c", ctx.as_os_str(),
+        ],
         "loading the PCR prediction public key",
     )?;
     let name = ws.path("signkey.name");
@@ -293,32 +321,42 @@ pub fn satisfy(
     // lets this run on a TPM with three transient object slots.
     flush(runner);
     let sk = ws.path("verifykey.ctx");
+    // `-C o` is load-bearing: `tpm2_loadexternal` defaults to the NULL hierarchy,
+    // and the TPM does not issue a validation ticket for a NULL-hierarchy key.
+    // Without it `tpm2_verifysignature` succeeds, silently writes no ticket, and
+    // the failure appears one step later as `TPM2_PolicyAuthorize` complaining
+    // about a missing file. The key's Name — which is what the policy is bound
+    // to — does not depend on the hierarchy, so this changes nothing about what
+    // a sealed token accepts.
     require(
         runner,
         "tpm2_loadexternal",
-        &argv!["-G", "rsa", "-u", public_key_pem.as_os_str(), "-c", sk.as_os_str()],
+        &argv![
+            "-C", "o",
+            "-G", "rsa",
+            "-u", public_key_pem.as_os_str(),
+            "-c", sk.as_os_str(),
+        ],
         "loading the PCR prediction public key",
     )?;
     let approved = ws.put("approved.bin", &prediction.approved_policy)?;
     let mut message = prediction.approved_policy.clone();
     message.extend_from_slice(&generation::policy_ref(gen_num));
     let msg = ws.put("verify_msg.bin", &message)?;
-    let sig = ws.put("prediction.sig", &prediction.signature)?;
+    let sig = ws.put("prediction.sig", &marshal_rsassa_sha256(&prediction.signature)?)?;
     let ticket = ws.path("ticket.bin");
-    let vs = runner.run(
-        "tpm2_verifysignature",
-        &argv![
-            "-c", sk.as_os_str(),
-            "-g", "sha256",
-            "-m", msg.as_os_str(),
-            "-s", sig.as_os_str(),
-            "-t", ticket.as_os_str(),
-        ],
-        None,
-    )?;
+    let verify_args = argv![
+        "-c", sk.as_os_str(),
+        "-g", "sha256",
+        "-m", msg.as_os_str(),
+        "-s", sig.as_os_str(),
+        "-t", ticket.as_os_str(),
+    ];
+    let vs = runner.run("tpm2_verifysignature", &verify_args, None)?;
     let _ = runner.run("tpm2_flushcontext", &argv!["-t"], None);
     if !vs.ok() {
         // Not signed by this key, or not over this generation's policy ref.
+        trace_failure("tpm2_verifysignature", &verify_args, &vs);
         return Ok(None);
     }
 
@@ -346,18 +384,16 @@ pub fn satisfy(
             bail!("reading live PCRs for the policy session failed: {}", pcr.last_error_line());
         }
         // Does the live state match what was signed?
-        let auth = runner.run(
-            "tpm2_policyauthorize",
-            &argv![
-                "-S", sess.as_os_str(),
-                "-i", approved.as_os_str(),
-                "-n", name_file.as_os_str(),
-                "-q", ref_file.as_os_str(),
-                "-t", ticket.as_os_str(),
-            ],
-            None,
-        )?;
+        let auth_args = argv![
+            "-S", sess.as_os_str(),
+            "-i", approved.as_os_str(),
+            "-n", name_file.as_os_str(),
+            "-q", ref_file.as_os_str(),
+            "-t", ticket.as_os_str(),
+        ];
+        let auth = runner.run("tpm2_policyauthorize", &auth_args, None)?;
         if !auth.ok() {
+            trace_failure("tpm2_policyauthorize", &auth_args, &auth);
             return Ok(None); // wrong prediction for the current state
         }
         // Rollback floor.
@@ -410,6 +446,22 @@ mod tests {
     fn pcr_selection_matches_the_tools_syntax() {
         assert_eq!(pcr_selection("sha256", &[7, 11]), "sha256:7,11");
         assert_eq!(pcr_selection("sha384", &[0]), "sha384:0");
+    }
+
+    #[test]
+    fn rsassa_marshalling_has_the_tpm_structure_layout() {
+        let sig = vec![0xABu8; 256];
+        let m = marshal_rsassa_sha256(&sig).unwrap();
+        assert_eq!(m.len(), 256 + 6);
+        assert_eq!(&m[0..2], &[0x00, 0x14], "sigAlg must be TPM_ALG_RSASSA");
+        assert_eq!(&m[2..4], &[0x00, 0x0B], "hash must be TPM_ALG_SHA256");
+        assert_eq!(&m[4..6], &[0x01, 0x00], "size must be 256 big-endian");
+        assert_eq!(&m[6..], &sig[..]);
+    }
+
+    #[test]
+    fn an_oversized_signature_is_refused_rather_than_truncated() {
+        assert!(marshal_rsassa_sha256(&vec![0u8; 70_000]).is_err());
     }
 
     #[test]

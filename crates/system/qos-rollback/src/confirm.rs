@@ -55,8 +55,9 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct State {
     pub nv_index: u32,
-    /// Counter value corresponding to floor generation 0.
-    pub nv_base: u64,
+    /// Counter value corresponding to floor generation 0. Signed — see
+    /// [`crate::counter`].
+    pub nv_base: i64,
     /// Last generation whose keyslot was enrolled and proven.
     pub last_confirmed: Option<u64>,
 }
@@ -89,8 +90,8 @@ pub fn save_state(path: &Path, state: &State) -> Result<()> {
 /// means one of them has been tampered with or a previous run was interrupted,
 /// and since a wrong base turns into "increment the counter a very large number
 /// of times", it is refused rather than resolved by preference.
-pub fn load_base(state: Option<&State>, tokens: &[(u32, RollbackToken)]) -> Result<Option<u64>> {
-    let mut bases: Vec<(String, u64)> = Vec::new();
+pub fn load_base(state: Option<&State>, tokens: &[(u32, RollbackToken)]) -> Result<Option<i64>> {
+    let mut bases: Vec<(String, i64)> = Vec::new();
     if let Some(s) = state {
         bases.push(("state file".into(), s.nv_base));
     }
@@ -195,11 +196,12 @@ mod tests {
     use super::*;
     use crate::policy::Prediction;
 
-    fn tok(gen_num: u64, base: u64) -> (u32, RollbackToken) {
+    fn tok(gen_num: u64, base: i64) -> (u32, RollbackToken) {
         (
             gen_num as u32,
             RollbackToken::new(
-                1, gen_num, 0x01D9_1100, base + gen_num, base, "sha256", &[7, 11], false,
+                1, gen_num, 0x01D9_1100, crate::counter::operand(base, gen_num).unwrap(), base,
+                "sha256", &[7, 11], false,
                 b"p", b"q", b"n", b"d",
                 &[Prediction { approved_policy: b"a".to_vec(), signature: b"s".to_vec(), label: String::new() }],
             ),
