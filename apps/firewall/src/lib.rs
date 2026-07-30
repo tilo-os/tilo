@@ -12,6 +12,7 @@
 //! `firewall-cmd`); `app_root_demo()` is the sample-seeded build used by the
 //! `--shots` renderer so the headless screenshot is populated offline.
 
+pub mod actions;
 pub mod app;
 pub mod backend;
 pub mod doc;
