@@ -4806,6 +4806,9 @@ mod tests {
             })
             .expect("a song row registers a like-heart hit");
         let expected = crate::actions::encode(&crate::actions::toggle_liked_action(&id));
+        // The sample library seeds some tracks as already-liked, so assert the
+        // membership *flips* rather than assuming a fixed direction.
+        let before = doc::load_library(&doc).is_liked(&id);
 
         send(&mut app, &cursor_at(center), &mut doc);
         send(&mut app, &press(MouseButton::Left), &mut doc);
@@ -4815,7 +4818,11 @@ mod tests {
             Some(&expected),
             "the like heart and the palette build the identical EncodedAction"
         );
-        assert!(doc::load_library(&doc).is_liked(&id), "and it actually liked the track");
+        assert_eq!(
+            doc::load_library(&doc).is_liked(&id),
+            !before,
+            "and it actually toggled the track's liked state in the doc"
+        );
         // The heads captured for the host's undo bracket are armed (the host
         // drains this via `take_committed_action` to record one undo boundary).
         assert!(
