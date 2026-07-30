@@ -3659,6 +3659,15 @@ impl Widget for ShellOverlayHost {
         // splice the dragged tab into whichever strip's row contains the
         // release point (or back into source if no strip matched).
         self.dispatch_cross_strip_detaches();
+        // Offer every open tab's document to its own writer. Debounced and
+        // off-thread, so a frame on which nothing was typed costs a head
+        // comparison per open record — but a frame on which something was
+        // is what puts it on disk. Without this the store holds each tab's
+        // document in memory and the session ends having written nothing.
+        if let Some(chrome) = self.chrome.as_ref() {
+            let records = chrome.borrow().records().clone();
+            records.tick();
+        }
         // Sandbox Phase 4 Task 4.2: drive the permission-prompt pump.
         // Latches a fresh widget for the front of `chrome.pending_grants`,
         // and drains entries when the user clicks an action button.
