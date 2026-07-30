@@ -1700,6 +1700,7 @@ dependencies = [
  "gstreamer-video",
  "image",
  "png 0.18.1",
+ "qos-actions",
  "qrcode",
  "rqrr",
  "serde",
