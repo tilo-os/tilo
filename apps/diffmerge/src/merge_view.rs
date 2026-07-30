@@ -22,6 +22,7 @@ use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::Widget;
 
+use crate::actions::{self, DiffmergeAction, HunkChoice, MergeResourceCtx};
 use crate::doc::MergeDoc;
 use crate::highlight;
 use crate::model::{MergeModel, Resolution};
@@ -33,12 +34,12 @@ const FONT_SIZE: f32 = 12.5;
 const PAD_X: f64 = 8.0;
 const GAP: f64 = 6.0;
 
-/// A clickable action chip rect tagged with the hunk + resolution it applies.
+/// A clickable action chip rect tagged with the hunk + side it takes.
 #[derive(Clone, Copy)]
 struct ActionHit {
     rect: Rect,
     hunk: usize,
-    resolution: Resolution,
+    choice: HunkChoice,
 }
 
 /// The three-way merge panel.
@@ -56,9 +57,14 @@ pub struct MergeView {
     /// Cursor position cache for click hit-testing.
     cursor: Point,
     dirty: bool,
-    /// Whether the model was just re-resolved and the merged buffer needs to be
-    /// pushed back into the CRDT on the next `sync`.
-    pending_write: bool,
+    /// Set when a fresh set of inputs was loaded: the next `sync` seeds the
+    /// merged buffer (a projection of the external inputs, not a replayable
+    /// action) and clears any stale per-hunk resolutions.
+    pending_seed: bool,
+    /// A conflict resolution the user just triggered via a chip, waiting to be
+    /// drained by the parent app and dispatched as a [`DiffmergeAction`] through
+    /// the shared action path (so a chip and Ctrl+K produce one undo boundary).
+    pending_action: Option<DiffmergeAction>,
 }
 
 impl MergeView {
@@ -75,7 +81,8 @@ impl MergeView {
             active_hunk: None,
             cursor: Point::ZERO,
             dirty: true,
-            pending_write: true,
+            pending_seed: true,
+            pending_action: None,
         }
     }
 
@@ -95,11 +102,35 @@ impl MergeView {
         self.scroll_y = 0.0;
         self.active_hunk = self.first_conflict().or_else(|| self.model.change_indices().first().copied());
         self.dirty = true;
-        self.pending_write = true;
+        self.pending_seed = true;
     }
 
     pub fn model(&self) -> &MergeModel {
         &self.model
+    }
+
+    /// Presentation context for the Ctrl+K resource tree: the merge title plus a
+    /// snapshot of the model the per-hunk specs compose from. `None` when there
+    /// is nothing to resolve.
+    pub(crate) fn resource_ctx(&self) -> Option<MergeResourceCtx> {
+        if self.model.change_count() == 0 {
+            return None;
+        }
+        let title = if self.ours_label.is_empty() && self.theirs_label.is_empty() {
+            "Merge result".to_string()
+        } else {
+            format!("Merge · {} ↔ {}", self.ours_label, self.theirs_label)
+        };
+        Some(MergeResourceCtx {
+            title,
+            model: self.model.clone(),
+        })
+    }
+
+    /// Take the pending chip-triggered resolution, if any, so the parent app can
+    /// dispatch it through the shared action path. Rising-edge: cleared on read.
+    pub(crate) fn take_pending_action(&mut self) -> Option<DiffmergeAction> {
+        self.pending_action.take()
     }
 
     fn first_conflict(&self) -> Option<usize> {
@@ -109,14 +140,26 @@ impl MergeView {
             .position(|h| h.resolution.is_conflict())
     }
 
-    /// Resolve `hunk` with `resolution` and flag the merged buffer for rewrite.
-    pub fn resolve(&mut self, hunk: usize, resolution: Resolution) {
-        if let Some(h) = self.model.hunks.get_mut(hunk) {
-            h.resolution = resolution;
-            self.active_hunk = Some(hunk);
-            self.pending_write = true;
-            self.dirty = true;
+    /// Resolve `hunk` by taking `choice`. Updates the in-memory model for
+    /// immediate feedback and queues the matching [`DiffmergeAction`] (with the
+    /// recomposed merged output baked in) for the parent app to dispatch through
+    /// the shared action path — so a chip click and the Ctrl+K row produce the
+    /// same replayable action under one undo boundary. The document write itself
+    /// happens via that action, not here.
+    pub fn resolve(&mut self, hunk: usize, choice: HunkChoice) {
+        if hunk >= self.model.hunks.len() {
+            return;
         }
+        // Compose the resulting merged output BEFORE mutating so the queued
+        // action is composed from the same model state the palette spec is —
+        // guaranteeing a byte-identical envelope from either entry point.
+        let merged = actions::compose_choice(&self.model, hunk, choice);
+        if let Some(h) = self.model.hunks.get_mut(hunk) {
+            h.resolution = choice.to_resolution();
+        }
+        self.active_hunk = Some(hunk);
+        self.pending_action = Some(actions::resolve_hunk_action(hunk, choice, merged));
+        self.dirty = true;
     }
 
     /// Navigate the active hunk among the real-change hunks.
@@ -198,14 +241,33 @@ impl MergeView {
 
 impl Widget for MergeView {
     fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
-        // On first sync (or after a re-resolution) push the composed merged
-        // output into the CRDT. Once seeded, the buffer is authoritative —
-        // a user could keep editing it via the editable panel.
-        if self.pending_write {
+        if self.pending_seed {
+            // Fresh inputs: seed the provisional merged output (a projection of
+            // the external inputs, not a replayable action) and drop any stale
+            // per-hunk resolutions whose indices no longer correspond.
+            MergeDoc::clear_resolutions(state);
             MergeDoc::set_merged(state, &self.model.merged_text());
-            self.pending_write = false;
-        } else if !MergeDoc::has_merged(state) {
+            self.pending_seed = false;
+            return;
+        }
+        // Seed once for a late joiner that has no buffer yet.
+        if !MergeDoc::has_merged(state) {
             MergeDoc::set_merged(state, &self.model.merged_text());
+        }
+        // Reconcile chip state from resolutions recorded by (possibly remote)
+        // actions, so a reload or a peer shows the same take-a-side selections.
+        // The merged `Text` itself stays authoritative — the actions already
+        // wrote it — so this only tints the in-memory hunks.
+        for (hunk, choice) in MergeDoc::resolutions(state) {
+            if let (Some(h), Some(c)) = (self.model.hunks.get_mut(hunk), HunkChoice::from_str(&choice)) {
+                if h.is_change {
+                    let res = c.to_resolution();
+                    if h.resolution != res {
+                        h.resolution = res;
+                        self.dirty = true;
+                    }
+                }
+            }
         }
     }
 
@@ -339,18 +401,18 @@ impl Widget for MergeView {
                 // keeps the resolution controls coherent: ours = success (green),
                 // theirs = info (blue), both = the neutral dim tone — mirroring
                 // the status label's own `ColorClass` mapping.
-                let chips: &[(&str, Resolution, Color)] = if h.resolution.is_conflict() {
+                let chips: &[(&str, HunkChoice, Color)] = if h.resolution.is_conflict() {
                     &[
-                        ("Take ours", Resolution::TookOurs, c.semantic.success),
-                        ("Take theirs", Resolution::TookTheirs, c.semantic.info),
-                        ("Take both", Resolution::TookBoth, c.text_dim),
+                        ("Take ours", HunkChoice::Ours, c.semantic.success),
+                        ("Take theirs", HunkChoice::Theirs, c.semantic.info),
+                        ("Take both", HunkChoice::Both, c.text_dim),
                     ]
                 } else {
                     // Auto-resolved — still allow flipping.
                     &[
-                        ("Ours", Resolution::TookOurs, c.semantic.success),
-                        ("Theirs", Resolution::TookTheirs, c.semantic.info),
-                        ("Both", Resolution::TookBoth, c.text_dim),
+                        ("Ours", HunkChoice::Ours, c.semantic.success),
+                        ("Theirs", HunkChoice::Theirs, c.semantic.info),
+                        ("Both", HunkChoice::Both, c.text_dim),
                     ]
                 };
                 // Status label on the left.
@@ -365,10 +427,10 @@ impl Widget for MergeView {
                 );
 
                 let mut cx = r.x0 + 2.0 * col_w + PAD_X;
-                for (label, res, col) in chips {
+                for (label, choice, col) in chips {
                     let w = label.len() as f64 * 7.2 + 16.0;
                     let chip = Rect::new(cx, ay, cx + w, ay + ACTION_H - 6.0);
-                    let selected = chip_is_selected(h.resolution, *res);
+                    let selected = chip_is_selected(h.resolution, *choice);
                     let bg = if selected {
                         with_alpha(*col, 220)
                     } else {
@@ -389,7 +451,7 @@ impl Widget for MergeView {
                     self.action_hits.push(ActionHit {
                         rect: chip,
                         hunk: hi,
-                        resolution: *res,
+                        choice: *choice,
                     });
                     cx += w + 6.0;
                 }
@@ -492,7 +554,7 @@ impl Widget for MergeView {
                     .find(|a| a.rect.contains(self.cursor))
                     .copied();
                 if let Some(a) = hit {
-                    self.resolve(a.hunk, a.resolution);
+                    self.resolve(a.hunk, a.choice);
                     *handled = true;
                 }
             }
@@ -521,14 +583,12 @@ impl Widget for MergeView {
     }
 }
 
-fn chip_is_selected(current: Resolution, chip: Resolution) -> bool {
+fn chip_is_selected(current: Resolution, chip: HunkChoice) -> bool {
     matches!(
         (current, chip),
-        (Resolution::TookOurs, Resolution::TookOurs)
-            | (Resolution::Ours, Resolution::TookOurs)
-            | (Resolution::TookTheirs, Resolution::TookTheirs)
-            | (Resolution::Theirs, Resolution::TookTheirs)
-            | (Resolution::TookBoth, Resolution::TookBoth)
+        (Resolution::TookOurs | Resolution::Ours, HunkChoice::Ours)
+            | (Resolution::TookTheirs | Resolution::Theirs, HunkChoice::Theirs)
+            | (Resolution::TookBoth, HunkChoice::Both)
     )
 }
 

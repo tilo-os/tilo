@@ -13,6 +13,7 @@
 //! `app_root()` is the single integration point used by both the live event
 //! loop and the `--shots` offscreen renderer.
 
+pub mod actions;
 pub mod app;
 pub mod diff_view;
 pub mod doc;
@@ -22,6 +23,7 @@ pub mod model;
 pub mod portal;
 pub mod samples;
 
+pub use actions::{DiffmergeAction, HunkChoice, DIFFMERGE_ACTION_TYPE};
 pub use app::{DiffMergeApp, Mode};
 pub use model::{DiffModel, MergeModel, Resolution};
 

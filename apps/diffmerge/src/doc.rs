@@ -7,9 +7,14 @@
 //!
 //! ```text
 //! root
-//! ├── "merged"   (Text)   # the editable merged result
-//! └── "session"  (Str)    # which sample/session is loaded (for late joiners)
+//! ├── "merged"       (Text)   # the editable merged result
+//! ├── "resolutions"  (Map)    # "<hunk index>" -> "ours" | "theirs" | "both"
+//! └── "session"      (Str)    # which sample/session is loaded (for late joiners)
 //! ```
+//!
+//! The `resolutions` map records the per-hunk take-a-side choice a user made so
+//! the chip state converges across peers and survives a reload; it is cleared
+//! when a fresh set of inputs is loaded (the hunk indices no longer correspond).
 //!
 //! The diff and three-way panels themselves are derived views over plain text
 //! the app holds in memory — only the *output* of the merge is CRDT-backed,
@@ -58,6 +63,48 @@ impl MergeDoc {
     pub fn set_merged(doc: &mut AutoCommit, text: &str) {
         let id = Self::merged_text_obj(doc);
         ui::doc::splice_text_diffed(doc, &id, text);
+    }
+
+    /// Get-or-create the top-level `resolutions` map.
+    fn resolutions_map(doc: &mut AutoCommit) -> ObjId {
+        match doc.get(&ROOT, "resolutions") {
+            Ok(Some((Value::Object(ObjType::Map), id))) => id,
+            _ => doc
+                .put_object(&ROOT, "resolutions", ObjType::Map)
+                .expect("put_object resolutions Map never fails"),
+        }
+    }
+
+    /// Record the take-a-side choice for hunk `hunk` (`"ours"`/`"theirs"`/
+    /// `"both"`), so peers converge on the same chip state.
+    pub fn set_resolution(doc: &mut AutoCommit, hunk: usize, choice: &str) {
+        let id = Self::resolutions_map(doc);
+        let _ = doc.put(&id, hunk.to_string(), choice);
+    }
+
+    /// Every recorded `(hunk index, choice)` pair, in ascending hunk order.
+    pub fn resolutions(doc: &AutoCommit) -> Vec<(usize, String)> {
+        let mut out = Vec::new();
+        if let Ok(Some((Value::Object(ObjType::Map), id))) = doc.get(&ROOT, "resolutions") {
+            for key in doc.keys(&id) {
+                let Ok(idx) = key.parse::<usize>() else { continue };
+                if let Ok(Some((Value::Scalar(v), _))) = doc.get(&id, &key) {
+                    if let automerge::ScalarValue::Str(s) = v.as_ref() {
+                        out.push((idx, s.to_string()));
+                    }
+                }
+            }
+        }
+        out.sort_by_key(|(k, _)| *k);
+        out
+    }
+
+    /// Drop every recorded resolution — called when a fresh set of inputs is
+    /// loaded, since the old hunk indices no longer correspond.
+    pub fn clear_resolutions(doc: &mut AutoCommit) {
+        if let Ok(Some((Value::Object(ObjType::Map), _))) = doc.get(&ROOT, "resolutions") {
+            let _ = doc.delete(&ROOT, "resolutions");
+        }
     }
 
     /// Read the loaded session label, if any.
@@ -139,6 +186,24 @@ mod tests {
         let mut b_loaded = AutoCommit::load(&b.save()).unwrap();
         a.merge(&mut b_loaded).unwrap();
         assert!(MergeDoc::merged_text(&a).contains("from-b"));
+    }
+
+    #[test]
+    fn resolutions_round_trip_and_clear() {
+        let mut doc = AutoCommit::new();
+        assert!(MergeDoc::resolutions(&doc).is_empty());
+        MergeDoc::set_resolution(&mut doc, 2, "theirs");
+        MergeDoc::set_resolution(&mut doc, 0, "both");
+        assert_eq!(
+            MergeDoc::resolutions(&doc),
+            vec![(0, "both".to_string()), (2, "theirs".to_string())],
+            "sorted by hunk index"
+        );
+        // Overwriting a hunk's choice replaces, not duplicates.
+        MergeDoc::set_resolution(&mut doc, 2, "ours");
+        assert_eq!(MergeDoc::resolutions(&doc), vec![(0, "both".to_string()), (2, "ours".to_string())]);
+        MergeDoc::clear_resolutions(&mut doc);
+        assert!(MergeDoc::resolutions(&doc).is_empty(), "clear drops every choice");
     }
 
     #[test]

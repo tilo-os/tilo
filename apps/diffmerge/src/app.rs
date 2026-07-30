@@ -15,7 +15,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 
-use automerge::{AutoCommit, ObjId};
+use automerge::{AutoCommit, ChangeHash, ObjId};
 use taffy::prelude::*;
 use vello::Scene;
 use vello::kurbo::{Affine, Line, Point, Rect, Stroke};
@@ -84,6 +84,14 @@ pub struct DiffMergeApp {
     /// One-shot flag: set when the active mode changed so the host rebuilds the
     /// taffy tree (the flex content child swaps between the two views).
     structure_dirty: bool,
+    /// Doc heads captured just before an on-panel affordance dispatched its
+    /// [`DiffmergeAction`], handed to the host so it brackets **one** undo
+    /// boundary around the action ([`Widget::take_committed_action`]). Rising-
+    /// edge: cleared on read.
+    action_commit_before: Option<Vec<ChangeHash>>,
+    /// The last action encoded by [`Self::perform_action`], kept so a test can
+    /// prove the affordance dispatched the expected envelope.
+    last_dispatched: Option<qos_actions::EncodedAction>,
 }
 
 impl DiffMergeApp {
@@ -141,6 +149,8 @@ impl DiffMergeApp {
             load_error: None,
             dirty: true,
             structure_dirty: false,
+            action_commit_before: None,
+            last_dispatched: None,
         }
     }
 
@@ -206,6 +216,39 @@ impl DiffMergeApp {
                 self.dirty = true;
             }
         }
+    }
+
+    /// Dispatch one [`DiffmergeAction`](crate::actions::DiffmergeAction) — the
+    /// single CRDT-mutation path shared with the Ctrl+K palette. The action is
+    /// applied through the qOS action executor (a pinned actor + committed
+    /// change, so it replays byte-identically on peers), exactly as the palette
+    /// does. The document heads captured just before the first action of the
+    /// event are stashed so the host records **one** undo boundary bracketing it
+    /// ([`Widget::take_committed_action`]). The in-memory merge model was already
+    /// updated by the chip handler for immediate feedback and is reconciled from
+    /// the document on the next `sync`.
+    fn perform_action(&mut self, doc: &mut AutoCommit, action: crate::actions::DiffmergeAction) {
+        if self.action_commit_before.is_none() {
+            // `get_heads` flushes any pending app writes, so the bracket covers
+            // only the action's own change.
+            self.action_commit_before = Some(doc.get_heads());
+        }
+        let encoded = crate::actions::encode(&action);
+        self.last_dispatched = Some(encoded.clone());
+        let mut tx = DiscardTransport;
+        if let Err(e) = qos_actions::dispatch(doc, &action, encoded, &mut tx) {
+            tracing::warn!(error = %e, "diffmerge action dispatch failed");
+        }
+    }
+
+    /// The presentation context Ctrl+K needs to build the merge resource tree.
+    /// `None` unless a three-way merge with at least one change hunk is the
+    /// active mode — the diff mode is read-only and mutates nothing.
+    pub(crate) fn merge_resource_ctx(&self) -> Option<crate::actions::MergeResourceCtx> {
+        if self.mode != Mode::Merge {
+            return None;
+        }
+        self.merge.resource_ctx()
     }
 
     /// Ask the host desktop's file chooser to open a file to compare. Per HIG
@@ -626,12 +669,34 @@ impl Widget for DiffMergeApp {
                 if let Some(n) = self.merge_node {
                     self.merge.handle_event(event, scale_factor, modifiers, state, path, handled, focus_target, n, taffy);
                 }
+                // A chip click on the merge panel queues its resolution; dispatch
+                // it through the shared action path so the chip and Ctrl+K produce
+                // the same replayable action under one undo boundary.
+                if let Some(action) = self.merge.take_pending_action() {
+                    self.perform_action(state, action);
+                    *handled = true;
+                }
             }
         }
     }
 
     fn name(&self) -> &str {
         "DiffMergeApp"
+    }
+
+    /// Publish the open merge + its hunks so the host's Ctrl+K action palette
+    /// scopes to them. Delegates to the
+    /// [`ResourceProvider`](qos_actions::ResourceProvider) impl in
+    /// [`crate::actions`].
+    fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
+        <Self as qos_actions::ResourceProvider>::resources(self, doc)
+    }
+
+    /// Hand the host the heads captured before an on-panel chip dispatched its
+    /// resolution action, so it records one undo boundary for it (see
+    /// [`Self::perform_action`]). Rising-edge: cleared on read.
+    fn take_committed_action(&mut self) -> Option<Vec<ChangeHash>> {
+        self.action_commit_before.take()
     }
 
     fn get_rect(&self) -> Rect {
@@ -677,6 +742,17 @@ impl Widget for DiffMergeApp {
 
 fn with_alpha(c: Color, a: u8) -> Color {
     Color::from_rgba8(c.r(), c.g(), c.b(), a)
+}
+
+/// The action transport Diff installs for its own on-panel chips. Peers receive
+/// the merge changes through ordinary CRDT sync (the executor pins each action's
+/// actor so the change is content-addressed identical to a peer's replay and
+/// dedupes on merge), so the local chip path has nothing extra to replicate —
+/// this sink drops the envelope. The Ctrl+K palette dispatches through the
+/// host's transport, which a collaborative session swaps for a peer-aware one.
+struct DiscardTransport;
+impl qos_actions::ActionTransport for DiscardTransport {
+    fn replicate(&mut self, _env: &qos_actions::ActionEnvelope) {}
 }
 
 #[cfg(test)]
@@ -774,5 +850,101 @@ mod tests {
         assert!(app.portal_rx.is_none());
         let err = app.load_error.as_deref().expect("a failure is recorded");
         assert!(err.contains("no portal"), "the reason is surfaced: {err}");
+    }
+
+    /// The full covenant on one on-panel affordance: driving the chip handler
+    /// exactly as a click does queues a resolution; dispatching it through the
+    /// app's shared action path mutates the merged buffer, records **one** undo
+    /// boundary bracketed at the pre-action heads, and Ctrl+Z reverts precisely
+    /// that action.
+    #[test]
+    fn chip_dispatch_records_one_undo_boundary_and_reverts() {
+        let mut app = DiffMergeApp::new_demo(); // Merge mode with a real conflict
+        let mut state = ui::State::new();
+        app.sync(&mut state.doc, &state.root); // seeds merged + clears resolutions
+
+        let hunk = app
+            .merge
+            .model()
+            .hunks
+            .iter()
+            .position(|h| h.resolution.is_conflict())
+            .expect("the demo merge has a conflict");
+
+        let before_merged = crate::doc::MergeDoc::merged_text(&state.doc);
+        let before_heads = state.doc.get_heads();
+
+        // Drive the chip handler exactly as a click does, then dispatch through
+        // the shared path (as `handle_event`'s drain does).
+        app.merge.resolve(hunk, crate::actions::HunkChoice::Theirs);
+        let action = app
+            .merge
+            .take_pending_action()
+            .expect("a chip click queues a resolution");
+        app.perform_action(&mut state.doc, action);
+
+        assert!(app.last_dispatched.is_some(), "the affordance dispatched an envelope");
+        let after_merged = crate::doc::MergeDoc::merged_text(&state.doc);
+        assert_ne!(before_merged, after_merged, "the action mutated the merged output");
+        assert_eq!(
+            crate::doc::MergeDoc::resolutions(&state.doc),
+            vec![(hunk, "theirs".to_string())],
+            "the take-a-side choice is recorded in the CRDT"
+        );
+
+        // Exactly one undo boundary, bracketed by the host at the pre-action heads.
+        let stashed = Widget::take_committed_action(&mut app).expect("heads stashed for the host");
+        assert_eq!(stashed, before_heads, "bracket starts at the pre-action heads");
+        state.record_committed_action(stashed, None, None);
+        assert!(state.peek_last_undo().is_some(), "one undo boundary recorded");
+
+        // Ctrl+Z reverts exactly this action.
+        state.undo(None, None).expect("an undo entry to pop");
+        assert_eq!(
+            crate::doc::MergeDoc::merged_text(&state.doc),
+            before_merged,
+            "undo reverted the resolution and nothing else"
+        );
+    }
+
+    /// Single source of truth: the take-theirs chip on the merge panel builds the
+    /// byte-identical [`EncodedAction`] the palette's take-theirs `ActionSpec`
+    /// does — one action, two entry points.
+    #[test]
+    fn chip_and_palette_encode_identically() {
+        let mut app = DiffMergeApp::new_demo();
+        let mut state = ui::State::new();
+        app.sync(&mut state.doc, &state.root);
+
+        let hunk = app
+            .merge
+            .model()
+            .hunks
+            .iter()
+            .position(|h| h.resolution.is_conflict())
+            .unwrap();
+
+        // Palette path: the take-theirs immediate spec on the conflict resource.
+        let resources = Widget::resources(&app, &state.doc);
+        let conflict = resources[0]
+            .children
+            .iter()
+            .find(|r| r.id.as_str() == format!("diffmerge.conflict:{hunk}"))
+            .expect("the conflict resource");
+        let spec = conflict.actions.iter().find(|a| a.id == "take-theirs").unwrap();
+        let from_spec = match &spec.input {
+            qos_actions::ActionInput::Immediate(e) => e.clone(),
+            _ => panic!("take-theirs is immediate"),
+        };
+
+        // Chip path: `resolve` queues the action a click builds.
+        app.merge.resolve(hunk, crate::actions::HunkChoice::Theirs);
+        let from_chip = crate::actions::encode(&app.merge.take_pending_action().unwrap());
+
+        assert_eq!(from_spec.type_id, from_chip.type_id);
+        assert_eq!(
+            from_spec.payload, from_chip.payload,
+            "chip and palette are one source of truth"
+        );
     }
 }
