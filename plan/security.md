@@ -15,8 +15,9 @@ The scenarios we defend against:
 
 ## Identity
 
-- Per-host ed25519 keypair at `/var/lib/qos-fs/peer-key`, auto-created on first boot.
-- libp2p `PeerId` is the multihash of the protobuf-encoded public key. Used everywhere a stable peer-identity is needed.
+- One ed25519 device key per machine at `/var/lib/qos/device/keypair.bin`, auto-created on first boot. Every network and document identity derives from it — no subsystem mints its own. The file is 0640 in a setgid `qos-identity` directory because both the root-run filesystem daemon and the session-run compositor must present that one identity; a key that exists but cannot be read is an error, never a reason to re-key.
+- libp2p `PeerId` is the multihash of the protobuf-encoded public key, and the filesystem's iroh `NodeId` is the same public key. Used everywhere a stable peer-identity is needed.
+- Identity decisions carry the whole peer id (`PeerOrigin`), never a fold of it: an equality check a digest can be ground against is not an identity check.
 - Per-user identity (display name, avatar) is self-asserted for v1; federated identity is a follow-up.
 
 Invite tokens are signed ed25519 blobs scoped to a workspace; see `plan/collaboration.md §7` for the wire format and validation order.
