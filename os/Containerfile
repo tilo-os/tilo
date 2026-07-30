@@ -522,6 +522,22 @@ COPY os/usr/lib/bootc/kargs.d/01-hardening.toml /usr/lib/bootc/kargs.d/01-harden
 COPY os/usr/libexec/qos-disk-encrypt /usr/libexec/qos-disk-encrypt
 RUN chmod 0755 /usr/libexec/qos-disk-encrypt
 
+# Owner-enrolled Secure Boot. qOS builds its own kernel, so the base image's
+# Fedora/Microsoft-signed chain cannot cover it; the machine generates its own
+# Platform Key instead, which is also what keeps a self-built image attestable
+# to a collaborator who trusts that key.
+#
+# Generating and enrolling keys is a deliberate act the owner takes — nothing
+# here does it, and the image build must never do it. What IS enabled by default
+# is the re-signing unit, so the hook is already in place before any key is
+# enrolled; it is a no-op until keys exist (ConditionPathExists). Getting that
+# order wrong — keys enrolled, signing hook missing — is what leaves a machine
+# refusing its own kernel.
+COPY os/usr/libexec/qos-secureboot /usr/libexec/qos-secureboot
+COPY os/usr/lib/systemd/system/qos-secureboot-sign.service /usr/lib/systemd/system/qos-secureboot-sign.service
+RUN chmod 0755 /usr/libexec/qos-secureboot \
+    && systemctl enable qos-secureboot-sign.service
+
 # hidepid on /proc + the boot self-check that ASSERTS what's actually active.
 COPY os/usr/libexec/qos-security-audit /usr/libexec/qos-security-audit
 COPY os/usr/lib/systemd/system/qos-security-audit.service /usr/lib/systemd/system/qos-security-audit.service
