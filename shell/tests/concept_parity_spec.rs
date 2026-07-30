@@ -1763,6 +1763,114 @@ fn topbar_right_cluster_paints_avatar_stack_when_collaborators_present() {
     );
 }
 
+/// The top-bar collaborator cluster is painted through the shared
+/// `ui::Avatar` (`draw_ringed_at` per chip, `draw_overflow_at` for the tail),
+/// so it must render the *expected count* — three peer chips plus a "+N"
+/// overflow — with each chip in that peer's **own** cursor hue rather than a
+/// single flat accent for everyone. Five peers in the active workspace →
+/// three chips (alice / bob / charlie) + a "+2" overflow. Asserting the real
+/// `TopBarChrome::draw` scene contains all three distinct peer hues proves the
+/// per-identity fill flows through the shared widget, and the non-empty glyph
+/// runs prove the initials + overflow label paint.
+#[test]
+fn topbar_avatar_cluster_renders_peer_hued_chips_through_shared_avatar() {
+    use shell::shell::state::{Collaborator, Workspace, WorkspaceId, WorkspaceTree};
+
+    let mut ws = Workspace::new(WorkspaceId::new(), "Home");
+    ws.collaborators = vec![
+        Collaborator::new("alice", "Ada"),
+        Collaborator::new("bob", "Bo"),
+        Collaborator::new("charlie", "Cy"),
+        Collaborator::new("dave", "Di"),
+        Collaborator::new("erin", "Ed"),
+    ];
+    let ws_id = ws.id;
+    let mut tree = WorkspaceTree {
+        workspaces: vec![ws],
+        active: ws_id,
+        active_strip: Default::default(),
+        active_group: Default::default(),
+        collaborators: vec![],
+        ..Default::default()
+    };
+    tree.active = ws_id;
+
+    let mut chrome = TopBarChrome::from_tree(&tree);
+    // Count/initials contract feeding the shared widget: three chips (peers
+    // beyond the local user, capped at three) and a "+2" overflow.
+    assert_eq!(
+        chrome.collaborator_initials().len(),
+        3,
+        "cluster must show exactly three avatar chips for five peers",
+    );
+    assert_eq!(
+        chrome.collaborator_overflow(),
+        2,
+        "the remaining two peers must flow into the overflow chip",
+    );
+
+    let theme = Theme::dark();
+    let mut taffy: TaffyTree<()> = TaffyTree::new();
+    let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+    let child = chrome.build_layout(&mut taffy, &theme, &mut node_map);
+    let root = taffy
+        .new_with_children(
+            Style {
+                size: Size {
+                    width: Dimension::length(1280.0),
+                    height: Dimension::length(48.0),
+                },
+                ..Default::default()
+            },
+            &[child],
+        )
+        .unwrap();
+    let mut tr = TextRenderer::new();
+    let measure_map = node_map.clone();
+    taffy
+        .compute_layout_with_measure(
+            root,
+            Size {
+                width: AvailableSpace::Definite(1280.0),
+                height: AvailableSpace::Definite(48.0),
+            },
+            |known, avail, node_id, _, _| {
+                if let Some(&ptr) = measure_map.get(&node_id) {
+                    unsafe { (*ptr).measure(known, avail, &mut tr) }
+                } else {
+                    taffy::Size::ZERO
+                }
+            },
+        )
+        .expect("compute_layout");
+    chrome.apply_layout(&taffy, child, Point::ORIGIN);
+    let mut scene = Scene::new();
+    let presence = PresenceCtx::default();
+    chrome.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+
+    let fills = collect_solid_colors(&scene);
+    // Each shown peer paints its OWN cursor hue via `Avatar::draw_ringed_at`
+    // (`ui::presence::user_color`: alice → pink-500, bob → orange-500,
+    // charlie → emerald-500) — three distinct chips, not one flat accent.
+    assert!(
+        contains_color_close(&fills, (236, 72, 153), 8),
+        "cluster must paint alice's pink chip through the shared avatar; fills: {fills:?}",
+    );
+    assert!(
+        contains_color_close(&fills, (249, 115, 22), 8),
+        "cluster must paint bob's orange chip through the shared avatar; fills: {fills:?}",
+    );
+    assert!(
+        contains_color_close(&fills, (16, 185, 129), 8),
+        "cluster must paint charlie's emerald chip through the shared avatar; fills: {fills:?}",
+    );
+    // Initials + the "+2" overflow label render as glyph runs.
+    assert!(
+        !scene.encoding().resources.glyph_runs.is_empty(),
+        "cluster must paint initials and the overflow label as glyph runs",
+    );
+}
+
 // ===========================================================================
 // Overview "+ Add workspace" affordance
 // ===========================================================================

@@ -1139,95 +1139,65 @@ impl Widget for TopBarChrome {
         // actually drew (including the overflow chip).
         let stack_right_x = rx;
 
-        // Avatar stack: up to 3 circles, overlapping by 4 px, newest on top.
-        // Each circle uses the peer's own `cursor_color` (or the palette-pinned
-        // `user_color` fallback), with a 2 px black separator ring so that
-        // overlapping avatars stay visually distinct — concept's
-        // `border-2 border-black` behaviour.
+        // Avatar stack: up to 3 chips, overlapping by 4 px, newest on top.
+        // Each chip is the shared `ui::Avatar` painted through
+        // `draw_ringed_at` — the per-user fill (peer's own `cursor_color`, or
+        // the palette-pinned `user_color` fallback) plus a 1.5 px black
+        // separator ring so overlapping avatars stay distinct (concept's
+        // `border-2 border-black`). Routing through the toolkit keeps the
+        // desktop roster pixel-identical to the app rosters that back it.
         for (i, initial) in self.collaborator_initials.iter().enumerate() {
             let cx = rx - i as f64 * (14.0 - 4.0);
             let center = Point::new(cx - 7.0, center_y);
-            // Black separator ring (2 px): paint a slightly larger black disc
-            // under the fill so the visible annulus between r=9 and r=7.5 is
-            // pure black, matching the concept's `border-2 border-black`
-            // between overlapping circles.
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                Color::from_rgb8(0, 0, 0),
-                None,
-                &vello::kurbo::Circle::new(center, 9.0),
+            // 15 px chip (r = 7.5); the ring adds 1.5 px so the outer disc is
+            // r = 9, matching the previous hand-painted separator geometry.
+            let rect = Rect::new(
+                center.x - 7.5,
+                center.y - 7.5,
+                center.x + 7.5,
+                center.y + 7.5,
             );
             let fill = self
                 .collaborator_colors
                 .get(i)
                 .copied()
                 .unwrap_or(colors.accent[5]);
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                fill,
-                None,
-                &vello::kurbo::Circle::new(center, 7.5),
-            );
-            let s = initial.to_string();
-            let initial_weight = TextWeight::Bold;
-            let (tw, th) = text_renderer.measure_weighted(
-                &s,
-                tokens.typography.scale.sm,
-                None,
-                initial_weight,
-            );
-            text_renderer.draw_text_weighted(
+            ui::widget::Avatar::draw_ringed_at(
                 scene,
-                &s,
-                tokens.typography.scale.sm,
-                colors.text_primary,
-                transform
-                    * Affine::translate((center.x - tw as f64 / 2.0, center.y - th as f64 / 2.0)),
-                None,
-                initial_weight,
+                transform,
+                rect,
+                &initial.to_string(),
+                fill,
+                Color::from_rgb8(0, 0, 0),
+                1.5,
+                theme,
+                text_renderer,
             );
         }
 
-        // Overflow chip: "+N" in the same avatar slot, rendered in neutral
-        // raised-surface colour so it reads as "count of extras" rather than
-        // another person. Concept places this to the left of the stack.
+        // Overflow chip: "+N" in the same avatar slot, painted through the
+        // shared `Avatar::draw_overflow_at` so it reads as "count of extras"
+        // (neutral raised surface + dim label) rather than another person.
         if self.collaborator_overflow > 0 {
             let i = self.collaborator_initials.len();
             let cx = rx - i as f64 * (14.0 - 4.0);
             let center = Point::new(cx - 7.0, center_y);
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                colors.surfaces.overlay,
-                None,
-                &vello::kurbo::Circle::new(center, 9.0),
+            let rect = Rect::new(
+                center.x - 7.5,
+                center.y - 7.5,
+                center.x + 7.5,
+                center.y + 7.5,
             );
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                colors.surfaces.raised,
-                None,
-                &vello::kurbo::Circle::new(center, 7.5),
-            );
-            let s = format!("+{}", self.collaborator_overflow);
-            let overflow_weight = TextWeight::Semibold;
-            let (tw, th) = text_renderer.measure_weighted(
-                &s,
-                tokens.typography.scale.xs,
-                None,
-                overflow_weight,
-            );
-            text_renderer.draw_text_weighted(
+            ui::widget::Avatar::draw_overflow_at(
                 scene,
-                &s,
-                tokens.typography.scale.xs,
+                transform,
+                rect,
+                self.collaborator_overflow,
+                colors.surfaces.raised,
+                colors.surfaces.overlay,
+                1.5,
                 colors.text_dim,
-                transform
-                    * Affine::translate((center.x - tw as f64 / 2.0, center.y - th as f64 / 2.0)),
-                None,
-                overflow_weight,
+                text_renderer,
             );
         }
 

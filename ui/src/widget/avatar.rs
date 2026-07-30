@@ -203,6 +203,103 @@ impl Avatar {
         );
     }
 
+    /// Immediate-mode avatar with a separator ring — [`Avatar::draw_at`]
+    /// preceded by a filled `ring_color` disc `ring_width` px larger than the
+    /// chip. Overlapping avatars in a cluster (the OS collaborator stack, an
+    /// app roster row) paint this so each chip stays distinct against its
+    /// neighbour and the surface behind: the visible annulus between the chip
+    /// edge and the ring edge is the separator. The fill + initials render
+    /// inside `rect` exactly as [`Avatar::draw_at`] (white, semibold, 0.4×).
+    pub fn draw_ringed_at(
+        scene: &mut Scene,
+        transform: Affine,
+        rect: Rect,
+        initials: &str,
+        color: Color,
+        ring_color: Color,
+        ring_width: f64,
+        theme: &Theme,
+        text_renderer: &mut TextRenderer,
+    ) {
+        if rect.width() <= 0.0 || rect.height() <= 0.0 {
+            return;
+        }
+        Self::draw_ring(scene, transform, rect, ring_color, ring_width);
+        Self::draw_at(scene, transform, rect, initials, color, theme, text_renderer);
+    }
+
+    /// Trailing "+N overflow" chip of an avatar cluster — an avatar-slot-shaped
+    /// chip (with the same separator ring as [`Avatar::draw_ringed_at`]) whose
+    /// label is the `count` of peers beyond the ones shown. It reads as "N more
+    /// people", not another identity, so it takes a neutral `fill` + dim
+    /// `label_color` and paints a non-truncated `"+{count}"` label rather than
+    /// a per-identity accent circle with two white initials. `count == 0`
+    /// paints nothing — an empty cluster has no overflow.
+    pub fn draw_overflow_at(
+        scene: &mut Scene,
+        transform: Affine,
+        rect: Rect,
+        count: usize,
+        fill: Color,
+        ring_color: Color,
+        ring_width: f64,
+        label_color: Color,
+        text_renderer: &mut TextRenderer,
+    ) {
+        if count == 0 || rect.width() <= 0.0 || rect.height() <= 0.0 {
+            return;
+        }
+        Self::draw_ring(scene, transform, rect, ring_color, ring_width);
+        let centre = rect.center();
+        let radius = rect.width().min(rect.height()) * 0.5;
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            fill,
+            None,
+            &Circle::new(centre, radius),
+        );
+        // "+N" can be 2–3 glyphs, so key the size a touch below the 0.4×
+        // initials ratio to keep "+12" inside the chip.
+        let label = format!("+{count}");
+        let text_size = (rect.width().min(rect.height()) as f32) * 0.36;
+        let (tw, th) =
+            text_renderer.measure_weighted(&label, text_size, None, TextWeight::Semibold);
+        let tx = centre.x - tw as f64 / 2.0;
+        let ty = centre.y - th as f64 / 2.0;
+        text_renderer.draw_text_weighted(
+            scene,
+            &label,
+            text_size,
+            label_color,
+            transform * Affine::translate((tx, ty)),
+            None,
+            TextWeight::Semibold,
+        );
+    }
+
+    /// Shared separator-ring painter for the cluster helpers: a filled
+    /// `ring_color` disc `ring_width` px larger than the chip, centred on
+    /// `rect`. Painted *before* the chip fill so the annulus that peeks out
+    /// between neighbouring chips is the ring colour.
+    fn draw_ring(
+        scene: &mut Scene,
+        transform: Affine,
+        rect: Rect,
+        ring_color: Color,
+        ring_width: f64,
+    ) {
+        let centre = rect.center();
+        let radius = rect.width().min(rect.height()) * 0.5;
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            ring_color,
+            None,
+            &Circle::new(centre, radius + ring_width),
+        );
+    }
+
     /// Word-initials for a display name: the first character of each of the
     /// first two whitespace-separated words, uppercased. `"Ada Lovelace"` →
     /// `"AL"`, `"mononym"` → `"M"`, `""` → `""`. This is the name→monogram
@@ -585,6 +682,99 @@ mod tests {
         assert_eq!(Avatar::initials_for_name("Grace Brewster Murray Hopper"), "GB");
         assert_eq!(Avatar::initials_for_name("   spaced   out  "), "SO");
         assert_eq!(Avatar::initials_for_name(""), "", "empty name yields empty — caller supplies its own fallback glyph");
+    }
+
+    /// `draw_ringed_at` paints the separator ring *and* the chip: at least
+    /// two COLOR fills (ring disc + chip circle) plus the initials glyph run.
+    /// A regression that dropped the ring would fall to one fill; one that
+    /// dropped the chip would lose the glyph run.
+    #[test]
+    fn draw_ringed_at_paints_ring_then_chip() {
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let mut scene = Scene::new();
+        Avatar::draw_ringed_at(
+            &mut scene,
+            Affine::IDENTITY,
+            Rect::new(0.0, 0.0, 40.0, 40.0),
+            "qd",
+            Avatar::color_for_initials("qd", &theme),
+            Color::from_rgb8(0, 0, 0),
+            2.0,
+            &theme,
+            &mut tr,
+        );
+        let enc = scene.encoding();
+        let color_fills = enc
+            .draw_tags
+            .iter()
+            .filter(|t| **t == DrawTag::COLOR)
+            .count();
+        assert!(
+            color_fills >= 2,
+            "draw_ringed_at must fill the ring disc AND the chip circle; got \
+             {color_fills} COLOR fills",
+        );
+        assert!(
+            !enc.resources.glyph_runs.is_empty(),
+            "draw_ringed_at must still paint the initials glyph run",
+        );
+    }
+
+    /// `draw_overflow_at` paints the neutral "+N" chip: ring + chip fill (two
+    /// COLOR fills) plus the `"+{count}"` glyph run. `count == 0` is a no-op —
+    /// an empty cluster shows no overflow.
+    #[test]
+    fn draw_overflow_at_paints_chip_and_label() {
+        let theme = Theme::dark();
+        let colors = &theme.tokens.colors;
+        let mut tr = TextRenderer::new();
+
+        let mut scene = Scene::new();
+        Avatar::draw_overflow_at(
+            &mut scene,
+            Affine::IDENTITY,
+            Rect::new(0.0, 0.0, 40.0, 40.0),
+            5,
+            colors.surfaces.raised,
+            colors.surfaces.overlay,
+            2.0,
+            colors.text_dim,
+            &mut tr,
+        );
+        let enc = scene.encoding();
+        let color_fills = enc
+            .draw_tags
+            .iter()
+            .filter(|t| **t == DrawTag::COLOR)
+            .count();
+        assert!(
+            color_fills >= 2,
+            "draw_overflow_at must fill the ring AND the chip; got {color_fills}",
+        );
+        assert!(
+            !enc.resources.glyph_runs.is_empty(),
+            "draw_overflow_at must paint the \"+N\" label glyph run",
+        );
+
+        // count == 0 → nothing at all.
+        let mut empty = Scene::new();
+        Avatar::draw_overflow_at(
+            &mut empty,
+            Affine::IDENTITY,
+            Rect::new(0.0, 0.0, 40.0, 40.0),
+            0,
+            colors.surfaces.raised,
+            colors.surfaces.overlay,
+            2.0,
+            colors.text_dim,
+            &mut tr,
+        );
+        assert_eq!(
+            empty.encoding().draw_tags.len(),
+            0,
+            "draw_overflow_at with count 0 must paint nothing",
+        );
     }
 
     /// A zero-size rect is a no-op for `draw_at` (no panic, no draw).
