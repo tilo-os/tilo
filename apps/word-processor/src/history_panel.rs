@@ -5,13 +5,32 @@
 //! that graph into rows, the [`HistoryScrubber`] renders them as a draggable
 //! track, and dragging the handle scrubs through the document's past.
 //!
-//! Two affordances, both the scrubber's own:
+//! Four affordances, all the scrubber's own:
 //!
 //! * **Preview** materialises the document as of the selected tick and shows
 //!   its text above the strip. Nothing is written; the live document is
 //!   untouched and the user can keep scrubbing.
 //! * **Restore to this version** rewrites the live document to that state — as
 //!   a *forward* change. See [`restore_to`].
+//! * **Name / Rename this version** writes a name over the run of changes the
+//!   handle is sitting in. Retroactive: the grouping has already drawn the run,
+//!   so naming it costs one click and no forethought.
+//! * **Start a version / Finish version** is the prospective case — say what you
+//!   are about to do, work, close it. It opens a range with no end, which absorbs
+//!   every change until it is closed.
+//!
+//! # Versions on the track
+//!
+//! The strip does not show one tick per change. A debounced editor produces
+//! hundreds of them, and a track of hundreds of ticks is a grey smear you cannot
+//! aim at. So [`ui::group_entries`] cuts the change graph into runs, the strip
+//! renders those as a labelled band above the track, and the handle snaps to
+//! their boundaries.
+//!
+//! The band shows **top-level** runs only. A name nested inside another name is
+//! a legible thing in the activity pane, which has two dimensions to draw it in;
+//! the strip has one, and stacking a sub-range on top of its parent would mean
+//! two labels over the same pixels. The pane is where nesting is read.
 //!
 //! The strip lives inside the app's own content area, under the canvas and
 //! above the layout bar, alongside the outline pane and the styles panel. It is
@@ -19,22 +38,26 @@
 //! an app must not draw those. What an app owns is its document, and its
 //! document's history is document content.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use automerge::{AutoCommit, ChangeHash};
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
+use ui::widget::history_scrubber::{ScrubberGroup, VersionAction};
 use ui::widget::{HistoryEntryId, HistoryScrubber};
-use ui::{AuthorDirectory, HistorySource, Theme};
+use ui::{AuthorDirectory, GroupNameRequest, GroupingConfig, HistorySource, Theme};
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::Fill;
 use vello::Scene;
 use winit::event::{Modifiers, WindowEvent};
 
-/// Height of the history strip when open. Covers the scrubber's popover, track
-/// and action-button row (56 + 6 + 24 + 28 plus breathing room).
-pub const HISTORY_BAND_H: f64 = 140.0;
+/// Height of the history strip when open, with the version band showing.
+///
+/// The strip asks the widget rather than hard-coding: it is taller once there is
+/// a version band above the track, and a host that reserved the old height would
+/// clip the button row.
+pub const HISTORY_BAND_H: f64 = 168.0;
 
 /// Height of the preview card drawn above the strip while a past version is
 /// selected.
@@ -50,6 +73,10 @@ pub struct HistoryOutcome {
     /// The document was rewritten to an earlier version. The host must commit
     /// (via `needs_commit()`) so the restore lands on the undo stack.
     pub restored: bool,
+    /// A version was named, renamed, un-named, opened or closed. Also needs a
+    /// commit: a name is a document write like any other, and collaborators only
+    /// see it once it is committed.
+    pub named: bool,
     /// The pane consumed the event.
     pub handled: bool,
 }
@@ -64,6 +91,10 @@ pub struct HistoryPanel {
     /// cannot reach back into this struct; a shared cell is the handshake.
     preview_intent: Rc<Cell<Option<HistoryEntryId>>>,
     restore_intent: Rc<Cell<Option<HistoryEntryId>>>,
+    /// Same handshake for the two writes that are not a restore. Neither payload
+    /// is `Copy`, so these are `RefCell` rather than `Cell`.
+    name_intent: Rc<RefCell<Option<GroupNameRequest>>>,
+    version_intent: Rc<RefCell<Option<VersionAction>>>,
     /// Document heads at the last rebuild. Re-deriving the whole timeline on
     /// every sync would materialise a snapshot per version per frame; the graph
     /// only moves when someone commits.
@@ -90,16 +121,24 @@ impl HistoryPanel {
     pub fn new() -> Self {
         let preview_intent = Rc::new(Cell::new(None));
         let restore_intent = Rc::new(Cell::new(None));
+        let name_intent = Rc::new(RefCell::new(None));
+        let version_intent = Rc::new(RefCell::new(None));
         let pi = Rc::clone(&preview_intent);
         let ri = Rc::clone(&restore_intent);
+        let ni = Rc::clone(&name_intent);
+        let vi = Rc::clone(&version_intent);
         Self {
             open: false,
             scrubber: HistoryScrubber::new(Vec::new())
                 .on_preview(move |id| pi.set(Some(*id)))
-                .on_restore(move |id| ri.set(Some(*id))),
+                .on_restore(move |id| ri.set(Some(*id)))
+                .on_name(move |req| *ni.borrow_mut() = Some(req.clone()))
+                .on_version(move |act| *vi.borrow_mut() = Some(act.clone())),
             source: HistorySource::new().with_artifact_kind(collab_kind()),
             preview_intent,
             restore_intent,
+            name_intent,
+            version_intent,
             last_heads: Vec::new(),
             preview: None,
             band: Rect::ZERO,
@@ -120,8 +159,43 @@ impl HistoryPanel {
     }
 
     /// Vertical space the strip needs out of the host's layout.
+    ///
+    /// Asked of the widget rather than fixed: the strip is taller once it has a
+    /// version band to draw above the track.
     pub fn band_height(&self) -> f64 {
-        if self.open { HISTORY_BAND_H } else { 0.0 }
+        if self.open {
+            self.scrubber.natural_height()
+        } else {
+            0.0
+        }
+    }
+
+    /// The versions currently on the track.
+    pub fn versions(&self) -> &[ScrubberGroup] {
+        self.scrubber.groups()
+    }
+
+    /// True while the strip's name field has the keyboard. The host must route
+    /// keys here regardless of where the pointer is, or a name could only be
+    /// typed with the mouse held still over the strip.
+    pub fn wants_keyboard(&self) -> bool {
+        self.scrubber.wants_keyboard()
+    }
+
+    /// Rect of the strip's `[Name this version]` button.
+    pub fn name_button_rect(&self) -> Rect {
+        self.scrubber.name_button_rect()
+    }
+
+    /// Rect of the strip's `[Start a version]` / `[Finish version]` button.
+    pub fn version_button_rect(&self) -> Rect {
+        self.scrubber.version_button_rect()
+    }
+
+    /// Whether the handle moves version by version (the default) or change by
+    /// change.
+    pub fn set_snap_to_versions(&mut self, snap: bool) {
+        self.scrubber.set_snap_to_groups(snap);
     }
 
     /// Number of versions currently on the track. Lets the host (and tests)
@@ -211,7 +285,25 @@ impl HistoryPanel {
         let at_end = self.scrubber.current_tick() + 1 >= self.scrubber.tick_count().max(1);
         let entries = self.source.entries(doc);
         let tick = self.scrubber.current_tick();
+        // The names people have given runs of this document live in the document,
+        // so a collaborator's name arrives with their edits and needs no separate
+        // channel. Grouping is derived from the graph and the names together.
+        let named = ui::history_groups::read_named_ranges(doc, self.source.authors());
+        let groups = ui::group_entries(&entries, &named, &GroupingConfig::default());
+        let segments: Vec<ScrubberGroup> = groups
+            .iter()
+            .map(|g| ScrubberGroup {
+                start: g.start,
+                // The model's ranges are half-open; the track's are inclusive.
+                end: g.end.saturating_sub(1),
+                label: g.name.clone(),
+                derived: g.title(&entries),
+                record_id: g.record_id.clone(),
+                open: g.open,
+            })
+            .collect();
         self.scrubber.set_entries(entries);
+        self.scrubber.set_groups(segments);
         // `set_entries` pins the handle to the newest tick. Keep the user's
         // position while they are scrubbing through the past; only follow the
         // document forward if they were already parked at the present.
@@ -282,7 +374,11 @@ impl HistoryPanel {
             &scratch,
         );
 
-        let mut out = HistoryOutcome { restored: false, handled };
+        let mut out = HistoryOutcome {
+            restored: false,
+            named: false,
+            handled,
+        };
         if let Some(id) = self.preview_intent.take() {
             self.preview = build_preview(doc, &id, self.scrubber.entries());
             out.handled = true;
@@ -296,6 +392,19 @@ impl HistoryPanel {
             }
             out.handled = true;
         }
+        if let Some(req) = self.name_intent.borrow_mut().take() {
+            out.named = apply_name(doc, &req);
+            out.handled = true;
+        }
+        if let Some(act) = self.version_intent.borrow_mut().take() {
+            out.named = apply_version(doc, &act);
+            out.handled = true;
+        }
+        if out.named {
+            // The graph will have a new change in it once the host commits; drop
+            // the cached heads so the next sync re-derives the band.
+            self.last_heads.clear();
+        }
         out
     }
 
@@ -304,6 +413,38 @@ impl HistoryPanel {
     pub fn follow_document(&mut self) {
         self.preview = None;
         self.last_heads.clear();
+    }
+}
+
+/// Write (or remove) a name over a run of changes.
+///
+/// An empty label is the request to take a name off — that is what clearing the
+/// field and pressing Enter means. Both paths leave the transaction open for the
+/// host to commit, so a name lands stamped and attributed like any other edit and
+/// reaches collaborators through the same sync.
+pub fn apply_name(doc: &mut AutoCommit, req: &GroupNameRequest) -> bool {
+    if req.label.is_empty() {
+        return match &req.record_id {
+            Some(id) => ui::history_groups::clear_name(doc, id),
+            None => false,
+        };
+    }
+    ui::history_groups::name_range(doc, &req.start, Some(&req.end), &req.label);
+    true
+}
+
+/// Open or close a prospective version.
+pub fn apply_version(doc: &mut AutoCommit, action: &VersionAction) -> bool {
+    match action {
+        VersionAction::Open { at, label } => {
+            // No end anchor: the range stays open and absorbs whatever comes
+            // next, which is the whole point of saying so up front.
+            ui::history_groups::name_range(doc, at, None, label);
+            true
+        }
+        VersionAction::Close { record_id, at } => {
+            ui::history_groups::close_range(doc, record_id, at)
+        }
     }
 }
 
@@ -564,5 +705,326 @@ mod tests {
         panel.refresh(&mut s.doc);
         let newest = panel.entries().last().unwrap().id;
         assert!(!restore_to(&mut s.doc, &newest));
+    }
+
+    // -----------------------------------------------------------------
+    // Versions on the track
+    // -----------------------------------------------------------------
+
+    /// A document with three working sessions: two by the local author either
+    /// side of a long break, one by a peer in between — the shape that makes
+    /// grouping mean something. Committed with explicit wall clocks, the way the
+    /// FS layer commits when it replays a durable chain, because the gaps are the
+    /// point.
+    fn three_session_doc() -> (State, Vec<String>) {
+        let mut s = State::new();
+        s.doc.set_actor(automerge::ActorId::from("alice".as_bytes()));
+        let c = qdoc::model::init(&mut s.doc, &s.root);
+        let mut ids = qdoc::IdGen::new(s.doc.get_actor().to_hex_string());
+        qdoc::history::commit_stamped_at(&mut s.doc, 1_000_000);
+        let p = {
+            let mut dm = qdoc::DocMut { doc: &mut s.doc, c: &c, ids: &mut ids };
+            let id = dm.insert_block(None, "paragraph");
+            dm.splice_text(&id, 0, 0, "Start.");
+            id
+        };
+        qdoc::history::commit_stamped_at(&mut s.doc, 1_000_010);
+
+        // Session one: five more edits, seconds apart.
+        for i in 0..5 {
+            let at = {
+                let cc = qdoc::model::open(&s.doc, &s.root).unwrap();
+                qdoc::model::materialize(&s.doc, &cc).blocks[0]
+                    .text
+                    .chars()
+                    .count()
+            };
+            let mut dm = qdoc::DocMut { doc: &mut s.doc, c: &c, ids: &mut ids };
+            dm.splice_text(&p, at, 0, " one");
+            drop(dm);
+            qdoc::history::commit_stamped_at(&mut s.doc, 1_000_020 + i * 10);
+        }
+
+        // Session two, an hour later, by a peer — forked, edited under its own
+        // actor, merged back, exactly as a sync round arrives.
+        let mut peer = s.doc.fork();
+        peer.set_actor(automerge::ActorId::from("bob".as_bytes()));
+        for i in 0..3 {
+            let at = {
+                let cc = qdoc::model::open(&peer, &s.root).unwrap();
+                qdoc::model::materialize(&peer, &cc).blocks[0]
+                    .text
+                    .chars()
+                    .count()
+            };
+            let cc = qdoc::model::open(&peer, &s.root).unwrap();
+            let mut pids = qdoc::IdGen::new(peer.get_actor().to_hex_string());
+            let mut dm = qdoc::DocMut { doc: &mut peer, c: &cc, ids: &mut pids };
+            dm.splice_text(&p, at, 0, " two");
+            drop(dm);
+            qdoc::history::commit_stamped_at(&mut peer, 1_004_000 + i * 10);
+        }
+        s.doc.merge(&mut peer).expect("peers merge");
+
+        // Session three, two hours after that, back to the local author.
+        for i in 0..4 {
+            let at = {
+                let cc = qdoc::model::open(&s.doc, &s.root).unwrap();
+                qdoc::model::materialize(&s.doc, &cc).blocks[0]
+                    .text
+                    .chars()
+                    .count()
+            };
+            let cc = qdoc::model::open(&s.doc, &s.root).unwrap();
+            let mut dm = qdoc::DocMut { doc: &mut s.doc, c: &cc, ids: &mut ids };
+            dm.splice_text(&p, at, 0, " three");
+            drop(dm);
+            qdoc::history::commit_stamped_at(&mut s.doc, 1_012_000 + i * 10);
+        }
+        (s, Vec::new())
+    }
+
+    #[test]
+    fn the_track_shows_versions_not_one_tick_per_change() {
+        let (mut s, _) = three_session_doc();
+        let mut panel = HistoryPanel::new();
+        panel.refresh(&mut s.doc);
+        let changes = panel.version_count();
+        assert!(changes >= 13, "the fixture has three sessions: {changes}");
+        let versions = panel.versions().len();
+        assert!(
+            versions >= 3 && versions < changes,
+            "{changes} changes must read as a handful of versions, got {versions}"
+        );
+        // The sessions are the boundaries: a long gap and a change of author.
+        assert!(
+            panel.versions().iter().any(|v| v.derived.contains("edits")),
+            "an unnamed version describes itself: {:?}",
+            panel.versions().iter().map(|v| v.derived.clone()).collect::<Vec<_>>()
+        );
+        // And the segments tile the whole track without gaps or overlaps.
+        let mut cursor = 0usize;
+        for v in panel.versions() {
+            assert_eq!(v.start, cursor, "versions must tile: {:?}", panel.versions());
+            cursor = v.end + 1;
+        }
+        assert_eq!(cursor, changes, "and cover every change");
+    }
+
+    #[test]
+    fn the_strip_grows_to_make_room_for_the_version_band() {
+        let (mut s, _) = three_session_doc();
+        let mut panel = HistoryPanel::new();
+        panel.toggle();
+        panel.refresh(&mut s.doc);
+        assert_eq!(
+            panel.band_height(),
+            HISTORY_BAND_H,
+            "the strip asks for the taller band once it has versions to show"
+        );
+        let mut empty = HistoryPanel::new();
+        empty.toggle();
+        let mut blank = State::new();
+        empty.refresh(&mut blank.doc);
+        assert!(
+            empty.band_height() > 0.0,
+            "an open strip over an empty document still reserves space to say so"
+        );
+    }
+
+    #[test]
+    fn naming_the_current_version_round_trips_through_the_document() {
+        let (mut s, _) = three_session_doc();
+        let mut panel = HistoryPanel::new();
+        panel.refresh(&mut s.doc);
+        let v = panel.versions()[1].clone();
+        let entries = panel.entries().to_vec();
+        let req = GroupNameRequest {
+            record_id: None,
+            start: entries[v.start].id,
+            end: entries[v.end].id,
+            label: "Bob's pass".to_string(),
+        };
+        assert!(apply_name(&mut s.doc, &req));
+        s.commit_action(None, None);
+
+        // In the document, so a collaborator gets it with the edits.
+        let ranges = ui::history_groups::read_named_ranges(&s.doc, &AuthorDirectory::new());
+        assert_eq!(ranges.len(), 1);
+        assert_eq!(ranges[0].label, "Bob's pass");
+
+        panel.follow_document();
+        panel.refresh(&mut s.doc);
+        assert!(
+            panel
+                .versions()
+                .iter()
+                .any(|g| g.label.as_deref() == Some("Bob's pass")),
+            "the band is on the track: {:?}",
+            panel.versions().iter().map(|g| g.title().to_string()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn naming_a_version_adds_no_version_of_its_own() {
+        let (mut s, _) = three_session_doc();
+        let mut panel = HistoryPanel::new();
+        panel.refresh(&mut s.doc);
+        let before = panel.version_count();
+        let entries = panel.entries().to_vec();
+        apply_name(
+            &mut s.doc,
+            &GroupNameRequest {
+                record_id: None,
+                start: entries[0].id,
+                end: entries[2].id,
+                label: "Opening".to_string(),
+            },
+        );
+        s.commit_action(None, None);
+        panel.follow_document();
+        panel.refresh(&mut s.doc);
+        assert_eq!(
+            panel.version_count(),
+            before,
+            "naming a version must not appear as a change on the track it named"
+        );
+    }
+
+    #[test]
+    fn an_open_version_absorbs_the_changes_that_come_after_it() {
+        let (mut s, _) = three_session_doc();
+        let mut panel = HistoryPanel::new();
+        panel.refresh(&mut s.doc);
+        let entries = panel.entries().to_vec();
+        let last = entries.last().unwrap().id;
+
+        assert!(apply_version(
+            &mut s.doc,
+            &VersionAction::Open {
+                at: last,
+                label: "Rework the intro".to_string()
+            }
+        ));
+        s.commit_action(None, None);
+        panel.follow_document();
+        panel.refresh(&mut s.doc);
+        let open = panel
+            .versions()
+            .iter()
+            .find(|v| v.open)
+            .cloned()
+            .expect("the version is open");
+        assert_eq!(open.label.as_deref(), Some("Rework the intro"));
+        let width_before = open.end - open.start;
+
+        // Keep working. The open version has to grow.
+        let c = qdoc::model::open(&s.doc, &s.root).unwrap();
+        let blocks = qdoc::model::materialize(&s.doc, &c).blocks;
+        let mut ids = qdoc::IdGen::new(s.doc.get_actor().to_hex_string());
+        for _ in 0..3 {
+            let at = {
+                let cc = qdoc::model::open(&s.doc, &s.root).unwrap();
+                qdoc::model::materialize(&s.doc, &cc).blocks[0].text.chars().count()
+            };
+            let mut dm = qdoc::DocMut { doc: &mut s.doc, c: &c, ids: &mut ids };
+            dm.splice_text(&blocks[0].id, at, 0, " more");
+            drop(dm);
+            s.commit_action(None, None);
+        }
+        panel.follow_document();
+        panel.refresh(&mut s.doc);
+        let open = panel
+            .versions()
+            .iter()
+            .find(|v| v.open)
+            .cloned()
+            .expect("still open");
+        assert!(
+            open.end - open.start > width_before,
+            "an open version must absorb what comes next: {} then {}",
+            width_before,
+            open.end - open.start
+        );
+        assert_eq!(
+            open.end,
+            panel.version_count() - 1,
+            "and it must run right up to the present"
+        );
+
+        // Closing it pins the end where it is now.
+        let entries = panel.entries().to_vec();
+        let end_id = entries.last().unwrap().id;
+        let record = ui::history_groups::read_named_ranges(&s.doc, &AuthorDirectory::new())[0]
+            .id
+            .clone();
+        assert!(apply_version(
+            &mut s.doc,
+            &VersionAction::Close { record_id: record, at: end_id }
+        ));
+        s.commit_action(None, None);
+        panel.follow_document();
+        panel.refresh(&mut s.doc);
+        assert!(
+            panel.versions().iter().all(|v| !v.open),
+            "nothing is open any more"
+        );
+        assert!(
+            panel
+                .versions()
+                .iter()
+                .any(|v| v.label.as_deref() == Some("Rework the intro")),
+            "and the version is still named"
+        );
+    }
+
+    #[test]
+    fn restoring_to_a_version_boundary_lands_on_that_versions_text() {
+        // The strip's [Restore] passes the tick the handle is on, and with
+        // snapping the handle can only be on a version boundary. So this is what
+        // "restore to the end of that version" actually does to the document.
+        let (mut s, _) = three_session_doc();
+        let mut panel = HistoryPanel::new();
+        panel.refresh(&mut s.doc);
+        let live = body(&s);
+        assert!(live.contains("three"), "the fixture ends in session three");
+
+        // The end of the *second* session: everything up to and including Bob's
+        // work, and nothing after it.
+        let v = panel.versions()[1].clone();
+        let boundary = panel.entries()[v.end].id;
+        let expected = {
+            let snap = qdoc::history::materialize_at(&mut s.doc, v.end).unwrap();
+            snap.blocks.first().map(|b| b.text.clone()).unwrap_or_default()
+        };
+        assert_ne!(expected, live, "the boundary is a different state");
+
+        assert!(restore_to(&mut s.doc, &boundary), "the restore wrote something");
+        s.commit_action(None, None);
+        assert_eq!(
+            body(&s),
+            expected,
+            "the document is the state that version boundary produced"
+        );
+        // Forward, not a rewind.
+        panel.follow_document();
+        panel.refresh(&mut s.doc);
+        assert!(
+            panel.version_count() > v.end + 1,
+            "the changes rolled past are still in the graph"
+        );
+    }
+
+    #[test]
+    fn a_version_that_snapping_can_reach_is_every_version() {
+        // Every version boundary must be reachable, or a version the user can see
+        // is one they cannot scrub to.
+        let (mut s, _) = three_session_doc();
+        let mut panel = HistoryPanel::new();
+        panel.refresh(&mut s.doc);
+        for v in panel.versions().to_vec() {
+            panel.set_current_tick(v.end);
+            assert_eq!(panel.current_tick(), v.end, "version ending at {} unreachable", v.end);
+        }
     }
 }
