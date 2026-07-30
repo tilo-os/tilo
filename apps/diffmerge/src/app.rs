@@ -26,9 +26,9 @@ use winit::keyboard::{Key, NamedKey};
 use ui::color_compat::ColorCompat;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
-use ui::text_render::TextRenderer;
+use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
-use ui::widget::Widget;
+use ui::widget::{Button, ButtonFace, Widget};
 
 use crate::diff_view::DiffView;
 use crate::merge_view::MergeView;
@@ -350,16 +350,16 @@ impl DiffMergeApp {
         ] {
             let w = label.len() as f64 * 7.2 + 20.0;
             let btn = Rect::new(rx - w, seg_y, rx, seg_y + seg_h);
-            let rr = RoundedRect::from_rect(btn, 6.0);
-            scene.fill(Fill::NonZero, transform, with_alpha(c.neutral[3], 150), None, &rr);
-            scene.stroke(&Stroke::new(1.0), transform, c.border_standard, None, &rr);
-            tr.draw_text(
+            Button::paint(
                 scene,
-                label,
-                12.5,
-                c.text_primary,
-                transform * Affine::translate((rx - w + 10.0, seg_y + 6.0)),
-                None,
+                transform,
+                tr,
+                theme,
+                &ButtonFace::new(btn, label)
+                    .radius(6.0)
+                    .text_size(12.5)
+                    .weight(TextWeight::Regular)
+                    .hovered(btn.contains(self.cursor)),
             );
             self.tool_hits.push(ToolHit { rect: btn, action });
             rx -= w + 8.0;
