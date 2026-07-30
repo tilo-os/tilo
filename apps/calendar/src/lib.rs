@@ -11,6 +11,7 @@
 //! the live event loop and the `--shots` offscreen renderer.
 
 pub mod account;
+pub mod actions;
 pub mod app;
 pub mod caldav;
 pub mod date;

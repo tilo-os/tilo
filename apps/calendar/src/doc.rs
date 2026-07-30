@@ -116,6 +116,22 @@ impl CalDoc {
         Self::write_task_fields(doc, &m, t);
     }
 
+    /// Flip a task's `done` flag in place, deterministically against the current
+    /// document state — reading the stored value and writing its negation. A
+    /// task that isn't in the document is a no-op. This is the mutation an action
+    /// applies so a "toggle" replays byte-identically from a shared base state
+    /// (the same value is read on every replica) rather than baking in a boolean
+    /// that could disagree with a concurrently-changed row.
+    pub fn toggle_task_done(doc: &mut AutoCommit, id: Id) {
+        let tasks = Self::map_at(doc, "tasks");
+        let Ok(Some((Value::Object(ObjType::Map), m))) = doc.get(&tasks, id.to_string().as_str())
+        else {
+            return;
+        };
+        let cur = get_bool(doc, &m, "done");
+        let _ = doc.put(&m, "done", !cur);
+    }
+
     /// Remove an event (and its notes) from the document. Idempotent — a
     /// missing id is a no-op.
     pub fn delete_event(doc: &mut AutoCommit, id: Id) {
