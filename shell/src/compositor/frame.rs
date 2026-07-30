@@ -129,6 +129,27 @@ impl FrameBuilder {
         )
     }
 
+    /// As [`Self::with_handle`], but keeping each open tab's document in
+    /// `records` — the session's own store, so a note typed into a tab is
+    /// still there after a restart. Everything else keeps the in-memory
+    /// default, because a probe or a `--shots` run must leave nothing
+    /// behind.
+    pub fn with_handle_and_records(
+        tree: crate::shell::state::WorkspaceTreeHandle,
+        enable_peer_sync: bool,
+        viewport: (u32, u32),
+        records: ui::record::RecordStore,
+    ) -> Self {
+        Self::from_parts(
+            crate::shell::build_nirios_overlay_host_with_records(
+                tree,
+                enable_peer_sync,
+                records,
+            ),
+            viewport,
+        )
+    }
+
     fn from_parts(
         (host, chrome): (ShellOverlayHost, Chrome),
         viewport: (u32, u32),
