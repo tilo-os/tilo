@@ -1701,14 +1701,20 @@ fn classify_subject(subject: &Subject) -> GrantSubject {
 /// The capabilities the Permissions pane lists, in display order:
 /// grouped by subject kind, then by subject, then by capability id.
 ///
-/// Room-membership capabilities are *not* listed here — they are what
-/// the Members tab renders as a role, and showing the same fact twice
-/// in two vocabularies is how the old panel drifted.
+/// A *person's* room-membership capability is not listed here — that is
+/// what the Members tab renders as a role, and showing one fact twice in
+/// two vocabularies is how the old panel drifted. Everything else is,
+/// including a room- or workspace-scoped grant held by an app or an
+/// agent: the Members tab only knows about people, so excluding those by
+/// scope alone would leave an app holding `Admin` over the workspace
+/// visible in neither tab and revocable from neither.
 fn listed_capabilities(ws: &Workspace) -> Vec<(GrantSubject, &CapOverride)> {
     let mut out: Vec<(GrantSubject, &CapOverride)> = ws
         .capabilities
         .iter()
-        .filter(|cap| cap.effect == Effect::Grant && !cap.is_room_membership())
+        .filter(|cap| {
+            cap.effect == Effect::Grant && !(cap.is_room_membership() && cap.subject_is_person())
+        })
         .map(|cap| (classify_subject(&cap.subject), cap))
         .collect();
     out.sort_by(|a, b| {
@@ -2570,6 +2576,53 @@ mod permissions_pane_tests {
                 .all(|r| r.subject.kind == SubjectKind::App),
             "only non-membership grants belong in the Permissions list"
         );
+    }
+
+    #[test]
+    fn a_workspace_scoped_app_grant_is_listed_and_revocable() {
+        // Excluding room- and workspace-scoped capabilities by scope
+        // alone hid this one from both tabs: Members lists people, and
+        // an app is not a person. A capability the panel cannot show is
+        // a permission nobody can audit or take back.
+        let mut ws = ws_with_grants();
+        let id = ws
+            .grant_as(
+                &OWNER.to_string(),
+                CapOverride::grant(Subject::app("firefox"), Scope::Workspace, Verb::Admin),
+            )
+            .expect("owner grants");
+        let layout = permissions_pane_layout(&ws, pane());
+        let row = layout
+            .rows
+            .iter()
+            .find(|r| r.cap_id == id)
+            .expect("the workspace-scoped app grant has a row");
+        assert_eq!(row.subject.kind, SubjectKind::App);
+        assert_eq!(row.allows, "Administer this workspace");
+        assert!(apply_revoke(&mut ws, &OWNER.to_string(), &row.cap_id).revoked.len() == 1);
+        assert!(!ws.allows(
+            &ws.actor_for_app("firefox"),
+            &ResourceRef::Workspace,
+            Verb::Admin
+        ));
+    }
+
+    #[test]
+    fn a_persons_membership_is_left_to_the_members_tab() {
+        // The owner's membership is room-scoped and person-subject, so it
+        // belongs to Members. Listing it here too would offer a Revoke
+        // button that removes someone from the workspace under the
+        // heading "permissions".
+        let ws = ws_with_grants();
+        let layout = permissions_pane_layout(&ws, pane());
+        assert!(
+            layout
+                .rows
+                .iter()
+                .all(|r| r.subject.kind == SubjectKind::App),
+            "no person membership rows in the Permissions list"
+        );
+        assert!(!members_pane_rows(&ws, pane()).is_empty(), "but Members has one");
     }
 
     #[test]
