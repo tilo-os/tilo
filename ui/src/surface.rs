@@ -44,6 +44,14 @@ const SHADOW_PEAK_RADIUS: f64 = 0.30;
 /// - `inner_shoulder` — clamps the centre to zero.
 /// - `outer_shoulder` — clamps the sprite boundary to zero so the
 ///   stretched image can't leak a square-edged halo.
+///
+/// The channels are written premultiplied (`c * a`), so the returned
+/// [`Image`] must declare [`ImageAlphaType::AlphaPremultiplied`].
+/// Declaring straight alpha instead makes the renderer premultiply a
+/// second time, which squares the tint and roughly halves every shadow
+/// in the toolkit — the peak of a full-strength white shadow lands at
+/// `255 · a²` instead of `255 · a`. `soft_shadow_peak_matches_sprite_
+/// envelope` pins the composited strength so that cannot come back.
 fn build_shadow_sprite(r: u8, g: u8, b: u8) -> Image {
     let size = SHADOW_SPRITE_SIZE;
     let s = size as f64;
@@ -73,7 +81,7 @@ fn build_shadow_sprite(r: u8, g: u8, b: u8) -> Image {
     Image {
         data: blob,
         format: Format::Rgba8,
-        alpha_type: ImageAlphaType::Alpha,
+        alpha_type: ImageAlphaType::AlphaPremultiplied,
         width: size,
         height: size,
     }
@@ -248,6 +256,81 @@ mod tests {
         // A point on the peak ring should be non-zero.
         let peak_x = (mid as f64 + SHADOW_PEAK_RADIUS * (mid as f64)) as u32;
         assert!(read_a(peak_x, mid) > 0, "peak ring alpha must be > 0");
+    }
+
+    /// The composited shadow has to reach the strength the sprite's
+    /// alpha envelope describes. A full-intensity white shadow peaks at
+    /// `bump · inner · outer = 1 · 1 · (1 - SHADOW_PEAK_RADIUS) = 0.7`,
+    /// so over black the brightest pixel on the ring is `255 · 0.7 ≈
+    /// 178`. When the premultiplied sprite is handed to the renderer as
+    /// straight alpha the tint gets premultiplied twice and that peak
+    /// collapses to `255 · 0.7² ≈ 125` — a visibly washed-out shadow
+    /// everywhere in the toolkit, which is what this pins against.
+    ///
+    /// The ring's radius is asserted too: it must sit at
+    /// `SHADOW_PEAK_RADIUS` of the target's half-extent (24 px for the
+    /// 160×160 target below), not at the rect's own edge.
+    #[test]
+    fn soft_shadow_peak_matches_sprite_envelope() {
+        use crate::offscreen::OffscreenRenderer;
+
+        let rect = Rect::new(150.0, 150.0, 250.0, 250.0);
+        let spread = 30.0;
+        let mut scene = Scene::new();
+        soft_shadow(
+            &mut scene,
+            Affine::IDENTITY,
+            rect,
+            Color::WHITE,
+            spread,
+            0.0,
+            1.0,
+        );
+
+        let mut r = OffscreenRenderer::new(400, 400);
+        let rgba = r.render(&scene, Color::BLACK);
+        let at = |x: u32, y: u32| OffscreenRenderer::sample(&rgba, 400, x, y).0;
+
+        // Walk outward along the horizontal centre line and keep the
+        // brightest sample plus where it was found.
+        let (cx, cy) = (200u32, 200u32);
+        let half = rect.width() / 2.0 + spread; // 80 px
+        let (mut peak, mut peak_dx) = (0u8, 0u32);
+        for dx in 0..=(half as u32) {
+            let v = at(cx + dx, cy);
+            if v > peak {
+                peak = v;
+                peak_dx = dx;
+            }
+        }
+
+        let expected = (255.0 * (1.0 - SHADOW_PEAK_RADIUS)).round() as i32;
+        assert!(
+            (peak as i32 - expected).abs() <= 6,
+            "full-intensity white shadow must peak at ~{expected}/255 \
+             (the sprite's own alpha envelope); got {peak}. A peak near \
+             {} means the premultiplied sprite is being premultiplied a \
+             second time.",
+            (255.0 * (1.0 - SHADOW_PEAK_RADIUS) * (1.0 - SHADOW_PEAK_RADIUS)).round() as i32,
+        );
+
+        let expected_dx = (SHADOW_PEAK_RADIUS * half).round() as i32;
+        assert!(
+            (peak_dx as i32 - expected_dx).abs() <= 4,
+            "the ring must peak {expected_dx} px out from the centre \
+             (SHADOW_PEAK_RADIUS of the target half-extent); peaked at \
+             {peak_dx}",
+        );
+
+        // The centre stays clear so a card's own fill paints over an
+        // unmodified backdrop, and the target's corner is fully
+        // transparent so no square halo leaks out.
+        assert!(at(cx, cy) <= 6, "sprite centre must stay clear");
+        assert_eq!(
+            at(cx + half as u32, cy + half as u32),
+            0,
+            "the stretched sprite must not leak a square-edged halo"
+        );
     }
 
     #[test]
