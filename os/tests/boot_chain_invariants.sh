@@ -46,13 +46,14 @@ done
 #    above gets silently undone on the next kernel bump.
 conf="$OS_ROOT/etc/kernel/install.conf"
 if [ -f "$conf" ]; then
+  conf_ok=1
   if grep -qE '^[[:space:]]*initrd_generator[[:space:]]*=[[:space:]]*none' "$conf"; then
-    bad "$conf sets initrd_generator=none"
+    bad "$conf sets initrd_generator=none"; conf_ok=0
   fi
   if grep -qE '^[[:space:]]*layout[[:space:]]*=[[:space:]]*bls' "$conf"; then
-    bad "$conf overrides the base's layout=ostree with layout=bls"
+    bad "$conf overrides the base's layout=ostree with layout=bls"; conf_ok=0
   fi
-  ok "$conf present and does not disable initrd generation"
+  [ "$conf_ok" -eq 1 ] && ok "$conf present and disables nothing"
 else
   ok "no /etc/kernel/install.conf override (base layout=ostree applies)"
 fi
