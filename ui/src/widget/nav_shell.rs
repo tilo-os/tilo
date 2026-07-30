@@ -111,6 +111,11 @@ pub enum ContentLayout {
     SideBySide,
     /// One pane at a time; detail pushes in from the right (narrow).
     Push,
+    /// There is only one content pane, so it fills the content region at
+    /// every width. The shape of a sidebar-plus-content app (§1a with no
+    /// §1b split) — a file manager, a settings pane — where the sidebar is
+    /// pure navigation and the content is the single thing being read.
+    Single,
 }
 
 /// Which content pane the push flow is targeting.
@@ -142,8 +147,10 @@ pub struct NavShell {
     sidebar: Option<Element>,
     /// The content overview / master (§1b).
     overview: Element,
-    /// The content detail (§1b).
-    detail: Element,
+    /// The content detail (§1b). `None` for a sidebar-plus-content app,
+    /// where there is no overview/detail split to push between and the
+    /// single content pane must stay visible at every width.
+    detail: Option<Element>,
 
     breakpoint: f64,
     sidebar_width: f64,
@@ -189,7 +196,7 @@ impl NavShell {
         Self {
             sidebar: None,
             overview,
-            detail,
+            detail: Some(detail),
             breakpoint: DEFAULT_NAVSHELL_BREAKPOINT,
             sidebar_width: DEFAULT_NAVSHELL_SIDEBAR_WIDTH,
             overview_width: DEFAULT_NAVSHELL_OVERVIEW_WIDTH,
@@ -212,6 +219,27 @@ impl NavShell {
             dirty: false,
             last_tick: None,
         }
+    }
+
+    /// Build a **sidebar-plus-content** shell: a genuine menu sidebar (§1a)
+    /// beside a *single* content pane. The file-manager / settings shape —
+    /// the sidebar is pure navigation (places, sections) and the content is
+    /// the one thing being read.
+    ///
+    /// Wide docks the sidebar beside the content. Narrow turns it into an
+    /// overlay drawer *over* the content behind a scrim, summoned by the
+    /// hamburger chip — the content stays visible throughout.
+    ///
+    /// Use this instead of [`NavShell::new`] whenever the left pane is a list
+    /// of *destinations*. Passing a navigation list as `new`'s `overview`
+    /// declares it to be §1b content, and narrow then promotes it to the
+    /// full-screen page while pushing the real content off the window: a file
+    /// manager that shows its places list and no files.
+    pub fn sidebar_over_content(sidebar: Element, content: Element) -> Self {
+        let mut shell = Self::new(content, Box::new(crate::widget::Spacer::new()));
+        shell.sidebar = Some(sidebar);
+        shell.detail = None;
+        shell
     }
 
     /// Attach a genuine menu sidebar (§1a) — the calendar / email case:
@@ -266,7 +294,21 @@ impl NavShell {
 
     /// Replace the detail pane in place, keeping the shell's responsive state.
     pub fn set_detail(&mut self, detail: Element) {
-        self.detail = detail;
+        self.detail = Some(detail);
+    }
+
+    /// Replace the single content pane of a sidebar-plus-content shell —
+    /// the [`NavShell::sidebar_over_content`] shape. Same slot
+    /// [`Self::set_overview`] writes; named for what it is so a
+    /// single-pane app doesn't have to call its content an "overview".
+    pub fn set_content(&mut self, content: Element) {
+        self.overview = content;
+    }
+
+    /// Whether this shell has a content detail pane. `false` for a
+    /// sidebar-plus-content shell.
+    pub fn has_detail(&self) -> bool {
+        self.detail.is_some()
     }
 
     /// Replace (or clear) the genuine menu sidebar in place, keeping the
@@ -289,6 +331,9 @@ impl NavShell {
 
     /// The content region's layout at the current width.
     pub fn content_layout(&self) -> ContentLayout {
+        if self.detail.is_none() {
+            return ContentLayout::Single;
+        }
         match self.mode() {
             ShellMode::Wide => ContentLayout::SideBySide,
             ShellMode::Narrow => ContentLayout::Push,
@@ -316,9 +361,11 @@ impl NavShell {
         self.pane
     }
 
-    /// Whether the detail pane is the push target.
+    /// Whether the detail pane is the push target. Always `false` when
+    /// there is no detail pane — a single content pane is never "pushed
+    /// over" anything.
     pub fn is_detail_shown(&self) -> bool {
-        self.pane == NavPane::Detail
+        self.detail.is_some() && self.pane == NavPane::Detail
     }
 
     /// Whether the sidebar is (resolved) open. `false` when there is none.
@@ -456,6 +503,43 @@ impl NavShell {
         let has_sidebar = self.has_sidebar();
         let sw = self.sidebar_width.min(w);
 
+        // Sidebar-plus-content: there is nothing to push between, so the one
+        // content pane fills the content region at every width. Narrow turns
+        // the sidebar into a drawer *over* that content (HIG §1a) — it never
+        // promotes the navigation list to a full-screen page, which is what
+        // the overview/detail branch below would do and what left a file
+        // manager showing its places list and no files.
+        if self.detail.is_none() {
+            self.detail_rect = Rect::ZERO;
+            match self.mode() {
+                ShellMode::Wide => {
+                    let inset =
+                        if has_sidebar { sw * self.sidebar_flap.reveal() } else { 0.0 };
+                    self.sidebar_rect = Rect::new(r.x0, r.y0, r.x0 + inset, r.y1);
+                    self.overview_rect = Rect::new(r.x0 + inset, r.y0, r.x1, r.y1);
+                    self.scrim_rect = Rect::ZERO;
+                }
+                ShellMode::Narrow => {
+                    self.overview_rect = r;
+                    if has_sidebar {
+                        let slide = self.sidebar_flap.slide();
+                        let x0 = r.x0 - sw * (1.0 - slide);
+                        self.sidebar_rect = Rect::new(x0, r.y0, x0 + sw, r.y1);
+                        self.scrim_rect = if self.sidebar_flap.reveal() > 0.001 {
+                            r
+                        } else {
+                            Rect::ZERO
+                        };
+                    } else {
+                        self.sidebar_rect = Rect::ZERO;
+                        self.scrim_rect = Rect::ZERO;
+                    }
+                }
+            }
+            self.recompute_affordance();
+            return;
+        }
+
         match self.mode() {
             ShellMode::Wide => {
                 // Sidebar docked: content is inset by the eased sidebar width
@@ -541,14 +625,19 @@ impl NavShell {
         let mut map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
 
         let o_node = self.overview.build_layout(&mut taffy, theme, &mut map);
-        let d_node = self.detail.build_layout(&mut taffy, theme, &mut map);
+        let d_node = self
+            .detail
+            .as_mut()
+            .map(|d| d.build_layout(&mut taffy, theme, &mut map));
         let s_node = self
             .sidebar
             .as_mut()
             .map(|s| s.build_layout(&mut taffy, theme, &mut map));
 
-        let mut jobs: Vec<(NodeId, Rect)> =
-            vec![(o_node, self.overview_rect), (d_node, self.detail_rect)];
+        let mut jobs: Vec<(NodeId, Rect)> = vec![(o_node, self.overview_rect)];
+        if let Some(dn) = d_node {
+            jobs.push((dn, self.detail_rect));
+        }
         if let Some(sn) = s_node {
             jobs.push((sn, self.sidebar_rect));
         }
@@ -574,15 +663,16 @@ impl NavShell {
 
         self.overview
             .apply_layout(&taffy, o_node, Point::new(self.overview_rect.x0, self.overview_rect.y0));
-        self.detail
-            .apply_layout(&taffy, d_node, Point::new(self.detail_rect.x0, self.detail_rect.y0));
+        if let (Some(d), Some(dn)) = (self.detail.as_mut(), d_node) {
+            d.apply_layout(&taffy, dn, Point::new(self.detail_rect.x0, self.detail_rect.y0));
+        }
         if let (Some(sb), Some(sn)) = (self.sidebar.as_mut(), s_node) {
             sb.apply_layout(&taffy, sn, Point::new(self.sidebar_rect.x0, self.sidebar_rect.y0));
         }
 
         self.inner_taffy = Some(taffy);
         self.overview_node = Some(o_node);
-        self.detail_node = Some(d_node);
+        self.detail_node = d_node;
         self.sidebar_node = s_node;
     }
 
@@ -703,7 +793,9 @@ impl NavShell {
 impl Widget for NavShell {
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
         self.overview.sync(state, path);
-        self.detail.sync(state, path);
+        if let Some(d) = self.detail.as_mut() {
+            d.sync(state, path);
+        }
         if let Some(s) = self.sidebar.as_mut() {
             s.sync(state, path);
         }
@@ -752,7 +844,9 @@ impl Widget for NavShell {
         // never calls `Widget::update`. Forward to children and report whether
         // anything still needs frames.
         let mut any = self.overview.update(state, path);
-        any |= self.detail.update(state, path);
+        if let Some(d) = self.detail.as_mut() {
+            any |= d.update(state, path);
+        }
         if let Some(s) = self.sidebar.as_mut() {
             any |= s.update(state, path);
         }
@@ -773,7 +867,9 @@ impl Widget for NavShell {
         // Content panes first (behind the overlay drawer). Off-screen panes
         // in push mode simply fall outside the framebuffer.
         self.overview.draw(scene, transform, text_renderer, theme, presence);
-        self.detail.draw(scene, transform, text_renderer, theme, presence);
+        if let Some(d) = self.detail.as_mut() {
+            d.draw(scene, transform, text_renderer, theme, presence);
+        }
         if self.sidebar_visible() {
             if let Some(s) = self.sidebar.as_mut() {
                 // Scrim must sit between content and the drawer; draw it here.
@@ -804,8 +900,9 @@ impl Widget for NavShell {
         }
         self.overview
             .draw_with_presence(scene, transform, text_renderer, theme, presence, permissions);
-        self.detail
-            .draw_with_presence(scene, transform, text_renderer, theme, presence, permissions);
+        if let Some(d) = self.detail.as_mut() {
+            d.draw_with_presence(scene, transform, text_renderer, theme, presence, permissions);
+        }
         if self.sidebar_visible() {
             if self.scrim_rect.width() > 0.0 {
                 let alpha = (self.sidebar_flap.reveal() * 0.5) as f32;
@@ -945,7 +1042,10 @@ impl Widget for NavShell {
                     None => continue,
                 },
                 Which::Overview => self.overview.as_mut(),
-                Which::Detail => self.detail.as_mut(),
+                Which::Detail => match self.detail.as_mut() {
+                    Some(d) => d.as_mut(),
+                    None => continue,
+                },
             };
             target.handle_event(
                 event,
@@ -962,7 +1062,10 @@ impl Widget for NavShell {
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
-        let mut v: Vec<&dyn Widget> = vec![self.overview.as_ref(), self.detail.as_ref()];
+        let mut v: Vec<&dyn Widget> = vec![self.overview.as_ref()];
+        if let Some(d) = self.detail.as_ref() {
+            v.push(d.as_ref());
+        }
         if let Some(s) = self.sidebar.as_ref() {
             v.push(s.as_ref());
         }
@@ -971,7 +1074,7 @@ impl Widget for NavShell {
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         let mut v: Vec<&mut (dyn Widget + '_)> =
-            vec![self.overview.as_mut(), self.detail.as_mut()];
+            vec![self.overview.as_mut()];
         if let Some(s) = self.sidebar.as_mut() {
             v.push(s.as_mut());
         }
@@ -991,7 +1094,7 @@ impl Widget for NavShell {
             || self.sidebar_flap.is_animating(self.sidebar_split_layout())
             || self.push.is_animating(SplitLayout::Docked)
             || self.overview.needs_animation_frame()
-            || self.detail.needs_animation_frame()
+            || self.detail.as_ref().is_some_and(|d| d.needs_animation_frame())
             || self
                 .sidebar
                 .as_ref()
@@ -1001,7 +1104,9 @@ impl Widget for NavShell {
 
     fn take_structure_dirty(&mut self) -> bool {
         let mut d = self.overview.take_structure_dirty();
-        d |= self.detail.take_structure_dirty();
+        if let Some(det) = self.detail.as_mut() {
+            d |= det.take_structure_dirty();
+        }
         if let Some(s) = self.sidebar.as_mut() {
             d |= s.take_structure_dirty();
         }
@@ -1011,7 +1116,7 @@ impl Widget for NavShell {
     fn needs_idle_sync(&self) -> bool {
         self.animating
             || self.overview.needs_idle_sync()
-            || self.detail.needs_idle_sync()
+            || self.detail.as_ref().is_some_and(|d| d.needs_idle_sync())
             || self
                 .sidebar
                 .as_ref()
@@ -1087,6 +1192,122 @@ mod tests {
             )
             .unwrap();
         ns.apply_layout(&taffy, node, Point::ZERO);
+    }
+
+    fn sidebar_content_shell(w: f64) -> NavShell {
+        let mut ns = NavShell::sidebar_over_content(
+            Box::new(Text::new("places")),
+            Box::new(Text::new("files")),
+        );
+        lay_out(&mut ns, w, 640.0);
+        // Settle the reveal easing: the flap is open-when-docked, so a first
+        // frame at a narrow width is mid-way through easing the drawer out.
+        // Every assertion here is about the settled frame.
+        ns.snap();
+        ns
+    }
+
+    // --- sidebar + single content pane (HIG §1a, no §1b split) -----------
+
+    /// The regression this shape exists for: a navigation sidebar must never
+    /// become the full-screen page at a narrow width. The content pane keeps
+    /// the whole window and the sidebar draws *over* it.
+    #[test]
+    fn narrow_sidebar_over_content_keeps_the_content_full_width() {
+        let ns = sidebar_content_shell(600.0);
+        assert_eq!(ns.mode(), ShellMode::Narrow);
+        assert_eq!(ns.content_layout(), ContentLayout::Single);
+        assert_eq!(
+            ns.overview_rect().width(),
+            600.0,
+            "the content pane must span the whole narrow window",
+        );
+        assert_eq!(
+            ns.overview_rect().x0, 0.0,
+            "and start at the window's left edge, not offset by a sidebar",
+        );
+        assert!(
+            !ns.is_detail_shown(),
+            "there is no detail pane to push in",
+        );
+        assert_eq!(
+            ns.detail_rect(),
+            Rect::ZERO,
+            "no detail pane means no detail geometry",
+        );
+    }
+
+    /// Narrow starts with the drawer closed, so the content is what you see;
+    /// the hamburger summons the sidebar over it behind a scrim.
+    #[test]
+    fn narrow_sidebar_starts_closed_and_opens_as_an_overlay_drawer() {
+        let mut ns = sidebar_content_shell(600.0);
+        assert!(!ns.is_sidebar_open(), "the drawer is closed by default");
+        assert_eq!(
+            ns.scrim_rect(),
+            Rect::ZERO,
+            "no scrim while the drawer is closed",
+        );
+        assert_eq!(
+            ns.top_left_affordance(),
+            Affordance::SidebarToggle,
+            "the corner offers the hamburger, never a Back arrow",
+        );
+
+        ns.open_sidebar();
+        ns.snap();
+        assert!(ns.is_sidebar_open());
+        assert!(ns.sidebar_rect().width() > 0.0, "the drawer is on screen");
+        assert_eq!(
+            ns.overview_rect().width(),
+            600.0,
+            "the drawer draws OVER the content — the content does not shrink \
+             or slide away",
+        );
+        assert!(
+            ns.scrim_rect().width() > 0.0,
+            "an open drawer dims the content behind a scrim",
+        );
+    }
+
+    /// Wide docks the sidebar and gives the content the rest — no second
+    /// content pane appears out of nowhere.
+    #[test]
+    fn wide_sidebar_over_content_docks_beside_a_full_height_content_pane() {
+        let ns = sidebar_content_shell(1200.0);
+        assert_eq!(ns.mode(), ShellMode::Wide);
+        assert_eq!(ns.content_layout(), ContentLayout::Single);
+        assert!(ns.sidebar_rect().width() > 0.0, "the sidebar is docked");
+        assert_eq!(
+            ns.overview_rect().x0,
+            ns.sidebar_rect().x1,
+            "the content starts where the sidebar ends",
+        );
+        assert_eq!(
+            ns.overview_rect().x1, 1200.0,
+            "and runs to the window's right edge",
+        );
+        assert_eq!(ns.detail_rect(), Rect::ZERO);
+    }
+
+    /// Resizing across the breakpoint reflows both ways without the content
+    /// ever leaving the window.
+    #[test]
+    fn sidebar_over_content_reflows_across_the_breakpoint_both_ways() {
+        let mut ns = sidebar_content_shell(1200.0);
+        assert_eq!(ns.mode(), ShellMode::Wide);
+        for w in [600.0, 1200.0, 480.0, 900.0] {
+            lay_out(&mut ns, w, 640.0);
+            ns.snap();
+            assert_eq!(
+                ns.overview_rect().x1, w,
+                "the content pane must reach the right edge at width {w}",
+            );
+            assert!(
+                ns.overview_rect().width() > 0.0,
+                "the content pane must never be laid out to zero width at {w}",
+            );
+        }
     }
 
     // --- mode resolution -------------------------------------------------
