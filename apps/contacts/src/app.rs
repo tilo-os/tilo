@@ -15,7 +15,8 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use automerge::{AutoCommit, ObjId};
+use automerge::{AutoCommit, ChangeHash, ObjId};
+use qos_actions::{ActionEnvelope, ActionTransport};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Circle, Line, Point, Rect, RoundedRect, Stroke};
@@ -38,6 +39,18 @@ use crate::model::{
 use crate::portal::{self, ExportOutcome, ImportOutcome};
 use crate::responsive::{Pane, PushNav};
 use crate::vcard::{self, VCardVersion};
+
+/// The transport the app installs for its own on-screen affordances. Peers
+/// receive contact changes through ordinary CRDT sync (the executor pins each
+/// action's actor so the change is content-addressed identical to a peer's
+/// replay and dedupes on merge), so the local affordance path has nothing extra
+/// to replicate — this sink drops the envelope. The Ctrl+K palette dispatches
+/// through the host's transport, which a collaborative session swaps for a
+/// peer-aware one.
+struct DiscardTransport;
+impl ActionTransport for DiscardTransport {
+    fn replicate(&mut self, _env: &ActionEnvelope) {}
+}
 
 /// Suggested file name for the export Save dialog.
 const EXPORT_FILE_NAME: &str = "contacts-export.vcf";
@@ -445,6 +458,24 @@ pub struct ContactsApp {
     /// The contacts + vCard version parked while the export Save dialog is up,
     /// written to the chosen destination when the portal returns a path.
     pending_export: Option<(Vec<ContactId>, VCardVersion)>,
+
+    /// Document heads captured just before the first `qos_actions` action of the
+    /// current event was dispatched. The host drains this via
+    /// [`Widget::take_committed_action`] to record exactly one undo boundary
+    /// bracketing the action(s) — the same undo path the Ctrl+K palette takes.
+    action_commit_before: Option<Vec<ChangeHash>>,
+
+    /// The last [`EncodedAction`](qos_actions::EncodedAction) an on-screen
+    /// affordance dispatched through [`Self::perform_action`]. Lets a test prove
+    /// a button and the Ctrl+K [`ActionSpec`](qos_actions::ActionSpec) build the
+    /// byte-identical action — one source of truth, not two code paths.
+    last_dispatched: Option<qos_actions::EncodedAction>,
+
+    /// The document heads the in-memory [`ContactStore`] was last derived from.
+    /// When the document moves past this out of band — a Ctrl+K palette action,
+    /// or a peer's change merged in — the next `sync` re-reads the store so those
+    /// mutations show up in the list, exactly as an on-screen edit already does.
+    model_heads: Vec<ChangeHash>,
 }
 
 impl ContactsApp {
@@ -517,6 +548,9 @@ impl ContactsApp {
             import_rx: None,
             export_rx: None,
             pending_export: None,
+            action_commit_before: None,
+            last_dispatched: None,
+            model_heads: Vec::new(),
         }
     }
 
@@ -686,7 +720,7 @@ impl ContactsApp {
             let c = form.draft.clone();
             let id = c.id;
             self.store.upsert(c.clone());
-            ContactsDoc::upsert_contact(doc, &c);
+            self.perform_action(doc, crate::actions::upsert_contact_action(&c));
             self.selected = Some(id);
             self.persist();
             self.show_toast(if form.is_new { "Contact created" } else { "Saved" });
@@ -709,6 +743,35 @@ impl ContactsApp {
     /// left in place because "and this is where the book is durable" is still
     /// true, one layer up.
     fn persist(&self) {}
+
+    /// Dispatch one [`ContactsAction`](crate::actions::ContactsAction) — the
+    /// single CRDT-mutation path shared with the Ctrl+K palette. The action is
+    /// applied through the qOS action executor (a pinned actor + committed
+    /// change, so it replays byte-identically on peers), exactly as the palette
+    /// does. The document heads captured just before the first action of the
+    /// event are stashed so the host records **one** undo boundary bracketing it
+    /// ([`Widget::take_committed_action`]). The in-memory store is updated by the
+    /// caller for immediate UI feedback and reconciled from the document on the
+    /// next `sync`.
+    fn perform_action(&mut self, doc: &mut AutoCommit, action: crate::actions::ContactsAction) {
+        if self.action_commit_before.is_none() {
+            // `get_heads` flushes any pending app writes, so the bracket covers
+            // only the action's own change.
+            self.action_commit_before = Some(doc.get_heads());
+        }
+        let encoded = crate::actions::encode(&action);
+        self.last_dispatched = Some(encoded.clone());
+        let mut tx = DiscardTransport;
+        if let Err(e) = qos_actions::dispatch(doc, &action, encoded, &mut tx) {
+            tracing::warn!(error = %e, "contacts action dispatch failed");
+        }
+    }
+
+    /// The context Ctrl+K needs to build the contacts resource tree: a snapshot
+    /// of the address book currently in the model.
+    pub(crate) fn contacts_resource_ctx(&self) -> crate::actions::ContactsResourceCtx {
+        crate::actions::ContactsResourceCtx { contacts: self.store.contacts.clone() }
+    }
 
     /// Whether the open edit form holds changes not yet written to the
     /// store. Collects the live input values into a throwaway draft and
@@ -782,7 +845,7 @@ impl ContactsApp {
 
     fn delete_selected(&mut self, doc: &mut AutoCommit, id: ContactId) {
         self.store.delete(id);
-        ContactsDoc::delete_contact(doc, id);
+        self.perform_action(doc, crate::actions::delete_contact_action(id.to_string()));
         if self.selected == Some(id) {
             self.selected = self.visible_ids().first().copied();
         }
@@ -2728,9 +2791,29 @@ impl Widget for ContactsApp {
                 self.selected = prefer.or_else(|| self.visible_ids().first().copied());
             }
             self.seeded = true;
+            self.model_heads = state.get_heads();
             self.relayout = true;
             self.dirty = true;
         }
+
+        // Reconcile the in-memory store from the document when it has moved past
+        // what the store was last derived from — a Ctrl+K palette action or a
+        // merged peer change mutates only the document, so the list would
+        // otherwise miss it. An on-screen affordance already updates the store
+        // eagerly, so this is a no-op for it beyond re-adopting the same records.
+        let heads = state.get_heads();
+        if heads != self.model_heads {
+            self.store.contacts = ContactsDoc::list_contacts(state);
+            self.model_heads = heads;
+            if let Some(sel) = self.selected {
+                if self.store.get(sel).is_none() {
+                    self.selected = self.visible_ids().first().copied();
+                }
+            }
+            self.relayout = true;
+            self.dirty = true;
+        }
+
         self.search.sync(state, path);
         if let Some(form) = &mut self.form {
             for f in &mut form.inputs {
@@ -2933,6 +3016,21 @@ impl Widget for ContactsApp {
 
     fn name(&self) -> &str {
         "ContactsApp"
+    }
+
+    /// Publish the open book + its contacts so the host's Ctrl+K action palette
+    /// scopes to them. Delegates to the
+    /// [`ResourceProvider`](qos_actions::ResourceProvider) impl in
+    /// [`crate::actions`].
+    fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
+        <Self as qos_actions::ResourceProvider>::resources(self, doc)
+    }
+
+    /// Hand the host the heads captured before an on-screen affordance dispatched
+    /// its contacts action, so it records one undo boundary for it (see
+    /// [`Self::perform_action`]). Rising-edge: cleared on read.
+    fn take_committed_action(&mut self) -> Option<Vec<ChangeHash>> {
+        self.action_commit_before.take()
     }
 
     /// Fold the address book into the unified Ctrl+K palette: a snapshot
@@ -3166,10 +3264,10 @@ impl ContactsApp {
             if self.selected.is_some() {
                 if self.hit.fav.contains(p) {
                     if let Some(id) = self.selected {
+                        let new_fav = !self.store.get(id).map(|c| c.favorite).unwrap_or(false);
+                        self.perform_action(state, crate::actions::set_favorite_action(id.to_string(), new_fav));
                         if let Some(c) = self.store.get_mut(id) {
-                            c.favorite = !c.favorite;
-                            let cc = c.clone();
-                            ContactsDoc::upsert_contact(state, &cc);
+                            c.favorite = new_fav;
                         }
                         self.persist();
                         self.dirty = true;
@@ -3652,14 +3750,18 @@ impl ContactsApp {
                             }
                         }
                         ContextAction::Favorite => {
-                            // Toggle the favorite flag and persist it to the
-                            // CRDT (same write path as the view-mode star and
-                            // Save), so the list star and the menu label flip
+                            // Toggle the favorite flag through the shared action
+                            // path (same action the view-mode star and Ctrl+K
+                            // dispatch), so the list star and the menu label flip
                             // immediately and the change survives a reload.
+                            let new_fav =
+                                !self.store.get(target).map(|c| c.favorite).unwrap_or(false);
+                            self.perform_action(
+                                state,
+                                crate::actions::set_favorite_action(target.to_string(), new_fav),
+                            );
                             if let Some(c) = self.store.get_mut(target) {
-                                c.favorite = !c.favorite;
-                                let cc = c.clone();
-                                ContactsDoc::upsert_contact(state, &cc);
+                                c.favorite = new_fav;
                             }
                             self.persist();
                             self.relayout = true;
@@ -4900,6 +5002,77 @@ mod tests {
             !ContactsDoc::list_contacts(&h.doc).iter().any(|c| c.id == id),
             "the deleted contact is gone from the document"
         );
+    }
+
+    #[test]
+    fn confirm_delete_dispatches_the_action_the_palette_builds() {
+        // Single source of truth, proven on the real button path: confirming
+        // a delete dispatches the byte-identical EncodedAction the Ctrl+K
+        // "Delete contact" spec builds for the same contact.
+        let mut h = Harness::new(1280, 800);
+        let id = h.row_id(0);
+        let expected =
+            crate::actions::encode(&crate::actions::delete_contact_action(id.to_string()));
+        h.app.confirm_delete = Some(id);
+        let (_panel, del, _cancel) = h.app.confirm_geometry();
+        h.press_left(del.center());
+        assert_eq!(
+            h.app.last_dispatched.as_ref(),
+            Some(&expected),
+            "the confirm-delete button and the palette build the identical EncodedAction",
+        );
+        assert!(
+            !ContactsDoc::list_contacts(&h.doc).iter().any(|c| c.id == id),
+            "and it actually deleted the contact",
+        );
+    }
+
+    #[test]
+    fn favorite_toggle_dispatches_the_action_the_palette_builds() {
+        // Same, on the favourite path: the context-menu Favorite item dispatches
+        // the byte-identical EncodedAction the Ctrl+K "favorite" spec builds,
+        // toggling to the negation of the current state.
+        let mut h = Harness::new(1280, 800);
+        let row = h.row_center(0);
+        let id = h.row_id(0);
+        let before = h.app.store.get(id).unwrap().favorite;
+        let expected =
+            crate::actions::encode(&crate::actions::set_favorite_action(id.to_string(), !before));
+
+        assert!(h.press_right(row));
+        let Some(Popup::ContextMenu { anchor, .. }) = h.app.popup else {
+            panic!("right-click should open the context menu");
+        };
+        let (_panel, rows) = h.app.popup_menu_geometry(anchor, CONTEXT_ACTIONS.len(), 200.0);
+        let fav_idx =
+            CONTEXT_ACTIONS.iter().position(|a| *a == ContextAction::Favorite).unwrap();
+        h.press_left(rows[fav_idx].center());
+        assert_eq!(
+            h.app.last_dispatched.as_ref(),
+            Some(&expected),
+            "the favourite affordance and the palette build the identical EncodedAction",
+        );
+    }
+
+    #[test]
+    fn palette_action_reconciles_into_the_list_on_next_sync() {
+        // A Ctrl+K palette action mutates only the document; the next sync must
+        // reconcile the in-memory store so the change shows in the list — the
+        // same way an on-screen edit already does.
+        let mut h = Harness::new(1280, 800);
+        let id = h.row_id(0);
+        let before = h.app.store.len();
+        // Dispatch a delete straight into the doc through the executor, bypassing
+        // the app's own affordances (exactly as the shell's Ctrl+K palette would).
+        let action = crate::actions::delete_contact_action(id.to_string());
+        let encoded = crate::actions::encode(&action);
+        let mut tx = qos_actions::LocalTransport::new();
+        qos_actions::dispatch(&mut h.doc, &action, encoded, &mut tx).unwrap();
+        // The store hasn't seen it yet — it still holds the contact.
+        assert!(h.app.store.get(id).is_some(), "store is stale before the reconciling sync");
+        h.app.sync(&mut h.doc, &ROOT);
+        assert!(h.app.store.get(id).is_none(), "the reconciling sync dropped the deleted contact");
+        assert_eq!(h.app.store.len(), before - 1);
     }
 
     #[test]
