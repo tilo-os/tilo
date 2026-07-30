@@ -592,8 +592,20 @@ impl Widget for SidebarWheelChrome {
                 };
                 for i in 0..shown {
                     let dx = base_x + dot_r + i as f64 * (dot_r * 2.0 + gap);
-                    let c = vello::kurbo::Circle::new(Point::new(dx, dot_y), dot_r);
-                    scene.fill(Fill::NonZero, card_xform, dot_color, None, &c);
+                    // Presence dot = empty-initials `ui::Avatar` chip, so the
+                    // card's per-card presence indicator is painted by the same
+                    // toolkit primitive as the top-bar / overview avatars.
+                    let dot_rect =
+                        Rect::new(dx - dot_r, dot_y - dot_r, dx + dot_r, dot_y + dot_r);
+                    ui::widget::Avatar::draw_at(
+                        scene,
+                        card_xform,
+                        dot_rect,
+                        "",
+                        dot_color,
+                        theme,
+                        text_renderer,
+                    );
                 }
                 if overflow > 0 {
                     let chip_x = base_x + shown as f64 * (dot_r * 2.0 + gap);
