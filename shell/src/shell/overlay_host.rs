@@ -1314,7 +1314,16 @@ impl ShellOverlayHost {
                 // vector and losing it).
                 for (idx, g) in strip.window_groups.iter().enumerate() {
                     if !live_ids.contains(&g.id) {
-                        row.insert_group(crate::shell::to_ui_window_group(g), idx);
+                        let mut fresh = crate::shell::to_ui_window_group(g);
+                        // A window arriving is worth seeing arrive. The
+                        // row's own splice paths (a tab dragged out into
+                        // its own group) already run this fade; a window
+                        // that appeared because the user opened it
+                        // deserves the same, and it is what reads
+                        // together with the neighbours sliding over to
+                        // make room for it.
+                        fresh.start_spawn_animation();
+                        row.insert_group(fresh, idx);
                         any_change = true;
                     }
                 }
@@ -1854,6 +1863,49 @@ impl ShellOverlayHost {
             }
             self.last_scrolled_active_group.insert(strip_id, group_id);
         }
+    }
+
+    /// Publish the active strip's laid-out geometry on the chrome, so an
+    /// "open this" path can consult it — see [`crate::shell::placement`].
+    ///
+    /// Runs at the end of every layout pass. Deliberately does **not**
+    /// bump the chrome revision: this is a report of what the layout just
+    /// produced, not a mutation anyone needs to re-sync against, and
+    /// bumping every frame would make the strip resync run forever.
+    fn publish_strip_viewport(&mut self) {
+        let Some(chrome) = self.chrome.clone() else {
+            return;
+        };
+        // The active strip is the one a new window would land in — the
+        // same resolution the placement rule performs.
+        let strip_id = {
+            let st = chrome.borrow();
+            let tree = st.tree();
+            tree.active_workspace().and_then(|ws| {
+                tree.active_strip
+                    .get(&ws.id)
+                    .copied()
+                    .filter(|id| ws.strips.iter().any(|s| s.id == *id))
+                    .or_else(|| ws.strips.first().map(|s| s.id))
+            })
+        };
+        let viewport = strip_id.and_then(|sid| {
+            let &ptr = self.group_row_ptrs.get(&sid)?;
+            // SAFETY: see field doc on `group_row_ptrs`.
+            let row: &GroupRow = unsafe { &*ptr };
+            let (visible_x0, visible_x1) = row.visible_canvas_span();
+            Some(crate::shell::placement::StripViewport {
+                strip: sid,
+                groups: row
+                    .group_canvas_spans()
+                    .into_iter()
+                    .map(|(id, x0, x1)| crate::shell::placement::GroupSpan { id, x0, x1 })
+                    .collect(),
+                visible_x0,
+                visible_x1,
+            })
+        });
+        chrome.borrow_mut().set_strip_viewport(viewport);
     }
 
     /// Per-tick wire-up for cross-strip tab drag-drop (#151).
@@ -3853,6 +3905,7 @@ impl Widget for ShellOverlayHost {
                 Point::new(self.rect.x0 - active_scroll_x, self.rect.y0),
             );
         }
+        self.publish_strip_viewport();
     }
 
     fn draw(
