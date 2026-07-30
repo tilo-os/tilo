@@ -32,7 +32,9 @@ use ui::presence::PresenceCtx;
 use ui::permissions::PermissionContext;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
-use ui::widget::{FlapState, SplitLayout};
+use ui::widget::{FlapState, ModalDialog, SplitLayout};
+use std::cell::Cell;
+use std::rc::Rc;
 
 use crate::catalog::sample_catalog;
 use crate::doc::StoreDoc;
@@ -117,10 +119,6 @@ enum Action {
     RemoteRemove(String),
     /// Remotes screen: add the Flathub remote (one-tap convenience).
     RemoteAddFlathub,
-    /// `.flatpakref` confirm sheet: confirm the gated install.
-    ConfirmRefInstall,
-    /// `.flatpakref` confirm sheet: dismiss without installing.
-    DismissRef,
     /// Hover a target carrying a tooltip (qOS affordances).
     HoverTooltip(String),
 }
@@ -205,8 +203,10 @@ pub struct SoftwareStore {
     search_dispatched: String,
     search_changed_at: Option<Instant>,
     /// A pending `.flatpakref` awaiting the user's install confirmation.
-    /// When `Some`, a modal confirm sheet renders over the body.
+    /// When `Some`, a shared [`ModalDialog`] confirm sheet renders over the body.
     pending_ref: Option<FlatpakRef>,
+    /// The live install-confirm dialog, built lazily from `pending_ref`.
+    ref_dialog: Option<RefDlg>,
     /// The most recent gated-action error, shown as a toast / inline note.
     action_error: Option<(String, Instant)>,
     /// The tooltip currently hovered (text), rendered near the cursor.
@@ -272,6 +272,7 @@ impl SoftwareStore {
             search_dispatched: String::new(),
             search_changed_at: None,
             pending_ref: None,
+            ref_dialog: None,
             action_error: None,
             tooltip: None,
             nav_flap: FlapState::closed_by_default(),
@@ -761,10 +762,6 @@ impl SoftwareStore {
                 } else {
                     self.show_toast("Added Flathub remote");
                 }
-            }
-            Action::ConfirmRefInstall => self.confirm_pending_ref(state),
-            Action::DismissRef => {
-                self.pending_ref = None;
             }
             Action::HoverTooltip(text) => {
                 self.tooltip = Some(text);
@@ -2491,56 +2488,115 @@ impl SoftwareStore {
         y
     }
 
-    /// Modal confirm sheet for a `.flatpakref` install. Dims the body and
-    /// floats a centred card with the app title, source, comment, and
-    /// Install / Cancel. This is the gate: the install only runs on confirm.
-    fn draw_ref_sheet(
-        &self,
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        t: Affine,
-        theme: &Theme,
-        targets: &mut Vec<HitTarget>,
-        r: &FlatpakRef,
-    ) {
-        let c = &theme.tokens.colors;
-        let ty = &theme.tokens.typography.scale;
-        // Scrim.
-        draw::fill_rect(scene, t, self.rect, alpha(Color::from_rgba8(0, 0, 0, 255), 0.55));
-        targets.push(HitTarget { rect: self.rect, action: Action::DismissRef });
+    /// Build the shared install-confirm dialog from the pending `.flatpakref`.
+    /// "Install this app?" is the dialog title; Install / Cancel are its footer
+    /// buttons. The install only runs on confirm.
+    fn build_ref_dialog(&self) -> Option<RefDlg> {
+        let r = self.pending_ref.as_ref()?;
+        let install = Rc::new(Cell::new(false));
+        let cancel = Rc::new(Cell::new(false));
+        let dialog = ModalDialog::new("Install this app?", RefBody::from_ref(r))
+            .open(true)
+            .with_max_size(460.0, 300.0)
+            .primary_action("Install", {
+                let s = install.clone();
+                move || s.set(true)
+            })
+            .secondary_action("Cancel", {
+                let c = cancel.clone();
+                move || c.set(true)
+            })
+            .on_dismiss({
+                let c = cancel.clone();
+                move || c.set(true)
+            });
+        Some(RefDlg { dialog, install, cancel })
+    }
 
-        let w = 460.0_f64.min(self.rect.width() - 48.0);
-        let h = 280.0_f64;
-        let card = Rect::new(self.rect.center().x - w / 2.0, self.rect.center().y - h / 2.0, self.rect.center().x + w / 2.0, self.rect.center().y + h / 2.0);
-        draw::fill_round(scene, t, card, theme.tokens.radii.xl, c.surfaces.base);
-        draw::stroke_round(scene, t, card, theme.tokens.radii.xl, c.border_standard, 1.0);
-        // Absorb clicks on the card (so they don't dismiss via the scrim).
-        targets.push(HitTarget { rect: card, action: Action::NavAbsorb });
-
-        let pad = 24.0;
-        draw::text_w(scene, tr, t, "Install this app?", ty.lg, TextWeight::Bold, c.text_primary, card.x0 + pad, card.y0 + pad, None);
-
-        // Icon tile + title.
-        let icon_r = Rect::new(card.x0 + pad, card.y0 + pad + 34.0, card.x0 + pad + 56.0, card.y0 + pad + 90.0);
-        let base = c.accent[5];
-        draw::icon_tile(scene, tr, t, icon_r, base, mix(base, Color::WHITE, 0.5), &r.app_id.chars().next().map(|c| c.to_uppercase().to_string()).unwrap_or_default(), Color::WHITE);
-        let tx = icon_r.x1 + 14.0;
-        draw::text_w(scene, tr, t, &r.title, ty.xl, TextWeight::Bold, c.text_primary, tx, icon_r.y0, None);
-        draw::text(scene, tr, t, &r.app_id, ty.xs, c.text_dim, tx, icon_r.y0 + 26.0, None);
-        let src = format!("from {}", if r.url.is_empty() { "a Flatpak remote".to_string() } else { r.url.clone() });
-        draw::text(scene, tr, t, &src, ty.xs, c.text_dim, tx, icon_r.y0 + 42.0, Some((w - (tx - card.x0) - pad) as f32));
-
-        if !r.comment.is_empty() {
-            draw::text(scene, tr, t, &r.comment, ty.sm, mix(c.text_primary, c.text_dim, 0.2), card.x0 + pad, icon_r.y1 + 16.0, Some((w - pad * 2.0) as f32));
+    fn ensure_ref_dialog(&mut self) {
+        if self.ref_dialog.is_none() {
+            self.ref_dialog = self.build_ref_dialog();
         }
+    }
 
-        // Buttons.
-        let bh = 42.0;
-        let bw = (w - pad * 2.0 - 12.0) / 2.0;
-        let cancel = Rect::new(card.x0 + pad, card.y1 - pad - bh, card.x0 + pad + bw, card.y1 - pad);
-        let install = Rect::new(card.x1 - pad - bw, card.y1 - pad - bh, card.x1 - pad, card.y1 - pad);
-        Self::pill_button(scene, tr, t, theme, targets, cancel, "Cancel", BtnStyle::Neutral, cancel.contains(self.mouse), Action::DismissRef);
-        Self::pill_button(scene, tr, t, theme, targets, install, "Install", BtnStyle::Primary, install.contains(self.mouse), Action::ConfirmRefInstall);
+    /// Lay the confirm dialog out against the app rect so its box + footer
+    /// buttons resolve.
+    fn layout_ref_dialog(&mut self) {
+        if self.rect.width() <= 0.0 || self.rect.height() <= 0.0 {
+            return;
+        }
+        let rect = self.rect;
+        let Some(rd) = self.ref_dialog.as_mut() else { return };
+        let theme = Theme::dark();
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let mut node_map: std::collections::HashMap<NodeId, *mut dyn Widget> =
+            std::collections::HashMap::new();
+        let node = rd.dialog.build_layout(&mut taffy, &theme, &mut node_map);
+        let root = taffy
+            .new_with_children(
+                Style {
+                    size: Size {
+                        width: Dimension::length(rect.width() as f32),
+                        height: Dimension::length(rect.height() as f32),
+                    },
+                    ..Default::default()
+                },
+                &[node],
+            )
+            .unwrap();
+        let _ = taffy.compute_layout(
+            root,
+            Size {
+                width: taffy::AvailableSpace::Definite(rect.width() as f32),
+                height: taffy::AvailableSpace::Definite(rect.height() as f32),
+            },
+        );
+        rd.dialog.apply_layout(&taffy, node, Point::new(rect.x0, rect.y0));
+    }
+
+    /// Route an event into the open install-confirm dialog, then apply the
+    /// flags its callbacks set (Enter confirms as a convenience).
+    fn route_ref_event(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: &winit::event::Modifiers,
+        state: &mut AutoCommit,
+        handled: &mut bool,
+    ) {
+        if let WindowEvent::KeyboardInput { event: ke, .. } = event {
+            if ke.state == winit::event::ElementState::Pressed
+                && matches!(ke.logical_key, Key::Named(NamedKey::Enter))
+            {
+                self.confirm_pending_ref(state);
+                self.ref_dialog = None;
+                *handled = true;
+                return;
+            }
+        }
+        self.ensure_ref_dialog();
+        self.layout_ref_dialog();
+        let (install, cancel) = {
+            let Some(rd) = self.ref_dialog.as_mut() else { return };
+            let mut taffy: TaffyTree<()> = TaffyTree::new();
+            let node = taffy.new_leaf(Style::default()).unwrap();
+            let mut focus_target = None;
+            let root = automerge::ROOT;
+            rd.dialog.handle_event(
+                event, scale_factor, modifiers, state, &root, handled,
+                &mut focus_target, node, &taffy,
+            );
+            (rd.install.replace(false), rd.cancel.replace(false))
+        };
+        if install {
+            self.confirm_pending_ref(state);
+            self.ref_dialog = None;
+        } else if cancel {
+            self.pending_ref = None;
+            self.ref_dialog = None;
+        }
+        self.dirty = true;
+        *handled = true;
     }
 
     /// Draw the hovered tooltip near the cursor (qOS affordances).
@@ -2583,6 +2639,132 @@ impl SoftwareStore {
         let x1 = body.x1 - 5.0;
         let r = Rect::new(x1 - 4.0, thumb_y, x1, thumb_y + thumb_h);
         draw::fill_round(scene, t, r, theme.tokens.radii.full, alpha(theme.tokens.colors.text_dim, 0.5));
+    }
+}
+
+// ===================================================================
+// Install-confirm dialog (shared ModalDialog) content
+// ===================================================================
+
+/// The live install-confirm dialog: the shared [`ModalDialog`] hosting a
+/// [`RefBody`] plus the install / cancel cells its footer buttons flip.
+struct RefDlg {
+    dialog: ModalDialog<RefBody>,
+    install: Rc<Cell<bool>>,
+    cancel: Rc<Cell<bool>>,
+}
+
+/// Content body for the `.flatpakref` install confirm: an icon tile, the app
+/// title + id, its source remote, and the summary. The [`ModalDialog`] owns the
+/// scrim, box, "Install this app?" title, Install/Cancel footer, Esc, focus
+/// trap, and a11y role.
+struct RefBody {
+    title: String,
+    app_id: String,
+    source: String,
+    comment: String,
+    monogram: String,
+    rect: Rect,
+}
+
+impl RefBody {
+    fn from_ref(r: &FlatpakRef) -> Self {
+        let source = format!(
+            "from {}",
+            if r.url.is_empty() { "a Flatpak remote".to_string() } else { r.url.clone() }
+        );
+        let monogram = r
+            .app_id
+            .chars()
+            .next()
+            .map(|c| c.to_uppercase().to_string())
+            .unwrap_or_default();
+        Self {
+            title: r.title.clone(),
+            app_id: r.app_id.clone(),
+            source,
+            comment: r.comment.clone(),
+            monogram,
+            rect: Rect::ZERO,
+        }
+    }
+}
+
+impl Widget for RefBody {
+    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
+
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        _theme: &Theme,
+        node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        let node = taffy
+            .new_leaf(Style {
+                size: Size {
+                    width: Dimension::percent(1.0),
+                    height: Dimension::percent(1.0),
+                },
+                ..Default::default()
+            })
+            .unwrap();
+        node_map.insert(node, self as *mut dyn Widget);
+        node
+    }
+
+    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        let l = taffy.layout(node).unwrap();
+        self.rect = Rect::new(
+            origin.x + l.location.x as f64,
+            origin.y + l.location.y as f64,
+            origin.x + l.location.x as f64 + l.size.width as f64,
+            origin.y + l.location.y as f64 + l.size.height as f64,
+        );
+    }
+
+    fn draw(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        _presence: &PresenceCtx,
+    ) {
+        let c = &theme.tokens.colors;
+        let ty = &theme.tokens.typography.scale;
+        let x = self.rect.x0;
+        let icon_r = Rect::new(x, self.rect.y0, x + 56.0, self.rect.y0 + 56.0);
+        let base = c.accent[5];
+        draw::icon_tile(scene, tr, t, icon_r, base, mix(base, Color::WHITE, 0.5), &self.monogram, Color::WHITE);
+        let tx = icon_r.x1 + 14.0;
+        draw::text_w(scene, tr, t, &self.title, ty.xl, TextWeight::Bold, c.text_primary, tx, icon_r.y0, None);
+        draw::text(scene, tr, t, &self.app_id, ty.xs, c.text_dim, tx, icon_r.y0 + 26.0, None);
+        draw::text(scene, tr, t, &self.source, ty.xs, c.text_dim, tx, icon_r.y0 + 42.0, Some((self.rect.x1 - tx) as f32));
+        if !self.comment.is_empty() {
+            draw::text(scene, tr, t, &self.comment, ty.sm, mix(c.text_primary, c.text_dim, 0.2), x, icon_r.y1 + 16.0, Some(self.rect.width() as f32));
+        }
+    }
+
+    fn handle_event(
+        &mut self,
+        _event: &WindowEvent,
+        _scale_factor: f64,
+        _modifiers: &winit::event::Modifiers,
+        _state: &mut AutoCommit,
+        _path: &ObjId,
+        _handled: &mut bool,
+        _focus_target: &mut Option<NodeId>,
+        _node_id: NodeId,
+        _taffy: &TaffyTree<()>,
+    ) {
+    }
+
+    fn name(&self) -> &str {
+        "RefBody"
+    }
+
+    fn get_rect(&self) -> Rect {
+        self.rect
     }
 }
 
@@ -2806,9 +2988,16 @@ impl Widget for SoftwareStore {
         // Toast sits above everything, including the drawer scrim.
         self.draw_toast(scene, tr, t, theme);
 
-        // The `.flatpakref` confirm sheet is a modal over everything.
-        if let Some(r) = self.pending_ref.clone() {
-            self.draw_ref_sheet(scene, tr, t, theme, &mut targets, &r);
+        // The `.flatpakref` confirm sheet is a modal over everything — the
+        // shared ModalDialog paints its own scrim, box, title, and footer.
+        if self.pending_ref.is_some() {
+            self.ensure_ref_dialog();
+            self.layout_ref_dialog();
+            if let Some(rd) = self.ref_dialog.as_mut() {
+                rd.dialog.draw(scene, t, tr, theme, _presence);
+            }
+        } else {
+            self.ref_dialog = None;
         }
 
         // Tooltip last, so it sits over the affordances it describes.
@@ -2832,6 +3021,14 @@ impl Widget for SoftwareStore {
         _taffy: &TaffyTree<()>,
     ) {
         use winit::event::{ElementState, MouseButton, MouseScrollDelta};
+
+        // The `.flatpakref` install confirm is modal: while it's up the shared
+        // ModalDialog captures every event (clicks, Esc, Enter) and nothing
+        // leaks to the catalog behind the scrim.
+        if self.pending_ref.is_some() {
+            self.route_ref_event(event, scale_factor, modifiers, state, handled);
+            return;
+        }
 
         match event {
             WindowEvent::CursorMoved { position, .. } => {
@@ -3176,6 +3373,59 @@ mod tests {
             event: ev,
             is_synthetic: false,
         }
+    }
+
+    fn esc_press() -> winit::event::WindowEvent {
+        let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
+        ev.logical_key = winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape);
+        ev.physical_key =
+            winit::keyboard::PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
+        ev.location = winit::keyboard::KeyLocation::Standard;
+        ev.state = winit::event::ElementState::Pressed;
+        ev.repeat = false;
+        ev.text = None;
+        winit::event::WindowEvent::KeyboardInput {
+            device_id: synth_device(),
+            event: ev,
+            is_synthetic: false,
+        }
+    }
+
+    fn sample_ref() -> FlatpakRef {
+        FlatpakRef {
+            app_id: "org.gimp.GIMP".into(),
+            title: "GIMP".into(),
+            comment: "Image editor".into(),
+            url: "https://dl.flathub.org/repo/".into(),
+            branch: "stable".into(),
+            source_path: "/tmp/gimp.flatpakref".into(),
+        }
+    }
+
+    /// The `.flatpakref` install confirm routes through the shared
+    /// `ModalDialog`: Escape dismisses it without installing, and a click on
+    /// the primary runs the real install (via `confirm_pending_ref`).
+    #[test]
+    fn ref_install_dialog_confirms_and_escape_cancels() {
+        let mut d = Driver::new();
+        d.app.open_flatpakref(sample_ref());
+        assert!(d.app.pending_ref.is_some());
+        d.frame(); // builds + lays out the shared dialog
+        d.dispatch(esc_press());
+        assert!(d.app.pending_ref.is_none(), "Escape dismissed the confirm without installing");
+        assert!(d.app.ref_dialog.is_none());
+
+        // Re-arm, then click the primary → the gated install runs.
+        d.app.open_flatpakref(sample_ref());
+        d.frame();
+        let primary = d.app.ref_dialog.as_ref().unwrap().dialog.primary_rect();
+        d.dispatch(cursor_at(primary.center().x, primary.center().y));
+        d.dispatch(left_press());
+        assert!(d.app.pending_ref.is_none(), "the primary click consumed the pending ref");
+        assert!(d.app.ref_dialog.is_none());
+        // The install was kicked off: the store navigated to the app's detail
+        // and enqueued its install (observable side effects of the real path).
+        assert_eq!(d.app.detail.as_deref(), Some("org.gimp.GIMP"), "install navigates to the app");
     }
 
     #[test]
