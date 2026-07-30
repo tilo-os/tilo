@@ -354,6 +354,53 @@ mod tests {
         unsafe { std::env::remove_var("XDG_DATA_HOME") };
     }
 
+    /// A frame is what puts a tab's document on disk.
+    ///
+    /// The store's writers are debounced and off-thread, so something has
+    /// to offer them the documents; nothing did, and a session that typed
+    /// for an hour wrote nothing. Asserted through the shell's own
+    /// per-frame `update` and read back from a *different* store, so it is
+    /// the file on disk being checked and not the live copy.
+    #[test]
+    #[serial_test::serial(record_state_dir)]
+    fn a_frame_offers_every_open_tab_to_its_writer() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        // SAFETY: serialised on `record_state_dir`.
+        unsafe {
+            std::env::set_var("XDG_DATA_HOME", tmp.path());
+            std::env::remove_var("QOS_PACKAGE_ID");
+        }
+        const PACKAGE: &str = "dev.qos.test-frame-writeback";
+
+        let store = RecordStore::open(PACKAGE);
+        let (mut host, _chrome) = crate::shell::build_nirios_overlay_host_with_records(
+            tree_with_two_note_tabs(),
+            false,
+            store.clone(),
+        );
+        // What a tab's app writes when the user types into it.
+        store.with(&RecordId::for_tab(TAB_A), |doc| {
+            let mut app = NotesApp::with_seed("written by a frame");
+            app.sync(doc, &automerge::ROOT);
+        });
+
+        let mut shell_doc = AutoCommit::new();
+        host.update(&mut shell_doc, &automerge::ROOT);
+        // The writer debounces (`app_state::DEFAULT_DEBOUNCE`, 400 ms) and
+        // waits on its own thread; give it longer than that to land.
+        std::thread::sleep(std::time::Duration::from_millis(900));
+
+        let reader = RecordStore::open(PACKAGE);
+        reader.open_record(&scratch_tab_record(TAB_A));
+        assert_eq!(
+            tab_body(&reader, TAB_A, BODY_KEY).as_deref(),
+            Some("written by a frame"),
+            "a frame must offer each open tab's document to its writer",
+        );
+
+        unsafe { std::env::remove_var("XDG_DATA_HOME") };
+    }
+
     /// Two tabs of one app must not report the same presence identity —
     /// a peer's caret is a position in *a* document, and the wrong key
     /// paints it in the wrong tab.
@@ -368,6 +415,22 @@ mod tests {
         assert_ne!(
             ka, kb,
             "two tabs of one app must not share a presence key",
+        );
+
+        // And the key the *body* publishes under, which is the one a peer's
+        // caret is looked up by (`EditorApp::draw` reads
+        // `PresenceCtx::carets` with it). Same app, same field, two
+        // documents — so the record has to be part of the key or the caret
+        // is drawn in both tabs at once.
+        let body_key = |t: &Tile| match t.host.content() {
+            UiTile::App(w) => w.presence_key(),
+            _ => None,
+        };
+        let ba = body_key(&a).expect("the notes body publishes presence");
+        let bb = body_key(&b).expect("and so does the other tab's");
+        assert_ne!(
+            ba, bb,
+            "two tabs' bodies must not publish under one presence key",
         );
     }
 }
