@@ -1,4 +1,5 @@
 pub mod acl;
+pub mod caps_file;
 pub mod conflict;
 pub mod content;
 pub mod control;
@@ -15,7 +16,8 @@ pub mod syncstate;
 mod tests;
 
 pub use docstore::{DocStore, VersionManifest, VersionRef};
-pub use acl::{Access, AclEntry, IdentityKey, WorkspaceAcl};
+pub use acl::{Access, AclEntry, AclHandle, IdentityKey, WorkspaceAcl};
+pub use caps_file::{CapabilityFile, CapsError, Refresh};
 pub use fs::QuickFS;
 pub use namespace::{Namespace, ROOT_INO};
 pub use store::ContentStore;
