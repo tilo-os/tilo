@@ -1725,14 +1725,35 @@ impl Widget for GroupRow {
         // stale; painting them anyway would draw ghost rules at the
         // pre-maximize gap positions.
         //
-        // And skipped while a make-space slide is playing: a handle's
-        // neighbour rects are the groups' *final* positions, so a rule
-        // painted from them would sit in open wallpaper until the groups
-        // catch up to it. It reappears the moment they land.
+        // During a make-space slide each handle travels with the group on
+        // its right — which is where the gap it marks actually is. Two
+        // adjacent windows are both white cards, so without the rule
+        // between them a slide reads as one wide window rather than two
+        // moving apart.
         let any_drag = self.groups.iter().any(|g| g.drag_in_flight());
-        if !any_drag && maximized_idx.is_none() && !self.shift_in_flight() {
-            for h in &mut self.handles {
-                h.draw(scene, transform, tr, theme, presence);
+        if !any_drag && maximized_idx.is_none() {
+            let remaining = 1.0 - self.shift_anim_t();
+            let offsets: Vec<(u64, f64)> = if remaining > 0.0 {
+                self.shift_anim
+                    .as_ref()
+                    .map(|a| a.offsets.clone())
+                    .unwrap_or_default()
+            } else {
+                Vec::new()
+            };
+            for (i, h) in self.handles.iter_mut().enumerate() {
+                let dx = self
+                    .groups
+                    .get(i + 1)
+                    .and_then(|g| offsets.iter().find(|(id, _)| *id == g.id))
+                    .map(|(_, from)| from * remaining)
+                    .unwrap_or(0.0);
+                let t = if dx.abs() > f64::EPSILON {
+                    transform * Affine::translate((dx, 0.0))
+                } else {
+                    transform
+                };
+                h.draw(scene, t, tr, theme, presence);
             }
         }
 
