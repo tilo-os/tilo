@@ -99,6 +99,78 @@ pub fn verify_recovery(
     verify_passphrase(runner, ws, device, recovery_key, None)
 }
 
+/// How the independent unlock path is checked before anything destructive.
+///
+/// Enrollment happens with a person present who has just been shown the recovery
+/// key, so it can be checked properly. Confirmation happens unattended after a
+/// reboot, where nothing on the machine knows the recovery key — by design, since
+/// a machine that stored it would have turned it into a second copy of the disk
+/// key. So the two get different, honestly-labelled checks.
+pub enum RecoveryCheck<'a> {
+    /// Open the device with the recovery key. The real thing.
+    Key(&'a [u8]),
+    /// Unattended: confirm the keyslots that are *not* ours are still there.
+    ///
+    /// This is strictly weaker and the difference matters: it proves nothing
+    /// about whether the recovery key still derives that slot's key, only that
+    /// the slot exists and that we did not remove it. It is the strongest check
+    /// available without the secret, and it does catch the failure that actually
+    /// happens — a keyslot removed by accident.
+    ForeignSlotsPresent { expected: &'a [u32] },
+}
+
+/// Keyslot numbers in the header that no `qos-rollback` token claims.
+///
+/// The recovery key's slot and any `systemd-cryptenroll` slots. Nothing in this
+/// crate ever writes to them.
+pub fn foreign_keyslots(runner: &dyn Runner, device: &Path) -> Result<Vec<u32>> {
+    let all = keyslots_in_use(runner, device)?;
+    let ours: Vec<u32> = list_tokens(runner, device)?
+        .into_iter()
+        .filter_map(|(_, t)| t.keyslot().ok())
+        .collect();
+    Ok(all.into_iter().filter(|s| !ours.contains(s)).collect())
+}
+
+/// Run a [`RecoveryCheck`].
+pub fn verify_recovery_path(
+    runner: &dyn Runner,
+    ws: &Workspace,
+    device: &Path,
+    check: &RecoveryCheck<'_>,
+) -> Result<()> {
+    match check {
+        RecoveryCheck::Key(k) => {
+            if !verify_recovery(runner, ws, device, k)? {
+                bail!(
+                    "the supplied recovery key does not open {} — every safeguard here depends on \
+                     that key working, so nothing will be changed",
+                    device.display()
+                );
+            }
+            Ok(())
+        }
+        RecoveryCheck::ForeignSlotsPresent { expected } => {
+            let present = foreign_keyslots(runner, device)?;
+            if present.is_empty() {
+                bail!(
+                    "{} has no keyslot outside the ones this tool manages: there is no independent \
+                     unlock path left, so nothing will be changed",
+                    device.display()
+                );
+            }
+            if let Some(missing) = expected.iter().find(|e| !present.contains(e)) {
+                bail!(
+                    "keyslot {missing} was an independent unlock path at enrollment and is no \
+                     longer in {}'s header; refusing to change anything until that is explained",
+                    device.display()
+                );
+            }
+            Ok(())
+        }
+    }
+}
+
 /// Read every `qos-rollback` token in the header, newest generation first.
 pub fn list_tokens(runner: &dyn Runner, device: &Path) -> Result<Vec<(u32, RollbackToken)>> {
     let mut found = Vec::new();

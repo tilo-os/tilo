@@ -60,6 +60,11 @@ pub struct State {
     pub nv_base: i64,
     /// Last generation whose keyslot was enrolled and proven.
     pub last_confirmed: Option<u64>,
+    /// Keyslots that were an independent unlock path at enrollment — the recovery
+    /// key's, and any `systemd-cryptenroll` slot. Recorded so an unattended
+    /// confirmation can notice one has gone missing.
+    #[serde(default)]
+    pub foreign_keyslots: Vec<u32>,
 }
 
 pub fn state_path() -> PathBuf {
@@ -210,14 +215,14 @@ mod tests {
 
     #[test]
     fn base_comes_from_agreeing_sources() {
-        let s = State { nv_index: 1, nv_base: 100, last_confirmed: Some(7) };
+        let s = State { nv_index: 1, nv_base: 100, last_confirmed: Some(7), foreign_keyslots: vec![0] };
         let toks = vec![tok(7, 100), tok(6, 100)];
         assert_eq!(load_base(Some(&s), &toks).unwrap(), Some(100));
     }
 
     #[test]
     fn a_disagreeing_base_is_refused() {
-        let s = State { nv_index: 1, nv_base: 100, last_confirmed: Some(7) };
+        let s = State { nv_index: 1, nv_base: 100, last_confirmed: Some(7), foreign_keyslots: vec![0] };
         let toks = vec![tok(7, 999)];
         let e = load_base(Some(&s), &toks).unwrap_err().to_string();
         assert!(e.contains("disagrees between sources"), "{e}");
@@ -257,7 +262,7 @@ mod tests {
     fn state_round_trips() {
         let d = tempfile::tempdir().unwrap();
         let p = d.path().join("s.json");
-        let s = State { nv_index: 0x01D9_1100, nv_base: 5, last_confirmed: None };
+        let s = State { nv_index: 0x01D9_1100, nv_base: 5, last_confirmed: None, foreign_keyslots: vec![0, 1] };
         assert_eq!(load_state(&p).unwrap(), None);
         save_state(&p, &s).unwrap();
         assert_eq!(load_state(&p).unwrap(), Some(s));
@@ -276,10 +281,19 @@ pub struct Request<'a> {
     pub generation: u64,
     /// Directory holding the signed predictions the image shipped.
     pub prediction_dir: &'a Path,
-    /// The independent unlock path. Verified before anything is touched and
+    /// How the independent unlock path is checked, before anything is touched and
     /// again after everything is done.
-    pub recovery_key: &'a [u8],
+    pub recovery: keyslots::RecoveryCheck<'a>,
+    /// PIN, when the tokens carry one and a person is supplying it.
     pub pin: Option<&'a [u8]>,
+    /// A secret already known to open the device — normally the one `unlock`
+    /// used at boot, left in `/run`.
+    ///
+    /// Supplying it is what makes unattended confirmation possible at all: the
+    /// sealed token may need a PIN that nothing on the machine knows after boot,
+    /// and this value is a *better* proof than a fresh unseal would be, because
+    /// the machine demonstrably booted with it.
+    pub proof: Option<&'a [u8]>,
     /// Raise the floor to at least this generation.
     pub floor_at_least: Option<u64>,
     pub state_path: &'a Path,
@@ -320,13 +334,15 @@ pub fn run(runner: &dyn Runner, ws: &Workspace, req: &Request<'_>) -> Result<Out
     let device = req.device;
     let cfg = req.cfg;
 
-    if !keyslots::verify_recovery(runner, ws, device, req.recovery_key)? {
-        bail!(
-            "the supplied recovery key does not open {} — refusing to confirm, because every \
-             safeguard here depends on that key working",
-            device.display()
-        );
-    }
+    keyslots::verify_recovery_path(runner, ws, device, &req.recovery)?;
+    let authorising: &[u8] = match (req.proof, &req.recovery) {
+        (Some(p), _) => p,
+        (None, keyslots::RecoveryCheck::Key(k)) => k,
+        (None, _) => bail!(
+            "confirmation needs either a recovery key or a proof secret that already opens the \
+             device; without one there is nothing to authorise a keyslot change with"
+        ),
+    };
 
     let mut tokens = keyslots::list_tokens(runner, device)?;
     let state = load_state(req.state_path)?;
@@ -359,7 +375,7 @@ pub fn run(runner: &dyn Runner, ws: &Workspace, req: &Request<'_>) -> Result<Out
                 req.generation,
                 floor,
                 &predictions,
-                req.recovery_key,
+                authorising,
                 req.pin,
             )?);
             tokens = keyslots::list_tokens(runner, device)?;
@@ -384,30 +400,54 @@ pub fn run(runner: &dyn Runner, ws: &Workspace, req: &Request<'_>) -> Result<Out
         });
     }
 
-    // The proof. Everything below is authorised by a secret that demonstrably
-    // works right now, not by the belief that it should.
-    let (_, running_token) = tokens
+    // The proof that the generation being confirmed can actually unlock this
+    // machine. Either it was handed to us (the secret this boot unlocked with) or
+    // we unseal it now. Everything destructive below is authorised by it, so no
+    // step can proceed on a belief.
+    let running_slot = tokens
         .iter()
         .find(|(_, t)| t.generation == req.generation)
-        .context("no token for the generation being confirmed")?;
-    let proof = keyslots::unseal(
-        runner,
-        ws,
-        running_token,
-        Path::new(&cfg.pcr_public_key),
-        req.pin,
-    )?
-    .context(
-        "the token for the generation being confirmed does not unseal on this machine, so there is \
-         nothing to confirm; refusing to touch the floor",
-    )?;
-    if !keyslots::verify_passphrase(runner, ws, device, &proof, None)? {
-        bail!(
-            "the unsealed secret for generation {} does not open {}",
-            req.generation,
-            device.display()
-        );
-    }
+        .context("no token for the generation being confirmed")?
+        .1
+        .keyslot()?;
+    let proof: Vec<u8> = match req.proof {
+        Some(p) => {
+            if !keyslots::verify_passphrase(runner, ws, device, p, Some(running_slot))? {
+                bail!(
+                    "the supplied proof secret does not open generation {}'s keyslot ({running_slot}) \
+                     on {} — refusing to confirm a generation on someone else's secret",
+                    req.generation,
+                    device.display()
+                );
+            }
+            p.to_vec()
+        }
+        None => {
+            let (_, running_token) = tokens
+                .iter()
+                .find(|(_, t)| t.generation == req.generation)
+                .expect("found above");
+            let s = keyslots::unseal(
+                runner,
+                ws,
+                running_token,
+                Path::new(&cfg.pcr_public_key),
+                req.pin,
+            )?
+            .context(
+                "the token for the generation being confirmed does not unseal on this machine, so \
+                 there is nothing to confirm; refusing to touch the floor",
+            )?;
+            if !keyslots::verify_passphrase(runner, ws, device, &s, None)? {
+                bail!(
+                    "the unsealed secret for generation {} does not open {}",
+                    req.generation,
+                    device.display()
+                );
+            }
+            s.to_vec()
+        }
+    };
 
     retention::prune_is_safe(&plan.drop, &[req.generation], true)?;
     let mut dropped = Vec::new();
@@ -436,15 +476,12 @@ pub fn run(runner: &dyn Runner, ws: &Workspace, req: &Request<'_>) -> Result<Out
             nv_index: cfg.nv_index,
             nv_base: floor.base,
             last_confirmed: Some(req.generation),
+            foreign_keyslots: keyslots::foreign_keyslots(runner, device)?,
         },
     )?;
 
-    if !keyslots::verify_recovery(runner, ws, device, req.recovery_key)? {
-        bail!(
-            "the recovery key no longer opens {} after confirmation — this needs attention NOW",
-            device.display()
-        );
-    }
+    // SAFETY-CRITICAL: last word goes to the independent unlock path.
+    keyslots::verify_recovery_path(runner, ws, device, &req.recovery)?;
     Ok(Outcome {
         plan,
         enrolled,
