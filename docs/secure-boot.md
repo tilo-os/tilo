@@ -153,8 +153,14 @@ the recovery key. Making PCR 4 workable needs signed PCR policies
 Consequences to expect:
 
 - Turning Secure Boot on or off after install changes PCR 7, so the TPM slot
-  stops opening. Unlock with the recovery key and re-run
-  `qos-disk-encrypt enrol` to re-seal.
+  stops opening. Unlock with the recovery key, then:
+
+  ```bash
+  sudo qos-disk-encrypt enrol /dev/<luks-partition> --reseal
+  ```
+
+  which replaces the stale TPM slot, authorising with the recovery key you just
+  typed. Add `--pin-file` to re-seal with a PIN.
 - A replaced motherboard or a cleared TPM is the same case, and has the same fix.
   This is the reason the recovery key is mandatory rather than offered.
 
