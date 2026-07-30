@@ -1,6 +1,7 @@
-use automerge::{AutoCommit, ObjId};
+use automerge::{AutoCommit, ObjId, ROOT};
 use std::sync::{Arc, OnceLock};
 use std::time::Instant;
+use crate::record::{RecordCheckout, RecordId, RecordStore};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
 use vello::peniko::{Blob, ImageAlphaType, ImageBrush, ImageData as Image, ImageFormat as Format};
@@ -147,6 +148,40 @@ fn draw_shadow_sprite(
     scene.pop_layer();
 }
 
+/// Which direction through a document's history a keystroke asks for.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum UndoStep {
+    Undo,
+    Redo,
+}
+
+/// The undo / redo chord an event carries, if any.
+///
+/// The same three bindings the host answers globally (`Ctrl+Z`,
+/// `Ctrl+Shift+Z`, `Ctrl+Y`) — read here first, and only while a tile's
+/// app holds focus, so the keystroke lands on the document the user is
+/// looking at.
+fn undo_step(event: &WindowEvent, m: &winit::event::Modifiers) -> Option<UndoStep> {
+    if !(m.state().control_key() || m.state().super_key()) {
+        return None;
+    }
+    let WindowEvent::KeyboardInput { event: key, .. } = event else {
+        return None;
+    };
+    if key.state != winit::event::ElementState::Pressed {
+        return None;
+    }
+    let winit::keyboard::Key::Character(c) = &key.logical_key else {
+        return None;
+    };
+    match c.as_str() {
+        "z" | "Z" if m.state().shift_key() => Some(UndoStep::Redo),
+        "z" | "Z" => Some(UndoStep::Undo),
+        "y" | "Y" => Some(UndoStep::Redo),
+        _ => None,
+    }
+}
+
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum AppKind { Terminal, Files, Editor, Browser, Settings }
 
@@ -173,8 +208,50 @@ pub enum TileContent {
     // reserved: Wayland(u64),
 }
 
+/// Which record a tile is showing, and where that record's document lives.
+///
+/// A tab is an open thing, not a view onto one shared thing, so the
+/// document behind it is the tab's own. Without this the host handed every
+/// tile the same document root and the same key inside it: two Notes tabs
+/// were one note wearing two pills, and everything downstream — undo,
+/// presence, in-app search — inherited that.
+struct Binding {
+    store: RecordStore,
+    /// The record the *tab* is: where its content lives while no file
+    /// names it. Never changes for the life of the tab.
+    tab: RecordCheckout,
+    /// The record actually live in this tile. `tab.id` until the hosted
+    /// app declares a file through
+    /// [`Widget::record_intent`](crate::widget::Widget::record_intent) —
+    /// opening a document *is* moving the tab onto that document's record,
+    /// and the scratch record it leaves behind is still its own document.
+    live: RecordId,
+}
+
+impl Binding {
+    /// Follow what the app says it is working on. Returns the record whose
+    /// document the app must be handed this pass.
+    fn follow(&mut self, want: Option<RecordCheckout>) -> RecordId {
+        if let Some(want) = want {
+            if want.id != self.live {
+                self.store.open_record(&want);
+                self.live = want.id;
+            }
+        }
+        self.live.clone()
+    }
+}
+
 pub struct TileHost {
     content: TileContent,
+    /// The tab's own document, or `None` for a tile nothing bound — a
+    /// bare `ui` host, a stub card, a test that only exercises paint.
+    /// Unbound tiles keep the old behaviour of editing whatever document
+    /// the parent pass carries.
+    binding: Option<Binding>,
+    /// The record scope the hosted app was last told about, so a scope is
+    /// announced once per change rather than every frame.
+    announced: Option<RecordId>,
     rect: Rect,
     /// Set by the parent `WindowGroup` each frame to indicate whether
     /// this tile is the "focused" tile — the concept's
@@ -198,7 +275,74 @@ pub struct TileHost {
 
 impl TileHost {
     pub fn new(content: TileContent) -> Self {
-        Self { content, rect: Rect::ZERO, focused: false, spawned_at: None }
+        Self {
+            content,
+            binding: None,
+            announced: None,
+            rect: Rect::ZERO,
+            focused: false,
+            spawned_at: None,
+        }
+    }
+
+    /// Give this tile its own document: the record `tab` names, kept in
+    /// `store`.
+    ///
+    /// Called once per tab as the window tree is built. From here on the
+    /// hosted app reads and writes that record's document rather than
+    /// whatever the parent pass carries, which is what makes a second tab
+    /// of an app a second thing rather than another window onto the first.
+    ///
+    /// Idempotent on the same record — rebuilding the tree re-binds every
+    /// tile, and a bind that opened the record again would hand the tab a
+    /// fresh empty document.
+    pub fn bind_record(&mut self, store: RecordStore, tab: RecordCheckout) {
+        if let Some(b) = &self.binding {
+            if b.tab.id == tab.id {
+                return;
+            }
+        }
+        store.open_record(&tab);
+        let live = tab.id.clone();
+        self.binding = Some(Binding { store, tab, live });
+        self.announce_scope();
+    }
+
+    /// The record whose document this tile's app is editing, if it has one
+    /// of its own.
+    pub fn live_record(&self) -> Option<&RecordId> {
+        self.binding.as_ref().map(|b| &b.live)
+    }
+
+    /// The record the tab *is*, whatever file it may currently be showing.
+    pub fn tab_record(&self) -> Option<&RecordCheckout> {
+        self.binding.as_ref().map(|b| &b.tab)
+    }
+
+    /// Bring the binding up to date with what the app says it is working
+    /// on, and hand back the record whose document it must be given.
+    fn resolve_record(&mut self) -> Option<RecordId> {
+        let want = match &self.content {
+            TileContent::App(w) => w.record_intent(),
+            TileContent::Stub { .. } => None,
+        };
+        let live = self.binding.as_mut()?.follow(want);
+        self.announce_scope();
+        Some(live)
+    }
+
+    /// Tell the hosted app which record it is on, once per change.
+    fn announce_scope(&mut self) {
+        let Some(live) = self.binding.as_ref().map(|b| b.live.clone()) else {
+            return;
+        };
+        if self.announced.as_ref() == Some(&live) {
+            return;
+        }
+        if let TileContent::App(w) = &mut self.content {
+            w.set_record_scope(&live);
+        }
+        self.announced = Some(live);
     }
     pub fn kind_string(&self) -> String {
         match &self.content {
@@ -252,8 +396,45 @@ impl TileHost {
 }
 
 impl Widget for TileHost {
-    fn sync(&mut self, s: &mut AutoCommit, p: &ObjId) { if let TileContent::App(w) = &mut self.content { w.sync(s, p); } }
-    fn update(&mut self, s: &mut AutoCommit, p: &ObjId) -> bool { if let TileContent::App(w) = &mut self.content { w.update(s, p) } else { false } }
+    fn sync(&mut self, s: &mut AutoCommit, p: &ObjId) {
+        let live = self.resolve_record();
+        let TileContent::App(w) = &mut self.content else {
+            return;
+        };
+        match (live, &self.binding) {
+            (Some(id), Some(b)) => {
+                b.store.with(&id, |doc| w.sync(doc, &ROOT));
+            }
+            _ => w.sync(s, p),
+        }
+    }
+
+    fn update(&mut self, s: &mut AutoCommit, p: &ObjId) -> bool {
+        let live = self.resolve_record();
+        let TileContent::App(w) = &mut self.content else {
+            return false;
+        };
+        let (Some(id), Some(b)) = (live, &self.binding) else {
+            return w.update(s, p);
+        };
+        let changed = b.store.with(&id, |doc| w.update(doc, &ROOT)).unwrap_or(false);
+        // Close the app's typing burst against *this* record's history.
+        // The host's own commit pass works on the document it holds, which
+        // is no longer the one the tab is editing — leaving the burst open
+        // forever, and the tab with nothing to undo.
+        if w.needs_commit() {
+            b.store.with_history(&id, |doc, history| {
+                history.commit_action_authored(
+                    doc,
+                    None,
+                    w.get_state(),
+                    Some(crate::collaboration::local_user_id()),
+                );
+            });
+            w.on_commit();
+        }
+        changed
+    }
     fn build_layout(&mut self, taffy: &mut TaffyTree<()>, theme: &Theme, node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>) -> NodeId {
         let node = match &mut self.content {
             TileContent::App(w) => {
@@ -346,16 +527,89 @@ impl Widget for TileHost {
         self.draw_steady_state(scene, transform, tr, theme, presence);
     }
     fn handle_event(&mut self, event: &WindowEvent, scale_factor: f64, m: &winit::event::Modifiers, s: &mut AutoCommit, p: &ObjId, handled: &mut bool, focus_target: &mut Option<NodeId>, node_id: NodeId, taffy: &TaffyTree<()>) {
-        if let TileContent::App(w) = &mut self.content {
-            // Same structural-mismatch guard as apply_layout above.
-            let children = taffy.children(node_id).unwrap_or_default();
-            if let Some(&child_node) = children.first() {
-                w.handle_event(event, scale_factor, m, s, p, handled, focus_target, child_node, taffy);
-            }
+        let live = self.resolve_record();
+        let TileContent::App(w) = &mut self.content else {
+            return;
+        };
+        // Same structural-mismatch guard as apply_layout above.
+        let children = taffy.children(node_id).unwrap_or_default();
+        let Some(&child_node) = children.first() else {
+            return;
+        };
+        let (Some(id), Some(b)) = (live, &self.binding) else {
+            w.handle_event(event, scale_factor, m, s, p, handled, focus_target, child_node, taffy);
+            return;
+        };
+        // Undo belongs to the document, so it is answered here rather than
+        // by the host's one global stack. An `UndoEntry` is a pair of
+        // change hashes inside *this* record's change graph; run against
+        // another tab's document it names changes that document has never
+        // seen, and Ctrl+Z either does nothing or reverts the wrong thing.
+        if w.is_focused()
+            && let Some(step) = undo_step(event, m)
+        {
+            b.store.with_history(&id, |doc, history| {
+                let author = crate::collaboration::local_user_id();
+                match step {
+                    UndoStep::Undo => history.undo_as(doc, Some(&author), None, w.get_state()),
+                    UndoStep::Redo => history.redo_as(doc, Some(&author), None, w.get_state()),
+                }
+                .map(|entry| {
+                    if let Some(meta) = entry.widget_metadata.as_deref() {
+                        w.set_state(meta);
+                    }
+                })
+            });
+            *handled = true;
+            return;
         }
+        b.store.with(&id, |doc| {
+            w.handle_event(
+                event,
+                scale_factor,
+                m,
+                doc,
+                &ROOT,
+                handled,
+                focus_target,
+                child_node,
+                taffy,
+            )
+        });
     }
     fn name(&self) -> &str { "TileHost" }
     fn get_rect(&self) -> Rect { self.rect }
+    /// The tile's presence identity is the record it is showing.
+    ///
+    /// Which is the only thing that tells two tabs of one app apart: the
+    /// app is the same app, the widget path inside it is the same path,
+    /// and a peer's caret is a position in *a document*. Unbound tiles
+    /// report nothing, as they did before there was a record to name.
+    fn presence_key(&self) -> Option<crate::presence::PresenceKey> {
+        self.binding.as_ref().map(|b| crate::presence::PresenceKey::Tab {
+            id: b.live.as_str().to_string(),
+        })
+    }
+    /// A bound tile has already committed the app's burst against its own
+    /// record in [`Widget::update`]; saying "yes" here would ask the host
+    /// to commit its own, unrelated document too.
+    fn needs_commit(&self) -> bool {
+        if self.binding.is_some() {
+            return false;
+        }
+        match &self.content {
+            TileContent::App(w) => w.needs_commit(),
+            TileContent::Stub { .. } => false,
+        }
+    }
+    fn on_commit(&mut self) {
+        if self.binding.is_some() {
+            return;
+        }
+        if let TileContent::App(w) = &mut self.content {
+            w.on_commit();
+        }
+    }
     fn take_structure_dirty(&mut self) -> bool {
         // A hosted app widget could itself mutate its subtree (e.g. a file
         // explorer that spawns a new pane). Forward through so App can
