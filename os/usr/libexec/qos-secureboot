@@ -93,10 +93,12 @@ artefacts() {
   for f in "$ESP/EFI/systemd/systemd-bootx64.efi" \
            "$ESP/EFI/BOOT/BOOTX64.EFI" \
            "$ESP/EFI/systemd/systemd-bootia32.efi"; do
-    [ -f "$f" ] && printf '%s\n' "$f"
+    if [ -f "$f" ]; then printf '%s\n' "$f"; fi
   done
   find "$BOOTDIR" -maxdepth 4 -name 'vmlinuz*' -type f 2>/dev/null | sort
   find "$ESP/EFI/Linux" -maxdepth 1 -name '*.efi' -type f 2>/dev/null | sort
+  # A loop or find that matched nothing must not look like a failure to `set -e`.
+  return 0
 }
 
 signed_with_db() {
@@ -120,7 +122,7 @@ cmd_status() {
     log "owner keys    : none generated yet"
   fi
   for v in vendor-db.esl vendor-KEK.esl; do
-    [ -s "$KEYDIR/$v" ] && log "factory keys  : $KEYDIR/$v captured"
+    if [ -s "$KEYDIR/$v" ]; then log "factory keys  : $KEYDIR/$v captured"; fi
   done
   if resign_armed; then
     log "re-sign       : armed ($(systemctl is-enabled qos-secureboot-sign.path 2>/dev/null || true) path, $(systemctl is-enabled qos-secureboot-sign.service 2>/dev/null || true) service)"
