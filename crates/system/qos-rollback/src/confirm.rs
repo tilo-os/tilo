@@ -263,3 +263,192 @@ mod tests {
         assert_eq!(load_state(&p).unwrap(), Some(s));
     }
 }
+
+// ---------------------------------------------------------------------------
+// The whole confirmation, in one place
+// ---------------------------------------------------------------------------
+
+/// Inputs to [`run`].
+pub struct Request<'a> {
+    pub cfg: &'a crate::Config,
+    pub device: &'a Path,
+    /// Generation being confirmed — the one that booted.
+    pub generation: u64,
+    /// Directory holding the signed predictions the image shipped.
+    pub prediction_dir: &'a Path,
+    /// The independent unlock path. Verified before anything is touched and
+    /// again after everything is done.
+    pub recovery_key: &'a [u8],
+    pub pin: Option<&'a [u8]>,
+    /// Raise the floor to at least this generation.
+    pub floor_at_least: Option<u64>,
+    pub state_path: &'a Path,
+    pub scratch: &'a Path,
+    /// Report and change nothing.
+    pub dry_run: bool,
+}
+
+/// What a confirmation did.
+#[derive(Debug, Clone)]
+pub struct Outcome {
+    pub plan: Plan,
+    /// `(keyslot, token id)` when this run enrolled the generation.
+    pub enrolled: Option<(u32, u32)>,
+    pub dropped: Vec<u64>,
+    pub floor: FloorState,
+}
+
+/// Confirm a generation: enroll it if needed, prove it, prune the window, and
+/// only then raise the floor.
+///
+/// This is the ordering the whole design rests on, so it lives in the library
+/// rather than in the command-line front end — a test that re-implements the
+/// order proves nothing about the order the machine actually uses.
+///
+/// SAFETY-CRITICAL, in the order the steps appear:
+///
+/// 1. the recovery key must open the device before anything is touched;
+/// 2. the generation being confirmed must have a keyslot, enrolled here if it
+///    does not, and enrollment verifies its own slot;
+/// 3. its secret must unseal *and* open the device — that value is then the
+///    authorisation for everything destructive that follows, so no step can
+///    proceed on an assumption;
+/// 4. pruning comes before the floor, because pruning is reversible by
+///    re-enrolling and an NV increment is reversible by nothing;
+/// 5. the recovery key must still open the device at the end.
+pub fn run(runner: &dyn Runner, ws: &Workspace, req: &Request<'_>) -> Result<Outcome> {
+    let device = req.device;
+    let cfg = req.cfg;
+
+    if !keyslots::verify_recovery(runner, ws, device, req.recovery_key)? {
+        bail!(
+            "the supplied recovery key does not open {} — refusing to confirm, because every \
+             safeguard here depends on that key working",
+            device.display()
+        );
+    }
+
+    let mut tokens = keyslots::list_tokens(runner, device)?;
+    let state = load_state(req.state_path)?;
+    let base = load_base(state.as_ref(), &tokens)?
+        .context("no rollback enrollment on this device yet: run `qos-rollback enroll` first")?;
+    let counter_value = counter::read(runner, cfg.nv_index, req.scratch)?
+        .context("the rollback floor counter has never been incremented")?;
+    let mut floor = FloorState { counter: counter_value, base };
+
+    // The generation must have a keyslot before the floor can pass it.
+    let mut enrolled = None;
+    if !tokens.iter().any(|(_, t)| t.generation == req.generation) {
+        let predictions =
+            crate::policy::load_signed_predictions(req.prediction_dir, req.generation)?;
+        if predictions.is_empty() {
+            bail!(
+                "no signed PCR prediction for generation {} in {}; cannot enroll it, and \
+                 confirming without enrolling would raise the floor past a generation that has no \
+                 keyslot",
+                req.generation,
+                req.prediction_dir.display()
+            );
+        }
+        if !req.dry_run {
+            enrolled = Some(keyslots::enroll_generation(
+                runner,
+                ws,
+                device,
+                cfg,
+                req.generation,
+                floor,
+                &predictions,
+                req.recovery_key,
+                req.pin,
+            )?);
+            tokens = keyslots::list_tokens(runner, device)?;
+        }
+    }
+
+    let present: Vec<u64> = tokens.iter().map(|(_, t)| t.generation).collect();
+    let plan = plan(
+        req.generation,
+        floor,
+        &present,
+        cfg.retained_generations,
+        req.floor_at_least,
+    )?;
+
+    if req.dry_run {
+        return Ok(Outcome {
+            plan,
+            enrolled: None,
+            dropped: Vec::new(),
+            floor,
+        });
+    }
+
+    // The proof. Everything below is authorised by a secret that demonstrably
+    // works right now, not by the belief that it should.
+    let (_, running_token) = tokens
+        .iter()
+        .find(|(_, t)| t.generation == req.generation)
+        .context("no token for the generation being confirmed")?;
+    let proof = keyslots::unseal(
+        runner,
+        ws,
+        running_token,
+        Path::new(&cfg.pcr_public_key),
+        req.pin,
+    )?
+    .context(
+        "the token for the generation being confirmed does not unseal on this machine, so there is \
+         nothing to confirm; refusing to touch the floor",
+    )?;
+    if !keyslots::verify_passphrase(runner, ws, device, &proof, None)? {
+        bail!(
+            "the unsealed secret for generation {} does not open {}",
+            req.generation,
+            device.display()
+        );
+    }
+
+    retention::prune_is_safe(&plan.drop, &[req.generation], true)?;
+    let mut dropped = Vec::new();
+    for g in &plan.drop {
+        let Some((token_id, t)) = tokens.iter().find(|(_, t)| t.generation == *g) else {
+            continue;
+        };
+        keyslots::kill_generation_slot(runner, ws, device, *token_id, t.keyslot()?, &proof)?;
+        dropped.push(*g);
+    }
+
+    floor = advance_floor(
+        runner,
+        ws,
+        device,
+        &plan,
+        floor,
+        cfg.nv_index,
+        &proof,
+        req.scratch,
+    )?;
+
+    save_state(
+        req.state_path,
+        &State {
+            nv_index: cfg.nv_index,
+            nv_base: floor.base,
+            last_confirmed: Some(req.generation),
+        },
+    )?;
+
+    if !keyslots::verify_recovery(runner, ws, device, req.recovery_key)? {
+        bail!(
+            "the recovery key no longer opens {} after confirmation — this needs attention NOW",
+            device.display()
+        );
+    }
+    Ok(Outcome {
+        plan,
+        enrolled,
+        dropped,
+        floor,
+    })
+}
