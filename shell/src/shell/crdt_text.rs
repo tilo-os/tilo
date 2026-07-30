@@ -70,6 +70,12 @@ pub struct CrdtTextBody {
     /// Automerge key under the tile's root. Distinct per app so two text
     /// tiles hosted in the same shell don't write over each other.
     key: &'static str,
+    /// The record whose document this body lives in, once the host has
+    /// said. Part of the presence key and nothing else: the body's
+    /// *content* is addressed by `key` inside that document, but its
+    /// *identity to a peer* has to name the document too, or two tabs of
+    /// one app publish the same caret address.
+    record: Option<String>,
     /// Mirror of the CRDT text, in step after every [`Self::sync`] and
     /// every [`Self::splice`]. Byte-indexed.
     pub text: String,
@@ -82,6 +88,7 @@ impl CrdtTextBody {
     pub fn new(key: &'static str) -> Self {
         Self {
             key,
+            record: None,
             text: String::new(),
             last_edit: None,
         }
@@ -93,16 +100,39 @@ impl CrdtTextBody {
     pub fn with_seed(key: &'static str, text: impl Into<String>) -> Self {
         Self {
             key,
+            record: None,
             text: text.into(),
             last_edit: None,
         }
     }
 
+    /// Name the record this body's document is. Called by the tile that
+    /// hosts the app, through
+    /// [`ui::widget::Widget::set_record_scope`].
+    pub fn set_record(&mut self, record: &ui::record::RecordId) {
+        self.record = Some(record.as_str().to_string());
+    }
+
     /// Presence key for this body — a widget-level path, so the peer
     /// caret / selection helpers pick it up.
+    ///
+    /// The path names the record first and the field second, because a
+    /// caret is a position in a *document*: two Notes tabs are two
+    /// documents with a `notes_body` each, and a key that only said
+    /// "notes_body" addressed both of them at once — a peer typing in one
+    /// tab drew a caret in the other. An unhosted body (no record named
+    /// yet) keeps the bare field path.
     pub fn presence_key(&self) -> PresenceKey {
-        PresenceKey::Widget {
-            path: vec![PathSegment::Field(self.key.into())],
+        match &self.record {
+            Some(record) => PresenceKey::Widget {
+                path: vec![
+                    PathSegment::Field(record.clone()),
+                    PathSegment::Field(self.key.into()),
+                ],
+            },
+            None => PresenceKey::Widget {
+                path: vec![PathSegment::Field(self.key.into())],
+            },
         }
     }
 
