@@ -626,7 +626,7 @@ impl NavShell {
     /// without this the chip lands on top of the sidebar's first row and clips
     /// its section heading. The panel *fill* still uses the full rect, so the
     /// reserved band is sidebar-coloured rather than a notch.
-    fn sidebar_content_rect(&self) -> Rect {
+    pub fn sidebar_content_rect(&self) -> Rect {
         let r = self.sidebar_rect;
         if self.affordance != Affordance::SidebarToggle || r.height() <= 0.0 {
             return r;
