@@ -10562,22 +10562,29 @@ mod tests {
     /// `NotesProvider` → palette rows. `nir` appears nowhere but the
     /// note's body, and the palette answered it with nothing, because the
     /// provider looked for the body under a per-tab map keyed by the tab
-    /// id — a shape the tile wiring never creates, since every hosted app
-    /// syncs against the same document root.
+    /// id — a shape the tile wiring never creates.
     #[test]
     fn ctrl_k_finds_a_word_that_only_appears_in_the_notes_body() {
         use crate::shell::chrome_state::SearchScope;
         use crate::shell::notes_app::NotesApp;
 
         let mut h = build_harness();
-        // The document as the app leaves it: `pump_apps` calls exactly
+        let doc = AutoCommit::new();
+        // The document as the app leaves it, in the document the app is
+        // handed: the tab's own record. `TileHost::sync` calls exactly
         // this on every frame of the live compositor.
-        let mut doc = AutoCommit::new();
-        let mut notes = NotesApp::with_seed(
-            "Welcome to nirios.\n\nThese notes sync live with anyone \
-             invited to this workspace.",
-        );
-        notes.sync(&mut doc, &automerge::ROOT);
+        let notes_tab = h.chrome.borrow().tree().workspaces[0].strips[0].window_groups[0].tabs[0]
+            .id;
+        let record = crate::shell::tab_documents::scratch_tab_record(notes_tab);
+        let store = h.chrome.borrow().records().clone();
+        store.open_record(&record);
+        store.with(&record.id, |d| {
+            let mut notes = NotesApp::with_seed(
+                "Welcome to nirios.\n\nThese notes sync live with anyone \
+                 invited to this workspace.",
+            );
+            notes.sync(d, &automerge::ROOT);
+        });
 
         let ctrl = Modifiers::from(ModifiersState::CONTROL);
         assert!(pump(&mut h, &key_press(Key::Character("k".into())), &ctrl));
