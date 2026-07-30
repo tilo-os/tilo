@@ -1218,10 +1218,11 @@ pub fn run() -> ! {
     // compositor `WorkspaceTree::bootstrap_default()`, so every boot was
     // a new desktop with unowned rooms and nothing was ever written back.
     let tree_handle = load_session_tree(enable_peer_sync);
-    let mut frame_builder = FrameBuilder::with_handle(
+    let mut frame_builder = FrameBuilder::with_handle_and_records(
         tree_handle.clone(),
         enable_peer_sync,
         initial_size,
+        crate::shell::session_record_store(),
     );
     // The scene spans every output, but a window's width is a fraction of
     // the monitor it is on — so hand the strips the real per-display
