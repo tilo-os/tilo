@@ -344,7 +344,7 @@ fn drop_records_filesystem_grant_for_target_app_on_the_workspace() {
     );
     // `grants()` derives the per-app view from the capability list, so it
     // is bound before borrowing out of it.
-    let view = ws.grants();
+    let view = ws.app_grants_snapshot();
     let editor_caps = view
         .get(&editor_key)
         .unwrap_or_else(|| panic!("a .ts drop must record a grant under {editor_key}"));
@@ -381,7 +381,7 @@ fn repeated_drop_of_same_file_does_not_duplicate_the_grant() {
     let st = chrome.borrow();
     let tree = st.tree();
     let editor_key = AppKind::Other("Editor".into()).app_id();
-    let view = tree.workspaces[0].grants();
+    let view = tree.workspaces[0].app_grants_snapshot();
     let editor_caps = view.get(&editor_key).expect("grant present");
     let count = editor_caps
         .iter()

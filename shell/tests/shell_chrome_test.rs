@@ -136,97 +136,72 @@ fn workspace_settings_general_edits_name_and_removes_collaborator() {
 }
 
 #[test]
-fn workspace_settings_roles_tab_edits_app_permissions() {
-    use shell::shell::state::{AppPerm, Role, RolePermissions, Workspace, WorkspaceId};
-    use shell::shell::workspace_settings::{WorkspaceSettings, WsTab};
+fn workspace_settings_members_tab_reads_the_real_roster() {
+    // Replaces four tests over `Workspace::roles` +
+    // `Workspace::workspace_files` and the two `DataTable`s built on
+    // them. That vocabulary is gone: nothing consulted it, and both
+    // vectors were empty in every production construction, so the tables
+    // asserted only that a table had columns. What a member may do is
+    // the verb on their membership capability, and that is what the
+    // Members pane renders.
+    use shell::shell::state::{CapOverride, CapRole, Subject, Verb, Workspace, WorkspaceId};
+    use shell::shell::workspace_settings::{WsTab, members_pane_rows};
     let mut ws = Workspace::new(WorkspaceId::new(), "Design");
-    ws.roles.push(Role {
-        id: "r1".into(),
-        name: "Viewer".into(),
-        permissions: RolePermissions::default(),
-    });
-    let mut modal = WorkspaceSettings::new(ws.id);
-    modal.set_tab(WsTab::Roles);
-    modal.select_role("r1");
-    assert_eq!(modal.selected_role(), Some("r1"));
-    modal.set_app_perm(&mut ws, "r1", "Terminal", AppPerm::View);
-    modal.set_app_perm(&mut ws, "r1", "Terminal", AppPerm::Edit);
-    let perm = ws.roles[0]
-        .permissions
-        .per_app
-        .get("Terminal")
-        .copied()
-        .unwrap_or(AppPerm::None);
-    assert!(matches!(perm, AppPerm::Edit));
+    ws.set_owner("host");
+    let room = ws.id.raw().to_string();
+    ws.grant_as(
+        &"host".to_string(),
+        CapOverride::membership(Subject::person("viewer-user"), room, Verb::Read),
+    )
+    .expect("the owner may write a membership");
+
+    let mut modal = shell::shell::workspace_settings::WorkspaceSettings::new(ws.id);
+    modal.set_tab(WsTab::Members);
+    assert_eq!(modal.active_tab(), WsTab::Members);
+
+    let pane = vello::kurbo::Rect::new(0.0, 0.0, 640.0, 480.0);
+    let rows = members_pane_rows(&ws, pane);
+    assert_eq!(rows.len(), 2, "owner + the invited viewer");
+    assert_eq!(rows[0].user, "host");
+    assert!(rows[0].is_workspace_owner);
+    assert_eq!(rows[0].role, CapRole::Owner);
+    assert_eq!(rows[1].user, "viewer-user");
+    assert_eq!(rows[1].role, CapRole::Viewer);
 }
 
 #[test]
-fn workspace_settings_roles_tab_builds_apps_table_with_columns() {
-    use shell::shell::state::WorkspaceId;
-    use shell::shell::workspace_settings::WorkspaceSettings;
-    let modal = WorkspaceSettings::new(WorkspaceId::new());
-    // Apps table should expose two columns: the app name (flex) and the
-    // permission picker (fixed width). Keys are stable so callers can hook
-    // sort/resize policies onto them in later tasks.
-    let apps_cols: Vec<String> = modal
-        .apps_table()
-        .columns()
-        .iter()
-        .map(|c| c.key.clone())
-        .collect();
-    assert_eq!(apps_cols, vec!["app".to_string(), "permission".to_string()]);
-}
-
-#[test]
-fn workspace_settings_files_tab_edits_file_permissions() {
+fn workspace_settings_permissions_tab_lists_granted_capabilities() {
     use shell::shell::state::{
-        FilePerm, Role, RolePermissions, Workspace, WorkspaceFile, WorkspaceId,
+        CapOverride, Expiry, Scope, Subject, Verb, Workspace, WorkspaceId,
     };
-    use shell::shell::workspace_settings::{WorkspaceSettings, WsTab};
+    use shell::shell::workspace_settings::{SubjectKind, WsTab, permissions_pane_layout};
     let mut ws = Workspace::new(WorkspaceId::new(), "Design");
-    ws.roles.push(Role {
-        id: "r1".into(),
-        name: "Editor".into(),
-        permissions: RolePermissions::default(),
-    });
-    ws.workspace_files.push(WorkspaceFile {
-        id: "f1".into(),
-        name: "brief.md".into(),
-        mime: "text/markdown".into(),
-    });
-    let mut modal = WorkspaceSettings::new(ws.id);
-    modal.set_tab(WsTab::Files);
-    modal.select_role("r1");
-    assert_eq!(modal.selected_role(), Some("r1"));
-    modal.set_file_perm(&mut ws, "r1", "f1", FilePerm::Read);
-    modal.set_file_perm(&mut ws, "r1", "f1", FilePerm::Write);
-    let perm = ws.roles[0]
-        .permissions
-        .per_file
-        .get("f1")
-        .copied()
-        .unwrap_or(FilePerm::None);
-    assert!(matches!(perm, FilePerm::Write));
-}
+    ws.set_owner("host");
+    ws.grant_as(
+        &"host".to_string(),
+        CapOverride::grant(
+            Subject::app("Terminal"),
+            Scope::FsPath("/var/workspace".into()),
+            Verb::Write,
+        )
+        .expiring(Expiry::EndOfSession),
+    )
+    .expect("the owner may grant");
 
-#[test]
-fn workspace_settings_files_tab_builds_files_table_with_columns() {
-    use shell::shell::state::WorkspaceId;
-    use shell::shell::workspace_settings::WorkspaceSettings;
-    let modal = WorkspaceSettings::new(WorkspaceId::new());
-    // Files table should expose two columns: the file name (flex) and the
-    // permission picker (fixed width). Keys are stable so callers can hook
-    // sort/resize policies onto them in later tasks.
-    let files_cols: Vec<String> = modal
-        .files_table()
-        .columns()
-        .iter()
-        .map(|c| c.key.clone())
-        .collect();
-    assert_eq!(
-        files_cols,
-        vec!["file".to_string(), "permission".to_string()]
-    );
+    let mut modal = shell::shell::workspace_settings::WorkspaceSettings::new(ws.id);
+    modal.set_tab(WsTab::Permissions);
+
+    let pane = vello::kurbo::Rect::new(0.0, 0.0, 660.0, 480.0);
+    let layout = permissions_pane_layout(&ws, pane);
+    assert_eq!(layout.rows.len(), 1, "the owner's membership is not a permission");
+    let row = &layout.rows[0];
+    assert_eq!(row.subject.kind, SubjectKind::App);
+    assert_eq!(row.subject.id, "Terminal");
+    assert_eq!(row.allows, "Edit files under /var/workspace");
+    assert_eq!(row.expiry, "Session");
+    // The composer is laid out whether or not anything is granted yet.
+    assert!(layout.choice_rect.area() > 0.0);
+    assert!(layout.submit_rect.area() > 0.0);
 }
 
 #[test]

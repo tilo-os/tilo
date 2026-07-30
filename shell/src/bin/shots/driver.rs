@@ -334,6 +334,71 @@ impl ShellDriver {
     /// Apply the named "scene" mutation set (the legacy `--scenes`
     /// catalogue). Each scene is a one-shot mutation — call on a fresh
     /// driver per scene if a clean slate is required.
+    /// Seed the active workspace with a membership and a set of granted
+    /// capabilities, so the Members and Permissions panes have something
+    /// real to render.
+    ///
+    /// Everything goes through `WorkspaceTree::grant_in_workspace` — the
+    /// authority-checked, doc-mirroring path the settings panel and the
+    /// portal both use. Nothing here writes a capability the enforcement
+    /// path would not honour, so a shot of this scene is a shot of a
+    /// state the compositor can actually be in.
+    fn seed_workspace_permissions(&mut self) {
+        use shell::shell::state::{CapOverride, Expiry, Scope, Subject, Verb};
+        let handle = self.chrome_handle();
+        let owner = handle.borrow().local_user_id.clone();
+        {
+            let st = handle.borrow();
+            let mut tree = st.tree_mut();
+            tree.adopt_ownerless_workspaces(&owner);
+            let ws_id = tree.active;
+            let room = ws_id.raw().to_string();
+            for (member, verb) in [("ada", Verb::Write), ("bo", Verb::Read)] {
+                tree.grant_in_workspace(
+                    ws_id,
+                    &owner,
+                    CapOverride::membership(Subject::person(member), room.clone(), verb),
+                );
+            }
+            for (app, scope, verb, expiry) in [
+                (
+                    "Files",
+                    Scope::FsPath("/var/workspace".to_string()),
+                    Verb::Write,
+                    Expiry::Never,
+                ),
+                (
+                    "Terminal",
+                    Scope::Device("camera".to_string()),
+                    Verb::Read,
+                    Expiry::EndOfSession,
+                ),
+                (
+                    "Browser",
+                    Scope::NetHost("*".to_string()),
+                    Verb::Read,
+                    Expiry::AfterUse,
+                ),
+            ] {
+                tree.grant_in_workspace(
+                    ws_id,
+                    &owner,
+                    CapOverride::grant(Subject::app(app), scope, verb).expiring(expiry),
+                );
+            }
+            tree.grant_in_workspace(
+                ws_id,
+                &owner,
+                CapOverride::grant(
+                    Subject::person("ada"),
+                    Scope::FsPath("/var/workspace/design".to_string()),
+                    Verb::Write,
+                ),
+            );
+        }
+        self.with_chrome(|_| {});
+    }
+
     pub fn scene_setup(&mut self, name: &str) -> Result<(), String> {
         match name {
             "desktop" => {}
@@ -409,17 +474,11 @@ impl ShellDriver {
                 });
                 self.fb.host_mut().force_ws_settings_settled();
             }
-            "ws-settings-roles" => {
+            "ws-settings-members" => {
+                self.seed_workspace_permissions();
                 self.with_chrome(|st| {
                     st.overlays.ws_settings = true;
-                    st.ws_settings_tab = WsTab::Roles;
-                });
-                self.fb.host_mut().force_ws_settings_settled();
-            }
-            "ws-settings-files" => {
-                self.with_chrome(|st| {
-                    st.overlays.ws_settings = true;
-                    st.ws_settings_tab = WsTab::Files;
+                    st.ws_settings_tab = WsTab::Members;
                 });
                 self.fb.host_mut().force_ws_settings_settled();
             }
@@ -566,6 +625,7 @@ impl ShellDriver {
                 );
             }
             "ws-settings-permissions" => {
+                self.seed_workspace_permissions();
                 self.with_chrome(|st| {
                     st.overlays.ws_settings = true;
                     st.ws_settings_tab = WsTab::Permissions;
@@ -707,8 +767,7 @@ impl ShellDriver {
         "qs-wifi-drillin",
         "qs-bt-drillin",
         "ws-settings-general",
-        "ws-settings-roles",
-        "ws-settings-files",
+        "ws-settings-members",
         "ws-settings-permissions",
         "notifications",
         "notifications-one",
@@ -732,7 +791,7 @@ impl ShellDriver {
     /// Names supported by the hand-curated table:
     ///   - `"add_workspace"` — the "+ Add workspace" tile in the overview
     ///     (only valid while the overview is open).
-    ///   - `"ws_settings_tab[general|roles|files|permissions]"` — modal
+    ///   - `"ws_settings_tab[general|members|permissions]"` — modal
     ///     tab pills (only valid while ws-settings is open).
     ///
     /// Beyond those, scenarios can address any widget by its `test_id`
@@ -744,8 +803,7 @@ impl ShellDriver {
         let curated = match name {
             "add_workspace" => Some(host.add_workspace_rect_for_tests()),
             "ws_settings_tab[general]" => Some(host.ws_settings_tab_pill_rect(WsTab::General)),
-            "ws_settings_tab[roles]" => Some(host.ws_settings_tab_pill_rect(WsTab::Roles)),
-            "ws_settings_tab[files]" => Some(host.ws_settings_tab_pill_rect(WsTab::Files)),
+            "ws_settings_tab[members]" => Some(host.ws_settings_tab_pill_rect(WsTab::Members)),
             "ws_settings_tab[permissions]" => {
                 Some(host.ws_settings_tab_pill_rect(WsTab::Permissions))
             }
