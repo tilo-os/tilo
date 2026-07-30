@@ -27,7 +27,7 @@ first — see [ui gaps](#ui-gaps)).
 | 1. Text input (HIGH) | `TextInput` / `SearchField` / `NumberInput` / `EditableLabel` | **23** | db_client, imager, pdf_viewer, chat, maps, mail |
 | 2. Buttons (MED) | `Button` / `Toolbar` | **~28** (painted-rect + hit-test; 6 converted via `Button::paint`) | ebook, software_store, slides, camera |
 | 3. Modals (MED) | `ModalDialog` | **14** (6 done: monitor, containers, vpn, software_store, music, feeds) | disks, db_client, snippets |
-| 4. Other controls (MED) | `Dropdown`/`Toggle`/`Slider`/`TabBar`/`ContextMenu`/`Popover`/`Chart` | **~22** | tube, music, monitor, logs, camera |
+| 4. Other controls (MED) | `Dropdown`/`Toggle`/`Slider`/`ToggleGroup`/`ContextMenu`/`Popover`/`Chart` | **~22** (6 toggle/segmented/tab converts via `Toggle::paint` + `ToggleGroup::paint`) | tube, music, monitor, logs, camera |
 | 5. Hard-coded colors (LOW) | `Theme` tokens | **35** (≥1 literal); **2 genuine chrome offenders fixed** (diffmerge, sheets) — the high-count apps are already themed, their literals are document/over-media/on-accent/color-math content | ebook 62, word-processor 44, tube 32 *(all defensible — see Category 5)* |
 
 **Structural finding.** `ModalDialog` adoption is now broad after the modals
@@ -224,6 +224,45 @@ also use the widget elsewhere.
 Dropdowns, toggles, sliders, tabs, segmented switches, menus, popovers, and
 charts/tables reimplemented where a `ui` widget exists.
 
+**Status (toggles / segmented / tabs wave).** The standard apps are monolithic
+*immediate-mode* painters, so — as with the buttons wave — the toolkit gained
+two immediate-mode paint faces rather than forcing a tree rewrite:
+`ui::widget::Toggle::paint(&ToggleFace)` (themed switch track + knob + focus
+ring + disabled dim) and `ui::widget::ToggleGroup::paint(&SegmentedFace)`
+(a segmented control over caller-owned rects). Both route their per-state
+palette through one source of truth (`toggle_face_colors` / `segment_colors`)
+shared with the retained widgets' own draw — *extended, not forked*.
+`SegmentedFace` carries three styles so one primitive absorbs the common looks:
+**Solid** (unified strip + separators + border), **Pill** (discrete
+accent/hover pills, tab-strip / mode-switch), **Underline** (accent underline
+under the active tab), plus a left-aligned-label option for nav-bar tabs.
+Apps keep their existing rect hit-test (which already fires the action) and now
+paint the shared, stateful control. **Converted:** **firewall** (rule/zone
+switches + filter/kind/proto/action segmenteds), **backups** (view tabs +
+source-enable switch), **disks** (Overview/SMART/Partitions tabs), **diffmerge**
+(Diff / 3-way merge switch), **software_store** (nav tabs, left-aligned + badge
+kept app-owned), **pdf_viewer** (Comments/Contents/Signatures underline tabs).
+
+Left for later, with the reason each isn't a clean face-swap:
+- **tube** Switch/SeekBar, **music**/**video_editor** sliders — `Toggle`/`Slider`
+  are CRDT-path-bound; need the non-CRDT value binding (gap 7, Wave 5b).
+- **vpn** — the connection switch is `semantic.success` (green = connected, not
+  accent) and the DetailTab active state is a subtle *raised* surface (not the
+  accent); both want an additive on-tone / subtle-selected option first.
+- **camera** — the mode segmented + HDR/Grid/… switches are deliberately
+  over-media overlays (fixed dark-on-light per Category 5), so routing them
+  through the theme-tracking shared control would regress that contract.
+- **logs** severity chips — a *cumulative*, per-priority-**coloured** threshold
+  (many active at once, coloured by priority not accent), not a single-select
+  segmented; converting would lose the semantics + colours.
+- **remote** favorite/scale/fullscreen — icon toggle-*buttons*, not track+knob
+  switches (a buttons-wave shape).
+- **imager** step chips — a 3-state wizard breadcrumb/stepper (done / current /
+  upcoming), not a two-state segmented.
+- **word-processor** find chips (Aa/W/.*) — *independent* boolean toggles, not
+  an exclusive selector; **hex_editor** search-kind — a cycle button, not a
+  visible-options segmented. Both are toggle-button/chip shapes.
+
 ### Dropdowns / selects
 | file:symbol | app | evidence | ui alt | effort |
 |---|---|---|---|---|
@@ -238,11 +277,11 @@ charts/tables reimplemented where a `ui` widget exists.
 | file:symbol | app | evidence | ui alt | effort |
 |---|---|---|---|---|
 | `apps/tube/src/widgets/controls.rs:382` `struct Switch` | tube | speaks `ActionBus` — **`ui::Toggle` is CRDT-path-bound** (doc `:3`) | extend `Toggle` | M |
-| `apps/camera/src/app.rs:1009` `toggle_switch` | camera | HDR/Grid/Level/Mirror/Geotag rows | `Toggle` | M |
-| `apps/firewall/src/app.rs:884` `toggle_panic` | firewall | panic-mode switch | `Toggle` | S |
-| `apps/vpn/src/app.rs:562` per-row on/off | vpn | connection switch | `Toggle` | M |
-| `apps/remote/src/app.rs:1729` favorite/scale/fullscreen | remote | hand-drawn toggles | `Toggle` | M |
-| `apps/backups/src/app.rs:867` source enable pill | backups | hand-drawn switch | `Toggle` | S |
+| `apps/camera/src/app.rs:1009` `toggle_switch` | camera | HDR/Grid/Level/Mirror/Geotag rows — **over-media, left (see status)** | `Toggle` | M |
+| `apps/firewall/src/app.rs` rule/zone switches | firewall ✅ | **DONE** — `draw_toggle` → `Toggle::paint` | `Toggle` | S |
+| `apps/vpn/src/app.rs:984` `draw_switch` | vpn | connection switch — **`semantic.success` green, left (see status)** | `Toggle` | M |
+| `apps/remote/src/app.rs:1729` favorite/scale/fullscreen | remote | icon toggle-*buttons*, not switches — buttons-wave shape | `Toggle` | M |
+| `apps/backups/src/app.rs` source enable switch | backups ✅ | **DONE** — `draw_switch` pill → `Toggle::paint` | `Toggle` | S |
 
 ### Sliders / scrubbers
 | file:symbol | app | evidence | ui alt | effort |
@@ -255,18 +294,18 @@ charts/tables reimplemented where a `ui` widget exists.
 ### Tabs / segmented
 | file:symbol | app | evidence | ui alt | effort |
 |---|---|---|---|---|
-| `apps/disks/src/app.rs:876` `draw_tabs` | disks | Overview/SMART/Partitions | `TabBar` | M |
-| `apps/vpn/src/app.rs:574` `DetailTab` | vpn | Status/Config/Logs | `TabBar` | M |
-| `apps/pdf_viewer/src/app_draw.rs:1237` `SidebarHit::Tab` | pdf_viewer | sidebar tab strip | `TabBar` | M |
-| `apps/software_store/src/app.rs:1132` nav-tab row | software_store | active/hover nav tabs | `TabBar`/`NavSplit` | M |
-| `apps/code_editor/src/tab_bar.rs:37` `TabBar`, `bottom_panel.rs:205` | code_editor | file tabs + panel tabs | `ui` `TabBar` | M |
+| `apps/disks/src/app.rs:876` `draw_tabs` | disks ✅ | **DONE** — Overview/SMART/Partitions → `ToggleGroup::paint` (Pill) | `ToggleGroup` | M |
+| `apps/vpn/src/app.rs:1029` `DetailTab` | vpn | Status/Config/Logs — **raised-subtle active (see status)** | `ToggleGroup` | M |
+| `apps/pdf_viewer/src/app_draw.rs:1215` sidebar tabs | pdf_viewer ✅ | **DONE** — Comments/Contents/Signatures → `ToggleGroup::paint` (Underline) | `ToggleGroup` | M |
+| `apps/software_store/src/app.rs:1126` nav-tab row | software_store ✅ | **DONE** — nav tabs → `ToggleGroup::paint` (Pill, left labels; badge app-owned) | `ToggleGroup` | M |
+| `apps/code_editor/src/tab_bar.rs:37` `TabBar`, `bottom_panel.rs:205` | code_editor | file tabs + panel tabs (closeable, editor-owned) | `ui` `TabBar` | M |
 | `apps/sheets/src/app.rs:185` `tab_rects` | sheets | sheet-tab bar (per-tab color + rename) | `TabBar` (extend) | M |
-| `apps/backups/src/app.rs:386` segmented tabs | backups | Timeline/Sources/Destinations/Schedules | `TabBar`/`Segmented` | M |
-| `apps/camera/src/app.rs:992` `segmented` | camera | Photo/Video/Scan mode | `ToggleGroup`/`segmented` | M |
-| `apps/video_editor/src/app.rs:920` resolution/container/fps | video_editor | painted segments | `ToggleGroup` | M |
-| `apps/diffmerge/src/app.rs:293` mode selector | diffmerge | Diff / 3-way merge, width-estimated segments | `ToggleGroup` | M |
-| `apps/logs/src/app.rs:625` priority threshold | logs | painted priority segments | `ToggleGroup` | M |
-| `apps/firewall/src/app.rs:889` filter/zone cyclers | firewall | All/Allow/Deny + zone | `Segmented`/`ToggleGroup` | M |
+| `apps/backups/src/app.rs` view tabs | backups ✅ | **DONE** — Timeline/Sources/Destinations/Schedules → `ToggleGroup::paint` (Pill) | `ToggleGroup` | M |
+| `apps/camera/src/app.rs:992` `segmented` | camera | Photo/Video/Scan mode — **over-media, left (see status)** | `ToggleGroup` | M |
+| `apps/video_editor/src/app.rs:920` resolution/container/fps | video_editor | painted segments (inside export modal) | `ToggleGroup` | M |
+| `apps/diffmerge/src/app.rs:317` mode selector | diffmerge ✅ | **DONE** — Diff / 3-way merge → `ToggleGroup::paint` (Pill) | `ToggleGroup` | M |
+| `apps/logs/src/app.rs:625` priority threshold | logs | cumulative, per-priority-**coloured** chips — **not single-select (see status)** | `ToggleGroup` | M |
+| `apps/firewall/src/app.rs` filter/kind/proto/action | firewall ✅ | **DONE** — `draw_segmented` → `ToggleGroup::paint` (Solid) | `ToggleGroup` | M |
 | `apps/imager/src/app.rs:394` step chips | imager | wizard step selector | `Breadcrumb`/`Segmented` | M |
 | `apps/word-processor/src/widget.rs:2468` find chips | word-processor | Aa / W / .* case/word/regex toggles | `Toggle`/`segmented` | S |
 | `apps/hex_editor/src/view.rs:1043` search-kind chip | hex_editor | painted cycle | `segmented` | S |
@@ -489,14 +528,24 @@ Do the large hit-table apps (ebook, music, camera, slides, software_store)
 last — they are `L` because the whole draw layer is the table.
 
 ### Wave 5a — Controls with an existing widget (MED)
+The toolkit gained immediate-mode paint faces `Toggle::paint(&ToggleFace)` and
+`ToggleGroup::paint(&SegmentedFace)` (Solid / Pill / Underline styles, optional
+left-aligned labels) so canvas apps adopt the shared switch + segmented control
+without a tree rewrite.
 - **Dropdowns:** api_tester (method/env), logs (unit/boot), ebook (font/sort),
-  remote (kind/auth), db_client (engine).
-- **Toggles:** camera, firewall, vpn, remote, backups.
-- **Tabs/segmented:** disks, vpn, pdf_viewer, software_store, code_editor,
-  sheets, backups, camera, video_editor, diffmerge, logs, firewall, imager,
-  word-processor, hex_editor.
+  remote (kind/auth), db_client (engine). *(not started)*
+- **Toggles:** firewall ✅, backups ✅ **done**; remaining: camera (over-media),
+  vpn (semantic green), remote (icon toggle-buttons).
+- **Tabs/segmented:** disks ✅, backups ✅, diffmerge ✅, software_store ✅,
+  pdf_viewer ✅, firewall ✅ **done**; remaining: vpn (raised-subtle active),
+  code_editor (closeable file tabs), sheets (per-tab colour + rename), camera
+  (over-media), video_editor (in export modal), logs (per-priority cumulative
+  chips), imager (stepper breadcrumb), word-processor / hex_editor (independent
+  toggle-buttons / cycle). See Category 4 status for why each remainder isn't a
+  clean drop-in.
 - **Menus/popovers:** pdf_viewer (`ContextMenu`), ebook/music/hex_editor
   (`Popover`), typst_editor (overflow), browser (address overlay), slides (fill).
+  *(not started)*
 
 ### Wave 5b — Controls blocked on a ui gap (MED)
 Extend then migrate: gap **7** (non-CRDT Toggle/Slider binding) → tube Switch,
