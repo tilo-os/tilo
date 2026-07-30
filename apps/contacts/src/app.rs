@@ -913,7 +913,11 @@ impl ContactsApp {
                     first_new = Some(c.id);
                 }
                 self.store.upsert(c.clone());
-                ContactsDoc::upsert_contact(doc, &c);
+                // Route each imported card through the action model too, so the
+                // whole import is one undo boundary (perform_action captures the
+                // pre-import heads once) and replays on peers like any other
+                // create.
+                self.perform_action(doc, crate::actions::upsert_contact_action(&c));
                 n += 1;
             }
         }
