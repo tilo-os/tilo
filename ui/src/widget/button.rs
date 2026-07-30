@@ -201,12 +201,13 @@ pub fn face_colors(
         ButtonStyle::Danger => {
             use crate::color_compat::ColorCompat;
             let d = theme.tokens.colors.semantic.danger;
-            // Subtly muted at rest, solid on hover/press, so the destructive
-            // action still gives interaction feedback without a second token.
+            // Solid danger at rest; lifted ~15% toward white on hover/press so
+            // the destructive action gives feedback without a second token.
             let bg = if interact.hovered || interact.pressed {
-                d
+                let mix = |a: u8| (a as f32 * 0.85 + 255.0 * 0.15).round() as u8;
+                Color::from_rgba8(mix(d.r()), mix(d.g()), mix(d.b()), d.a())
             } else {
-                d.with_alpha_factor(0.9)
+                d
             };
             (bg, None, Color::WHITE)
         }
@@ -761,6 +762,22 @@ mod tests {
             face_colors(&theme, ButtonStyle::Primary, hover).0,
             theme.accent_hover,
             "primary hover darkens to the accent-hover token",
+        );
+    }
+
+    #[test]
+    fn face_colors_danger_is_solid_at_rest_borderless_white() {
+        let theme = Theme::dark();
+        let rest = ButtonInteract::default();
+        let hover = ButtonInteract { hovered: true, ..Default::default() };
+        let (bg, border, fg) = face_colors(&theme, ButtonStyle::Danger, rest);
+        assert_eq!(bg, theme.tokens.colors.semantic.danger, "danger rest = solid danger");
+        assert_eq!(border, None);
+        assert_eq!(fg, vello::peniko::Color::WHITE);
+        assert_ne!(
+            face_colors(&theme, ButtonStyle::Danger, hover).0,
+            theme.tokens.colors.semantic.danger,
+            "danger hover lifts off the rest colour for feedback",
         );
     }
 
