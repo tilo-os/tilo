@@ -38,6 +38,25 @@ use crate::word_processor::{Caret, ClipBlock, WordProcessor};
 use crate::WpFormat;
 use ui::portal;
 
+/// An [`ActionTransport`](qos_actions::ActionTransport) that drops replicated
+/// envelopes: the word processor's durable form is the document itself (synced
+/// separately by the host's collaboration manager), so a locally-dispatched
+/// action needs no extra replication step — applying it to the shared doc is
+/// enough.
+struct DiscardTransport;
+impl qos_actions::ActionTransport for DiscardTransport {
+    fn replicate(&mut self, _env: &qos_actions::ActionEnvelope) {}
+}
+
+/// Convert the model's `(block, start, end)` ranges into serializable
+/// [`Span`](crate::actions::Span)s for an action payload.
+fn to_spans(ranges: Vec<(String, usize, usize)>) -> Vec<crate::actions::Span> {
+    ranges
+        .into_iter()
+        .map(|(block, start, end)| crate::actions::Span { block, start, end })
+        .collect()
+}
+
 /// Why a portal file-dialog was opened: the drain path routes the chosen file to
 /// the matching action. One request is in flight at a time (`portal_rx`), so a
 /// single purpose is enough to disambiguate the outcome.
@@ -1564,6 +1583,16 @@ pub struct WordProcessorWidget {
     focused: bool,
     dirty: bool,
     needs_commit: bool,
+    /// The document heads captured just before the first `qos_actions` action of
+    /// the current event was dispatched through [`Self::perform_action`]. The
+    /// host drains this via [`Widget::take_committed_action`] to record exactly
+    /// one undo boundary bracketing the affordance's mutation. Rising-edge:
+    /// `None` until an action fires, cleared on read.
+    action_commit_before: Option<Vec<automerge::ChangeHash>>,
+    /// The last [`EncodedAction`](qos_actions::EncodedAction) an on-screen
+    /// affordance dispatched through [`Self::perform_action`], so a test can
+    /// prove the affordance builds the same envelope the Ctrl+K palette does.
+    last_dispatched: Option<qos_actions::EncodedAction>,
     pointer: Point,
     drag: DragSelect,
     path: Option<PathBuf>,
@@ -1837,6 +1866,8 @@ impl WordProcessorWidget {
             focused: true,
             dirty: true,
             needs_commit: false,
+            action_commit_before: None,
+            last_dispatched: None,
             pointer: Point::ZERO,
             drag: DragSelect::new(),
             path: None,
@@ -1919,6 +1950,176 @@ impl WordProcessorWidget {
             style_menu_actions: Vec::new(),
             toast: None,
             color_picker: None,
+        }
+    }
+
+    // ---- qOS action dispatch ------------------------------------------------
+
+    /// Dispatch one [`WordProcessorAction`](crate::actions::WordProcessorAction)
+    /// — the single CRDT-mutation path shared with the Ctrl+K palette. Applied
+    /// through the qOS action executor (a pinned actor + committed change, so it
+    /// replays byte-identically on peers). The document heads captured just
+    /// before the first action of the current event are stashed so the host
+    /// records **one** undo boundary bracketing it (see
+    /// [`Widget::take_committed_action`]); a second action in the same event
+    /// extends that one boundary rather than opening another.
+    fn perform_action(&mut self, state: &mut AutoCommit, action: crate::actions::WordProcessorAction) {
+        if self.action_commit_before.is_none() {
+            // `get_heads` flushes any pending app writes, so the bracket covers
+            // only the action's own change.
+            self.action_commit_before = Some(state.get_heads());
+        }
+        let encoded = crate::actions::encode(&action);
+        self.last_dispatched = Some(encoded.clone());
+        let mut tx = DiscardTransport;
+        if let Err(e) = qos_actions::dispatch(state, &action, encoded, &mut tx) {
+            // A malformed dispatch never wedges the editor — the affordance is a
+            // no-op and the next frame re-syncs from the document.
+            tracing::warn!(error = %e, "word-processor action dispatch failed");
+        }
+    }
+
+    /// The context Ctrl+K needs to build the document's resource tree: the caret
+    /// anchor for structural inserts and the blocks a block-level format targets.
+    /// `None` until the document is bound (a fresh, unsynced widget).
+    pub(crate) fn wp_resource_ctx(&self) -> Option<crate::actions::WpResourceCtx> {
+        let caret = self.inner.caret();
+        if caret.block.is_empty() {
+            return None;
+        }
+        // The caret block is the alignment target for a palette-initiated block
+        // format (the palette runs between frames with no live selection).
+        let target = if self.blocks.iter().any(|b| b.id == caret.block) {
+            vec![caret.block.clone()]
+        } else {
+            Vec::new()
+        };
+        Some(crate::actions::WpResourceCtx {
+            caret_block: caret.block.clone(),
+            caret_offset: caret.offset,
+            target_blocks: if target.is_empty() { vec![caret.block.clone()] } else { target },
+        })
+    }
+
+    /// Test hook: the last action an affordance dispatched through
+    /// [`Self::perform_action`], so a test can compare it to a palette spec.
+    #[cfg(test)]
+    pub(crate) fn last_dispatched_for_test(&self) -> Option<&qos_actions::EncodedAction> {
+        self.last_dispatched.as_ref()
+    }
+
+    // ---- formatting affordances → actions -----------------------------------
+
+    /// Toggle an inline mark (bold/italic/underline/strike) over the selection,
+    /// as one replayable action. A toggle with no selection is a no-op.
+    fn dispatch_toggle_mark(&mut self, state: &mut AutoCommit, name: &str) {
+        let Some((spans, active)) = self.inner.plan_toggle_mark(state, name) else {
+            return;
+        };
+        let region = self.inner.region_kind();
+        let value = if active { None } else { Some(crate::actions::MarkVal::Bool(true)) };
+        let action = crate::actions::set_mark_action(region, to_spans(spans), name, value, vec![]);
+        self.perform_action(state, action);
+    }
+
+    /// Toggle a mutually-exclusive mark (super/sub) over the selection / caret
+    /// block, clearing its sibling, as one replayable action.
+    fn dispatch_exclusive_mark(&mut self, state: &mut AutoCommit, name: &str, sibling: &str) {
+        let (spans, active) = self.inner.plan_exclusive_mark(state, name);
+        if spans.iter().all(|(_, s, e)| s >= e) {
+            return;
+        }
+        let region = self.inner.region_kind();
+        let value = if active { None } else { Some(crate::actions::MarkVal::Bool(true)) };
+        // When turning on, also clear the sibling over the same spans.
+        let also_clear = if active { vec![] } else { vec![sibling.to_string()] };
+        let action = crate::actions::set_mark_action(region, to_spans(spans), name, value, also_clear);
+        self.perform_action(state, action);
+    }
+
+    /// Set a valued inline mark (font/size/colour/highlight) over the selection
+    /// or caret block, as one replayable action (replacing any prior value).
+    fn dispatch_set_mark_value(&mut self, state: &mut AutoCommit, name: &str, value: crate::actions::MarkVal) {
+        let spans = self.inner.format_spans(state);
+        if spans.iter().all(|(_, s, e)| s >= e) {
+            return;
+        }
+        let region = self.inner.region_kind();
+        let action = crate::actions::set_mark_action(region, to_spans(spans), name, Some(value), vec![]);
+        self.perform_action(state, action);
+    }
+
+    /// Clear a valued inline mark over the selection or caret block.
+    fn dispatch_clear_mark(&mut self, state: &mut AutoCommit, name: &str) {
+        let spans = self.inner.format_spans(state);
+        if spans.iter().all(|(_, s, e)| s >= e) {
+            return;
+        }
+        let region = self.inner.region_kind();
+        let action = crate::actions::set_mark_action(region, to_spans(spans), name, None, vec![]);
+        self.perform_action(state, action);
+    }
+
+    /// Set the paragraph kind/level over the selection, as one replayable action.
+    fn dispatch_paragraph_style(&mut self, state: &mut AutoCommit, kind: &str, level: Option<i64>, ordered: Option<bool>) {
+        let blocks = self.inner.paragraph_style_targets(state);
+        if blocks.is_empty() {
+            return;
+        }
+        let action = crate::actions::set_paragraph_style_action(blocks, kind, level, ordered);
+        self.perform_action(state, action);
+    }
+
+    /// Set a block attribute (alignment / line-spacing / style) over the current
+    /// target blocks, as one replayable action.
+    fn dispatch_block_attr(&mut self, state: &mut AutoCommit, key: &str, value: crate::actions::AttrVal) {
+        let blocks = self.inner.target_block_ids(state);
+        if blocks.is_empty() {
+            return;
+        }
+        let region = self.inner.region_kind();
+        let action = crate::actions::set_block_attr_action(region, blocks, key, value);
+        self.perform_action(state, action);
+    }
+
+    /// Insert a `rows`×`cols` table after the caret as one replayable action,
+    /// then re-seat the caret into the new table's first cell (presentation) —
+    /// the cell ids are minted inside `apply`, so they're discovered from the
+    /// document afterwards rather than known up front.
+    fn insert_table_via_action(&mut self, state: &mut AutoCommit, rows: usize, cols: usize) {
+        let after = self.inner.caret().block.clone();
+        let before: std::collections::HashSet<String> = self.body_cell_ids(state);
+        self.perform_action(state, crate::actions::insert_table_action(&after, rows, cols));
+        // The first cell of the freshly-created table = the new `cell` block at
+        // (row 0, col 0). Seat the caret there so typing continues in the table.
+        if let Some(c) = self.inner.containers.clone() {
+            let snap = qdoc::model::materialize(state, &c);
+            let first = snap
+                .blocks
+                .iter()
+                .filter(|b| b.kind == "cell" && !before.contains(&b.id))
+                .find(|b| {
+                    matches!(b.attrs.get("row"), Some(AttrVal::Int(0)))
+                        && matches!(b.attrs.get("col"), Some(AttrVal::Int(0)))
+                })
+                .map(|b| b.id.clone());
+            if let Some(fc) = first {
+                self.inner.set_caret(Caret { block: fc, offset: 0 });
+                self.inner.clear_anchor();
+            }
+        }
+    }
+
+    /// The ids of every `cell` block currently in the body.
+    fn body_cell_ids(&self, state: &AutoCommit) -> std::collections::HashSet<String> {
+        match self.inner.containers.clone() {
+            Some(c) => qdoc::model::materialize(state, &c)
+                .blocks
+                .into_iter()
+                .filter(|b| b.kind == "cell")
+                .map(|b| b.id)
+                .collect(),
+            None => std::collections::HashSet::new(),
         }
     }
 
@@ -6328,6 +6529,20 @@ impl Widget for WordProcessorWidget {
         self.needs_commit = false;
         self.modified = true;
     }
+    /// Hand the host the heads captured before an on-screen affordance dispatched
+    /// a [`WordProcessorAction`](crate::actions) through
+    /// [`Self::perform_action`], so it records one undo boundary bracketing the
+    /// affordance's change (the button-driven twin of the Ctrl+K palette).
+    /// Rising-edge: cleared on read.
+    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        self.action_commit_before.take()
+    }
+    /// Publish the resource tree Ctrl+K walks (delegates to the
+    /// [`ResourceProvider`](qos_actions::ResourceProvider) impl in
+    /// [`crate::actions`]).
+    fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
+        <Self as qos_actions::ResourceProvider>::resources(self, doc)
+    }
     fn needs_redraw(&self) -> bool {
         self.dirty
     }
@@ -6536,26 +6751,38 @@ impl WordProcessorWidget {
 
     fn apply_tool(&mut self, state: &mut AutoCommit, action: ToolAction) {
         match action {
-            ToolAction::Bold => self.inner.toggle_mark(state, "strong"),
-            ToolAction::Italic => self.inner.toggle_mark(state, "em"),
-            ToolAction::Underline => self.inner.toggle_mark(state, "underline"),
-            ToolAction::Strike => self.inner.toggle_mark(state, "strike"),
-            ToolAction::TextColor(Some(c)) => self.inner.set_text_color(state, &crate::styles::color_to_hex(c)),
+            // Every document-mutating format dispatches its matching
+            // `WordProcessorAction` through the shared action path (the same
+            // EncodedAction the Ctrl+K palette dispatches), so it replays
+            // byte-identically and lands as one undo boundary.
+            ToolAction::Bold => self.dispatch_toggle_mark(state, "strong"),
+            ToolAction::Italic => self.dispatch_toggle_mark(state, "em"),
+            ToolAction::Underline => self.dispatch_toggle_mark(state, "underline"),
+            ToolAction::Strike => self.dispatch_toggle_mark(state, "strike"),
+            ToolAction::TextColor(Some(c)) => self.dispatch_set_mark_value(
+                state,
+                "color",
+                crate::actions::MarkVal::Str(crate::styles::color_to_hex(c)),
+            ),
             // The neutral swatch clears any per-run colour, reverting to the
             // block's style ink.
-            ToolAction::TextColor(None) => self.inner.clear_mark(state, "color"),
-            ToolAction::Highlight(Some(c)) => self.inner.set_highlight(state, &crate::styles::color_to_hex(c)),
+            ToolAction::TextColor(None) => self.dispatch_clear_mark(state, "color"),
+            ToolAction::Highlight(Some(c)) => self.dispatch_set_mark_value(
+                state,
+                "highlight",
+                crate::actions::MarkVal::Str(crate::styles::color_to_hex(c)),
+            ),
             // The "no highlight" swatch clears any per-run highlight band.
-            ToolAction::Highlight(None) => self.inner.clear_mark(state, "highlight"),
-            ToolAction::Super => self.inner.toggle_super(state),
-            ToolAction::Sub => self.inner.toggle_sub(state),
+            ToolAction::Highlight(None) => self.dispatch_clear_mark(state, "highlight"),
+            ToolAction::Super => self.dispatch_exclusive_mark(state, "super", "sub"),
+            ToolAction::Sub => self.dispatch_exclusive_mark(state, "sub", "super"),
             ToolAction::FontSizeInc => {
                 let next = (self.current_font_size() + 1.0).round().clamp(6.0, 200.0) as i64;
-                self.inner.set_font_size(state, next);
+                self.dispatch_set_mark_value(state, "size", crate::actions::MarkVal::Int(next));
             }
             ToolAction::FontSizeDec => {
                 let next = (self.current_font_size() - 1.0).round().clamp(6.0, 200.0) as i64;
-                self.inner.set_font_size(state, next);
+                self.dispatch_set_mark_value(state, "size", crate::actions::MarkVal::Int(next));
             }
             ToolAction::FontCycle => {
                 let name = match self.current_font().next() {
@@ -6563,10 +6790,10 @@ impl WordProcessorWidget {
                     FontFamily::Serif => "serif",
                     FontFamily::Mono => "mono",
                 };
-                self.inner.set_font_family(state, name);
+                self.dispatch_set_mark_value(state, "font", crate::actions::MarkVal::Str(name.to_string()));
             }
             ToolAction::InsertImage => self.request_image_insert(state),
-            ToolAction::InsertTable => self.inner.insert_table(state, 2, 2),
+            ToolAction::InsertTable => self.insert_table_via_action(state, 2, 2),
             ToolAction::TableRowAdd => self.inner.table_add_row(state),
             ToolAction::TableRowDel => self.inner.table_del_row(state),
             ToolAction::TableColAdd => self.inner.table_add_col(state),
