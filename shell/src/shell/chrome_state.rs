@@ -347,6 +347,15 @@ pub struct ChromeState {
     /// carried out. Written by the palette's action rows, drained once
     /// per frame by `ShellOverlayHost::pump_peer_sync`.
     peer_sync_requests: Vec<crate::shell::overlay_host::PeerSyncAction>,
+    /// Where the active strip's window groups sit, and which part of
+    /// that the displays are showing, as of the last layout pass.
+    ///
+    /// Published by `ShellOverlayHost::apply_layout` so a launch can ask
+    /// "which border between windows can the user actually see" — see
+    /// [`crate::shell::placement`] — without reaching into the widget
+    /// tree. `None` before the first layout, or when the active
+    /// workspace has no strip.
+    strip_viewport: Option<crate::shell::placement::StripViewport>,
 }
 
 impl ChromeState {
@@ -390,7 +399,22 @@ impl ChromeState {
             peer_sync_status: None,
             peer_sync_enabled: false,
             peer_sync_requests: Vec::new(),
+            strip_viewport: None,
         }))
+    }
+
+    /// Publish the active strip's layout so the placement rule can read
+    /// it. Called once per layout pass by the overlay host.
+    pub fn set_strip_viewport(
+        &mut self,
+        viewport: Option<crate::shell::placement::StripViewport>,
+    ) {
+        self.strip_viewport = viewport;
+    }
+
+    /// The active strip's layout as of the last pass, if one has run.
+    pub fn strip_viewport(&self) -> Option<&crate::shell::placement::StripViewport> {
+        self.strip_viewport.as_ref()
     }
 
     /// Queue a peer-sync command for the shell to carry out.
