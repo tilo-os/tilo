@@ -421,14 +421,6 @@ impl TopBarChrome {
         TextWeight::Semibold
     }
 
-    /// Typographic weight the collaborator-avatar initial letters render at.
-    /// Concept `CollaboratorPopover.tsx` paints initials at `font-bold`; the
-    /// avatar circles are small enough that a Regular weight fades into the
-    /// peer-colour fill (visual-gap #7).
-    pub fn avatar_initial_text_weight(&self) -> TextWeight {
-        TextWeight::Bold
-    }
-
     /// Typographic weight for the system-monitor row's acronym labels ("CPU",
     /// "RAM", "TMP"). Concept uses `font-mono font-semibold` for labels while
     /// the numeric values take `font-bold` — [`Self::system_monitor_value_text_weight`]
