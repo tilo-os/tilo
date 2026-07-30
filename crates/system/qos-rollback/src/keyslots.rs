@@ -200,7 +200,9 @@ pub fn list_tokens(runner: &dyn Runner, device: &Path) -> Result<Vec<(u32, Rollb
             }
         }
     }
-    found.sort_by(|a, b| b.1.generation.cmp(&a.1.generation));
+    // Newest generation first: `unlock` tries them in this order, and the newest
+    // is the one the running image is most likely to be.
+    found.sort_by_key(|(_, t)| std::cmp::Reverse(t.generation));
     Ok(found)
 }
 

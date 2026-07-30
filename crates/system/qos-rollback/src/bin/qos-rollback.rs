@@ -4,11 +4,10 @@
 //!
 //! * `tpm-status`  — what this TPM's dictionary-attack lockout actually permits.
 //! * `harden`      — set the DA reset authorisation and tighten the parameters.
-//! * `enroll`      — first-time setup on an encrypted device: define the floor
-//!                   counter, seal the running generation's keyslot, prove it.
+//! * `enroll`      — define the floor counter and seal a generation's keyslot.
 //! * `unlock`      — unseal a generation's passphrase in early userspace.
-//! * `confirm`     — after a successful boot: enroll the running generation,
-//!                   prove it, prune the window, THEN raise the floor.
+//! * `confirm`     — after a healthy boot: prove the generation, prune the
+//!   window, THEN raise the floor.
 //! * `status`      — floor, retained generations, and whether each unseals.
 //! * `certify`     — a signed statement of the floor, for a peer to verify.
 //! * `sign-prediction` — build-side: sign a PCR prediction for a generation.
