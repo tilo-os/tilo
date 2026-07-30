@@ -26,12 +26,14 @@ first — see [ui gaps](#ui-gaps)).
 |---|---|---|---|
 | 1. Text input (HIGH) | `TextInput` / `SearchField` / `NumberInput` / `EditableLabel` | **23** | db_client, imager, pdf_viewer, chat, maps, mail |
 | 2. Buttons (MED) | `Button` / `Toolbar` | **~28** (painted-rect + hit-test) | ebook, software_store, slides, camera, monitor |
-| 3. Modals (MED) | `ModalDialog` | **14** | containers (×3), vpn (×2), db_client, monitor |
+| 3. Modals (MED) | `ModalDialog` | **14** (5 done: monitor, containers, vpn, software_store, feeds) | disks, db_client, snippets, music |
 | 4. Other controls (MED) | `Dropdown`/`Toggle`/`Slider`/`TabBar`/`ContextMenu`/`Popover`/`Chart` | **~22** | tube, music, monitor, logs, camera |
 | 5. Hard-coded colors (LOW) | `Theme` tokens | **35** (≥1 literal) | ebook 62, word-processor 44, tube 32 |
 
-**Structural finding.** Only three apps import `ModalDialog` (db_client — and it
-*declines* to use it — mail, notes) and only nine import `Button`. `Slider` is
+**Structural finding.** `ModalDialog` adoption is now broad after the modals
+wave (monitor, containers, vpn, software_store, feeds, mail, notes) — it gained
+`with_destructive` (danger primary) and a shared `PromptBody` text-entry body.
+Only nine apps import `Button`. `Slider` is
 used by two apps, `SearchField` by one. Toggle adoption is good. So the debt is
 overwhelmingly concentrated in **text input, buttons, and modals**, and a large
 share of the buttons/modals is the *same* anti-pattern copied across apps: a
@@ -147,25 +149,35 @@ slides.** Representative helpers:
 ## Category 3 — Modals / dialogs (MED risk)
 
 App-drawn confirm/prompt/sheet + scrim instead of `ModalDialog` — misses focus
-capture, Esc, scrim semantics, a11y, theming. Only `mail` and `notes` use the
-real widget; `db_client` explicitly declines it.
+capture, Esc, scrim semantics, a11y, theming.
 
-| file:symbol | app | evidence | ui alt | effort | risk |
-|---|---|---|---|---|---|
-| `apps/containers/src/panels.rs:1163/1280/1310` | containers | `draw_create_modal` + `draw_confirm` + `draw_prompt`, own scrim (`:1509`) | `ModalDialog` | M | MED |
-| `apps/vpn/src/app.rs:1099/1163` | vpn | `draw_modal` (add) + `draw_confirm_modal` + `modal_button_rects` | `ModalDialog` | M | MED |
-| `apps/db_client/src/connect_modal.rs:256` | db_client | hand-drawn scrim `from_rgba8(0,0,0,150)` + panel; header comment declines `ModalDialog` for dynamic fields | `ModalDialog` | L | MED |
-| `apps/monitor/src/app.rs:2093` `draw_modal` | monitor | kill/terminate confirm overlay + `confirm_stop` | `ModalDialog` | M | MED |
-| `apps/disks/src/app.rs:1275` `draw_modal` | disks | format/erase confirm + scrim (`:246`) | `ModalDialog` | M | MED |
-| `apps/feeds/src/app.rs:2669` `draw_input_modal` | feeds | scrim + card + title/helper/footer + field | `ModalDialog` | M | MED |
-| `apps/software_store/src/app.rs:2497` `draw_ref_sheet` | software_store | flatpakref install-confirm sheet + scrim (`:2509`) | `ModalDialog` | M | MED |
-| `apps/music/src/app/render.rs:3216` `draw_name_prompt` | music | name-input overlay + painted OK/Save | `ModalDialog` | M | MED |
-| `apps/video_editor/src/app.rs:2292` `draw_export_modal` | video_editor | export dialog toggled by `show_export` | `ModalDialog` | M | MED |
-| `apps/imager/src/app.rs:1589` `export_text` overlay | imager | Esc-dismiss config sheet | `ModalDialog` | S | MED |
-| `apps/snippets/src/expand.rs` `ExpandModal` | snippets | own scrim (`:87`) + panel + focus + text fields + Esc/Enter/Tab | `ModalDialog` | M | HIGH |
-| `apps/git_client/src/app.rs:149` `armed_discard` | git_client | destructive discard is a two-step "arm then click again" inline confirm, not a dialog | `ModalDialog` | M | MED |
-| `apps/sheets/src/app.rs:2582` own scrim | sheets | paints its own scrim behind the (shared) command palette | `ModalDialog` scrim | S | LOW |
-| `apps/notes/src/shortcuts_overlay.rs:172` | notes | dim backdrop + card + Esc; comment says it "mirrors `ModalDialog`'s 70% black" | `ModalDialog` | M | LOW |
+**Status (this wave):** the confirm/prompt/sheet overlays in **monitor,
+containers, vpn, software_store** are now routed through the shared
+`ui::widget::ModalDialog` (themed scrim + centered box + title + content +
+primary/secondary + Esc/backdrop dismiss + focus trap + a11y `Dialog` role). The
+widget was extended additively: `ModalDialog::with_destructive(true)` paints the
+primary in `semantic.danger` for delete/kill/erase, and a shared
+`ui::widget::PromptBody` (label + real `TextInput`, with `multiline`/`secret`)
+is the canonical text-entry body so prompts stop hand-rolling a field. `feeds`
+was already converted (its local `ModalBody` + `ModalDialog`); `mail`/`notes`
+also use the widget elsewhere.
+
+| file:symbol | app | status |
+|---|---|---|
+| `apps/monitor/src/app.rs` kill/stop confirm | monitor | **DONE** — `ModalDialog<Text>`, destructive primary; `draw_modal` + `hit.modal_*` deleted |
+| `apps/containers/src/panels.rs` `draw_confirm` + `draw_prompt` | containers | **DONE** — confirm → `ModalDialog<Text>` (destructive); prompt → `ModalDialog<PromptBody>` (also kills the hand-rolled `prompt.value` String). `draw_create_modal` (multi-field form) left for the text-input wave |
+| `apps/vpn/src/app.rs:1163` `draw_confirm_modal` | vpn | **DONE** — `ModalDialog<ConfirmBody>` (keeps the command-preview box), destructive primary for disconnect. `draw_modal` (the Add multi-field form) left for the text-input wave |
+| `apps/software_store/src/app.rs:2497` `draw_ref_sheet` | software_store | **DONE** — `ModalDialog<RefBody>` (icon tile + title + source + comment); adds real Esc/focus-trap the scrim-only sheet lacked |
+| `apps/feeds/src/app.rs` (was `draw_input_modal`) | feeds | **DONE (prior)** — `ModalDialog<ModalBody>` with a real `TextInput` |
+| `apps/db_client/src/connect_modal.rs:256` | db_client | **DEFER** — declines `ModalDialog` for a dynamic field set + an unmasked password; belongs to the text-input wave (secret `TextInput` + dynamic content) |
+| `apps/disks/src/app.rs:1275` `draw_modal` | disks | **DEFER** — a gated *type-the-device-name-to-confirm* dialog with a locked primary; needs a gated-primary `ModalDialog` capability first |
+| `apps/music/src/app/render.rs:3216` `draw_name_prompt` | music | **REMAINING** — single-field name prompt; `PromptBody` is ready for it, but the ActionBus + `Palette` + multi-module wiring made it higher-risk than the confirm/prompt batch above |
+| `apps/video_editor/src/app.rs:2292` `draw_export_modal` | video_editor | **DEFER** — embeds interactive segmented controls (resolution/format/fps); belongs with the controls wave (5a), then wrap in `ModalDialog` |
+| `apps/imager/src/app.rs:1578` `export_text` overlay | imager | **REMAINING** — read-only config sheet with per-line syntax colouring; wrap in a no-footer `ModalDialog` + a small coloured-config body |
+| `apps/snippets/src/expand.rs` `ExpandModal` | snippets | **DEFER** — multiple per-variable text fields; belongs with the text-input wave |
+| `apps/git_client/src/app.rs:149` `armed_discard` | git_client | **DEFER** — an inline two-click "arm then confirm" affordance, not an overlay; converting to a dialog is a behaviour change, not a drop-in |
+| `apps/sheets/src/app.rs:2582` own scrim | sheets | **LEAVE** — scrim-only behind the already-shared command palette; low value, and wrapping the palette would fight its own layout |
+| `apps/notes/src/shortcuts_overlay.rs:172` | notes | **REMAINING (LOW)** — info card that already mirrors `ModalDialog`'s backdrop; structured shortcut-row content needs a small custom body |
 
 ---
 
@@ -378,10 +390,17 @@ per-keystroke CRDT rewrites (imager, containers) as diff-splice while touching
 them (`ui/HIG.md` §6).
 
 ### Wave 3 — Modals (MED)
-Migrate app-drawn confirm/prompt/sheet overlays to `ModalDialog`. **Apps:**
-containers (×3), vpn (×2), db_client, monitor, disks, feeds, software_store,
-music, video_editor, imager, snippets, git_client (replace arm-twice with a
-dialog), sheets (scrim), notes (shortcuts overlay).
+Migrate app-drawn confirm/prompt/sheet overlays to `ModalDialog`. **Done:**
+monitor, containers (confirm + prompt), vpn (confirm), software_store (ref
+sheet); feeds landed earlier. The widget was extended additively —
+`with_destructive` (danger primary) and a shared `PromptBody` text-entry body.
+**Remaining:** music (name prompt — `PromptBody` ready), imager (config info
+sheet), notes (shortcuts overlay); **deferred to other waves:** db_client +
+snippets (text-input wave: dynamic/secret fields, per-variable fields), disks
+(needs a gated-primary capability), video_editor (controls wave — segmented
+controls inside), git_client (arm-twice → dialog is a behaviour change), sheets
+(scrim-only behind the shared palette). The multi-field forms left hand-rolled
+for now: `containers` create-container, `vpn` add-tunnel.
 
 ### Wave 4 — Buttons sweep (MED, broadest single win)
 Replace painted-rect + hit-test tables with `Button`/`Toolbar`. **Apps (zero
