@@ -178,10 +178,15 @@ fn resolve_acl(args: &AclArgs, node_key: IdentityKey) -> Result<Option<(Workspac
 }
 
 /// Bind and serve the document control socket (best-effort).
+///
+/// `enforcement` is the same ACL and identity the mount is bound to. The
+/// socket reaches the same documents by a shorter route, so it has to reach
+/// them under the same policy — see [`fs::control`].
 fn spawn_control(
     sock: PathBuf,
     namespace: Arc<Mutex<Namespace>>,
     sync: Arc<SyncHandle>,
+    enforcement: fs::control::Enforcement,
 ) -> tokio::task::JoinHandle<()> {
     let _ = std::fs::remove_file(&sock); // clear a stale socket
     match tokio::net::UnixListener::bind(&sock) {
@@ -190,7 +195,7 @@ fn spawn_control(
             use std::os::unix::fs::PermissionsExt;
             let _ = std::fs::set_permissions(&sock, std::fs::Permissions::from_mode(0o600));
             println!("Document control socket at {sock:?}");
-            tokio::spawn(fs::control::serve(listener, namespace, Some(sync)))
+            tokio::spawn(fs::control::serve(listener, namespace, Some(sync), enforcement))
         }
         Err(e) => {
             eprintln!("could not bind control socket {sock:?}: {e}");
@@ -250,7 +255,7 @@ async fn serve(
     println!("Hosting workspace — share this ticket to invite peers:\n{}", ticket.encode());
 
     let _control =
-        control_sock.map(|s| spawn_control(s, namespace.clone(), workspace.sync.clone()));
+        control_sock.map(|s| spawn_control(s, namespace.clone(), workspace.sync.clone(), acl.clone()));
     let persist = np.clone().map(|p| spawn_persist(namespace.clone(), p));
     run_mount(
         mount_point,
@@ -302,7 +307,7 @@ async fn mount(
     println!("Joined workspace.");
 
     let _control =
-        control_sock.map(|s| spawn_control(s, namespace.clone(), workspace.sync.clone()));
+        control_sock.map(|s| spawn_control(s, namespace.clone(), workspace.sync.clone(), acl.clone()));
     let persist = np.clone().map(|p| spawn_persist(namespace.clone(), p));
     run_mount(
         mount_point,
