@@ -44,6 +44,21 @@ fn shot(name: &str, renderer: &mut OffscreenRenderer, scene: &vello::Scene) -> V
     rgba
 }
 
+/// One production frame: the per-frame state pump (`sync` + `update`) and
+/// then layout + paint, in the order `compositor::native::run` does it.
+///
+/// The pump is not optional here. Adopting a client focuses its new group,
+/// and it is `update` that pans the strip to bring the focused group into
+/// view. A strip whose existing window is full-width places the new group
+/// past the right edge, so without the pump the tile under test is laid out
+/// off the render surface and every pixel assertion samples nothing.
+fn frame(fb: &mut FrameBuilder) -> vello::Scene {
+    let mut doc = automerge::AutoCommit::new();
+    let root = automerge::ROOT;
+    fb.pump_apps(&mut doc, &root);
+    fb.paint_settled()
+}
+
 /// Paint until the widget tree stops asking for animation frames.
 ///
 /// Splicing a tab into a live group plays the tile's spawn fade, which
@@ -55,11 +70,11 @@ fn settle(fb: &mut FrameBuilder) {
     // Always paint once: the first pass is what splices pending tabs into
     // the live tree and lays them out, so it must run even when nothing
     // is animating yet.
-    let _ = fb.paint_settled();
+    let _ = frame(fb);
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
     while fb.needs_animation_frame() && std::time::Instant::now() < deadline {
         std::thread::sleep(std::time::Duration::from_millis(8));
-        let _ = fb.paint_settled();
+        let _ = frame(fb);
     }
     assert!(
         !fb.needs_animation_frame(),
@@ -94,6 +109,36 @@ fn adopt_into_frame_builder(surface_id: u64, app_id: &str) -> (FrameBuilder, Wor
         mirrored,
         "the protocol-side adoption must mirror into the rendered tree"
     );
+    // Focus the adopted client's group in the rendered tree.
+    //
+    // `adopt_toplevel` does this on the protocol side, and in the compositor
+    // the two are one shared tree — but this harness keeps them separate and
+    // `reconcile_foreign_tabs` mirrors tabs, not the focus pointer. Without
+    // the focus the per-frame scroll reconcile has no reason to pan, and a
+    // strip whose existing window is full-width leaves the new group off the
+    // right edge of the output.
+    {
+        let chrome = fb.chrome();
+        let mut rendered = chrome.tree_mut();
+        let focus = rendered
+            .workspaces
+            .iter()
+            .flat_map(|w| w.strips.iter())
+            .flat_map(|st| st.window_groups.iter().map(move |g| (st.id, g)))
+            .find(|(_, g)| {
+                g.tabs.iter().any(|t| {
+                    matches!(
+                        &t.tile,
+                        shell::shell::state::TileContent::Foreign { surface_id: s, .. }
+                            if *s == surface_id
+                    )
+                })
+            })
+            .map(|(strip_id, g)| (strip_id, g.id));
+        let (strip_id, group_id) =
+            focus.expect("the mirrored tree must hold the adopted client's group");
+        rendered.set_active_group(strip_id, group_id);
+    }
     fb.with_chrome(|st| st.bump());
     (fb, protocol_tree)
 }
@@ -122,9 +167,12 @@ fn client_buffer_pixels_are_composited_into_the_tab_rect() {
     store().forget(surface_id);
 
     let (mut fb, _protocol) = adopt_into_frame_builder(surface_id, "org.example.client");
-    // First settle: splices the tab into the live widget tree and runs
-    // the layout pass that publishes the tab's rect.
-    let scene = fb.paint_settled();
+    // Reach a steady state first: the tab is spliced into the live tree, the
+    // strip pans the newly focused group into view, and the spawn fade
+    // finishes. Only then is the published tab rect the one the client will
+    // actually be configured to.
+    settle(&mut fb);
+    let scene = frame(&mut fb);
     let mut renderer = OffscreenRenderer::new(W, H);
     let before = shot("foreign-before-first-frame", &mut renderer, &scene);
 
@@ -168,7 +216,7 @@ fn client_buffer_pixels_are_composited_into_the_tab_rect() {
         "a freshly committed client frame must request a repaint"
     );
 
-    let scene = fb.paint_settled();
+    let scene = frame(&mut fb);
     let after = shot("foreign-with-client-frame", &mut renderer, &scene);
     let px = OffscreenRenderer::sample(&after, W, cx, cy);
     assert!(
@@ -198,7 +246,7 @@ fn tab_layout_drives_the_client_configure_size() {
     store().forget(surface_id);
 
     let (mut fb, _protocol) = adopt_into_frame_builder(surface_id, "org.example.sized");
-    let _ = fb.paint_settled();
+    let _ = frame(&mut fb);
 
     let first = store()
         .take_pending_configure(surface_id, 1.0)
@@ -218,7 +266,7 @@ fn tab_layout_drives_the_client_configure_size() {
     // Shrink the output: the tab shrinks, so the client is re-configured
     // to the new tab extent.
     fb.set_viewport((900, 600));
-    let _ = fb.paint_settled();
+    let _ = frame(&mut fb);
     let resized = store()
         .take_pending_configure(surface_id, 1.0)
         .expect("a resized tab must re-configure the client");
@@ -255,7 +303,7 @@ fn unmap_stops_painting_and_destroy_releases_the_frame() {
     assert!(store().snapshot(surface_id).is_some());
 
     let mut renderer = OffscreenRenderer::new(W, H);
-    let scene = fb.paint_settled();
+    let scene = frame(&mut fb);
     let mapped = shot("foreign-lifecycle-mapped", &mut renderer, &scene);
     let rect = tile_rect(&mut fb, surface_id);
     let (cx, cy) = (rect.center().x as u32, rect.center().y as u32);
@@ -272,7 +320,7 @@ fn unmap_stops_painting_and_destroy_releases_the_frame() {
         store().snapshot(surface_id).is_none(),
         "an unmapped surface must not keep painting its stale frame"
     );
-    let scene = fb.paint_settled();
+    let scene = frame(&mut fb);
     let unmapped = shot("foreign-lifecycle-unmapped", &mut renderer, &scene);
     let px = OffscreenRenderer::sample(&unmapped, W, cx, cy);
     assert!(
@@ -294,7 +342,7 @@ fn destroying_the_toplevel_removes_the_tab_from_the_rendered_tree() {
     store().forget(surface_id);
 
     let (mut fb, mut protocol) = adopt_into_frame_builder(surface_id, "org.example.transient");
-    let _ = fb.paint_settled();
+    let _ = frame(&mut fb);
     assert!(
         fb.foreign_surface_rect(surface_id).is_some(),
         "the adopted client has a live tile"
@@ -312,7 +360,7 @@ fn destroying_the_toplevel_removes_the_tab_from_the_rendered_tree() {
     };
     assert!(mirrored, "the teardown must mirror across");
     fb.with_chrome(|st| st.bump());
-    let _ = fb.paint_settled();
+    let _ = frame(&mut fb);
 
     assert!(
         fb.foreign_surface_rect(surface_id).is_none(),
@@ -347,7 +395,7 @@ fn painting_does_not_reimport_the_clients_buffer() {
     // Now paint repeatedly with no further commits, the way the
     // compositor's loop does while the client sits idle.
     for _ in 0..30 {
-        let _ = fb.paint_settled();
+        let _ = frame(&mut fb);
     }
 
     assert_eq!(
@@ -428,7 +476,7 @@ fn a_background_foreign_tab_neither_paints_nor_wakes_the_paint_loop() {
     );
 
     let mut renderer = OffscreenRenderer::new(W, H);
-    let scene = fb.paint_settled();
+    let scene = frame(&mut fb);
     let pixels = shot("foreign-background-tab", &mut renderer, &scene);
     let px = OffscreenRenderer::sample(&pixels, W, cx, cy);
     assert!(

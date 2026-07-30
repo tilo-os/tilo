@@ -2188,8 +2188,12 @@ mod tests {
     fn wide_sidebar_folder_click_switches_folder() {
         let (mut app, mut doc) = app();
         app.layout_for_test(1280.0, 800.0);
-        // The Sent row of the active account (see the sidebar layout math).
-        let p = Point::new(130.0, 250.0);
+        // The Sent row of the active account. Resolved from the sidebar's own
+        // laid-out rect rather than a screen literal: the shell reserves a band
+        // at the top of the sidebar for the collapse chip, so the rows sit at an
+        // offset the test should not have to restate.
+        let sidebar = app.nav.sidebar_content_rect();
+        let p = Point::new(sidebar.x0 + 130.0, sidebar.y0 + 250.0);
         assert!(click_at(&mut app, &mut doc, p), "folder click consumed");
         assert_eq!(app.shared.borrow().folder, Folder::Sent, "clicking Sent switches the folder");
     }
