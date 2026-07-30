@@ -26,6 +26,13 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use zeroize::Zeroizing;
 
+/// Where `unlock` leaves the secret it used, for `confirm` to reuse.
+///
+/// `/run` is a tmpfs, so this does not survive a reboot and never touches the
+/// disk. It holds a working disk passphrase, so it is written 0600 and the
+/// directory is 0700.
+const PROOF_FILE: &str = "/run/qos-rollback/proof.key";
+
 #[derive(Parser)]
 #[command(
     name = "qos-rollback",
@@ -91,11 +98,18 @@ enum Cmd {
         #[arg(long)]
         i_have_a_recovery_key: bool,
     },
-    /// First-time enrollment on an already-encrypted device.
+    /// Seal a generation's keyslot. Used both for first-time enrollment and, at
+    /// update-staging time, for the generation that is about to boot.
     Enroll {
         #[arg(long)]
         device: PathBuf,
         /// Generation to enroll. Defaults to the running one.
+        ///
+        /// A generation that is not the running one is sealed to *its* signed
+        /// prediction, which cannot be satisfied until that image boots. That is
+        /// the point: staging an update has to enroll the incoming generation's
+        /// keyslot before the reboot, or its first boot has nothing to unseal
+        /// with and lands on the recovery key.
         #[arg(long)]
         generation: Option<u64>,
         /// Read the authorising passphrase (normally the recovery key) from this
@@ -117,15 +131,31 @@ enum Cmd {
         output: Option<PathBuf>,
         #[arg(long)]
         pin_file: Option<PathBuf>,
+        /// Also keep the unsealed secret here for `confirm` to reuse later in the
+        /// boot. Must be on a tmpfs; it holds a working disk passphrase.
+        #[arg(long, default_value = PROOF_FILE)]
+        proof_file: PathBuf,
+        /// Do not write the proof file.
+        #[arg(long)]
+        no_proof_file: bool,
     },
-    /// Confirm the running generation, then raise the floor.
+    /// Confirm a generation, then raise the floor.
     Confirm {
         #[arg(long)]
         device: PathBuf,
         #[arg(long)]
         generation: Option<u64>,
+        /// Recovery key, for an operator-driven confirmation.
         #[arg(long)]
-        recovery_key_file: PathBuf,
+        recovery_key_file: Option<PathBuf>,
+        /// Unattended: instead of verifying the recovery key, require that the
+        /// keyslots recorded as independent unlock paths at enrollment are still
+        /// present. Weaker, and the only thing possible after an unattended boot.
+        #[arg(long)]
+        unattended: bool,
+        /// Secret that already opens the device — what `unlock` left in /run.
+        #[arg(long, default_value = PROOF_FILE)]
+        proof_file: PathBuf,
         #[arg(long)]
         pin_file: Option<PathBuf>,
         /// Raise the floor to at least this generation, so a security update can
@@ -295,6 +325,8 @@ fn run() -> Result<()> {
             device,
             output,
             pin_file,
+            proof_file,
+            no_proof_file,
         } => cmd_unlock(
             &runner,
             &ws,
@@ -302,11 +334,14 @@ fn run() -> Result<()> {
             device,
             output.as_deref(),
             pin_file.as_deref(),
+            if *no_proof_file { None } else { Some(proof_file) },
         ),
         Cmd::Confirm {
             device,
             generation: gen_num,
             recovery_key_file,
+            unattended,
+            proof_file,
             pin_file,
             floor_at_least,
             dry_run,
@@ -319,7 +354,9 @@ fn run() -> Result<()> {
             scratch.path(),
             device,
             *gen_num,
-            recovery_key_file,
+            recovery_key_file.as_deref(),
+            *unattended,
+            proof_file,
             pin_file.as_deref(),
             *floor_at_least,
             *dry_run,
@@ -552,30 +589,54 @@ fn cmd_enroll(
     )?;
     println!("generation {gen_num}: keyslot {slot}, token {token_id}");
 
-    // SAFETY-CRITICAL: prove the seal round-trips before declaring success.
+    // SAFETY-CRITICAL: prove as much of the seal as is provable right now.
+    //
+    // For the generation that is *running*, the whole round-trip is provable: the
+    // live measurements are the ones the prediction covers, so the TPM should
+    // release the secret and it should open the keyslot.
+    //
+    // For a generation that is not running — staging an update — it is not
+    // provable, and no amount of care makes it so: the seal is bound to that
+    // image's measurements, which will not exist until it boots. What is provable
+    // is that the keyslot works (`enroll_generation` verified it) and that the
+    // current generation's own token is untouched, so a first boot that cannot
+    // unseal falls back rather than failing.
     let tokens = keyslots::list_tokens(runner, device)?;
     let (_, t) = tokens
         .iter()
         .find(|(_, t)| t.generation == gen_num)
         .context("the token just written is not readable back")?;
-    match keyslots::unseal(
-        runner,
-        ws,
-        t,
-        Path::new(&cfg.pcr_public_key),
-        pin.as_deref().map(|v| &v[..]),
-    )? {
-        Some(secret) => {
-            if !keyslots::verify_passphrase(runner, ws, device, &secret, Some(slot))? {
-                bail!("the unsealed secret does not open keyslot {slot} — enrollment is not usable");
+    let running = generation::running().ok();
+    if running == Some(gen_num) {
+        match keyslots::unseal(
+            runner,
+            ws,
+            t,
+            Path::new(&cfg.pcr_public_key),
+            pin.as_deref().map(|v| &v[..]),
+        )? {
+            Some(secret) => {
+                if !keyslots::verify_passphrase(runner, ws, device, &secret, Some(slot))? {
+                    bail!(
+                        "the unsealed secret does not open keyslot {slot} — enrollment is not usable"
+                    );
+                }
+                println!("generation {gen_num} unseals and opens keyslot {slot}");
             }
-            println!("generation {gen_num} unseals and opens keyslot {slot}");
+            None => bail!(
+                "the token for generation {gen_num} was written but does not unseal on this \
+                 machine: the signed prediction does not match the live PCRs. The keyslot was left \
+                 in place and the recovery key still works; fix the prediction and re-run."
+            ),
         }
-        None => bail!(
-            "the token for generation {gen_num} was written but does not unseal on this machine: the \
-             signed prediction does not match the live PCRs. The keyslot was left in place and the \
-             recovery key still works; fix the prediction and re-run."
-        ),
+    } else {
+        println!(
+            "generation {gen_num} is not the running generation ({}), so its seal cannot be \
+             exercised until that image boots. Its keyslot is verified; the running generation's \
+             keyslot and the rollback floor are untouched, so a first boot that cannot unseal falls \
+             back instead of failing.",
+            running.map(|g| g.to_string()).unwrap_or_else(|| "unknown".into())
+        );
     }
 
     confirm::save_state(
@@ -583,7 +644,8 @@ fn cmd_enroll(
         &confirm::State {
             nv_index: cfg.nv_index,
             nv_base: floor.base,
-            last_confirmed: Some(gen_num),
+            last_confirmed: running.filter(|g| *g == gen_num),
+            foreign_keyslots: keyslots::foreign_keyslots(runner, device)?,
         },
     )?;
     // SAFETY-CRITICAL: last word goes to the recovery key.
@@ -597,6 +659,25 @@ fn cmd_enroll(
     Ok(())
 }
 
+fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
+    if let Some(d) = path.parent() {
+        std::fs::create_dir_all(d).with_context(|| format!("creating {}", d.display()))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(d, std::fs::Permissions::from_mode(0o700));
+        }
+    }
+    std::fs::write(path, bytes).with_context(|| format!("writing {}", path.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
 fn cmd_unlock(
     runner: &dyn exec::Runner,
     ws: &policy::Workspace,
@@ -604,7 +685,8 @@ fn cmd_unlock(
     device: &Path,
     output: Option<&Path>,
     pin_file: Option<&Path>,
-) -> Result<()> {
+    proof_file: Option<&Path>,
+) -> Result<()>  {
     let pin = pin_file.map(read_secret).transpose()?;
     let tokens = keyslots::list_tokens(runner, device)?;
     if tokens.is_empty() {
@@ -622,16 +704,7 @@ fn cmd_unlock(
             Ok(Some(secret)) => {
                 match output {
                     Some(p) => {
-                        if let Some(d) = p.parent() {
-                            std::fs::create_dir_all(d)?;
-                        }
-                        std::fs::write(p, &*secret)
-                            .with_context(|| format!("writing {}", p.display()))?;
-                        #[cfg(unix)]
-                        {
-                            use std::os::unix::fs::PermissionsExt;
-                            std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o600))?;
-                        }
+                        write_private(p, &secret)?;
                         eprintln!(
                             "qos-rollback: generation {} unsealed to {}",
                             t.generation,
@@ -642,6 +715,11 @@ fn cmd_unlock(
                         use std::io::Write;
                         std::io::stdout().write_all(&secret)?;
                     }
+                }
+                // Keep it for `confirm`, which runs later in the same boot and
+                // cannot re-unseal without the PIN.
+                if let Some(pf) = proof_file {
+                    write_private(pf, &secret)?;
                 }
                 return Ok(());
             }
@@ -678,7 +756,9 @@ fn cmd_confirm(
     scratch: &Path,
     device: &Path,
     gen_num: Option<u64>,
-    recovery_key_file: &Path,
+    recovery_key_file: Option<&Path>,
+    unattended: bool,
+    proof_file: &Path,
     pin_file: Option<&Path>,
     floor_at_least: Option<u64>,
     dry_run: bool,
@@ -687,8 +767,30 @@ fn cmd_confirm(
         Some(g) => g,
         None => generation::running()?,
     };
-    let recovery = read_secret(recovery_key_file)?;
+    let recovery = recovery_key_file.map(read_secret).transpose()?;
     let pin = pin_file.map(read_secret).transpose()?;
+    let proof = match read_secret(proof_file) {
+        Ok(p) => Some(p),
+        Err(_) if recovery.is_some() || pin.is_some() => None,
+        Err(e) if unattended => {
+            return Err(e).context(
+                "unattended confirmation needs the secret `unlock` left behind; without it there is                  no way to authorise a keyslot change after the PIN prompt is gone",
+            );
+        }
+        Err(_) => None,
+    };
+    let recorded_slots = confirm::load_state(state_path)?
+        .map(|s| s.foreign_keyslots)
+        .unwrap_or_default();
+    let check = match (&recovery, unattended) {
+        (Some(k), false) => keyslots::RecoveryCheck::Key(k),
+        (_, true) => keyslots::RecoveryCheck::ForeignSlotsPresent {
+            expected: &recorded_slots,
+        },
+        (None, false) => bail!(
+            "pass --recovery-key-file to confirm with the recovery key verified, or --unattended to              accept the weaker check that the independent keyslots are still present"
+        ),
+    };
     let outcome = confirm::run(
         runner,
         ws,
@@ -697,8 +799,9 @@ fn cmd_confirm(
             device,
             generation: gen_num,
             prediction_dir: pred_dir,
-            recovery_key: &recovery,
+            recovery: check,
             pin: pin.as_deref().map(|v| &v[..]),
+            proof: proof.as_deref().map(|v| &v[..]),
             floor_at_least,
             state_path,
             scratch,
@@ -733,7 +836,10 @@ fn cmd_confirm(
         outcome.floor.floor_generation(),
         outcome.floor.counter
     );
-    println!("recovery key still verified.");
+    println!(
+        "independent unlock path re-checked ({}).",
+        if unattended { "keyslots present" } else { "recovery key verified" }
+    );
     Ok(())
 }
 

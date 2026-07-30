@@ -911,7 +911,7 @@ fn confirming_a_generation_enrolls_it_prunes_the_window_and_then_raises_the_floo
             .expect("enroll 5");
     confirm::save_state(
         &state,
-        &confirm::State { nv_index: f.cfg.nv_index, nv_base: floor.base, last_confirmed: Some(5) },
+        &confirm::State { nv_index: f.cfg.nv_index, nv_base: floor.base, last_confirmed: Some(5), foreign_keyslots: vec![0] },
     )
     .expect("seed state");
     assert!(slot5 != 0);
@@ -921,8 +921,9 @@ fn confirming_a_generation_enrolls_it_prunes_the_window_and_then_raises_the_floo
         device: &img,
         generation,
         prediction_dir: &preds,
-        recovery_key: recovery,
+        recovery: keyslots::RecoveryCheck::Key(recovery),
         pin: None,
+        proof: None,
         floor_at_least,
         state_path: &state,
         scratch: f.dir(),
@@ -996,7 +997,7 @@ fn a_declared_floor_closes_the_window_on_a_vulnerable_generation() {
         .expect("enroll 7");
     confirm::save_state(
         &state,
-        &confirm::State { nv_index: f.cfg.nv_index, nv_base: floor.base, last_confirmed: Some(7) },
+        &confirm::State { nv_index: f.cfg.nv_index, nv_base: floor.base, last_confirmed: Some(7), foreign_keyslots: vec![0] },
     )
     .expect("seed state");
     let t7 = keyslots::list_tokens(&f.runner, &img).expect("list").remove(0).1;
@@ -1011,8 +1012,9 @@ fn a_declared_floor_closes_the_window_on_a_vulnerable_generation() {
             device: &img,
             generation: 8,
             prediction_dir: &preds,
-            recovery_key: recovery,
+            recovery: keyslots::RecoveryCheck::Key(recovery),
             pin: None,
+            proof: None,
             floor_at_least: Some(8),
             state_path: &state,
             scratch: f.dir(),
@@ -1055,7 +1057,7 @@ fn a_declared_floor_above_the_running_generation_is_refused_before_anything_move
         .expect("enroll 7");
     confirm::save_state(
         &state,
-        &confirm::State { nv_index: f.cfg.nv_index, nv_base: floor.base, last_confirmed: Some(7) },
+        &confirm::State { nv_index: f.cfg.nv_index, nv_base: floor.base, last_confirmed: Some(7), foreign_keyslots: vec![0] },
     )
     .expect("seed state");
 
@@ -1068,8 +1070,9 @@ fn a_declared_floor_above_the_running_generation_is_refused_before_anything_move
             device: &img,
             generation: 7,
             prediction_dir: &preds,
-            recovery_key: recovery,
+            recovery: keyslots::RecoveryCheck::Key(recovery),
             pin: None,
+            proof: None,
             floor_at_least: Some(9),
             state_path: &state,
             scratch: f.dir(),
@@ -1132,4 +1135,224 @@ fn the_floor_can_be_certified_with_an_attestation_key() {
     .expect("certify again");
     assert_eq!(att2.floor_generation, 7);
     assert_ne!(att.attestation, att2.attestation);
+}
+
+// ---------------------------------------------------------------------------
+// The unattended path — the one the machine actually takes after a reboot
+// ---------------------------------------------------------------------------
+
+/// After a reboot nothing on the machine knows the recovery key or the PIN. The
+/// confirmation has to work from the secret the boot itself unlocked with, and
+/// from the observation that the independent keyslots are still there.
+#[test]
+fn an_unattended_confirmation_works_from_the_boot_secret_alone() {
+    let f = fixture!();
+    let recovery = b"recovery-key-for-the-unattended-test";
+    let img = luks_image(f.dir(), recovery);
+    let ws = f.ws();
+    let preds = f.dir().join("predictions");
+    let state = f.dir().join("state.json");
+    for g in [6u64, 7] {
+        let p = f.predict(g, &f.sign_priv, "");
+        policy::write_signed_prediction(&preds, g, &f.cfg.pcr_bank, &f.cfg.pcrs, &p).expect("write");
+    }
+
+    // Enrolled with a PIN, the way a real machine is.
+    let pin: &[u8] = b"482913";
+    let floor = f.floor(4);
+    keyslots::enroll_generation(
+        &f.runner, &ws, &img, &f.cfg, 6, floor,
+        &[f.predict(6, &f.sign_priv, "")], recovery, Some(pin),
+    )
+    .expect("enroll 6 with a PIN");
+    keyslots::enroll_generation(
+        &f.runner, &ws, &img, &f.cfg, 7, floor,
+        &[f.predict(7, &f.sign_priv, "")], recovery, Some(pin),
+    )
+    .expect("enroll 7 with a PIN");
+    let foreign = keyslots::foreign_keyslots(&f.runner, &img).expect("foreign slots");
+    assert_eq!(foreign.len(), 1, "only the recovery key's slot should be foreign: {foreign:?}");
+    confirm::save_state(
+        &state,
+        &confirm::State {
+            nv_index: f.cfg.nv_index,
+            nv_base: floor.base,
+            last_confirmed: Some(6),
+            foreign_keyslots: foreign.clone(),
+        },
+    )
+    .expect("seed state");
+
+    // What boot does: unseal generation 7 with the PIN, keep the secret.
+    let t7 = keyslots::list_tokens(&f.runner, &img)
+        .expect("list")
+        .into_iter()
+        .find(|(_, t)| t.generation == 7)
+        .expect("token 7")
+        .1;
+    let boot_secret = f
+        .try_unseal(&t7, Some(pin))
+        .expect("unseal 7 with the PIN")
+        .expect("a prediction applies");
+
+    // What the confirmation service does: no recovery key, no PIN, just the
+    // secret the boot used.
+    let o = confirm::run(
+        &f.runner,
+        &ws,
+        &confirm::Request {
+            cfg: &f.cfg,
+            device: &img,
+            generation: 7,
+            prediction_dir: &preds,
+            recovery: keyslots::RecoveryCheck::ForeignSlotsPresent { expected: &foreign },
+            pin: None,
+            proof: Some(&boot_secret),
+            floor_at_least: None,
+            state_path: &state,
+            scratch: f.dir(),
+            dry_run: false,
+        },
+    )
+    .expect("unattended confirmation");
+    assert_eq!(o.floor.floor_generation(), 5);
+    assert!(keyslots::verify_recovery(&f.runner, &ws, &img, recovery).expect("verify recovery"));
+}
+
+#[test]
+fn an_unattended_confirmation_refuses_a_proof_that_is_not_that_generations_secret() {
+    let f = fixture!();
+    let recovery = b"recovery-key-for-the-wrong-proof-test";
+    let img = luks_image(f.dir(), recovery);
+    let ws = f.ws();
+    let preds = f.dir().join("predictions");
+    let state = f.dir().join("state.json");
+    for g in [6u64, 7] {
+        let p = f.predict(g, &f.sign_priv, "");
+        policy::write_signed_prediction(&preds, g, &f.cfg.pcr_bank, &f.cfg.pcrs, &p).expect("write");
+    }
+    let floor = f.floor(4);
+    for g in [6u64, 7] {
+        keyslots::enroll_generation(
+            &f.runner, &ws, &img, &f.cfg, g, floor,
+            &[f.predict(g, &f.sign_priv, "")], recovery, None,
+        )
+        .expect("enroll");
+    }
+    let foreign = keyslots::foreign_keyslots(&f.runner, &img).expect("foreign");
+    confirm::save_state(
+        &state,
+        &confirm::State {
+            nv_index: f.cfg.nv_index,
+            nv_base: floor.base,
+            last_confirmed: Some(6),
+            foreign_keyslots: foreign.clone(),
+        },
+    )
+    .expect("seed state");
+
+    // Generation 6's secret must not be accepted as proof for generation 7:
+    // otherwise a machine that booted an older image could confirm a newer one
+    // and drag the floor up past what it can actually run.
+    let t6 = keyslots::list_tokens(&f.runner, &img)
+        .expect("list")
+        .into_iter()
+        .find(|(_, t)| t.generation == 6)
+        .expect("token 6")
+        .1;
+    let secret6 = f.try_unseal(&t6, None).expect("unseal 6").expect("applies");
+    let before = f.counter_now();
+    let e = confirm::run(
+        &f.runner,
+        &ws,
+        &confirm::Request {
+            cfg: &f.cfg,
+            device: &img,
+            generation: 7,
+            prediction_dir: &preds,
+            recovery: keyslots::RecoveryCheck::ForeignSlotsPresent { expected: &foreign },
+            pin: None,
+            proof: Some(&secret6),
+            floor_at_least: None,
+            state_path: &state,
+            scratch: f.dir(),
+            dry_run: false,
+        },
+    )
+    .expect_err("the wrong generation's secret must not authorise a confirmation");
+    assert!(
+        format!("{e:#}").contains("does not open generation 7's keyslot"),
+        "{e:#}"
+    );
+    assert_eq!(f.counter_now(), before, "the counter must not have moved");
+}
+
+#[test]
+fn a_confirmation_refuses_to_proceed_when_the_recovery_keyslot_has_vanished() {
+    let f = fixture!();
+    let recovery = b"recovery-key-that-gets-removed";
+    let img = luks_image(f.dir(), recovery);
+    let ws = f.ws();
+    let preds = f.dir().join("predictions");
+    let state = f.dir().join("state.json");
+    let p7 = f.predict(7, &f.sign_priv, "");
+    policy::write_signed_prediction(&preds, 7, &f.cfg.pcr_bank, &f.cfg.pcrs, &p7).expect("write");
+    let floor = f.floor(5);
+    keyslots::enroll_generation(&f.runner, &ws, &img, &f.cfg, 7, floor, &[p7], recovery, None)
+        .expect("enroll 7");
+    let foreign = keyslots::foreign_keyslots(&f.runner, &img).expect("foreign");
+    assert_eq!(foreign, vec![0]);
+    confirm::save_state(
+        &state,
+        &confirm::State {
+            nv_index: f.cfg.nv_index,
+            nv_base: floor.base,
+            last_confirmed: Some(7),
+            foreign_keyslots: foreign.clone(),
+        },
+    )
+    .expect("seed state");
+    let t7 = keyslots::list_tokens(&f.runner, &img).expect("list").remove(0).1;
+    let secret7 = f.try_unseal(&t7, None).expect("unseal").expect("applies");
+
+    // Something outside this tool removes the recovery keyslot.
+    let kf = f.dir().join("kill.key");
+    std::fs::write(&kf, &secret7).expect("write key file");
+    assert!(
+        f.raw(
+            "cryptsetup",
+            &[
+                "luksKillSlot", "--batch-mode", "--key-file",
+                kf.to_str().unwrap(), img.to_str().unwrap(), "0",
+            ],
+        )
+        .ok(),
+        "could not remove slot 0, so this test proves nothing"
+    );
+
+    let before = f.counter_now();
+    let e = confirm::run(
+        &f.runner,
+        &ws,
+        &confirm::Request {
+            cfg: &f.cfg,
+            device: &img,
+            generation: 7,
+            prediction_dir: &preds,
+            recovery: keyslots::RecoveryCheck::ForeignSlotsPresent { expected: &foreign },
+            pin: None,
+            proof: Some(&secret7),
+            floor_at_least: None,
+            state_path: &state,
+            scratch: f.dir(),
+            dry_run: false,
+        },
+    )
+    .expect_err("a missing independent keyslot must stop the confirmation");
+    let msg = format!("{e:#}");
+    assert!(
+        msg.contains("no longer in") || msg.contains("no keyslot outside"),
+        "{msg}"
+    );
+    assert_eq!(f.counter_now(), before, "the counter must not have moved");
 }
