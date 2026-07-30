@@ -187,7 +187,7 @@ pub fn load_or_create_keypair(
 fn read_device_keypair(
     path: &std::path::Path,
 ) -> std::io::Result<libp2p::identity::Keypair> {
-    match qos_user_identity::persist::read_signing_key(path) {
+    match qos_user_identity::persist::read_device_key(path) {
         Ok(sk) => keypair_from_seed(&sk.to_bytes()),
         Err(qos_user_identity::PersistError::WrongKeyLength(_)) => {
             // Not 32 bytes. Either the older protobuf keypair — which
@@ -229,15 +229,15 @@ fn keypair_from_seed(seed: &[u8; 32]) -> std::io::Result<libp2p::identity::Keypa
     libp2p::identity::Keypair::ed25519_from_bytes(*seed).map_err(std::io::Error::other)
 }
 
-/// Write the seed with mode `0600` and no window where it is readable
-/// at its final path — the private key impersonates this device on the
-/// mesh, and the previous write-then-chmod left it briefly at the
+/// Write the seed at the device-key mode with no window where it is
+/// readable at its final path — the private key impersonates this device
+/// on the mesh, and the previous write-then-chmod left it briefly at the
 /// process umask.
 fn write_seed(path: &std::path::Path, seed: &[u8; 32]) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    qos_user_identity::persist::write_signing_key(
+    qos_user_identity::persist::write_device_key(
         path,
         &ed25519_dalek::SigningKey::from_bytes(seed),
     )
@@ -291,22 +291,31 @@ mod tests {
         );
     }
 
-    /// A world-readable key is a reportable condition too, not a reason
-    /// to mint a replacement.
+    /// A key reachable by users outside the device-trust group is a
+    /// reportable condition, not a reason to mint a replacement.
+    /// Group-readable is expected — the filesystem daemon and the
+    /// compositor read this file as two different uids.
     #[test]
-    fn world_readable_key_file_raises_instead_of_rotating_identity() {
+    fn key_reachable_outside_the_trust_group_raises_instead_of_rotating() {
         use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("keypair.bin");
         let kp = load_or_create_keypair(&path).expect("first load creates");
         let before = kp.public().to_peer_id();
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
 
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
         assert!(
             load_or_create_keypair(&path).is_err(),
-            "a key readable by other local users must be reported"
+            "a key any local user can read must be reported"
         );
-        // Still the same key on disk — tightening the mode recovers it.
+
+        // Still the same key on disk — tightening the mode recovers it,
+        // and group-read is a legitimate mode for this file.
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640)).unwrap();
+        assert_eq!(
+            load_or_create_keypair(&path).unwrap().public().to_peer_id(),
+            before
+        );
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
         assert_eq!(
             load_or_create_keypair(&path).unwrap().public().to_peer_id(),
@@ -431,28 +440,28 @@ mod tests {
         let _salt_other = peer_salt_from_keypair(&other);
     }
 
-    /// C-8 (security): the freshly-generated peer keypair must land on
-    /// disk with mode `0600`. Default `std::fs::write` uses the process
-    /// umask which is typically `0644` — that lets any local user copy
-    /// the ed25519 private key and impersonate this peer in the libp2p
-    /// mesh. Regression-guard the mode bits explicitly.
+    /// The freshly-generated device key must land on disk with no bits
+    /// for users outside the device-trust group. Default
+    /// `std::fs::write` uses the process umask, typically `0644`, which
+    /// would let any local user copy the private key and impersonate
+    /// this device on the mesh.
     #[test]
-    fn load_or_create_keypair_sets_0600_permissions() {
+    fn load_or_create_keypair_writes_the_device_key_mode() {
         use std::os::unix::fs::PermissionsExt;
 
         let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("peer-key");
+        let path = dir.path().join("keypair.bin");
         let _kp = load_or_create_keypair(&path).expect("creates key");
 
         let meta = std::fs::metadata(&path).expect("stat key file");
-        let mode = meta.permissions().mode();
         // Compare the low 12 bits (file-type bits live above 0o7777).
+        let mode = meta.permissions().mode() & 0o7777;
         assert_eq!(
-            mode & 0o7777,
-            0o600,
-            "peer keypair must be mode 0600, got {:o} (full mode: {:o})",
-            mode & 0o7777,
-            mode
+            mode,
+            qos_user_identity::persist::DEVICE_KEY_MODE,
+            "device key must be mode {:o}, got {mode:o}",
+            qos_user_identity::persist::DEVICE_KEY_MODE
         );
+        assert_eq!(mode & 0o007, 0, "no access for anyone outside the group");
     }
 }
