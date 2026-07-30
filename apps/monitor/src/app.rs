@@ -30,7 +30,7 @@ use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::context_menu::{ContextMenu, MenuItem};
 use ui::widget::popover::Popover;
-use ui::widget::{ModalDialog, Text, Widget};
+use ui::widget::{Button, ButtonFace, ButtonStyle, ModalDialog, Text, Widget};
 use std::cell::Cell;
 use std::rc::Rc;
 
@@ -1998,29 +1998,30 @@ impl MonitorApp {
         let bw = 92.0_f64.min((bar.width() - 8.0) / 2.0);
         let kill_r = Rect::new(bar.x1 - bw, by0, bar.x1, by0 + bh);
         let stop_r = Rect::new(kill_r.x0 - 8.0 - bw, by0, kill_r.x0 - 8.0, by0 + bh);
-        Self::draw_action_button(scene, t, tr, theme, stop_r, "Stop", Icon::Power, c.surface_white_5, c.text_primary, true);
-        Self::draw_action_button(scene, t, tr, theme, kill_r, "Kill", Icon::X, c.semantic.danger, Color::WHITE, false);
+        let cur = self.last_cursor;
+        Self::draw_action_button(scene, t, tr, theme, stop_r, "Stop", Icon::Power, ButtonStyle::Neutral, stop_r.contains(cur));
+        Self::draw_action_button(scene, t, tr, theme, kill_r, "Kill", Icon::X, ButtonStyle::Danger, kill_r.contains(cur));
         self.hit.stop_btn = stop_r;
         self.hit.kill_btn = kill_r;
     }
 
-    /// One rounded action button: fill + optional border, an icon and a label,
-    /// both in `text_color`, centred as an icon-then-label pair.
-    #[allow(clippy::too_many_arguments)]
-    fn draw_action_button(scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, rect: Rect, label: &str, icon: Icon, fill: Color, text_color: Color, border: bool) {
-        let radius = theme.tokens.radii.md as f64;
-        charts::fill_rrect(scene, t, rect, radius, fill);
-        if border {
-            charts::stroke_rrect(scene, t, rect, radius, theme.tokens.colors.border_standard, 1.0);
-        }
-        let fs = theme.tokens.typography.scale.sm;
-        let (lw, lh) = tr.measure_weighted(label, fs, None, TextWeight::Semibold);
-        // Centre the icon+label pair (16px icon + 6px gap + label) in the button.
-        let pair_w = 16.0 + 6.0 + lw as f64;
-        let start = rect.center().x - pair_w / 2.0;
-        let icon_r = Rect::new(start, rect.center().y - 8.0, start + 16.0, rect.center().y + 8.0);
-        icons::draw_icon(scene, t, icon_r, icon, text_color, 1.8);
-        tr.draw_text_weighted(scene, label, fs, text_color, t * Affine::translate((icon_r.x1 + 6.0, rect.center().y - lh as f64 / 2.0)), None, TextWeight::Semibold);
+    /// One rounded action button (the shared Button face): a centred
+    /// icon-then-label pair. `Neutral` for Stop, `Danger` for the destructive
+    /// Kill; hover/press feedback comes from the themed face.
+    fn draw_action_button(scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, rect: Rect, label: &str, icon: Icon, style: ButtonStyle, hovered: bool) {
+        Button::paint(
+            scene,
+            t,
+            tr,
+            theme,
+            &ButtonFace::new(rect, label)
+                .radius(theme.tokens.radii.md as f64)
+                .text_size(theme.tokens.typography.scale.sm)
+                .weight(TextWeight::Semibold)
+                .icon(icon)
+                .style(style)
+                .hovered(hovered),
+        );
     }
 
     /// The Resources dashboard. Top-to-bottom: an **overview row** (Processor
