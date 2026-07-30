@@ -193,14 +193,17 @@ mod tests {
             out.iter().map(|r| (&r.title, r.score)).collect::<Vec<_>>()
         );
         assert_eq!(out[0].score, 40, "a body hit scores 40");
+        let snippet = out[0].subtitle.as_deref().unwrap_or_default();
         assert!(
-            out[0]
-                .subtitle
-                .as_deref()
-                .unwrap_or_default()
-                .contains("nirios"),
-            "the row must show the matching line: {:?}",
-            out[0].subtitle
+            snippet.contains("nirios"),
+            "the row must show the matching line: {snippet:?}"
+        );
+        // One line of prose, not the body's own line breaks: the seed has
+        // a paragraph break right after the match, and two spaces in the
+        // middle of a palette row read as a typo.
+        assert!(
+            !snippet.contains("  ") && !snippet.contains('\n'),
+            "the snippet must collapse the body's line structure: {snippet:?}"
         );
     }
 
