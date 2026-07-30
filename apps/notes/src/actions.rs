@@ -139,14 +139,24 @@ impl Action for NotesAction {
                         affected.insert(p.parent);
                     }
                 }
-                for id in &removed {
+                // Delete in a deterministic order (by page id). A `HashSet`'s
+                // iteration order is not stable across replicas, so emitting the
+                // delete ops in set order would make the change diverge; sorting
+                // pins one identical op sequence on every replica.
+                let mut removed_sorted: Vec<PageId> = removed.iter().copied().collect();
+                removed_sorted.sort();
+                for id in &removed_sorted {
                     NotesDoc::remove_page(doc, *id);
                 }
-                // Re-densify each affected sibling group: stable by existing
-                // order, rewritten to 0,1,2,… Only the pages whose order
+                // Re-densify each affected sibling group, visiting parents in a
+                // stable order (root group first, then by parent id) for the same
+                // reason. Within a group, siblings sort by their existing order
+                // and are rewritten to 0,1,2,…; only the pages whose order
                 // actually moves are re-written (a diff-spliced title + guarded
                 // scalars make an unchanged upsert a no-op).
-                for parent in affected {
+                let mut affected_sorted: Vec<Option<PageId>> = affected.into_iter().collect();
+                affected_sorted.sort();
+                for parent in affected_sorted {
                     let mut siblings: Vec<PageMeta> = all
                         .iter()
                         .filter(|p| p.parent == parent && !removed.contains(&p.id))
