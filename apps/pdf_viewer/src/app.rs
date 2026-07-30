@@ -386,6 +386,16 @@ pub struct PdfApp {
     /// The on-disk path the current document was opened from, used to suggest a
     /// filename and folder when saving flattened markup.
     source_path: Option<std::path::PathBuf>,
+    /// The record holding *this document's* markup — the annotations, comments
+    /// and signatures the user has made on it.
+    ///
+    /// It is a record of its own that references the document record, not
+    /// state inside it. That is what makes the reader's markup shareable
+    /// separately from the file, and it is why opening a second document no
+    /// longer has anything to clear: the second document's markup is a
+    /// different document. `None` on the empty state — no document, no
+    /// markup.
+    markup_record: Option<ui::RecordCheckout>,
     /// A transient one-line status (e.g. "Saved to …"), shown as a toast until
     /// the next document action.
     status_note: Option<String>,
@@ -474,6 +484,7 @@ impl PdfApp {
                 app.has_document = true;
                 app.doc_name = loaded.name;
                 app.source_path = Some(path.to_path_buf());
+                app.markup_record = Some(Self::markup_record_for(path));
                 app
             }
             Err(e) => {
@@ -576,6 +587,7 @@ impl PdfApp {
             doc,
             raster: None,
             has_document: false,
+            markup_record: None,
             doc_name: String::new(),
             load_error: None,
             seed_sample,
@@ -2065,10 +2077,29 @@ impl PdfApp {
         }
     }
 
+    /// The record holding the markup for the document at `path`.
+    ///
+    /// Two records and one reference: the file is a record whose identity is
+    /// its path, and its markup is a record derived from it that references
+    /// it. Derived rather than minted so reopening the file next month finds
+    /// the same annotations; separate from the file so "share the document"
+    /// and "share my notes on it" are different acts.
+    fn markup_record_for(path: &std::path::Path) -> ui::RecordCheckout {
+        let file = ui::RecordId::for_file(path);
+        ui::RecordCheckout::new(
+            ui::RecordId::derived("annotations", &file),
+            ui::RecordKind::new("annotation-set"),
+        )
+        .referencing(
+            ui::RecordCheckout::new(file, ui::RecordKind::new("file")),
+            "marks-up",
+        )
+    }
+
     /// Load a real PDF from `path` into the running reader, replacing whatever
     /// was open. On success the view resets to page one at fit-page and the
-    /// prior document's markup is cleared; on failure the empty state surfaces
-    /// the reason.
+    /// reader switches to that document's own markup record; on failure the
+    /// empty state surfaces the reason.
     fn load_path(&mut self, path: &std::path::Path, state: &mut AutoCommit) {
         match crate::source::open(path) {
             Ok(loaded) => {
@@ -2079,7 +2110,15 @@ impl PdfApp {
                 self.source_path = Some(path.to_path_buf());
                 self.load_error = None;
                 self.status_note = None;
-                PdfDoc::clear_all(state);
+                // Point at the new document's markup record. The host checks
+                // it out before the next `sync`, so the caches are emptied
+                // here rather than the previous document's markup being
+                // deleted — which is what this used to do, and it was the
+                // one copy of the user's annotations.
+                self.markup_record = Some(Self::markup_record_for(path));
+                self.annotations.clear();
+                self.comments.clear();
+                self.signatures.clear();
                 self.reload(state);
                 self.commit_pending = true;
                 // Reset per-peer view state for the fresh document.
@@ -2148,6 +2187,10 @@ include!("app_draw.rs");
 include!("app_events.rs");
 
 impl Widget for PdfApp {
+    fn record_intent(&self) -> Option<ui::RecordCheckout> {
+        self.markup_record.clone()
+    }
+
     fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
         // Pull in any file the host portal picker returned since the last
         // frame (off-thread; never blocks the UI).
@@ -2302,6 +2345,116 @@ impl Widget for PdfApp {
 mod tests {
     use super::*;
     use serial_test::serial;
+
+    /// Two real PDFs on disk, from the bundled fixture. "Open a second
+    /// document" has to be a second *file* — the bug is about one document's
+    /// markup reaching another, and the same path twice is one record.
+    fn two_documents() -> (tempfile::TempDir, std::path::PathBuf, std::path::PathBuf) {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let a = dir.path().join("a.pdf");
+        let b = dir.path().join("b.pdf");
+        let fixture = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/sample.pdf");
+        std::fs::copy(fixture, &a).expect("copy fixture to a.pdf");
+        std::fs::copy(fixture, &b).expect("copy fixture to b.pdf");
+        (dir, a, b)
+    }
+
+    /// One frame of the record-aware host: check out whatever record the
+    /// widget names, then sync. This is `ui::App::record_tick` +
+    /// `root_widget.sync` — the same `ui::record::tick` the App calls, not a
+    /// reimplementation of it.
+    fn record_frame(
+        app: &mut PdfApp,
+        st: &mut ui::State,
+        set: &mut ui::RecordSet,
+        room: &mut AutoCommit,
+    ) {
+        ui::record::tick(set, st, Some(room), &*app);
+        app.sync(&mut st.doc, &st.root);
+    }
+
+    /// Place a highlight on page 1 through the drag path a user takes.
+    fn annotate(app: &mut PdfApp, st: &mut ui::State) {
+        app.tool = Tool::Highlight;
+        app.drag = Some(DragState {
+            tool: Tool::Highlight,
+            page: 1,
+            start: (70.0, 150.0),
+            cur: (360.0, 165.0),
+            points: vec![],
+        });
+        app.commit_drag(&mut st.doc);
+    }
+
+    /// Opening a second document must not destroy the first document's
+    /// markup. Annotations are per-document state; before records they lived
+    /// in one document per `(app, room)` and the only way to stop one file's
+    /// markup appearing over another was to delete it — which is data loss,
+    /// not scoping.
+    #[test]
+    #[serial(pdfium)]
+    fn annotating_one_document_survives_opening_another() {
+        let (_dir, a, b) = two_documents();
+        let mut app = PdfApp::open(&a);
+        assert!(app.has_document, "a.pdf must load");
+        let mut st = ui::State::new();
+        let mut set = ui::RecordSet::in_memory();
+        let mut room = AutoCommit::new();
+        record_frame(&mut app, &mut st, &mut set, &mut room);
+
+        annotate(&mut app, &mut st);
+        let on_a = PdfDoc::list_annotations(&st.doc).len();
+        assert!(on_a > 0, "the highlight landed in a.pdf's document");
+
+        // Open the second document in place, the way the portal picker does.
+        app.load_path(&b, &mut st.doc);
+        record_frame(&mut app, &mut st, &mut set, &mut room);
+        assert!(
+            PdfDoc::list_annotations(&st.doc).is_empty(),
+            "b.pdf opens with no markup — a.pdf's highlight is not its"
+        );
+
+        // Back to the first document.
+        app.load_path(&a, &mut st.doc);
+        record_frame(&mut app, &mut st, &mut set, &mut room);
+        assert_eq!(
+            PdfDoc::list_annotations(&st.doc).len(),
+            on_a,
+            "a.pdf's annotations are still there after b.pdf was opened"
+        );
+        assert_eq!(
+            app.annotations.len(),
+            on_a,
+            "and the reader shows them again"
+        );
+    }
+
+    /// The markup of a document is a record of its own that *references* the
+    /// document, rather than state living inside it. That is what makes
+    /// "share the document without my notes" expressible at all: two
+    /// records, one reference, and the sharing decision is which of them you
+    /// hand over.
+    #[test]
+    #[serial(pdfium)]
+    fn markup_is_a_record_referencing_the_document() {
+        let (_dir, a, _b) = two_documents();
+        let mut app = PdfApp::open(&a);
+        let mut st = ui::State::new();
+        let mut set = ui::RecordSet::in_memory();
+        let mut room = AutoCommit::new();
+        record_frame(&mut app, &mut st, &mut set, &mut room);
+
+        let file = ui::RecordId::for_file(&a);
+        assert!(
+            ui::record::room::holds(&room, &file),
+            "the room references the file record it opened"
+        );
+        let refs = ui::record::references(&st.doc);
+        assert!(
+            refs.iter().any(|r| r.target == file && r.relation == "marks-up"),
+            "the live markup record references the document it marks up, got {refs:?}"
+        );
+    }
 
     fn app_with_state() -> (PdfApp, ui::State) {
         let mut app = PdfApp::sample();
@@ -3045,20 +3198,33 @@ mod tests {
 
     #[test]
     #[serial(pdfium)]
-    fn loading_a_second_document_clears_the_prior_documents_markup() {
-        let (mut app, mut st) = app_with_state(); // seeded sample, has markup
-        assert!(!app.annotations.is_empty(), "sample starts with seeded markup");
-        assert!(!app.signatures.is_empty());
-        assert!(!app.comments.is_empty());
-        let path = std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/sample.pdf"));
-        app.load_path(&path, &mut st.doc);
+    fn loading_a_second_document_shows_none_of_the_priors_markup() {
+        // The property this has always protected: one document's markup must
+        // never appear over another. What changed is how — the second
+        // document is a different record, so there is nothing to clear, and
+        // the first document's markup is still its own (proved by
+        // `annotating_one_document_survives_opening_another`).
+        let (_dir, a, b) = two_documents();
+        let mut app = PdfApp::open(&a);
+        let mut st = ui::State::new();
+        let mut set = ui::RecordSet::in_memory();
+        let mut room = AutoCommit::new();
+        record_frame(&mut app, &mut st, &mut set, &mut room);
+        annotate(&mut app, &mut st);
+        record_frame(&mut app, &mut st, &mut set, &mut room);
+        assert!(!app.annotations.is_empty(), "a.pdf has markup to bleed");
+
+        app.load_path(&b, &mut st.doc);
+        record_frame(&mut app, &mut st, &mut set, &mut room);
         assert!(app.has_document, "the second document loads");
-        assert_eq!(app.doc_name, "sample.pdf");
-        // The prior document's markup must not bleed onto the new one.
-        assert!(app.annotations.is_empty(), "prior annotations cleared");
-        assert!(app.comments.is_empty(), "prior comments cleared");
-        assert!(app.signatures.is_empty(), "prior signatures cleared");
-        assert!(PdfDoc::list_annotations(&st.doc).is_empty(), "cleared in the shared document too");
+        assert_eq!(app.doc_name, "b.pdf");
+        assert!(app.annotations.is_empty(), "no prior annotations shown");
+        assert!(app.comments.is_empty(), "no prior comments shown");
+        assert!(app.signatures.is_empty(), "no prior signatures shown");
+        assert!(
+            PdfDoc::list_annotations(&st.doc).is_empty(),
+            "and none in the document the reader is now editing"
+        );
         assert!(PdfDoc::list_signatures(&st.doc).is_empty());
         // View state resets for the fresh document.
         assert_eq!(app.current_page, 1);
