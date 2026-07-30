@@ -94,7 +94,25 @@ fn main() -> Result<(), Box<dyn Error>> {
             .doc
             .set_actor(automerge::ActorId::from(app_id.as_bytes()));
 
-        let mut app = App::new(state, widget);
+        // The document being edited is a record identified by its path, and
+        // the widget names it. Installing the record set is what puts its
+        // deltas on that record's own channel instead of one shared by every
+        // word-processor window in the room — which is what used to merge two
+        // people's unrelated documents into each other.
+        //
+        // The set is in-memory: this app's durable form is the file on disk,
+        // not a per-record automerge store, and adding a second copy of the
+        // truth is not what records are for. What the set gives it is
+        // identity, routing and the room's index of which documents it holds.
+        let (room, room_autosave) = ui::persist::open("dev.qos.word-processor");
+        let records = ui::RecordSet::in_memory().with_home(
+            std::env::var("QOS_WORKSPACE_ID")
+                .or_else(|_| std::env::var("QUICK_CLUSTER_ID"))
+                .unwrap_or_default(),
+        );
+        let mut app = App::new(state, widget)
+            .with_autosave(room_autosave)
+            .with_records(records, room.doc);
         // Announce ourselves under a stable document scope: this drives the
         // late-join handshake (peers already in the room reply with full state)
         // and is the scope under which our pointer presence is broadcast. The
