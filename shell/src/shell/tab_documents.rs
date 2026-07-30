@@ -16,7 +16,7 @@
 //! "stable identity that survives a restart" a record needs.
 
 use ui::record::{RecordCheckout, RecordId, RecordKind, RecordStore};
-use ui::widget::{TileContent, TileHost, WindowGroup as UiGroup};
+use ui::widget::WindowGroup as UiGroup;
 
 /// Record type for a tab whose content is the app's own, unsaved
 /// document — a scratch note, an untitled buffer. App-owned vocabulary,
@@ -59,17 +59,6 @@ pub fn tab_body(store: &RecordStore, tab_id: u64, body_key: &str) -> Option<Stri
     store.read(&RecordId::for_tab(tab_id), |doc| {
         crate::shell::crdt_text::read_body(doc, &automerge::ROOT, body_key)
     })?
-}
-
-/// The document a tile's hosted app is editing, for a caller that has the
-/// tile rather than the tab id.
-pub fn tile_record(host: &TileHost) -> Option<RecordId> {
-    host.live_record().cloned()
-}
-
-/// Whether `content` hosts a live app widget (rather than a stub card).
-pub fn hosts_app(content: &TileContent) -> bool {
-    matches!(content, TileContent::App(_))
 }
 
 #[cfg(test)]
