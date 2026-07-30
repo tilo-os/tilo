@@ -56,6 +56,17 @@ struct CapFixture {
 }
 
 async fn cap_fixture(identity: [u8; 32], caps: &[CapOverride], now: Option<u64>) -> CapFixture {
+    cap_fixture_with(
+        identity,
+        fs::AclHandle::new(WorkspaceAcl::from_capabilities(identity, caps, &[], now)),
+    )
+    .await
+}
+
+/// [`cap_fixture`] over an ACL handle someone else owns — a
+/// [`fs::CapabilityFile`], for the tests that swap the policy while the
+/// same `QuickFS` stays live.
+async fn cap_fixture_with(identity: [u8; 32], acl: fs::AclHandle) -> CapFixture {
     let endpoint = Endpoint::bind(presets::N0).await.expect("bind endpoint");
     let store = Arc::new(ContentStore::memory());
     let body = b"contents";
@@ -83,7 +94,6 @@ async fn cap_fixture(identity: [u8; 32], caps: &[CapOverride], now: Option<u64>)
 
     let hydrator = Arc::new(Hydrator::new(endpoint, store));
     let heuristics = Arc::new(Heuristics::new(hydrator.clone(), namespace.clone()));
-    let acl = WorkspaceAcl::from_capabilities(identity, caps, &[], now);
     let fs = QuickFS::new(namespace, hydrator, heuristics).with_acl(acl, identity);
 
     CapFixture {
@@ -690,4 +700,90 @@ async fn rmdir_rejects_nonempty_and_unlink_rejects_dir() {
         assert!(!path.join("dir").exists(), "empty dir removed");
     })
     .await;
+}
+
+// ---------------------------------------------------------------------
+// A grant made after the mount is up
+//
+// The capability list was read once, at mount time, and copied into the
+// filesystem by value. `/var/workspace` is mounted at boot and stays up
+// for the whole session, so "a later grant needs a remount" meant the
+// compositor could show a capability the filesystem was not honouring —
+// in either direction. These drive `QuickFS::check_access`, the exact
+// function `open`, `read` and `write` route every access through, on one
+// `QuickFS` that is never rebuilt.
+// ---------------------------------------------------------------------
+
+/// Write `caps` to `path` as the JSON array the mount reads.
+fn put_caps(path: &std::path::Path, caps: &[CapOverride]) {
+    std::fs::write(path, serde_json::to_vec(caps).unwrap()).unwrap();
+    // Make the ordering of two writes unambiguous regardless of the
+    // filesystem's mtime resolution.
+    std::thread::sleep(Duration::from_millis(10));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_grant_made_after_the_mount_reaches_the_live_access_check() {
+    use fs::CapabilityFile;
+
+    let dir = tempdir().unwrap();
+    let caps_path = dir.path().join("caps.json");
+    put_caps(&caps_path, &[read_cap(ALICE, "/w/docs")]);
+
+    let file = CapabilityFile::load(&caps_path, ALICE, Vec::new()).expect("loads");
+    let f = cap_fixture_with(ALICE, file.handle()).await;
+
+    // Reproduces the bug's precondition: the sibling subtree is denied.
+    assert_eq!(
+        f.fs.check_access(f.other_child, Access::Read),
+        Err(libc::EACCES),
+        "the sibling subtree must be denied before it is granted, or the reload proves nothing"
+    );
+    assert_eq!(f.fs.check_access(f.docs_child, Access::Read), Ok(()));
+
+    // The user grants it, an hour into the session. No remount.
+    put_caps(
+        &caps_path,
+        &[read_cap(ALICE, "/w/docs"), read_cap(ALICE, "/w/other")],
+    );
+    assert_eq!(file.refresh(), fs::Refresh::Reloaded(2));
+
+    assert_eq!(
+        f.fs.check_access(f.other_child, Access::Read),
+        Ok(()),
+        "a capability granted after the mount came up must be honoured by the same live mount"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_revocation_after_the_mount_reaches_the_live_access_check() {
+    use fs::CapabilityFile;
+
+    let dir = tempdir().unwrap();
+    let caps_path = dir.path().join("caps.json");
+    put_caps(
+        &caps_path,
+        &[read_cap(ALICE, "/w/docs"), read_cap(ALICE, "/w/other")],
+    );
+
+    let file = CapabilityFile::load(&caps_path, ALICE, Vec::new()).expect("loads");
+    let f = cap_fixture_with(ALICE, file.handle()).await;
+    assert_eq!(f.fs.check_access(f.other_child, Access::Read), Ok(()));
+
+    // The user revokes it. This is the direction that matters most: a
+    // revocation the filesystem ignores is a permission the user
+    // believes they took away.
+    put_caps(&caps_path, &[read_cap(ALICE, "/w/docs")]);
+    assert_eq!(file.refresh(), fs::Refresh::Reloaded(1));
+
+    assert_eq!(
+        f.fs.check_access(f.other_child, Access::Read),
+        Err(libc::EACCES),
+        "a revoked capability must stop working on the live mount, not at the next remount"
+    );
+    assert_eq!(
+        f.fs.check_access(f.docs_child, Access::Read),
+        Ok(()),
+        "revoking one capability must not disturb the others"
+    );
 }

@@ -39,6 +39,7 @@
 //! capability list.
 
 use std::collections::HashSet;
+use std::sync::{Arc, RwLock};
 
 use collab_types::{
     Actor, CapDecision, CapOverride, Ed25519PublicKey, Principal, ResourceRef, Verb,
@@ -258,6 +259,12 @@ impl WorkspaceAcl {
         self.grant(identity, path_prefix, true, true)
     }
 
+    /// How many capabilities are bound, across every binding. For
+    /// logging what a reload put in force.
+    pub fn capability_count(&self) -> usize {
+        self.bindings.iter().map(|b| b.caps.len()).sum()
+    }
+
     /// The set of identities that appear in the ACL — as a direct grant
     /// or as a capability binding.
     pub fn identities(&self) -> HashSet<IdentityKey> {
@@ -293,6 +300,74 @@ impl WorkspaceAcl {
                 .bindings
                 .iter()
                 .any(|b| &b.identity == identity && b.permits(path, access))
+    }
+}
+
+/// The ACL a live mount enforces, in a form that can be replaced while
+/// the mount is up.
+///
+/// A [`WorkspaceAcl`] is a snapshot of a decision. Handing that snapshot
+/// to [`crate::QuickFS`] by value made the mount's policy fixed at mount
+/// time: a capability granted (or revoked) a minute later did not reach
+/// the filesystem until the next remount, so the recorded grant and the
+/// enforced grant disagreed for as long as the mount lived. That is the
+/// same class of bug the capability model exists to prevent, only with
+/// the drift in time rather than in vocabulary.
+///
+/// So the mount holds a handle, and whoever owns the policy source —
+/// [`crate::CapabilityFile`] in production — swaps the contents under it.
+/// Reads take the lock per access; a `RwLock` read is uncontended in the
+/// steady state and is dwarfed by the FUSE round-trip it sits inside.
+#[derive(Clone, Debug)]
+pub struct AclHandle(Arc<RwLock<WorkspaceAcl>>);
+
+impl AclHandle {
+    /// A handle over `acl`.
+    pub fn new(acl: WorkspaceAcl) -> Self {
+        Self(Arc::new(RwLock::new(acl)))
+    }
+
+    /// Does `identity` hold `access` on `path`, per the ACL bound *right
+    /// now*? Delegates to [`WorkspaceAcl::permits`] — there is no second
+    /// decision here, only a load.
+    pub fn permits(&self, identity: &IdentityKey, path: &str, access: Access) -> bool {
+        // A poisoned lock means a writer panicked mid-swap. Fail closed:
+        // the alternative is to answer from a value nobody vouches for.
+        match self.0.read() {
+            Ok(acl) => acl.permits(identity, path, access),
+            Err(_) => false,
+        }
+    }
+
+    /// Replace the bound ACL. Every access after this call is decided by
+    /// `acl`; accesses already in flight finish against the old one.
+    pub fn replace(&self, acl: WorkspaceAcl) {
+        match self.0.write() {
+            Ok(mut slot) => *slot = acl,
+            // Re-establish a known value rather than leaving the mount
+            // deciding from a poisoned lock (which `permits` denies on).
+            Err(poisoned) => *poisoned.into_inner() = acl,
+        }
+    }
+
+    /// The currently-bound ACL, cloned. For tests and for logging.
+    pub fn snapshot(&self) -> WorkspaceAcl {
+        match self.0.read() {
+            Ok(acl) => acl.clone(),
+            Err(_) => WorkspaceAcl::new(),
+        }
+    }
+}
+
+impl From<WorkspaceAcl> for AclHandle {
+    fn from(acl: WorkspaceAcl) -> Self {
+        Self::new(acl)
+    }
+}
+
+impl From<&AclHandle> for AclHandle {
+    fn from(handle: &AclHandle) -> Self {
+        handle.clone()
     }
 }
 
