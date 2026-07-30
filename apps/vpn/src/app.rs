@@ -444,6 +444,14 @@ impl VpnApp {
     }
 
     /// Begin connecting/disconnecting a connection → raises a confirm.
+    /// Seed the action confirm over the first connection for a deterministic
+    /// `--shots` frame (no event loop).
+    pub fn seed_shot_confirm(&mut self) {
+        if let Some(id) = self.vault.connections.first().map(|c| c.id) {
+            self.request_toggle(id);
+        }
+    }
+
     fn request_toggle(&mut self, id: ConnId) {
         let Some(c) = self.vault.get(id) else { return };
         let backend = config::default_backend(c.kind);
