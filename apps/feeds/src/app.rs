@@ -12,7 +12,9 @@
 //! is *local* to this peer (which article is selected, scroll offsets, the
 //! active filter, the open modal) is kept in widget fields.
 
+use std::cell::Cell;
 use std::collections::HashMap;
+use std::rc::Rc;
 use std::time::Instant;
 
 use automerge::{AutoCommit, ObjId};
@@ -30,9 +32,10 @@ use ui::richtext::{FontFamily, RichSpan, RichTextLayout, TextAlign};
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::context_menu::{ContextMenu, MenuItem};
-use ui::widget::{FlapState, SplitLayout, Widget};
+use ui::widget::{FlapState, ModalDialog, SplitLayout, Widget};
 
 use crate::doc::FeedsDoc;
+use crate::modal::{ModalBody, ModalIntent};
 use crate::fetch::{FetchRequest, FetchResult, FetchWorker};
 use crate::icons;
 use crate::model::{
@@ -59,13 +62,42 @@ const LIST_ROW_H: f64 = 88.0;
 /// "Refresh all" is in flight (and briefly after, as a summary).
 const REFRESH_STRIP_H: f64 = 52.0;
 
-/// Below this allocated width (logical px) the three panes stop fitting side
-/// by side: the subscriptions sidebar collapses to an overlay flap and the
-/// list + reader switch to single-pane master→detail push navigation. Above
-/// it the classic three-pane desktop layout is kept. Sized so the sidebar
-/// (256) + a usable article list (400) + a readable reader column still fit
-/// when docked.
-const NAV_BREAKPOINT: f64 = 820.0;
+/// At or above this width the three panes fit side by side (docked sidebar +
+/// article list + reader). Sized so the sidebar (256) + a usable article list
+/// (400) + a readable reader column (~344) all fit at once.
+const WIDE_BREAKPOINT: f64 = 1000.0;
+/// At or above this width (but below [`WIDE_BREAKPOINT`]) the sidebar stays
+/// docked (fixed) but only one content pane — the article list OR the reader —
+/// shares the remaining width, with a top-left Back returning reader→list.
+/// Below it the sidebar itself collapses to an overlay drawer. Sized so the
+/// docked sidebar (256) + a usable single content pane (~384) still fit.
+const MIDDLE_BREAKPOINT: f64 = 640.0;
+
+/// Which responsive tier the current width resolves to. Recomputed from the
+/// allocated width every geometry pass (never laid out once), per HIG §1/§7.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Tier {
+    /// Sidebar + list + reader, all docked side by side.
+    Wide,
+    /// Sidebar docked (fixed) + exactly one of {list, reader}; Back returns
+    /// reader→list.
+    Middle,
+    /// A single view stack (list→reader push) with the sidebar as an overlay
+    /// drawer.
+    Narrow,
+}
+
+impl Tier {
+    fn from_width(w: f64) -> Self {
+        if w >= WIDE_BREAKPOINT {
+            Tier::Wide
+        } else if w >= MIDDLE_BREAKPOINT {
+            Tier::Middle
+        } else {
+            Tier::Narrow
+        }
+    }
+}
 
 // ---------------------------------------------------------------------
 // Local geometry / interaction model
@@ -138,10 +170,95 @@ struct ListRow {
     id: Id,
 }
 
-/// A transient modal overlay.
-enum Modal {
-    AddSubscription { input: String },
-    RenameFeed { feed_id: Id, input: String },
+/// A live dialog: the shared [`ModalDialog`] plus the intent that says which
+/// real mutation its primary action runs. The dialog owns the backdrop, box,
+/// title, footer buttons, Esc + backdrop dismissal, and the focus trap; the
+/// [`ModalBody`] inside it hosts a real [`ui::widget::TextInput`] (or a
+/// message). The `submit` / `cancel` cells are flipped by the dialog's action
+/// callbacks and drained by the host each event.
+struct FeedsModal {
+    intent: ModalIntent,
+    dialog: ModalDialog<ModalBody>,
+    submit: Rc<Cell<bool>>,
+    cancel: Rc<Cell<bool>>,
+}
+
+impl FeedsModal {
+    fn new(
+        intent: ModalIntent,
+        title: &str,
+        body: ModalBody,
+        primary_label: &str,
+        max_w: f64,
+        max_h: f64,
+    ) -> Self {
+        let submit = Rc::new(Cell::new(false));
+        let cancel = Rc::new(Cell::new(false));
+        let dialog = ModalDialog::new(title, body)
+            .open(true)
+            .with_max_size(max_w, max_h)
+            .primary_action(primary_label, {
+                let s = submit.clone();
+                move || s.set(true)
+            })
+            .secondary_action("Cancel", {
+                let c = cancel.clone();
+                move || c.set(true)
+            })
+            .on_dismiss({
+                let c = cancel.clone();
+                move || c.set(true)
+            });
+        Self { intent, dialog, submit, cancel }
+    }
+
+    fn add_subscription() -> Self {
+        let body = ModalBody::input(
+            "Paste a feed or site URL — RSS, Atom, and gemini:// all work.",
+            "Feed URL",
+            "",
+            "https://example.com/feed.xml",
+        );
+        Self::new(
+            ModalIntent::AddSubscription,
+            "Add subscription",
+            body,
+            "Add",
+            520.0,
+            248.0,
+        )
+    }
+
+    fn rename(feed_id: Id, title: &str) -> Self {
+        let body = ModalBody::input(
+            "Give this feed a name that makes sense to you.",
+            "Feed name",
+            title,
+            "Feed name",
+        );
+        Self::new(
+            ModalIntent::RenameFeed { feed_id },
+            "Rename feed",
+            body,
+            "Save",
+            520.0,
+            236.0,
+        )
+    }
+
+    fn unsubscribe(feed_id: Id, title: &str) -> Self {
+        let body = ModalBody::message(&format!(
+            "Unsubscribe from \u{201c}{title}\u{201d}? Its articles will be removed from this device.",
+        ));
+        Self::new(
+            ModalIntent::Unsubscribe { feed_id },
+            "Unsubscribe",
+            body,
+            "Unsubscribe",
+            460.0,
+            210.0,
+        )
+    }
 }
 
 /// Live progress for an in-flight (or just-finished) "Refresh all". Shown as a
@@ -225,7 +342,7 @@ pub struct FeedsApp {
     reader_open_rect: Option<Rect>,
 
     last_mouse: Point,
-    modal: Option<Modal>,
+    modal: Option<FeedsModal>,
     toast: Option<(String, Instant)>,
 
     // --- OPML import (XDG portal) ---------------------------------------
@@ -363,12 +480,25 @@ impl FeedsApp {
         app
     }
 
-    /// Resolve the navigation layout purely from the *allocated* width: wide
-    /// keeps the three panes docked side by side; narrow collapses the
-    /// subscriptions sidebar to an overlay flap and switches the list + reader
-    /// to single-pane master→detail push.
+    /// The responsive tier resolved from the current allocated width.
+    fn tier(&self) -> Tier {
+        Tier::from_width(self.rect.width())
+    }
+
+    /// Whether the content is a single pane showing one of {list, reader} at a
+    /// time (master→detail push). True at the middle and narrow tiers.
+    fn single_pane(&self) -> bool {
+        matches!(self.tier(), Tier::Middle | Tier::Narrow)
+    }
+
+    /// How the subscriptions sidebar flap resolves: docked beside the content
+    /// at the wide + middle tiers (fixed at middle), an overlay drawer at the
+    /// narrow tier. The [`FlapState`] easing is driven off this.
     fn nav_layout(&self) -> SplitLayout {
-        SplitLayout::from_width(self.rect.width(), NAV_BREAKPOINT)
+        match self.tier() {
+            Tier::Narrow => SplitLayout::Overlay,
+            Tier::Wide | Tier::Middle => SplitLayout::Docked,
+        }
     }
 
     /// Snap the subscriptions sidebar fully open/closed with no animation, so
@@ -397,6 +527,16 @@ impl FeedsApp {
     /// the sidebar geometry is known.
     pub fn force_feed_menu_open(&mut self) {
         self.stage_menu_shot = true;
+    }
+
+    /// Open the Add-subscription dialog with `url` pre-typed into the field, so
+    /// a `--shots` capture shows the real modal + focused TextInput with a caret
+    /// (the single-frame renderer can't reach it through live input).
+    pub fn stage_add_subscription(&mut self, url: &str) {
+        self.open_add_subscription();
+        if let Some(m) = self.modal.as_mut() {
+            m.dialog.content_mut().set_value(url);
+        }
     }
 
     /// Merge the bundled sample OPML into the store so a `--shots` capture shows
@@ -525,9 +665,9 @@ impl FeedsApp {
         self.list_scroll = 0.0;
         self.ensure_selection();
         self.reader_scroll = 0.0;
-        // Changing the source in narrow mode returns to the list so the new
-        // selection is visible (the reader is pushed back on the next select).
-        if self.nav_layout() == SplitLayout::Overlay {
+        // In a single-pane tier, changing the source returns to the list so the
+        // new selection is visible (the reader is pushed back on the next select).
+        if self.single_pane() {
             self.detail_pushed = false;
         }
     }
@@ -538,14 +678,14 @@ impl FeedsApp {
         if self.store.mark_read(id, true) {
             FeedsDoc::set_read(doc, id, true);
         }
-        // Narrow master→detail: selecting from the list pushes the reader in.
-        if self.nav_layout() == SplitLayout::Overlay {
+        // Single-pane master→detail: selecting from the list pushes the reader in.
+        if self.single_pane() {
             self.detail_pushed = true;
         }
     }
 
     /// Return from the pushed reader (detail) to the article list (master) in
-    /// narrow master→detail navigation.
+    /// single-pane master→detail navigation.
     fn show_master(&mut self) {
         self.detail_pushed = false;
     }
@@ -884,9 +1024,132 @@ impl FeedsApp {
                     .feed(feed_id)
                     .map(|f| f.title.clone())
                     .unwrap_or_default();
-                self.modal = Some(Modal::RenameFeed { feed_id, input: title });
+                self.modal = Some(FeedsModal::rename(feed_id, &title));
             }
-            FeedMenuAction::Unsubscribe => self.unsubscribe_feed(feed_id, doc),
+            // Unsubscribe is destructive, so confirm it through the shared modal
+            // rather than removing the feed on the spot.
+            FeedMenuAction::Unsubscribe => self.open_unsubscribe_confirm(feed_id),
+        }
+    }
+
+    /// Open the "Add subscription" dialog (real modal + real URL field).
+    fn open_add_subscription(&mut self) {
+        self.modal = Some(FeedsModal::add_subscription());
+    }
+
+    /// Open the unsubscribe confirmation for `feed_id`.
+    fn open_unsubscribe_confirm(&mut self, feed_id: Id) {
+        let title = self
+            .store
+            .feed(feed_id)
+            .map(|f| f.title.clone())
+            .unwrap_or_default();
+        self.modal = Some(FeedsModal::unsubscribe(feed_id, &title));
+    }
+
+    // --- modal lifecycle (drive the shared ModalDialog) ------------------
+
+    /// Lay the open dialog out against the widget's own rect so its box,
+    /// footer buttons, and embedded field geometry are current. Runs each
+    /// frame from `apply_layout`. No-op when no modal is open.
+    fn layout_modal(&mut self) {
+        if self.rect.width() <= 0.0 || self.rect.height() <= 0.0 {
+            return;
+        }
+        let Some(m) = self.modal.as_mut() else { return };
+        let theme = Theme::dark();
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let node = m.dialog.build_layout(&mut taffy, &theme, &mut node_map);
+        let root = taffy
+            .new_with_children(
+                Style {
+                    size: Size {
+                        width: Dimension::length(self.rect.width() as f32),
+                        height: Dimension::length(self.rect.height() as f32),
+                    },
+                    ..Default::default()
+                },
+                &[node],
+            )
+            .unwrap();
+        let _ = taffy.compute_layout(
+            root,
+            Size {
+                width: taffy::AvailableSpace::Definite(self.rect.width() as f32),
+                height: taffy::AvailableSpace::Definite(self.rect.height() as f32),
+            },
+        );
+        m.dialog
+            .apply_layout(&taffy, node, Point::new(self.rect.x0, self.rect.y0));
+    }
+
+    /// Route an event to the open dialog and act on the flags its action
+    /// callbacks set. The dialog handles Esc, backdrop click, button clicks,
+    /// typing, selection, and clipboard itself; Enter here is a submit
+    /// convenience (the Add/Save button remains the real affordance).
+    fn handle_modal_event(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: &winit::event::Modifiers,
+        state: &mut AutoCommit,
+        path: &ObjId,
+        handled: &mut bool,
+    ) {
+        if let WindowEvent::KeyboardInput { event: ke, .. } = event {
+            if ke.state == ElementState::Pressed
+                && matches!(ke.logical_key, Key::Named(NamedKey::Enter))
+            {
+                self.submit_modal(state);
+                *handled = true;
+                return;
+            }
+        }
+        let (submit, cancel) = {
+            let Some(m) = self.modal.as_mut() else { return };
+            // The dialog ignores the node/taffy it's handed (it drives its own
+            // retained content tree), so a throwaway leaf is fine.
+            let mut taffy: TaffyTree<()> = TaffyTree::new();
+            let node = taffy.new_leaf(Style::default()).unwrap();
+            let mut focus_target = None;
+            m.dialog.handle_event(
+                event,
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                &mut focus_target,
+                node,
+                &taffy,
+            );
+            (m.submit.replace(false), m.cancel.replace(false))
+        };
+        if submit {
+            self.submit_modal(state);
+        } else if cancel {
+            self.modal = None;
+        }
+        *handled = true;
+    }
+
+    /// Apply the open dialog's primary action against the real store +
+    /// document, then close it. An input dialog with an empty field stays open
+    /// (nothing to submit yet).
+    fn submit_modal(&mut self, doc: &mut AutoCommit) {
+        let (intent, value) = match self.modal.as_ref() {
+            Some(m) => (m.intent, m.dialog.content().value().trim().to_string()),
+            None => return,
+        };
+        if intent.requires_input() && value.is_empty() {
+            return;
+        }
+        self.modal = None;
+        match intent {
+            ModalIntent::AddSubscription => self.subscribe(value),
+            ModalIntent::RenameFeed { feed_id } => self.rename_feed(feed_id, value, doc),
+            ModalIntent::Unsubscribe { feed_id } => self.unsubscribe_feed(feed_id, doc),
         }
     }
 
@@ -1049,16 +1312,15 @@ impl FeedsApp {
 
     fn recompute_geometry(&mut self) {
         let r = self.rect;
-        let layout = self.nav_layout();
         let reveal = self.sidebar.reveal();
         // Sidebar can't be wider than the window (very narrow phones).
         let sw = SIDEBAR_W.min(r.width());
 
-        match layout {
-            SplitLayout::Docked => {
-                // Wide: the subscriptions sidebar is docked beside the content,
-                // which is inset by the eased width so it reveals/collapses
-                // smoothly. The list + reader sit side by side in the content.
+        match self.tier() {
+            Tier::Wide => {
+                // The subscriptions sidebar is docked beside the content, which
+                // is inset by the eased width so it reveals/collapses smoothly.
+                // The list + reader sit side by side in the content.
                 let inset = sw * reveal;
                 self.sidebar_rect = Rect::new(r.x0, r.y0, r.x0 + inset, r.y1);
                 let content_x0 = r.x0 + inset;
@@ -1074,22 +1336,23 @@ impl FeedsApp {
                     Rect::ZERO
                 };
             }
-            SplitLayout::Overlay => {
-                // Narrow: the content spans the full width and the subscriptions
-                // sidebar floats in over a scrim. Within the content, the list
-                // and reader are a single master→detail push — one fills the
-                // pane at a time.
+            Tier::Middle => {
+                // The sidebar stays docked and FIXED (always open, not
+                // collapsible), sharing the width with exactly one content pane.
+                // The list + reader are a master→detail push in that pane; a
+                // top-left Back returns reader→list.
+                self.sidebar_rect = Rect::new(r.x0, r.y0, r.x0 + sw, r.y1);
+                let content = Rect::new(r.x0 + sw, r.y0, r.x1, r.y1);
+                self.place_single_content(content);
+                self.scrim_rect = Rect::ZERO;
+                // No hamburger — the sidebar is fixed at this tier.
+                self.hamburger_rect = Rect::ZERO;
+            }
+            Tier::Narrow => {
+                // The content spans the full width as a single master→detail
+                // pane; the subscriptions sidebar floats in over a scrim.
                 let content = r;
-                self.toolbar_rect = Rect::new(content.x0, content.y0, content.x1, content.y0 + HEADER_H);
-                if self.detail_pushed {
-                    // Detail (reader) fills the content; list is parked off-pane.
-                    self.list_rect = Rect::new(content.x0 - content.width(), content.y0, content.x0, content.y1);
-                    self.reader_rect = content;
-                } else {
-                    // Master (list) fills the content; reader is parked off-pane.
-                    self.list_rect = content;
-                    self.reader_rect = Rect::new(content.x1, content.y0, content.x1 + content.width(), content.y1);
-                }
+                self.place_single_content(content);
                 // Sidebar slides in from the left edge by the eased reveal.
                 let slide = self.sidebar.slide();
                 let x0 = r.x0 - sw * (1.0 - slide);
@@ -1110,6 +1373,26 @@ impl FeedsApp {
         self.build_list_rows();
         self.build_toolbar();
         self.build_back_affordance();
+    }
+
+    /// Lay out the single content pane used at the middle + narrow tiers: the
+    /// toolbar spans the pane, and the list + reader are a master→detail push —
+    /// one fills the pane while the other is parked off to the side (so a
+    /// selection can slide the reader in and Back can slide it back out).
+    fn place_single_content(&mut self, content: Rect) {
+        self.toolbar_rect =
+            Rect::new(content.x0, content.y0, content.x1, content.y0 + HEADER_H);
+        if self.detail_pushed {
+            // Detail (reader) fills the content; list is parked off to the left.
+            self.list_rect =
+                Rect::new(content.x0 - content.width(), content.y0, content.x0, content.y1);
+            self.reader_rect = content;
+        } else {
+            // Master (list) fills the content; reader is parked off to the right.
+            self.list_rect = content;
+            self.reader_rect =
+                Rect::new(content.x1, content.y0, content.x1 + content.width(), content.y1);
+        }
     }
 
     /// Extra left margin for the sidebar's "Feeds" wordmark so it never sits
@@ -1140,10 +1423,10 @@ impl FeedsApp {
         Rect::new(x, cy - size / 2.0, x + size, cy + size / 2.0)
     }
 
-    /// In narrow master→detail mode, a Back chevron in the reader's header
-    /// returns to the list. Empty otherwise.
+    /// In a single-pane tier (middle + narrow), a Back chevron in the reader's
+    /// header returns to the list. Empty otherwise.
     fn build_back_affordance(&mut self) {
-        self.back_rect = if self.nav_layout() == SplitLayout::Overlay && self.detail_pushed {
+        self.back_rect = if self.single_pane() && self.detail_pushed {
             let size = 36.0;
             let x = self.reader_rect.x0 + 10.0;
             let cy = self.reader_rect.y0 + HEADER_H / 2.0;
@@ -1364,8 +1647,10 @@ impl FeedsApp {
         let c = &theme.tokens.colors;
         let base = c.surfaces.base;
         let sidebar_bg = c.neutral[0];
-        let layout = self.nav_layout();
-        let overlay = layout == SplitLayout::Overlay;
+        let tier = self.tier();
+        // The subscriptions sidebar is an overlay (scrim) drawer only at the
+        // narrow tier; docked (wide + middle) otherwise.
+        let overlay = tier == Tier::Narrow;
 
         // Base background covers the whole widget so an off-pane child never
         // shows through during a push slide.
@@ -1381,7 +1666,9 @@ impl FeedsApp {
             self.now, &self.filter_title(), self.store.count_for(self.filter), list_inset,
             &self.refresh,
         );
-        let reader_inset = if overlay && self.detail_pushed { 46.0 } else { 0.0 };
+        // The reader shifts right to clear the top-left Back button whenever it
+        // is the pushed single pane (middle + narrow).
+        let reader_inset = if self.single_pane() && self.detail_pushed { 46.0 } else { 0.0 };
         let palette = ReaderPalette::resolve(self.settings.theme, theme);
         let has_article = self.selected.and_then(|id| self.store.article(id)).is_some();
         let (links, open_rect, content_h) = draw_reader(
@@ -1402,9 +1689,10 @@ impl FeedsApp {
         self.reader_open_rect = open_rect;
         self.reader_content_h = content_h;
 
-        // The list/reader divider only exists in the wide three-pane layout.
+        // The list/reader divider only exists in the wide three-pane layout;
+        // the middle + narrow tiers show a single content pane at a time.
         let divider = alpha(c.border_standard, 150);
-        if !overlay {
+        if tier == Tier::Wide {
             vline(scene, t, self.list_rect.x1, self.rect.y0, self.rect.y1, divider);
         }
 
@@ -1461,32 +1749,11 @@ impl FeedsApp {
             }
         }
 
-        match &self.modal {
-            Some(Modal::AddSubscription { input }) => draw_input_modal(
-                scene,
-                t,
-                tr,
-                theme,
-                &self.rect,
-                "Add subscription",
-                "Paste a feed or site URL (RSS, Atom, or gemini://).",
-                "https://",
-                input,
-                "Enter to subscribe · Esc to cancel",
-            ),
-            Some(Modal::RenameFeed { input, .. }) => draw_input_modal(
-                scene,
-                t,
-                tr,
-                theme,
-                &self.rect,
-                "Rename feed",
-                "Enter a new name for this feed.",
-                "Feed name",
-                input,
-                "Enter to save · Esc to cancel",
-            ),
-            None => {}
+        // Dialog on top of everything — the shared ModalDialog paints its own
+        // backdrop, box, title, footer buttons, and the embedded field.
+        if let Some(m) = self.modal.as_mut() {
+            let presence = PresenceCtx::empty();
+            m.dialog.draw(scene, t, tr, theme, &presence);
         }
     }
 
@@ -1736,9 +2003,7 @@ impl FeedsApp {
         for b in self.toolbar_buttons.clone() {
             if b.rect.contains(p) {
                 match b.action {
-                    ToolbarAction::AddSubscription => {
-                        self.modal = Some(Modal::AddSubscription { input: String::new() });
-                    }
+                    ToolbarAction::AddSubscription => self.open_add_subscription(),
                     ToolbarAction::Refresh => self.refresh_all(),
                     ToolbarAction::MarkAllRead => self.mark_all_read(doc),
                     ToolbarAction::ImportOpml => self.request_import(),
@@ -2662,81 +2927,6 @@ fn draw_toast(
     tr.draw_text(scene, msg, 13.0, c.text_primary, t * Affine::translate((x + 18.0, y + 11.0)), None);
 }
 
-/// A centred single-input modal card over a scrim. Shared by the
-/// "Add subscription" and "Rename feed" flows — only the title, helper line,
-/// placeholder and footer hint differ.
-#[allow(clippy::too_many_arguments)]
-fn draw_input_modal(
-    scene: &mut Scene,
-    t: Affine,
-    tr: &mut TextRenderer,
-    theme: &Theme,
-    rect: &Rect,
-    title: &str,
-    helper: &str,
-    placeholder: &str,
-    input: &str,
-    footer: &str,
-) {
-    let c = &theme.tokens.colors;
-    // Scrim.
-    scene.fill(Fill::NonZero, t, c.surfaces.overlay, None, rect);
-
-    let w = 520.0;
-    let h = 190.0;
-    let cx = (rect.x0 + rect.x1) / 2.0;
-    let x = cx - w / 2.0;
-    let y = rect.y0 + 150.0;
-    let card = Rect::new(x, y, x + w, y + h);
-    scene.fill(Fill::NonZero, t, c.surfaces.raised, None, &RoundedRect::from_rect(card, 14.0));
-    scene.stroke(&Stroke::new(1.0), t, alpha(c.border_standard, 180), None, &RoundedRect::from_rect(card, 14.0));
-
-    tr.draw_text_weighted(
-        scene,
-        title,
-        18.0,
-        c.text_primary,
-        t * Affine::translate((x + 24.0, y + 20.0)),
-        None,
-        TextWeight::Bold,
-    );
-    tr.draw_text(
-        scene,
-        helper,
-        13.0,
-        c.text_dim,
-        t * Affine::translate((x + 24.0, y + 48.0)),
-        None,
-    );
-
-    // Input field.
-    let field = Rect::new(x + 24.0, y + 78.0, x + w - 24.0, y + 78.0 + 40.0);
-    scene.fill(Fill::NonZero, t, c.surfaces.base, None, &RoundedRect::from_rect(field, 8.0));
-    scene.stroke(&Stroke::new(1.5), t, c.border_focus, None, &RoundedRect::from_rect(field, 8.0));
-    let shown = if input.is_empty() {
-        placeholder.to_string()
-    } else {
-        input.to_string()
-    };
-    let color = if input.is_empty() { alpha(c.text_dim, 160) } else { c.text_primary };
-    tr.draw_text(scene, &shown, 14.0, color, t * Affine::translate((field.x0 + 12.0, field.y0 + 11.0)), None);
-    // Caret.
-    let cw = measure_w(tr, &shown, 14.0);
-    if !input.is_empty() {
-        vline(scene, t, field.x0 + 12.0 + cw + 1.0, field.y0 + 9.0, field.y1 - 9.0, c.accent[5]);
-    }
-
-    // Hint.
-    tr.draw_text(
-        scene,
-        footer,
-        12.0,
-        c.text_dim,
-        t * Affine::translate((x + 24.0, y + h - 26.0)),
-        None,
-    );
-}
-
 // --- text helpers -----------------------------------------------------
 
 fn measure_w(tr: &mut TextRenderer, s: &str, size: f32) -> f64 {
@@ -2899,6 +3089,9 @@ impl Widget for FeedsApp {
             self.settled_once = true;
         }
         self.recompute_geometry();
+        // With the widget rect known, lay the open dialog out over it so its
+        // box + footer buttons + embedded field are current before draw/events.
+        self.layout_modal();
     }
 
     fn draw(
@@ -2928,9 +3121,9 @@ impl Widget for FeedsApp {
         &mut self,
         event: &WindowEvent,
         scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
+        modifiers: &winit::event::Modifiers,
         state: &mut AutoCommit,
-        _path: &ObjId,
+        path: &ObjId,
         handled: &mut bool,
         _focus_target: &mut Option<NodeId>,
         _node_id: NodeId,
@@ -2939,6 +3132,15 @@ impl Widget for FeedsApp {
         // Persist anything the live drain queued since the last doc-holding
         // pass (keeps the CRDT current without waiting for `sync`).
         self.flush_doc_writes(state);
+        // Track the pointer everywhere so it's current when a modal closes.
+        if let WindowEvent::CursorMoved { position, .. } = event {
+            self.last_mouse = Point::new(position.x / scale_factor, position.y / scale_factor);
+        }
+        // An open dialog captures all input while it's up.
+        if self.modal.is_some() {
+            self.handle_modal_event(event, scale_factor, modifiers, state, path, handled);
+            return;
+        }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 self.last_mouse = Point::new(position.x / scale_factor, position.y / scale_factor);
@@ -3032,41 +3234,6 @@ impl FeedsApp {
         state: &mut AutoCommit,
         handled: &mut bool,
     ) {
-        // Modal: capture text entry (shared by Add-subscription + Rename).
-        if self.modal.is_some() {
-            let mut cancel = false;
-            let mut submit = false;
-            match &mut self.modal {
-                Some(Modal::AddSubscription { input })
-                | Some(Modal::RenameFeed { input, .. }) => match &key_event.logical_key {
-                    Key::Named(NamedKey::Escape) => cancel = true,
-                    Key::Named(NamedKey::Enter) => submit = true,
-                    Key::Named(NamedKey::Backspace) => {
-                        input.pop();
-                    }
-                    Key::Named(NamedKey::Space) => input.push(' '),
-                    Key::Character(s) => input.push_str(s.as_str()),
-                    _ => {}
-                },
-                None => {}
-            }
-            if cancel {
-                self.modal = None;
-            } else if submit {
-                // Take the modal out first so the follow-up mutation is free of
-                // the `&mut self.modal` borrow.
-                match self.modal.take() {
-                    Some(Modal::AddSubscription { input }) => self.subscribe(input),
-                    Some(Modal::RenameFeed { feed_id, input }) => {
-                        self.rename_feed(feed_id, input, state)
-                    }
-                    None => {}
-                }
-            }
-            *handled = true;
-            return;
-        }
-
         // Esc closes an open feed context menu before anything else.
         if matches!(&key_event.logical_key, Key::Named(NamedKey::Escape)) && self.feed_menu.is_open()
         {
@@ -3076,7 +3243,7 @@ impl FeedsApp {
         }
 
         // Esc dismisses the responsive overlay sidebar, then unwinds a pushed
-        // detail back to the list (narrow master→detail).
+        // detail back to the list (single-pane master→detail).
         if matches!(&key_event.logical_key, Key::Named(NamedKey::Escape)) {
             if self.nav_layout() == SplitLayout::Overlay
                 && self.sidebar.is_open(SplitLayout::Overlay)
@@ -3085,7 +3252,7 @@ impl FeedsApp {
                 *handled = true;
                 return;
             }
-            if self.nav_layout() == SplitLayout::Overlay && self.detail_pushed {
+            if self.single_pane() && self.detail_pushed {
                 self.show_master();
                 *handled = true;
                 return;
@@ -3131,7 +3298,7 @@ impl FeedsApp {
                         *handled = true;
                     }
                     "n" => {
-                        self.modal = Some(Modal::AddSubscription { input: String::new() });
+                        self.open_add_subscription();
                         *handled = true;
                     }
                     "e" => {
@@ -3831,6 +3998,77 @@ mod tests {
         assert_eq!(a.back_rect.area(), 0.0, "no Back affordance in the docked layout");
     }
 
+    /// The middle tier: the sidebar stays docked + fixed while exactly ONE
+    /// content pane (the list here, since nothing is pushed) shares the rest of
+    /// the width. No overlay chrome, no collapse toggle — the sidebar is fixed.
+    #[test]
+    fn middle_docks_sidebar_and_shows_a_single_content_pane() {
+        let mut a = app();
+        lay_out(&mut a, 820.0, 800.0);
+        assert_eq!(a.tier(), Tier::Middle);
+        assert_eq!(a.nav_layout(), SplitLayout::Docked, "the sidebar is docked, not an overlay");
+        // Sidebar docked at full width, fixed (no collapse toggle, no scrim).
+        assert!((a.sidebar_rect.width() - SIDEBAR_W).abs() < 0.5, "sidebar docked at full width");
+        assert_eq!(a.hamburger_rect.area(), 0.0, "the middle-tier sidebar is fixed (no toggle)");
+        assert_eq!(a.scrim_rect.area(), 0.0, "a docked sidebar shows no scrim");
+        // A single content pane fills the width right of the sidebar; with
+        // nothing pushed it is the article list, and the reader is parked off.
+        assert!(!a.detail_pushed, "the middle tier opens on the list");
+        assert!((a.list_rect.x0 - a.sidebar_rect.x1).abs() < 0.5, "list starts at the sidebar edge");
+        assert!((a.list_rect.x1 - a.rect.x1).abs() < 0.5, "list fills to the right edge");
+        assert!(a.reader_rect.x0 >= a.rect.x1 - 0.5, "the reader is parked off-pane to the right");
+        assert_eq!(a.back_rect.area(), 0.0, "no Back affordance while the list is showing");
+    }
+
+    /// The middle tier's master→detail: selecting pushes the reader into the
+    /// single content pane with a top-left Back button; Back returns to the
+    /// list. Driven entirely through the real selection + click paths + state.
+    #[test]
+    fn middle_back_button_navigates_detail_to_list() {
+        let mut a = app();
+        let mut doc = AutoCommit::new();
+        a.sync(&mut doc, &automerge::ROOT);
+        lay_out(&mut a, 820.0, 800.0);
+        assert_eq!(a.tier(), Tier::Middle);
+        assert!(!a.detail_pushed, "opens on the list");
+
+        // Select an article: the reader is pushed into the single content pane.
+        let id = a.store.articles_for(Filter::All)[0].id;
+        a.select_article(id, &mut doc);
+        assert!(a.detail_pushed, "selecting pushes the reader in at the middle tier");
+        lay_out_keep(&mut a, 820.0, 800.0);
+        // Reader now fills the content pane; the list is parked off to the left.
+        assert!((a.reader_rect.x0 - a.sidebar_rect.x1).abs() < 0.5, "reader fills the content pane");
+        assert!((a.reader_rect.x1 - a.rect.x1).abs() < 0.5);
+        assert!(a.list_rect.x1 <= a.sidebar_rect.x1 + 0.5, "the list is parked off-pane to the left");
+        // A top-left Back affordance is offered inside the reader pane.
+        assert!(a.back_rect.area() > 0.0, "the pushed reader offers a Back button");
+        assert!(a.back_rect.x0 >= a.sidebar_rect.x1 - 0.5, "Back sits at the content pane's top-left");
+
+        // Clicking Back returns to the list on real state.
+        let p = a.back_rect.center();
+        assert!(a.click(p, &mut doc), "Back click is consumed");
+        assert!(!a.detail_pushed, "Back returns the single pane to the list");
+        lay_out_keep(&mut a, 820.0, 800.0);
+        assert!((a.list_rect.x1 - a.rect.x1).abs() < 0.5, "the list fills the content pane again");
+        assert_eq!(a.back_rect.area(), 0.0, "no Back affordance once back on the list");
+        // The sidebar stayed docked + fixed throughout.
+        assert!((a.sidebar_rect.width() - SIDEBAR_W).abs() < 0.5);
+        assert_eq!(a.scrim_rect.area(), 0.0);
+    }
+
+    /// Crossing the tier boundaries flips the sidebar between docked (wide +
+    /// middle) and an overlay drawer (narrow) — proven off the width alone.
+    #[test]
+    fn tier_resolves_from_width() {
+        assert_eq!(Tier::from_width(1280.0), Tier::Wide);
+        assert_eq!(Tier::from_width(1000.0), Tier::Wide, "wide boundary is inclusive");
+        assert_eq!(Tier::from_width(999.0), Tier::Middle);
+        assert_eq!(Tier::from_width(640.0), Tier::Middle, "middle boundary is inclusive");
+        assert_eq!(Tier::from_width(639.0), Tier::Narrow);
+        assert_eq!(Tier::from_width(400.0), Tier::Narrow);
+    }
+
     /// Re-run geometry without re-settling the flap (so an explicit
     /// snap/toggle survives), mirroring a post-interaction draw frame.
     fn lay_out_keep(app: &mut FeedsApp, w: f64, h: f64) {
@@ -3855,6 +4093,55 @@ mod tests {
             state: ElementState::Pressed,
             button: MouseButton::Right,
         }
+    }
+    fn left_press() -> WindowEvent {
+        WindowEvent::MouseInput {
+            device_id: synth_device(),
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+        }
+    }
+    /// A `Character` key press carrying `s` as both the logical key and text —
+    /// the shape winit delivers for a typed character. Zeroed base then the
+    /// inspected fields overwritten (winit's `KeyEventExtra` is `pub(crate)`),
+    /// same pattern the toolkit's own widget tests use.
+    fn char_key(s: &str) -> WindowEvent {
+        let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
+        ev.logical_key = Key::Character(s.into());
+        ev.physical_key =
+            winit::keyboard::PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
+        ev.location = winit::keyboard::KeyLocation::Standard;
+        ev.state = ElementState::Pressed;
+        ev.repeat = false;
+        ev.text = Some(s.into());
+        WindowEvent::KeyboardInput { device_id: synth_device(), event: ev, is_synthetic: false }
+    }
+    fn named_key(k: NamedKey) -> WindowEvent {
+        let mut ev: winit::event::KeyEvent = unsafe { std::mem::zeroed() };
+        ev.logical_key = Key::Named(k);
+        ev.physical_key =
+            winit::keyboard::PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
+        ev.location = winit::keyboard::KeyLocation::Standard;
+        ev.state = ElementState::Pressed;
+        ev.repeat = false;
+        ev.text = None;
+        WindowEvent::KeyboardInput { device_id: synth_device(), event: ev, is_synthetic: false }
+    }
+    /// Dispatch an event with explicit modifiers held (for Ctrl+V etc).
+    fn dispatch_mods(
+        a: &mut FeedsApp,
+        doc: &mut AutoCommit,
+        event: &WindowEvent,
+        mods: &winit::event::Modifiers,
+    ) -> bool {
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let node = taffy.new_leaf(Style::default()).unwrap();
+        let mut handled = false;
+        let mut focus_target = None;
+        a.handle_event(
+            event, 1.0, mods, doc, &automerge::ROOT, &mut handled, &mut focus_target, node, &taffy,
+        );
+        handled
     }
     /// Drive the app's real `handle_event` dispatch (same path the winit loop
     /// uses), returning whether the event was consumed.
@@ -4045,11 +4332,27 @@ mod tests {
             .count();
         assert!(had_articles > 0, "the target feed has articles to remove");
 
-        // Click the Unsubscribe row (index 2) via the real click path.
+        // Click the Unsubscribe row (index 2) via the real click path — this
+        // now opens a confirmation dialog rather than removing on the spot.
         let p = menu_point_for(&a, 2);
         assert!(a.click(p, &mut doc), "unsubscribe click is consumed");
-
         assert!(!a.feed_menu.is_open(), "the menu closes after the action");
+
+        let m = a.modal.as_ref().expect("unsubscribe opens a confirmation dialog");
+        assert_eq!(m.intent, ModalIntent::Unsubscribe { feed_id: id });
+        assert!(
+            a.store.feed(id).is_some(),
+            "the feed is NOT removed until the confirmation is accepted"
+        );
+
+        // Confirm via the dialog's real primary ("Unsubscribe") button.
+        lay_out(&mut a, 1280.0, 800.0);
+        a.layout_modal();
+        let primary = a.modal.as_ref().unwrap().dialog.primary_rect().center();
+        assert!(dispatch(&mut a, &mut doc, &cursor_at(primary)));
+        assert!(dispatch(&mut a, &mut doc, &left_press()), "confirm click is consumed");
+
+        assert!(a.modal.is_none(), "confirming closes the dialog");
         assert!(a.store.feed(id).is_none(), "the feed is removed from the store");
         assert!(
             !a.store.articles.iter().any(|x| x.feed_id == id),
@@ -4099,16 +4402,16 @@ mod tests {
         let old_title = a.store.feed(id).unwrap().title.clone();
 
         // Click the Rename row (index 1) — opens the rename modal prefilled with
-        // the current title.
+        // the current title in a real TextInput.
         let p = menu_point_for(&a, 1);
         assert!(a.click(p, &mut doc));
-        match &a.modal {
-            Some(Modal::RenameFeed { feed_id, input }) => {
-                assert_eq!(*feed_id, id);
-                assert_eq!(input, &old_title, "the field is prefilled with the title");
-            }
-            _ => panic!("rename opens the rename modal"),
-        }
+        let m = a.modal.as_ref().expect("rename opens the rename modal");
+        assert_eq!(m.intent, ModalIntent::RenameFeed { feed_id: id });
+        assert_eq!(
+            m.dialog.content().value(),
+            old_title,
+            "the field is prefilled with the current title"
+        );
 
         // Commit a new name through the production mutation and assert it lands
         // in both the store and the document.
@@ -4168,5 +4471,101 @@ mod tests {
             .articles
             .iter()
             .any(|x| x.id == art.id && !x.blocks.is_empty()));
+    }
+
+    // --- add-subscription dialog (real ModalDialog + real TextInput) -------
+
+    /// The add-subscription dialog hosts a real [`ui::widget::TextInput`], so
+    /// the shared clipboard core works: seed the clipboard, paste with Ctrl+V
+    /// through the app's real event path, and the URL lands in the field.
+    /// Submitting then runs the real `subscribe` path. This is the proof the
+    /// hand-rolled fake field (no clipboard, "Press enter to add") is gone.
+    #[test]
+    fn add_subscription_modal_pastes_url_and_subscribes() {
+        use winit::event::Modifiers;
+        use winit::keyboard::ModifiersState;
+
+        let mut a = app();
+        let mut doc = AutoCommit::new();
+        a.sync(&mut doc, &automerge::ROOT);
+        // A thread-less worker so `subscribe` enqueues without any network.
+        let _tx = a.install_test_worker();
+
+        // Open the dialog through the real toolbar action path, then lay it out.
+        lay_out(&mut a, 1280.0, 800.0);
+        a.open_add_subscription();
+        a.layout_modal();
+        assert_eq!(
+            a.modal.as_ref().map(|m| m.intent),
+            Some(ModalIntent::AddSubscription),
+            "the Add-subscription dialog is open"
+        );
+        assert!(
+            a.modal.as_ref().unwrap().dialog.content().value().is_empty(),
+            "the URL field starts empty"
+        );
+
+        // Seed the clipboard, then paste with Ctrl+V through `handle_event`.
+        let url = "https://blog.rust-lang.org/feed.xml";
+        ui::text_selection::clipboard_copy(url);
+        let ctrl = Modifiers::from(ModifiersState::CONTROL);
+        assert!(
+            dispatch_mods(&mut a, &mut doc, &char_key("v"), &ctrl),
+            "Ctrl+V is consumed by the dialog"
+        );
+        assert_eq!(
+            a.modal.as_ref().unwrap().dialog.content().value(),
+            url,
+            "Ctrl+V pasted the clipboard URL into the real TextInput"
+        );
+
+        // Enter submits: the real `subscribe` runs and the dialog closes.
+        assert!(dispatch(&mut a, &mut doc, &named_key(NamedKey::Enter)));
+        assert!(a.modal.is_none(), "submitting closes the dialog");
+        let toast = a.toast.as_ref().map(|(m, _)| m.clone()).unwrap_or_default();
+        assert!(
+            toast.contains(url),
+            "submit ran the real subscribe path for the pasted URL (toast: {toast:?})"
+        );
+    }
+
+    /// Esc cancels the dialog without subscribing, and typing then Ctrl+A +
+    /// typing edits the field — exercising the shared caret/selection core
+    /// rather than a per-app buffer.
+    #[test]
+    fn add_subscription_modal_esc_cancels_and_typing_edits() {
+        use winit::event::Modifiers;
+        use winit::keyboard::ModifiersState;
+
+        let mut a = app();
+        let mut doc = AutoCommit::new();
+        a.sync(&mut doc, &automerge::ROOT);
+        let _tx = a.install_test_worker();
+        lay_out(&mut a, 1280.0, 800.0);
+
+        a.open_add_subscription();
+        a.layout_modal();
+        // Type two characters into the real field.
+        let none = Modifiers::from(ModifiersState::empty());
+        dispatch_mods(&mut a, &mut doc, &char_key("h"), &none);
+        dispatch_mods(&mut a, &mut doc, &char_key("i"), &none);
+        assert_eq!(a.modal.as_ref().unwrap().dialog.content().value(), "hi");
+        // Select-all + replace, proving the selection core is live.
+        let ctrl = Modifiers::from(ModifiersState::CONTROL);
+        dispatch_mods(&mut a, &mut doc, &char_key("a"), &ctrl);
+        dispatch_mods(&mut a, &mut doc, &char_key("x"), &none);
+        assert_eq!(
+            a.modal.as_ref().unwrap().dialog.content().value(),
+            "x",
+            "Ctrl+A then a keystroke replaces the whole selection"
+        );
+
+        // Esc cancels — no dialog, no subscription toast.
+        assert!(dispatch(&mut a, &mut doc, &named_key(NamedKey::Escape)));
+        assert!(a.modal.is_none(), "Esc closes the dialog");
+        assert!(
+            a.toast.is_none(),
+            "cancelling must not run subscribe"
+        );
     }
 }
