@@ -42,7 +42,7 @@ use ui::portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
-use ui::widget::Widget;
+use ui::widget::{TextInput, Widget};
 
 use crate::doc::ImagerDoc;
 use crate::model::{
@@ -143,6 +143,11 @@ pub struct ImagerApp {
     dirty: bool,
     last_mouse: Point,
     hover_target: Option<usize>,
+    /// The password field is a shared secret [`TextInput`] (masked glyphs, real
+    /// value kept out of the a11y tree) rather than a hand-spliced `String`, so
+    /// it gets caret / selection / clipboard for free. Its value mirrors
+    /// `profile.user.password`, which stays the serialized source of truth.
+    password: TextInput,
 }
 
 impl Default for ImagerApp {
@@ -174,6 +179,11 @@ impl ImagerApp {
             dirty: true,
             last_mouse: Point::ZERO,
             hover_target: None,
+            password: {
+                let mut p = TextInput::local().with_secret(true);
+                p.set_plain_chrome(true); // the wizard draws the field box itself
+                p
+            },
         }
     }
 
@@ -934,7 +944,7 @@ impl ImagerApp {
         self.txt(scene, tr, &format!("⚠ Erases {}", drive.contents_summary()), 11.5, c.semantic.danger, left, r.y1 - 24.0, Some((r.width() - (left - r.x0) - 30.0) as f32), TextWeight::Medium);
     }
 
-    fn draw_customize_step(&self, scene: &mut Scene, tr: &mut TextRenderer, theme: &Theme, t: Affine, lay: &Layout) {
+    fn draw_customize_step(&mut self, scene: &mut Scene, tr: &mut TextRenderer, theme: &Theme, t: Affine, lay: &Layout, presence: &PresenceCtx) {
         let c = &theme.tokens.colors;
         let content = lay.content;
         if !self.customizable() {
@@ -951,14 +961,14 @@ impl ImagerApp {
 
         let g = self.customize_geom(content);
         self.section_label(scene, tr, theme, "IDENTITY", content.x0, g.identity_label_y);
-        self.draw_field(scene, tr, theme, t, g.hostname, Field::Hostname, "Hostname", &self.profile.hostname, false);
-        self.draw_field(scene, tr, theme, t, g.full_name, Field::FullName, "Full name", &self.profile.user.full_name, false);
-        self.draw_field(scene, tr, theme, t, g.username, Field::Username, "Username", &self.profile.user.username, false);
-        self.draw_field(scene, tr, theme, t, g.password, Field::Password, "Password", &self.profile.user.password, true);
-        self.draw_field(scene, tr, theme, t, g.timezone, Field::Timezone, "Time zone", &self.profile.timezone, false);
+        self.draw_field(scene, tr, theme, t, g.hostname, Field::Hostname, "Hostname", &self.profile.hostname);
+        self.draw_field(scene, tr, theme, t, g.full_name, Field::FullName, "Full name", &self.profile.user.full_name);
+        self.draw_field(scene, tr, theme, t, g.username, Field::Username, "Username", &self.profile.user.username);
+        self.draw_password_field(scene, tr, theme, t, g.password, "Password", presence);
+        self.draw_field(scene, tr, theme, t, g.timezone, Field::Timezone, "Time zone", &self.profile.timezone);
 
         self.section_label(scene, tr, theme, "REGION & OPTIONS", content.x0, g.region_label_y);
-        self.draw_field(scene, tr, theme, t, g.keyboard, Field::Keyboard, "Keyboard", &self.profile.keyboard, false);
+        self.draw_field(scene, tr, theme, t, g.keyboard, Field::Keyboard, "Keyboard", &self.profile.keyboard);
         self.draw_toggle(scene, tr, theme, t, g.autologin, "Auto-login", "Sign in without a password prompt", self.profile.user.autologin);
         self.draw_toggle(scene, tr, theme, t, g.encrypt, "Encrypt storage", "Protect user data with LUKS", self.profile.encrypt);
         if self.target().map(|d| d.removable).unwrap_or(false) {
@@ -973,25 +983,47 @@ impl ImagerApp {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn draw_field(&self, scene: &mut Scene, tr: &mut TextRenderer, theme: &Theme, t: Affine, r: Rect, f: Field, label: &str, value: &str, secret: bool) {
+    fn draw_field(&self, scene: &mut Scene, tr: &mut TextRenderer, theme: &Theme, t: Affine, r: Rect, f: Field, label: &str, value: &str) {
         let c = &theme.tokens.colors;
         self.txt(scene, tr, label, 11.0, c.text_dim, r.x0 + 2.0, r.y0 - 17.0, None, TextWeight::Semibold);
         let focused = self.focus == Some(f);
         Self::fill_rr(scene, t, r, 9.0, c.neutral[2]);
         Self::stroke_rr(scene, t, r, 9.0, if focused { c.border_focus } else { c.border_standard }, if focused { 1.6 } else { 1.0 });
-        let shown = if secret {
-            "•".repeat(value.chars().count().min(16))
-        } else if value.is_empty() {
-            String::new()
-        } else {
-            value.to_string()
-        };
-        self.txt(scene, tr, &shown, 13.5, c.text_primary, r.x0 + 12.0, r.y0 + 10.0, Some((r.width() - 24.0) as f32), TextWeight::Regular);
+        self.txt(scene, tr, value, 13.5, c.text_primary, r.x0 + 12.0, r.y0 + 10.0, Some((r.width() - 24.0) as f32), TextWeight::Regular);
         if focused {
-            let (tw, _) = tr.measure_weighted(&shown, 13.5, None, TextWeight::Regular);
+            let (tw, _) = tr.measure_weighted(value, 13.5, None, TextWeight::Regular);
             let cx = r.x0 + 12.0 + tw as f64 + 2.0;
             scene.stroke(&Stroke::new(1.4), t, c.accent[6], None, &Line::new(Point::new(cx, r.y0 + 8.0), Point::new(cx, r.y1 - 8.0)));
         }
+    }
+
+    /// The password field: same box + label chrome as [`draw_field`], but the
+    /// masked glyphs + caret + selection are rendered by the shared secret
+    /// `TextInput`, which also keeps the real value out of the a11y tree.
+    fn draw_password_field(&mut self, scene: &mut Scene, tr: &mut TextRenderer, theme: &Theme, t: Affine, r: Rect, label: &str, presence: &PresenceCtx) {
+        let c = &theme.tokens.colors;
+        self.txt(scene, tr, label, 11.0, c.text_dim, r.x0 + 2.0, r.y0 - 17.0, None, TextWeight::Semibold);
+        let focused = self.focus == Some(Field::Password);
+        Self::fill_rr(scene, t, r, 9.0, c.neutral[2]);
+        Self::stroke_rr(scene, t, r, 9.0, if focused { c.border_focus } else { c.border_standard }, if focused { 1.6 } else { 1.0 });
+        // The plain-chrome secret input paints inside the field box.
+        self.password.apply_layout_external(Self::password_inner(r));
+        Widget::draw(&mut self.password, scene, t, tr, theme, presence);
+    }
+
+    /// The rect of a field's box for the current frame, from the computed
+    /// hit-list — the single source of truth `draw` and `handle_event` share.
+    fn field_rect(lay: &Layout, f: Field) -> Option<Rect> {
+        lay.hits.iter().find_map(|(r, h)| match h {
+            Hit::Field(g) if *g == f => Some(*r),
+            _ => None,
+        })
+    }
+
+    /// Inner text rect the password widget draws / hit-tests within its box
+    /// (matches the 12 px gutter the other fields' text uses).
+    fn password_inner(r: Rect) -> Rect {
+        Rect::new(r.x0 + 12.0, r.y0, r.x1 - 12.0, r.y1)
     }
 
     fn draw_write_step(&self, scene: &mut Scene, tr: &mut TextRenderer, theme: &Theme, t: Affine, lay: &Layout) {
@@ -1488,6 +1520,16 @@ impl Widget for ImagerApp {
         self.status = ImagerDoc::status(state);
         self.step = ImagerDoc::step(state);
         self.selected = ImagerDoc::selected(state).filter(|i| *i < self.targets.len());
+
+        // Bind the secret TextInput to the profile: mirror the focus flag, and
+        // while it isn't the active editor pull the stored value in (so a
+        // loaded/seeded password shows). While focused, the widget is the
+        // source of truth and writes back to `profile.user.password` on edit.
+        let pw_focused = self.focus == Some(Field::Password);
+        self.password.set_focus(pw_focused);
+        if !pw_focused {
+            self.password.set_text(&self.profile.user.password);
+        }
         self.dirty = true;
     }
 
@@ -1518,7 +1560,7 @@ impl Widget for ImagerApp {
         );
     }
 
-    fn draw(&mut self, scene: &mut Scene, transform: Affine, text_renderer: &mut TextRenderer, theme: &Theme, _presence: &PresenceCtx) {
+    fn draw(&mut self, scene: &mut Scene, transform: Affine, text_renderer: &mut TextRenderer, theme: &Theme, presence: &PresenceCtx) {
         let c = &theme.tokens.colors;
         scene.fill(Fill::NonZero, transform, c.surfaces.base, None, &self.rect);
         let lay = self.compute_layout();
@@ -1528,7 +1570,7 @@ impl Widget for ImagerApp {
         match self.step {
             Step::Source => self.draw_source_step(scene, tr, theme, transform, &lay),
             Step::Drive => self.draw_drive_step(scene, tr, theme, transform, &lay),
-            Step::Customize => self.draw_customize_step(scene, tr, theme, transform, &lay),
+            Step::Customize => self.draw_customize_step(scene, tr, theme, transform, &lay, presence),
             Step::Write => self.draw_write_step(scene, tr, theme, transform, &lay),
         }
         self.draw_footer(scene, tr, theme, transform, &lay);
@@ -1542,13 +1584,13 @@ impl Widget for ImagerApp {
         &mut self,
         event: &WindowEvent,
         scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
+        modifiers: &winit::event::Modifiers,
         state: &mut AutoCommit,
-        _path: &ObjId,
+        path: &ObjId,
         handled: &mut bool,
         _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
+        node_id: NodeId,
+        taffy: &TaffyTree<()>,
     ) {
         use winit::event::{ElementState, KeyEvent, MouseButton};
         use winit::keyboard::{Key, NamedKey};
@@ -1566,6 +1608,13 @@ impl Widget for ImagerApp {
                     _ => None,
                 });
                 self.hover_target = hover_now;
+                // Forward to the password input so its hover flag (and any drag
+                // selection) tracks the pointer.
+                if let Some(r) = Self::field_rect(&lay, Field::Password) {
+                    self.password.apply_layout_external(Self::password_inner(r));
+                    let (mut h, mut ft) = (false, None);
+                    self.password.handle_event(event, scale_factor, modifiers, state, path, &mut h, &mut ft, node_id, taffy);
+                }
                 // Repaint on move so buttons/cards light up under the pointer.
                 self.dirty = true;
             }
@@ -1577,8 +1626,23 @@ impl Widget for ImagerApp {
                     self.dirty = true;
                     return;
                 }
-                if let Some((_, hit)) = lay.hits.iter().find(|(r, _)| r.contains(p)) {
-                    self.dispatch_hit(state, hit.clone());
+                let hit = lay.hits.iter().find(|(r, _)| r.contains(p)).map(|(_, h)| h.clone());
+                if let Some(hit) = hit {
+                    // The password field is a real widget: focus it and forward
+                    // the press so it drops its caret at the click point.
+                    if matches!(hit, Hit::Field(Field::Password)) {
+                        self.focus = Some(Field::Password);
+                        self.password.set_focus(true);
+                        if let Some(r) = Self::field_rect(&lay, Field::Password) {
+                            self.password.apply_layout_external(Self::password_inner(r));
+                        }
+                        let (mut h, mut ft) = (false, None);
+                        self.password.handle_event(event, scale_factor, modifiers, state, path, &mut h, &mut ft, node_id, taffy);
+                        *handled = true;
+                        self.dirty = true;
+                        return;
+                    }
+                    self.dispatch_hit(state, hit);
                     *handled = true;
                     self.dirty = true;
                     return;
@@ -1596,6 +1660,34 @@ impl Widget for ImagerApp {
                 }
                 // Field typing.
                 if let Some(f) = self.focus {
+                    // The password field routes to its secret TextInput, which
+                    // owns caret / selection / clipboard. Enter and Escape still
+                    // release focus like the other fields.
+                    if f == Field::Password {
+                        match logical_key {
+                            Key::Named(NamedKey::Enter) | Key::Named(NamedKey::Escape) => {
+                                self.focus = None;
+                                self.password.set_focus(false);
+                                *handled = true;
+                                self.dirty = true;
+                            }
+                            _ => {
+                                self.password.set_focus(true);
+                                if let Some(r) = Self::field_rect(&lay, Field::Password) {
+                                    self.password.apply_layout_external(Self::password_inner(r));
+                                }
+                                let (mut h, mut ft) = (false, None);
+                                self.password.handle_event(event, scale_factor, modifiers, state, path, &mut h, &mut ft, node_id, taffy);
+                                // Mirror the edited value back into the profile
+                                // (the serialized source of truth) and the doc.
+                                self.profile.user.password = self.password.value().to_string();
+                                ImagerDoc::set_profile(state, &self.profile);
+                                *handled = true;
+                                self.dirty = true;
+                            }
+                        }
+                        return;
+                    }
                     match logical_key {
                         Key::Named(NamedKey::Backspace) => {
                             self.type_into_field(state, f, None, true);
@@ -1825,6 +1917,58 @@ mod tests {
         assert_eq!(app.removable_count(), 1);
         app.show_internal = true;
         assert_eq!(app.visible_targets().len(), 2);
+    }
+
+    /// The password field is now a shared secret `TextInput`: typing through
+    /// the real keyboard path persists to the profile + doc, the widget holds
+    /// the true value, and the a11y node stays protected with no value (the
+    /// plaintext never leaks).
+    #[test]
+    fn typing_into_password_uses_secret_textinput_and_never_leaks_to_a11y() {
+        use winit::event::KeyEvent;
+        use winit::keyboard::{Key, SmolStr};
+
+        fn char_ev(s: &str) -> WindowEvent {
+            let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
+            ev.logical_key = Key::Character(SmolStr::new(s));
+            ev.physical_key = winit::keyboard::PhysicalKey::Unidentified(
+                winit::keyboard::NativeKeyCode::Unidentified,
+            );
+            ev.location = winit::keyboard::KeyLocation::Standard;
+            ev.state = winit::event::ElementState::Pressed;
+            ev.repeat = false;
+            ev.text = Some(SmolStr::new(s));
+            WindowEvent::KeyboardInput {
+                device_id: unsafe { std::mem::zeroed() },
+                event: ev,
+                is_synthetic: false,
+            }
+        }
+
+        let (mut app, mut doc) = seeded_app();
+        app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        // Start from an empty field so the assertion is exact (the default
+        // profile pre-fills a password).
+        app.profile.user.password.clear();
+        app.password.set_text("");
+        app.focus = Some(Field::Password);
+        app.password.set_focus(true);
+
+        let m = winit::event::Modifiers::default();
+        let taffy: TaffyTree<()> = TaffyTree::new();
+        let node = NodeId::new(0);
+        for s in ["h", "u", "n", "t", "2"] {
+            let (mut h, mut ft) = (false, None);
+            app.handle_event(&char_ev(s), 1.0, &m, &mut doc, &automerge::ROOT, &mut h, &mut ft, node, &taffy);
+        }
+
+        assert_eq!(app.profile.user.password, "hunt2", "typed value persisted to the profile");
+        assert_eq!(ImagerDoc::profile(&doc).user.password, "hunt2", "and to the doc");
+        assert_eq!(app.password.value(), "hunt2", "the widget holds the real secret");
+
+        let node = Widget::accessibility(&app.password).expect("a11y node");
+        assert_eq!(node.value, None, "the secret must not reach the a11y tree");
+        assert!(node.state.protected, "password input is marked protected");
     }
 
     #[test]

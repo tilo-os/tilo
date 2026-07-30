@@ -18,7 +18,7 @@ use std::path::Path;
 use automerge::{AutoCommit, ObjId};
 use taffy::prelude::*;
 use vello::Scene;
-use vello::kurbo::{Affine, Line, Point, Rect, RoundedRect, Stroke};
+use vello::kurbo::{Affine, Line, Point, Rect, Stroke};
 use vello::peniko::{Color, Fill};
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
@@ -26,9 +26,9 @@ use winit::keyboard::{Key, NamedKey};
 use ui::color_compat::ColorCompat;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
-use ui::text_render::TextRenderer;
+use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
-use ui::widget::Widget;
+use ui::widget::{Button, ButtonFace, SegmentedFace, ToggleGroup, Widget};
 
 use crate::diff_view::DiffView;
 use crate::merge_view::MergeView;
@@ -314,30 +314,32 @@ impl DiffMergeApp {
             None,
         );
 
-        // Mode segmented control.
-        let mut x = r.x0 + 70.0;
+        // Mode segmented control (shared pill-style segmented control).
         let seg_y = r.y0 + 10.0;
         let seg_h = 28.0;
-        for (label, action, selected) in [
-            ("Diff", Action::ModeDiff, self.mode == Mode::Diff),
-            ("3-way merge", Action::ModeMerge, self.mode == Mode::Merge),
-        ] {
+        let mode_labels: [&str; 2] = ["Diff", "3-way merge"];
+        let mode_actions = [Action::ModeDiff, Action::ModeMerge];
+        let selected = if self.mode == Mode::Merge { 1 } else { 0 };
+        let mut mode_rects: Vec<Rect> = Vec::with_capacity(mode_labels.len());
+        let mut x = r.x0 + 70.0;
+        for label in mode_labels {
             let w = label.len() as f64 * 7.4 + 22.0;
-            let seg = Rect::new(x, seg_y, x + w, seg_y + seg_h);
-            let bg = if selected { c.accent[5] } else { with_alpha(c.neutral[3], 120) };
-            let rr = RoundedRect::from_rect(seg, 6.0);
-            scene.fill(Fill::NonZero, transform, bg, None, &rr);
-            let tcol = if selected { Color::WHITE } else { c.text_dim };
-            tr.draw_text(
-                scene,
-                label,
-                13.0,
-                tcol,
-                transform * Affine::translate((x + 11.0, seg_y + 6.0)),
-                None,
-            );
-            self.tool_hits.push(ToolHit { rect: seg, action });
+            mode_rects.push(Rect::new(x, seg_y, x + w, seg_y + seg_h));
             x += w + 6.0;
+        }
+        let hovered = mode_rects.iter().position(|rr| rr.contains(self.cursor));
+        ToggleGroup::paint(
+            scene,
+            transform,
+            tr,
+            theme,
+            &SegmentedFace::new(&mode_rects, &mode_labels, selected)
+                .pill()
+                .hovered(hovered)
+                .radius(6.0),
+        );
+        for (rect, action) in mode_rects.iter().zip(mode_actions) {
+            self.tool_hits.push(ToolHit { rect: *rect, action });
         }
 
         // Right-aligned action buttons.
@@ -350,16 +352,16 @@ impl DiffMergeApp {
         ] {
             let w = label.len() as f64 * 7.2 + 20.0;
             let btn = Rect::new(rx - w, seg_y, rx, seg_y + seg_h);
-            let rr = RoundedRect::from_rect(btn, 6.0);
-            scene.fill(Fill::NonZero, transform, with_alpha(c.neutral[3], 150), None, &rr);
-            scene.stroke(&Stroke::new(1.0), transform, c.border_standard, None, &rr);
-            tr.draw_text(
+            Button::paint(
                 scene,
-                label,
-                12.5,
-                c.text_primary,
-                transform * Affine::translate((rx - w + 10.0, seg_y + 6.0)),
-                None,
+                transform,
+                tr,
+                theme,
+                &ButtonFace::new(btn, label)
+                    .radius(6.0)
+                    .text_size(12.5)
+                    .weight(TextWeight::Regular)
+                    .hovered(btn.contains(self.cursor)),
             );
             self.tool_hits.push(ToolHit { rect: btn, action });
             rx -= w + 8.0;
