@@ -31,7 +31,7 @@ use vello::peniko::{self, BlendMode, Color, Fill};
 use winit::event::WindowEvent;
 
 use crate::presence::PresenceCtx;
-use crate::text_render::TextRenderer;
+use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
 use crate::widget::Widget;
 
@@ -186,18 +186,38 @@ impl Avatar {
         }
         // Same 0.4× ratio the widget uses, but keyed off the rect rather
         // than a stored `size` field so callers don't have to thread one.
+        // Semibold so the monogram reads crisply on a small saturated chip —
+        // the weight the roster apps hand-rolled before adopting this helper.
         let text_size = (rect.width().min(rect.height()) as f32) * 0.4;
-        let (tw, th) = text_renderer.measure(&initials, text_size, None);
+        let (tw, th) = text_renderer.measure_weighted(&initials, text_size, None, TextWeight::Semibold);
         let tx = centre.x - tw as f64 / 2.0;
         let ty = centre.y - th as f64 / 2.0;
-        text_renderer.draw_text(
+        text_renderer.draw_text_weighted(
             scene,
             &initials,
             text_size,
             Color::WHITE,
             transform * Affine::translate((tx, ty)),
             None,
+            TextWeight::Semibold,
         );
+    }
+
+    /// Word-initials for a display name: the first character of each of the
+    /// first two whitespace-separated words, uppercased. `"Ada Lovelace"` →
+    /// `"AL"`, `"mononym"` → `"M"`, `""` → `""`. This is the name→monogram
+    /// step every roster app does before handing the (≤ 2-char) result to
+    /// [`Avatar::draw_at`] / [`Avatar::from_initials`], which only truncate
+    /// and never split on words — so passing a full name straight to them
+    /// would yield the first two *letters* (`"Ad"`) rather than the
+    /// per-word monogram (`"AL"`). Callers supply their own fallback glyph
+    /// for the empty case (a nameless peer), which is app-specific.
+    pub fn initials_for_name(name: &str) -> String {
+        name.split_whitespace()
+            .filter_map(|w| w.chars().next())
+            .take(2)
+            .collect::<String>()
+            .to_uppercase()
     }
 
     /// Deterministic accent colour for `initials` against `theme`'s accent
@@ -238,16 +258,17 @@ impl Avatar {
         // and a 64px header avatar both look balanced. 0.4× matches the
         // ratio used in the concept mocks for chat avatars.
         let text_size = self.size * 0.4;
-        let (tw, th) = text_renderer.measure(&self.initials, text_size, None);
+        let (tw, th) = text_renderer.measure_weighted(&self.initials, text_size, None, TextWeight::Semibold);
         let tx = centre.x - tw as f64 / 2.0;
         let ty = centre.y - th as f64 / 2.0;
-        text_renderer.draw_text(
+        text_renderer.draw_text_weighted(
             scene,
             &self.initials,
             text_size,
             Color::WHITE,
             transform * Affine::translate((tx, ty)),
             None,
+            TextWeight::Semibold,
         );
     }
 }
@@ -549,6 +570,21 @@ mod tests {
             Avatar::color_for_initials("AB", &theme),
             Avatar::color_for_initials("ab", &theme),
         );
+    }
+
+    /// `initials_for_name` is the name→monogram step: first char of each of
+    /// the first two words, uppercased. This is what separates a per-word
+    /// monogram (`"AL"`) from `from_initials`'s first-two-letters truncation
+    /// (`"AD"`), so a roster app gets `"AL"` for "Ada Lovelace" only by
+    /// routing through here first.
+    #[test]
+    fn initials_for_name_takes_first_char_of_first_two_words() {
+        assert_eq!(Avatar::initials_for_name("Ada Lovelace"), "AL");
+        assert_eq!(Avatar::initials_for_name("ada lovelace"), "AL");
+        assert_eq!(Avatar::initials_for_name("mononym"), "M");
+        assert_eq!(Avatar::initials_for_name("Grace Brewster Murray Hopper"), "GB");
+        assert_eq!(Avatar::initials_for_name("   spaced   out  "), "SO");
+        assert_eq!(Avatar::initials_for_name(""), "", "empty name yields empty — caller supplies its own fallback glyph");
     }
 
     /// A zero-size rect is a no-op for `draw_at` (no panic, no draw).

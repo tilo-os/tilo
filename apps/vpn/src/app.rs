@@ -21,7 +21,9 @@ use winit::keyboard::{Key, NamedKey};
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
-use ui::widget::Widget;
+use ui::widget::{ModalDialog, Widget};
+use std::cell::Cell;
+use std::rc::Rc;
 
 use crate::config::{self, Backend, CommandPlan};
 use crate::doc::VpnDoc;
@@ -144,6 +146,115 @@ enum AddField {
     Endpoint,
 }
 
+/// The live confirm dialog: the shared [`ModalDialog`] hosting a [`ConfirmBody`]
+/// plus the confirm / cancel cells its footer buttons flip.
+struct ConfirmDlg {
+    dialog: ModalDialog<ConfirmBody>,
+    confirm: Rc<Cell<bool>>,
+    cancel: Rc<Cell<bool>>,
+}
+
+/// Content body for the confirm dialog: an action summary plus a preview box
+/// showing the exact shell command that will run. The [`ModalDialog`] owns the
+/// scrim, box, title, footer buttons, Esc, focus trap, and a11y role.
+struct ConfirmBody {
+    summary: String,
+    cmd: String,
+    rect: Rect,
+}
+
+impl ConfirmBody {
+    fn new(summary: String, cmd: String) -> Self {
+        Self { summary, cmd, rect: Rect::ZERO }
+    }
+}
+
+impl Widget for ConfirmBody {
+    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
+
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        _theme: &Theme,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        let node = taffy
+            .new_leaf(Style {
+                size: Size {
+                    width: Dimension::percent(1.0),
+                    height: Dimension::percent(1.0),
+                },
+                ..Default::default()
+            })
+            .unwrap();
+        node_map.insert(node, self as *mut dyn Widget);
+        node
+    }
+
+    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        let l = taffy.layout(node).unwrap();
+        self.rect = Rect::new(
+            origin.x + l.location.x as f64,
+            origin.y + l.location.y as f64,
+            origin.x + l.location.x as f64 + l.size.width as f64,
+            origin.y + l.location.y as f64 + l.size.height as f64,
+        );
+    }
+
+    fn draw(
+        &mut self,
+        scene: &mut Scene,
+        t: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        _presence: &PresenceCtx,
+    ) {
+        let x = self.rect.x0;
+        let width = self.rect.width().max(1.0) as f32;
+        text_w(tr, scene, t, &self.summary, 13.0, theme.text_dim, x, self.rect.y0, TextWeight::Regular);
+        let _ = width;
+        // Command preview box below the summary.
+        let box_top = self.rect.y0 + 36.0;
+        let cmd_box = Rect::new(x, box_top, self.rect.x1, (box_top + 56.0).min(self.rect.y1));
+        fill_round(scene, t, cmd_box, theme.tokens.radii.md as f64, theme.tokens.colors.neutral[0]);
+        stroke_round(scene, t, cmd_box, theme.tokens.radii.md as f64, theme.tokens.colors.border_white_10, 1.0);
+        text_w(tr, scene, t, "Will run:", 10.0, theme.text_dim, cmd_box.x0 + 12.0, cmd_box.y0 + 8.0, TextWeight::Bold);
+        tr.draw_text_styled(
+            scene,
+            &ellipsize(&self.cmd, 52),
+            13.0,
+            theme.tokens.colors.semantic.success,
+            t * Affine::translate((cmd_box.x0 + 12.0, cmd_box.y0 + 26.0)),
+            None,
+            TextWeight::Regular,
+            false,
+            true,
+        );
+    }
+
+    fn handle_event(
+        &mut self,
+        _event: &WindowEvent,
+        _scale_factor: f64,
+        _modifiers: &Modifiers,
+        _state: &mut AutoCommit,
+        _path: &ObjId,
+        _handled: &mut bool,
+        _focus_target: &mut Option<NodeId>,
+        _node_id: NodeId,
+        _taffy: &TaffyTree<()>,
+    ) {
+    }
+
+    fn name(&self) -> &str {
+        "ConfirmBody"
+    }
+
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
+}
+
 pub struct VpnApp {
     vault: Vault,
     rect: Rect,
@@ -151,6 +262,9 @@ pub struct VpnApp {
     seeded: bool,
     detail_tab: DetailTab,
     modal: Modal,
+    /// The live confirm dialog (shared [`ModalDialog`]), built lazily while
+    /// `modal == Modal::Confirm` and torn down when it resolves.
+    confirm_dialog: Option<ConfirmDlg>,
     add_kind: ConnKind,
     add_name: String,
     add_endpoint: String,
@@ -205,6 +319,7 @@ impl VpnApp {
             seeded: false,
             detail_tab: DetailTab::Status,
             modal: Modal::None,
+            confirm_dialog: None,
             add_kind: ConnKind::WireGuard,
             add_name: String::new(),
             add_endpoint: String::new(),
@@ -329,6 +444,14 @@ impl VpnApp {
     }
 
     /// Begin connecting/disconnecting a connection → raises a confirm.
+    /// Seed the action confirm over the first connection for a deterministic
+    /// `--shots` frame (no event loop).
+    pub fn seed_shot_confirm(&mut self) {
+        if let Some(id) = self.vault.connections.first().map(|c| c.id) {
+            self.request_toggle(id);
+        }
+    }
+
     fn request_toggle(&mut self, id: ConnId) {
         let Some(c) = self.vault.get(id) else { return };
         let backend = config::default_backend(c.kind);
@@ -1096,8 +1219,10 @@ impl VpnApp {
         text_vc(tr, scene, t, tip, 11.0, theme.text_dim, f.x1 - 20.0 - w as f64, f.y0, f.height(), TextWeight::Regular);
     }
 
-    fn draw_modal(&self, scene: &mut Scene, tr: &mut TextRenderer, t: Affine, theme: &Theme, lay: &LayoutRects) {
-        if self.modal == Modal::None {
+    /// Draw the hand-rolled Add form modal (scrim + card + fields). The Confirm
+    /// modal is drawn via the shared [`ModalDialog`] in `draw`.
+    fn draw_add_modal_overlay(&self, scene: &mut Scene, tr: &mut TextRenderer, t: Affine, theme: &Theme, lay: &LayoutRects) {
+        if self.modal != Modal::Add {
             return;
         }
         // Scrim.
@@ -1105,11 +1230,7 @@ impl VpnApp {
         let card = lay.modal_card;
         fill_round(scene, t, card, theme.tokens.radii.xl as f64, theme.tokens.colors.surfaces.raised);
         stroke_round(scene, t, card, theme.tokens.radii.xl as f64, theme.tokens.colors.border_white_20, 1.0);
-        match self.modal {
-            Modal::Add => self.draw_add_modal(scene, tr, t, theme, card),
-            Modal::Confirm => self.draw_confirm_modal(scene, tr, t, theme, card),
-            Modal::None => {}
-        }
+        self.draw_add_modal(scene, tr, t, theme, card);
     }
 
     fn draw_add_modal(&self, scene: &mut Scene, tr: &mut TextRenderer, t: Affine, theme: &Theme, card: Rect) {
@@ -1160,9 +1281,10 @@ impl VpnApp {
         }
     }
 
-    fn draw_confirm_modal(&self, scene: &mut Scene, tr: &mut TextRenderer, t: Affine, theme: &Theme, card: Rect) {
-        let x = card.x0 + 28.0;
-        let (title, summary, cmd, danger) = match &self.pending {
+    /// Copy for the pending action's confirm dialog: title, summary, the exact
+    /// command that will run, and whether the affirmative is destructive.
+    fn confirm_copy(&self) -> (&'static str, String, String, bool) {
+        match &self.pending {
             Some(Pending::Connect(_, p)) => ("Connect tunnel", p.summary.clone(), p.display(), false),
             Some(Pending::Disconnect(_, p)) => ("Disconnect tunnel", p.summary.clone(), p.display(), true),
             Some(Pending::TorGlobal(on, p)) => (
@@ -1172,25 +1294,133 @@ impl VpnApp {
                 false,
             ),
             None => ("Confirm", String::new(), String::new(), false),
-        };
-        text_w(tr, scene, t, title, 18.0, theme.text_primary, x, card.y0 + 28.0, TextWeight::Bold);
-        text_w(tr, scene, t, &summary, 13.0, theme.text_dim, x, card.y0 + 64.0, TextWeight::Regular);
-        // command preview box
-        let cmd_box = Rect::new(x, card.y0 + 98.0, card.x1 - 28.0, card.y0 + 98.0 + 56.0);
-        fill_round(scene, t, cmd_box, theme.tokens.radii.md as f64, theme.tokens.colors.neutral[0]);
-        stroke_round(scene, t, cmd_box, theme.tokens.radii.md as f64, theme.tokens.colors.border_white_10, 1.0);
-        text_w(tr, scene, t, "Will run:", 10.0, theme.text_dim, cmd_box.x0 + 12.0, cmd_box.y0 + 8.0, TextWeight::Bold);
-        tr.draw_text_styled(scene, &ellipsize(&cmd, 52), 13.0, theme.tokens.colors.semantic.success, t * Affine::translate((cmd_box.x0 + 12.0, cmd_box.y0 + 26.0)), None, TextWeight::Regular, false, true);
+        }
+    }
 
-        let by = card.y1 - 52.0;
-        let cancel = Rect::new(card.x1 - 28.0 - 220.0, by, card.x1 - 28.0 - 120.0, by + 36.0);
-        let ok = Rect::new(card.x1 - 28.0 - 110.0, by, card.x1 - 28.0, by + 36.0);
-        fill_round(scene, t, cancel, theme.tokens.radii.md as f64, theme.tokens.colors.surfaces.base);
-        stroke_round(scene, t, cancel, theme.tokens.radii.md as f64, theme.tokens.colors.border_standard, 1.0);
-        text_center(tr, scene, t, "Cancel", 13.0, theme.text_primary, cancel, TextWeight::Medium);
-        let okbg = if danger { theme.tokens.colors.semantic.danger } else { theme.tokens.colors.accent[5] };
-        fill_round(scene, t, ok, theme.tokens.radii.md as f64, okbg);
-        text_center(tr, scene, t, "Confirm", 13.0, Color::WHITE, ok, TextWeight::Semibold);
+    /// Build the confirm dialog for the pending action. The affirmative button
+    /// is destructive for a disconnect (danger-coloured).
+    fn build_confirm_dialog(&self) -> ConfirmDlg {
+        let (title, summary, cmd, danger) = self.confirm_copy();
+        let ok = Rc::new(Cell::new(false));
+        let cancel = Rc::new(Cell::new(false));
+        let dialog = ModalDialog::new(title, ConfirmBody::new(summary, cmd))
+            .open(true)
+            .with_max_size(480.0, 260.0)
+            .with_destructive(danger)
+            .primary_action("Confirm", {
+                let c = ok.clone();
+                move || c.set(true)
+            })
+            .secondary_action("Cancel", {
+                let c = cancel.clone();
+                move || c.set(true)
+            })
+            .on_dismiss({
+                let c = cancel.clone();
+                move || c.set(true)
+            });
+        ConfirmDlg { dialog, confirm: ok, cancel }
+    }
+
+    fn ensure_confirm_dialog(&mut self) {
+        if self.confirm_dialog.is_none() {
+            self.confirm_dialog = Some(self.build_confirm_dialog());
+        }
+    }
+
+    /// Lay the confirm dialog out against the app rect so its box + footer
+    /// buttons resolve.
+    fn layout_confirm_dialog(&mut self) {
+        if self.rect.width() <= 0.0 || self.rect.height() <= 0.0 {
+            return;
+        }
+        let rect = self.rect;
+        let Some(cd) = self.confirm_dialog.as_mut() else { return };
+        let theme = Theme::dark();
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        let node = cd.dialog.build_layout(&mut taffy, &theme, &mut node_map);
+        let root = taffy
+            .new_with_children(
+                Style {
+                    size: Size {
+                        width: Dimension::length(rect.width() as f32),
+                        height: Dimension::length(rect.height() as f32),
+                    },
+                    ..Default::default()
+                },
+                &[node],
+            )
+            .unwrap();
+        let _ = taffy.compute_layout(
+            root,
+            Size {
+                width: taffy::AvailableSpace::Definite(rect.width() as f32),
+                height: taffy::AvailableSpace::Definite(rect.height() as f32),
+            },
+        );
+        cd.dialog.apply_layout(&taffy, node, Point::new(rect.x0, rect.y0));
+    }
+
+    /// Route an event into the open confirm dialog, then apply the flags its
+    /// callbacks set (Enter/`y` confirm, `n` cancels — kept as shortcuts).
+    fn route_confirm_event(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: &Modifiers,
+        doc: &mut AutoCommit,
+        handled: &mut bool,
+    ) {
+        if let WindowEvent::KeyboardInput { event: ke, .. } = event {
+            if ke.state == ElementState::Pressed {
+                match &ke.logical_key {
+                    Key::Named(NamedKey::Enter) => {
+                        self.confirm_pending(doc);
+                        self.confirm_dialog = None;
+                        *handled = true;
+                        return;
+                    }
+                    Key::Character(c) if c.as_str() == "y" => {
+                        self.confirm_pending(doc);
+                        self.confirm_dialog = None;
+                        *handled = true;
+                        return;
+                    }
+                    Key::Character(c) if c.as_str() == "n" => {
+                        self.pending = None;
+                        self.modal = Modal::None;
+                        self.confirm_dialog = None;
+                        *handled = true;
+                        return;
+                    }
+                    _ => {}
+                }
+            }
+        }
+        self.ensure_confirm_dialog();
+        self.layout_confirm_dialog();
+        let root = automerge::ROOT;
+        let (ok, cancel) = {
+            let Some(cd) = self.confirm_dialog.as_mut() else { return };
+            let mut taffy: TaffyTree<()> = TaffyTree::new();
+            let node = taffy.new_leaf(Style::default()).unwrap();
+            let mut focus_target = None;
+            cd.dialog.handle_event(
+                event, scale_factor, modifiers, doc, &root, handled,
+                &mut focus_target, node, &taffy,
+            );
+            (cd.confirm.replace(false), cd.cancel.replace(false))
+        };
+        if ok {
+            self.confirm_pending(doc);
+            self.confirm_dialog = None;
+        } else if cancel {
+            self.pending = None;
+            self.modal = Modal::None;
+            self.confirm_dialog = None;
+        }
+        *handled = true;
     }
 
     fn modal_button_rects(&self, lay: &LayoutRects) -> (Rect, Rect) {
@@ -1332,7 +1562,19 @@ impl Widget for VpnApp {
         self.draw_detail(scene, text_renderer, transform, theme, &lay);
         self.draw_header(scene, text_renderer, transform, theme, &lay);
         self.draw_footer(scene, text_renderer, transform, theme, &lay);
-        self.draw_modal(scene, text_renderer, transform, theme, &lay);
+        // The Add form keeps its hand-rolled overlay (multi-field form); the
+        // destructive/action Confirm routes through the shared ModalDialog.
+        match self.modal {
+            Modal::Add => self.draw_add_modal_overlay(scene, text_renderer, transform, theme, &lay),
+            Modal::Confirm => {
+                self.ensure_confirm_dialog();
+                self.layout_confirm_dialog();
+                if let Some(cd) = self.confirm_dialog.as_mut() {
+                    cd.dialog.draw(scene, transform, text_renderer, theme, _presence);
+                }
+            }
+            Modal::None => self.confirm_dialog = None,
+        }
     }
 
     fn handle_event(
@@ -1347,6 +1589,13 @@ impl Widget for VpnApp {
         _node_id: NodeId,
         _taffy: &TaffyTree<()>,
     ) {
+        // The Confirm dialog is modal: while it's up the shared ModalDialog
+        // captures every event (clicks, Esc, y/n) and nothing leaks to the
+        // list behind the scrim.
+        if self.modal == Modal::Confirm {
+            self.route_confirm_event(event, scale_factor, _modifiers, state, handled);
+            return;
+        }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 let p = Point::new(position.x / scale_factor, position.y / scale_factor);
@@ -1371,16 +1620,6 @@ impl Widget for VpnApp {
                 // Modal first (captures everything).
                 if self.modal == Modal::Add {
                     self.add_modal_hit(state, p, &lay);
-                    return;
-                }
-                if self.modal == Modal::Confirm {
-                    let (cancel, ok) = self.modal_button_rects(&lay);
-                    if point_in(ok, p) {
-                        self.confirm_pending(state);
-                    } else if point_in(cancel, p) {
-                        self.pending = None;
-                        self.modal = Modal::None;
-                    }
                     return;
                 }
                 // Header controls.
@@ -1473,23 +1712,6 @@ impl Widget for VpnApp {
                     }
                     return;
                 }
-                if self.modal == Modal::Confirm {
-                    *handled = true;
-                    match logical_key {
-                        Key::Named(NamedKey::Enter) => self.confirm_pending(state),
-                        Key::Named(NamedKey::Escape) => {
-                            self.pending = None;
-                            self.modal = Modal::None;
-                        }
-                        Key::Character(c) if c.as_str() == "y" => self.confirm_pending(state),
-                        Key::Character(c) if c.as_str() == "n" => {
-                            self.pending = None;
-                            self.modal = Modal::None;
-                        }
-                        _ => {}
-                    }
-                    return;
-                }
                 // Global shortcuts.
                 match logical_key {
                     Key::Named(NamedKey::ArrowDown) => {
@@ -1579,6 +1801,77 @@ mod tests {
         let mut doc = AutoCommit::new();
         app.refresh(&mut doc);
         (app, doc)
+    }
+
+    fn cursor_at(p: Point) -> WindowEvent {
+        WindowEvent::CursorMoved {
+            device_id: unsafe { std::mem::zeroed() },
+            position: winit::dpi::PhysicalPosition::new(p.x, p.y),
+        }
+    }
+    fn press() -> WindowEvent {
+        WindowEvent::MouseInput {
+            device_id: unsafe { std::mem::zeroed() },
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+        }
+    }
+    fn esc_key() -> WindowEvent {
+        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
+        ev.logical_key = Key::Named(NamedKey::Escape);
+        ev.physical_key =
+            winit::keyboard::PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
+        ev.location = winit::keyboard::KeyLocation::Standard;
+        ev.state = ElementState::Pressed;
+        ev.repeat = false;
+        ev.text = None;
+        WindowEvent::KeyboardInput {
+            device_id: unsafe { std::mem::zeroed() },
+            event: ev,
+            is_synthetic: false,
+        }
+    }
+    fn dispatch(app: &mut VpnApp, doc: &mut AutoCommit, ev: &WindowEvent) {
+        let taffy: TaffyTree<()> = TaffyTree::new();
+        let node = taffy::NodeId::new(0);
+        let mut handled = false;
+        let mut focus = None;
+        app.handle_event(
+            ev, 1.0, &Modifiers::default(), doc, &automerge::ROOT, &mut handled, &mut focus, node,
+            &taffy,
+        );
+    }
+
+    /// The action confirm routes through the shared `ModalDialog`: Escape
+    /// dismisses it, and a click on its primary button runs the real
+    /// `confirm_pending` — both driven through the production `handle_event`.
+    #[test]
+    #[serial_test::serial(vpn_env)]
+    fn confirm_dialog_routes_through_modaldialog() {
+        unsafe { std::env::remove_var("QOS_VPN_ALLOW_EXEC") };
+        let (mut app, mut doc) = demo_with_doc();
+        app.rect = Rect::new(0.0, 0.0, 900.0, 600.0);
+        let work = app.vault.connections.iter().find(|c| c.name == "Work").unwrap().id;
+        app.select(&mut doc, work);
+
+        // Arm a confirm, then Escape it — the dialog owns dismissal.
+        app.request_toggle(work);
+        assert_eq!(app.modal, Modal::Confirm);
+        dispatch(&mut app, &mut doc, &esc_key());
+        assert_eq!(app.modal, Modal::None, "Escape closed the confirm dialog");
+        assert!(app.pending.is_none(), "Escape cleared the pending action");
+        assert!(app.confirm_dialog.is_none());
+
+        // Re-arm, then click the dialog's primary → confirm_pending runs.
+        app.request_toggle(work);
+        assert_eq!(app.modal, Modal::Confirm);
+        dispatch(&mut app, &mut doc, &cursor_at(Point::new(10.0, 10.0)));
+        let primary = app.confirm_dialog.as_ref().unwrap().dialog.primary_rect();
+        dispatch(&mut app, &mut doc, &cursor_at(primary.center()));
+        dispatch(&mut app, &mut doc, &press());
+        assert_eq!(app.modal, Modal::None, "the primary click resolved the confirm");
+        assert!(app.pending.is_none(), "confirming consumed the pending action");
+        assert!(app.confirm_dialog.is_none());
     }
 
     #[test]

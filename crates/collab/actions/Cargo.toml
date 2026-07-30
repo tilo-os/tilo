@@ -1,0 +1,21 @@
+[package]
+name = "qos-actions"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "qos_actions"
+path = "src/lib.rs"
+
+# The qOS ACTION model: a serializable, replayable unit of CRDT mutation, plus
+# the nested Resource tree apps publish and the locus-aware dispatch that either
+# executes-and-replicates locally (`ClientLocal`) or routes to a host
+# (`ServerPreferred`). Pure state layer — no `ui`, no `winit`, no render deps —
+# so both the toolkit and any app can build on it. See `src/lib.rs`.
+
+[dependencies]
+automerge = "0.8.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+uuid = { version = "1.23.1", features = ["v4", "serde"] }
+thiserror = "1"

@@ -115,6 +115,13 @@ impl SearchField {
         self
     }
 
+    /// Change the placeholder at runtime (e.g. when a palette repurposes the
+    /// field to collect a prompted action's argument, the placeholder becomes
+    /// the action's prompt).
+    pub fn set_placeholder(&mut self, hint: &str) {
+        self.input.set_placeholder(hint);
+    }
+
     /// Give the embedded input a stable test/focus id.
     pub fn with_id(mut self, id: &str) -> Self {
         self.input = std::mem::replace(&mut self.input, TextInput::local()).with_id(id);
