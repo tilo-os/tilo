@@ -292,8 +292,18 @@ mod tests {
         assert_eq!(sandbox_bus_path(1000), PathBuf::from("/run/user/1000/bus"));
     }
 
+    /// Serialises the tests that reach into the process environment.
+    ///
+    /// `PROXY_BIN_ENV` and `PATH` are process-wide, so two tests that set
+    /// them race under the default parallel runner: one clears the
+    /// override the other just installed, or inherits the empty `PATH` the
+    /// other left behind. Taking one lock is enough — there is no
+    /// ordering requirement between them, only exclusion.
+    static ENV_GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn find_proxy_binary_honours_env_override() {
+        let _guard = ENV_GUARD.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
         let bin = tmp.path().join("xdg-dbus-proxy-mock");
         std::fs::write(&bin, "#!/bin/sh\n").unwrap();
@@ -306,19 +316,27 @@ mod tests {
 
     #[test]
     fn find_proxy_binary_returns_none_when_env_points_at_nonexistent() {
+        let _guard = ENV_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+        let path = std::env::var_os("PATH");
         unsafe {
             std::env::set_var(PROXY_BIN_ENV, "/nonexistent/xdg-dbus-proxy");
             // Nuke PATH so the fallback can't find a real binary.
             std::env::set_var("PATH", "");
         }
         let found = find_proxy_binary();
+        unsafe {
+            std::env::remove_var(PROXY_BIN_ENV);
+            // Put `PATH` back: leaving it empty breaks every later
+            // binary lookup in this process, not only this test.
+            match &path {
+                Some(p) => std::env::set_var("PATH", p),
+                None => std::env::remove_var("PATH"),
+            }
+        }
         assert!(
             found.is_none(),
             "expected None with bad env + empty PATH, got {found:?}"
         );
-        unsafe {
-            std::env::remove_var(PROXY_BIN_ENV);
-        }
     }
 
     /// Mock proxy fixture: writes a marker to `argv[2]` (the socket
