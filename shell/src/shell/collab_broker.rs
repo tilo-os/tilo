@@ -1882,6 +1882,63 @@ mod tests {
         drop(handle);
     }
 
+    /// The record boundary holds across hosts, not just within one.
+    ///
+    /// Gossipsub is a broadcast: a frame reaches every host on the topic, and
+    /// which of their apps see it is decided entirely by the route the sending
+    /// host stamped on it. So the record has to be on the wire — and it is,
+    /// as a field of `NeighbourMsg::AppCrdt*`, rebuilt into a route by the
+    /// receiving broker's drain thread.
+    #[test]
+    #[serial_test::serial(collab_broker)]
+    fn a_remote_frame_reaches_only_the_record_it_was_stamped_with() {
+        let socket_path = temp_sock("record-over-the-wire");
+        let handle = spawn(socket_path.clone()).expect("broker should bind");
+
+        let theirs = ui::record::RecordId::for_file("/work/theirs.odt");
+        let mine = ui::record::RecordId::for_file("/work/mine.odt");
+        let mut on_theirs =
+            connect_manager_on_record(&socket_path, "dev.qos.word-processor", TEST_CLUSTER, &theirs);
+        let mut on_mine =
+            connect_manager_on_record(&socket_path, "dev.qos.word-processor", TEST_CLUSTER, &mine);
+        wait_for_peers(&handle, 2, Duration::from_millis(500));
+        wait_for_announced(&handle, 2, Duration::from_millis(500));
+        let _ = on_theirs.poll();
+        let _ = on_mine.poll();
+
+        // One frame onto the wire, stamped with the remote host's record.
+        let (_, delta) = edited("body", "written on another machine");
+        let wire_route = CrdtRoute::record(
+            "dev.qos.word-processor",
+            TEST_CLUSTER,
+            theirs.as_str(),
+        );
+        deliver_over_the_wire(&handle, &wire_route, &delta);
+
+        let mut theirs_doc = automerge::AutoCommit::new();
+        assert_eq!(
+            absorb(&mut on_theirs, &mut theirs_doc),
+            1,
+            "the app on that record receives it"
+        );
+        assert_eq!(
+            field(&theirs_doc, "body").as_deref(),
+            Some("written on another machine")
+        );
+
+        let mut mine_doc = automerge::AutoCommit::new();
+        assert_eq!(
+            absorb(&mut on_mine, &mut mine_doc),
+            0,
+            "the app on a different record receives nothing"
+        );
+        assert_eq!(field(&mine_doc, "body"), None);
+
+        drop(on_theirs);
+        drop(on_mine);
+        drop(handle);
+    }
+
     /// Sharing one record shares **only** that record.
     ///
     /// The sender holds two documents open — the shape of a reviewer with two
