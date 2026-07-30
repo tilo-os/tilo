@@ -420,9 +420,12 @@ COPY os/etc/polkit-1/rules.d/49-qos-greeter-power.rules /etc/polkit-1/rules.d/49
 # Public keys only (the private keys are git-excluded; see keys/README.md).
 #  - cosign.pub verifies the OS image signature before `bootc upgrade` applies
 #    it (policy.json below). CI signs each pushed image (see .forgejo/workflows).
-#  - tpm2-pcr-signing.public.pem is the trust root for measured-boot PCR
-#    predictions; baked here so the installer/enroll path can bind LUKS to it
-#    once the build-side prediction-signing + UKI land (see §4 — not yet active).
+#  - tpm2-pcr-signing.public.pem is the trust root for SIGNED PCR policies, and
+#    nothing reads it yet. LUKS binds to PCR 7 (the Secure Boot policy) because
+#    that value is stable across OS updates; binding to PCR 4 — the boot
+#    artefacts themselves — needs a signed prediction, or every update would
+#    break the seal. This key is what such a prediction would verify against.
+#    See docs/secure-boot.md.
 COPY keys/cosign.pub /usr/share/qos/cosign.pub
 COPY keys/tpm2-pcr-signing.public.pem /usr/share/qos/tpm2-pcr-signing.public.pem
 
