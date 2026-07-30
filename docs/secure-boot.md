@@ -116,6 +116,50 @@ filesystem model rather than adding to it, and enabling it demands its own
 verified-boot campaign. Until then, the command line is protected by nothing
 stronger than the fact that `/boot` is only writable by root.
 
+## Interface for generation-bound unlock
+
+`crates/system/qos-rollback` wants four things from the boot chain. Two are
+available now, two are not, and the two that are not both depend on the UKI gap
+above rather than on anything that could be wired up around it.
+
+**PCR 7 — available.** The firmware measures the Secure Boot policy into it on
+every boot, UKI or not, and the LUKS TPM slot already binds to it.
+
+**PCR 11 — not available, and a prediction for it would seal against nothing.**
+PCR 11 is extended by `systemd-stub`, which only runs when the firmware loads a
+UKI. On the ostree backend the firmware loads the kernel directly and no stub is
+involved, so PCR 11 is never extended and stays at its reset value. A
+per-generation signed prediction for PCR 11 would therefore predict a constant,
+and a policy bound to it would be satisfied by any generation — including a rolled
+back one, which is the thing it exists to prevent.
+
+**`qos.generation=<N>` inside the signature — not available.** On this backend
+the command line lives in a Boot Loader Specification entry under `/boot`,
+assembled by the bootloader from `/usr/lib/bootc/kargs.d` plus install-time
+`--karg`s. The value can be put there in one line, and it would be readable by
+early userspace — but it would be exactly what the requirement rules out: a file
+under `/boot`, outside any signature, editable by anything that can write the ESP.
+Shipping it that way would look like compliance and provide none of it, so it is
+not shipped.
+
+**The unlock hook — available in shape, with these concrete facts.** An encrypted
+install made by `qos-disk-encrypt` names the volume `luks-<LUKS-UUID>`, because
+that is what dracut derives from the `rd.luks.uuid=` karg. So the key file the
+hook must write is:
+
+```
+/run/cryptsetup-keys.d/luks-<LUKS-UUID>.key
+```
+
+`systemd-cryptsetup` consults that path before it tries any token, so a hook that
+writes it takes precedence over the `tpm2-device=auto` slot without conflicting
+with it — the TPM slot stays as the fallback for a boot where the hook did not
+run. Ordering the hook `Before=systemd-cryptsetup@luks-<uuid>.service` inside the
+initramfs is the remaining work, and it needs the `qos-rollback` binary installed
+into the initramfs by a dracut module.
+
+None of this is wired up here, because the crate is not on this branch.
+
 ## Disk encryption
 
 `qos-install --encrypt` produces a LUKS2 root. The block work is
