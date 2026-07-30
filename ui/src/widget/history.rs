@@ -141,6 +141,12 @@ pub struct HistoryEntry {
     /// "Tombstoned". The producer keeps it short — the row is ~40 px
     /// tall and the summary is the load-bearing label.
     pub summary: String,
+    /// Characters inserted / deleted by this change, when the producer
+    /// counted them. `None` means "not a text edit, or not countable"
+    /// — it is **not** `(0, 0)`, because a group that aggregates these
+    /// must be able to tell "nothing moved" from "we do not know", and
+    /// report an aggregate only when every member reported one.
+    pub text_delta: Option<(usize, usize)>,
     /// Opaque bytes for the scrubber to re-derive the artifact's
     /// state at this tick. The widget doesn't crack them open — the
     /// shell layer takes responsibility for replaying. Optional
@@ -340,6 +346,7 @@ mod tests {
             artifact_kind: ArtifactKind::Note,
             timestamp: SystemTime::UNIX_EPOCH + Duration::from_secs(ts_offset_secs),
             summary: "test entry".into(),
+            text_delta: None,
             diff_payload: None,
             redaction: None,
         }
