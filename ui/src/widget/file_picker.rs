@@ -1003,40 +1003,19 @@ fn draw_button(
     is_hover: bool,
     is_primary: bool,
 ) {
-    let radius = theme.tokens.radii.md as f64;
-    let shape = RoundedRect::from_rect(rect, radius);
-    let bg = if is_primary {
-        theme.tokens.colors.accent.stops[crate::tokens::colors::ACCENT_PRIMARY_IDX]
-    } else if is_hover {
-        theme.bg_hover
-    } else {
-        theme.tokens.colors.surfaces.raised
-    };
-    scene.fill(Fill::NonZero, transform, bg, None, &shape);
-    scene.stroke(
-        &Stroke::new(1.0),
-        transform,
-        theme.tokens.colors.border_standard,
-        None,
-        &shape,
-    );
-    let text_size = theme.tokens.typography.scale.sm;
-    let (text_w, _) = text_renderer.measure(label, text_size, None);
-    let text_x = rect.center().x - (text_w as f64 / 2.0);
-    let text_y = rect.y0 + (rect.height() - text_size as f64) / 2.0;
-    let text_color = if is_primary {
-        Color::WHITE
-    } else {
-        theme.tokens.colors.text_primary
-    };
-    text_renderer.draw_text(
-        scene,
-        label,
-        text_size,
-        text_color,
-        transform * Affine::translate((text_x, text_y)),
-        None,
-    );
+    // Share the canonical immediate-mode button face so the picker footer
+    // stays visually locked to the retained widget and every converted app.
+    let face = crate::widget::ButtonFace::new(rect, label)
+        .radius(theme.tokens.radii.md as f64)
+        .text_size(theme.tokens.typography.scale.sm)
+        .weight(crate::text_render::TextWeight::Regular)
+        .hovered(is_hover)
+        .style(if is_primary {
+            crate::widget::ButtonStyle::Primary
+        } else {
+            crate::widget::ButtonStyle::Neutral
+        });
+    crate::widget::Button::paint(scene, transform, text_renderer, theme, &face);
 }
 
 #[cfg(test)]
