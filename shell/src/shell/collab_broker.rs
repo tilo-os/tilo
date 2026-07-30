@@ -2579,9 +2579,12 @@ mod tests {
         instance: &str,
     ) -> CollaborationManager {
         let env = sandbox_env_for_launch(dir, package_id, room);
-        // SAFETY: every test in this module is serialised on the
-        // `collab_broker` key, so nothing else reads these between the
-        // writes and the `new()` that consumes them.
+        // SAFETY: the tests that call this hold both the `collab_broker` and
+        // the `process_env` serial keys. The second one matters: these are the
+        // launcher's own variables, and tests elsewhere in the crate (the
+        // document-open handler's, for one) *read* them. Holding only
+        // `collab_broker` serialised this module against itself and left those
+        // readers racing a write from here.
         unsafe {
             std::env::set_var("QUICK_COLLAB_SOCK", sock);
             std::env::set_var("QUICK_APP_ID", instance);
@@ -2626,7 +2629,7 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial(collab_broker)]
+    #[serial_test::serial(collab_broker, process_env)]
     fn apps_launched_into_the_same_workspace_exchange_deltas() {
         let dir = scratch_dir("same-ws");
         let socket_path = temp_sock("same-workspace");
@@ -2667,7 +2670,7 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial(collab_broker)]
+    #[serial_test::serial(collab_broker, process_env)]
     fn apps_launched_into_different_workspaces_do_not_exchange_deltas() {
         // The half that matters. A workspace is a room: an app opened
         // in workspace 7 must never see the document of the same app
@@ -2735,7 +2738,7 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial(collab_broker)]
+    #[serial_test::serial(collab_broker, process_env)]
     fn a_launch_tells_the_app_its_package_and_its_workspace() {
         // The precedence rule read straight off the env the launcher
         // produces: under a session the package id and the workspace
@@ -2843,7 +2846,7 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial(collab_broker)]
+    #[serial_test::serial(collab_broker, process_env)]
     fn a_workspace_is_the_same_room_after_a_restart() {
         // "The workspace I had yesterday is the workspace I have
         // today." A room id that changed on restart would quietly
@@ -2952,7 +2955,7 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial(collab_broker)]
+    #[serial_test::serial(collab_broker, process_env)]
     fn an_invited_host_joins_the_room_and_an_uninvited_one_does_not() {
         // The cross-machine claim. Three hosts, three brokers, three
         // independently-built workspace trees — and, deliberately, the
