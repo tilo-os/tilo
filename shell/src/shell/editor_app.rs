@@ -23,7 +23,7 @@ use std::collections::HashMap;
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{NodeId, TaffyTree};
-use ui::presence::{PresenceCtx, PresenceKey};
+use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::text_selection::line_boundaries;
@@ -839,7 +839,7 @@ mod tests {
 
     #[test]
     fn body_presence_key_names_the_record_and_the_body_field() {
-        use ui::presence::PathSegment;
+        use ui::presence::{PathSegment, PresenceKey};
         // Stable contract: the shell seeds presence state under this
         // exact key, so a peer's caret/selection for the editor body
         // materialises where `draw` looks for it.
