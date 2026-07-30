@@ -34,6 +34,16 @@ pub struct RelayClient {
     pub inbound: Arc<AsyncMutex<mpsc::UnboundedReceiver<Envelope>>>,
     /// Kept alive so the connection is not dropped.
     _connection: Connection,
+    /// Kept alive for the same reason. A `Connection` does **not** keep
+    /// its endpoint open: when the last `Endpoint` handle drops, the
+    /// socket it owns goes with it and every connection dialled from it
+    /// dies mid-flight. `connect` takes the endpoint by value, so
+    /// without this field a caller that hands over its only handle gets
+    /// a session that completes the handshake (those bytes are already
+    /// on the wire) and then loses the connection before the first
+    /// envelope — a failure that surfaces as an unexplained silence on
+    /// `recv`, not as a dial error.
+    _endpoint: Endpoint,
     /// The task driving the send/recv split. Aborted on drop.
     _pump: JoinHandle,
 }
@@ -70,6 +80,9 @@ impl RelayClient {
     /// `own_user_public_key` MUST equal `own_cert.user_public_key`;
     /// the mutual-auth step compares the server cert's user pubkey
     /// against this value.
+    ///
+    /// The returned client owns `endpoint` and holds it open for its own
+    /// lifetime, so a caller may pass its only handle.
     pub async fn connect(
         endpoint: Endpoint,
         relay_addr: EndpointAddr,
@@ -78,6 +91,7 @@ impl RelayClient {
         own_sk: ed25519_dalek::SigningKey,
         revocations: RevocationList,
     ) -> Result<Self, ClientError> {
+        let endpoint_keepalive = endpoint.clone();
         let conn = endpoint
             .connect(relay_addr, ALPN)
             .await
@@ -147,6 +161,7 @@ impl RelayClient {
             outbound: outbound_tx,
             inbound: Arc::new(AsyncMutex::new(inbound_rx)),
             _connection: conn,
+            _endpoint: endpoint_keepalive,
             _pump: JoinHandle(pump),
         })
     }
