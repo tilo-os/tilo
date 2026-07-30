@@ -5,6 +5,7 @@
 //! widgets — lives here so we can test each layer in isolation.
 
 pub mod model;
+pub mod actions;
 pub mod doc;
 pub mod storage;
 pub mod markdown;

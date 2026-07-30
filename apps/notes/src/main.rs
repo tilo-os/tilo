@@ -56,6 +56,9 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         .set_actor(automerge::ActorId::from(app_id.as_bytes()));
 
     let mut app = ui::App::new(state, Box::new(app_widget));
+    // Register Notes' action decoders so the Ctrl+K palette and remote replay
+    // can decode every page-tree mutation this app dispatches.
+    notes::actions::register(app.action_registry_mut());
     // Announce ourselves under a stable workspace scope: this drives the
     // late-join handshake (peers reply with full state) and is the scope
     // under which our pointer presence is broadcast.
