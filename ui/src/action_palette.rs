@@ -279,10 +279,12 @@ impl ActionPalette {
                 self.open = false;
             }
             Some(RowResolution::Dispatch(ActionKind::Prompted { prompt, build })) => {
-                // Repurpose the field to collect the argument.
+                // Repurpose the field to collect the argument; clear the result
+                // list so only the prompt shows.
                 self.field = SearchField::new();
                 self.field.set_placeholder(&prompt);
                 self.field.set_focused(true);
+                self.results.set_groups(Vec::new());
                 self.arg = Some(ArgState { build });
             }
             Some(RowResolution::Navigate(target)) => {
