@@ -44,6 +44,8 @@ use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
+use crate::a11y::AccessNode;
+use crate::accesskit_bridge::build_tree_update;
 use crate::permissions::PermissionContext;
 use crate::presence::PresenceCtx;
 use crate::state::State;
@@ -100,6 +102,14 @@ pub struct Driver {
     permissions: PermissionContext,
     modifiers: winit::event::Modifiers,
     viewport: (u32, u32),
+    /// The taffy node of the widget that currently holds keyboard focus, or
+    /// `None`. Mirrors [`crate::app::App::focused_node`]: the driver manages
+    /// focus itself (Tab / directional / focus-on-click) because focus is an
+    /// App-level responsibility, not something the root widget's
+    /// `handle_event` does. Remapped across every `relayout` by scanning for
+    /// the widget whose `is_focused()` is still set (widget instances survive
+    /// a relayout; their taffy ids do not).
+    focused: Option<NodeId>,
 }
 
 impl Driver {
@@ -119,6 +129,7 @@ impl Driver {
             permissions: PermissionContext::permissive(),
             modifiers: winit::event::Modifiers::default(),
             viewport,
+            focused: None,
         };
         d.relayout();
         d
@@ -191,6 +202,126 @@ impl Driver {
             &self.presence,
             &self.permissions,
         );
+
+        // The taffy tree was rebuilt, so the previous `focused` NodeId is
+        // stale. The widget *instances* survive (a relayout rebuilds layout,
+        // not widgets), and the focused one still reports `is_focused()`, so
+        // recover the current node by scanning the fresh node map. This keeps
+        // Tab focus + keystroke routing stable across the relayout every
+        // action triggers.
+        self.focused = self.node_map.iter().find_map(|(&n, &p)| {
+            // SAFETY: same node_map contract the measure closure uses — the
+            // pointers alias `self.root`, which is live and not otherwise
+            // borrowed here.
+            unsafe { (*p).is_focused() }.then_some(n)
+        });
+    }
+
+    /// The keyboard-focusable widgets in tree order — the same DFS
+    /// `crate::app::App::update_focusable_order` walks (a node is included
+    /// when `is_focusable() && is_enabled()`), so a Tab that reaches a widget
+    /// here reaches it in the live app too. Focus-trap (modal) confinement is
+    /// not modelled; a harness that needs it can filter the result.
+    pub fn focus_order(&self) -> Vec<NodeId> {
+        let mut order = Vec::new();
+        collect_focus_order(self.child_node, self.root.as_ref(), &self.taffy, &mut order);
+        order
+    }
+
+    /// The taffy node holding keyboard focus, if any.
+    pub fn focused(&self) -> Option<NodeId> {
+        self.focused
+    }
+
+    /// Move keyboard focus to the widget at `node`, toggling `set_focus` on
+    /// the outgoing/incoming widgets exactly as
+    /// [`crate::app::App::set_focused_node`] does.
+    fn set_focused(&mut self, node: Option<NodeId>) {
+        if self.focused == node {
+            return;
+        }
+        if let Some(old) = self.focused {
+            if let Some(&p) = self.node_map.get(&old) {
+                unsafe { (*p).set_focus(false) };
+            }
+        }
+        if let Some(new) = node {
+            if let Some(&p) = self.node_map.get(&new) {
+                unsafe { (*p).set_focus(true) };
+            }
+        }
+        self.focused = node;
+    }
+
+    /// Advance keyboard focus like Tab (or Shift+Tab when `back`), cycling the
+    /// focus order. Returns the newly-focused node.
+    pub fn tab(&mut self, back: bool) -> Option<NodeId> {
+        let order = self.focus_order();
+        if order.is_empty() {
+            return None;
+        }
+        let next = match self.focused.and_then(|f| order.iter().position(|&x| x == f)) {
+            Some(idx) => {
+                if back {
+                    if idx == 0 { order.len() - 1 } else { idx - 1 }
+                } else {
+                    (idx + 1) % order.len()
+                }
+            }
+            None => {
+                if back { order.len() - 1 } else { 0 }
+            }
+        };
+        let target = order[next];
+        self.set_focused(Some(target));
+        self.relayout();
+        Some(target)
+    }
+
+    /// The accessibility node of every keyboard-focusable control, in focus
+    /// order — one entry per Tab stop. Non-mutating (it does not move focus),
+    /// so a test can assert the expected controls exist with the right roles,
+    /// names, and states in a single pass.
+    pub fn focus_access_nodes(&self) -> Vec<AccessNode> {
+        self.focus_order()
+            .into_iter()
+            .filter_map(|id| {
+                let &p = self.node_map.get(&id)?;
+                unsafe { (*p).accessibility() }
+            })
+            .collect()
+    }
+
+    /// The local accessibility node of the currently-focused widget, if any —
+    /// what a screen reader would announce when Tab lands here.
+    pub fn focused_access_node(&self) -> Option<AccessNode> {
+        let id = self.focused?;
+        let &p = self.node_map.get(&id)?;
+        unsafe { (*p).accessibility() }
+    }
+
+    /// The full accessibility tree the AccessKit bridge exports for the
+    /// current frame — the exact `(NodeId, Node)` list that reaches AT-SPI2 /
+    /// Orca and the built-in screen reader, with the driver's focus marked.
+    pub fn a11y_nodes(&self) -> Vec<(accesskit::NodeId, accesskit::Node)> {
+        build_tree_update(self.root.as_ref(), &self.node_map, self.focused, 1.0).nodes
+    }
+
+    /// Tab through the entire focus order from the top, returning the
+    /// accessible `(role, name)` a screen reader would announce at each stop.
+    /// One assertion proves both that every control is reachable by keyboard
+    /// and that each announces a sensible role + label.
+    pub fn tab_through(&mut self) -> Vec<(crate::a11y::Role, Option<String>)> {
+        self.set_focused(None);
+        let count = self.focus_order().len();
+        let mut out = Vec::with_capacity(count);
+        for _ in 0..count {
+            self.tab(false);
+            if let Some(node) = self.focused_access_node() {
+                out.push((node.role, node.name));
+            }
+        }
+        out
     }
 
     /// Every widget the driver can address, by `test_id` or path, with the
@@ -222,6 +353,12 @@ impl Driver {
             self.child_node,
             &self.taffy,
         );
+        // Mirror the App: a widget that claimed focus during dispatch (a
+        // click on a field / button) becomes the focused node, so subsequent
+        // keystrokes route to it.
+        if let Some(t) = focus_target {
+            self.set_focused(Some(t));
+        }
         // Mirror the App's idle tick: a widget that asked for a commit gets
         // one, so undo boundaries and any commit-time CRDT writes happen the
         // way they do live.
@@ -269,7 +406,16 @@ impl Driver {
     }
 
     /// Press and release one key.
+    ///
+    /// `Tab` is intercepted and drives keyboard focus (Shift+Tab reverses),
+    /// exactly as [`crate::app::App`] does in the live event loop — the root
+    /// widget never sees Tab. Every other key is delivered to the root's
+    /// `handle_event`, where the focused child consumes it.
     pub fn key(&mut self, spec: &str) {
+        if spec == "Tab" {
+            self.tab(self.modifiers.state().shift_key());
+            return;
+        }
         let key = parse_key(spec);
         for state in [ElementState::Pressed, ElementState::Released] {
             self.send(key_event(key.clone(), state));
@@ -327,6 +473,26 @@ impl Driver {
     pub fn dump_json(&mut self) -> String {
         serde_json::to_string_pretty(&automerge::AutoSerde::from(&*self.state.doc.document()))
             .unwrap_or_else(|e| format!("{{\"error\":\"{e}\"}}"))
+    }
+}
+
+/// DFS the widget tree collecting the taffy node of every keyboard-focusable
+/// widget, in the order [`crate::app::App::update_focusable_order`] uses. The
+/// widget's taffy children come from `taffy.children(node)`, zipped against
+/// `widget.children()` — the two must line up, which every container upholds.
+fn collect_focus_order(
+    node: NodeId,
+    widget: &dyn Widget,
+    taffy: &TaffyTree<()>,
+    out: &mut Vec<NodeId>,
+) {
+    if widget.is_focusable() && widget.is_enabled() {
+        out.push(node);
+    }
+    if let Ok(children) = taffy.children(node) {
+        for (child_widget, &child_node) in widget.children().iter().zip(children.iter()) {
+            collect_focus_order(child_node, *child_widget, taffy, out);
+        }
     }
 }
 
