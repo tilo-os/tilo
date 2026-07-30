@@ -766,14 +766,15 @@ mod tests {
             "a standalone-note resource"
         );
 
-        // The one palette lists them all.
+        // The one palette surfaces the tree's actions as rows (the Actions group
+        // is capped, so assert on the leading, always-present ones).
         let mut palette = ui::ActionPalette::new();
         palette.load_open_resources(&resources);
         palette.open();
         let labels = palette.result_labels();
+        assert!(labels.iter().any(|l| l.contains("Toggle bookmark")), "{labels:?}");
         assert!(labels.iter().any(|l| l.contains("Delete highlight")), "{labels:?}");
         assert!(labels.iter().any(|l| l.contains("Delete comment")), "{labels:?}");
-        assert!(labels.iter().any(|l| l.contains("Delete bookmark")), "{labels:?}");
     }
 
     /// Deleting the highlight through its action removes the highlight *and*
