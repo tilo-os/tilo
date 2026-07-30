@@ -120,6 +120,198 @@ impl ToggleGroup {
     }
 }
 
+/// Visual style for an immediate-mode segmented control painted via
+/// [`ToggleGroup::paint`].
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum SegmentedStyle {
+    /// Unified strip — every segment is filled (selected in the accent,
+    /// unselected in the raised surface), interior 1-px separators between
+    /// adjacent segments, and one outer border wrapping the whole control.
+    /// Matches the retained [`ToggleGroup`]. Segment rects must be contiguous.
+    #[default]
+    Solid,
+    /// Discrete pills — only the selected pill (accent) or a hovered pill
+    /// (subtle hover surface) is filled; unselected pills are transparent.
+    /// No outer border, no separators. The tab-strip / mode-switch look.
+    Pill,
+}
+
+/// Resolve the `(fill, label)` colours for one segment given the style and
+/// its selected / hovered state. `fill == None` means "paint no background"
+/// (a transparent, unselected pill). Single source of truth for both the
+/// retained draw's palette intent and [`ToggleGroup::paint`].
+pub fn segment_colors(
+    theme: &Theme,
+    style: SegmentedStyle,
+    selected: bool,
+    hovered: bool,
+) -> (Option<Color>, Color) {
+    let colors = &theme.tokens.colors;
+    match style {
+        SegmentedStyle::Solid => {
+            if selected {
+                (Some(theme.accent_primary), Color::WHITE)
+            } else {
+                (Some(colors.surfaces.raised), colors.text_primary)
+            }
+        }
+        SegmentedStyle::Pill => {
+            if selected {
+                (Some(theme.accent_primary), Color::WHITE)
+            } else if hovered {
+                (Some(theme.bg_hover), colors.text_dim)
+            } else {
+                (None, colors.text_dim)
+            }
+        }
+    }
+}
+
+/// Configuration for [`ToggleGroup::paint`], the immediate-mode segmented
+/// face. The caller owns the per-segment rects (its own layout) and its own
+/// hit-test; this paints the themed, stateful look over them so tab strips /
+/// mode switches share one segmented control's palette and geometry.
+pub struct SegmentedFace<'a> {
+    segments: &'a [Rect],
+    labels: &'a [&'a str],
+    selected: usize,
+    hovered: Option<usize>,
+    style: SegmentedStyle,
+    radius: f64,
+    text_size: f32,
+    weight: crate::text_render::TextWeight,
+}
+
+impl<'a> SegmentedFace<'a> {
+    /// A segmented face over `segments` (one rect per label, same order).
+    pub fn new(segments: &'a [Rect], labels: &'a [&'a str], selected: usize) -> Self {
+        Self {
+            segments,
+            labels,
+            selected,
+            hovered: None,
+            style: SegmentedStyle::Solid,
+            radius: 8.0,
+            text_size: 13.0,
+            weight: crate::text_render::TextWeight::Medium,
+        }
+    }
+    pub fn style(mut self, style: SegmentedStyle) -> Self { self.style = style; self }
+    pub fn pill(mut self) -> Self { self.style = SegmentedStyle::Pill; self }
+    pub fn hovered(mut self, idx: Option<usize>) -> Self { self.hovered = idx; self }
+    pub fn radius(mut self, r: f64) -> Self { self.radius = r; self }
+    pub fn text_size(mut self, s: f32) -> Self { self.text_size = s; self }
+    pub fn weight(mut self, w: crate::text_render::TextWeight) -> Self { self.weight = w; self }
+}
+
+impl ToggleGroup {
+    /// Immediate-mode paint of a themed segmented control over caller-owned
+    /// per-segment rects, matching the retained [`ToggleGroup`]'s look for the
+    /// `Solid` style (unified strip + separators + outer border) and a
+    /// tab-strip look for `Pill` (selected/hovered pill only). For
+    /// canvas/immediate-mode apps that own their own rect hit-testing: call
+    /// this to paint, keep your existing hit-test to fire the selection.
+    /// Extends the widget rather than forking a painter — the palette flows
+    /// through [`segment_colors`].
+    pub fn paint(
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        face: &SegmentedFace<'_>,
+    ) {
+        let segs = face.segments;
+        if segs.is_empty() {
+            return;
+        }
+        let colors = &theme.tokens.colors;
+
+        match face.style {
+            SegmentedStyle::Solid => {
+                // Union rect of the (contiguous) segments → outer chunk.
+                let outer = Rect::new(segs[0].x0, segs[0].y0, segs[segs.len() - 1].x1, segs[0].y1);
+                let outer_shape = RoundedRect::from_rect(outer, face.radius);
+                // Per-segment fills clipped to the rounded outer so the end
+                // segments inherit the corner radius.
+                scene.push_layer(
+                    vello::peniko::Fill::NonZero,
+                    vello::peniko::BlendMode::default(),
+                    1.0,
+                    transform,
+                    &outer_shape,
+                );
+                for (i, seg) in segs.iter().enumerate() {
+                    let (fill, _) = segment_colors(theme, face.style, i == face.selected, false);
+                    if let Some(fill) = fill {
+                        scene.fill(vello::peniko::Fill::NonZero, transform, fill, None, seg);
+                    }
+                }
+                scene.pop_layer();
+                // Interior separators.
+                let sep = Stroke::new(1.0);
+                for seg in segs.iter().take(segs.len().saturating_sub(1)) {
+                    let x = seg.x1;
+                    scene.stroke(
+                        &sep,
+                        transform,
+                        colors.border_standard,
+                        None,
+                        &Line::new(Point::new(x, outer.y0), Point::new(x, outer.y1)),
+                    );
+                }
+                // Outer border.
+                scene.stroke(&Stroke::new(1.0), transform, colors.border_standard, None, &outer_shape);
+            }
+            SegmentedStyle::Pill => {
+                for (i, seg) in segs.iter().enumerate() {
+                    let (fill, _) = segment_colors(
+                        theme,
+                        face.style,
+                        i == face.selected,
+                        face.hovered == Some(i),
+                    );
+                    if let Some(fill) = fill {
+                        scene.fill(
+                            vello::peniko::Fill::NonZero,
+                            transform,
+                            fill,
+                            None,
+                            &RoundedRect::from_rect(*seg, face.radius),
+                        );
+                    }
+                }
+            }
+        }
+
+        // Labels — centred in each segment. Selected pills use a slightly
+        // heavier weight so the active choice reads first.
+        for (i, seg) in segs.iter().enumerate() {
+            let label = face.labels.get(i).copied().unwrap_or("");
+            if label.is_empty() {
+                continue;
+            }
+            let (_, fg) = segment_colors(theme, face.style, i == face.selected, face.hovered == Some(i));
+            let weight = if i == face.selected {
+                crate::text_render::TextWeight::Semibold
+            } else {
+                face.weight
+            };
+            let (tw, th) = text_renderer.measure_weighted(label, face.text_size, None, weight);
+            let text_x = seg.center().x - tw as f64 / 2.0;
+            let text_y = seg.y0 + (seg.height() - th as f64) / 2.0;
+            text_renderer.draw_text_weighted(
+                scene,
+                label,
+                face.text_size,
+                fg,
+                transform * Affine::translate((text_x, text_y)),
+                None,
+                weight,
+            );
+        }
+    }
+}
+
 impl Widget for ToggleGroup {
     fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
 
@@ -616,6 +808,64 @@ mod tests {
             unfocused, focused,
             "focusing the group must change the border colour in the encoded scene",
         );
+    }
+
+    #[test]
+    fn segment_colors_solid_selected_is_accent_white() {
+        let theme = Theme::dark();
+        let (fill, fg) = segment_colors(&theme, SegmentedStyle::Solid, true, false);
+        assert_eq!(fill, Some(theme.accent_primary));
+        assert_eq!(fg, Color::WHITE);
+        let (ufill, ufg) = segment_colors(&theme, SegmentedStyle::Solid, false, false);
+        assert_eq!(ufill, Some(theme.tokens.colors.surfaces.raised), "unselected solid is a raised fill");
+        assert_eq!(ufg, theme.tokens.colors.text_primary);
+    }
+
+    #[test]
+    fn segment_colors_pill_unselected_is_transparent() {
+        let theme = Theme::dark();
+        // Unselected + not hovered → no fill at all (transparent pill).
+        let (fill, fg) = segment_colors(&theme, SegmentedStyle::Pill, false, false);
+        assert_eq!(fill, None, "an idle unselected pill paints no background");
+        assert_eq!(fg, theme.tokens.colors.text_dim, "inactive tab label is dimmed");
+        // Hover gives it the shared hover surface.
+        let (hfill, _) = segment_colors(&theme, SegmentedStyle::Pill, false, true);
+        assert_eq!(hfill, Some(theme.bg_hover));
+        // Selected pill is the accent + white, same as solid.
+        let (sfill, sfg) = segment_colors(&theme, SegmentedStyle::Pill, true, false);
+        assert_eq!(sfill, Some(theme.accent_primary));
+        assert_eq!(sfg, Color::WHITE);
+    }
+
+    #[test]
+    fn segmented_paint_emits_fills_over_caller_rects() {
+        // The immediate-mode paint helper renders something for both styles
+        // over caller-owned rects without a layout pass.
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let segs = [
+            Rect::new(0.0, 0.0, 60.0, 28.0),
+            Rect::new(60.0, 0.0, 120.0, 28.0),
+            Rect::new(120.0, 0.0, 180.0, 28.0),
+        ];
+        let labels = ["A", "B", "C"];
+        for style in [SegmentedStyle::Solid, SegmentedStyle::Pill] {
+            let mut scene = Scene::new();
+            ToggleGroup::paint(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut tr,
+                &theme,
+                &SegmentedFace::new(&segs, &labels, 1).style(style),
+            );
+            let colour_tags = scene
+                .encoding()
+                .draw_tags
+                .iter()
+                .filter(|t| **t == DrawTag::COLOR)
+                .count();
+            assert!(colour_tags > 0, "{style:?} paint must emit draw commands");
+        }
     }
 
     #[test]
