@@ -320,6 +320,25 @@ pub trait Widget {
     /// selecting genuinely changes shared state. Default: no-op.
     fn activate_search_result(&mut self, _action_id: &str, _doc: &mut AutoCommit, _path: &ObjId) {}
 
+    /// The affordance-driven twin of the Ctrl+K palette: when one of a widget's
+    /// own controls (a toolbar button, a context-menu item, a swatch) performs a
+    /// document-mutating operation, it dispatches the SAME
+    /// [`qos_actions`] action its [`ActionSpec`](qos_actions::ActionSpec) exports
+    /// — applied through the executor so it replays byte-identically on peers —
+    /// and reports the document heads captured **just before** that action here.
+    ///
+    /// The host ([`crate::app::App`]) drains this after each event and records
+    /// exactly one undo boundary bracketing `[before, current]`, the same
+    /// `record_committed_action` path a palette dispatch takes. So an app's own
+    /// buttons and its Ctrl+K entries share one dispatch + undo path, and the
+    /// user's Ctrl+Z reverts a button-driven action just like a palette one.
+    ///
+    /// Rising-edge: reading MUST clear it (return `Some` once per dispatched
+    /// batch, then `None`). Default: nothing to record.
+    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        None
+    }
+
     fn accepts_drop(&self, _payload: &DragPayload) -> bool { false }
     fn on_drop(&mut self, _payload: DragPayload, _state: &mut AutoCommit, _path: &ObjId) {}
     fn wants_pointer_capture(&self) -> bool { false }

@@ -3708,6 +3708,18 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             window.request_redraw();
         }
 
+        // An affordance may have dispatched a `qos_actions` action out-of-band
+        // during the last event (the button-driven twin of the Ctrl+K palette).
+        // Record one undo boundary bracketing it, so Ctrl+Z reverts it — the same
+        // `record_committed_action` path the palette dispatch takes.
+        if let Some(before) = app.root_widget.take_committed_action() {
+            if app.state.doc.get_heads() != before {
+                app.state.record_committed_action(before, None, None);
+                app.needs_sync = true;
+                window.request_redraw();
+            }
+        }
+
         if app.root_widget.needs_commit() {
             app.commit_action();
             app.root_widget.on_commit();
