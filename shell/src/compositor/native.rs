@@ -1223,6 +1223,10 @@ pub fn run() -> ! {
         enable_peer_sync,
         initial_size,
     );
+    // The scene spans every output, but a window's width is a fraction of
+    // the monitor it is on — so hand the strips the real per-display
+    // geometry rather than letting them size against the bounding box.
+    frame_builder.set_output_geometry(output_geometry(backend.outputs()));
 
     // Peer sync. Constructed here rather than only in the hosted entry
     // point because this is the compositor that boots as the qOS
@@ -1577,6 +1581,12 @@ pub fn run() -> ! {
                 } => {
                     if size.0 > 0 && size.1 > 0 {
                         frame_builder.set_viewport(size);
+                        // A resize is also how the compositor learns a
+                        // monitor was plugged in, unplugged or re-moded, so
+                        // re-derive the per-display widths groups size
+                        // against alongside the scene extent.
+                        frame_builder
+                            .set_output_geometry(output_geometry(backend.outputs()));
                         // Keep the size used for fullscreen configures in sync
                         // so a fullscreened client fills the current output.
                         state.output_size = (size.0 as i32, size.1 as i32);
@@ -2788,5 +2798,72 @@ mod tests {
         // Blanked → set_dpms(false), Woke → set_dpms(true); Locked /
         // Unlocked produce no backend calls.
         assert_eq!(backend.dpms_calls, vec![false, true]);
+    }
+}
+
+/// Translate the backend's output list into the geometry the shell's strips
+/// resolve window widths against.
+///
+/// Outputs with a zero dimension are dropped: a connector mid-modeset
+/// reports 0×0, and letting that through would hand a strip a display it
+/// cannot place a window on.
+fn output_geometry(
+    outputs: &[crate::compositor::backend::Output],
+) -> Vec<crate::shell::overlay_host::OutputGeometry> {
+    outputs
+        .iter()
+        .filter(|o| o.size.0 > 0 && o.size.1 > 0)
+        .map(|o| crate::shell::overlay_host::OutputGeometry {
+            x: o.position.0 as f64,
+            width: o.size.0 as f64,
+            height: o.size.1 as f64,
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod output_geometry_tests {
+    use super::output_geometry;
+    use crate::compositor::backend::{Output, OutputId};
+
+    /// A single monitor maps to one display at the origin — the case every
+    /// screenshot and test runs in.
+    #[test]
+    fn single_output_maps_to_one_display() {
+        let outs = [Output::new(OutputId(0), (3840, 2160), 1.0)];
+        let geo = output_geometry(&outs);
+        assert_eq!(geo.len(), 1);
+        assert_eq!((geo[0].x, geo[0].width, geo[0].height), (0.0, 3840.0, 2160.0));
+    }
+
+    /// Two monitors side by side stay two displays, each with its own
+    /// width. This is what stops a full-width window spanning both: the
+    /// combined geometry here is 3520 px, and neither display is that wide.
+    #[test]
+    fn side_by_side_outputs_stay_separate_displays() {
+        let outs = [
+            Output::new(OutputId(0), (1600, 900), 1.0),
+            Output {
+                id: OutputId(1),
+                position: (1600, 0),
+                size: (1920, 1080),
+                scale: 1.0,
+            },
+        ];
+        let geo = output_geometry(&outs);
+        assert_eq!(geo.len(), 2);
+        assert_eq!((geo[0].x, geo[0].width), (0.0, 1600.0));
+        assert_eq!((geo[1].x, geo[1].width), (1600.0, 1920.0));
+    }
+
+    /// A connector mid-modeset reports 0x0; a strip cannot place a window
+    /// on it, so it must not appear as a display.
+    #[test]
+    fn zero_sized_outputs_are_dropped() {
+        let outs = [
+            Output::new(OutputId(0), (1600, 900), 1.0),
+            Output::new(OutputId(1), (0, 0), 1.0),
+        ];
+        assert_eq!(output_geometry(&outs).len(), 1);
     }
 }
