@@ -113,6 +113,9 @@ pub struct ActionPalette {
     /// can resolve the inner text input's node.
     field_taffy: TaffyTree<()>,
     field_node: Option<NodeId>,
+    /// A text renderer kept for the field's per-frame measure pass, so `layout`
+    /// does not construct a font system every frame the palette is open.
+    measure: TextRenderer,
 }
 
 impl Default for ActionPalette {
@@ -139,6 +142,7 @@ impl ActionPalette {
             rect: Rect::ZERO,
             field_taffy: TaffyTree::new(),
             field_node: None,
+            measure: TextRenderer::new(),
         }
     }
 
@@ -350,10 +354,10 @@ impl ActionPalette {
     pub fn layout(&mut self, theme: &Theme, origin: Point, width: f64) {
         // Field: build a fresh 2-node tree so `handle_event` can resolve the
         // inner text input's node, then place it at the top of the card.
-        let mut tr = TextRenderer::new();
         let mut taffy: TaffyTree<()> = TaffyTree::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
         let node = self.field.build_layout(&mut taffy, theme, &mut node_map);
+        let tr = &mut self.measure;
         taffy
             .compute_layout_with_measure(
                 node,
@@ -364,7 +368,7 @@ impl ActionPalette {
                 |known, available, id, _, _| {
                     node_map
                         .get(&id)
-                        .map(|&p| unsafe { (*p).measure(known, available, &mut tr) })
+                        .map(|&p| unsafe { (*p).measure(known, available, tr) })
                         .unwrap_or(Size::ZERO)
                 },
             )
