@@ -26,7 +26,10 @@ use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::tooltip::Tooltip;
 use ui::widget::page_sidebar::{PageSidebar, PageSidebarEvent};
-use ui::widget::{Avatar, SmallContentAlign, TextInput, ViewportState};
+use ui::widget::{
+    Avatar, SegmentedFace, SegmentedStyle, SmallContentAlign, TextInput, ToggleGroup,
+    ViewportState,
+};
 use ui::Widget;
 
 use crate::doc::PdfDoc;
