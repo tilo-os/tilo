@@ -32,17 +32,17 @@ use crate::shell::state::WorkspaceTreeHandle;
 /// without per-workspace negotiation.
 pub const DEFAULT_WS_TOPIC: u64 = 0;
 
-/// Default on-disk path the shell uses for its persistent libp2p
-/// keypair. Lives alongside the FUSE driver's state so a single bind-
-/// mount covers both.
-pub const DEFAULT_KEYPAIR_PATH: &str = "/var/lib/qos-fs/peer-key";
+/// Default on-disk path of the machine's device key, from which the
+/// shell derives its libp2p identity. The FUSE mount reads the same
+/// file, so one device has one identity rather than one per subsystem.
+pub const DEFAULT_KEYPAIR_PATH: &str = crate::network::behaviour::DEVICE_KEY_PATH;
 
-/// Where this session's libp2p keypair lives.
+/// Where this session's device key lives.
 ///
 /// [`DEFAULT_KEYPAIR_PATH`] unless `QOS_PEER_KEY_PATH` names somewhere
 /// else. The override is what makes two sessions on one machine two
-/// *peers*: the keypair is the shell's network identity and also the
-/// seed for the id salt that keeps their minted ids disjoint, so two
+/// *peers*: the key is the shell's network identity and also the seed
+/// for the id salt that keeps their minted ids disjoint, so two
 /// processes reading one key file are one peer talking to itself.
 pub fn peer_key_path() -> std::path::PathBuf {
     match std::env::var("QOS_PEER_KEY_PATH") {
