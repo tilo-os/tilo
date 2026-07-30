@@ -22,7 +22,10 @@ use winit::event::{ElementState, Modifiers, MouseButton, MouseScrollDelta, Windo
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
-use crate::widget::{ResizeHandle, TabDescriptor, TileHost, Widget, WindowGroup, WindowWidth};
+use crate::widget::{
+    DEFAULT_STRIP_USABLE_PX, HANDLE_SLOT_PX, ResizeHandle, TabDescriptor, TileHost, Widget,
+    WindowGroup, WindowWidth,
+};
 
 /// Idle threshold after the last wheel event before we kick off a
 /// snap-to-nearest-group animation. Mirrors the concept's
@@ -235,6 +238,34 @@ pub struct GroupRow {
     /// replicates to peers. Take-pattern (leaves `None`) so a later
     /// harvest tick can't double-apply.
     pending_group_reorder: Option<(u64, usize)>,
+    /// The displays this strip spans, in the compositor's combined
+    /// coordinate space, each carrying the width its window groups
+    /// resolve their [`WindowWidth`] fractions against. Pushed down by the
+    /// shell before every `build_layout`; empty in a bare `ui` host, which
+    /// falls back to the row's own geometry (see [`Self::usable_at`]).
+    ///
+    /// A strip can span more than one display — the compositor paints one
+    /// scene across the bounding box of every output — so a group's width
+    /// has to resolve against the display that group sits on. Resolving
+    /// against the combined desktop would make a full-width window span
+    /// both monitors.
+    output_spans: Vec<OutputSpan>,
+}
+
+/// One display's horizontal extent in the compositor's combined
+/// coordinate space, plus the width window groups on it size themselves
+/// against.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct OutputSpan {
+    /// Left edge of the display in combined coordinates.
+    pub x: f64,
+    /// Full width of the display.
+    pub width: f64,
+    /// Width available to window groups on this display: `width` minus
+    /// whatever shell chrome the display reserves (on the leftmost
+    /// display, the wheel-disc slot). This is the denominator every
+    /// [`WindowWidth`] fraction is taken of.
+    pub usable: f64,
 }
 
 impl GroupRow {
@@ -261,6 +292,7 @@ impl GroupRow {
             group_drag: None,
             group_reorder_target: None,
             pending_group_reorder: None,
+            output_spans: Vec::new(),
         }
     }
 
@@ -333,6 +365,77 @@ impl GroupRow {
             // takes effect on the next paint.
             self.scroll_dirty = true;
         }
+    }
+
+    /// Tell the strip which displays it spans, so each group's width
+    /// fraction resolves against the display that group sits on. The
+    /// shell pushes this before every `build_layout`; passing an empty
+    /// slice restores the fallback in [`Self::usable_at`].
+    ///
+    /// Flags `structure_dirty` on a real change so a monitor being
+    /// plugged in, unplugged or resized re-bakes every group's width.
+    pub fn set_output_spans(&mut self, spans: &[OutputSpan]) {
+        if self.output_spans != spans {
+            self.output_spans = spans.to_vec();
+            self.structure_dirty = true;
+        }
+    }
+
+    /// The displays this strip spans. Empty until the shell pushes them.
+    pub fn output_spans(&self) -> &[OutputSpan] {
+        &self.output_spans
+    }
+
+    /// Usable width a group whose left edge sits at combined-x `x` should
+    /// resolve its [`WindowWidth`] fraction against.
+    ///
+    /// `x` is a *canvas* coordinate — the strip's own unscrolled space —
+    /// deliberately, not a screen coordinate: panning the strip must not
+    /// resize the windows in it. A group therefore keeps the basis of the
+    /// display it is laid out on, whatever is currently scrolled into
+    /// view.
+    ///
+    /// Falls back, in order, to the row's own laid-out width minus the
+    /// leading gutter (a bare `ui` host, where the row *is* the display),
+    /// and to [`DEFAULT_STRIP_USABLE_PX`] before any layout has run.
+    pub fn usable_at(&self, x: f64) -> f64 {
+        if !self.output_spans.is_empty() {
+            // Last span whose left edge is at or before `x`; the first
+            // span for anything left of the whole arrangement.
+            let mut chosen = self.output_spans[0];
+            for span in &self.output_spans {
+                if x >= span.x {
+                    chosen = *span;
+                }
+            }
+            return chosen.usable.max(1.0);
+        }
+        let own = self.rect.width() - self.leading_inset;
+        if own > 1.0 {
+            own
+        } else {
+            DEFAULT_STRIP_USABLE_PX
+        }
+    }
+
+    /// Per-group usable width, in strip order: the width each group's
+    /// [`WindowWidth`] fraction resolves against. Walks the strip left to
+    /// right accumulating resolved widths, so a group that lands on the
+    /// second display gets that display's basis rather than the first's.
+    ///
+    /// Depends only on the groups' own stored widths and the pushed output
+    /// spans — never on a previous frame's layout — so it is stable on the
+    /// very first frame.
+    pub fn usable_per_group(&self) -> Vec<f64> {
+        let mut canvas_x = self.rect.x0 + self.leading_inset;
+        self.groups
+            .iter()
+            .map(|g| {
+                let usable = self.usable_at(canvas_x);
+                canvas_x += g.width().resolve(usable) + HANDLE_SLOT_PX;
+                usable
+            })
+            .collect()
     }
 
     /// Ordered list of group ids currently held by the row. Used by
@@ -429,6 +532,17 @@ impl GroupRow {
     /// it must be called after a layout pass — which the shell always has
     /// by the time it reconciles focus. Cancels any in-flight wheel-snap so
     /// the into-view target isn't immediately overridden by a snap-back.
+    /// Whether `group_id` has a real laid-out rect in this row — i.e. whether
+    /// [`Self::scroll_group_into_view`] can act on it at all. A group focused
+    /// in the same frame it was spliced in has not been through a layout pass
+    /// yet, so its rect is degenerate and any pan would be a no-op.
+    pub fn group_is_laid_out(&self, group_id: u64) -> bool {
+        self.groups
+            .iter()
+            .find(|g| g.id == group_id)
+            .is_some_and(|g| g.get_rect().width() > 0.0)
+    }
+
     pub fn scroll_group_into_view(&mut self, group_id: u64) -> bool {
         let Some(g) = self.groups.iter().find(|g| g.id == group_id) else {
             return false;
@@ -1036,6 +1150,17 @@ impl Widget for GroupRow {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.node_ids.clear();
+        // Resolve every group's width fraction BEFORE it builds its node,
+        // walking the strip left to right so each group's basis is the
+        // usable width of the display its own left edge lands on. Widths
+        // determine the next group's left edge, so the walk is sequential
+        // — but it is fully determined here, with no dependency on a
+        // previous frame's layout, which is what keeps a single-frame
+        // offscreen render (a screenshot) identical to the live one.
+        let usable_per_group = self.usable_per_group();
+        for (g, &usable) in self.groups.iter_mut().zip(usable_per_group.iter()) {
+            g.set_strip_usable_px(usable);
+        }
         let group_nodes: Vec<NodeId> = self
             .groups
             .iter_mut()
@@ -1086,6 +1211,17 @@ impl Widget for GroupRow {
             );
         } else if self.handles.len() > desired_handles {
             self.handles.truncate(desired_handles);
+        }
+        // Each handle clamps its drag against the same per-display range
+        // its neighbours were sized with. Handle `i` sits in the gap after
+        // group `i`, so it takes group `i`'s basis — the display that gap
+        // is on. Without this the clamps would still be the old fixed
+        // 300..1200 px, which on a 4K panel refused to let a drag past
+        // 31 % of the screen.
+        for (i, h) in self.handles.iter_mut().enumerate() {
+            if let Some(&usable) = usable_per_group.get(i) {
+                h.set_strip_usable_px(usable);
+            }
         }
         // Build per-handle taffy nodes and interleave them between
         // the group nodes. Order: `[g0, h0, g1, h1, g2, …, g_{N-1}]`
@@ -1604,7 +1740,9 @@ impl Widget for GroupRow {
         }
 
         // Drain any handle width pulses produced by the dispatch above
-        // and apply them to the two adjacent groups via `set_width`.
+        // and apply them to the two adjacent groups via `set_width_px`,
+        // which converts each pixel measurement back into a fraction of
+        // that group's own display.
         // We do this before the group dispatch loop so a mid-drag
         // CursorMoved sees the updated widths on the same frame —
         // otherwise the user perceives one frame of lag between
@@ -1612,10 +1750,10 @@ impl Widget for GroupRow {
         for i in 0..self.handles.len() {
             if let Some((new_left, new_right)) = self.handles[i].take_pending() {
                 if i < self.groups.len() {
-                    self.groups[i].set_width(WindowWidth::Custom(new_left));
+                    self.groups[i].set_width_px(new_left);
                 }
                 if i + 1 < self.groups.len() {
-                    self.groups[i + 1].set_width(WindowWidth::Custom(new_right));
+                    self.groups[i + 1].set_width_px(new_right);
                 }
             }
             if self.handles[i].take_pending_commit() {
@@ -2059,7 +2197,7 @@ impl Widget for GroupRow {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::widget::{TabDescriptor, TileContent, WindowWidth, WIDTH_MIN_PX};
+    use crate::widget::{TabDescriptor, TileContent, WindowWidth, min_group_px};
 
     fn make_group(id: u64, tab_ids: &[u64]) -> WindowGroup {
         let tabs: Vec<(TabDescriptor, TileContent)> = tab_ids
@@ -2296,18 +2434,31 @@ mod tests {
     /// row fills the vertical axis (`height: percent(1.0)` on each
     /// `WindowGroup`). Returns the row alongside the taffy tree + root
     /// node id so callers can invoke `handle_event` with a live tree.
+    /// Usable strip width the row fixtures pin. Group widths are
+    /// *fractions*, so a test only has round pixel numbers to assert
+    /// against once the strip's width is fixed; 1200 puts the tiers on
+    /// whole hundreds (Narrow 400 / Normal 800 / Wide 1200).
+    const FIXTURE_USABLE_PX: f64 = 1200.0;
+
+    /// A single-display span of `usable` px, as the shell pushes down.
+    fn one_display(usable: f64) -> Vec<OutputSpan> {
+        vec![OutputSpan { x: 0.0, width: usable, usable }]
+    }
+
     fn make_row_with_groups_with_taffy(
         tab_specs: &[&[u64]],
     ) -> (GroupRow, TaffyTree<()>, NodeId) {
+        make_row_with_groups_on_display(tab_specs, FIXTURE_USABLE_PX, 2000.0)
+    }
+
+    /// Re-run `build_layout` + `apply_layout` on an existing row, so a test
+    /// that mutated group widths sees the geometry those widths produce.
+    /// Returns the fresh taffy tree because the callers dispatch events
+    /// against it.
+    fn relayout_row_owned(mut row: GroupRow, viewport_w: f64) -> (GroupRow, TaffyTree<()>, NodeId) {
         use std::collections::HashMap;
         use taffy::{AvailableSpace, Size as TSize, TaffyTree};
 
-        let groups: Vec<WindowGroup> = tab_specs
-            .iter()
-            .enumerate()
-            .map(|(i, ids)| make_group(100 + i as u64 * 100, ids))
-            .collect();
-        let mut row = GroupRow::new(groups);
         let theme = Theme::dark();
         let mut taffy: TaffyTree<()> = TaffyTree::new();
         let mut node_map: HashMap<taffy::NodeId, *mut dyn Widget> = HashMap::new();
@@ -2316,7 +2467,7 @@ mod tests {
             .new_with_children(
                 Style {
                     size: Size {
-                        width: Dimension::length(2000.0),
+                        width: Dimension::length(viewport_w as f32),
                         height: Dimension::length(600.0),
                     },
                     ..Default::default()
@@ -2328,7 +2479,56 @@ mod tests {
             .compute_layout_with_measure(
                 viewport,
                 TSize {
-                    width: AvailableSpace::Definite(2000.0),
+                    width: AvailableSpace::Definite(viewport_w as f32),
+                    height: AvailableSpace::Definite(600.0),
+                },
+                |_, _, _, _, _| taffy::Size::ZERO,
+            )
+            .expect("taffy compute_layout");
+        row.apply_layout(&taffy, root, Point::ORIGIN);
+        (row, taffy, root)
+    }
+
+    /// Lay a row out on a display of `usable` px inside a `viewport_w`
+    /// wide window. Separate knobs because the strip deliberately
+    /// overflows its viewport (that is what makes it scrollable), so the
+    /// width groups size against is not the window width.
+    fn make_row_with_groups_on_display(
+        tab_specs: &[&[u64]],
+        usable: f64,
+        viewport_w: f64,
+    ) -> (GroupRow, TaffyTree<()>, NodeId) {
+        use std::collections::HashMap;
+        use taffy::{AvailableSpace, Size as TSize, TaffyTree};
+
+        let groups: Vec<WindowGroup> = tab_specs
+            .iter()
+            .enumerate()
+            .map(|(i, ids)| make_group(100 + i as u64 * 100, ids))
+            .collect();
+        let mut row = GroupRow::new(groups);
+        row.set_output_spans(&one_display(usable));
+        let theme = Theme::dark();
+        let mut taffy: TaffyTree<()> = TaffyTree::new();
+        let mut node_map: HashMap<taffy::NodeId, *mut dyn Widget> = HashMap::new();
+        let root = row.build_layout(&mut taffy, &theme, &mut node_map);
+        let viewport = taffy
+            .new_with_children(
+                Style {
+                    size: Size {
+                        width: Dimension::length(viewport_w as f32),
+                        height: Dimension::length(600.0),
+                    },
+                    ..Default::default()
+                },
+                &[root],
+            )
+            .unwrap();
+        taffy
+            .compute_layout_with_measure(
+                viewport,
+                TSize {
+                    width: AvailableSpace::Definite(viewport_w as f32),
                     height: AvailableSpace::Definite(600.0),
                 },
                 |_, _, _, _, _| taffy::Size::ZERO,
@@ -3849,11 +4049,12 @@ mod tests {
         assert_eq!(row.handle_count(), 1);
 
         // Capture starting widths. Both groups default to
-        // `WindowWidth::Normal` = 600 px.
-        let pre_left_w = row.groups[0].width().pixels();
-        let pre_right_w = row.groups[1].width().pixels();
-        assert_eq!(pre_left_w, 600);
-        assert_eq!(pre_right_w, 600);
+        // `WindowWidth::Normal` — two thirds of the fixture's 1200 px
+        // display, i.e. 800 px.
+        let pre_left_w = row.groups[0].resolved_width_px();
+        let pre_right_w = row.groups[1].resolved_width_px();
+        assert_eq!(pre_left_w, 800.0);
+        assert_eq!(pre_right_w, 800.0);
 
         // Resolve handle centre from the live row geometry.
         let handle_rect = row.handle_at(0).unwrap().get_rect();
@@ -3901,13 +4102,13 @@ mod tests {
             &mut handled, &mut focus, root, &taffy,
         );
         assert_eq!(
-            row.groups[0].width().pixels(),
-            650,
+            row.groups[0].resolved_width_px(),
+            850.0,
             "left neighbour grew by exactly dx",
         );
         assert_eq!(
-            row.groups[1].width().pixels(),
-            550,
+            row.groups[1].resolved_width_px(),
+            750.0,
             "right neighbour shrank by exactly dx",
         );
 
@@ -3937,27 +4138,38 @@ mod tests {
         assert!(!row.handle_at(0).unwrap().is_dragging(), "release ends drag");
         assert_eq!(
             row.groups[0].take_pending_width_change(),
-            Some(650),
-            "release stamps left neighbour's persisted width",
+            Some(708),
+            "release stamps left neighbour's persisted width as a fraction \
+             of its display (850/1200)",
         );
         assert_eq!(
             row.groups[1].take_pending_width_change(),
-            Some(550),
-            "release stamps right neighbour's persisted width",
+            Some(625),
+            "release stamps right neighbour's persisted width as a fraction \
+             of its display (750/1200)",
         );
     }
 
-    /// A handle drag that pushes the left neighbour past `WIDTH_MIN_PX`
-    /// must NOT shrink it further. The right neighbour absorbs only
-    /// the actual movement up to the clamp point — equivalent to the
-    /// `compute_widths_clamps_left_at_min` unit test but driven
-    /// through the row's full event dispatch path.
+    /// A handle drag that pushes the left neighbour past the display's
+    /// minimum group width must NOT shrink it further. The right
+    /// neighbour absorbs only the actual movement up to the clamp point
+    /// — equivalent to the `compute_widths_clamps_left_at_min` unit test
+    /// but driven through the row's full event dispatch path.
     #[test]
     fn drag_clamps_left_neighbour_at_minimum_width() {
         use winit::dpi::PhysicalPosition;
         use winit::event::WindowEvent;
 
         let (mut row, taffy, root) = make_row_with_groups_with_taffy(&[&[1], &[2]]);
+        // Start both groups at `Narrow` (a third of the 1200 px display =
+        // 400 px each). The pair sum has to leave the right neighbour room
+        // to absorb the movement: from two `Normal`s the left neighbour
+        // cannot reach the minimum at all, because the right would have to
+        // grow past the display to make room.
+        row.groups[0].set_width(WindowWidth::Narrow);
+        row.groups[1].set_width(WindowWidth::Narrow);
+        drop((taffy, root));
+        let (mut row, taffy, root) = relayout_row_owned(row, 2000.0);
 
         // Resolve handle centre.
         let handle_rect = row.handle_at(0).unwrap().get_rect();
@@ -3986,28 +4198,30 @@ mod tests {
             1.0, &modifiers, &mut state, &path,
             &mut handled, &mut focus, root, &taffy,
         );
-        // Drag 500 px LEFT. Both groups start at 600 px; pushing
-        // left by 500 would land left at 100 (below MIN=300). The
-        // clamp pins left at 300; right absorbs only the actual
-        // 300 px the left moved, settling at 900.
+        // Drag 500 px LEFT. Both groups start at 400 px; pushing left by
+        // 500 would land left at -100, below the display's minimum of
+        // `min_group_px(1200) = 240`. The clamp pins left at 240; right
+        // absorbs only the actual 160 px the left moved, settling at 560.
         row.handle_event(
             &WindowEvent::CursorMoved { device_id: dev, position: PhysicalPosition::new(cx - 500.0, cy) },
             1.0, &modifiers, &mut state, &path,
             &mut handled, &mut focus, root, &taffy,
         );
+        let min = min_group_px(FIXTURE_USABLE_PX);
         assert_eq!(
-            row.groups[0].width().pixels(),
-            WIDTH_MIN_PX,
-            "left neighbour must clamp at WIDTH_MIN_PX (300), not shrink past it",
+            row.groups[0].resolved_width_px(),
+            min,
+            "left neighbour must clamp at the display's minimum group width \
+             ({min}), not shrink past it",
         );
         assert_eq!(
-            row.groups[1].width().pixels(),
-            900,
-            "right neighbour absorbs only the actual movement (300), not the requested 500",
+            row.groups[1].resolved_width_px(),
+            800.0 - min,
+            "right neighbour absorbs only the actual movement, not the requested 500",
         );
         assert_eq!(
-            row.groups[0].width().pixels() + row.groups[1].width().pixels(),
-            1200,
+            row.groups[0].resolved_width_px() + row.groups[1].resolved_width_px(),
+            800.0,
             "pair sum is preserved across the clamp",
         );
     }

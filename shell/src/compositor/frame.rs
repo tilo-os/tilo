@@ -43,6 +43,8 @@ use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::Widget;
 
+use crate::shell::overlay_host::OutputGeometry;
+
 /// Layout + paint core shared between `bin/shots`'s `ShellDriver` and
 /// the native compositor's per-frame tick.
 ///
@@ -71,6 +73,13 @@ pub struct FrameBuilder {
     text_renderer: TextRenderer,
     theme: Theme,
     viewport: (f64, f64),
+    /// The displays behind `viewport`, when the caller knows them. The
+    /// viewport is the *bounding box* of every output, so on a multi-monitor
+    /// desktop it is not a display anyone actually has — a window group
+    /// sized as a fraction of it would span both monitors. `None` means "one
+    /// display, the size of the viewport", which is true for winit, headless
+    /// and every single-output DRM setup.
+    outputs: Option<Vec<OutputGeometry>>,
 }
 
 impl FrameBuilder {
@@ -120,15 +129,44 @@ impl FrameBuilder {
             text_renderer: TextRenderer::new(),
             theme,
             viewport: (viewport.0 as f64, viewport.1 as f64),
+            outputs: None,
         };
         builder.rebuild_layout_tree();
         builder.relayout();
         builder
     }
 
+    /// The displays to resolve window-group widths against: whatever the
+    /// compositor last reported, else a single display the size of the
+    /// viewport.
+    fn effective_outputs(&self) -> Vec<OutputGeometry> {
+        self.outputs.clone().unwrap_or_else(|| {
+            vec![OutputGeometry {
+                x: 0.0,
+                width: self.viewport.0,
+                height: self.viewport.1,
+            }]
+        })
+    }
+
+    /// Tell the frame builder which displays it is painting across, so a
+    /// group's width is a fraction of its own monitor rather than of the
+    /// combined desktop. Called by the compositor at startup and on every
+    /// output hotplug / mode change.
+    pub fn set_output_geometry(&mut self, outputs: Vec<OutputGeometry>) {
+        if self.outputs.as_deref() != Some(outputs.as_slice()) {
+            self.outputs = Some(outputs);
+            self.rebuild_layout_tree();
+        }
+    }
+
     fn rebuild_layout_tree(&mut self) {
         self.taffy = TaffyTree::new();
         self.node_map.clear();
+        // Push display geometry before the tree is built: the strips read it
+        // to resolve each group's width fraction in this same pass.
+        let outputs = self.effective_outputs();
+        self.host.set_output_geometry(&outputs);
         let child = self
             .host
             .build_layout(&mut self.taffy, &self.theme, &mut self.node_map);
