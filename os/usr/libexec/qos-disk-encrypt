@@ -30,7 +30,10 @@
 # every configuration falls back to.
 set -euo pipefail
 
-log()  { printf '%s\n' "$*"; }
+# Progress goes to STDERR throughout: `prepare` reports the volume it made on
+# stdout as key=value lines, and mixing prose into that would make the caller
+# parse around it.
+log()  { printf '%s\n' "$*" >&2; }
 die()  { printf 'error: %s\n' "$*" >&2; exit 1; }
 
 # GUIDs, not sfdisk's short aliases, so the partition types do not depend on the
@@ -38,8 +41,8 @@ die()  { printf 'error: %s\n' "$*" >&2; exit 1; }
 GUID_ESP=C12A7328-F81F-11D2-BA4B-00A0C93EC93B
 GUID_LINUX=0FC63DAF-8483-4772-8E79-3D69D8477DE4
 
-ESP_SIZE=${QOS_ESP_SIZE:-512MiB}
-BOOT_SIZE=${QOS_BOOT_SIZE:-1GiB}
+ESP_SIZE=${QOS_ESP_SIZE:-512M}
+BOOT_SIZE=${QOS_BOOT_SIZE:-1G}
 
 # `enrol`/`prepare` both need a place for the throwaway key. It is 0600 in a
 # 0700 dir on the installer's tmpfs, never on the target disk, and `finish`
@@ -80,7 +83,7 @@ cmd_prepare() {
   wipefs -a "$disk" >/dev/null
   sfdisk --quiet --wipe always --wipe-partitions always "$disk" <<EOF
 label: gpt
-start=1MiB, size=$ESP_SIZE, type=$GUID_ESP, name="EFI-SYSTEM"
+start=1M, size=$ESP_SIZE, type=$GUID_ESP, name="EFI-SYSTEM"
 size=$BOOT_SIZE, type=$GUID_LINUX, name="boot"
 type=$GUID_LINUX, name="root"
 EOF
@@ -228,7 +231,8 @@ cmd_enrol() {
       # The PIN the caller collected becomes an ordinary passphrase slot, so the
       # user has something short to type at boot instead of the recovery key.
       log "  enrolling the supplied passphrase as a LUKS key slot…"
-      cryptsetup luksAddKey --batch-mode --key-file "$key" "$dev" "$pin_file" \
+      cryptsetup luksAddKey --batch-mode \
+        --key-file "$key" --new-keyfile "$pin_file" "$dev" \
         || die "passphrase enrolment failed"
       log "  passphrase enrolled."
     else

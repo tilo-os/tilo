@@ -25,7 +25,7 @@
 #
 #   * the keys exist,
 #   * every artefact the firmware will check already verifies against db,
-#   * qos-secureboot-sign.service is enabled, so the next update cannot land an
+#   * the re-signing units are enabled, so the next update cannot land an
 #     unsigned kernel behind your back, and
 #   * the firmware is in setup mode — i.e. you have already cleared the factory
 #     keys yourself, which is also the only state in which these writes are
@@ -74,6 +74,14 @@ efivar_byte() {
 sb_enabled() { [ "$(efivar_byte SecureBoot)" = "1" ]; }
 setup_mode()  { [ "$(efivar_byte SetupMode)" = "1" ]; }
 
+# Is something going to sign the next deployment's kernel? The path unit is what
+# catches a hand-run `bootc upgrade` before the reboot that would otherwise find
+# an unsigned kernel; the service alone only catches it one boot too late.
+resign_armed() {
+  systemctl is-enabled qos-secureboot-sign.path >/dev/null 2>&1 \
+    && systemctl is-enabled qos-secureboot-sign.service >/dev/null 2>&1
+}
+
 # --- the artefacts the firmware checks ---------------------------------------
 #
 # Two kinds. The EFI loaders on the ESP, planted by bootupd. And the kernels
@@ -114,10 +122,10 @@ cmd_status() {
   for v in vendor-db.esl vendor-KEK.esl; do
     [ -s "$KEYDIR/$v" ] && log "factory keys  : $KEYDIR/$v captured"
   done
-  if systemctl is-enabled qos-secureboot-sign.service >/dev/null 2>&1; then
-    log "re-sign unit  : enabled"
+  if resign_armed; then
+    log "re-sign       : armed ($(systemctl is-enabled qos-secureboot-sign.path 2>/dev/null || true) path, $(systemctl is-enabled qos-secureboot-sign.service 2>/dev/null || true) service)"
   else
-    log "re-sign unit  : NOT enabled (systemctl enable qos-secureboot-sign.service)"
+    log "re-sign       : NOT armed (systemctl enable --now qos-secureboot-sign.path)"
   fi
   log "artefacts     :"
   local a state
@@ -241,11 +249,11 @@ cmd_enroll() {
   cmd_verify
 
   # Gate 2: something must keep signing after the next update.
-  systemctl is-enabled qos-secureboot-sign.service >/dev/null 2>&1 \
-    || die "qos-secureboot-sign.service is not enabled. Enable it first, or the
-next OS update stages a kernel nothing has signed and the machine stops booting:
+  resign_armed || die "the re-signing units are not both enabled. Enable them
+first, or the next OS update stages a kernel nothing has signed and the machine
+stops booting at the reboot that follows:
 
-    systemctl enable qos-secureboot-sign.service"
+    systemctl enable --now qos-secureboot-sign.path qos-secureboot-sign.service"
 
   # Gate 3: setup mode. Writing db/KEK/PK is only accepted there, and it means
   # the owner has consciously cleared the factory keys.
@@ -286,7 +294,7 @@ ROMs may stop verifying)."
   log "writing KEK"
   efi-updatevar -e -f "$kek_src" KEK || die "could not write KEK"
   log "writing PK"
-  efi-updatevar -f "$KEYDIR/PK.esl" PK || die "could not write PK"
+  efi-updatevar -e -f "$KEYDIR/PK.esl" PK || die "could not write PK"
   rm -f "$KEYDIR/.db-combined.esl" "$KEYDIR/.KEK-combined.esl"
 
   log ""

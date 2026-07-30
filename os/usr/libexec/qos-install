@@ -289,7 +289,12 @@ ENC_LUKS=""
 ENC_KEYFILE=""
 if [ "$ENCRYPT" -eq 1 ]; then
   step "Preparing an encrypted root on $DISK (this ERASES the disk)"
-  PREP="$("$DISK_ENCRYPT" prepare "$DISK" --filesystem "$FILESYSTEM" | tee /dev/stderr)"
+  # The helper reports the volume it made on stdout and its progress on stderr;
+  # keep the report and let the progress through to the UI, which reads our
+  # stdout. fd 3 is this script's stdout for the duration.
+  exec 3>&1
+  PREP="$("$DISK_ENCRYPT" prepare "$DISK" --filesystem "$FILESYSTEM" 2>&3)"
+  exec 3>&-
   ENC_MNT="$(printf '%s\n' "$PREP" | sed -n 's/^MNT=//p')"
   ENC_LUKS="$(printf '%s\n' "$PREP" | sed -n 's/^LUKS_PART=//p')"
   ENC_KEYFILE="$(printf '%s\n' "$PREP" | sed -n 's/^KEY_FILE=//p')"
@@ -349,7 +354,9 @@ if [ "$ENCRYPT" -eq 1 ]; then
     ( umask 0077; printf '%s' "$PIN" > "$PIN_FILE" )
     ENROL_ARGS+=(--pin-file "$PIN_FILE")
   fi
-  "$DISK_ENCRYPT" enrol "$ENC_LUKS" --key-file "$ENC_KEYFILE" "${ENROL_ARGS[@]}"
+  # The helper logs to stderr; fold it into our stdout so the UI sees the
+  # recovery key it has to show the user.
+  "$DISK_ENCRYPT" enrol "$ENC_LUKS" --key-file "$ENC_KEYFILE" "${ENROL_ARGS[@]}" 2>&1
   [ -n "${PIN_FILE:-}" ] && { shred -u "$PIN_FILE" 2>/dev/null || rm -f "$PIN_FILE"; }
   unset PIN
 fi
@@ -465,7 +472,7 @@ if [ "$ENCRYPT" -eq 1 ]; then
   # Drops the throwaway install key slot (only once another factor exists),
   # unmounts the tree and closes the mapping.
   step "Closing the encrypted root"
-  "$DISK_ENCRYPT" finish "$ENC_LUKS" --key-file "$ENC_KEYFILE" --mnt "$ENC_MNT"
+  "$DISK_ENCRYPT" finish "$ENC_LUKS" --key-file "$ENC_KEYFILE" --mnt "$ENC_MNT" 2>&1
 else
   umount "$MOUNTED" 2>/dev/null || true
   MOUNTED=""
