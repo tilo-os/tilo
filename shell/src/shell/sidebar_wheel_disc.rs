@@ -813,16 +813,21 @@ impl Widget for SidebarWheelDisc {
                         for (kk, user) in peers.iter().take(peer_count).enumerate() {
                             let off = (kk as f64 - centre_bias) * spacing;
                             let (rr, gg, bb) = presence.color_for(user);
-                            let dot = Circle::new(
-                                (dot_base_x + perp_x * off, dot_base_y + perp_y * off),
-                                3.0,
-                            );
-                            scene.fill(
-                                Fill::NonZero,
+                            // Per-spoke presence dot = empty-initials
+                            // `ui::Avatar` chip in the peer's own colour, so the
+                            // dot matches the cursor and the other avatar sites.
+                            let dcx = dot_base_x + perp_x * off;
+                            let dcy = dot_base_y + perp_y * off;
+                            let dot_rect =
+                                Rect::new(dcx - 3.0, dcy - 3.0, dcx + 3.0, dcy + 3.0);
+                            ui::widget::Avatar::draw_at(
+                                scene,
                                 transform,
+                                dot_rect,
+                                "",
                                 Color::from_rgb8(rr, gg, bb),
-                                None,
-                                &dot,
+                                theme,
+                                text_renderer,
                             );
                         }
                     }

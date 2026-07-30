@@ -6793,20 +6793,8 @@ impl ShellOverlayHost {
             for (idx, (user, known)) in peers.iter().take(max_shown).enumerate() {
                 let cx = sidebar_x0 + avatar_r + idx as f64 * avatar_step;
                 let cy = avatar_y + avatar_r;
-                scene.fill(
-                    Fill::NonZero,
-                    card_xform,
-                    colors.neutral[1], // ring bg = slate-900
-                    None,
-                    &vello::kurbo::Circle::new(Point::new(cx, cy), avatar_r + 2.0),
-                );
-                scene.fill(
-                    Fill::NonZero,
-                    card_xform,
-                    colors.accent[5],
-                    None,
-                    &vello::kurbo::Circle::new(Point::new(cx, cy), avatar_r),
-                );
+                let avatar_rect =
+                    Rect::new(cx - avatar_r, cy - avatar_r, cx + avatar_r, cy + avatar_r);
                 let initial = known
                     .map(|c| c.name.as_str())
                     .unwrap_or(user.as_str())
@@ -6815,14 +6803,25 @@ impl ShellOverlayHost {
                     .unwrap_or('?')
                     .to_ascii_uppercase()
                     .to_string();
-                let (iw, ih) = text_renderer.measure(&initial, tokens.typography.scale.sm, None);
-                text_renderer.draw_text(
+                // Per-identity fill (peer's own cursor colour, else the
+                // palette-pinned `user_color`) so the overview avatar matches
+                // the peer's cursor and the top-bar stack — not a single flat
+                // accent for everyone. Painted through the shared `ui::Avatar`
+                // with a slate ring, exactly like the top-bar cluster.
+                let (r, g, b) = known
+                    .and_then(|c| c.cursor_color.as_deref())
+                    .and_then(ui::presence::parse_hex_color)
+                    .unwrap_or_else(|| ui::presence::user_color(user));
+                ui::widget::Avatar::draw_ringed_at(
                     scene,
+                    card_xform,
+                    avatar_rect,
                     &initial,
-                    tokens.typography.scale.sm,
-                    colors.text_primary,
-                    card_xform * Affine::translate((cx - iw as f64 / 2.0, cy - ih as f64 / 2.0)),
-                    None,
+                    Color::from_rgb8(r, g, b),
+                    colors.neutral[1], // ring bg = slate-900
+                    2.0,
+                    theme,
+                    text_renderer,
                 );
             }
             // Plus button at the tail of the avatar stack — concept uses
@@ -8654,7 +8653,7 @@ impl ShellOverlayHost {
             None,
         );
 
-        let peers: Vec<(String, char)> = self
+        let peers: Vec<(String, char, Color)> = self
             .chrome
             .as_ref()
             .map(|c| {
@@ -8669,9 +8668,17 @@ impl ShellOverlayHost {
                             .next()
                             .map(|c| c.to_ascii_uppercase())
                             .unwrap_or('•');
-                        (p.name.clone(), initial)
+                        // Per-identity avatar colour (cursor colour, else the
+                        // palette-pinned `user_color`) so a peer's row avatar
+                        // matches their cursor and top-bar chip.
+                        let (r, g, b) = p
+                            .cursor_color
+                            .as_deref()
+                            .and_then(ui::presence::parse_hex_color)
+                            .unwrap_or_else(|| ui::presence::user_color(&p.id));
+                        (p.name.clone(), initial, Color::from_rgb8(r, g, b))
                     })
-                    .collect::<Vec<(String, char)>>()
+                    .collect::<Vec<(String, char, Color)>>()
             })
             .unwrap_or_default();
 
@@ -8688,26 +8695,21 @@ impl ShellOverlayHost {
             return;
         }
 
-        for (i, (name, initial)) in peers.iter().enumerate() {
+        for (i, (name, initial, color)) in peers.iter().enumerate() {
             let row_y = rect.y0 + 48.0 + i as f64 * 36.0;
             let center = Point::new(rect.x0 + 16.0 + 12.0, row_y + 14.0);
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                colors.accent[5],
-                None,
-                &vello::kurbo::Circle::new(center, 11.0),
-            );
-            let initial_str = initial.to_string();
-            let (iw, ih) = text_renderer.measure(&initial_str, tokens.typography.scale.sm, None);
-            text_renderer.draw_text(
+            // Row avatar = shared `ui::Avatar` chip (r = 11) in the peer's own
+            // colour, matching the top-bar stack and the overview.
+            let avatar_rect =
+                Rect::new(center.x - 11.0, center.y - 11.0, center.x + 11.0, center.y + 11.0);
+            ui::widget::Avatar::draw_at(
                 scene,
-                &initial_str,
-                tokens.typography.scale.sm,
-                colors.text_primary,
-                transform
-                    * Affine::translate((center.x - iw as f64 / 2.0, center.y - ih as f64 / 2.0)),
-                None,
+                transform,
+                avatar_rect,
+                &initial.to_string(),
+                *color,
+                theme,
+                text_renderer,
             );
             text_renderer.draw_text(
                 scene,
