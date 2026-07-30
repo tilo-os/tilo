@@ -235,22 +235,13 @@ impl<'a> ControlState for FrameBuilderControlState<'a> {
         if let Some(id) = id {
             cap = cap.with_id(id);
         }
-        let ws = tree
-            .workspaces
-            .iter_mut()
-            .find(|w| w.id == ws_id)
-            .ok_or_else(|| "no active workspace".to_string())?;
-        let granted = ws.grant_as(&user, cap).ok_or_else(|| {
+        // Through the tree's own entry point rather than `grant_as`
+        // directly, so this answers with the same authority the rest of the
+        // compositor grants under — including the room's write authority,
+        // which `grant_as` alone does not see.
+        let granted = tree.grant_in_workspace(ws_id, &user, cap).ok_or_else(|| {
             format!("{user} may not administer this room, so nothing was granted")
         })?;
-        let written = ws
-            .capabilities
-            .iter()
-            .find(|c| c.id == granted)
-            .cloned()
-            .ok_or_else(|| "grant recorded but not readable back".to_string())?;
-        tree.doc_insert_capability(ws_id, &written);
-        tree.flush_to_disk();
         Ok(serde_json::json!({ "granted": granted, "grantor": user }))
     }
 

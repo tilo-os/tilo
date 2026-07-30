@@ -106,6 +106,89 @@ impl From<uuid::Uuid> for RoomId {
     }
 }
 
+/// Whoever a message arrived from, named as the transport authenticated
+/// it — not as the message claims.
+///
+/// This is the only thing a receiver knows about a payload's author that
+/// the author did not write, so it is the only thing an authority
+/// decision may rest on. Over libp2p it is the remote `PeerId`, which the
+/// noise handshake bound to the connection and gossipsub's message
+/// signature binds to the publish; over the in-process [`Hub`] it is the
+/// subscriber id.
+///
+/// The two are namespaced (`p2p:` / `hub:`) so a subscriber id can never
+/// be mistaken for a peer id, and the peer id is carried whole rather
+/// than hashed to a `u64`: a decision that turns on equality must not
+/// turn on a 64-bit digest an attacker is free to grind against.
+///
+/// [`Hub`]: crate::network::hub::Hub
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct PeerOrigin(String);
+
+impl PeerOrigin {
+    /// A remote libp2p peer, by its base58 `PeerId`.
+    pub fn peer(peer: &libp2p::PeerId) -> Self {
+        Self(format!("p2p:{}", peer.to_base58()))
+    }
+
+    /// A remote libp2p peer named as an invite token names it — base58
+    /// text that has already been through
+    /// [`crate::network::invite::validate_invite_token`], so the string
+    /// is one the owner's own signature covered.
+    pub fn peer_base58(base58: &str) -> Self {
+        Self(format!("p2p:{base58}"))
+    }
+
+    /// An in-process [`Hub`] subscriber.
+    ///
+    /// [`Hub`]: crate::network::hub::Hub
+    pub fn hub(id: u64) -> Self {
+        Self(format!("hub:{id}"))
+    }
+
+    /// This machine, for a batch that did not come off a wire at all
+    /// (a local document fork replayed into a room).
+    pub fn local() -> Self {
+        Self("local".to_string())
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for PeerOrigin {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+/// Who may write a room's **governance** — its owner and its capability
+/// list — as this machine knows it.
+///
+/// Automerge merges a map key by last-writer-wins and has no per-key
+/// ACL, so if both ends of a room project their own cache into the shared
+/// document the room's owner is decided by which actor id sorts higher.
+/// That is not a governance model; it is a coin toss a guest can enter.
+/// This is the record that decides it instead, and every value in it is
+/// established by something the sender could not forge.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RoomAuthority {
+    /// This machine. The room was minted here, so its cache *is* the
+    /// governance and no peer may replace it.
+    Local,
+    /// A named peer — the owner an invite token named, cross-checked
+    /// against that token's signature. Governance is taken from that
+    /// peer and from nobody else.
+    Peer(PeerOrigin),
+    /// A room this machine joined without an invite naming who
+    /// administers it. Nothing establishes an authority yet, so the
+    /// first peer to supply governance becomes it (and is pinned, so the
+    /// second peer cannot).
+    Unpinned,
+}
+
 impl From<u64> for WorkspaceId {
     fn from(v: u64) -> Self {
         Self(v)
@@ -1031,6 +1114,38 @@ impl Workspace {
         );
     }
 
+    /// Give up administration of this workspace, because it has joined a
+    /// room it did not mint.
+    ///
+    /// The bootstrap half of write authority on a room document. A guest
+    /// legitimately receives the room's owner and capability list on its
+    /// first sync — that is what joining *is* — so a receiver cannot
+    /// simply refuse every incoming governance change. What it can do is
+    /// make sure it never holds two answers at once: joining a room is the
+    /// act that surrenders whatever governance the local workspace had,
+    /// so a machine either has no governance for the room and *learns* it,
+    /// or has governance and is being asked to have it *overwritten*.
+    /// Those are never the same act, which is what makes "refuse an
+    /// overwrite" a rule that does not also refuse the join.
+    ///
+    /// Concretely: the recorded owner goes, and so does every capability
+    /// that made a person an administrator here — otherwise
+    /// [`Self::may_administer`] would still answer yes off the capability
+    /// and the joiner would keep granting in a room it does not own.
+    ///
+    /// Returns whether anything was given up.
+    pub fn surrender_governance(&mut self) -> bool {
+        let had_owner = self.owner.take().is_some();
+        let room = self.id.raw().to_string();
+        let dropped = self.revoke_matching(|c| {
+            let is_person = matches!(c.subject, Subject::Principal(Principal::Person(_)));
+            let covers_room = matches!(&c.scope, Scope::Room(r) if *r == room)
+                || matches!(c.scope, Scope::Workspace);
+            is_person && covers_room && c.verb.implies(Verb::Admin)
+        });
+        had_owner || !dropped.is_empty()
+    }
+
     /// The role `user` holds in this room, derived from their
     /// membership capability.
     ///
@@ -1375,6 +1490,21 @@ pub struct WorkspaceTree {
     /// peer's copy by last-writer-wins instead of duplicating entries.
     #[serde(skip, default)]
     pub room_docs: HashMap<RoomId, AutoCommit>,
+    /// Who may write each room's governance — see [`RoomAuthority`].
+    ///
+    /// A room absent from this map is one this machine minted, and so one
+    /// this machine governs: [`Self::room_authority`] reads a missing
+    /// entry as [`RoomAuthority::Local`]. Joining a room
+    /// ([`Self::set_room`]) writes [`RoomAuthority::Unpinned`], and
+    /// accepting an invite pins the owner the token named.
+    ///
+    /// Persisted, unlike [`Self::room_docs`]: the room documents can be
+    /// re-projected from the cache after a restart, but who governs a
+    /// room cannot be — the invite that established it is long gone, and
+    /// a machine that forgot would be back to taking governance from
+    /// whoever answered first.
+    #[serde(default)]
+    pub room_authority: HashMap<RoomId, RoomAuthority>,
     /// Where to write this tree when a capability changes.
     ///
     /// `None` disables the write, which is what tests and the offscreen
@@ -1403,6 +1533,7 @@ impl Default for WorkspaceTree {
             collaborators: Vec::new(),
             doc: AutoCommit::new(),
             room_docs: HashMap::new(),
+            room_authority: HashMap::new(),
             persist_path: None,
             fs_acl_path: None,
         }
@@ -1658,6 +1789,65 @@ impl WorkspaceTree {
             .collect()
     }
 
+    /// Who may write `room`'s governance — its owner and its capability
+    /// list.
+    ///
+    /// A room with no recorded authority is one this machine minted, and a
+    /// machine governs the rooms it minted: that is the only reading under
+    /// which a fresh workspace is administrable by the person who made it
+    /// without anyone having to say so. Joining someone else's room
+    /// ([`Self::set_room`]) records [`RoomAuthority::Unpinned`], and
+    /// accepting an invite pins the owner the token named
+    /// ([`Self::pin_room_authority`]).
+    pub fn room_authority(&self, room: RoomId) -> RoomAuthority {
+        self.room_authority
+            .get(&room)
+            .cloned()
+            .unwrap_or(RoomAuthority::Local)
+    }
+
+    /// Does this machine hold `room`'s governance?
+    pub fn governs_room(&self, room: RoomId) -> bool {
+        self.room_authority(room) == RoomAuthority::Local
+    }
+
+    /// Record that `room`'s governance is written by `peer` and nobody
+    /// else.
+    ///
+    /// The value comes from a validated invite token: the room id and the
+    /// owner's peer id are both inside the ed25519 signature
+    /// ([`crate::network::invite::canonical_payload`]), so a peer cannot
+    /// name itself the authority over a room it was not the owner of — it
+    /// would need the owner's key to mint the token that says so. That is
+    /// what makes this checkable by the receiver rather than asserted by
+    /// the sender.
+    ///
+    /// Refuses to overwrite an authority already pinned to a different
+    /// peer: a second invite is not a transfer of the room, and treating
+    /// it as one would make "send the guest another invite" a way to
+    /// re-point them at an attacker.
+    pub fn pin_room_authority(&mut self, room: RoomId, peer: PeerOrigin) -> bool {
+        if room.is_nil() {
+            return false;
+        }
+        if let Some(RoomAuthority::Peer(existing)) = self.room_authority.get(&room)
+            && *existing != peer
+        {
+            tracing::warn!(
+                target: "shell::state",
+                room = %room,
+                pinned = %existing,
+                offered = %peer,
+                "room authority already pinned to another peer; keeping it",
+            );
+            return false;
+        }
+        self.room_authority
+            .insert(room, RoomAuthority::Peer(peer));
+        self.flush_to_disk();
+        true
+    }
+
     /// The cached workspace that addresses `room`, if this machine is in
     /// it. First match wins: two local workspaces sharing a room would be
     /// one room the machine joined twice, and the sync path has to pick
@@ -1708,6 +1898,16 @@ impl WorkspaceTree {
         let owner = ws.owner.clone();
         let caps: Vec<CapOverride> = ws.capabilities.clone();
         let room_str = room.to_string();
+        // Governance is projected only by the machine that holds it. A
+        // guest has nothing to say about who owns the room it joined, and
+        // a guest that said it anyway would be putting a competing claim
+        // on the wire for last-writer-wins to arbitrate — which is the
+        // race this authority model exists to remove. This is not the
+        // control (a peer that does not run this code will project
+        // whatever it likes; that is refused on the receiving side, in
+        // `apply_room_changes`); it is what keeps the honest path from
+        // producing a payload the receiving side then has to refuse.
+        let governs = self.governs_room(room);
 
         let doc = self.room_docs.entry(room).or_insert_with(AutoCommit::new);
 
@@ -1745,12 +1945,19 @@ impl WorkspaceTree {
             _ => None,
         };
         match &owner {
-            Some(o) if current_owner.as_deref() != Some(o.as_str()) => {
+            Some(o) if governs && current_owner.as_deref() != Some(o.as_str()) => {
                 let _ = doc.put(&ROOT, "owner", o.clone());
             }
-            // An owner is never unset once recorded — `adopt_ownerless_workspaces`
-            // only ever fills the field in — so there is no deletion case here.
+            // An owner is never unset in a room this machine governs —
+            // `adopt_ownerless_workspaces` only ever fills the field in —
+            // so there is no deletion case here.
             _ => {}
+        }
+
+        if !governs {
+            let _ = qdoc::history::commit_stamped(doc);
+            doc.reset_diff_cursor();
+            return;
         }
 
         let caps_id = match doc.get(&ROOT, "capabilities").ok().flatten() {
@@ -1792,6 +1999,58 @@ impl WorkspaceTree {
         // in sort order. A guest merging its host's room document died
         // on that. Drop the log at every point one could accumulate.
         doc.reset_diff_cursor();
+    }
+
+    /// The governance a room document records: the room's owner, and its
+    /// capability list keyed by capability id.
+    ///
+    /// These two are the room's governance because these two are what every
+    /// authority question in the compositor reads.
+    /// [`Workspace::may_administer`] reads the owner; [`Workspace::decide`]
+    /// reads the capabilities, and so — through
+    /// [`WorkspaceTree::export_fs_capabilities`] — does the filesystem. A
+    /// peer able to write either decides who may grant in the room and what
+    /// is already granted, which is the whole of the room's security
+    /// policy.
+    ///
+    /// The room's **name** is deliberately not in here. No decision reads
+    /// it, and a label the room's members can agree on between them is the
+    /// collaborative behaviour we want: the host renames the room and the
+    /// guests see it, and a guest correcting a typo in it is not an
+    /// escalation. What that does leave open is a guest renaming a room to
+    /// something misleading, which is a spoofing nuisance rather than a
+    /// privilege — recorded here so the choice is a choice.
+    ///
+    /// The room's **id** is governed, but by a stricter rule that already
+    /// exists: a payload declaring a different room is refused outright
+    /// rather than compared, because a document that could be re-labelled
+    /// could be applied to the wrong room entirely.
+    fn governance_of(
+        doc: Option<&AutoCommit>,
+    ) -> (Option<String>, std::collections::BTreeMap<String, Vec<u8>>) {
+        use automerge::{ROOT, ReadDoc, ScalarValue, Value};
+        let Some(doc) = doc else {
+            return (None, std::collections::BTreeMap::new());
+        };
+        let owner = match doc.get(&ROOT, "owner").ok().flatten() {
+            Some((Value::Scalar(s), _)) => match s.as_ref() {
+                ScalarValue::Str(v) => Some(v.to_string()),
+                _ => None,
+            },
+            _ => None,
+        };
+        let mut caps = std::collections::BTreeMap::new();
+        if let Some((_, caps_id)) = doc.get(&ROOT, "capabilities").ok().flatten() {
+            let keys: Vec<String> = doc.keys(&caps_id).collect();
+            for key in keys {
+                if let Some((Value::Scalar(s), _)) = doc.get(&caps_id, &key).ok().flatten()
+                    && let ScalarValue::Bytes(blob) = s.as_ref()
+                {
+                    caps.insert(key, blob.clone());
+                }
+            }
+        }
+        (owner, caps)
     }
 
     /// Current heads of `room`'s replication document — the baseline a
@@ -1840,11 +2099,48 @@ impl WorkspaceTree {
     /// different room than the envelope claimed, so a host cannot answer a
     /// request for one room with another room's document.
     ///
+    /// # Write authority
+    ///
+    /// And refuses a payload that would change the room's **governance** —
+    /// its owner or its capability list — unless `from` is the peer
+    /// entitled to write it ([`Self::room_authority`]). Automerge has no
+    /// per-key ACL: it merges a map key by last-writer-wins, so without
+    /// this a guest that projected its own cache would be entering a coin
+    /// toss for the ownership of its host's room rather than proposing a
+    /// change to it. `grant_as` / `revoke_as` gate the local path; this is
+    /// the same authority on the replication path, which a guest could
+    /// otherwise use instead.
+    ///
+    /// The refusal is of the **whole batch**, and nothing about it is
+    /// stored. Two reasons, both about what a partial merge would leave
+    /// behind:
+    ///
+    /// - It would advance this machine's heads past changes it did not
+    ///   accept. The sender's next export starts after them, so whatever
+    ///   was legitimate in the batch becomes unreachable. Refusing leaves
+    ///   the heads where they were, which makes the round repeatable
+    ///   rather than lossy.
+    /// - The refused ops would still be in the document's change graph,
+    ///   and a room document is exported wholesale to the next peer that
+    ///   asks. So merging-then-correcting would relay a claim this machine
+    ///   rejected, and would let any peer in the room grow the room's
+    ///   permanent history at will. A refused write is not part of the
+    ///   room's history.
+    ///
+    /// What it costs: a peer that keeps sending a governance change it is
+    /// not entitled to make keeps being refused, one logged batch per sync
+    /// interval, because its heads and ours never converge. That is the
+    /// right shape for a misbehaving peer. It also catches an honest one
+    /// whose stale lineage would resurrect a capability revoked while it
+    /// was away — refused, correctly, and the revocation still reaches it
+    /// from the authority in the other direction.
+    ///
     /// Returns whether the local workspace changed.
     pub fn apply_room_changes(
         &mut self,
         room: RoomId,
         changes: &[Vec<u8>],
+        from: &PeerOrigin,
     ) -> Result<bool, automerge::AutomergeError> {
         use automerge::{ROOT, ReadDoc, ScalarValue, Value};
 
@@ -1887,6 +2183,60 @@ impl WorkspaceTree {
                  the one it answers",
             );
             return Ok(false);
+        }
+
+        // --- Write authority on the room's governance. -----------------
+        //
+        // What the batch would make the room's owner and capability list,
+        // against what they are now. Values, not op ids: a peer echoing
+        // the governance it learned from us re-states it under its own
+        // actor, and re-stating a value is not changing it.
+        let before = Self::governance_of(self.room_docs.get(&room));
+        let after = Self::governance_of(Some(&candidate));
+        if before != after {
+            match self.room_authority(room) {
+                // We administer the room, so no peer is entitled to write
+                // its governance.
+                RoomAuthority::Local => {
+                    tracing::warn!(
+                        target: "shell::state",
+                        room = %room,
+                        from = %from,
+                        "room sync refused: a peer's changes would rewrite \
+                         the governance of a room this machine administers",
+                    );
+                    return Ok(false);
+                }
+                // Someone else's room, and this is not them.
+                RoomAuthority::Peer(pinned) if pinned != *from => {
+                    tracing::warn!(
+                        target: "shell::state",
+                        room = %room,
+                        from = %from,
+                        pinned = %pinned,
+                        "room sync refused: governance may only come from \
+                         the peer that administers the room",
+                    );
+                    return Ok(false);
+                }
+                RoomAuthority::Peer(_) => {}
+                // A room joined without an invite naming who administers
+                // it. Nothing establishes an authority, so the first peer
+                // to supply governance becomes it — and is pinned, so the
+                // second peer to try is refused above.
+                RoomAuthority::Unpinned => {
+                    tracing::info!(
+                        target: "shell::state",
+                        room = %room,
+                        from = %from,
+                        "room sync: pinning this peer as the room's \
+                         governance authority (joined without an invite \
+                         naming one)",
+                    );
+                    self.room_authority
+                        .insert(room, RoomAuthority::Peer(from.clone()));
+                }
+            }
         }
 
         let name = match candidate.get(&ROOT, "name").ok().flatten() {
@@ -2587,11 +2937,25 @@ impl WorkspaceTree {
     /// answer that is both usable and closed: it names a specific
     /// owner, and it names the person sitting at the machine.
     ///
+    /// A workspace sitting in a room this machine does not govern is
+    /// **not** adopted, however ownerless it looks. Such a workspace is
+    /// ownerless precisely because it joined someone else's room and gave
+    /// its governance up; adopting it would hand the room back to the
+    /// person at this machine on the next boot, and a guest who restarts
+    /// before the room's owner replies would spend that window
+    /// administering a room they were only invited to.
+    ///
     /// Returns the ids adopted, so the caller can mirror them.
     pub fn adopt_ownerless_workspaces(&mut self, user: &UserId) -> Vec<WorkspaceId> {
+        let governed_elsewhere: Vec<RoomId> = self
+            .room_authority
+            .iter()
+            .filter(|(_, a)| **a != RoomAuthority::Local)
+            .map(|(room, _)| *room)
+            .collect();
         let mut adopted = Vec::new();
         for ws in &mut self.workspaces {
-            if ws.owner.is_none() {
+            if ws.owner.is_none() && !governed_elsewhere.contains(&ws.room) {
                 ws.set_owner(user.clone());
                 adopted.push(ws.id);
             }
@@ -2682,10 +3046,23 @@ impl WorkspaceTree {
     /// Refuses a nil `room` — "join the unminted room" is never a
     /// meaningful request, and honouring it would drop a workspace out
     /// of collaboration silently. Returns whether the tree changed.
+    ///
+    /// This is also where a workspace stops governing itself. The room
+    /// being joined already has an administrator and it is not the joiner,
+    /// so the joined workspace surrenders its own
+    /// ([`Workspace::surrender_governance`]) and the room is recorded as
+    /// governed elsewhere. Without that a guest would hold two answers to
+    /// "who administers this room" — its own and the one arriving over the
+    /// wire — and the merge would be picking between them instead of
+    /// learning the second.
     pub fn set_room(&mut self, workspace_id: WorkspaceId, room: RoomId) -> bool {
         if room.is_nil() {
             return false;
         }
+        // Joining a room some other local workspace is already in is not a
+        // join: this machine is already in the room and already knows who
+        // governs it.
+        let joining = !self.workspaces.iter().any(|w| w.room == room);
         let Some(ws) = self.workspaces.iter_mut().find(|w| w.id == workspace_id) else {
             return false;
         };
@@ -2693,7 +3070,23 @@ impl WorkspaceTree {
             return false;
         }
         ws.room = room;
+        let surrendered = if joining {
+            ws.surrender_governance()
+        } else {
+            false
+        };
+        if joining {
+            self.room_authority
+                .entry(room)
+                .or_insert(RoomAuthority::Unpinned);
+        }
         self.doc_set_room(workspace_id, room);
+        if surrendered {
+            // The owner and the admin capability went; the tree document
+            // has to say so too, or the next cache rebuild reads the old
+            // owner back out of it.
+            self.seed_doc_from_cache();
+        }
         self.flush_to_disk();
         true
     }
@@ -2725,12 +3118,36 @@ impl WorkspaceTree {
     /// Returns the new capability's id, or `None` when the grantor
     /// lacked the authority to delegate it — the check that makes
     /// ownership mean something.
+    ///
+    /// Refuses outright in a room whose governance is written elsewhere
+    /// ([`Self::room_authority`]), whatever the local cache says about who
+    /// owns it. Otherwise a machine could hold a grant its own sandbox
+    /// honours while the room it belongs to has never heard of it: nothing
+    /// would carry it (a machine that does not govern a room projects no
+    /// governance into it) and the next sync from the room's authority
+    /// would drop it. A grant nobody but the grantor can see is not a
+    /// grant, it is a local escalation.
+    ///
+    /// Deliberately not symmetric with [`Self::revoke_in_workspace`],
+    /// which stays open: widening your own access in someone else's room is
+    /// the thing to refuse, and narrowing it — the Revoke button, the kill
+    /// switch — has to work locally whoever governs the room.
     pub fn grant_in_workspace(
         &mut self,
         workspace_id: WorkspaceId,
         grantor: &UserId,
         cap: CapOverride,
     ) -> Option<String> {
+        let room = self.room_of(workspace_id)?;
+        if !room.is_nil() && !self.governs_room(room) {
+            tracing::warn!(
+                target: "shell::state",
+                room = %room,
+                grantor = %grantor,
+                "grant refused: this machine does not administer the room",
+            );
+            return None;
+        }
         let ws = self.workspaces.iter_mut().find(|w| w.id == workspace_id)?;
         let id = ws.grant_as(grantor, cap)?;
         let stored = ws.capabilities.iter().find(|c| c.id == id).cloned()?;
@@ -4133,11 +4550,12 @@ mod automerge_foundation_tests {
     #[test]
     fn a_guest_merges_its_hosts_room_after_projecting_its_own() {
         for _ in 0..24 {
-            let room = RoomId::new();
-
+            // The host's room is the one its own workspace was minted
+            // with, so the host actually administers it — the room being
+            // synced has a governance to be right about.
             let mut host = WorkspaceTree::bootstrap_default();
             let host_ws = host.workspaces[0].id;
-            assert!(host.set_room(host_ws, room));
+            let room = host.room_of(host_ws).expect("bootstrap mints a room");
             host.adopt_ownerless_workspaces(&"alice".to_string());
 
             let mut guest = WorkspaceTree::bootstrap_default();
@@ -4153,21 +4571,22 @@ mod automerge_foundation_tests {
                 .export_room_changes_since(room, &[])
                 .expect("the host is in the room");
             guest
-                .apply_room_changes(room, &changes)
+                .apply_room_changes(room, &changes, &PeerOrigin::hub(1))
                 .expect("the guest merges its host's room document");
 
-            // What the fix establishes: the merge completes and the two
-            // sides are addressing one room afterwards.
-            //
-            // Deliberately *not* asserted here: which owner survives.
-            // Both sides project their own cache into the shared
-            // document, so the owner and capability keys are decided by
-            // automerge's last-writer-wins between two actors rather
-            // than by who administers the room — a guest that projects
-            // before it merges takes ownership of its host's room. That
-            // is a design hole in the projection, not something this
-            // crash fix addresses, and pinning the current outcome here
-            // would pin the hole.
+            // The merge completes, and it is the host's governance that
+            // comes out of it — not whichever of the two actor ids sorted
+            // higher.
+            assert_eq!(
+                guest
+                    .workspaces
+                    .iter()
+                    .find(|w| w.id == guest_ws)
+                    .and_then(|w| w.owner.clone())
+                    .as_deref(),
+                Some("alice"),
+                "the guest must end up with the room's owner, not its own",
+            );
             assert_eq!(
                 guest.room_of(guest_ws),
                 Some(room),
@@ -4184,6 +4603,401 @@ mod automerge_foundation_tests {
                 "the merge must leave a capability list behind, not wipe it",
             );
         }
+    }
+
+    // =================================================================
+    // Write authority on a room's governance.
+    //
+    // A room document carries the room's owner and its capability list.
+    // Those are the two values every authority question in the compositor
+    // bottoms out in — `may_administer` reads the first, `decide` reads
+    // the second, and the FUSE mount enforces an export of the second.
+    // Automerge merges a map key by last-writer-wins and has no per-key
+    // ACL, so a peer that projects its own cache into the shared document
+    // is not proposing a change to the room's governance, it is entering
+    // a coin toss for it. These pin that a peer's governance is taken
+    // only from the peer entitled to write it.
+    //
+    // Every assertion reads the **receiver's** own state after the merge —
+    // its cached workspace and its own copy of the room document — never
+    // the payload or the sender's intent.
+    // =================================================================
+
+    /// The room's real administrator, as the receiver knows it.
+    const ROOM_OWNER: &str = "alice-administers-the-room";
+    /// A guest that was invited in.
+    const ROOM_GUEST: &str = "bob-was-invited";
+    /// The capability the owner granted, and the one a guest tries to add.
+    const OWNER_GRANT_PATH: &str = "/home/alice/room-notes";
+    const ROGUE_GRANT_PATH: &str = "/etc/shadow";
+
+    /// A host in a room it minted, owning it, with one grant of its own.
+    ///
+    /// The room is minted by `append_empty_workspace` — the production
+    /// path a user's "new workspace" takes — rather than by `set_room`,
+    /// because minting a room and joining someone else's are different
+    /// acts and the difference is the whole subject here.
+    fn host_owning_a_room() -> (WorkspaceTree, WorkspaceId, RoomId) {
+        let mut host = WorkspaceTree::default();
+        let ws = host.append_empty_workspace("Design review");
+        let room = host.room_of(ws).expect("a fresh workspace mints a room");
+        host.adopt_ownerless_workspaces(&ROOM_OWNER.to_string());
+        host.grant_in_workspace(
+            ws,
+            &ROOM_OWNER.to_string(),
+            CapOverride::grant(
+                Subject::app("files"),
+                Scope::FsPath(OWNER_GRANT_PATH.to_string()),
+                Verb::Read,
+            )
+            .with_id("owners-own-grant"),
+        )
+        .expect("the owner may grant in the room it owns");
+        (host, ws, room)
+    }
+
+    /// The bytes a guest puts on the wire when it does not honour the
+    /// join: it is in `room`, but its own state still says it governs the
+    /// room, so its projection carries its own owner and its own grants.
+    ///
+    /// This is the payload the reported attack produces. It is built by
+    /// driving the guest's real projection and export path
+    /// (`sync_room_doc` / `export_room_changes_since`) rather than by
+    /// hand, so the receiver is answering a message a peer running this
+    /// code can actually emit.
+    fn governance_claim_from(user: &str, room: RoomId) -> Vec<Vec<u8>> {
+        let mut guest = WorkspaceTree::default();
+        let guest_ws = guest.append_empty_workspace("Mine");
+        assert!(guest.set_room(guest_ws, room), "the guest joins the room");
+        // A peer whose own state says it administers the room. Nothing
+        // stops a peer from believing that — it is *its* machine — which
+        // is exactly why the receiver cannot take the sender's word for
+        // who governs the room.
+        guest.room_authority.insert(room, RoomAuthority::Local);
+        {
+            let ws = guest
+                .workspaces
+                .iter_mut()
+                .find(|w| w.id == guest_ws)
+                .expect("the guest's own workspace");
+            ws.set_owner(user.to_string());
+        }
+        guest
+            .grant_in_workspace(
+                guest_ws,
+                &user.to_string(),
+                CapOverride::grant(
+                    Subject::app("rogue"),
+                    Scope::FsPath(ROGUE_GRANT_PATH.to_string()),
+                    Verb::Write,
+                )
+                .with_id("rogue-grant"),
+            )
+            .expect("the guest grants in its own copy");
+        guest.sync_room_doc(room);
+        guest
+            .export_room_changes_since(room, &[])
+            .expect("the guest is in the room it exports")
+    }
+
+    /// The owner and capability ids the receiver's own **room document**
+    /// records — not its cache, so a fold that quietly diverged from the
+    /// replicated document cannot hide behind it.
+    fn governance_in_room_doc(tree: &mut WorkspaceTree, room: RoomId) -> (Option<String>, Vec<String>) {
+        use automerge::{ROOT, ReadDoc, ScalarValue, Value};
+        let Some(doc) = tree.room_docs.get(&room) else {
+            return (None, Vec::new());
+        };
+        let owner = match doc.get(&ROOT, "owner").ok().flatten() {
+            Some((Value::Scalar(s), _)) => match s.as_ref() {
+                ScalarValue::Str(v) => Some(v.to_string()),
+                _ => None,
+            },
+            _ => None,
+        };
+        let mut caps: Vec<String> = match doc.get(&ROOT, "capabilities").ok().flatten() {
+            Some((_, caps_id)) => doc.keys(&caps_id).collect(),
+            None => Vec::new(),
+        };
+        caps.sort();
+        (owner, caps)
+    }
+
+    /// The reported hole. A guest projects its own cache into a room it
+    /// was invited to; the room's owner and capability list on the
+    /// **host** must be exactly what the host granted.
+    ///
+    /// Two orderings, because whether the host had already projected its
+    /// own document decides whether the guest's write lands unopposed or
+    /// races the host's: with no projection the guest's owner is the only
+    /// one in the merged document, and with one the winner is whichever
+    /// actor id sorts higher. Actor ids are random, so each ordering runs
+    /// 32 rounds — a hole that survives by being lucky in one round does
+    /// not survive 32.
+    #[test]
+    fn a_guest_cannot_rewrite_the_governance_of_the_room_it_joined() {
+        for host_projected_first in [false, true] {
+            for round in 0..32 {
+                let (mut host, host_ws, room) = host_owning_a_room();
+                if host_projected_first {
+                    host.sync_room_doc(room);
+                }
+                let claim = governance_claim_from(ROOM_GUEST, room);
+
+                host.apply_room_changes(room, &claim, &PeerOrigin::hub(2))
+                    .expect("well-formed change blobs parse");
+
+                // The receiver's cache: who the host believes administers
+                // its own room, and what it believes is granted in it.
+                let ws = host
+                    .workspaces
+                    .iter()
+                    .find(|w| w.id == host_ws)
+                    .expect("the host keeps its workspace");
+                assert_eq!(
+                    ws.owner.as_deref(),
+                    Some(ROOM_OWNER),
+                    "round {round} (host projected first: {host_projected_first}): \
+                     a guest's projection took ownership of the host's room",
+                );
+                assert!(
+                    ws.may_administer(&ROOM_OWNER.to_string()),
+                    "round {round}: the owner must still administer its own room",
+                );
+                assert!(
+                    !ws.may_administer(&ROOM_GUEST.to_string()),
+                    "round {round}: the guest must not have become an \
+                     administrator of the host's room",
+                );
+                let cap_ids: Vec<&str> = ws.capabilities.iter().map(|c| c.id.as_str()).collect();
+                assert!(
+                    cap_ids.contains(&"owners-own-grant"),
+                    "round {round}: the owner's own grant was replaced by the \
+                     guest's list; held {cap_ids:?}",
+                );
+                assert!(
+                    !cap_ids.contains(&"rogue-grant"),
+                    "round {round}: a grant the guest wrote entered the host's \
+                     capability list; held {cap_ids:?}",
+                );
+
+                // And the same read off the receiver's own copy of the
+                // replicated document, which is what it will hand to the
+                // next peer that asks.
+                let (doc_owner, doc_caps) = governance_in_room_doc(&mut host, room);
+                assert_ne!(
+                    doc_owner.as_deref(),
+                    Some(ROOM_GUEST),
+                    "round {round}: the host's own room document records the \
+                     guest as owner",
+                );
+                assert!(
+                    !doc_caps.iter().any(|c| c == "rogue-grant"),
+                    "round {round}: the guest's grant is in the host's own room \
+                     document; it holds {doc_caps:?}",
+                );
+            }
+        }
+    }
+
+    /// The same forgery between two guests. Neither administers the room,
+    /// so "am I the administrator?" is not the question the receiver can
+    /// answer — it has to know *which* peer the room's governance comes
+    /// from, and refuse the rest.
+    ///
+    /// The receiver here has learned the room legitimately first, so this
+    /// is an overwrite rather than a bootstrap.
+    #[test]
+    fn one_guest_cannot_rewrite_the_governance_another_guest_learned() {
+        for round in 0..32 {
+            let (mut host, _host_ws, room) = host_owning_a_room();
+            let legitimate = host
+                .export_room_changes_since(room, &[])
+                .expect("the host is in its own room");
+
+            // Carol joins and learns the room from the host it was
+            // invited by. `PeerOrigin::hub(1)` stands for that host.
+            let mut carol = WorkspaceTree::default();
+            let carol_ws = carol.append_empty_workspace("Mine");
+            assert!(carol.set_room(carol_ws, room), "carol joins the room");
+            carol.room_authority.insert(room, RoomAuthority::Peer(PeerOrigin::hub(1)));
+            carol
+                .apply_room_changes(room, &legitimate, &PeerOrigin::hub(1))
+                .expect("the host's document parses");
+            assert_eq!(
+                carol
+                    .workspaces
+                    .iter()
+                    .find(|w| w.id == carol_ws)
+                    .and_then(|w| w.owner.clone())
+                    .as_deref(),
+                Some(ROOM_OWNER),
+                "round {round}: carol must learn the room's owner from the \
+                 peer that invited her — without that the refusal below \
+                 would be vacuous",
+            );
+
+            // Bob, in the same room, claims it.
+            let claim = governance_claim_from(ROOM_GUEST, room);
+            carol
+                .apply_room_changes(room, &claim, &PeerOrigin::hub(2))
+                .expect("well-formed change blobs parse");
+
+            let ws = carol
+                .workspaces
+                .iter()
+                .find(|w| w.id == carol_ws)
+                .expect("carol keeps her workspace");
+            assert_eq!(
+                ws.owner.as_deref(),
+                Some(ROOM_OWNER),
+                "round {round}: a guest rewrote another guest's copy of the \
+                 room's owner",
+            );
+            let cap_ids: Vec<&str> = ws.capabilities.iter().map(|c| c.id.as_str()).collect();
+            assert!(
+                !cap_ids.contains(&"rogue-grant"),
+                "round {round}: a guest's grant entered another guest's \
+                 capability list; held {cap_ids:?}",
+            );
+            let (doc_owner, doc_caps) = governance_in_room_doc(&mut carol, room);
+            assert_eq!(
+                doc_owner.as_deref(),
+                Some(ROOM_OWNER),
+                "round {round}: carol's own room document records the wrong \
+                 owner",
+            );
+            assert!(
+                !doc_caps.iter().any(|c| c == "rogue-grant"),
+                "round {round}: carol's own room document carries the rogue \
+                 grant; it holds {doc_caps:?}",
+            );
+        }
+    }
+
+    /// The other half: a guest joining a room **must** learn its owner and
+    /// its capabilities from the peer that admitted it. Refusing every
+    /// incoming governance change would close the hole and collaboration
+    /// with it, so this is the assertion that keeps the fix honest.
+    #[test]
+    fn a_guest_learns_the_governance_of_the_room_that_invited_it() {
+        let (mut host, _host_ws, room) = host_owning_a_room();
+        let from_host = host
+            .export_room_changes_since(room, &[])
+            .expect("the host is in its own room");
+
+        let mut guest = WorkspaceTree::default();
+        let guest_ws = guest.append_empty_workspace("Mine");
+        assert!(guest.set_room(guest_ws, room), "the guest joins the room");
+        guest
+            .room_authority
+            .insert(room, RoomAuthority::Peer(PeerOrigin::hub(1)));
+
+        let changed = guest
+            .apply_room_changes(room, &from_host, &PeerOrigin::hub(1))
+            .expect("the host's document parses");
+        assert!(changed, "the round must change the guest's copy");
+
+        let ws = guest
+            .workspaces
+            .iter()
+            .find(|w| w.id == guest_ws)
+            .expect("the guest keeps its workspace");
+        assert_eq!(
+            ws.owner.as_deref(),
+            Some(ROOM_OWNER),
+            "the guest must learn who administers the room it joined",
+        );
+        assert!(
+            ws.capabilities.iter().any(|c| c.id == "owners-own-grant"),
+            "the guest must learn the room's capabilities; it holds {:?}",
+            ws.capabilities.iter().map(|c| &c.id).collect::<Vec<_>>(),
+        );
+        assert!(
+            !ws.may_administer(&ROOM_GUEST.to_string()),
+            "and joining a room must not make the joiner its administrator",
+        );
+    }
+
+    /// The local grant path has to agree with the replication path.
+    ///
+    /// If a machine could grant in a room it does not administer, the grant
+    /// would be honoured by its own sandbox while the room had never heard
+    /// of it: a machine that does not govern a room projects no governance,
+    /// so nothing carries the grant, and the next sync from the room's
+    /// authority drops it. That is a local escalation dressed as a grant,
+    /// and a stale cache — a state file written before the room was
+    /// joined — is what would otherwise leave it reachable.
+    #[test]
+    fn a_machine_cannot_grant_in_a_room_it_does_not_administer() {
+        let (_host, _host_ws, room) = host_owning_a_room();
+
+        let mut guest = WorkspaceTree::default();
+        let guest_ws = guest.append_empty_workspace("Mine");
+        assert!(guest.set_room(guest_ws, room), "the guest joins the room");
+        // A cache that still names the local user as owner — what an
+        // upgrade from a state file written before joining looks like. The
+        // ownership check alone would say yes here.
+        guest
+            .workspaces
+            .iter_mut()
+            .find(|w| w.id == guest_ws)
+            .expect("the guest's workspace")
+            .set_owner(ROOM_GUEST.to_string());
+        assert!(
+            guest
+                .workspaces
+                .iter()
+                .find(|w| w.id == guest_ws)
+                .expect("the guest's workspace")
+                .may_administer(&ROOM_GUEST.to_string()),
+            "precondition: the cache says the guest administers it, so the \
+             refusal below is the room's write authority and not ownership",
+        );
+
+        let granted = guest.grant_in_workspace(
+            guest_ws,
+            &ROOM_GUEST.to_string(),
+            CapOverride::grant(
+                Subject::app("rogue"),
+                Scope::FsPath(ROGUE_GRANT_PATH.to_string()),
+                Verb::Write,
+            ),
+        );
+        assert!(
+            granted.is_none(),
+            "a grant in a room administered elsewhere must be refused",
+        );
+        assert!(
+            !guest
+                .workspaces
+                .iter()
+                .find(|w| w.id == guest_ws)
+                .expect("the guest's workspace")
+                .capabilities
+                .iter()
+                .any(|c| matches!(&c.scope, Scope::FsPath(p) if p == ROGUE_GRANT_PATH)),
+            "and must record nothing",
+        );
+
+        // The control: the same call in a room this machine minted is
+        // allowed, so the refusal above is about the room and not the call.
+        let mut own = WorkspaceTree::default();
+        let own_ws = own.append_empty_workspace("Mine");
+        own.adopt_ownerless_workspaces(&ROOM_GUEST.to_string());
+        assert!(
+            own.grant_in_workspace(
+                own_ws,
+                &ROOM_GUEST.to_string(),
+                CapOverride::grant(
+                    Subject::app("files"),
+                    Scope::FsPath(OWNER_GRANT_PATH.to_string()),
+                    Verb::Read,
+                ),
+            )
+            .is_some(),
+            "granting in a room this machine administers must still work",
+        );
     }
 
     /// "Join the unminted room" is never a meaningful request, and
