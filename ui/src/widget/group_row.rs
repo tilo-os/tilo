@@ -532,6 +532,17 @@ impl GroupRow {
     /// it must be called after a layout pass — which the shell always has
     /// by the time it reconciles focus. Cancels any in-flight wheel-snap so
     /// the into-view target isn't immediately overridden by a snap-back.
+    /// Whether `group_id` has a real laid-out rect in this row — i.e. whether
+    /// [`Self::scroll_group_into_view`] can act on it at all. A group focused
+    /// in the same frame it was spliced in has not been through a layout pass
+    /// yet, so its rect is degenerate and any pan would be a no-op.
+    pub fn group_is_laid_out(&self, group_id: u64) -> bool {
+        self.groups
+            .iter()
+            .find(|g| g.id == group_id)
+            .is_some_and(|g| g.get_rect().width() > 0.0)
+    }
+
     pub fn scroll_group_into_view(&mut self, group_id: u64) -> bool {
         let Some(g) = self.groups.iter().find(|g| g.id == group_id) else {
             return false;
