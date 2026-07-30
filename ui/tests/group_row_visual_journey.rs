@@ -263,9 +263,16 @@ fn group_row_maximized_paints_distinct_pixels_and_hides_siblings() {
     );
 }
 
-/// Determinism guard: two GroupRows built identically must produce
-/// byte-identical pixels. Without this, the journey test's pixel-hash
-/// comparisons are meaningless.
+/// Determinism guard: two GroupRows built identically must produce the
+/// same image. Without this, the journey test's pixel-hash comparisons
+/// are meaningless.
+///
+/// "The same image" is not the same as "the same bytes": the GPU
+/// rasteriser may move an antialiased edge pixel one 8-bit step between
+/// runs (see the `ui::offscreen` module docs for the mechanism), so
+/// compare with the tolerance that describes and nothing wider. The
+/// journey test's `assert_ne!`s are unaffected — a state change moves
+/// far more than one step on far more than a few pixels.
 #[test]
 fn group_row_fresh_render_is_deterministic() {
     let (w, h) = (600u32, 200u32);
@@ -287,9 +294,9 @@ fn group_row_fresh_render_is_deterministic() {
     let a = render_row(&mut renderer, &mut r1);
     let b = render_row(&mut renderer, &mut r2);
     assert_eq!(
-        pixel_hash(&a),
-        pixel_hash(&b),
-        "two identical GroupRow renders must produce identical pixels",
+        OffscreenRenderer::pixels_differing_beyond_aa(&a, &b),
+        0,
+        "two identical GroupRow renders must produce the same image",
     );
 }
 

@@ -4,7 +4,9 @@
 //!
 //! Same pipeline the e2e snapshot tests use. Public so callers outside
 //! the test target (binaries, examples, downstream crates) can take
-//! deterministic screenshots at any resolution.
+//! screenshots at any resolution, off any scene, with no display
+//! attached. What is drawn is a pure function of the scene; the last bit
+//! of the rasterisation is not — see the last section.
 //!
 //! # Why wgpu row-pitch alignment matters
 //! `copy_texture_to_buffer` requires the buffer's row pitch to be a
