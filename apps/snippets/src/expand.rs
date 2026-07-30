@@ -11,6 +11,7 @@ use std::collections::HashMap;
 
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
+use ui::widget::{Button, ButtonFace};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
@@ -247,17 +248,16 @@ impl ExpandModal {
         let copy_label = if self.all_filled() { "Copy" } else { "Copy (partial)" };
         let cw = tr.measure(copy_label, 14.0, None).0 as f64 + 36.0;
         self.copy_rect = Rect::new(panel.x1 - pad - cw, by, panel.x1 - pad, by + 36.0);
-        draw::fill_round(scene, t, self.copy_rect, theme.tokens.radii.md as f64, c.accent[5]);
-        draw::text(
+        Button::paint(
             scene,
-            tr,
             t,
-            copy_label,
-            self.copy_rect.x0 + 18.0,
-            by + 10.0,
-            14.0,
-            c.text_primary,
-            TextWeight::Semibold,
+            tr,
+            theme,
+            &ButtonFace::new(self.copy_rect, copy_label)
+                .radius(theme.tokens.radii.md as f64)
+                .text_size(14.0)
+                .weight(TextWeight::Semibold)
+                .primary(),
         );
 
         let cancel_w = tr.measure("Cancel", 14.0, None).0 as f64 + 36.0;
@@ -267,18 +267,15 @@ impl ExpandModal {
             self.copy_rect.x0 - 12.0,
             by + 36.0,
         );
-        draw::fill_round(scene, t, self.cancel_rect, theme.tokens.radii.md as f64, c.neutral[2]);
-        draw::stroke_round(scene, t, self.cancel_rect, theme.tokens.radii.md as f64, 1.0, c.border_standard);
-        draw::text(
+        Button::paint(
             scene,
-            tr,
             t,
-            "Cancel",
-            self.cancel_rect.x0 + 18.0,
-            by + 10.0,
-            14.0,
-            c.neutral[7],
-            TextWeight::Semibold,
+            tr,
+            theme,
+            &ButtonFace::new(self.cancel_rect, "Cancel")
+                .radius(theme.tokens.radii.md as f64)
+                .text_size(14.0)
+                .weight(TextWeight::Semibold),
         );
     }
 
