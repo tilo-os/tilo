@@ -422,14 +422,20 @@ impl Store {
         false
     }
 
-    /// Mark every article matching `filter` as read. Returns affected ids.
-    pub fn mark_all_read(&mut self, filter: Filter) -> Vec<Id> {
-        let ids: Vec<Id> = self
-            .articles
+    /// The unread article ids matching `filter`, in document order. Shared by
+    /// [`Self::mark_all_read`] and the action model's "Mark all as read" so the
+    /// affordance and the palette resolve the byte-identical id batch.
+    pub fn unread_ids_for(&self, filter: Filter) -> Vec<Id> {
+        self.articles
             .iter()
             .filter(|a| self.matches(a, filter) && !a.read)
             .map(|a| a.id)
-            .collect();
+            .collect()
+    }
+
+    /// Mark every article matching `filter` as read. Returns affected ids.
+    pub fn mark_all_read(&mut self, filter: Filter) -> Vec<Id> {
+        let ids = self.unread_ids_for(filter);
         for id in &ids {
             if let Some(a) = self.article_mut(*id) {
                 a.read = true;
