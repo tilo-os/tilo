@@ -143,6 +143,226 @@ impl Button {
     }
 }
 
+/// Visual style for a button face. Mirrors the conventions the retained
+/// [`Button`] and the standard app toolbars already paint by hand:
+/// - `Neutral` — a raised surface with a standard border (the default).
+/// - `Primary` — an accent-filled default action (Send / Save / Open),
+///   white label, no border (the accent fill is self-defining).
+/// - `Danger` — a destructive action, danger-filled, white label, no border.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum ButtonStyle {
+    #[default]
+    Neutral,
+    Primary,
+    Danger,
+}
+
+/// Interaction state for an immediate-mode button face. The retained
+/// [`Button`] tracks these itself; an immediate-mode caller (a canvas app
+/// that owns its own hit-testing) passes what it knows — usually just
+/// `hovered`, derived from the last cursor position.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct ButtonInteract {
+    pub hovered: bool,
+    pub pressed: bool,
+    pub focused: bool,
+    pub disabled: bool,
+}
+
+/// Resolve the `(fill, border, label)` colours for a button face. The single
+/// source of truth for both the retained widget's look and the immediate-mode
+/// [`Button::paint`]. `border` is `None` for the accent-filled styles, whose
+/// fill is self-defining; the painter adds a focus ring on top when focused.
+pub fn face_colors(
+    theme: &Theme,
+    style: ButtonStyle,
+    interact: ButtonInteract,
+) -> (vello::peniko::Color, Option<vello::peniko::Color>, vello::peniko::Color) {
+    use vello::peniko::Color;
+    match style {
+        ButtonStyle::Neutral => {
+            let bg = if interact.pressed {
+                theme.bg_active
+            } else if interact.hovered {
+                theme.bg_hover
+            } else {
+                theme.tokens.colors.surfaces.raised
+            };
+            (bg, Some(theme.tokens.colors.border_standard), theme.tokens.colors.text_primary)
+        }
+        ButtonStyle::Primary => {
+            let bg = if interact.hovered || interact.pressed {
+                theme.accent_hover
+            } else {
+                theme.accent_primary
+            };
+            (bg, None, Color::WHITE)
+        }
+        ButtonStyle::Danger => {
+            use crate::color_compat::ColorCompat;
+            let d = theme.tokens.colors.semantic.danger;
+            // Subtly muted at rest, solid on hover/press, so the destructive
+            // action still gives interaction feedback without a second token.
+            let bg = if interact.hovered || interact.pressed {
+                d
+            } else {
+                d.with_alpha_factor(0.9)
+            };
+            (bg, None, Color::WHITE)
+        }
+    }
+}
+
+/// Configuration for [`Button::paint`], the immediate-mode button face. Built
+/// fluently: `ButtonFace::new(rect, "Save").primary().hovered(hit)`. Defaults
+/// to a neutral, medium-weight, 14px label at an 8px corner radius.
+pub struct ButtonFace<'a> {
+    rect: Rect,
+    label: &'a str,
+    icon: Option<crate::icons::Icon>,
+    style: ButtonStyle,
+    interact: ButtonInteract,
+    radius: f64,
+    weight: crate::text_render::TextWeight,
+    text_size: f32,
+    accessible_name: Option<&'a str>,
+}
+
+impl<'a> ButtonFace<'a> {
+    pub fn new(rect: Rect, label: &'a str) -> Self {
+        Self {
+            rect,
+            label,
+            icon: None,
+            style: ButtonStyle::Neutral,
+            interact: ButtonInteract::default(),
+            radius: 8.0,
+            weight: crate::text_render::TextWeight::Medium,
+            text_size: 14.0,
+            accessible_name: None,
+        }
+    }
+    pub fn style(mut self, style: ButtonStyle) -> Self { self.style = style; self }
+    pub fn primary(mut self) -> Self { self.style = ButtonStyle::Primary; self }
+    pub fn danger(mut self) -> Self { self.style = ButtonStyle::Danger; self }
+    pub fn icon(mut self, icon: crate::icons::Icon) -> Self { self.icon = Some(icon); self }
+    pub fn radius(mut self, radius: f64) -> Self { self.radius = radius; self }
+    pub fn weight(mut self, weight: crate::text_render::TextWeight) -> Self { self.weight = weight; self }
+    pub fn text_size(mut self, size: f32) -> Self { self.text_size = size; self }
+    pub fn hovered(mut self, v: bool) -> Self { self.interact.hovered = v; self }
+    pub fn pressed(mut self, v: bool) -> Self { self.interact.pressed = v; self }
+    pub fn focused(mut self, v: bool) -> Self { self.interact.focused = v; self }
+    pub fn disabled(mut self, v: bool) -> Self { self.interact.disabled = v; self }
+    /// Spoken name for an icon-only face (empty visible label). Carried for
+    /// callers that expose a their own accessibility node for the region.
+    pub fn accessible_name(mut self, name: &'a str) -> Self { self.accessible_name = Some(name); self }
+    /// The accessible name a screen reader should announce: the visible label,
+    /// or the explicit `accessible_name` when the label is empty.
+    pub fn spoken_name(&self) -> &str {
+        if !self.label.is_empty() { self.label } else { self.accessible_name.unwrap_or("") }
+    }
+    /// The style resolved for the current interaction state, as `(fill,
+    /// border, label)` colours. Exposed for tests and callers that want the
+    /// resolved palette without painting.
+    pub fn colors(&self, theme: &Theme) -> (vello::peniko::Color, Option<vello::peniko::Color>, vello::peniko::Color) {
+        face_colors(theme, self.style, self.interact)
+    }
+}
+
+impl Button {
+    /// Immediate-mode paint of a themed button face inside `face.rect`,
+    /// matching the retained [`Button`]'s look (fill / border / hover / press /
+    /// focus-ring / disabled dim, centred label + optional leading icon). For
+    /// canvas/immediate-mode apps that own their own rect hit-testing: call
+    /// this to paint, keep your existing hit-test to fire the action. Extends
+    /// the widget rather than forking a second painter — the retained draw, the
+    /// file picker's footer, and every converted app now share `face_colors`.
+    pub fn paint(
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        face: &ButtonFace<'_>,
+    ) {
+        let (bg, border, fg) = face_colors(theme, face.style, face.interact);
+        let shape = RoundedRect::from_rect(face.rect, face.radius);
+
+        // Disabled faces dim as one layer so fill + border + label fade
+        // together, matching the retained widget's DISABLED_ALPHA look.
+        let dim = face.interact.disabled;
+        if dim {
+            scene.push_layer(
+                vello::peniko::Fill::NonZero,
+                vello::peniko::BlendMode::default(),
+                crate::widget::DISABLED_ALPHA,
+                transform,
+                &shape,
+            );
+        }
+
+        scene.fill(vello::peniko::Fill::NonZero, transform, bg, None, &shape);
+        if face.interact.focused {
+            scene.stroke(&vello::kurbo::Stroke::new(2.0), transform, theme.border_focus, None, &shape);
+        } else if let Some(bc) = border {
+            scene.stroke(&vello::kurbo::Stroke::new(1.0), transform, bc, None, &shape);
+        }
+
+        let rect = face.rect;
+        let label = i18n!(face.label);
+        let icon_px = (rect.height() - 14.0).clamp(12.0, 22.0);
+        match (face.icon, label.is_empty()) {
+            (Some(icon), true) => {
+                // Icon-only face — centre the glyph.
+                let ix = rect.center().x - icon_px / 2.0;
+                let iy = rect.center().y - icon_px / 2.0;
+                crate::icons::draw_icon(
+                    scene,
+                    transform,
+                    Rect::new(ix, iy, ix + icon_px, iy + icon_px),
+                    icon,
+                    fg,
+                    crate::icons::LUCIDE_DEFAULT_STROKE_PX,
+                );
+            }
+            (icon, _) => {
+                // Optional leading icon + centred label cluster.
+                let (text_width, _) =
+                    text_renderer.measure_weighted(&label, face.text_size, None, face.weight);
+                let gap = if icon.is_some() { 6.0 } else { 0.0 };
+                let icon_w = if icon.is_some() { icon_px } else { 0.0 };
+                let cluster_w = icon_w + gap + text_width as f64;
+                let start_x = rect.center().x - cluster_w / 2.0;
+                if let Some(icon) = icon {
+                    let iy = rect.center().y - icon_px / 2.0;
+                    crate::icons::draw_icon(
+                        scene,
+                        transform,
+                        Rect::new(start_x, iy, start_x + icon_px, iy + icon_px),
+                        icon,
+                        fg,
+                        crate::icons::LUCIDE_DEFAULT_STROKE_PX,
+                    );
+                }
+                let text_x = start_x + icon_w + gap;
+                let text_y = rect.y0 + (rect.height() - face.text_size as f64) / 2.0;
+                text_renderer.draw_text_weighted(
+                    scene,
+                    &label,
+                    face.text_size,
+                    fg,
+                    transform * Affine::translate((text_x, text_y)),
+                    None,
+                    face.weight,
+                );
+            }
+        }
+
+        if dim {
+            scene.pop_layer();
+        }
+    }
+}
+
 impl Widget for Button {
     fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {
         // Button label could be synced from CRDT here
@@ -510,6 +730,86 @@ mod tests {
     fn button_test_id_returns_label() {
         let b = Button::new("id", "Save", None);
         assert_eq!(Widget::test_id(&b), Some("Save"));
+    }
+
+    #[test]
+    fn face_colors_neutral_tracks_hover_and_press() {
+        // The immediate-mode face must resolve to the exact tokens the
+        // retained widget draws for its neutral look, per interaction state.
+        let theme = Theme::dark();
+        let rest = ButtonInteract::default();
+        let hover = ButtonInteract { hovered: true, ..Default::default() };
+        let press = ButtonInteract { pressed: true, ..Default::default() };
+        let (bg, border, fg) = face_colors(&theme, ButtonStyle::Neutral, rest);
+        assert_eq!(bg, theme.tokens.colors.surfaces.raised, "rest fill = raised surface");
+        assert_eq!(border, Some(theme.tokens.colors.border_standard), "neutral shows a border");
+        assert_eq!(fg, theme.tokens.colors.text_primary);
+        assert_eq!(face_colors(&theme, ButtonStyle::Neutral, hover).0, theme.bg_hover);
+        assert_eq!(face_colors(&theme, ButtonStyle::Neutral, press).0, theme.bg_active);
+    }
+
+    #[test]
+    fn face_colors_primary_is_accent_borderless_white() {
+        let theme = Theme::dark();
+        let rest = ButtonInteract::default();
+        let hover = ButtonInteract { hovered: true, ..Default::default() };
+        let (bg, border, fg) = face_colors(&theme, ButtonStyle::Primary, rest);
+        assert_eq!(bg, theme.accent_primary, "primary rest = accent fill");
+        assert_eq!(border, None, "accent fill is self-defining — no border");
+        assert_eq!(fg, vello::peniko::Color::WHITE, "accent-filled label is white");
+        assert_eq!(
+            face_colors(&theme, ButtonStyle::Primary, hover).0,
+            theme.accent_hover,
+            "primary hover darkens to the accent-hover token",
+        );
+    }
+
+    #[test]
+    fn button_face_builder_sets_style_and_state() {
+        let f = ButtonFace::new(Rect::new(0.0, 0.0, 80.0, 32.0), "Send")
+            .primary()
+            .hovered(true)
+            .weight(crate::text_render::TextWeight::Bold)
+            .text_size(13.0);
+        let theme = Theme::dark();
+        let (bg, border, fg) = f.colors(&theme);
+        assert_eq!(bg, theme.accent_hover);
+        assert_eq!(border, None);
+        assert_eq!(fg, vello::peniko::Color::WHITE);
+        assert_eq!(f.spoken_name(), "Send", "visible label is the spoken name");
+    }
+
+    #[test]
+    fn icon_only_face_spoken_name_falls_back_to_accessible_name() {
+        let f = ButtonFace::new(Rect::new(0.0, 0.0, 32.0, 32.0), "")
+            .icon(crate::icons::Icon::Plus)
+            .accessible_name("Add page");
+        assert_eq!(f.spoken_name(), "Add page");
+    }
+
+    #[test]
+    fn paint_emits_fill_and_label_geometry() {
+        // The immediate-mode painter must actually emit geometry — the body
+        // fill plus the label glyphs — so a converted app draws a visible,
+        // labelled button.
+        use vello_encoding::DrawTag;
+        let mut tr = TextRenderer::new();
+        let theme = Theme::dark();
+        let mut scene = Scene::new();
+        Button::paint(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut tr,
+            &theme,
+            &ButtonFace::new(Rect::new(10.0, 10.0, 110.0, 46.0), "Go").primary(),
+        );
+        let fills = scene
+            .encoding()
+            .draw_tags
+            .iter()
+            .filter(|t| **t == DrawTag::COLOR)
+            .count();
+        assert!(fills > 1, "body fill + label glyphs ⇒ several COLOR tags, got {fills}");
     }
 
     #[test]
