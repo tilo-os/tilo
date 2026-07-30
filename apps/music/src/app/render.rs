@@ -335,6 +335,14 @@ impl Widget for MusicApp {
             }
         }
 
+        // The name-prompt dialog is modal: while it's up the shared ModalDialog
+        // captures every event (typing, clicks, Esc) and nothing leaks to the
+        // library behind the scrim.
+        if self.name_prompt.is_some() {
+            self.route_name_event(event, scale_factor, modifiers, state, handled);
+            return;
+        }
+
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 self.mouse = Point::new(position.x / scale_factor, position.y / scale_factor);
@@ -638,44 +646,14 @@ impl MusicApp {
     fn on_key(
         &mut self,
         key: &Key,
-        text: Option<&str>,
+        _text: Option<&str>,
         modifiers: &winit::event::Modifiers,
         state: &mut AutoCommit,
         handled: &mut bool,
     ) {
-        // The name-input overlay owns typing while open.
-        if self.name_prompt.is_some() {
-            match key {
-                Key::Named(NamedKey::Escape) => {
-                    self.dispatch(Action::CloseNamePrompt, state);
-                    *handled = true;
-                }
-                Key::Named(NamedKey::Backspace) => {
-                    self.name_input.pop();
-                    self.dirty = true;
-                    *handled = true;
-                }
-                Key::Named(NamedKey::Enter) => {
-                    let commit = match self.name_prompt.clone() {
-                        Some(NamePrompt::NewPlaylist) => Action::CreatePlaylist,
-                        Some(NamePrompt::Rename(id)) => Action::CommitRename(id),
-                        None => Action::None,
-                    };
-                    self.dispatch(commit, state);
-                    *handled = true;
-                }
-                _ => {
-                    if let Some(tx) = text {
-                        if !tx.is_empty() && !tx.chars().any(|c| c.is_control()) {
-                            self.name_input.push_str(tx);
-                            self.dirty = true;
-                            *handled = true;
-                        }
-                    }
-                }
-            }
-            return;
-        }
+        // The name-input overlay is modal and handled upstream in
+        // `handle_event` (the shared ModalDialog owns typing / Esc / buttons),
+        // so `on_key` never runs with it open.
 
         // (The focused search field routes its keystrokes to the real
         // `ui::TextInput` up in `handle_event`, before `on_key` is reached.)
@@ -889,9 +867,16 @@ impl MusicApp {
 
         self.draw_toast(scene, t, tr, &c);
 
-        // Inline name-input overlay (create / rename playlist).
+        // Name-input overlay (create / rename playlist) — the shared
+        // ModalDialog paints its own scrim, box, title, footer, and field.
         if self.name_prompt.is_some() {
-            self.draw_name_prompt(scene, t, tr, &c);
+            self.ensure_name_dialog();
+            self.layout_name_dialog();
+            if let Some(nd) = self.name_dialog.as_mut() {
+                nd.dialog.draw(scene, t, tr, theme, &PresenceCtx::empty());
+            }
+        } else {
+            self.name_dialog = None;
         }
 
         // The context menu paints last so it sits on top of all content.
@@ -3209,58 +3194,6 @@ impl MusicApp {
             scene.stroke(&Stroke::new(1.0), t, c.border, None, &rrect(rect, 19.0));
             draw_text(tr, scene, t, &msg, x + 20.0, vy(yb, 38.0, 13.0), 13.0, c.text, TextWeight::Medium, None);
         }
-    }
-
-    // ---- inline name prompt (create / rename playlist) --------------------
-
-    fn draw_name_prompt(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, c: &Palette) {
-        let (title, commit): (&str, Action) = match self.name_prompt.clone() {
-            Some(NamePrompt::NewPlaylist) => ("New playlist", Action::CreatePlaylist),
-            Some(NamePrompt::Rename(id)) => ("Rename playlist", Action::CommitRename(id)),
-            None => return,
-        };
-        // Dim the app behind the dialog; a click on the scrim cancels.
-        scene.fill(Fill::NonZero, t, c.scrim.multiply_alpha(0.5), None, &self.rect);
-        self.push_hit(self.rect, Action::CloseNamePrompt);
-
-        let w = 420.0_f64.min(self.rect.width() - 48.0);
-        let h = 168.0;
-        let x0 = (self.rect.x0 + self.rect.x1) / 2.0 - w / 2.0;
-        let y0 = (self.rect.y0 + self.rect.y1) / 2.0 - h / 2.0;
-        let dialog = Rect::new(x0, y0, x0 + w, y0 + h);
-        fill_rrect(scene, t, dialog, 16.0, c.card);
-        scene.stroke(&Stroke::new(1.0), t, c.border, None, &rrect(dialog, 16.0));
-        // Block clicks inside the dialog from hitting the scrim.
-        self.push_hit(dialog, Action::None);
-
-        draw_text(tr, scene, t, title, x0 + 24.0, y0 + 22.0, 18.0, c.text, TextWeight::Bold, None);
-
-        // Text field.
-        let field = Rect::new(x0 + 24.0, y0 + 56.0, x0 + w - 24.0, y0 + 92.0);
-        fill_rrect(scene, t, field, 10.0, c.panel);
-        scene.stroke(&Stroke::new(1.5), t, c.accent, None, &rrect(field, 10.0));
-        let shown = elide(tr, &self.name_input, 15.0, TextWeight::Regular, field.width() - 28.0);
-        let col = if self.name_input.is_empty() { c.dim } else { c.text };
-        let label = if self.name_input.is_empty() { "Playlist name" } else { shown.as_str() };
-        draw_text(tr, scene, t, label, field.x0 + 14.0, vy(field.y0, 36.0, 15.0), 15.0, col, TextWeight::Regular, None);
-        // Caret.
-        let cw = tr.measure_weighted(&self.name_input, 15.0, None, TextWeight::Regular).0 as f64;
-        let cx = (field.x0 + 14.0 + cw).min(field.x1 - 12.0);
-        scene.fill(Fill::NonZero, t, c.accent, None, &Rect::new(cx, field.y0 + 9.0, cx + 1.5, field.y1 - 9.0));
-
-        // Buttons.
-        let by = y0 + h - 48.0;
-        let cancel = Rect::new(x0 + w - 24.0 - 200.0, by, x0 + w - 24.0 - 108.0, by + 36.0);
-        let ch = self.push_hit(cancel, Action::CloseNamePrompt);
-        scene.stroke(&Stroke::new(1.0), t, if ch { c.text } else { c.border }, None, &rrect(cancel, 18.0));
-        let (caw, _) = tr.measure_weighted("Cancel", 14.0, None, TextWeight::Semibold);
-        draw_text(tr, scene, t, "Cancel", cancel.center().x - caw as f64 / 2.0, vy(by, 36.0, 14.0), 14.0, if ch { c.text } else { c.dim }, TextWeight::Semibold, None);
-        let ok = Rect::new(x0 + w - 24.0 - 96.0, by, x0 + w - 24.0, by + 36.0);
-        let oh = self.push_hit(ok, commit);
-        fill_rrect(scene, t, ok, 18.0, if oh { c.accent_hover } else { c.accent });
-        let ok_label = if matches!(self.name_prompt, Some(NamePrompt::Rename(_))) { "Save" } else { "Create" };
-        let (ow, _) = tr.measure_weighted(ok_label, 14.0, None, TextWeight::Semibold);
-        draw_text(tr, scene, t, ok_label, ok.center().x - ow as f64 / 2.0, vy(by, 36.0, 14.0), 14.0, c.bg, TextWeight::Semibold, None);
     }
 
     // ---- gather helpers (own data so draw can borrow &mut self) -----------
