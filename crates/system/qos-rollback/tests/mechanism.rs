@@ -1632,7 +1632,6 @@ fn confirming_the_running_generation_keeps_the_staged_generations_keyslot() {
 #[test]
 fn pure_policy_digests_match_the_tpms_own_arithmetic() {
     let f = fixture!();
-    let ws = f.ws();
     let floor = f.floor(3);
     let nv_name = f.nv_name();
 
