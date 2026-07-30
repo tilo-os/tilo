@@ -330,12 +330,12 @@ mod tests {
     /// socket; the edit propagates over P2P; an editor on peer B sees it.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn edit_via_control_reaches_a_remote_editor() {
-        use crate::sync::{bind_endpoint, fetch_remote_doc, Workspace};
+        use crate::sync::{bind_ephemeral_endpoint, fetch_remote_doc, Workspace};
         use crate::{ContentStore, Hydrator};
         use std::time::Duration;
 
         // peer A: a document with a paragraph, then host the workspace
-        let (ep_a, look_a) = bind_endpoint().await.unwrap();
+        let (ep_a, look_a) = bind_ephemeral_endpoint().await.unwrap();
         let store_a = Arc::new(ContentStore::memory());
         let hyd_a = Arc::new(Hydrator::new(ep_a.clone(), store_a.clone()));
         let ns_a = Arc::new(Mutex::new(Namespace::new("A")));
@@ -352,7 +352,7 @@ mod tests {
                 .unwrap();
 
         // peer B: bootstrap the doc + join
-        let (ep_b, look_b) = bind_endpoint().await.unwrap();
+        let (ep_b, look_b) = bind_ephemeral_endpoint().await.unwrap();
         let store_b = Arc::new(ContentStore::memory());
         let hyd_b = Arc::new(Hydrator::new(ep_b.clone(), store_b.clone()));
         let doc = fetch_remote_doc(&ep_b, ticket.node.clone()).await.unwrap();
