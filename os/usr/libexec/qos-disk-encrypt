@@ -6,6 +6,7 @@
 #
 #   qos-disk-encrypt prepare  <disk> [--filesystem btrfs|ext4|xfs] [--mnt DIR]
 #   qos-disk-encrypt enrol    <luks-part> [--key-file F] [--pin-file F] [--fido2]
+#   qos-disk-encrypt enrol    <luks-part> --reseal [--pin-file F]
 #   qos-disk-encrypt finish   <luks-part> [--key-file F] [--mnt DIR]
 #   qos-disk-encrypt teardown <disk> [--mnt DIR]
 #
@@ -181,28 +182,62 @@ EOF
 have_tpm2() { [ -e /dev/tpmrm0 ] || [ -e /dev/tpm0 ]; }
 
 cmd_enrol() {
-  local dev="" key="" pin_file="" want_fido2=0
+  local dev="" key="" pin_file="" want_fido2=0 reseal=0
   while [ $# -gt 0 ]; do
     case "$1" in
       --key-file) key="${2:-}"; shift 2 ;;
       --pin-file) pin_file="${2:-}"; shift 2 ;;
       --fido2) want_fido2=1; shift ;;
+      # Re-bind an already-installed volume to a TPM: after a cleared or replaced
+      # chip, or after turning Secure Boot on or off (PCR 7 changes either way).
+      # No new recovery key — the existing one is what authorises this — and the
+      # stale TPM slot is replaced rather than added to.
+      --reseal) reseal=1; shift ;;
       -*) die "enrol: unknown option $1" ;;
       *) [ -z "$dev" ] || die "enrol: unexpected argument $1"; dev="$1"; shift ;;
     esac
   done
   [ -n "$dev" ] || die "enrol: missing <luks-part>"
   [ -n "$key" ] || key="$(default_key_file)"
-  [ -f "$key" ] || die "enrol: no unlock key file at $key"
   need systemd-cryptenroll
   need cryptsetup
+
+  # During an install the throwaway key authorises every enrolment. Afterwards it
+  # is gone, so systemd-cryptenroll asks for an existing passphrase instead —
+  # which is the recovery key. That is what makes --reseal usable on a machine
+  # that is already running.
+  local unlock=()
+  if [ -f "$key" ]; then
+    unlock=(--unlock-key-file="$key")
+  elif [ "$reseal" -eq 1 ]; then
+    log "  no install key; systemd-cryptenroll will ask for an existing"
+    log "  passphrase (your recovery key)."
+  else
+    die "enrol: no unlock key file at $key (pass --reseal to authorise with the recovery key instead)"
+  fi
+
+  if [ "$reseal" -eq 1 ]; then
+    have_tpm2 || die "enrol --reseal: no TPM2 device to re-seal to"
+    log "  re-sealing to the TPM (replacing the previous TPM key slot)…"
+    if [ -n "$pin_file" ]; then
+      NEWPIN="$(cat "$pin_file")" systemd-cryptenroll "${unlock[@]}" \
+        --wipe-slot=tpm2 --tpm2-device=auto --tpm2-pcrs=7 --tpm2-with-pin=yes "$dev" \
+        || die "re-seal failed; the recovery key still opens the disk"
+    else
+      systemd-cryptenroll "${unlock[@]}" \
+        --wipe-slot=tpm2 --tpm2-device=auto --tpm2-pcrs=7 "$dev" \
+        || die "re-seal failed; the recovery key still opens the disk"
+    fi
+    log "  re-sealed."
+    return 0
+  fi
 
   # (1) The recovery key, first and mandatory. Every other factor is a
   # convenience that can be lost with the hardware; this one is the guarantee,
   # so a failure here aborts rather than leaving a disk only a TPM can open.
   log "  enrolling the recovery key…"
   local rec_out rec_key
-  rec_out="$(systemd-cryptenroll --unlock-key-file="$key" --recovery-key "$dev" 2>&1)" \
+  rec_out="$(systemd-cryptenroll "${unlock[@]}" --recovery-key "$dev" 2>&1)" \
     || die "recovery-key enrolment failed; aborting rather than shipping a disk with no recoverable factor:"$'\n'"$rec_out"
   rec_key="$(printf '%s\n' "$rec_out" \
     | grep -oE '[a-z]{6}-[a-z]{6}-[a-z]{6}-[a-z]{6}-[a-z]{6}-[a-z]{6}-[a-z]{6}-[a-z]{6}' \
@@ -226,7 +261,7 @@ cmd_enrol() {
   # TPM slot below) still open the volume.
   if [ "$want_fido2" -eq 1 ]; then
     log "  enrolling a FIDO2 security key (touch it now if prompted)…"
-    if systemd-cryptenroll --unlock-key-file="$key" --fido2-device=auto "$dev"; then
+    if systemd-cryptenroll "${unlock[@]}" --fido2-device=auto "$dev"; then
       log "  FIDO2 key enrolled."
     else
       log "  WARNING: FIDO2 enrolment failed (no token?) — continuing."
@@ -240,13 +275,13 @@ cmd_enrol() {
   if have_tpm2; then
     if [ -n "$pin_file" ]; then
       log "  enrolling TPM2 with a PIN…"
-      NEWPIN="$(cat "$pin_file")" systemd-cryptenroll --unlock-key-file="$key" \
+      NEWPIN="$(cat "$pin_file")" systemd-cryptenroll "${unlock[@]}" \
         --tpm2-device=auto --tpm2-pcrs=7 --tpm2-with-pin=yes "$dev" \
         || die "TPM2+PIN enrolment failed (the recovery key still opens the disk, but the requested configuration was not reached)"
       log "  TPM2+PIN enrolled."
     else
       log "  enrolling TPM2 (no PIN)…"
-      systemd-cryptenroll --unlock-key-file="$key" \
+      systemd-cryptenroll "${unlock[@]}" \
         --tpm2-device=auto --tpm2-pcrs=7 "$dev" \
         || die "TPM2 enrolment failed (the recovery key still opens the disk, but the requested configuration was not reached)"
       log "  TPM2 enrolled."
@@ -257,8 +292,12 @@ cmd_enrol() {
       # The PIN the caller collected becomes an ordinary passphrase slot, so the
       # user has something short to type at boot instead of the recovery key.
       log "  enrolling the supplied passphrase as a LUKS key slot…"
+      # cryptsetup takes the authorising key as --key-file and the new one as
+      # --new-keyfile; with no install key it prompts for the existing secret.
+      local addkey=()
+      [ -f "$key" ] && addkey=(--key-file "$key")
       cryptsetup luksAddKey --batch-mode \
-        --key-file "$key" --new-keyfile "$pin_file" "$dev" \
+        "${addkey[@]}" --new-keyfile "$pin_file" "$dev" \
         || die "passphrase enrolment failed"
       log "  passphrase enrolled."
     else
