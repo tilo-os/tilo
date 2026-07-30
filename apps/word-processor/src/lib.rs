@@ -8,6 +8,7 @@
 //! (undo, two-peer convergence, timeline, codec round-trip) against the real
 //! `ui::State` via tests.
 
+pub mod actions;
 pub mod history_panel;
 pub mod i18n;
 pub mod styles;
