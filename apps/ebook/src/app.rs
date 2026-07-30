@@ -609,6 +609,18 @@ pub struct BooksApp {
 
     // --- per-frame hit regions --------------------------------------------
     hits: Vec<Hit>,
+
+    /// The document heads captured just before the first `qos_actions` action of
+    /// the current event was dispatched. The host drains this via
+    /// [`Widget::take_committed_action`] to record exactly one undo boundary
+    /// bracketing the action(s) — the same undo path the Ctrl+K palette takes.
+    action_commit_before: Option<Vec<automerge::ChangeHash>>,
+
+    /// The last [`EncodedAction`](qos_actions::EncodedAction) an on-page
+    /// affordance dispatched through [`Self::perform_action`]. Lets a test prove
+    /// an affordance and the Ctrl+K [`ActionSpec`](qos_actions::ActionSpec) build
+    /// the byte-identical action — one source of truth, not two code paths.
+    last_dispatched: Option<qos_actions::EncodedAction>,
 }
 
 impl BooksApp {
@@ -705,6 +717,8 @@ impl BooksApp {
             layout: None,
             cover_cache: HashMap::new(),
             hits: Vec::new(),
+            action_commit_before: None,
+            last_dispatched: None,
         }
     }
 
@@ -1358,9 +1372,13 @@ impl BooksApp {
                 self.hi_color = c;
                 // Highlighting is selection-only now: a selection's exact range
                 // is marked continuously across paragraphs. Picking the same
-                // colour again clears it; a different colour replaces it.
+                // colour again clears it; a different colour replaces it. The
+                // swatch resolves the gesture into the SAME action the palette's
+                // "Highlight selection" dispatches — one source of truth.
                 if let Some(sel) = self.sel.filter(|s| !s.is_empty()) {
-                    self.apply_or_toggle_highlight(doc, sel, c);
+                    if let Some(plan) = self.resolve_highlight_plan(sel, c) {
+                        self.perform_action(doc, plan.into_action());
+                    }
                     self.clear_selection();
                 }
             }
@@ -1372,23 +1390,22 @@ impl BooksApp {
             }
             Action::AddNote => {
                 // A note anchors to the live text selection; the composer floats
-                // on-page near the passage rather than on a separate screen.
+                // on-page near the passage rather than on a separate screen. The
+                // note is created through the same AddNote action the palette
+                // dispatches; typing into it afterwards is live text editing.
                 let anchor = self.sel.filter(|s| !s.is_empty()).map(|s| {
                     let (start, end) = s.ordered();
                     (start.block, start.ch, end.ch.max(start.ch))
                 });
                 if let Some((block, start, end)) = anchor {
-                    let id = self.book_id();
+                    let book_id = self.book_id();
                     let excerpt = self.selection_excerpt();
-                    let mut a = Annotation::new(&id, AnnoKind::Note, self.chapter, block)
-                        .with_color(self.hi_color)
-                        .with_excerpt(excerpt);
-                    a.start = start;
-                    a.end = end;
-                    a.note = String::new();
-                    let aid = a.id;
-                    BooksDoc::upsert_annotation(doc, &a);
-                    self.composing = Some(aid);
+                    let id = Uuid::new_v4();
+                    let action = crate::actions::add_note_action(
+                        &book_id, id, self.chapter, block, start, end, self.hi_color, &excerpt, "",
+                    );
+                    self.perform_action(doc, action);
+                    self.composing = Some(id);
                 }
             }
             Action::CopySelection => {
@@ -1420,7 +1437,7 @@ impl BooksApp {
                 if self.composing == Some(id) {
                     self.composing = None;
                 }
-                BooksDoc::remove_annotation(doc, id);
+                self.perform_action(doc, crate::actions::delete_annotation_action(id));
             }
             Action::OpenComments(group) => {
                 // The overlay owns interaction while it is up: drop any live
@@ -1437,7 +1454,7 @@ impl BooksApp {
                 self.comment_group = None;
             }
             Action::DeleteHighlight(group) => {
-                BooksDoc::remove_group(doc, group);
+                self.perform_action(doc, crate::actions::delete_highlight_action(group));
                 if self.comment_group == Some(group) {
                     self.comment_group = None;
                 }
@@ -1446,7 +1463,8 @@ impl BooksApp {
             Action::AddComment(group) => {
                 // Anchor the new comment to the highlight's first piece so it
                 // sorts with the range, and share the group so it lists as one of
-                // that highlight's comments.
+                // that highlight's comments. Created through the same AddComment
+                // action the palette dispatches; typing into it is live editing.
                 if self.composing.is_some() {
                     self.edit_note_text(doc, NoteEdit::Done);
                 }
@@ -1457,17 +1475,14 @@ impl BooksApp {
                     .min_by_key(|a| (a.block, a.start))
                     .map(|a| (a.block, a.start, a.end, a.color, a.excerpt.clone()));
                 if let Some((block, start, end, color, excerpt)) = anchor {
-                    let id = self.book_id();
-                    let mut a = Annotation::new(&id, AnnoKind::Note, self.chapter, block)
-                        .with_color(color)
-                        .with_excerpt(excerpt)
-                        .with_group(group);
-                    a.start = start;
-                    a.end = end;
-                    let aid = a.id;
-                    BooksDoc::upsert_annotation(doc, &a);
+                    let book_id = self.book_id();
+                    let id = Uuid::new_v4();
+                    let action = crate::actions::add_comment_action(
+                        &book_id, group, id, self.chapter, block, start, end, color, &excerpt, "",
+                    );
+                    self.perform_action(doc, action);
                     self.comment_group = Some(group);
-                    self.composing = Some(aid);
+                    self.composing = Some(id);
                 }
             }
             Action::EditComment(id) => {
@@ -1477,7 +1492,7 @@ impl BooksApp {
                 if self.composing == Some(id) {
                     self.composing = None;
                 }
-                BooksDoc::remove_annotation(doc, id);
+                self.perform_action(doc, crate::actions::delete_annotation_action(id));
             }
             Action::ReloadLibrary => {
                 // Re-scan the on-disk library directories. If the reader has
@@ -1961,17 +1976,27 @@ impl BooksApp {
         self.layout = None;
     }
 
-    /// Highlighting semantics over a text selection: applying a colour marks the
+    /// Resolve a highlight-the-selection gesture into a replayable
+    /// [`HighlightPlan`](crate::actions::HighlightPlan) — the presentation-side
+    /// half of the action. Highlighting semantics: applying a colour marks the
     /// range; picking the **same** colour again clears it; a **different** colour
     /// replaces it. Colours never layer — any highlight the selection overlaps is
-    /// removed first, then the new one is added unless it exactly toggled off.
-    fn apply_or_toggle_highlight(&mut self, doc: &mut AutoCommit, sel: TextSel, color: HiColor) {
+    /// dropped first, then the new pieces are added unless it exactly toggled off.
+    ///
+    /// The returned plan is what both the selection-toolbar swatch and the
+    /// book-level "Highlight selection" palette action dispatch, so the two paths
+    /// build the identical [`EbookAction`](crate::actions::EbookAction). Returns
+    /// `None` when there is no laid-out page to resolve against, or the gesture
+    /// resolves to nothing.
+    fn resolve_highlight_plan(
+        &self,
+        sel: TextSel,
+        color: HiColor,
+    ) -> Option<crate::actions::HighlightPlan> {
         let (start, end) = sel.ordered();
-        // Snapshot block char lengths so the layout borrow ends before mutating.
-        let clens: HashMap<usize, usize> = match self.layout.as_ref() {
-            Some(l) => l.blocks.iter().map(|b| (b.index, b.char_len)).collect(),
-            None => return,
-        };
+        let layout = self.layout.as_ref()?;
+        let clens: HashMap<usize, usize> =
+            layout.blocks.iter().map(|b| (b.index, b.char_len)).collect();
         // Distinct highlight *groups* the selection overlaps (a group is one
         // logical highlight, possibly several per-block rows). Toggling works on
         // whole highlights, never half of a multi-paragraph one.
@@ -1994,15 +2019,58 @@ impl BooksApp {
         }
         // Same colour over exactly what's already there ⇒ toggle it off.
         let toggling_off = !overlapping.is_empty() && overlapping.iter().all(|(_, c)| *c == color);
-        // Remove the whole overlapping highlight(s) — every piece and its
-        // comments — so a colour never layers and a re-colour never leaves a
-        // stray band behind.
-        for (group, _) in &overlapping {
-            BooksDoc::remove_group(doc, *group);
-        }
+        let remove_groups: Vec<String> =
+            overlapping.iter().map(|(g, _)| g.to_string()).collect();
+
+        let mut pieces = Vec::new();
         if !toggling_off {
-            self.add_highlight_range(doc, sel, color);
+            // One ranged highlight per block the selection touches, each covering
+            // exactly the selected characters — so a drag across paragraphs marks
+            // precisely what was selected.
+            for b in &layout.blocks {
+                if b.index < start.block || b.index > end.block {
+                    continue;
+                }
+                let lo = if b.index == start.block { start.ch } else { 0 };
+                let hi = if b.index == end.block { end.ch } else { b.char_len };
+                let lo = lo.min(b.char_len);
+                let hi = hi.min(b.char_len);
+                if lo >= hi {
+                    continue;
+                }
+                let excerpt: String = b.text.chars().skip(lo).take((hi - lo).min(120)).collect();
+                pieces.push(crate::actions::HiPiece {
+                    id: Uuid::new_v4().to_string(),
+                    block: b.index,
+                    start: lo,
+                    end: hi,
+                    excerpt,
+                });
+            }
         }
+        if pieces.is_empty() && remove_groups.is_empty() {
+            return None;
+        }
+        // A fresh group id only when actually adding pieces; a pure toggle-off
+        // leaves `group` unused by `apply`, so keep it stable (the group being
+        // removed) — that makes a toggle-off deterministic across call sites, so
+        // the swatch and the palette encode identically.
+        let group = if pieces.is_empty() {
+            remove_groups
+                .first()
+                .cloned()
+                .unwrap_or_else(|| Uuid::nil().to_string())
+        } else {
+            Uuid::new_v4().to_string()
+        };
+        Some(crate::actions::HighlightPlan {
+            book_id: self.book_id(),
+            group,
+            chapter: self.chapter,
+            color: color.as_str().to_string(),
+            remove_groups,
+            pieces,
+        })
     }
 
     /// The highlight group covering a document position, if the point lands
@@ -2059,37 +2127,45 @@ impl BooksApp {
         v
     }
 
-    /// Highlight an arbitrary text selection: one ranged highlight per block the
-    /// selection touches, each covering exactly the selected characters. This is
-    /// what makes a drag across paragraphs mark precisely what was selected.
-    fn add_highlight_range(&mut self, doc: &mut AutoCommit, sel: TextSel, color: HiColor) {
-        let (start, end) = sel.ordered();
-        let id = self.book_id();
-        // One group id for the whole logical highlight, so its per-block pieces
-        // are treated as a single mark (one click opens it, one delete removes
-        // it) and comments can attach to the range.
-        let group = Uuid::new_v4();
-        let Some(layout) = self.layout.as_ref() else { return };
-        for b in &layout.blocks {
-            if b.index < start.block || b.index > end.block {
-                continue;
-            }
-            let lo = if b.index == start.block { start.ch } else { 0 };
-            let hi = if b.index == end.block { end.ch } else { b.char_len };
-            let lo = lo.min(b.char_len);
-            let hi = hi.min(b.char_len);
-            if lo >= hi {
-                continue;
-            }
-            let excerpt: String = b.text.chars().skip(lo).take((hi - lo).min(120)).collect();
-            let mut a = Annotation::new(&id, AnnoKind::Highlight, self.chapter, b.index)
-                .with_color(color)
-                .with_excerpt(excerpt)
-                .with_group(group);
-            a.start = lo;
-            a.end = hi;
-            BooksDoc::upsert_annotation(doc, &a);
+    /// Dispatch one Books [`EbookAction`](crate::actions::EbookAction) — the
+    /// single mutation path shared with the Ctrl+K palette. The action is applied
+    /// through the qOS action executor (a pinned actor + committed change, so it
+    /// replays byte-identically on peers), exactly as the palette does. The doc
+    /// heads captured just before the first action of the event are stashed so
+    /// the host records **one** undo boundary bracketing it
+    /// ([`Widget::take_committed_action`]).
+    fn perform_action(&mut self, doc: &mut AutoCommit, action: crate::actions::EbookAction) {
+        if self.action_commit_before.is_none() {
+            // `get_heads` flushes any pending app writes, so the bracket covers
+            // only the action's own change.
+            self.action_commit_before = Some(doc.get_heads());
         }
+        let encoded = crate::actions::encode(&action);
+        self.last_dispatched = Some(encoded.clone());
+        let mut tx = DiscardTransport;
+        if let Err(e) = qos_actions::dispatch(doc, &action, encoded, &mut tx) {
+            tracing::warn!(error = %e, "ebook action dispatch failed");
+        }
+    }
+
+    /// The presentation context Ctrl+K needs to build the book-level actions
+    /// (bookmark toggle at the current page; highlight the live selection).
+    /// `None` when no book is open.
+    pub(crate) fn book_resource_ctx(&self) -> Option<crate::actions::BookResourceCtx> {
+        let book = self.open_book()?;
+        let (book_id, book_title) = (book.id.clone(), book.title.clone());
+        let block = self.page_top_block;
+        Some(crate::actions::BookResourceCtx {
+            book_id,
+            book_title,
+            chapter: self.chapter,
+            bookmark_block: block,
+            bookmark_excerpt: self.block_excerpt(block),
+            selection_highlight: self
+                .sel
+                .filter(|s| !s.is_empty())
+                .and_then(|s| self.resolve_highlight_plan(s, self.hi_color)),
+        })
     }
 
     /// The plain text covered by the current selection, across blocks (truncated
@@ -2323,19 +2399,18 @@ impl BooksApp {
 
     fn toggle_bookmark(&mut self, doc: &mut AutoCommit) {
         let block = self.page_top_block;
-        let existing = self.annotations.iter().find(|a| {
-            a.kind == AnnoKind::Bookmark && a.chapter == self.chapter && a.block == block
-        });
-        if let Some(a) = existing {
-            let id = a.id;
-            BooksDoc::remove_annotation(doc, id);
-        } else {
-            let id = self.book_id();
-            let excerpt = self.block_excerpt(block);
-            let a = Annotation::new(&id, AnnoKind::Bookmark, self.chapter, block)
-                .with_excerpt(excerpt);
-            BooksDoc::upsert_annotation(doc, &a);
-        }
+        let book_id = self.book_id();
+        let excerpt = self.block_excerpt(block);
+        // One action covers both add and remove: `apply` decides deterministically
+        // against the document. The minted id is used only on the add branch.
+        let action = crate::actions::toggle_bookmark_action(
+            &book_id,
+            Uuid::new_v4(),
+            self.chapter,
+            block,
+            &excerpt,
+        );
+        self.perform_action(doc, action);
     }
 
     /// Append/erase a character on the note currently being composed. Each
@@ -2382,6 +2457,18 @@ enum NoteEdit {
     Done,
 }
 
+/// The action transport Books installs for its own on-page affordances. Peers
+/// receive annotation changes through ordinary CRDT sync (the executor pins each
+/// action's actor so the change is content-addressed identical to a peer's
+/// replay and dedupes on merge), so the local affordance path has nothing extra
+/// to replicate — this sink drops the envelope. The Ctrl+K palette dispatches
+/// through the host's transport, which a collaborative session swaps for a
+/// peer-aware one.
+struct DiscardTransport;
+impl qos_actions::ActionTransport for DiscardTransport {
+    fn replicate(&mut self, _env: &qos_actions::ActionEnvelope) {}
+}
+
 /// One PAGE pill in the quick-settings popover: a colour scheme the reader can
 /// switch to. Built-in tints and (later) enabled custom schemes both flow
 /// through this so the popover doesn't care which kind it's drawing.
@@ -2422,6 +2509,13 @@ impl Widget for BooksApp {
     /// [`crate::actions`].
     fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
         <Self as qos_actions::ResourceProvider>::resources(self, doc)
+    }
+
+    /// Hand the host the heads captured before an on-page affordance dispatched
+    /// its annotation action, so it records one undo boundary for it (see
+    /// [`Self::perform_action`]). Rising-edge: cleared on read.
+    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        self.action_commit_before.take()
     }
 
     fn sync(&mut self, doc: &mut AutoCommit, _path: &ObjId) {
@@ -7305,6 +7399,139 @@ mod interaction_tests {
             .expect("delete affordance is present without hover");
         assert!(click(&mut app, &mut doc, del), "delete click handled");
         assert!(BooksDoc::list_annotations(&doc).is_empty(), "annotation removed");
+    }
+
+    // ---- single source of truth: affordance == palette ActionSpec -----------
+
+    /// The comment-overlay Delete (×) button dispatches the byte-identical
+    /// `EncodedAction` the palette's "Delete comment" ActionSpec exports — proof
+    /// the two are one code path, not two. Drives the real click through
+    /// `handle_event` and compares against the live resource tree.
+    #[test]
+    fn comment_delete_button_dispatches_the_same_action_as_the_palette() {
+        let mut app = app_with_sample();
+        let mut doc = AutoCommit::new();
+        frame(&mut app, &mut doc, 1280.0, 800.0);
+        let book_id = app.book_id();
+        let group = Uuid::from_u128(0x2222_3333_4444_5555_6666_7777_8888_9999);
+        let cid = Uuid::from_u128(0x0000_0000_0000_0000_0000_0000_0000_00AB);
+        let hl = Annotation::new(&book_id, AnnoKind::Highlight, 0, 1)
+            .with_excerpt("a marked passage")
+            .with_group(group);
+        BooksDoc::upsert_annotation(&mut doc, &hl);
+        let mut cm = Annotation::new(&book_id, AnnoKind::Note, 0, 1)
+            .with_excerpt("a marked passage")
+            .with_note("a comment")
+            .with_group(group);
+        cm.id = cid;
+        BooksDoc::upsert_annotation(&mut doc, &cm);
+        // Open the highlight's comment overlay (presentation).
+        app.comment_group = Some(group);
+        frame(&mut app, &mut doc, 1280.0, 800.0);
+
+        // The EncodedAction the palette would dispatch for "Delete comment".
+        let resources = <BooksApp as qos_actions::ResourceProvider>::resources(&app, &doc);
+        let spec_encoded = {
+            let hl_res = resources[0]
+                .children
+                .iter()
+                .find(|r| r.kind == "ebook.highlight")
+                .expect("highlight resource");
+            let comment = hl_res
+                .children
+                .iter()
+                .find(|r| r.id.as_str() == format!("ebook.comment:{cid}"))
+                .expect("comment resource");
+            let spec = comment
+                .actions
+                .iter()
+                .find(|a| a.id == "delete-comment")
+                .expect("delete-comment spec");
+            match &spec.input {
+                qos_actions::ActionInput::Immediate(enc) => enc.clone(),
+                _ => panic!("delete-comment is immediate"),
+            }
+        };
+
+        // Click the overlay's per-comment × button (the real affordance).
+        let del = find_hit(&app, |a| matches!(a, Action::DeleteComment(_)))
+            .expect("a comment delete button");
+        assert!(click(&mut app, &mut doc, del), "delete-comment click handled");
+
+        let dispatched = app.last_dispatched.clone().expect("the button dispatched an action");
+        assert_eq!(dispatched.type_id, spec_encoded.type_id);
+        assert_eq!(
+            dispatched.payload, spec_encoded.payload,
+            "the button and the palette build the identical EncodedAction",
+        );
+        // And it really removed the comment through that action.
+        assert!(
+            BooksDoc::list_annotations(&doc).iter().all(|a| a.id != cid),
+            "the comment was deleted via the dispatched action",
+        );
+    }
+
+    /// The selection-toolbar swatch, toggling an existing highlight off, dispatches
+    /// the byte-identical `EncodedAction` the book resource's "Highlight selection"
+    /// ActionSpec exports — the swatch and the palette are one source of truth.
+    /// Drives the real `SetColor` dispatch arm a swatch click invokes.
+    #[test]
+    fn selection_swatch_dispatches_the_same_action_as_the_palette() {
+        let mut app = app_with_sample();
+        let mut doc = AutoCommit::new();
+        // Create a highlight over the first word via the real swatch path, so the
+        // page layout and annotation store are populated exactly as at runtime.
+        frame(&mut app, &mut doc, 1280.0, 800.0);
+        let __p = page_point(&app);
+        dbl_click(&mut app, &mut doc, __p);
+        frame(&mut app, &mut doc, 1280.0, 800.0);
+        let swatch = find_hit(&app, |a| matches!(a, Action::SetColor(HiColor::Yellow)))
+            .expect("the yellow swatch");
+        click(&mut app, &mut doc, swatch);
+        frame(&mut app, &mut doc, 1280.0, 800.0);
+        let hl = BooksDoc::list_annotations(&doc)
+            .into_iter()
+            .find(|a| a.kind == AnnoKind::Highlight)
+            .expect("one highlight now exists");
+
+        // Re-establish the exact selection over that highlight (set directly so
+        // the test doesn't depend on a second hit-test resolving under load), so
+        // the swatch would toggle it off — a deterministic plan (pure removal, no
+        // freshly-minted ids), the case where the two paths encode identically.
+        app.hi_color = HiColor::Yellow;
+        app.sel = Some(TextSel {
+            anchor: DocPos { block: hl.block, ch: hl.start },
+            head: DocPos { block: hl.block, ch: hl.end },
+        });
+        app.selected_block = Some(hl.block);
+
+        // The palette's book-level "Highlight selection" EncodedAction, resolved
+        // from the same live selection the swatch sees.
+        let resources = <BooksApp as qos_actions::ResourceProvider>::resources(&app, &doc);
+        let spec_encoded = {
+            let spec = resources[0]
+                .actions
+                .iter()
+                .find(|a| a.id == "highlight-selection")
+                .expect("a highlight-selection spec while a selection exists");
+            match &spec.input {
+                qos_actions::ActionInput::Immediate(enc) => enc.clone(),
+                _ => panic!("highlight-selection is immediate"),
+            }
+        };
+
+        // Dispatch the swatch's action through the real handler a click invokes.
+        app.dispatch(Action::SetColor(HiColor::Yellow), &mut doc);
+        let dispatched = app.last_dispatched.clone().expect("the swatch dispatched an action");
+        assert_eq!(
+            dispatched.payload, spec_encoded.payload,
+            "the swatch and the palette build the identical EncodedAction",
+        );
+        // And it really toggled the highlight off through that action.
+        assert!(
+            BooksDoc::list_annotations(&doc).iter().all(|a| a.kind != AnnoKind::Highlight),
+            "the highlight was removed via the dispatched action",
+        );
     }
 
     // ---- bookmark toggle (icon + 'b') ---------------------------------------
