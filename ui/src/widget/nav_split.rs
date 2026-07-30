@@ -164,12 +164,24 @@ impl FlapState {
     /// so a window resize returns to the auto behaviour. Call once per frame
     /// before reading [`Self::reveal`]. The first reconcile (no prior
     /// layout) does NOT clear the preference.
+    ///
+    /// The first reconcile *does* [`Self::settle`]: the constructor picks a
+    /// `reveal` before any width is known (`open_when_docked` starts at 1.0),
+    /// so a flap whose first resolved layout is [`SplitLayout::Overlay`] would
+    /// otherwise paint fully open and ease shut over the following frames —
+    /// a drawer flashing over the content on open, and a *permanently* open
+    /// drawer in a single-frame render like `--shots`. A later breakpoint
+    /// crossing still animates; that transition is worth showing.
     pub fn reconcile(&mut self, layout: SplitLayout) {
         if self.last_layout != Some(layout) {
-            if self.last_layout.is_some() {
+            let first = self.last_layout.is_none();
+            if !first {
                 self.user_open = None;
             }
             self.last_layout = Some(layout);
+            if first {
+                self.settle(layout);
+            }
         }
     }
 
@@ -950,6 +962,46 @@ mod tests {
         ns.push.snap(false);
         ns.recompute_rects();
         assert_eq!(ns.push_pane(), PushPane::Master);
+    }
+
+    #[test]
+    fn first_reconcile_settles_the_reveal_to_the_layout_default() {
+        // `open_when_docked` guesses reveal = 1.0 before any width is known.
+        // If the first resolved layout is an overlay, the drawer must already
+        // be shut — not ease shut over the next frames, which paints it over
+        // the content and, in a single-frame render, leaves it open for good.
+        let mut f = FlapState::open_when_docked();
+        assert_eq!(f.reveal(), 1.0, "constructor guess");
+        f.reconcile(SplitLayout::Overlay);
+        assert_eq!(
+            f.reveal(),
+            0.0,
+            "first resolution snaps to the overlay default (closed)",
+        );
+        assert!(
+            !f.is_animating(SplitLayout::Overlay),
+            "and requests no frames — there is nothing to animate",
+        );
+
+        // Docked first resolution keeps it open, no transient either way.
+        let mut g = FlapState::open_when_docked();
+        g.reconcile(SplitLayout::Docked);
+        assert_eq!(g.reveal(), 1.0);
+        assert!(!g.is_animating(SplitLayout::Docked));
+    }
+
+    #[test]
+    fn a_later_breakpoint_cross_still_animates() {
+        // Only the *first* resolution snaps; a real resize is a transition the
+        // user should see.
+        let mut f = FlapState::open_when_docked();
+        f.reconcile(SplitLayout::Docked);
+        f.reconcile(SplitLayout::Overlay);
+        assert_eq!(f.reveal(), 1.0, "the reveal has not jumped");
+        assert!(
+            f.is_animating(SplitLayout::Overlay),
+            "it eases shut over the following frames",
+        );
     }
 
     #[test]
