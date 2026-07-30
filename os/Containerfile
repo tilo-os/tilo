@@ -500,8 +500,17 @@ COPY docs/secure-boot.md /usr/share/doc/qos/secure-boot.md
 # The systemd-boot install already satisfies the "some bootloader must
 # exist" invariant, so shell out to `rpm -e --nodeps` for the protected
 # ones — dnf handles the unprotected ones on the same pass.
+#
+# sbsigntools and efitools are what replaces the trust that removal takes away.
+# Deleting shim and GRUB, and building our own kernel, leaves nothing on the boot
+# path that a distribution key covers — so the machine has to be able to sign its
+# own artefacts and enrol its own Platform Key. sbsign/sbverify do the signing,
+# cert-to-efi-sig-list/efi-updatevar/efi-readvar the enrolment; without them
+# /usr/libexec/qos-secureboot can only refuse. See docs/secure-boot.md.
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
         systemd-boot-unsigned \
+        sbsigntools \
+        efitools \
     && rpm -qa | grep -E '^(shim-x64|grub2-)' | xargs -r rpm -e --nodeps \
     && dnf clean all
 
