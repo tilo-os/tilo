@@ -14,6 +14,36 @@ card/tile/grid audit across all ~47 apps.
 
 ## Executed this pass
 
+### 0. One Ctrl+K palette over the resource/action model  ✅ BUILT
+**Problem.** `ui` carried *two* parallel Ctrl+K stacks. `ui::App`'s Ctrl+K opened
+an `ActionPalette` that bridged the resource/action model (`qos_actions`
+`Resource`/`ActionSpec`, published via `Widget::resources`) into the older
+single-provider `CommandPalette`. Separately, the richer "find things" layer —
+`ui::search` (`SearchProvider`/`SearchRegistry`) + the `SearchResultsView`
+overlay + `SearchField` — existed but was **never wired to Ctrl+K**; contacts
+even declared a `ContactSearchProvider` that reached no surface. Two registries,
+two result widgets, two type→filter→activate flows.
+
+**Unified.** `ActionPalette` is now the single Ctrl+K surface: a shared
+`SearchField` over a shared `SearchResultsView`, driven by the resource/action
+model as the foundation.
+- The focused app's exported `ActionSpec`s form the **Actions** group; activating
+  one dispatches through `qos_actions` (locus-honouring, undo-recorded — the same
+  path a peer replays). A `Prompted` action collects its argument in the field.
+- Apps fold in searchable content via `Widget::search_providers()` — each
+  `SearchProvider`'s hits render as their own group (e.g. **Contacts**), and
+  activating one calls `Widget::activate_search_result()` so the app navigates
+  (presentation, not a CRDT action). The two outcomes are drained separately.
+
+`CommandPalette` stays as a general widget for the surfaces that still use it
+directly (shell global search, containers, sheets); it is simply **out of the app
+Ctrl+K path** — no second registry, one renderer, one flow. `ui::search` is
+untouched (the shell still drives its own compositor-level search through it).
+Proof: `ui/examples/ctrl_k_palette.rs` renders the unified palette (Actions +
+Contacts groups) offscreen; app-level tests in `ui/src/app.rs` prove both an
+action-dispatch and a content-navigate through the real path; contacts/ebook/tube
+tests exercise the unified `ActionPalette` API.
+
 ### 1. Card + CardGrid — the canonical grouped-content primitives  ✅ BUILT
 **Problem.** `ui` had **no `Card` and no responsive `CardGrid`**. Two shapes were
 hand-rolled everywhere, badly and inconsistently:
