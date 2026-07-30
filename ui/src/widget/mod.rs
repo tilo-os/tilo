@@ -267,6 +267,24 @@ pub trait Widget {
     /// layout even though the app itself never asked. Default no-op.
     fn on_fullscreen_changed(&mut self, _active: bool) {}
 
+    /// Which **record** this widget's document should be.
+    ///
+    /// A record is the unit of state and of collaboration: one document, one
+    /// identity, one channel (see [`crate::record`]). An app that works on one
+    /// thing at a time — a document, a PDF's markup, a book's annotations —
+    /// names it here, and the App checks that record's own document out before
+    /// the next `sync`. So opening a second file does not overwrite the first
+    /// one's state: it is a different document.
+    ///
+    /// Declarative, like [`Self::fullscreen_intent`]: return the record the
+    /// widget is on every frame. The App compares it against the live one and
+    /// only acts when they differ, so a steady value is correct and cheap.
+    /// `None` — the default — means "no opinion", and the app keeps the single
+    /// package-level document it always had.
+    ///
+    /// Only the root widget is consulted.
+    fn record_intent(&self) -> Option<crate::record::RecordCheckout> { None }
+
     // --- Collab / DnD contract extensions ---
     /// Stable identity used to look up presence and permissions for this widget.
     /// Default: opt-out (no presence tracking).
