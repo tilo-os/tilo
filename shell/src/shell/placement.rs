@@ -300,10 +300,11 @@ mod tests {
         let strip_id = tree.workspaces[0].strips[0].id;
         tree.active_strip.insert(tree.active, strip_id);
         tree.active_group.remove(&strip_id);
-        // A full-width window: the screen shows canvas 0..100 exactly,
-        // so no *interior* border is on it and the first seam past the
-        // right edge is group 1's, at 200.
-        let view = viewport(strip_id, &ids, (0.5, 99.5));
+        // The screen shows canvas 120..190 — inside group 1, with its
+        // left border behind the viewport and its right one ahead of it.
+        // That is what a full-width window scrolled into the middle of a
+        // strip looks like: no border between windows anywhere on screen.
+        let view = viewport(strip_id, &ids, (120.0, 190.0));
         assert_eq!(
             placement_for_new_window(&tree, Some(&view)),
             Placement::RightOf(ids[1]),
@@ -426,9 +427,9 @@ mod tests {
         let strip_id = tree.workspaces[0].strips[0].id;
         tree.active_strip.insert(tree.active, strip_id);
         tree.active_group.remove(&strip_id);
-        // A full-width window: the display shows group 0 and nothing
-        // else, so there is no border between windows anywhere on it.
-        let view = viewport(strip_id, &ids, (0.5, 99.5));
+        // A full-width window scrolled into the middle of the strip: the
+        // display shows the inside of group 1 and no border at all.
+        let view = viewport(strip_id, &ids, (120.0, 190.0));
 
         let (order, landed) = launch_and_adopt(
             &mut tree,
