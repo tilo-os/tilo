@@ -24,6 +24,7 @@ pub mod browser_stub;
 pub mod chrome_state;
 pub mod collab_broker;
 pub mod collab_broker_capnp;
+pub mod color_pipeline;
 pub mod crdt_text;
 pub mod cursor_interp;
 pub mod desktop_backdrop;
