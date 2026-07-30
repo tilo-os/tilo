@@ -32,7 +32,7 @@ impl Action {
         Action {
             id: "settings.open",
             label: "Open workspace settings",
-            subtitle: "General, roles, files, permissions",
+            subtitle: "Identity, members, permissions",
             apply: |st| {
                 st.overlays.ws_settings = true;
             },
