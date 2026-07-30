@@ -58,6 +58,20 @@ pub enum Placement {
     /// longer exists (the opener was closed while its document was
     /// starting).
     TabIn(GroupId),
+    /// Its own window group, inserted immediately to the right of the
+    /// group named here.
+    ///
+    /// [`Placement::NewGroup`] says "beside whatever has focus"; this
+    /// says "beside *that* one". It is what
+    /// [`crate::shell::placement::placement_for_new_window`] returns
+    /// when the position was decided from something other than the
+    /// focus pointer — a seam the user could see, in particular — so the
+    /// answer survives focus moving between the launch and the window
+    /// arriving.
+    ///
+    /// Falls back to [`Placement::NewGroup`] when the named group is
+    /// gone, exactly as [`Placement::TabIn`] does.
+    RightOf(GroupId),
 }
 
 impl Default for Placement {
@@ -79,11 +93,15 @@ impl Default for Placement {
 ///
 /// The placement comes from whichever launch this client belongs to
 /// ([`crate::shell::launcher::placement_for_toplevel`]), matched by
-/// app-id exactly as the tab's label is. A client we did not launch — or
-/// one whose app-id we cannot correlate — gets [`Placement::NewGroup`],
-/// the same as a launched app: an unrecognised window is still a new
-/// thing, and burying it as a tab inside somebody else's group is the
-/// worse of the two guesses.
+/// app-id exactly as the tab's label is — that note was written when the
+/// user asked, against the layout they were looking at.
+///
+/// A client we did not launch, or one whose app-id we cannot correlate,
+/// gets the rule applied here instead
+/// ([`crate::shell::placement::placement_for_new_window`]) with no
+/// layout snapshot: an unrecognised window is still a window opening,
+/// and it belongs beside — or inside — whatever the user is in, the same
+/// as any other.
 ///
 /// When the active workspace has no strips, a default strip (with one
 /// window group) is synthesized so the new tab always lands somewhere
@@ -95,7 +113,7 @@ pub fn adopt_toplevel(tree: &mut WorkspaceTree, surface_id: u64, app_id: Option<
     let placement = app_id
         .as_deref()
         .and_then(|id| crate::shell::launcher::placement_for_toplevel(id, surface_id))
-        .unwrap_or_default();
+        .unwrap_or_else(|| crate::shell::placement::placement_for_new_window(tree, None));
     adopt_toplevel_at(tree, surface_id, app_id, placement)
 }
 
@@ -161,16 +179,25 @@ pub fn adopt_toplevel_at(
     let strip = &mut ws.strips[strip_idx];
     let strip_id = strip.id;
 
-    // A `TabIn` whose group is gone degrades to `NewGroup` rather than
+    // A `TabIn` whose group is gone degrades to a new group rather than
     // silently landing somewhere arbitrary.
     let tab_target = match placement {
         Placement::TabIn(g) => strip.window_groups.iter().position(|w| w.id == g),
-        Placement::NewGroup => None,
+        Placement::NewGroup | Placement::RightOf(_) => None,
     };
 
     if let Some(idx) = tab_target {
         let group = &mut strip.window_groups[idx];
-        group.tabs.push(new_tab);
+        // Immediately right of the tab the user was on, not at the end
+        // of the bar: the new window is the next thing along from what
+        // they were looking at, and a tab bar reads left to right.
+        let after = group
+            .tabs
+            .iter()
+            .position(|t| t.id == group.active_tab)
+            .map(|i| i + 1)
+            .unwrap_or(group.tabs.len());
+        group.tabs.insert(after, new_tab);
         group.active_tab = tab_id;
         let group_id = group.id;
         tree.active_strip.insert(ws_id, strip_id);
@@ -186,9 +213,18 @@ pub fn adopt_toplevel_at(
         maximized: false,
     };
     let group_id = group.id;
-    // Immediately right of the focused group; at the end when nothing is
-    // focused or the pointer is stale.
-    let insert_at = active_group
+    // Immediately right of the group the placement named — the one the
+    // rule picked out, falling back to the focused one when that group
+    // is gone, and to the end of the strip when nothing is focused
+    // either.
+    let anchor = match placement {
+        Placement::RightOf(g) => Some(g).filter(|g| {
+            strip.window_groups.iter().any(|w| w.id == *g)
+        }),
+        _ => None,
+    }
+    .or(active_group);
+    let insert_at = anchor
         .and_then(|g| strip.window_groups.iter().position(|w| w.id == g))
         .map(|i| i + 1)
         .unwrap_or(strip.window_groups.len());
