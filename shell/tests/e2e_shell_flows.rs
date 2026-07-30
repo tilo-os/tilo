@@ -530,12 +530,13 @@ fn e2e_tab_drag_reorder() {
     ];
     // Active tab = Notes so the reorder doesn't accidentally also
     // change the active id mid-drag.
-    let mut group: Box<dyn Widget> = Box::new(WindowGroup::new(
-        100,
-        tabs,
-        /* active_id */ 1,
-        WindowWidth::Normal,
-    ));
+    let mut standalone = WindowGroup::new(100, tabs, /* active_id */ 1, WindowWidth::Normal);
+    // A width is a fraction of the strip it lives in. There is no `GroupRow`
+    // here to push one down, so tell the group that the 960 px capture surface
+    // *is* its strip — otherwise it resolves against the toolkit's fallback and
+    // the captured geometry has nothing to do with the frame it is drawn in.
+    standalone.set_strip_usable_px(960.0);
+    let mut group: Box<dyn Widget> = Box::new(standalone);
 
     let theme = Theme::dark();
     let mut taffy: TaffyTree<()> = TaffyTree::new();
@@ -1056,6 +1057,9 @@ fn e2e_maximized_tile_floating_controls() {
         tab_stub(4, "Browser", AppKind::Browser, "browser"),
     ];
     let mut group = WindowGroup::new(200, tabs, /* active_id */ 1, WindowWidth::Normal);
+    // See the note in `e2e_tab_drag_reorder`: no row here, so the capture
+    // surface is the strip.
+    group.set_strip_usable_px(960.0);
     assert!(!group.maximized, "group starts un-maximized");
 
     let theme = Theme::dark();
@@ -1551,6 +1555,8 @@ impl UndoHarness {
         };
         let tabs = vec![(tab, TileContent::App(Box::new(editor)))];
         let mut group = WindowGroup::new(300, tabs, 1, WindowWidth::Normal);
+        // See the note in `e2e_tab_drag_reorder`.
+        group.set_strip_usable_px(960.0);
 
         let theme = Theme::dark();
         let mut taffy: TaffyTree<()> = TaffyTree::new();
