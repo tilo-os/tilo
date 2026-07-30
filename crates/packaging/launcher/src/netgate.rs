@@ -114,6 +114,49 @@
 //! An app granted `*` keeps `--share-net` and resolves for itself, as
 //! before. There is nothing to filter, so there is nothing to broker.
 //!
+//! ## Device-local is network
+//!
+//! The device's own services are on the network like anything else, and
+//! qOS runs some: the collaboration broker, the registry, whatever a user
+//! has started. An app that reached them would have escaped its network
+//! decision through the back door, so device-local addresses are covered
+//! by the same policy as everything else:
+//!
+//! - **No network capability** ⇒ an empty namespace. The sandbox's
+//!   `127.0.0.1` is *its own* loopback, containing nothing, and the
+//!   host's is not routable from inside. Nothing to add.
+//! - **A host allowlist** ⇒ the gate resolves names in the host
+//!   namespace, so a name that resolves to `127.0.0.1` — or to the
+//!   machine's own LAN address — would otherwise reach local services.
+//!   [`is_device_local`] catches those *after* resolution, and the
+//!   destination is dropped unless the allowlist names that host
+//!   **exactly** (see [`EgressPolicy::permits_device_local`]). A suffix
+//!   pattern covers a host without the user having pointed at it, and a
+//!   name whose record points at the machine itself is the classic
+//!   rebinding move.
+//! - **`*`** ⇒ device-local is reachable, because a `*` grant does not
+//!   reach a gate at all in production: it becomes `--share-net`, which
+//!   reaches the host's loopback like any other host process.
+//!
+//! IPv4-mapped and IPv4-compatible IPv6 forms are folded to their v4
+//! address before the test, so `::ffff:127.0.0.1` is loopback here as
+//! well.
+//!
+//! ## A refusal looks like an absence of network
+//!
+//! A denied destination answers SOCKS5 `HOST_UNREACHABLE` and HTTP
+//! `502 Bad Gateway` — not `NOT_ALLOWED` / `403`, which are the wire
+//! spellings of `EACCES`. "There is no route to that host" is a state
+//! every network client already handles, usually by backing off and
+//! retrying later; "you are forbidden" is a state many handle by telling
+//! the user to fix a permission, which the user cannot do from inside the
+//! app and should not be trained to try.
+//!
+//! What this does *not* claim: a refusal is instant while a genuinely
+//! unroutable host may take until [`CONNECT_TIMEOUT`], so timing
+//! separates "refused" from "timed out". It does not separate it from the
+//! common offline states — `NXDOMAIN` and `ECONNREFUSED` are both instant.
+//!
 //! ## What this does not constrain
 //!
 //! **Ports.** A `Scope::NetHost` names a host and carries no port, so a
@@ -315,6 +358,36 @@ impl EgressPolicy {
     /// An allowlist containing `*` is not an allowlist.
     pub fn is_unrestricted(&self) -> bool {
         self.allow.iter().any(|p| p == "*")
+    }
+
+    /// Does the allowlist name `host` **exactly**, as opposed to merely
+    /// covering it?
+    ///
+    /// [`Self::permits`] is the access decision and stays as it is. This
+    /// is the narrower question device-local egress turns on: `*` covers
+    /// every host and `.example.com` covers every subdomain, but neither
+    /// is the user having pointed at one machine. Only a literal entry is.
+    ///
+    /// Case-insensitive, like [`host_covers`], because DNS is.
+    pub fn names_exactly(&self, host: &str) -> bool {
+        self.allow
+            .iter()
+            .any(|p| p != "*" && !p.starts_with('.') && p.eq_ignore_ascii_case(host))
+    }
+
+    /// May a connection to `host` land on an address of *this device*?
+    ///
+    /// Only when the user pointed at that host specifically, or when the
+    /// allowlist is `*`. The wildcard is included because in production a
+    /// `*` grant does not reach a gate at all — it becomes `--share-net`,
+    /// which reaches the host's loopback like any other host process. A
+    /// gate that were stricter than the sandbox it stands in for would be
+    /// a second, divergent interpretation of the same grant.
+    ///
+    /// Everything in between — a suffix pattern, or an exact grant whose
+    /// name resolves somewhere else than the user meant — does not.
+    pub fn permits_device_local(&self, host: &str) -> bool {
+        self.is_unrestricted() || self.names_exactly(host)
     }
 
     fn into_decision(self) -> EgressDecision {
@@ -640,14 +713,17 @@ fn serve_socks5(
             allow = ?policy.hosts(),
             "egress DENIED: the app asked for a host it was not granted"
         );
-        write_reply(&mut client, reply::NOT_ALLOWED)?;
+        // `HOST_UNREACHABLE`, not `NOT_ALLOWED`: the app is told there is
+        // no route, which is a state it already handles, rather than that
+        // it lacks a permission, which it will ask the user about.
+        write_reply(&mut client, reply::HOST_UNREACHABLE)?;
         return Ok(());
     }
 
     // Resolution happens here, after the policy decision and per
     // connection — never cached, never pinned. See the module docs on
     // name-to-address drift.
-    let upstream = match connect_upstream(&dest) {
+    let upstream = match connect_upstream(&dest, policy) {
         Ok(s) => s,
         Err(e) => {
             stats.failed.fetch_add(1, Ordering::Relaxed);
@@ -845,13 +921,17 @@ fn serve_http(
             allow = ?policy.hosts(),
             "egress DENIED: the app asked for a host it was not granted"
         );
+        // `502`, not `403`: a gateway that could not reach the host.
+        // Same reasoning as the SOCKS5 reply code above, and it makes a
+        // refused host indistinguishable from an unreachable one on both
+        // protocols the gate serves.
         let _ = client.write_all(
-            b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
         );
         return Ok(());
     }
 
-    let mut upstream = match connect_upstream(&req.dest) {
+    let mut upstream = match connect_upstream(&req.dest, policy) {
         Ok(s) => s,
         Err(e) => {
             stats.failed.fetch_add(1, Ordering::Relaxed);
@@ -878,13 +958,88 @@ fn serve_http(
     Ok(())
 }
 
-fn connect_upstream(dest: &Destination) -> io::Result<TcpStream> {
+/// Fold an address to the form the device-local test is written against:
+/// IPv4-mapped (`::ffff:127.0.0.1`) and IPv4-compatible (`::127.0.0.1`)
+/// IPv6 addresses become their IPv4 address, so one spelling of loopback
+/// cannot slip past a test written for another.
+fn canonical_ip(addr: IpAddr) -> IpAddr {
+    match addr {
+        IpAddr::V6(v6) => v6.to_ipv4().map(IpAddr::V4).unwrap_or(addr),
+        v4 => v4,
+    }
+}
+
+/// Is `addr` an address of *this device* rather than of somewhere on the
+/// network?
+///
+/// Three cases, and the third is the one a loopback check alone misses:
+///
+/// 1. loopback and the unspecified address — `127.0.0.0/8`, `::1`, `::`;
+/// 2. link-local — `169.254.0.0/16`, `fe80::/10`;
+/// 3. **any address configured on one of this machine's interfaces.** A
+///    machine's own LAN address is an ordinary route to its own services,
+///    so a name that resolves to it is device-local however public it
+///    looks. The kernel is asked directly: `bind(2)` to an address the
+///    host does not hold fails `EADDRNOTAVAIL`, and binding UDP port 0
+///    needs no privilege and sends nothing.
+///
+/// Private ranges as such are *not* device-local — `192.168.1.7` is
+/// usually a different machine on the LAN, and calling that "local"
+/// would silently redefine a granted host.
+pub fn is_device_local(addr: IpAddr) -> bool {
+    // Before folding: `Ipv6Addr::to_ipv4` maps `::1` to `0.0.0.1`, so the
+    // v6 loopback has to be recognised as itself first.
+    if addr.is_loopback() || addr.is_unspecified() {
+        return true;
+    }
+    let addr = canonical_ip(addr);
+    if addr.is_loopback() || addr.is_unspecified() {
+        return true;
+    }
+    let link_local = match addr {
+        IpAddr::V4(v4) => v4.is_link_local(),
+        // `fe80::/10`, spelled out because `Ipv6Addr::is_unicast_link_local`
+        // is not stable.
+        IpAddr::V6(v6) => (v6.segments()[0] & 0xffc0) == 0xfe80,
+    };
+    link_local || is_assigned_to_this_host(addr)
+}
+
+/// Does this machine hold `addr` on one of its interfaces?
+fn is_assigned_to_this_host(addr: IpAddr) -> bool {
+    std::net::UdpSocket::bind((addr, 0)).is_ok()
+}
+
+/// Resolve and connect, dropping any candidate address that turns out to
+/// be this device unless the policy named the host exactly.
+///
+/// The device-local filter runs on the **resolved** address, because that
+/// is the only place it can run: a name says nothing about where it
+/// points, and the record can change between two connections. Dropping
+/// the address rather than refusing the request is deliberate — what the
+/// app sees is a host with no usable address, which is what a host with no
+/// usable address looks like.
+fn connect_upstream(dest: &Destination, policy: &EgressPolicy) -> io::Result<TcpStream> {
     let addrs: Vec<std::net::SocketAddr> = match dest {
         Destination::Domain(host, port) => (host.as_str(), *port).to_socket_addrs()?.collect(),
         Destination::Addr(ip, port) => vec![std::net::SocketAddr::new(*ip, *port)],
     };
+    let key = dest.host_key();
+    let device_local_allowed = policy.permits_device_local(&key);
     let mut last = io::Error::new(io::ErrorKind::NotFound, "name resolved to no addresses");
     for addr in addrs {
+        if !device_local_allowed && is_device_local(addr.ip()) {
+            tracing::warn!(
+                host = %key,
+                addr = %addr.ip(),
+                allow = ?policy.hosts(),
+                "egress DROPPED: the host resolves to this device, and the grant does not name \
+                 it exactly. Device-local services are behind the same decision as the rest of \
+                 the network."
+            );
+            last = io::Error::from_raw_os_error(libc::ENETUNREACH);
+            continue;
+        }
         match TcpStream::connect_timeout(&addr, CONNECT_TIMEOUT) {
             Ok(s) => return Ok(s),
             Err(e) => last = e,
@@ -1296,5 +1451,116 @@ mod tests {
         // An absolute-form URI with a scheme we do not proxy must not
         // silently become a hostname.
         assert!(parse_http_proxy_head("GET ftp://example.com/x HTTP/1.1\r\n\r\n").is_none());
+    }
+
+    // ---- device-local egress ---------------------------------------
+
+    #[test]
+    fn loopback_and_link_local_are_device_local_in_every_spelling() {
+        for addr in [
+            "127.0.0.1",
+            "127.0.0.53",
+            "0.0.0.0",
+            "::1",
+            "::",
+            "169.254.169.254",
+            "fe80::1",
+            // IPv4-mapped and IPv4-compatible loopback. A test written
+            // only against `is_loopback()` misses both.
+            "::ffff:127.0.0.1",
+            "::127.0.0.1",
+        ] {
+            assert!(
+                is_device_local(addr.parse().unwrap()),
+                "{addr} is an address of this device"
+            );
+        }
+    }
+
+    #[test]
+    fn a_public_address_is_not_device_local() {
+        // Reserved for documentation (RFC 5737 / 3849), so no machine
+        // running this test holds them.
+        for addr in ["198.51.100.9", "203.0.113.7", "2001:db8::1"] {
+            assert!(
+                !is_device_local(addr.parse().unwrap()),
+                "{addr} is not this device"
+            );
+        }
+    }
+
+    #[test]
+    fn this_hosts_own_addresses_are_device_local_even_when_they_look_public() {
+        // Every address the host actually holds is a route to the host's
+        // own services, whatever range it is in. Loopback is the one
+        // every machine has, so it is the one that can be asserted
+        // without knowing the network this runs on.
+        assert!(is_device_local("127.0.0.1".parse().unwrap()));
+        // The mechanism itself: an address the host does not hold cannot
+        // be bound.
+        assert!(!is_assigned_to_this_host("198.51.100.9".parse().unwrap()));
+    }
+
+    #[test]
+    fn only_an_exact_grant_or_the_wildcard_reaches_this_device() {
+        let suffix = EgressPolicy::new(v(&[".localhost"]));
+        assert!(
+            suffix.permits("localhost"),
+            "the suffix pattern does cover the name — the access decision is unchanged"
+        );
+        assert!(
+            !suffix.permits_device_local("localhost"),
+            "but covering a name is not naming it, so it must not reach the device itself"
+        );
+
+        let exact = EgressPolicy::new(v(&["localhost"]));
+        assert!(exact.permits_device_local("localhost"));
+
+        // A wildcard allowlist becomes `--share-net` in production, which
+        // reaches the host's loopback; the gate must not be stricter than
+        // the sandbox it stands in for.
+        assert!(EgressPolicy::new(v(&["*"])).permits_device_local("localhost"));
+
+        // An exact grant for one host does not carry device-local access
+        // for a different one.
+        assert!(!exact.permits_device_local("other.localhost"));
+    }
+
+    // The production connect path, against a real listener on the host's
+    // loopback — the shape a local service (the collaboration broker, the
+    // registry) actually has. One variable changes between the two
+    // halves: how the grant is spelled.
+    #[test]
+    fn a_suffix_grant_cannot_reach_a_loopback_service_an_exact_grant_can() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind loopback service");
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            while let Ok((mut s, _)) = listener.accept() {
+                let _ = s.write_all(b"LOCAL-SERVICE");
+            }
+        });
+
+        let dest = Destination::Domain("localhost".to_string(), port);
+
+        let suffix = EgressPolicy::new(v(&[".localhost"]));
+        let err = connect_upstream(&dest, &suffix)
+            .err()
+            .expect("a suffix grant must not reach this device");
+        assert_eq!(
+            err.raw_os_error(),
+            Some(libc::ENETUNREACH),
+            "and the failure must look like an absence of network, not a refusal: {err}"
+        );
+
+        let exact = EgressPolicy::new(v(&["localhost"]));
+        let mut stream = connect_upstream(&dest, &exact)
+            .expect("an exact grant for a device-local host must reach it");
+        let mut buf = Vec::new();
+        stream.read_to_end(&mut buf).expect("read the service reply");
+        assert_eq!(
+            String::from_utf8_lossy(&buf),
+            "LOCAL-SERVICE",
+            "the same service, the same request — only the spelling of the grant differed"
+        );
     }
 }
