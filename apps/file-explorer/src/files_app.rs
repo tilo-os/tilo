@@ -1016,6 +1016,14 @@ impl FileExplorerWidget {
 
     // --- inline rename -------------------------------------------------
 
+    /// The transient status line shown in the footer — an operation
+    /// result, or the reason an open was refused. Readable so a host (or
+    /// a test standing in for one) can confirm the explorer told the user
+    /// something rather than swallowing it.
+    pub fn status_line(&self) -> Option<&str> {
+        self.status.as_deref()
+    }
+
     /// Whether an inline rename is currently in progress.
     pub fn is_renaming(&self) -> bool {
         self.renaming.is_some()
