@@ -37,7 +37,7 @@ use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
-use ui::widget::{TextInput, Widget};
+use ui::widget::{Button, ButtonFace, TextInput, Widget};
 
 use ui::widget::SplitLayout;
 
@@ -796,28 +796,22 @@ impl ApiTesterApp {
         );
         self.hits.method_btn = method_btn;
 
-        // Send button (right).
+        // Send button (right): the accent primary action. Dimmed while a
+        // request is in flight; hover feedback comes from the shared face.
         let send_btn = Rect::new(area.x1 - PAD - SEND_W, cy0, area.x1 - PAD, cy0 + 36.0);
-        let send_shape = RoundedRect::from_rect(send_btn, theme.tokens.radii.md as f64);
-        let send_bg = if self.sending {
-            theme.accent_primary.with_alpha_factor(0.5)
-        } else {
-            theme.accent_primary
-        };
-        scene.fill(Fill::NonZero, t, send_bg, None, &send_shape);
         let send_label = if self.sending { "Sending…" } else { "Send" };
-        let (slw, _) = tr.measure(send_label, theme.tokens.typography.scale.sm, None);
-        tr.draw_text_weighted(
+        Button::paint(
             scene,
-            send_label,
-            theme.tokens.typography.scale.sm,
-            Color::WHITE,
-            t * Affine::translate((
-                send_btn.center().x - slw as f64 / 2.0,
-                send_btn.center().y - 7.0,
-            )),
-            None,
-            TextWeight::Bold,
+            t,
+            tr,
+            theme,
+            &ButtonFace::new(send_btn, send_label)
+                .radius(theme.tokens.radii.md as f64)
+                .text_size(theme.tokens.typography.scale.sm)
+                .weight(TextWeight::Bold)
+                .primary()
+                .hovered(send_btn.contains(self.last_cursor) && !self.sending)
+                .disabled(self.sending),
         );
         self.hits.send_btn = send_btn;
 
