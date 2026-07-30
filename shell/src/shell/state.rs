@@ -754,11 +754,16 @@ impl Workspace {
             .collect()
     }
 
-    /// The portal-shaped view of app grants, for the Permissions tab.
+    /// A **snapshot** of app grants in the portal's `Capability` shape.
     ///
-    /// Derived on every call from [`Self::capabilities`] — there is no
-    /// cached copy to fall out of sync.
-    pub fn grants(&self) -> HashMap<AppId, Vec<Capability>> {
+    /// Rebuilt from [`Self::capabilities`] on every call and returned by
+    /// value: there is no cached copy to fall out of sync, and equally
+    /// nothing to write to. Mutating the returned map edits a temporary
+    /// and stores nothing — three tests seeded themselves that way and
+    /// silently asserted against an empty workspace, so the name says
+    /// "snapshot" to make that obvious at the call site. To grant, use
+    /// [`Self::grant_app`] or [`Self::grant_as`].
+    pub fn app_grants_snapshot(&self) -> HashMap<AppId, Vec<Capability>> {
         let now = Some(now_unix());
         let mut out: HashMap<AppId, Vec<Capability>> = HashMap::new();
         for c in &self.capabilities {
@@ -4851,7 +4856,7 @@ mod capability_tests {
             Workspace::new(WorkspaceId::from(1), "Demo"),
         ] {
             assert!(ws.capabilities.is_empty());
-            assert!(ws.grants().is_empty());
+            assert!(ws.app_grants_snapshot().is_empty());
             assert!(!ws.has_app_grants());
             assert!(
                 !ws.may_administer(&"anyone".to_string()),
@@ -4935,7 +4940,7 @@ mod capability_tests {
         let json = serde_json::to_string(&ws).expect("serialize");
         let round: Workspace = serde_json::from_str(&json).expect("deserialize");
 
-        let view = round.grants();
+        let view = round.app_grants_snapshot();
         assert_eq!(view.len(), 1);
         let caps = view.get("org.gnome.gedit").expect("app present");
         assert_eq!(caps.len(), 2);
@@ -4992,7 +4997,7 @@ mod capability_tests {
         }"#;
         let ws: Workspace = serde_json::from_str(legacy).expect("legacy compat");
         assert!(ws.capabilities.is_empty());
-        assert!(ws.grants().is_empty());
+        assert!(ws.app_grants_snapshot().is_empty());
         assert_eq!(ws.owner, None, "a legacy workspace records no owner");
         assert_eq!(ws.id, WorkspaceId::from(1));
         assert_eq!(ws.name, "Old");

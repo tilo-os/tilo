@@ -1245,7 +1245,7 @@ mod active_tab_tests {
 
         let guard = st.tree();
         let ws = guard.workspaces.iter().find(|w| w.id == ws_id).unwrap();
-        let grants = ws.grants();
+        let grants = ws.app_grants_snapshot();
         let caps = grants.get("org.gimp.GIMP").unwrap_or_else(|| {
             panic!(
                 "grant must be keyed by the foreign client's real app-id; \
@@ -1288,7 +1288,7 @@ mod active_tab_tests {
 
         let guard = st.tree();
         let ws = guard.workspaces.iter().find(|w| w.id == ws_id).unwrap();
-        let grants = ws.grants();
+        let grants = ws.app_grants_snapshot();
         assert!(
             grants.contains_key("org.nirios.Editor"),
             "built-in Editor must be keyed by its canonical app-id; \
