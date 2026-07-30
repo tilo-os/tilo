@@ -552,6 +552,14 @@ pub fn walk_widget(
     if let Some(id) = w.test_id() {
         out.insert(id.to_string(), w.get_rect());
     }
+    // Affordances the widget paints itself, addressable by name. Skipping
+    // zero-area entries is what makes a name mean "on screen now".
+    for (name, rect) in w.test_rects() {
+        if rect.area() > 0.0 {
+            out.insert(format!("{path}/{name}"), rect);
+            out.entry(name).or_insert(rect);
+        }
+    }
     let mut child_counts: HashMap<String, usize> = HashMap::new();
     for child in w.children() {
         walk_widget(child, &path, &mut child_counts, out);

@@ -410,12 +410,15 @@ fn draw_section_header(
     transform: Affine,
     origin: Point,
     label: &str,
-    count: usize,
+    count: Option<usize>,
     text_renderer: &mut TextRenderer,
     theme: &Theme,
 ) {
     let tokens = &theme.tokens;
-    let text = format!("{label} · {count}");
+    let text = match count {
+        Some(n) => format!("{label} · {n}"),
+        None => label.to_string(),
+    };
     text_renderer.draw_text(
         scene,
         &text,
@@ -763,17 +766,6 @@ fn draw_empty_state(
 // Capability vocabulary — labels
 // =====================================================================
 
-/// The verb a capability is phrased in, as a user-facing word.
-pub fn verb_label(verb: Verb) -> &'static str {
-    match verb {
-        Verb::Read => "View",
-        Verb::Comment => "Comment",
-        Verb::Write => "Edit",
-        Verb::Invite => "Invite",
-        Verb::Admin => "Administer",
-    }
-}
-
 /// The role a member holds, as a user-facing word.
 pub fn role_label(role: CapRole) -> &'static str {
     match role {
@@ -834,10 +826,28 @@ pub fn short_id(id: &str) -> String {
     format!("{head}…")
 }
 
-/// One line describing what a capability allows: the verb plus the
+/// One line describing what a capability allows, phrased for the kind of
 /// thing it ranges over.
+///
+/// "verb · scope" mechanically produces lines like "View · the
+/// microphone", which is not what anyone would say. A device is *used*,
+/// a host is *reached*, a path is read or edited, and the workspace is
+/// administered — so the sentence is built per scope kind rather than
+/// concatenated.
 pub fn capability_allows(cap: &CapOverride) -> String {
-    format!("{} · {}", verb_label(cap.verb), scope_label(&cap.scope))
+    let what = scope_label(&cap.scope);
+    match (&cap.scope, cap.verb) {
+        (Scope::Device(_), Verb::Write | Verb::Admin) => format!("Control {what}"),
+        (Scope::Device(_), _) => format!("Use {what}"),
+        (Scope::NetHost(_), _) => format!("Reach {what}"),
+        (Scope::Workspace | Scope::Room(_), Verb::Admin) => format!("Administer {what}"),
+        (Scope::Action { .. }, _) => format!("Run {what}"),
+        (_, Verb::Admin) => format!("Administer {what}"),
+        (_, Verb::Write) => format!("Edit {what}"),
+        (_, Verb::Comment) => format!("Comment on {what}"),
+        (_, Verb::Invite) => format!("Invite others to {what}"),
+        (_, Verb::Read) => format!("View {what}"),
+    }
 }
 
 /// Short expiry badge label.
@@ -1432,7 +1442,7 @@ pub fn draw_members_pane(
         transform,
         Point::new(pane_rect.x0 + PANE_PAD_X, pane_rect.y0 + PANE_PAD_TOP),
         "MEMBERS",
-        ordered_roster(ws).len(),
+        Some(ordered_roster(ws).len()),
         text_renderer,
         theme,
     );
@@ -1527,22 +1537,26 @@ pub fn draw_members_pane(
             None,
             &RoundedRect::from_rect(row.role_rect, tokens.radii.md as f64),
         );
-        if role_interactive {
-            scene.stroke(
-                &Stroke::new(1.0),
-                transform,
-                chip_tint.with_alpha_factor(0.60),
-                None,
-                &RoundedRect::from_rect(row.role_rect, tokens.radii.md as f64),
-            );
-        }
+        // A stroke on every chip: it is what makes the interactive ones
+        // look interactive and the owner's status badge still look like a
+        // badge rather than a smudge.
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            chip_tint.with_alpha_factor(if role_interactive { 0.60 } else { 0.35 }),
+            None,
+            &RoundedRect::from_rect(row.role_rect, tokens.radii.md as f64),
+        );
         let role_text = role_label(row.role);
         let (rw, rh) = text_renderer.measure(role_text, detail_size, None);
+        // The label is `text_primary`, not the chip's own hue: a tinted
+        // label on a tinted fill of the same hue is unreadable, and the
+        // chip already carries the colour meaning in its fill and stroke.
         text_renderer.draw_text(
             scene,
             role_text,
             detail_size,
-            chip_tint.with_alpha_factor(chip_alpha),
+            colors.text_primary.with_alpha_factor(chip_alpha),
             transform
                 * Affine::translate((
                     row.role_rect.x0 + 10.0,
@@ -1832,7 +1846,7 @@ pub fn draw_permissions_pane(
         transform,
         Point::new(pane_rect.x0 + PANE_PAD_X, pane_rect.y0 + PANE_PAD_TOP),
         "GRANT A PERMISSION",
-        GRANT_CHOICES.len(),
+        None,
         text_renderer,
         theme,
     );
@@ -2019,7 +2033,7 @@ pub fn draw_permissions_pane(
                 transform,
                 Point::new(row.row_rect.x0, row.row_rect.y0 - SECTION_HEADER_HEIGHT + 6.0),
                 row.subject.kind.section_label(),
-                group_counts(row.subject.kind),
+                Some(group_counts(row.subject.kind)),
                 text_renderer,
                 theme,
             );
@@ -2608,7 +2622,7 @@ mod permissions_pane_tests {
         .expect("owner grants");
         let layout = permissions_pane_layout(&ws, pane());
         let row = &layout.rows[0];
-        assert_eq!(row.allows, "Edit · files under /var/workspace");
+        assert_eq!(row.allows, "Edit files under /var/workspace");
         assert_eq!(row.expiry, "Session");
         assert_eq!(
             row.granted_by.as_deref(),
