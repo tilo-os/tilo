@@ -1462,6 +1462,18 @@ mod tests {
         use crate::compositor::tab_binding::{Placement, adopt_toplevel, adopt_toplevel_at};
         crate::shell::launcher::clear_pending_placements();
         let mut tree = WorkspaceTree::bootstrap_default();
+        // A lone selected window, so each adoption opens its own column
+        // rather than joining a tabbed group — which is the arrangement
+        // this test is about.
+        {
+            let strip_id = tree.workspaces[0].strips[0].id;
+            let g = &mut tree.workspaces[0].strips[0].window_groups[0];
+            g.tabs.truncate(1);
+            g.active_tab = g.tabs[0].id;
+            let gid = g.id;
+            tree.active_strip.insert(tree.active, strip_id);
+            tree.set_active_group(strip_id, gid);
+        }
         let first = adopt_toplevel(&mut tree, 11, None);
         assert!(is_visible_tab(&tree, 11), "a fresh adoption becomes active");
 
