@@ -5483,7 +5483,13 @@ impl Widget for WordProcessorWidget {
                 }
                 _ => self.pointer,
             };
-            if self.history.band().contains(at) || self.history.is_dragging() {
+            // The strip also takes the keyboard outright while its name field is
+            // up: a name that could only be typed with the pointer held still
+            // over the band would be unusable.
+            if self.history.band().contains(at)
+                || self.history.is_dragging()
+                || self.history.wants_keyboard()
+            {
                 let outcome =
                     self.history
                         .handle_event(event, scale_factor, modifiers, state, _path);
@@ -5491,6 +5497,12 @@ impl Widget for WordProcessorWidget {
                     self.needs_commit = true;
                     self.history.follow_document();
                     self.refresh_blocks(state);
+                }
+                if outcome.named {
+                    // Naming a version is a document write; it commits with the
+                    // same author and timestamp as an edit, and lands on the undo
+                    // stack so it can be taken back the usual way.
+                    self.needs_commit = true;
                 }
                 if outcome.handled {
                     *handled = true;
