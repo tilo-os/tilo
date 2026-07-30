@@ -279,6 +279,11 @@ pub struct GroupRow {
     shift_armed: bool,
     /// The make-space slide currently playing, if any.
     shift_anim: Option<ShiftAnim>,
+    /// When set, the point on the curve [`Self::shift_anim_t`] reports
+    /// instead of reading the clock, and the slide is held against
+    /// retirement. Only ever set by [`Self::hold_shift_at`], which the
+    /// capture harness uses; always `None` in a running shell.
+    shift_hold: Option<Duration>,
 }
 
 /// One display's horizontal extent in the compositor's combined
@@ -325,6 +330,7 @@ impl GroupRow {
             last_local_x: HashMap::new(),
             shift_armed: false,
             shift_anim: None,
+            shift_hold: None,
         }
     }
 
@@ -537,7 +543,7 @@ impl GroupRow {
         let Some(anim) = &self.shift_anim else {
             return 1.0;
         };
-        let elapsed = anim.started.elapsed();
+        let elapsed = self.shift_hold.unwrap_or_else(|| anim.started.elapsed());
         if elapsed >= Duration::from_millis(MAKE_SPACE_ANIM_MS) {
             return 1.0;
         }
@@ -566,6 +572,28 @@ impl GroupRow {
     /// True while any group is still travelling.
     fn shift_in_flight(&self) -> bool {
         self.shift_anim.is_some() && self.shift_anim_t() < 1.0
+    }
+
+    /// Freeze the in-flight slide `elapsed` into its curve, and report
+    /// whether there was one to freeze.
+    ///
+    /// The curve runs on wall time, and an offscreen render costs far
+    /// more wall time per frame than the whole curve lasts — so a
+    /// capture harness stepping frames sees the start and the end and
+    /// nothing in between. This lets it ask for a specific point
+    /// instead. What it then renders is the production `draw` at that
+    /// point, not a reconstruction of it.
+    ///
+    /// The freeze also holds the slide against the per-layout retirement,
+    /// so the harness can walk the whole curve however long each render
+    /// takes.
+    #[cfg(any(test, debug_assertions))]
+    pub fn hold_shift_at(&mut self, elapsed: Duration) -> bool {
+        if self.shift_anim.is_none() {
+            return false;
+        }
+        self.shift_hold = Some(elapsed);
+        true
     }
 
     /// Remove the group with id `id`. No-op if absent. Returns
@@ -1525,7 +1553,7 @@ impl Widget for GroupRow {
         }
         // Retire a settled slide so `needs_animation_frame` stops
         // pumping and `draw` stops composing an extra transform.
-        if self.shift_anim.is_some() && self.shift_anim_t() >= 1.0 {
+        if self.shift_hold.is_none() && self.shift_anim.is_some() && self.shift_anim_t() >= 1.0 {
             self.shift_anim = None;
         }
         // Clamp scroll into bounds — but use the SAME widened upper
