@@ -1165,6 +1165,17 @@ impl ShellOverlayHost {
     /// the window as the single display — the right answer in that mode.
     fn strip_output_spans(&self) -> Vec<OutputSpan> {
         let outputs: Vec<OutputGeometry> = if self.outputs.is_empty() {
+            // No backend has told us about its displays yet. `self.rect` is
+            // only set in `apply_layout`, and this runs during
+            // `build_layout`, so on a first frame it is still zero — a
+            // synthesised span would hand every strip a 1 px basis and
+            // nothing would paint. Returning no spans instead lets
+            // `GroupRow::basis_for` use its own chain (its laid-out width,
+            // then a default), which is the answer for any host that does
+            // not publish output geometry at all.
+            if self.rect.width() <= 1.0 {
+                return Vec::new();
+            }
             vec![OutputGeometry {
                 x: 0.0,
                 width: self.rect.width(),
