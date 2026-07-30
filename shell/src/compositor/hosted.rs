@@ -101,22 +101,27 @@ pub fn run_with_full_options(opts: HostedOptions) {
     // tests + restart cases keep producing the familiar `0x0001,
     // 0x0002, …` id sequence. The salt-0 default is the explicit
     // back-compat contract.
-    if enable_peer_sync {
-        match load_or_create_keypair(&peer_key_path()) {
+    // Refused rather than downgraded when the device key will not load:
+    // the salt comes from that key, and syncing an unsalted id space
+    // lets two peers mint colliding ids, which CRDT sync then folds into
+    // one row.
+    let enable_peer_sync = enable_peer_sync
+        && match load_or_create_keypair(&peer_key_path()) {
             Ok(kp) => {
                 let salt = peer_salt_from_keypair(&kp);
                 tree.set_peer_salt(salt);
                 tree.seed_next_id_from_self();
                 tracing::info!("peer-sync: id salt set to 0x{:04x}", salt);
+                true
             }
             Err(e) => {
-                tracing::warn!(
-                    "peer-sync: keypair load failed ({e}); ids remain unsalted \
-                     (cross-peer collisions possible)"
+                tracing::error!(
+                    "peer-sync: device key load failed ({e}); peer sync stays off \
+                     rather than syncing an unsalted id space"
                 );
+                false
             }
-        }
-    }
+        };
 
     // Permissions must outlive the process. Recording where to write
     // the tree is what turns an `Always` grant into a durable one:

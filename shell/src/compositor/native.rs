@@ -1072,7 +1072,15 @@ const INVITE_EXPIRY_SECONDS: u64 = 3600;
 /// same reasons: an unowned room has no administrators, and a room
 /// whose identity is re-minted each boot is a different room every
 /// morning.
-fn load_session_tree(enable_peer_sync: bool) -> crate::shell::state::WorkspaceTreeHandle {
+///
+/// Returns the tree alongside whether peer sync may come up. It is
+/// refused when the device key will not load, because the id salt comes
+/// from that key: syncing an unsalted id space lets two peers mint
+/// colliding ids and CRDT sync then folds two distinct workspaces into
+/// one row.
+fn load_session_tree(
+    enable_peer_sync: bool,
+) -> (crate::shell::state::WorkspaceTreeHandle, bool) {
     use crate::shell::persist;
 
     let path = persist::state_json_path();
@@ -1083,6 +1091,7 @@ fn load_session_tree(enable_peer_sync: bool) -> crate::shell::state::WorkspaceTr
     // row. The salt is derived from the libp2p keypair, so it has to be
     // set before the id counter is seeded off what is already in the
     // tree — hence the re-seed.
+    let mut peer_sync_possible = enable_peer_sync;
     if enable_peer_sync {
         match crate::network::behaviour::load_or_create_keypair(
             &crate::shell::network::peer_key_path(),
@@ -1094,9 +1103,10 @@ fn load_session_tree(enable_peer_sync: bool) -> crate::shell::state::WorkspaceTr
                 tracing::info!("peer-sync: id salt set to 0x{:04x}", salt);
             }
             Err(e) => {
-                tracing::warn!(
-                    "peer-sync: keypair load failed ({e}); ids remain unsalted \
-                     (cross-peer collisions possible)"
+                peer_sync_possible = false;
+                tracing::error!(
+                    "peer-sync: device key load failed ({e}); peer sync stays off \
+                     rather than syncing an unsalted id space"
                 );
             }
         }
@@ -1120,7 +1130,7 @@ fn load_session_tree(enable_peer_sync: bool) -> crate::shell::state::WorkspaceTr
             adopted.len()
         );
     }
-    tree.shared()
+    (tree.shared(), peer_sync_possible)
 }
 
 pub fn run() -> ! {
@@ -1217,7 +1227,7 @@ pub fn run() -> ! {
     // entry point had none of it: `FrameBuilder::new` handed the
     // compositor `WorkspaceTree::bootstrap_default()`, so every boot was
     // a new desktop with unowned rooms and nothing was ever written back.
-    let tree_handle = load_session_tree(enable_peer_sync);
+    let (tree_handle, enable_peer_sync) = load_session_tree(enable_peer_sync);
     let mut frame_builder = FrameBuilder::with_handle(
         tree_handle.clone(),
         enable_peer_sync,
