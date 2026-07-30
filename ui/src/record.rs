@@ -597,19 +597,34 @@ pub struct RecordSet {
 impl RecordSet {
     /// The production set: per-record documents under this package's state
     /// directory, in the room the launcher put this process in.
-    pub fn open(package_id: impl Into<String>) -> Self {
+    ///
+    /// `manifest_id` is the app's own `[package] id`, and it is only a
+    /// fallback: `QOS_PACKAGE_ID` — which the launcher sets on every sandboxed
+    /// launch — always wins, exactly as it does for
+    /// [`crate::persist::open`]. Resolving it differently here would put a
+    /// package's records in one directory and its room index in another.
+    pub fn open(manifest_id: impl Into<String>) -> Self {
+        let package_id = std::env::var("QOS_PACKAGE_ID")
+            .ok()
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| manifest_id.into());
         let home = std::env::var("QOS_WORKSPACE_ID")
             .ok()
             .filter(|s| !s.is_empty())
             .or_else(|| std::env::var("QUICK_CLUSTER_ID").ok().filter(|s| !s.is_empty()))
             .unwrap_or_default();
         Self {
-            package_id: package_id.into(),
+            package_id,
             home,
             open: HashMap::new(),
             active: None,
             persistent: true,
         }
+    }
+
+    /// The package these records are stored under.
+    pub fn package_id(&self) -> &str {
+        &self.package_id
     }
 
     /// A set that never touches the disk. For tests, for `--shots`, and for

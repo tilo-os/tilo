@@ -100,6 +100,14 @@ pub struct Driver {
     permissions: PermissionContext,
     modifiers: winit::event::Modifiers,
     viewport: (u32, u32),
+    /// Records this driver has open, when the app under test uses them.
+    ///
+    /// Present so a headless run edits the same documents the live app does:
+    /// without it a record-aware app would be driven against its room index
+    /// instead of the record it has checked out, and the harness would be
+    /// testing something the user never runs.
+    records: Option<crate::record::RecordSet>,
+    room_index: Option<automerge::AutoCommit>,
 }
 
 impl Driver {
@@ -115,6 +123,8 @@ impl Driver {
             text: TextRenderer::new(),
             theme: Theme::dark(),
             scene: Scene::new(),
+            records: None,
+            room_index: None,
             presence: PresenceCtx::empty(),
             permissions: PermissionContext::permissive(),
             modifiers: winit::event::Modifiers::default(),
@@ -122,6 +132,50 @@ impl Driver {
         };
         d.relayout();
         d
+    }
+
+    /// Drive a record-aware app: the live document is a record's, and the
+    /// widget names which one. Mirrors [`crate::App::with_records`].
+    pub fn with_records(
+        mut self,
+        records: crate::record::RecordSet,
+        room_index: automerge::AutoCommit,
+    ) -> Self {
+        self.records = Some(records);
+        self.room_index = Some(room_index);
+        self.relayout();
+        self
+    }
+
+    /// The records this driver has open, if the app under test uses them.
+    pub fn records(&self) -> Option<&crate::record::RecordSet> {
+        self.records.as_ref()
+    }
+
+    /// The record the root widget names, if any. Read before installing a
+    /// record set so an app that does not use records is left alone.
+    pub fn root_record_intent(&self) -> Option<crate::record::RecordCheckout> {
+        self.root.record_intent()
+    }
+
+    /// Offer the live document to its record's writer. Returns whether a
+    /// record set handled it — `false` means the caller should persist the
+    /// document itself, as an app without records does.
+    pub fn persist_tick(&mut self) -> bool {
+        match self.records.as_mut() {
+            Some(set) => {
+                set.tick(&mut self.state.doc);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Write out every open record and wait for it to land.
+    pub fn persist_flush(&mut self) {
+        if let Some(set) = self.records.as_mut() {
+            set.flush(&mut self.state.doc);
+        }
     }
 
     /// Re-run the app's frame: pull state from the CRDT, rebuild the Taffy
@@ -136,6 +190,11 @@ impl Driver {
     /// produce. Nothing is rasterised: the `Scene` is encoded on the CPU and
     /// thrown away, so no GPU or display is involved.
     pub fn relayout(&mut self) {
+        // Records first, as `ui::App` does: an action that opened a document
+        // must be editing that document by the time the next frame syncs.
+        if let Some(set) = self.records.as_mut() {
+            crate::record::tick(set, &mut self.state, self.room_index.as_mut(), &*self.root);
+        }
         self.root.sync(&mut self.state.doc, &self.state.root);
         self.taffy = TaffyTree::new();
         self.node_map.clear();
@@ -517,7 +576,16 @@ pub fn run(spec: Spec, root: Box<dyn Widget>, manifest_id: &str) -> i32 {
         );
         return 3;
     }
+    // An app whose root names a record keeps its content in that record's own
+    // document, so the driver has to hold the same record set the live app
+    // does — otherwise the run would edit the room index and prove nothing
+    // about what the user sees. An app that names no record is unaffected: the
+    // set stays empty and the live document is the package's, as before.
     let mut driver = Driver::new(state, root, spec.viewport.unwrap_or(DEFAULT_VIEWPORT));
+    if driver.root_record_intent().is_some() {
+        let (room, _) = crate::persist::open(manifest_id);
+        driver = driver.with_records(crate::record::RecordSet::open(manifest_id), room.doc);
+    }
 
     let mut failure: Option<String> = None;
     for action in &spec.actions {
@@ -525,8 +593,11 @@ pub fn run(spec: Spec, root: Box<dyn Widget>, manifest_id: &str) -> i32 {
             failure = Some(e);
             break;
         }
-        autosave.request(&mut driver.state_mut().doc);
+        if !driver.persist_tick() {
+            autosave.request(&mut driver.state_mut().doc);
+        }
     }
+    driver.persist_flush();
 
     if let Some(path) = &spec.targets {
         let mut names: Vec<(String, [f64; 4])> = driver
