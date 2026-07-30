@@ -1293,6 +1293,7 @@ impl ShellOverlayHost {
         }
         let mut any_change = false;
         let st = chrome.borrow();
+        let records = st.records().clone();
         let tree = st.tree();
         if let Some(ws) = tree.active_workspace() {
             for strip in &ws.strips {
@@ -1314,7 +1315,7 @@ impl ShellOverlayHost {
                 // vector and losing it).
                 for (idx, g) in strip.window_groups.iter().enumerate() {
                     if !live_ids.contains(&g.id) {
-                        let mut fresh = crate::shell::to_ui_window_group(g);
+                        let mut fresh = crate::shell::to_ui_window_group(g, &records);
                         // A window arriving is worth seeing arrive. The
                         // row's own splice paths (a tab dragged out into
                         // its own group) already run this fade; a window
@@ -1355,11 +1356,17 @@ impl ShellOverlayHost {
                             title: tab.title.clone(),
                             app_kind: Some(crate::shell::tile_app_kind(&tab.tile)),
                         };
-                        live.insert_detached_tab(
-                            idx.min(live.tab_count()),
-                            desc,
-                            ui::widget::TileHost::new(crate::shell::to_ui_tile(&tab.tile)),
+                        // A tab spliced into a live group gets its own
+                        // document too — an adopted toplevel or a
+                        // freshly-opened app is as much an open thing as
+                        // one that was there at boot.
+                        let mut host =
+                            ui::widget::TileHost::new(crate::shell::to_ui_tile(&tab.tile));
+                        host.bind_record(
+                            records.clone(),
+                            crate::shell::tab_documents::scratch_tab_record(tab.id),
                         );
+                        live.insert_detached_tab(idx.min(live.tab_count()), desc, host);
                         any_change = true;
                     }
                     for stale in live_tab_ids.difference(&tree_tab_ids) {

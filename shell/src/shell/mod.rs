@@ -1135,7 +1135,7 @@ pub fn build_nirios_overlay_host_with_options(
 /// [`ShellOverlayHost::resync_strips_from_tree`] path on chrome-
 /// revision bumps can reach for the same conversion when splicing
 /// freshly-added groups into a live [`GroupRow`].
-pub fn to_ui_window_group(g: &state::WindowGroup) -> UiGroup {
+pub fn to_ui_window_group(g: &state::WindowGroup, records: &ui::record::RecordStore) -> UiGroup {
     let tabs_with_content: Vec<(TabDescriptor, UiTile)> = g
         .tabs
         .iter()
@@ -1151,8 +1151,12 @@ pub fn to_ui_window_group(g: &state::WindowGroup) -> UiGroup {
             )
         })
         .collect();
-    UiGroup::new(g.id, tabs_with_content, g.active_tab, to_ui_width(g.width))
-        .with_maximized(g.maximized)
+    let mut group = UiGroup::new(g.id, tabs_with_content, g.active_tab, to_ui_width(g.width))
+        .with_maximized(g.maximized);
+    // Every tab gets its own document before it is ever synced, so no
+    // hosted app writes a keystroke into the shell's own state.
+    tab_documents::bind_group_records(&mut group, records);
+    group
 }
 
 /// Wire the hosted file explorer's document activation to
@@ -1175,7 +1179,38 @@ pub fn build_nirios_overlay_host_with_handle(
     tree_handle: state::WorkspaceTreeHandle,
     enable_peer_sync: bool,
 ) -> (overlay_host::ShellOverlayHost, chrome_state::Chrome) {
+    // In-memory records: a host built without being told where to keep
+    // them is a test, a probe or a `--shots` run, and none of those may
+    // leave a user's tabs on disk. The session passes its own store
+    // through [`build_nirios_overlay_host_with_records`].
+    build_nirios_overlay_host_with_records(
+        tree_handle,
+        enable_peer_sync,
+        ui::record::RecordStore::in_memory(),
+    )
+}
+
+/// The package the shell keeps its own tabs' documents under. A scratch
+/// tab belongs to the compositor, not to any installed app, so its
+/// records live in the compositor's own state directory.
+pub const SHELL_RECORDS_PACKAGE: &str = "org.nirios.Shell";
+
+/// The persistent store a session uses: one file per open tab, under the
+/// compositor's own state directory.
+pub fn session_record_store() -> ui::record::RecordStore {
+    ui::record::RecordStore::open(SHELL_RECORDS_PACKAGE)
+}
+
+/// As [`build_nirios_overlay_host_with_handle`], but with the store the
+/// open tabs' documents live in named by the caller.
+pub fn build_nirios_overlay_host_with_records(
+    tree_handle: state::WorkspaceTreeHandle,
+    enable_peer_sync: bool,
+    records: ui::record::RecordStore,
+) -> (overlay_host::ShellOverlayHost, chrome_state::Chrome) {
     let chrome = chrome_state::ChromeState::new_with_handle(tree_handle.clone());
+    chrome.borrow_mut().set_records(records);
+    let records = chrome.borrow().records().clone();
     // Point every hosted file explorer at the desktop's one open path, so
     // activating a row there resolves the owning app, grants the read and
     // focuses an already-open document exactly as a palette hit does. The
@@ -1251,7 +1286,11 @@ pub fn build_nirios_overlay_host_with_handle(
             // drag-drops. Each WindowGroup still handles its own close /
             // reorder / maximize; GroupRow only wakes when a drag release
             // lands outside the source bar.
-            let groups: Vec<UiGroup> = strip.window_groups.iter().map(to_ui_window_group).collect();
+            let groups: Vec<UiGroup> = strip
+                .window_groups
+                .iter()
+                .map(|g| to_ui_window_group(g, &records))
+                .collect();
             let mut strip_row: Box<GroupRow> = Box::new(
                 GroupRow::new(groups)
                     // Reserve canvas-x [0, SIDEBAR_WIDTH] for the
@@ -1388,11 +1427,23 @@ pub fn sync_tab_presence_from_tree(tree: &WorkspaceTree, ctx: &mut ui::presence:
 /// editor body, the per-char measurement in `EditorApp::draw` handles
 /// out-of-range indices gracefully — `char_index_to_byte` clamps to
 /// `text.len()` so the caret just rides at end-of-buffer.
-pub fn seed_demo_editor_presence(ctx: &mut ui::presence::PresenceCtx) {
+pub fn seed_demo_editor_presence(tree: &WorkspaceTree, ctx: &mut ui::presence::PresenceCtx) {
     use ui::permissions::UserId;
     use ui::presence::{PathSegment, PresenceKey, SelectionRange};
+    // The key has to name the *document*, not just the field: each Editor
+    // tab is its own record with an `editor_body` of its own, so a caret
+    // published under the bare field name would be drawn in every one of
+    // them at once. Seed the first Editor tab in the tree — the one this
+    // dev aid exists to make visible.
+    let Some(tab_id) = editor_tab_ids(tree).into_iter().next() else {
+        return;
+    };
+    let record = tab_documents::scratch_tab_record(tab_id);
     let key = PresenceKey::Widget {
-        path: vec![PathSegment::Field("editor_body".into())],
+        path: vec![
+            PathSegment::Field(record.id.as_str().into()),
+            PathSegment::Field("editor_body".into()),
+        ],
     };
     let alice = UserId("alice".into());
     ctx.register_presence(&key, alice.clone());
@@ -1402,4 +1453,26 @@ pub fn seed_demo_editor_presence(ctx: &mut ui::presence::PresenceCtx) {
         alice,
         SelectionRange { start: 60, end: 72 }, // short multi-char band on the same line
     );
+}
+
+/// Every tab in `tree` hosting the shell's Editor, in walk order.
+fn editor_tab_ids(tree: &WorkspaceTree) -> Vec<u64> {
+    let mut out = Vec::new();
+    for w in &tree.workspaces {
+        for s in &w.strips {
+            for g in &s.window_groups {
+                for t in &g.tabs {
+                    let is_editor = matches!(
+                        &t.tile,
+                        ShellTile::AppPlaceholder { kind: ShellKind::Other(name), .. }
+                            if name.eq_ignore_ascii_case("Editor")
+                    );
+                    if is_editor {
+                        out.push(t.id);
+                    }
+                }
+            }
+        }
+    }
+    out
 }
