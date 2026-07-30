@@ -391,6 +391,11 @@ RUN mkdir -p /etc/qos \
 
 # FUSE mount service
 COPY os/usr/lib/systemd/system/fs.service /usr/lib/systemd/system/fs.service
+# The capability list that mount enforces. Shipped read-only under /usr;
+# tmpfiles.d copies it to /var/lib/qos on first boot, where it can be
+# edited and survives image updates. See fs.service for why the subject
+# is a principal rather than a key.
+COPY os/usr/share/qos/fs-capabilities.json /usr/share/qos/fs-capabilities.json
 
 # Wayland session desktop entries. Two files land here:
 #   - shell.desktop          — default session (no peer-sync)
