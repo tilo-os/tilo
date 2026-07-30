@@ -1356,3 +1356,95 @@ fn a_confirmation_refuses_to_proceed_when_the_recovery_keyslot_has_vanished() {
     );
     assert_eq!(f.counter_now(), before, "the counter must not have moved");
 }
+
+/// The staged update's keyslot must survive the confirmation of the generation
+/// that is currently running.
+///
+/// This is a regression test for a real defect: `drop_set` treated any generation
+/// newer than the running one as stale residue, which reads reasonably and is
+/// wrong — the normal state of a machine mid-update is "running N, keyslot sealed
+/// for N+1". Confirming N deleted N+1's keyslot, and the reboot into N+1 had
+/// nothing to unseal and landed on the recovery key.
+#[test]
+fn confirming_the_running_generation_keeps_the_staged_generations_keyslot() {
+    let f = fixture!();
+    let recovery = b"recovery-key-for-the-staging-test";
+    let img = luks_image(f.dir(), recovery);
+    let ws = f.ws();
+    let preds = f.dir().join("predictions");
+    let state = f.dir().join("state.json");
+    for g in [5u64, 6] {
+        let p = f.predict(g, &f.sign_priv, "");
+        policy::write_signed_prediction(&preds, g, &f.cfg.pcr_bank, &f.cfg.pcrs, &p).expect("write");
+    }
+    let floor = f.floor(3);
+
+    // Running generation 5, and generation 6 staged with its keyslot sealed.
+    keyslots::enroll_generation(
+        &f.runner, &ws, &img, &f.cfg, 5, floor,
+        &[f.predict(5, &f.sign_priv, "")], recovery, None,
+    )
+    .expect("enroll 5");
+    let (slot6, _) = keyslots::enroll_generation(
+        &f.runner, &ws, &img, &f.cfg, 6, floor,
+        &[f.predict(6, &f.sign_priv, "")], recovery, None,
+    )
+    .expect("stage 6");
+    confirm::save_state(
+        &state,
+        &confirm::State {
+            nv_index: f.cfg.nv_index,
+            nv_base: floor.base,
+            last_confirmed: Some(5),
+            foreign_keyslots: vec![0],
+        },
+    )
+    .expect("seed state");
+
+    let o = confirm::run(
+        &f.runner,
+        &ws,
+        &confirm::Request {
+            cfg: &f.cfg,
+            device: &img,
+            generation: 5,
+            prediction_dir: &preds,
+            recovery: keyslots::RecoveryCheck::Key(recovery),
+            pin: None,
+            proof: None,
+            floor_at_least: None,
+            state_path: &state,
+            scratch: f.dir(),
+            dry_run: false,
+        },
+    )
+    .expect("confirm 5");
+    assert!(
+        o.dropped.is_empty(),
+        "confirming 5 must not drop anything, least of all the staged 6: {:?}",
+        o.dropped
+    );
+
+    let left: Vec<u64> = keyslots::list_tokens(&f.runner, &img)
+        .expect("list")
+        .into_iter()
+        .map(|(_, t)| t.generation)
+        .collect();
+    assert!(left.contains(&6), "generation 6's token must survive: {left:?}");
+    assert!(
+        keyslots::keyslots_in_use(&f.runner, &img).expect("slots").contains(&slot6),
+        "generation 6's keyslot must survive"
+    );
+
+    // And it still unseals, so the reboot into 6 has something to unlock with.
+    let t6 = keyslots::list_tokens(&f.runner, &img)
+        .expect("list")
+        .into_iter()
+        .find(|(_, t)| t.generation == 6)
+        .expect("token 6")
+        .1;
+    assert!(
+        f.try_unseal(&t6, None).expect("unseal 6").is_some(),
+        "the staged generation's secret must still be releasable"
+    );
+}
