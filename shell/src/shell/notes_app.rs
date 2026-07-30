@@ -688,6 +688,17 @@ impl Widget for NotesApp {
         "NotesApp"
     }
 
+    /// The record this tab's document is. Folded into the body's presence
+    /// key so a peer's caret arriving for one tab is not drawn in another
+    /// tab of the same app.
+    fn set_record_scope(&mut self, record: &ui::record::RecordId) {
+        self.body.set_record(record);
+    }
+
+    fn presence_key(&self) -> Option<ui::presence::PresenceKey> {
+        Some(self.body.presence_key())
+    }
+
     fn get_rect(&self) -> Rect {
         self.rect
     }

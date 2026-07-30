@@ -555,6 +555,28 @@ impl WindowGroup {
     pub fn take_pending_search_open(&mut self) -> Option<u64> {
         self.pending_search_open.take()
     }
+    /// Give every tab in this group its own document.
+    ///
+    /// `record_for` names the record a tab holds — the host decides that,
+    /// because only it knows what a tab id means (see
+    /// `shell::tab_documents`). Binding is idempotent per tab, so a
+    /// rebuild of the window tree re-binds without handing anybody a fresh
+    /// empty document.
+    ///
+    /// Not done inside [`Self::new`]: a group is also built by a bare `ui`
+    /// host and by tests that have no records at all, and a tile with no
+    /// binding keeps the old behaviour of editing whatever document the
+    /// parent pass carries.
+    pub fn bind_tab_records(
+        &mut self,
+        store: &crate::record::RecordStore,
+        record_for: impl Fn(u64) -> crate::record::RecordCheckout,
+    ) {
+        for (tab_id, host) in self.hosts.iter_mut() {
+            host.bind_record(store.clone(), record_for(*tab_id));
+        }
+    }
+
     pub fn active_host_mut(&mut self) -> Option<&mut TileHost> {
         let id = self.bar.active_id();
         self.hosts.iter_mut().find(|(i, _)| *i == id).map(|(_, h)| h)

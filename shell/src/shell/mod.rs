@@ -55,6 +55,7 @@ pub mod sidebar_wheel_disc;
 pub mod split_row;
 pub mod state;
 pub mod system_monitor;
+pub mod tab_documents;
 pub mod test_support;
 pub mod tile;
 pub mod topbar;

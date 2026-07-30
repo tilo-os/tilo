@@ -317,6 +317,20 @@ pub trait Widget {
     /// [`Self::children`] itself.
     fn appearance_intent(&self) -> Option<crate::theme::AppearanceIntent> { None }
 
+    /// Told to a widget when its host hands it a record's document.
+    ///
+    /// The inverse of [`Self::record_intent`]: the widget names the record
+    /// it wants, this names the one it got — which is also the answer for
+    /// a widget that never asked and was simply given the one its tab
+    /// holds.
+    ///
+    /// A widget that publishes presence **must** fold this into its
+    /// presence key. Two instances of one app are two records now, and a
+    /// key that only names the field ("the notes body") is the same key in
+    /// both of them: a peer's caret arriving for one lands in whichever
+    /// one drew last. Default: ignore, for the widgets that publish none.
+    fn set_record_scope(&mut self, _record: &crate::record::RecordId) {}
+
     // --- Collab / DnD contract extensions ---
     /// Stable identity used to look up presence and permissions for this widget.
     /// Default: opt-out (no presence tracking).
