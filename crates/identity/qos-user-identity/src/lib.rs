@@ -148,9 +148,8 @@ impl UserIdentity {
     }
 }
 
-/// A per-device Ed25519 keypair. Analogous to
-/// `/var/lib/qos-fs/peer-key` today but scoped to the new identity
-/// model.
+/// A per-device Ed25519 keypair — the one at
+/// `/var/lib/qos/device/keypair.bin`, scoped to the identity model.
 ///
 /// Devices generate a fresh keypair on first boot. The public half
 /// is embedded in the [`DeviceCert`] the trusted-device pool signs
