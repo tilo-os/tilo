@@ -244,10 +244,8 @@ fn cmd_shell(store: &Store, args: ShellArgs) -> Result<()> {
                 report_ephemeral_exit(&name, &d);
             }
         }
-        if !status.success() {
-            if let Some(code) = status.code() {
-                std::process::exit(code);
-            }
+        if let Some(code) = status.code().filter(|_| !status.success()) {
+            std::process::exit(code);
         }
         Ok(())
     }
@@ -302,7 +300,7 @@ fn cmd_list(store: &Store) -> Result<()> {
         println!("No layers. `tinker` opens one.");
         return Ok(());
     }
-    println!("{:<20} {:<12} {:<10} {}", "LAYER", "BASE", "KIND", "NOTE");
+    println!("{:<20} {:<12} {:<10} NOTE", "LAYER", "BASE", "KIND");
     for l in layers {
         let stack = if l.stacked_on.is_empty() {
             String::new()
