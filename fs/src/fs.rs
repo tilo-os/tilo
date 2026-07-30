@@ -636,9 +636,8 @@ impl Filesystem for QuickFS {
             reply.error(to_errno(ENOENT));
             return;
         }
-        let nlink = self.visible_dir_nlink(ino.0);
-        let ns = self.namespace.lock().unwrap();
-        match ns.getattr(ino.0) {
+        let found = self.namespace.lock().unwrap().getattr(ino.0);
+        match found {
             Some(mut attr) => {
                 if let Some(len) = buf_len.or(doc_len) {
                     attr.size = len;
@@ -647,8 +646,9 @@ impl Filesystem for QuickFS {
                 if attr.kind == FileType::Directory {
                     // Matches the filtered listing, including at the mount
                     // root: an identity granted nothing sees `nlink == 2`
-                    // and `size == 0` — an ordinary empty directory.
-                    attr.nlink = nlink;
+                    // and `size == 0` — an ordinary empty directory. Only
+                    // directories pay for it.
+                    attr.nlink = self.visible_dir_nlink(ino.0);
                 }
                 reply.attr(&self.ttl_for(is_doc), &attr);
             }
@@ -972,15 +972,15 @@ impl Filesystem for QuickFS {
             .unwrap()
             .get(&ino.0)
             .map(|b| b.len() as u64);
-        let nlink = self.visible_dir_nlink(ino.0);
-        match self.namespace.lock().unwrap().getattr(ino.0) {
+        let found = self.namespace.lock().unwrap().getattr(ino.0);
+        match found {
             Some(mut attr) => {
                 if let Some(len) = buf_len {
                     attr.size = len;
                     attr.blocks = len.div_ceil(512);
                 }
                 if attr.kind == FileType::Directory {
-                    attr.nlink = nlink;
+                    attr.nlink = self.visible_dir_nlink(ino.0);
                 }
                 reply.attr(&TTL, &attr);
             }
