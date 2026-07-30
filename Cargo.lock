@@ -10163,6 +10163,7 @@ dependencies = [
  "serde_json",
  "serial_test",
  "taffy",
+ "tempfile",
  "tracing",
  "tracing-subscriber",
  "ui",
