@@ -285,6 +285,23 @@ pub trait Widget {
     /// Only the root widget is consulted.
     fn record_intent(&self) -> Option<crate::record::RecordCheckout> { None }
 
+    /// The typed presentation fields this widget contributes to the App's
+    /// [`View`](crate::view::View) — its scroll offset(s) and current view mode
+    /// — captured on freeze (and, later, broadcast to presence) and restored on
+    /// thaw via [`restore_view_state`](Self::restore_view_state).
+    ///
+    /// Distinct from [`get_state`](Self::get_state), which captures the
+    /// *focused* widget's caret/selection: this is the structured, broadcastable
+    /// presentation state a scroll container or a mode-switching root owns, and
+    /// the scrollable is usually not the focused widget. Only the root widget is
+    /// consulted. Default: contributes nothing.
+    fn view_state(&self) -> Option<crate::view::ViewContribution> { None }
+
+    /// Restore the presentation fields captured by
+    /// [`view_state`](Self::view_state). Called on the root widget on thaw.
+    /// Default: no-op.
+    fn restore_view_state(&mut self, _view: &crate::view::ViewContribution) {}
+
     /// A widget's desired **global appearance** (theme + high-contrast +
     /// reduced-motion + UI-scale + text-scale), polled by [`crate::app::App`]
     /// each frame when [`crate::app::App::appearance_reconcile`] is enabled.

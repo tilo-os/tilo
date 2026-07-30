@@ -5674,3 +5674,102 @@ mod action_palette_tests {
         assert!(app.needs_sync && app.layout_dirty, "navigation marks a redraw");
     }
 }
+
+// ---------------------------------------------------------------------------
+// Freeze / thaw: the App is (de)serializable as a whole — its State document
+// plus its View — through one override seam. See `crate::view` for the design.
+// Kept as a small, self-contained impl block so the bulk of `app.rs` is
+// untouched.
+// ---------------------------------------------------------------------------
+impl crate::view::FreezeThaw for App {
+    /// Default state serialization for a CRDT app: `doc.save()`. `AutoCommit`'s
+    /// save takes `&mut self` to flush its open transaction; freeze is `&self`
+    /// and a cold path (memory eviction / reboot), so we save a clone rather
+    /// than widen the signature.
+    fn serialize_state(&self) -> Vec<u8> {
+        self.state.doc.clone().save()
+    }
+
+    /// Default state restore for a CRDT app: load the document and adopt it as
+    /// the live one (which also resets the undo history, as a document swap
+    /// must — the old stacks name changes this document has never seen).
+    fn restore_state(&mut self, bytes: &[u8]) -> Result<(), crate::view::ThawError> {
+        let doc = automerge::AutoCommit::load(bytes)
+            .map_err(|e| crate::view::ThawError::State(e.to_string()))?;
+        self.state.adopt_doc(doc);
+        Ok(())
+    }
+
+    /// Capture the live presentation into a [`View`](crate::view::View): the
+    /// focused widget's caret/selection (through the same ephemeral
+    /// `get_state` mechanism the undo path uses), the open resource, the
+    /// viewport, and the root widget's scroll/view-mode contribution.
+    fn capture_view(&self) -> crate::view::View {
+        use crate::view::{FocusView, View, ViewRect};
+
+        let focus = self.focused_node.and_then(|id| {
+            let ordinal = self.focusable_order.iter().position(|&x| x == id)?;
+            let ephemeral = self
+                .node_map
+                .get(&id)
+                .and_then(|&w| unsafe { (*w).get_state() })
+                .unwrap_or_default();
+            Some(FocusView { ordinal, ephemeral })
+        });
+
+        let open_resource = self
+            .root_widget
+            .record_intent()
+            .map(|c| c.id.as_str().to_string());
+
+        let viewport = self
+            .last_frame_size
+            .map(|s| ViewRect {
+                x: 0.0,
+                y: 0.0,
+                width: s.width as f64,
+                height: s.height as f64,
+            })
+            .unwrap_or_default();
+
+        let contrib = self.root_widget.view_state().unwrap_or_default();
+
+        View {
+            scroll: contrib.scroll,
+            focus,
+            open_resource,
+            viewport,
+            view_mode: contrib.view_mode,
+        }
+    }
+
+    /// Restore a [`View`](crate::view::View) onto the live app: hand the
+    /// scroll/view-mode fields back to the root widget, then move focus to the
+    /// captured ordinal and replay the focused widget's ephemeral caret via
+    /// `set_state`. `open_resource` is carried for presence/reboot to reopen the
+    /// record; the record-navigation wiring is the host's and is not driven
+    /// here.
+    fn restore_view(&mut self, view: &crate::view::View) {
+        self.root_widget
+            .restore_view_state(&crate::view::ViewContribution {
+                scroll: view.scroll.clone(),
+                view_mode: view.view_mode.clone(),
+            });
+
+        if let Some(f) = &view.focus {
+            if let Some(&id) = self.focusable_order.get(f.ordinal) {
+                self.set_focused_node(Some(id));
+                if !f.ephemeral.is_empty() {
+                    if let Some(&w) = self.node_map.get(&id) {
+                        unsafe {
+                            (*w).set_state(&f.ephemeral);
+                        }
+                    }
+                }
+            }
+        }
+
+        self.layout_dirty = true;
+        self.needs_sync = true;
+    }
+}
