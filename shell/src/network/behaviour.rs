@@ -1,10 +1,11 @@
-//! libp2p `NetworkBehaviour` for nirios — Phase 2 Task 2.1.
+//! libp2p `NetworkBehaviour` for nirios.
 //!
 //! Combines gossipsub (for [`crate::network::protocol::NeighbourMsg`] fan-out
 //! across the workspace topic) and mDNS (for LAN peer discovery) into a single
-//! derived behaviour. The peer identity is an ed25519 keypair persisted at
-//! `/var/lib/qos-fs/peer-key` so the same `PeerId` survives compositor
-//! restarts.
+//! derived behaviour. The peer identity is the machine's device key, read from
+//! [`DEVICE_KEY_PATH`] — the same file the FUSE mount derives its iroh node id
+//! from — so the `PeerId` survives compositor restarts *and* names the same
+//! device the filesystem and the CRDT author do.
 //!
 //! # Video substream
 //!
@@ -62,7 +63,7 @@ impl NiriosBehaviour {
 }
 
 /// Derive a deterministic 16-bit peer salt from the local libp2p
-/// keypair (C-1). The salt occupies the high 16 bits of every id
+/// keypair. The salt occupies the high 16 bits of every id
 /// minted by [`crate::shell::state::next_id`] so two peers minting
 /// ids in parallel can never collide.
 ///
@@ -106,45 +107,121 @@ fn fnv1a_64(bytes: &[u8]) -> u64 {
     h
 }
 
-/// Load (or create) the persistent ed25519 keypair at `path`.
+/// Where the machine's one device key lives. The FUSE mount reads the
+/// same file, so the compositor's libp2p `PeerId` and the filesystem's
+/// iroh `NodeId` are two encodings of a single identity.
+pub const DEVICE_KEY_PATH: &str = "/var/lib/qos/device/keypair.bin";
+
+/// Where the compositor used to keep a libp2p keypair of its own,
+/// unrelated to any other identity on the machine. Read once, to carry
+/// an existing installation's peer id over to [`DEVICE_KEY_PATH`] — see
+/// [`load_or_create_keypair`].
+pub const LEGACY_PEER_KEY_PATH: &str = "/var/lib/qos-fs/peer-key";
+
+/// Load the device key at `path` and present it as a libp2p keypair,
+/// generating one on first boot.
 ///
-/// On first call (or if the file is unreadable / unparseable) a fresh
-/// ed25519 keypair is generated, written to `path` (creating any missing
-/// parent directories), and returned. Subsequent calls return the same
-/// keypair so the compositor's `PeerId` is stable across restarts.
+/// The stored form is the bare 32-byte Ed25519 seed — the same file, in
+/// the same format, that the filesystem reads for its iroh node key. So
+/// the compositor does not have a network identity of its own: it has
+/// the device's, expressed in libp2p's encoding.
+///
+/// **A key file that exists but cannot be read is an error.** It used to
+/// be silently replaced with a fresh keypair, which made identity loss
+/// indistinguishable from first boot: the machine rejoined the mesh
+/// under a new `PeerId`, every invite naming the old one was dead, and
+/// nothing reported a problem. Now a bad mode, a wrong length, or an
+/// I/O failure all propagate, and the bytes are left on disk so a
+/// restore is still possible.
+///
+/// One migration is performed: when `path` holds a libp2p protobuf
+/// keypair (the older on-disk shape) its Ed25519 seed is adopted and the
+/// file rewritten in device-key form, so an existing installation keeps
+/// the `PeerId` its peers already know it by.
 pub fn load_or_create_keypair(
     path: &std::path::Path,
 ) -> std::io::Result<libp2p::identity::Keypair> {
-    use std::io::Read;
-    if let Ok(mut f) = std::fs::File::open(path) {
-        let mut bytes = Vec::new();
-        f.read_to_end(&mut bytes)?;
-        if let Ok(kp) = libp2p::identity::Keypair::from_protobuf_encoding(&bytes) {
-            return Ok(kp);
+    if path.exists() {
+        return read_device_keypair(path);
+    }
+    // Nothing at `path`. On a system that predates the shared device
+    // key, the compositor's own keypair is the identity this machine is
+    // already known by — carry it over rather than renaming the machine.
+    let legacy = std::path::Path::new(LEGACY_PEER_KEY_PATH);
+    if path == std::path::Path::new(DEVICE_KEY_PATH) && legacy.exists() {
+        if let Some(seed) = seed_from_libp2p_protobuf(&std::fs::read(legacy)?) {
+            write_seed(path, &seed)?;
+            return keypair_from_seed(&seed);
         }
-        // File exists but is unreadable as a keypair — fall through and
-        // overwrite it with a fresh one rather than panicking.
+        tracing::warn!(
+            legacy = %legacy.display(),
+            "peer-sync: legacy peer key is not an ed25519 libp2p keypair; minting a device key"
+        );
     }
+    let seed = ed25519_dalek::SigningKey::generate(&mut rand_core::OsRng).to_bytes();
+    write_seed(path, &seed)?;
+    keypair_from_seed(&seed)
+}
+
+/// Read an existing key file, migrating the older libp2p-protobuf shape
+/// in place. Every failure is returned; none is a reason to re-key.
+fn read_device_keypair(
+    path: &std::path::Path,
+) -> std::io::Result<libp2p::identity::Keypair> {
+    match qos_user_identity::persist::read_signing_key(path) {
+        Ok(sk) => keypair_from_seed(&sk.to_bytes()),
+        Err(qos_user_identity::PersistError::WrongKeyLength(_)) => {
+            // Not 32 bytes. Either the older protobuf keypair — which
+            // we can migrate without changing the identity — or damage,
+            // which must be reported.
+            let bytes = std::fs::read(path)?;
+            let seed = seed_from_libp2p_protobuf(&bytes).ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!(
+                        "{} is neither a 32-byte device key nor an ed25519 libp2p keypair \
+                         ({} bytes); refusing to replace it",
+                        path.display(),
+                        bytes.len()
+                    ),
+                )
+            })?;
+            write_seed(path, &seed)?;
+            keypair_from_seed(&seed)
+        }
+        Err(e) => Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("{} could not be read as a device key: {e}", path.display()),
+        )),
+    }
+}
+
+/// Pull the Ed25519 seed out of a libp2p protobuf-encoded keypair, or
+/// `None` if the bytes are not one (or are a non-ed25519 key type).
+fn seed_from_libp2p_protobuf(bytes: &[u8]) -> Option<[u8; 32]> {
+    let kp = libp2p::identity::Keypair::from_protobuf_encoding(bytes).ok()?;
+    let ed = kp.try_into_ed25519().ok()?;
+    Some(ed.secret().as_ref().try_into().ok()?)
+}
+
+/// Expand a seed into the libp2p keypair. Same 32 bytes, same public
+/// key, so the `PeerId` is a function of the device key alone.
+fn keypair_from_seed(seed: &[u8; 32]) -> std::io::Result<libp2p::identity::Keypair> {
+    libp2p::identity::Keypair::ed25519_from_bytes(*seed).map_err(std::io::Error::other)
+}
+
+/// Write the seed with mode `0600` and no window where it is readable
+/// at its final path — the private key impersonates this device on the
+/// mesh, and the previous write-then-chmod left it briefly at the
+/// process umask.
+fn write_seed(path: &std::path::Path, seed: &[u8; 32]) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
+        std::fs::create_dir_all(parent)?;
     }
-    let kp = libp2p::identity::Keypair::generate_ed25519();
-    let bytes = kp.to_protobuf_encoding().map_err(std::io::Error::other)?;
-    std::fs::write(path, bytes)?;
-    // C-8 (security): the ed25519 private key impersonates this peer
-    // in the libp2p mesh. Default `std::fs::write` honours the
-    // process umask which is typically `0644` — that lets any local
-    // user copy the key. Tighten to `0600` immediately after the
-    // write. A separate process that beat us between the write and
-    // the chmod can only see the bytes for that brief window; we
-    // can't atomically create-with-mode without an `openat2` dance,
-    // which is more complexity than this single-host secret needs.
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let perms = std::fs::Permissions::from_mode(0o600);
-        std::fs::set_permissions(path, perms)?;
-    }
-    Ok(kp)
+    qos_user_identity::persist::write_signing_key(
+        path,
+        &ed25519_dalek::SigningKey::from_bytes(seed),
+    )
 }
 
 #[cfg(test)]
@@ -170,6 +247,104 @@ mod tests {
         let kp2 = load_or_create_keypair(&path).expect("second load reads");
 
         assert_eq!(kp1.public().to_peer_id(), kp2.public().to_peer_id());
+    }
+
+    /// The defining property of P2-2's fix: a key file that exists but
+    /// cannot be read must raise. Overwriting it would rejoin the mesh
+    /// under a new `PeerId`, silently killing every invite that names
+    /// the old one, with identity loss looking exactly like first boot.
+    #[test]
+    fn unreadable_key_file_raises_instead_of_rotating_identity() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("keypair.bin");
+        std::fs::write(&path, b"not a key, not a keypair").expect("write junk");
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+
+        let err = load_or_create_keypair(&path).expect_err("must not replace the file");
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            b"not a key, not a keypair",
+            "the bytes must be left on disk so a restore is possible"
+        );
+    }
+
+    /// A world-readable key is a reportable condition too, not a reason
+    /// to mint a replacement.
+    #[test]
+    fn world_readable_key_file_raises_instead_of_rotating_identity() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("keypair.bin");
+        let kp = load_or_create_keypair(&path).expect("first load creates");
+        let before = kp.public().to_peer_id();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        assert!(
+            load_or_create_keypair(&path).is_err(),
+            "a key readable by other local users must be reported"
+        );
+        // Still the same key on disk — tightening the mode recovers it.
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert_eq!(
+            load_or_create_keypair(&path).unwrap().public().to_peer_id(),
+            before
+        );
+    }
+
+    /// An installation that already had a libp2p protobuf keypair keeps
+    /// its `PeerId` — the seed is adopted into the device-key format
+    /// rather than the machine being renamed.
+    #[test]
+    fn legacy_libp2p_keypair_is_adopted_without_changing_the_peer_id() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("keypair.bin");
+
+        let legacy = Keypair::generate_ed25519();
+        let expected = legacy.public().to_peer_id();
+        std::fs::write(&path, legacy.to_protobuf_encoding().unwrap()).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+
+        let loaded = load_or_create_keypair(&path).expect("migrates in place");
+        assert_eq!(
+            loaded.public().to_peer_id(),
+            expected,
+            "migration must preserve the identity peers already know"
+        );
+        // Rewritten in device-key form, so the mount reads the same file.
+        assert_eq!(std::fs::read(&path).unwrap().len(), 32);
+        assert_eq!(
+            load_or_create_keypair(&path).unwrap().public().to_peer_id(),
+            expected
+        );
+    }
+
+    /// The libp2p `PeerId` is a function of the device key alone: the
+    /// same 32 bytes the FUSE mount reads for its iroh node id. Without
+    /// this the compositor and the filesystem are two anonymous
+    /// identities on one machine.
+    #[test]
+    fn peer_id_is_derived_from_the_device_key_seed() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("keypair.bin");
+        let kp = load_or_create_keypair(&path).expect("creates");
+
+        let seed: [u8; 32] = std::fs::read(&path).unwrap().try_into().expect("32 bytes");
+        let expected = Keypair::ed25519_from_bytes(seed).unwrap();
+        assert_eq!(kp.public().to_peer_id(), expected.public().to_peer_id());
+
+        // …and it is the public key dalek derives from the same seed,
+        // which is what makes the peer id, the node id and the CRDT
+        // author one identity.
+        let dalek = ed25519_dalek::SigningKey::from_bytes(&seed);
+        assert_eq!(
+            kp.public().try_into_ed25519().unwrap().to_bytes(),
+            dalek.verifying_key().to_bytes()
+        );
     }
 
     #[test]
