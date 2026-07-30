@@ -494,11 +494,35 @@ impl CollaborationManager {
     /// 2. Otherwise try `runtime_collab::try_connect()` and enter SDK
     ///    mode on `Ok`; enter Disabled mode on `Err(NotAvailable)`.
     ///
-    /// Both modes auto-send `Hello { app_id, cluster_id }` — the
-    /// address the broker routes this connection's traffic on. See
-    /// [`auto_hello_env`] for where those two values come from and in
-    /// what order.
+    /// Both modes auto-send `Hello { app_id, cluster_id, record }` —
+    /// the address the broker routes this connection's traffic on. See
+    /// [`auto_hello_env`] for where the first two values come from and
+    /// in what order. This constructor announces **no record**, which
+    /// is the pre-record addressing: the app's whole state is one
+    /// document per `(app, room)`. An app that has adopted records
+    /// uses [`Self::for_record`].
     pub fn new() -> Self {
+        Self::new_scoped(None)
+    }
+
+    /// A manager whose traffic is scoped to **one record** — one
+    /// document, one change graph, one channel.
+    ///
+    /// This is the whole of "apps announce a channel per record": the
+    /// broker keeps routing opaque bytes and never materialises a
+    /// document, and what changes is that the sender now says which
+    /// document its bytes belong to. Two people editing two different
+    /// files in one room therefore stop being handed each other's
+    /// state, and a peer given one record receives that record only.
+    ///
+    /// A process that has several records open holds several managers,
+    /// one per record. `ui::App` builds one for its live record and
+    /// replaces it when the checkout changes.
+    pub fn for_record(record: &crate::record::RecordId) -> Self {
+        Self::new_scoped(Some(record.as_str().to_string()))
+    }
+
+    fn new_scoped(record: Option<String>) -> Self {
         // Attempt to load the user's on-disk identity via the
         // runtime SDK. When the file is present, its pubkey bytes
         // ride along on the join_channel call the auto-Hello issues
@@ -541,7 +565,11 @@ impl CollaborationManager {
                     identity: None,
                 };
                 let (app_id, cluster_id) = auto_hello_env();
-                manager.send(CollabRequest::Hello { app_id, cluster_id, record: None });
+                manager.send(CollabRequest::Hello {
+                    app_id,
+                    cluster_id,
+                    record: record.clone(),
+                });
                 return manager;
             }
         }
@@ -553,7 +581,11 @@ impl CollaborationManager {
                     identity: None,
                 };
                 let (app_id, cluster_id) = auto_hello_env();
-                manager.send(CollabRequest::Hello { app_id, cluster_id, record: None });
+                manager.send(CollabRequest::Hello {
+                    app_id,
+                    cluster_id,
+                    record,
+                });
                 manager
             }
             Err(_) => Self {
@@ -1051,7 +1083,18 @@ async fn drive_shovel(
                 // the "no identity" fallback (unchanged behaviour for
                 // apps outside a qOS session or missing an
                 // `QOS_USER_IDENTITY` env var).
-                let channel_id = cluster_id.to_string();
+                // The capnp `joinChannel(channelId, identity)` surface
+                // carries no record field, so a record-scoped
+                // connection names its record *inside* the channel id.
+                // The shell parses it back out
+                // (`CrdtRoute::from_channel_key`), so one document's
+                // subscription never sees another's deltas on this
+                // transport either — and no schema change was needed to
+                // get there.
+                let channel_id = match record.as_deref() {
+                    Some(r) if !r.is_empty() => format!("{cluster_id}#record:{r}"),
+                    _ => cluster_id.to_string(),
+                };
                 let ch = match client.join_channel(&channel_id, &identity_bytes).await {
                     Ok(ch) => ch,
                     Err(_) => continue,
