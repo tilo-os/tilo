@@ -529,6 +529,13 @@ COPY os/usr/lib/bootc/kargs.d/01-hardening.toml /usr/lib/bootc/kargs.d/01-harden
 # app sandbox, needs them.
 COPY os/usr/lib/sysctl.d/60-qos-hardening.conf /usr/lib/sysctl.d/60-qos-hardening.conf
 
+# Which sandboxed packages get the expensive protections (hardened allocator +
+# hardware shadow stacks). Read by qos-launcher at launch; scoped rather than
+# image-wide because the allocator costs multiples on allocation-heavy work and
+# most of this system is Rust, which does not produce the bugs it catches. The
+# image owns the list — an app manifest can neither request nor decline it.
+COPY os/usr/lib/qos/untrusted-parsers.conf /usr/lib/qos/untrusted-parsers.conf
+
 # hidepid on /proc + the boot self-check that ASSERTS what's actually active.
 COPY os/usr/libexec/qos-security-audit /usr/libexec/qos-security-audit
 COPY os/usr/lib/systemd/system/qos-security-audit.service /usr/lib/systemd/system/qos-security-audit.service
