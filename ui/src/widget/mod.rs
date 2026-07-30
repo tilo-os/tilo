@@ -464,7 +464,7 @@ mod button;      pub use button::{Button, ButtonStyle, ButtonInteract, ButtonFac
 mod checkbox;    pub use checkbox::Checkbox;
 mod column;      pub use column::Column;
 mod row;         pub use row::Row;
-mod toggle;      pub use toggle::Toggle;
+mod toggle;      pub use toggle::{Toggle, ToggleFace, ToggleInteract, toggle_face_colors};
 mod stack;       pub use stack::Stack;
 mod container;   pub use container::Container;
 mod divider;     pub use divider::{Divider, DividerAxis};
@@ -574,7 +574,7 @@ pub mod video_player;     pub use video_player::VideoPlayer;
 pub mod webview;          pub use webview::WebView;
 pub mod image_viewer;     pub use image_viewer::ImageViewer;
 pub mod tree_view;        pub use tree_view::TreeView;
-pub mod toggle_group;     pub use toggle_group::ToggleGroup;
+pub mod toggle_group;     pub use toggle_group::{ToggleGroup, SegmentedFace, SegmentedStyle, segment_colors};
 
 // === Shared app patterns promoted from the app fleet + new primitives ======
 // Widgets that many apps hand-rolled (empty states, search boxes, stat tiles)
