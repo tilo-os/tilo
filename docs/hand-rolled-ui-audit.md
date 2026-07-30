@@ -40,6 +40,17 @@ overwhelmingly concentrated in **text input, buttons, and modals**, and a large
 share of the buttons/modals is the *same* anti-pattern copied across apps: a
 private `Vec<(Action, Rect)>` hit-test table painted by hand.
 
+**2026-07-30 — Ctrl+K unified on the shared search widgets.** The app-level Ctrl+K
+palette (`ui::ActionPalette`) previously bridged the resource/action model into
+the older single-provider `CommandPalette`. It now renders through the shared
+`SearchField` (input) + `SearchResultsView` (grouped results), driven by the
+resource/action model, with `SearchProvider`s folded in via a new
+`Widget::search_providers()` hook. So `SearchField`/`SearchResultsView` back
+*every* app's Ctrl+K, and contacts' `ContactSearchProvider` (previously wired to
+nothing) surfaces there. `CommandPalette` remains a general widget for the shell
+global-search overlay, containers, and sheets — it is just no longer a second
+Ctrl+K stack in `ui::App`.
+
 **Model apps (adopt these as references; no material hand-rolling):**
 `settings` (Button/Dropdown/Toggle/Slider/TextInput/TreeView), `store`
 (TextInput/Button/ToggleGroup), `themes` (ColorPicker/Slider/Dropdown),
