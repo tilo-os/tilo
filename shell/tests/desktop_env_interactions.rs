@@ -586,6 +586,86 @@ fn group_right_edge_drag_resizes_on_screen_and_persists() {
     let _ = &layout;
 }
 
+/// A group focused in the *same frame it appeared* must still be panned into
+/// view. A freshly adopted Wayland client is exactly this: `adopt_toplevel`
+/// creates the group and focuses it, and on that frame the group has no rect
+/// yet, so the row cannot pan. The reconcile used to record "already handled"
+/// regardless and never retry — leaving a newly launched window off the output
+/// whenever the strip's existing window filled it.
+#[test]
+fn a_group_focused_before_it_has_a_rect_is_still_scrolled_into_view() {
+    // One full-width group fills the strip; a second group therefore starts
+    // past the right edge — the geometry a newly launched app lands in.
+    let (mut tree, strip_id, _ids) = single_strip_tree(&[100]);
+    tree.workspaces[0].strips[0].window_groups[0].width = WindowWidth::Wide;
+    let (mut host, chrome) = build_nirios_overlay_host_with_chrome(&tree);
+    let layout = lay_out_host(&mut host);
+    let _ = &layout;
+
+    // Splice in a second group and focus it, the way adoption does — before
+    // any layout pass has given it a rect.
+    let new_group = {
+        let st = chrome.borrow();
+        let mut t = st.tree_mut();
+        let id = 9_100_u64;
+        let tab_id = 9_101_u64;
+        t.workspaces[0].strips[0]
+            .window_groups
+            .push(shell::shell::state::WindowGroup {
+                id,
+                tabs: vec![Tab {
+                    id: tab_id,
+                    title: "Launched".into(),
+                    tile: TileContent::Stub {
+                        kind: AppKind::Other("Launched".into()),
+                        label: "Launched".into(),
+                    },
+                }],
+                active_tab: tab_id,
+                width: WindowWidth::Normal,
+                maximized: false,
+            });
+        t.set_active_group(strip_id, id);
+        id
+    };
+    chrome.borrow_mut().bump();
+
+    // Frame one, in production order: the resync splices the group into the
+    // live row, then the scroll reconcile runs — before any layout has given
+    // the group a rect.
+    let _ = Widget::take_structure_dirty(&mut host);
+    host.tick_scroll_active_into_view_for_tests();
+    let _layout = lay_out_host(&mut host);
+    // Frame two: the group now has a rect, so the pan must happen.
+    host.tick_scroll_active_into_view_for_tests();
+    let scrolled = host
+        .group_row_mut_for_tests(strip_id)
+        .expect("strip GroupRow")
+        .scroll_x();
+    assert!(
+        scrolled > 0.0,
+        "the strip must pan toward the newly focused group; scroll_x is {scrolled}",
+    );
+
+    let _layout = lay_out_host(&mut host);
+    let row_rect = host.group_row_rect_for_tests(strip_id).unwrap();
+    let idx = host
+        .group_row_mut_for_tests(strip_id)
+        .unwrap()
+        .group_ids()
+        .iter()
+        .position(|&g| g == new_group)
+        .expect("the new group is in the row");
+    let rect = host.group_at_for_tests(strip_id, idx).unwrap().get_rect();
+    assert!(
+        rect.x0 < row_rect.x1,
+        "the newly focused group must be on the output, not past its right \
+         edge (group x0 {} vs row x1 {})",
+        rect.x0,
+        row_rect.x1,
+    );
+}
+
 /// Dragging a tab pill to a new slot *inside its own group* must reorder the
 /// group's `tabs` list in the persisted tree. Drives the real press → move →
 /// release path and then the per-frame harvest `Widget::update` runs, so this
