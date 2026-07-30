@@ -396,6 +396,40 @@ impl CodeEditor {
         self.inner.get_rect()
     }
 
+    /// Scroll the body by `dy` logical px (wheel), clamped to the content.
+    pub fn scroll_by(&mut self, dy: f64) {
+        self.inner.scroll_by(dy);
+    }
+
+    // ---- geometry for host overlays (diagnostics, markers) -----------------
+
+    /// The on-screen caret rect for a byte offset — a host uses this to align a
+    /// gutter marker with a source line (`caret_rect(theme, line_start)`).
+    pub fn caret_rect(&self, theme: &Theme, byte: usize) -> Rect {
+        self.inner.caret_rect(theme, byte)
+    }
+
+    /// On-screen rects covering byte range `[start, end)` — one per visual row.
+    /// A host draws a diagnostic squiggle along each rect's bottom edge.
+    pub fn selection_rects(&self, theme: &Theme, start: usize, end: usize) -> Vec<Rect> {
+        self.inner.selection_rects(theme, start, end)
+    }
+
+    /// The shared text/caret line-height in logical px.
+    pub fn line_height(&self) -> f64 {
+        self.inner.body_line_height()
+    }
+
+    /// The line-number gutter width in logical px.
+    pub fn gutter_width(&self) -> f64 {
+        self.inner.gutter_width()
+    }
+
+    /// Resolve a logical-space point to a byte offset (hover hit-test).
+    pub fn byte_at_point(&self, point: Point) -> usize {
+        self.inner.byte_at_point(point)
+    }
+
     /// Draw when embedded outside the taffy tree — a monolithic host that owns
     /// its own layout calls [`set_rect`] then this each frame.
     ///

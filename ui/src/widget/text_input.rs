@@ -262,6 +262,11 @@ pub struct TextInput {
     hl_line_starts: Vec<usize>,
     /// Cheap signature of the text `hl_spans`/`hl_line_starts` were built for.
     hl_sig: u64,
+    /// Caret position the multiline body last followed with vertical scroll.
+    /// The caret-follow only re-centres when the caret actually *moves* (edit /
+    /// arrow), so a wheel scroll away from the caret sticks instead of snapping
+    /// straight back every frame. `None` before the first draw.
+    last_scroll_caret: Option<usize>,
 }
 
 /// One on-screen row of a multiline [`TextInput`]: either a whole short logical
@@ -342,6 +347,7 @@ impl TextInput {
             hl_spans: Vec::new(),
             hl_line_starts: Vec::new(),
             hl_sig: u64::MAX,
+            last_scroll_caret: None,
         }
     }
 
@@ -558,6 +564,45 @@ impl TextInput {
     /// against the same scroll axis as the underlying text.
     pub fn scroll_x(&self) -> f64 {
         self.scroll_x
+    }
+
+    /// Current vertical scroll offset (logical px, multiline). Exposed so a
+    /// code-editor host can align a diagnostics overlay with the scrolled text.
+    pub fn scroll_y(&self) -> f64 {
+        self.scroll_y
+    }
+
+    /// The line-height band (logical px) both text and caret share. Public so a
+    /// host can position per-line overlays (gutter markers, squiggles).
+    pub fn body_line_height(&self) -> f64 {
+        self.line_height()
+    }
+
+    /// The multiline gutter width (logical px, `0` when no gutter). Lets a host
+    /// place gutter-area decorations (a diagnostic severity dot) precisely.
+    pub fn gutter_width(&self) -> f64 {
+        self.code_gutter_w()
+    }
+
+    /// Resolve a logical-space `point` to a byte offset in the text (multiline
+    /// row+column hit-test, or the single-line horizontal one). Requires a prior
+    /// `draw` to have built the metrics. Public counterpart to the internal
+    /// hit-test for hosts that map a pointer to a caret (a code editor's
+    /// hover-a-diagnostic lookup).
+    pub fn byte_at_point(&self, point: Point) -> usize {
+        self.resolve_cursor(point)
+    }
+
+    /// Scroll the multiline body by `dy` logical px (positive = down), clamped
+    /// to the content. No-op for a single-line field. A code-editor host wires
+    /// this to the mouse wheel.
+    pub fn scroll_by(&mut self, dy: f64) {
+        if !self.multiline {
+            return;
+        }
+        let view_h = self.rect.height() - ML_PAD_Y * 2.0;
+        let max = (self.content_height() - ML_PAD_Y * 2.0 - view_h).max(0.0);
+        self.scroll_y = (self.scroll_y + dy).clamp(0.0, max);
     }
 
     /// True iff the input is currently rendering in plain-chrome mode
@@ -960,15 +1005,21 @@ impl TextInput {
         let caret_top = self.lines.get(caret_row).map(|r| r.y).unwrap_or(0.0);
         let caret_bot = caret_top + lh;
         let view_h = self.rect.height() - ML_PAD_Y * 2.0;
+        // Only re-centre on the caret when it actually moved (edit / arrow key);
+        // a wheel scroll leaves the caret put, so it must not snap back.
+        let caret_moved = self.last_scroll_caret != Some(self.cursor_pos);
         if self.is_focused {
-            if caret_top - self.scroll_y < 0.0 {
-                self.scroll_y = caret_top;
-            } else if caret_bot - self.scroll_y > view_h {
-                self.scroll_y = caret_bot - view_h;
+            if caret_moved {
+                if caret_top - self.scroll_y < 0.0 {
+                    self.scroll_y = caret_top;
+                } else if caret_bot - self.scroll_y > view_h {
+                    self.scroll_y = caret_bot - view_h;
+                }
             }
         } else {
             self.scroll_y = 0.0;
         }
+        self.last_scroll_caret = Some(self.cursor_pos);
         let content_h = self.lines.len() as f64 * lh;
         let max_scroll = (content_h - view_h).max(0.0);
         self.scroll_y = self.scroll_y.clamp(0.0, max_scroll);
@@ -2111,6 +2162,23 @@ impl Widget for TextInput {
         self.clamp_to_text();
 
         match event {
+            // Wheel scroll for a multiline field with content taller than the
+            // view (a code editor). Only when hovered, so it never steals the
+            // wheel from a surrounding scroll region unless the pointer is over
+            // the editable body.
+            WindowEvent::MouseWheel { delta, .. }
+                if self.multiline && self.is_hovered && !self.disabled =>
+            {
+                let dy = match delta {
+                    winit::event::MouseScrollDelta::LineDelta(_, y) => -(*y as f64) * self.line_height(),
+                    winit::event::MouseScrollDelta::PixelDelta(p) => -p.y,
+                };
+                let before = self.scroll_y;
+                self.scroll_by(dy);
+                if (self.scroll_y - before).abs() > f64::EPSILON {
+                    *handled = true;
+                }
+            }
             WindowEvent::CursorMoved { position, .. } => {
                 let logical_pos = Point::new(position.x / scale_factor, position.y / scale_factor);
                 let hover = self.rect.contains(logical_pos);
