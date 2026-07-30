@@ -95,9 +95,10 @@ pub enum GrantScope { Once, Session, Always, Workspace }
 
 Replication semantics:
 
-- Grants replicate to peers as part of the workspace document.
+- Grants replicate to peers as part of the room document.
 - **Only the owner can grant.** Non-owners see the grant rows in the Permissions tab but the Revoke button is disabled.
 - A grant revocation writes the removal to the CRDT; the next workspace start uses the updated profile.
+- **Only the owner can grant over the wire either.** A room document's owner and capability list are accepted only from the peer entitled to write them, so a guest cannot project its own cache into the room and let automerge's last-writer-wins decide who administers it. See `plan/collaboration.md §4` — "Write authority on a room's governance" — for the record that decides it, why the invite's signature is what makes it checkable by the receiver, and what it does not yet cover (a relayed or delegated governance change, which needs the op signed rather than the hop authenticated).
 
 ### Inline prompt
 
@@ -195,6 +196,7 @@ When a peer publishes `RemoteInput { peer, surface, event }`:
 | Network exfil to an ungranted host | Empty netns + name-matched SOCKS5 egress gate   | `packaging/launcher/netgate.rs`    |
 | Clickjacking               | Z-order verification before remote input inject         | compositor scene graph             |
 | Privilege escalation       | Owner-only grant authority + CRDT-persisted grants       | `shell/state.rs::Workspace.grants` |
+| Room takeover via replication | Governance written only by the room's authority, pinned from the invite signature | `shell/state.rs::apply_room_changes` |
 | Traffic snoop              | noise / TLS 1.3 end-to-end                              | libp2p, iroh                       |
 | Token forgery              | ed25519 signature + canonical payload + expiry          | `network/invite.rs`                |
 | Host takeover by peer      | Physical-input priority + kill switch                   | compositor input loop              |

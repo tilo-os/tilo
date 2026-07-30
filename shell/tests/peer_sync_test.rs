@@ -19,7 +19,7 @@ use shell::network::{
     Actor, NeighbourMsg, NetCmd, NetEvent, NiriosBehaviour,
     invite::{make_invite_token, validate_invite_token},
 };
-use shell::shell::state::WorkspaceTree;
+use shell::shell::state::{PeerOrigin, WorkspaceTree};
 use tokio::sync::mpsc;
 use tokio::time::timeout;
 
@@ -144,9 +144,10 @@ async fn two_actors_exchange_a_workspace_append_change() {
         loop {
             match ev_rx_b.recv().await {
                 Some(NetEvent::Msg {
+                    peer,
                     msg: NeighbourMsg::SyncResp { changes, room },
                     ..
-                }) => return Some((changes, room)),
+                }) => return Some((changes, room, peer)),
                 Some(_) => continue,
                 None => return None,
             }
@@ -155,7 +156,7 @@ async fn two_actors_exchange_a_workspace_append_change() {
     .await
     .expect("SyncResp within 10 s")
     .expect("event channel still open");
-    let (received_changes, received_room) = received;
+    let (received_changes, received_room, sender) = received;
     assert_eq!(
         received_room,
         room.to_string(),
@@ -169,7 +170,11 @@ async fn two_actors_exchange_a_workspace_append_change() {
     let local_b = tree_b.append_empty_workspace("Placeholder");
     assert!(tree_b.set_room(local_b, room), "B joins A's room");
     let merged = tree_b
-        .apply_room_changes(room, &received_changes)
+        .apply_room_changes(
+            room,
+            &received_changes,
+            &PeerOrigin::peer(&sender),
+        )
         .expect("apply");
     assert!(merged, "the round must change B's copy of the room");
 

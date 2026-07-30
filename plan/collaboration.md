@@ -66,6 +66,24 @@ A `WorkspaceTreeReplica` wraps the tree and a `Hub` subscriber (the in-process t
 
 Changes that belong to no single room never cross. The active-workspace pointer is a fact about which of this machine's rooms this machine is looking at and has no meaning on a peer; a whole-tree cache flush decomposes into per-room projections rather than travelling as one unattributable blob.
 
+### Write authority on a room's governance
+
+A room document's **owner** and **capability list** are its governance — `may_administer` reads the first, `decide` reads the second, and the FUSE mount enforces an export of the second. Automerge merges a map key by last-writer-wins and has no per-key ACL, so two machines both projecting their cache into one room document do not disagree about the owner, they toss a coin for it by actor id. `grant_as`/`revoke_as` gate the local path; without the same authority on the replication path a guest simply uses that instead.
+
+So each machine records, per room, who may write its governance (`WorkspaceTree::room_authority`):
+
+- **`Local`** — a room minted here. No peer may write its governance.
+- **`Peer(p)`** — the owner an invite named. `accept_invite_into` pins it from the validated token, and the room id and owner peer id are both *inside* the ed25519 signature (§7), so a sender cannot name itself the authority over a room it does not own. Governance is taken from `p` and from no other peer, including other guests of the same room.
+- **`Unpinned`** — a room joined without an invite naming an administrator. The first peer to supply governance is pinned; the second to try is refused.
+
+`apply_room_changes` compares the governance the batch would produce against the governance it holds. Unchanged, it merges as before — an honest peer echoing what it learned is not changing it. Changed, it is accepted only from the room's authority; otherwise **nothing about the batch is stored**. Refusing wholesale rather than stripping keys is deliberate: a partial merge advances the receiver's heads past changes it did not accept, so the legitimate content becomes unreachable, and the refused ops would stay in a change graph that is exported wholesale to the next peer — relaying a claim this machine rejected, and letting any peer in the room append to its permanent history.
+
+The bootstrap case is not an exception to that rule, because joining is the act that removes it: `set_room` surrenders the joining workspace's own governance (`Workspace::surrender_governance`), so a machine either holds none for the room and *learns* it, or holds it and is being asked to have it *overwritten*. Those are never the same act. A machine that does not govern a room also stops projecting governance into it, so the honest path never puts a competing claim on the wire.
+
+The sender's identity reaching that decision is the authenticated `PeerId` (`PeerOrigin`), carried whole — not the `DefaultHasher` digest `peer_id_to_u64` produces, which is fine for echo-suppression and not for an equality check an attacker gets to aim at.
+
+**What this binds is the hop, not the op.** Transport authentication says "these bytes came from `p`"; it says nothing about who authored the change inside them. So a governance change **relayed** by a third peer is refused even when it originated with the room's owner, and a delegated co-administrator's governance cannot cross at all — their edits never reach the owner to be re-issued. Binding the *op* needs a signature over the change, which is what `SignedOp` in `collab-types` is for; its validator is still dormant (`authorised_signers` is never registered). Until that path is wired, governance flows only on a direct hop from the room's owner.
+
 **What a peer must know to be answered** is the room's id — a random 122-bit uuid minted at workspace creation, carried only inside a signed invite (§7), and now never exported to anyone outside the room. Naming it is the credential, in the same sense that holding the invite is. That is a bearer capability with no revocation and no per-peer binding; binding admission to the accepting peer's identity is the next thing to build here.
 
 The replica path goes through `shell/src/network/replica.rs` and `hub.rs`. The cached-materialisation design means writes go through both the public cache and the backing doc, with `assert_cache_matches_doc()` running under `debug_assertions` to catch drift.
