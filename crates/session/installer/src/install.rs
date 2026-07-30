@@ -11,28 +11,30 @@
 //!     [--encrypt] [--pin] [--fido2] --yes
 //! ```
 //!
-//! `--encrypt` opts into full-disk encryption: the backend passes
-//! `bootc install to-disk --block-setup tpm2-luks`, then layers additional
-//! LUKS2 keyslots on the installed root so the disk has an independent,
-//! non-TPM unlock path:
+//! `--encrypt` opts into full-disk encryption. The backend builds the LUKS2
+//! layout itself and installs `bootc ... to-filesystem` into the opened
+//! mapping, because `--block-setup tpm2-luks` can only produce a volume whose
+//! single keyslot is sealed to a TPM:
 //!
-//! * a **recovery key** is always generated and shown once during install
-//!   (the backstop for a cleared/failed TPM);
-//! * with `--pin`, the bare-TPM keyslot is replaced by a **TPM2+PIN**
-//!   keyslot — the PIN is sent as the **second stdin line**, after the
-//!   account password, never on the command line;
+//! * a **recovery key** is always generated and shown once during install.
+//!   It is the factor no hardware failure can take away, so every other one
+//!   is layered on top of it;
+//! * with `--pin`, the secret on the **second stdin line** (after the account
+//!   password, never on the command line) becomes a **TPM2+PIN** keyslot
+//!   where there is a TPM, and an ordinary passphrase keyslot where there is
+//!   not — so a TPM-less machine unlocks with something short to type;
 //! * with `--fido2`, a **FIDO2 security key** is enrolled if a token is
 //!   present (its absence does not abort the install).
 //!
-//! `--encrypt` requires a TPM2 device at install time; the backend refuses
-//! it if none is present. `--pin`/`--fido2` require `--encrypt`. Omitting
-//! `--encrypt` keeps the default unencrypted (`direct`) layout.
+//! `--encrypt` does **not** require a TPM: absence of the hardware costs the
+//! silent unlock, not the encryption. `--pin`/`--fido2` require `--encrypt`.
+//! Omitting `--encrypt` keeps the default unencrypted layout.
 //!
 //! `--yes` is required because the backend has no tty here; the installer's
 //! Review screen is the user's "are you sure" gate. The account password is
-//! supplied on **stdin** as the first line; when `--pin` is set the TPM2
-//! unlock PIN follows as the second line. The backend runs the privileged
-//! `bootc install to-disk` + keyslot enrolment + account/hostname/timezone
+//! supplied on **stdin** as the first line; when `--pin` is set the unlock
+//! secret follows as the second line. The backend runs the privileged
+//! `bootc install` + keyslot enrolment + account/hostname/timezone
 //! seeding, streams human-readable progress to **stdout**, and exits `0` on
 //! success / non-zero on failure. We do not implement it here — we only
 //! spawn it, feed the stdin lines, and relay its output.
@@ -86,15 +88,16 @@ pub struct InstallOptions {
     /// Optional xkb variant (e.g. `dvorak`, `colemak`). Empty ⇒ no
     /// variant; the flag is then omitted.
     pub keyvariant: String,
-    /// Full-disk encryption (LUKS, multi-factor). `true` ⇒ the backend is
-    /// passed `--encrypt`, which maps to `bootc install to-disk
-    /// --block-setup tpm2-luks` plus an always-generated recovery key.
-    /// Default `false` (unencrypted, `direct`).
+    /// Full-disk encryption (LUKS2, multi-factor). `true` ⇒ the backend is
+    /// passed `--encrypt`: a volume with an always-generated recovery key,
+    /// plus whichever of TPM2 / passphrase / FIDO2 the machine and the other
+    /// options allow. No TPM is required. Default `false` (unencrypted).
     pub encrypt: bool,
-    /// TPM2 unlock PIN. Only meaningful when [`Self::encrypt`] is `true`
-    /// and non-empty: the backend is passed `--pin` and the PIN is sent as
-    /// the second stdin line, enrolling a PIN-protected TPM2 keyslot in
-    /// place of the bare-TPM one. Empty ⇒ no PIN (the flag is omitted).
+    /// Unlock secret. Only meaningful when [`Self::encrypt`] is `true` and
+    /// non-empty: the backend is passed `--pin` and the value is sent as the
+    /// second stdin line. It becomes a TPM2+PIN keyslot on a machine with a
+    /// TPM, and the boot passphrase on one without. Empty ⇒ omitted, which on
+    /// a TPM-less machine leaves the recovery key as the only way in.
     pub pin: String,
     /// Enroll a FIDO2 security key as an extra unlock factor. Only
     /// meaningful with [`Self::encrypt`]; maps to `--fido2`. A token must
@@ -156,14 +159,14 @@ pub fn install_command(disk: &str, user: &str, opts: &InstallOptions) -> Command
             cmd.arg("--keyvariant").arg(opts.keyvariant.trim());
         }
     }
-    // Opt-in full-disk encryption (multi-factor LUKS). The backend maps
-    // this to `bootc install to-disk --block-setup tpm2-luks` plus an
-    // always-generated recovery key. The PIN and FIDO2 factors are only
-    // meaningful alongside it.
+    // Opt-in full-disk encryption (multi-factor LUKS2). The backend builds the
+    // volume itself with an always-generated recovery key; the PIN and FIDO2
+    // factors are only meaningful alongside it.
     if opts.encrypt {
         cmd.arg("--encrypt");
-        // A non-empty PIN means "enroll a TPM2+PIN keyslot": pass the bare
-        // `--pin` flag (the PIN value travels on stdin, never the argv).
+        // A non-empty PIN means "enrol a secret-protected keyslot": TPM2+PIN
+        // where there is a TPM, a plain passphrase where there is not. The bare
+        // flag goes on argv; the value travels on stdin.
         if !opts.pin.is_empty() {
             cmd.arg("--pin");
         }
@@ -395,7 +398,7 @@ mod tests {
     #[test]
     fn install_command_appends_encrypt_when_enabled() {
         // Encryption on: a bare `--encrypt` flag is appended just before
-        // `--yes`; the backend maps it to `--block-setup tpm2-luks`.
+        // `--yes`.
         let opts = InstallOptions {
             filesystem: "btrfs".to_string(),
             hostname: "qos".to_string(),
