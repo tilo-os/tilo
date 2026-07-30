@@ -1,17 +1,17 @@
 //! Shared surface-drawing primitives — the reusable "how a card/panel
 //! sits above the desktop" layer.
 //!
-//! The centrepiece is [`soft_shadow`]: a stretched radial-Gaussian
-//! sprite that produces a genuinely soft drop shadow. Vello has no blur
-//! primitive, so the historical fallback everywhere was a stack of
-//! concentric rounded rects — which visibly stair-steps. The toolkit
-//! solved this once inside `tile_host` but kept it private; promoting it
-//! here lets the shell chrome (notifications, the wheel disc glow, the
-//! top bar) drop their own stair-stepping approximations and share one
-//! correct implementation.
+//! The centrepiece is [`soft_shadow`]: a baked Gaussian falloff,
+//! 9-sliced around the rect, that produces a genuinely soft drop
+//! shadow. Vello has no blur primitive, so the historical fallback
+//! everywhere was a stack of concentric rounded rects — which visibly
+//! stair-steps. The toolkit solved this once inside `tile_host` but kept
+//! it private; promoting it here lets the shell chrome (notifications,
+//! the wheel disc glow, the top bar) drop their own stair-stepping
+//! approximations and share one correct implementation.
 //!
 //! Sprites are baked once per tint and cached, so repeated shadows of
-//! the same colour cost only an image stretch.
+//! the same colour cost only a handful of image stretches.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -26,76 +26,183 @@ use vello::peniko::{
 use crate::theme::Theme;
 use crate::tokens::Shadow;
 
-/// Baked sprite resolution. 256² is plenty — the sprite is always
-/// stretched over a larger target, and the Gaussian is smooth so the
-/// upscale stays soft.
+/// Resolution of the baked falloff along the profile axis. 256 samples
+/// across a band that is at most a couple of hundred logical px wide is
+/// plenty, and the Gaussian is smooth so any rescale stays soft.
 const SHADOW_SPRITE_SIZE: u32 = 256;
+/// Row count of the edge sprite. The edge falloff depends only on the
+/// axis perpendicular to the edge, so every row is identical; keeping a
+/// few of them (rather than one) leaves the image non-degenerate for the
+/// sampler at a cost of 4 KB.
+const SHADOW_EDGE_ROWS: u32 = 4;
 /// Gaussian width of the falloff ring. Larger = softer, more spread-out.
 const SHADOW_GAUSSIAN_K: f64 = 0.35;
-/// Normalised radius (0..1 of the half-diagonal) where the shadow is
-/// darkest. The centre is forced transparent so a card's own fill paints
-/// over clear sprite, not a pre-darkened spot.
+/// Where the envelope peaks, as a fraction of the band it is baked
+/// across. The band runs from one `spread` *inside* the rect's edge to
+/// one `spread` outside it, so `0.30` puts the darkest point
+/// `(1 - 2·0.30) = 0.4` of a spread under the rect's own edge and leaves
+/// the interior fully transparent — a card's fill paints over clear
+/// sprite, not a pre-darkened spot, which is what keeps translucent
+/// surfaces from self-darkening.
 const SHADOW_PEAK_RADIUS: f64 = 0.30;
 
-/// Bake a premultiplied-RGBA radial-Gaussian sprite tinted `(r,g,b)`.
+/// The shadow's alpha as a function of the normalised signed distance
+/// `u` from the rect's edge: `-1` is one band inside the rect, `0` is
+/// exactly on the edge, `+1` is one `spread` outside.
 ///
-/// The alpha envelope is `bump * inner_shoulder * outer_shoulder`:
+/// The envelope is `bump · inner_shoulder · outer_shoulder`:
 /// - `bump` — the Gaussian ring peaking at [`SHADOW_PEAK_RADIUS`].
-/// - `inner_shoulder` — clamps the centre to zero.
-/// - `outer_shoulder` — clamps the sprite boundary to zero so the
-///   stretched image can't leak a square-edged halo.
+/// - `inner_shoulder` — clamps the inner end of the band to zero.
+/// - `outer_shoulder` — clamps the outer end to zero so no slice can
+///   leak a hard-edged halo at the shadow's boundary.
+fn shadow_profile(u: f64) -> f64 {
+    let d = (u + 1.0) * 0.5;
+    if d <= 0.0 || d >= 1.0 {
+        return 0.0;
+    }
+    let bump = (-((d - SHADOW_PEAK_RADIUS) / SHADOW_GAUSSIAN_K).powi(2)).exp();
+    let inner = (d / SHADOW_PEAK_RADIUS).min(1.0);
+    let outer = 1.0 - d;
+    (bump * inner * outer).clamp(0.0, 1.0)
+}
+
+/// Signed distance to the rect, in band units, at a corner — the
+/// rounded-box SDF with a zero corner radius.
 ///
-/// The channels are written premultiplied (`c * a`), so the returned
-/// [`Image`] must declare [`ImageAlphaType::AlphaPremultiplied`].
-/// Declaring straight alpha instead makes the renderer premultiply a
-/// second time, which squares the tint and roughly halves every shadow
-/// in the toolkit — the peak of a full-strength white shadow lands at
+/// `ux`/`uy` are each already normalised to their own band (`+1` one
+/// spread outside that edge, `-1` at the inner end). Outside both edges
+/// this is `hypot`, so the iso-alpha contours are *circles* of radius
+/// `spread` about the corner; the moment one coordinate goes inside, the
+/// `max` term takes over and the field collapses to a pure function of
+/// the other axis — which is exactly what the neighbouring edge slice
+/// paints, so the two meet without a discontinuity.
+fn corner_u(ux: f64, uy: f64) -> f64 {
+    let ox = ux.max(0.0);
+    let oy = uy.max(0.0);
+    (ox * ox + oy * oy).sqrt() + ux.max(uy).min(0.0)
+}
+
+/// Map a texel index onto its band coordinate in `-1..=1`, sampling at
+/// pixel centres so the brush's half-texel offset doesn't skew the
+/// baked profile against the geometry it is stretched over.
+fn band_coord(i: u32, n: u32) -> f64 {
+    2.0 * (i as f64 + 0.5) / n as f64 - 1.0
+}
+
+/// The pair of premultiplied-RGBA sprites one tint needs.
+///
+/// The channels are written premultiplied (`c * a`), so both [`Image`]s
+/// must declare [`ImageAlphaType::AlphaPremultiplied`]. Declaring
+/// straight alpha instead makes the renderer premultiply a second time,
+/// which squares the tint and roughly halves every shadow in the
+/// toolkit — the peak of a full-strength white shadow lands at
 /// `255 · a²` instead of `255 · a`. `soft_shadow_peak_matches_sprite_
 /// envelope` pins the composited strength so that cannot come back.
-fn build_shadow_sprite(r: u8, g: u8, b: u8) -> Image {
-    let size = SHADOW_SPRITE_SIZE;
-    let s = size as f64;
-    let cx = (s - 1.0) * 0.5;
-    let cy = (s - 1.0) * 0.5;
-    let max_r = cx.max(cy);
-    let k = SHADOW_GAUSSIAN_K;
-    let d_peak = SHADOW_PEAK_RADIUS;
-    let mut data = Vec::<u8>::with_capacity((size * size * 4) as usize);
-    for y in 0..size {
-        for x in 0..size {
-            let dx = (x as f64 - cx) / max_r;
-            let dy = (y as f64 - cy) / max_r;
-            let d = (dx * dx + dy * dy).sqrt();
-            let bump = (-((d - d_peak) / k).powi(2)).exp();
-            let inner = (d / d_peak).min(1.0);
-            let outer = (1.0 - d).max(0.0);
-            let a = (bump * inner * outer).clamp(0.0, 1.0);
-            let a8 = (a * 255.0).round() as u8;
+struct ShadowSprites {
+    /// `SHADOW_SPRITE_SIZE × SHADOW_EDGE_ROWS`: the 1-D profile running
+    /// along x (inner end at x = 0), constant down every column. Stretched
+    /// along one axis only, so an edge's falloff width never depends on
+    /// how long that edge is.
+    edge: Image,
+    /// `SHADOW_SPRITE_SIZE²`: the corner quadrant, oriented
+    /// bottom-right (inner end at the origin). Mirrored into the other
+    /// three corners, and never scaled by anything but the band, so
+    /// corners stay `spread × spread` and circular on any aspect ratio.
+    corner: Image,
+}
+
+fn bake(r: u8, g: u8, b: u8, w: u32, h: u32, f: impl Fn(u32, u32) -> f64) -> Image {
+    let mut data = Vec::<u8>::with_capacity((w * h * 4) as usize);
+    for y in 0..h {
+        for x in 0..w {
+            let a = f(x, y).clamp(0.0, 1.0);
             data.push((r as f64 * a).round() as u8);
             data.push((g as f64 * a).round() as u8);
             data.push((b as f64 * a).round() as u8);
-            data.push(a8);
+            data.push((a * 255.0).round() as u8);
         }
     }
-    let blob = Blob::new(Arc::new(data));
     Image {
-        data: blob,
+        data: Blob::new(Arc::new(data)),
         format: Format::Rgba8,
         alpha_type: ImageAlphaType::AlphaPremultiplied,
-        width: size,
-        height: size,
+        width: w,
+        height: h,
+    }
+}
+
+fn build_shadow_sprites(r: u8, g: u8, b: u8) -> ShadowSprites {
+    let n = SHADOW_SPRITE_SIZE;
+    ShadowSprites {
+        edge: bake(r, g, b, n, SHADOW_EDGE_ROWS, |x, _| {
+            shadow_profile(band_coord(x, n))
+        }),
+        corner: bake(r, g, b, n, n, |x, y| {
+            shadow_profile(corner_u(band_coord(x, n), band_coord(y, n)))
+        }),
     }
 }
 
 /// Per-tint sprite cache. Keyed by opaque `(r,g,b)`; the alpha is applied
-/// at draw time via a layer, so one sprite serves every intensity.
-fn sprite_for(r: u8, g: u8, b: u8) -> Arc<Image> {
-    static CACHE: OnceLock<Mutex<HashMap<(u8, u8, u8), Arc<Image>>>> = OnceLock::new();
+/// at draw time via a layer, so one pair serves every intensity.
+fn sprites_for(r: u8, g: u8, b: u8) -> Arc<ShadowSprites> {
+    static CACHE: OnceLock<Mutex<HashMap<(u8, u8, u8), Arc<ShadowSprites>>>> = OnceLock::new();
     let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
     let mut map = cache.lock().unwrap();
     map.entry((r, g, b))
-        .or_insert_with(|| Arc::new(build_shadow_sprite(r, g, b)))
+        .or_insert_with(|| Arc::new(build_shadow_sprites(r, g, b)))
         .clone()
+}
+
+/// Map a sprite's `sw × sh` pixel rect onto `dest`, optionally mirroring
+/// either axis. The sprite's x axis stays the destination's x axis.
+fn slice_xform(dest: Rect, sw: f64, sh: f64, mirror_x: bool, mirror_y: bool) -> Affine {
+    let (a, e) = if mirror_x {
+        (-dest.width() / sw, dest.x1)
+    } else {
+        (dest.width() / sw, dest.x0)
+    };
+    let (d, f) = if mirror_y {
+        (-dest.height() / sh, dest.y1)
+    } else {
+        (dest.height() / sh, dest.y0)
+    };
+    Affine::new([a, 0.0, 0.0, d, e, f])
+}
+
+/// [`slice_xform`] with the axes swapped: the sprite's x axis (its
+/// profile) maps onto the destination's *y* axis, and its rows stretch
+/// along the destination's x. Used for the top and bottom edges, where
+/// the same baked profile has to run vertically.
+fn slice_xform_rot(dest: Rect, sw: f64, sh: f64, mirror_y: bool) -> Affine {
+    let (b, f) = if mirror_y {
+        (-dest.height() / sw, dest.y1)
+    } else {
+        (dest.height() / sw, dest.y0)
+    };
+    Affine::new([0.0, b, dest.width() / sh, 0.0, dest.x0, f])
+}
+
+/// Paint the part of a slice that falls inside `clip`.
+///
+/// `local` maps the sprite's pixel rect onto the slice's **full** band
+/// geometry — always `spread` on each side of the edge, whatever the
+/// rect's size — and `clip` narrows that to the part this slice actually
+/// owns. Keeping the two separate is what lets a rect shorter than
+/// `2 · spread` share its inner band between the opposing slices without
+/// either squashing the profile (which would shorten the outer falloff,
+/// the very bug this function exists to fix) or double-painting the
+/// overlap.
+///
+/// The shape is derived in `local` space, which is axis-aligned by
+/// construction, so the bbox is exact no matter what the caller's own
+/// `transform` does.
+fn blit(scene: &mut Scene, transform: Affine, local: Affine, brush: &ImageBrush, clip: Rect) {
+    if clip.width() <= 0.0 || clip.height() <= 0.0 {
+        return;
+    }
+    let shape = local.inverse().transform_rect_bbox(clip);
+    scene.fill(Fill::NonZero, transform * local, brush, None, &shape);
 }
 
 /// Paint a soft drop shadow for `rect`.
@@ -107,7 +214,21 @@ fn sprite_for(r: u8, g: u8, b: u8) -> Arc<Image> {
 /// - `offset_y` shifts the shadow downward (ambient light from above).
 /// - `intensity` in `0.0..=1.0` scales the whole shadow's opacity.
 ///
-/// No-op for a degenerate rect or `intensity <= 0`.
+/// The falloff is **9-sliced** around the rect: the four corners get the
+/// corner sprite at a fixed `spread × spread` (so they stay circular),
+/// the four edges stretch the 1-D profile along their own length only
+/// (so the falloff width is always `spread`), and the middle is skipped
+/// because the envelope is zero there by construction.
+///
+/// The single stretched sprite this replaced was radially symmetric in
+/// *sprite* space, so squashing it over `rect ± spread` scaled the
+/// falloff with the rect's own dimensions: on the overview's 1022×235
+/// active card at `spread` 40 the ring landed ~165 px from centre —
+/// under the card — and the accent glow the concept asks for was
+/// invisible at every aspect ratio but square. Every wide surface in the
+/// toolkit (notifications, the palette, cards) had the same shadow.
+///
+/// No-op for a degenerate rect, `spread <= 0`, or `intensity <= 0`.
 pub fn soft_shadow(
     scene: &mut Scene,
     transform: Affine,
@@ -117,36 +238,108 @@ pub fn soft_shadow(
     offset_y: f64,
     intensity: f32,
 ) {
-    if rect.width() <= 0.0 || rect.height() <= 0.0 || intensity <= 0.0 {
+    if rect.width() <= 0.0 || rect.height() <= 0.0 || intensity <= 0.0 || spread <= 0.0 {
         return;
     }
-    let target = Rect::new(
-        rect.x0 - spread,
-        rect.y0 - spread + offset_y,
-        rect.x1 + spread,
-        rect.y1 + spread + offset_y,
-    );
-    let sprite = sprite_for(color.to_rgba8().r, color.to_rgba8().g, color.to_rgba8().b);
-    let sx = target.width() / sprite.width as f64;
-    let sy = target.height() / sprite.height as f64;
-    let brush_transform = transform
-        * Affine::translate((target.x0, target.y0))
-        * Affine::scale_non_uniform(sx, sy);
+    // Band geometry. Every slice's profile runs `spread` outward from an
+    // edge and `spread` inward; the *clip* boundaries meet at the rect's
+    // mid-lines when it is narrower than `2 · spread`, so opposing slices
+    // divide the interior between them rather than overlapping.
+    let in_x = spread.min(rect.width() / 2.0);
+    let in_y = spread.min(rect.height() / 2.0);
+    let (ox0, ix0) = (rect.x0 - spread, rect.x0 + in_x);
+    let (ix1, ox1) = (rect.x1 - in_x, rect.x1 + spread);
+    let (oy0, iy0) = (rect.y0 - spread + offset_y, rect.y0 + in_y + offset_y);
+    let (iy1, oy1) = (rect.y1 - in_y + offset_y, rect.y1 + spread + offset_y);
+    // Full band extents, ignoring the clamp: this is what the sprites are
+    // baked against.
+    let (bx0, bx1) = (rect.x0 + spread, rect.x1 - spread);
+    let (by0, by1) = (rect.y0 + spread + offset_y, rect.y1 - spread + offset_y);
+
+    let rgba = color.to_rgba8();
+    let sprites = sprites_for(rgba.r, rgba.g, rgba.b);
+    let n = SHADOW_SPRITE_SIZE as f64;
+    let rows = SHADOW_EDGE_ROWS as f64;
+
     scene.push_layer(
         Fill::NonZero,
         vello::peniko::BlendMode::default(),
         intensity.clamp(0.0, 1.0),
         transform,
-        &target,
+        &Rect::new(ox0, oy0, ox1, oy1),
     );
-    let sprite_brush = ImageBrush::new((*sprite).clone());
-    scene.fill(
-        Fill::NonZero,
-        brush_transform,
-        &sprite_brush,
-        None,
-        &Rect::new(0.0, 0.0, sprite.width as f64, sprite.height as f64),
-    );
+
+    // Corners: the sprite covers a 2·spread square centred on the
+    // corner, mirrored into each quadrant, and is never stretched by
+    // anything but the band — so the corner falloff is a `spread`-radius
+    // quarter circle on every aspect ratio.
+    let corner = ImageBrush::new(sprites.corner.clone());
+    for (band, clip, mirror_x, mirror_y) in [
+        (
+            Rect::new(bx1, by1, ox1, oy1),
+            Rect::new(ix1, iy1, ox1, oy1),
+            false,
+            false,
+        ),
+        (
+            Rect::new(ox0, by1, bx0, oy1),
+            Rect::new(ox0, iy1, ix0, oy1),
+            true,
+            false,
+        ),
+        (
+            Rect::new(bx1, oy0, ox1, by0),
+            Rect::new(ix1, oy0, ox1, iy0),
+            false,
+            true,
+        ),
+        (
+            Rect::new(ox0, oy0, bx0, by0),
+            Rect::new(ox0, oy0, ix0, iy0),
+            true,
+            true,
+        ),
+    ] {
+        let local = slice_xform(band, n, n, mirror_x, mirror_y);
+        blit(scene, transform, local, &corner, clip);
+    }
+
+    // Edges: the same 1-D profile, stretched along the edge's own length
+    // only. The centre slice is skipped — the envelope is zero more than
+    // one band inside the rect, which is also what keeps a translucent
+    // card from darkening itself.
+    let edge = ImageBrush::new(sprites.edge.clone());
+    for (band, clip, mirror_x) in [
+        (
+            Rect::new(bx1, iy0, ox1, iy1),
+            Rect::new(ix1, iy0, ox1, iy1),
+            false,
+        ),
+        (
+            Rect::new(ox0, iy0, bx0, iy1),
+            Rect::new(ox0, iy0, ix0, iy1),
+            true,
+        ),
+    ] {
+        let local = slice_xform(band, n, rows, mirror_x, false);
+        blit(scene, transform, local, &edge, clip);
+    }
+    for (band, clip, mirror_y) in [
+        (
+            Rect::new(ix0, by1, ix1, oy1),
+            Rect::new(ix0, iy1, ix1, oy1),
+            false,
+        ),
+        (
+            Rect::new(ix0, oy0, ix1, by0),
+            Rect::new(ix0, oy0, ix1, iy0),
+            true,
+        ),
+    ] {
+        let local = slice_xform_rot(band, n, rows, mirror_y);
+        blit(scene, transform, local, &edge, clip);
+    }
+
     scene.pop_layer();
 }
 
@@ -234,28 +427,123 @@ mod tests {
 
     #[test]
     fn sprite_is_cached_per_tint() {
-        let a = sprite_for(0, 0, 0);
-        let b = sprite_for(0, 0, 0);
+        let a = sprites_for(0, 0, 0);
+        let b = sprites_for(0, 0, 0);
         assert!(Arc::ptr_eq(&a, &b), "same tint must return the cached sprite");
-        let c = sprite_for(99, 102, 241);
+        let c = sprites_for(99, 102, 241);
         assert!(!Arc::ptr_eq(&a, &c), "different tint must bake a new sprite");
     }
 
+    fn alpha_at(img: &Image, x: u32, y: u32) -> u8 {
+        img.data.data()[((y * img.width + x) * 4 + 3) as usize]
+    }
+
+    /// Both ends of the band are zero — the inner end so a card's own
+    /// fill paints over clear sprite, the outer end so no slice can leak
+    /// a hard-edged halo — and the envelope peaks where
+    /// [`SHADOW_PEAK_RADIUS`] says it does.
     #[test]
-    fn sprite_centre_is_transparent_edges_are_zero() {
-        let img = build_shadow_sprite(0, 0, 0);
-        let read_a = |x: u32, y: u32| -> u8 {
-            let idx = ((y * img.width + x) * 4 + 3) as usize;
-            img.data.data()[idx]
-        };
-        let mid = img.width / 2;
-        // The sprite is even-sized so there's no exact centre pixel; the
-        // near-centre sample rounds to <=2/255. Corner is a true zero.
-        assert!(read_a(mid, mid) <= 2, "centre alpha must be ~0");
-        assert_eq!(read_a(0, 0), 0, "corner alpha must be 0");
-        // A point on the peak ring should be non-zero.
-        let peak_x = (mid as f64 + SHADOW_PEAK_RADIUS * (mid as f64)) as u32;
-        assert!(read_a(peak_x, mid) > 0, "peak ring alpha must be > 0");
+    fn edge_sprite_runs_from_zero_through_the_peak_back_to_zero() {
+        let s = build_shadow_sprites(0, 0, 0);
+        let n = SHADOW_SPRITE_SIZE;
+        assert!(alpha_at(&s.edge, 0, 0) <= 2, "inner end of the band must be ~0");
+        assert!(
+            alpha_at(&s.edge, n - 1, 0) <= 2,
+            "outer end of the band must be ~0"
+        );
+        // Peak column: SHADOW_PEAK_RADIUS along the band.
+        let peak_x = (SHADOW_PEAK_RADIUS * n as f64).round() as u32;
+        let peak = alpha_at(&s.edge, peak_x, 0);
+        let expected = (255.0 * (1.0 - SHADOW_PEAK_RADIUS)).round() as i32;
+        assert!(
+            (peak as i32 - expected).abs() <= 2,
+            "the baked peak must be {expected}/255; got {peak}"
+        );
+        // Every row is the same profile — that is what lets one edge
+        // sprite stretch along an edge of any length.
+        for y in 1..SHADOW_EDGE_ROWS {
+            for x in [0, peak_x, n / 2, n - 1] {
+                assert_eq!(
+                    alpha_at(&s.edge, x, y),
+                    alpha_at(&s.edge, x, 0),
+                    "edge sprite row {y} differs from row 0 at x={x}"
+                );
+            }
+        }
+    }
+
+    /// The corner sprite has to *become* the edge profile along the two
+    /// rows/columns where it meets an edge slice. That agreement is what
+    /// makes the 9-slice seamless by construction rather than by luck.
+    #[test]
+    fn corner_sprite_joins_the_edge_profile_where_the_slices_meet() {
+        let s = build_shadow_sprites(0, 0, 0);
+        let n = SHADOW_SPRITE_SIZE;
+        for x in [0, 1, n / 4, n / 2, (3 * n) / 4, n - 1] {
+            // Innermost row of the corner = the edge profile in x.
+            assert_eq!(
+                alpha_at(&s.corner, x, 0),
+                alpha_at(&s.edge, x, 0),
+                "corner row 0 must equal the edge profile at x={x}"
+            );
+            // …and by symmetry the innermost column equals it in y.
+            assert_eq!(
+                alpha_at(&s.corner, 0, x),
+                alpha_at(&s.edge, x, 0),
+                "corner column 0 must equal the edge profile at y={x}"
+            );
+        }
+        // The outer corner of the sprite is a full spread × spread away
+        // diagonally — outside the circle — so it is a true zero.
+        assert_eq!(alpha_at(&s.corner, n - 1, n - 1), 0);
+    }
+
+    /// In the sprite itself the corner's iso-alpha contours are circles
+    /// about the corner point, not the axis-aligned or elliptical
+    /// contours a stretched radial sprite produces.
+    #[test]
+    fn corner_sprite_contours_are_circular() {
+        let s = build_shadow_sprites(0, 0, 0);
+        let n = SHADOW_SPRITE_SIZE as f64;
+        // Band coordinate 0 is the rect's own edge — the sprite's
+        // mid-point. Walking a quarter circle of radius `r` (in band
+        // units) out from the corner must hold the alpha constant.
+        let px = |u: f64| ((u + 1.0) * 0.5 * n).round().clamp(0.0, n - 1.0) as u32;
+        for r in [0.25_f64, 0.5, 0.75] {
+            let straight = alpha_at(&s.corner, px(r), px(0.0)) as i32;
+            for deg in [15.0_f64, 30.0, 45.0, 60.0, 75.0] {
+                let (sin, cos) = deg.to_radians().sin_cos();
+                let got = alpha_at(&s.corner, px(r * cos), px(r * sin)) as i32;
+                assert!(
+                    (got - straight).abs() <= 3,
+                    "at radius {r} the corner alpha must not depend on the \
+                     angle: {deg}° gave {got}, straight out gave {straight}"
+                );
+            }
+        }
+    }
+
+    /// Render one full-intensity white shadow over black. The red
+    /// channel of the result *is* the composited alpha, so the sampler
+    /// reads the production output of [`soft_shadow`] in the same units
+    /// [`shadow_profile`] declares.
+    fn render_shadow(w: u32, h: u32, rect: Rect, spread: f64) -> impl Fn(f64, f64) -> u8 {
+        use crate::offscreen::OffscreenRenderer;
+        let mut scene = Scene::new();
+        soft_shadow(
+            &mut scene,
+            Affine::IDENTITY,
+            rect,
+            Color::WHITE,
+            spread,
+            0.0,
+            1.0,
+        );
+        let mut r = OffscreenRenderer::new(w, h);
+        let rgba = r.render(&scene, Color::BLACK);
+        move |x: f64, y: f64| {
+            OffscreenRenderer::sample(&rgba, w, x.floor() as u32, y.floor() as u32).0
+        }
     }
 
     /// The composited shadow has to reach the strength the sprite's
@@ -267,40 +555,28 @@ mod tests {
     /// collapses to `255 · 0.7² ≈ 125` — a visibly washed-out shadow
     /// everywhere in the toolkit, which is what this pins against.
     ///
-    /// The ring's radius is asserted too: it must sit at
-    /// `SHADOW_PEAK_RADIUS` of the target's half-extent (24 px for the
-    /// 160×160 target below), not at the rect's own edge.
+    /// The ring's position is asserted too, and it is measured from the
+    /// rect's **edge**: the envelope peaks `(1 - 2·SHADOW_PEAK_RADIUS)`
+    /// of a `spread` inside the edge and dies exactly one `spread`
+    /// outside it, whatever the rect's size. It used to sit at
+    /// `SHADOW_PEAK_RADIUS` of the *target's* half-extent, which is the
+    /// aspect-dependent placement that hid every wide surface's shadow.
     #[test]
     fn soft_shadow_peak_matches_sprite_envelope() {
-        use crate::offscreen::OffscreenRenderer;
-
         let rect = Rect::new(150.0, 150.0, 250.0, 250.0);
         let spread = 30.0;
-        let mut scene = Scene::new();
-        soft_shadow(
-            &mut scene,
-            Affine::IDENTITY,
-            rect,
-            Color::WHITE,
-            spread,
-            0.0,
-            1.0,
-        );
-
-        let mut r = OffscreenRenderer::new(400, 400);
-        let rgba = r.render(&scene, Color::BLACK);
-        let at = |x: u32, y: u32| OffscreenRenderer::sample(&rgba, 400, x, y).0;
+        let at = render_shadow(400, 400, rect, spread);
 
         // Walk outward along the horizontal centre line and keep the
         // brightest sample plus where it was found.
-        let (cx, cy) = (200u32, 200u32);
+        let (cx, cy) = (200.0, 200.0);
         let half = rect.width() / 2.0 + spread; // 80 px
-        let (mut peak, mut peak_dx) = (0u8, 0u32);
+        let (mut peak, mut peak_dx) = (0u8, 0.0f64);
         for dx in 0..=(half as u32) {
-            let v = at(cx + dx, cy);
+            let v = at(cx + dx as f64, cy);
             if v > peak {
                 peak = v;
-                peak_dx = dx;
+                peak_dx = dx as f64;
             }
         }
 
@@ -314,12 +590,13 @@ mod tests {
             (255.0 * (1.0 - SHADOW_PEAK_RADIUS) * (1.0 - SHADOW_PEAK_RADIUS)).round() as i32,
         );
 
-        let expected_dx = (SHADOW_PEAK_RADIUS * half).round() as i32;
+        let expected_dx = rect.width() / 2.0 - (1.0 - 2.0 * SHADOW_PEAK_RADIUS) * spread;
         assert!(
-            (peak_dx as i32 - expected_dx).abs() <= 4,
-            "the ring must peak {expected_dx} px out from the centre \
-             (SHADOW_PEAK_RADIUS of the target half-extent); peaked at \
-             {peak_dx}",
+            (peak_dx - expected_dx).abs() <= 4.0,
+            "the ring must peak {expected_dx} px out from the centre — \
+             {} px inside the rect's own edge, independent of the rect's \
+             size; peaked at {peak_dx}",
+            (1.0 - 2.0 * SHADOW_PEAK_RADIUS) * spread,
         );
 
         // The centre stays clear so a card's own fill paints over an
@@ -327,17 +604,187 @@ mod tests {
         // transparent so no square halo leaks out.
         assert!(at(cx, cy) <= 6, "sprite centre must stay clear");
         assert_eq!(
-            at(cx + half as u32, cy + half as u32),
+            at(cx + half, cy + half),
             0,
             "the stretched sprite must not leak a square-edged halo"
         );
     }
 
+    /// Sample the shadow outward from the middle of `rect`'s right and
+    /// bottom edges, one sample per pixel, starting half a pixel outside
+    /// the edge.
+    fn outward_profiles(rect: Rect, spread: f64, span: u32) -> (Vec<u8>, Vec<u8>) {
+        let at = render_shadow(1400, 900, rect, spread);
+        let right = (0..span)
+            .map(|k| at(rect.x1 + k as f64, rect.center().y))
+            .collect();
+        let bottom = (0..span)
+            .map(|k| at(rect.center().x, rect.y1 + k as f64))
+            .collect();
+        (right, bottom)
+    }
+
+    /// The headline geometry contract: the falloff outside an edge is a
+    /// function of the distance to that edge and of `spread` — never of
+    /// the rect's own dimensions.
+    ///
+    /// The single stretched sprite this replaced was radially symmetric
+    /// in sprite space, so squashing it over `rect ± spread` made the
+    /// falloff width scale with the rect: the overview's 1022×235 active
+    /// card at `spread` 40 put its ring ~165 px from centre, under the
+    /// card, and the concept's accent glow was invisible. Here a wide
+    /// card, a tall card and a small square must all produce the *same*
+    /// outward profile, on both axes, and it must match
+    /// [`shadow_profile`] pixel for pixel.
+    #[test]
+    fn soft_shadow_falloff_width_is_the_spread_not_the_rects_size() {
+        let spread = 40.0;
+        let span = spread as u32 + 6;
+        // Wide (the overview's active row), tall, and a small square.
+        let wide = outward_profiles(Rect::new(150.0, 330.0, 1172.0, 565.0), spread, span);
+        let tall = outward_profiles(Rect::new(560.0, 100.0, 800.0, 800.0), spread, span);
+        let square = outward_profiles(Rect::new(600.0, 400.0, 700.0, 500.0), spread, span);
+
+        for (label, profile) in [
+            ("wide/right", &wide.0),
+            ("wide/bottom", &wide.1),
+            ("tall/right", &tall.0),
+            ("tall/bottom", &tall.1),
+            ("square/right", &square.0),
+            ("square/bottom", &square.1),
+        ] {
+            // 1. Every sample matches the declared envelope at its own
+            //    distance from the edge, in units of `spread`.
+            for (k, got) in profile.iter().enumerate() {
+                let u = (k as f64 + 0.5) / spread;
+                let want = (255.0 * shadow_profile(u)).round() as i32;
+                assert!(
+                    (*got as i32 - want).abs() <= 8,
+                    "{label}: {k} px out from the edge must be {want}/255 \
+                     (shadow_profile({u:.3})); got {got}. Whole profile: \
+                     {profile:?}"
+                );
+            }
+            // 2. …so the falloff dies at `spread`, not at some fraction
+            //    of the rect's own width or height.
+            let width = profile.iter().rposition(|v| *v > 2).unwrap_or(0);
+            assert!(
+                (width as f64 - spread).abs() <= 5.0,
+                "{label}: the shadow must still be painting within \
+                 {spread} px of the edge and gone past it; last visible \
+                 sample was at {width} px: {profile:?}"
+            );
+            // 3. And it is actually a shadow at the edge, not a hairline.
+            assert!(
+                profile[0] as i32 >= (255.0 * shadow_profile(0.0)) as i32 - 12,
+                "{label}: the shadow at the edge must read ~{}/255; got {}",
+                (255.0 * shadow_profile(0.0)).round(),
+                profile[0]
+            );
+        }
+
+        // 4. Stated directly: the three aspect ratios agree with each
+        //    other, and each rect's own two axes agree.
+        for (label, a, b) in [
+            ("wide vs square", &wide.0, &square.0),
+            ("tall vs square", &tall.0, &square.0),
+            ("wide: x vs y", &wide.0, &wide.1),
+            ("tall: x vs y", &tall.0, &tall.1),
+        ] {
+            for (k, (x, y)) in a.iter().zip(b.iter()).enumerate() {
+                assert!(
+                    (*x as i32 - *y as i32).abs() <= 6,
+                    "{label}: the profiles diverge {k} px out from the \
+                     edge ({x} vs {y}): {a:?} vs {b:?}"
+                );
+            }
+        }
+    }
+
+    /// A corner's falloff is a `spread`-radius quarter circle about the
+    /// corner point, so the alpha a given distance diagonally out from
+    /// the corner matches the alpha the same distance straight out from
+    /// an edge. The stretched sprite turned that circle into an ellipse
+    /// as wide as the card.
+    #[test]
+    fn soft_shadow_corners_stay_circular_on_a_wide_rect() {
+        let spread = 40.0;
+        let rect = Rect::new(150.0, 330.0, 1172.0, 565.0);
+        let at = render_shadow(1400, 900, rect, spread);
+        for r in [6.0_f64, 12.0, 20.0, 28.0, 36.0] {
+            let straight = at(rect.x1 + r, rect.center().y) as i32;
+            for deg in [15.0_f64, 30.0, 45.0, 60.0, 75.0] {
+                let (sin, cos) = deg.to_radians().sin_cos();
+                let got = at(rect.x1 + r * cos, rect.y1 + r * sin) as i32;
+                assert!(
+                    (got - straight).abs() <= 8,
+                    "{r} px out from the bottom-right corner at {deg}° \
+                     reads {got}/255, but {r} px straight out from the \
+                     edge reads {straight}/255 — the corner is not a \
+                     circle of radius {spread}"
+                );
+            }
+        }
+    }
+
+    /// Along one edge the shadow is constant, including across the
+    /// boundaries where the edge slice meets the two corner slices. Any
+    /// step there would show as a hairline running out of the corner —
+    /// so this is both the "edges stretch on one axis only" contract and
+    /// the seam check for the 9-slice.
+    #[test]
+    fn soft_shadow_is_uniform_along_an_edge_and_seamless_at_the_slice_joins() {
+        let spread = 40.0;
+        let rect = Rect::new(150.0, 330.0, 1172.0, 565.0);
+        let at = render_shadow(1400, 900, rect, spread);
+        // The corner slices own the first and last `spread` of the edge;
+        // between them the field must not vary at all. Sampling starts
+        // exactly on those two joins.
+        for dy in [1.0_f64, 8.0, 20.0] {
+            let y = rect.y1 + dy;
+            let mut samples: Vec<(f64, u8)> = Vec::new();
+            let mut x = rect.x0 + spread;
+            while x <= rect.x1 - spread {
+                samples.push((x, at(x, y)));
+                x += 1.0;
+            }
+            let lo = samples.iter().map(|(_, v)| *v).min().unwrap();
+            let hi = samples.iter().map(|(_, v)| *v).max().unwrap();
+            assert!(
+                hi as i32 - lo as i32 <= 3,
+                "{dy} px below the bottom edge the shadow varies from \
+                 {lo} to {hi} across the edge's length; the worst \
+                 columns were {:?}",
+                samples
+                    .iter()
+                    .filter(|(_, v)| *v == lo || *v == hi)
+                    .take(6)
+                    .collect::<Vec<_>>()
+            );
+        }
+    }
+
+    /// A wide card's interior stays completely clear, which is what lets
+    /// translucent surfaces sit on a shadow without darkening
+    /// themselves. The centre slice is skipped precisely because the
+    /// envelope is zero more than one band in.
+    #[test]
+    fn soft_shadow_leaves_a_wide_rects_interior_clear() {
+        let spread = 40.0;
+        let rect = Rect::new(150.0, 330.0, 1172.0, 565.0);
+        let at = render_shadow(1400, 900, rect, spread);
+        for fx in [0.25_f64, 0.5, 0.75] {
+            let x = rect.x0 + rect.width() * fx;
+            let y = rect.center().y;
+            assert_eq!(at(x, y), 0, "the interior at ({x}, {y}) must be clear");
+        }
+    }
+
     #[test]
     fn degenerate_inputs_are_noops() {
         let mut scene = Scene::new();
-        // Zero-area rect, zero intensity — must not panic and must add
-        // nothing detectable (we just assert it returns).
+        // Zero-area rect, zero intensity, zero spread — must not panic
+        // and must add nothing detectable (we just assert it returns).
         soft_shadow(
             &mut scene,
             Affine::IDENTITY,
@@ -356,5 +803,40 @@ mod tests {
             0.0,
             0.0,
         );
+        soft_shadow(
+            &mut scene,
+            Affine::IDENTITY,
+            Rect::new(0.0, 0.0, 100.0, 100.0),
+            Color::BLACK,
+            0.0,
+            0.0,
+            0.5,
+        );
+    }
+
+    /// A pill shorter than `2 · spread` still gets the full outward
+    /// falloff: the opposing slices share the interior instead of
+    /// squashing the profile into whatever room the rect has. The
+    /// toolkit's own tab / close / restore pills are exactly this shape
+    /// (26 px tall against a 10 px spread), and the wheel disc's spoke
+    /// card is the small near-square case that already looked right and
+    /// must keep looking right.
+    #[test]
+    fn a_pill_thinner_than_the_spread_keeps_the_full_falloff() {
+        let spread = 20.0;
+        // 24 px tall — narrower than 2 · spread — and 120 px wide.
+        let pill = Rect::new(400.0, 400.0, 520.0, 424.0);
+        let at = render_shadow(1400, 900, pill, spread);
+        for k in 0..(spread as u32 + 4) {
+            let u = (k as f64 + 0.5) / spread;
+            let want = (255.0 * shadow_profile(u)).round() as i32;
+            let got = at(pill.center().x, pill.y1 + k as f64) as i32;
+            assert!(
+                (got - want).abs() <= 8,
+                "{k} px below a {}-px-tall pill must read {want}/255 \
+                 (shadow_profile({u:.3})); got {got}",
+                pill.height(),
+            );
+        }
     }
 }
