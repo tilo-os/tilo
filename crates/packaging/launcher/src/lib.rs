@@ -26,6 +26,7 @@
 pub mod capabilities;
 pub mod dbus_proxy;
 pub mod gpu;
+pub mod hardening;
 pub mod landlock;
 pub mod landlock_shim;
 pub mod manifest;

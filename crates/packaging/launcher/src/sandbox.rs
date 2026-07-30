@@ -200,6 +200,33 @@ pub const WORKSPACE_ID_ENV: &str = "QOS_WORKSPACE_ID";
 /// (which room did the user open this app into), not of the package,
 /// so it arrives from `RunOptions` alongside the Wayland socket rather
 /// than from the manifest the way `QOS_PACKAGE_ID` does.
+/// Attach the scoped runtime protections from
+/// [`crate::hardening::RuntimeHardening`] to a sandbox.
+///
+/// Both are environment, but the allocator also needs its library reachable
+/// from inside the namespace: the sandbox mounts a curated set of paths, and an
+/// `LD_PRELOAD` naming a path that was not bound in is not an error — the loader
+/// prints a warning to stderr and the process runs with the ordinary allocator.
+/// That failure mode is the reason the bind is emitted here next to the variable
+/// rather than left to whatever the manifest happened to list.
+pub fn push_runtime_hardening(argv: &mut Vec<String>, hardening: &crate::hardening::RuntimeHardening) {
+    if let Some(allocator) = &hardening.allocator {
+        // Same path inside and out, so LD_PRELOAD and the bind cannot drift.
+        push_bind(argv, "--ro-bind", allocator, allocator);
+        argv.push("--setenv".to_string());
+        argv.push("LD_PRELOAD".to_string());
+        argv.push(allocator.display().to_string());
+    }
+    if hardening.shadow_stack {
+        // Marking the binary is not enough on its own: glibc reads this
+        // tunable to decide whether to ask the kernel for a shadow stack. On a
+        // CPU or kernel without support it is ignored, not an error.
+        argv.push("--setenv".to_string());
+        argv.push("GLIBC_TUNABLES".to_string());
+        argv.push("glibc.cpu.hwcaps=SHSTK".to_string());
+    }
+}
+
 pub fn push_workspace_id(argv: &mut Vec<String>, workspace_id: &str) {
     argv.push("--setenv".to_string());
     argv.push(WORKSPACE_ID_ENV.to_string());
@@ -418,6 +445,15 @@ pub fn build_bwrap_argv_for_entry(
     argv.push("--setenv".to_string());
     argv.push("QOS_PACKAGE_ID".to_string());
     argv.push(manifest.package_id.clone());
+
+    // Hardened allocator + shadow stacks, for the packages the image lists as
+    // handling untrusted bytes. Decided from the package id against an
+    // image-owned policy, not from anything the manifest can ask for — an app
+    // must not be able to opt itself out of protection.
+    push_runtime_hardening(
+        &mut argv,
+        &crate::hardening::for_package(&manifest.package_id),
+    );
 
     // Runtime bind: host runtime_root -> /usr/lib/qos-runtime/<version>/
     // and set LD_LIBRARY_PATH inside the sandbox so the entrypoint can
@@ -768,10 +804,91 @@ mod tests {
                 },
                 services: BTreeMap::new(),
                 portals: BTreeMap::new(),
+                ..Default::default()
             },
             cli_commands: Vec::new(),
             opens_ext: Vec::new(),
         }
+    }
+
+    /// Build argv for `mk_manifest`'s package id with `policy` as the image's
+    /// untrusted-parser list, so the tests exercise the real
+    /// `build_bwrap_argv` → `hardening::for_package` path rather than calling
+    /// `push_runtime_hardening` directly with a hand-made value.
+    fn argv_with_hardening_policy(policy: &str) -> Vec<String> {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("untrusted-parsers.conf");
+        std::fs::write(&file, policy).unwrap();
+        // SAFETY: the test body is single-threaded and takes the process_env
+        // lock; the variable is removed before the assertions run.
+        unsafe { std::env::set_var(crate::hardening::POLICY_PATH_ENV, &file) };
+        let m = mk_manifest("off");
+        let argv = build_bwrap_argv(
+            &m,
+            Path::new("/host/pkg"),
+            None,
+            &[],
+            None,
+            None,
+            &CapabilityPlan::empty(),
+        );
+        // SAFETY: as above.
+        unsafe { std::env::remove_var(crate::hardening::POLICY_PATH_ENV) };
+        argv
+    }
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn a_listed_package_gets_the_allocator_bound_as_well_as_preloaded() {
+        let argv = argv_with_hardening_policy("com.example.notes\n");
+
+        let preload = argv
+            .windows(3)
+            .find(|w| w[0] == "--setenv" && w[1] == "LD_PRELOAD")
+            .map(|w| w[2].clone());
+
+        // compiler-rt may not be installed where the tests run; when it is
+        // absent the launcher must fall back to the system allocator rather
+        // than set a preload that cannot resolve.
+        match preload {
+            Some(path) => {
+                assert!(
+                    path.ends_with("libclang_rt.scudo_standalone.so"),
+                    "unexpected preload: {path}"
+                );
+                assert!(
+                    argv.windows(3)
+                        .any(|w| w[0] == "--ro-bind" && w[1] == path && w[2] == path),
+                    "LD_PRELOAD is set to {path} but that path is not bound into \
+                     the sandbox, so the loader would silently skip it: {argv:?}"
+                );
+            }
+            None => assert!(
+                crate::hardening::find_hardened_allocator().is_none(),
+                "an allocator is installed but no LD_PRELOAD was emitted"
+            ),
+        }
+
+        assert!(
+            argv.windows(3).any(|w| w[0] == "--setenv"
+                && w[1] == "GLIBC_TUNABLES"
+                && w[2] == "glibc.cpu.hwcaps=SHSTK"),
+            "shadow stacks were not requested for a listed package: {argv:?}"
+        );
+    }
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn an_unlisted_package_pays_for_neither_protection() {
+        let argv = argv_with_hardening_policy("dev.qos.browser\n");
+        assert!(
+            !argv.iter().any(|a| a == "LD_PRELOAD"),
+            "an ordinary app must not carry the hardened allocator: {argv:?}"
+        );
+        assert!(
+            !argv.iter().any(|a| a == "GLIBC_TUNABLES"),
+            "an ordinary app must not carry the shadow-stack tunable: {argv:?}"
+        );
     }
 
     #[test]
