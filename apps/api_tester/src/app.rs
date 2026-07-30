@@ -1576,6 +1576,13 @@ impl Widget for ApiTesterApp {
         self.url_input.sync(state, path);
         self.body_input.sync(state, path);
 
+        // Apply any commands an assistive technology queued by activating a
+        // control directly through `perform_action` (which bypasses the
+        // container's `handle_event`, where pointer/keyboard activations are
+        // drained). Draining here too means Orca / the built-in reader can
+        // Send, switch tabs, and open rows just like the keyboard.
+        self.drain_commands(state, path);
+
         // Sync + reconcile the CRDT-bound pickers.
         self.method_dropdown.sync(state, path);
         self.env_dropdown.sync(state, path);
