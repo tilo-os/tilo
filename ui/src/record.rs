@@ -682,6 +682,28 @@ impl RecordSet {
             return false;
         }
 
+        // A document that already has content and belongs to no record
+        // *becomes* this record's, rather than being replaced by it. That is
+        // what "this untitled document is now saved as /work/report.odt"
+        // means, and equally what an app that loaded a file before naming its
+        // record has in hand. Replacing it here would throw the content away
+        // — the exact class of loss records exist to prevent.
+        if self.active.is_none() && !state.doc.get_heads().is_empty() {
+            let adopted = std::mem::replace(&mut state.doc, AutoCommit::new());
+            state.adopt_doc(adopted);
+            let autosave = self.persist_for(&want.id, &mut state.doc);
+            self.open.insert(
+                want.id.clone(),
+                Parked {
+                    doc: None,
+                    kind: want.kind.clone(),
+                    autosave,
+                },
+            );
+            self.finish_checkout(state, room, want);
+            return true;
+        }
+
         // Park the outgoing document under the record that owns it.
         if let Some(prev) = self.active.take() {
             let outgoing = std::mem::replace(&mut state.doc, AutoCommit::new());
@@ -712,6 +734,20 @@ impl RecordSet {
         };
 
         state.adopt_doc(incoming);
+        self.finish_checkout(state, room, want);
+        true
+    }
+
+    /// Stamp the identity, apply the declared references, and put the record
+    /// (and what it references) into the room index. Shared by both routes
+    /// into a checkout — a document loaded from its own file, and one adopted
+    /// from the caller.
+    fn finish_checkout(
+        &mut self,
+        state: &mut crate::state::State,
+        room: Option<&mut AutoCommit>,
+        want: &RecordCheckout,
+    ) {
         init(&mut state.doc, &want.id, &want.kind, &self.home);
         for (target, relation) in &want.references {
             add_reference(
@@ -729,31 +765,67 @@ impl RecordSet {
             }
         }
         self.active = Some(want.id.clone());
-        true
     }
 
     /// Open a record's stored document, and the writer for it.
     fn load(&self, id: &RecordId) -> (AutoCommit, Option<crate::persist::Autosave>) {
+        let mut doc = AutoCommit::new();
+        let autosave = self.persist_for(id, &mut doc);
+        (doc, autosave)
+    }
+
+    /// Attach `doc` to this record's own file: merge in whatever the file
+    /// already holds, and hand back the writer that keeps it up to date.
+    ///
+    /// Merging rather than overwriting is what makes adoption safe — a
+    /// document adopted from the caller keeps its content *and* picks up
+    /// anything a previous session left behind, which is the same convergence
+    /// automerge gives two peers.
+    ///
+    /// The writer is seeded from the **stored** heads, not the merged ones, so
+    /// content that only the live document has is written out on the first
+    /// tick. Seeding from the merged heads would tell the writer that the
+    /// adopted content was already on disk, and it would never land.
+    fn persist_for(&self, id: &RecordId, doc: &mut AutoCommit) -> Option<crate::persist::Autosave> {
         if !self.persistent {
-            return (AutoCommit::new(), None);
+            return None;
         }
-        match app_state::DocStore::open_record(&self.package_id, &id.storage_key()) {
-            Ok(mut store) => {
-                let mut doc = store.load_or_new();
-                let mut autosave =
-                    crate::persist::Autosave::spawn(store, crate::persist::DEFAULT_DEBOUNCE);
-                autosave.seed(&mut doc);
-                (doc, Some(autosave))
-            }
+        let mut store = match app_state::DocStore::open_record(&self.package_id, &id.storage_key())
+        {
+            Ok(store) => store,
             Err(e) => {
                 tracing::error!(
                     record = %id,
                     error = %e,
                     "record store unavailable; this record runs without persistence"
                 );
-                (AutoCommit::new(), None)
+                return None;
+            }
+        };
+        let stored = match store.load() {
+            Ok(found) => found,
+            Err(e) => {
+                tracing::error!(
+                    record = %id,
+                    error = %e,
+                    "stored record could not be read; continuing with what is live"
+                );
+                None
+            }
+        };
+        let mut autosave =
+            crate::persist::Autosave::spawn(store, crate::persist::DEFAULT_DEBOUNCE);
+        if let Some(mut stored) = stored {
+            autosave.seed(&mut stored);
+            if let Err(e) = doc.merge(&mut stored) {
+                tracing::error!(
+                    record = %id,
+                    error = %e,
+                    "stored record could not be merged; continuing with what is live"
+                );
             }
         }
+        Some(autosave)
     }
 
     /// Offer the live document to the active record's writer. Cheap when
@@ -984,6 +1056,78 @@ mod tests {
         put_text(&mut state.doc, "body", "typed");
         assert!(!set.checkout(&mut state, None, &want), "already live");
         assert_eq!(text(&state.doc, "body").as_deref(), Some("typed"));
+    }
+
+    /// Records persist one file each, and a record adopted from a live
+    /// document (the "save as" / already-loaded case) is written out rather
+    /// than being mistaken for something already on disk.
+    #[test]
+    #[serial_test::serial(record_state_dir)]
+    fn each_record_persists_to_its_own_file_and_comes_back() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        // SAFETY: this test is serialised on `record_state_dir`; no other
+        // thread reads the variable between the set and the reads below.
+        unsafe {
+            std::env::set_var("XDG_DATA_HOME", tmp.path());
+            std::env::remove_var("QOS_PACKAGE_ID");
+        }
+
+        let a = RecordCheckout::new(
+            RecordId::for_file("/work/a.odt"),
+            RecordKind::new("document"),
+        );
+        let b = RecordCheckout::new(
+            RecordId::for_file("/work/b.odt"),
+            RecordKind::new("document"),
+        );
+
+        {
+            let mut set = RecordSet::open("dev.qos.test-records");
+            let mut state = State::new();
+            let mut room = AutoCommit::new();
+            // `a` is adopted: the document already holds the file's content
+            // before the record is named, exactly as an app that loaded a
+            // file first does.
+            put_text(&mut state.doc, "body", "a's body");
+            set.checkout(&mut state, Some(&mut room), &a);
+            set.checkout(&mut state, Some(&mut room), &b);
+            put_text(&mut state.doc, "body", "b's body");
+            set.flush(&mut state.doc);
+        }
+
+        // A fresh process: same package, same record ids, nothing else shared.
+        let mut set = RecordSet::open("dev.qos.test-records");
+        let mut state = State::new();
+        let mut room = AutoCommit::new();
+        set.checkout(&mut state, Some(&mut room), &a);
+        assert_eq!(
+            text(&state.doc, "body").as_deref(),
+            Some("a's body"),
+            "the adopted record was written to its own file and came back"
+        );
+        set.checkout(&mut state, Some(&mut room), &b);
+        assert_eq!(
+            text(&state.doc, "body").as_deref(),
+            Some("b's body"),
+            "and the second record is its own file, not the first's"
+        );
+
+        let dir = tmp
+            .path()
+            .join("dev.qos.test-records")
+            .join(app_state::RECORDS_DIR);
+        let entries: Vec<_> = std::fs::read_dir(&dir)
+            .expect("records directory exists")
+            .filter_map(|e| e.ok())
+            .collect();
+        assert_eq!(
+            entries.len(),
+            2,
+            "one directory per record under {}, got {entries:?}",
+            dir.display()
+        );
+
+        unsafe { std::env::remove_var("XDG_DATA_HOME") };
     }
 
     #[test]
