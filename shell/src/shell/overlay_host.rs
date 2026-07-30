@@ -6852,11 +6852,13 @@ impl ShellOverlayHost {
             let mut drew_any = false;
             'outer: for strip in &ws.strips {
                 for g in &strip.window_groups {
-                    let mini_w = match g.width {
-                        crate::shell::state::WindowWidth::Wide => 128.0,
-                        crate::shell::state::WindowWidth::Narrow => 64.0,
-                        _ => OVERVIEW_MINI_WIDTH_PX,
-                    };
+                    // Scale the mini-window by the group's share of its
+                    // strip, so the overview reflects the real layout for
+                    // any width — a hand-resized group used to fall into
+                    // the same generic box as an untouched one.
+                    let mini_w = OVERVIEW_MINI_WIDTH_PX
+                        * (g.width.permille() as f64
+                            / ui::widget::WIDTH_NORMAL_PERMILLE as f64);
                     if mx + mini_w > mini_x1 {
                         break 'outer;
                     }
