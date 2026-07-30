@@ -1,26 +1,100 @@
-use shell::shell::state::{Role, RolePermissions, Workspace, WorkspaceFile, WorkspaceId};
+//! Workspace permission state round-trips through the one model the
+//! enforcement points read.
+//!
+//! This file used to round-trip `Role` / `RolePermissions` /
+//! `WorkspaceFile` — a vocabulary no decision anywhere consulted. Those
+//! types are gone; what a member may do is the verb on their membership
+//! capability, and what an app may touch is a capability scoped to a
+//! path or a device. The assertions below keep the same shape as before
+//! (write it, read it back, check the value) against the model that
+//! actually decides.
+
+use shell::shell::state::{
+    CapOverride, CapRole, ResourceRef, Scope, Subject, Verb, Workspace, WorkspaceId,
+};
 
 #[test]
-fn role_permissions_round_trip() {
+fn membership_round_trips_as_a_role() {
     let mut ws = Workspace::new(WorkspaceId::new(), "Design");
-    ws.roles.push(Role {
-        id: "role-1".into(),
-        name: "Editor".into(),
-        permissions: RolePermissions {
-            can_invite: false,
-            can_edit_files: true,
-            per_app: Default::default(),
-            per_file: Default::default(),
-        },
-    });
-    ws.workspace_files.push(WorkspaceFile {
-        id: "file-1".into(),
-        name: "brief.md".into(),
-        mime: "text/markdown".into(),
-    });
-    assert_eq!(ws.roles[0].name, "Editor");
-    assert!(ws.roles[0].permissions.can_edit_files);
-    assert!(!ws.roles[0].permissions.can_invite);
-    assert_eq!(ws.workspace_files[0].name, "brief.md");
-    assert_eq!(ws.workspace_files[0].mime, "text/markdown");
+    ws.set_owner("host");
+    let room = ws.id.raw().to_string();
+    ws.grant_as(
+        &"host".to_string(),
+        CapOverride::membership(Subject::person("editor-user"), room, Verb::Write),
+    )
+    .expect("the owner may write a membership");
+
+    assert_eq!(
+        ws.role_of(&"editor-user".to_string()),
+        Some(CapRole::Editor)
+    );
+    assert_eq!(ws.role_of(&"host".to_string()), Some(CapRole::Owner));
+    assert_eq!(
+        ws.role_of(&"stranger".to_string()),
+        None,
+        "not a member is distinct from a member with no rights"
+    );
+    let roster = ws.roster();
+    assert_eq!(roster.len(), 2);
+    assert!(
+        roster
+            .iter()
+            .any(|(u, r)| u == "editor-user" && *r == CapRole::Editor)
+    );
+}
+
+#[test]
+fn a_file_capability_round_trips_and_decides() {
+    let mut ws = Workspace::new(WorkspaceId::new(), "Design");
+    ws.set_owner("host");
+    ws.grant_as(
+        &"host".to_string(),
+        CapOverride::grant(
+            Subject::app("Files"),
+            Scope::FsPath("/var/workspace/design".into()),
+            Verb::Write,
+        ),
+    )
+    .expect("the owner may grant");
+
+    let actor = ws.actor_for_app("Files");
+    assert!(
+        ws.allows(
+            &actor,
+            &ResourceRef::FsPath("/var/workspace/design/brief.md".into()),
+            Verb::Write
+        ),
+        "a path capability inherits down the tree"
+    );
+    assert!(
+        !ws.allows(
+            &actor,
+            &ResourceRef::FsPath("/etc/shadow".into()),
+            Verb::Write
+        ),
+        "and does not leak outside it"
+    );
+}
+
+#[test]
+fn only_an_administrator_may_write_permission_state() {
+    let mut ws = Workspace::new(WorkspaceId::new(), "Design");
+    ws.set_owner("host");
+    let refused = ws.grant_as(
+        &"stranger".to_string(),
+        CapOverride::grant(
+            Subject::app("Files"),
+            Scope::FsPath("/var/workspace".into()),
+            Verb::Write,
+        ),
+    );
+    assert!(
+        refused.is_none(),
+        "grant_as must refuse a non-administrator"
+    );
+    assert_eq!(
+        ws.capabilities.len(),
+        1,
+        "only the owner's own membership is recorded"
+    );
 }

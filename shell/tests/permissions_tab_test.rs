@@ -1,21 +1,19 @@
-//! Sandbox Phase 6 — UI integration tests for the WS-Settings
-//! Permissions tab.
+//! Integration tests for the Workspace Settings permission panel.
 //!
-//! These tests exercise the chrome ↔ overlay-host wiring end-to-end:
+//! Every test here drives the chrome ↔ overlay-host wiring end-to-end:
 //!
-//!   1. Seed `Workspace::grants` with one or more capabilities.
-//!   2. Open the Workspace Settings modal at the Permissions tab.
-//!   3. Render once so `draw_ws_settings` populates the cached
-//!      revoke-button hit rects.
-//!   4. Read the rects via the test-only
-//!      `permissions_revoke_rects()` accessor and synthesize a click
-//!      on one.
-//!   5. Assert the workspace's grants map has been mutated (or, for
-//!      the non-owner case, has *not* been mutated).
+//!   1. Build a workspace with a real owner (and, where relevant, real
+//!      members and capabilities), written through `grant_as`.
+//!   2. Open the modal at the tab under test.
+//!   3. Render once, so `draw_ws_settings` populates the control rects.
+//!   4. Read those rects back and synthesize a click on one.
+//!   5. Assert against `Workspace::capabilities` and the decision
+//!      function — never against a widget's own cache. A control that
+//!      only updates the thing that painted it is the defect this panel
+//!      replaces.
 //!
-//! The test harness mirrors `e2e_shell_flows.rs` and
-//! `concept_parity_spec.rs` — full build/layout/draw cycle with no
-//! GPU.
+//! The harness mirrors `e2e_shell_flows.rs` and `concept_parity_spec.rs`
+//! — full build/layout/draw cycle with no GPU.
 
 use std::collections::HashMap;
 
@@ -27,9 +25,10 @@ use shell::shell::build_nirios_overlay_host_with_chrome;
 use shell::shell::chrome_state::{Chrome, WsTab};
 use shell::shell::overlay_host::ShellOverlayHost;
 use shell::shell::state::{
-    Capability, GRANT_ALWAYS, GRANT_ONCE, GRANT_SESSION, Workspace, WorkspaceId, WorkspaceTree,
+    CapOverride, Capability, Expiry, GRANT_ALWAYS, GRANT_SESSION, ResourceRef, Scope, Subject,
+    Verb, Workspace, WorkspaceId, WorkspaceTree,
 };
-use shell::shell::workspace_settings;
+use shell::shell::workspace_settings::{self, GrantDraft, SubjectKind};
 
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
@@ -64,6 +63,14 @@ fn left_press() -> WindowEvent {
     }
 }
 
+fn left_release() -> WindowEvent {
+    WindowEvent::MouseInput {
+        device_id: synth_device(),
+        state: ElementState::Released,
+        button: MouseButton::Left,
+    }
+}
+
 /// Build a tree with a single workspace that holds the supplied grants.
 /// Mirrors `permission_prompt_pump.rs::chrome_with_pending_grant`'s
 /// shape so test setup stays compact.
@@ -90,15 +97,15 @@ fn tree_with_grants(entries: Vec<(&str, Vec<Capability>)>) -> WorkspaceTree {
     tree
 }
 
-/// Render the host once with the chrome configured for the
-/// Permissions tab. Returns the produced Scene + the host so the
-/// caller can read back hit rects and dispatch synthesized events.
-fn render_at_permissions_tab(tree: &WorkspaceTree) -> (ShellOverlayHost, Chrome, Scene) {
+/// Render the host once with the chrome configured for `tab`. Returns
+/// the produced Scene + the host so the caller can read back hit rects
+/// and dispatch synthesized events.
+fn render_at_tab(tree: &WorkspaceTree, tab: WsTab) -> (ShellOverlayHost, Chrome, Scene) {
     let (mut host, chrome) = build_nirios_overlay_host_with_chrome(tree);
     {
         let mut st = chrome.borrow_mut();
         st.overlays.ws_settings = true;
-        st.ws_settings_tab = WsTab::Permissions;
+        st.ws_settings_tab = tab;
     }
     let theme = Theme::dark();
     let mut taffy: TaffyTree<()> = TaffyTree::new();
@@ -165,28 +172,117 @@ fn dispatch_to_host(host: &mut ShellOverlayHost, event: &WindowEvent) {
     );
 }
 
+
+/// Click a rect through the production event path: a cursor move to seed
+/// `last_cursor`, then a left press that lands on it.
+fn click(host: &mut ShellOverlayHost, rect: vello::kurbo::Rect) {
+    dispatch_to_host(host, &cursor_at(rect.center()));
+    dispatch_to_host(host, &left_press());
+    dispatch_to_host(host, &left_release());
+}
+
+/// Re-render so the host's control-rect caches match the current state.
+fn repaint(host: &mut ShellOverlayHost) {
+    let theme = Theme::dark();
+    let mut tr = TextRenderer::new();
+    let mut scene = Scene::new();
+    let presence = PresenceCtx::default();
+    host.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+}
+
+/// A tree whose active workspace is owned by the local user and has two
+/// invited members. Memberships go in through `grant_as`, so the fixture
+/// itself exercises the authority check.
+fn tree_with_members() -> WorkspaceTree {
+    let mut tree = WorkspaceTree::default();
+    let id = WorkspaceId::from(1);
+    let mut ws = Workspace::new(id, "perm-test");
+    let owner = shell::shell::state::local_user_id();
+    ws.set_owner(owner.clone());
+    let room = ws.id.raw().to_string();
+    for (person, verb) in [("ada", Verb::Read), ("bo", Verb::Read)] {
+        ws.grant_as(
+            &owner,
+            CapOverride::membership(Subject::person(person), room.clone(), verb),
+        )
+        .expect("the owner may write a membership");
+    }
+    tree.workspaces.push(ws);
+    tree.set_active(id);
+    tree
+}
+
+/// The active workspace's capabilities, read straight off the tree.
+fn capabilities(chrome: &Chrome) -> Vec<CapOverride> {
+    let st = chrome.borrow();
+    let tree = st.tree();
+    tree.active_workspace()
+        .map(|ws| ws.capabilities.clone())
+        .unwrap_or_default()
+}
+
 // =====================================================================
-// Task 6.1 — rendering
+// The Permissions tab is always reachable
 // =====================================================================
 
 #[test]
-fn permissions_tab_renders_zero_rows_when_no_grants() {
-    // Empty grants ⇒ the rect-cache populated by `draw_ws_settings`
-    // for revoke buttons is empty, even after the modal renders.
+fn the_permissions_pill_is_painted_on_a_workspace_with_no_grants() {
+    // The tab used to be filtered out of the strip until a grant already
+    // existed, which meant the only way to create the first grant was a
+    // portal prompt — a host could not grant anything proactively. The
+    // pill must be on screen for an empty workspace.
     let tree = tree_with_grants(vec![]);
-    let (host, _chrome, _scene) = render_at_permissions_tab(&tree);
+    let (host, chrome, _scene) = render_at_tab(&tree, WsTab::General);
+    {
+        let st = chrome.borrow();
+        let t = st.tree();
+        assert!(
+            !t.active_workspace().unwrap().has_app_grants(),
+            "precondition: no grants"
+        );
+    }
+    assert!(
+        host.ws_settings_tab_pill_rect(WsTab::Permissions).area() > 0.0,
+        "the Permissions pill must be painted even with zero grants"
+    );
+    for tab in [WsTab::General, WsTab::Members, WsTab::Permissions] {
+        assert!(
+            host.ws_settings_tab_pill_rect(tab).area() > 0.0,
+            "{tab:?} must have a clickable pill"
+        );
+    }
+}
+
+#[test]
+fn clicking_the_permissions_pill_switches_to_it() {
+    let tree = tree_with_grants(vec![]);
+    let (mut host, chrome, _scene) = render_at_tab(&tree, WsTab::General);
+    let pill = host.ws_settings_tab_pill_rect(WsTab::Permissions);
+    click(&mut host, pill);
+    assert_eq!(chrome.borrow().ws_settings_tab, WsTab::Permissions);
+}
+
+// =====================================================================
+// Rendering the real capability list
+// =====================================================================
+
+#[test]
+fn permissions_tab_renders_zero_revoke_rects_when_no_grants() {
+    let tree = tree_with_grants(vec![]);
+    let (host, _chrome, _scene) = render_at_tab(&tree, WsTab::Permissions);
     assert!(
         host.permissions_revoke_rects().is_empty(),
-        "no grants ⇒ no revoke-button rects, got {:?}",
+        "no grants ⇒ no revoke-button rects, got {}",
         host.permissions_revoke_rects().len()
+    );
+    assert!(
+        host.grant_composer_rects().is_some(),
+        "the composer must be on screen even with nothing granted"
     );
 }
 
 #[test]
-fn permissions_tab_renders_one_row_per_capability_per_app() {
-    // Two capabilities for one app ⇒ two revoke-button rects in the
-    // cache. Each rect must be non-zero (the renderer painted the
-    // button at a real pixel position).
+fn permissions_tab_renders_one_row_per_capability() {
     let tree = tree_with_grants(vec![(
         "firefox",
         vec![
@@ -199,7 +295,7 @@ fn permissions_tab_renders_one_row_per_capability_per_app() {
             },
         ],
     )]);
-    let (host, _chrome, _scene) = render_at_permissions_tab(&tree);
+    let (host, chrome, _scene) = render_at_tab(&tree, WsTab::Permissions);
     let rects = host.permissions_revoke_rects();
     assert_eq!(
         rects.len(),
@@ -207,19 +303,136 @@ fn permissions_tab_renders_one_row_per_capability_per_app() {
         "expected 2 revoke rects for 2 capabilities, got {}",
         rects.len()
     );
-    for (_app, _idx, r) in rects {
+    // Each rect is keyed by a capability that really exists on the
+    // workspace, so a click cannot name something that isn't there.
+    let live: Vec<String> = capabilities(&chrome).into_iter().map(|c| c.id).collect();
+    for (cap_id, r) in rects {
         assert!(r.area() > 0.0, "revoke rect must have non-zero area");
+        assert!(
+            live.contains(cap_id),
+            "revoke rect keyed by {cap_id}, which is not a live capability"
+        );
     }
 }
 
 // =====================================================================
-// Task 6.1 — revoke flow
+// Granting — the affordance the panel previously had no equivalent of
 // =====================================================================
 
 #[test]
-fn revoke_click_removes_capability_from_grants() {
-    // Click on the first row's revoke button → the mapped
-    // (app_id, cap_index) is removed from the workspace's grants.
+fn clicking_grant_writes_a_capability_the_decision_function_honours() {
+    let tree = tree_with_grants(vec![(
+        "firefox",
+        vec![Capability::Camera {
+            scope: GRANT_ALWAYS,
+        }],
+    )]);
+    let (mut host, chrome, _scene) = render_at_tab(&tree, WsTab::Permissions);
+
+    // Drive the subject picker to `firefox` by clicking it, exactly as a
+    // user would, rather than by writing the draft directly.
+    let subjects = {
+        let st = chrome.borrow();
+        let t = st.tree();
+        workspace_settings::grant_subjects(t.active_workspace().unwrap())
+    };
+    let target = subjects
+        .iter()
+        .position(|s| s.kind == SubjectKind::App && s.id == "firefox")
+        .expect("firefox is a candidate subject");
+    for _ in 0..target {
+        let rect = host.grant_composer_rects().unwrap().subject;
+        click(&mut host, rect);
+        repaint(&mut host);
+    }
+    assert_eq!(chrome.borrow().ws_grant_draft.subject_index, target);
+
+    // Drive the capability picker to "Microphone".
+    while chrome.borrow().ws_grant_draft.choice().label() != "Microphone" {
+        let rect = host.grant_composer_rects().unwrap().capability;
+        click(&mut host, rect);
+        repaint(&mut host);
+    }
+
+    // Pick the "Session" expiry segment (index 1 of the picker).
+    let session = host.grant_composer_rects().unwrap().expiry[1];
+    click(&mut host, session);
+    repaint(&mut host);
+    assert_eq!(chrome.borrow().ws_grant_draft.expiry, Expiry::EndOfSession);
+
+    // Precondition read off the model, not the widget.
+    {
+        let st = chrome.borrow();
+        let t = st.tree();
+        let ws = t.active_workspace().unwrap();
+        assert!(!ws.allows(
+            &ws.actor_for_app("firefox"),
+            &ResourceRef::Device("microphone".into()),
+            Verb::Read
+        ));
+    }
+
+    let submit = host.grant_composer_rects().unwrap().submit;
+    click(&mut host, submit);
+
+    let st = chrome.borrow();
+    let t = st.tree();
+    let ws = t.active_workspace().expect("active workspace");
+    assert!(
+        ws.allows(
+            &ws.actor_for_app("firefox"),
+            &ResourceRef::Device("microphone".into()),
+            Verb::Read
+        ),
+        "the grant must start working, not merely start rendering"
+    );
+    let written = ws
+        .capabilities
+        .iter()
+        .find(|c| matches!(&c.scope, Scope::Device(d) if d == "microphone"))
+        .expect("the capability is on the workspace");
+    assert_eq!(written.expiry, Expiry::EndOfSession, "chosen expiry is kept");
+    assert!(
+        written.granted_by.is_some(),
+        "grant_as records the grantor; a grant with no recorded author \
+         did not go through the authority-checked path"
+    );
+}
+
+#[test]
+fn a_non_owner_clicking_grant_changes_nothing() {
+    let tree = tree_with_grants(vec![(
+        "firefox",
+        vec![Capability::Camera {
+            scope: GRANT_ALWAYS,
+        }],
+    )]);
+    let (mut host, chrome, _scene) = render_at_tab(&tree, WsTab::Permissions);
+    let before = capabilities(&chrome);
+    chrome.borrow_mut().test_only_owner_override = Some(false);
+
+    let composer = *host.grant_composer_rects().expect("composer on screen");
+    click(&mut host, composer.subject);
+    click(&mut host, composer.capability);
+    click(&mut host, composer.expiry[0]);
+    click(&mut host, composer.submit);
+
+    assert_eq!(
+        capabilities(&chrome),
+        before,
+        "a non-owner driving the composer must not change the capability list"
+    );
+    // And the modal is still open: the click was consumed, not fallen
+    // through to the dismiss path.
+    assert_eq!(chrome.borrow().ws_settings_tab, WsTab::Permissions);
+}
+
+// =====================================================================
+// Revoking
+// =====================================================================
+
+#[test]
+fn revoke_click_removes_the_capability_it_was_painted_for() {
     let tree = tree_with_grants(vec![(
         "firefox",
         vec![
@@ -232,122 +445,236 @@ fn revoke_click_removes_capability_from_grants() {
             },
         ],
     )]);
-    let (mut host, chrome, _scene) = render_at_permissions_tab(&tree);
-    let rects = host.permissions_revoke_rects().to_vec();
-    assert_eq!(rects.len(), 2);
-    let target = rects[0].clone();
-    let target_app = target.0.clone();
-    let target_idx = target.1;
-    let click_point = target.2.center();
+    let (mut host, chrome, _scene) = render_at_tab(&tree, WsTab::Permissions);
+    let (target_id, target_rect) = host.permissions_revoke_rects()[0].clone();
+    let before = capabilities(&chrome);
+    assert!(before.iter().any(|c| c.id == target_id));
 
-    // Synthesize the click — cursor move first so `last_cursor` is
-    // populated, then a left-press lands on the button rect.
-    dispatch_to_host(&mut host, &cursor_at(click_point));
-    dispatch_to_host(&mut host, &left_press());
+    click(&mut host, target_rect);
 
-    let st = chrome.borrow();
-    let tree = st.tree();
-    let ws = tree.active_workspace().expect("active workspace");
-    // After revoking one of two grants, the app entry still exists
-    // with one capability remaining.
-    let view = ws.grants();
-    let firefox = view.get(&target_app);
-    if target_idx == 0 {
-        // Revoked the Camera grant ⇒ Network remains.
-        let caps = firefox.expect("firefox entry must remain after partial revoke");
-        assert_eq!(caps.len(), 1, "1 of 2 grants must remain after revoke");
-        assert!(matches!(caps[0], Capability::Network { .. }));
-    } else {
-        // Revoked the Network grant ⇒ Camera remains.
-        let caps = firefox.expect("firefox entry must remain after partial revoke");
-        assert_eq!(caps.len(), 1);
-        assert!(matches!(caps[0], Capability::Camera { .. }));
-    }
+    let after = capabilities(&chrome);
+    assert!(
+        !after.iter().any(|c| c.id == target_id),
+        "the clicked row's capability must be gone"
+    );
+    assert_eq!(
+        after.len(),
+        before.len() - 1,
+        "exactly one capability is removed"
+    );
 }
 
-// =====================================================================
-// Task 6.2 — owner-only enforcement
-// =====================================================================
-
 #[test]
-fn revoke_button_disabled_for_non_owner() {
-    // Flip the chrome's test-only override so
-    // `is_active_workspace_owner` returns `false`. With that the
-    // click router consumes the click (so the modal stays open + the
-    // name-edit isn't committed) but skips the cache mutation —
-    // grants must be unchanged after the click.
+fn revoke_button_is_inert_for_a_non_owner() {
     let tree = tree_with_grants(vec![(
         "firefox",
         vec![Capability::Camera {
             scope: GRANT_ALWAYS,
         }],
     )]);
-    let (mut host, chrome, _scene) = render_at_permissions_tab(&tree);
-    // Force non-owner *after* the first render so the rect cache is
-    // already populated — the test exercises the click-router's
-    // gating, not the renderer's.
+    let (mut host, chrome, _scene) = render_at_tab(&tree, WsTab::Permissions);
     chrome.borrow_mut().test_only_owner_override = Some(false);
+    let before = capabilities(&chrome);
     let rects = host.permissions_revoke_rects().to_vec();
     assert_eq!(rects.len(), 1);
-    let click_point = rects[0].2.center();
-    dispatch_to_host(&mut host, &cursor_at(click_point));
-    dispatch_to_host(&mut host, &left_press());
+
+    click(&mut host, rects[0].1);
+
+    assert_eq!(
+        capabilities(&chrome),
+        before,
+        "a non-owner click on Revoke must be a no-op"
+    );
+}
+
+// =====================================================================
+// Members
+// =====================================================================
+
+#[test]
+fn the_members_tab_renders_the_roster_with_controls() {
+    let tree = tree_with_members();
+    let (host, chrome, _scene) = render_at_tab(&tree, WsTab::Members);
+    let rows = host.member_control_rects();
+    let roster = {
+        let st = chrome.borrow();
+        let t = st.tree();
+        t.active_workspace().unwrap().roster()
+    };
+    assert_eq!(
+        rows.len(),
+        roster.len(),
+        "one row per member of the real roster"
+    );
+    for (user, role_rect, remove_rect) in rows {
+        assert!(roster.iter().any(|(u, _)| u == user), "{user} is a member");
+        assert!(role_rect.area() > 0.0);
+        assert!(remove_rect.area() > 0.0);
+    }
+}
+
+#[test]
+fn clicking_a_role_chip_changes_what_the_member_may_do() {
+    let tree = tree_with_members();
+    let (mut host, chrome, _scene) = render_at_tab(&tree, WsTab::Members);
+    let ada = host
+        .member_control_rects()
+        .iter()
+        .find(|(u, _, _)| u == "ada")
+        .cloned()
+        .expect("ada is in the roster");
+
+    {
+        let st = chrome.borrow();
+        let t = st.tree();
+        let ws = t.active_workspace().unwrap();
+        assert_eq!(
+            ws.role_of(&"ada".to_string()),
+            Some(shell::shell::state::CapRole::Viewer)
+        );
+        assert!(!ws.allows(
+            &ws.actor_for_person(&"ada".to_string()),
+            &ResourceRef::Workspace,
+            Verb::Write
+        ));
+    }
+
+    // Viewer → Commenter → Editor.
+    click(&mut host, ada.1);
+    repaint(&mut host);
+    click(&mut host, ada.1);
 
     let st = chrome.borrow();
-    let tree = st.tree();
-    let ws = tree.active_workspace().expect("active workspace");
-    // `grants()` re-derives the per-app map from the workspace's
-    // capabilities and hands it back by value, so it needs a binding to
-    // outlive the borrow taken from it.
-    let grants = ws.grants();
-    let caps = grants
-        .get("firefox")
-        .expect("non-owner click must NOT remove the grant");
+    let t = st.tree();
+    let ws = t.active_workspace().unwrap();
     assert_eq!(
-        caps.len(),
-        1,
-        "non-owner click on Revoke must be a no-op; got {} caps",
-        caps.len()
+        ws.role_of(&"ada".to_string()),
+        Some(shell::shell::state::CapRole::Editor)
     );
-}
-
-// =====================================================================
-// Task 6.1 — WsTab visibility
-// =====================================================================
-
-#[test]
-fn permissions_tab_appears_in_ws_tab_iter() {
-    // Sandbox Phase 6 — `WsTab::all()` must include `Permissions`
-    // so the focus trap and sidebar nav can reach it.
-    let all = WsTab::all();
     assert!(
-        all.contains(&WsTab::Permissions),
-        "WsTab::all() must include Permissions; got {:?}",
-        all
+        ws.allows(
+            &ws.actor_for_person(&"ada".to_string()),
+            &ResourceRef::Workspace,
+            Verb::Write
+        ),
+        "promoting to Editor must actually grant write authority"
     );
-    // And the visibility helper exposes Permissions exactly when
-    // grants are non-empty.
-    let mut empty_ws = Workspace::new(WorkspaceId::default(), "empty");
-    assert!(!WsTab::visible(&empty_ws).contains(&WsTab::Permissions));
-    empty_ws.grant_app("vscode", &Capability::Camera { scope: GRANT_ONCE });
-    assert!(WsTab::visible(&empty_ws).contains(&WsTab::Permissions));
+}
+
+#[test]
+fn removing_a_member_takes_their_capabilities_with_them() {
+    let mut tree = tree_with_members();
+    let owner = shell::shell::state::local_user_id();
+    if let Some(ws) = tree.active_workspace_mut() {
+        ws.grant_as(
+            &owner,
+            CapOverride::grant(
+                Subject::person("ada"),
+                Scope::FsPath("/var/workspace".into()),
+                Verb::Write,
+            ),
+        )
+        .expect("the owner may grant");
+    }
+    let (mut host, chrome, _scene) = render_at_tab(&tree, WsTab::Members);
+    let ada = host
+        .member_control_rects()
+        .iter()
+        .find(|(u, _, _)| u == "ada")
+        .cloned()
+        .expect("ada is in the roster");
+
+    click(&mut host, ada.2);
+
+    let st = chrome.borrow();
+    let t = st.tree();
+    let ws = t.active_workspace().unwrap();
+    assert_eq!(ws.role_of(&"ada".to_string()), None, "no longer a member");
+    assert!(
+        !ws.allows(
+            &ws.actor_for_person(&"ada".to_string()),
+            &ResourceRef::FsPath("/var/workspace/notes".into()),
+            Verb::Write
+        ),
+        "removal must revoke what they held, not just hide the row"
+    );
+}
+
+#[test]
+fn a_non_owner_cannot_change_a_role_or_remove_a_member() {
+    let tree = tree_with_members();
+    let (mut host, chrome, _scene) = render_at_tab(&tree, WsTab::Members);
+    chrome.borrow_mut().test_only_owner_override = Some(false);
+    let before = capabilities(&chrome);
+    let rows = host.member_control_rects().to_vec();
+    assert!(!rows.is_empty());
+
+    for (_, role_rect, remove_rect) in &rows {
+        click(&mut host, *role_rect);
+        click(&mut host, *remove_rect);
+    }
+
+    assert_eq!(
+        capabilities(&chrome),
+        before,
+        "a non-owner driving the member controls must change nothing"
+    );
+}
+
+#[test]
+fn the_owner_row_offers_no_role_change_and_no_removal() {
+    // The recorded owner is the workspace's root of trust and `role_of`
+    // short-circuits to Owner for them, so a control that appeared to
+    // change it would be a control that lies.
+    let tree = tree_with_members();
+    let owner = shell::shell::state::local_user_id();
+    let (mut host, chrome, _scene) = render_at_tab(&tree, WsTab::Members);
+    let row = host
+        .member_control_rects()
+        .iter()
+        .find(|(u, _, _)| *u == owner)
+        .cloned()
+        .expect("the owner is in the roster");
+    let before = capabilities(&chrome);
+
+    click(&mut host, row.1);
+    click(&mut host, row.2);
+
+    assert_eq!(capabilities(&chrome), before);
+    let st = chrome.borrow();
+    let t = st.tree();
+    assert_eq!(
+        t.active_workspace().unwrap().role_of(&owner),
+        Some(shell::shell::state::CapRole::Owner)
+    );
 }
 
 // =====================================================================
-// Task 6.1 — empty-grants cleanup
+// Grant draft plumbing
 // =====================================================================
 
 #[test]
-fn revoking_last_grant_clears_workspace_grants_map() {
-    // After revoking the only grant for an app, the map entry is
-    // cleaned up so `Workspace::grants.is_empty()` flips back to true
-    // — which in turn flips `WsTab::visible` to drop the Permissions
-    // tab from the strip. Verifies the
-    // `revoke_grant` ↔ `WsTab::visible` contract end-to-end.
-    let mut ws = Workspace::new(WorkspaceId::default(), "single-grant");
-    ws.grant_app("vscode", &Capability::Camera { scope: GRANT_ONCE });
-    assert!(WsTab::visible(&ws).contains(&WsTab::Permissions));
-    workspace_settings::revoke_grant(&mut ws, &"vscode".to_string(), 0);
-    assert!(ws.grants().is_empty());
-    assert!(!WsTab::visible(&ws).contains(&WsTab::Permissions));
+fn the_draft_survives_a_tab_round_trip() {
+    // The draft lives on the chrome, not the overlay host, so leaving
+    // and returning to the tab must not silently reset a half-composed
+    // grant.
+    let tree = tree_with_members();
+    let (mut host, chrome, _scene) = render_at_tab(&tree, WsTab::Permissions);
+    let rect = host.grant_composer_rects().unwrap().capability;
+    click(&mut host, rect);
+    let composed = chrome.borrow().ws_grant_draft;
+    assert_ne!(composed, GrantDraft::default());
+
+    repaint(&mut host);
+    let general = host.ws_settings_tab_pill_rect(WsTab::General);
+    click(&mut host, general);
+    repaint(&mut host);
+    assert!(
+        host.grant_composer_rects().is_none(),
+        "the composer's rects are cleared when its tab is not on screen"
+    );
+    let permissions = host.ws_settings_tab_pill_rect(WsTab::Permissions);
+    click(&mut host, permissions);
+
+    assert_eq!(chrome.borrow().ws_grant_draft, composed);
 }

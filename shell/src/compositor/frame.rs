@@ -463,8 +463,7 @@ impl FrameBuilder {
         put("add_workspace".into(), host.add_workspace_rect_for_tests());
         for (key, tab) in [
             ("general", WsTab::General),
-            ("roles", WsTab::Roles),
-            ("files", WsTab::Files),
+            ("members", WsTab::Members),
             ("permissions", WsTab::Permissions),
         ] {
             put(
@@ -479,8 +478,32 @@ impl FrameBuilder {
         for (idx, rect) in host.overview_row_rects_for_tests().into_iter().enumerate() {
             put(format!("overview_card[{idx}]"), rect);
         }
-        for (app, index, rect) in host.permissions_revoke_rects() {
-            put(format!("permissions_revoke[{app}][{index}]"), *rect);
+        // Revoke buttons are addressable both by position (stable for a
+        // harness that just wants "the first one") and by the capability
+        // id they revoke (stable across reordering).
+        for (index, (cap_id, rect)) in host.permissions_revoke_rects().iter().enumerate() {
+            put(format!("permissions_revoke[{index}]"), *rect);
+            put(format!("permissions_revoke[{cap_id}]"), *rect);
+        }
+        if let Some(composer) = host.grant_composer_rects() {
+            put("grant_subject".into(), composer.subject);
+            put("grant_capability".into(), composer.capability);
+            put("grant_submit".into(), composer.submit);
+            for (key, rect) in [
+                ("always", composer.expiry[0]),
+                ("session", composer.expiry[1]),
+                ("once", composer.expiry[2]),
+            ] {
+                put(format!("grant_expiry[{key}]"), rect);
+            }
+        }
+        for (index, (user, role_rect, remove_rect)) in
+            host.member_control_rects().iter().enumerate()
+        {
+            put(format!("member_role[{index}]"), *role_rect);
+            put(format!("member_role[{user}]"), *role_rect);
+            put(format!("member_remove[{index}]"), *remove_rect);
+            put(format!("member_remove[{user}]"), *remove_rect);
         }
         for (which, rect) in host.peer_sync_prompt_rects_for_tests() {
             put(format!("peer_sync_{which}"), rect);
@@ -528,6 +551,14 @@ pub fn walk_widget(
     }
     if let Some(id) = w.test_id() {
         out.insert(id.to_string(), w.get_rect());
+    }
+    // Affordances the widget paints itself, addressable by name. Skipping
+    // zero-area entries is what makes a name mean "on screen now".
+    for (name, rect) in w.test_rects() {
+        if rect.area() > 0.0 {
+            out.insert(format!("{path}/{name}"), rect);
+            out.entry(name).or_insert(rect);
+        }
     }
     let mut child_counts: HashMap<String, usize> = HashMap::new();
     for child in w.children() {
