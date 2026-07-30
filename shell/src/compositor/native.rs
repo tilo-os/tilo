@@ -370,6 +370,25 @@ impl<'a> ControlState for FrameBuilderControlState<'a> {
                 "connect_input": chrome.peer_sync_connect_input,
                 "status": chrome.peer_sync_status,
             },
+            // What the Permissions tab's grant composer is composing.
+            // A harness driving the pickers by click has no other way to
+            // see which subject or capability it has landed on, and
+            // guessing from click counts is how a driver ends up
+            // asserting against its own arithmetic.
+            "ws_grant_draft": {
+                "subject": chrome
+                    .tree()
+                    .active_workspace()
+                    .and_then(|ws| {
+                        crate::shell::workspace_settings::draft_subject(
+                            ws,
+                            &chrome.ws_grant_draft,
+                        )
+                    })
+                    .map(|s| format!("{:?}:{}", s.kind, s.id)),
+                "capability": chrome.ws_grant_draft.choice().label(),
+                "expiry": format!("{:?}", chrome.ws_grant_draft.expiry),
+            },
             "palette": palette_json(self.fb),
         })
     }

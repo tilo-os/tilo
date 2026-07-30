@@ -303,8 +303,7 @@ pub fn chrome_state_json(driver: &ShellDriver) -> String {
     };
     let ws_tab = match st.ws_settings_tab {
         WsTab::General => "general",
-        WsTab::Roles => "roles",
-        WsTab::Files => "files",
+        WsTab::Members => "members",
         WsTab::Permissions => "permissions",
     };
     let palette_visible = host.palette_visible();

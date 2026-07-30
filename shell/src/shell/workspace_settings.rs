@@ -1,56 +1,58 @@
-//! `WorkspaceSettings` — the three-tabbed modal opened from the TopBar's
-//! workspace-name button. This module covers the **General** tab (T15), the
-//! **Roles** tab (T16), and the **Files** tab (T17).
+//! `WorkspaceSettings` — the modal opened from the TopBar's
+//! workspace-name button. Three tabs: **General** (identity + invite),
+//! **Members** (who is in the workspace, and with what authority) and
+//! **Permissions** (every capability the workspace has granted, plus
+//! the affordance to grant one).
 //!
-//! The modal is a retained-mode shell widget: it owns its `ws_id` + active tab
-//! + per-tab sub-state (selected role id, DataTable instances), and mutates a
-//! borrowed `&mut Workspace` when the caller invokes one of its mutator
-//! methods. Rendering sits on Plan 1's `overlay::Modal` + `FocusTrap`
-//! scaffolding so tabbing within the dialog is trapped and the scrim
-//! dismisses it.
+//! The modal is a retained-mode shell widget: it owns its `ws_id` +
+//! active tab, and mutates a borrowed `&mut Workspace` when the caller
+//! invokes one of its mutator methods. Rendering sits on
+//! `overlay::Modal` + `FocusTrap` so tabbing within the dialog is
+//! trapped and the scrim dismisses it.
 //!
-//! ## Modal layout (concept-fidelity T1)
+//! ## One model, one panel
 //!
-//! Concept ref `nirios-concept/src/components/WorkspaceSettingsModal.tsx:43-95`
-//! splits the modal into a **256 px left sidebar** (workspace identity card +
-//! General / Roles & Permissions / Files nav rows + Close-Settings footer)
-//! and a right content pane that swaps body by `active_tab`. The sidebar
-//! nav and dispatch helpers ([`WorkspaceSettings::nav_rows`],
-//! [`WorkspaceSettings::sidebar_rect`], [`WorkspaceSettings::pane_rect`],
-//! [`WorkspaceSettings::draw_body`]) live on `WorkspaceSettings` itself so
-//! the per-tab content drawers (T2 General, T3 Roles, T4 Files) implemented
-//! by sister patches in `overlay_host.rs` can hang their content off the
-//! `match ws.active_tab` arm without re-deriving any geometry.
+//! Members and Permissions are both views of [`Workspace::capabilities`]
+//! — the single list that `decide_capability` consults, that the
+//! sandbox turns into bwrap binds and Landlock rules, and that the room
+//! replicates. A member's role *is* the verb on their membership
+//! capability ([`Workspace::role_of`]); an app's access *is* a
+//! capability scoped to a device, host or path. Nothing in this module
+//! keeps a parallel permission vocabulary, so nothing here can drift
+//! out of agreement with what is enforced.
+//!
+//! Every mutation routes through [`Workspace::grant_as`] /
+//! [`Workspace::revoke_as`], which refuse callers that fail
+//! [`Workspace::may_administer`]. Non-owners see the same information
+//! with the controls painted disabled — the asymmetry is visible rather
+//! than hidden.
 
 use vello::Scene;
-use vello::kurbo::{Affine, Rect, RoundedRect, Stroke};
-use vello::peniko::Fill;
+use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
+use vello::peniko::{Color, Fill};
 
 use ui::ColorCompat;
 use ui::icons::{Icon, LUCIDE_DEFAULT_STROKE_PX, draw_icon};
 use ui::overlay::{FocusTrap, Modal};
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::data_table::{ColumnDef, ColumnWidth, DataTable};
 
-use crate::shell::state::{AppId, AppPerm, Capability, FilePerm, Role, Workspace, WorkspaceId};
+use crate::shell::state::{
+    CapOverride, CapRole, Effect, Expiry, Principal, Scope, Subject, UserId, Verb, Workspace,
+    WorkspaceId,
+};
 
-/// Width of the modal's left sidebar in CSS px. Mirrors
-/// `WorkspaceSettingsModal.tsx:50` (`w-64` = 16 rem = 256 px).
+/// Width of the modal's left sidebar in CSS px.
 pub const SIDEBAR_WIDTH: f64 = 256.0;
 
 /// Vertical inset between the top of the sidebar and the workspace
-/// identity card. Mirrors `p-6` on the sidebar wrapper plus the badge's
-/// own height (concept ref:55-72).
+/// identity card.
 const SIDEBAR_IDENTITY_TOP: f64 = 24.0;
 
-/// Height of one nav row (Tailwind `h-10` minus the row's vertical
-/// breathing room — concept ref:75-89 uses `py-2.5` on a 40 px target).
+/// Height of one nav row.
 const NAV_ROW_HEIGHT: f64 = 40.0;
 
-/// Vertical gap between consecutive nav rows. The concept stacks them
-/// with `space-y-1` (= 4 px); we add the row height for the start-of-next
-/// stride.
+/// Vertical gap between consecutive nav rows.
 const NAV_ROW_GAP: f64 = 4.0;
 
 /// Y origin (relative to the sidebar's top edge) where the first nav row
@@ -60,88 +62,35 @@ const NAV_ROWS_TOP: f64 = 120.0;
 /// Tab selector for the WorkspaceSettings modal.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum WsTab {
-    /// Workspace identity, invite link, collaborators (T2).
+    /// Workspace identity, invite link, collaborators.
     #[default]
     General,
-    /// Per-role app + file permissions (T3).
-    Roles,
-    /// File grid w/ assigned-role avatar piles (T4).
-    Files,
-    /// Per-app capability grants list with Revoke affordances
-    /// (Sandbox Phase 6). Hidden by default — only surfaces in the
-    /// sidebar nav + tab strip when the active workspace has at
-    /// least one entry in [`Workspace::grants`]. Empty workspaces
-    /// keep the four-tab parity baseline so concept-fidelity pill
-    /// positions don't shift.
+    /// The workspace's membership: who is in it, their role, and how
+    /// many capabilities they hold. Rendered from
+    /// [`Workspace::roster`].
+    Members,
+    /// Every capability the workspace has granted, and the affordance
+    /// to grant another. Rendered from [`Workspace::capabilities`].
     Permissions,
 }
 
 impl WsTab {
-    /// Display label for the sidebar nav row + tab pill. Concept ref
-    /// `WorkspaceSettingsModal.tsx:80` (`Roles & Permissions`).
+    /// Display label for the sidebar nav row + tab pill.
     pub fn label(&self) -> &'static str {
         match self {
             WsTab::General => "General",
-            WsTab::Roles => "Roles & Permissions",
-            WsTab::Files => "Files",
+            WsTab::Members => "Members",
             WsTab::Permissions => "Permissions",
         }
     }
 
-    /// Iteration order for the sidebar nav (top-to-bottom). Includes
-    /// every variant; callers that only want the visible-in-this-
-    /// workspace subset should use [`WsTab::visible`] instead. The
-    /// stable iteration order (General → Roles → Files → Permissions)
-    /// is what the sidebar nav and the tab strip render against.
-    pub fn all() -> [WsTab; 4] {
-        [
-            WsTab::General,
-            WsTab::Roles,
-            WsTab::Files,
-            WsTab::Permissions,
-        ]
+    /// Iteration order for the sidebar nav and the tab strip
+    /// (top-to-bottom / left-to-right). Every tab is always reachable:
+    /// a host who wants to grant something before any grant exists has
+    /// to be able to get to the Permissions tab.
+    pub fn all() -> [WsTab; 3] {
+        [WsTab::General, WsTab::Members, WsTab::Permissions]
     }
-
-    /// Tabs visible for the supplied workspace. The Permissions tab is
-    /// hidden by default and only surfaces once the workspace has at
-    /// least one capability grant — concept-parity pill positions are
-    /// pinned for the 4-pill strip (`General/Roles/Files/Collaborators`),
-    /// so adding a 5th pill unconditionally would shift them. Empty
-    /// `grants` ⇒ Permissions is filtered out so the parity tests keep
-    /// observing the original strip; non-empty ⇒ Permissions joins the
-    /// strip at the tail.
-    pub fn visible(ws: &Workspace) -> Vec<WsTab> {
-        let base = vec![WsTab::General, WsTab::Roles, WsTab::Files];
-        if !ws.has_app_grants() {
-            base
-        } else {
-            let mut v = base;
-            v.push(WsTab::Permissions);
-            v
-        }
-    }
-}
-
-/// One row in the Roles-tab's "apps" `DataTable`: an app name and the
-/// permission the currently-selected role has against it. Constructed on
-/// demand from `ws.roles[selected].permissions.per_app`; the table is purely
-/// a view of that map.
-#[derive(Clone, Debug)]
-pub struct AppPermRow {
-    pub app_name: String,
-    pub perm: AppPerm,
-}
-
-/// One row in the Files-tab's "files" `DataTable`: a workspace file id/name
-/// pair plus the permission the currently-selected role has against it.
-/// Constructed on demand from `ws.workspace_files` crossed with
-/// `ws.roles[selected].permissions.per_file`; the table is purely a view of
-/// that map.
-#[derive(Clone, Debug)]
-pub struct FilePermRow {
-    pub file_id: String,
-    pub file_name: String,
-    pub perm: FilePerm,
 }
 
 /// The WorkspaceSettings modal state.
@@ -150,19 +99,6 @@ pub struct WorkspaceSettings {
     pub active_tab: WsTab,
     modal: Modal,
     focus_trap: FocusTrap,
-    /// Role id currently selected in the Roles tab, if any. Driving the
-    /// `apps_table` rows; `None` means no role is selected and the table is
-    /// empty.
-    selected_role: Option<String>,
-    /// Per-app permission table populated from the selected role's
-    /// `per_app` map. Typed over [`AppPermRow`]; the table primitive renders
-    /// it via the standard Plan 2 [`DataTable`] passes.
-    apps_table: DataTable<AppPermRow>,
-    /// Per-file permission table populated from the selected role's
-    /// `per_file` map crossed with `Workspace.workspace_files`. Typed over
-    /// [`FilePermRow`]; rendered via the same [`DataTable`] primitive as the
-    /// Roles-tab apps table.
-    files_table: DataTable<FilePermRow>,
 }
 
 impl std::fmt::Debug for WorkspaceSettings {
@@ -170,40 +106,29 @@ impl std::fmt::Debug for WorkspaceSettings {
         f.debug_struct("WorkspaceSettings")
             .field("ws_id", &self.ws_id)
             .field("active_tab", &self.active_tab)
-            .field("selected_role", &self.selected_role)
             .finish()
     }
 }
 
 impl WorkspaceSettings {
     /// Construct a fresh modal targeting `ws_id` with the General tab
-    /// selected and a default focus trap spanning the three tab buttons.
+    /// selected and a focus trap spanning the tab buttons.
     pub fn new(ws_id: WorkspaceId) -> Self {
-        // Tab button ids are stable constants so the caller (shell root) can
-        // render them without maintaining a separate id registry.
-        let members = vec![
-            tab_focus_id(WsTab::General),
-            tab_focus_id(WsTab::Roles),
-            tab_focus_id(WsTab::Files),
-            tab_focus_id(WsTab::Permissions),
-        ];
+        let members = WsTab::all().into_iter().map(tab_focus_id).collect();
         Self {
             ws_id,
             active_tab: WsTab::General,
             modal: Modal::new("workspace-settings"),
             focus_trap: FocusTrap::new(members),
-            selected_role: None,
-            apps_table: DataTable::new(apps_table_columns()),
-            files_table: DataTable::new(files_table_columns()),
         }
     }
 
-    /// The Plan-1 modal scaffold (scrim + id tag) that owns this dialog.
+    /// The modal scaffold (scrim + id tag) that owns this dialog.
     pub fn modal(&self) -> &Modal {
         &self.modal
     }
 
-    /// The focus trap bounding tabbing to the three header buttons.
+    /// The focus trap bounding tabbing to the header buttons.
     pub fn focus_trap(&self) -> &FocusTrap {
         &self.focus_trap
     }
@@ -239,95 +164,19 @@ impl WorkspaceSettings {
     }
 
     /// Return a `quickdesktop://invite/{id}` link for this workspace. The
-    /// TopBar's "Invite" button copies this to the clipboard; full P2P
-    /// invite handshake lives in Plan 4.
+    /// TopBar's "Invite" button copies this to the clipboard.
     pub fn invite_link(&self, ws: &Workspace) -> String {
         format!("quickdesktop://invite/{}", u64::from(ws.id))
     }
 
-    /// Select a role in the Roles tab. The value is stored verbatim (no
-    /// validation against a workspace — callers supply the id from a click on
-    /// a role list row, so a mismatch would only ever mean an empty apps
-    /// table).
-    pub fn select_role(&mut self, role_id: &str) {
-        self.selected_role = Some(role_id.to_string());
-    }
-
-    /// Currently-selected role id, if any.
-    pub fn selected_role(&self) -> Option<&str> {
-        self.selected_role.as_deref()
-    }
-
-    /// Immutable handle to the Roles-tab's apps permission table. Exposed so
-    /// the shell root can pass it to its render tree alongside the other
-    /// chrome widgets.
-    pub fn apps_table(&self) -> &DataTable<AppPermRow> {
-        &self.apps_table
-    }
-
-    /// Mutable handle to the apps table — used by the shell root when it
-    /// needs to forward events (column resize, sort toggle) into the table.
-    pub fn apps_table_mut(&mut self) -> &mut DataTable<AppPermRow> {
-        &mut self.apps_table
-    }
-
-    /// Write `perm` into `ws.roles[role_id].permissions.per_app[app_name]`.
-    /// No-op when `role_id` does not exist on the workspace; inserts the
-    /// key if not already present. After mutating the workspace the
-    /// modal's `apps_table` is refreshed so the visible table matches.
-    pub fn set_app_perm(
-        &mut self,
-        ws: &mut Workspace,
-        role_id: &str,
-        app_name: &str,
-        perm: AppPerm,
-    ) {
-        if let Some(role) = ws.roles.iter_mut().find(|r| r.id == role_id) {
-            role.permissions.per_app.insert(app_name.to_string(), perm);
-        }
-        self.refresh_apps_table(ws);
-    }
-
-    /// Immutable handle to the Files-tab's files permission table. Mirrors
-    /// [`Self::apps_table`] but over the `per_file` map; exposed so the
-    /// shell root can pass it to its render tree alongside the other chrome
-    /// widgets.
-    pub fn files_table(&self) -> &DataTable<FilePermRow> {
-        &self.files_table
-    }
-
-    /// Mutable handle to the files table — used by the shell root when it
-    /// needs to forward events (column resize, sort toggle) into the table.
-    pub fn files_table_mut(&mut self) -> &mut DataTable<FilePermRow> {
-        &mut self.files_table
-    }
-
-    /// Write `perm` into `ws.roles[role_id].permissions.per_file[file_id]`.
-    /// No-op when `role_id` does not exist on the workspace; inserts the
-    /// key if not already present. After mutating the workspace the
-    /// modal's `files_table` is refreshed so the visible table matches.
-    /// Mirrors [`Self::set_app_perm`] but over the `per_file` map.
-    pub fn set_file_perm(
-        &mut self,
-        ws: &mut Workspace,
-        role_id: &str,
-        file_id: &str,
-        perm: FilePerm,
-    ) {
-        if let Some(role) = ws.roles.iter_mut().find(|r| r.id == role_id) {
-            role.permissions.per_file.insert(file_id.to_string(), perm);
-        }
-        self.refresh_files_table(ws);
-    }
-
     // -----------------------------------------------------------------
-    // Sidebar nav layout (T1)
+    // Sidebar nav layout
     // -----------------------------------------------------------------
 
     /// The sidebar's bounds inside `modal_rect`. The modal is split with
-    /// the left 256 px reserved for nav (concept ref:50). Returns
-    /// `Rect::ZERO` when the modal isn't wide enough to host the full
-    /// sidebar (callers that hit this can fall back to drawing nothing).
+    /// the left 256 px reserved for nav. Returns `Rect::ZERO` when the
+    /// modal isn't wide enough to host the full sidebar (callers that
+    /// hit this can fall back to drawing nothing).
     pub fn sidebar_rect(&self, modal_rect: Rect) -> Rect {
         if modal_rect.width() <= SIDEBAR_WIDTH {
             return Rect::ZERO;
@@ -340,8 +189,8 @@ impl WorkspaceSettings {
         )
     }
 
-    /// The right-pane bounds inside `modal_rect`. T2/T3/T4 dispatch
-    /// content into this rect.
+    /// The right-pane bounds inside `modal_rect`. Per-tab content is
+    /// dispatched into this rect.
     pub fn pane_rect(&self, modal_rect: Rect) -> Rect {
         if modal_rect.width() <= SIDEBAR_WIDTH {
             return modal_rect;
@@ -355,10 +204,8 @@ impl WorkspaceSettings {
     }
 
     /// Per-row hit-test rects for the sidebar nav, one per [`WsTab`] in
-    /// `WsTab::all()` order. Geometry mirrors the concept's `space-y-1`
-    /// stack (40 px row + 4 px gap) starting `NAV_ROWS_TOP` below the
-    /// sidebar's top edge.
-    pub fn nav_rows(&self, modal_rect: Rect) -> [(WsTab, Rect); 4] {
+    /// [`WsTab::all`] order.
+    pub fn nav_rows(&self, modal_rect: Rect) -> [(WsTab, Rect); 3] {
         let sidebar = self.sidebar_rect(modal_rect);
         let inset_x0 = sidebar.x0 + 16.0;
         let inset_x1 = sidebar.x1 - 16.0;
@@ -372,19 +219,16 @@ impl WorkspaceSettings {
 
     /// Tab whose nav-row contains `point`, if any. Used by hit-testing
     /// to dispatch a pointer-down into [`Self::select_tab`].
-    pub fn nav_hit_test(&self, modal_rect: Rect, point: vello::kurbo::Point) -> Option<WsTab> {
+    pub fn nav_hit_test(&self, modal_rect: Rect, point: Point) -> Option<WsTab> {
         self.nav_rows(modal_rect)
             .into_iter()
             .find_map(|(tab, row)| row.contains(point).then_some(tab))
     }
 
-    /// Draw the modal body — paints the 256 px sidebar nav (always
-    /// visible, even when no per-tab content is wired) and dispatches
-    /// the right pane to the per-tab drawer keyed by `active_tab`.
-    /// Per-tab drawers receive [`Self::pane_rect`] so they don't need to
-    /// re-derive geometry. T2/T3/T4 supply their own drawer closures via
-    /// the optional `pane_drawer` argument; `None` paints nothing on
-    /// the right (the sidebar still renders).
+    /// Draw the modal body — paints the sidebar nav (always visible)
+    /// and dispatches the right pane to the per-tab drawer keyed by
+    /// `active_tab`. `None` paints nothing on the right (the sidebar
+    /// still renders).
     pub fn draw_body(
         &self,
         scene: &mut Scene,
@@ -394,8 +238,6 @@ impl WorkspaceSettings {
         theme: &Theme,
         pane_drawer: Option<&mut dyn FnMut(&mut Scene, Affine, Rect, &mut TextRenderer, &Theme)>,
     ) {
-        // The sidebar always renders, even when the right pane isn't
-        // wired yet — so the user sees the nav and can switch tabs.
         self.draw_sidebar(scene, transform, modal_rect, text_renderer, theme);
 
         if let Some(drawer) = pane_drawer {
@@ -404,8 +246,7 @@ impl WorkspaceSettings {
         }
     }
 
-    /// Paint the sidebar — identity card, nav rows, footer. Concept ref
-    /// `WorkspaceSettingsModal.tsx:50-95`.
+    /// Paint the sidebar — identity card, nav rows, footer.
     fn draw_sidebar(
         &self,
         scene: &mut Scene,
@@ -421,16 +262,15 @@ impl WorkspaceSettings {
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
 
-        // Sidebar surface: slate-900 at low alpha so the nav reads
-        // distinct from the right pane. Right border = slate-700 hairline.
+        // Sidebar surface reads distinct from the right pane, separated
+        // by a hairline rather than a heavy border.
         let bg = colors.neutral[1].with_alpha_factor(0.40);
         scene.fill(Fill::NonZero, transform, bg, None, &sidebar);
         let border_x = sidebar.x1 - 0.5;
         let border = Rect::new(border_x, sidebar.y0, border_x + 1.0, sidebar.y1);
         scene.fill(Fill::NonZero, transform, colors.neutral[3], None, &border);
 
-        // Identity card — 56 px indigo-500 rounded square + workspace
-        // first letter centered. Concept ref:55-72.
+        // Identity card.
         let identity_size = 56.0_f64;
         let identity_rect = Rect::new(
             sidebar.x0 + 24.0,
@@ -447,19 +287,15 @@ impl WorkspaceSettings {
             &identity_card,
         );
 
-        // Caption "Workspace Settings" beneath the badge.
-        let caption_size = tokens.typography.scale.xs;
         text_renderer.draw_text(
             scene,
             "Workspace Settings",
-            caption_size,
+            tokens.typography.scale.xs,
             colors.text_dim,
             transform * Affine::translate((sidebar.x0 + 24.0, identity_rect.y1 + 12.0)),
             None,
         );
 
-        // Nav rows — selected row gets indigo-500 fill + white text;
-        // idle rows are transparent + dimmed.
         for (tab, row) in self.nav_rows(modal_rect) {
             let active = self.active_tab == tab;
             let row_rr = RoundedRect::from_rect(row, 12.0);
@@ -498,7 +334,6 @@ impl WorkspaceSettings {
             None,
             &footer_rr,
         );
-        // Concept uses lucide `X` at 16 px slate-400.
         let glyph_size = 16.0;
         let glyph_rect = Rect::new(
             footer.x0 + 12.0,
@@ -523,728 +358,501 @@ impl WorkspaceSettings {
             None,
         );
     }
+}
 
-    /// Rebuild [`apps_table`] rows from the currently-selected role's
-    /// `per_app` map. Safe to call when `selected_role` is `None` (result:
-    /// empty table).
-    fn refresh_apps_table(&mut self, ws: &Workspace) {
-        let rows: Vec<AppPermRow> = match self.selected_role.as_deref() {
-            Some(id) => match ws.roles.iter().find(|r| r.id == id) {
-                Some(role) => {
-                    let mut v: Vec<AppPermRow> = role
-                        .permissions
-                        .per_app
-                        .iter()
-                        .map(|(k, v)| AppPermRow {
-                            app_name: k.clone(),
-                            perm: *v,
-                        })
-                        .collect();
-                    // Stable order so snapshots are deterministic — the table
-                    // doesn't sort on insertion.
-                    v.sort_by(|a, b| a.app_name.cmp(&b.app_name));
-                    v
-                }
-                None => Vec::new(),
-            },
-            None => Vec::new(),
-        };
-        self.apps_table.set_rows(rows);
-    }
-
-    /// Rebuild [`files_table`] rows from the currently-selected role's
-    /// `per_file` map crossed with `Workspace.workspace_files`. Every file
-    /// on the workspace produces a row; files without an entry in `per_file`
-    /// default to [`FilePerm::None`] so the UI can cycle them up from there.
-    /// Safe to call when `selected_role` is `None` (result: empty table) so
-    /// the cycle None → Read → Write → None always has a concrete starting
-    /// permission to read for each file.
-    fn refresh_files_table(&mut self, ws: &Workspace) {
-        let rows: Vec<FilePermRow> = match self.selected_role.as_deref() {
-            Some(id) => match ws.roles.iter().find(|r| r.id == id) {
-                Some(role) => {
-                    let mut v: Vec<FilePermRow> = ws
-                        .workspace_files
-                        .iter()
-                        .map(|f| FilePermRow {
-                            file_id: f.id.clone(),
-                            file_name: f.name.clone(),
-                            perm: role
-                                .permissions
-                                .per_file
-                                .get(&f.id)
-                                .copied()
-                                .unwrap_or(FilePerm::None),
-                        })
-                        .collect();
-                    // Stable order so snapshots are deterministic — the table
-                    // doesn't sort on insertion.
-                    v.sort_by(|a, b| a.file_name.cmp(&b.file_name));
-                    v
-                }
-                None => Vec::new(),
-            },
-            None => Vec::new(),
-        };
-        self.files_table.set_rows(rows);
+/// Stable focus id for the tab button representing `tab`, used by the
+/// dialog's `FocusTrap`.
+fn tab_focus_id(tab: WsTab) -> u64 {
+    // Reserve a small id range so the modal's trap members can't collide
+    // with shell-level focusables.
+    const BASE: u64 = 0xFFFF_0000;
+    match tab {
+        WsTab::General => BASE,
+        WsTab::Members => BASE + 1,
+        WsTab::Permissions => BASE + 2,
     }
 }
 
-/// Column layout for the Roles-tab apps table: `App` name (flex), fixed
-/// 160px `Permission` picker. The cell renderers paint nothing yet — the
-/// shell root forwards theme/transform through its own draw pass in later
-/// wiring tasks (T27); the key/header/width metadata is already
-/// load-bearing for hit-testing.
-fn apps_table_columns() -> Vec<ColumnDef<AppPermRow>> {
-    vec![
-        ColumnDef::new("app", "App", ColumnWidth::Flex(1.0)).sortable(true),
-        ColumnDef::new("permission", "Permission", ColumnWidth::Fixed(160.0)),
-    ]
-}
+// =====================================================================
+// Shared chrome — cards, chips, section headers
+// =====================================================================
 
-/// Column layout for the Files-tab files table: `File` name (flex), fixed
-/// 160px `Permission` picker (None/Read/Write). Mirrors
-/// [`apps_table_columns`] — cell renderers stay empty for now; T27 wires
-/// the draw pass through the shell root.
-fn files_table_columns() -> Vec<ColumnDef<FilePermRow>> {
-    vec![
-        ColumnDef::new("file", "File", ColumnWidth::Flex(1.0)).sortable(true),
-        ColumnDef::new("permission", "Permission", ColumnWidth::Fixed(160.0)),
-    ]
-}
+/// Horizontal inset on each side of a settings pane.
+const PANE_PAD_X: f64 = 16.0;
+/// Vertical inset between the top of a pane and its first element.
+const PANE_PAD_TOP: f64 = 12.0;
+/// Height of one subject row (two lines of text plus breathing room).
+const ROW_HEIGHT: f64 = 56.0;
+/// Vertical gap between consecutive rows.
+const ROW_GAP: f64 = 8.0;
+/// Height of a section header ("Apps", "People", …).
+const SECTION_HEADER_HEIGHT: f64 = 26.0;
+/// Height of a control (cycler, segment, button) in the composer.
+const CONTROL_HEIGHT: f64 = 30.0;
+/// Height of the whole grant composer card.
+const COMPOSER_HEIGHT: f64 = 78.0;
+/// Width of the destructive Revoke button.
+const REVOKE_WIDTH: f64 = 80.0;
+/// Height of the destructive Revoke button.
+const REVOKE_HEIGHT: f64 = 26.0;
+/// Width of the Grant submit button.
+const SUBMIT_WIDTH: f64 = 92.0;
+/// Width of one expiry segment.
+const EXPIRY_SEGMENT_WIDTH: f64 = 58.0;
+/// Alpha applied to a control the local user has no authority to use.
+/// Matches the dimmed-Revoke treatment the permission prompt uses for
+/// its `Always` button, so "disabled" reads the same everywhere.
+const DISABLED_ALPHA: f32 = 0.40;
 
-/// Width (in CSS px) of the role-list left column inside the Roles
-/// pane. Mirrors `WorkspaceSettingsModal.tsx:155` (`w-48` = 12 rem =
-/// 192 px).
-const ROLES_LIST_WIDTH: f64 = 192.0;
-
-/// Vertical padding inside the role list — matches the concept's `p-4`
-/// wrapper around the column.
-const ROLES_LIST_PADDING: f64 = 16.0;
-
-/// Height of one role-list button row (concept uses `py-2` on a
-/// flex-row with text-sm children — ~36 px target).
-const ROLE_ROW_HEIGHT: f64 = 36.0;
-
-/// Vertical gap between consecutive role-list rows. Concept stacks
-/// them with `gap-2` (= 8 px).
-const ROLE_ROW_GAP: f64 = 8.0;
-
-/// Concept-hardcoded application list shown in the per-role app
-/// permission grid. Mirrors `WorkspaceSettingsModal.tsx:191`.
-const ROLES_PANE_APPS: [&str; 5] = ["Editor", "Files", "Browser", "Terminal", "Settings"];
-
-/// Paint the Roles tab body into `pane_rect`. Pure renderer — owns no
-/// state of its own; reads role + file metadata off `workspace` and
-/// honours the optional `selected_role_id` so callers (the overlay host
-/// in production, tests in isolation) can drive selection without
-/// constructing a full `WorkspaceSettings` instance.
-///
-/// Concept reference: `nirios-concept/src/components/WorkspaceSettingsModal.tsx:152-254`.
-/// The pane is split:
-///
-/// * **Left column (192 px)** — role list. Header "Roles" caption +
-///   one selectable button per `Workspace::role`, each carrying a
-///   coloured swatch + role name + optional "Default" pill, plus a
-///   "+ New Role" affordance pinned beneath. Selected row gets a
-///   `white/10` fill so the section reads as a list view.
-/// * **Right pane (flex)** — when a role is selected, paints two
-///   sections: an **Apps** grid (5 hardcoded entries — `editor` /
-///   `files` / `browser` / `terminal` / `settings` per concept TSX:191),
-///   and a **Files** strip (one row per `Workspace::workspace_files`
-///   entry with three permission chips: `None` / `Read` / `Write`).
-///   When no role is selected, paints the concept's "Select a role"
-///   empty state (Shield glyph + caption).
-///
-/// The function short-circuits if `pane_rect` has zero area so the
-/// modal-clip path can call it unconditionally without painting into a
-/// degenerate rect.
-pub fn draw_roles_pane(
+/// Paint a section header — a small upper-case caption plus a count.
+fn draw_section_header(
     scene: &mut Scene,
     transform: Affine,
-    pane_rect: Rect,
-    workspace: &Workspace,
-    selected_role_id: Option<&str>,
+    origin: Point,
+    label: &str,
+    count: Option<usize>,
     text_renderer: &mut TextRenderer,
     theme: &Theme,
 ) {
-    if pane_rect.width() <= 0.0 || pane_rect.height() <= 0.0 {
-        return;
-    }
     let tokens = &theme.tokens;
-    let colors = &tokens.colors;
-
-    // ---- Left column: role list ------------------------------------
-    // Concept ref:155 — the role list lives in a `w-48` column with a
-    // 1 px slate-700-ish right border. Render the column bg at low
-    // alpha so it reads distinct from the right pane (mirrors the
-    // sidebar's surface treatment in `draw_sidebar`).
-    let list_rect = Rect::new(
-        pane_rect.x0,
-        pane_rect.y0,
-        (pane_rect.x0 + ROLES_LIST_WIDTH).min(pane_rect.x1),
-        pane_rect.y1,
+    let text = match count {
+        Some(n) => format!("{label} · {n}"),
+        None => label.to_string(),
+    };
+    text_renderer.draw_text(
+        scene,
+        &text,
+        tokens.typography.scale.xs,
+        tokens.colors.text_dim,
+        transform * Affine::translate((origin.x, origin.y)),
+        None,
     );
-    let list_bg = colors.neutral[1].with_alpha_factor(0.20);
-    scene.fill(Fill::NonZero, transform, list_bg, None, &list_rect);
+}
 
-    // 1 px right border separating role list from permission pane —
-    // concept ref:155 `border-r border-white/5`.
-    let list_border = Rect::new(
-        list_rect.x1 - 0.5,
-        list_rect.y0,
-        list_rect.x1 + 0.5,
-        list_rect.y1,
+/// Paint a row card — the surface every subject row sits on.
+fn draw_row_card(scene: &mut Scene, transform: Affine, rect: Rect, theme: &Theme) {
+    scene.fill(
+        Fill::NonZero,
+        transform,
+        theme.tokens.colors.neutral[3].with_alpha_factor(0.15),
+        None,
+        &RoundedRect::from_rect(rect, theme.tokens.radii.lg as f64),
+    );
+}
+
+/// Paint a small pill with `label` centred, tinted `tint`. Returns the
+/// pill's rect so callers can lay out rightwards from its left edge.
+fn draw_pill(
+    scene: &mut Scene,
+    transform: Affine,
+    right_edge: f64,
+    center_y: f64,
+    label: &str,
+    tint: Color,
+    alpha: f32,
+    text_renderer: &mut TextRenderer,
+    theme: &Theme,
+) -> Rect {
+    let tokens = &theme.tokens;
+    let size = tokens.typography.scale.xs;
+    let (tw, th) = text_renderer.measure(label, size, None);
+    let pad_x = 8.0;
+    let pad_y = 4.0;
+    let w = tw as f64 + pad_x * 2.0;
+    let h = th as f64 + pad_y * 2.0;
+    let rect = Rect::new(
+        right_edge - w,
+        center_y - h / 2.0,
+        right_edge,
+        center_y + h / 2.0,
     );
     scene.fill(
         Fill::NonZero,
         transform,
-        colors.neutral[3],
+        tint.with_alpha_factor(0.20 * alpha),
         None,
-        &list_border,
+        &RoundedRect::from_rect(rect, tokens.radii.md as f64),
     );
-
-    // "Roles" caption (concept ref:156, `text-[10px] uppercase tracking-widest`).
-    let caption_y = list_rect.y0 + ROLES_LIST_PADDING;
     text_renderer.draw_text(
         scene,
-        "Roles",
-        tokens.typography.scale.xs,
-        colors.text_dim,
-        transform * Affine::translate((list_rect.x0 + ROLES_LIST_PADDING, caption_y)),
+        label,
+        size,
+        tint.with_alpha_factor(alpha),
+        transform * Affine::translate((rect.x0 + pad_x, rect.y0 + pad_y)),
         None,
     );
-
-    // Per-role rows. Use the workspace's actual roster so callers see
-    // their own roles surface in the list; an empty roster paints just
-    // the caption and the "+ New Role" affordance below.
-    let mut row_y = caption_y + 28.0;
-    for role in &workspace.roles {
-        let row = Rect::new(
-            list_rect.x0 + 8.0,
-            row_y,
-            list_rect.x1 - 8.0,
-            row_y + ROLE_ROW_HEIGHT,
-        );
-        let active = selected_role_id == Some(role.id.as_str());
-        if active {
-            // Selected row fills `white/10` — concept ref:161
-            // `bg-white/10 text-white`.
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                colors.neutral[3].with_alpha_factor(0.25),
-                None,
-                &RoundedRect::from_rect(row, 12.0),
-            );
-        }
-        // Coloured swatch dot (concept ref:163 — `w-2 h-2 rounded-full`).
-        // We don't have a per-role colour field on `Role` yet, so seed
-        // the swatch from the role id's first byte against the accent
-        // ramp (deterministic and avoids hand-coded palette entries).
-        let swatch_size = 10.0_f64;
-        let swatch_x = row.x0 + 12.0;
-        let swatch_y = row.y0 + (ROLE_ROW_HEIGHT - swatch_size) / 2.0;
-        let swatch = Rect::new(
-            swatch_x,
-            swatch_y,
-            swatch_x + swatch_size,
-            swatch_y + swatch_size,
-        );
-        let swatch_color = role_swatch_color(&role.id, colors);
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            swatch_color,
-            None,
-            &RoundedRect::from_rect(swatch, swatch_size / 2.0),
-        );
-        // Role name.
-        let label_color = if active {
-            colors.text_primary
-        } else {
-            colors.text_dim
-        };
-        text_renderer.draw_text(
-            scene,
-            &role.name,
-            tokens.typography.scale.sm,
-            label_color,
-            transform * Affine::translate((swatch.x1 + 10.0, row.y0 + 8.0)),
-            None,
-        );
-        row_y += ROLE_ROW_HEIGHT + ROLE_ROW_GAP;
-    }
-
-    // "+ New Role" affordance — concept ref:168, indigo-400 text on
-    // hover-only background. Always rendered with an indigo tint dot
-    // so the row reads as actionable even at rest.
-    let new_role_row = Rect::new(
-        list_rect.x0 + 8.0,
-        row_y + 4.0,
-        list_rect.x1 - 8.0,
-        row_y + 4.0 + ROLE_ROW_HEIGHT,
-    );
-    if new_role_row.y1 < list_rect.y1 - ROLES_LIST_PADDING {
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            colors.accent[5].with_alpha_factor(0.10),
-            None,
-            &RoundedRect::from_rect(new_role_row, 12.0),
-        );
-        text_renderer.draw_text(
-            scene,
-            "+ New Role",
-            tokens.typography.scale.sm,
-            colors.accent[5],
-            transform * Affine::translate((new_role_row.x0 + 12.0, new_role_row.y0 + 8.0)),
-            None,
-        );
-    }
-
-    // ---- Right pane: permission grids ------------------------------
-    let perm_rect = Rect::new(list_rect.x1, pane_rect.y0, pane_rect.x1, pane_rect.y1);
-    if perm_rect.width() <= 0.0 {
-        return;
-    }
-    // Resolve the role we're rendering permissions for. If the caller
-    // didn't pin one but the workspace has at least one role, fall
-    // through to the first role so the grids render with sensible
-    // defaults — matches the concept's UX where the first role auto-
-    // selects on tab open.
-    let resolved_role = selected_role_id
-        .and_then(|id| workspace.roles.iter().find(|r| r.id == id))
-        .or_else(|| workspace.roles.first());
-
-    let pad = 24.0_f64;
-    let mut cursor_y = perm_rect.y0 + pad;
-
-    // Section: "Allowed Applications" — concept ref:189.
-    text_renderer.draw_text(
-        scene,
-        "Allowed Applications",
-        tokens.typography.scale.xs,
-        colors.text_dim,
-        transform * Affine::translate((perm_rect.x0 + pad, cursor_y)),
-        None,
-    );
-    cursor_y += 24.0;
-
-    // Apps grid — 5 hardcoded entries per concept TSX:191. Each row
-    // paints an icon container, the toggle pill, and (when on) a knob
-    // dot — three solid-colour fills minimum, regardless of the
-    // workspace's roles vector being empty.
-    let row_h = 56.0_f64;
-    let row_gap = 8.0_f64;
-    for app in ROLES_PANE_APPS {
-        let row = Rect::new(
-            perm_rect.x0 + pad,
-            cursor_y,
-            perm_rect.x1 - pad,
-            cursor_y + row_h,
-        );
-        let row_bg = colors.neutral[3].with_alpha_factor(0.15);
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            row_bg,
-            None,
-            &RoundedRect::from_rect(row, 16.0),
-        );
-
-        // Icon container (concept ref:194 — `p-2 bg-white/5 rounded-lg`).
-        let icon_box = Rect::new(
-            row.x0 + 12.0,
-            row.y0 + 14.0,
-            row.x0 + 12.0 + 28.0,
-            row.y0 + 14.0 + 28.0,
-        );
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            colors.neutral[3].with_alpha_factor(0.25),
-            None,
-            &RoundedRect::from_rect(icon_box, 8.0),
-        );
-
-        // App label (concept ref:197 — `text-sm font-bold text-white`).
-        text_renderer.draw_text(
-            scene,
-            app,
-            tokens.typography.scale.sm,
-            colors.text_primary,
-            transform * Affine::translate((icon_box.x1 + 12.0, row.y0 + 18.0)),
-            None,
-        );
-
-        // Toggle pill (concept ref:206 — `w-9 h-5 ... peer-checked:bg-indigo-500`).
-        let pill_w = 36.0_f64;
-        let pill_h = 20.0_f64;
-        let pill_x = row.x1 - 12.0 - pill_w;
-        let pill_y = row.y0 + (row_h - pill_h) / 2.0;
-        let pill = Rect::new(pill_x, pill_y, pill_x + pill_w, pill_y + pill_h);
-        let on = role_app_perm(resolved_role, app)
-            .map(|p| !matches!(p, AppPerm::None))
-            .unwrap_or(false);
-        let pill_bg = if on {
-            colors.accent[5]
-        } else {
-            colors.neutral[2]
-        };
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            pill_bg,
-            None,
-            &RoundedRect::from_rect(pill, pill_h / 2.0),
-        );
-        // Knob (white circle inside the pill).
-        let knob_d = pill_h - 4.0;
-        let knob_x = if on {
-            pill.x1 - 2.0 - knob_d
-        } else {
-            pill.x0 + 2.0
-        };
-        let knob_y = pill.y0 + 2.0;
-        let knob = Rect::new(knob_x, knob_y, knob_x + knob_d, knob_y + knob_d);
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            colors.text_primary,
-            None,
-            &RoundedRect::from_rect(knob, knob_d / 2.0),
-        );
-
-        cursor_y += row_h + row_gap;
-    }
-
-    cursor_y += 16.0;
-
-    // Section: "File Access Overrides" — concept ref:215.
-    text_renderer.draw_text(
-        scene,
-        "File Access Overrides",
-        tokens.typography.scale.xs,
-        colors.text_dim,
-        transform * Affine::translate((perm_rect.x0 + pad, cursor_y)),
-        None,
-    );
-    cursor_y += 24.0;
-
-    // File rows — one per workspace file. Each row paints a chip strip
-    // (None/Read/Write) where the active permission gets the indigo
-    // accent fill (concept ref:234 — `bg-indigo-500 text-white shadow`).
-    if workspace.workspace_files.is_empty() {
-        // No files → render a single placeholder row so the section
-        // header reads as belonging to a populated UI and not a
-        // dangling label. The concept's empty state is just the empty
-        // section, but the spec test exercises a default workspace
-        // (zero files) and we want the Roles tab to clearly differ
-        // from General regardless.
-        let row = Rect::new(
-            perm_rect.x0 + pad,
-            cursor_y,
-            perm_rect.x1 - pad,
-            cursor_y + row_h,
-        );
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            colors.neutral[3].with_alpha_factor(0.10),
-            None,
-            &RoundedRect::from_rect(row, 16.0),
-        );
-        text_renderer.draw_text(
-            scene,
-            "No files added yet",
-            tokens.typography.scale.sm,
-            colors.text_dim,
-            transform * Affine::translate((row.x0 + 16.0, row.y0 + 18.0)),
-            None,
-        );
-    } else {
-        for file in &workspace.workspace_files {
-            let row = Rect::new(
-                perm_rect.x0 + pad,
-                cursor_y,
-                perm_rect.x1 - pad,
-                cursor_y + row_h,
-            );
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                colors.neutral[3].with_alpha_factor(0.15),
-                None,
-                &RoundedRect::from_rect(row, 16.0),
-            );
-            text_renderer.draw_text(
-                scene,
-                &file.name,
-                tokens.typography.scale.sm,
-                colors.text_primary,
-                transform * Affine::translate((row.x0 + 16.0, row.y0 + 18.0)),
-                None,
-            );
-            // Three-permission chip strip — concept ref:230-238.
-            let chip_strip_w = 168.0_f64;
-            let chip_pad = 4.0_f64;
-            let chip_w = (chip_strip_w - chip_pad * 4.0) / 3.0;
-            let chip_h = 28.0_f64;
-            let strip_x = row.x1 - 12.0 - chip_strip_w;
-            let strip_y = row.y0 + (row_h - chip_h) / 2.0;
-            let strip_bg = Rect::new(strip_x, strip_y, strip_x + chip_strip_w, strip_y + chip_h);
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                colors.neutral[1].with_alpha_factor(0.50),
-                None,
-                &RoundedRect::from_rect(strip_bg, 12.0),
-            );
-            let cur_perm = role_file_perm(resolved_role, &file.id);
-            for (i, perm) in [FilePerm::None, FilePerm::Read, FilePerm::Write]
-                .into_iter()
-                .enumerate()
-            {
-                let cx = strip_x + chip_pad + i as f64 * (chip_w + chip_pad);
-                let chip = Rect::new(
-                    cx,
-                    strip_y + chip_pad,
-                    cx + chip_w,
-                    strip_y + chip_h - chip_pad,
-                );
-                let active = cur_perm == perm;
-                if active {
-                    scene.fill(
-                        Fill::NonZero,
-                        transform,
-                        colors.accent[5],
-                        None,
-                        &RoundedRect::from_rect(chip, 8.0),
-                    );
-                }
-            }
-            cursor_y += row_h + row_gap;
-        }
-    }
+    rect
 }
 
-/// Minimal Files-tab body — paints a "Files" caption header plus one
-/// row per [`Workspace::workspace_files`] entry. Standalone of the
-/// General body so the Files arm of the Workspace Settings modal does
-/// not depend on `editing_workspace_name` (which is the Name-input edit
-/// buffer for the General tab and unrelated to file-grid rendering).
-///
-/// This is the placeholder until the concept's full Files tab
-/// (`WorkspaceSettingsModal.tsx:257-303` — icon + name + type badge +
-/// assigned-roles avatar pile + Remove button per row) lands in T3's
-/// follow-up. Even in its minimal form, it owns enough geometry to
-/// keep `WsTab::Files` orthogonal to the General body's name edit
-/// state — the side-channel migration in `chrome_state::WsTab` relies
-/// on that orthogonality.
-pub fn draw_files_pane(
+/// Paint an avatar disc carrying `label`'s first character. The tint is
+/// derived from the label so the same subject keeps the same colour
+/// across frames without storing one.
+fn draw_avatar(
     scene: &mut Scene,
     transform: Affine,
-    pane_rect: Rect,
-    workspace: &Workspace,
+    rect: Rect,
+    label: &str,
+    square: bool,
     text_renderer: &mut TextRenderer,
     theme: &Theme,
 ) {
-    if pane_rect.width() <= 0.0 || pane_rect.height() <= 0.0 {
-        return;
-    }
-    let tokens = &theme.tokens;
-    let colors = &tokens.colors;
-
-    let pad = 16.0_f64;
-    let row_h = 40.0_f64;
-    let row_gap = 8.0_f64;
-    let mut cursor_y = pane_rect.y0 + pad;
-
+    let colors = &theme.tokens.colors;
+    let tint = subject_tint(label, theme);
+    let radius = if square {
+        theme.tokens.radii.md as f64
+    } else {
+        rect.width() / 2.0
+    };
+    scene.fill(
+        Fill::NonZero,
+        transform,
+        tint.with_alpha_factor(0.30),
+        None,
+        &RoundedRect::from_rect(rect, radius),
+    );
+    let initial: String = label
+        .chars()
+        .next()
+        .map(|c| c.to_uppercase().to_string())
+        .unwrap_or_else(|| "?".to_string());
+    let size = theme.tokens.typography.scale.sm;
+    let (tw, th) = text_renderer.measure(&initial, size, None);
     text_renderer.draw_text(
         scene,
-        "Files",
-        tokens.typography.scale.sm,
-        colors.text_dim,
-        transform * Affine::translate((pane_rect.x0 + pad, cursor_y)),
+        &initial,
+        size,
+        colors.text_primary,
+        transform
+            * Affine::translate((
+                rect.center().x - tw as f64 / 2.0,
+                rect.center().y - th as f64 / 2.0,
+            )),
         None,
     );
-    cursor_y += 28.0;
+}
 
-    if workspace.workspace_files.is_empty() {
-        let row = Rect::new(
-            pane_rect.x0 + pad,
-            cursor_y,
-            pane_rect.x1 - pad,
-            cursor_y + row_h,
-        );
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            colors.neutral[3].with_alpha_factor(0.10),
-            None,
-            &RoundedRect::from_rect(row, 12.0),
-        );
-        text_renderer.draw_text(
-            scene,
-            "No files added yet",
-            tokens.typography.scale.sm,
-            colors.text_dim,
-            transform * Affine::translate((row.x0 + 16.0, row.y0 + 12.0)),
-            None,
-        );
-    } else {
-        for file in &workspace.workspace_files {
-            let row = Rect::new(
-                pane_rect.x0 + pad,
-                cursor_y,
-                pane_rect.x1 - pad,
-                cursor_y + row_h,
-            );
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                colors.neutral[3].with_alpha_factor(0.15),
-                None,
-                &RoundedRect::from_rect(row, 12.0),
-            );
-            text_renderer.draw_text(
-                scene,
-                &file.name,
-                tokens.typography.scale.sm,
-                colors.text_primary,
-                transform * Affine::translate((row.x0 + 16.0, row.y0 + 12.0)),
-                None,
-            );
-            cursor_y += row_h + row_gap;
+/// Deterministic per-subject tint drawn from the theme's accent ramp, so
+/// two subjects rarely share a colour and none is hard-coded.
+fn subject_tint(label: &str, theme: &Theme) -> Color {
+    let colors = &theme.tokens.colors;
+    let bucket = label.bytes().fold(0u32, |a, b| a.wrapping_add(b as u32)) as usize % 4;
+    match bucket {
+        0 => colors.accent[5],
+        1 => colors.accent[4],
+        2 => colors.semantic.info,
+        _ => colors.semantic.success,
+    }
+}
+
+/// Paint a "cycler" control: a bordered field whose label advances to
+/// the next value on click, with a chevron affording that it cycles.
+fn draw_cycler(
+    scene: &mut Scene,
+    transform: Affine,
+    rect: Rect,
+    label: &str,
+    enabled: bool,
+    text_renderer: &mut TextRenderer,
+    theme: &Theme,
+) {
+    let tokens = &theme.tokens;
+    let colors = &tokens.colors;
+    let alpha = if enabled { 1.0 } else { DISABLED_ALPHA };
+    let track = RoundedRect::from_rect(rect, tokens.radii.md as f64);
+    scene.fill(
+        Fill::NonZero,
+        transform,
+        colors.surfaces.raised.with_alpha_factor(alpha),
+        None,
+        &track,
+    );
+    scene.stroke(
+        &Stroke::new(1.0),
+        transform,
+        colors.border_standard.with_alpha_factor(alpha),
+        None,
+        &track,
+    );
+    let size = tokens.typography.scale.sm;
+    let chevron = 14.0_f64;
+    let text_max = rect.width() - 12.0 - chevron - 10.0;
+    let shown = elide(label, size, text_max, text_renderer);
+    let (_, th) = text_renderer.measure(&shown, size, None);
+    text_renderer.draw_text(
+        scene,
+        &shown,
+        size,
+        colors.text_primary.with_alpha_factor(alpha),
+        transform * Affine::translate((rect.x0 + 10.0, rect.center().y - th as f64 / 2.0)),
+        None,
+    );
+    let glyph = Rect::new(
+        rect.x1 - 8.0 - chevron,
+        rect.center().y - chevron / 2.0,
+        rect.x1 - 8.0,
+        rect.center().y + chevron / 2.0,
+    );
+    draw_icon(
+        scene,
+        transform,
+        glyph,
+        Icon::ChevronDown,
+        colors.text_dim.with_alpha_factor(alpha),
+        LUCIDE_DEFAULT_STROKE_PX,
+    );
+}
+
+/// Truncate `text` with an ellipsis so it fits `max_w` at `size`. Text
+/// that would overflow its field is a craft defect; clipping it is not
+/// a fix, so we measure and elide.
+fn elide(text: &str, size: f32, max_w: f64, text_renderer: &mut TextRenderer) -> String {
+    if max_w <= 0.0 {
+        return String::new();
+    }
+    let (w, _) = text_renderer.measure(text, size, None);
+    if (w as f64) <= max_w {
+        return text.to_string();
+    }
+    let mut chars: Vec<char> = text.chars().collect();
+    while !chars.is_empty() {
+        chars.pop();
+        let candidate: String = chars.iter().collect::<String>() + "…";
+        let (w, _) = text_renderer.measure(&candidate, size, None);
+        if (w as f64) <= max_w {
+            return candidate;
         }
     }
+    String::new()
+}
+
+/// Paint a labelled micro-caption above a control.
+fn draw_control_caption(
+    scene: &mut Scene,
+    transform: Affine,
+    origin: Point,
+    label: &str,
+    text_renderer: &mut TextRenderer,
+    theme: &Theme,
+) {
+    text_renderer.draw_text(
+        scene,
+        label,
+        theme.tokens.typography.scale.xs,
+        theme.tokens.colors.text_dim,
+        transform * Affine::translate((origin.x, origin.y)),
+        None,
+    );
+}
+
+/// Paint a destructive button (Revoke). Dimmed when `enabled` is false
+/// so a viewer sees the control exists but cannot be used.
+fn draw_danger_button(
+    scene: &mut Scene,
+    transform: Affine,
+    rect: Rect,
+    label: &str,
+    enabled: bool,
+    text_renderer: &mut TextRenderer,
+    theme: &Theme,
+) {
+    let tokens = &theme.tokens;
+    let danger = tokens.colors.semantic.danger;
+    let alpha = if enabled { 1.0 } else { DISABLED_ALPHA };
+    scene.fill(
+        Fill::NonZero,
+        transform,
+        danger.with_alpha_factor(0.20 * alpha),
+        None,
+        &RoundedRect::from_rect(rect, tokens.radii.md as f64),
+    );
+    let size = tokens.typography.scale.sm;
+    let (tw, th) = text_renderer.measure(label, size, None);
+    text_renderer.draw_text(
+        scene,
+        label,
+        size,
+        danger.with_alpha_factor(alpha),
+        transform
+            * Affine::translate((
+                rect.center().x - tw as f64 / 2.0,
+                rect.center().y - th as f64 / 2.0,
+            )),
+        None,
+    );
+}
+
+/// Paint the pane's one primary action.
+fn draw_primary_button(
+    scene: &mut Scene,
+    transform: Affine,
+    rect: Rect,
+    label: &str,
+    enabled: bool,
+    text_renderer: &mut TextRenderer,
+    theme: &Theme,
+) {
+    let tokens = &theme.tokens;
+    let alpha = if enabled { 1.0 } else { DISABLED_ALPHA };
+    scene.fill(
+        Fill::NonZero,
+        transform,
+        tokens.colors.accent[5].with_alpha_factor(alpha),
+        None,
+        &RoundedRect::from_rect(rect, tokens.radii.md as f64),
+    );
+    let size = tokens.typography.scale.sm;
+    let (tw, th) = text_renderer.measure(label, size, None);
+    text_renderer.draw_text(
+        scene,
+        label,
+        size,
+        tokens.colors.text_primary.with_alpha_factor(alpha),
+        transform
+            * Affine::translate((
+                rect.center().x - tw as f64 / 2.0,
+                rect.center().y - th as f64 / 2.0,
+            )),
+        None,
+    );
+}
+
+/// Paint a composed empty state — glyph, headline, caption.
+fn draw_empty_state(
+    scene: &mut Scene,
+    transform: Affine,
+    rect: Rect,
+    icon: Icon,
+    headline: &str,
+    caption: &str,
+    text_renderer: &mut TextRenderer,
+    theme: &Theme,
+) {
+    let tokens = &theme.tokens;
+    let colors = &tokens.colors;
+    let glyph = 28.0_f64;
+    let cx = rect.center().x;
+    let top = rect.y0 + (rect.height() * 0.28).min(96.0);
+    draw_icon(
+        scene,
+        transform,
+        Rect::new(cx - glyph / 2.0, top, cx + glyph / 2.0, top + glyph),
+        icon,
+        colors.text_dim,
+        LUCIDE_DEFAULT_STROKE_PX,
+    );
+    let h_size = tokens.typography.scale.base;
+    let (hw, _) = text_renderer.measure(headline, h_size, None);
+    text_renderer.draw_text(
+        scene,
+        headline,
+        h_size,
+        colors.text_primary,
+        transform * Affine::translate((cx - hw as f64 / 2.0, top + glyph + 14.0)),
+        None,
+    );
+    let c_size = tokens.typography.scale.sm;
+    let (cw, _) = text_renderer.measure(caption, c_size, None);
+    text_renderer.draw_text(
+        scene,
+        caption,
+        c_size,
+        colors.text_dim,
+        transform * Affine::translate((cx - cw as f64 / 2.0, top + glyph + 36.0)),
+        None,
+    );
 }
 
 // =====================================================================
-// Sandbox Phase 6 — Permissions tab
+// Capability vocabulary — labels
 // =====================================================================
 
-/// One row in the Permissions pane: a `(app_id, capability)` pairing
-/// from [`Workspace::grants`] plus the geometry the renderer painted
-/// for the row body and its Revoke button. Returned by
-/// [`permissions_pane_rows`] so click-routing can match a click point
-/// back to a (app_id, capability) tuple without re-deriving any
-/// layout. The row is keyed by `(app_id, cap_index)` because the
-/// `grants` map stores capabilities in a `Vec` and removing by value
-/// would be ambiguous when an app holds two `Filesystem` grants for
-/// different paths — index is the unambiguous identifier.
-#[derive(Clone, Debug)]
-pub struct PermissionRow {
-    pub app_id: AppId,
-    pub cap_index: usize,
-    pub capability: Capability,
-    pub row_rect: Rect,
-    pub revoke_rect: Rect,
-}
-
-/// Vertical inset between the top of the pane and the first row.
-const PERMISSIONS_PANE_PAD_TOP: f64 = 16.0;
-/// Horizontal inset on each side of the pane.
-const PERMISSIONS_PANE_PAD_X: f64 = 16.0;
-/// Height of one row (icon + label + revoke button).
-const PERMISSIONS_ROW_HEIGHT: f64 = 48.0;
-/// Vertical gap between consecutive rows.
-const PERMISSIONS_ROW_GAP: f64 = 8.0;
-/// Width of the Revoke button (right-aligned within the row).
-const PERMISSIONS_REVOKE_WIDTH: f64 = 84.0;
-/// Height of the Revoke button.
-const PERMISSIONS_REVOKE_HEIGHT: f64 = 28.0;
-
-/// Compute the `(row_rect, revoke_rect)` per-row geometry for the
-/// Permissions pane in `pane_rect`. Pure layout — no painting; the
-/// returned [`PermissionRow`]s feed both the renderer and the
-/// click-routing path so a click on a Revoke button always lands on
-/// the same rect that was painted.
-///
-/// Rows are emitted in the iteration order of `workspace.grants`
-/// (HashMap, so ordering is undefined but deterministic per run).
-/// Tests sort by app_id when they need stable assertions; the click
-/// path is index-based and doesn't care about ordering.
-pub fn permissions_pane_rows(workspace: &Workspace, pane_rect: Rect) -> Vec<PermissionRow> {
-    let mut rows = Vec::new();
-    if pane_rect.width() <= 0.0 || pane_rect.height() <= 0.0 {
-        return rows;
-    }
-    let mut cursor_y = pane_rect.y0 + PERMISSIONS_PANE_PAD_TOP;
-    // Iterate sorted by app_id so the on-screen order is stable across
-    // runs — HashMap iteration is unspecified, but the renderer wants
-    // a deterministic visual order so visual snapshots don't churn.
-    let owned = workspace.grants();
-    let mut entries: Vec<(&AppId, &Vec<Capability>)> = owned.iter().collect();
-    entries.sort_by(|a, b| a.0.cmp(b.0));
-    for (app_id, caps) in entries {
-        for (cap_index, capability) in caps.iter().enumerate() {
-            let row_rect = Rect::new(
-                pane_rect.x0 + PERMISSIONS_PANE_PAD_X,
-                cursor_y,
-                pane_rect.x1 - PERMISSIONS_PANE_PAD_X,
-                cursor_y + PERMISSIONS_ROW_HEIGHT,
-            );
-            let revoke_rect = Rect::new(
-                row_rect.x1 - 12.0 - PERMISSIONS_REVOKE_WIDTH,
-                row_rect.y0 + (PERMISSIONS_ROW_HEIGHT - PERMISSIONS_REVOKE_HEIGHT) / 2.0,
-                row_rect.x1 - 12.0,
-                row_rect.y0 + (PERMISSIONS_ROW_HEIGHT + PERMISSIONS_REVOKE_HEIGHT) / 2.0,
-            );
-            rows.push(PermissionRow {
-                app_id: app_id.clone(),
-                cap_index,
-                capability: capability.clone(),
-                row_rect,
-                revoke_rect,
-            });
-            cursor_y += PERMISSIONS_ROW_HEIGHT + PERMISSIONS_ROW_GAP;
-        }
-    }
-    rows
-}
-
-/// Build a human-readable label for `cap`. Mirrors the helper in
-/// `overlay_host.rs::capability_label` — duplicated here so the
-/// permissions pane can render labels without reaching across modules.
-/// Phase 4.2's prompt widget and this Phase 6 list view share the
-/// same label vocabulary so a user revoking a grant sees the exact
-/// same wording the prompt offered when they granted it.
-pub fn capability_label(cap: &Capability) -> String {
-    match cap {
-        Capability::Filesystem { path, mode, .. } => {
-            let mode_str = match mode {
-                crate::shell::state::FsMode::Read => "read",
-                crate::shell::state::FsMode::ReadWrite => "read/write",
-            };
-            format!("{} access to {}", mode_str, path.display())
-        }
-        Capability::Camera { .. } => "Camera access".to_string(),
-        Capability::Microphone { .. } => "Microphone access".to_string(),
-        Capability::Screencast { .. } => "Screen capture".to_string(),
-        Capability::RemoteDesktop { .. } => "Remote control (pointer + keyboard)".to_string(),
-        Capability::Network { hosts, .. } => match hosts {
-            Some(h) if !h.is_empty() => format!("Network access to {}", h.join(", ")),
-            _ => "Network access".to_string(),
-        },
+/// The role a member holds, as a user-facing word.
+pub fn role_label(role: CapRole) -> &'static str {
+    match role {
+        CapRole::Owner => "Owner",
+        CapRole::Editor => "Editor",
+        CapRole::Commenter => "Commenter",
+        CapRole::Viewer => "Viewer",
+        CapRole::Denied => "Blocked",
     }
 }
 
-/// Short scope badge label (Once / Session / Always) — read off the
-/// capability's `scope` field. Mirrors the GrantScope enum's three
-/// variants from `state.rs:323-332`.
-pub fn capability_scope_label(cap: &Capability) -> &'static str {
-    use crate::shell::state::Expiry;
-    let scope = match cap {
-        Capability::Filesystem { scope, .. } => scope,
-        Capability::Camera { scope } => scope,
-        Capability::Microphone { scope } => scope,
-        Capability::Screencast { scope } => scope,
-        Capability::RemoteDesktop { scope } => scope,
-        Capability::Network { scope, .. } => scope,
-    };
+/// The thing a device-scoped capability names.
+fn device_label(device: &str) -> &str {
+    match device {
+        "camera" => "the camera",
+        "microphone" => "the microphone",
+        "screencast" => "screen capture",
+        "remote-desktop" => "remote pointer + keyboard",
+        other => other,
+    }
+}
+
+/// What a capability's scope covers, as a user-facing phrase.
+pub fn scope_label(scope: &Scope) -> String {
     match scope {
+        Scope::Workspace => "this workspace".to_string(),
+        Scope::Room(_) => "this room".to_string(),
+        Scope::App(app) => format!("the {app} app"),
+        Scope::FsPath(path) => format!("files under {path}"),
+        Scope::Device(device) => device_label(device).to_string(),
+        Scope::NetHost(host) if host == "*" => "any network host".to_string(),
+        Scope::NetHost(host) => format!("network host {host}"),
+        Scope::Action { app, action } => format!("“{action}” in {app}"),
+        Scope::ResourceType(kind) => format!("every {}", artifact_kind_label(kind)),
+        Scope::ResourceInstance(id) => format!("one document ({})", short_id(&id.0.to_string())),
+    }
+}
+
+fn artifact_kind_label(kind: &collab_types::role::ArtifactKind) -> &'static str {
+    use collab_types::role::ArtifactKind;
+    match kind {
+        ArtifactKind::Note => "note",
+        ArtifactKind::File => "file",
+        ArtifactKind::Cluster => "saved cluster",
+        ArtifactKind::Kanban => "board",
+        ArtifactKind::ChatLog => "chat log",
+    }
+}
+
+/// Shorten a long opaque identifier for display. Person ids are 64-char
+/// hex public keys; printing one in full turns a row into a wall of
+/// noise, so we show enough to distinguish and no more.
+pub fn short_id(id: &str) -> String {
+    if id.chars().count() <= 14 {
+        return id.to_string();
+    }
+    let head: String = id.chars().take(10).collect();
+    format!("{head}…")
+}
+
+/// One line describing what a capability allows, phrased for the kind of
+/// thing it ranges over.
+///
+/// "verb · scope" mechanically produces lines like "View · the
+/// microphone", which is not what anyone would say. A device is *used*,
+/// a host is *reached*, a path is read or edited, and the workspace is
+/// administered — so the sentence is built per scope kind rather than
+/// concatenated.
+pub fn capability_allows(cap: &CapOverride) -> String {
+    let what = scope_label(&cap.scope);
+    match (&cap.scope, cap.verb) {
+        (Scope::Device(_), Verb::Write | Verb::Admin) => format!("Control {what}"),
+        (Scope::Device(_), _) => format!("Use {what}"),
+        (Scope::NetHost(_), _) => format!("Reach {what}"),
+        (Scope::Workspace | Scope::Room(_), Verb::Admin) => format!("Administer {what}"),
+        (Scope::Action { .. }, _) => format!("Run {what}"),
+        (_, Verb::Admin) => format!("Administer {what}"),
+        (_, Verb::Write) => format!("Edit {what}"),
+        (_, Verb::Comment) => format!("Comment on {what}"),
+        (_, Verb::Invite) => format!("Invite others to {what}"),
+        (_, Verb::Read) => format!("View {what}"),
+    }
+}
+
+/// Short expiry badge label.
+pub fn expiry_label(expiry: Expiry) -> &'static str {
+    match expiry {
         Expiry::AfterUse => "Once",
         Expiry::EndOfSession => "Session",
         Expiry::AtUnix(_) => "Until",
@@ -1252,47 +860,558 @@ pub fn capability_scope_label(cap: &Capability) -> &'static str {
     }
 }
 
-/// Revoke the `cap_index`-th grant the Permissions tab renders for
-/// `app_id`. No-op when the app has no grants or the index is out of
-/// bounds.
+/// Who granted a capability, as a user-facing phrase, or `None` for a
+/// capability with no recorded grantor.
+pub fn granted_by_label(cap: &CapOverride) -> Option<String> {
+    cap.granted_by.as_ref().map(|p| match p {
+        Principal::Person(id) => format!("granted by {}", short_id(id)),
+        Principal::App(id) => format!("granted by the {id} app"),
+        Principal::Agent(id) => format!("granted by agent {}", short_id(id)),
+        Principal::Token(id) => format!("granted by token {}", short_id(id)),
+        Principal::Room(id) => format!("granted by room {}", short_id(id)),
+    })
+}
+
+// =====================================================================
+// Grant composer
+// =====================================================================
+
+/// A subject the grant composer can target, and the subject axis the
+/// Permissions list groups by.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum SubjectKind {
+    /// An application, identified by its Wayland app id.
+    App,
+    /// A person in the workspace.
+    Member,
+    /// Everyone holding a role.
+    Role,
+    /// An agent, bearer token or room — surfaced so no live capability
+    /// is invisible in the panel, even though the composer can't mint
+    /// one.
+    Other,
+}
+
+impl SubjectKind {
+    /// Section heading for a group of rows with this subject kind.
+    pub fn section_label(self) -> &'static str {
+        match self {
+            SubjectKind::App => "Apps",
+            SubjectKind::Member => "People",
+            SubjectKind::Role => "Roles",
+            SubjectKind::Other => "Other",
+        }
+    }
+}
+
+/// A resolved subject: what kind of thing it is and how it is named.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GrantSubject {
+    pub kind: SubjectKind,
+    /// The subject's identifier as the capability model stores it.
+    pub id: String,
+}
+
+impl GrantSubject {
+    /// The `Subject` this resolves to in the capability model.
+    pub fn to_subject(&self) -> Option<Subject> {
+        match self.kind {
+            SubjectKind::App => Some(Subject::app(self.id.clone())),
+            SubjectKind::Member => Some(Subject::person(self.id.clone())),
+            // Role and Other subjects are rendered but not mintable from
+            // this panel: a role-wide grant is a policy decision, not a
+            // per-workspace click.
+            SubjectKind::Role | SubjectKind::Other => None,
+        }
+    }
+
+    /// How the subject reads in a row title.
+    pub fn display(&self) -> String {
+        match self.kind {
+            SubjectKind::Member => short_id(&self.id),
+            _ => self.id.clone(),
+        }
+    }
+}
+
+/// What the composer's scope picker maps to. Kept as a small enum
+/// rather than a pre-built `Scope` so the table can stay `const`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum GrantTarget {
+    Device(&'static str),
+    AnyHost,
+    WorkspaceFiles,
+    Workspace,
+}
+
+/// One entry in the composer's "what does this allow" picker. Every
+/// entry produces a capability an enforcement point actually reads:
+/// devices gate the portal, `NetHost` gates egress, `FsPath` gates both
+/// the sandbox binds and the filesystem, `Workspace` gates
+/// administration.
+pub struct GrantChoice {
+    label: &'static str,
+    target: GrantTarget,
+    verb: Verb,
+}
+
+impl GrantChoice {
+    /// The picker's label for this choice.
+    pub fn label(&self) -> &'static str {
+        self.label
+    }
+}
+
+/// The capabilities the panel can grant, in picker order.
+static GRANT_CHOICES: &[GrantChoice] = &[
+    GrantChoice {
+        label: "Camera",
+        target: GrantTarget::Device("camera"),
+        verb: Verb::Read,
+    },
+    GrantChoice {
+        label: "Microphone",
+        target: GrantTarget::Device("microphone"),
+        verb: Verb::Read,
+    },
+    GrantChoice {
+        label: "Screen capture",
+        target: GrantTarget::Device("screencast"),
+        verb: Verb::Read,
+    },
+    GrantChoice {
+        label: "Remote control",
+        target: GrantTarget::Device("remote-desktop"),
+        verb: Verb::Write,
+    },
+    GrantChoice {
+        label: "Network access",
+        target: GrantTarget::AnyHost,
+        verb: Verb::Read,
+    },
+    GrantChoice {
+        label: "Read workspace files",
+        target: GrantTarget::WorkspaceFiles,
+        verb: Verb::Read,
+    },
+    GrantChoice {
+        label: "Edit workspace files",
+        target: GrantTarget::WorkspaceFiles,
+        verb: Verb::Write,
+    },
+    GrantChoice {
+        label: "Administer workspace",
+        target: GrantTarget::Workspace,
+        verb: Verb::Admin,
+    },
+];
+
+/// The path workspace files are projected at. A capability scoped here
+/// is enforced by the sandbox's binds and by the filesystem alike.
+const WORKSPACE_FILES_PATH: &str = "/var/workspace";
+
+/// The composer's picker order for expiry.
+pub const EXPIRY_CHOICES: [Expiry; 3] = [Expiry::Never, Expiry::EndOfSession, Expiry::AfterUse];
+
+/// The in-flight grant the Permissions tab's composer is composing.
+/// Lives on the chrome so it survives a re-render, and holds indices
+/// rather than resolved values so a subject leaving the workspace can't
+/// leave a dangling reference — [`grant_subjects`] is re-derived every
+/// frame and the index is taken modulo its length.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GrantDraft {
+    pub subject_index: usize,
+    pub choice_index: usize,
+    pub expiry: Expiry,
+}
+
+impl Default for GrantDraft {
+    fn default() -> Self {
+        Self {
+            subject_index: 0,
+            choice_index: 0,
+            expiry: Expiry::EndOfSession,
+        }
+    }
+}
+
+impl GrantDraft {
+    /// Advance the subject picker, wrapping at `len`.
+    pub fn cycle_subject(&mut self, len: usize) {
+        if len == 0 {
+            self.subject_index = 0;
+        } else {
+            self.subject_index = (self.subject_index + 1) % len;
+        }
+    }
+
+    /// Advance the capability picker, wrapping.
+    pub fn cycle_choice(&mut self) {
+        self.choice_index = (self.choice_index + 1) % GRANT_CHOICES.len();
+    }
+
+    /// The capability entry this draft currently names.
+    pub fn choice(&self) -> &'static GrantChoice {
+        &GRANT_CHOICES[self.choice_index % GRANT_CHOICES.len()]
+    }
+}
+
+/// The subjects the composer can target, in picker order: the
+/// workspace's people first, then every app that is either running in
+/// the workspace or already holds a capability.
 ///
-/// Resolves the row index to the underlying capability's stable id
-/// before removing it, so the revoke targets the capability the user
-/// actually clicked rather than whatever currently sits at that
-/// position. Returns `true` if a capability was removed.
-///
-/// This is the storage-level revoke. The production click path goes
-/// through [`crate::shell::state::WorkspaceTree::revoke_in_workspace`],
-/// which additionally checks the revoker's authority and mirrors the
-/// removal to peers and to disk.
-pub fn revoke_grant(workspace: &mut Workspace, app_id: &AppId, cap_index: usize) -> bool {
-    let ids = workspace.app_grant_ids(app_id);
-    let Some(id) = ids.get(cap_index) else {
-        return false;
+/// Running apps matter: without them a host could only ever grant to an
+/// app that had already been granted something, so the panel could not
+/// be used to hand out access ahead of the first portal prompt.
+pub fn grant_subjects(ws: &Workspace) -> Vec<GrantSubject> {
+    let mut out: Vec<GrantSubject> = ws
+        .roster()
+        .into_iter()
+        .map(|(user, _)| GrantSubject {
+            kind: SubjectKind::Member,
+            id: user,
+        })
+        .collect();
+
+    let mut apps: Vec<String> = Vec::new();
+    for strip in &ws.strips {
+        for group in &strip.window_groups {
+            for tab in &group.tabs {
+                if let Some(app) = tile_app_id(&tab.tile) {
+                    apps.push(app);
+                }
+            }
+        }
+    }
+    for cap in &ws.capabilities {
+        if let Subject::Principal(Principal::App(app)) = &cap.subject {
+            apps.push(app.clone());
+        }
+    }
+    apps.sort();
+    apps.dedup();
+    out.extend(apps.into_iter().map(|id| GrantSubject {
+        kind: SubjectKind::App,
+        id,
+    }));
+    out
+}
+
+/// The app id a tile belongs to, for subject discovery.
+fn tile_app_id(tile: &crate::shell::state::TileContent) -> Option<String> {
+    use crate::shell::state::TileContent;
+    match tile {
+        TileContent::Foreign { app_id, .. } => Some(app_id.clone()),
+        TileContent::AppPlaceholder { kind, .. } | TileContent::Stub { kind, .. } => {
+            Some(kind.as_str().to_string())
+        }
+    }
+}
+
+/// Build the capability `draft` currently names against `ws`, or `None`
+/// when the draft has no addressable subject (an empty workspace) or
+/// names a subject this panel cannot mint for.
+pub fn draft_capability(ws: &Workspace, draft: &GrantDraft) -> Option<CapOverride> {
+    let subjects = grant_subjects(ws);
+    if subjects.is_empty() {
+        return None;
+    }
+    let subject_entry = &subjects[draft.subject_index % subjects.len()];
+    let subject = subject_entry.to_subject()?;
+    let choice = draft.choice();
+    let scope = match choice.target {
+        GrantTarget::Device(d) => Scope::Device(d.to_string()),
+        GrantTarget::AnyHost => Scope::NetHost("*".to_string()),
+        GrantTarget::WorkspaceFiles => Scope::FsPath(WORKSPACE_FILES_PATH.to_string()),
+        GrantTarget::Workspace => Scope::Workspace,
     };
-    let id = id.clone();
-    workspace.revoke_capability(&id)
+    Some(CapOverride::grant(subject, scope, choice.verb).expiring(draft.expiry))
 }
 
-/// Same as [`revoke_grant`], but returns the revoked capability's
-/// stable id so the caller can mirror the removal to peers.
-pub fn revoke_grant_id(workspace: &Workspace, app_id: &AppId, cap_index: usize) -> Option<String> {
-    workspace.app_grant_ids(app_id).get(cap_index).cloned()
+/// The subject a draft currently names, for rendering the picker.
+pub fn draft_subject(ws: &Workspace, draft: &GrantDraft) -> Option<GrantSubject> {
+    let subjects = grant_subjects(ws);
+    if subjects.is_empty() {
+        return None;
+    }
+    Some(subjects[draft.subject_index % subjects.len()].clone())
 }
 
-/// Paint the Permissions tab body into `pane_rect`. Renders one row
-/// per `(app_id, capability)` pair across the workspace's grants map;
-/// each row paints the app id (left), capability label (middle), grant
-/// scope badge, and a Revoke button (right). The Revoke button paints
-/// at full alpha for owners and at 40% alpha for non-owners — mirrors
-/// the PermissionPrompt's `Always` button gating from Phase 4.2.
+// =====================================================================
+// Authority-checked mutations
+// =====================================================================
+
+/// What a panel mutation changed, so the caller can mirror it into the
+/// room document and to disk. An empty edit means nothing happened —
+/// either the actor lacked authority, or there was nothing to change.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CapEdit {
+    /// Ids of capabilities removed.
+    pub revoked: Vec<String>,
+    /// Ids of capabilities added.
+    pub granted: Vec<String>,
+}
+
+impl CapEdit {
+    /// Whether anything changed.
+    pub fn is_empty(&self) -> bool {
+        self.revoked.is_empty() && self.granted.is_empty()
+    }
+}
+
+/// Grant the capability `draft` names, as `actor`.
 ///
-/// Empty grants ⇒ paints a "No permissions granted" placeholder row.
-pub fn draw_permissions_pane(
+/// Routes through [`Workspace::grant_as`], so an actor that fails
+/// [`Workspace::may_administer`] records nothing — the authority check
+/// is the same one the portal and the replica validator use, not a
+/// UI-side copy of it.
+pub fn apply_grant_draft(ws: &mut Workspace, actor: &UserId, draft: &GrantDraft) -> CapEdit {
+    let Some(cap) = draft_capability(ws, draft) else {
+        return CapEdit::default();
+    };
+    match ws.grant_as(actor, cap) {
+        Some(id) => CapEdit {
+            revoked: Vec::new(),
+            granted: vec![id],
+        },
+        None => CapEdit::default(),
+    }
+}
+
+/// Revoke the capability with id `cap_id`, as `actor`. Routes through
+/// [`Workspace::revoke_as`].
+pub fn apply_revoke(ws: &mut Workspace, actor: &UserId, cap_id: &str) -> CapEdit {
+    if ws.revoke_as(actor, cap_id) {
+        CapEdit {
+            revoked: vec![cap_id.to_string()],
+            granted: Vec::new(),
+        }
+    } else {
+        CapEdit::default()
+    }
+}
+
+/// The roles a member's role chip cycles through. `Denied` is not in
+/// the cycle: blocking someone is what the Revoke control expresses,
+/// and cycling into a block by accident is not a thing a permission
+/// panel should make easy.
+const ROLE_CYCLE: [CapRole; 4] = [
+    CapRole::Viewer,
+    CapRole::Commenter,
+    CapRole::Editor,
+    CapRole::Owner,
+];
+
+/// The verb that expresses `role` on a membership capability. Inverse of
+/// the mapping [`Workspace::role_of`] reads.
+fn role_verb(role: CapRole) -> Option<Verb> {
+    match role {
+        CapRole::Owner => Some(Verb::Admin),
+        CapRole::Editor => Some(Verb::Write),
+        CapRole::Commenter => Some(Verb::Comment),
+        CapRole::Viewer => Some(Verb::Read),
+        CapRole::Denied => None,
+    }
+}
+
+/// The role after `role` in the chip's cycle.
+pub fn next_role(role: CapRole) -> CapRole {
+    let idx = ROLE_CYCLE.iter().position(|r| *r == role).unwrap_or(0);
+    ROLE_CYCLE[(idx + 1) % ROLE_CYCLE.len()]
+}
+
+/// Every membership capability id `member` currently holds in `ws`.
+fn membership_ids(ws: &Workspace, member: &UserId) -> Vec<String> {
+    ws.capabilities
+        .iter()
+        .filter(|cap| cap.is_room_membership() && subject_is_person(&cap.subject, member))
+        .map(|cap| cap.id.clone())
+        .collect()
+}
+
+/// Whether `subject` names the person `user`.
+fn subject_is_person(subject: &Subject, user: &UserId) -> bool {
+    match subject {
+        Subject::Principal(Principal::Person(id)) => id == user,
+        Subject::User(key) => Principal::person_from_key(*key).id() == user.as_str(),
+        _ => false,
+    }
+}
+
+/// Move `member` to `role`, as `actor`.
+///
+/// A role is the verb on a membership capability, and
+/// [`Workspace::grant_capability`] keeps the strongest of two grants
+/// over the same scope — so *lowering* a role means retiring the
+/// existing membership capabilities before writing the new one. Both
+/// halves go through the authority-checked API, and an actor without
+/// authority changes nothing at all (the first `revoke_as` refuses and
+/// we stop).
+pub fn set_member_role(
+    ws: &mut Workspace,
+    actor: &UserId,
+    member: &UserId,
+    role: CapRole,
+) -> CapEdit {
+    let Some(verb) = role_verb(role) else {
+        return CapEdit::default();
+    };
+    if !ws.may_administer(actor) {
+        return CapEdit::default();
+    }
+    // The recorded owner's role is structural, not a capability — there
+    // is nothing to rewrite, and pretending otherwise would show the
+    // chip changing while `role_of` kept answering Owner.
+    if ws.owner.as_deref() == Some(member.as_str()) {
+        return CapEdit::default();
+    }
+    let mut edit = CapEdit::default();
+    for id in membership_ids(ws, member) {
+        if ws.revoke_as(actor, &id) {
+            edit.revoked.push(id);
+        }
+    }
+    let cap = CapOverride::membership(
+        Subject::person(member.clone()),
+        ws.id.raw().to_string(),
+        verb,
+    );
+    if let Some(id) = ws.grant_as(actor, cap) {
+        edit.granted.push(id);
+    }
+    edit
+}
+
+/// Remove `member` from the workspace, as `actor`: their membership and
+/// every capability they hold. Routes each removal through
+/// [`Workspace::revoke_as`].
+pub fn remove_member(ws: &mut Workspace, actor: &UserId, member: &UserId) -> CapEdit {
+    if ws.owner.as_deref() == Some(member.as_str()) {
+        // The recorded owner is the workspace's root of trust; removing
+        // it from the UI would leave a room no one can administer.
+        return CapEdit::default();
+    }
+    let ids: Vec<String> = ws
+        .capabilities
+        .iter()
+        .filter(|cap| subject_is_person(&cap.subject, member))
+        .map(|cap| cap.id.clone())
+        .collect();
+    let mut edit = CapEdit::default();
+    for id in ids {
+        if ws.revoke_as(actor, &id) {
+            edit.revoked.push(id);
+        }
+    }
+    edit
+}
+
+// =====================================================================
+// Members pane
+// =====================================================================
+
+/// One row in the Members pane, plus the geometry the renderer painted
+/// for its controls so click-routing matches a point back to a member
+/// without re-deriving layout.
+#[derive(Clone, Debug)]
+pub struct MemberRow {
+    pub user: UserId,
+    pub role: CapRole,
+    /// Whether this member is the workspace's recorded owner. The
+    /// owner's role is structural, so their role chip is inert.
+    pub is_workspace_owner: bool,
+    /// How many capabilities beyond their membership this member holds.
+    pub grant_count: usize,
+    pub row_rect: Rect,
+    pub role_rect: Rect,
+    pub remove_rect: Rect,
+}
+
+/// The roster in a stable display order: the workspace owner first, then
+/// everyone else by id.
+///
+/// [`Workspace::roster`] returns members in the order their membership
+/// capabilities happen to sit in the list, and changing someone's role
+/// rewrites their capability — which moved their row while the pointer
+/// was still over it, so a second click landed on a different person.
+/// Ordering here rather than in `roster` keeps the fix in the layer that
+/// has the problem.
+fn ordered_roster(ws: &Workspace) -> Vec<(UserId, CapRole)> {
+    let mut rows = ws.roster();
+    let owner = ws.owner.clone();
+    rows.sort_by(|a, b| {
+        let a_owner = Some(&a.0) == owner.as_ref();
+        let b_owner = Some(&b.0) == owner.as_ref();
+        b_owner.cmp(&a_owner).then_with(|| a.0.cmp(&b.0))
+    });
+    rows
+}
+
+/// Layout the Members pane. Pure geometry — no painting; the rows feed
+/// both the renderer and the click router.
+pub fn members_pane_rows(ws: &Workspace, pane_rect: Rect) -> Vec<MemberRow> {
+    let mut rows = Vec::new();
+    if pane_rect.width() <= 0.0 || pane_rect.height() <= 0.0 {
+        return rows;
+    }
+    let mut cursor_y = pane_rect.y0 + PANE_PAD_TOP + SECTION_HEADER_HEIGHT;
+    for (user, role) in ordered_roster(ws) {
+        let row_rect = Rect::new(
+            pane_rect.x0 + PANE_PAD_X,
+            cursor_y,
+            pane_rect.x1 - PANE_PAD_X,
+            cursor_y + ROW_HEIGHT,
+        );
+        if row_rect.y1 > pane_rect.y1 - PANE_PAD_TOP {
+            break;
+        }
+        let remove_rect = Rect::new(
+            row_rect.x1 - 12.0 - REVOKE_WIDTH,
+            row_rect.center().y - REVOKE_HEIGHT / 2.0,
+            row_rect.x1 - 12.0,
+            row_rect.center().y + REVOKE_HEIGHT / 2.0,
+        );
+        let role_w = 96.0_f64;
+        let role_rect = Rect::new(
+            remove_rect.x0 - 12.0 - role_w,
+            row_rect.center().y - REVOKE_HEIGHT / 2.0,
+            remove_rect.x0 - 12.0,
+            row_rect.center().y + REVOKE_HEIGHT / 2.0,
+        );
+        let is_workspace_owner = ws.owner.as_deref() == Some(user.as_str());
+        let grant_count = ws
+            .capabilities
+            .iter()
+            .filter(|cap| {
+                cap.effect == Effect::Grant
+                    && !cap.is_room_membership()
+                    && subject_is_person(&cap.subject, &user)
+            })
+            .count();
+        rows.push(MemberRow {
+            user,
+            role,
+            is_workspace_owner,
+            grant_count,
+            row_rect,
+            role_rect,
+            remove_rect,
+        });
+        cursor_y += ROW_HEIGHT + ROW_GAP;
+    }
+    rows
+}
+
+/// Paint the Members pane: one row per person in
+/// [`Workspace::roster`], each carrying their role and how much they
+/// hold. `is_owner` is the *local* user's authority — a non-owner sees
+/// every row and every control, with the controls disabled.
+pub fn draw_members_pane(
     scene: &mut Scene,
     transform: Affine,
     pane_rect: Rect,
-    workspace: &Workspace,
+    ws: &Workspace,
+    local_user: &UserId,
     is_owner: bool,
     text_renderer: &mut TextRenderer,
     theme: &Theme,
@@ -1302,187 +1421,729 @@ pub fn draw_permissions_pane(
     }
     let tokens = &theme.tokens;
     let colors = &tokens.colors;
-
-    let rows = permissions_pane_rows(workspace, pane_rect);
+    let rows = members_pane_rows(ws, pane_rect);
 
     if rows.is_empty() {
-        // Empty-state placeholder so the section reads as "intentionally
-        // empty" instead of "broken". Concept ref: Roles tab uses the
-        // same idiom for an empty workspace_files vector.
-        let row = Rect::new(
-            pane_rect.x0 + PERMISSIONS_PANE_PAD_X,
-            pane_rect.y0 + PERMISSIONS_PANE_PAD_TOP,
-            pane_rect.x1 - PERMISSIONS_PANE_PAD_X,
-            pane_rect.y0 + PERMISSIONS_PANE_PAD_TOP + PERMISSIONS_ROW_HEIGHT,
-        );
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            colors.neutral[3].with_alpha_factor(0.10),
-            None,
-            &RoundedRect::from_rect(row, 12.0),
-        );
-        text_renderer.draw_text(
+        draw_empty_state(
             scene,
-            "No permissions granted yet",
-            tokens.typography.scale.sm,
-            colors.text_dim,
-            transform * Affine::translate((row.x0 + 16.0, row.y0 + 16.0)),
-            None,
+            transform,
+            pane_rect,
+            Icon::Shield,
+            "No one else is in this workspace",
+            "Share the invite link from the General tab to add someone.",
+            text_renderer,
+            theme,
         );
         return;
     }
 
+    draw_section_header(
+        scene,
+        transform,
+        Point::new(pane_rect.x0 + PANE_PAD_X, pane_rect.y0 + PANE_PAD_TOP),
+        "MEMBERS",
+        Some(ordered_roster(ws).len()),
+        text_renderer,
+        theme,
+    );
+
     for row in &rows {
-        // Row card.
+        draw_row_card(scene, transform, row.row_rect, theme);
+
+        let avatar_size = 28.0_f64;
+        let avatar = Rect::new(
+            row.row_rect.x0 + 12.0,
+            row.row_rect.center().y - avatar_size / 2.0,
+            row.row_rect.x0 + 12.0 + avatar_size,
+            row.row_rect.center().y + avatar_size / 2.0,
+        );
+        let name = short_id(&row.user);
+        draw_avatar(
+            scene,
+            transform,
+            avatar,
+            &name,
+            false,
+            text_renderer,
+            theme,
+        );
+
+        // Which row is you. You need that before you reach for Remove,
+        // and a name alone does not tell you — person ids are hex keys.
+        let mut text_limit = row.role_rect.x0 - 12.0;
+        if &row.user == local_user {
+            let you = draw_pill(
+                scene,
+                transform,
+                text_limit,
+                row.row_rect.center().y,
+                "You",
+                colors.accent[5],
+                1.0,
+                text_renderer,
+                theme,
+            );
+            text_limit = you.x0 - 8.0;
+        }
+
+        let text_x = avatar.x1 + 12.0;
+        let text_max = text_limit - text_x;
+        let title_size = tokens.typography.scale.sm;
+        let title_text = elide(&name, title_size, text_max, text_renderer);
+        text_renderer.draw_text(
+            scene,
+            &title_text,
+            title_size,
+            colors.text_primary,
+            transform * Affine::translate((text_x, row.row_rect.y0 + 12.0)),
+            None,
+        );
+
+        let detail = match row.grant_count {
+            0 => format!("{} · no extra permissions", role_label(row.role)),
+            1 => format!("{} · 1 extra permission", role_label(row.role)),
+            n => format!("{} · {n} extra permissions", role_label(row.role)),
+        };
+        let detail_size = tokens.typography.scale.xs;
+        let detail_text = elide(&detail, detail_size, text_max, text_renderer);
+        text_renderer.draw_text(
+            scene,
+            &detail_text,
+            detail_size,
+            colors.text_dim,
+            transform * Affine::translate((text_x, row.row_rect.y0 + 32.0)),
+            None,
+        );
+
+        // Role chip. The recorded owner's role is structural, so the
+        // chip reads as a status badge rather than a control.
+        let role_interactive = is_owner && !row.is_workspace_owner;
+        let chip_tint = if row.role == CapRole::Denied {
+            colors.semantic.danger
+        } else if row.is_workspace_owner {
+            colors.semantic.success
+        } else {
+            colors.accent[5]
+        };
+        let chip_alpha = if role_interactive || row.is_workspace_owner {
+            1.0
+        } else {
+            DISABLED_ALPHA
+        };
         scene.fill(
             Fill::NonZero,
             transform,
-            colors.neutral[3].with_alpha_factor(0.15),
+            chip_tint.with_alpha_factor(0.20 * chip_alpha),
             None,
-            &RoundedRect::from_rect(row.row_rect, 12.0),
+            &RoundedRect::from_rect(row.role_rect, tokens.radii.md as f64),
         );
-
-        // App id (left) — concept's grant rows lead with the app's
-        // wayland app-id so the user can correlate the entry with
-        // the originating app.
+        // A stroke on every chip: it is what makes the interactive ones
+        // look interactive and the owner's status badge still look like a
+        // badge rather than a smudge.
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            chip_tint.with_alpha_factor(if role_interactive { 0.60 } else { 0.35 }),
+            None,
+            &RoundedRect::from_rect(row.role_rect, tokens.radii.md as f64),
+        );
+        let role_text = role_label(row.role);
+        let (rw, rh) = text_renderer.measure(role_text, detail_size, None);
+        // The label is `text_primary`, not the chip's own hue: a tinted
+        // label on a tinted fill of the same hue is unreadable, and the
+        // chip already carries the colour meaning in its fill and stroke.
         text_renderer.draw_text(
             scene,
-            &row.app_id,
-            tokens.typography.scale.sm,
+            role_text,
+            detail_size,
+            colors.text_primary.with_alpha_factor(chip_alpha),
+            transform
+                * Affine::translate((
+                    row.role_rect.x0 + 10.0,
+                    row.role_rect.center().y - rh as f64 / 2.0,
+                )),
+            None,
+        );
+        if role_interactive {
+            let glyph = 12.0_f64;
+            let gx = (row.role_rect.x0 + 10.0 + rw as f64 + 6.0)
+                .min(row.role_rect.x1 - 6.0 - glyph);
+            draw_icon(
+                scene,
+                transform,
+                Rect::new(
+                    gx,
+                    row.role_rect.center().y - glyph / 2.0,
+                    gx + glyph,
+                    row.role_rect.center().y + glyph / 2.0,
+                ),
+                Icon::ChevronRight,
+                chip_tint,
+                LUCIDE_DEFAULT_STROKE_PX,
+            );
+        }
+
+        draw_danger_button(
+            scene,
+            transform,
+            row.remove_rect,
+            "Remove",
+            is_owner && !row.is_workspace_owner,
+            text_renderer,
+            theme,
+        );
+    }
+
+    if !is_owner {
+        draw_authority_footnote(scene, transform, pane_rect, text_renderer, theme);
+    }
+}
+
+/// Explain, once per pane, why the controls are inert. A disabled
+/// control with no reason reads as a broken one.
+fn draw_authority_footnote(
+    scene: &mut Scene,
+    transform: Affine,
+    pane_rect: Rect,
+    text_renderer: &mut TextRenderer,
+    theme: &Theme,
+) {
+    let tokens = &theme.tokens;
+    let note = "Only the workspace owner can change permissions.";
+    let size = tokens.typography.scale.xs;
+    text_renderer.draw_text(
+        scene,
+        note,
+        size,
+        tokens.colors.text_dim,
+        transform
+            * Affine::translate((pane_rect.x0 + PANE_PAD_X, pane_rect.y1 - PANE_PAD_TOP - 14.0)),
+        None,
+    );
+}
+
+// =====================================================================
+// Permissions pane
+// =====================================================================
+
+/// One capability row in the Permissions pane. Keyed by the
+/// capability's stable id — the same key [`Workspace::revoke_as`] takes,
+/// so a click can never revoke a different capability than the one the
+/// row was painted for.
+#[derive(Clone, Debug)]
+pub struct PermissionRow {
+    pub cap_id: String,
+    pub subject: GrantSubject,
+    /// What the capability allows, as one line.
+    pub allows: String,
+    /// Short expiry badge text.
+    pub expiry: &'static str,
+    /// Who granted it, if recorded.
+    pub granted_by: Option<String>,
+    pub row_rect: Rect,
+    pub revoke_rect: Rect,
+}
+
+/// The Permissions pane's full geometry: the composer's controls and
+/// the capability rows. Pure layout — the renderer and the click router
+/// both read it, so a click always lands on the rect that was painted.
+#[derive(Clone, Debug, Default)]
+pub struct PermissionsPaneLayout {
+    /// The subject picker. Zero-area when the workspace has no
+    /// addressable subject.
+    pub subject_rect: Rect,
+    /// The capability picker.
+    pub choice_rect: Rect,
+    /// The three expiry segments, in [`EXPIRY_CHOICES`] order.
+    pub expiry_rects: [Rect; 3],
+    /// The Grant button.
+    pub submit_rect: Rect,
+    /// One row per live granted capability.
+    pub rows: Vec<PermissionRow>,
+    /// Capabilities that did not fit the pane.
+    pub overflow: usize,
+}
+
+/// Classify a capability's subject for grouping + display.
+fn classify_subject(subject: &Subject) -> GrantSubject {
+    match subject {
+        Subject::Principal(Principal::App(id)) => GrantSubject {
+            kind: SubjectKind::App,
+            id: id.clone(),
+        },
+        Subject::Principal(Principal::Person(id)) => GrantSubject {
+            kind: SubjectKind::Member,
+            id: id.clone(),
+        },
+        Subject::User(key) => GrantSubject {
+            kind: SubjectKind::Member,
+            id: Principal::person_from_key(*key).id().to_string(),
+        },
+        Subject::Role(role) => GrantSubject {
+            kind: SubjectKind::Role,
+            id: format!("everyone with {}", role_label(*role)),
+        },
+        Subject::Principal(Principal::Agent(id)) => GrantSubject {
+            kind: SubjectKind::Other,
+            id: format!("agent {}", short_id(id)),
+        },
+        Subject::Principal(Principal::Token(id)) => GrantSubject {
+            kind: SubjectKind::Other,
+            id: format!("token {}", short_id(id)),
+        },
+        Subject::Principal(Principal::Room(id)) => GrantSubject {
+            kind: SubjectKind::Other,
+            id: format!("room {}", short_id(id)),
+        },
+    }
+}
+
+/// The capabilities the Permissions pane lists, in display order:
+/// grouped by subject kind, then by subject, then by capability id.
+///
+/// A *person's* room-membership capability is not listed here — that is
+/// what the Members tab renders as a role, and showing one fact twice in
+/// two vocabularies is how the old panel drifted. Everything else is,
+/// including a room- or workspace-scoped grant held by an app or an
+/// agent: the Members tab only knows about people, so excluding those by
+/// scope alone would leave an app holding `Admin` over the workspace
+/// visible in neither tab and revocable from neither.
+fn listed_capabilities(ws: &Workspace) -> Vec<(GrantSubject, &CapOverride)> {
+    let mut out: Vec<(GrantSubject, &CapOverride)> = ws
+        .capabilities
+        .iter()
+        .filter(|cap| {
+            cap.effect == Effect::Grant && !(cap.is_room_membership() && cap.subject_is_person())
+        })
+        .map(|cap| (classify_subject(&cap.subject), cap))
+        .collect();
+    out.sort_by(|a, b| {
+        a.0.kind
+            .cmp(&b.0.kind)
+            .then_with(|| a.0.id.cmp(&b.0.id))
+            .then_with(|| a.1.id.cmp(&b.1.id))
+    });
+    out
+}
+
+/// Lay out the Permissions pane against `pane_rect`.
+///
+/// The geometry does not depend on the draft — which subject or expiry
+/// is selected changes what the controls *say*, never where they are —
+/// so the click router can resolve a point without knowing the draft.
+pub fn permissions_pane_layout(ws: &Workspace, pane_rect: Rect) -> PermissionsPaneLayout {
+    let mut layout = PermissionsPaneLayout::default();
+    if pane_rect.width() <= 0.0 || pane_rect.height() <= 0.0 {
+        return layout;
+    }
+
+    // ---- Composer -------------------------------------------------
+    let card = Rect::new(
+        pane_rect.x0 + PANE_PAD_X,
+        pane_rect.y0 + PANE_PAD_TOP + SECTION_HEADER_HEIGHT,
+        pane_rect.x1 - PANE_PAD_X,
+        pane_rect.y0 + PANE_PAD_TOP + SECTION_HEADER_HEIGHT + COMPOSER_HEIGHT,
+    );
+    let inner_x0 = card.x0 + 12.0;
+    let inner_x1 = card.x1 - 12.0;
+    let controls_y = card.y1 - 12.0 - CONTROL_HEIGHT;
+    let gap = 8.0_f64;
+    let expiry_w = EXPIRY_SEGMENT_WIDTH * 3.0;
+    let flexible = (inner_x1 - inner_x0) - expiry_w - SUBMIT_WIDTH - gap * 3.0;
+    let subject_w = (flexible * 0.45).max(72.0);
+    let choice_w = (flexible - subject_w).max(72.0);
+
+    layout.subject_rect = Rect::new(
+        inner_x0,
+        controls_y,
+        inner_x0 + subject_w,
+        controls_y + CONTROL_HEIGHT,
+    );
+    layout.choice_rect = Rect::new(
+        layout.subject_rect.x1 + gap,
+        controls_y,
+        layout.subject_rect.x1 + gap + choice_w,
+        controls_y + CONTROL_HEIGHT,
+    );
+    let expiry_x0 = layout.choice_rect.x1 + gap;
+    layout.expiry_rects = std::array::from_fn(|i| {
+        let x0 = expiry_x0 + i as f64 * EXPIRY_SEGMENT_WIDTH;
+        Rect::new(x0, controls_y, x0 + EXPIRY_SEGMENT_WIDTH, controls_y + CONTROL_HEIGHT)
+    });
+    layout.submit_rect = Rect::new(
+        inner_x1 - SUBMIT_WIDTH,
+        controls_y,
+        inner_x1,
+        controls_y + CONTROL_HEIGHT,
+    );
+    if grant_subjects(ws).is_empty() {
+        layout.subject_rect = Rect::ZERO;
+        layout.submit_rect = Rect::ZERO;
+    }
+
+    // ---- Capability rows ------------------------------------------
+    let entries = listed_capabilities(ws);
+    let mut cursor_y = card.y1 + 16.0;
+    let mut last_kind: Option<SubjectKind> = None;
+    let mut placed = 0usize;
+    for (subject, cap) in &entries {
+        let needs_header = last_kind != Some(subject.kind);
+        let header_h = if needs_header { SECTION_HEADER_HEIGHT } else { 0.0 };
+        let row_y0 = cursor_y + header_h;
+        if row_y0 + ROW_HEIGHT > pane_rect.y1 - PANE_PAD_TOP {
+            break;
+        }
+        let row_rect = Rect::new(
+            pane_rect.x0 + PANE_PAD_X,
+            row_y0,
+            pane_rect.x1 - PANE_PAD_X,
+            row_y0 + ROW_HEIGHT,
+        );
+        let revoke_rect = Rect::new(
+            row_rect.x1 - 12.0 - REVOKE_WIDTH,
+            row_rect.center().y - REVOKE_HEIGHT / 2.0,
+            row_rect.x1 - 12.0,
+            row_rect.center().y + REVOKE_HEIGHT / 2.0,
+        );
+        layout.rows.push(PermissionRow {
+            cap_id: cap.id.clone(),
+            subject: subject.clone(),
+            allows: capability_allows(cap),
+            expiry: expiry_label(cap.expiry),
+            granted_by: granted_by_label(cap),
+            row_rect,
+            revoke_rect,
+        });
+        last_kind = Some(subject.kind);
+        cursor_y = row_rect.y1 + ROW_GAP;
+        placed += 1;
+    }
+    layout.overflow = entries.len().saturating_sub(placed);
+    layout
+}
+
+/// Paint the Permissions pane: the grant composer, then every live
+/// capability the workspace has granted, grouped by subject.
+///
+/// `is_owner` is the local user's authority. Non-owners see the same
+/// list and the same controls, painted disabled, with a footnote saying
+/// why — the asymmetry is information, so it is shown rather than
+/// hidden.
+pub fn draw_permissions_pane(
+    scene: &mut Scene,
+    transform: Affine,
+    pane_rect: Rect,
+    ws: &Workspace,
+    draft: &GrantDraft,
+    is_owner: bool,
+    text_renderer: &mut TextRenderer,
+    theme: &Theme,
+) {
+    if pane_rect.width() <= 0.0 || pane_rect.height() <= 0.0 {
+        return;
+    }
+    let tokens = &theme.tokens;
+    let colors = &tokens.colors;
+    let layout = permissions_pane_layout(ws, pane_rect);
+
+    // ---- Composer -------------------------------------------------
+    draw_section_header(
+        scene,
+        transform,
+        Point::new(pane_rect.x0 + PANE_PAD_X, pane_rect.y0 + PANE_PAD_TOP),
+        "GRANT A PERMISSION",
+        None,
+        text_renderer,
+        theme,
+    );
+    let card = Rect::new(
+        pane_rect.x0 + PANE_PAD_X,
+        pane_rect.y0 + PANE_PAD_TOP + SECTION_HEADER_HEIGHT,
+        pane_rect.x1 - PANE_PAD_X,
+        pane_rect.y0 + PANE_PAD_TOP + SECTION_HEADER_HEIGHT + COMPOSER_HEIGHT,
+    );
+    let card_rr = RoundedRect::from_rect(card, tokens.radii.lg as f64);
+    scene.fill(
+        Fill::NonZero,
+        transform,
+        colors.neutral[1].with_alpha_factor(0.55),
+        None,
+        &card_rr,
+    );
+    scene.stroke(
+        &Stroke::new(1.0),
+        transform,
+        colors.border_standard,
+        None,
+        &card_rr,
+    );
+
+    let caption_y = card.y0 + 12.0;
+    let subject = draft_subject(ws, draft);
+    match &subject {
+        Some(entry) => {
+            draw_control_caption(
+                scene,
+                transform,
+                Point::new(layout.subject_rect.x0 + 2.0, caption_y),
+                "Who",
+                text_renderer,
+                theme,
+            );
+            draw_cycler(
+                scene,
+                transform,
+                layout.subject_rect,
+                &entry.display(),
+                is_owner,
+                text_renderer,
+                theme,
+            );
+        }
+        None => {
+            draw_control_caption(
+                scene,
+                transform,
+                Point::new(card.x0 + 12.0, caption_y),
+                "Nobody to grant to yet — invite someone, or open an app here.",
+                text_renderer,
+                theme,
+            );
+        }
+    }
+    draw_control_caption(
+        scene,
+        transform,
+        Point::new(layout.choice_rect.x0 + 2.0, caption_y),
+        "What it allows",
+        text_renderer,
+        theme,
+    );
+    draw_cycler(
+        scene,
+        transform,
+        layout.choice_rect,
+        draft.choice().label,
+        is_owner,
+        text_renderer,
+        theme,
+    );
+
+    draw_control_caption(
+        scene,
+        transform,
+        Point::new(layout.expiry_rects[0].x0 + 2.0, caption_y),
+        "Until",
+        text_renderer,
+        theme,
+    );
+    let expiry_track = Rect::new(
+        layout.expiry_rects[0].x0,
+        layout.expiry_rects[0].y0,
+        layout.expiry_rects[2].x1,
+        layout.expiry_rects[2].y1,
+    );
+    let track_rr = RoundedRect::from_rect(expiry_track, tokens.radii.md as f64);
+    let track_alpha = if is_owner { 1.0 } else { DISABLED_ALPHA };
+    scene.fill(
+        Fill::NonZero,
+        transform,
+        colors.surfaces.raised.with_alpha_factor(track_alpha),
+        None,
+        &track_rr,
+    );
+    scene.stroke(
+        &Stroke::new(1.0),
+        transform,
+        colors.border_standard.with_alpha_factor(track_alpha),
+        None,
+        &track_rr,
+    );
+    for (i, expiry) in EXPIRY_CHOICES.into_iter().enumerate() {
+        let seg = layout.expiry_rects[i];
+        let selected = draft.expiry == expiry;
+        if selected {
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                colors.accent[5].with_alpha_factor(0.90 * track_alpha),
+                None,
+                &RoundedRect::from_rect(seg.inset(2.0), tokens.radii.md as f64 - 2.0),
+            );
+        }
+        let label = expiry_label(expiry);
+        let size = tokens.typography.scale.sm;
+        let (tw, th) = text_renderer.measure(label, size, None);
+        let color = if selected {
+            colors.text_primary
+        } else {
+            colors.text_dim
+        };
+        text_renderer.draw_text(
+            scene,
+            label,
+            size,
+            color.with_alpha_factor(track_alpha),
+            transform
+                * Affine::translate((
+                    seg.center().x - tw as f64 / 2.0,
+                    seg.center().y - th as f64 / 2.0,
+                )),
+            None,
+        );
+    }
+
+    if layout.submit_rect.area() > 0.0 {
+        draw_primary_button(
+            scene,
+            transform,
+            layout.submit_rect,
+            "Grant",
+            is_owner,
+            text_renderer,
+            theme,
+        );
+    }
+
+    // ---- Capability rows ------------------------------------------
+    if layout.rows.is_empty() {
+        let body = Rect::new(pane_rect.x0, card.y1, pane_rect.x1, pane_rect.y1);
+        draw_empty_state(
+            scene,
+            transform,
+            body,
+            Icon::Shield,
+            "No permissions granted",
+            "Apps get nothing until it is granted here or approved in a prompt.",
+            text_renderer,
+            theme,
+        );
+        if !is_owner {
+            draw_authority_footnote(scene, transform, pane_rect, text_renderer, theme);
+        }
+        return;
+    }
+
+    let mut last_kind: Option<SubjectKind> = None;
+    let group_counts = |kind: SubjectKind| -> usize {
+        layout
+            .rows
+            .iter()
+            .filter(|r| r.subject.kind == kind)
+            .count()
+    };
+    for row in &layout.rows {
+        if last_kind != Some(row.subject.kind) {
+            draw_section_header(
+                scene,
+                transform,
+                Point::new(row.row_rect.x0, row.row_rect.y0 - SECTION_HEADER_HEIGHT + 6.0),
+                row.subject.kind.section_label(),
+                Some(group_counts(row.subject.kind)),
+                text_renderer,
+                theme,
+            );
+            last_kind = Some(row.subject.kind);
+        }
+
+        draw_row_card(scene, transform, row.row_rect, theme);
+
+        let avatar_size = 28.0_f64;
+        let avatar = Rect::new(
+            row.row_rect.x0 + 12.0,
+            row.row_rect.center().y - avatar_size / 2.0,
+            row.row_rect.x0 + 12.0 + avatar_size,
+            row.row_rect.center().y + avatar_size / 2.0,
+        );
+        let title = row.subject.display();
+        draw_avatar(
+            scene,
+            transform,
+            avatar,
+            &title,
+            row.subject.kind == SubjectKind::App,
+            text_renderer,
+            theme,
+        );
+
+        // Expiry chip sits left of Revoke; the text column stops before
+        // it so nothing can overlap.
+        let chip = draw_pill(
+            scene,
+            transform,
+            row.revoke_rect.x0 - 12.0,
+            row.row_rect.center().y,
+            row.expiry,
+            colors.accent[5],
+            1.0,
+            text_renderer,
+            theme,
+        );
+
+        let text_x = avatar.x1 + 12.0;
+        let text_max = chip.x0 - 12.0 - text_x;
+        let title_size = tokens.typography.scale.sm;
+        let title_text = elide(&title, title_size, text_max, text_renderer);
+        text_renderer.draw_text(
+            scene,
+            &title_text,
+            title_size,
             colors.text_primary,
-            transform * Affine::translate((row.row_rect.x0 + 16.0, row.row_rect.y0 + 8.0)),
+            transform * Affine::translate((text_x, row.row_rect.y0 + 12.0)),
+            None,
+        );
+        let detail = match &row.granted_by {
+            Some(by) => format!("{} · {by}", row.allows),
+            None => row.allows.clone(),
+        };
+        let detail_size = tokens.typography.scale.xs;
+        let detail_text = elide(&detail, detail_size, text_max, text_renderer);
+        text_renderer.draw_text(
+            scene,
+            &detail_text,
+            detail_size,
+            colors.text_dim,
+            transform * Affine::translate((text_x, row.row_rect.y0 + 32.0)),
             None,
         );
 
-        // Capability label (left, second line) — describes what the
-        // grant allows. Reuses Phase 4.2's vocabulary via
-        // [`capability_label`] so revoke wording matches the prompt.
-        let cap_text = capability_label(&row.capability);
+        draw_danger_button(
+            scene,
+            transform,
+            row.revoke_rect,
+            "Revoke",
+            is_owner,
+            text_renderer,
+            theme,
+        );
+    }
+
+    if layout.overflow > 0 {
+        let more = format!("+{} more", layout.overflow);
         text_renderer.draw_text(
             scene,
-            &cap_text,
+            &more,
             tokens.typography.scale.xs,
             colors.text_dim,
-            transform * Affine::translate((row.row_rect.x0 + 16.0, row.row_rect.y0 + 28.0)),
+            transform
+                * Affine::translate((
+                    pane_rect.x0 + PANE_PAD_X,
+                    pane_rect.y1 - PANE_PAD_TOP - 14.0,
+                )),
             None,
         );
-
-        // Scope badge (middle-right, before the Revoke button).
-        let scope_label = capability_scope_label(&row.capability);
-        let (sw, sh) = text_renderer.measure(scope_label, tokens.typography.scale.xs, None);
-        let badge = Rect::new(
-            row.revoke_rect.x0 - 16.0 - (sw as f64 + 16.0),
-            row.row_rect.y0 + (PERMISSIONS_ROW_HEIGHT - (sh as f64 + 8.0)) / 2.0,
-            row.revoke_rect.x0 - 16.0,
-            row.row_rect.y0 + (PERMISSIONS_ROW_HEIGHT + (sh as f64 + 8.0)) / 2.0,
-        );
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            colors.accent[5].with_alpha_factor(0.20),
-            None,
-            &RoundedRect::from_rect(badge, 8.0),
-        );
-        text_renderer.draw_text(
-            scene,
-            scope_label,
-            tokens.typography.scale.xs,
-            colors.accent[5],
-            transform * Affine::translate((badge.x0 + 8.0, badge.y0 + 4.0)),
-            None,
-        );
-
-        // Revoke button. Owners see it at full alpha; non-owners see
-        // it dimmed to 40 % so it visually reads as disabled — mirrors
-        // PermissionPrompt's `Always` button gating from Phase 4.2.
-        let revoke_alpha: f32 = if is_owner { 1.0 } else { 0.40 };
-        let revoke_bg = colors
-            .semantic
-            .danger
-            .with_alpha_factor(0.20 * revoke_alpha);
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            revoke_bg,
-            None,
-            &RoundedRect::from_rect(row.revoke_rect, 8.0),
-        );
-        text_renderer.draw_text(
-            scene,
-            "Revoke",
-            tokens.typography.scale.sm,
-            colors.semantic.danger.with_alpha_factor(revoke_alpha),
-            transform * Affine::translate((row.revoke_rect.x0 + 16.0, row.revoke_rect.y0 + 6.0)),
-            None,
-        );
-    }
-}
-
-/// Pick a swatch colour for the role with id `role_id`. Deterministic
-/// and palette-pinned: hashes the id's first byte against the theme's
-/// accent ramp + a small set of fallbacks so two roles with different
-/// ids never collide on the same dot. No-op until the workspace state
-/// gains a per-role `color` field — at that point this becomes a
-/// thin `role.color.unwrap_or_else(|| swatch_for_id(...))`.
-fn role_swatch_color(role_id: &str, colors: &ui::tokens::colors::Colors) -> vello::peniko::Color {
-    let bucket = role_id.bytes().next().unwrap_or(0) as usize % 5;
-    match bucket {
-        0 => colors.accent[5],
-        1 => colors.accent[4],
-        2 => colors.accent[6],
-        3 => colors.text_dim,
-        _ => colors.text_primary,
-    }
-}
-
-/// Look up the [`AppPerm`] the supplied role grants for `app`. Returns
-/// `None` when no role is in scope; the caller renders the toggle as
-/// off.
-fn role_app_perm(role: Option<&Role>, app: &str) -> Option<AppPerm> {
-    role.and_then(|r| r.permissions.per_app.get(app).copied())
-}
-
-/// Look up the [`FilePerm`] the supplied role grants for `file_id`,
-/// defaulting to [`FilePerm::None`] when there's no entry on the role
-/// (or no role in scope).
-fn role_file_perm(role: Option<&Role>, file_id: &str) -> FilePerm {
-    role.and_then(|r| r.permissions.per_file.get(file_id).copied())
-        .unwrap_or(FilePerm::None)
-}
-
-/// Stable focus id for the tab button representing `tab`, used by the
-/// dialog's `FocusTrap`. Assigning them via a deterministic function
-/// lets tests and the shell agree on the ids without a shared registry.
-fn tab_focus_id(tab: WsTab) -> u64 {
-    // Reserve a small id range so the modal's trap members can't collide
-    // with shell-level focusables.
-    const BASE: u64 = 0xFFFF_0000;
-    match tab {
-        WsTab::General => BASE,
-        WsTab::Roles => BASE + 1,
-        WsTab::Files => BASE + 2,
-        WsTab::Permissions => BASE + 3,
+    } else if !is_owner {
+        draw_authority_footnote(scene, transform, pane_rect, text_renderer, theme);
     }
 }
 
 #[cfg(test)]
 mod tab_tests {
-    //! Concept-fidelity T1 — sidebar nav default + switch behaviour
-    //! (plan `2026-04-28-nirios-concept-fidelity.md`, Task 1).
-    //!
-    //! These tests pin the exposed [`WsTab`] dispatch surface so the
-    //! General/Roles/Files tab patches (T2/T3/T4) can rely on a stable
-    //! `active_tab` + `select_tab` API and a sidebar that renders even
-    //! without their per-tab content drawers.
+    //! The modal's tab surface: default tab, switching, sidebar
+    //! geometry, and that the sidebar renders without a pane drawer.
 
     use super::*;
-    use vello::kurbo::Point;
 
-    /// Construct a fresh modal with a default workspace id — equivalent
-    /// to the plan's `WorkspaceSettings::new()` shorthand, accommodating
-    /// the existing `new(WorkspaceId)` signature without renaming the
-    /// constructor used elsewhere in the shell.
     fn ws_settings_default() -> WorkspaceSettings {
         WorkspaceSettings::new(WorkspaceId::default())
     }
@@ -1496,81 +2157,46 @@ mod tab_tests {
     #[test]
     fn select_tab_switches_active() {
         let mut ws = ws_settings_default();
-        ws.select_tab(WsTab::Roles);
-        assert_eq!(ws.active_tab, WsTab::Roles);
-        ws.select_tab(WsTab::Files);
-        assert_eq!(ws.active_tab, WsTab::Files);
+        ws.select_tab(WsTab::Members);
+        assert_eq!(ws.active_tab, WsTab::Members);
+        ws.select_tab(WsTab::Permissions);
+        assert_eq!(ws.active_tab, WsTab::Permissions);
         ws.select_tab(WsTab::General);
         assert_eq!(ws.active_tab, WsTab::General);
     }
 
     #[test]
     fn ws_tab_default_matches_general() {
-        // `Default for WsTab` is what `#[derive(Default)] struct …` would
-        // pick up if the field were ever defaulted that way; pin it here
-        // so a future code-gen path can't silently flip the default.
         assert_eq!(WsTab::default(), WsTab::General);
     }
 
     #[test]
-    fn ws_tab_all_iterates_in_concept_order() {
-        // Concept renders the rows top-to-bottom: General, Roles &
-        // Permissions, Files (`WorkspaceSettingsModal.tsx:75-89`).
-        // Sandbox Phase 6 appends `Permissions` at the tail; the head of
-        // the iteration order stays pinned to the concept fidelity strip.
+    fn ws_tab_all_iterates_in_nav_order() {
         assert_eq!(
             WsTab::all(),
-            [
-                WsTab::General,
-                WsTab::Roles,
-                WsTab::Files,
-                WsTab::Permissions
-            ]
+            [WsTab::General, WsTab::Members, WsTab::Permissions]
         );
     }
 
     #[test]
-    fn ws_tab_appears_in_all_iter() {
-        // Sandbox Phase 6 — `WsTab::all()` must include `Permissions` so
-        // the focus trap and sidebar nav can reach it via the standard
-        // iteration helper.
-        assert!(WsTab::all().contains(&WsTab::Permissions));
-    }
-
-    #[test]
-    fn ws_tab_visible_hides_permissions_when_no_grants() {
-        // Concept-fidelity invariant: the 4-pill strip
-        // (General/Roles/Files/Collaborators) must keep its pinned
-        // positions when the workspace has no grants. Permissions is
-        // suppressed in that case so the parity tests keep pinning the
-        // same x-coordinates for General/Roles/Files.
+    fn permissions_tab_is_reachable_on_a_workspace_with_no_grants() {
+        // A host who wants to grant something before any grant exists
+        // has to be able to reach the tab that grants it. The tab was
+        // previously filtered out until a grant already existed, which
+        // made the panel unusable for its main purpose.
         let ws = Workspace::new(WorkspaceId::default(), "no-grants");
-        assert_eq!(
-            WsTab::visible(&ws),
-            vec![WsTab::General, WsTab::Roles, WsTab::Files]
+        assert!(!ws.has_app_grants());
+        assert!(WsTab::all().contains(&WsTab::Permissions));
+        let pane = Rect::new(0.0, 0.0, 640.0, 480.0);
+        let layout = permissions_pane_layout(&ws, pane);
+        assert!(
+            layout.choice_rect.area() > 0.0,
+            "the capability picker must be laid out even with zero grants"
         );
-    }
-
-    #[test]
-    fn ws_tab_visible_shows_permissions_when_workspace_has_grants() {
-        // Sandbox Phase 6 — once a grant exists the Permissions tab
-        // joins the strip at the tail. Owner-only revoke enforcement
-        // happens at click-time (not visibility-time).
-        let mut ws = Workspace::new(WorkspaceId::default(), "with-grants");
-        ws.grant_app(
-            "firefox",
-            &Capability::Camera {
-                scope: crate::shell::state::GRANT_ALWAYS,
-            },
-        );
-        let visible = WsTab::visible(&ws);
-        assert_eq!(visible.last(), Some(&WsTab::Permissions));
-        assert_eq!(visible.len(), 4);
     }
 
     #[test]
     fn sidebar_rect_is_256_px_wide() {
-        // Concept ref:50 — `w-64` = 16 rem = 256 px.
         let ws = ws_settings_default();
         let modal = Rect::new(0.0, 0.0, 896.0, 600.0);
         let sidebar = ws.sidebar_rect(modal);
@@ -1586,7 +2212,6 @@ mod tab_tests {
         let pane = ws.pane_rect(modal);
         assert_eq!(pane.x0, modal.x0 + SIDEBAR_WIDTH);
         assert_eq!(pane.x1, modal.x1);
-        // Sidebar + pane partition the modal exactly.
         assert!((pane.width() + SIDEBAR_WIDTH - modal.width()).abs() < f64::EPSILON);
     }
 
@@ -1595,12 +2220,10 @@ mod tab_tests {
         let ws = ws_settings_default();
         let modal = Rect::new(0.0, 0.0, 896.0, 600.0);
         let rows = ws.nav_rows(modal);
-        assert_eq!(rows.len(), 4);
+        assert_eq!(rows.len(), 3);
         assert_eq!(rows[0].0, WsTab::General);
-        assert_eq!(rows[1].0, WsTab::Roles);
-        assert_eq!(rows[2].0, WsTab::Files);
-        assert_eq!(rows[3].0, WsTab::Permissions);
-        // Stacked top-to-bottom, each 40 px tall with a 4 px gap.
+        assert_eq!(rows[1].0, WsTab::Members);
+        assert_eq!(rows[2].0, WsTab::Permissions);
         for (_, r) in &rows {
             assert!((r.height() - NAV_ROW_HEIGHT).abs() < f64::EPSILON);
             assert!(r.x1 > r.x0);
@@ -1608,19 +2231,15 @@ mod tab_tests {
         let stride = NAV_ROW_HEIGHT + NAV_ROW_GAP;
         assert!((rows[1].1.y0 - rows[0].1.y0 - stride).abs() < f64::EPSILON);
         assert!((rows[2].1.y0 - rows[1].1.y0 - stride).abs() < f64::EPSILON);
-        assert!((rows[3].1.y0 - rows[2].1.y0 - stride).abs() < f64::EPSILON);
     }
 
     #[test]
     fn nav_hit_test_returns_tab_at_point() {
         let ws = ws_settings_default();
         let modal = Rect::new(0.0, 0.0, 896.0, 600.0);
-        let rows = ws.nav_rows(modal);
-        for (tab, row) in rows {
-            let center = Point::new((row.x0 + row.x1) / 2.0, (row.y0 + row.y1) / 2.0);
-            assert_eq!(ws.nav_hit_test(modal, center), Some(tab));
+        for (tab, row) in ws.nav_rows(modal) {
+            assert_eq!(ws.nav_hit_test(modal, row.center()), Some(tab));
         }
-        // Click well outside the sidebar — no tab should match.
         assert_eq!(
             ws.nav_hit_test(modal, Point::new(modal.x1 - 10.0, modal.y1 - 10.0)),
             None
@@ -1629,9 +2248,6 @@ mod tab_tests {
 
     #[test]
     fn draw_body_paints_sidebar_when_pane_drawer_absent() {
-        // The sidebar nav renders even when no per-tab drawer has been
-        // wired (T2/T3/T4 are not landed in this unit) — verify by
-        // checking the produced `Scene` is non-empty after `draw_body`.
         let ws = ws_settings_default();
         let mut scene = Scene::new();
         let theme = Theme::dark();
@@ -1646,10 +2262,8 @@ mod tab_tests {
 
     #[test]
     fn draw_body_invokes_pane_drawer_for_active_tab() {
-        // Pin the dispatch surface T2/T3/T4 will hang content off:
-        // `draw_body` must pass [`Self::pane_rect`] to the drawer.
         let mut ws = ws_settings_default();
-        ws.select_tab(WsTab::Roles);
+        ws.select_tab(WsTab::Members);
         let modal = Rect::new(0.0, 0.0, 896.0, 600.0);
         let expected_pane = ws.pane_rect(modal);
 
@@ -1674,163 +2288,244 @@ mod tab_tests {
 }
 
 #[cfg(test)]
-mod roles_pane_tests {
-    //! Concept-fidelity T2 — Roles pane paints the per-role app + file
-    //! permission grids (plan `2026-04-28-nirios-concept-fidelity.md`,
-    //! Task 3 — exposed here as wave-2 unit T2).
-    //!
-    //! These tests pin the public [`draw_roles_pane`] helper that the
-    //! overlay host calls from its `WsTab::Roles` arm. The helper paints
-    //! enough chrome (role list left column, app-permission grid for the
-    //! 5 concept-hardcoded apps, file-permission rows) that switching to
-    //! the Roles tab adds at least 20 solid-colour fills over the General
-    //! tab — the threshold pinned by `concept_parity_spec`'s
-    //! `workspace_settings_renders_roles_tab_with_per_role_app_grid`.
-    //!
-    //! Concept reference: `nirios-concept/src/components/WorkspaceSettingsModal.tsx:152-254`.
+mod members_pane_tests {
+    //! The Members pane renders [`Workspace::roster`] — the membership
+    //! the capability model actually holds — and its role control
+    //! rewrites the membership capability that `role_of` reads back.
+
     use super::*;
-    use crate::shell::state::{Role, RolePermissions, Workspace, WorkspaceId};
-    use vello_encoding::DrawTag;
+    use crate::shell::state::{Verb, WorkspaceId};
 
-    fn count_solid_fills(scene: &Scene) -> usize {
-        scene
-            .encoding()
-            .draw_tags
+    const OWNER: &str = "owner-user";
+    const PEER: &str = "peer-user";
+
+    fn ws_with_two_members() -> Workspace {
+        let mut ws = Workspace::new(WorkspaceId::from(7), "members-test");
+        ws.set_owner(OWNER);
+        let cap = CapOverride::membership(
+            Subject::person(PEER),
+            ws.id.raw().to_string(),
+            Verb::Read,
+        );
+        ws.grant_as(&OWNER.to_string(), cap)
+            .expect("owner may grant membership");
+        ws
+    }
+
+    #[test]
+    fn members_rows_come_from_the_roster() {
+        let ws = ws_with_two_members();
+        let pane = Rect::new(0.0, 0.0, 640.0, 480.0);
+        let rows = members_pane_rows(&ws, pane);
+        assert_eq!(rows.len(), 2, "owner + invited peer");
+        let owner_row = rows
             .iter()
-            .filter(|t| **t == DrawTag::COLOR)
-            .count()
-    }
-
-    fn empty_workspace() -> Workspace {
-        Workspace::new(WorkspaceId::default(), "Roles-Test")
+            .find(|r| r.user == OWNER)
+            .expect("owner is in the roster");
+        assert!(owner_row.is_workspace_owner);
+        assert_eq!(owner_row.role, CapRole::Owner);
+        let peer_row = rows.iter().find(|r| r.user == PEER).expect("peer row");
+        assert!(!peer_row.is_workspace_owner);
+        assert_eq!(peer_row.role, CapRole::Viewer);
+        // Rows stack, and each control sits inside its row.
+        for row in &rows {
+            assert!(row.role_rect.x0 > row.row_rect.x0);
+            assert!(row.remove_rect.x1 <= row.row_rect.x1);
+            assert!(row.role_rect.x1 <= row.remove_rect.x0);
+        }
     }
 
     #[test]
-    fn draw_roles_pane_paints_at_least_twenty_fills_on_empty_workspace() {
-        // Even with no roles or files in the workspace the Roles pane must
-        // render the role list scaffolding + the 5 concept-hardcoded app
-        // permission rows (each row contributes an icon container fill, a
-        // toggle-pill bg fill, and a knob fill — plus the section divider
-        // strip and role-list bg). Concept TSX:152-254 shows this content
-        // is independent of the workspace's roles/files vector contents.
-        let workspace = empty_workspace();
-        let mut scene = Scene::new();
+    fn owner_can_promote_a_member_and_role_of_agrees() {
+        let mut ws = ws_with_two_members();
+        assert_eq!(ws.role_of(&PEER.to_string()), Some(CapRole::Viewer));
+        let edit = set_member_role(
+            &mut ws,
+            &OWNER.to_string(),
+            &PEER.to_string(),
+            CapRole::Editor,
+        );
+        assert!(!edit.is_empty());
+        assert_eq!(
+            ws.role_of(&PEER.to_string()),
+            Some(CapRole::Editor),
+            "the role the panel shows must be the role the model decides with"
+        );
+        // The promotion is a real authority change, not a label: an
+        // Editor may write the workspace, a Viewer may not.
+        assert!(ws.allows(
+            &ws.actor_for_person(&PEER.to_string()),
+            &crate::shell::state::ResourceRef::Workspace,
+            Verb::Write
+        ));
+    }
+
+    #[test]
+    fn owner_can_demote_a_member() {
+        // Demotion is the case a naive implementation gets wrong:
+        // `grant_capability` keeps the strongest of two grants, so the
+        // old membership has to be retired first or `role_of` keeps
+        // answering the higher role.
+        let mut ws = ws_with_two_members();
+        set_member_role(
+            &mut ws,
+            &OWNER.to_string(),
+            &PEER.to_string(),
+            CapRole::Editor,
+        );
+        assert_eq!(ws.role_of(&PEER.to_string()), Some(CapRole::Editor));
+        set_member_role(
+            &mut ws,
+            &OWNER.to_string(),
+            &PEER.to_string(),
+            CapRole::Viewer,
+        );
+        assert_eq!(ws.role_of(&PEER.to_string()), Some(CapRole::Viewer));
+        assert!(
+            !ws.allows(
+                &ws.actor_for_person(&PEER.to_string()),
+                &crate::shell::state::ResourceRef::Workspace,
+                Verb::Write
+            ),
+            "a demoted member must stop being able to write, not merely stop reading as Editor"
+        );
+    }
+
+    #[test]
+    fn non_owner_cannot_change_a_role() {
+        let mut ws = ws_with_two_members();
+        let edit = set_member_role(
+            &mut ws,
+            &PEER.to_string(),
+            &PEER.to_string(),
+            CapRole::Owner,
+        );
+        assert!(edit.is_empty(), "a viewer must not be able to promote itself");
+        assert_eq!(ws.role_of(&PEER.to_string()), Some(CapRole::Viewer));
+    }
+
+    #[test]
+    fn the_recorded_owner_role_is_structural() {
+        // `role_of` short-circuits to Owner for the recorded owner, so
+        // offering to change it would show a chip that lies.
+        let mut ws = ws_with_two_members();
+        let edit = set_member_role(
+            &mut ws,
+            &OWNER.to_string(),
+            &OWNER.to_string(),
+            CapRole::Viewer,
+        );
+        assert!(edit.is_empty());
+        assert_eq!(ws.role_of(&OWNER.to_string()), Some(CapRole::Owner));
+    }
+
+    #[test]
+    fn removing_a_member_takes_their_grants_with_them() {
+        let mut ws = ws_with_two_members();
+        let cap = CapOverride::grant(
+            Subject::person(PEER),
+            Scope::FsPath("/var/workspace".into()),
+            Verb::Write,
+        );
+        ws.grant_as(&OWNER.to_string(), cap).expect("owner grants");
+        assert_eq!(members_pane_rows(&ws, Rect::new(0.0, 0.0, 640.0, 480.0))[1].grant_count, 1);
+
+        let edit = remove_member(&mut ws, &OWNER.to_string(), &PEER.to_string());
+        assert_eq!(edit.revoked.len(), 2, "membership + the file grant");
+        assert_eq!(ws.role_of(&PEER.to_string()), None);
+        assert!(
+            !ws.allows(
+                &ws.actor_for_person(&PEER.to_string()),
+                &crate::shell::state::ResourceRef::FsPath("/var/workspace/notes".into()),
+                Verb::Write
+            ),
+            "removing a member must revoke what they held, not just hide them"
+        );
+    }
+
+    #[test]
+    fn the_owner_cannot_be_removed() {
+        let mut ws = ws_with_two_members();
+        let edit = remove_member(&mut ws, &OWNER.to_string(), &OWNER.to_string());
+        assert!(edit.is_empty());
+        assert_eq!(ws.role_of(&OWNER.to_string()), Some(CapRole::Owner));
+    }
+
+    #[test]
+    fn role_chip_cycles_through_the_positive_roles() {
+        assert_eq!(next_role(CapRole::Viewer), CapRole::Commenter);
+        assert_eq!(next_role(CapRole::Commenter), CapRole::Editor);
+        assert_eq!(next_role(CapRole::Editor), CapRole::Owner);
+        assert_eq!(next_role(CapRole::Owner), CapRole::Viewer);
+    }
+
+    #[test]
+    fn draw_members_pane_paints_more_with_members_than_without() {
         let theme = Theme::dark();
+        let pane = Rect::new(0.0, 0.0, 640.0, 480.0);
         let mut tr = TextRenderer::new();
-        let pane = Rect::new(256.0, 0.0, 896.0, 600.0);
-        draw_roles_pane(
-            &mut scene,
+
+        let mut empty = Scene::new();
+        draw_members_pane(
+            &mut empty,
             Affine::IDENTITY,
             pane,
-            &workspace,
-            None,
+            &Workspace::new(WorkspaceId::default(), "empty"),
+            &OWNER.to_string(),
+            true,
             &mut tr,
             &theme,
         );
-        let fills = count_solid_fills(&scene);
-        assert!(
-            fills >= 20,
-            "Roles pane must paint at least 20 solid-colour fills (role list \
-             scaffolding + 5-app permission grid per concept TSX 152-254); \
-             observed {fills}"
-        );
-    }
-
-    #[test]
-    fn draw_roles_pane_paints_more_with_roles_than_without() {
-        // Adding roles to the workspace surfaces them in the left-column
-        // role list — each row adds at minimum a coloured swatch fill.
-        let mut workspace = empty_workspace();
-        workspace.roles.push(Role {
-            id: "owner".into(),
-            name: "Owner".into(),
-            permissions: RolePermissions::default(),
-        });
-        workspace.roles.push(Role {
-            id: "editor".into(),
-            name: "Editor".into(),
-            permissions: RolePermissions::default(),
-        });
-
-        let theme = Theme::dark();
-        let pane = Rect::new(256.0, 0.0, 896.0, 600.0);
-
-        let mut scene_empty = Scene::new();
-        let mut tr_empty = TextRenderer::new();
-        draw_roles_pane(
-            &mut scene_empty,
+        let mut full = Scene::new();
+        draw_members_pane(
+            &mut full,
             Affine::IDENTITY,
             pane,
-            &empty_workspace(),
-            None,
-            &mut tr_empty,
-            &theme,
-        );
-
-        let mut scene_with = Scene::new();
-        let mut tr_with = TextRenderer::new();
-        draw_roles_pane(
-            &mut scene_with,
-            Affine::IDENTITY,
-            pane,
-            &workspace,
-            Some("owner"),
-            &mut tr_with,
-            &theme,
-        );
-
-        let with = count_solid_fills(&scene_with);
-        let without = count_solid_fills(&scene_empty);
-        assert!(
-            with > without,
-            "Roles pane with 2 roles must paint more fills than empty roster \
-             (with={with}, without={without})"
-        );
-    }
-
-    #[test]
-    fn draw_roles_pane_no_op_on_zero_area_pane() {
-        // Hit-test invariant: a degenerate pane rect (modal too narrow for
-        // sidebar) must short-circuit without panic and without painting.
-        let workspace = empty_workspace();
-        let mut scene = Scene::new();
-        let theme = Theme::dark();
-        let mut tr = TextRenderer::new();
-        let pane = Rect::new(100.0, 100.0, 100.0, 100.0);
-        draw_roles_pane(
-            &mut scene,
-            Affine::IDENTITY,
-            pane,
-            &workspace,
-            None,
+            &ws_with_two_members(),
+            &OWNER.to_string(),
+            true,
             &mut tr,
             &theme,
         );
         assert!(
-            scene.encoding().draw_tags.is_empty(),
-            "zero-area pane must short-circuit — observed draw tags emitted"
+            full.encoding().draw_tags.len() > empty.encoding().draw_tags.len(),
+            "a populated roster must paint more than the empty state"
         );
+    }
+
+    #[test]
+    fn draw_members_pane_no_op_on_zero_area_pane() {
+        let ws = ws_with_two_members();
+        let mut scene = Scene::new();
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        draw_members_pane(
+            &mut scene,
+            Affine::IDENTITY,
+            Rect::new(100.0, 100.0, 100.0, 100.0),
+            &ws,
+            &OWNER.to_string(),
+            true,
+            &mut tr,
+            &theme,
+        );
+        assert!(scene.encoding().draw_tags.is_empty());
     }
 }
 
 #[cfg(test)]
 mod permissions_pane_tests {
-    //! Sandbox Phase 6 — Permissions tab body.
-    //!
-    //! These tests pin the public [`permissions_pane_rows`] +
-    //! [`draw_permissions_pane`] + [`revoke_grant`] surface that the
-    //! overlay host calls from its `WsTab::Permissions` arm. The
-    //! revoke flow mutates `Workspace::grants` directly (cache-only
-    //! per Sandbox 4.1's commit message — full doc-mirror is a
-    //! follow-up); the click router writes through and bumps the
-    //! revision counter so widgets resync on the next frame.
+    //! The Permissions pane lists [`Workspace::capabilities`] and its
+    //! composer writes one through [`Workspace::grant_as`].
+
     use super::*;
-    use crate::shell::state::{
-        Capability, GRANT_ALWAYS, GRANT_ONCE, GRANT_SESSION, Workspace, WorkspaceId,
-    };
+    use crate::shell::state::{Capability, GRANT_ALWAYS, GRANT_SESSION, ResourceRef, WorkspaceId};
+
+    const OWNER: &str = "owner-user";
 
     fn ws_with_grants() -> Workspace {
-        let mut ws = Workspace::new(WorkspaceId::default(), "perm-test");
+        let mut ws = Workspace::new(WorkspaceId::from(3), "perm-test");
+        ws.set_owner(OWNER);
         ws.grant_app(
             "firefox",
             &Capability::Camera {
@@ -1847,190 +2542,423 @@ mod permissions_pane_tests {
         ws
     }
 
-    #[test]
-    fn permissions_tab_renders_zero_rows_when_no_grants() {
-        // Empty grants ⇒ no row rects; the renderer paints a single
-        // empty-state placeholder but `permissions_pane_rows` (the
-        // hit-test source of truth) returns nothing.
-        let ws = Workspace::new(WorkspaceId::default(), "empty");
-        let pane = Rect::new(0.0, 0.0, 480.0, 360.0);
-        let rows = permissions_pane_rows(&ws, pane);
-        assert_eq!(rows.len(), 0, "no grants ⇒ no rows; got {}", rows.len());
+    fn pane() -> Rect {
+        Rect::new(0.0, 0.0, 660.0, 480.0)
     }
 
     #[test]
-    fn permissions_tab_renders_one_row_per_capability_per_app() {
-        // `firefox` holds two capabilities ⇒ two rows. Each row owns a
-        // distinct row_rect (stacked vertically) and revoke_rect
-        // (right-aligned within row_rect).
+    fn rows_are_one_per_granted_capability() {
         let ws = ws_with_grants();
-        let pane = Rect::new(0.0, 0.0, 480.0, 360.0);
-        let rows = permissions_pane_rows(&ws, pane);
-        assert_eq!(rows.len(), 2);
-        assert_eq!(rows[0].app_id, "firefox");
-        assert_eq!(rows[1].app_id, "firefox");
-        // Distinct cap_index values keep revoke routing unambiguous.
-        assert_ne!(rows[0].cap_index, rows[1].cap_index);
-        // Stacked top-to-bottom: row[1] starts below row[0].
-        assert!(rows[1].row_rect.y0 > rows[0].row_rect.y0);
-        // Revoke button is right-aligned inside row_rect.
-        for row in &rows {
+        let layout = permissions_pane_layout(&ws, pane());
+        assert_eq!(layout.rows.len(), 2);
+        for row in &layout.rows {
+            assert_eq!(row.subject.kind, SubjectKind::App);
+            assert_eq!(row.subject.id, "firefox");
             assert!(row.revoke_rect.x1 <= row.row_rect.x1);
             assert!(row.revoke_rect.x0 > row.row_rect.x0);
+            assert!(!row.cap_id.is_empty(), "rows are keyed by capability id");
+        }
+        assert_ne!(layout.rows[0].cap_id, layout.rows[1].cap_id);
+        assert_eq!(layout.overflow, 0);
+    }
+
+    #[test]
+    fn membership_capabilities_are_not_listed_as_permissions() {
+        // The owner's membership is a capability, but it is what the
+        // Members tab renders as a role. Listing it here too would show
+        // one fact twice in two vocabularies.
+        let ws = ws_with_grants();
+        let layout = permissions_pane_layout(&ws, pane());
+        assert!(
+            layout
+                .rows
+                .iter()
+                .all(|r| r.subject.kind == SubjectKind::App),
+            "only non-membership grants belong in the Permissions list"
+        );
+    }
+
+    #[test]
+    fn a_workspace_scoped_app_grant_is_listed_and_revocable() {
+        // Excluding room- and workspace-scoped capabilities by scope
+        // alone hid this one from both tabs: Members lists people, and
+        // an app is not a person. A capability the panel cannot show is
+        // a permission nobody can audit or take back.
+        let mut ws = ws_with_grants();
+        let id = ws
+            .grant_as(
+                &OWNER.to_string(),
+                CapOverride::grant(Subject::app("firefox"), Scope::Workspace, Verb::Admin),
+            )
+            .expect("owner grants");
+        let layout = permissions_pane_layout(&ws, pane());
+        let row = layout
+            .rows
+            .iter()
+            .find(|r| r.cap_id == id)
+            .expect("the workspace-scoped app grant has a row");
+        assert_eq!(row.subject.kind, SubjectKind::App);
+        assert_eq!(row.allows, "Administer this workspace");
+        assert!(apply_revoke(&mut ws, &OWNER.to_string(), &row.cap_id).revoked.len() == 1);
+        assert!(!ws.allows(
+            &ws.actor_for_app("firefox"),
+            &ResourceRef::Workspace,
+            Verb::Admin
+        ));
+    }
+
+    #[test]
+    fn a_persons_membership_is_left_to_the_members_tab() {
+        // The owner's membership is room-scoped and person-subject, so it
+        // belongs to Members. Listing it here too would offer a Revoke
+        // button that removes someone from the workspace under the
+        // heading "permissions".
+        let ws = ws_with_grants();
+        let layout = permissions_pane_layout(&ws, pane());
+        assert!(
+            layout
+                .rows
+                .iter()
+                .all(|r| r.subject.kind == SubjectKind::App),
+            "no person membership rows in the Permissions list"
+        );
+        assert!(!members_pane_rows(&ws, pane()).is_empty(), "but Members has one");
+    }
+
+    #[test]
+    fn person_and_role_subjects_are_listed_too() {
+        // Every live grant must be visible somewhere: a capability the
+        // panel cannot show is a permission the user cannot audit.
+        let mut ws = ws_with_grants();
+        ws.grant_as(
+            &OWNER.to_string(),
+            CapOverride::grant(
+                Subject::person("peer-user"),
+                Scope::FsPath("/var/workspace".into()),
+                Verb::Write,
+            ),
+        )
+        .expect("owner grants");
+        ws.grant_as(
+            &OWNER.to_string(),
+            CapOverride::grant(
+                Subject::Role(CapRole::Editor),
+                Scope::Device("camera".into()),
+                Verb::Read,
+            ),
+        )
+        .expect("owner grants");
+        let layout = permissions_pane_layout(&ws, pane());
+        let kinds: Vec<SubjectKind> = layout.rows.iter().map(|r| r.subject.kind).collect();
+        assert!(kinds.contains(&SubjectKind::App));
+        assert!(kinds.contains(&SubjectKind::Member));
+        assert!(kinds.contains(&SubjectKind::Role));
+        // Grouped: apps, then people, then roles.
+        let mut sorted = kinds.clone();
+        sorted.sort();
+        assert_eq!(kinds, sorted, "rows must be grouped by subject kind");
+    }
+
+    #[test]
+    fn rows_carry_the_scope_and_grantor_the_model_recorded() {
+        let mut ws = Workspace::new(WorkspaceId::from(4), "labels");
+        ws.set_owner(OWNER);
+        ws.grant_as(
+            &OWNER.to_string(),
+            CapOverride::grant(
+                Subject::app("terminal"),
+                Scope::FsPath("/var/workspace".into()),
+                Verb::Write,
+            )
+            .expiring(Expiry::EndOfSession),
+        )
+        .expect("owner grants");
+        let layout = permissions_pane_layout(&ws, pane());
+        let row = &layout.rows[0];
+        assert_eq!(row.allows, "Edit files under /var/workspace");
+        assert_eq!(row.expiry, "Session");
+        assert_eq!(
+            row.granted_by.as_deref(),
+            Some("granted by owner-user"),
+            "grant_as records the grantor; the row shows it"
+        );
+    }
+
+    #[test]
+    fn the_composer_offers_the_roster_and_the_workspaces_apps() {
+        let ws = ws_with_grants();
+        let subjects = grant_subjects(&ws);
+        assert_eq!(
+            subjects[0],
+            GrantSubject {
+                kind: SubjectKind::Member,
+                id: OWNER.to_string()
+            },
+            "people come first"
+        );
+        assert!(subjects.contains(&GrantSubject {
+            kind: SubjectKind::App,
+            id: "firefox".to_string()
+        }));
+    }
+
+    #[test]
+    fn granting_from_the_composer_writes_a_capability_that_enforces() {
+        let mut ws = ws_with_grants();
+        let subjects = grant_subjects(&ws);
+        let firefox = subjects
+            .iter()
+            .position(|s| s.id == "firefox")
+            .expect("firefox is a candidate subject");
+        // Pick "Microphone" out of the choice table by cycling, the way
+        // a click does.
+        let mut draft = GrantDraft {
+            subject_index: firefox,
+            choice_index: 0,
+            expiry: Expiry::Never,
+        };
+        while draft.choice().label != "Microphone" {
+            draft.cycle_choice();
+        }
+        assert!(!ws.allows(
+            &ws.actor_for_app("firefox"),
+            &ResourceRef::Device("microphone".into()),
+            Verb::Read
+        ));
+
+        let edit = apply_grant_draft(&mut ws, &OWNER.to_string(), &draft);
+        assert_eq!(edit.granted.len(), 1);
+        assert!(
+            ws.allows(
+                &ws.actor_for_app("firefox"),
+                &ResourceRef::Device("microphone".into()),
+                Verb::Read
+            ),
+            "the granted capability must start working, not merely start rendering"
+        );
+    }
+
+    #[test]
+    fn granting_records_the_chosen_expiry() {
+        let mut ws = ws_with_grants();
+        let subjects = grant_subjects(&ws);
+        let firefox = subjects.iter().position(|s| s.id == "firefox").unwrap();
+        // Pick something the app does not already hold. Re-granting an
+        // existing capability *merges*, keeping the longer of the two
+        // expiries, so a fresh grant is the only way to observe the
+        // chosen one.
+        let mut draft = GrantDraft {
+            subject_index: firefox,
+            choice_index: 0,
+            expiry: Expiry::AfterUse,
+        };
+        while draft.choice().label != "Microphone" {
+            draft.cycle_choice();
+        }
+        let edit = apply_grant_draft(&mut ws, &OWNER.to_string(), &draft);
+        let id = &edit.granted[0];
+        let cap = ws
+            .capabilities
+            .iter()
+            .find(|c| &c.id == id)
+            .expect("stored capability");
+        assert_eq!(cap.expiry, Expiry::AfterUse);
+        assert!(
+            !cap.persists_across_restart(),
+            "an after-use grant must not be written down as permanent"
+        );
+    }
+
+    #[test]
+    fn re_granting_never_shortens_an_existing_grant() {
+        // `grant_capability` keeps the longer expiry when the same
+        // (subject, scope, effect, verb) is granted again. A panel that
+        // reported "Once" after that click would be lying about what the
+        // enforcement path holds.
+        let mut ws = ws_with_grants();
+        let subjects = grant_subjects(&ws);
+        let firefox = subjects.iter().position(|s| s.id == "firefox").unwrap();
+        let mut draft = GrantDraft {
+            subject_index: firefox,
+            choice_index: 0,
+            expiry: Expiry::AfterUse,
+        };
+        while draft.choice().label != "Camera" {
+            draft.cycle_choice();
+        }
+        apply_grant_draft(&mut ws, &OWNER.to_string(), &draft);
+        let camera = ws
+            .capabilities
+            .iter()
+            .filter(|c| matches!(&c.scope, Scope::Device(d) if d == "camera"))
+            .collect::<Vec<_>>();
+        assert_eq!(camera.len(), 1, "the re-grant merges rather than duplicating");
+        assert_eq!(
+            camera[0].expiry,
+            Expiry::Never,
+            "the existing permanent grant is not demoted to once-only"
+        );
+        let layout = permissions_pane_layout(&ws, pane());
+        let row = layout
+            .rows
+            .iter()
+            .find(|r| r.allows.contains("camera"))
+            .expect("camera row");
+        assert_eq!(
+            row.expiry, "Always",
+            "the row must report the expiry that is stored, not the one that was asked for"
+        );
+    }
+
+    #[test]
+    fn a_non_owner_cannot_grant() {
+        let mut ws = ws_with_grants();
+        let subjects = grant_subjects(&ws);
+        let firefox = subjects.iter().position(|s| s.id == "firefox").unwrap();
+        let draft = GrantDraft {
+            subject_index: firefox,
+            choice_index: 0,
+            expiry: Expiry::Never,
+        };
+        let before = ws.capabilities.len();
+        let edit = apply_grant_draft(&mut ws, &"someone-else".to_string(), &draft);
+        assert!(edit.is_empty(), "grant_as must refuse a non-administrator");
+        assert_eq!(ws.capabilities.len(), before);
+    }
+
+    #[test]
+    fn revoking_a_row_stops_the_capability_working() {
+        let mut ws = ws_with_grants();
+        let layout = permissions_pane_layout(&ws, pane());
+        let camera_row = layout
+            .rows
+            .iter()
+            .find(|r| r.allows.contains("camera"))
+            .expect("camera row");
+        let edit = apply_revoke(&mut ws, &OWNER.to_string(), &camera_row.cap_id);
+        assert_eq!(edit.revoked, vec![camera_row.cap_id.clone()]);
+        assert!(
+            !ws.allows(
+                &ws.actor_for_app("firefox"),
+                &ResourceRef::Device("camera".into()),
+                Verb::Read
+            ),
+            "the revoked capability must stop working, not merely stop rendering"
+        );
+        // The other grant survives.
+        let after = permissions_pane_layout(&ws, pane());
+        assert_eq!(after.rows.len(), 1);
+    }
+
+    #[test]
+    fn a_non_owner_cannot_revoke() {
+        let mut ws = ws_with_grants();
+        let layout = permissions_pane_layout(&ws, pane());
+        let target = layout.rows[0].cap_id.clone();
+        let edit = apply_revoke(&mut ws, &"someone-else".to_string(), &target);
+        assert!(edit.is_empty());
+        assert_eq!(
+            permissions_pane_layout(&ws, pane())
+                .rows
+                .len(),
+            2
+        );
+    }
+
+    #[test]
+    fn revoking_an_unknown_id_is_a_no_op() {
+        let mut ws = ws_with_grants();
+        let edit = apply_revoke(&mut ws, &OWNER.to_string(), "cap-does-not-exist");
+        assert!(edit.is_empty());
+        assert_eq!(ws.capabilities.len(), 3, "owner membership + two grants");
+    }
+
+    #[test]
+    fn every_offered_capability_produces_a_scope_an_enforcement_point_reads() {
+        // A picker entry that mints a capability nothing consults would
+        // be a control that does nothing — the exact defect this panel
+        // replaces.
+        let ws = ws_with_grants();
+        let subjects = grant_subjects(&ws);
+        let firefox = subjects.iter().position(|s| s.id == "firefox").unwrap();
+        for i in 0..GRANT_CHOICES.len() {
+            let draft = GrantDraft {
+                subject_index: firefox,
+                choice_index: i,
+                expiry: Expiry::Never,
+            };
+            let cap = draft_capability(&ws, &draft).expect("every choice resolves");
+            assert_eq!(cap.effect, Effect::Grant);
+            let resource = match &cap.scope {
+                Scope::Device(d) => ResourceRef::Device(d.clone()),
+                Scope::NetHost(h) => ResourceRef::NetHost(h.clone()),
+                Scope::FsPath(p) => ResourceRef::FsPath(p.clone()),
+                Scope::Workspace => ResourceRef::Workspace,
+                other => panic!("unexpected scope in the grant table: {other:?}"),
+            };
+            let mut probe = ws.clone();
+            probe
+                .grant_as(&OWNER.to_string(), cap.clone())
+                .expect("owner grants");
+            assert!(
+                probe.allows(&probe.actor_for_app("firefox"), &resource, cap.verb),
+                "granting {:?} must make the decision function allow it",
+                GRANT_CHOICES[i].label
+            );
         }
     }
 
     #[test]
-    fn revoke_grant_removes_capability_from_grants_at_index() {
-        // Sandbox Phase 6 — `revoke_grant` is the cache-mutator the
-        // click router calls. It removes by (app_id, cap_index) so a
-        // workspace with two `Camera`+`Network` grants on the same
-        // app can be revoked one at a time without ambiguity.
-        let mut ws = ws_with_grants();
-        let removed = revoke_grant(&mut ws, &"firefox".to_string(), 0);
-        assert!(removed);
-        // After removing the Camera grant the Network grant remains,
-        // and the app is denied the camera it no longer holds.
-        let view = ws.grants();
-        let firefox = view.get("firefox").expect("entry");
-        assert_eq!(firefox.len(), 1);
-        assert!(matches!(firefox[0], Capability::Network { .. }));
-        assert!(
-            !ws.allows(
-                &ws.actor_for_app("firefox"),
-                &crate::shell::state::ResourceRef::Device("camera".into()),
-                crate::shell::state::Verb::Read
-            ),
-            "the revoked capability must stop working, not merely stop rendering"
-        );
-    }
-
-    #[test]
-    fn revoke_grant_cleans_up_empty_app_entry() {
-        // After revoking the last capability for an app the
-        // map entry must be removed entirely so
-        // `Workspace::grants.is_empty()` flips to true once the last
-        // grant is revoked. Without this cleanup the Permissions tab
-        // would stay visible (`WsTab::visible` checks `is_empty()`).
-        let mut ws = Workspace::new(WorkspaceId::default(), "single-grant");
-        ws.grant_app("vscode", &Capability::Camera { scope: GRANT_ONCE });
-        let removed = revoke_grant(&mut ws, &"vscode".to_string(), 0);
-        assert!(removed);
-        assert!(
-            !ws.has_app_grants(),
-            "the last grant's removal hides the tab again"
-        );
-        assert!(ws.grants().is_empty());
-    }
-
-    #[test]
-    fn revoke_grant_no_op_for_missing_app_or_index() {
-        // Out-of-bounds index and missing app id are both no-ops —
-        // hit-test misalignment / racy clicks must not panic.
-        let mut ws = ws_with_grants();
-        let before = ws.grants().get("firefox").map(|v| v.len());
-        let r1 = revoke_grant(&mut ws, &"unknown".to_string(), 0);
-        let r2 = revoke_grant(&mut ws, &"firefox".to_string(), 99);
-        assert!(!r1);
-        assert!(!r2);
-        assert_eq!(ws.grants().get("firefox").map(|v| v.len()), before);
-    }
-
-    #[test]
-    fn capability_label_matches_phase_4_2_vocabulary() {
-        // Phase 6's revoke list and Phase 4.2's grant prompt share the
-        // same wording so users see the same string when granting and
-        // revoking. This pins the helper's outputs against the
-        // canonical labels.
-        let cam = Capability::Camera {
-            scope: GRANT_ALWAYS,
-        };
-        assert_eq!(capability_label(&cam), "Camera access");
-        let mic = Capability::Microphone { scope: GRANT_ONCE };
-        assert_eq!(capability_label(&mic), "Microphone access");
-        let net = Capability::Network {
-            hosts: None,
-            scope: GRANT_SESSION,
-        };
-        assert_eq!(capability_label(&net), "Network access");
-    }
-
-    #[test]
-    fn capability_scope_label_returns_short_badge_text() {
-        // Three-variant short label used by the row-side scope badge.
-        let always = Capability::Camera {
-            scope: GRANT_ALWAYS,
-        };
-        let session = Capability::Camera {
-            scope: GRANT_SESSION,
-        };
-        let once = Capability::Camera { scope: GRANT_ONCE };
-        assert_eq!(capability_scope_label(&always), "Always");
-        assert_eq!(capability_scope_label(&session), "Session");
-        assert_eq!(capability_scope_label(&once), "Once");
-    }
-
-    #[test]
-    fn draw_permissions_pane_paints_empty_state_when_no_grants() {
-        // Empty grants ⇒ one placeholder row fill so the section
-        // reads as "intentionally empty" rather than "broken".
+    fn draw_permissions_pane_paints_an_empty_state_with_no_grants() {
         let ws = Workspace::new(WorkspaceId::default(), "empty");
         let mut scene = Scene::new();
         let theme = Theme::dark();
         let mut tr = TextRenderer::new();
-        let pane = Rect::new(0.0, 0.0, 480.0, 360.0);
         draw_permissions_pane(
             &mut scene,
             Affine::IDENTITY,
-            pane,
+            pane(),
             &ws,
+            &GrantDraft::default(),
             true,
             &mut tr,
             &theme,
         );
         assert!(
             !scene.encoding().draw_tags.is_empty(),
-            "empty Permissions pane must paint at least the placeholder"
+            "the composer and the empty state must both paint"
         );
     }
 
     #[test]
     fn draw_permissions_pane_paints_more_with_grants_than_without() {
-        // Adding two grants for an app surfaces two row cards + scope
-        // badges + revoke buttons ⇒ strictly more solid fills than the
-        // empty-state placeholder.
         let theme = Theme::dark();
-        let pane = Rect::new(0.0, 0.0, 480.0, 360.0);
         let mut tr = TextRenderer::new();
+        let draft = GrantDraft::default();
 
-        let mut empty_scene = Scene::new();
+        let mut empty = Scene::new();
         draw_permissions_pane(
-            &mut empty_scene,
+            &mut empty,
             Affine::IDENTITY,
-            pane,
+            pane(),
             &Workspace::new(WorkspaceId::default(), "empty"),
+            &draft,
             true,
             &mut tr,
             &theme,
         );
-
-        let mut full_scene = Scene::new();
+        let mut full = Scene::new();
         draw_permissions_pane(
-            &mut full_scene,
+            &mut full,
             Affine::IDENTITY,
-            pane,
+            pane(),
             &ws_with_grants(),
+            &draft,
             true,
             &mut tr,
             &theme,
         );
-
-        let empty = empty_scene.encoding().draw_tags.len();
-        let full = full_scene.encoding().draw_tags.len();
-        assert!(
-            full > empty,
-            "Permissions pane with grants must paint more than empty (full={full}, empty={empty})"
-        );
+        assert!(full.encoding().draw_tags.len() > empty.encoding().draw_tags.len());
     }
 
     #[test]
@@ -2039,19 +2967,108 @@ mod permissions_pane_tests {
         let mut scene = Scene::new();
         let theme = Theme::dark();
         let mut tr = TextRenderer::new();
-        let pane = Rect::new(100.0, 100.0, 100.0, 100.0);
         draw_permissions_pane(
             &mut scene,
             Affine::IDENTITY,
-            pane,
+            Rect::new(100.0, 100.0, 100.0, 100.0),
             &ws,
+            &GrantDraft::default(),
             true,
             &mut tr,
             &theme,
         );
-        assert!(
-            scene.encoding().draw_tags.is_empty(),
-            "zero-area pane must short-circuit — observed draw tags emitted"
+        assert!(scene.encoding().draw_tags.is_empty());
+    }
+
+    #[test]
+    fn rows_that_do_not_fit_are_counted_rather_than_clipped() {
+        let mut ws = Workspace::new(WorkspaceId::from(9), "many");
+        ws.set_owner(OWNER);
+        for i in 0..12 {
+            ws.grant_as(
+                &OWNER.to_string(),
+                CapOverride::grant(
+                    Subject::app(format!("app-{i}")),
+                    Scope::Device("camera".into()),
+                    Verb::Read,
+                ),
+            )
+            .expect("owner grants");
+        }
+        let short_pane = Rect::new(0.0, 0.0, 660.0, 300.0);
+        let layout = permissions_pane_layout(&ws, short_pane);
+        assert!(layout.rows.len() < 12);
+        assert_eq!(layout.rows.len() + layout.overflow, 12);
+        for row in &layout.rows {
+            assert!(
+                row.row_rect.y1 <= short_pane.y1,
+                "a laid-out row must fit inside the pane"
+            );
+        }
+    }
+
+    #[test]
+    fn expiry_segments_are_laid_out_in_picker_order_without_overlap() {
+        let ws = ws_with_grants();
+        let layout = permissions_pane_layout(&ws, pane());
+        for i in 1..3 {
+            assert!(layout.expiry_rects[i].x0 >= layout.expiry_rects[i - 1].x1 - f64::EPSILON);
+        }
+        assert!(layout.expiry_rects[2].x1 <= layout.submit_rect.x0);
+        assert!(layout.subject_rect.x1 <= layout.choice_rect.x0);
+        assert!(layout.choice_rect.x1 <= layout.expiry_rects[0].x0);
+    }
+
+    #[test]
+    fn long_identifiers_are_shortened_rather_than_overrun() {
+        let long = "a".repeat(64);
+        let shortened = short_id(&long);
+        assert!(shortened.chars().count() <= 11);
+        assert!(shortened.ends_with('…'));
+        assert_eq!(short_id("quinten"), "quinten");
+    }
+}
+
+#[cfg(test)]
+mod roster_order_tests {
+    //! The Members list must not reorder under the pointer.
+
+    use super::*;
+    use crate::shell::state::WorkspaceId;
+
+    #[test]
+    fn changing_a_role_does_not_move_the_row() {
+        // A role change rewrites the member's membership capability, so
+        // the raw roster order shifts. The pane's order must not: a row
+        // that moves out from under a second click is how one click on
+        // one person became two clicks on two.
+        let mut ws = Workspace::new(WorkspaceId::from(5), "order");
+        ws.set_owner("host");
+        let room = ws.id.raw().to_string();
+        for person in ["ada", "bo", "cy"] {
+            ws.grant_as(
+                &"host".to_string(),
+                CapOverride::membership(Subject::person(person), room.clone(), Verb::Read),
+            )
+            .expect("owner may grant");
+        }
+        let pane = Rect::new(0.0, 0.0, 640.0, 600.0);
+        let before: Vec<UserId> = members_pane_rows(&ws, pane)
+            .into_iter()
+            .map(|r| r.user)
+            .collect();
+        assert_eq!(before, vec!["host", "ada", "bo", "cy"]);
+
+        set_member_role(
+            &mut ws,
+            &"host".to_string(),
+            &"ada".to_string(),
+            CapRole::Editor,
         );
+        let after: Vec<UserId> = members_pane_rows(&ws, pane)
+            .into_iter()
+            .map(|r| r.user)
+            .collect();
+        assert_eq!(after, before, "the row order must be identical");
     }
 }
