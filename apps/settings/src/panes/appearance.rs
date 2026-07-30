@@ -37,6 +37,35 @@ pub const THEME_KEY: &str = "appearance.theme";
 pub const HIGH_CONTRAST_KEY: &str = "appearance.high_contrast";
 pub const REDUCE_MOTION_KEY: &str = "appearance.reduce_motion";
 pub const TEXT_SIZE_KEY: &str = "appearance.text_size";
+pub const UI_SCALE_KEY: &str = "appearance.ui_scale";
+
+/// The offered global UI-scale steps as `(display label, factor)`. The factor is
+/// what [`AppearancePrefs::ui_scale`] persists; it grows the whole design system
+/// (spacing, radii, and type together) and composes with the per-output
+/// fractional device scale. Spans the daily-driver-comfortable 90 %–150 % range.
+pub const UI_SCALES: &[(&str, f64)] = &[
+    ("90%", 0.90),
+    ("100%", 1.0),
+    ("110%", 1.10),
+    ("125%", 1.25),
+    ("150%", 1.50),
+];
+
+/// Map a UI-scale factor to the closest offered label (defaults to "100%").
+fn ui_scale_label(scale: f64) -> &'static str {
+    UI_SCALES
+        .iter()
+        .min_by(|(_, a), (_, b)| {
+            (a - scale).abs().partial_cmp(&(b - scale).abs()).unwrap()
+        })
+        .map(|(label, _)| *label)
+        .unwrap_or("100%")
+}
+
+/// Map a UI-scale label back to its factor, if recognised.
+fn ui_scale_factor(label: &str) -> Option<f64> {
+    UI_SCALES.iter().find(|(l, _)| *l == label).map(|(_, s)| *s)
+}
 
 /// The offered text sizes as `(display label, scale factor)`. The label is
 /// what the dropdown shows and stores; the factor is what
@@ -115,10 +144,16 @@ impl AppearancePane {
             .with_id("appearance.text_size")
             .with_placeholder(text_size_label(self.prefs.text_scale));
 
+        let ui_scale_opts: Vec<String> = UI_SCALES.iter().map(|(l, _)| l.to_string()).collect();
+        let ui_scale = Dropdown::new(ui_scale_opts, UI_SCALE_KEY)
+            .with_id("appearance.ui_scale")
+            .with_placeholder(ui_scale_label(self.prefs.ui_scale));
+
         let theme_card = card(
             "Theme",
             rows(vec![
                 choice_row("Theme", Box::new(theme)),
+                choice_row("UI scale", Box::new(ui_scale)),
                 choice_row("Text size", Box::new(size)),
             ]),
         );
@@ -153,6 +188,10 @@ impl AppearancePane {
             rows(vec![
                 value_row("Active theme", &resolved.name),
                 value_row(
+                    "UI scale",
+                    &format!("{:.0}%", resolved.ui_scale as f64 * 100.0),
+                ),
+                value_row(
                     "Text scale",
                     &format!("{:.0}%", resolved.text_scale as f64 * 100.0),
                 ),
@@ -163,9 +202,11 @@ impl AppearancePane {
         let explainer = card(
             "Shared with your apps",
             rows(vec![caption(
-                "Your theme, contrast, motion, and text-size choices are read \
-                 by the compositor and every qOS app, so the whole system \
-                 follows the look you pick here.",
+                "Your theme, contrast, motion, UI-scale, and text-size choices \
+                 are read by the compositor and every qOS app, so the whole \
+                 system follows the look you pick here. UI scale grows the \
+                 entire interface and composes with each display's own \
+                 fractional scale; text size adjusts type on top.",
             )]),
         );
 
@@ -213,6 +254,7 @@ impl Widget for AppearancePane {
         if self.needs_seed {
             let _ = state.put(root, THEME_KEY, self.prefs.theme.as_str());
             let _ = state.put(root, TEXT_SIZE_KEY, text_size_label(self.prefs.text_scale));
+            let _ = state.put(root, UI_SCALE_KEY, ui_scale_label(self.prefs.ui_scale));
             let _ = state.put(
                 root,
                 HIGH_CONTRAST_KEY,
@@ -238,6 +280,14 @@ impl Widget for AppearancePane {
             if let Some(scale) = text_size_scale(&label) {
                 if (scale - self.prefs.text_scale).abs() > f64::EPSILON {
                     self.prefs.text_scale = scale;
+                    changed = true;
+                }
+            }
+        }
+        if let Some(label) = Self::read_str(state, root, UI_SCALE_KEY) {
+            if let Some(factor) = ui_scale_factor(&label) {
+                if (factor - self.prefs.ui_scale).abs() > f64::EPSILON {
+                    self.prefs.ui_scale = factor;
                     changed = true;
                 }
             }
@@ -364,6 +414,22 @@ impl Widget for AppearancePane {
     fn get_rect(&self) -> Rect {
         self.rect
     }
+
+    /// Surface the user's current appearance choice so the running Settings
+    /// window re-scales and re-themes live the instant a control changes. The
+    /// host [`ui::App`] (with `appearance_reconcile` enabled by `main`) polls
+    /// this each frame and applies any field that differs. We hand back the
+    /// *base* colour theme unscaled — the App folds in high-contrast, the UI
+    /// scale, and the text scale itself, keeping that bookkeeping in one place.
+    fn appearance_intent(&self) -> Option<ui::theme::AppearanceIntent> {
+        Some(ui::theme::AppearanceIntent {
+            base_theme: crate::prefs::theme_by_name(&self.prefs.theme),
+            high_contrast: self.prefs.high_contrast,
+            reduce_motion: self.prefs.reduce_motion,
+            text_scale: self.prefs.text_scale as f32,
+            ui_scale: self.prefs.ui_scale as f32,
+        })
+    }
 }
 
 #[cfg(test)]
@@ -377,6 +443,7 @@ mod tests {
             high_contrast: true,
             reduce_motion: false,
             text_scale: 1.15,
+            ui_scale: 1.25,
         });
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
@@ -391,9 +458,59 @@ mod tests {
             "1.15 seeds the 'Large' label"
         );
         assert_eq!(
+            AppearancePane::read_str(&doc, &root, UI_SCALE_KEY).as_deref(),
+            Some("125%"),
+            "1.25 seeds the '125%' UI-scale label"
+        );
+        assert_eq!(
             AppearancePane::read_bool(&doc, &root, HIGH_CONTRAST_KEY),
             Some(true)
         );
+    }
+
+    #[test]
+    fn changing_ui_scale_updates_prefs_and_resolves() {
+        let _cfg = crate::prefs::test_env::ConfigGuard::new("appearance_uiscale");
+        let mut pane = AppearancePane::with_prefs(AppearancePrefs::default());
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        pane.sync(&mut doc, &root);
+        // The UI-scale dropdown writes the chosen label.
+        let _ = doc.put(&root, UI_SCALE_KEY, "150%");
+        pane.sync(&mut doc, &root);
+        assert_eq!(pane.prefs().ui_scale, 1.50);
+        // The pref folds into the resolved theme's ui_scale + scaled tokens.
+        let resolved = pane.prefs().resolve_theme();
+        assert_eq!(resolved.ui_scale, 1.50);
+        let base_gap = ui::Theme::dark().tokens.spacing.s3;
+        assert!((resolved.tokens.spacing.s3 - base_gap * 1.50).abs() < 1e-2);
+    }
+
+    #[test]
+    fn ui_scale_label_and_factor_round_trip() {
+        assert_eq!(ui_scale_label(1.0), "100%");
+        assert_eq!(ui_scale_label(1.25), "125%");
+        assert_eq!(ui_scale_label(1.50), "150%");
+        assert_eq!(ui_scale_factor("90%"), Some(0.90));
+        assert_eq!(ui_scale_factor("nope"), None);
+    }
+
+    #[test]
+    fn appearance_intent_reflects_ui_scale_and_text_size_for_live_apply() {
+        let pane = AppearancePane::with_prefs(AppearancePrefs {
+            theme: "Nord".into(),
+            high_contrast: false,
+            reduce_motion: true,
+            text_scale: 1.15,
+            ui_scale: 1.25,
+        });
+        let intent = ui::widget::Widget::appearance_intent(&pane)
+            .expect("the appearance pane always expresses an intent");
+        assert_eq!(intent.base_theme.name, "Nord", "base theme is handed back unscaled");
+        assert_eq!(intent.ui_scale, 1.25);
+        assert_eq!(intent.text_scale, 1.15);
+        assert!(intent.reduce_motion);
+        assert!(!intent.high_contrast);
     }
 
     #[test]
