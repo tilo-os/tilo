@@ -295,7 +295,7 @@ fn plain_summary(html_text: &str) -> String {
     trimmed
 }
 
-fn derive_site_url(feed_url: &str) -> String {
+pub(crate) fn derive_site_url(feed_url: &str) -> String {
     // scheme://host  (drop path) as a reasonable homepage guess.
     if let Some(scheme_end) = feed_url.find("://") {
         let after = &feed_url[scheme_end + 3..];
