@@ -22,7 +22,10 @@ use winit::event::{ElementState, Modifiers, MouseButton, MouseScrollDelta, Windo
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
-use crate::widget::{ResizeHandle, TabDescriptor, TileHost, Widget, WindowGroup, WindowWidth};
+use crate::widget::{
+    DEFAULT_STRIP_USABLE_PX, HANDLE_SLOT_PX, ResizeHandle, TabDescriptor, TileHost, Widget,
+    WindowGroup, WindowWidth,
+};
 
 /// Idle threshold after the last wheel event before we kick off a
 /// snap-to-nearest-group animation. Mirrors the concept's
@@ -235,6 +238,34 @@ pub struct GroupRow {
     /// replicates to peers. Take-pattern (leaves `None`) so a later
     /// harvest tick can't double-apply.
     pending_group_reorder: Option<(u64, usize)>,
+    /// The displays this strip spans, in the compositor's combined
+    /// coordinate space, each carrying the width its window groups
+    /// resolve their [`WindowWidth`] fractions against. Pushed down by the
+    /// shell before every `build_layout`; empty in a bare `ui` host, which
+    /// falls back to the row's own geometry (see [`Self::usable_at`]).
+    ///
+    /// A strip can span more than one display — the compositor paints one
+    /// scene across the bounding box of every output — so a group's width
+    /// has to resolve against the display that group sits on. Resolving
+    /// against the combined desktop would make a full-width window span
+    /// both monitors.
+    output_spans: Vec<OutputSpan>,
+}
+
+/// One display's horizontal extent in the compositor's combined
+/// coordinate space, plus the width window groups on it size themselves
+/// against.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct OutputSpan {
+    /// Left edge of the display in combined coordinates.
+    pub x: f64,
+    /// Full width of the display.
+    pub width: f64,
+    /// Width available to window groups on this display: `width` minus
+    /// whatever shell chrome the display reserves (on the leftmost
+    /// display, the wheel-disc slot). This is the denominator every
+    /// [`WindowWidth`] fraction is taken of.
+    pub usable: f64,
 }
 
 impl GroupRow {
@@ -261,6 +292,7 @@ impl GroupRow {
             group_drag: None,
             group_reorder_target: None,
             pending_group_reorder: None,
+            output_spans: Vec::new(),
         }
     }
 
@@ -333,6 +365,77 @@ impl GroupRow {
             // takes effect on the next paint.
             self.scroll_dirty = true;
         }
+    }
+
+    /// Tell the strip which displays it spans, so each group's width
+    /// fraction resolves against the display that group sits on. The
+    /// shell pushes this before every `build_layout`; passing an empty
+    /// slice restores the fallback in [`Self::usable_at`].
+    ///
+    /// Flags `structure_dirty` on a real change so a monitor being
+    /// plugged in, unplugged or resized re-bakes every group's width.
+    pub fn set_output_spans(&mut self, spans: &[OutputSpan]) {
+        if self.output_spans != spans {
+            self.output_spans = spans.to_vec();
+            self.structure_dirty = true;
+        }
+    }
+
+    /// The displays this strip spans. Empty until the shell pushes them.
+    pub fn output_spans(&self) -> &[OutputSpan] {
+        &self.output_spans
+    }
+
+    /// Usable width a group whose left edge sits at combined-x `x` should
+    /// resolve its [`WindowWidth`] fraction against.
+    ///
+    /// `x` is a *canvas* coordinate — the strip's own unscrolled space —
+    /// deliberately, not a screen coordinate: panning the strip must not
+    /// resize the windows in it. A group therefore keeps the basis of the
+    /// display it is laid out on, whatever is currently scrolled into
+    /// view.
+    ///
+    /// Falls back, in order, to the row's own laid-out width minus the
+    /// leading gutter (a bare `ui` host, where the row *is* the display),
+    /// and to [`DEFAULT_STRIP_USABLE_PX`] before any layout has run.
+    pub fn usable_at(&self, x: f64) -> f64 {
+        if !self.output_spans.is_empty() {
+            // Last span whose left edge is at or before `x`; the first
+            // span for anything left of the whole arrangement.
+            let mut chosen = self.output_spans[0];
+            for span in &self.output_spans {
+                if x >= span.x {
+                    chosen = *span;
+                }
+            }
+            return chosen.usable.max(1.0);
+        }
+        let own = self.rect.width() - self.leading_inset;
+        if own > 1.0 {
+            own
+        } else {
+            DEFAULT_STRIP_USABLE_PX
+        }
+    }
+
+    /// Per-group usable width, in strip order: the width each group's
+    /// [`WindowWidth`] fraction resolves against. Walks the strip left to
+    /// right accumulating resolved widths, so a group that lands on the
+    /// second display gets that display's basis rather than the first's.
+    ///
+    /// Depends only on the groups' own stored widths and the pushed output
+    /// spans — never on a previous frame's layout — so it is stable on the
+    /// very first frame.
+    pub fn usable_per_group(&self) -> Vec<f64> {
+        let mut canvas_x = self.rect.x0 + self.leading_inset;
+        self.groups
+            .iter()
+            .map(|g| {
+                let usable = self.usable_at(canvas_x);
+                canvas_x += g.width().resolve(usable) + HANDLE_SLOT_PX;
+                usable
+            })
+            .collect()
     }
 
     /// Ordered list of group ids currently held by the row. Used by
@@ -1036,6 +1139,17 @@ impl Widget for GroupRow {
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.node_ids.clear();
+        // Resolve every group's width fraction BEFORE it builds its node,
+        // walking the strip left to right so each group's basis is the
+        // usable width of the display its own left edge lands on. Widths
+        // determine the next group's left edge, so the walk is sequential
+        // — but it is fully determined here, with no dependency on a
+        // previous frame's layout, which is what keeps a single-frame
+        // offscreen render (a screenshot) identical to the live one.
+        let usable_per_group = self.usable_per_group();
+        for (g, &usable) in self.groups.iter_mut().zip(usable_per_group.iter()) {
+            g.set_strip_usable_px(usable);
+        }
         let group_nodes: Vec<NodeId> = self
             .groups
             .iter_mut()
@@ -1086,6 +1200,17 @@ impl Widget for GroupRow {
             );
         } else if self.handles.len() > desired_handles {
             self.handles.truncate(desired_handles);
+        }
+        // Each handle clamps its drag against the same per-display range
+        // its neighbours were sized with. Handle `i` sits in the gap after
+        // group `i`, so it takes group `i`'s basis — the display that gap
+        // is on. Without this the clamps would still be the old fixed
+        // 300..1200 px, which on a 4K panel refused to let a drag past
+        // 31 % of the screen.
+        for (i, h) in self.handles.iter_mut().enumerate() {
+            if let Some(&usable) = usable_per_group.get(i) {
+                h.set_strip_usable_px(usable);
+            }
         }
         // Build per-handle taffy nodes and interleave them between
         // the group nodes. Order: `[g0, h0, g1, h1, g2, …, g_{N-1}]`
@@ -1604,7 +1729,9 @@ impl Widget for GroupRow {
         }
 
         // Drain any handle width pulses produced by the dispatch above
-        // and apply them to the two adjacent groups via `set_width`.
+        // and apply them to the two adjacent groups via `set_width_px`,
+        // which converts each pixel measurement back into a fraction of
+        // that group's own display.
         // We do this before the group dispatch loop so a mid-drag
         // CursorMoved sees the updated widths on the same frame —
         // otherwise the user perceives one frame of lag between
@@ -1612,10 +1739,10 @@ impl Widget for GroupRow {
         for i in 0..self.handles.len() {
             if let Some((new_left, new_right)) = self.handles[i].take_pending() {
                 if i < self.groups.len() {
-                    self.groups[i].set_width(WindowWidth::Custom(new_left));
+                    self.groups[i].set_width_px(new_left);
                 }
                 if i + 1 < self.groups.len() {
-                    self.groups[i + 1].set_width(WindowWidth::Custom(new_right));
+                    self.groups[i + 1].set_width_px(new_right);
                 }
             }
             if self.handles[i].take_pending_commit() {

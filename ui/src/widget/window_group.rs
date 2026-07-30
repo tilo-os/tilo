@@ -15,9 +15,78 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::presence::PresenceCtx;
 
-pub const WIDTH_MIN_PX: u32 = 300;
-pub const WIDTH_MAX_PX: u32 = 1200;
+/// Per-mille of the strip's usable width taken by each named tier.
+///
+/// The tiers are *fractions*, not pixel counts, because the strip they
+/// live in is as wide as the display: a fixed 600 px "Normal" is 37 % of
+/// a 1600 px output and 15 % of a 3840 px one, so the same setting meant
+/// something different on every monitor and no setting at all could fill
+/// a large one.
+///
+/// Thirds are the grid the strip already implies: `Narrow + Wide` and
+/// three `Narrow`s each tile the usable width exactly, so cycling a
+/// group through the tiers lands on layouts that divide the strip
+/// cleanly rather than leaving a sliver. `Wide` is the whole usable
+/// width so a lone window can genuinely fill its output — the previous
+/// model's 1200 px ceiling made 31 % the widest attainable on a 4K
+/// panel.
+pub const WIDTH_NARROW_PERMILLE: u16 = 333;
+/// See [`WIDTH_NARROW_PERMILLE`]. Two thirds is the launch default: it
+/// reads as the dominant window of the strip while still showing that
+/// there is strip left to scroll into, which a full-width default hides.
+pub const WIDTH_NORMAL_PERMILLE: u16 = 667;
+/// See [`WIDTH_NARROW_PERMILLE`]. The whole usable width of the output.
+pub const WIDTH_WIDE_PERMILLE: u16 = 1000;
+
+/// Narrowest fraction a manual resize can dial in, per-mille. 15 % of
+/// the strip keeps a group readable as a side panel on a wide output
+/// without letting a drag collapse it to a sliver; [`WIDTH_FLOOR_PX`]
+/// backs it up on small outputs where 15 % is too few pixels to use.
+pub const WIDTH_MIN_PERMILLE: u16 = 150;
+/// Widest fraction a group may occupy: the full usable width. Anything
+/// beyond that would push the group past the output it sits on.
+pub const WIDTH_MAX_PERMILLE: u16 = 1000;
+
+/// Absolute floor, in logical px, under which a group is no longer
+/// usable regardless of how narrow the output is. A pure fraction has no
+/// floor — 15 % of an 800 px strip is 120 px, which fits neither a tab
+/// pill nor a scrollbar — so the resolved width is clamped up to this
+/// (and back down to the usable width if the strip is narrower still).
+pub const WIDTH_FLOOR_PX: f64 = 240.0;
+
+/// Usable width assumed when nothing has told the strip how wide its
+/// output is. Only reachable from a bare `ui` host that never pushes
+/// output spans (see [`crate::widget::GroupRow::set_output_spans`]); the
+/// shell always pushes the real geometry before the first `build_layout`,
+/// so no production frame resolves against this.
+pub const DEFAULT_STRIP_USABLE_PX: f64 = 1280.0;
+
 pub const RESIZE_HANDLE_PX: f64 = 6.0;
+
+/// Narrowest a group may be laid out at inside a strip whose usable
+/// width is `strip_usable_px`: [`WIDTH_MIN_PERMILLE`] of the strip, but
+/// never under [`WIDTH_FLOOR_PX`] and never over the strip itself.
+pub fn min_group_px(strip_usable_px: f64) -> f64 {
+    let usable = strip_usable_px.max(1.0);
+    (usable * WIDTH_MIN_PERMILLE as f64 / 1000.0)
+        .max(WIDTH_FLOOR_PX)
+        .min(usable)
+}
+
+/// Widest a group may be laid out at: the strip's whole usable width.
+pub fn max_group_px(strip_usable_px: f64) -> f64 {
+    strip_usable_px.max(1.0)
+}
+
+/// Fraction (per-mille) that resolves to `px` inside a strip of
+/// `strip_usable_px`. Inverse of [`WindowWidth::resolve`] — this is how a
+/// pointer drag, which is inherently in pixels, becomes a stored
+/// resolution-independent width.
+pub fn permille_for_px(px: f64, strip_usable_px: f64) -> u16 {
+    let usable = strip_usable_px.max(1.0);
+    let raw = (px.max(0.0) / usable * 1000.0).round();
+    (raw.clamp(WIDTH_MIN_PERMILLE as f64, WIDTH_MAX_PERMILLE as f64)) as u16
+}
 
 /// Duration of the per-group fade-in played when a `WindowGroup` is
 /// newly spawned — e.g. via split-into-new-group from a cross-group
@@ -57,17 +126,61 @@ const GROUP_CLOSE_FADE_MS: u64 = 180;
 /// resolves through the existing handle_event arms.
 const MAXIMIZED_CHROME_REVEAL_Y: f64 = 80.0;
 
+/// How wide a [`WindowGroup`] is, as a fraction of the usable width of
+/// the strip — and therefore of the output — it sits on.
+///
+/// Nothing here is a pixel count. A width only becomes pixels through
+/// [`WindowWidth::resolve`], against the usable width `GroupRow` derives
+/// from the output the group is on, which is what makes the same stored
+/// width mean the same *proportion* of the screen on a 1600 px laptop
+/// panel and a 3840 px desktop one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum WindowWidth { Narrow, Normal, Wide, Custom(u32) }
+pub enum WindowWidth {
+    Narrow,
+    Normal,
+    Wide,
+    /// An arbitrary fraction of the strip's usable width, in per-mille.
+    /// What a manual resize produces: the drag is measured in pixels and
+    /// converted straight back to a fraction, so the width the user
+    /// dialled in survives a restart *and* means the same thing if the
+    /// group later lands on a differently-sized output.
+    Fraction(u16),
+}
 
 impl WindowWidth {
-    pub fn pixels(&self) -> u32 {
+    /// The fraction this width represents, in per-mille of the strip's
+    /// usable width.
+    pub fn permille(&self) -> u16 {
         match self {
-            WindowWidth::Narrow => 400,
-            WindowWidth::Normal => 600,
-            WindowWidth::Wide => 800,
-            WindowWidth::Custom(p) => (*p).clamp(WIDTH_MIN_PX, WIDTH_MAX_PX),
+            WindowWidth::Narrow => WIDTH_NARROW_PERMILLE,
+            WindowWidth::Normal => WIDTH_NORMAL_PERMILLE,
+            WindowWidth::Wide => WIDTH_WIDE_PERMILLE,
+            WindowWidth::Fraction(p) => (*p).clamp(WIDTH_MIN_PERMILLE, WIDTH_MAX_PERMILLE),
         }
+    }
+
+    /// The same fraction as a 0..=1 multiplier.
+    pub fn fraction(&self) -> f64 {
+        self.permille() as f64 / 1000.0
+    }
+
+    /// Resolve to logical pixels against the usable width of the strip
+    /// the group sits in. Clamped into
+    /// `[min_group_px(usable), max_group_px(usable)]` so a fraction can
+    /// neither collapse a group below usability nor push it past the
+    /// output's right edge.
+    pub fn resolve(&self, strip_usable_px: f64) -> f64 {
+        let usable = strip_usable_px.max(1.0);
+        (usable * self.fraction()).clamp(min_group_px(usable), max_group_px(usable))
+    }
+
+    /// The width that resolves to `px` in a strip of `strip_usable_px`.
+    /// Always a [`WindowWidth::Fraction`] — a resize records the
+    /// proportion the user landed on, never the tier it happens to
+    /// coincide with, so a later tier retune doesn't silently move their
+    /// window.
+    pub fn from_px(px: f64, strip_usable_px: f64) -> Self {
+        WindowWidth::Fraction(permille_for_px(px, strip_usable_px))
     }
 }
 
@@ -76,8 +189,19 @@ pub struct WindowGroup {
     bar: TabBar,
     hosts: Vec<(u64, TileHost)>,
     width: WindowWidth,
+    /// Usable width (logical px) this group's [`WindowWidth`] fraction
+    /// resolves against — the width of the output the group sits on,
+    /// minus whatever shell chrome that output reserves. Pushed down by
+    /// the parent [`crate::widget::GroupRow`] at the top of every
+    /// `build_layout`, so it is current before the width is baked into
+    /// the taffy node. Seeded to [`DEFAULT_STRIP_USABLE_PX`] purely so a
+    /// group constructed outside a row still has a definite width.
+    strip_usable_px: f64,
     rect: Rect,
-    resize_origin: Option<(f32, u32)>,
+    /// `(press-time cursor x, press-time resolved width in px)`. The
+    /// gesture is tracked in pixels because a pointer drag is pixels;
+    /// the *result* is converted back to a fraction on every tick.
+    resize_origin: Option<(f32, f64)>,
     pub hover_resize: bool,
     /// User has requested the concept's "maximized" mode for this group.
     /// The shell paints the floating controls on top of this rect while
@@ -150,7 +274,10 @@ pub struct WindowGroup {
     /// once per resize gesture in [`Self::end_resize`] so the persisted
     /// width survives a shell restart and replicates across collaborators.
     /// Same take-pattern as [`Self::take_pending_maximize_change`].
-    pending_width_change: Option<u32>,
+    /// Carries a *fraction* (per-mille), not pixels, so the value that
+    /// gets persisted and replicated to peers means the same thing on
+    /// their output as it did on this one.
+    pending_width_change: Option<u16>,
     /// One-shot "open search scoped to this app" request awaiting harvest by
     /// the shell, carrying the tab id whose magnifier chip was clicked. The
     /// group itself can't open the palette (that lives on the shell overlay
@@ -186,6 +313,7 @@ impl WindowGroup {
             bar: TabBar::new(&format!("g{id}"), descs, active_id),
             hosts,
             width,
+            strip_usable_px: DEFAULT_STRIP_USABLE_PX,
             rect: Rect::ZERO,
             resize_origin: None,
             hover_resize: false,
@@ -305,49 +433,89 @@ impl WindowGroup {
         self.maximized && cursor_y.is_some_and(|y| y <= MAXIMIZED_CHROME_REVEAL_Y)
     }
 
-    pub fn begin_resize(&mut self, pointer_x: f32) { self.resize_origin = Some((pointer_x, self.width.pixels())); }
+    /// Usable width this group's fraction resolves against — see the
+    /// `strip_usable_px` field.
+    pub fn strip_usable_px(&self) -> f64 {
+        self.strip_usable_px
+    }
+
+    /// Tell the group how wide the usable part of its output is. Called
+    /// by [`crate::widget::GroupRow::build_layout`] for every child before
+    /// the child builds its own node, so the width baked into taffy is
+    /// always resolved against current geometry. Flags `style_dirty` on a
+    /// real change so a display resize (or the group moving to another
+    /// output) re-bakes the node.
+    pub fn set_strip_usable_px(&mut self, px: f64) {
+        let px = px.max(1.0);
+        if (self.strip_usable_px - px).abs() > 0.5 {
+            self.strip_usable_px = px;
+            self.style_dirty = true;
+        }
+    }
+
+    /// This group's width in logical pixels on the output it currently
+    /// sits on. The single place a `WindowWidth` becomes pixels.
+    pub fn resolved_width_px(&self) -> f64 {
+        self.width.resolve(self.strip_usable_px)
+    }
+
+    pub fn begin_resize(&mut self, pointer_x: f32) {
+        self.resize_origin = Some((pointer_x, self.resolved_width_px()));
+    }
     pub fn update_resize(&mut self, pointer_x: f32) {
         if let Some((origin_x, origin_w)) = self.resize_origin {
-            let delta = pointer_x - origin_x;
-            let new_w = ((origin_w as f32) + delta).round().max(0.0) as i64;
-            let clamped = (new_w.max(WIDTH_MIN_PX as i64).min(WIDTH_MAX_PX as i64)) as u32;
-            if self.width.pixels() != clamped {
-                self.width = WindowWidth::Custom(clamped);
-                // `build_layout` bakes the width into the taffy node as a
-                // fixed `Dimension::length`, so a width change is only
-                // visible after the tree is rebuilt. Without this flag the
-                // drag updated the field and nothing moved on screen.
+            let delta = (pointer_x - origin_x) as f64;
+            let usable = self.strip_usable_px;
+            let clamped =
+                (origin_w + delta).clamp(min_group_px(usable), max_group_px(usable));
+            let next = WindowWidth::from_px(clamped, usable);
+            if next != self.width {
+                self.width = next;
+                // `build_layout` bakes the resolved width into the taffy
+                // node as a fixed `Dimension::length`, so a width change is
+                // only visible after the tree is rebuilt. Without this flag
+                // the drag updated the field and nothing moved on screen.
                 self.style_dirty = true;
             }
         }
     }
     pub fn end_resize(&mut self) {
         self.resize_origin = None;
-        self.pending_width_change = Some(self.width.pixels());
+        self.pending_width_change = Some(self.width.permille());
     }
 
     /// Imperative setter used by the between-groups `ResizeHandle`. Clamps
-    /// `px` into `[WIDTH_MIN_PX, WIDTH_MAX_PX]` (via `WindowWidth::Custom`)
-    /// and stamps the new value. Does NOT touch `resize_origin` — the
-    /// inter-group handle owns its own drag state. Callers wanting a
-    /// "user finished resizing" pulse should follow up with
-    /// [`Self::stamp_pending_width_change`] on mouse-release; mid-drag
-    /// updates should NOT pulse so the shell isn't writing every frame.
+    /// a [`WindowWidth::Fraction`] into
+    /// `[WIDTH_MIN_PERMILLE, WIDTH_MAX_PERMILLE]` and stamps the new
+    /// value. Does NOT touch `resize_origin` — the inter-group handle owns
+    /// its own drag state. Callers wanting a "user finished resizing"
+    /// pulse should follow up with [`Self::stamp_pending_width_change`] on
+    /// mouse-release; mid-drag updates should NOT pulse so the shell isn't
+    /// writing every frame.
     pub fn set_width(&mut self, w: WindowWidth) {
-        // Normalise through Custom so callers passing Narrow/Normal/Wide
-        // still land on the clamping path's invariant — Custom(p) clamps
-        // internally in `pixels()`. Mid-drag math operates on raw pixels
-        // and feeds clamped values back in via `Custom(px)`.
-        let before = self.width.pixels();
+        // Normalise through Fraction so callers passing Narrow/Normal/Wide
+        // still land on the clamping path's invariant.
+        let before = self.width;
         match w {
-            WindowWidth::Custom(p) => self.width = WindowWidth::Custom(p.clamp(WIDTH_MIN_PX, WIDTH_MAX_PX)),
+            WindowWidth::Fraction(p) => {
+                self.width =
+                    WindowWidth::Fraction(p.clamp(WIDTH_MIN_PERMILLE, WIDTH_MAX_PERMILLE))
+            }
             other => self.width = other,
         }
         // Same reason as `update_resize`: the taffy node carries a baked
         // length, so the new width only takes effect after a rebuild.
-        if self.width.pixels() != before {
+        if self.width != before {
             self.style_dirty = true;
         }
+    }
+
+    /// Set the width from a pixel measurement taken on this group's own
+    /// output — what the inter-group [`crate::widget::ResizeHandle`]
+    /// produces. Converts to a fraction immediately so nothing downstream
+    /// ever stores pixels.
+    pub fn set_width_px(&mut self, px: f64) {
+        self.set_width(WindowWidth::from_px(px, self.strip_usable_px));
     }
 
     /// Stamp a pending width-change pulse so the shell harvests this
@@ -355,16 +523,17 @@ impl WindowGroup {
     /// inter-group `ResizeHandle` on mouse-release, mirroring what
     /// [`Self::end_resize`] does for the per-group right-edge handle.
     pub fn stamp_pending_width_change(&mut self) {
-        self.pending_width_change = Some(self.width.pixels());
+        self.pending_width_change = Some(self.width.permille());
     }
     /// Drain a one-shot pending width change produced by a completed
     /// resize gesture (press → drag → release on the right-edge handle).
-    /// Returns `Some(pixels)` once per gesture, then `None` until the
+    /// Returns `Some(per-mille)` once per gesture, then `None` until the
     /// next [`Self::end_resize`]. Mirrors
     /// [`Self::take_pending_maximize_change`]; the shell harvests this
     /// each frame and writes the value into the persisted
-    /// [`WorkspaceTree`] so resizes survive a restart.
-    pub fn take_pending_width_change(&mut self) -> Option<u32> {
+    /// [`WorkspaceTree`] so resizes survive a restart — as a fraction, so
+    /// the restart can be onto a different display.
+    pub fn take_pending_width_change(&mut self) -> Option<u16> {
         self.pending_width_change.take()
     }
 
@@ -503,6 +672,7 @@ impl WindowGroup {
             bar: TabBar::new(&format!("g{id}"), vec![desc], active_id),
             hosts: vec![(tab_id, host)],
             width,
+            strip_usable_px: DEFAULT_STRIP_USABLE_PX,
             rect: Rect::ZERO,
             resize_origin: None,
             hover_resize: false,
@@ -778,7 +948,7 @@ impl Widget for WindowGroup {
         let mut style = Style {
             display: taffy::Display::Flex,
             flex_direction: taffy::FlexDirection::Column,
-            size: Size { width: Dimension::length(self.width.pixels() as f32), height: Dimension::percent(1.0) },
+            size: Size { width: Dimension::length(self.resolved_width_px() as f32), height: Dimension::percent(1.0) },
             // Niri-style infinite strip: groups stay at their declared
             // `WindowWidth` regardless of how many siblings the strip
             // already has. Placing a new app *never resizes* siblings —
