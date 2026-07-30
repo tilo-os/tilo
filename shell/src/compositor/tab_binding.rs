@@ -114,6 +114,13 @@ pub fn adopt_toplevel(tree: &mut WorkspaceTree, surface_id: u64, app_id: Option<
         .as_deref()
         .and_then(|id| crate::shell::launcher::placement_for_toplevel(id, surface_id))
         .unwrap_or_else(|| crate::shell::placement::placement_for_new_window(tree, None));
+    // If this window is the one a document open asked for, that is where
+    // the document now lives — recorded here because this is where the
+    // launch and the window it produced meet, the same correlation the
+    // placement lookup above makes.
+    if let Some(id) = app_id.as_deref() {
+        crate::shell::doc_open::claim_surface_for_document(id, surface_id);
+    }
     adopt_toplevel_at(tree, surface_id, app_id, placement)
 }
 
@@ -356,6 +363,12 @@ fn tab_label_for_foreign(app_id: &str) -> String {
     }
 }
 
+// Every test here drives `launcher`'s process-wide pending-placement
+// table, so they are serialised on the crate's one group for global
+// state — against each other and against everything else that stages a
+// launch (`shell::doc_open`'s opens, most of `shell::launcher`'s own
+// tests). Clearing the table at the top of each test only protects a
+// test from its predecessors, not from one running beside it.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -412,6 +425,7 @@ mod tests {
     /// A window opened while a single window has focus is a new thing
     /// beside it: its own column, immediately to the right.
     #[test]
+    #[serial_test::serial(process_env)]
     fn a_launch_beside_a_lone_window_opens_its_own_group_to_the_right() {
         crate::shell::launcher::clear_pending_placements();
         let mut tree = WorkspaceTree::bootstrap_default();
@@ -513,6 +527,7 @@ mod tests {
     /// at the end of the strip — so the window you just opened is next
     /// to the one you opened it from and the strip doesn't scroll away.
     #[test]
+    #[serial_test::serial(process_env)]
     fn the_new_group_is_inserted_beside_the_focused_group_not_at_the_end() {
         use crate::shell::state::{WindowGroup, WindowWidth, next_id};
         crate::shell::launcher::clear_pending_placements();
@@ -556,6 +571,7 @@ mod tests {
     /// A document opened from another app is the same task as the app
     /// that asked for it, so it joins that app's group as a tab.
     #[test]
+    #[serial_test::serial(process_env)]
     fn a_document_opened_from_an_app_becomes_a_tab_in_that_apps_group() {
         crate::shell::launcher::clear_pending_placements();
         let mut tree = WorkspaceTree::bootstrap_default();
@@ -595,6 +611,7 @@ mod tests {
     /// That degrades to the launch placement rather than dropping the
     /// window into an arbitrary group.
     #[test]
+    #[serial_test::serial(process_env)]
     fn a_tab_placement_naming_a_dead_group_falls_back_to_a_new_group() {
         crate::shell::launcher::clear_pending_placements();
         let mut tree = WorkspaceTree::bootstrap_default();
@@ -623,6 +640,7 @@ mod tests {
     /// The launch-time note and the adoption are two events on two
     /// processes; this is the whole correlation, driven end to end.
     #[test]
+    #[serial_test::serial(process_env)]
     fn a_recorded_placement_is_consumed_by_the_matching_adoption() {
         use crate::shell::launcher;
         use crate::shell::state::{WindowGroup, WindowWidth, next_id};
@@ -699,6 +717,7 @@ mod tests {
     /// A note that were consumed by the first reader would leave the
     /// rendered tree on the default placement — the bug this pins.
     #[test]
+    #[serial_test::serial(process_env)]
     fn both_trees_place_the_same_toplevel_the_same_way() {
         use crate::shell::launcher;
         launcher::clear_pending_placements();
@@ -735,6 +754,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(process_env)]
     fn group_id_for_surface_resolves_the_owning_group() {
         crate::shell::launcher::clear_pending_placements();
         let mut tree = WorkspaceTree::bootstrap_default();
@@ -751,6 +771,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(process_env)]
     fn close_tab_for_destroyed_surface_removes_matching_foreign_tab() {
         crate::shell::launcher::clear_pending_placements();
         let mut tree = WorkspaceTree::bootstrap_default();
@@ -783,6 +804,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(process_env)]
     fn rename_tab_for_app_id_rewrites_anon_placeholder() {
         let mut tree = WorkspaceTree::bootstrap_default();
         // First adopt without an app-id so the tab gets the
@@ -802,6 +824,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(process_env)]
     fn rename_tab_for_app_id_returns_false_for_unknown_surface() {
         let mut tree = WorkspaceTree::bootstrap_default();
         let renamed = rename_tab_for_app_id(&mut tree, 12345, "x".into());
@@ -818,6 +841,7 @@ mod tests {
     /// painted). Post-fix, the adoption synthesizes a default strip +
     /// group so the new tab is always reachable.
     #[test]
+    #[serial_test::serial(process_env)]
     fn adopt_toplevel_creates_strip_when_workspace_empty() {
         let mut tree = WorkspaceTree::bootstrap_default();
         // Start from a known-good tree and erase the active workspace's
@@ -871,6 +895,7 @@ mod tests {
     /// The launch history is process-global, so the fixture uses an id
     /// no other test registers.
     #[test]
+    #[serial_test::serial(process_env)]
     fn adopted_tab_takes_the_launched_app_name() {
         crate::shell::launcher::remember_launch(&crate::shell::launcher::InstalledApp {
             package_id: "dev.qos.adoptfixture".into(),
@@ -907,6 +932,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(process_env)]
     fn anonymous_app_id_falls_back_to_surface_synthetic() {
         let mut tree = WorkspaceTree::bootstrap_default();
         let _ = adopt_toplevel(&mut tree, 7, None);
