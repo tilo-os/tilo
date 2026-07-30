@@ -28,7 +28,7 @@ use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
-use ui::widget::{Link, TextInput, Widget};
+use ui::widget::{Avatar, Link, TextInput, Widget};
 
 use crate::date;
 use crate::doc::ContactsDoc;
@@ -2606,23 +2606,10 @@ fn draw_checkbox(scene: &mut Scene, t: Affine, theme: &Theme, rect: Rect, checke
 }
 
 fn draw_avatar(scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme, rect: Rect, initials: &str) {
-    let ramp = &theme.tokens.colors.accent;
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    std::hash::Hash::hash(initials, &mut hasher);
-    let idx = (std::hash::Hasher::finish(&hasher) as usize) % ramp.len();
-    let bg = ramp[idx];
-    let radius = rect.width().min(rect.height()) / 2.0;
-    scene.fill(Fill::NonZero, t, bg, None, &Circle::new(rect.center(), radius));
-    let size = (rect.width() * 0.4) as f32;
-    let (tw, th) = tr.measure(initials, size, None);
-    tr.draw_text(
-        scene,
-        initials,
-        size,
-        Color::WHITE,
-        t * Affine::translate((rect.center().x - tw as f64 / 2.0, rect.center().y - th as f64 / 2.0)),
-        None,
-    );
+    // Coloured initials disc sourced from the shared toolkit avatar so the
+    // hue/shape/placement stay consistent with every other app's roster.
+    let color = Avatar::color_for_initials(initials, theme);
+    Avatar::draw_at(scene, t, rect, initials, color, theme, tr);
 }
 
 fn draw_star(scene: &mut Scene, t: Affine, center: Point, r: f64, color: Color, filled: bool) {
@@ -2946,6 +2933,24 @@ impl Widget for ContactsApp {
 
     fn name(&self) -> &str {
         "ContactsApp"
+    }
+
+    /// Fold the address book into the unified Ctrl+K palette: a snapshot
+    /// [`ContactSearchProvider`](crate::search_provider::ContactSearchProvider)
+    /// makes every contact findable there, alongside any actions the app
+    /// exports.
+    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
+        vec![Box::new(crate::search_provider::ContactSearchProvider::new(&self.store))]
+    }
+
+    /// Navigate to the contact a chosen palette row identifies (selection is
+    /// app-local presentation, not a shared-doc mutation).
+    fn activate_search_result(&mut self, action_id: &str, _doc: &mut AutoCommit, _path: &ObjId) {
+        if let Some(id) = crate::search_provider::ContactSearchProvider::parse_action_id(action_id) {
+            if self.store.get(id).is_some() {
+                self.commit_select(id);
+            }
+        }
     }
 
     fn get_rect(&self) -> Rect {
@@ -4050,6 +4055,34 @@ mod tests {
     use automerge::ROOT;
     use taffy::{AvailableSpace, Dimension, Size, Style};
     use vello::kurbo::Point;
+
+    /// Contacts folds its address book into the unified Ctrl+K palette: the
+    /// provider surfaces a real contact, and activating that row navigates the
+    /// app to it (selection). Proves both `Widget` hooks on the real path.
+    #[test]
+    fn search_provider_row_navigates_to_the_contact() {
+        let mut app = ContactsApp::new();
+        for c in sample_contacts() {
+            app.store.upsert(c);
+        }
+        // The unified palette collects this provider each time it opens.
+        let providers = Widget::search_providers(&app);
+        assert_eq!(providers.len(), 1, "contacts exposes one searchable source");
+        let hits = providers[0].search("grace");
+        let grace = hits
+            .iter()
+            .find(|r| r.title == "Grace Hopper")
+            .expect("the provider surfaces the real contact");
+        let action_id = grace.action_id.clone();
+
+        // Activating the row navigates the app to that contact.
+        assert!(app.selected.is_none(), "nothing selected yet");
+        let mut doc = AutoCommit::new();
+        Widget::activate_search_result(&mut app, &action_id, &mut doc, &ROOT);
+        let id = crate::search_provider::ContactSearchProvider::parse_action_id(&action_id)
+            .expect("the id parses back to a contact");
+        assert_eq!(app.selected, Some(id), "the palette row selected the contact");
+    }
 
     /// Drive one full five-pass frame against `app` at the given size,
     /// encoding the scene on the CPU so any panic in sync/layout/draw

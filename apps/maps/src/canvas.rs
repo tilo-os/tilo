@@ -890,8 +890,10 @@ pub fn draw_scale_and_attribution(
 
     // Attribution — right-aligned, just above the scale bar. Anchoring it to
     // the right edge keeps it clear of the left-hand panel/drawer (which would
-    // otherwise cover a bottom-left credit); OSM requires it stay visible.
-    let attr = "© OpenStreetMap contributors";
+    // otherwise cover a bottom-left credit); the map data + basemap credits
+    // must stay visible. Data is OpenStreetMap; the label-free raster style is
+    // served by CARTO, so both are credited.
+    let attr = "© OpenStreetMap contributors © CARTO";
     let aw = draw::measure_w(tr, attr, 10.0) + 14.0;
     let ax1 = clip.x1 - 24.0;
     let ax = ax1 - aw;

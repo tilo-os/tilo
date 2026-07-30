@@ -335,18 +335,22 @@ impl Widget for MergeView {
             // Action chips for change hunks.
             if h.is_change {
                 let ay = y + block_h + 2.0;
+                // Chip hues track the theme so a palette / high-contrast swap
+                // keeps the resolution controls coherent: ours = success (green),
+                // theirs = info (blue), both = the neutral dim tone — mirroring
+                // the status label's own `ColorClass` mapping.
                 let chips: &[(&str, Resolution, Color)] = if h.resolution.is_conflict() {
                     &[
-                        ("Take ours", Resolution::TookOurs, Color::from_rgb8(16, 185, 129)),
-                        ("Take theirs", Resolution::TookTheirs, Color::from_rgb8(96, 165, 250)),
-                        ("Take both", Resolution::TookBoth, Color::from_rgb8(148, 163, 184)),
+                        ("Take ours", Resolution::TookOurs, c.semantic.success),
+                        ("Take theirs", Resolution::TookTheirs, c.semantic.info),
+                        ("Take both", Resolution::TookBoth, c.text_dim),
                     ]
                 } else {
                     // Auto-resolved — still allow flipping.
                     &[
-                        ("Ours", Resolution::TookOurs, Color::from_rgb8(16, 185, 129)),
-                        ("Theirs", Resolution::TookTheirs, Color::from_rgb8(96, 165, 250)),
-                        ("Both", Resolution::TookBoth, Color::from_rgb8(148, 163, 184)),
+                        ("Ours", Resolution::TookOurs, c.semantic.success),
+                        ("Theirs", Resolution::TookTheirs, c.semantic.info),
+                        ("Both", Resolution::TookBoth, c.text_dim),
                     ]
                 };
                 // Status label on the left.

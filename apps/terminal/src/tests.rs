@@ -314,11 +314,16 @@ mod tests {
                 next_link_id: &mut next_link_id,
                 current_link_id: 0,
                 title_out: &mut title_out,
+                print_buf: None,
             };
 
             performer.print('H');
             performer.print('i');
             assert_eq!(performer.cursor_x, 2);
+            // Printed cells are batched in-memory and committed to the CRDT on
+            // any non-print action or at end of feed; flush so the read below
+            // sees them (the real feed path flushes via `flush_cursor`).
+            performer.flush_print_buf();
         }
 
         let (_, text_id) = doc.get(&line_id, "text").unwrap().unwrap();
@@ -693,6 +698,61 @@ mod tests {
         assert_eq!(w.scroll_offset(), 0, "new output snaps to the live bottom");
         let after = w.visible_lines();
         assert!(after.iter().any(|l| l.contains("LINE060")), "bottom shows freshest: {:?}", after);
+    }
+
+    /// Bulk output must stay linear. `print` batches a run of cells into one
+    /// diffed text splice + one `attrs` put per line; the old per-cell
+    /// `splice_text` + full-`attrs`-`put` was an O(doc) write *per character*, so
+    /// a screenful of coloured output was O(n²) and took minutes (a debug-build
+    /// freeze; HIG §6). Feeding a full screen of styled lines through the real
+    /// `feed` path must produce correct content and finish well under a bound the
+    /// quadratic path could never meet.
+    #[test]
+    fn bulk_styled_output_stays_linear_and_correct() {
+        use std::time::{Duration, Instant};
+        let (mut w, _write_rx, _out_tx) = build_test_widget_io();
+        let mut doc = AutoCommit::new();
+        // 129 cols × ~38 rows — the same shape a maximized terminal reflows to,
+        // where the regression froze.
+        w.force_geometry(Rect::new(0.0, 0.0, 1290.0, 760.0), 10.0, 20.0);
+
+        // A screenful-and-then-some of SGR-coloured lines (the mid-line reset is
+        // deliberate: it forces a buffer flush partway through each line too).
+        let mut payload = Vec::new();
+        for i in 0..80u32 {
+            payload.extend_from_slice(
+                format!("\x1b[38;5;250m{i:>4}\x1b[0m  the quick brown fox jumps over the lazy dog {i:03}\r\n")
+                    .as_bytes(),
+            );
+        }
+
+        let start = Instant::now();
+        w.feed(&mut doc, &automerge::ROOT, &payload);
+        w.sync(&mut doc, &automerge::ROOT);
+        let elapsed = start.elapsed();
+
+        // Correctness: the freshest lines are on screen with their real content.
+        let visible = w.visible_lines();
+        assert!(
+            visible.iter().any(|l| l.contains("lazy dog 079")),
+            "newest bulk line rendered: {visible:?}"
+        );
+        // Scroll back to prove the older lines were retained (not dropped/garbled).
+        w.scroll_to_top();
+        let top = w.visible_lines();
+        assert!(
+            top.iter().any(|l| l.contains("lazy dog 000")),
+            "oldest bulk line retained: {top:?}"
+        );
+
+        // Performance guard: the fixed path does this in well under a second even
+        // in debug; the O(n²) regression took minutes. A generous 30s bound only
+        // trips if the per-character CRDT write storm comes back — never on load.
+        assert!(
+            elapsed < Duration::from_secs(30),
+            "feeding 80 styled lines took {elapsed:?} — the per-cell O(n²) CRDT \
+             write regressed (HIG §6)"
+        );
     }
 
     #[test]

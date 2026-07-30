@@ -13,6 +13,7 @@ use vello::peniko::{Color, Fill};
 
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
+use ui::widget::Avatar;
 use ui::ColorCompat;
 
 use crate::model::ChangeKind;
@@ -218,11 +219,15 @@ pub fn lane_color(theme: &Theme, lane: usize) -> Color {
     palette[lane % palette.len()]
 }
 
-/// Two-initials avatar disc for an author. Returns the disc diameter.
+/// Two-initials avatar disc for an author. `color` is the author's stable
+/// per-email hue (see [`author_color`]); the disc + centred monogram are
+/// painted by the shared toolkit avatar so shape/placement match every other
+/// app. Returns the disc diameter.
 pub fn avatar(
     scene: &mut Scene,
     tr: &mut TextRenderer,
     t: Affine,
+    theme: &Theme,
     x: f64,
     y: f64,
     diameter: f64,
@@ -230,26 +235,7 @@ pub fn avatar(
     color: Color,
 ) -> f64 {
     let rect = Rect::new(x, y, x + diameter, y + diameter);
-    fill_round(scene, t, rect, diameter / 2.0, color);
-    let initials: String = name
-        .split_whitespace()
-        .filter_map(|w| w.chars().next())
-        .take(2)
-        .collect::<String>()
-        .to_uppercase();
-    let size = (diameter * 0.42) as f32;
-    let tw = tr.measure_weighted(&initials, size, None, TextWeight::Semibold).0 as f64;
-    text_weighted(
-        scene,
-        tr,
-        t,
-        &initials,
-        size,
-        Color::WHITE,
-        x + (diameter - tw) / 2.0,
-        y + (diameter - size as f64) / 2.0 - 1.0,
-        None,
-        TextWeight::Semibold,
-    );
+    let initials = Avatar::initials_for_name(name);
+    Avatar::draw_at(scene, t, rect, &initials, color, theme, tr);
     diameter
 }

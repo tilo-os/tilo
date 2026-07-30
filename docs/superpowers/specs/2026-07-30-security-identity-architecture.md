@@ -247,8 +247,31 @@ No `sudo`, no `pkexec`, no general-purpose escalation. Privileged operations are
 individually-authorised requests to a broker. The failure mode we are eliminating is the one where
 a single authorisation prompt converts into unrestricted, indefinite control of the machine.
 
-Root access exists, but only via recovery mode with explicit consent and a data wipe — so reaching
-it grants an attacker nothing.
+The thing to get right is that a locked-down system must not feel like it is fighting its owner.
+Android-style lockdown reads as *gimmicky* to anyone who wants to look inside their own computer,
+and an OS that makes tinkering feel adversarial has failed at something more important than the
+attack it prevented.
+
+Two commitments follow.
+
+**Unlocking does not destroy anything.** Reaching full control is a supported operation, not a
+punishment. Wiping user data to permit it — the Android bootloader model — protects the vendor's
+threat model at the owner's expense, and it makes the safe path the one where you never learn how
+your system works.
+
+What unlocking costs instead is **attestability**. An unlocked machine says so: the state is
+recorded where the running system cannot forge it, and it appears in what the machine attests to its
+peers. You cannot unlock quietly, and you cannot unlock something you do not own. That preserves
+the property the wipe was protecting — an attacker with brief physical access gains nothing durable
+and invisible — while leaving the owner's data alone.
+
+Relocking is likewise supported, and returns the machine to a fully attestable state.
+
+**Most tinkering must not require unlocking at all.** If full control is the only way to install a
+package or read a log, then the granular capability system has failed and everyone will just unlock.
+The measure of success is that the unlock exists and is rarely reached: elevated operations are
+requested at the granularity actually needed, and a first-class environment exists for building,
+installing and experimenting that does not need host privilege at all.
 
 ### 4.7 Without a TPM
 
@@ -256,6 +279,35 @@ Signed UKI and sealed root still give full offline integrity. What is lost is me
 rollback binding, and automatic unlock; the disk falls back to a passphrase. The machine reports
 itself as unattestable and **continues to work**. Hardware absence must never become a hardware
 requirement by accident.
+
+### 4.8 Separately verifiable components, for reasons that are not security
+
+The root filesystem is sealed under one digest, which cannot express "this kernel is suspect but
+that firmware is fine". Splitting the image into independently signed components — kernel, firmware
+bundles, out-of-tree modules — is worth doing, but **not** for the reason it is usually claimed.
+
+On a monolithic kernel it buys almost no isolation. A compromised graphics module and a compromised
+kernel are the same compromise: both run in ring 0, and an attacker who has either has the machine.
+Verifying them separately tells you *which* component was subverted, not that the subversion was
+contained. The argument for component isolation as a security boundary belongs to a system with an
+actual boundary there — a microkernel — and Linux is not that system.
+
+The real reasons, stated honestly so nobody later mistakes this for defence in depth:
+
+- **Attack surface by omission.** A machine with no Nvidia hardware should not carry Nvidia drivers.
+  Code that was never installed cannot be exploited, and that is a genuine reduction — just a
+  different mechanism from isolation.
+- **Install size**, for the same reason.
+- **Low-level components need a distribution channel anyway.** Firmware, out-of-tree modules and
+  kernel variants have to reach machines somehow, signed and verifiable. A component format is that
+  channel, and inventing a second mechanism later would be worse.
+- **It leaves room for a boundary that does not exist yet.** If a future kernel offers real
+  intra-kernel confinement, a system that already ships components separately can use it. One that
+  ships a single blob cannot without re-architecting.
+
+This is close to conventional package management with signing and verification done properly, and
+that resemblance is fine — but it should be recognised, so the design does not drift into
+re-solving problems package managers already solved badly.
 
 ---
 
@@ -457,3 +509,7 @@ right now. Continuous enforcement comes from the sealed root, not from attestati
 - That attestation proves anything about the running state after boot (§8).
 - That a machine without a TPM is equally protected against a thief. It is equally protected
   against every *other* adversary, and that distinction is the design (§4.7).
+- That separately signed components isolate a compromise. They identify it. On a monolithic kernel
+  those are different things (§4.8).
+- That an unlocked machine is as trustworthy as a locked one. It is as *usable*, and it says which
+  it is (§4.6).
