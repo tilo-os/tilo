@@ -157,6 +157,10 @@ pub struct InboundAppCrdt {
     /// Originating cluster id (uuid as string); second half of the
     /// broker's delivery filter.
     pub cluster_id: String,
+    /// Originating record id — which document these changes belong
+    /// to. Empty for a sender whose state is one document per
+    /// `(app, cluster)`. Third component of the delivery filter.
+    pub record_id: String,
     /// Opaque Automerge incremental change blob, passed through to
     /// the receiving app's `CollaborationManager` as a
     /// `CollabEvent::CRDTIncremental`.
@@ -179,6 +183,9 @@ pub struct InboundAppCrdtSigned {
     pub app_id: String,
     /// Originating cluster id; second half of the delivery filter.
     pub cluster_id: String,
+    /// Originating record id; third component of the delivery filter.
+    /// Empty for a sender that announced no record.
+    pub record_id: String,
     /// The signed envelope. Wrapped in `Box` to mirror the wire shape
     /// and keep the queue entry size bounded — `SignedOp` is large
     /// (32-byte pubkey + 64-byte sig + variable payload + UUIDs).
@@ -409,11 +416,18 @@ impl ShellNetwork {
     /// swallowed — CRDT updates are idempotent and the next
     /// `SyncIncremental` will republish, so a brief actor backlog
     /// is recoverable.
-    pub fn publish_app_crdt_incremental(&self, app_id: String, cluster_id: String, data: Vec<u8>) {
+    pub fn publish_app_crdt_incremental(
+        &self,
+        app_id: String,
+        cluster_id: String,
+        record_id: String,
+        data: Vec<u8>,
+    ) {
         let msg = NeighbourMsg::AppCrdtIncremental {
             peer: self.local_peer_id_hash(),
             app_id,
             cluster_id,
+            record_id,
             data,
         };
         let _ = self.cmd_tx.try_send(NetCmd::Publish {
@@ -430,6 +444,7 @@ impl ShellNetwork {
         peer: u64,
         app_id: String,
         cluster_id: String,
+        record_id: String,
         data: Vec<u8>,
     ) {
         if let Ok(mut buf) = self.inbound_app_crdt.lock() {
@@ -437,6 +452,7 @@ impl ShellNetwork {
                 peer,
                 app_id,
                 cluster_id,
+                record_id,
                 data,
             });
         }
@@ -461,12 +477,14 @@ impl ShellNetwork {
         &self,
         app_id: String,
         cluster_id: String,
+        record_id: String,
         envelope: collab_types::SignedOp,
     ) {
         let msg = NeighbourMsg::AppCrdtIncrementalSigned {
             peer: self.local_peer_id_hash(),
             app_id,
             cluster_id,
+            record_id,
             envelope: Box::new(envelope),
         };
         let _ = self.cmd_tx.try_send(NetCmd::Publish {
@@ -484,6 +502,7 @@ impl ShellNetwork {
         peer: u64,
         app_id: String,
         cluster_id: String,
+        record_id: String,
         envelope: collab_types::SignedOp,
     ) {
         if let Ok(mut buf) = self.inbound_app_crdt_signed.lock() {
@@ -491,6 +510,7 @@ impl ShellNetwork {
                 peer,
                 app_id,
                 cluster_id,
+                record_id,
                 envelope: Box::new(envelope),
             });
         }
@@ -791,6 +811,7 @@ impl ShellNetwork {
                     peer: peer_hash,
                     ref app_id,
                     ref cluster_id,
+                    ref record_id,
                     ref data,
                 } = msg
                 {
@@ -799,6 +820,7 @@ impl ShellNetwork {
                             peer_hash,
                             app_id.clone(),
                             cluster_id.clone(),
+                            record_id.clone(),
                             data.clone(),
                         );
                     }
@@ -812,6 +834,7 @@ impl ShellNetwork {
                     peer: peer_hash,
                     ref app_id,
                     ref cluster_id,
+                    ref record_id,
                     ref envelope,
                 } = msg
                 {
@@ -820,6 +843,7 @@ impl ShellNetwork {
                             peer_hash,
                             app_id.clone(),
                             cluster_id.clone(),
+                            record_id.clone(),
                             (**envelope).clone(),
                         );
                     }
@@ -1121,6 +1145,7 @@ mod tests {
         net.publish_app_crdt_incremental(
             "terminal".into(),
             "00000000-0000-0000-0000-000000000000".into(),
+            "file:/work/notes.md".into(),
             vec![0xAA, 0xBB, 0xCC],
         );
         let cmd = cmd_rx
@@ -1134,11 +1159,16 @@ mod tests {
                         peer,
                         app_id,
                         cluster_id,
+                        record_id,
                         data,
                     } => {
                         assert_eq!(peer, 0xCAFEu64);
                         assert_eq!(app_id, "terminal");
                         assert_eq!(cluster_id, "00000000-0000-0000-0000-000000000000");
+                        // The record has to survive the wrap: it is what
+                        // tells the receiving broker which document these
+                        // changes belong to.
+                        assert_eq!(record_id, "file:/work/notes.md");
                         assert_eq!(data, vec![0xAA, 0xBB, 0xCC]);
                     }
                     other => panic!("expected AppCrdtIncremental, got {other:?}"),
@@ -1160,6 +1190,7 @@ mod tests {
             7u64,
             "terminal".into(),
             "cluster-uuid".into(),
+            "file:/work/notes.md".into(),
             vec![0x01, 0x02],
         );
         let buf = buf_handle.lock().unwrap();
@@ -1167,6 +1198,7 @@ mod tests {
         assert_eq!(buf[0].peer, 7u64);
         assert_eq!(buf[0].app_id, "terminal");
         assert_eq!(buf[0].cluster_id, "cluster-uuid");
+        assert_eq!(buf[0].record_id, "file:/work/notes.md");
         assert_eq!(buf[0].data, vec![0x01, 0x02]);
     }
 
@@ -1220,6 +1252,7 @@ mod tests {
         net.publish_app_crdt_signed(
             "notes".to_string(),
             "cluster-7".to_string(),
+            "uuid:9f".to_string(),
             envelope.clone(),
         );
         let cmd = cmd_rx
@@ -1233,6 +1266,7 @@ mod tests {
                         peer,
                         app_id,
                         cluster_id,
+                        record_id,
                         envelope: got,
                     } => {
                         assert_eq!(peer, 0xFEED_u64);
@@ -1241,6 +1275,7 @@ mod tests {
                         // envelope arrives unaddressed and is dropped.
                         assert_eq!(app_id, "notes");
                         assert_eq!(cluster_id, "cluster-7");
+                        assert_eq!(record_id, "uuid:9f");
                         assert_eq!(*got, envelope);
                     }
                     other => panic!("expected AppCrdtIncrementalSigned, got {other:?}"),
@@ -1264,6 +1299,7 @@ mod tests {
             99u64,
             "notes".to_string(),
             "cluster-7".to_string(),
+            "uuid:9f".to_string(),
             envelope.clone(),
         );
         let buf = buf_handle.lock().unwrap();
@@ -1271,6 +1307,7 @@ mod tests {
         assert_eq!(buf[0].peer, 99u64);
         assert_eq!(buf[0].app_id, "notes");
         assert_eq!(buf[0].cluster_id, "cluster-7");
+        assert_eq!(buf[0].record_id, "uuid:9f");
         assert_eq!(*buf[0].envelope, envelope);
     }
 
