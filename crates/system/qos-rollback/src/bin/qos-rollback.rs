@@ -1,5 +1,1011 @@
-//! Placeholder entry point; the subcommand surface lands with the TPM drivers.
+//! `qos-rollback` — bounded rollback protection and TPM lockout hardening.
+//!
+//! Subcommands, in the order a machine meets them:
+//!
+//! * `tpm-status`  — what this TPM's dictionary-attack lockout actually permits.
+//! * `harden`      — set the DA reset authorisation and tighten the parameters.
+//! * `enroll`      — first-time setup on an encrypted device: define the floor
+//!                   counter, seal the running generation's keyslot, prove it.
+//! * `unlock`      — unseal a generation's passphrase in early userspace.
+//! * `confirm`     — after a successful boot: enroll the running generation,
+//!                   prove it, prune the window, THEN raise the floor.
+//! * `status`      — floor, retained generations, and whether each unseals.
+//! * `certify`     — a signed statement of the floor, for a peer to verify.
+//! * `sign-prediction` — build-side: sign a PCR prediction for a generation.
+//!
+//! Secrets never travel on `argv`. The recovery key and the PIN are read from
+//! stdin or from a file passed by path.
+
+use anyhow::{Context, Result, bail};
+use clap::{Parser, Subcommand};
+use qos_rollback::{
+    Config, certify, confirm, counter, exec, generation, keyslots, lockout, policy, retention,
+    token::RollbackToken,
+};
+use std::io::Read;
+use std::path::{Path, PathBuf};
+use zeroize::Zeroizing;
+
+#[derive(Parser)]
+#[command(
+    name = "qos-rollback",
+    about = "Bounded rollback protection: the last few OS generations may unseal the disk, older ones may not"
+)]
+struct Cli {
+    /// TPM2 TCTI. Omit for the tools' default, which is the kernel resource
+    /// manager at /dev/tpmrm0. Set it to reach an emulator, e.g.
+    /// `swtpm:host=127.0.0.1,port=2321`.
+    #[arg(long, global = true)]
+    tcti: Option<String>,
+
+    /// NV index holding the rollback floor.
+    #[arg(long, global = true)]
+    nv_index: Option<String>,
+
+    /// How many generations keep a sealed keyslot, counting the current one.
+    #[arg(long, global = true)]
+    retain: Option<u32>,
+
+    /// Public half of the PCR prediction signing key.
+    #[arg(long, global = true)]
+    pcr_public_key: Option<PathBuf>,
+
+    /// PCR bank and list, e.g. `sha256:7,11`.
+    #[arg(long, global = true)]
+    pcrs: Option<String>,
+
+    /// Bookkeeping file. Non-secret.
+    #[arg(long, global = true)]
+    state: Option<PathBuf>,
+
+    /// Directory holding signed PCR predictions.
+    #[arg(long, global = true)]
+    predictions: Option<PathBuf>,
+
+    #[command(subcommand)]
+    cmd: Cmd,
+}
+
+#[derive(Subcommand)]
+enum Cmd {
+    /// Report what this TPM's lockout configuration actually allows.
+    TpmStatus {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Set the dictionary-attack reset authorisation and tighten the parameters.
+    Harden {
+        /// Where to record the generated reset authorisation. Must be on the
+        /// encrypted root.
+        #[arg(long, default_value = "/var/lib/qos/rollback/lockout-auth")]
+        auth_file: PathBuf,
+        #[arg(long, default_value_t = 8)]
+        max_tries: u32,
+        #[arg(long, default_value_t = 7200)]
+        recovery_time: u32,
+        #[arg(long, default_value_t = 86400)]
+        lockout_recovery: u32,
+        /// Proceed even though no recovery key has been confirmed. Refused by
+        /// default, because a set reset authorisation plus a forgotten PIN and no
+        /// recovery key is unrecoverable data loss.
+        #[arg(long)]
+        i_have_a_recovery_key: bool,
+    },
+    /// First-time enrollment on an already-encrypted device.
+    Enroll {
+        #[arg(long)]
+        device: PathBuf,
+        /// Generation to enroll. Defaults to the running one.
+        #[arg(long)]
+        generation: Option<u64>,
+        /// Read the authorising passphrase (normally the recovery key) from this
+        /// file. `-` reads stdin.
+        #[arg(long)]
+        recovery_key_file: PathBuf,
+        /// Read the unlock PIN from this file.
+        #[arg(long)]
+        pin_file: Option<PathBuf>,
+    },
+    /// Unseal a generation's passphrase.
+    Unlock {
+        #[arg(long)]
+        device: PathBuf,
+        /// Write the passphrase here instead of stdout. The intended target is
+        /// `/run/cryptsetup-keys.d/<volume>.key`, which `systemd-cryptsetup`
+        /// picks up as an implicit key file.
+        #[arg(long)]
+        output: Option<PathBuf>,
+        #[arg(long)]
+        pin_file: Option<PathBuf>,
+    },
+    /// Confirm the running generation, then raise the floor.
+    Confirm {
+        #[arg(long)]
+        device: PathBuf,
+        #[arg(long)]
+        generation: Option<u64>,
+        #[arg(long)]
+        recovery_key_file: PathBuf,
+        #[arg(long)]
+        pin_file: Option<PathBuf>,
+        /// Raise the floor to at least this generation, so a security update can
+        /// jump past a vulnerable one instead of leaving it inside the window.
+        #[arg(long)]
+        floor_at_least: Option<u64>,
+        /// Report what would happen and change nothing.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Floor, retained generations, and whether each still unseals.
+    Status {
+        #[arg(long)]
+        device: Option<PathBuf>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Produce a signed statement of the rollback floor.
+    Certify {
+        /// Verifier's nonce, hex.
+        #[arg(long)]
+        nonce: String,
+        /// Directory to write attestation.bin, signature.bin and ak.pub into.
+        #[arg(long)]
+        out_dir: PathBuf,
+    },
+    /// Build side: sign a PCR prediction for a generation.
+    SignPrediction {
+        #[arg(long)]
+        private_key: PathBuf,
+        /// `tpm2_pcrread -o` blob of the predicted measurements. Omit to predict
+        /// the machine's current state.
+        #[arg(long)]
+        pcr_values: Option<PathBuf>,
+        #[arg(long)]
+        generation: u64,
+        #[arg(long)]
+        out_dir: PathBuf,
+        #[arg(long, default_value = "")]
+        label: String,
+    },
+}
+
+fn read_secret(path: &Path) -> Result<Zeroizing<Vec<u8>>> {
+    if path == Path::new("-") {
+        let mut line = String::new();
+        std::io::stdin()
+            .read_line(&mut line)
+            .context("reading a secret from stdin")?;
+        let t = line.trim_end_matches(['\n', '\r']).to_string();
+        if t.is_empty() {
+            bail!("empty secret on stdin");
+        }
+        return Ok(Zeroizing::new(t.into_bytes()));
+    }
+    let mut f = std::fs::File::open(path).with_context(|| format!("opening {}", path.display()))?;
+    let mut buf = Vec::new();
+    f.read_to_end(&mut buf)
+        .with_context(|| format!("reading {}", path.display()))?;
+    // A trailing newline is near-universal in a file a human made, and a
+    // passphrase that differs by one byte fails in a way that looks like data
+    // loss. Strip it.
+    while buf.last() == Some(&b'\n') || buf.last() == Some(&b'\r') {
+        buf.pop();
+    }
+    if buf.is_empty() {
+        bail!("{} is empty", path.display());
+    }
+    Ok(Zeroizing::new(buf))
+}
+
+fn parse_pcrs(spec: &str) -> Result<(String, Vec<u32>)> {
+    let (bank, list) = spec
+        .split_once(':')
+        .with_context(|| format!("--pcrs {spec} should look like sha256:7,11"))?;
+    let pcrs = list
+        .split(',')
+        .map(|s| s.trim().parse::<u32>().context("PCR index"))
+        .collect::<Result<Vec<_>>>()?;
+    Ok((bank.to_string(), pcrs))
+}
+
+fn config(cli: &Cli) -> Result<Config> {
+    let mut cfg = Config::default();
+    if let Some(i) = &cli.nv_index {
+        let s = i.trim_start_matches("0x").trim_start_matches("0X");
+        cfg.nv_index = u32::from_str_radix(s, 16)
+            .with_context(|| format!("--nv-index {i} should be hex, e.g. 0x01D91100"))?;
+    }
+    if let Some(r) = cli.retain {
+        if r == 0 {
+            bail!("--retain must be at least 1");
+        }
+        cfg.retained_generations = r;
+    }
+    if let Some(p) = &cli.pcr_public_key {
+        cfg.pcr_public_key = p.display().to_string();
+    }
+    if let Some(spec) = &cli.pcrs {
+        let (bank, pcrs) = parse_pcrs(spec)?;
+        cfg.pcr_bank = bank;
+        cfg.pcrs = pcrs;
+    }
+    Ok(cfg)
+}
+
 fn main() {
-    eprintln!("qos-rollback: not yet wired up");
-    std::process::exit(1);
+    if let Err(e) = run() {
+        eprintln!("qos-rollback: {e:#}");
+        std::process::exit(1);
+    }
+}
+
+fn run() -> Result<()> {
+    let cli = Cli::parse();
+    let cfg = config(&cli)?;
+    let scratch = tempfile::Builder::new()
+        .prefix("qos-rollback.")
+        .tempdir()
+        .context("creating a scratch directory")?;
+    let runner = exec::Real::new()
+        .with_tcti(cli.tcti.as_deref())
+        .with_cwd(scratch.path());
+    let ws = policy::Workspace::new(scratch.path());
+    let state_path = cli.state.clone().unwrap_or_else(confirm::state_path);
+    let pred_dir = cli
+        .predictions
+        .clone()
+        .unwrap_or_else(|| PathBuf::from("/usr/share/qos/pcr-predictions"));
+
+    match &cli.cmd {
+        Cmd::TpmStatus { json } => cmd_tpm_status(&runner, *json),
+        Cmd::Harden {
+            auth_file,
+            max_tries,
+            recovery_time,
+            lockout_recovery,
+            i_have_a_recovery_key,
+        } => cmd_harden(
+            &runner,
+            auth_file,
+            lockout::Target {
+                max_tries: *max_tries,
+                recovery_time: *recovery_time,
+                lockout_recovery: *lockout_recovery,
+            },
+            *i_have_a_recovery_key,
+        ),
+        Cmd::Enroll {
+            device,
+            generation: gen_num,
+            recovery_key_file,
+            pin_file,
+        } => cmd_enroll(
+            &runner,
+            &ws,
+            &cfg,
+            &state_path,
+            &pred_dir,
+            scratch.path(),
+            device,
+            *gen_num,
+            recovery_key_file,
+            pin_file.as_deref(),
+        ),
+        Cmd::Unlock {
+            device,
+            output,
+            pin_file,
+        } => cmd_unlock(
+            &runner,
+            &ws,
+            &cfg,
+            device,
+            output.as_deref(),
+            pin_file.as_deref(),
+        ),
+        Cmd::Confirm {
+            device,
+            generation: gen_num,
+            recovery_key_file,
+            pin_file,
+            floor_at_least,
+            dry_run,
+        } => cmd_confirm(
+            &runner,
+            &ws,
+            &cfg,
+            &state_path,
+            &pred_dir,
+            scratch.path(),
+            device,
+            *gen_num,
+            recovery_key_file,
+            pin_file.as_deref(),
+            *floor_at_least,
+            *dry_run,
+        ),
+        Cmd::Status { device, json } => cmd_status(
+            &runner,
+            &cfg,
+            &state_path,
+            scratch.path(),
+            device.as_deref(),
+            *json,
+        ),
+        Cmd::Certify { nonce, out_dir } => {
+            cmd_certify(&runner, &ws, &cfg, &state_path, scratch.path(), nonce, out_dir)
+        }
+        Cmd::SignPrediction {
+            private_key,
+            pcr_values,
+            generation: gen_num,
+            out_dir,
+            label,
+        } => cmd_sign_prediction(
+            &runner,
+            &ws,
+            &cfg,
+            private_key,
+            pcr_values.as_deref(),
+            *gen_num,
+            out_dir,
+            label,
+        ),
+    }
+}
+
+fn cmd_tpm_status(runner: &dyn exec::Runner, json: bool) -> Result<()> {
+    let params = lockout::read(runner)?;
+    let a = lockout::assess(params, lockout::Target::default());
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "max_tries": params.max_tries,
+                "recovery_time_s": params.recovery_time,
+                "lockout_recovery_s": params.lockout_recovery,
+                "failure_counter": params.counter,
+                "reset_auth_set": params.lockout_auth_set,
+                "in_lockout": params.in_lockout,
+                "pin_is_defensible": a.pin_is_defensible(),
+                "critical": a.critical,
+                "warnings": a.warnings,
+            })
+        );
+        return Ok(());
+    }
+    println!("TPM dictionary-attack lockout, as this hardware reports it:");
+    println!("  maxTries            {}", params.max_tries);
+    println!("  recoveryTime        {}s", params.recovery_time);
+    println!("  lockoutRecovery     {}s", params.lockout_recovery);
+    println!("  failure counter     {}", params.counter);
+    println!(
+        "  reset authorisation {}",
+        if params.lockout_auth_set { "set" } else { "EMPTY" }
+    );
+    println!("  in lockout          {}", params.in_lockout);
+    for c in &a.critical {
+        println!("\nCRITICAL: {c}");
+    }
+    for w in &a.warnings {
+        println!("warning: {w}");
+    }
+    if a.pin_is_defensible() {
+        println!("\nA short PIN is defensible on this TPM.");
+    } else {
+        println!("\nA short PIN is NOT defensible on this TPM as configured. Run `harden`.");
+    }
+    Ok(())
+}
+
+fn cmd_harden(
+    runner: &dyn exec::Runner,
+    auth_file: &Path,
+    target: lockout::Target,
+    have_recovery_key: bool,
+) -> Result<()> {
+    let before = lockout::read(runner)?;
+    println!(
+        "before: maxTries={} recoveryTime={}s lockoutRecovery={}s resetAuth={}",
+        before.max_tries,
+        before.recovery_time,
+        before.lockout_recovery,
+        if before.lockout_auth_set { "set" } else { "empty" }
+    );
+
+    if !before.lockout_auth_set && !have_recovery_key {
+        bail!(
+            "refusing to set the dictionary-attack reset authorisation without \
+             --i-have-a-recovery-key.\n\
+             Once it is set, a forgotten PIN plus an exhausted lockout can only be resolved with \
+             the recovery key or by clearing the TPM (which destroys every sealed keyslot). \
+             Confirm the recovery key is written down first."
+        );
+    }
+
+    if !before.lockout_auth_set {
+        let auth = lockout::new_reset_auth()?;
+        // SAFETY-CRITICAL: record it BEFORE setting it. Dying between the two
+        // leaves a TPM whose DA counter can never be reset by anyone.
+        if let Some(d) = auth_file.parent() {
+            std::fs::create_dir_all(d).with_context(|| format!("creating {}", d.display()))?;
+        }
+        std::fs::write(auth_file, &*auth).with_context(|| {
+            format!(
+                "recording the reset authorisation in {}",
+                auth_file.display()
+            )
+        })?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(auth_file, std::fs::Permissions::from_mode(0o600))?;
+        }
+        lockout::set_reset_auth(runner, &auth, None)?;
+        println!("reset authorisation set; recorded in {}", auth_file.display());
+        println!(
+            "note: that file lives on the encrypted root, which is what keeps it away from an \
+             attacker holding a powered-off machine — and also means a TPM lockout cannot be \
+             cleared until the disk is open. The recovery key is the way out of that."
+        );
+    } else {
+        println!("reset authorisation already set; leaving it alone");
+    }
+
+    let auth = read_secret(auth_file).ok();
+    let after = lockout::tighten(runner, target, auth.as_deref().map(|v| &v[..]))?;
+    println!(
+        "after:  maxTries={} recoveryTime={}s lockoutRecovery={}s",
+        after.max_tries, after.recovery_time, after.lockout_recovery
+    );
+    let a = lockout::assess(after, target);
+    for w in &a.warnings {
+        println!("warning: {w}");
+    }
+    for c in &a.critical {
+        println!("CRITICAL: {c}");
+    }
+    if !a.pin_is_defensible() {
+        bail!("the lockout configuration is still not adequate for a short PIN");
+    }
+    Ok(())
+}
+
+/// Load signed predictions for one generation.
+///
+/// Enrollment cannot produce these itself: signing needs the private prediction
+/// key, which is not on the device. That is the point — a device that could sign
+/// its own predictions could authorise any measurement state it liked.
+fn load_predictions(dir: &Path, gen_num: u64) -> Result<Vec<policy::Prediction>> {
+    let mut out = Vec::new();
+    let entries = std::fs::read_dir(dir)
+        .with_context(|| format!("reading the prediction directory {}", dir.display()))?;
+    let mut names: Vec<PathBuf> = entries
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.extension().is_some_and(|e| e == "json"))
+        .collect();
+    names.sort();
+    use base64::Engine as _;
+    let b64 = base64::engine::general_purpose::STANDARD;
+    for p in names {
+        let text =
+            std::fs::read_to_string(&p).with_context(|| format!("reading {}", p.display()))?;
+        let v: serde_json::Value =
+            serde_json::from_str(&text).with_context(|| format!("parsing {}", p.display()))?;
+        if v["generation"].as_u64() != Some(gen_num) {
+            continue;
+        }
+        out.push(policy::Prediction {
+            approved_policy: b64
+                .decode(v["approved_policy"].as_str().context("approved_policy")?)
+                .with_context(|| format!("{}: approved_policy is not base64", p.display()))?,
+            signature: b64
+                .decode(v["signature"].as_str().context("signature")?)
+                .with_context(|| format!("{}: signature is not base64", p.display()))?,
+            label: v["label"].as_str().unwrap_or("").to_string(),
+        });
+    }
+    Ok(out)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn cmd_enroll(
+    runner: &dyn exec::Runner,
+    ws: &policy::Workspace,
+    cfg: &Config,
+    state_path: &Path,
+    pred_dir: &Path,
+    scratch: &Path,
+    device: &Path,
+    gen_num: Option<u64>,
+    recovery_key_file: &Path,
+    pin_file: Option<&Path>,
+) -> Result<()> {
+    let gen_num = match gen_num {
+        Some(g) => g,
+        None => generation::running()?,
+    };
+    let recovery = read_secret(recovery_key_file)?;
+    let pin = pin_file.map(read_secret).transpose()?;
+
+    // SAFETY-CRITICAL: the independent unlock path has to work before we touch
+    // anything at all.
+    if !keyslots::verify_recovery(runner, ws, device, &recovery)? {
+        bail!(
+            "the supplied recovery key does not open {} — refusing to enroll, because every \
+             safeguard here depends on that key working",
+            device.display()
+        );
+    }
+    println!("recovery key verified on {}", device.display());
+
+    let predictions = load_predictions(pred_dir, gen_num)?;
+    if predictions.is_empty() {
+        bail!(
+            "no signed PCR prediction for generation {gen_num} in {} — a token sealed without one can \
+             never satisfy PolicyAuthorize, so enrollment would produce a keyslot that fails at boot",
+            pred_dir.display()
+        );
+    }
+    println!(
+        "{} signed prediction(s) for generation {gen_num}",
+        predictions.len()
+    );
+
+    counter::define(runner, cfg.nv_index)?;
+    let existing = keyslots::list_tokens(runner, device)?;
+    let base = confirm::load_base(confirm::load_state(state_path)?.as_ref(), &existing)?;
+    let floor = match base {
+        Some(b) => {
+            let c = counter::read(runner, cfg.nv_index, scratch)?
+                .context("the rollback floor counter exists but has never been incremented")?;
+            counter::FloorState { counter: c, base: b }
+        }
+        None => {
+            // First enrollment starts the floor at the bottom of the window, not
+            // at this generation: an immediate floor of `gen_num` would mean the very
+            // first update had nothing to fall back to.
+            let initial = gen_num.saturating_sub(u64::from(cfg.retained_generations - 1));
+            counter::materialise(runner, cfg.nv_index, scratch, initial)?
+        }
+    };
+    println!(
+        "rollback floor counter {} (base {}, floor generation {})",
+        floor.counter,
+        floor.base,
+        floor.floor_generation()
+    );
+
+    let (slot, token_id) = keyslots::enroll_generation(
+        runner,
+        ws,
+        device,
+        cfg,
+        gen_num,
+        floor,
+        &predictions,
+        &recovery,
+        pin.as_deref().map(|v| &v[..]),
+    )?;
+    println!("generation {gen_num}: keyslot {slot}, token {token_id}");
+
+    // SAFETY-CRITICAL: prove the seal round-trips before declaring success.
+    let tokens = keyslots::list_tokens(runner, device)?;
+    let (_, t) = tokens
+        .iter()
+        .find(|(_, t)| t.generation == gen_num)
+        .context("the token just written is not readable back")?;
+    match keyslots::unseal(
+        runner,
+        ws,
+        t,
+        Path::new(&cfg.pcr_public_key),
+        pin.as_deref().map(|v| &v[..]),
+    )? {
+        Some(secret) => {
+            if !keyslots::verify_passphrase(runner, ws, device, &secret, Some(slot))? {
+                bail!("the unsealed secret does not open keyslot {slot} — enrollment is not usable");
+            }
+            println!("generation {gen_num} unseals and opens keyslot {slot}");
+        }
+        None => bail!(
+            "the token for generation {gen_num} was written but does not unseal on this machine: the \
+             signed prediction does not match the live PCRs. The keyslot was left in place and the \
+             recovery key still works; fix the prediction and re-run."
+        ),
+    }
+
+    confirm::save_state(
+        state_path,
+        &confirm::State {
+            nv_index: cfg.nv_index,
+            nv_base: floor.base,
+            last_confirmed: Some(gen_num),
+        },
+    )?;
+    // SAFETY-CRITICAL: last word goes to the recovery key.
+    if !keyslots::verify_recovery(runner, ws, device, &recovery)? {
+        bail!(
+            "the recovery key no longer opens {} after enrollment — this needs attention NOW",
+            device.display()
+        );
+    }
+    println!("recovery key still verified. Enrollment complete.");
+    Ok(())
+}
+
+fn cmd_unlock(
+    runner: &dyn exec::Runner,
+    ws: &policy::Workspace,
+    cfg: &Config,
+    device: &Path,
+    output: Option<&Path>,
+    pin_file: Option<&Path>,
+) -> Result<()> {
+    let pin = pin_file.map(read_secret).transpose()?;
+    let tokens = keyslots::list_tokens(runner, device)?;
+    if tokens.is_empty() {
+        bail!("no qos-rollback token on {}", device.display());
+    }
+    let mut floor_refusals = Vec::new();
+    for (id, t) in &tokens {
+        match keyslots::unseal(
+            runner,
+            ws,
+            t,
+            Path::new(&cfg.pcr_public_key),
+            pin.as_deref().map(|v| &v[..]),
+        ) {
+            Ok(Some(secret)) => {
+                match output {
+                    Some(p) => {
+                        if let Some(d) = p.parent() {
+                            std::fs::create_dir_all(d)?;
+                        }
+                        std::fs::write(p, &*secret)
+                            .with_context(|| format!("writing {}", p.display()))?;
+                        #[cfg(unix)]
+                        {
+                            use std::os::unix::fs::PermissionsExt;
+                            std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o600))?;
+                        }
+                        eprintln!(
+                            "qos-rollback: generation {} unsealed to {}",
+                            t.generation,
+                            p.display()
+                        );
+                    }
+                    None => {
+                        use std::io::Write;
+                        std::io::stdout().write_all(&secret)?;
+                    }
+                }
+                return Ok(());
+            }
+            Ok(None) => continue,
+            Err(e) => {
+                floor_refusals.push(format!("token {id} (generation {}): {e:#}", t.generation))
+            }
+        }
+    }
+    if !floor_refusals.is_empty() {
+        bail!(
+            "no generation could unseal. The rollback floor refused:\n  {}\n\
+             This machine is running an image older than the oldest generation it still permits. \
+             Unlock with the recovery key.",
+            floor_refusals.join("\n  ")
+        );
+    }
+    bail!(
+        "no generation could unseal: none of the {} token(s) matched a signed prediction for the \
+         live measurements. Either the firmware or kernel changed without a new prediction being \
+         shipped, or this is not the machine these tokens were sealed on. Unlock with the recovery \
+         key.",
+        tokens.len()
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn cmd_confirm(
+    runner: &dyn exec::Runner,
+    ws: &policy::Workspace,
+    cfg: &Config,
+    state_path: &Path,
+    pred_dir: &Path,
+    scratch: &Path,
+    device: &Path,
+    gen_num: Option<u64>,
+    recovery_key_file: &Path,
+    pin_file: Option<&Path>,
+    floor_at_least: Option<u64>,
+    dry_run: bool,
+) -> Result<()> {
+    let gen_num = match gen_num {
+        Some(g) => g,
+        None => generation::running()?,
+    };
+    let recovery = read_secret(recovery_key_file)?;
+    let pin = pin_file.map(read_secret).transpose()?;
+
+    if !keyslots::verify_recovery(runner, ws, device, &recovery)? {
+        bail!(
+            "the supplied recovery key does not open {} — refusing to confirm",
+            device.display()
+        );
+    }
+
+    let mut tokens = keyslots::list_tokens(runner, device)?;
+    let state = confirm::load_state(state_path)?;
+    let base = confirm::load_base(state.as_ref(), &tokens)?
+        .context("no rollback enrollment on this device yet: run `qos-rollback enroll` first")?;
+    let cnt = counter::read(runner, cfg.nv_index, scratch)?
+        .context("the rollback floor counter has never been incremented")?;
+    let mut floor = counter::FloorState { counter: cnt, base };
+
+    // Enroll the running generation if it is not already there. This has to
+    // happen before the floor moves, or the floor could pass a generation that
+    // has no keyslot.
+    if !tokens.iter().any(|(_, t)| t.generation == gen_num) {
+        let predictions = load_predictions(pred_dir, gen_num)?;
+        if predictions.is_empty() {
+            bail!(
+                "no signed PCR prediction for generation {gen_num}; cannot enroll it, and confirming \
+                 without enrolling would raise the floor past a generation with no keyslot"
+            );
+        }
+        if dry_run {
+            println!(
+                "would enroll generation {gen_num} ({} prediction(s))",
+                predictions.len()
+            );
+        } else {
+            let (slot, token_id) = keyslots::enroll_generation(
+                runner,
+                ws,
+                device,
+                cfg,
+                gen_num,
+                floor,
+                &predictions,
+                &recovery,
+                pin.as_deref().map(|v| &v[..]),
+            )?;
+            println!("generation {gen_num}: keyslot {slot}, token {token_id}");
+            tokens = keyslots::list_tokens(runner, device)?;
+        }
+    }
+
+    let present: Vec<u64> = tokens.iter().map(|(_, t)| t.generation).collect();
+    let plan = confirm::plan(gen_num, floor, &present, cfg.retained_generations, floor_at_least)?;
+    println!(
+        "floor: {} -> {} (window {}{})",
+        plan.floor.current_floor,
+        plan.floor.target_floor,
+        plan.floor.window_floor,
+        plan.floor
+            .declared_floor
+            .map(|d| format!(", declared {d}"))
+            .unwrap_or_default()
+    );
+    println!("keep generations {:?}, drop {:?}", plan.keep, plan.drop);
+
+    if dry_run {
+        println!("dry run: nothing changed");
+        return Ok(());
+    }
+
+    // SAFETY-CRITICAL: the proof. Unseal the generation being confirmed, so that
+    // everything destructive below is authorised by a secret that demonstrably
+    // works right now.
+    let (_, running_token) = tokens
+        .iter()
+        .find(|(_, t)| t.generation == gen_num)
+        .context("no token for the generation being confirmed")?;
+    let proof = keyslots::unseal(
+        runner,
+        ws,
+        running_token,
+        Path::new(&cfg.pcr_public_key),
+        pin.as_deref().map(|v| &v[..]),
+    )?
+    .context(
+        "the token for the running generation does not unseal, so there is nothing to confirm; \
+         refusing to touch the floor",
+    )?;
+    if !keyslots::verify_passphrase(runner, ws, device, &proof, None)? {
+        bail!(
+            "the unsealed secret for generation {gen_num} does not open {}",
+            device.display()
+        );
+    }
+    println!("generation {gen_num} proven: unseals and opens the device");
+
+    // Prune first — reversible by re-enrolling. Then the floor — reversible by
+    // nothing.
+    retention::prune_is_safe(&plan.drop, &[gen_num], true)?;
+    for g in &plan.drop {
+        let Some((token_id, t)) = tokens.iter().find(|(_, t)| t.generation == *g) else {
+            continue;
+        };
+        let slot = t.keyslot()?;
+        keyslots::kill_generation_slot(runner, ws, device, *token_id, slot, &proof)?;
+        println!("dropped generation {g} (keyslot {slot}, token {token_id})");
+    }
+
+    floor = confirm::advance_floor(
+        runner,
+        ws,
+        device,
+        &plan,
+        floor,
+        cfg.nv_index,
+        &proof,
+        scratch,
+    )?;
+    println!(
+        "rollback floor is now generation {} (counter {})",
+        floor.floor_generation(),
+        floor.counter
+    );
+
+    confirm::save_state(
+        state_path,
+        &confirm::State {
+            nv_index: cfg.nv_index,
+            nv_base: floor.base,
+            last_confirmed: Some(gen_num),
+        },
+    )?;
+    if !keyslots::verify_recovery(runner, ws, device, &recovery)? {
+        bail!(
+            "the recovery key no longer opens {} — attention needed NOW",
+            device.display()
+        );
+    }
+    println!("recovery key still verified.");
+    Ok(())
+}
+
+fn cmd_status(
+    runner: &dyn exec::Runner,
+    cfg: &Config,
+    state_path: &Path,
+    scratch: &Path,
+    device: Option<&Path>,
+    json: bool,
+) -> Result<()> {
+    let state = confirm::load_state(state_path)?;
+    let tokens: Vec<(u32, RollbackToken)> = match device {
+        Some(d) => keyslots::list_tokens(runner, d)?,
+        None => Vec::new(),
+    };
+    let base = confirm::load_base(state.as_ref(), &tokens)?;
+    let counter_value = counter::read(runner, cfg.nv_index, scratch).ok().flatten();
+    let floor = match (base, counter_value) {
+        (Some(b), Some(c)) => Some(counter::FloorState { counter: c, base: b }),
+        _ => None,
+    };
+    let gens: Vec<u64> = tokens.iter().map(|(_, t)| t.generation).collect();
+    let running = generation::running().ok();
+
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "nv_index": format!("0x{:08X}", cfg.nv_index),
+                "counter": counter_value,
+                "base": base,
+                "floor_generation": floor.map(|f| f.floor_generation()),
+                "running_generation": running,
+                "retained_generations": cfg.retained_generations,
+                "enrolled_generations": gens,
+            })
+        );
+        return Ok(());
+    }
+    println!("NV index            0x{:08X}", cfg.nv_index);
+    match counter_value {
+        Some(c) => println!("counter             {c}"),
+        None => println!("counter             not initialised"),
+    }
+    match floor {
+        Some(f) => println!("rollback floor      generation {}", f.floor_generation()),
+        None => println!("rollback floor      unknown (no recorded base)"),
+    }
+    match running {
+        Some(g) => println!("running generation  {g}"),
+        None => println!("running generation  unknown (no qos.generation= on the command line)"),
+    }
+    println!(
+        "retention window    {} generations",
+        cfg.retained_generations
+    );
+    if device.is_some() {
+        println!("enrolled            {gens:?}");
+        if let Some(f) = floor {
+            for g in &gens {
+                let permitted = *g >= f.floor_generation();
+                println!(
+                    "  generation {g:<6} {}",
+                    if permitted {
+                        "permitted by the floor"
+                    } else {
+                        "BLOCKED by the floor"
+                    }
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+fn cmd_certify(
+    runner: &dyn exec::Runner,
+    ws: &policy::Workspace,
+    cfg: &Config,
+    state_path: &Path,
+    scratch: &Path,
+    nonce_hex: &str,
+    out_dir: &Path,
+) -> Result<()> {
+    let nonce = hex::decode(nonce_hex).context("--nonce must be hex")?;
+    if nonce.is_empty() {
+        bail!("--nonce must not be empty: without a verifier-chosen nonce the attestation replays");
+    }
+    let base = confirm::load_state(state_path)?
+        .map(|s| s.nv_base)
+        .context("no recorded counter base, so the floor generation cannot be reported")?;
+    let att = certify::certify_floor(runner, ws, cfg.nv_index, base, &nonce, scratch)?;
+    std::fs::create_dir_all(out_dir)?;
+    std::fs::write(out_dir.join("attestation.bin"), &att.attestation)?;
+    std::fs::write(out_dir.join("signature.bin"), &att.signature)?;
+    std::fs::write(out_dir.join("ak.pub"), &att.key_public)?;
+    println!(
+        "certified: counter {} = floor generation {} ({} bytes attestation, {} bytes signature)",
+        att.counter,
+        att.floor_generation,
+        att.attestation.len(),
+        att.signature.len()
+    );
+    println!("written to {}", out_dir.display());
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn cmd_sign_prediction(
+    runner: &dyn exec::Runner,
+    ws: &policy::Workspace,
+    cfg: &Config,
+    private_key: &Path,
+    pcr_values: Option<&Path>,
+    gen_num: u64,
+    out_dir: &Path,
+    label: &str,
+) -> Result<()> {
+    let selection = policy::pcr_selection(&cfg.pcr_bank, &cfg.pcrs);
+    let approved = policy::approved_policy(runner, ws, &selection, pcr_values)?;
+    let sig = policy::sign_prediction(runner, ws, private_key, &approved, gen_num)?;
+    std::fs::create_dir_all(out_dir)?;
+    use base64::Engine as _;
+    let b64 = base64::engine::general_purpose::STANDARD;
+    let doc = serde_json::json!({
+        "generation": gen_num,
+        "pcr_bank": cfg.pcr_bank,
+        "pcrs": cfg.pcrs,
+        "approved_policy": b64.encode(&approved),
+        "signature": b64.encode(&sig),
+        "label": label,
+    });
+    let name = if label.is_empty() {
+        format!("generation-{gen_num}.json")
+    } else {
+        format!("generation-{gen_num}-{}.json", label.replace(['/', ' '], "-"))
+    };
+    let path = out_dir.join(name);
+    std::fs::write(&path, serde_json::to_string_pretty(&doc)?)?;
+    println!(
+        "signed prediction for generation {gen_num} -> {}",
+        path.display()
+    );
+    Ok(())
 }

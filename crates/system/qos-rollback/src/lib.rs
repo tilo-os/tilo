@@ -114,10 +114,16 @@
 //!    silently, because silently clamping hides an authoring mistake that would
 //!    otherwise be caught before it ships.
 
+pub mod certify;
+pub mod confirm;
 pub mod counter;
 pub mod exec;
 pub mod generation;
+pub mod keyslots;
+pub mod lockout;
+pub mod policy;
 pub mod retention;
+pub mod token;
 
 /// Everything that is a deployment policy rather than a constant.
 #[derive(Debug, Clone, PartialEq, Eq)]
