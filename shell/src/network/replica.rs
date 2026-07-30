@@ -44,7 +44,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::network::hub::TopicSubscriber;
 use crate::network::protocol::NeighbourMsg;
-use crate::shell::state::RoomId;
+use crate::shell::state::{PeerOrigin, RoomId};
 #[cfg(test)]
 use crate::shell::state::WorkspaceTree;
 use crate::shell::state::WorkspaceTreeHandle;
@@ -67,6 +67,17 @@ pub struct WorkspaceTreeReplica {
     pub id: u64,
     pub tree: WorkspaceTreeHandle,
     pub pending_outgoing: Arc<Mutex<Vec<NeighbourMsg>>>,
+    /// The transport identity this replica's messages arrive under.
+    ///
+    /// Only meaningful when the replica is driven through a [`Hub`],
+    /// which has no peer identities of its own: the live wiring calls
+    /// [`Self::handle_from`] with the authenticated `PeerId` directly and
+    /// never consults this. A hub-driven replica standing in for a peer —
+    /// the one that issued an invite, say — sets it so the receiving side
+    /// sees the identity the invite named.
+    ///
+    /// [`Hub`]: crate::network::hub::Hub
+    pub origin: PeerOrigin,
 }
 
 impl WorkspaceTreeReplica {
@@ -75,7 +86,14 @@ impl WorkspaceTreeReplica {
             id,
             tree,
             pending_outgoing: Arc::new(Mutex::new(Vec::new())),
+            origin: PeerOrigin::hub(id),
         }
+    }
+
+    /// Deliver this replica's messages under `origin`.
+    pub fn with_origin(mut self, origin: PeerOrigin) -> Self {
+        self.origin = origin;
+        self
     }
 
     /// Stash one `SyncReq` per room this machine is in, each carrying that
@@ -133,7 +151,28 @@ impl TopicSubscriber for WorkspaceTreeReplica {
         self.id
     }
 
-    fn handle(&mut self, sender: u64, msg: &NeighbourMsg) {
+    fn origin(&self) -> PeerOrigin {
+        self.origin.clone()
+    }
+
+    fn handle(&mut self, sender: &PeerOrigin, msg: &NeighbourMsg) {
+        self.handle_from(sender, msg);
+    }
+}
+
+impl WorkspaceTreeReplica {
+    /// [`TopicSubscriber::handle`] under the name the live transport
+    /// authenticated, which is what an authority decision may rest on.
+    ///
+    /// The room-replication path decides whether a payload may rewrite a
+    /// room's governance, and that decision turns on **who** the bytes
+    /// came from. The `u64` the hub used to pass cannot carry that: in
+    /// production it was a `DefaultHasher` digest of the peer id, fine for
+    /// echo-suppression and not fine for an equality check an attacker
+    /// gets to aim at. So the live wiring calls this with the peer's own
+    /// identity ([`PeerOrigin::peer`]).
+    pub fn handle_from(&mut self, from: &PeerOrigin, msg: &NeighbourMsg) {
+        let sender = from;
         match msg {
             NeighbourMsg::SyncReq { since, room } => {
                 // A request that names no room is the transport's
@@ -191,15 +230,15 @@ impl TopicSubscriber for WorkspaceTreeReplica {
                 let Some(room_id) = RoomId::parse(room).filter(|r| !r.is_nil()) else {
                     tracing::warn!(
                         target: "shell::network::replica",
-                        sender,
+                        sender = %sender,
                         "SyncResp names no room; dropped",
                     );
                     return;
                 };
-                if let Err(err) = self.tree.write().apply_room_changes(room_id, changes) {
+                if let Err(err) = self.tree.write().apply_room_changes(room_id, changes, from) {
                     tracing::error!(
                         target: "shell::network::replica",
-                        sender,
+                        sender = %sender,
                         room = %room_id,
                         change_count = changes.len(),
                         ?err,
@@ -235,7 +274,10 @@ mod tests {
         fn id(&self) -> u64 {
             self.0.lock().unwrap().id()
         }
-        fn handle(&mut self, sender: u64, msg: &NeighbourMsg) {
+        fn origin(&self) -> PeerOrigin {
+            self.0.lock().unwrap().origin()
+        }
+        fn handle(&mut self, sender: &PeerOrigin, msg: &NeighbourMsg) {
             self.0.lock().unwrap().handle(sender, msg);
         }
     }
@@ -432,7 +474,16 @@ mod tests {
             accept_invite_into(&mut guest_tree, guest_ws, &token).expect("the guest accepts it");
         assert_eq!(joined, room_a, "the invite names room A");
 
-        let host = Arc::new(Mutex::new(WorkspaceTreeReplica::new(1, host_tree.shared())));
+        // The host replica delivers under the identity its own invite
+        // named. That is what the guest pinned as room A's governance
+        // authority when it accepted, and it is why the round below is
+        // answered rather than refused: a guest takes a room's owner and
+        // capabilities from the peer whose signature admitted it.
+        let host = Arc::new(Mutex::new(
+            WorkspaceTreeReplica::new(1, host_tree.shared()).with_origin(PeerOrigin::peer(
+                &owner_key.public().to_peer_id(),
+            )),
+        ));
         let guest_handle = guest_tree.shared();
         let guest = Arc::new(Mutex::new(WorkspaceTreeReplica::new(
             2,
@@ -518,7 +569,7 @@ mod tests {
         let mut host = WorkspaceTreeReplica::new(1, host_tree.shared());
 
         host.handle(
-            9,
+            &PeerOrigin::hub(9),
             &NeighbourMsg::SyncReq {
                 since: serde_json::to_vec(&Vec::<automerge::ChangeHash>::new()).unwrap(),
                 room: stranger_room.to_string(),
@@ -543,7 +594,7 @@ mod tests {
         let mut host = WorkspaceTreeReplica::new(1, host_tree.shared());
 
         host.handle(
-            9,
+            &PeerOrigin::hub(9),
             &NeighbourMsg::SyncReq {
                 since: Vec::new(),
                 room: String::new(),
@@ -568,6 +619,93 @@ mod tests {
         assert_eq!(named.len(), 2, "one request per room, no more: {named:?}");
     }
 
+    /// The write-authority check on the live message path.
+    ///
+    /// A guest in room A publishes a `SyncResp` for room A carrying its own
+    /// owner and its own grant. The host administers room A, so what it
+    /// holds afterwards must be what it granted — read off the host's own
+    /// state, through `handle`, which is the entry point the network actor
+    /// calls.
+    #[test]
+    fn a_syncresp_that_would_rewrite_our_rooms_governance_is_not_taken() {
+        const ROGUE_OWNER: &str = "guest-claiming-room-a";
+        const ROGUE_PATH: &str = "/srv/rogue-claim";
+
+        let (host_tree, a, _b) = host_with_two_rooms();
+        let room_a = host_tree.room_of(a).expect("room A");
+        let host_handle = host_tree.shared();
+        let mut host = WorkspaceTreeReplica::new(1, host_handle.clone());
+
+        // A guest in room A whose own state says it governs the room, and
+        // which therefore projects its owner and its grants into it.
+        let mut guest = WorkspaceTree::default();
+        let guest_ws = guest.append_empty_workspace("Mine");
+        assert!(guest.set_room(guest_ws, room_a), "the guest joins room A");
+        guest
+            .room_authority
+            .insert(room_a, crate::shell::state::RoomAuthority::Local);
+        guest
+            .workspaces
+            .iter_mut()
+            .find(|w| w.id == guest_ws)
+            .expect("the guest's workspace")
+            .set_owner(ROGUE_OWNER.to_string());
+        guest
+            .grant_in_workspace(
+                guest_ws,
+                &ROGUE_OWNER.to_string(),
+                CapOverride::grant(
+                    Subject::app("rogue"),
+                    Scope::FsPath(ROGUE_PATH.to_string()),
+                    Verb::Write,
+                ),
+            )
+            .expect("the guest grants in its own copy");
+        let changes = guest
+            .export_room_changes_since(room_a, &[])
+            .expect("the guest is in room A");
+
+        host.handle(
+            &PeerOrigin::hub(9),
+            &NeighbourMsg::SyncResp {
+                changes,
+                room: room_a.to_string(),
+            },
+        );
+
+        let mut tree = host_handle.write();
+        let ws = tree
+            .workspaces
+            .iter()
+            .find(|w| w.id == a)
+            .expect("the host keeps room A's workspace");
+        assert_eq!(
+            ws.owner.as_deref(),
+            Some(ROOM_A_OWNER),
+            "a guest's SyncResp took ownership of the host's room",
+        );
+        assert!(
+            ws.capabilities
+                .iter()
+                .any(|c| matches!(&c.scope, Scope::FsPath(p) if p == ROOM_A_PATH)),
+            "the owner's own grant was replaced by the guest's list",
+        );
+        assert!(
+            !ws.capabilities
+                .iter()
+                .any(|c| matches!(&c.scope, Scope::FsPath(p) if p == ROGUE_PATH)),
+            "the guest's grant entered the host's capability list",
+        );
+        // And nowhere in what the host now holds — including the room
+        // document it will hand to the next peer that asks.
+        let held = holdings(&mut tree);
+        assert!(
+            !held.contains(ROGUE_OWNER) && !held.contains(ROGUE_PATH),
+            "the refused governance is still somewhere in the host's state: \
+             {held}"
+        );
+    }
+
     /// A response is merged into the room its envelope names, and the
     /// payload has to agree. A host that answered a request for room A
     /// with room B's document must not have that document accepted.
@@ -585,7 +723,7 @@ mod tests {
         let guest_room = guest_tree.room_of(guest_ws).expect("the guest's room");
 
         let applied = guest_tree
-            .apply_room_changes(guest_room, &room_b_changes)
+            .apply_room_changes(guest_room, &room_b_changes, &PeerOrigin::hub(1))
             .expect("well-formed change blobs still parse");
         assert!(
             !applied,
@@ -761,7 +899,7 @@ mod tests {
         // causing `apply_room_changes` to return `Err`.
         let garbage = vec![0xDE, 0xAD, 0xBE, 0xEF];
         rep.handle(
-            7,
+            &PeerOrigin::hub(7),
             &NeighbourMsg::SyncResp {
                 changes: vec![garbage],
                 room: room.to_string(),
@@ -789,7 +927,7 @@ mod tests {
         let mut rep = WorkspaceTreeReplica::new(7, tree);
 
         rep.handle(
-            1,
+            &PeerOrigin::hub(1),
             &NeighbourMsg::PresenceCleared {
                 peer: 1,
                 key: "cursor".into(),
