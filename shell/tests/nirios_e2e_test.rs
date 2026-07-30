@@ -153,7 +153,7 @@ fn search_scope_defaults_to_workspace_and_mutates_through_chrome() {
     }
     assert_eq!(chrome.borrow().search_scope, SearchScope::All);
     assert_eq!(SearchScope::Workspace.label(), "Workspace");
-    assert_eq!(SearchScope::All.label(), "All");
+    assert_eq!(SearchScope::All.label(), "Everywhere");
 }
 
 #[test]
