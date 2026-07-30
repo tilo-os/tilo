@@ -26,15 +26,25 @@ impl Output {
     pub fn stdout_utf8(&self) -> String {
         String::from_utf8_lossy(&self.stdout).into_owned()
     }
-    /// Last non-empty stderr line — the useful part of a tpm2-tools failure,
-    /// which prints several layers of ESYS scaffolding above it.
+    /// The most informative stderr line.
+    ///
+    /// tpm2-tools prints several layers: ESYS scaffolding, then the real reason,
+    /// then a generic `ERROR: Unable to run tpm2_foo` epilogue. Taking the last
+    /// line gets the epilogue and throws away the diagnosis, so the epilogue is
+    /// skipped.
     pub fn last_error_line(&self) -> String {
-        self.stderr
+        let lines: Vec<&str> = self
+            .stderr
             .lines()
             .map(str::trim)
             .filter(|l| !l.is_empty())
-            .next_back()
-            .unwrap_or("(no diagnostic)")
+            .collect();
+        lines
+            .iter()
+            .rev()
+            .find(|l| !l.starts_with("ERROR: Unable to run "))
+            .or_else(|| lines.last())
+            .unwrap_or(&"(no diagnostic)")
             .to_string()
     }
 }
@@ -120,6 +130,31 @@ impl Runner for Real {
     }
 }
 
+/// Is diagnostic tracing on?
+///
+/// A boot that cannot unseal is the situation where "the tool exited non-zero"
+/// is useless and the tool's own stderr is everything. `QOS_ROLLBACK_DEBUG=1`
+/// turns it on. It prints tool arguments, which never carry a secret — the PIN
+/// and passphrases are always passed by file reference.
+pub fn debug_enabled() -> bool {
+    std::env::var_os("QOS_ROLLBACK_DEBUG").is_some_and(|v| v != "0" && !v.is_empty())
+}
+
+/// Report a step that failed in a way the caller treats as "expected outcome",
+/// so the reason is not lost.
+pub fn trace_failure(program: &str, args: &[&OsStr], out: &Output) {
+    if !debug_enabled() {
+        return;
+    }
+    let joined: Vec<String> = args.iter().map(|a| a.to_string_lossy().into_owned()).collect();
+    eprintln!(
+        "qos-rollback: {program} {} -> exit {}\n{}",
+        joined.join(" "),
+        out.code,
+        out.stderr.trim_end()
+    );
+}
+
 /// Convenience: run and fail with the tool's own last diagnostic line.
 pub fn require(runner: &dyn Runner, program: &str, args: &[&OsStr], what: &str) -> Result<Output> {
     let out = runner.run(program, args, None)?;
@@ -150,6 +185,28 @@ mod tests {
             stderr: "WARNING:esys: noise\nERROR: real problem\n\n".into(),
         };
         assert_eq!(o.last_error_line(), "ERROR: real problem");
+    }
+
+    #[test]
+    fn last_error_line_skips_the_tpm2_tools_epilogue() {
+        let o = Output {
+            code: 1,
+            stdout: vec![],
+            stderr: "WARNING:esys: noise\nERROR: value is out of range\n\
+                     ERROR: Unable to run tpm2_changeauth\n"
+                .into(),
+        };
+        assert_eq!(o.last_error_line(), "ERROR: value is out of range");
+    }
+
+    #[test]
+    fn last_error_line_falls_back_when_the_epilogue_is_all_there_is() {
+        let o = Output {
+            code: 1,
+            stdout: vec![],
+            stderr: "ERROR: Unable to run tpm2_changeauth\n".into(),
+        };
+        assert_eq!(o.last_error_line(), "ERROR: Unable to run tpm2_changeauth");
     }
 
     #[test]

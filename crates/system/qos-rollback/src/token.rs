@@ -69,8 +69,9 @@ pub struct RollbackToken {
     pub nv_index: u32,
     /// Absolute `operandB` in the token's `TPM2_PolicyNV`: `base + generation`.
     pub nv_operand: u64,
-    /// Counter value corresponding to floor generation 0.
-    pub nv_base: u64,
+    /// Counter value corresponding to floor generation 0. Signed, and usually
+    /// negative — see [`crate::counter`].
+    pub nv_base: i64,
     pub pcr_bank: String,
     pub pcrs: Vec<u32>,
     /// Is a PIN part of the policy?
@@ -94,7 +95,7 @@ impl RollbackToken {
         generation: u64,
         nv_index: u32,
         nv_operand: u64,
-        nv_base: u64,
+        nv_base: i64,
         pcr_bank: &str,
         pcrs: &[u32],
         pin: bool,
@@ -186,10 +187,8 @@ impl RollbackToken {
         }
         // `nv_operand` must equal `nv_base + generation`, or the token was built
         // by something that does not agree with us about the mapping.
-        let expect = self
-            .nv_base
-            .checked_add(self.generation)
-            .context("token nv_base + generation overflows")?;
+        let expect = crate::counter::operand(self.nv_base, self.generation)
+            .context("token nv_base + generation is not a usable NV counter value")?;
         if self.nv_operand != expect {
             bail!(
                 "token for generation {} is internally inconsistent: nv_operand {} but nv_base {} \
