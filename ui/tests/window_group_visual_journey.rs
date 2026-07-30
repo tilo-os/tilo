@@ -213,8 +213,15 @@ fn window_group_visual_journey_distinguishes_all_states() {
 }
 
 /// Fresh render is reproducible: rendering the same state twice yields
-/// byte-identical output. This is the invariant the journey test relies
-/// on — without it, pixel-hash comparisons are meaningless.
+/// the same image. This is the invariant the journey test relies on —
+/// without it, its pixel-hash comparisons are meaningless.
+///
+/// "The same image" is not the same as "the same bytes": the GPU
+/// rasteriser may move an antialiased edge pixel one 8-bit step between
+/// runs (see the `ui::offscreen` module docs for the mechanism), so
+/// compare with the tolerance that describes and nothing wider. The
+/// journey test's `assert_ne!`s are unaffected — a state change moves
+/// far more than one step on far more than a few pixels.
 #[test]
 fn window_group_fresh_render_is_deterministic() {
     let (w, h) = (400u32, 120u32);
@@ -230,8 +237,8 @@ fn window_group_fresh_render_is_deterministic() {
     let a = render_group(&mut renderer, &mut g1);
     let b = render_group(&mut renderer, &mut g2);
     assert_eq!(
-        pixel_hash(&a),
-        pixel_hash(&b),
-        "two fresh WindowGroup renders must produce identical pixels",
+        OffscreenRenderer::pixels_differing_beyond_aa(&a, &b),
+        0,
+        "two fresh WindowGroup renders must produce the same image",
     );
 }
