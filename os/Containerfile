@@ -514,6 +514,14 @@ COPY os/usr/lib/bootc/install/40-qos.toml /usr/lib/bootc/install/40-qos.toml
 # install/upgrade.
 COPY os/usr/lib/bootc/kargs.d/01-hardening.toml /usr/lib/bootc/kargs.d/01-hardening.toml
 
+# Disk-encryption block work: partitioning + LUKS2 + unlock-factor enrolment.
+# Used by the installer (os/Containerfile.installer layers qos-install on top of
+# this image), and afterwards on the installed system — `enrol` is also how a
+# volume is re-sealed to a replaced TPM, which is exactly the case where the
+# machine can only be reached with the recovery key.
+COPY os/usr/libexec/qos-disk-encrypt /usr/libexec/qos-disk-encrypt
+RUN chmod 0755 /usr/libexec/qos-disk-encrypt
+
 # hidepid on /proc + the boot self-check that ASSERTS what's actually active.
 COPY os/usr/libexec/qos-security-audit /usr/libexec/qos-security-audit
 COPY os/usr/lib/systemd/system/qos-security-audit.service /usr/lib/systemd/system/qos-security-audit.service
@@ -615,7 +623,7 @@ RUN firewall-offline-cmd --set-default-zone=FedoraWorkstation && \
 # The kernel image (see os/kernel/Containerfile + .forgejo/workflows/
 # build-kernel.yml) rebuilds Fedora's kernel with a config fragment that:
 #   * links the storage/net/USB/HID boot-path drivers statically, so the
-#     kernel can mount the root FS without an initramfs stage, and
+#     boot path needs no module loading to reach the root device, and
 #   * tunes for interactive throughput (PREEMPT + HZ=1000 + THP=always +
 #     SCHED_MC), and
 #   * drops DEBUG_INFO so the RPM doesn't carry ~800 MB of debuginfo.
@@ -627,12 +635,15 @@ RUN firewall-offline-cmd --set-default-zone=FedoraWorkstation && \
 # image is verified via cosign against code.sandbox.example/qos/qos-kernel
 # (see os/etc/containers/policy.json).
 #
-# Because the qos-kernel package ships every boot-path driver in-kernel,
-# also disable initramfs generation: systemd's kernel-install reads
-# /etc/kernel/install.conf and skips initrd creation when
-# `initrd_generator=none`.  Verified post-install by the absence of
-# /boot/initramfs-*.img.
-COPY os/etc/kernel/install.conf /etc/kernel/install.conf
+# An initramfs is mandatory, and the static drivers do not remove the need
+# for one: unlocking an encrypted root takes early USERSPACE (device-mapper
+# setup, a TPM unseal or a passphrase prompt, systemd-cryptsetup). Static
+# drivers get the kernel as far as seeing the block device; they cannot open
+# a LUKS volume. Under the base's `layout=ostree` kernel-install config,
+# kernel-install deliberately does not run dracut, so the image build owns
+# initramfs generation — hence the explicit dracut call below. The base's
+# dracut drop-ins (/usr/lib/dracut/dracut.conf.d/*bootc*) already add the
+# crypt, systemd-cryptsetup, tpm2-tss and clevis modules.
 RUN --mount=type=bind,from=rpms,source=/repo,target=/frozen-repo \
     --mount=type=bind,from=kernel-rpms,source=/repo,target=/qkernel-repo \
     set -eux; \
@@ -649,9 +660,21 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/frozen-repo \
     dnf swap -y --setopt=reposdir=/etc/qos-swap.d --nogpgcheck --allowerasing \
         kernel-core qos-kernel-core; \
     rm -rf /etc/qos-swap.d; \
-    # If any initramfs was produced by the swap's %post scripts, drop it —
-    # we boot without one.
-    rm -f /boot/initramfs-*.img; \
+    kver="$(rpm -q --provides qos-kernel-core | sed -n 's/^kernel-uname-r = //p' | head -1)"; \
+    if [ -z "$kver" ]; then \
+      kver="$(rpm -ql qos-kernel-core | sed -n 's|^/usr/lib/modules/\([^/]*\)/vmlinuz$|\1|p' | head -1)"; \
+    fi; \
+    test -n "$kver"; \
+    test -d "/usr/lib/modules/$kver"; \
+    # The base ships a prebuilt initramfs for ITS kernel, and that file is
+    # owned by no RPM — so removing kernel-core leaves the old modules
+    # directory behind and the image would carry two kernel versions.
+    for d in /usr/lib/modules/*; do \
+      [ "$d" = "/usr/lib/modules/$kver" ] || rm -rf "$d"; \
+    done; \
+    dracut --force --reproducible --kver "$kver" \
+        "/usr/lib/modules/$kver/initramfs.img"; \
+    test -s "/usr/lib/modules/$kver/initramfs.img"; \
     dnf clean all
 
 # Validate
