@@ -32,7 +32,7 @@ use ui::presence::PresenceCtx;
 use ui::permissions::PermissionContext;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
-use ui::widget::{FlapState, ModalDialog, SplitLayout};
+use ui::widget::{FlapState, ModalDialog, SegmentedFace, SplitLayout, ToggleGroup};
 use std::cell::Cell;
 use std::rc::Rc;
 
@@ -1122,25 +1122,38 @@ impl SoftwareStore {
             }
             let total_tabs: f64 = widths.iter().sum();
             let origin = pad_r - total_tabs;
+            // Nav tabs via the shared segmented control (pill/tab-strip style,
+            // left-aligned labels). No tab is active while a detail page or a
+            // search is open, so `selected` falls out of range → nothing lit.
+            let mut rects: Vec<Rect> = Vec::with_capacity(tabs.len());
             let mut tab_x = origin;
+            for w in &widths {
+                rects.push(Rect::new(tab_x, cy - 16.0, tab_x + w, cy + 16.0));
+                tab_x += w;
+            }
+            let labels: Vec<&str> = tabs.iter().map(|(_, l)| l.as_str()).collect();
+            let selected = if self.detail.is_none() && self.search_query.is_empty() {
+                tabs.iter().position(|(tab, _)| self.tab == *tab).unwrap_or(usize::MAX)
+            } else {
+                usize::MAX
+            };
+            let hovered = rects.iter().position(|r| r.contains(self.mouse));
+            ToggleGroup::paint(
+                scene,
+                t,
+                tr,
+                theme,
+                &SegmentedFace::new(&rects, &labels, selected)
+                    .pill()
+                    .hovered(hovered)
+                    .radius(theme.tokens.radii.full as f64)
+                    .text_size(tsize)
+                    .left_labels(14.0),
+            );
+            // Updates badge + hit targets (per-tab extras the strip doesn't own).
             for (i, (tab, label)) in tabs.iter().enumerate() {
-                let w = widths[i];
-                let r = Rect::new(tab_x, cy - 16.0, tab_x + w, cy + 16.0);
-                let active = self.detail.is_none() && self.tab == *tab && self.search_query.is_empty();
-                let hov = r.contains(self.mouse);
-                let bg = if active {
-                    c.accent[5]
-                } else if hov {
-                    c.surface_white_10
-                } else {
-                    Color::TRANSPARENT
-                };
-                if bg != Color::TRANSPARENT {
-                    draw::fill_round(scene, t, r, theme.tokens.radii.full, bg);
-                }
-                let fg = if active { Color::WHITE } else { c.text_dim };
-                draw::text_w(scene, tr, t, label, tsize, TextWeight::Medium, fg, r.x0 + 14.0, cy - 8.0, None);
-                // Updates badge.
+                let r = rects[i];
+                let active = selected == i;
                 if *tab == Tab::Updates && up_count > 0 {
                     let bw = draw::measure(tr, label, tsize).0;
                     let badge_c = Point::new(r.x0 + 14.0 + bw + 12.0, cy);
@@ -1153,7 +1166,6 @@ impl SoftwareStore {
                     draw::text_w(scene, tr, t, &txt, theme.tokens.typography.scale.xs, TextWeight::Bold, nfg, badge_c.x - nw / 2.0, badge_c.y - nh / 2.0, None);
                 }
                 targets.push(HitTarget { rect: r, action: Action::SetTab(*tab) });
-                tab_x += w;
             }
             origin
         };
