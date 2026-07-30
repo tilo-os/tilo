@@ -44,7 +44,6 @@
 use crate::argv;
 use crate::exec::{Runner, require};
 use anyhow::{Context, Result, bail};
-use std::ffi::OsStr;
 use std::path::Path;
 
 /// NV index holding the rollback floor.
