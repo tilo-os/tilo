@@ -2421,6 +2421,7 @@ dependencies = [
  "atomic-file",
  "automerge",
  "pkg",
+ "qos-actions",
  "serde",
  "serde_json",
  "serial_test",

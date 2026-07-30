@@ -7,6 +7,7 @@
 //! master/detail widget — lives in the modules below so each layer is
 //! testable in isolation.
 
+pub mod actions;
 pub mod app;
 pub mod date;
 pub mod doc;

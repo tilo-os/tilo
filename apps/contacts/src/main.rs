@@ -73,7 +73,10 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some(legacy) => ui::persist::open_migrating("dev.qos.contacts", &legacy),
         None => ui::persist::open("dev.qos.contacts"),
     };
-    let app = ui::App::new(state, contacts::app_root()).with_autosave(autosave);
+    let mut app = ui::App::new(state, contacts::app_root()).with_autosave(autosave);
+    // Register the contacts actions so the shell's Ctrl+K palette can decode +
+    // replay the same contact mutations the on-screen affordances dispatch.
+    contacts::actions::register(app.action_registry_mut());
     app.run();
     Ok(())
 }

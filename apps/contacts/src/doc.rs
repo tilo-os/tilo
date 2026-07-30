@@ -81,6 +81,18 @@ impl ContactsDoc {
         let _ = doc.delete(&contacts, id.to_string().as_str());
     }
 
+    /// Set just the `favorite` flag on an existing contact, leaving every other
+    /// field untouched. A no-op when the contact is absent, so a stale replay
+    /// can't resurrect a deleted record. The guarded put makes an unchanged
+    /// re-store free.
+    pub fn set_favorite(doc: &mut AutoCommit, id: ContactId, favorite: bool) {
+        let contacts = Self::contacts_map(doc);
+        let key = id.to_string();
+        if let Ok(Some((Value::Object(ObjType::Map), m))) = doc.get(&contacts, key.as_str()) {
+            ui::doc::put_if_changed(doc, &m, "favorite", favorite);
+        }
+    }
+
     /// Read every contact out of the document. Records with an
     /// unparseable id key are skipped.
     pub fn list_contacts(doc: &AutoCommit) -> Vec<Contact> {
