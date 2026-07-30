@@ -31,7 +31,7 @@
 //! that into its neighbours.
 
 use qos_rollback::{
-    Config, Pbkdf, counter, exec, keyslots, lockout, policy,
+    Config, Pbkdf, confirm, counter, exec, keyslots, lockout, policy,
     policy::{Prediction, Workspace},
     token::RollbackToken,
 };
@@ -879,4 +879,257 @@ fn a_restored_header_resurrects_the_token_but_the_floor_still_refuses_it() {
         format!("{e:#}").contains("rollback floor"),
         "the refusal should come from the floor: {e:#}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// The confirmation sequence, end to end
+// ---------------------------------------------------------------------------
+
+/// The whole point, exercised through `confirm::run` — the same function the
+/// command-line front end calls, so the ordering under test is the ordering the
+/// machine uses.
+#[test]
+fn confirming_a_generation_enrolls_it_prunes_the_window_and_then_raises_the_floor() {
+    let f = fixture!();
+    let recovery = b"recovery-key-for-the-confirm-test";
+    let img = luks_image(f.dir(), recovery);
+    let ws = f.ws();
+    let preds = f.dir().join("predictions");
+    let state = f.dir().join("state.json");
+
+    // Generations 5, 6, 7, 8 all ship a prediction for the live measurements.
+    for g in [5u64, 6, 7, 8] {
+        let p = f.predict(g, &f.sign_priv, "");
+        policy::write_signed_prediction(&preds, g, &f.cfg.pcr_bank, &f.cfg.pcrs, &p)
+            .expect("write prediction");
+    }
+
+    // First enrollment: generation 5, floor at the bottom of the window.
+    let floor = f.floor(3);
+    let (slot5, _t5) =
+        keyslots::enroll_generation(&f.runner, &ws, &img, &f.cfg, 5, floor, &[f.predict(5, &f.sign_priv, "")], recovery, None)
+            .expect("enroll 5");
+    confirm::save_state(
+        &state,
+        &confirm::State { nv_index: f.cfg.nv_index, nv_base: floor.base, last_confirmed: Some(5) },
+    )
+    .expect("seed state");
+    assert!(slot5 != 0);
+
+    let req = |generation: u64, floor_at_least: Option<u64>, dry_run: bool| confirm::Request {
+        cfg: &f.cfg,
+        device: &img,
+        generation,
+        prediction_dir: &preds,
+        recovery_key: recovery,
+        pin: None,
+        floor_at_least,
+        state_path: &state,
+        scratch: f.dir(),
+        dry_run,
+    };
+
+    // A dry run must not move anything.
+    let counter_before = f.counter_now();
+    let dry = confirm::run(&f.runner, &ws, &req(6, None, true)).expect("dry run");
+    assert_eq!(dry.floor.floor_generation(), 3);
+    assert_eq!(f.counter_now(), counter_before, "a dry run must not touch the counter");
+    assert!(dry.enrolled.is_none());
+    assert!(dry.dropped.is_empty());
+
+    // Confirm 6 and 7: the window (3 generations) still holds 5, 6, 7, so the
+    // floor rises to 5 and nothing is pruned.
+    let o6 = confirm::run(&f.runner, &ws, &req(6, None, false)).expect("confirm 6");
+    assert!(o6.enrolled.is_some(), "generation 6 should have been enrolled");
+    assert_eq!(o6.floor.floor_generation(), 4);
+    assert!(o6.dropped.is_empty());
+
+    let o7 = confirm::run(&f.runner, &ws, &req(7, None, false)).expect("confirm 7");
+    assert_eq!(o7.floor.floor_generation(), 5);
+    assert!(o7.dropped.is_empty(), "5, 6 and 7 all fit the window");
+
+    // Confirm 8: 5 falls out of the window, so its keyslot goes and the floor
+    // moves to 6.
+    let o8 = confirm::run(&f.runner, &ws, &req(8, None, false)).expect("confirm 8");
+    assert_eq!(o8.dropped, vec![5], "generation 5 should have been pruned");
+    assert_eq!(o8.floor.floor_generation(), 6);
+
+    // The pruned generation's keyslot is gone and the window's generations are
+    // the ones that remain.
+    let left: Vec<u64> = keyslots::list_tokens(&f.runner, &img)
+        .expect("list")
+        .into_iter()
+        .map(|(_, t)| t.generation)
+        .collect();
+    assert_eq!(left, vec![8, 7, 6]);
+
+    // Generation 6 is the floor, so it must still unseal; anything below must not.
+    let t6 = keyslots::list_tokens(&f.runner, &img)
+        .expect("list")
+        .into_iter()
+        .find(|(_, t)| t.generation == 6)
+        .expect("token 6")
+        .1;
+    assert!(
+        f.try_unseal(&t6, None).expect("unseal 6").is_some(),
+        "the generation at the floor must still unseal"
+    );
+
+    // And the recovery key, at every step, still works.
+    assert!(keyslots::verify_recovery(&f.runner, &ws, &img, recovery).expect("verify recovery"));
+}
+
+#[test]
+fn a_declared_floor_closes_the_window_on_a_vulnerable_generation() {
+    let f = fixture!();
+    let recovery = b"recovery-key-for-the-declared-floor-test";
+    let img = luks_image(f.dir(), recovery);
+    let ws = f.ws();
+    let preds = f.dir().join("predictions");
+    let state = f.dir().join("state.json");
+    for g in [7u64, 8] {
+        let p = f.predict(g, &f.sign_priv, "");
+        policy::write_signed_prediction(&preds, g, &f.cfg.pcr_bank, &f.cfg.pcrs, &p).expect("write");
+    }
+    let floor = f.floor(5);
+    keyslots::enroll_generation(&f.runner, &ws, &img, &f.cfg, 7, floor, &[f.predict(7, &f.sign_priv, "")], recovery, None)
+        .expect("enroll 7");
+    confirm::save_state(
+        &state,
+        &confirm::State { nv_index: f.cfg.nv_index, nv_base: floor.base, last_confirmed: Some(7) },
+    )
+    .expect("seed state");
+    let t7 = keyslots::list_tokens(&f.runner, &img).expect("list").remove(0).1;
+
+    // Generation 8 is a security fix; 7 is vulnerable. Declaring floor 8 closes
+    // the window immediately instead of leaving 7 reachable for two more updates.
+    let o = confirm::run(
+        &f.runner,
+        &ws,
+        &confirm::Request {
+            cfg: &f.cfg,
+            device: &img,
+            generation: 8,
+            prediction_dir: &preds,
+            recovery_key: recovery,
+            pin: None,
+            floor_at_least: Some(8),
+            state_path: &state,
+            scratch: f.dir(),
+            dry_run: false,
+        },
+    )
+    .expect("confirm 8 with a declared floor");
+    assert_eq!(o.plan.floor.window_floor, 6, "the window alone would have allowed 6");
+    assert_eq!(o.floor.floor_generation(), 8);
+
+    // Generation 7's keyslot is still in the header — it is inside the retention
+    // window — and the floor is what refuses it. Exactly the "both mechanisms"
+    // split: presence is not permission.
+    assert!(
+        keyslots::list_tokens(&f.runner, &img)
+            .expect("list")
+            .iter()
+            .any(|(_, t)| t.generation == 7),
+        "generation 7's token should still be present"
+    );
+    let e = f
+        .try_unseal(&t7, None)
+        .expect_err("the declared floor must refuse generation 7");
+    assert!(format!("{e:#}").contains("rollback floor"), "{e:#}");
+    assert!(keyslots::verify_recovery(&f.runner, &ws, &img, recovery).expect("verify recovery"));
+}
+
+#[test]
+fn a_declared_floor_above_the_running_generation_is_refused_before_anything_moves() {
+    let f = fixture!();
+    let recovery = b"recovery-key-for-the-bad-declaration-test";
+    let img = luks_image(f.dir(), recovery);
+    let ws = f.ws();
+    let preds = f.dir().join("predictions");
+    let state = f.dir().join("state.json");
+    let p = f.predict(7, &f.sign_priv, "");
+    policy::write_signed_prediction(&preds, 7, &f.cfg.pcr_bank, &f.cfg.pcrs, &p).expect("write");
+    let floor = f.floor(5);
+    keyslots::enroll_generation(&f.runner, &ws, &img, &f.cfg, 7, floor, &[p], recovery, None)
+        .expect("enroll 7");
+    confirm::save_state(
+        &state,
+        &confirm::State { nv_index: f.cfg.nv_index, nv_base: floor.base, last_confirmed: Some(7) },
+    )
+    .expect("seed state");
+
+    let before = f.counter_now();
+    let e = confirm::run(
+        &f.runner,
+        &ws,
+        &confirm::Request {
+            cfg: &f.cfg,
+            device: &img,
+            generation: 7,
+            prediction_dir: &preds,
+            recovery_key: recovery,
+            pin: None,
+            floor_at_least: Some(9),
+            state_path: &state,
+            scratch: f.dir(),
+            dry_run: false,
+        },
+    )
+    .expect_err("a floor above the running generation must be refused");
+    assert!(
+        format!("{e:#}").contains("above the generation being confirmed"),
+        "{e:#}"
+    );
+    assert_eq!(
+        f.counter_now(),
+        before,
+        "a refused confirmation must not have moved the counter — an NV increment cannot be undone"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Attestation
+// ---------------------------------------------------------------------------
+
+#[test]
+fn the_floor_can_be_certified_with_an_attestation_key() {
+    let f = fixture!();
+    let floor = f.floor(5);
+    let nonce = b"\x01\x02\x03\x04verifier-nonce";
+    let att = qos_rollback::certify::certify_floor(
+        &f.runner,
+        &f.ws(),
+        f.cfg.nv_index,
+        floor.base,
+        nonce,
+        f.dir(),
+    )
+    .expect("certify the floor");
+
+    assert_eq!(att.counter, floor.counter);
+    assert_eq!(att.floor_generation, 5);
+    assert!(!att.attestation.is_empty(), "an attestation structure should be produced");
+    assert!(!att.signature.is_empty(), "a signature should be produced");
+    assert!(!att.key_public.is_empty(), "the attestation key's public area should be produced");
+    // The verifier's nonce has to be inside the attestation, or a captured one
+    // replays forever.
+    assert!(
+        att.attestation.windows(nonce.len()).any(|w| w == nonce),
+        "the qualifying nonce must appear in the attestation's extraData"
+    );
+
+    // Moving the floor must change what is certified.
+    f.bump_floor(2);
+    let att2 = qos_rollback::certify::certify_floor(
+        &f.runner,
+        &f.ws(),
+        f.cfg.nv_index,
+        floor.base,
+        nonce,
+        f.dir(),
+    )
+    .expect("certify again");
+    assert_eq!(att2.floor_generation, 7);
+    assert_ne!(att.attestation, att2.attestation);
 }
