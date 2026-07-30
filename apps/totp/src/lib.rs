@@ -27,6 +27,7 @@
 //! [`app_root`] is the single integration point used by `main.rs` for
 //! both the live event loop and the `--shots` offscreen renderer.
 
+pub mod actions;
 pub mod add_panel;
 pub mod app;
 pub mod doc;

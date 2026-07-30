@@ -197,7 +197,10 @@ impl Vault {
         }
     }
 
-    fn next_order(&self) -> u32 {
+    /// The `order` value a brand-new account should take to land at the end of
+    /// the list (one past the current maximum). Computed at *authoring* time and
+    /// baked into the add action so replay stays deterministic.
+    pub fn next_order(&self) -> u32 {
         self.accounts.iter().map(|a| a.order).max().map(|m| m + 1).unwrap_or(0)
     }
 
