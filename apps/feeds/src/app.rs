@@ -18,6 +18,7 @@ use std::rc::Rc;
 use std::time::Instant;
 
 use automerge::{AutoCommit, ObjId};
+use uuid::Uuid;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Line, Point, Rect, RoundedRect, Stroke};
@@ -34,6 +35,7 @@ use ui::theme::Theme;
 use ui::widget::context_menu::{ContextMenu, MenuItem};
 use ui::widget::{FlapState, ModalDialog, SplitLayout, Widget};
 
+use crate::actions::{self, FeedsAction, FeedsResourceCtx};
 use crate::doc::FeedsDoc;
 use crate::modal::{ModalBody, ModalIntent};
 use crate::fetch::{FetchRequest, FetchResult, FetchWorker};
@@ -400,6 +402,18 @@ pub struct FeedsApp {
 
     worker: Option<FetchWorker>,
     synced: bool,
+
+    // --- action model ---------------------------------------------------
+    /// Document heads captured just before the first affordance-dispatched
+    /// action of an event, handed to the host so it brackets the action in
+    /// exactly one undo boundary ([`Widget::take_committed_action`]). Rising
+    /// edge: `None` between events, set on the first `perform_action`.
+    action_commit_before: Option<Vec<automerge::ChangeHash>>,
+    /// The document heads the mirrored [`Store`] was last reconciled against.
+    /// When the document moves out-of-band (a Ctrl+K palette action mutates it
+    /// directly, not through this widget's methods) and the fetch backlog is
+    /// drained, `sync` reloads the store from the document so the change shows.
+    store_heads: Vec<automerge::ChangeHash>,
     /// When true this is the hermetic `--shots`/demo build: it seeds the
     /// bundled sample subscriptions. The live app leaves this false and never
     /// fabricates feeds — it starts empty on the user's persisted document.
@@ -471,6 +485,8 @@ impl FeedsApp {
             last_frame: Instant::now(),
             worker: None,
             synced: false,
+            action_commit_before: None,
+            store_heads: Vec::new(),
             demo,
             now: chrono::Utc::now().timestamp(),
         };
@@ -640,6 +656,26 @@ impl FeedsApp {
         tx
     }
 
+    /// Mirrored-store accessors used by the action tests to pick real ids /
+    /// resolve the same batches the affordances do (so the covenant asserts on
+    /// production state, never a fabricated fixture).
+    #[cfg(test)]
+    pub(crate) fn store_feed_ids(&self) -> Vec<Id> {
+        self.store.feeds.iter().map(|f| f.id).collect()
+    }
+    #[cfg(test)]
+    pub(crate) fn store_folder_ids(&self) -> Vec<Id> {
+        self.store.folders.iter().map(|f| f.id).collect()
+    }
+    #[cfg(test)]
+    pub(crate) fn store_article_ids(&self) -> Vec<Id> {
+        self.store.articles.iter().map(|a| a.id).collect()
+    }
+    #[cfg(test)]
+    pub(crate) fn store_unread_ids(&self, filter: Filter) -> Vec<Id> {
+        self.store.unread_ids_for(filter)
+    }
+
     // --- filter / selection helpers -------------------------------------
 
     fn filter_title(&self) -> String {
@@ -676,7 +712,7 @@ impl FeedsApp {
         self.selected = Some(id);
         self.reader_scroll = 0.0;
         if self.store.mark_read(id, true) {
-            FeedsDoc::set_read(doc, id, true);
+            self.perform_action(doc, actions::mark_read_action(id, true));
         }
         // Single-pane master→detail: selecting from the list pushes the reader in.
         if self.single_pane() {
@@ -731,7 +767,7 @@ impl FeedsApp {
     fn toggle_star(&mut self, id: Id, doc: &mut AutoCommit) {
         if self.store.toggle_star(id) {
             let starred = self.store.article(id).map(|a| a.starred).unwrap_or(false);
-            FeedsDoc::set_starred(doc, id, starred);
+            self.perform_action(doc, actions::set_starred_action(id, starred));
             self.set_toast(if starred { "Starred" } else { "Unstarred" });
         }
     }
@@ -740,17 +776,73 @@ impl FeedsApp {
         if let Some(id) = self.selected {
             let now_read = self.store.article(id).map(|a| !a.read).unwrap_or(true);
             if self.store.mark_read(id, now_read) {
-                FeedsDoc::set_read(doc, id, now_read);
+                self.perform_action(doc, actions::mark_read_action(id, now_read));
             }
         }
     }
 
     fn mark_all_read(&mut self, doc: &mut AutoCommit) {
         let ids = self.store.mark_all_read(self.filter);
-        for id in &ids {
-            FeedsDoc::set_read(doc, *id, true);
+        if !ids.is_empty() {
+            self.perform_action(doc, actions::mark_all_read_action(&ids));
         }
         self.set_toast(format!("Marked {} read", ids.len()));
+    }
+
+    // --- action model ---------------------------------------------------
+
+    /// Dispatch one Feeds [`FeedsAction`] — the single mutation path shared with
+    /// the Ctrl+K palette. The action is applied through the qOS action executor
+    /// (a pinned actor + committed change, so it replays byte-identically on
+    /// peers), exactly as the palette does. The document heads captured just
+    /// before the first action of the event are stashed so the host records
+    /// **one** undo boundary bracketing it ([`Widget::take_committed_action`]).
+    fn perform_action(&mut self, doc: &mut AutoCommit, action: FeedsAction) {
+        if self.action_commit_before.is_none() {
+            // `get_heads` flushes any pending app writes, so the bracket covers
+            // only the action's own change.
+            self.action_commit_before = Some(doc.get_heads());
+        }
+        let encoded = actions::encode(&action);
+        let mut tx = DiscardTransport;
+        if let Err(e) = qos_actions::dispatch(doc, &action, encoded, &mut tx) {
+            tracing::warn!(error = %e, "feeds action dispatch failed");
+        }
+        // The action just mutated the document; keep the reload watermark ahead
+        // of it so `sync`'s out-of-band reload doesn't redundantly rebuild the
+        // store for a change this widget already mirrored.
+        self.store_heads = doc.get_heads();
+    }
+
+    /// The presentation context Ctrl+K needs to build the reader/folder/feed
+    /// actions, derived from the mirrored store (which converges with the doc).
+    pub(crate) fn feeds_resource_ctx(&self) -> FeedsResourceCtx {
+        let folders = self
+            .store
+            .folders_sorted()
+            .iter()
+            .map(|f| actions::FolderRef { id: f.id, name: f.name.clone() })
+            .collect();
+        let mut feeds: Vec<actions::FeedRef> = self
+            .store
+            .feeds
+            .iter()
+            .map(|f| actions::FeedRef {
+                id: f.id,
+                title: f.title.clone(),
+                unread: self.store.unread_ids_for(Filter::Feed(f.id)),
+            })
+            .collect();
+        feeds.sort_by(|a, b| a.title.to_lowercase().cmp(&b.title.to_lowercase()));
+        let next_folder_order = self
+            .store
+            .folders
+            .iter()
+            .map(|f| f.order)
+            .max()
+            .map(|m| m + 1)
+            .unwrap_or(0);
+        FeedsResourceCtx { folders, feeds, next_folder_order }
     }
 
     fn toggle_folder(&mut self, id: Id, doc: &mut AutoCommit) {
@@ -831,7 +923,11 @@ impl FeedsApp {
         self.toast = None;
     }
 
-    fn subscribe(&mut self, url: String) {
+    /// Add a subscription. The subscription *record* is a deterministic action
+    /// (mint the id here, create the feed row with a placeholder title + derived
+    /// site-url in the store and document); populating its real title + articles
+    /// is an external fetch, not an action.
+    fn subscribe(&mut self, url: String, doc: &mut AutoCommit) {
         let url = url.trim().to_string();
         if url.is_empty() {
             return;
@@ -841,7 +937,23 @@ impl FeedsApp {
             Filter::Feed(fid) => self.store.feed(fid).and_then(|f| f.folder),
             _ => None,
         };
-        self.worker().send(FetchRequest::Subscribe { url: url.clone(), folder });
+        let id = Uuid::new_v4();
+        let order = self.store.next_feed_order(folder);
+        let feed = Feed {
+            id,
+            // Placeholder until the fetch fills the real title in.
+            title: url.clone(),
+            url: url.clone(),
+            site_url: crate::fetch::derive_site_url(&url),
+            folder,
+            order,
+            kind: actions::guess_kind(&url),
+        };
+        self.store.upsert_feed(feed);
+        self.perform_action(doc, actions::add_subscription_action(id, &url, folder, order));
+        // Populate the new feed's title + articles off-thread (external).
+        self.refresh_feeds(&[id]);
+        self.set_filter(Filter::Feed(id));
         self.set_toast(format!("Subscribing to {url}…"));
     }
 
@@ -1013,8 +1125,8 @@ impl FeedsApp {
         match action {
             FeedMenuAction::MarkAllRead => {
                 let ids = self.store.mark_all_read(Filter::Feed(feed_id));
-                for id in &ids {
-                    FeedsDoc::set_read(doc, *id, true);
+                if !ids.is_empty() {
+                    self.perform_action(doc, actions::mark_all_read_action(&ids));
                 }
                 self.set_toast(format!("Marked {} read", ids.len()));
             }
@@ -1147,7 +1259,7 @@ impl FeedsApp {
         }
         self.modal = None;
         match intent {
-            ModalIntent::AddSubscription => self.subscribe(value),
+            ModalIntent::AddSubscription => self.subscribe(value, doc),
             ModalIntent::RenameFeed { feed_id } => self.rename_feed(feed_id, value, doc),
             ModalIntent::Unsubscribe { feed_id } => self.unsubscribe_feed(feed_id, doc),
         }
@@ -1162,8 +1274,7 @@ impl FeedsApp {
             .map(|f| f.title.clone())
             .unwrap_or_default();
         let removed = self.store.remove_feed(feed_id);
-        FeedsDoc::remove_feed(doc, feed_id);
-        doc.commit();
+        self.perform_action(doc, actions::remove_subscription_action(feed_id));
         // If we were viewing the removed feed, fall back to All.
         if matches!(self.filter, Filter::Feed(id) if id == feed_id) {
             self.set_filter(Filter::All);
@@ -1182,11 +1293,11 @@ impl FeedsApp {
         if name.is_empty() {
             return;
         }
-        if let Some(f) = self.store.feeds.iter_mut().find(|f| f.id == feed_id) {
-            f.title = name;
-            let feed = f.clone();
-            FeedsDoc::upsert_feed(doc, &feed);
-            doc.commit();
+        if self.store.feeds.iter().any(|f| f.id == feed_id) {
+            if let Some(f) = self.store.feeds.iter_mut().find(|f| f.id == feed_id) {
+                f.title = name.clone();
+            }
+            self.perform_action(doc, actions::rename_feed_action(feed_id, &name));
             self.set_toast("Renamed feed");
         }
     }
@@ -3011,6 +3122,18 @@ fn chrono_date(published: i64, now: i64) -> String {
 // Widget impl
 // ---------------------------------------------------------------------
 
+/// The action transport Feeds installs for its own on-screen affordances. Peers
+/// receive subscription / read-state changes through ordinary CRDT sync (the
+/// executor pins each action's actor so the change is content-addressed
+/// identical to a peer's replay and dedupes on merge), so the local affordance
+/// path has nothing extra to replicate — this sink drops the envelope. The
+/// Ctrl+K palette dispatches through the host's transport, which a collaborative
+/// session swaps for a peer-aware one.
+struct DiscardTransport;
+impl qos_actions::ActionTransport for DiscardTransport {
+    fn replicate(&mut self, _env: &qos_actions::ActionEnvelope) {}
+}
+
 impl Widget for FeedsApp {
     fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
         self.now = chrono::Utc::now().timestamp();
@@ -3036,6 +3159,7 @@ impl Widget for FeedsApp {
                 self.settings = FeedsDoc::read_settings(state);
             }
             self.synced = true;
+            self.store_heads = state.get_heads();
         }
         // Persist anything the live (doc-less) drain queued, then drain again
         // here so an input-driven sync also picks up fresh results promptly.
@@ -3045,6 +3169,39 @@ impl Widget for FeedsApp {
         // Drain an in-flight OPML import portal request (holds the doc so the
         // parsed subscriptions persist the moment the user picks a file).
         self.drain_import(state);
+        // A Ctrl+K palette action (or any other out-of-band write) mutates the
+        // document directly, not this widget's mirrored store. Once the fetch
+        // backlog is drained — so the store isn't leading the document with
+        // not-yet-persisted articles — reload the store if the document has
+        // moved since we last mirrored it, so those changes appear.
+        if self.pending_doc_writes.is_empty() {
+            let heads = state.get_heads();
+            if heads != self.store_heads {
+                self.store = FeedsDoc::load(state);
+                // A palette delete can strand the selection on a now-gone
+                // article; drop it rather than render a dangling reader.
+                if let Some(sel) = self.selected {
+                    if self.store.article(sel).is_none() {
+                        self.selected = None;
+                    }
+                }
+                self.store_heads = heads;
+            }
+        }
+    }
+
+    /// Publish the reader + its folders and subscriptions so the host's Ctrl+K
+    /// action palette scopes to them. Delegates to the [`ResourceProvider`]
+    /// (qos_actions::ResourceProvider) impl in [`crate::actions`].
+    fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
+        <Self as qos_actions::ResourceProvider>::resources(self, doc)
+    }
+
+    /// Hand the host the heads captured before an on-screen affordance dispatched
+    /// its action, so it records one undo boundary for it (see
+    /// [`Self::perform_action`]). Rising-edge: cleared on read.
+    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        self.action_commit_before.take()
     }
 
     fn build_layout(
