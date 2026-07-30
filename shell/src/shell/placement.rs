@@ -89,20 +89,40 @@ impl StripViewport {
             .collect()
     }
 
-    /// The leftmost seam currently on screen.
+    /// The leftmost border **between two windows** that the user can
+    /// actually see a space at.
+    ///
+    /// Two things this deliberately excludes.
+    ///
+    /// A seam lying exactly on an edge of the screen is not a space you
+    /// can see: the window on its far side is entirely off the display.
+    /// That is not a corner case — a full-width window puts its trailing
+    /// border precisely on the right edge, which is the resting state of
+    /// a default strip. So the bound is strict, and that case falls
+    /// through to [`Self::next_seam_rightwards`], which lands the window
+    /// immediately after the one filling the screen.
+    ///
+    /// And the seam after the *last* window, which is a border between a
+    /// window and open space rather than between two windows. It is
+    /// still where "rightwards" terminates — see
+    /// [`Self::next_seam_rightwards`] — just not something to call
+    /// visible.
     ///
     /// Leftmost rather than nearest-to-centre: the strip reads left to
     /// right, so the first gap you can see is the one you would point at
     /// if asked where the space between the windows is.
     pub fn visible_seam(&self) -> Option<Seam> {
-        self.seams()
+        let seams = self.seams();
+        let between_windows = seams.len().saturating_sub(1);
+        seams
             .into_iter()
-            .find(|s| s.x >= self.visible_x0 && s.x <= self.visible_x1)
+            .take(between_windows)
+            .find(|s| s.x > self.visible_x0 && s.x < self.visible_x1)
     }
 
-    /// The first seam past the right edge of the screen — where a window
-    /// goes when no border between windows is visible at all, which is
-    /// the normal case for a full-width window filling the display.
+    /// The first seam at or past the right edge of the screen — where a
+    /// window goes when no space between windows is visible, which is
+    /// the ordinary case for a full-width window.
     ///
     /// Falls back to the rightmost seam when every seam is already
     /// behind the viewport (the user has panned into the empty space
@@ -113,7 +133,7 @@ impl StripViewport {
         seams
             .iter()
             .copied()
-            .find(|s| s.x > self.visible_x1)
+            .find(|s| s.x >= self.visible_x1)
             .or_else(|| seams.last().copied())
     }
 }
@@ -327,6 +347,26 @@ mod tests {
         );
     }
 
+    /// The resting state of a strip of full-width windows: the border
+    /// between the window you are looking at and the next one lands
+    /// exactly on the screen's right edge. Nothing of the space is on
+    /// screen, so the window goes after the one filling it — not two
+    /// windows along.
+    #[test]
+    fn a_border_exactly_on_the_screen_edge_is_not_a_space_you_can_see() {
+        let mut tree = WorkspaceTree::bootstrap_default();
+        let ids = strip_of(&mut tree, &[1, 1, 1]);
+        let strip_id = tree.workspaces[0].strips[0].id;
+        tree.active_strip.insert(tree.active, strip_id);
+        tree.active_group.remove(&strip_id);
+        let view = viewport(strip_id, &ids, (0.0, 100.0));
+        assert_eq!(view.visible_seam(), None, "nothing of the gap is on screen");
+        assert_eq!(
+            placement_for_new_window(&tree, Some(&view)),
+            Placement::RightOf(ids[0]),
+        );
+    }
+
     #[test]
     fn panning_past_the_last_window_still_lands_at_the_end() {
         let mut tree = WorkspaceTree::bootstrap_default();
@@ -427,8 +467,9 @@ mod tests {
         let strip_id = tree.workspaces[0].strips[0].id;
         tree.active_strip.insert(tree.active, strip_id);
         tree.active_group.remove(&strip_id);
-        // A full-width window scrolled into the middle of the strip: the
-        // display shows the inside of group 1 and no border at all.
+        // The screen shows canvas 120..190 — the inside of group 1, its
+        // left border behind the viewport and its right one ahead of it.
+        // No border between windows is on screen at all.
         let view = viewport(strip_id, &ids, (120.0, 190.0));
 
         let (order, landed) = launch_and_adopt(
