@@ -648,24 +648,26 @@ fn a_grant_naming_one_host_reaches_that_host_and_no_other() {
     // policy, and the resolve-it-yourself bypass is closed.
     assert_eq!(
         report.get("gate_by_literal"),
-        format!("REFUSED:{:#04x}", reply::NOT_ALLOWED),
+        format!("REFUSED:{:#04x}", reply::HOST_UNREACHABLE),
         "an address literal must not satisfy a hostname grant, even when it is the very \
          server the grant names — otherwise anyone who controls a DNS answer turns a \
          name-scoped grant into an any-host grant"
     );
     assert_eq!(
         report.get("relay_by_literal"),
-        format!("REFUSED:{:#04x}", reply::NOT_ALLOWED),
+        format!("REFUSED:{:#04x}", reply::HOST_UNREACHABLE),
         "the relay must not be a way around the policy the direct socket enforces"
     );
 
-    // Does not reach an unlisted name, and is refused by the *policy*
-    // (0x02) rather than failing to resolve (0x04) — the gate answers
-    // before it ever looks the name up.
+    // Does not reach an unlisted name — and the refusal is spelled
+    // `HOST_UNREACHABLE`, exactly as an unresolvable host would be. The
+    // app is told there is no route, which it already knows how to
+    // handle, rather than that it lacks a permission, which it would
+    // report to a user who cannot act on it.
     assert_eq!(
         report.get("gate_by_other_name"),
-        format!("REFUSED:{:#04x}", reply::NOT_ALLOWED),
-        "an unlisted host must be refused by the ruleset, not merely fail to resolve"
+        format!("REFUSED:{:#04x}", reply::HOST_UNREACHABLE),
+        "an unlisted host must be refused as unreachable, not as forbidden"
     );
 
     // The same three answers over HTTP CONNECT. This is the path a
@@ -679,14 +681,15 @@ fn a_grant_naming_one_host_reaches_that_host_and_no_other() {
     );
     assert_eq!(
         report.get("http_by_literal"),
-        "STATUS:403",
+        "STATUS:502",
         "the literal must be refused over HTTP too, or the SOCKS-side rule is bypassable by \
          switching protocol"
     );
     assert_eq!(
         report.get("http_by_other_name"),
-        "STATUS:403",
-        "an unlisted host must be refused over HTTP too"
+        "STATUS:502",
+        "an unlisted host must be refused over HTTP too, and as a gateway that could not \
+         reach it rather than as a forbidden request"
     );
 
     // No route beside the gate.
@@ -787,7 +790,7 @@ fn widening_the_allowlist_lets_the_refused_connection_through() {
     refused.dump("control: filter on");
     assert_eq!(
         refused.get("gate_by_literal"),
-        format!("REFUSED:{:#04x}", reply::NOT_ALLOWED)
+        format!("REFUSED:{:#04x}", reply::HOST_UNREACHABLE)
     );
     // Exactly the two by-name requests — one per protocol — and
     // exactly the four that named the literal or the unlisted host.
@@ -827,14 +830,18 @@ fn widening_the_allowlist_lets_the_refused_connection_through() {
         "with the filter open, the previously-refused connection must carry traffic — if it \
          still failed, the negative assertion above was proving nothing"
     );
+    // A refused host and an unreachable one answer identically, on
+    // purpose: the app must not be able to tell a policy decision from an
+    // absence of network. What separates the two runs is not the code, it
+    // is whether the traffic flowed — which is what the assertions above
+    // and below measure.
     assert_eq!(
         passed.get("gate_by_other_name"),
         format!("REFUSED:{:#04x}", reply::HOST_UNREACHABLE),
-        "an unresolvable name must fail at resolution (0x04) once the policy stops refusing \
-         it (0x02) — which is also what distinguishes the two failures"
+        "an unresolvable name is unreachable, the same answer a refused one gets"
     );
-    // Same experiment on the HTTP path: 403 (policy) becomes 200 for
-    // the reachable host and 502 (upstream) for the unresolvable one.
+    // Same experiment on the HTTP path: the refusal (502) becomes 200 for
+    // the reachable host and stays 502 for the unresolvable one.
     assert_eq!(
         passed.get("http_by_literal"),
         "BODY:ALLOWED-SERVER",
@@ -844,7 +851,8 @@ fn widening_the_allowlist_lets_the_refused_connection_through() {
     assert_eq!(
         passed.get("http_by_other_name"),
         "STATUS:502",
-        "a forbidden host (403) and an unreachable one (502) must stay distinguishable"
+        "and an unresolvable host stays a bad gateway whether or not the policy would have \
+         allowed it"
     );
     assert!(
         open_gate.stats().allowed() > strict_gate.stats().allowed(),
@@ -895,4 +903,289 @@ fn a_gate_that_cannot_start_refuses_rather_than_sharing_the_network() {
         "the refusal must name the explicit opt-out so the fallback is a decision on the \
          record rather than a default: {msg}"
     );
+}
+
+// =====================================================================
+// Device-local is network
+//
+// The machine's own services are the interesting bypass, because they are
+// the ones an app can reach without leaving the box: qOS runs a
+// collaboration broker locally, and "no network" that still reaches the
+// broker is not "no network".
+//
+// Two routes have to be closed, and they are closed by different
+// mechanisms:
+//
+// 1. **Raw TCP from a sandbox with no network capability.** Closed by the
+//    empty namespace — the sandbox's `127.0.0.1` is its own, and the
+//    host's addresses are not routable from inside.
+// 2. **Through the gate, by name, from a sandbox that has *some* network
+//    capability.** Closed by `is_device_local`, because the gate resolves
+//    in the host namespace and a name can point anywhere.
+// =====================================================================
+
+/// `IP:PORT` of a service on the host's loopback.
+const ENV_LOCAL_LOOPBACK: &str = "QOS_NETGATE_LOCAL_LOOPBACK";
+/// `IP:PORT` of the same service on the host's own LAN address, or unset
+/// when the machine has no non-loopback address.
+const ENV_LOCAL_LAN: &str = "QOS_NETGATE_LOCAL_LAN";
+/// Name to ask the gate for, when a gate is present.
+const ENV_LOCAL_NAME: &str = "QOS_NETGATE_LOCAL_NAME";
+
+/// The in-sandbox half of the device-local tests. Same dispatcher shape as
+/// [`netns_probe`]: a no-op unless the outer test selected it.
+#[test]
+fn device_local_probe() {
+    let Ok(loopback) = std::env::var(ENV_LOCAL_LOOPBACK) else {
+        return;
+    };
+    println!("PROBE raw_loopback={}", describe(raw_get_addr(&loopback)));
+    match std::env::var(ENV_LOCAL_LAN) {
+        Ok(lan) => println!("PROBE raw_lan={}", describe(raw_get_addr(&lan))),
+        Err(_) => println!("PROBE raw_lan=NO-LAN-ADDRESS"),
+    }
+    if let (Ok(socket), Ok(name)) = (std::env::var(ENV_SOCKET), std::env::var(ENV_LOCAL_NAME)) {
+        let port: u16 = loopback.rsplit(':').next().unwrap().parse().unwrap();
+        println!(
+            "PROBE gate_by_name={}",
+            describe(socks_get(&socket, &name, port))
+        );
+        println!(
+            "PROBE http_by_name={}",
+            describe(http_connect(&socket, &name, port))
+        );
+    }
+}
+
+/// [`raw_get`] against a full `IP:PORT`.
+fn raw_get_addr(addr: &str) -> Outcome {
+    let parsed = match addr.parse() {
+        Ok(a) => a,
+        Err(e) => return Outcome::Failed(format!("bad addr {addr}: {e}")),
+    };
+    match TcpStream::connect_timeout(&parsed, Duration::from_secs(2)) {
+        Ok(mut s) => http_exchange(&mut s),
+        Err(e) => Outcome::Failed(format!("{:?}", e.kind())),
+    }
+}
+
+/// This host's own non-loopback address, if it has one.
+///
+/// Found by connecting a UDP socket, which sends no packet — it only makes
+/// the kernel pick a source address from the routing table. `None` on a
+/// machine with no network at all, which is a reason to skip that half of
+/// the assertion, not to fail.
+fn host_lan_addr() -> Option<std::net::IpAddr> {
+    let sock = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
+    sock.connect("198.51.100.9:9").ok()?;
+    let ip = sock.local_addr().ok()?.ip();
+    (!ip.is_loopback() && !ip.is_unspecified()).then_some(ip)
+}
+
+/// Serve `body` on `ip:0`, returning the bound port. Stands in for a
+/// device-local service — the collaboration broker's shape.
+fn serve_on(ip: std::net::IpAddr, body: &'static str) -> u16 {
+    let listener = TcpListener::bind((ip, 0)).expect("bind local service");
+    let port = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        while let Ok((mut stream, _)) = listener.accept() {
+            std::thread::spawn(move || {
+                let mut scratch = [0u8; 1024];
+                let _ = stream.read(&mut scratch);
+                let _ = stream.write_all(
+                    format!(
+                        "HTTP/1.0 200 OK\r\nContent-Length: {}\r\n\r\n{body}",
+                        body.len()
+                    )
+                    .as_bytes(),
+                );
+            });
+        }
+    });
+    port
+}
+
+/// Run [`device_local_probe`] in a sandbox shaped by `decision`.
+fn run_device_local_probe(
+    decision: &EgressDecision,
+    gate_socket: Option<&Path>,
+    loopback: &str,
+    lan: Option<&str>,
+    name: Option<&str>,
+) -> ProbeReport {
+    let exe = std::env::current_exe().expect("current_exe");
+    let exe_s = exe.display().to_string();
+
+    let mut argv: Vec<String> = vec!["--unshare-all".into(), "--die-with-parent".into()];
+    if decision.shares_host_network() {
+        argv.push("--share-net".into());
+    }
+    for (flag, a, b) in [
+        ("--ro-bind", "/usr", "/usr"),
+        ("--ro-bind-try", "/lib64", "/lib64"),
+        ("--ro-bind-try", "/lib", "/lib"),
+        ("--ro-bind", exe_s.as_str(), exe_s.as_str()),
+    ] {
+        argv.extend([flag.to_string(), a.to_string(), b.to_string()]);
+    }
+    argv.extend(["--proc".into(), "/proc".into()]);
+    argv.extend(["--dev".into(), "/dev".into()]);
+    argv.extend(["--tmpfs".into(), "/tmp".into()]);
+    if let Some(host_socket) = gate_socket {
+        let bind = NetGateBind {
+            host_socket: host_socket.to_path_buf(),
+            sandbox_socket: PathBuf::from(SANDBOX_SOCKET_PATH),
+            port: PROBE_RELAY_PORT,
+        };
+        launcher::sandbox::push_net_gate(&mut argv, &bind);
+    }
+    argv.push(exe_s);
+    argv.extend([
+        "--exact".into(),
+        "device_local_probe".into(),
+        "--nocapture".into(),
+        "--test-threads".into(),
+        "1".into(),
+    ]);
+
+    let mut cmd = std::process::Command::new(bwrap());
+    cmd.args(&argv).env(ENV_LOCAL_LOOPBACK, loopback);
+    match lan {
+        Some(l) => cmd.env(ENV_LOCAL_LAN, l),
+        None => cmd.env_remove(ENV_LOCAL_LAN),
+    };
+    match name {
+        Some(n) => cmd.env(ENV_LOCAL_NAME, n),
+        None => cmd.env_remove(ENV_LOCAL_NAME),
+    };
+    match gate_socket {
+        Some(_) => cmd.env(ENV_SOCKET, SANDBOX_SOCKET_PATH),
+        None => cmd.env_remove(ENV_SOCKET),
+    };
+
+    let output = cmd.output().expect("spawn bwrap");
+    ProbeReport {
+        stdout: String::from_utf8_lossy(&output.stdout).to_string(),
+        stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+    }
+}
+
+/// An app denied the network cannot reach a service on this device — not
+/// on loopback, and not on the machine's own LAN address either.
+#[test]
+fn an_app_denied_the_network_cannot_reach_a_device_local_service() {
+    let loopback_port = serve_on("127.0.0.1".parse().unwrap(), "BROKER-STANDIN");
+    let loopback = format!("127.0.0.1:{loopback_port}");
+    let lan = host_lan_addr().map(|ip| {
+        let port = serve_on(ip, "BROKER-STANDIN");
+        format!("{ip}:{port}")
+    });
+
+    let decision = EgressDecision::resolve("off", &[], &[]);
+    assert_eq!(decision, EgressDecision::Blocked);
+
+    let report = run_device_local_probe(&decision, None, &loopback, lan.as_deref(), None);
+    report.dump("denied: device-local");
+
+    assert!(
+        report.get("raw_loopback").starts_with("ERR:"),
+        "a sandbox with no network capability must not reach a service on the host's \
+         loopback — that is where the collaboration broker lives: {}",
+        report.get("raw_loopback")
+    );
+    if lan.is_some() {
+        assert!(
+            report.get("raw_lan").starts_with("ERR:"),
+            "nor on the host's own LAN address, which is the same machine by another name: {}",
+            report.get("raw_lan")
+        );
+    }
+
+    // The negative case is not vacuous: the same probe, the same
+    // listeners, with the network shared reaches both. So the failures
+    // above are the namespace and not a service that never came up.
+    let shared = run_device_local_probe(
+        &EgressDecision::Unrestricted,
+        None,
+        &loopback,
+        lan.as_deref(),
+        None,
+    );
+    shared.dump("shared: device-local");
+    assert_eq!(
+        shared.get("raw_loopback"),
+        "BODY:BROKER-STANDIN",
+        "with the host network shared the loopback service is reachable, so the listener \
+         works and the denial above was real"
+    );
+    if lan.is_some() {
+        assert_eq!(shared.get("raw_lan"), "BODY:BROKER-STANDIN");
+    }
+}
+
+/// An app with a *host allowlist* has a gate, and the gate resolves names
+/// in the host namespace — so a name that points at this device is the
+/// bypass to close. It is closed unless the grant names that host exactly.
+///
+/// One variable changes between the two halves: the spelling of the grant.
+/// Same sandbox, same gate code, same service, same request.
+#[test]
+fn a_grant_that_merely_covers_a_local_name_does_not_reach_this_device() {
+    let port = serve_on("127.0.0.1".parse().unwrap(), "BROKER-STANDIN");
+    let loopback = format!("127.0.0.1:{port}");
+
+    // `.localhost` covers `localhost` for the access decision — but it is
+    // not the user pointing at this machine.
+    let covered = EgressPolicy::new(vec![".localhost".to_string()]);
+    assert!(
+        covered.permits("localhost"),
+        "the grant must cover the name, or the refusal below proves nothing about \
+         device-local filtering"
+    );
+    let (covered_gate, covered_socket) = start_gate("device-local-covered", covered.clone());
+    let refused = run_device_local_probe(
+        &EgressDecision::Filtered(covered),
+        Some(&covered_socket),
+        &loopback,
+        None,
+        Some("localhost"),
+    );
+    refused.dump("covered grant");
+    assert_eq!(
+        refused.get("gate_by_name"),
+        format!("REFUSED:{:#04x}", reply::HOST_UNREACHABLE),
+        "a name that resolves to this device must be unreachable through the gate when the \
+         grant only covers it"
+    );
+    assert_eq!(
+        refused.get("http_by_name"),
+        "STATUS:502",
+        "and over HTTP CONNECT too, or the rule is bypassable by switching protocol"
+    );
+    assert!(
+        refused.get("raw_loopback").starts_with("ERR:"),
+        "the namespace is still empty, so there is no route beside the gate: {}",
+        refused.get("raw_loopback")
+    );
+    let _ = covered_gate;
+
+    // Same everything, an exact grant: the service is reached. So the
+    // refusal above was the device-local rule and not a broken fixture.
+    let named = EgressPolicy::new(vec!["localhost".to_string()]);
+    let (named_gate, named_socket) = start_gate("device-local-named", named.clone());
+    let allowed = run_device_local_probe(
+        &EgressDecision::Filtered(named),
+        Some(&named_socket),
+        &loopback,
+        None,
+        Some("localhost"),
+    );
+    allowed.dump("exact grant");
+    assert_eq!(
+        allowed.get("gate_by_name"),
+        "BODY:BROKER-STANDIN",
+        "an exact grant for a device-local host must reach it — the rule narrows what a \
+         pattern covers, it does not ban local services outright"
+    );
+    let _ = named_gate;
 }
