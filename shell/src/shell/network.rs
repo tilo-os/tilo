@@ -274,7 +274,8 @@ impl ShellNetwork {
         // Mirrors the same hash function `tick`'s receive path uses,
         // so a peer's own publishes hash to the same `peer` u64 on
         // both sides of the wire.
-        let local_peer_hash = peer_id_to_u64(keypair.public().to_peer_id());
+        let local_peer_hash =
+            crate::network::behaviour::peer_liveness_handle(&keypair.public().to_peer_id());
         let mut swarm = SwarmBuilder::with_existing_identity(keypair.clone())
             .with_tokio()
             .with_tcp(
@@ -878,9 +879,9 @@ impl ShellNetwork {
                     continue;
                 }
                 let mut rep = self.replica.lock().unwrap();
-                // The peer's own identity, not `peer_id_to_u64`'s digest
-                // of it: room replication decides from this whether a
-                // payload may rewrite a room's governance.
+                // The peer's own identity, not the liveness handle's
+                // digest of it: room replication decides from this
+                // whether a payload may rewrite a room's governance.
                 rep.handle_from(&crate::shell::state::PeerOrigin::peer(&peer), &msg);
                 let outgoing = rep.drain_outgoing();
                 drop(rep);
@@ -908,17 +909,7 @@ impl Drop for ShellNetwork {
     }
 }
 
-/// Hash a libp2p `PeerId` to a `u64` for the replica's `_sender`
-/// argument. Mirrors the same hash the actor uses for
-/// `Heartbeat::peer`; collisions are not security-critical because
-/// the authenticated `PeerId` is already carried by gossipsub itself.
-fn peer_id_to_u64(peer: libp2p::PeerId) -> u64 {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-    let mut h = DefaultHasher::new();
-    peer.to_bytes().hash(&mut h);
-    h.finish()
-}
+
 
 /// Test-only constructor that wires `ShellNetwork`'s command sender to
 /// a caller-owned receiver, bypassing the libp2p actor entirely. Tests
