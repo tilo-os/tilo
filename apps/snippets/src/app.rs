@@ -18,7 +18,7 @@
 
 use std::collections::HashMap;
 
-use automerge::{AutoCommit, ObjId};
+use automerge::{AutoCommit, ChangeHash, ObjId};
 use taffy::{NodeId, Style, TaffyTree};
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
@@ -32,6 +32,7 @@ use winit::keyboard::{Key, NamedKey};
 use ui::ColorCompat;
 use ui::widget::{Button, ButtonFace, ButtonStyle, FlapState, PushPane, SplitLayout};
 
+use crate::actions::{self, SnippetsAction, SnippetsResourceCtx};
 use crate::doc::SnippetsDoc;
 use crate::draw;
 use crate::expand::ExpandModal;
@@ -113,6 +114,18 @@ pub struct SnippetsApp {
     /// (1.0) before the animation ticks it closed — the overlay would flash
     /// open. A staged `--shots` scenario sets this so its snap isn't undone.
     settled_layout: bool,
+
+    /// The document heads captured just before the first [`SnippetsAction`] of
+    /// the current event was dispatched. The host drains this via
+    /// [`ui::widget::Widget::take_committed_action`] to record exactly one undo
+    /// boundary bracketing the action — the same undo path Ctrl+K takes.
+    action_commit_before: Option<Vec<ChangeHash>>,
+
+    /// The last [`qos_actions::EncodedAction`] an on-screen affordance dispatched
+    /// through [`Self::perform_action`]. Lets a test prove a button and the
+    /// Ctrl+K [`qos_actions::ActionSpec`] build the byte-identical action — one
+    /// source of truth, not two code paths.
+    last_dispatched: Option<qos_actions::EncodedAction>,
 }
 
 /// A clickable region recorded during draw and resolved on mouse-down.
@@ -194,6 +207,8 @@ impl SnippetsApp {
             push: FlapState::closed_by_default(),
             push_pane: PushPane::Master,
             settled_layout: false,
+            action_commit_before: None,
+            last_dispatched: None,
         };
         app.recompute_visible();
         app
@@ -232,20 +247,62 @@ impl SnippetsApp {
         }
     }
 
-    fn new_snippet(&mut self) {
+    /// Dispatch one [`SnippetsAction`] — the single mutation path shared with the
+    /// Ctrl+K palette. The action runs through the qOS executor (a pinned actor +
+    /// committed change, so it replays byte-identically on peers), the shared
+    /// document being authoritative; the in-memory library is then re-projected
+    /// from it so the panes reflect the change this frame. The heads captured
+    /// just before the first action of the event are stashed so the host records
+    /// **one** undo boundary bracketing it.
+    fn perform_action(&mut self, doc: &mut AutoCommit, action: SnippetsAction) {
+        if self.action_commit_before.is_none() {
+            // `get_heads` flushes any pending writes, so the bracket covers only
+            // the action's own change.
+            self.action_commit_before = Some(doc.get_heads());
+        }
+        let encoded = actions::encode(&action);
+        self.last_dispatched = Some(encoded.clone());
+        let mut tx = DiscardTransport;
+        if let Err(e) = qos_actions::dispatch(doc, &action, encoded, &mut tx) {
+            tracing::warn!(error = %e, "snippets action dispatch failed");
+        }
+        self.refresh_from_doc(doc);
+    }
+
+    /// Re-project the authoritative document into the in-memory library. Called
+    /// after every dispatched action so the list/detail reflect it immediately,
+    /// before the next frame's `sync`.
+    fn refresh_from_doc(&mut self, doc: &AutoCommit) {
+        self.library.snippets = SnippetsDoc::list(doc);
+    }
+
+    /// The presentation context Ctrl+K needs to build the library-level "New
+    /// snippet" action (which folder to file it under).
+    pub(crate) fn snippets_resource_ctx(&self) -> SnippetsResourceCtx {
+        SnippetsResourceCtx {
+            current_folder: match &self.selection {
+                Selection::Folder(f) => f.clone(),
+                _ => String::new(),
+            },
+        }
+    }
+
+    fn new_snippet(&mut self, doc: &mut AutoCommit) {
         let folder = match &self.selection {
             Selection::Folder(f) => f.clone(),
             _ => String::new(),
         };
+        // The uuid is minted here, at authoring time, and carried in the action
+        // payload so replay reproduces the identical row.
         let s = Snippet::blank(&folder);
         let id = s.id;
-        self.library.insert(s);
+        self.perform_action(doc, actions::create_snippet_action(s));
         self.recompute_visible();
         self.open = Some(id);
         self.toast("New snippet created");
     }
 
-    fn copy(&mut self, id: SnippetId) {
+    fn copy(&mut self, id: SnippetId, doc: &mut AutoCommit) {
         // If the body has placeholders, route through the expand flow so
         // we never paste raw `${...}` onto the clipboard.
         let needs_expand = self
@@ -257,11 +314,19 @@ impl SnippetsApp {
             self.start_expand(id);
             return;
         }
-        if let Some(s) = self.library.get_mut(id) {
-            ui::clipboard_copy(&s.body);
-            s.uses += 1;
+        // Copying to the clipboard is presentation; the usage bump it records is
+        // a document mutation, so it goes through an action.
+        if let Some(body) = self.library.get(id).map(|s| s.body.clone()) {
+            ui::clipboard_copy(&body);
+            self.record_use(id, doc);
             self.toast("Copied to clipboard");
         }
+    }
+
+    /// Record one use of a snippet (drives "Most Used" + the usage hint) through
+    /// the action path, so the bump replicates and is undoable like any mutation.
+    fn record_use(&mut self, id: SnippetId, doc: &mut AutoCommit) {
+        self.perform_action(doc, actions::record_use_action(id));
     }
 
     fn start_expand(&mut self, id: SnippetId) {
@@ -270,14 +335,13 @@ impl SnippetsApp {
         }
     }
 
-    fn toggle_favorite(&mut self, id: SnippetId) {
-        if let Some(s) = self.library.get_mut(id) {
-            s.favorite = !s.favorite;
-        }
+    fn toggle_favorite(&mut self, id: SnippetId, doc: &mut AutoCommit) {
+        let cur = self.library.get(id).map(|s| s.favorite).unwrap_or(false);
+        self.perform_action(doc, actions::set_favorite_action(id, !cur));
         self.recompute_visible();
     }
 
-    fn duplicate(&mut self, id: SnippetId) {
+    fn duplicate(&mut self, id: SnippetId, doc: &mut AutoCommit) {
         if let Some(src) = self.library.get(id).cloned() {
             let mut copy = src.clone();
             copy.id = uuid::Uuid::new_v4();
@@ -285,15 +349,15 @@ impl SnippetsApp {
             copy.favorite = false;
             copy.uses = 0;
             let new_id = copy.id;
-            self.library.insert(copy);
+            self.perform_action(doc, actions::create_snippet_action(copy));
             self.recompute_visible();
             self.open = Some(new_id);
             self.toast("Duplicated");
         }
     }
 
-    fn delete(&mut self, id: SnippetId) {
-        self.library.remove(id);
+    fn delete(&mut self, id: SnippetId, doc: &mut AutoCommit) {
+        self.perform_action(doc, actions::delete_snippet_action(id));
         if self.open == Some(id) {
             self.open = None;
         }
@@ -301,10 +365,8 @@ impl SnippetsApp {
         self.toast("Deleted");
     }
 
-    fn set_language(&mut self, id: SnippetId, lang: Language) {
-        if let Some(s) = self.library.get_mut(id) {
-            s.language = lang;
-        }
+    fn set_language(&mut self, id: SnippetId, lang: Language, doc: &mut AutoCommit) {
+        self.perform_action(doc, actions::set_language_action(id, lang));
         self.recompute_visible();
     }
 
@@ -312,58 +374,54 @@ impl SnippetsApp {
         self.toast = Some(Toast { message: message.to_string(), ttl: 90 });
     }
 
-    /// Mirror the whole in-memory library into the shared doc (idempotent
-    /// upserts). Pulls in any snippets a peer added that we don't have.
+    /// Reconcile the in-memory library with the shared document.
+    ///
+    /// The document is the source of truth: every mutation flows through a
+    /// dispatched [`SnippetsAction`] (see [`crate::actions`]). On first sync we
+    /// either seed our starter set into an empty document or adopt a peer's; from
+    /// then on we re-project the document so a peer's change — and our own
+    /// just-dispatched action — both surface. Guarded so an unchanged frame
+    /// doesn't churn the visible list.
     fn sync_library(&mut self, doc: &mut AutoCommit) {
         let remote = SnippetsDoc::list(doc);
         if !self.seeded {
             if remote.is_empty() {
-                // We're the origin — seed our starter set.
+                // We're the origin — seed our starter set into the document,
+                // which becomes authoritative from here on.
                 for s in self.library.snippets.clone() {
                     SnippetsDoc::upsert(doc, &s);
                 }
             } else {
                 // A peer is already sharing — adopt their library.
-                self.library.snippets = remote.clone();
+                self.library.snippets = remote;
                 self.recompute_visible();
             }
             self.seeded = true;
             return;
         }
-        // Steady state: push local snippets, pull remote-only ones.
-        let local_ids: std::collections::HashSet<SnippetId> =
-            self.library.snippets.iter().map(|s| s.id).collect();
-        for s in self.library.snippets.clone() {
-            SnippetsDoc::upsert(doc, &s);
-        }
-        let mut changed = false;
-        for r in remote {
-            if !local_ids.contains(&r.id) {
-                self.library.insert(r);
-                changed = true;
-            }
-        }
-        if changed {
+        // Steady state: the document is authoritative — re-project it.
+        if self.library.snippets != remote {
+            self.library.snippets = remote;
             self.recompute_visible();
         }
     }
 
-    fn apply(&mut self, action: Action) {
+    fn apply(&mut self, action: Action, doc: &mut AutoCommit) {
         match action {
             Action::Select(sel) => self.select(sel),
             Action::OpenSnippet(id) => self.open_snippet(id),
-            Action::NewSnippet => self.new_snippet(),
-            Action::Copy(id) => self.copy(id),
+            Action::NewSnippet => self.new_snippet(doc),
+            Action::Copy(id) => self.copy(id, doc),
             Action::Expand(id) => self.start_expand(id),
-            Action::ToggleFavorite(id) => self.toggle_favorite(id),
-            Action::Duplicate(id) => self.duplicate(id),
-            Action::Delete(id) => self.delete(id),
+            Action::ToggleFavorite(id) => self.toggle_favorite(id, doc),
+            Action::Duplicate(id) => self.duplicate(id, doc),
+            Action::Delete(id) => self.delete(id, doc),
             Action::FocusSearch => self.search_focused = true,
             Action::ClearSearch => {
                 self.search.clear();
                 self.recompute_visible();
             }
-            Action::SetLanguage(id, lang) => self.set_language(id, lang),
+            Action::SetLanguage(id, lang) => self.set_language(id, lang, doc),
             Action::ToggleSidebar => self.sidebar.toggle(self.sidebar_layout()),
             Action::DismissSidebar => self.sidebar.close(),
             Action::PushBack => {
@@ -498,13 +556,36 @@ impl SnippetsApp {
     }
 
     #[doc(hidden)]
-    pub fn copy_for_test(&mut self, id: SnippetId) {
-        self.copy(id);
+    pub fn copy_for_test(&mut self, id: SnippetId, doc: &mut AutoCommit) {
+        self.copy(id, doc);
+    }
+
+    #[doc(hidden)]
+    pub fn new_snippet_for_test(&mut self, doc: &mut AutoCommit) {
+        self.new_snippet(doc);
     }
 
     #[doc(hidden)]
     pub fn snippet_uses_for_test(&self, id: SnippetId) -> u32 {
         self.library.get(id).map(|s| s.uses).unwrap_or(0)
+    }
+
+    #[doc(hidden)]
+    pub fn last_dispatched_for_test(&self) -> Option<qos_actions::EncodedAction> {
+        self.last_dispatched.clone()
+    }
+
+    /// Drive the toolbar Delete affordance exactly as a click resolves it (via
+    /// the shared `apply` dispatch), against the authoritative document.
+    #[doc(hidden)]
+    pub fn delete_for_test(&mut self, id: SnippetId, doc: &mut AutoCommit) {
+        self.apply(Action::Delete(id), doc);
+    }
+
+    /// Drive the toolbar Star affordance the same way.
+    #[doc(hidden)]
+    pub fn toggle_favorite_for_test(&mut self, id: SnippetId, doc: &mut AutoCommit) {
+        self.apply(Action::ToggleFavorite(id), doc);
     }
 
     // ---- responsive test accessors -------------------------------------
@@ -561,7 +642,9 @@ impl SnippetsApp {
 
     #[doc(hidden)]
     pub fn toggle_sidebar_for_test(&mut self) {
-        self.apply(Action::ToggleSidebar);
+        // Toggling the sidebar is pure presentation; a scratch document
+        // satisfies the shared dispatch signature without any mutation.
+        self.apply(Action::ToggleSidebar, &mut AutoCommit::new());
     }
 
     #[doc(hidden)]
@@ -585,6 +668,21 @@ impl ui::widget::Widget for SnippetsApp {
 
     fn needs_idle_sync(&self) -> bool {
         !self.seeded
+    }
+
+    /// Publish the library + its snippets so the host's Ctrl+K action palette
+    /// scopes to them. Delegates to the
+    /// [`ResourceProvider`](qos_actions::ResourceProvider) impl in
+    /// [`crate::actions`].
+    fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
+        <Self as qos_actions::ResourceProvider>::resources(self, doc)
+    }
+
+    /// Hand the host the heads captured before an on-screen affordance dispatched
+    /// its action, so it records one undo boundary for it (see
+    /// [`Self::perform_action`]). Rising-edge: cleared on read.
+    fn take_committed_action(&mut self) -> Option<Vec<ChangeHash>> {
+        self.action_commit_before.take()
     }
 
     fn build_layout(
@@ -699,7 +797,7 @@ impl ui::widget::Widget for SnippetsApp {
         event: &WindowEvent,
         scale_factor: f64,
         modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
+        state: &mut AutoCommit,
         _path: &ObjId,
         handled: &mut bool,
         _focus_target: &mut Option<NodeId>,
@@ -726,9 +824,7 @@ impl ui::widget::Widget for SnippetsApp {
                 }
                 ExpandOutcome::Copy(text, id) => {
                     ui::clipboard_copy(&text);
-                    if let Some(s) = self.library.get_mut(id) {
-                        s.uses += 1;
-                    }
+                    self.record_use(id, state);
                     self.toast("Expanded and copied");
                     *handled = true;
                     return;
@@ -747,7 +843,7 @@ impl ui::widget::Widget for SnippetsApp {
                     if !matches!(action, Action::FocusSearch) {
                         self.search_focused = false;
                     }
-                    self.apply(action);
+                    self.apply(action, state);
                     *handled = true;
                 } else {
                     self.search_focused = false;
@@ -782,13 +878,13 @@ impl ui::widget::Widget for SnippetsApp {
                                 return;
                             }
                             "n" => {
-                                self.new_snippet();
+                                self.new_snippet(state);
                                 *handled = true;
                                 return;
                             }
                             "c" => {
                                 if let Some(id) = self.open {
-                                    self.copy(id);
+                                    self.copy(id, state);
                                 }
                                 *handled = true;
                                 return;
@@ -809,10 +905,10 @@ impl ui::widget::Widget for SnippetsApp {
                 // open it dismisses the flap; otherwise it clears the search.
                 if let Key::Named(NamedKey::Escape) = logical_key {
                     if self.is_push_layout() && self.push.reveal() > 0.5 {
-                        self.apply(Action::PushBack);
+                        self.apply(Action::PushBack, state);
                         *handled = true;
                     } else if self.sidebar_layout() == SplitLayout::Overlay && self.sidebar_open() {
-                        self.apply(Action::DismissSidebar);
+                        self.apply(Action::DismissSidebar, state);
                         *handled = true;
                     } else if !self.search.is_empty() {
                         self.search.clear();
@@ -869,6 +965,18 @@ impl ui::widget::Widget for SnippetsApp {
     ) {
         self.draw(scene, transform, tr, theme, presence);
     }
+}
+
+/// The action transport Snippets installs for its own on-screen affordances.
+/// Peers receive library changes through ordinary CRDT sync (the executor pins
+/// each action's actor so the change is content-addressed identical to a peer's
+/// replay and dedupes on merge), so the local affordance path has nothing extra
+/// to replicate — this sink drops the envelope. The Ctrl+K palette dispatches
+/// through the host's transport, which a collaborative session swaps for a
+/// peer-aware one.
+struct DiscardTransport;
+impl qos_actions::ActionTransport for DiscardTransport {
+    fn replicate(&mut self, _env: &qos_actions::ActionEnvelope) {}
 }
 
 /// Result of routing an event to the expand modal.
@@ -1749,6 +1857,8 @@ impl Radii for Theme {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::actions::SNIPPETS_ACTION_TYPE;
+    use ui::widget::Widget;
 
     #[test]
     fn live_app_starts_empty() {
@@ -1770,7 +1880,6 @@ mod tests {
 
     #[test]
     fn empty_live_app_does_not_seed_the_shared_doc() {
-        use ui::widget::Widget;
         let mut app = SnippetsApp::new();
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
@@ -1794,6 +1903,11 @@ mod tests {
     #[test]
     fn copying_a_plain_snippet_bumps_uses() {
         let mut app = SnippetsApp::new_demo();
+        // Seed the shared document (as the live app's per-frame sync does before
+        // any event) so the usage-bump action has an authoritative row to edit.
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        app.sync(&mut doc, &root);
         // Find a snippet without placeholders.
         let id = app
             .library
@@ -1803,7 +1917,7 @@ mod tests {
             .map(|s| s.id)
             .expect("a placeholder-free snippet exists");
         let before = app.snippet_uses_for_test(id);
-        app.copy_for_test(id);
+        app.copy_for_test(id, &mut doc);
         assert_eq!(app.snippet_uses_for_test(id), before + 1);
         assert!(!app.expand_open_for_test());
     }
@@ -1811,6 +1925,9 @@ mod tests {
     #[test]
     fn copying_a_templated_snippet_opens_expand() {
         let mut app = SnippetsApp::new_demo();
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        app.sync(&mut doc, &root);
         let id = app
             .library
             .snippets
@@ -1818,15 +1935,18 @@ mod tests {
             .find(|s| s.has_placeholders())
             .map(|s| s.id)
             .expect("a templated snippet exists");
-        app.copy_for_test(id);
+        app.copy_for_test(id, &mut doc);
         assert!(app.expand_open_for_test(), "templated copy routes through expand");
     }
 
     #[test]
     fn new_snippet_grows_library_and_opens_it() {
         let mut app = SnippetsApp::new();
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        app.sync(&mut doc, &root);
         let before = app.library_len_for_test();
-        app.new_snippet();
+        app.new_snippet_for_test(&mut doc);
         assert_eq!(app.library_len_for_test(), before + 1);
         assert!(app.open_id_for_test().is_some());
     }
@@ -1839,7 +1959,6 @@ mod tests {
 
     #[test]
     fn sync_seeds_into_empty_doc() {
-        use ui::widget::Widget;
         let mut app = SnippetsApp::new_demo();
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
@@ -1925,5 +2044,143 @@ mod tests {
             app.sidebar_open_for_test() && !app.sidebar_is_overlay_for_test(),
             "crossing back over the breakpoint restores the docked-open default"
         );
+    }
+
+    // ---- action model: affordances dispatch through the shared path ----
+
+    /// Seed a demo app + its shared document, as the live frame order does.
+    fn seeded_app() -> (SnippetsApp, AutoCommit) {
+        let mut app = SnippetsApp::new_demo();
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        app.sync(&mut doc, &root);
+        (app, doc)
+    }
+
+    /// The toolbar Delete button dispatches the byte-identical `EncodedAction`
+    /// the Ctrl+K palette's "Delete snippet" ActionSpec exports — proof the two
+    /// share one source of truth — and it actually removes the row.
+    #[test]
+    fn toolbar_delete_dispatches_the_same_action_as_the_palette() {
+        let (mut app, mut doc) = seeded_app();
+        let id = SnippetsDoc::list(&doc)[0].id;
+
+        // What the palette would dispatch for this snippet's "delete".
+        let resources = Widget::resources(&app, &doc);
+        let snip = resources[0]
+            .children
+            .iter()
+            .find(|r| r.id.as_str() == format!("snippets.snippet:{id}"))
+            .expect("a resource for the target snippet");
+        let spec = snip.actions.iter().find(|a| a.id == "delete").unwrap();
+        let spec_encoded = match &spec.input {
+            qos_actions::ActionInput::Immediate(e) => e.clone(),
+            _ => panic!("delete is immediate"),
+        };
+
+        app.delete_for_test(id, &mut doc);
+
+        let dispatched = app.last_dispatched_for_test().expect("the button dispatched an action");
+        assert_eq!(dispatched.type_id, SNIPPETS_ACTION_TYPE);
+        assert_eq!(dispatched.type_id, spec_encoded.type_id);
+        assert_eq!(
+            dispatched.payload, spec_encoded.payload,
+            "the button and the palette build the identical EncodedAction",
+        );
+        assert!(
+            SnippetsDoc::get(&doc, id).is_none(),
+            "the snippet was deleted via the dispatched action",
+        );
+        assert!(
+            !app.library.snippets.iter().any(|s| s.id == id),
+            "the library re-projected the deletion",
+        );
+    }
+
+    /// The toolbar Star button dispatches the same `EncodedAction` the palette's
+    /// "toggle-favorite" spec exports (both carry the flipped target value).
+    #[test]
+    fn toolbar_star_dispatches_the_same_action_as_the_palette() {
+        let (mut app, mut doc) = seeded_app();
+        // Pick an unstarred snippet so both sides compute `favorite: true`.
+        let id = SnippetsDoc::list(&doc)
+            .into_iter()
+            .find(|s| !s.favorite)
+            .map(|s| s.id)
+            .expect("an unstarred seeded snippet");
+
+        let resources = Widget::resources(&app, &doc);
+        let snip = resources[0]
+            .children
+            .iter()
+            .find(|r| r.id.as_str() == format!("snippets.snippet:{id}"))
+            .unwrap();
+        let spec = snip.actions.iter().find(|a| a.id == "toggle-favorite").unwrap();
+        let spec_encoded = match &spec.input {
+            qos_actions::ActionInput::Immediate(e) => e.clone(),
+            _ => panic!("toggle-favorite is immediate"),
+        };
+
+        app.toggle_favorite_for_test(id, &mut doc);
+
+        let dispatched = app.last_dispatched_for_test().expect("the star dispatched an action");
+        assert_eq!(
+            dispatched.payload, spec_encoded.payload,
+            "the star and the palette build the identical EncodedAction",
+        );
+        assert!(SnippetsDoc::get(&doc, id).unwrap().favorite, "the snippet is now starred");
+    }
+
+    /// The full undo covenant through the real host path: a toolbar affordance
+    /// dispatches its action, the host drains `take_committed_action` to record
+    /// exactly one undo boundary, and Ctrl+Z reverts precisely that action.
+    #[test]
+    fn affordance_records_one_undo_boundary_through_the_host() {
+        let mut app = SnippetsApp::new_demo();
+        let mut state = ui::State::new();
+        app.sync(&mut state.doc, &state.root);
+        let id = SnippetsDoc::list(&state.doc)
+            .into_iter()
+            .find(|s| !s.favorite)
+            .map(|s| s.id)
+            .expect("an unstarred snippet");
+
+        // Fire the toolbar Star through the shared dispatch path.
+        app.toggle_favorite_for_test(id, &mut state.doc);
+        assert!(SnippetsDoc::get(&state.doc, id).unwrap().favorite);
+
+        // The host drains the captured heads and records ONE undo boundary.
+        let before = Widget::take_committed_action(&mut app).expect("heads were captured");
+        assert!(
+            Widget::take_committed_action(&mut app).is_none(),
+            "rising-edge: the captured heads are cleared on read",
+        );
+        state.record_committed_action(before, None, None);
+        assert!(state.peek_last_undo().is_some(), "exactly one undo boundary recorded");
+
+        // Ctrl+Z reverts the star. Re-project so the library reflects the undo.
+        state.undo(None, None).expect("an undo entry to pop");
+        app.sync(&mut state.doc, &state.root);
+        assert!(
+            !SnippetsDoc::get(&state.doc, id).unwrap().favorite,
+            "undo reverted the star and nothing else",
+        );
+    }
+
+    /// Actions make the document authoritative: a mutation applied straight to
+    /// the document (as a peer's replayed action would arrive) is re-projected
+    /// into the library on the next `sync`, and a local delete is not resurrected.
+    #[test]
+    fn steady_state_reprojects_the_document() {
+        let (mut app, mut doc) = seeded_app();
+        let before = app.library_len_for_test();
+        let id = SnippetsDoc::list(&doc)[0].id;
+
+        // A peer deletes a snippet — it arrives in our replica as a raw document
+        // mutation (the shape a replayed `DeleteSnippet` action leaves behind).
+        SnippetsDoc::remove(&mut doc, id);
+        app.sync(&mut doc, &automerge::ROOT);
+        assert_eq!(app.library_len_for_test(), before - 1, "the deletion re-projected");
+        assert!(!app.library.snippets.iter().any(|s| s.id == id), "and is not resurrected");
     }
 }
