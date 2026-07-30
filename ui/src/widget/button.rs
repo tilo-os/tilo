@@ -171,6 +171,13 @@ impl Button {
         self
     }
 
+    /// Shorthand for [`Self::with_style`]`(ButtonStyle::Ghost)` — a
+    /// borderless, transparent-at-rest affordance (close-`X`, icon button).
+    pub fn ghost(mut self) -> Self {
+        self.style = ButtonStyle::Ghost;
+        self
+    }
+
     /// Imperatively set the style, invalidating the scene cache so the new
     /// fill/label is re-emitted next frame.
     pub fn set_style(&mut self, style: ButtonStyle) {
@@ -202,12 +209,18 @@ impl Button {
 /// - `Primary` — an accent-filled default action (Send / Save / Open),
 ///   white label, no border (the accent fill is self-defining).
 /// - `Danger` — a destructive action, danger-filled, white label, no border.
+/// - `Ghost` — borderless and transparent at rest, tinting to `bg_hover` /
+///   `bg_active` only on interaction, dim label/icon. The look a close-`X`,
+///   a toolbar icon, or an overlay affordance wants: no box at rest, real
+///   themed hover/press feedback on top. Replaces the per-app "draw a bare
+///   icon and hit-test the rect" pattern with a themed face.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum ButtonStyle {
     #[default]
     Neutral,
     Primary,
     Danger,
+    Ghost,
 }
 
 /// Interaction state for an immediate-mode button face. The retained
@@ -264,6 +277,19 @@ pub fn face_colors(
             };
             (bg, None, Color::WHITE)
         }
+        ButtonStyle::Ghost => {
+            // Transparent + borderless at rest; a themed surface tint only
+            // on hover / press. Dim label so it reads as a secondary
+            // affordance, not a primary action.
+            let bg = if interact.pressed {
+                theme.bg_active
+            } else if interact.hovered {
+                theme.bg_hover
+            } else {
+                Color::TRANSPARENT
+            };
+            (bg, None, theme.tokens.colors.text_dim)
+        }
     }
 }
 
@@ -299,6 +325,7 @@ impl<'a> ButtonFace<'a> {
     pub fn style(mut self, style: ButtonStyle) -> Self { self.style = style; self }
     pub fn primary(mut self) -> Self { self.style = ButtonStyle::Primary; self }
     pub fn danger(mut self) -> Self { self.style = ButtonStyle::Danger; self }
+    pub fn ghost(mut self) -> Self { self.style = ButtonStyle::Ghost; self }
     pub fn icon(mut self, icon: crate::icons::Icon) -> Self { self.icon = Some(icon); self }
     pub fn radius(mut self, radius: f64) -> Self { self.radius = radius; self }
     pub fn weight(mut self, weight: crate::text_render::TextWeight) -> Self { self.weight = weight; self }
@@ -815,6 +842,24 @@ mod tests {
         assert_eq!(fg, theme.tokens.colors.text_primary);
         assert_eq!(face_colors(&theme, ButtonStyle::Neutral, hover).0, theme.bg_hover);
         assert_eq!(face_colors(&theme, ButtonStyle::Neutral, press).0, theme.bg_active);
+    }
+
+    #[test]
+    fn face_colors_ghost_is_transparent_at_rest_then_tints() {
+        // A ghost face draws no box and no border at rest — only the dim
+        // label/icon — then tints to the same hover/press surface tokens the
+        // neutral face uses, so an icon affordance gets real feedback without
+        // a resting box.
+        let theme = Theme::dark();
+        let rest = ButtonInteract::default();
+        let hover = ButtonInteract { hovered: true, ..Default::default() };
+        let press = ButtonInteract { pressed: true, ..Default::default() };
+        let (bg, border, fg) = face_colors(&theme, ButtonStyle::Ghost, rest);
+        assert_eq!(bg, vello::peniko::Color::TRANSPARENT, "ghost rest fill is transparent");
+        assert_eq!(border, None, "ghost has no border");
+        assert_eq!(fg, theme.tokens.colors.text_dim, "ghost label/icon is dim");
+        assert_eq!(face_colors(&theme, ButtonStyle::Ghost, hover).0, theme.bg_hover);
+        assert_eq!(face_colors(&theme, ButtonStyle::Ghost, press).0, theme.bg_active);
     }
 
     #[test]

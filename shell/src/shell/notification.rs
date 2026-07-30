@@ -22,14 +22,15 @@ use std::time::{Duration, Instant};
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Circle, Line, Point, Rect, RoundedRect, Stroke};
+use vello::kurbo::{Affine, Circle, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::Fill;
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
 use ui::presence::PresenceCtx;
-use ui::text_render::{TextRenderer, TextWeight};
+use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::Widget;
+use ui::widget::toast::{ToastCard, ToastKind};
 
 use crate::shell::chrome_state::Chrome;
 
@@ -55,6 +56,16 @@ impl NotificationSeverity {
             Self::Info => theme.tokens.colors.semantic.info,
             Self::Warning => theme.tokens.colors.semantic.warning,
             Self::Error => theme.tokens.colors.semantic.danger,
+        }
+    }
+
+    /// Map onto the shared toast severity ramp so a desktop notification and
+    /// an in-app `ui::ToastStack` toast tint identically.
+    pub fn toast_kind(self) -> ToastKind {
+        match self {
+            Self::Info => ToastKind::Info,
+            Self::Warning => ToastKind::Warning,
+            Self::Error => ToastKind::Error,
         }
     }
 }
@@ -260,10 +271,8 @@ const TOAST_HEIGHT: f64 = 64.0;
 const TOAST_GAP: f64 = 8.0;
 const EDGE_INSET: f64 = 24.0;
 const CARD_PADDING_X: f64 = 14.0;
-const CARD_PADDING_Y: f64 = 10.0;
 const DOT_RADIUS: f64 = 5.0;
 const DOT_GAP: f64 = 12.0;
-const CLOSE_BUTTON_SIZE: f64 = 16.0;
 
 /// Maximum number of notifications kept in the active stack. Older
 /// entries are dropped from the front when the cap is exceeded — same
@@ -559,149 +568,29 @@ impl Widget for NotificationStack {
             let card_rect = Rect::new(card_x0, y, card_x0 + TOAST_WIDTH, y + TOAST_HEIGHT);
             stack_min_y = stack_min_y.min(card_rect.y0);
             stack_max_y = stack_max_y.max(card_rect.y1);
-            let shape = RoundedRect::from_rect(card_rect, radius);
 
-            // Soft drop shadow via the shared Gaussian primitive (was a
-            // single offset flat rect — a hard-edged fake). Modulated by
-            // the toast's animated alpha so it fades in/out with the card.
-            ui::surface::soft_shadow(
+            // One shared card renderer for every toast surface: the desktop
+            // notification and an in-app `ui::ToastStack` toast are the same
+            // painter now (HIG §8 — extend the widget, don't fork it). The
+            // stack still owns *what* to show — D-Bus attribution, severity,
+            // actions, expiry — and the click routing; `ui::widget::toast`
+            // owns the card's look, the severity stripe, and the dismiss
+            // button, and hands back the button rect to hit-test.
+            let hit = ui::widget::toast::paint_card(
                 scene,
                 transform,
+                text_renderer,
+                theme,
                 card_rect,
-                theme.tokens.colors.neutral[0],
-                18.0,
-                6.0,
-                (alpha * 0.5).clamp(0.0, 1.0),
+                &ToastCard::new(&n.title, n.severity.toast_kind())
+                    .body(&n.body)
+                    .caption(n.app_name.as_deref().unwrap_or(""))
+                    .alpha(alpha)
+                    .closable(true)
+                    .actionable(!n.actions.is_empty()),
             );
 
-            // Fill: surfaces.raised at the toast's animated alpha.
-            let fill_color = theme.tokens.colors.surfaces.raised.with_alpha(alpha);
-            scene.fill(Fill::NonZero, transform, fill_color, None, &shape);
-            let border_color = theme.tokens.colors.border_standard.with_alpha(alpha);
-            scene.stroke(&Stroke::new(1.0), transform, border_color, None, &shape);
-
-            // Severity dot.
-            let dot_cx = card_rect.x0 + CARD_PADDING_X + DOT_RADIUS;
-            let dot_cy = card_rect.y0 + CARD_PADDING_Y + DOT_RADIUS;
-            let dot_color = n.severity.color(theme).with_alpha(alpha);
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                dot_color,
-                None,
-                &Circle::new(Point::new(dot_cx, dot_cy), DOT_RADIUS),
-            );
-
-            // Text column: optional app-name caption, then the title
-            // (semibold), then the body (dim). The caption shifts the
-            // start up a touch so all three lines fit the fixed card
-            // height.
-            let text_x = card_rect.x0 + CARD_PADDING_X + DOT_RADIUS * 2.0 + DOT_GAP;
-            let width_avail =
-                (TOAST_WIDTH - (text_x - card_rect.x0) - CLOSE_BUTTON_SIZE - 8.0) as f32;
-            let title_color = theme.tokens.colors.text_primary.with_alpha(alpha);
-            let body_color = theme.tokens.colors.text_dim.with_alpha(alpha);
-
-            let mut text_y = if n.app_name.is_some() {
-                card_rect.y0 + 8.0
-            } else {
-                card_rect.y0 + CARD_PADDING_Y
-            };
-
-            // App-name caption (attribution): the sending app's name in
-            // uppercase, dim.
-            if let Some(app) = n.app_name.as_ref() {
-                text_renderer.draw_text_weighted(
-                    scene,
-                    &app.to_uppercase(),
-                    body_size,
-                    body_color,
-                    transform * Affine::translate((text_x, text_y)),
-                    Some(width_avail),
-                    TextWeight::Semibold,
-                );
-                text_y += body_size as f64 + 2.0;
-            }
-
-            // Title (bold).
-            text_renderer.draw_text_weighted(
-                scene,
-                &n.title,
-                title_size,
-                title_color,
-                transform * Affine::translate((text_x, text_y)),
-                Some(width_avail),
-                TextWeight::Semibold,
-            );
-            text_y += title_size as f64 + 4.0;
-
-            // Body (dim).
-            if !n.body.is_empty() {
-                text_renderer.draw_text(
-                    scene,
-                    &n.body,
-                    body_size,
-                    body_color,
-                    transform * Affine::translate((text_x, text_y)),
-                    Some(width_avail),
-                );
-            }
-
-            // Close (X) button at the top-right.
-            let cx0 = card_rect.x1 - CLOSE_BUTTON_SIZE - 6.0;
-            let cy0 = card_rect.y0 + 6.0;
-            let close_rect = Rect::new(cx0, cy0, cx0 + CLOSE_BUTTON_SIZE, cy0 + CLOSE_BUTTON_SIZE);
-            let x_color = theme.tokens.colors.text_dim.with_alpha(alpha);
-            let inset = 4.0;
-            let stroke = Stroke::new(1.5);
-            scene.stroke(
-                &stroke,
-                transform,
-                x_color,
-                None,
-                &Line::new(
-                    Point::new(close_rect.x0 + inset, close_rect.y0 + inset),
-                    Point::new(close_rect.x1 - inset, close_rect.y1 - inset),
-                ),
-            );
-            scene.stroke(
-                &stroke,
-                transform,
-                x_color,
-                None,
-                &Line::new(
-                    Point::new(close_rect.x1 - inset, close_rect.y0 + inset),
-                    Point::new(close_rect.x0 + inset, close_rect.y1 - inset),
-                ),
-            );
-
-            // Actionable indicator: a severity-tinted chevron at the
-            // bottom-right when the notification carries actions. The
-            // whole card is the activate hit-target — clicking it invokes
-            // the default (or first) action and emits `ActionInvoked`.
-            // Per-action buttons are a documented follow-up.
-            if !n.actions.is_empty() {
-                let chev_color = n.severity.color(theme).with_alpha(alpha);
-                let chx = card_rect.x1 - 16.0;
-                let chy = card_rect.y1 - 12.0;
-                let chev_stroke = Stroke::new(1.6);
-                scene.stroke(
-                    &chev_stroke,
-                    transform,
-                    chev_color,
-                    None,
-                    &Line::new(Point::new(chx, chy - 4.0), Point::new(chx + 4.0, chy)),
-                );
-                scene.stroke(
-                    &chev_stroke,
-                    transform,
-                    chev_color,
-                    None,
-                    &Line::new(Point::new(chx + 4.0, chy), Point::new(chx, chy + 4.0)),
-                );
-            }
-
-            self.hit_rects.push((n.id, card_rect, close_rect));
+            self.hit_rects.push((n.id, card_rect, hit.close_rect));
             y += TOAST_HEIGHT + TOAST_GAP;
         }
 
@@ -758,6 +647,42 @@ impl Widget for NotificationStack {
     fn get_rect(&self) -> Rect {
         self.rect
     }
+
+    /// The stack is a live region of transient notifications — the same
+    /// contract `ui::widget::toast::ToastStack` exposes, so a screen reader
+    /// announces a freshly-posted toast without the user having to focus it.
+    /// While the session is locked the value is redacted to a count so no
+    /// title/body/app-name ever reaches the a11y tree.
+    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        use ui::a11y::{AccessNode, Politeness, Role};
+        let ch = self.chrome.borrow();
+        if ch.session_locked() {
+            let n = ch.notification_count();
+            if n == 0 {
+                return None;
+            }
+            return Some(
+                AccessNode::new(Role::Group)
+                    .with_name("Notifications")
+                    .with_live(Politeness::Polite)
+                    .with_value(lock_suppressed_label(n)),
+            );
+        }
+        let latest = ch.notifications().last().map(|t| {
+            if t.body.is_empty() {
+                t.title.clone()
+            } else {
+                format!("{}. {}", t.title, t.body)
+            }
+        });
+        let mut node = AccessNode::new(Role::Group)
+            .with_name("Notifications")
+            .with_live(Politeness::Assertive);
+        if let Some(v) = latest {
+            node = node.with_value(v);
+        }
+        Some(node)
+    }
 }
 
 impl NotificationStack {
@@ -806,6 +731,30 @@ mod tests {
         assert_eq!(ch.notifications()[0].title, "Hello");
         assert_eq!(ch.notifications()[0].body, "World");
         assert_eq!(ch.notifications()[0].severity, NotificationSeverity::Info);
+    }
+
+    #[test]
+    fn accessibility_exposes_a_named_live_region_with_latest_notification() {
+        use ui::a11y::{Politeness, Role};
+        let chrome = new_chrome();
+        let stack = NotificationStack::new(chrome.clone());
+        // Empty: a named assertive live region with no value yet — the anchor
+        // a freshly-posted toast announces through.
+        let node = Widget::accessibility(&stack).expect("the stack is a live region");
+        assert_eq!(node.role, Role::Group);
+        assert_eq!(node.name.as_deref(), Some("Notifications"));
+        assert_eq!(node.live, Some(Politeness::Assertive));
+        assert!(node.value.is_none(), "an empty stack announces nothing");
+        // With a toast, the latest surfaces as the announced value.
+        chrome.borrow_mut().push_notification("New mail", "secret subject");
+        let node = Widget::accessibility(&stack).unwrap();
+        assert_eq!(node.value.as_deref(), Some("New mail. secret subject"));
+        // Locked: content is redacted to a count — no title/body/app reaches
+        // the a11y tree.
+        chrome.borrow_mut().set_session_locked(true);
+        let node = Widget::accessibility(&stack).unwrap();
+        assert_eq!(node.value.as_deref(), Some("1 notification"));
+        assert_eq!(node.live, Some(Politeness::Polite));
     }
 
     #[test]
