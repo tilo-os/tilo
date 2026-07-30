@@ -113,7 +113,11 @@
 //! 4. A declared floor above the running generation is refused, not clamped
 //!    silently, because silently clamping hides an authoring mistake that would
 //!    otherwise be caught before it ships.
+//! 5. The counter cannot be incremented by anything that does not hold a signed,
+//!    single-use approval bound to one specific target value ([`approval`]). An
+//!    unreachable authority freezes the floor; it never stops the disk unlocking.
 
+pub mod approval;
 pub mod certify;
 pub mod confirm;
 pub mod counter;
@@ -124,6 +128,7 @@ pub mod lockout;
 pub mod policy;
 pub mod retention;
 pub mod token;
+pub mod tpm_policy;
 
 /// Everything that is a deployment policy rather than a constant.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -138,6 +143,16 @@ pub struct Config {
     pub pcrs: Vec<u32>,
     /// Public half of the PCR-prediction signing key.
     pub pcr_public_key: String,
+    /// Public half of the key that authorises floor advances.
+    ///
+    /// Defaults to the PCR-prediction key because both are the same trust domain —
+    /// the authority that publishes an image. Production custody should separate
+    /// them: a prediction signature only says "these are the expected
+    /// measurements", while a floor approval permanently narrows what a machine
+    /// will boot, so they warrant different handling.
+    pub floor_authority_key: String,
+    /// Where the device keeps the signed floor-advance approvals it holds.
+    pub approval_dir: String,
     /// Override the key-derivation cost of the keyslots this crate creates.
     ///
     /// `None` in production, which means cryptsetup's own defaults (argon2id,
@@ -167,6 +182,8 @@ impl Default for Config {
             //      the root digest transitively measured.
             pcrs: vec![7, 11],
             pcr_public_key: "/usr/share/qos/tpm2-pcr-signing.public.pem".into(),
+            floor_authority_key: "/usr/share/qos/tpm2-pcr-signing.public.pem".into(),
+            approval_dir: approval::DEFAULT_DIR.into(),
             pbkdf: None,
         }
     }

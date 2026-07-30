@@ -31,9 +31,9 @@
 //! that into its neighbours.
 
 use qos_rollback::{
-    Config, Pbkdf, confirm, counter, exec, keyslots, lockout, policy,
+    Config, Pbkdf, approval, confirm, counter, exec, keyslots, lockout, policy,
     policy::{Prediction, Workspace},
-    token::RollbackToken,
+    token::RollbackToken, tpm_policy,
 };
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
@@ -217,6 +217,12 @@ struct Fixture {
     /// Second, unauthorised key.
     evil_priv: PathBuf,
     key_name: Vec<u8>,
+    /// The floor authority's key Name and the NV index authPolicy it implies.
+    authority_name: Vec<u8>,
+    nv_auth_policy: tpm_policy::Digest256,
+    /// Counter base recorded by the last `floor()` call, so the helpers that move
+    /// the floor can turn counter values into floor generations.
+    base: std::cell::Cell<i64>,
 }
 
 impl Fixture {
@@ -235,8 +241,13 @@ impl Fixture {
         let evil_pub = scratch.path().join("evil.pub.pem");
         gen_rsa(&evil_priv, &evil_pub);
 
+        // One key stands in for both the prediction authority and the floor
+        // authority, which is the shipped default; the tests that care about the
+        // distinction use `evil_priv` as the wrong key.
         let mut cfg = Config {
             pcr_public_key: sign_pub.display().to_string(),
+            floor_authority_key: sign_pub.display().to_string(),
+            approval_dir: scratch.path().join("approvals").display().to_string(),
             pbkdf: Some(Pbkdf {
                 algorithm: "pbkdf2".into(),
                 iterations: 1000,
@@ -247,6 +258,8 @@ impl Fixture {
 
         let ws = Workspace::new(scratch.path());
         let key_name = policy::key_name(&runner, &ws, &sign_pub).expect("key name");
+        let authority_name = key_name.clone();
+        let nv_auth_policy = counter::auth_policy(&authority_name);
         Some(Fixture {
             _tpm: tpm,
             scratch,
@@ -255,6 +268,9 @@ impl Fixture {
             sign_priv,
             evil_priv,
             key_name,
+            authority_name,
+            nv_auth_policy,
+            base: std::cell::Cell::new(0),
         })
     }
 
@@ -270,9 +286,107 @@ impl Fixture {
 
     /// Set up the floor counter with the floor at `initial_floor`.
     fn floor(&self, initial_floor: u64) -> counter::FloorState {
-        counter::define(&self.runner, self.cfg.nv_index).expect("define");
-        counter::materialise(&self.runner, self.cfg.nv_index, self.dir(), initial_floor)
-            .expect("materialise")
+        let ws = self.ws();
+        counter::define(&self.runner, self.cfg.nv_index, &self.nv_auth_policy, &ws)
+            .expect("define");
+        let f = counter::materialise(
+            &self.runner,
+            &ws,
+            self.cfg.nv_index,
+            self.dir(),
+            initial_floor,
+            &self.authority_name,
+        )
+        .expect("materialise");
+        self.base.set(f.base);
+        f
+    }
+
+    fn nv_name(&self) -> Vec<u8> {
+        counter::read_name(&self.runner, self.cfg.nv_index).expect("nv name")
+    }
+
+    fn approval_dir(&self) -> PathBuf {
+        PathBuf::from(&self.cfg.approval_dir)
+    }
+
+    /// Issue approvals covering floor generations up to `up_to_floor`.
+    ///
+    /// `strict` applies the safe bound (never above the newest enrolled
+    /// generation). The counter-only tests have no enrolled generations at all, so
+    /// they pass `false` to move the floor as a test setup step — which is exactly
+    /// the override the CLI gates behind an explicit flag.
+    fn issue_approvals(
+        &self,
+        floor: counter::FloorState,
+        enrolled: &[u64],
+        up_to_floor: u64,
+        strict: bool,
+    ) -> Vec<approval::Approval> {
+        let ws = self.ws();
+        let req = approval::build_request(
+            self.cfg.nv_index,
+            &self.nv_name(),
+            floor,
+            enrolled,
+            self.cfg.retained_generations,
+        )
+        .expect("build request");
+        let a = approval::issue(
+            &self.runner,
+            &ws,
+            &req,
+            &self.sign_priv,
+            up_to_floor,
+            !strict,
+        )
+        .expect("issue approvals");
+        approval::store(&self.approval_dir(), &a).expect("store approvals");
+        a
+    }
+
+    /// Raise the floor by `times` steps, issuing the approvals needed to do it.
+    fn bump_floor(&self, times: u64) {
+        let ws = self.ws();
+        let counter_value = self.counter_now();
+        let base = self.current_base();
+        let floor = counter::FloorState { counter: counter_value, base };
+        let target = floor.floor_generation() + times;
+        let approvals = self.issue_approvals(floor, &[], target, false);
+        let out = counter::advance(
+            &self.runner,
+            &ws,
+            self.cfg.nv_index,
+            self.dir(),
+            floor,
+            target,
+            counter::MAX_INCREMENTS_PER_ADVANCE,
+            Path::new(&self.cfg.pcr_public_key),
+            &self.authority_name,
+            &approvals,
+            Some(&self.approval_dir()),
+        )
+        .expect("advance the floor");
+        assert!(
+            out.unapproved.is_empty(),
+            "test setup could not advance the floor: {:?}",
+            out.unapproved
+        );
+        assert_eq!(out.steps, times, "expected {times} steps");
+    }
+
+    /// Issue exactly the approvals a confirmation of `generation` needs to reach
+    /// `target_floor`, the way a real deployment does: staging enrolls the
+    /// generation, then the authority approves up to it.
+    fn approve_up_to(&self, base: i64, generation: u64, target_floor: u64) {
+        let floor = counter::FloorState { counter: self.counter_now(), base };
+        self.issue_approvals(floor, &[generation], target_floor, true);
+    }
+
+    /// The base recorded by the most recent `floor()` call, recovered from the
+    /// counter — the tests always materialise before using this.
+    fn current_base(&self) -> i64 {
+        self.base.get()
     }
 
     /// Sign a prediction over the machine's *current* measurements, for one
@@ -340,12 +454,6 @@ impl Fixture {
             pin,
         )
         .map(|o| o.map(|s| s.to_vec()))
-    }
-
-    fn bump_floor(&self, times: u64) {
-        for _ in 0..times {
-            counter::increment(&self.runner, self.cfg.nv_index).expect("increment");
-        }
     }
 
     fn counter_now(&self) -> u64 {
@@ -443,11 +551,23 @@ fn the_floor_counter_survives_undefine_and_redefine() {
         f.raw("tpm2_nvundefine", &[&idx, "-C", "o"]).ok(),
         "could not undefine the index, so the test proves nothing"
     );
+    let policy_file = f.dir().join("redefine_policy.bin");
+    std::fs::write(&policy_file, f.nv_auth_policy).expect("write policy");
     assert!(
-        f.raw("tpm2_nvdefine", &[&idx, "-C", "o", "-a", counter::NV_ATTRS]).ok(),
+        f.raw(
+            "tpm2_nvdefine",
+            &[
+                &idx, "-C", "o", "-a", counter::NV_ATTRS,
+                "-L", policy_file.to_str().unwrap(),
+            ],
+        )
+        .ok(),
         "could not redefine the index"
     );
-    counter::increment(&f.runner, f.cfg.nv_index).expect("increment after redefine");
+    // A redefined index is unwritten again, so the one-time materialise branch
+    // applies to it — and the counter still does not regress, which is the point.
+    counter::increment_first(&f.runner, &f.ws(), f.cfg.nv_index, &f.authority_name)
+        .expect("materialise after redefine");
     let after = f.counter_now();
     assert!(
         after >= before,
@@ -980,18 +1100,22 @@ fn confirming_a_generation_enrolls_it_prunes_the_window_and_then_raises_the_floo
     assert!(dry.dropped.is_empty());
 
     // Confirm 6 and 7: the window (3 generations) still holds 5, 6, 7, so the
-    // floor rises to 5 and nothing is pruned.
+    // floor rises to 5 and nothing is pruned. Each advance spends approvals the
+    // authority issued for it.
+    f.approve_up_to(floor.base, 6, 4);
     let o6 = confirm::run(&f.runner, &ws, &req(6, None, false)).expect("confirm 6");
     assert!(o6.enrolled.is_some(), "generation 6 should have been enrolled");
     assert_eq!(o6.floor.floor_generation(), 4);
     assert!(o6.dropped.is_empty());
 
+    f.approve_up_to(floor.base, 7, 5);
     let o7 = confirm::run(&f.runner, &ws, &req(7, None, false)).expect("confirm 7");
     assert_eq!(o7.floor.floor_generation(), 5);
     assert!(o7.dropped.is_empty(), "5, 6 and 7 all fit the window");
 
     // Confirm 8: 5 falls out of the window, so its keyslot goes and the floor
     // moves to 6.
+    f.approve_up_to(floor.base, 8, 6);
     let o8 = confirm::run(&f.runner, &ws, &req(8, None, false)).expect("confirm 8");
     assert_eq!(o8.dropped, vec![5], "generation 5 should have been pruned");
     assert_eq!(o8.floor.floor_generation(), 6);
@@ -1045,6 +1169,8 @@ fn a_declared_floor_closes_the_window_on_a_vulnerable_generation() {
 
     // Generation 8 is a security fix; 7 is vulnerable. Declaring floor 8 closes
     // the window immediately instead of leaving 7 reachable for two more updates.
+    // A jump like this is exactly what the authority approves deliberately.
+    f.approve_up_to(floor.base, 8, 8);
     let o = confirm::run(
         &f.runner,
         &ws,
@@ -1235,6 +1361,9 @@ fn an_unattended_confirmation_works_from_the_boot_secret_alone() {
         .try_unseal(&t7, Some(pin))
         .expect("unseal 7 with the PIN")
         .expect("a prediction applies");
+
+    // The authority has approved the advance this confirmation will make.
+    f.approve_up_to(floor.base, 7, 5);
 
     // What the confirmation service does: no recovery key, no PIN, just the
     // secret the boot used.
@@ -1488,4 +1617,462 @@ fn confirming_the_running_generation_keeps_the_staged_generations_keyslot() {
         f.try_unseal(&t6, None).expect("unseal 6").is_some(),
         "the staged generation's secret must still be releasable"
     );
+}
+
+// ---------------------------------------------------------------------------
+// The floor cannot be advanced without a signed, single-use approval
+// ---------------------------------------------------------------------------
+
+/// Every policy digest this crate computes without a TPM, checked against the
+/// TPM's own trial-session arithmetic.
+///
+/// The floor authority computes approvals in software so it does not need a TPM.
+/// That is only safe while the software agrees with the hardware, so the agreement
+/// is a test rather than an assumption.
+#[test]
+fn pure_policy_digests_match_the_tpms_own_arithmetic() {
+    let f = fixture!();
+    let ws = f.ws();
+    let floor = f.floor(3);
+    let nv_name = f.nv_name();
+
+    // The index's Name, computed from its public area, must match what the TPM
+    // reports — including the written bit, which flips on the first increment.
+    assert_eq!(
+        counter::written_name(f.cfg.nv_index, &f.nv_auth_policy),
+        nv_name,
+        "the computed written NV Name must match the TPM's"
+    );
+    assert_ne!(
+        counter::unwritten_name(f.cfg.nv_index, &f.nv_auth_policy),
+        nv_name,
+        "the unwritten Name must differ, or the written bit is not in the public area"
+    );
+
+    // A trial session is the TPM's own answer. Compare each step of ours to it.
+    let trial = |steps: &[&[&str]]| -> Vec<u8> {
+        let sess = f.dir().join("purity.ctx");
+        let _ = f.raw("tpm2_flushcontext", &["-s"]);
+        assert!(
+            f.raw("tpm2_startauthsession", &["-S", sess.to_str().unwrap()]).ok(),
+            "could not start a trial session"
+        );
+        for step in steps {
+            let mut argv: Vec<&str> = vec![];
+            argv.extend_from_slice(step);
+            let out = f.raw(argv[0], &argv[1..]);
+            assert!(out.ok(), "{argv:?} failed: {}", out.last_error_line());
+        }
+        let out_file = f.dir().join("purity.digest");
+        assert!(
+            f.raw(
+                "tpm2_getpolicydigest",
+                &["-S", sess.to_str().unwrap(), "-o", out_file.to_str().unwrap()],
+            )
+            .ok(),
+            "could not read the trial digest"
+        );
+        let d = std::fs::read(&out_file).expect("read digest");
+        let _ = f.raw("tpm2_flushcontext", &[sess.to_str().unwrap()]);
+        d
+    };
+    let sess = f.dir().join("purity.ctx");
+    let sess_s = sess.to_str().unwrap().to_string();
+    let idx = format!("0x{:08X}", f.cfg.nv_index);
+
+    // PolicyCommandCode
+    assert_eq!(
+        trial(&[&["tpm2_policycommandcode", "-S", &sess_s, "TPM2_CC_NV_Increment"]]),
+        tpm_policy::command_code(tpm_policy::ZERO, tpm_policy::CC_NV_INCREMENT).to_vec(),
+        "PolicyCommandCode"
+    );
+
+    // PolicyAuthValue
+    assert_eq!(
+        trial(&[&["tpm2_policyauthvalue", "-S", &sess_s]]),
+        tpm_policy::auth_value(tpm_policy::ZERO).to_vec(),
+        "PolicyAuthValue"
+    );
+
+    // PolicyNvWritten, both ways.
+    assert_eq!(
+        trial(&[&["tpm2_policynvwritten", "-S", &sess_s, "c"]]),
+        tpm_policy::nv_written(tpm_policy::ZERO, false).to_vec(),
+        "PolicyNvWritten(clear)"
+    );
+    assert_eq!(
+        trial(&[&["tpm2_policynvwritten", "-S", &sess_s, "s"]]),
+        tpm_policy::nv_written(tpm_policy::ZERO, true).to_vec(),
+        "PolicyNvWritten(set)"
+    );
+
+    // PolicyNV, both operations we rely on.
+    let operand = f.dir().join("purity_operand.bin");
+    std::fs::write(&operand, 7u64.to_be_bytes()).expect("write operand");
+    let op_s = operand.to_str().unwrap().to_string();
+    assert_eq!(
+        trial(&[&["tpm2_policynv", "-S", &sess_s, "-i", &op_s, &idx, "eq", "-C", &idx]]),
+        tpm_policy::nv_counter(tpm_policy::ZERO, &nv_name, 7, tpm_policy::Operation::Eq).to_vec(),
+        "PolicyNV(eq)"
+    );
+    assert_eq!(
+        trial(&[&["tpm2_policynv", "-S", &sess_s, "-i", &op_s, &idx, "ule", "-C", &idx]]),
+        tpm_policy::nv_counter(tpm_policy::ZERO, &nv_name, 7, tpm_policy::Operation::UnsignedLe)
+            .to_vec(),
+        "PolicyNV(ule)"
+    );
+
+    // PolicyAuthorize, and the branch/OR structure the index actually uses.
+    let name_file = f.dir().join("purity_key.name");
+    std::fs::write(&name_file, &f.authority_name).expect("write key name");
+    let ref_file = f.dir().join("purity_ref.bin");
+    std::fs::write(&ref_file, approval::POLICY_REF).expect("write ref");
+    assert_eq!(
+        trial(&[&[
+            "tpm2_policyauthorize", "-S", &sess_s,
+            "-n", name_file.to_str().unwrap(),
+            "-q", ref_file.to_str().unwrap(),
+        ]]),
+        counter::signed_branch(&f.authority_name).to_vec(),
+        "PolicyAuthorize with the floor policy reference"
+    );
+    assert_eq!(
+        trial(&[
+            &["tpm2_policynvwritten", "-S", &sess_s, "c"],
+            &["tpm2_policycommandcode", "-S", &sess_s, "TPM2_CC_NV_Increment"],
+        ]),
+        counter::first_write_branch().to_vec(),
+        "the one-time materialise branch"
+    );
+
+    // PolicyOR over those two branches is the index's authPolicy.
+    let a_file = f.dir().join("purity_a.bin");
+    let b_file = f.dir().join("purity_b.bin");
+    std::fs::write(&a_file, counter::signed_branch(&f.authority_name)).expect("write a");
+    std::fs::write(&b_file, counter::first_write_branch()).expect("write b");
+    let list = format!("sha256:{},{}", a_file.display(), b_file.display());
+    assert_eq!(
+        trial(&[&["tpm2_policyor", "-S", &sess_s, "-l", &list]]),
+        f.nv_auth_policy.to_vec(),
+        "PolicyOR of the two branches is the index's authPolicy"
+    );
+
+    // And the approval policy, end to end.
+    let target = floor.counter + 1;
+    std::fs::write(&operand, (target - 1).to_be_bytes()).expect("write operand");
+    assert_eq!(
+        trial(&[
+            &["tpm2_policycommandcode", "-S", &sess_s, "TPM2_CC_NV_Increment"],
+            &["tpm2_policynv", "-S", &sess_s, "-i", &op_s, &idx, "eq", "-C", &idx],
+        ]),
+        approval::approved_policy(&nv_name, target).unwrap().to_vec(),
+        "the policy an approval authorises"
+    );
+}
+
+#[test]
+fn an_increment_without_an_approval_is_refused() {
+    let f = fixture!();
+    let floor = f.floor(3);
+    let idx = format!("0x{:08X}", f.cfg.nv_index);
+
+    // Empty authorisation value: the index has no authwrite, so this is what a
+    // process running as root can try on its own.
+    let out = f.raw("tpm2_nvincrement", &[&idx, "-C", &idx]);
+    assert!(
+        !out.ok(),
+        "an unauthorised increment must be refused — otherwise anything running as root can push \
+         the floor above the running generation and force the machine onto its recovery key"
+    );
+    // Owner authorisation must not work either.
+    let out = f.raw("tpm2_nvincrement", &[&idx, "-C", "o"]);
+    assert!(!out.ok(), "owner authorisation must not increment the floor");
+    assert_eq!(f.counter_now(), floor.counter, "the counter must not have moved");
+}
+
+#[test]
+fn the_materialise_escape_works_exactly_once() {
+    let f = fixture!();
+    let floor = f.floor(3); // this performs the one permitted unapproved increment
+    assert_eq!(f.counter_now(), floor.counter);
+
+    // The written flag is now set, so PolicyNvWritten(clear) can never be
+    // satisfied again — the escape hatch closes itself.
+    let err = counter::increment_first(
+        &f.runner,
+        &f.ws(),
+        f.cfg.nv_index,
+        &f.authority_name,
+    )
+    .expect_err("the materialise branch must not work a second time");
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("never been written") || msg.contains("materialising"),
+        "{msg}"
+    );
+    assert_eq!(f.counter_now(), floor.counter, "the counter must not have moved");
+}
+
+#[test]
+fn a_replayed_approval_is_refused_by_the_tpm() {
+    let f = fixture!();
+    let ws = f.ws();
+    let floor = f.floor(3);
+    let approvals = f.issue_approvals(floor, &[], 4, false);
+    assert_eq!(approvals.len(), 1, "one step, one approval");
+    let approval = &approvals[0];
+
+    // First use works.
+    counter::increment_approved(
+        &f.runner, &ws, f.cfg.nv_index,
+        Path::new(&f.cfg.pcr_public_key), &f.authority_name, approval,
+    )
+    .expect("the approval should work once");
+    let after = f.counter_now();
+    assert_eq!(after, floor.counter + 1);
+
+    // Replaying the very same approval must fail, and it must fail in the TPM —
+    // not because we deleted a file. The file is handed straight back in.
+    let err = counter::increment_approved(
+        &f.runner, &ws, f.cfg.nv_index,
+        Path::new(&f.cfg.pcr_public_key), &f.authority_name, approval,
+    )
+    .expect_err("a replayed approval must be refused");
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("already been used") || msg.contains("does not apply"),
+        "the refusal should say the approval is spent: {msg}"
+    );
+    assert_eq!(f.counter_now(), after, "a replay must not move the counter");
+}
+
+#[test]
+fn an_approval_is_bound_to_one_target_and_cannot_reach_another() {
+    let f = fixture!();
+    let ws = f.ws();
+    let floor = f.floor(3);
+    // Approvals for two steps: floor 4 and floor 5.
+    let approvals = f.issue_approvals(floor, &[], 5, false);
+    assert_eq!(approvals.len(), 2);
+
+    // The approval for the second step cannot be used first: the counter is not
+    // yet at its target minus one. So an attacker holding a batch cannot skip
+    // ahead, and cannot use one approval to move several steps.
+    let second = approvals
+        .iter()
+        .find(|a| a.target_counter == floor.counter + 2)
+        .expect("second-step approval");
+    let err = counter::increment_approved(
+        &f.runner, &ws, f.cfg.nv_index,
+        Path::new(&f.cfg.pcr_public_key), &f.authority_name, second,
+    )
+    .expect_err("an out-of-order approval must be refused");
+    assert!(format!("{err:#}").contains("does not apply"), "{err:#}");
+    assert_eq!(f.counter_now(), floor.counter);
+
+    // In order, both work, one step each.
+    for a in &approvals {
+        counter::increment_approved(
+            &f.runner, &ws, f.cfg.nv_index,
+            Path::new(&f.cfg.pcr_public_key), &f.authority_name, a,
+        )
+        .expect("in-order approvals should work");
+    }
+    assert_eq!(f.counter_now(), floor.counter + 2);
+}
+
+#[test]
+fn an_approval_signed_by_another_key_is_refused() {
+    let f = fixture!();
+    let ws = f.ws();
+    let floor = f.floor(3);
+    let nv_name = f.nv_name();
+    let target = floor.counter + 1;
+
+    // Same policy, same target, wrong signer.
+    let req = approval::build_request(f.cfg.nv_index, &nv_name, floor, &[], 3).unwrap();
+    let forged = approval::issue(&f.runner, &ws, &req, &f.evil_priv, 4, true)
+        .expect("the forger can produce a well-formed approval");
+    assert_eq!(forged.len(), 1);
+    assert_eq!(forged[0].target_counter, target);
+
+    let err = counter::increment_approved(
+        &f.runner, &ws, f.cfg.nv_index,
+        Path::new(&f.cfg.pcr_public_key), &f.authority_name, &forged[0],
+    )
+    .expect_err("an approval from the wrong key must be refused");
+    assert!(
+        format!("{err:#}").contains("not signed by the configured authority"),
+        "{err:#}"
+    );
+    assert_eq!(f.counter_now(), floor.counter, "the counter must not have moved");
+}
+
+/// The answer to "what if the authority is unavailable": the floor stops
+/// advancing, the disk keeps unlocking, and the keyslot window is still pruned.
+#[test]
+fn without_approvals_the_floor_stays_put_and_the_disk_still_unlocks() {
+    let f = fixture!();
+    let recovery = b"recovery-key-for-the-no-approvals-test";
+    let img = luks_image(f.dir(), recovery);
+    let ws = f.ws();
+    let preds = f.dir().join("predictions");
+    let state = f.dir().join("state.json");
+    for g in [5u64, 6, 7, 8] {
+        let p = f.predict(g, &f.sign_priv, "");
+        policy::write_signed_prediction(&preds, g, &f.cfg.pcr_bank, &f.cfg.pcrs, &p).expect("write");
+    }
+    let floor = f.floor(3);
+    for g in [5u64, 6, 7, 8] {
+        keyslots::enroll_generation(
+            &f.runner, &ws, &img, &f.cfg, g, floor,
+            &[f.predict(g, &f.sign_priv, "")], recovery, None,
+        )
+        .expect("enroll");
+    }
+    confirm::save_state(
+        &state,
+        &confirm::State {
+            nv_index: f.cfg.nv_index,
+            nv_base: floor.base,
+            last_confirmed: Some(5),
+            foreign_keyslots: keyslots::foreign_keyslots(&f.runner, &img).expect("foreign"),
+        },
+    )
+    .expect("seed state");
+
+    // No approvals anywhere.
+    assert!(
+        approval::load_all(&f.approval_dir()).expect("load").is_empty(),
+        "this test needs to start with no approvals"
+    );
+
+    let o = confirm::run(
+        &f.runner,
+        &ws,
+        &confirm::Request {
+            cfg: &f.cfg,
+            device: &img,
+            generation: 8,
+            prediction_dir: &preds,
+            recovery: keyslots::RecoveryCheck::Key(recovery),
+            pin: None,
+            proof: None,
+            floor_at_least: None,
+            state_path: &state,
+            scratch: f.dir(),
+            dry_run: false,
+        },
+    )
+    .expect("confirmation must succeed even with no approvals");
+
+    assert_eq!(
+        o.floor.floor_generation(),
+        3,
+        "the floor must not have moved without an approval"
+    );
+    assert!(
+        !o.unapproved_steps.is_empty(),
+        "the unapproved steps must be reported rather than passed over silently"
+    );
+    assert_eq!(o.dropped, vec![5], "the keyslot window must still be pruned");
+
+    // The disk still unlocks — the whole point.
+    let t8 = keyslots::list_tokens(&f.runner, &img)
+        .expect("list")
+        .into_iter()
+        .find(|(_, t)| t.generation == 8)
+        .expect("token 8")
+        .1;
+    assert!(
+        f.try_unseal(&t8, None).expect("unseal 8").is_some(),
+        "an unavailable floor authority must never stop the disk unlocking"
+    );
+    assert!(keyslots::verify_recovery(&f.runner, &ws, &img, recovery).expect("verify recovery"));
+
+    // And once approvals arrive, the same confirmation advances.
+    let floor_now = counter::FloorState { counter: f.counter_now(), base: floor.base };
+    let enrolled: Vec<u64> = keyslots::list_tokens(&f.runner, &img)
+        .expect("list")
+        .into_iter()
+        .map(|(_, t)| t.generation)
+        .collect();
+    f.issue_approvals(floor_now, &enrolled, 6, true);
+    let o2 = confirm::run(
+        &f.runner,
+        &ws,
+        &confirm::Request {
+            cfg: &f.cfg,
+            device: &img,
+            generation: 8,
+            prediction_dir: &preds,
+            recovery: keyslots::RecoveryCheck::Key(recovery),
+            pin: None,
+            proof: None,
+            floor_at_least: None,
+            state_path: &state,
+            scratch: f.dir(),
+            dry_run: false,
+        },
+    )
+    .expect("confirmation with approvals");
+    assert_eq!(o2.floor.floor_generation(), 6);
+    assert!(o2.unapproved_steps.is_empty(), "{:?}", o2.unapproved_steps);
+}
+
+/// Issuance refuses to hand a device approvals that could strand it, which is what
+/// keeps a stash of approvals from becoming a denial of service after a later
+/// compromise.
+#[test]
+fn issuance_refuses_to_approve_past_the_newest_enrolled_generation() {
+    let f = fixture!();
+    let ws = f.ws();
+    let floor = f.floor(3);
+    let nv_name = f.nv_name();
+
+    // Generations 5 and 6 have keyslots; 6 is therefore the highest floor that
+    // still leaves something able to unseal.
+    let req = approval::build_request(f.cfg.nv_index, &nv_name, floor, &[5, 6], 3).unwrap();
+    assert_eq!(req.safe_target_floor, 6);
+
+    let err = approval::issue(&f.runner, &ws, &req, &f.sign_priv, 7, false)
+        .expect_err("approving past the newest enrolled generation must be refused");
+    let msg = format!("{err:#}");
+    assert!(msg.contains("newest generation with a sealed keyslot"), "{msg}");
+
+    // Up to the bound is fine, and it is exactly enough steps to get there.
+    let ok = approval::issue(&f.runner, &ws, &req, &f.sign_priv, 6, false).expect("issue to bound");
+    assert_eq!(ok.len(), 3, "floor 3 -> 6 is three single-use steps");
+    assert_eq!(ok[0].target_floor, 4);
+    assert_eq!(ok[2].target_floor, 6);
+
+    // And the override exists, but has to be asked for.
+    let forced = approval::issue(&f.runner, &ws, &req, &f.sign_priv, 7, true)
+        .expect("the override should work when explicitly requested");
+    assert_eq!(forced.len(), 4);
+}
+
+#[test]
+fn an_approval_for_another_machines_index_is_refused() {
+    let f = fixture!();
+    let ws = f.ws();
+    let floor = f.floor(3);
+
+    // Same authority, same target, but issued against a different NV Name.
+    let mut other_name = f.nv_name();
+    other_name[10] ^= 0xFF;
+    let req =
+        approval::build_request(f.cfg.nv_index, &other_name, floor, &[], 3).unwrap();
+    let foreign = approval::issue(&f.runner, &ws, &req, &f.sign_priv, 4, true).expect("issue");
+
+    let err = counter::increment_approved(
+        &f.runner, &ws, f.cfg.nv_index,
+        Path::new(&f.cfg.pcr_public_key), &f.authority_name, &foreign[0],
+    )
+    .expect_err("an approval bound to another index must be refused");
+    assert!(
+        format!("{err:#}").contains("different NV index Name"),
+        "{err:#}"
+    );
+    assert_eq!(f.counter_now(), floor.counter);
 }
