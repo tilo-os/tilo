@@ -8,11 +8,13 @@
 //!   1. **Fan-out excludes the sender.** A `SyncIncremental` from peer A
 //!      reaches B and C exactly once each, and never echoes back to A.
 //!   2. **Presence is attributed per peer.** A presence from A and a
-//!      presence from B arrive at C tagged with *distinct, non-empty*
-//!      user ids — and A never receives its own presence back.
+//!      presence from B arrive at C tagged with the id each of them
+//!      announced — so the two are distinct and neither is the other's
+//!      — and A never receives its own presence back.
 //!
 //! Everything is one `#[test]` so the process-global `QUICK_COLLAB_SOCK`
-//! env var isn't raced by parallel tests in this binary.
+//! and `QUICK_APP_ID` env vars aren't raced by parallel tests in this
+//! binary.
 
 use std::thread;
 use std::time::Duration;
