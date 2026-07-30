@@ -665,14 +665,21 @@ mod tests {
                      {profile:?}"
                 );
             }
-            // 2. …so the falloff dies at `spread`, not at some fraction
-            //    of the rect's own width or height.
-            let width = profile.iter().rposition(|v| *v > 2).unwrap_or(0);
+            // 2. …so the band that carries the falloff is `spread` wide:
+            //    still painting half way out, and nothing at all past the
+            //    spread. Under the stretched sprite the wide card was
+            //    already down to ~2/255 one pixel out and blank by ten.
+            let half_way = profile[(spread * 0.5) as usize];
             assert!(
-                (width as f64 - spread).abs() <= 5.0,
-                "{label}: the shadow must still be painting within \
-                 {spread} px of the edge and gone past it; last visible \
-                 sample was at {width} px: {profile:?}"
+                half_way >= 8,
+                "{label}: half a spread ({} px) out the shadow must still \
+                 be painting; got {half_way}/255: {profile:?}",
+                spread * 0.5,
+            );
+            assert!(
+                profile[spread as usize..].iter().all(|v| *v == 0),
+                "{label}: nothing may paint past {spread} px — the spread \
+                 *is* the falloff width: {profile:?}"
             );
             // 3. And it is actually a shadow at the edge, not a hairline.
             assert!(
