@@ -1800,8 +1800,19 @@ mod tests {
     /// Assertions then read the *receiver's own document*, which is the only
     /// thing that answers "did this peer get that document's contents".
     fn absorb(mgr: &mut CollaborationManager, doc: &mut automerge::AutoCommit) -> usize {
+        absorb_within(mgr, doc, Duration::from_millis(400))
+    }
+
+    /// [`absorb`] with an explicit window — the peer-bridge drain thread runs
+    /// on a 100 ms cadence, so a frame that crossed the wire needs longer than
+    /// one that was fanned out inline.
+    fn absorb_within(
+        mgr: &mut CollaborationManager,
+        doc: &mut automerge::AutoCommit,
+        window: Duration,
+    ) -> usize {
         let mut applied = 0;
-        for event in poll_until(mgr, 1, Duration::from_millis(400)) {
+        for event in poll_until(mgr, 1, window) {
             if let CollabEvent::CRDTIncremental { data } = event {
                 doc.load_incremental(&data).expect("peer changes apply");
                 applied += 1;
@@ -1885,15 +1896,20 @@ mod tests {
     /// The record boundary holds across hosts, not just within one.
     ///
     /// Gossipsub is a broadcast: a frame reaches every host on the topic, and
-    /// which of their apps see it is decided entirely by the route the sending
-    /// host stamped on it. So the record has to be on the wire — and it is,
-    /// as a field of `NeighbourMsg::AppCrdt*`, rebuilt into a route by the
-    /// receiving broker's drain thread.
+    /// which of their apps see it is decided entirely by the route. So the
+    /// record has to be *on the wire* — a field of `NeighbourMsg::AppCrdt*` —
+    /// and the receiving host has to rebuild it. This drives the real inbound
+    /// path: a frame queued as if it had just arrived off gossipsub, picked up
+    /// by the broker's drain thread, routed by what the sender stamped.
     #[test]
     #[serial_test::serial(collab_broker)]
     fn a_remote_frame_reaches_only_the_record_it_was_stamped_with() {
         let socket_path = temp_sock("record-over-the-wire");
-        let handle = spawn(socket_path.clone()).expect("broker should bind");
+        let tree = crate::shell::state::WorkspaceTree::bootstrap_default().shared();
+        let (net, _cmd_rx) = crate::shell::network::shell_network_for_test(tree, 0xB0BAu64);
+        let net = std::sync::Arc::new(net);
+        let handle = spawn_full(socket_path.clone(), None, Some(Arc::clone(&net)))
+            .expect("broker should bind");
 
         let theirs = ui::record::RecordId::for_file("/work/theirs.odt");
         let mine = ui::record::RecordId::for_file("/work/mine.odt");
@@ -1906,18 +1922,22 @@ mod tests {
         let _ = on_theirs.poll();
         let _ = on_mine.poll();
 
-        // One frame onto the wire, stamped with the remote host's record.
+        // A frame as it arrives off the wire from another host, stamped with
+        // the record it belongs to. Queued exactly as `ShellNetwork::tick`
+        // queues a received `AppCrdtIncremental`; the drain thread takes it
+        // from here.
         let (_, delta) = edited("body", "written on another machine");
-        let wire_route = CrdtRoute::record(
-            "dev.qos.word-processor",
-            TEST_CLUSTER,
-            theirs.as_str(),
+        net.handle_app_crdt_message(
+            0xFACEu64,
+            "dev.qos.word-processor".to_string(),
+            TEST_CLUSTER.to_string(),
+            theirs.as_str().to_string(),
+            delta,
         );
-        deliver_over_the_wire(&handle, &wire_route, &delta);
 
         let mut theirs_doc = automerge::AutoCommit::new();
         assert_eq!(
-            absorb(&mut on_theirs, &mut theirs_doc),
+            absorb_within(&mut on_theirs, &mut theirs_doc, Duration::from_millis(2000)),
             1,
             "the app on that record receives it"
         );
@@ -1928,7 +1948,7 @@ mod tests {
 
         let mut mine_doc = automerge::AutoCommit::new();
         assert_eq!(
-            absorb(&mut on_mine, &mut mine_doc),
+            absorb_within(&mut on_mine, &mut mine_doc, Duration::from_millis(1000)),
             0,
             "the app on a different record receives nothing"
         );

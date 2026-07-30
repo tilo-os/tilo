@@ -925,8 +925,12 @@ fn peer_id_to_u64(peer: libp2p::PeerId) -> u64 {
 /// use this to assert that `publish_presence` (and future Phase 3
 /// publishers) emit the expected `NetCmd::Publish` shapes without
 /// having to spin up a real swarm. Not exposed outside `cfg(test)`.
+///
+/// `pub(crate)` so the broker's own tests can drive the inbound side of the
+/// peer bridge — `handle_app_crdt_message` into the drain thread — which is
+/// where a frame's route is rebuilt from what the sending host stamped on it.
 #[cfg(test)]
-fn shell_network_for_test(
+pub(crate) fn shell_network_for_test(
     tree: WorkspaceTreeHandle,
     local_peer_hash: u64,
 ) -> (ShellNetwork, mpsc::Receiver<NetCmd>) {
