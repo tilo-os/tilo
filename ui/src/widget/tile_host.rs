@@ -321,17 +321,6 @@ impl TileHost {
         self.announce_scope();
     }
 
-    /// The record whose document this tile's app is editing, if it has one
-    /// of its own.
-    pub fn live_record(&self) -> Option<&RecordId> {
-        self.binding.as_ref().map(|b| &b.live)
-    }
-
-    /// The record the tab *is*, whatever file it may currently be showing.
-    pub fn tab_record(&self) -> Option<&RecordCheckout> {
-        self.binding.as_ref().map(|b| &b.tab)
-    }
-
     /// Bring the binding up to date with what the app says it is working
     /// on, and hand back the record whose document it must be given.
     fn resolve_record(&mut self) -> Option<RecordId> {
