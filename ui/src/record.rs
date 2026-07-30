@@ -103,6 +103,19 @@ impl RecordId {
         Self(format!("uuid:{}", uuid::Uuid::new_v4()))
     }
 
+    /// The identity of the record that plays `role` for another record —
+    /// "the annotations of this document", "the reading position of this
+    /// book".
+    ///
+    /// Stable, so the side-car is found again next launch, and distinct from
+    /// its target, so the two can be shared separately: handing someone the
+    /// document does not hand them your notes on it. The reference between
+    /// them is what ties them back together, and it is the reference — not
+    /// this spelling — that anything downstream reads.
+    pub fn derived(role: &str, of: &RecordId) -> Self {
+        Self(format!("derived:{role}@{}", of.0))
+    }
+
     /// Adopt an id that already exists — read back from a document, a room
     /// index, or the wire. `None` for the empty string, which addresses
     /// nothing.
@@ -238,11 +251,32 @@ impl RecordRef {
 pub struct RecordCheckout {
     pub id: RecordId,
     pub kind: RecordKind,
+    /// Records this one references, and what each reference means.
+    ///
+    /// Declared here rather than written by the app because a reference has
+    /// two halves and only the host holds both documents: the reference goes
+    /// into *this* record's document, and the target is brought into the room
+    /// index, so the reference does not dangle for anyone who reaches the room
+    /// later. One level deep — a target's own references are the target's
+    /// business, applied when it is itself checked out.
+    pub references: Vec<(RecordCheckout, String)>,
 }
 
 impl RecordCheckout {
     pub fn new(id: RecordId, kind: RecordKind) -> Self {
-        Self { id, kind }
+        Self {
+            id,
+            kind,
+            references: Vec::new(),
+        }
+    }
+
+    /// Declare that this record references `target` under `relation` — an
+    /// annotation set marking up a document, a duplicate pointing at its
+    /// origin.
+    pub fn referencing(mut self, target: RecordCheckout, relation: impl Into<String>) -> Self {
+        self.references.push((target, relation.into()));
+        self
     }
 }
 
@@ -302,7 +336,7 @@ pub fn identity(doc: &AutoCommit) -> Option<RecordCheckout> {
     };
     let id = RecordId::parse(&str_at(doc, &m, "id")?)?;
     let kind = RecordKind::new(str_at(doc, &m, "kind").unwrap_or_default());
-    Some(RecordCheckout { id, kind })
+    Some(RecordCheckout::new(id, kind))
 }
 
 /// The room this record was minted in.
@@ -468,7 +502,7 @@ pub mod room {
                     }
                     _ => RecordKind::new(""),
                 };
-                Some(RecordCheckout { id, kind })
+                Some(RecordCheckout::new(id, kind))
             })
             .collect();
         out.sort();
@@ -679,8 +713,20 @@ impl RecordSet {
 
         state.adopt_doc(incoming);
         init(&mut state.doc, &want.id, &want.kind, &self.home);
+        for (target, relation) in &want.references {
+            add_reference(
+                &mut state.doc,
+                &RecordRef::new(target.id.clone(), relation.clone()),
+            );
+        }
         if let Some(room) = room {
             room::reference(room, &want.id, &want.kind);
+            // The targets too: a room that holds a record but not what that
+            // record references would hand a member a set of annotations
+            // over a document they cannot reach.
+            for (target, _) in &want.references {
+                room::reference(room, &target.id, &target.kind);
+            }
         }
         self.active = Some(want.id.clone());
         true
