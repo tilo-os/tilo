@@ -8,7 +8,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use iroh_blobs::Hash;
 
-use crate::acl::{Access, WorkspaceAcl};
+use crate::acl::{Access, AclHandle};
 use crate::hydration::Hydrator;
 use crate::namespace::Namespace;
 use crate::smart::Heuristics;
@@ -39,7 +39,12 @@ pub struct QuickFS {
     /// The two are one field precisely so an ACL can never be attached
     /// without the identity it answers for — there is no placeholder
     /// identity to accidentally enforce against.
-    enforcement: Option<(WorkspaceAcl, crate::acl::IdentityKey)>,
+    ///
+    /// It is a *handle* rather than the ACL itself so the policy can be
+    /// replaced while the mount is up. `/var/workspace` is mounted once
+    /// at boot; binding the list by value made a grant issued afterwards
+    /// unreachable until the next remount. See [`crate::CapabilityFile`].
+    enforcement: Option<(AclHandle, crate::acl::IdentityKey)>,
 }
 
 impl QuickFS {
@@ -190,8 +195,17 @@ impl QuickFS {
     /// for `identity`. Every subsequent open/read/write is checked
     /// against `acl` as `identity`; without this the mount keeps the
     /// Unix-veneer-only behaviour. See [`crate::acl`].
-    pub fn with_acl(mut self, acl: WorkspaceAcl, identity: crate::acl::IdentityKey) -> Self {
-        self.enforcement = Some((acl, identity));
+    ///
+    /// Takes anything that becomes an [`AclHandle`]: a [`WorkspaceAcl`]
+    /// for a policy that will not change, or a handle held by a
+    /// [`crate::CapabilityFile`] for one that reloads under the live
+    /// mount.
+    pub fn with_acl(
+        mut self,
+        acl: impl Into<AclHandle>,
+        identity: crate::acl::IdentityKey,
+    ) -> Self {
+        self.enforcement = Some((acl.into(), identity));
         self
     }
 
