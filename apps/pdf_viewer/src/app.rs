@@ -2303,6 +2303,116 @@ mod tests {
     use super::*;
     use serial_test::serial;
 
+    /// Two real PDFs on disk, from the bundled fixture. "Open a second
+    /// document" has to be a second *file* — the bug is about one document's
+    /// markup reaching another, and the same path twice is one record.
+    fn two_documents() -> (tempfile::TempDir, std::path::PathBuf, std::path::PathBuf) {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let a = dir.path().join("a.pdf");
+        let b = dir.path().join("b.pdf");
+        let fixture = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/sample.pdf");
+        std::fs::copy(fixture, &a).expect("copy fixture to a.pdf");
+        std::fs::copy(fixture, &b).expect("copy fixture to b.pdf");
+        (dir, a, b)
+    }
+
+    /// One frame of the record-aware host: check out whatever record the
+    /// widget names, then sync. This is `ui::App::record_tick` +
+    /// `root_widget.sync` — the same `ui::record::tick` the App calls, not a
+    /// reimplementation of it.
+    fn record_frame(
+        app: &mut PdfApp,
+        st: &mut ui::State,
+        set: &mut ui::RecordSet,
+        room: &mut AutoCommit,
+    ) {
+        ui::record::tick(set, st, Some(room), &*app);
+        app.sync(&mut st.doc, &st.root);
+    }
+
+    /// Place a highlight on page 1 through the drag path a user takes.
+    fn annotate(app: &mut PdfApp, st: &mut ui::State) {
+        app.tool = Tool::Highlight;
+        app.drag = Some(DragState {
+            tool: Tool::Highlight,
+            page: 1,
+            start: (70.0, 150.0),
+            cur: (360.0, 165.0),
+            points: vec![],
+        });
+        app.commit_drag(&mut st.doc);
+    }
+
+    /// Opening a second document must not destroy the first document's
+    /// markup. Annotations are per-document state; before records they lived
+    /// in one document per `(app, room)` and the only way to stop one file's
+    /// markup appearing over another was to delete it — which is data loss,
+    /// not scoping.
+    #[test]
+    #[serial(pdfium)]
+    fn annotating_one_document_survives_opening_another() {
+        let (_dir, a, b) = two_documents();
+        let mut app = PdfApp::open(&a);
+        assert!(app.has_document, "a.pdf must load");
+        let mut st = ui::State::new();
+        let mut set = ui::RecordSet::in_memory();
+        let mut room = AutoCommit::new();
+        record_frame(&mut app, &mut st, &mut set, &mut room);
+
+        annotate(&mut app, &mut st);
+        let on_a = PdfDoc::list_annotations(&st.doc).len();
+        assert!(on_a > 0, "the highlight landed in a.pdf's document");
+
+        // Open the second document in place, the way the portal picker does.
+        app.load_path(&b, &mut st.doc);
+        record_frame(&mut app, &mut st, &mut set, &mut room);
+        assert!(
+            PdfDoc::list_annotations(&st.doc).is_empty(),
+            "b.pdf opens with no markup — a.pdf's highlight is not its"
+        );
+
+        // Back to the first document.
+        app.load_path(&a, &mut st.doc);
+        record_frame(&mut app, &mut st, &mut set, &mut room);
+        assert_eq!(
+            PdfDoc::list_annotations(&st.doc).len(),
+            on_a,
+            "a.pdf's annotations are still there after b.pdf was opened"
+        );
+        assert_eq!(
+            app.annotations.len(),
+            on_a,
+            "and the reader shows them again"
+        );
+    }
+
+    /// The markup of a document is a record of its own that *references* the
+    /// document, rather than state living inside it. That is what makes
+    /// "share the document without my notes" expressible at all: two
+    /// records, one reference, and the sharing decision is which of them you
+    /// hand over.
+    #[test]
+    #[serial(pdfium)]
+    fn markup_is_a_record_referencing_the_document() {
+        let (_dir, a, _b) = two_documents();
+        let mut app = PdfApp::open(&a);
+        let mut st = ui::State::new();
+        let mut set = ui::RecordSet::in_memory();
+        let mut room = AutoCommit::new();
+        record_frame(&mut app, &mut st, &mut set, &mut room);
+
+        let file = ui::RecordId::for_file(&a);
+        assert!(
+            ui::record::room::holds(&room, &file),
+            "the room references the file record it opened"
+        );
+        let refs = ui::record::references(&st.doc);
+        assert!(
+            refs.iter().any(|r| r.target == file && r.relation == "marks-up"),
+            "the live markup record references the document it marks up, got {refs:?}"
+        );
+    }
+
     fn app_with_state() -> (PdfApp, ui::State) {
         let mut app = PdfApp::sample();
         let mut st = ui::State::new();
