@@ -180,6 +180,10 @@ pub struct SegmentedFace<'a> {
     radius: f64,
     text_size: f32,
     weight: crate::text_render::TextWeight,
+    /// When `Some(pad)`, labels are left-aligned `pad` px from each segment's
+    /// left edge instead of horizontally centred — the nav-bar tab look where
+    /// a trailing badge follows the label. `None` (default) centres them.
+    label_pad_left: Option<f64>,
 }
 
 impl<'a> SegmentedFace<'a> {
@@ -194,6 +198,7 @@ impl<'a> SegmentedFace<'a> {
             radius: 8.0,
             text_size: 13.0,
             weight: crate::text_render::TextWeight::Medium,
+            label_pad_left: None,
         }
     }
     pub fn style(mut self, style: SegmentedStyle) -> Self { self.style = style; self }
@@ -202,6 +207,9 @@ impl<'a> SegmentedFace<'a> {
     pub fn radius(mut self, r: f64) -> Self { self.radius = r; self }
     pub fn text_size(mut self, s: f32) -> Self { self.text_size = s; self }
     pub fn weight(mut self, w: crate::text_render::TextWeight) -> Self { self.weight = w; self }
+    /// Left-align labels `pad` px from each segment's left edge (nav-bar tab
+    /// style) instead of centring them.
+    pub fn left_labels(mut self, pad: f64) -> Self { self.label_pad_left = Some(pad); self }
 }
 
 impl ToggleGroup {
@@ -297,7 +305,10 @@ impl ToggleGroup {
                 face.weight
             };
             let (tw, th) = text_renderer.measure_weighted(label, face.text_size, None, weight);
-            let text_x = seg.center().x - tw as f64 / 2.0;
+            let text_x = match face.label_pad_left {
+                Some(pad) => seg.x0 + pad,
+                None => seg.center().x - tw as f64 / 2.0,
+            };
             let text_y = seg.y0 + (seg.height() - th as f64) / 2.0;
             text_renderer.draw_text_weighted(
                 scene,
@@ -866,6 +877,19 @@ mod tests {
                 .count();
             assert!(colour_tags > 0, "{style:?} paint must emit draw commands");
         }
+        // Left-aligned (nav-bar tab) labels also paint without panicking.
+        let mut scene = Scene::new();
+        ToggleGroup::paint(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut tr,
+            &theme,
+            &SegmentedFace::new(&segs, &labels, 0).pill().left_labels(14.0),
+        );
+        assert!(
+            scene.encoding().draw_tags.iter().any(|t| *t == DrawTag::COLOR),
+            "left-labelled pill paint must emit draw commands",
+        );
     }
 
     #[test]
