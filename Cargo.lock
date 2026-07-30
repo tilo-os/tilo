@@ -9105,6 +9105,7 @@ dependencies = [
  "atomic-file",
  "automerge",
  "dirs 6.0.0",
+ "qos-actions",
  "serde",
  "serde_json",
  "taffy",
