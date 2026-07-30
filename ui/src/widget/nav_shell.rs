@@ -618,6 +618,34 @@ impl NavShell {
         self.has_sidebar() && self.sidebar_flap.reveal() > 0.001
     }
 
+    /// The rect the sidebar's *child* is laid out into: [`Self::sidebar_rect`]
+    /// with the top-left affordance chip's band reserved.
+    ///
+    /// The chip is painted in the shell's top-left corner, which is the corner
+    /// the sidebar occupies whenever it is docked or its drawer is open — so
+    /// without this the chip lands on top of the sidebar's first row and clips
+    /// its section heading. The panel *fill* still uses the full rect, so the
+    /// reserved band is sidebar-coloured rather than a notch.
+    fn sidebar_content_rect(&self) -> Rect {
+        let r = self.sidebar_rect;
+        if self.affordance != Affordance::SidebarToggle || r.height() <= 0.0 {
+            return r;
+        }
+        let band = CHIP_INSET * 2.0 + CHIP_SIZE;
+        Rect::new(r.x0, (r.y0 + band).min(r.y1), r.x1, r.y1)
+    }
+
+    /// Paint the sidebar's own opaque panel. The drawer slides *over* live
+    /// content, so without a fill the content reads straight through it — the
+    /// file list showing through the places list. Drawn under the child so a
+    /// sidebar that paints its own background simply covers this.
+    fn fill_panel(scene: &mut Scene, transform: Affine, theme: &Theme, r: Rect) {
+        if r.width() <= 0.0 || r.height() <= 0.0 {
+            return;
+        }
+        scene.fill(Fill::NonZero, transform, theme.bg_primary, None, &r);
+    }
+
     /// Build the inner taffy tree for the present children at their resolved
     /// rects so they lay out + receive events.
     fn place_children(&mut self, theme: &Theme, text_renderer: &mut TextRenderer) {
@@ -634,12 +662,13 @@ impl NavShell {
             .as_mut()
             .map(|s| s.build_layout(&mut taffy, theme, &mut map));
 
+        let sidebar_child_rect = self.sidebar_content_rect();
         let mut jobs: Vec<(NodeId, Rect)> = vec![(o_node, self.overview_rect)];
         if let Some(dn) = d_node {
             jobs.push((dn, self.detail_rect));
         }
         if let Some(sn) = s_node {
-            jobs.push((sn, self.sidebar_rect));
+            jobs.push((sn, sidebar_child_rect));
         }
         for (node, rect) in jobs {
             if rect.width() <= 0.0 || rect.height() <= 0.0 {
@@ -667,7 +696,11 @@ impl NavShell {
             d.apply_layout(&taffy, dn, Point::new(self.detail_rect.x0, self.detail_rect.y0));
         }
         if let (Some(sb), Some(sn)) = (self.sidebar.as_mut(), s_node) {
-            sb.apply_layout(&taffy, sn, Point::new(self.sidebar_rect.x0, self.sidebar_rect.y0));
+            sb.apply_layout(
+                &taffy,
+                sn,
+                Point::new(sidebar_child_rect.x0, sidebar_child_rect.y0),
+            );
         }
 
         self.inner_taffy = Some(taffy);
@@ -878,6 +911,7 @@ impl Widget for NavShell {
                     let scrim = Color::from_rgba8(0, 0, 0, 255).with_alpha_factor(alpha);
                     scene.fill(Fill::NonZero, transform, scrim, None, &self.scrim_rect);
                 }
+                Self::fill_panel(scene, transform, theme, self.sidebar_rect);
                 s.draw(scene, transform, text_renderer, theme, presence);
             }
         }
@@ -909,6 +943,7 @@ impl Widget for NavShell {
                 let scrim = Color::from_rgba8(0, 0, 0, 255).with_alpha_factor(alpha);
                 scene.fill(Fill::NonZero, transform, scrim, None, &self.scrim_rect);
             }
+            Self::fill_panel(scene, transform, theme, self.sidebar_rect);
             if let Some(s) = self.sidebar.as_mut() {
                 s.draw_with_presence(
                     scene, transform, text_renderer, theme, presence, permissions,
