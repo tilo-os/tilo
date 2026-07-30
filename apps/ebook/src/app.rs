@@ -615,6 +615,12 @@ pub struct BooksApp {
     /// [`Widget::take_committed_action`] to record exactly one undo boundary
     /// bracketing the action(s) — the same undo path the Ctrl+K palette takes.
     action_commit_before: Option<Vec<automerge::ChangeHash>>,
+
+    /// The last [`EncodedAction`](qos_actions::EncodedAction) an on-page
+    /// affordance dispatched through [`Self::perform_action`]. Lets a test prove
+    /// an affordance and the Ctrl+K [`ActionSpec`](qos_actions::ActionSpec) build
+    /// the byte-identical action — one source of truth, not two code paths.
+    last_dispatched: Option<qos_actions::EncodedAction>,
 }
 
 impl BooksApp {
@@ -712,6 +718,7 @@ impl BooksApp {
             cover_cache: HashMap::new(),
             hits: Vec::new(),
             action_commit_before: None,
+            last_dispatched: None,
         }
     }
 
@@ -2044,9 +2051,21 @@ impl BooksApp {
         if pieces.is_empty() && remove_groups.is_empty() {
             return None;
         }
+        // A fresh group id only when actually adding pieces; a pure toggle-off
+        // leaves `group` unused by `apply`, so keep it stable (the group being
+        // removed) — that makes a toggle-off deterministic across call sites, so
+        // the swatch and the palette encode identically.
+        let group = if pieces.is_empty() {
+            remove_groups
+                .first()
+                .cloned()
+                .unwrap_or_else(|| Uuid::nil().to_string())
+        } else {
+            Uuid::new_v4().to_string()
+        };
         Some(crate::actions::HighlightPlan {
             book_id: self.book_id(),
-            group: Uuid::new_v4().to_string(),
+            group,
             chapter: self.chapter,
             color: color.as_str().to_string(),
             remove_groups,
@@ -2122,6 +2141,7 @@ impl BooksApp {
             self.action_commit_before = Some(doc.get_heads());
         }
         let encoded = crate::actions::encode(&action);
+        self.last_dispatched = Some(encoded.clone());
         let mut tx = DiscardTransport;
         if let Err(e) = qos_actions::dispatch(doc, &action, encoded, &mut tx) {
             tracing::warn!(error = %e, "ebook action dispatch failed");
@@ -7379,6 +7399,137 @@ mod interaction_tests {
             .expect("delete affordance is present without hover");
         assert!(click(&mut app, &mut doc, del), "delete click handled");
         assert!(BooksDoc::list_annotations(&doc).is_empty(), "annotation removed");
+    }
+
+    // ---- single source of truth: affordance == palette ActionSpec -----------
+
+    /// The comment-overlay Delete (×) button dispatches the byte-identical
+    /// `EncodedAction` the palette's "Delete comment" ActionSpec exports — proof
+    /// the two are one code path, not two. Drives the real click through
+    /// `handle_event` and compares against the live resource tree.
+    #[test]
+    fn comment_delete_button_dispatches_the_same_action_as_the_palette() {
+        let mut app = app_with_sample();
+        let mut doc = AutoCommit::new();
+        frame(&mut app, &mut doc, 1280.0, 800.0);
+        let book_id = app.book_id();
+        let group = Uuid::from_u128(0x2222_3333_4444_5555_6666_7777_8888_9999);
+        let cid = Uuid::from_u128(0x0000_0000_0000_0000_0000_0000_0000_00AB);
+        let hl = Annotation::new(&book_id, AnnoKind::Highlight, 0, 1)
+            .with_excerpt("a marked passage")
+            .with_group(group);
+        BooksDoc::upsert_annotation(&mut doc, &hl);
+        let mut cm = Annotation::new(&book_id, AnnoKind::Note, 0, 1)
+            .with_excerpt("a marked passage")
+            .with_note("a comment")
+            .with_group(group);
+        cm.id = cid;
+        BooksDoc::upsert_annotation(&mut doc, &cm);
+        // Open the highlight's comment overlay (presentation).
+        app.comment_group = Some(group);
+        frame(&mut app, &mut doc, 1280.0, 800.0);
+
+        // The EncodedAction the palette would dispatch for "Delete comment".
+        let resources = <BooksApp as qos_actions::ResourceProvider>::resources(&app, &doc);
+        let spec_encoded = {
+            let hl_res = resources[0]
+                .children
+                .iter()
+                .find(|r| r.kind == "ebook.highlight")
+                .expect("highlight resource");
+            let comment = hl_res
+                .children
+                .iter()
+                .find(|r| r.id.as_str() == format!("ebook.comment:{cid}"))
+                .expect("comment resource");
+            let spec = comment
+                .actions
+                .iter()
+                .find(|a| a.id == "delete-comment")
+                .expect("delete-comment spec");
+            match &spec.input {
+                qos_actions::ActionInput::Immediate(enc) => enc.clone(),
+                _ => panic!("delete-comment is immediate"),
+            }
+        };
+
+        // Click the overlay's per-comment × button (the real affordance).
+        let del = find_hit(&app, |a| matches!(a, Action::DeleteComment(_)))
+            .expect("a comment delete button");
+        assert!(click(&mut app, &mut doc, del), "delete-comment click handled");
+
+        let dispatched = app.last_dispatched.clone().expect("the button dispatched an action");
+        assert_eq!(dispatched.type_id, spec_encoded.type_id);
+        assert_eq!(
+            dispatched.payload, spec_encoded.payload,
+            "the button and the palette build the identical EncodedAction",
+        );
+        // And it really removed the comment through that action.
+        assert!(
+            BooksDoc::list_annotations(&doc).iter().all(|a| a.id != cid),
+            "the comment was deleted via the dispatched action",
+        );
+    }
+
+    /// The selection-toolbar swatch, toggling an existing highlight off, dispatches
+    /// the byte-identical `EncodedAction` the book resource's "Highlight selection"
+    /// ActionSpec exports — the swatch and the palette are one source of truth.
+    #[test]
+    fn selection_swatch_dispatches_the_same_action_as_the_palette() {
+        let mut app = app_with_sample();
+        let mut doc = AutoCommit::new();
+        frame(&mut app, &mut doc, 1280.0, 800.0);
+        // Create a highlight over a word via double-click + the yellow swatch.
+        let __p = page_point(&app);
+        dbl_click(&mut app, &mut doc, __p);
+        frame(&mut app, &mut doc, 1280.0, 800.0);
+        let swatch = find_hit(&app, |a| matches!(a, Action::SetColor(HiColor::Yellow)))
+            .expect("the yellow swatch");
+        click(&mut app, &mut doc, swatch);
+        frame(&mut app, &mut doc, 1280.0, 800.0);
+        assert_eq!(
+            BooksDoc::list_annotations(&doc).iter().filter(|a| a.kind == AnnoKind::Highlight).count(),
+            1,
+            "one highlight now exists",
+        );
+
+        // Re-select the same word so the swatch would toggle the highlight off —
+        // a deterministic plan (pure removal, no freshly-minted ids), so the
+        // swatch and the palette encode identically.
+        dbl_click(&mut app, &mut doc, __p);
+        frame(&mut app, &mut doc, 1280.0, 800.0);
+
+        // The palette's book-level "Highlight selection" EncodedAction, resolved
+        // from the same live selection the swatch sees.
+        let resources = <BooksApp as qos_actions::ResourceProvider>::resources(&app, &doc);
+        let spec_encoded = {
+            let spec = resources[0]
+                .actions
+                .iter()
+                .find(|a| a.id == "highlight-selection")
+                .expect("a highlight-selection spec while a selection exists");
+            match &spec.input {
+                qos_actions::ActionInput::Immediate(enc) => enc.clone(),
+                _ => panic!("highlight-selection is immediate"),
+            }
+        };
+
+        // Click the yellow swatch (the real affordance).
+        let swatch = find_hit(&app, |a| matches!(a, Action::SetColor(HiColor::Yellow)))
+            .expect("the yellow swatch again");
+        click(&mut app, &mut doc, swatch);
+
+        let dispatched = app.last_dispatched.clone().expect("the swatch dispatched an action");
+        assert_eq!(
+            dispatched.payload, spec_encoded.payload,
+            "the swatch and the palette build the identical EncodedAction",
+        );
+        // And it really toggled the highlight off through that action.
+        frame(&mut app, &mut doc, 1280.0, 800.0);
+        assert!(
+            BooksDoc::list_annotations(&doc).iter().all(|a| a.kind != AnnoKind::Highlight),
+            "the highlight was removed via the dispatched action",
+        );
     }
 
     // ---- bookmark toggle (icon + 'b') ---------------------------------------
