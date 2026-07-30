@@ -8548,6 +8548,7 @@ dependencies = [
  "automerge",
  "gstreamer",
  "iroh",
+ "qos-actions",
  "reqwest 0.12.28",
  "rustypipe",
  "serde",

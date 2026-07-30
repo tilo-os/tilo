@@ -249,6 +249,21 @@ impl Widget for MusicApp {
         self.publish_mpris();
     }
 
+    /// Publish the open library + its playlists/tracks so the host's Ctrl+K action
+    /// palette scopes to them. Delegates to the
+    /// [`ResourceProvider`](qos_actions::ResourceProvider) impl in
+    /// [`crate::actions`].
+    fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
+        <Self as qos_actions::ResourceProvider>::resources(self, doc)
+    }
+
+    /// Hand the host the heads captured before an on-screen affordance dispatched
+    /// its music action, so it records one undo boundary for it (see
+    /// [`MusicApp::perform_action`]). Rising-edge: cleared on read.
+    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        self.action_commit_before.take()
+    }
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,

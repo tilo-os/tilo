@@ -44,6 +44,7 @@
 //!
 //! [`ContextMenu`]: ui::widget::context_menu::ContextMenu
 
+pub mod actions;
 pub mod app;
 pub mod art;
 pub mod audio;

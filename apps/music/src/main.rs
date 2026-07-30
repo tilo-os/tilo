@@ -97,7 +97,10 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let (state, autosave) = ui::persist::open("dev.qos.music");
-    let app = ui::App::new(state, music::app_root()).with_autosave(autosave);
+    let mut app = ui::App::new(state, music::app_root()).with_autosave(autosave);
+    // Register Music's actions so the shell's Ctrl+K palette can decode + replay
+    // the same library edits the on-screen affordances dispatch.
+    music::actions::register(app.action_registry_mut());
     app.run();
     Ok(())
 }
