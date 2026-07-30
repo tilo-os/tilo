@@ -85,6 +85,80 @@ pub fn pcr_selection(bank: &str, pcrs: &[u32]) -> String {
     format!("{bank}:{list}")
 }
 
+/// Where the image ships the signed predictions it was built with.
+pub const DEFAULT_PREDICTION_DIR: &str = "/usr/share/qos/pcr-predictions";
+
+/// Read the signed predictions for one generation out of a directory.
+///
+/// A device cannot produce these itself: signing needs the private prediction
+/// key, which is deliberately not on the device. A machine that could sign its
+/// own predictions could authorise any measurement state it liked, which is the
+/// whole property `PolicyAuthorize` is there to provide.
+pub fn load_signed_predictions(dir: &Path, generation: u64) -> Result<Vec<Prediction>> {
+    use base64::Engine as _;
+    let b64 = base64::engine::general_purpose::STANDARD;
+    let entries = std::fs::read_dir(dir)
+        .with_context(|| format!("reading the prediction directory {}", dir.display()))?;
+    let mut names: Vec<PathBuf> = entries
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.extension().is_some_and(|e| e == "json"))
+        .collect();
+    names.sort();
+    let mut out = Vec::new();
+    for p in names {
+        let text =
+            std::fs::read_to_string(&p).with_context(|| format!("reading {}", p.display()))?;
+        let v: serde_json::Value =
+            serde_json::from_str(&text).with_context(|| format!("parsing {}", p.display()))?;
+        if v["generation"].as_u64() != Some(generation) {
+            continue;
+        }
+        out.push(Prediction {
+            approved_policy: b64
+                .decode(v["approved_policy"].as_str().context("approved_policy")?)
+                .with_context(|| format!("{}: approved_policy is not base64", p.display()))?,
+            signature: b64
+                .decode(v["signature"].as_str().context("signature")?)
+                .with_context(|| format!("{}: signature is not base64", p.display()))?,
+            label: v["label"].as_str().unwrap_or("").to_string(),
+        });
+    }
+    Ok(out)
+}
+
+/// Write a signed prediction where [`load_signed_predictions`] will find it.
+pub fn write_signed_prediction(
+    dir: &Path,
+    generation: u64,
+    bank: &str,
+    pcrs: &[u32],
+    prediction: &Prediction,
+) -> Result<PathBuf> {
+    use base64::Engine as _;
+    let b64 = base64::engine::general_purpose::STANDARD;
+    std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+    let doc = serde_json::json!({
+        "generation": generation,
+        "pcr_bank": bank,
+        "pcrs": pcrs,
+        "approved_policy": b64.encode(&prediction.approved_policy),
+        "signature": b64.encode(&prediction.signature),
+        "label": prediction.label,
+    });
+    let name = if prediction.label.is_empty() {
+        format!("generation-{generation}.json")
+    } else {
+        format!(
+            "generation-{generation}-{}.json",
+            prediction.label.replace(['/', ' ', '\\'], "-")
+        )
+    };
+    let path = dir.join(name);
+    std::fs::write(&path, serde_json::to_string_pretty(&doc)?)
+        .with_context(|| format!("writing {}", path.display()))?;
+    Ok(path)
+}
+
 /// Scratch directory plus the handful of files the tpm2 tools pass by path.
 pub struct Workspace {
     pub dir: PathBuf,

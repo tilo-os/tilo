@@ -19,7 +19,7 @@
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use qos_rollback::{
-    Config, certify, confirm, counter, exec, generation, keyslots, lockout, policy, retention,
+    Config, certify, confirm, counter, exec, generation, keyslots, lockout, policy,
     token::RollbackToken,
 };
 use std::io::Read;
@@ -254,7 +254,7 @@ fn run() -> Result<()> {
     let pred_dir = cli
         .predictions
         .clone()
-        .unwrap_or_else(|| PathBuf::from("/usr/share/qos/pcr-predictions"));
+        .unwrap_or_else(|| PathBuf::from(policy::DEFAULT_PREDICTION_DIR));
 
     match &cli.cmd {
         Cmd::TpmStatus { json } => cmd_tpm_status(&runner, *json),
@@ -471,43 +471,6 @@ fn cmd_harden(
     Ok(())
 }
 
-/// Load signed predictions for one generation.
-///
-/// Enrollment cannot produce these itself: signing needs the private prediction
-/// key, which is not on the device. That is the point — a device that could sign
-/// its own predictions could authorise any measurement state it liked.
-fn load_predictions(dir: &Path, gen_num: u64) -> Result<Vec<policy::Prediction>> {
-    let mut out = Vec::new();
-    let entries = std::fs::read_dir(dir)
-        .with_context(|| format!("reading the prediction directory {}", dir.display()))?;
-    let mut names: Vec<PathBuf> = entries
-        .filter_map(|e| e.ok().map(|e| e.path()))
-        .filter(|p| p.extension().is_some_and(|e| e == "json"))
-        .collect();
-    names.sort();
-    use base64::Engine as _;
-    let b64 = base64::engine::general_purpose::STANDARD;
-    for p in names {
-        let text =
-            std::fs::read_to_string(&p).with_context(|| format!("reading {}", p.display()))?;
-        let v: serde_json::Value =
-            serde_json::from_str(&text).with_context(|| format!("parsing {}", p.display()))?;
-        if v["generation"].as_u64() != Some(gen_num) {
-            continue;
-        }
-        out.push(policy::Prediction {
-            approved_policy: b64
-                .decode(v["approved_policy"].as_str().context("approved_policy")?)
-                .with_context(|| format!("{}: approved_policy is not base64", p.display()))?,
-            signature: b64
-                .decode(v["signature"].as_str().context("signature")?)
-                .with_context(|| format!("{}: signature is not base64", p.display()))?,
-            label: v["label"].as_str().unwrap_or("").to_string(),
-        });
-    }
-    Ok(out)
-}
-
 #[allow(clippy::too_many_arguments)]
 fn cmd_enroll(
     runner: &dyn exec::Runner,
@@ -539,7 +502,7 @@ fn cmd_enroll(
     }
     println!("recovery key verified on {}", device.display());
 
-    let predictions = load_predictions(pred_dir, gen_num)?;
+    let predictions = policy::load_signed_predictions(pred_dir, gen_num)?;
     if predictions.is_empty() {
         bail!(
             "no signed PCR prediction for generation {gen_num} in {} — a token sealed without one can \
@@ -726,142 +689,50 @@ fn cmd_confirm(
     };
     let recovery = read_secret(recovery_key_file)?;
     let pin = pin_file.map(read_secret).transpose()?;
+    let outcome = confirm::run(
+        runner,
+        ws,
+        &confirm::Request {
+            cfg,
+            device,
+            generation: gen_num,
+            prediction_dir: pred_dir,
+            recovery_key: &recovery,
+            pin: pin.as_deref().map(|v| &v[..]),
+            floor_at_least,
+            state_path,
+            scratch,
+            dry_run,
+        },
+    )?;
 
-    if !keyslots::verify_recovery(runner, ws, device, &recovery)? {
-        bail!(
-            "the supplied recovery key does not open {} — refusing to confirm",
-            device.display()
-        );
+    if let Some((slot, token_id)) = outcome.enrolled {
+        println!("generation {gen_num}: keyslot {slot}, token {token_id}");
     }
-
-    let mut tokens = keyslots::list_tokens(runner, device)?;
-    let state = confirm::load_state(state_path)?;
-    let base = confirm::load_base(state.as_ref(), &tokens)?
-        .context("no rollback enrollment on this device yet: run `qos-rollback enroll` first")?;
-    let cnt = counter::read(runner, cfg.nv_index, scratch)?
-        .context("the rollback floor counter has never been incremented")?;
-    let mut floor = counter::FloorState { counter: cnt, base };
-
-    // Enroll the running generation if it is not already there. This has to
-    // happen before the floor moves, or the floor could pass a generation that
-    // has no keyslot.
-    if !tokens.iter().any(|(_, t)| t.generation == gen_num) {
-        let predictions = load_predictions(pred_dir, gen_num)?;
-        if predictions.is_empty() {
-            bail!(
-                "no signed PCR prediction for generation {gen_num}; cannot enroll it, and confirming \
-                 without enrolling would raise the floor past a generation with no keyslot"
-            );
-        }
-        if dry_run {
-            println!(
-                "would enroll generation {gen_num} ({} prediction(s))",
-                predictions.len()
-            );
-        } else {
-            let (slot, token_id) = keyslots::enroll_generation(
-                runner,
-                ws,
-                device,
-                cfg,
-                gen_num,
-                floor,
-                &predictions,
-                &recovery,
-                pin.as_deref().map(|v| &v[..]),
-            )?;
-            println!("generation {gen_num}: keyslot {slot}, token {token_id}");
-            tokens = keyslots::list_tokens(runner, device)?;
-        }
-    }
-
-    let present: Vec<u64> = tokens.iter().map(|(_, t)| t.generation).collect();
-    let plan = confirm::plan(gen_num, floor, &present, cfg.retained_generations, floor_at_least)?;
+    let p = &outcome.plan;
     println!(
         "floor: {} -> {} (window {}{})",
-        plan.floor.current_floor,
-        plan.floor.target_floor,
-        plan.floor.window_floor,
-        plan.floor
+        p.floor.current_floor,
+        p.floor.target_floor,
+        p.floor.window_floor,
+        p.floor
             .declared_floor
             .map(|d| format!(", declared {d}"))
             .unwrap_or_default()
     );
-    println!("keep generations {:?}, drop {:?}", plan.keep, plan.drop);
-
+    println!("keep generations {:?}, drop {:?}", p.keep, p.drop);
     if dry_run {
         println!("dry run: nothing changed");
         return Ok(());
     }
-
-    // SAFETY-CRITICAL: the proof. Unseal the generation being confirmed, so that
-    // everything destructive below is authorised by a secret that demonstrably
-    // works right now.
-    let (_, running_token) = tokens
-        .iter()
-        .find(|(_, t)| t.generation == gen_num)
-        .context("no token for the generation being confirmed")?;
-    let proof = keyslots::unseal(
-        runner,
-        ws,
-        running_token,
-        Path::new(&cfg.pcr_public_key),
-        pin.as_deref().map(|v| &v[..]),
-    )?
-    .context(
-        "the token for the running generation does not unseal, so there is nothing to confirm; \
-         refusing to touch the floor",
-    )?;
-    if !keyslots::verify_passphrase(runner, ws, device, &proof, None)? {
-        bail!(
-            "the unsealed secret for generation {gen_num} does not open {}",
-            device.display()
-        );
+    for g in &outcome.dropped {
+        println!("dropped generation {g}");
     }
-    println!("generation {gen_num} proven: unseals and opens the device");
-
-    // Prune first — reversible by re-enrolling. Then the floor — reversible by
-    // nothing.
-    retention::prune_is_safe(&plan.drop, &[gen_num], true)?;
-    for g in &plan.drop {
-        let Some((token_id, t)) = tokens.iter().find(|(_, t)| t.generation == *g) else {
-            continue;
-        };
-        let slot = t.keyslot()?;
-        keyslots::kill_generation_slot(runner, ws, device, *token_id, slot, &proof)?;
-        println!("dropped generation {g} (keyslot {slot}, token {token_id})");
-    }
-
-    floor = confirm::advance_floor(
-        runner,
-        ws,
-        device,
-        &plan,
-        floor,
-        cfg.nv_index,
-        &proof,
-        scratch,
-    )?;
     println!(
         "rollback floor is now generation {} (counter {})",
-        floor.floor_generation(),
-        floor.counter
+        outcome.floor.floor_generation(),
+        outcome.floor.counter
     );
-
-    confirm::save_state(
-        state_path,
-        &confirm::State {
-            nv_index: cfg.nv_index,
-            nv_base: floor.base,
-            last_confirmed: Some(gen_num),
-        },
-    )?;
-    if !keyslots::verify_recovery(runner, ws, device, &recovery)? {
-        bail!(
-            "the recovery key no longer opens {} — attention needed NOW",
-            device.display()
-        );
-    }
     println!("recovery key still verified.");
     Ok(())
 }
@@ -985,24 +856,17 @@ fn cmd_sign_prediction(
     let selection = policy::pcr_selection(&cfg.pcr_bank, &cfg.pcrs);
     let approved = policy::approved_policy(runner, ws, &selection, pcr_values)?;
     let sig = policy::sign_prediction(runner, ws, private_key, &approved, gen_num)?;
-    std::fs::create_dir_all(out_dir)?;
-    use base64::Engine as _;
-    let b64 = base64::engine::general_purpose::STANDARD;
-    let doc = serde_json::json!({
-        "generation": gen_num,
-        "pcr_bank": cfg.pcr_bank,
-        "pcrs": cfg.pcrs,
-        "approved_policy": b64.encode(&approved),
-        "signature": b64.encode(&sig),
-        "label": label,
-    });
-    let name = if label.is_empty() {
-        format!("generation-{gen_num}.json")
-    } else {
-        format!("generation-{gen_num}-{}.json", label.replace(['/', ' '], "-"))
-    };
-    let path = out_dir.join(name);
-    std::fs::write(&path, serde_json::to_string_pretty(&doc)?)?;
+    let path = policy::write_signed_prediction(
+        out_dir,
+        gen_num,
+        &cfg.pcr_bank,
+        &cfg.pcrs,
+        &policy::Prediction {
+            approved_policy: approved,
+            signature: sig,
+            label: label.to_string(),
+        },
+    )?;
     println!(
         "signed prediction for generation {gen_num} -> {}",
         path.display()
