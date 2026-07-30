@@ -54,7 +54,10 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let (state, autosave) = ui::persist::open("dev.qos.totp");
-    let app = ui::App::new(state, totp::app_root()).with_autosave(autosave);
+    let mut app = ui::App::new(state, totp::app_root()).with_autosave(autosave);
+    // Register the Authenticator's actions so the shell's Ctrl+K palette can
+    // decode + replay the same account actions the on-screen affordances dispatch.
+    totp::actions::register(app.action_registry_mut());
     app.run();
     Ok(())
 }
