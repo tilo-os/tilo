@@ -147,6 +147,38 @@ Inside the app:
 - A `permissions()` helper lets widgets check capability grants for the current workspace.
 - Remote cursors render natively inside the vello scene for zero-latency feedback.
 
+### The unit of a channel is a record, not an app
+
+An app's traffic is addressed by `(app_id, cluster_id, record_id)` — the triple
+it announces on `CollabRequest::Hello`, carried on the peer wire as fields of
+`NeighbourMsg::AppCrdt*` and, on the capnp transport, inside the channel id
+(`<cluster>#record:<id>`, parsed back by `CrdtRoute::from_channel_key`).
+
+A **record** is one document with one identity (`ui::record`; a file's identity
+is its path). Two people editing two different files in one room announce two
+different records, so the broker no longer hands each of them the other's
+document. Chrome traffic — presence, cursors, roster — stays room-wide, because
+who else is here is a fact about the room.
+
+Two ways to make the record the routing key were open, and the second is what
+is built:
+
+- **The broker understands record boundaries.** It would have to materialise
+  every app's document to know which record a change belongs to — the broker
+  holds no `AutoCommit` today and would need one per app per room — and it still
+  could not split a change graph, because a change names its dependencies by
+  hash (see §4). So it would end up re-deriving, from opaque bytes, a fact the
+  sender already knows.
+- **Apps announce a channel per record.** The broker keeps routing opaque bytes
+  and never materialises anything; what changed is that a connection says which
+  document its bytes are for. A process with two records open holds two
+  channels. `ui::App` re-announces when the record it has checked out changes.
+
+Fail-closed both ways: an app that has adopted records is not handed the traffic
+of one that has not, and vice versa, because those are not the same document.
+Apps that have not adopted records keep the `(app, room)` addressing they always
+had.
+
 ### Legacy / foreign Wayland clients
 
 For non-collaboration-aware Wayland clients (anything bound through the per-workspace bridge socket):
