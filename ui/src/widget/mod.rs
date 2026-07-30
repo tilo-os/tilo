@@ -548,9 +548,13 @@ pub mod data_table;
 pub mod table;         pub use table::Table;
 pub mod icon_grid;     pub use icon_grid::{IconGrid, IconGridItem};
 mod window_group;
-pub use window_group::{WindowGroup, WindowWidth, WIDTH_MIN_PX, WIDTH_MAX_PX, RESIZE_HANDLE_PX};
+pub use window_group::{
+    WindowGroup, WindowWidth, DEFAULT_STRIP_USABLE_PX, RESIZE_HANDLE_PX, WIDTH_FLOOR_PX,
+    WIDTH_MAX_PERMILLE, WIDTH_MIN_PERMILLE, WIDTH_NARROW_PERMILLE, WIDTH_NORMAL_PERMILLE,
+    WIDTH_WIDE_PERMILLE, max_group_px, min_group_px, permille_for_px,
+};
 mod resize_handle;
-pub use resize_handle::{ResizeHandle, HANDLE_HIT_HALF_PX, HANDLE_HOVER_PX, HANDLE_VISIBLE_PX};
+pub use resize_handle::{ResizeHandle, HANDLE_HIT_HALF_PX, HANDLE_HOVER_PX, HANDLE_SLOT_PX, HANDLE_VISIBLE_PX};
 mod group_row;
 pub use group_row::{CrossStripDetach, GroupRow};
 mod strip_view;
