@@ -209,6 +209,13 @@ pub const WORKSPACE_ID_ENV: &str = "QOS_WORKSPACE_ID";
 /// prints a warning to stderr and the process runs with the ordinary allocator.
 /// That failure mode is the reason the bind is emitted here next to the variable
 /// rather than left to whatever the manifest happened to list.
+///
+/// One assumption, stated because it is load-bearing: the preloaded library is
+/// the host's, and it is linked against the host's libc. For a package running
+/// against a runtime bundle — which rebinds its own loader and libc over the
+/// canonical paths — that only holds because the bundle is baked from the same
+/// rootfs as the allocator, in the same image build. A bundle from a different
+/// glibc would need its own copy of the library.
 pub fn push_runtime_hardening(argv: &mut Vec<String>, hardening: &crate::hardening::RuntimeHardening) {
     if let Some(allocator) = &hardening.allocator {
         // Same path inside and out, so LD_PRELOAD and the bind cannot drift.
