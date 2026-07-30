@@ -364,6 +364,8 @@ impl TileHost {
         }
     }
     pub fn content_mut(&mut self) -> &mut TileContent { &mut self.content }
+    /// What this tile is showing, read-only.
+    pub fn content(&self) -> &TileContent { &self.content }
     /// Toggle the indigo-bloom shadow. Called by `WindowGroup::draw`
     /// before dispatching to the active host.
     pub fn set_focused(&mut self, focused: bool) { self.focused = focused; }
