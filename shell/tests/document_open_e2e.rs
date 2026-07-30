@@ -244,6 +244,11 @@ fn activating_a_file_row_in_the_palette_opens_it_in_its_own_app() {
     let apps = tmp.path().join("apps");
     std::fs::create_dir_all(&apps).unwrap();
     install(&apps, "dev.qos.word-processor", "Word Processor", &["odt"]);
+    // A decoy that claims nothing and sorts first by display name, so a
+    // routing that ignored the extension would pick *it* and this test
+    // would say so. Without a second package installed, "resolve the
+    // owner" and "take whatever is installed" are indistinguishable.
+    install(&apps, "dev.qos.calculator", "Calculator", &[]);
     let runtime = tmp.path().join("run");
     std::fs::create_dir_all(&runtime).unwrap();
     let log = install_recording_launcher(&runtime);
@@ -382,6 +387,9 @@ fn dropping_a_document_on_a_group_opens_it_in_its_own_app() {
     let apps = tmp.path().join("apps");
     std::fs::create_dir_all(&apps).unwrap();
     install(&apps, "dev.qos.word-processor", "Word Processor", &["odt"]);
+    // See the palette test: the decoy is what makes "the app that owns
+    // .odt" a different claim from "whatever is installed".
+    install(&apps, "dev.qos.calculator", "Calculator", &[]);
     let runtime = tmp.path().join("run");
     std::fs::create_dir_all(&runtime).unwrap();
     let log = install_recording_launcher(&runtime);
