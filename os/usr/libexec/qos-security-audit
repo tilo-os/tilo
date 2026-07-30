@@ -31,9 +31,50 @@ for k in init_on_alloc=1 init_on_free=1 slab_nomerge page_alloc.shuffle=1 vsysca
 done
 case " $cmdline " in *randomize_kstack_offset=on*|*randomize_kstack_offset=1*) ok "karg randomize_kstack_offset";; *) warn "karg randomize_kstack_offset MISSING";; esac
 
-# Secure Boot
-sb="$(mokutil --sb-state 2>/dev/null | head -1 || echo 'unknown')"
-case "$sb" in *enabled*) ok "Secure Boot: $sb";; *) note "Secure Boot: $sb (HW/firmware-gated; off in the dev VM)";; esac
+# Secure Boot. Read the EFI variable when mokutil is absent — mokutil arrives
+# with the shim stack this image removes, so the tool it reports through must not
+# be the thing that decides whether the check happens.
+sb_var() {
+  local f
+  f="$(ls /sys/firmware/efi/efivars/SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c 2>/dev/null | head -1)"
+  [ -n "$f" ] || return 1
+  od -An -tu1 -j4 -N1 "$f" 2>/dev/null | tr -d ' \n'
+}
+if sb="$(mokutil --sb-state 2>/dev/null | head -1)" && [ -n "$sb" ]; then
+  :
+elif v="$(sb_var)"; then
+  [ "$v" = "1" ] && sb="SecureBoot enabled" || sb="SecureBoot disabled"
+else
+  sb="no Secure Boot variables (not UEFI, or no SB support)"
+fi
+case "$sb" in
+  *enabled*) ok "Secure Boot: $sb" ;;
+  *) note "Secure Boot: $sb — kernel lockdown stays advisory and the LUKS PCR 7 binding attests an unverified chain (see /usr/share/doc/qos/secure-boot.md)" ;;
+esac
+
+# Owner-enrolled Secure Boot: are the keys there, and will the next deployment's
+# kernel get signed? A machine with keys enrolled and no re-signing is one update
+# away from not booting, so this is worth saying out loud on every boot.
+if [ -f /var/lib/qos/secureboot/db.key ]; then
+  if systemctl is-enabled qos-secureboot-sign.path >/dev/null 2>&1 \
+     && systemctl is-enabled qos-secureboot-sign.service >/dev/null 2>&1; then
+    ok "owner Secure Boot keys present, re-signing armed"
+  else
+    warn "owner Secure Boot keys present but re-signing is NOT armed — the next update stages an unsigned kernel"
+  fi
+else
+  note "no owner Secure Boot keys (qos-secureboot generate-keys)"
+fi
+
+# Root filesystem encryption. Walk from the root mount to its backing device and
+# ask whether a dm-crypt layer is under it.
+rootsrc="$(findmnt -nro SOURCE / 2>/dev/null | sed 's/\[.*//')"
+roottype="$(lsblk -nro TYPE "$rootsrc" 2>/dev/null | head -1)"
+case "${roottype:-}" in
+  crypt) ok "root filesystem is encrypted ($rootsrc)" ;;
+  "")    note "root filesystem is not backed by a block device (${rootsrc:-unknown}); encryption state undetermined" ;;
+  *)     note "root filesystem is NOT encrypted ($rootsrc, $roottype) — install with --encrypt to change that" ;;
+esac
 
 # hidepid on /proc (other users' processes hidden)
 if findmnt -no OPTIONS /proc 2>/dev/null | grep -qE 'hidepid=(2|invisible|1)'; then
