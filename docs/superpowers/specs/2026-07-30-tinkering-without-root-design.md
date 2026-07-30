@@ -604,6 +604,14 @@ Must change:
 
 `crates/system/tinker/`, 42 tests, all green.
 
+```bash
+cargo build -p tinker && ./crates/system/tinker/demo.sh
+```
+
+`demo.sh` drives the entire loop from a cold start and fails loudly if the base
+moved, so the load-bearing claim — that tinkering cannot affect the next boot —
+is checkable rather than asserted.
+
 **Working, proven end to end against a real Debian trixie base with no privilege
 at any point:**
 
