@@ -18,7 +18,7 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use automerge::{AutoCommit, ObjId};
+use automerge::{AutoCommit, ChangeHash, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
 use vello::peniko::{Color, Fill};
@@ -98,6 +98,14 @@ pub struct AuthenticatorApp {
     /// The visible (filtered/ordered) list must be recomputed — set when the
     /// vault or the search query changes.
     list_dirty: bool,
+    /// The document heads captured just before the first account action of the
+    /// current event, so the host records exactly one undo boundary bracketing
+    /// it. Drained by [`Widget::take_committed_action`]; rising-edge.
+    action_commit_before: Option<Vec<ChangeHash>>,
+    /// The most recent [`EncodedAction`](qos_actions::EncodedAction) an
+    /// affordance dispatched. Lets a test prove a button builds the byte-identical
+    /// action its Ctrl+K [`ActionSpec`](qos_actions::ActionSpec) does.
+    last_dispatched: Option<qos_actions::EncodedAction>,
 }
 
 impl Default for AuthenticatorApp {
@@ -145,6 +153,8 @@ impl AuthenticatorApp {
             seed_mode,
             doc_dirty: false,
             list_dirty: false,
+            action_commit_before: None,
+            last_dispatched: None,
         }
     }
 
@@ -169,9 +179,40 @@ impl AuthenticatorApp {
         self.list_dirty = true;
     }
 
-    /// Persist the vault (live only) and flag it for CRDT re-mirroring.
-    fn commit_vault(&mut self) {
-        self.doc_dirty = true;
+    /// Dispatch one [`TotpAction`](crate::actions::TotpAction) — the single
+    /// CRDT-mutation path shared with the Ctrl+K palette. The action is applied
+    /// through the qOS action executor (a pinned actor + committed change, so it
+    /// replays byte-identically on peers), exactly as the palette does. The
+    /// document heads captured just before the first action of the event are
+    /// stashed so the host records **one** undo boundary bracketing it
+    /// ([`Widget::take_committed_action`]). Callers reload the in-memory vault
+    /// from the document afterward for immediate feedback; `sync` reconciles it
+    /// again each frame (so a palette dispatch shows up the same way).
+    fn perform_action(&mut self, doc: &mut AutoCommit, action: crate::actions::TotpAction) {
+        if self.action_commit_before.is_none() {
+            // `get_heads` flushes any pending app writes, so the bracket covers
+            // only the action's own change.
+            self.action_commit_before = Some(doc.get_heads());
+        }
+        let encoded = crate::actions::encode(&action);
+        self.last_dispatched = Some(encoded.clone());
+        let mut tx = DiscardTransport;
+        if let Err(e) = qos_actions::dispatch(doc, &action, encoded, &mut tx) {
+            tracing::warn!(error = %e, "totp action dispatch failed");
+        }
+    }
+
+    /// Re-project the in-memory vault from the now-authoritative document, and —
+    /// when it actually changed — persist the encrypted vault (live only). Run
+    /// every frame from `sync` so palette dispatches and remote edits appear, and
+    /// right after an on-screen affordance action for immediate feedback. The
+    /// document is the source of truth; the vault is a pure projection of it.
+    fn reload_from_doc(&mut self, doc: &AutoCommit) {
+        let projected = AuthDoc::list_accounts(doc); // sorted by order
+        if projected == self.vault.ordered() {
+            return; // nothing changed
+        }
+        self.vault.accounts = projected;
         self.list_dirty = true;
         if self.seed_mode == SeedMode::Live {
             storage::save(&self.vault);
@@ -213,8 +254,11 @@ impl AuthenticatorApp {
         self.last_copied.as_deref()
     }
 
-    /// Apply one list interaction.
-    fn apply_list_event(&mut self, ev: ListEvent) {
+    /// Apply one list interaction. Reorder and delete are document mutations, so
+    /// they dispatch a [`TotpAction`](crate::actions::TotpAction) through
+    /// [`Self::perform_action`] (the same action the Ctrl+K palette dispatches);
+    /// copy and select are presentation and never touch the document.
+    fn apply_list_event(&mut self, ev: ListEvent, state: &mut AutoCommit) {
         match ev {
             ListEvent::Copy(id) => {
                 self.selected = Some(id);
@@ -226,38 +270,41 @@ impl AuthenticatorApp {
                 self.list_dirty = true;
             }
             ListEvent::MoveUp(id) => {
-                if self.vault.move_up(id) {
-                    self.commit_vault();
-                }
+                self.perform_action(state, crate::actions::move_up_action(id));
+                self.reload_from_doc(state);
             }
             ListEvent::MoveDown(id) => {
-                if self.vault.move_down(id) {
-                    self.commit_vault();
-                }
+                self.perform_action(state, crate::actions::move_down_action(id));
+                self.reload_from_doc(state);
             }
             ListEvent::Delete(id) => {
-                self.vault.delete(id);
+                self.perform_action(state, crate::actions::delete_account_action(id));
+                self.reload_from_doc(state);
                 if self.selected == Some(id) {
                     self.selected = self.vault.ordered().first().map(|a| a.id);
                 }
-                self.commit_vault();
                 self.toast("Account removed");
             }
         }
     }
 
-    /// Act on one outcome drained from the Add-account modal.
-    fn apply_add_panel_event(&mut self, ev: AddPanelEvent) {
+    /// Act on one outcome drained from the Add-account modal. A save is a
+    /// document mutation dispatched as an [`TotpAction::AddAccount`]
+    /// (crate::actions::TotpAction); the colour slot and list order are pinned at
+    /// authoring time so replay is deterministic.
+    fn apply_add_panel_event(&mut self, ev: AddPanelEvent, state: &mut AutoCommit) {
         match ev {
             AddPanelEvent::Cancel => {}
             AddPanelEvent::PickImageForQr => self.import_qr_from_image(),
             AddPanelEvent::Save(mut acc) => {
-                // Give the new account a distinct colour slot.
+                // Give the new account a distinct colour slot + end-of-list order,
+                // baked into the action so peers replay the identical row.
                 acc.color = (self.vault.len() % 7) as u8;
+                let order = self.vault.next_order();
                 let id = acc.id;
-                self.vault.upsert(acc);
+                self.perform_action(state, crate::actions::add_account_action(&acc, order));
+                self.reload_from_doc(state);
                 self.selected = Some(id);
-                self.commit_vault();
                 self.toast("Account added");
             }
         }
@@ -474,13 +521,17 @@ impl Widget for AuthenticatorApp {
             self.seed();
             self.seeded = true;
         }
-        // Mirror the vault into the shared document only when it actually
-        // changed — an unconditional per-frame rewrite would append redundant
-        // ops to the CRDT history on every hover/animation tick.
+        // Mirror the freshly-loaded vault into the shared document once, on the
+        // seed frame — the initial-load population, not an undoable edit. After
+        // that the document is authoritative: every mutation is an action, and
+        // the vault is re-projected from the document below.
         if self.doc_dirty {
             AuthDoc::sync_vault(state, &self.vault.ordered());
             self.doc_dirty = false;
         }
+        // Re-project the vault from the document so palette dispatches and remote
+        // edits appear (a cheap no-op when nothing changed).
+        self.reload_from_doc(state);
         // Recompute the visible set only when the vault or query changed.
         if self.list_dirty {
             self.refresh_list();
@@ -613,7 +664,7 @@ impl Widget for AuthenticatorApp {
             self.add_panel
                 .handle_event(event, scale_factor, modifiers, state, path, handled, node_id, taffy);
             if let Some(ev) = self.add_panel.take_event() {
-                self.apply_add_panel_event(ev);
+                self.apply_add_panel_event(ev, state);
             }
             return;
         }
@@ -710,10 +761,25 @@ impl Widget for AuthenticatorApp {
             .handle_event(event, scale_factor, modifiers, state, path, handled, &mut throwaway, node_id, taffy);
         let events = self.list.take_events();
         for ev in events {
-            self.apply_list_event(ev);
+            self.apply_list_event(ev, state);
         }
         // Keep the list's selection mirror current.
         self.list.set_selected(self.selected);
+    }
+
+    /// Publish the open vault + its accounts so the host's Ctrl+K palette scopes
+    /// to them. Delegates to the
+    /// [`ResourceProvider`](qos_actions::ResourceProvider) impl in
+    /// [`crate::actions`], which reads the accounts straight from the document.
+    fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
+        <Self as qos_actions::ResourceProvider>::resources(self, doc)
+    }
+
+    /// Hand the host the heads captured before an on-screen affordance dispatched
+    /// its account action, so it records one undo boundary for it (see
+    /// [`Self::perform_action`]). Rising-edge: cleared on read.
+    fn take_committed_action(&mut self) -> Option<Vec<ChangeHash>> {
+        self.action_commit_before.take()
     }
 
     fn name(&self) -> &str {
@@ -728,6 +794,18 @@ impl Widget for AuthenticatorApp {
     fn needs_animation_frame(&self) -> bool {
         true
     }
+}
+
+/// The action transport the Authenticator installs for its own on-screen
+/// affordances. Peers receive account changes through ordinary CRDT sync (the
+/// executor pins each action's actor so the change is content-addressed
+/// identical to a peer's replay and dedupes on merge), so the local affordance
+/// path has nothing extra to replicate — this sink drops the envelope. The
+/// Ctrl+K palette dispatches through the host's transport, which a collaborative
+/// session swaps for a peer-aware one.
+struct DiscardTransport;
+impl qos_actions::ActionTransport for DiscardTransport {
+    fn replicate(&mut self, _env: &qos_actions::ActionEnvelope) {}
 }
 
 #[cfg(test)]
@@ -864,31 +942,38 @@ mod tests {
 
     #[test]
     fn delete_event_removes_account() {
-        let (mut app, _state) = app_with_state();
+        let (mut app, mut state) = app_with_state();
         let before = app.vault.len();
         let id = app.vault.ordered()[0].id;
-        app.apply_list_event(ListEvent::Delete(id));
+        app.apply_list_event(ListEvent::Delete(id), &mut state.doc);
         assert_eq!(app.vault.len(), before - 1);
         assert!(app.vault.get(id).is_none());
+        // The delete went through the action, so it left the shared document too.
+        assert!(
+            AuthDoc::list_accounts(&state.doc).iter().all(|a| a.id != id),
+            "the delete action mutated the shared document"
+        );
     }
 
     #[test]
     fn reorder_event_moves_account_down() {
-        let (mut app, _state) = app_with_state();
+        let (mut app, mut state) = app_with_state();
         let first = app.vault.ordered()[0].id;
         let second = app.vault.ordered()[1].id;
-        app.apply_list_event(ListEvent::MoveDown(first));
+        app.apply_list_event(ListEvent::MoveDown(first), &mut state.doc);
         assert_eq!(app.vault.ordered()[0].id, second);
         assert_eq!(app.vault.ordered()[1].id, first);
+        // The reorder is reflected in the document (the source of truth).
+        assert_eq!(AuthDoc::list_accounts(&state.doc)[0].id, second);
     }
 
     #[test]
     fn copy_event_selects_the_account_and_confirms_with_a_toast() {
-        let (mut app, _state) = app_with_state();
+        let (mut app, mut state) = app_with_state();
         let id = app.vault.ordered()[0].id;
         let acc = app.vault.get(id).cloned().unwrap();
         let before = totp::current_code(&acc);
-        app.apply_list_event(ListEvent::Copy(id));
+        app.apply_list_event(ListEvent::Copy(id), &mut state.doc);
         let after = totp::current_code(&acc);
         assert_eq!(app.selected, Some(id), "the copied row becomes selected");
         let (msg, _) = app.toast.clone().expect("copying shows a confirmation toast");
@@ -906,7 +991,7 @@ mod tests {
 
     #[test]
     fn adding_an_account_through_the_panel_grows_the_vault() {
-        let (mut app, _state) = app_with_state();
+        let (mut app, mut state) = app_with_state();
         let before = app.vault.len();
         app.add_panel.open();
         // Fill via the paste seam, then run the production save path.
@@ -915,12 +1000,20 @@ mod tests {
         app.add_panel.save_for_test();
         assert!(!app.add_panel.is_open(), "a valid save closes the modal");
         let ev = app.add_panel.take_event().expect("save emits an event");
-        app.apply_add_panel_event(ev);
+        app.apply_add_panel_event(ev, &mut state.doc);
         assert_eq!(app.vault.len(), before + 1, "the account is added to the vault");
-        assert!(app.doc_dirty, "the new account is queued for CRDT mirroring");
+        // The save went through the AddAccount action, so it landed in the
+        // shared document (the real, replicated path — not just the local vault).
+        let in_doc = AuthDoc::list_accounts(&state.doc);
+        assert_eq!(in_doc.len(), before + 1, "the add action mutated the shared document");
         assert!(
-            app.vault.ordered().iter().any(|a| a.issuer == "Proton"),
-            "the added account is present by issuer"
+            in_doc.iter().any(|a| a.issuer == "Proton"),
+            "the added account is present in the document by issuer"
+        );
+        // And the host has one undo boundary to record for it.
+        assert!(
+            app.action_commit_before.is_some(),
+            "the add action registered exactly one undo boundary for the host"
         );
     }
 
