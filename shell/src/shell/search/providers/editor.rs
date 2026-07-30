@@ -116,6 +116,17 @@ mod tests {
         }))
     }
 
+    /// Seed a tab's body the way the app does: into the document that
+    /// tab holds — its own record — because that is where a hosted app
+    /// writes and therefore the only place the provider can honestly
+    /// read.
+    fn seed_tab_body(chrome: &ChromeState, tab_id: u64, seed: impl FnOnce(&mut AutoCommit)) {
+        let record = crate::shell::tab_documents::scratch_tab_record(tab_id);
+        let store = chrome.records();
+        store.open_record(&record);
+        store.with(&record.id, seed);
+    }
+
     /// Ctrl+K in the Editor finds a word that only appears in the
     /// document the *real* `EditorApp` wrote — and it reads it from the
     /// Editor's own key, not the note's.
@@ -124,9 +135,11 @@ mod tests {
         let handle = tree_with_editor_tab(3, "Editor");
         let chrome = ChromeState::new_with_handle(handle);
         let chrome_st = chrome.borrow();
-        let mut doc = AutoCommit::new();
-        let mut app = EditorApp::with_seed("export function renderScene() {}");
-        app.sync(&mut doc, &automerge::ROOT);
+        let doc = AutoCommit::new();
+        seed_tab_body(&chrome_st, 3, |d| {
+            let mut app = EditorApp::with_seed("export function renderScene() {}");
+            app.sync(d, &automerge::ROOT);
+        });
 
         let provider = EditorProvider::new();
         let out = provider.query(SearchContext {
@@ -160,9 +173,11 @@ mod tests {
         let handle = tree_with_editor_tab(3, "Editor");
         let chrome = ChromeState::new_with_handle(handle);
         let chrome_st = chrome.borrow();
-        let mut doc = AutoCommit::new();
-        let mut notes = crate::shell::notes_app::NotesApp::with_seed("xylophone");
-        notes.sync(&mut doc, &automerge::ROOT);
+        let doc = AutoCommit::new();
+        seed_tab_body(&chrome_st, 3, |d| {
+            let mut notes = crate::shell::notes_app::NotesApp::with_seed("xylophone");
+            notes.sync(d, &automerge::ROOT);
+        });
 
         let out = EditorProvider::new().query(SearchContext {
             needle: "xylophone",
