@@ -138,6 +138,21 @@ pub struct Config {
     pub pcrs: Vec<u32>,
     /// Public half of the PCR-prediction signing key.
     pub pcr_public_key: String,
+    /// Override the key-derivation cost of the keyslots this crate creates.
+    ///
+    /// `None` in production, which means cryptsetup's own defaults (argon2id,
+    /// benchmarked). It exists because the mechanism tests add and remove a
+    /// dozen keyslots and argon2id at default cost turns a five-second test into
+    /// a minute of CPU and a gigabyte of RAM. Setting it weakens the keyslot, so
+    /// nothing but a test should ever set it.
+    pub pbkdf: Option<Pbkdf>,
+}
+
+/// A deliberately weakened key-derivation setting. Tests only.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Pbkdf {
+    pub algorithm: String,
+    pub iterations: u32,
 }
 
 impl Default for Config {
@@ -152,6 +167,7 @@ impl Default for Config {
             //      the root digest transitively measured.
             pcrs: vec![7, 11],
             pcr_public_key: "/usr/share/qos/tpm2-pcr-signing.public.pem".into(),
+            pbkdf: None,
         }
     }
 }

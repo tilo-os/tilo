@@ -249,6 +249,13 @@ pub fn tighten(runner: &dyn Runner, target: Target, lockout_auth: Option<&[u8]>)
 /// every sealed keyslot on the machine — recoverable with the recovery key,
 /// unrecoverable without it.
 pub fn set_reset_auth(runner: &dyn Runner, new_auth: &[u8], old_auth: Option<&[u8]>) -> Result<()> {
+    if new_auth.len() > 48 {
+        bail!(
+            "a {}-byte reset authorisation is longer than TPM2B_AUTH accepts in practice; keep it \
+             at or below 48",
+            new_auth.len()
+        );
+    }
     let new_spec = format!("str:{}", String::from_utf8_lossy(new_auth));
     let mut args = argv!["-c", "lockout", &new_spec];
     let old_spec;
@@ -267,11 +274,21 @@ pub fn set_reset_auth(runner: &dyn Runner, new_auth: &[u8], old_auth: Option<&[u
     Ok(())
 }
 
-/// A random reset authorisation, hex, 32 bytes of entropy.
+/// Length of a generated reset authorisation, in characters.
+///
+/// 32 hex characters — 128 bits of entropy — and deliberately not more.
+/// `TPM2B_AUTH` is bounded by the size of the TPM's largest digest, and
+/// implementations are stricter in practice than that nominal maximum: a 64-byte
+/// value is refused by `swtpm` while 48 is accepted. 32 stays comfortably inside
+/// every TPM's limit, and for a value whose guessing is throttled by
+/// `lockoutRecovery` (hours per attempt) 128 bits is already absurd overkill.
+pub const RESET_AUTH_CHARS: usize = 32;
+
+/// A random reset authorisation.
 pub fn new_reset_auth() -> Result<zeroize::Zeroizing<Vec<u8>>> {
     use std::io::Read;
     let mut f = std::fs::File::open("/dev/urandom").context("opening /dev/urandom")?;
-    let mut b = [0u8; 32];
+    let mut b = [0u8; RESET_AUTH_CHARS / 2];
     f.read_exact(&mut b).context("reading /dev/urandom")?;
     Ok(zeroize::Zeroizing::new(hex::encode(b).into_bytes()))
 }
@@ -361,9 +378,14 @@ TPM2_PT_LOCKOUT_RECOVERY: 0x3E8
     }
 
     #[test]
-    fn reset_auth_is_random_and_long() {
+    fn reset_auth_is_random_and_within_the_tpm_auth_size_limit() {
         let a = new_reset_auth().unwrap();
-        assert_eq!(a.len(), 64);
+        assert_eq!(a.len(), RESET_AUTH_CHARS);
+        assert!(
+            a.len() <= 48,
+            "TPM2B_AUTH is refused above ~48 bytes on real implementations"
+        );
+        assert!(a.iter().all(|b| b.is_ascii_hexdigit()));
         assert_ne!(*a, *new_reset_auth().unwrap());
     }
 }
