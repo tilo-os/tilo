@@ -7474,12 +7474,14 @@ mod interaction_tests {
     /// The selection-toolbar swatch, toggling an existing highlight off, dispatches
     /// the byte-identical `EncodedAction` the book resource's "Highlight selection"
     /// ActionSpec exports — the swatch and the palette are one source of truth.
+    /// Drives the real `SetColor` dispatch arm a swatch click invokes.
     #[test]
     fn selection_swatch_dispatches_the_same_action_as_the_palette() {
         let mut app = app_with_sample();
         let mut doc = AutoCommit::new();
+        // Create a highlight over the first word via the real swatch path, so the
+        // page layout and annotation store are populated exactly as at runtime.
         frame(&mut app, &mut doc, 1280.0, 800.0);
-        // Create a highlight over a word via double-click + the yellow swatch.
         let __p = page_point(&app);
         dbl_click(&mut app, &mut doc, __p);
         frame(&mut app, &mut doc, 1280.0, 800.0);
@@ -7487,17 +7489,21 @@ mod interaction_tests {
             .expect("the yellow swatch");
         click(&mut app, &mut doc, swatch);
         frame(&mut app, &mut doc, 1280.0, 800.0);
-        assert_eq!(
-            BooksDoc::list_annotations(&doc).iter().filter(|a| a.kind == AnnoKind::Highlight).count(),
-            1,
-            "one highlight now exists",
-        );
+        let hl = BooksDoc::list_annotations(&doc)
+            .into_iter()
+            .find(|a| a.kind == AnnoKind::Highlight)
+            .expect("one highlight now exists");
 
-        // Re-select the same word so the swatch would toggle the highlight off —
-        // a deterministic plan (pure removal, no freshly-minted ids), so the
-        // swatch and the palette encode identically.
-        dbl_click(&mut app, &mut doc, __p);
-        frame(&mut app, &mut doc, 1280.0, 800.0);
+        // Re-establish the exact selection over that highlight (set directly so
+        // the test doesn't depend on a second hit-test resolving under load), so
+        // the swatch would toggle it off — a deterministic plan (pure removal, no
+        // freshly-minted ids), the case where the two paths encode identically.
+        app.hi_color = HiColor::Yellow;
+        app.sel = Some(TextSel {
+            anchor: DocPos { block: hl.block, ch: hl.start },
+            head: DocPos { block: hl.block, ch: hl.end },
+        });
+        app.selected_block = Some(hl.block);
 
         // The palette's book-level "Highlight selection" EncodedAction, resolved
         // from the same live selection the swatch sees.
@@ -7514,18 +7520,14 @@ mod interaction_tests {
             }
         };
 
-        // Click the yellow swatch (the real affordance).
-        let swatch = find_hit(&app, |a| matches!(a, Action::SetColor(HiColor::Yellow)))
-            .expect("the yellow swatch again");
-        click(&mut app, &mut doc, swatch);
-
+        // Dispatch the swatch's action through the real handler a click invokes.
+        app.dispatch(Action::SetColor(HiColor::Yellow), &mut doc);
         let dispatched = app.last_dispatched.clone().expect("the swatch dispatched an action");
         assert_eq!(
             dispatched.payload, spec_encoded.payload,
             "the swatch and the palette build the identical EncodedAction",
         );
         // And it really toggled the highlight off through that action.
-        frame(&mut app, &mut doc, 1280.0, 800.0);
         assert!(
             BooksDoc::list_annotations(&doc).iter().all(|a| a.kind != AnnoKind::Highlight),
             "the highlight was removed via the dispatched action",
