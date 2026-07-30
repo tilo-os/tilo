@@ -33,7 +33,9 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
             .unwrap_or(DEFAULT_SHOTS_VIEWPORT);
         // Default `--shots` renders the live/empty state; the sample fleet is
         // only used when the gallery explicitly asks for it.
-        let root = if std::env::var("QOS_VPN_SAMPLE").as_deref() == Ok("1") {
+        let root = if parse_value_arg(&args, "--scenario").as_deref() == Some("confirm") {
+            vpn::app_root_demo_confirm()
+        } else if std::env::var("QOS_VPN_SAMPLE").as_deref() == Ok("1") {
             vpn::app_root_demo()
         } else {
             vpn::app_root()

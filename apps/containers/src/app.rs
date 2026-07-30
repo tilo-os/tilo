@@ -839,6 +839,36 @@ impl ContainersApp {
         self.refresh_view(doc);
     }
 
+    /// Seed a modal for a deterministic `--shots` frame (no event loop). The
+    /// draw pass builds + lays out the shared dialog from this metadata.
+    pub fn seed_shot(&mut self, scenario: &str) {
+        match scenario {
+            "confirm" => {
+                let (name, id) = self
+                    .engine
+                    .containers
+                    .first()
+                    .map(|c| (c.name.clone(), c.id.clone()))
+                    .unwrap_or_else(|| ("web".to_string(), "web".to_string()));
+                self.confirm = Some(Confirm {
+                    name,
+                    verb: "Remove container".into(),
+                    target: ConfirmTarget::Container { id, action: Action::Remove },
+                });
+            }
+            "prompt" => {
+                self.prompt = Some(Prompt {
+                    kind: PromptKind::NewVolume,
+                    title: "New volume".into(),
+                    placeholder: "my-volume".into(),
+                    value: "backups".into(),
+                    context: String::new(),
+                });
+            }
+            _ => {}
+        }
+    }
+
     /// Read the prompt's typed value out of the embedded field and commit it.
     fn submit_prompt(&mut self, doc: &mut AutoCommit) {
         let value = self
