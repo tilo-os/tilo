@@ -28,7 +28,7 @@
 //! into the per-block Automerge `Text` (the toolkit's CRDT-native text path); it
 //! is not an action.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 use automerge::AutoCommit;
 use serde::{Deserialize, Serialize};
@@ -305,11 +305,10 @@ fn page_resource(m: &PageMeta, pages: &[PageMeta]) -> Resource {
     res
 }
 
-/// Build the resource tree Notes currently has open: the notebook (with a "New
-/// page" action) and its pages, nested by the page tree, each exporting rename /
-/// delete / new-child. Every document-mutating operation is exported as the same
-/// action the on-screen affordance dispatches. Returns an empty tree when the
-/// notebook has no pages (the palette shows nothing for Notes).
+/// Build the resource tree Notes currently has open: the notebook (always
+/// present, exporting a "New page" action) and its pages, nested by the page
+/// tree, each exporting rename / delete / new-child. Every document-mutating
+/// operation is exported as the same action the on-screen affordance dispatches.
 pub fn provide_resources(ctx: &NotesResourceCtx, _doc: &AutoCommit) -> Vec<Resource> {
     let mut notebook = Resource::new("notes.notebook", "notes.notebook", "Notes");
 

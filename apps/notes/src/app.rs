@@ -30,6 +30,9 @@ use ui::theme::Theme;
 use ui::widget::link_popover::PageEntry;
 use ui::widget::page_palette::PageJumpPalette;
 
+use qos_actions::{ActionEnvelope, ActionTransport};
+
+use crate::actions::{self, NotesAction};
 use crate::doc::NotesDoc;
 use crate::main_panel::MainPanel;
 use crate::model::{PageId, Workspace};
@@ -64,6 +67,18 @@ const SAVE_DEBOUNCE: Duration = Duration::from_millis(500);
 /// a second instance adopts the first's workspace instead of creating a
 /// duplicate. A lone instance simply seeds after the window elapses.
 const SEED_GRACE: Duration = Duration::from_millis(1500);
+
+/// Drops the replayable envelope of a locally-dispatched action. Two Notes
+/// instances receive page-tree mutations through ordinary CRDT sync (the
+/// executor pins each action's actor so the change is content-addressed
+/// identical to a peer's replay and dedupes on merge), so the local affordance
+/// path has nothing extra to replicate. The Ctrl+K palette dispatches through
+/// the host's transport, which a collaborative session swaps for a peer-aware
+/// one.
+struct DiscardTransport;
+impl ActionTransport for DiscardTransport {
+    fn replicate(&mut self, _env: &ActionEnvelope) {}
+}
 
 pub struct NotesApp {
     workspace: Workspace,
@@ -142,6 +157,22 @@ pub struct NotesApp {
     /// Rect of the content area (between top bar and status bar). Used
     /// to place the drawer scrim in narrow mode.
     content_rect: Rect,
+    /// Document heads captured just before the first `qos_actions` action of the
+    /// current event was dispatched. The host drains this via
+    /// [`Widget::take_committed_action`] to record exactly one undo boundary
+    /// bracketing the page-tree mutation(s) — the same undo path Ctrl+K takes.
+    action_commit_before: Option<Vec<automerge::ChangeHash>>,
+    /// The last [`EncodedAction`](qos_actions::EncodedAction) an on-screen
+    /// affordance dispatched through [`Self::perform_action`]. Lets a test prove
+    /// a sidebar affordance and the Ctrl+K [`ActionSpec`](qos_actions::ActionSpec)
+    /// build the byte-identical action — one source of truth, not two paths.
+    last_dispatched: Option<qos_actions::EncodedAction>,
+    /// Page ids that have appeared in the shared document. Steady-state `sync`
+    /// uses this to tell a never-yet-mirrored local page (push it up) from a page
+    /// the document dropped — a Ctrl+Z undo of a create, or a remote delete —
+    /// which must be removed locally too. Without it the unconditional local→doc
+    /// mirror would resurrect an undone page every frame.
+    known_in_doc: std::collections::HashSet<PageId>,
 }
 
 impl NotesApp {
@@ -239,6 +270,9 @@ impl NotesApp {
             topbar_rect: Rect::ZERO,
             menu_btn_rect: Rect::ZERO,
             content_rect: Rect::ZERO,
+            action_commit_before: None,
+            last_dispatched: None,
+            known_in_doc: std::collections::HashSet::new(),
         };
         app.refresh_link_pages();
         app.refresh_status();
@@ -497,7 +531,9 @@ impl NotesApp {
                 if std::env::var("QUICK_COLLAB_DEBUG").is_ok() {
                     eprintln!("[notes] ADOPT {} remote page(s)", doc_pages.len());
                 }
+                let ids: Vec<PageId> = doc_pages.iter().map(|p| p.id).collect();
                 self.workspace.data.pages = doc_pages;
+                self.known_in_doc.extend(ids);
                 if let Some(s) = self.workspace.selected() {
                     if self.workspace.get(s).is_none() {
                         self.workspace.set_selected(None);
@@ -509,20 +545,62 @@ impl NotesApp {
                 self.seeded = true;
                 self.sidebar.sync_from_workspace(&self.workspace);
             } else {
-                // Already sharing: pull any new remote pages and push our
-                // local ones (idempotent upsert propagates local
-                // creates / renames).
-                let local: std::collections::HashSet<PageId> =
-                    self.workspace.pages().iter().map(|p| p.id).collect();
+                // Already sharing. The document is authoritative for the page
+                // tree: every local tree mutation is dispatched as an action
+                // that writes it (see `dispatch_tree_diff`), and remote peers'
+                // mutations arrive by merge. Reconcile the workspace to match —
+                // pull new pages, fold changed metadata back in, and drop pages
+                // the document no longer holds (a Ctrl+Z undo of a create, or a
+                // remote delete). A page the document has never held yet (a
+                // freshly seeded welcome, or a test-created page) is pushed up.
+                let doc_ids: std::collections::HashSet<PageId> =
+                    doc_pages.iter().map(|p| p.id).collect();
+                for dp in &doc_pages {
+                    self.known_in_doc.insert(dp.id);
+                }
                 let mut changed = false;
                 for dp in &doc_pages {
-                    if !local.contains(&dp.id) {
-                        self.workspace.data.pages.push(dp.clone());
-                        changed = true;
+                    match self.workspace.get_mut(dp.id) {
+                        Some(existing) => {
+                            if existing != dp {
+                                *existing = dp.clone();
+                                changed = true;
+                            }
+                        }
+                        None => {
+                            self.workspace.data.pages.push(dp.clone());
+                            changed = true;
+                        }
                     }
                 }
+                // Drop pages the document dropped. Only pages it once held — a
+                // never-mirrored local page stays and is pushed up below.
+                let to_drop: Vec<PageId> = self
+                    .workspace
+                    .pages()
+                    .iter()
+                    .filter(|p| !doc_ids.contains(&p.id) && self.known_in_doc.contains(&p.id))
+                    .map(|p| p.id)
+                    .collect();
+                if !to_drop.is_empty() {
+                    self.workspace
+                        .data
+                        .pages
+                        .retain(|p| !to_drop.contains(&p.id));
+                    changed = true;
+                    if let Some(s) = self.workspace.selected() {
+                        if self.workspace.get(s).is_none() {
+                            self.workspace.set_selected(None);
+                        }
+                    }
+                }
+                // Push any local page the document has never held yet (seed
+                // carry-over or a test-created page), recording it as known.
                 for p in self.workspace.pages().to_vec() {
-                    NotesDoc::upsert_page_meta(state, &p);
+                    if !doc_ids.contains(&p.id) {
+                        NotesDoc::upsert_page_meta(state, &p);
+                        self.known_in_doc.insert(p.id);
+                    }
                 }
                 if changed {
                     self.sidebar.sync_from_workspace(&self.workspace);
@@ -539,6 +617,7 @@ impl NotesApp {
             }
             for p in self.workspace.pages().to_vec() {
                 NotesDoc::upsert_page_meta(state, &p);
+                self.known_in_doc.insert(p.id);
             }
             self.seeded = true;
             self.adopted = true;
@@ -622,6 +701,91 @@ impl NotesApp {
             .map(|b| b.text())
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    // --- action dispatch -------------------------------------------------
+
+    /// Dispatch one [`NotesAction`] — the single CRDT-mutation path shared with
+    /// the Ctrl+K palette. Applied through the qOS action executor (a pinned
+    /// actor + committed change, so it replays byte-identically on peers). The
+    /// document heads captured just before the first action of the current event
+    /// are stashed so the host records **one** undo boundary bracketing it
+    /// ([`Widget::take_committed_action`]). The in-memory workspace is updated by
+    /// the caller for immediate UI feedback and reconciled from the document on
+    /// the next `sync`.
+    fn perform_action(&mut self, doc: &mut AutoCommit, action: NotesAction) {
+        if self.action_commit_before.is_none() {
+            // `get_heads` flushes any pending app writes, so the bracket covers
+            // only the action's own change.
+            self.action_commit_before = Some(doc.get_heads());
+        }
+        let encoded = actions::encode(&action);
+        self.last_dispatched = Some(encoded.clone());
+        let mut tx = DiscardTransport;
+        if let Err(e) = qos_actions::dispatch(doc, &action, encoded, &mut tx) {
+            tracing::warn!(error = %e, "notes action dispatch failed");
+        }
+    }
+
+    /// The context Ctrl+K needs to build the notebook's resource tree: the page
+    /// tree the workspace holds (which mirrors the shared `pages` map).
+    pub(crate) fn notes_resource_ctx(&self) -> crate::actions::NotesResourceCtx {
+        crate::actions::NotesResourceCtx { pages: self.workspace.pages().to_vec() }
+    }
+
+    /// Snapshot every page's metadata by id, for the pre/post diff that turns an
+    /// applied [`OutEvent`] into the matching [`NotesAction`](crate::actions).
+    fn meta_map(&self) -> HashMap<PageId, crate::model::PageMeta> {
+        self.workspace.pages().iter().map(|p| (p.id, p.clone())).collect()
+    }
+
+    /// Apply one sidebar [`OutEvent`] to the workspace, then dispatch the
+    /// matching [`NotesAction`](crate::actions) so the change lands in the shared
+    /// document on the same replayable path the Ctrl+K palette uses.
+    fn apply_and_dispatch(&mut self, doc: &mut AutoCommit, ev: OutEvent) {
+        let before = self.meta_map();
+        self.apply_event(ev);
+        let after = self.meta_map();
+        self.dispatch_tree_diff(doc, &before, &after);
+        // The action path removed any deleted page from the document itself, so
+        // drop the removals `apply_event` queued for the next `sync` — replaying
+        // them would re-delete a page a Ctrl+Z undo has just restored.
+        self.pending_doc_removals.clear();
+    }
+
+    /// Turn the page-tree change [`apply_event`] just made into the matching
+    /// action(s). Deletes are dispatched before upserts so a delete's own sibling
+    /// renumber (which `apply` recomputes in the document) doesn't double-write.
+    fn dispatch_tree_diff(
+        &mut self,
+        doc: &mut AutoCommit,
+        before: &HashMap<PageId, crate::model::PageMeta>,
+        after: &HashMap<PageId, crate::model::PageMeta>,
+    ) {
+        // Deletions: a page present before and gone after. Dispatch one
+        // DeletePage per *deletion root* (a removed page whose parent wasn't
+        // also removed) — `apply` deletes the whole subtree, so descendants need
+        // no separate action.
+        for (id, meta) in before {
+            if after.contains_key(id) {
+                continue;
+            }
+            let parent_also_removed = meta
+                .parent
+                .map(|p| before.contains_key(&p) && !after.contains_key(&p))
+                .unwrap_or(false);
+            if !parent_also_removed {
+                self.perform_action(doc, actions::delete_page_action(*id));
+            }
+        }
+        // Creates + edits: a page new in `after`, or one whose metadata changed
+        // (title / parent / order). Each is a whole-page upsert.
+        for (id, meta) in after {
+            match before.get(id) {
+                Some(old) if old == meta => {}
+                _ => self.perform_action(doc, actions::upsert_page_action(meta)),
+            }
+        }
     }
 
     /// Apply one [`OutEvent`] from the sidebar to the workspace + disk.
@@ -790,9 +954,10 @@ impl NotesApp {
         }
     }
 
-    /// Drain the sidebar's outbound event queue and apply each.
-    /// Called after every `handle_event` call.
-    fn drain_sidebar_events(&mut self) {
+    /// Drain the sidebar's outbound event queue and apply each, dispatching the
+    /// matching page-tree action against the shared document. Called after every
+    /// `handle_event` call.
+    fn drain_sidebar_events(&mut self, doc: &mut AutoCommit) {
         let events = self.sidebar.take_events();
         // An expand/collapse toggle mutates the sidebar's `expanded` set
         // without emitting an event; it still needs a re-flatten so the
@@ -805,7 +970,7 @@ impl NotesApp {
             return;
         }
         for ev in events {
-            self.apply_event(ev);
+            self.apply_and_dispatch(doc, ev);
         }
         // After mutation, push the new workspace snapshot back into
         // the sidebar so the tree shape reflects.
@@ -875,6 +1040,23 @@ impl NotesApp {
     #[doc(hidden)]
     pub fn apply_event_for_test(&mut self, ev: OutEvent) {
         self.apply_event(ev);
+    }
+
+    /// Test hook: apply one [`OutEvent`] AND dispatch the matching page-tree
+    /// action against `doc`, exactly as the live sidebar-event path does. Lets a
+    /// test prove the on-screen affordance and the Ctrl+K palette resolve to the
+    /// same [`EncodedAction`](qos_actions::EncodedAction), and drive the real
+    /// undo path.
+    #[doc(hidden)]
+    pub fn dispatch_event_for_test(&mut self, doc: &mut AutoCommit, ev: OutEvent) {
+        self.apply_and_dispatch(doc, ev);
+    }
+
+    /// Test hook: the last action an affordance dispatched through
+    /// [`Self::perform_action`], so a test can compare it to a palette spec.
+    #[doc(hidden)]
+    pub fn last_dispatched_for_test(&self) -> Option<&qos_actions::EncodedAction> {
+        self.last_dispatched.as_ref()
     }
 
     /// Test hook: whether the current tree is the narrow (drawer) layout.
@@ -1081,6 +1263,21 @@ impl Widget for NotesApp {
         self.ensure_editor_bound(state);
         self.sidebar.sync(state, path);
         self.main.sync(state, path);
+    }
+
+    /// Publish the open notebook + its pages (nested by the tree) so the host's
+    /// Ctrl+K action palette scopes to them. Delegates to the
+    /// [`ResourceProvider`](qos_actions::ResourceProvider) impl in
+    /// [`crate::actions`].
+    fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
+        <Self as qos_actions::ResourceProvider>::resources(self, doc)
+    }
+
+    /// Hand the host the heads captured before a sidebar affordance dispatched
+    /// its page-tree action, so it records one undo boundary for it (see
+    /// [`Self::perform_action`]). Rising-edge: cleared on read.
+    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        self.action_commit_before.take()
     }
 
     fn presence_payload(&self) -> Option<(PresenceKey, PresencePayload)> {
@@ -1507,7 +1704,7 @@ impl Widget for NotesApp {
                 let mods = modifiers.state();
                 if (mods.control_key() || mods.super_key()) && c.to_lowercase().as_str() == "n" {
                     let parent = self.workspace.selected();
-                    self.apply_event(OutEvent::CreateChild { parent });
+                    self.apply_and_dispatch(state, OutEvent::CreateChild { parent });
                     self.sidebar.sync_from_workspace(&self.workspace);
                     *handled = true;
                     return;
@@ -1583,7 +1780,7 @@ impl Widget for NotesApp {
                         focus_target, n, taffy,
                     );
                 }
-                self.drain_sidebar_events();
+                self.drain_sidebar_events(state);
                 if self.workspace.selected() != sel_before {
                     self.set_drawer_open(false);
                 }
@@ -1640,7 +1837,7 @@ impl Widget for NotesApp {
                 );
             }
             // Drain any commands the sidebar produced.
-            self.drain_sidebar_events();
+            self.drain_sidebar_events(state);
         }
         // The editor never sees keystrokes the sidebar is capturing — its
         // right-click menu OR an in-progress inline rename — so a rename
@@ -1799,5 +1996,116 @@ mod tests {
             new_title: "Index".into(),
         });
         assert_eq!(app.main.title(), Some("Index"));
+    }
+
+    /// A fresh app whose seeded "Welcome" page is mirrored into `state.doc`, with
+    /// the seed-grace window collapsed so the first `sync` seeds immediately.
+    fn app_seeded_into_doc() -> (NotesApp, ui::State, TempDir, PageId) {
+        let tmp = TempDir::new().unwrap();
+        let mut app = NotesApp::spawn_with_starter_page(tmp.path().into()).unwrap();
+        app.bypass_seed_grace_for_test();
+        let mut state = ui::State::new();
+        app.sync(&mut state.doc, &state.root);
+        let welcome = app.selected_for_test().expect("welcome page seeded + selected");
+        (app, state, tmp, welcome)
+    }
+
+    /// One source of truth: the sidebar's Delete event, dispatched through the
+    /// real app path, encodes the byte-identical [`NotesAction`] the Ctrl+K
+    /// palette's "Delete page" spec does.
+    #[test]
+    fn sidebar_delete_and_palette_encode_identically() {
+        let (mut app, mut state, _tmp, welcome) = app_seeded_into_doc();
+
+        // Palette side: the welcome page resource's delete spec (built before we
+        // delete the page, while it still exists in the tree).
+        let resources = Widget::resources(&app, &state.doc);
+        let page = resources[0]
+            .children
+            .iter()
+            .find(|r| r.label == "Welcome")
+            .expect("a Welcome page resource");
+        let delete_spec = page.actions.iter().find(|a| a.id == "delete").unwrap();
+        let from_palette = match &delete_spec.input {
+            qos_actions::ActionInput::Immediate(enc) => enc.clone(),
+            _ => panic!("delete is an immediate action"),
+        };
+
+        // Affordance side: the sidebar's Delete event through the app path.
+        app.dispatch_event_for_test(&mut state.doc, OutEvent::Delete(welcome));
+        let from_button = app
+            .last_dispatched_for_test()
+            .expect("the sidebar delete dispatched an action")
+            .clone();
+
+        assert_eq!(from_palette.type_id, from_button.type_id);
+        assert_eq!(
+            from_palette.payload, from_button.payload,
+            "the sidebar affordance and the palette build the same EncodedAction"
+        );
+    }
+
+    /// Creating a page through the sidebar path dispatches an `UpsertPage` that
+    /// lands in the shared document — the create crosses the action executor,
+    /// not a private mutation.
+    #[test]
+    fn creating_a_page_dispatches_an_upsert_into_the_doc() {
+        let (mut app, mut state, _tmp, _welcome) = app_seeded_into_doc();
+        let before = NotesDoc::list_pages(&state.doc).len();
+
+        app.dispatch_event_for_test(&mut state.doc, OutEvent::CreateChild { parent: None });
+
+        assert_eq!(
+            NotesDoc::list_pages(&state.doc).len(),
+            before + 1,
+            "the create wrote a new page into the shared document"
+        );
+        let enc = app.last_dispatched_for_test().expect("an action was dispatched");
+        assert_eq!(enc.type_id, crate::actions::NOTES_ACTION_TYPE);
+        let action: crate::actions::NotesAction =
+            serde_json::from_slice(&enc.payload).expect("payload decodes");
+        assert!(
+            matches!(action, crate::actions::NotesAction::UpsertPage(_)),
+            "a create dispatches an UpsertPage"
+        );
+    }
+
+    /// The full undo covenant at the app level: deleting a page through the
+    /// sidebar path records exactly one undo boundary, and Ctrl+Z (the host's
+    /// `undo`) reverts it in both the document and — after the next `sync`
+    /// reconciles — the app's own page list.
+    #[test]
+    fn page_delete_records_one_undo_boundary_and_reverts_in_the_app() {
+        let (mut app, mut state, _tmp, welcome) = app_seeded_into_doc();
+        assert!(NotesDoc::list_pages(&state.doc).iter().any(|p| p.id == welcome));
+
+        // Delete through the real sidebar-event path.
+        app.dispatch_event_for_test(&mut state.doc, OutEvent::Delete(welcome));
+
+        // The host drains the captured heads and records one boundary for it.
+        let before = Widget::take_committed_action(&mut app).expect("heads captured for the host");
+        state.record_committed_action(before, None, None);
+
+        assert!(
+            !NotesDoc::list_pages(&state.doc).iter().any(|p| p.id == welcome),
+            "the delete removed the page from the document"
+        );
+        assert!(state.peek_last_undo().is_some(), "exactly one undo boundary recorded");
+        assert!(
+            Widget::take_committed_action(&mut app).is_none(),
+            "the boundary is rising-edge — cleared on read"
+        );
+
+        // Ctrl+Z reverts the document; the next `sync` reconciles the workspace.
+        state.undo(None, None).expect("an undo entry to pop");
+        assert!(
+            NotesDoc::list_pages(&state.doc).iter().any(|p| p.id == welcome),
+            "undo restored the page in the document"
+        );
+        app.sync(&mut state.doc, &state.root);
+        assert!(
+            app.workspace_pages_for_test().iter().any(|p| p.id == welcome),
+            "the app shows the page again after undo"
+        );
     }
 }
