@@ -117,12 +117,14 @@ impl SearchProvider for RecordsProvider {
 
         let index = self.index.borrow();
         let mut ranked: Vec<(i32, KnownRecord, String)> = Vec::new();
-        for record in index.known() {
+        for record in index.known().iter() {
             let title = record.title();
             let Some(score) = match_score(&needle, &title, record.id.as_str()) else {
                 continue;
             };
-            ranked.push((score, record, title));
+            // Cloned only for the handful that matched — the corpus itself
+            // is shared, not copied, on every keystroke.
+            ranked.push((score, record.clone(), title));
         }
         drop(index);
         // Best first; ties broken by title so the order is the same on
