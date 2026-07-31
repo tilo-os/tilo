@@ -18,7 +18,8 @@
 
 use std::collections::HashMap;
 
-use automerge::{transaction::Transactable, AutoCommit, ObjId, ReadDoc, Value};
+use automerge::{transaction::Transactable, AutoCommit, ChangeHash, ObjId, ReadDoc, Value};
+use qos_actions::{ActionEnvelope, ActionTransport, EncodedAction};
 use taffy::{NodeId, TaffyTree};
 use tracing::warn;
 use ui::theme::Theme;
@@ -27,8 +28,19 @@ use vello::kurbo::{Affine, Point, Rect};
 use vello::Scene;
 use winit::event::{Modifiers, WindowEvent};
 
+use crate::actions::{set_bool_action, SettingsAction};
 use crate::prefs::{NotificationPrefs, SystemPrefs};
 use crate::widgets::{card, caption, rows, setting_row_described, status_pill, El};
+
+/// A local replication sink: the doc is already shared, and the executor pins
+/// each action's actor so the change is content-addressed identical to a peer's
+/// replay and dedupes on merge — so the on-screen affordance path has nothing
+/// extra to replicate. The Ctrl+K palette dispatches through the host's own
+/// transport, which a collaborative session swaps for a peer-aware one.
+struct DiscardTransport;
+impl ActionTransport for DiscardTransport {
+    fn replicate(&mut self, _env: &ActionEnvelope) {}
+}
 
 pub const DND_KEY: &str = "notifications.do_not_disturb";
 pub const BANNERS_KEY: &str = "notifications.show_banners";
@@ -41,6 +53,14 @@ pub struct NotificationsPane {
     needs_seed: bool,
     composed: Option<Box<dyn Widget>>,
     rect: Rect,
+    /// The document heads captured just before the first action of an event, so
+    /// the host records exactly **one** undo boundary bracketing it
+    /// ([`Widget::take_committed_action`], bubbled up by `SettingsApp`).
+    /// Rising-edge: cleared on read.
+    action_commit_before: Option<Vec<ChangeHash>>,
+    /// The most recently dispatched action's wire form, so a test can prove an
+    /// on-screen toggle builds the same [`EncodedAction`] the palette does.
+    last_dispatched: Option<EncodedAction>,
 }
 
 impl Default for NotificationsPane {
@@ -62,6 +82,73 @@ impl NotificationsPane {
             needs_seed: true,
             composed: None,
             rect: Rect::ZERO,
+            action_commit_before: None,
+            last_dispatched: None,
+        }
+    }
+
+    /// The most recently dispatched settings action's wire form (test hook).
+    pub fn last_dispatched(&self) -> Option<&EncodedAction> {
+        self.last_dispatched.as_ref()
+    }
+
+    /// The scratch (edit-intent) key a toggle binds to for a given canonical
+    /// setting key. The widget writes the scratch; `sync` reconciles it into the
+    /// canonical value through an action, and mirrors the canonical value back
+    /// into the scratch when it changes underneath us (undo / remote / palette).
+    fn scratch_key(canonical: &str) -> String {
+        format!("{canonical}.edit")
+    }
+
+    /// Dispatch one [`SettingsAction`] — the single CRDT-mutation path shared
+    /// with the Ctrl+K palette. Applied through the qOS action executor (a pinned
+    /// actor + committed change, so it replays byte-identically on peers). The
+    /// document heads captured just before the first action of the frame are
+    /// stashed so the host records **one** undo boundary bracketing it.
+    ///
+    /// This is *only* the CRDT write. Carrying the preference to the compositor's
+    /// notification layer (the shared `settings.json`, see [`Self::persist`]) is a
+    /// separate side effect driven by the resulting document state — never part
+    /// of an action.
+    fn perform_action(&mut self, state: &mut AutoCommit, action: SettingsAction) {
+        if self.action_commit_before.is_none() {
+            // `get_heads` flushes pending writes, so the bracket covers only the
+            // action's own change.
+            self.action_commit_before = Some(state.get_heads());
+        }
+        let encoded = crate::actions::encode(&action);
+        self.last_dispatched = Some(encoded.clone());
+        let mut tx = DiscardTransport;
+        if let Err(e) = qos_actions::dispatch(state, &action, encoded, &mut tx) {
+            warn!(target: "qos::settings", op = "notifications_action", error = %e, "action dispatch failed");
+        }
+    }
+
+    /// Reconcile one boolean setting between its widget scratch key and its
+    /// canonical (action-owned) key. Returns `(new_value, changed)`.
+    ///
+    /// * canonical changed under us (undo / remote / palette) → adopt it and
+    ///   mirror it into the scratch so the toggle reflects it;
+    /// * else the user flipped the toggle (scratch ≠ canonical) → dispatch the
+    ///   action that writes the canonical value.
+    fn reconcile_bool(
+        &mut self,
+        state: &mut AutoCommit,
+        root: &ObjId,
+        canonical: &str,
+        field: bool,
+    ) -> (bool, bool) {
+        let scratch = Self::scratch_key(canonical);
+        let cv = Self::read_bool(state, root, canonical).unwrap_or(field);
+        let sv = Self::read_bool(state, root, &scratch).unwrap_or(cv);
+        if cv != field {
+            let _ = state.put(root, scratch.as_str(), automerge::ScalarValue::Boolean(cv));
+            (cv, true)
+        } else if sv != cv {
+            self.perform_action(state, set_bool_action(canonical, sv));
+            (sv, true)
+        } else {
+            (field, false)
         }
     }
 
@@ -82,8 +169,11 @@ impl NotificationsPane {
         }
     }
 
-    fn toggle(id: &str, key: &str) -> El {
-        Box::new(Toggle::new(id, key).with_id(id))
+    fn toggle(id: &str, canonical: &str) -> El {
+        // The toggle writes the scratch (edit-intent) key; `sync` turns that
+        // edit into an action on the canonical key. The palette dispatches the
+        // same action on the same canonical key — one source of truth.
+        Box::new(Toggle::new(id, &Self::scratch_key(canonical)).with_id(id))
     }
 
     fn build_composition(&self) -> Box<dyn Widget> {
@@ -183,8 +273,16 @@ pub fn build() -> Box<dyn Widget> {
 impl Widget for NotificationsPane {
     fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
         if self.needs_seed {
-            let seed = |state: &mut AutoCommit, key: &str, v: bool| {
-                let _ = state.put(root, key, automerge::ScalarValue::Boolean(v));
+            // Seed both the canonical (action-owned) key and the scratch
+            // (widget-bound) key, so the toggle shows the current value and the
+            // reconciliation starts settled.
+            let seed = |state: &mut AutoCommit, canonical: &str, v: bool| {
+                let _ = state.put(root, canonical, automerge::ScalarValue::Boolean(v));
+                let _ = state.put(
+                    root,
+                    Self::scratch_key(canonical).as_str(),
+                    automerge::ScalarValue::Boolean(v),
+                );
             };
             seed(state, DND_KEY, self.prefs.do_not_disturb);
             seed(state, BANNERS_KEY, self.prefs.show_banners);
@@ -194,23 +292,25 @@ impl Widget for NotificationsPane {
             self.needs_seed = false;
         }
 
+        // Reconcile every toggle's scratch → canonical through an action (a user
+        // flip) or mirror the canonical → scratch (an undo / remote / palette
+        // change). Each binding is (canonical key, current field value).
         let mut changed = false;
-        let mut adopt = |cur: &mut bool, v: Option<bool>| {
-            if let Some(b) = v {
-                if b != *cur {
-                    *cur = b;
-                    changed = true;
-                }
-            }
-        };
-        adopt(&mut self.prefs.do_not_disturb, Self::read_bool(state, root, DND_KEY));
-        adopt(&mut self.prefs.show_banners, Self::read_bool(state, root, BANNERS_KEY));
-        adopt(&mut self.prefs.show_previews, Self::read_bool(state, root, PREVIEWS_KEY));
-        adopt(&mut self.prefs.play_sounds, Self::read_bool(state, root, SOUNDS_KEY));
-        adopt(
-            &mut self.prefs.show_on_lock_screen,
-            Self::read_bool(state, root, LOCK_SCREEN_KEY),
-        );
+        let (v, c) = self.reconcile_bool(state, root, DND_KEY, self.prefs.do_not_disturb);
+        self.prefs.do_not_disturb = v;
+        changed |= c;
+        let (v, c) = self.reconcile_bool(state, root, BANNERS_KEY, self.prefs.show_banners);
+        self.prefs.show_banners = v;
+        changed |= c;
+        let (v, c) = self.reconcile_bool(state, root, PREVIEWS_KEY, self.prefs.show_previews);
+        self.prefs.show_previews = v;
+        changed |= c;
+        let (v, c) = self.reconcile_bool(state, root, SOUNDS_KEY, self.prefs.play_sounds);
+        self.prefs.play_sounds = v;
+        changed |= c;
+        let (v, c) = self.reconcile_bool(state, root, LOCK_SCREEN_KEY, self.prefs.show_on_lock_screen);
+        self.prefs.show_on_lock_screen = v;
+        changed |= c;
 
         if changed {
             self.persist();
@@ -321,6 +421,13 @@ impl Widget for NotificationsPane {
     fn get_rect(&self) -> Rect {
         self.rect
     }
+
+    /// Hand the host the heads captured before an on-screen toggle dispatched its
+    /// settings action, so it records one undo boundary for it (bubbled up to the
+    /// root by `SettingsApp`). Rising-edge: cleared on read.
+    fn take_committed_action(&mut self) -> Option<Vec<ChangeHash>> {
+        self.action_commit_before.take()
+    }
 }
 
 #[cfg(test)]
@@ -358,6 +465,94 @@ mod tests {
         assert!(pane.prefs().do_not_disturb, "the pane adopted the toggle");
         // And it persisted to the shared store (loaded back through the store).
         assert!(SystemPrefs::load().notifications.do_not_disturb, "persisted");
+    }
+
+    /// Single source of truth: an on-screen toggle flip dispatches the exact
+    /// same [`EncodedAction`] the Ctrl+K palette's flip spec builds — proven at
+    /// the same pre-flip document state so both target the same value.
+    #[test]
+    fn on_screen_toggle_dispatches_same_action_as_palette() {
+        let _cfg = crate::prefs::test_env::ConfigGuard::new("notifications_affordance");
+        let mut pane = NotificationsPane::with_prefs(NotificationPrefs::default()); // DND off
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        pane.sync(&mut doc, &root); // seeds both keys; nothing to dispatch
+        assert!(pane.last_dispatched().is_none(), "seeding dispatches no action");
+
+        // The palette's DND flip spec, read at the pre-flip state (DND off).
+        let app = crate::SettingsApp::new();
+        let res = Widget::resources(&app, &doc);
+        let notif = res[0]
+            .children
+            .iter()
+            .find(|r| r.id.as_str() == "settings.section:notifications")
+            .unwrap();
+        let dnd_spec = notif.actions.iter().find(|a| a.id == "dnd").unwrap();
+        let from_spec = match &dnd_spec.input {
+            qos_actions::ActionInput::Immediate(enc) => enc.clone(),
+            _ => panic!("the DND flip is an immediate action"),
+        };
+
+        // Simulate the Toggle writing its scratch key on a flip, then sync.
+        let scratch = NotificationsPane::scratch_key(DND_KEY);
+        let _ = doc.put(&root, scratch.as_str(), automerge::ScalarValue::Boolean(true));
+        pane.sync(&mut doc, &root);
+
+        let dispatched = pane.last_dispatched().expect("the flip dispatched an action").clone();
+        let from_builder = crate::actions::encode(&crate::actions::set_bool_action(DND_KEY, true));
+        assert_eq!(dispatched, from_builder, "on-screen flip == the shared builder");
+        assert_eq!(dispatched, from_spec, "on-screen flip == the palette ActionSpec");
+
+        // The action landed on the canonical key and the pane adopted + persisted it.
+        assert_eq!(NotificationsPane::read_bool(&doc, &root, DND_KEY), Some(true));
+        assert!(pane.prefs().do_not_disturb);
+    }
+
+    /// The full undo covenant on the on-screen path: a toggle flip dispatched
+    /// through the executor records exactly one undo boundary, and Ctrl+Z reverts
+    /// precisely that setting — after which the pane mirrors the reverted value
+    /// back into the toggle.
+    #[test]
+    fn on_screen_toggle_records_one_undo_boundary_and_reverts() {
+        let _cfg = crate::prefs::test_env::ConfigGuard::new("notifications_undo");
+        let mut pane = NotificationsPane::with_prefs(NotificationPrefs::default());
+        let mut state = ui::State::new();
+        pane.sync(&mut state.doc, &state.root); // seed
+
+        // Flip the toggle's scratch key, then sync → the pane dispatches.
+        let scratch = NotificationsPane::scratch_key(DND_KEY);
+        let _ = state.doc.put(&state.root, scratch.as_str(), automerge::ScalarValue::Boolean(true));
+        pane.sync(&mut state.doc, &state.root);
+
+        // The host drains the pane's captured bracket and records one boundary.
+        let before = pane.take_committed_action().expect("the dispatch captured heads");
+        state.record_committed_action(before, None, None);
+        assert_eq!(
+            NotificationsPane::read_bool(&state.doc, &state.root, DND_KEY),
+            Some(true),
+            "the action set DND on"
+        );
+        assert!(pane.prefs().do_not_disturb);
+        assert!(state.peek_last_undo().is_some(), "exactly one undo boundary recorded");
+        assert!(pane.take_committed_action().is_none(), "the bracket is rising-edge");
+
+        // Ctrl+Z reverts precisely the setting.
+        state.undo(None, None).expect("an undo entry to pop");
+        assert_eq!(
+            NotificationsPane::read_bool(&state.doc, &state.root, DND_KEY),
+            Some(false),
+            "undo reverted the setting"
+        );
+        // Next frame the pane mirrors the reverted canonical back into the scratch
+        // and adopts it, so the toggle follows — and it does not re-dispatch.
+        pane.sync(&mut state.doc, &state.root);
+        assert!(!pane.prefs().do_not_disturb, "the pane adopted the revert");
+        assert_eq!(
+            NotificationsPane::read_bool(&state.doc, &state.root, scratch.as_str()),
+            Some(false),
+            "the toggle's scratch mirrors the reverted value"
+        );
+        assert!(pane.take_committed_action().is_none(), "mirroring the revert dispatches nothing");
     }
 
     #[test]
