@@ -20,6 +20,9 @@ settings-store = { path = "../../crates/system/settings-store" }
 # ~/.config/qos/state.json and render them read-only, instead of a hand-mirrored
 # copy that could drift from the enforced shape.
 collab-types = { path = "../../crates/collab/collab-types" }
+# The qOS action model: every setting mutation is a serializable, replayable
+# `SettingsAction` the on-screen controls and the Ctrl+K palette both dispatch.
+qos-actions = { path = "../../crates/collab/actions" }
 ui = { path = "../../ui" }
 # Shared shell-out helpers for the interactive panes (display, audio,
 # network, bluetooth). The crate lives at the workspace root so both
