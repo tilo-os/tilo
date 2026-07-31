@@ -16,6 +16,7 @@
 //! an empty state. The bundled demonstration document ([`model::sample_document`])
 //! is used only by the screenshot harness and the tests.
 
+pub mod actions;
 pub mod app;
 pub mod doc;
 pub mod model;

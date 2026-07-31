@@ -162,8 +162,7 @@ impl PdfApp {
             ToolbarHit::Swatch(s) => {
                 self.swatch = s;
                 if let Some(id) = self.selected_anno.clone() {
-                    PdfDoc::set_annotation_color(state, &id, s);
-                    self.commit_pending = true;
+                    self.perform_action(state, crate::actions::set_annotation_color_action(&id, s));
                     self.reload(state);
                 }
                 self.dirty = true;
@@ -258,8 +257,7 @@ impl PdfApp {
                     .find(|c| c.id == id)
                     .map(|c| c.resolved)
                     .unwrap_or(false);
-                PdfDoc::set_comment_resolved(state, &id, !cur);
-                self.commit_pending = true;
+                self.perform_action(state, crate::actions::set_comment_resolved_action(&id, !cur));
                 self.reload(state);
             }
             SidebarHit::DeleteComment(id) => {
@@ -622,8 +620,10 @@ impl PdfApp {
                 if let Some(mdrag) = self.marker_drag.take() {
                     if mdrag.moved() {
                         if let Some((x, y)) = self.note_pos(&mdrag.id) {
-                            PdfDoc::set_annotation_position(state, &mdrag.id, x, y);
-                            self.commit_pending = true;
+                            self.perform_action(
+                                state,
+                                crate::actions::set_annotation_position_action(&mdrag.id, x, y),
+                            );
                             self.reload(state);
                         }
                     } else {
@@ -1084,7 +1084,44 @@ mod event_tests {
         app.apply_toolbar(ToolbarHit::Swatch(Swatch::Green), &mut st.doc);
         let after = app.annotations.iter().find(|a| a.id == hl.id).unwrap();
         assert_eq!(after.color, Swatch::Green);
-        assert!(app.commit_pending);
+        assert!(
+            app.take_committed_action().is_some(),
+            "the recolour dispatched an action and stashed one undo boundary"
+        );
+    }
+
+    /// The sidebar / context-menu Delete on an annotation dispatches the
+    /// byte-identical `EncodedAction` the Ctrl+K palette's own delete spec
+    /// carries — one source of truth, proven on the real affordance path.
+    #[test]
+    fn annotation_delete_affordance_matches_palette_action() {
+        use qos_actions::ActionInput;
+        let (mut app, mut st) = app();
+        let anno = app.annotations.first().expect("sample seeds annotations").clone();
+
+        // The EncodedAction the palette would dispatch for this annotation's delete.
+        let resources = Widget::resources(&app, &st.doc);
+        let want_id = format!("pdf.annotation:{}", anno.id);
+        let res = resources[0]
+            .children
+            .iter()
+            .find(|r| r.id.as_str() == want_id.as_str())
+            .expect("the annotation is published as a resource");
+        let spec = res.actions.iter().find(|a| a.id == "delete").unwrap();
+        let spec_encoded = match &spec.input {
+            ActionInput::Immediate(e) => e.clone(),
+            _ => panic!("delete is an immediate action"),
+        };
+
+        // The real affordance path (Delete key / rail button / context menu).
+        app.delete_target(&DeleteTarget::Annotation(anno.id.clone()), &mut st.doc);
+        let dispatched = app.last_dispatched.clone().expect("the affordance dispatched an action");
+        assert_eq!(dispatched.type_id, spec_encoded.type_id);
+        assert_eq!(dispatched.payload, spec_encoded.payload, "one source of truth");
+        assert!(
+            app.annotations.iter().all(|a| a.id != anno.id),
+            "the annotation was deleted via the dispatched action"
+        );
     }
 
     #[test]
@@ -1384,7 +1421,10 @@ mod event_tests {
         feed(&mut app, &mut st, &WindowEvent::MouseInput { device_id: dev, state: ElementState::Released, button: MouseButton::Left });
 
         assert!(app.annotations.len() > before, "a highlight drag through handle_event adds an annotation");
-        assert!(app.commit_pending, "the new highlight is a committed CRDT action");
+        assert!(
+            app.take_committed_action().is_some(),
+            "the new highlight dispatched an action and stashed one undo boundary"
+        );
         assert!(PdfDoc::list_annotations(&st.doc).len() > before, "and it landed in the shared document");
     }
 

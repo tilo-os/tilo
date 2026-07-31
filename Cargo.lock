@@ -10167,6 +10167,7 @@ dependencies = [
  "image",
  "pdf-extract",
  "pdfium-render",
+ "qos-actions",
  "serde",
  "serde_json",
  "serial_test",

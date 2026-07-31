@@ -62,9 +62,12 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     // to. It costs a few kilobytes and destroys nothing.
     let (room, autosave) = ui::persist::open("dev.qos.pdf-viewer");
     let records = ui::RecordSet::open("dev.qos.pdf-viewer");
-    let app = ui::App::new(ui::State::new(), build_widget(&args))
+    let mut app = ui::App::new(ui::State::new(), build_widget(&args))
         .with_autosave(autosave)
         .with_records(records, room.doc);
+    // Register the reader's actions so the shell's Ctrl+K palette can decode +
+    // replay the same markup actions the on-page affordances dispatch.
+    pdf_viewer::actions::register(app.action_registry_mut());
     app.run();
     Ok(())
 }
