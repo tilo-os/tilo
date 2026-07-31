@@ -72,7 +72,10 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let (state, autosave) = ui::persist::open("dev.qos.sheets");
-    let app = ui::App::new(state, sheets::app_root()).with_autosave(autosave);
+    let mut app = ui::App::new(state, sheets::app_root()).with_autosave(autosave);
+    // Register Sheets' actions so the shell's Ctrl+K palette can decode + replay
+    // the same workbook mutations the on-screen affordances dispatch.
+    sheets::actions::register(app.action_registry_mut());
     app.run();
     Ok(())
 }

@@ -687,13 +687,16 @@ impl SheetsApp {
             }
             let dc = target.0 as i64 - cb.src.0 as i64;
             let dr = target.1 as i64 - cb.src.1 as i64;
+            let sheet = self.active_sheet;
             // A cut moves the block: clear the whole source first, then write.
             if cb.cut {
                 for r in 0..rows {
                     for c in 0..cols {
                         let addr = (cb.src.0 + c, cb.src.1 + r);
-                        SheetsDoc::set_cell_raw(doc, self.active_sheet, addr, "");
-                        SheetsDoc::set_cell_format(doc, self.active_sheet, addr, CellFormat::General);
+                        self.perform_action(
+                            doc,
+                            actions::set_cell_action(sheet, addr, "", Some(CellFormat::General)),
+                        );
                     }
                 }
             }
@@ -706,8 +709,10 @@ impl SheetsApp {
                     } else {
                         shift_formula_refs(raw, dc, dr)
                     };
-                    SheetsDoc::set_cell_raw(doc, self.active_sheet, addr, &out_raw);
-                    SheetsDoc::set_cell_format(doc, self.active_sheet, addr, *fmt);
+                    self.perform_action(
+                        doc,
+                        actions::set_cell_action(sheet, addr, &out_raw, Some(*fmt)),
+                    );
                     last = addr;
                 }
             }
@@ -725,7 +730,6 @@ impl SheetsApp {
             return;
         }
 
-        self.needs_commit = true;
         self.reload(doc);
         self.status = format!("Pasted into {}", self.grid.selection_label());
     }
@@ -741,18 +745,18 @@ impl SheetsApp {
         if body.is_empty() {
             return false;
         }
+        let sheet = self.active_sheet;
         let mut last = target;
         for (ri, line) in body.split('\n').enumerate() {
             for (ci, field) in line.split('\t').enumerate() {
                 let addr = (target.0 + ci as u32, target.1 + ri as u32);
-                if field.is_empty() {
-                    SheetsDoc::set_cell_raw(doc, self.active_sheet, addr, "");
-                    SheetsDoc::set_cell_format(doc, self.active_sheet, addr, CellFormat::General);
+                let action = if field.is_empty() {
+                    actions::set_cell_action(sheet, addr, "", Some(CellFormat::General))
                 } else {
                     let inferred = infer_entry(field, cur);
-                    SheetsDoc::set_cell_raw(doc, self.active_sheet, addr, &inferred.raw);
-                    SheetsDoc::set_cell_format(doc, self.active_sheet, addr, inferred.format);
-                }
+                    actions::set_cell_action(sheet, addr, &inferred.raw, Some(inferred.format))
+                };
+                self.perform_action(doc, action);
                 last = addr;
             }
         }
@@ -788,8 +792,7 @@ impl SheetsApp {
             crate::model::addr_to_a1(c, top),
             crate::model::addr_to_a1(c, r - 1)
         );
-        SheetsDoc::set_cell_raw(doc, self.active_sheet, (c, r), &formula);
-        self.needs_commit = true;
+        self.perform_action(doc, actions::set_cell_action(self.active_sheet, (c, r), &formula, None));
         self.reload(doc);
         self.status = format!("Inserted {formula}");
     }
@@ -806,16 +809,15 @@ impl SheetsApp {
             self.status = "Select two or more rows to fill down".into();
             return;
         }
+        let sheet = self.active_sheet;
         for c in c0..=c1 {
             let src_raw = self.grid.cell_raw_at((c, r0));
             let src_fmt = self.grid.cell_fmt_at((c, r0));
             for r in (r0 + 1)..=r1 {
                 let out_raw = shift_formula_refs(&src_raw, 0, (r - r0) as i64);
-                SheetsDoc::set_cell_raw(doc, self.active_sheet, (c, r), &out_raw);
-                SheetsDoc::set_cell_format(doc, self.active_sheet, (c, r), src_fmt);
+                self.perform_action(doc, actions::set_cell_action(sheet, (c, r), &out_raw, Some(src_fmt)));
             }
         }
-        self.needs_commit = true;
         self.reload(doc);
         self.status = format!("Filled down {}", self.grid.selection_label());
     }
@@ -830,16 +832,15 @@ impl SheetsApp {
             self.status = "Select two or more columns to fill right".into();
             return;
         }
+        let sheet = self.active_sheet;
         for r in r0..=r1 {
             let src_raw = self.grid.cell_raw_at((c0, r));
             let src_fmt = self.grid.cell_fmt_at((c0, r));
             for c in (c0 + 1)..=c1 {
                 let out_raw = shift_formula_refs(&src_raw, (c - c0) as i64, 0);
-                SheetsDoc::set_cell_raw(doc, self.active_sheet, (c, r), &out_raw);
-                SheetsDoc::set_cell_format(doc, self.active_sheet, (c, r), src_fmt);
+                self.perform_action(doc, actions::set_cell_action(sheet, (c, r), &out_raw, Some(src_fmt)));
             }
         }
-        self.needs_commit = true;
         self.reload(doc);
         self.status = format!("Filled right {}", self.grid.selection_label());
     }
@@ -1033,10 +1034,12 @@ impl SheetsApp {
 
     fn add_sheet(&mut self, doc: &mut AutoCommit) {
         let n = SheetsDoc::sheet_count(doc);
-        let idx = SheetsDoc::add_sheet(doc, &format!("Sheet{}", n + 1));
-        SheetsDoc::set_active_index(doc, idx);
+        let name = format!("Sheet{}", n + 1);
+        self.perform_action(doc, actions::add_sheet_action(&name));
+        // The active sheet tab is presentation, not a document mutation: a plain
+        // write, outside the action's undo bracket. The appended sheet is at `n`.
+        SheetsDoc::set_active_index(doc, n);
         self.grid.select_only((0, 0));
-        self.needs_commit = true;
         self.reload(doc);
         self.status = "Added sheet".into();
     }
@@ -1051,8 +1054,8 @@ impl SheetsApp {
         }
         // Persist the document overrides into the CRDT so collaborators (and
         // the next session) share the document's conventions.
-        SheetsDoc::set_doc_settings(doc, &self.doc_settings);
-        self.needs_commit = true;
+        let action = actions::set_doc_settings_action(&self.doc_settings);
+        self.perform_action(doc, action);
         self.reload(doc);
     }
 
@@ -1183,85 +1186,38 @@ impl SheetsApp {
         self.apply_cmds(doc, out);
         let ((c0, r0), (c1, r1)) = self.grid.selection_bounds();
         let target_r = r1 + 1;
+        let sheet = self.active_sheet;
         for c in c0..=c1 {
             let formula = format!(
                 "=SUM({}:{})",
                 crate::model::addr_to_a1(c, r0),
                 crate::model::addr_to_a1(c, r1),
             );
-            SheetsDoc::set_cell_raw(doc, self.active_sheet, (c, target_r), &formula);
+            self.perform_action(doc, actions::set_cell_action(sheet, (c, target_r), &formula, None));
         }
-        self.needs_commit = true;
         self.reload(doc);
         self.grid.select_range_public((c0, target_r), (c1, target_r));
         self.status = format!("Summed selection into row {}", target_r + 1);
     }
 
-    /// Rebuild the active sheet's cells through `map`: each populated address
-    /// moves to `map(addr)`, or is dropped when `map` returns `None`. Used by
-    /// the row/column insert + delete commands. Contents move verbatim; the
-    /// old cells are cleared before the new ones are written so overlaps are
-    /// handled correctly.
-    fn restructure_cells(&mut self, doc: &mut AutoCommit, map: impl Fn(Addr) -> Option<Addr>) {
-        let cur = self.default_currency();
-        let snap = SheetsDoc::snapshot_sheet(doc, self.active_sheet, cur);
-        let mut new_raw: HashMap<Addr, String> = HashMap::new();
-        let mut new_fmt: HashMap<Addr, CellFormat> = HashMap::new();
-        for (addr, raw) in &snap.raw {
-            if let Some(dst) = map(*addr) {
-                new_raw.insert(dst, raw.clone());
-            }
-        }
-        for (addr, fmt) in &snap.fmt {
-            if let Some(dst) = map(*addr) {
-                new_fmt.insert(dst, *fmt);
-            }
-        }
-        // Clear every previously-populated cell first.
-        let mut old: std::collections::HashSet<Addr> = std::collections::HashSet::new();
-        old.extend(snap.raw.keys().copied());
-        old.extend(snap.fmt.keys().copied());
-        for addr in old {
-            SheetsDoc::set_cell_raw(doc, self.active_sheet, addr, "");
-            SheetsDoc::set_cell_format(doc, self.active_sheet, addr, CellFormat::General);
-        }
-        for (addr, raw) in &new_raw {
-            SheetsDoc::set_cell_raw(doc, self.active_sheet, *addr, raw);
-        }
-        for (addr, fmt) in &new_fmt {
-            SheetsDoc::set_cell_format(doc, self.active_sheet, *addr, *fmt);
-        }
-        self.needs_commit = true;
-        self.reload(doc);
-    }
-
     fn insert_row(&mut self, doc: &mut AutoCommit) {
         let r0 = self.grid.active().1;
-        self.restructure_cells(doc, |(c, r)| {
-            Some((c, if r >= r0 { r + 1 } else { r }))
-        });
+        self.perform_action(doc, actions::insert_row_action(self.active_sheet, r0));
+        self.reload(doc);
         self.status = format!("Inserted row {}", r0 + 1);
     }
 
     fn delete_row(&mut self, doc: &mut AutoCommit) {
         let r0 = self.grid.active().1;
-        self.restructure_cells(doc, |(c, r)| {
-            if r == r0 {
-                None
-            } else if r > r0 {
-                Some((c, r - 1))
-            } else {
-                Some((c, r))
-            }
-        });
+        self.perform_action(doc, actions::delete_row_action(self.active_sheet, r0));
+        self.reload(doc);
         self.status = format!("Deleted row {}", r0 + 1);
     }
 
     fn insert_column(&mut self, doc: &mut AutoCommit) {
         let c0 = self.grid.active().0;
-        self.restructure_cells(doc, |(c, r)| {
-            Some((if c >= c0 { c + 1 } else { c }, r))
-        });
+        self.perform_action(doc, actions::insert_column_action(self.active_sheet, c0));
+        self.reload(doc);
         self.status = format!("Inserted column {}", crate::model::addr_to_a1(c0, 0)
             .trim_end_matches(|ch: char| ch.is_ascii_digit())
             .to_string());
@@ -1269,15 +1225,8 @@ impl SheetsApp {
 
     fn delete_column(&mut self, doc: &mut AutoCommit) {
         let c0 = self.grid.active().0;
-        self.restructure_cells(doc, |(c, r)| {
-            if c == c0 {
-                None
-            } else if c > c0 {
-                Some((c - 1, r))
-            } else {
-                Some((c, r))
-            }
-        });
+        self.perform_action(doc, actions::delete_column_action(self.active_sheet, c0));
+        self.reload(doc);
         self.status = format!("Deleted column {}", crate::model::addr_to_a1(c0, 0)
             .trim_end_matches(|ch: char| ch.is_ascii_digit())
             .to_string());
@@ -2680,6 +2629,21 @@ impl Widget for SheetsApp {
         ))
     }
 
+    /// Publish the open workbook + its sheets so the host's Ctrl+K action
+    /// palette scopes to them. Delegates to the
+    /// [`ResourceProvider`](qos_actions::ResourceProvider) impl in
+    /// [`crate::actions`].
+    fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
+        <Self as qos_actions::ResourceProvider>::resources(self, doc)
+    }
+
+    /// Hand the host the heads captured before an on-screen affordance dispatched
+    /// its action, so it records one undo boundary bracketing it (see
+    /// [`Self::perform_action`]). Rising-edge: cleared on read.
+    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        self.actions.take_committed()
+    }
+
     fn handle_event(
         &mut self,
         event: &WindowEvent,
@@ -3333,8 +3297,7 @@ impl SheetsApp {
             let name: String = r.chars.iter().collect();
             let trimmed = name.trim();
             if !trimmed.is_empty() {
-                SheetsDoc::rename_sheet(doc, r.idx, trimmed);
-                self.needs_commit = true;
+                self.perform_action(doc, actions::rename_sheet_action(r.idx, trimmed));
                 self.reload(doc);
                 self.status = format!("Renamed sheet to {trimmed}");
             }
@@ -3501,47 +3464,48 @@ impl SheetsApp {
         match act {
             TabAction::Rename => self.begin_tab_rename(idx),
             TabAction::Duplicate => {
-                if let Some(new_idx) = SheetsDoc::duplicate_sheet(doc, idx) {
-                    SheetsDoc::set_active_index(doc, new_idx);
+                if idx < SheetsDoc::sheet_count(doc) {
+                    self.perform_action(doc, actions::duplicate_sheet_action(idx));
+                    // The duplicate lands immediately after the source.
+                    SheetsDoc::set_active_index(doc, idx + 1);
                     self.grid.select_only((0, 0));
-                    self.needs_commit = true;
                     self.reload(doc);
                     self.status = "Duplicated sheet".into();
                 }
             }
             TabAction::InsertRight => {
                 let n = SheetsDoc::sheet_count(doc);
-                let new_idx = SheetsDoc::insert_sheet(doc, (idx + 1).min(n), &format!("Sheet{}", n + 1));
-                SheetsDoc::set_active_index(doc, new_idx);
+                let at = (idx + 1).min(n);
+                self.perform_action(doc, actions::insert_sheet_action(at, &format!("Sheet{}", n + 1)));
+                SheetsDoc::set_active_index(doc, at);
                 self.grid.select_only((0, 0));
-                self.needs_commit = true;
                 self.reload(doc);
                 self.status = "Inserted sheet".into();
             }
             TabAction::MoveLeft => {
                 if idx > 0 {
-                    SheetsDoc::move_sheet(doc, idx, idx - 1);
+                    self.perform_action(doc, actions::move_sheet_action(idx, idx - 1));
                     SheetsDoc::set_active_index(doc, idx - 1);
-                    self.needs_commit = true;
                     self.reload(doc);
                     self.status = "Moved sheet left".into();
                 }
             }
             TabAction::MoveRight => {
                 if idx + 1 < SheetsDoc::sheet_count(doc) {
-                    SheetsDoc::move_sheet(doc, idx, idx + 1);
+                    self.perform_action(doc, actions::move_sheet_action(idx, idx + 1));
                     SheetsDoc::set_active_index(doc, idx + 1);
-                    self.needs_commit = true;
                     self.reload(doc);
                     self.status = "Moved sheet right".into();
                 }
             }
             TabAction::Delete => {
-                if SheetsDoc::sheet_count(doc) <= 1 {
+                let count_before = SheetsDoc::sheet_count(doc);
+                if count_before <= 1 {
                     self.status = "A workbook keeps at least one sheet".into();
                 } else {
                     let old_active = SheetsDoc::active_index(doc);
-                    if SheetsDoc::delete_sheet(doc, idx) {
+                    self.perform_action(doc, actions::delete_sheet_action(idx));
+                    if SheetsDoc::sheet_count(doc) < count_before {
                         let count = SheetsDoc::sheet_count(doc);
                         let new_active = if idx < old_active {
                             old_active - 1
@@ -3552,15 +3516,13 @@ impl SheetsApp {
                         };
                         SheetsDoc::set_active_index(doc, new_active.min(count - 1));
                         self.grid.select_only((0, 0));
-                        self.needs_commit = true;
                         self.reload(doc);
                         self.status = "Deleted sheet".into();
                     }
                 }
             }
             TabAction::SetColor(color) => {
-                SheetsDoc::set_sheet_color(doc, idx, color);
-                self.needs_commit = true;
+                self.perform_action(doc, actions::set_sheet_color_action(idx, color));
                 self.reload(doc);
                 self.status = if color.is_some() {
                     "Set tab colour".into()
