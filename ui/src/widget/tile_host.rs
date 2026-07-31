@@ -792,6 +792,166 @@ mod tests {
         );
     }
 
+    /// A hosted app that writes one string into whatever document it is
+    /// handed, and optionally declares a file it has open.
+    struct Scribe {
+        text: String,
+        opens: Option<std::path::PathBuf>,
+    }
+
+    impl Widget for Scribe {
+        fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+            use automerge::transaction::Transactable;
+            let _ = state.put(path, "body", self.text.as_str());
+        }
+        fn build_layout(
+            &mut self,
+            taffy: &mut TaffyTree<()>,
+            _theme: &Theme,
+            node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
+        ) -> NodeId {
+            let n = taffy.new_leaf(Style::default()).unwrap();
+            node_map.insert(n, self as *mut dyn Widget);
+            n
+        }
+        fn apply_layout(&mut self, _t: &TaffyTree<()>, _n: NodeId, _o: Point) {}
+        fn draw(
+            &mut self,
+            _s: &mut Scene,
+            _t: Affine,
+            _tr: &mut TextRenderer,
+            _th: &Theme,
+            _p: &PresenceCtx,
+        ) {
+        }
+        fn handle_event(
+            &mut self,
+            _event: &WindowEvent,
+            _scale: f64,
+            _m: &winit::event::Modifiers,
+            _state: &mut AutoCommit,
+            _path: &ObjId,
+            _handled: &mut bool,
+            _focus: &mut Option<NodeId>,
+            _node: NodeId,
+            _taffy: &TaffyTree<()>,
+        ) {
+        }
+        fn name(&self) -> &str {
+            "Scribe"
+        }
+        fn get_rect(&self) -> Rect {
+            Rect::ZERO
+        }
+        /// The file-backed half of a tab's identity: an app that has a
+        /// file open says so, and the tile moves onto that file's record.
+        fn record_intent(&self) -> Option<RecordCheckout> {
+            self.opens.as_ref().map(|p| {
+                RecordCheckout::new(RecordId::for_file(p), crate::record::RecordKind::new("file"))
+            })
+        }
+    }
+
+    impl crate::widget::app_widget::AppWidget for Scribe {
+        fn app_kind(&self) -> AppKind {
+            AppKind::Editor
+        }
+        fn app_title(&self) -> &str {
+            "Scribe"
+        }
+        fn app_icon(&self) -> crate::widget::app_widget::IconDescriptor {
+            crate::widget::app_widget::IconDescriptor::Glyph("S")
+        }
+        fn permission_hint(&self) -> Option<AppKind> {
+            None
+        }
+    }
+
+    fn body_of(store: &RecordStore, id: &RecordId) -> Option<String> {
+        use automerge::ReadDoc;
+        store.read(id, |doc| match doc.get(&ROOT, "body") {
+            Ok(Some((automerge::Value::Scalar(v), _))) => match v.as_ref() {
+                automerge::ScalarValue::Str(s) => Some(s.to_string()),
+                _ => None,
+            },
+            _ => None,
+        })?
+    }
+
+    fn tab_checkout(id: u64) -> RecordCheckout {
+        RecordCheckout::new(RecordId::for_tab(id), crate::record::RecordKind::new("tab"))
+    }
+
+    /// A tab with no file is its own record; a tab whose app has a file
+    /// open is that file's.
+    #[test]
+    fn a_tile_follows_the_record_its_app_names() {
+        let store = RecordStore::in_memory();
+        let mut parent = AutoCommit::new();
+
+        let mut scratch = TileHost::new(TileContent::App(Box::new(Scribe {
+            text: "unsaved".into(),
+            opens: None,
+        })));
+        scratch.bind_record(store.clone(), tab_checkout(1));
+        scratch.sync(&mut parent, &ROOT);
+        assert_eq!(
+            body_of(&store, &RecordId::for_tab(1)).as_deref(),
+            Some("unsaved"),
+            "a tab with no file writes into the record the tab is",
+        );
+
+        let file = std::path::PathBuf::from("/work/report.odt");
+        let mut opened = TileHost::new(TileContent::App(Box::new(Scribe {
+            text: "the report".into(),
+            opens: Some(file.clone()),
+        })));
+        opened.bind_record(store.clone(), tab_checkout(2));
+        opened.sync(&mut parent, &ROOT);
+        assert_eq!(
+            body_of(&store, &RecordId::for_file(&file)).as_deref(),
+            Some("the report"),
+            "an app that has a file open edits that file's record",
+        );
+        assert_eq!(
+            body_of(&store, &RecordId::for_tab(2)),
+            None,
+            "and not the scratch record its tab started on",
+        );
+        assert_eq!(
+            body_of(&store, &RecordId::for_tab(1)).as_deref(),
+            Some("unsaved"),
+            "the other tab is untouched by any of it",
+        );
+    }
+
+    /// Two tabs opened on one file are one document — a copy would
+    /// diverge, and no amount of merging makes two copies one file again.
+    #[test]
+    fn two_tabs_on_one_file_are_one_document() {
+        let store = RecordStore::in_memory();
+        let mut parent = AutoCommit::new();
+        let file = std::path::PathBuf::from("/work/shared.odt");
+        for (tab, text) in [(3u64, "first"), (4u64, "second")] {
+            let mut host = TileHost::new(TileContent::App(Box::new(Scribe {
+                text: text.into(),
+                opens: Some(file.clone()),
+            })));
+            host.bind_record(store.clone(), tab_checkout(tab));
+            host.sync(&mut parent, &ROOT);
+        }
+        assert_eq!(
+            store.open_records().len(),
+            3,
+            "two scratch records and the one file both tabs opened",
+        );
+        assert_eq!(
+            body_of(&store, &RecordId::for_file(&file)).as_deref(),
+            Some("second"),
+            "the second tab edited the same document as the first",
+        );
+    }
+
     fn stub_host() -> TileHost {
         TileHost::new(TileContent::Stub {
             kind: AppKind::Terminal,
