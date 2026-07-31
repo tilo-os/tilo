@@ -1972,11 +1972,10 @@ impl WordProcessorWidget {
         let encoded = crate::actions::encode(&action);
         self.last_dispatched = Some(encoded.clone());
         let mut tx = DiscardTransport;
-        if let Err(e) = qos_actions::dispatch(state, &action, encoded, &mut tx) {
-            // A malformed dispatch never wedges the editor — the affordance is a
-            // no-op and the next frame re-syncs from the document.
-            tracing::warn!(error = %e, "word-processor action dispatch failed");
-        }
+        // A malformed dispatch never wedges the editor — the affordance is a
+        // no-op and the next frame re-syncs from the document. Our own actions
+        // always encode/decode, so an error here is unreachable in practice.
+        let _ = qos_actions::dispatch(state, &action, encoded, &mut tx);
     }
 
     /// The context Ctrl+K needs to build the document's resource tree: the caret
