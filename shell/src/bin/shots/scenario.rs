@@ -732,6 +732,7 @@ pub fn catalogue() -> Vec<Scenario> {
         wheel_scroll_workspaces(),
         strip_horizontal_scroll(),
         notes_click_and_type(),
+        two_notes_tabs_keep_their_own_text(),
         cycle_all_tabs(),
         room_activity_from_palette(),
         window_open_beside_selection(),
@@ -798,6 +799,47 @@ fn notes_click_and_type() -> Scenario {
             Action::Type("hi".into()),
             Action::Wait(2),
             Action::Snapshot("03-post-type"),
+        ],
+    }
+}
+
+/// Two Notes tabs, each with its own text.
+///
+/// The picture of the bug this branch closes: every tab of an app used
+/// to share one document, so typing into the second tab showed up in
+/// the first. Type into the tab the desktop boots with, open a second
+/// one, type something else into it, then switch back — the first tab
+/// still has to be showing what was typed into *it*.
+///
+/// The last snapshot is the one that matters. Anything that reverted
+/// per-tab documents would show the second tab's text there.
+fn two_notes_tabs_keep_their_own_text() -> Scenario {
+    Scenario {
+        name: "two_notes_tabs_keep_their_own_text",
+        description: "Type in one Notes tab, open a second, type in it, switch back.",
+        actions: vec![
+            // Same body coordinate `notes_click_and_type` uses.
+            Action::ClickAt(Point::new(660.0, 500.0)),
+            Action::Wait(2),
+            Action::Type("first tab writes alpha".into()),
+            Action::Wait(2),
+            Action::Snapshot("01-first-tab-typed"),
+            Action::AddHostedTab { app: "Notes", title: "Notes" },
+            Action::Wait(20),
+            Action::Snapshot("02-second-tab-opened"),
+            // Reach the new tab the way a person does — its pill — so
+            // it is switched to rather than merely spliced in active.
+            Action::ClickAt(Point::new(884.0, 103.0)),
+            Action::Wait(4),
+            Action::ClickAt(Point::new(660.0, 500.0)),
+            Action::Wait(4),
+            Action::Type("second tab writes beta".into()),
+            Action::Wait(2),
+            Action::Snapshot("03-second-tab-typed"),
+            // Back to the first Notes pill, left-most in the bar.
+            Action::ClickAt(Point::new(310.0, 103.0)),
+            Action::Wait(4),
+            Action::Snapshot("04-first-tab-still-alpha"),
         ],
     }
 }
