@@ -31,6 +31,7 @@
 pub mod a11y;
 pub mod accesskit_bridge;
 pub mod screen_reader;
+pub mod action_host;
 pub mod action_palette;
 pub mod app;
 pub mod color_compat;
@@ -122,6 +123,7 @@ pub use widget::command_palette::{
 };
 // The qOS ACTION model (re-exported so apps get the whole vocabulary through
 // `ui::` without a second `use qos_actions` line) + the Ctrl+K bridge.
+pub use action_host::ActionHost;
 pub use action_palette::ActionPalette;
 pub use qos_actions;
 // Phase 1 (Audit timeline) widgets + their shared types. The
