@@ -918,8 +918,16 @@ def run(host: Session, peer: Session, shots: str) -> None:
     note(f"token is {len(token)} chars; host status "
          f"{host.chrome()['peer_sync']['status']!r}")
     host.snapshot(os.path.join(shots, "08-invite-token.png"))
-    host.key("Escape")
-    host.settle()
+    # The invite card is a modal sitting over the middle of the screen —
+    # the same place the settings modal puts its fields — so it has to be
+    # gone before anything else is clicked, not merely asked to go.
+    for _ in range(4):
+        if host.chrome()["peer_sync"]["invite_token"] is None:
+            break
+        host.key("Escape")
+        host.settle(0.4)
+    claim("the invite card dismisses",
+          host.chrome()["peer_sync"]["invite_token"], None)
 
     peer.run_palette_command("connect to peer", expect_id="result:0")
     opened = wait_for(
@@ -935,8 +943,11 @@ def run(host: Session, peer: Session, shots: str) -> None:
         timeout=20)
     note(f"peer status: {peer.chrome()['peer_sync']['status']!r}")
     claim("the peer joined", bool(joined), True)
-    peer.key("Escape")
-    peer.settle()
+    for _ in range(4):
+        if peer.chrome()["peer_sync"]["connect_input"] is None:
+            break
+        peer.key("Escape")
+        peer.settle(0.4)
     peer_ws = peer.active_workspace()
     claim("the peer is in the host's room", peer_ws["room"], host_ws["room"])
     claim("and its copy names the host as the room's owner",
