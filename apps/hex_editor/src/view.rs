@@ -22,7 +22,8 @@ use std::path::PathBuf;
 use std::sync::mpsc::TryRecvError;
 use std::time::Instant;
 
-use automerge::{AutoCommit, ObjId};
+use automerge::{AutoCommit, ChangeHash, ObjId};
+use qos_actions::{ActionTransport, EncodedAction};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Line, Point, Rect, RoundedRect, Stroke};
@@ -97,6 +98,17 @@ pub struct HexView {
     flash: Option<(String, bool, Instant)>,
     /// Hit rect of the empty-state "Open file…" button, recorded during draw.
     open_button: Rect,
+
+    /// The document heads captured just before the first buffer-edit action of
+    /// the current event was dispatched. The host drains this via
+    /// [`Widget::take_committed_action`] to record exactly one undo boundary
+    /// bracketing the edit — the same undo path a Ctrl+K palette dispatch takes.
+    action_commit_before: Option<Vec<ChangeHash>>,
+    /// The last [`EncodedAction`] a keystroke dispatched through
+    /// [`Self::perform_action`]. Lets a test prove a keystroke and the Ctrl+K
+    /// [`qos_actions::ActionSpec`] build the byte-identical action — one source
+    /// of truth, not two code paths.
+    last_dispatched: Option<EncodedAction>,
 }
 
 impl HexView {
@@ -121,6 +133,8 @@ impl HexView {
             save_rx: None,
             flash: None,
             open_button: Rect::ZERO,
+            action_commit_before: None,
+            last_dispatched: None,
         }
     }
 
@@ -143,6 +157,36 @@ impl HexView {
     /// Test/read accessor for the decoded model.
     pub fn model(&self) -> &HexModel {
         &self.model
+    }
+
+    /// Mutable accessor for the decoded model — used by tests to position the
+    /// cursor / selection that drive the resource tree and the edit journal.
+    #[cfg(test)]
+    pub fn model_mut(&mut self) -> &mut HexModel {
+        &mut self.model
+    }
+
+    /// Test accessor for the last action a keystroke dispatched, so a test can
+    /// prove the keystroke and the palette build the byte-identical action.
+    #[cfg(test)]
+    pub fn last_dispatched(&self) -> Option<&EncodedAction> {
+        self.last_dispatched.as_ref()
+    }
+
+    /// The presentation context Ctrl+K needs to target its byte-edit actions at
+    /// the live cursor / selection. Everything here is view state the document
+    /// doesn't own.
+    pub(crate) fn hex_resource_ctx(&self) -> crate::actions::HexResourceCtx {
+        crate::actions::HexResourceCtx {
+            label: if self.file_name.is_empty() {
+                "Buffer".to_string()
+            } else {
+                self.file_name.clone()
+            },
+            cursor: self.model.cursor(),
+            len: self.model.len(),
+            selection: self.model.selection(),
+        }
     }
 
     /// Whether a real buffer is loaded (false in the empty state).
@@ -178,9 +222,45 @@ impl HexView {
         self
     }
 
+    /// Seed / replace the whole shared buffer at once — used when opening a file
+    /// or adopting a peer's document, not for incremental edits. Writing the
+    /// bytes wholesale (rather than through an edit action) is right here: a file
+    /// load is external I/O, not a collaborative mutation.
     fn flush(&mut self, doc: &mut AutoCommit) {
         HexDoc::write_model(doc, &self.model);
         self.dirty = true;
+    }
+
+    /// Persist whatever the last input changed. Buffer mutations the model
+    /// journaled are dispatched through the qOS action model — each replays
+    /// byte-identically on peers and the batch records one undo boundary Ctrl+Z
+    /// reverts. Presentation meta (cursor, mode, endianness) is view state, so
+    /// it is written straight to the document, never as an action.
+    fn persist(&mut self, doc: &mut AutoCommit) {
+        for edit in self.model.take_edits() {
+            self.perform_action(doc, crate::actions::edit_to_action(&edit));
+        }
+        HexDoc::write_meta(doc, &self.model);
+        self.dirty = true;
+    }
+
+    /// Dispatch one [`crate::actions::HexEditorAction`] — the single buffer-edit
+    /// path shared with the Ctrl+K palette. The action runs through the qOS
+    /// executor (a pinned actor + committed change, so it replays byte-identically
+    /// on peers). The heads captured just before the first action of the event
+    /// are stashed so the host records **one** undo boundary bracketing it.
+    fn perform_action(&mut self, doc: &mut AutoCommit, action: crate::actions::HexEditorAction) {
+        if self.action_commit_before.is_none() {
+            // `get_heads` flushes any pending write, so the bracket covers only
+            // this event's changes.
+            self.action_commit_before = Some(doc.get_heads());
+        }
+        let encoded = crate::actions::encode(&action);
+        self.last_dispatched = Some(encoded.clone());
+        let mut tx = DiscardTransport;
+        if let Err(e) = qos_actions::dispatch(doc, &action, encoded, &mut tx) {
+            tracing::warn!(error = %e, "hex_editor action dispatch failed");
+        }
     }
 
     // --- file open / save (through the host portal) --------------------
@@ -1182,7 +1262,7 @@ impl HexView {
                 }
                 Key::Named(NamedKey::Enter) => {
                     self.jump_to_match(!shift);
-                    self.flush(doc);
+                    self.persist(doc);
                     true
                 }
                 Key::Named(NamedKey::Backspace) => {
@@ -1220,7 +1300,7 @@ impl HexView {
                 }
                 Key::Named(NamedKey::Enter) => {
                     self.commit_goto();
-                    self.flush(doc);
+                    self.persist(doc);
                     true
                 }
                 Key::Named(NamedKey::Backspace) => {
@@ -1244,6 +1324,15 @@ impl HexView {
 /// helper so the choice stays consistent across the grid and overlays.
 fn ui_accent_idx() -> usize {
     5
+}
+
+/// The transport a dispatched action is handed after local execution. The
+/// editor commits the action's change to the shared document; the host's normal
+/// CRDT sync ships it to peers, so a local-only transport suffices here (a
+/// collaborative session swaps in a peer-aware one).
+struct DiscardTransport;
+impl ActionTransport for DiscardTransport {
+    fn replicate(&mut self, _env: &qos_actions::ActionEnvelope) {}
 }
 
 impl Widget for HexView {
@@ -1270,6 +1359,24 @@ impl Widget for HexView {
             }
             self.seeded = true;
             self.dirty = true;
+        }
+
+        // Adopt buffer changes that arrived out-of-band: a peer's edit, a Ctrl+K
+        // palette action, or an undo restoring the document. The shared bytes are
+        // authoritative, so the render cache re-derives from them whenever they
+        // diverge from ours. A local keystroke keeps model and document in step
+        // (the edit is applied to both), so this is a no-op on the common path
+        // and never clobbers an in-progress edit.
+        if self.seeded && self.has_file {
+            if let Some(bytes) = HexDoc::read_bytes(doc) {
+                if bytes != self.model.bytes() {
+                    self.model.adopt_bytes(bytes);
+                    if self.overlay == Overlay::Search {
+                        self.recompute_matches();
+                    }
+                    self.dirty = true;
+                }
+            }
         }
 
         // Expire a status flash so an idle window settles back to no message.
@@ -1405,7 +1512,7 @@ impl Widget for HexView {
                 if let Some((off, col)) = self.hit_test(self.last_mouse) {
                     self.model.set_column(col);
                     self.model.move_to(off, shift);
-                    self.flush(state);
+                    self.persist(state);
                     *handled = true;
                 }
             }
@@ -1480,7 +1587,7 @@ impl Widget for HexView {
                             }
                             "a" | "A" => {
                                 self.model.select_all();
-                                self.flush(state);
+                                self.persist(state);
                                 *handled = true;
                                 return;
                             }
@@ -1539,12 +1646,27 @@ impl Widget for HexView {
                 if moved {
                     let (row, _) = self.model.cursor_cell();
                     self.model.scroll_into_view(row, self.visible_rows);
-                    self.flush(state);
+                    self.persist(state);
                     *handled = true;
                 }
             }
             _ => {}
         }
+    }
+
+    /// Publish the open buffer + its byte-edit actions so the shell's Ctrl+K
+    /// action palette scopes to them. Delegates to the
+    /// [`ResourceProvider`](qos_actions::ResourceProvider) impl in
+    /// [`crate::actions`].
+    fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
+        <Self as qos_actions::ResourceProvider>::resources(self, doc)
+    }
+
+    /// Hand the host the heads captured before a keystroke dispatched its
+    /// buffer-edit action, so it records one undo boundary for it (see
+    /// [`Self::perform_action`]). Rising-edge: cleared on read.
+    fn take_committed_action(&mut self) -> Option<Vec<ChangeHash>> {
+        self.action_commit_before.take()
     }
 
     fn name(&self) -> &str {
