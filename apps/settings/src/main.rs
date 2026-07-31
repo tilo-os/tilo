@@ -30,6 +30,9 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let (state, autosave) = ui::persist::open("dev.qos.settings");
     let mut app = ui::App::new(state, Box::new(widget)).with_autosave(autosave);
+    // Register the settings actions so the shell's Ctrl+K palette can decode +
+    // replay the same per-setting mutations the on-screen controls dispatch.
+    settings::actions::register(app.action_registry_mut());
     // Filtering the sidebar as the user types rebuilds the widget tree each
     // keystroke. Preserve keyboard focus across that rebuild so the search
     // field keeps the caret (it is the first focusable, so focus returns to
