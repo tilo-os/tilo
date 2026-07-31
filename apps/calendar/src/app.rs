@@ -32,8 +32,6 @@ use vello::peniko::{Color, Fill};
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use qos_actions::{ActionEnvelope, ActionTransport};
-
 use ui::Widget;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
@@ -224,18 +222,6 @@ pub enum CalTarget {
     Remote(String),
 }
 
-/// The transport the calendar installs for its own on-screen affordances. Peers
-/// receive events/tasks through ordinary CRDT sync (the executor pins each
-/// action's actor so the change is content-addressed identical to a peer's
-/// replay and dedupes on merge), so the local affordance path has nothing extra
-/// to replicate — this sink drops the envelope. The Ctrl+K palette dispatches
-/// through the host's transport, which a collaborative session swaps for a
-/// peer-aware one.
-struct DiscardTransport;
-impl ActionTransport for DiscardTransport {
-    fn replicate(&mut self, _env: &ActionEnvelope) {}
-}
-
 /// Cached rects for the event form's fields, recomputed every `relayout` from
 /// the detail panel. Kept together so the draw pass, the hit map, and the
 /// embedded widgets' `apply_layout_external` all read the same geometry.
@@ -368,17 +354,13 @@ pub struct CalendarApp {
     /// without waiting for the next unrelated input.
     syncing: bool,
 
-    /// Document heads captured just before the first `qos_actions` action of the
-    /// current event was dispatched. The host drains this via
-    /// [`Widget::take_committed_action`] to record exactly one undo boundary
-    /// bracketing the action(s) — the same undo path the Ctrl+K palette takes.
-    action_commit_before: Option<Vec<ChangeHash>>,
-
-    /// The last [`EncodedAction`](qos_actions::EncodedAction) an on-screen
-    /// affordance dispatched through [`Self::perform_action`]. Lets a test prove
-    /// a button and the Ctrl+K [`ActionSpec`](qos_actions::ActionSpec) build the
-    /// byte-identical action — one source of truth, not two code paths.
-    last_dispatched: Option<qos_actions::EncodedAction>,
+    /// Framework-owned action dispatch. Each on-screen affordance dispatches its
+    /// [`CalendarAction`](crate::actions::CalendarAction) through this: the host
+    /// brackets the undo boundary, applies the action through the executor (so it
+    /// replays byte-identically on peers, exactly as the Ctrl+K palette does), and
+    /// records the last one so a test can prove a button and its
+    /// [`ActionSpec`](qos_actions::ActionSpec) build the identical action.
+    actions: ui::ActionHost,
 
     /// The document heads the in-memory [`Model`] was last derived from. When the
     /// document moves past this out of band — a Ctrl+K palette action, a peer's
@@ -482,8 +464,7 @@ impl CalendarApp {
             dirty: true,
             sync_rx: None,
             syncing: false,
-            action_commit_before: None,
-            last_dispatched: None,
+            actions: ui::ActionHost::new(),
             model_heads: Vec::new(),
         }
     }
@@ -870,26 +851,24 @@ impl CalendarApp {
     // --- action dispatch -------------------------------------------------
 
     /// Dispatch one [`CalendarAction`](crate::actions::CalendarAction) — the
-    /// single CRDT-mutation path shared with the Ctrl+K palette. The action is
-    /// applied through the qOS action executor (a pinned actor + committed
-    /// change, so it replays byte-identically on peers), exactly as the palette
-    /// does. The document heads captured just before the first action of the
-    /// event are stashed so the host records **one** undo boundary bracketing it
-    /// ([`Widget::take_committed_action`]). The in-memory model is updated by the
-    /// caller for immediate UI feedback and reconciled from the document on the
-    /// next `sync`.
+    /// single CRDT-mutation path shared with the Ctrl+K palette. Delegates to the
+    /// framework's [`ActionHost`](ui::ActionHost), which brackets the undo
+    /// boundary and applies the action through the executor (a pinned actor +
+    /// committed change, so it replays byte-identically on peers), exactly as the
+    /// palette does. The in-memory model is updated by the caller for immediate UI
+    /// feedback and reconciled from the document on the next `sync`. This app
+    /// supplies only its domain: the action and its type.
     fn perform_action(&mut self, doc: &mut AutoCommit, action: crate::actions::CalendarAction) {
-        if self.action_commit_before.is_none() {
-            // `get_heads` flushes any pending app writes, so the bracket covers
-            // only the action's own change.
-            self.action_commit_before = Some(doc.get_heads());
-        }
-        let encoded = crate::actions::encode(&action);
-        self.last_dispatched = Some(encoded.clone());
-        let mut tx = DiscardTransport;
-        if let Err(e) = qos_actions::dispatch(doc, &action, encoded, &mut tx) {
-            tracing::warn!(error = %e, "calendar action dispatch failed");
-        }
+        self.actions.dispatch(doc, crate::actions::CALENDAR_ACTION_TYPE, &action);
+    }
+
+    /// The last [`EncodedAction`](qos_actions::EncodedAction) an on-screen
+    /// affordance dispatched, for the button == [`ActionSpec`](qos_actions::ActionSpec)
+    /// covenant test: a control and its Ctrl+K entry must build the identical
+    /// action.
+    #[cfg(test)]
+    fn last_dispatched(&self) -> Option<&qos_actions::EncodedAction> {
+        self.actions.last_dispatched()
     }
 
     /// The source calendar id to queue a CalDAV delete for when an event is
@@ -3575,7 +3554,7 @@ impl Widget for CalendarApp {
     /// its calendar action, so it records one undo boundary for it (see
     /// [`Self::perform_action`]). Rising-edge: cleared on read.
     fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.action_commit_before.take()
+        self.actions.take_committed()
     }
 
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
@@ -6224,7 +6203,7 @@ mod tests {
             .expect("a delete target in the editor");
         h.click(p);
         assert_eq!(
-            h.app.last_dispatched.as_ref(),
+            h.app.last_dispatched(),
             Some(&expected),
             "the trash button and the palette build the identical EncodedAction"
         );
