@@ -85,6 +85,10 @@ pub const LOCK_FILE: &str = "writer.lock";
 /// Directory, inside a package's state directory, holding one subdirectory per
 /// record. See [`DocStore::open_record`].
 pub const RECORDS_DIR: &str = "records";
+/// Directory, inside a package's state directory, holding one subdirectory per
+/// **room** — the index of which records that room holds. See
+/// [`DocStore::open_room`].
+pub const ROOMS_DIR: &str = "rooms";
 
 /// Everything that can go wrong opening, reading or writing a store.
 #[derive(Debug, thiserror::Error)]
@@ -279,6 +283,28 @@ impl DocStore {
         let dir = cli::standalone_state_dir(package_id)
             .join(RECORDS_DIR)
             .join(record_key);
+        Self::open_in(package_id, dir)
+    }
+
+    /// Open the index of **one room** — the list of which records that room
+    /// holds.
+    ///
+    /// A room's index is a document like any other, and it is deliberately not
+    /// a record: a record is a thing the user made, an index is the room's
+    /// statement about which of those things it reaches. Keeping them in
+    /// sibling directories rather than one is what stops a room id from ever
+    /// resolving to a record's document, which would merge the two.
+    ///
+    /// `room_key` is validated exactly as strictly as a record key — the same
+    /// containment boundary, for the same reason.
+    ///
+    /// The bytes land in `<package dir>/rooms/<room_key>/state.automerge`.
+    pub fn open_room(package_id: &str, room_key: &str) -> Result<Self, StoreError> {
+        validate_package_id(package_id)?;
+        validate_record_key(room_key)?;
+        let dir = cli::standalone_state_dir(package_id)
+            .join(ROOMS_DIR)
+            .join(room_key);
         Self::open_in(package_id, dir)
     }
 

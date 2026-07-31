@@ -309,7 +309,18 @@ impl FrameBuilder {
     /// structural layout (overlay reservations).
     pub fn paint_settled(&mut self) -> Scene {
         self.relayout();
-        self.paint()
+        let scene = self.paint();
+        // A draw can discover that the layout it was handed is not the
+        // one it needs: the palette's filter band grows a row when the
+        // kind chips wrap, and only the paint knows how wide the labels
+        // measure. A live session settles that on the very next frame —
+        // a single-frame capture has no next frame, so settle here, or
+        // every screenshot shows a state the user never sees.
+        if self.host.structure_dirty() {
+            self.relayout();
+            return self.paint();
+        }
+        scene
     }
 
     /// Mutate chrome state — opens overlays, switches tabs, tweaks
