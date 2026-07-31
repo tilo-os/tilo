@@ -2146,11 +2146,10 @@ mod helper_tests {
 // Overview card: the faces on a workspace card are the people who can reach it
 // ===========================================================================
 
-/// The overview's collaborator avatars must come from the workspace's
-/// capability-derived roster, not from a display list.
+/// The faces on a workspace card are the people who can reach it.
 ///
 /// The card paints a "Members" badge counted from [`Workspace::roster`]
-/// and, below it, a stack of avatars. Those two used to read different
+/// and, beneath it, a stack of avatars. Those two used to read different
 /// sources: the badge counted the roster while the avatars came from
 /// `ws.collaborators`, falling back to the *tree-wide* collaborator list
 /// when the workspace's own was empty. A card could therefore read
@@ -2158,83 +2157,26 @@ mod helper_tests {
 /// faces on every card in the overview.
 ///
 /// On a permissions surface that is not a cosmetic mismatch: showing
-/// someone on a workspace card states that they can reach it. The
-/// avatars have to be derived from the same model the enforcement path
-/// reads, so the card cannot claim access the compositor would refuse.
+/// someone on a workspace card states that they can reach it.
 ///
-/// Asserted by counting `accent[5]` fills — the avatar disc colour —
-/// with the overview settled open, for a tree whose workspaces have
-/// collaborator records but an empty roster, against the same tree with
-/// one real member added.
+/// Asserted against `overview_card_faces`, the function the draw pass
+/// itself calls. An earlier version of this test counted avatar-coloured
+/// fills in the rendered scene, which stopped meaning anything the moment
+/// avatars moved to the shared `ui::Avatar` widget with a per-identity
+/// fill — the product was still correct and the proxy had gone stale.
+/// Assert on the production path, not on something that correlates with
+/// it.
 ///
 /// Forbidden modifications (re: the file header covenant):
-/// - Don't assert only that the member case has *some* fills; the point
-///   is the difference between "has a capability here" and "is merely
+/// - Don't assert only that the member case is non-empty; the point is
+///   the difference between "holds a capability here" and "is merely
 ///   listed", so both halves have to be pinned.
-/// - Don't relax `no_member_discs == 0` to `<= n`. Zero is the claim: a
-///   person with no capability in the workspace gets no face on it.
+/// - Don't relax the listed-only case to "at most N". Empty is the
+///   claim: a person with no capability in the workspace gets no face.
 #[test]
 fn overview_avatars_come_from_the_roster_not_the_collaborator_list() {
+    use shell::shell::overlay_host::overview_card_faces;
     use shell::shell::state::{CapOverride, Collaborator, Principal, Subject, Verb};
-
-    fn accent_discs(tree: &WorkspaceTree) -> usize {
-        let (mut host, chrome) = build_nirios_overlay_host_with_chrome(tree);
-        chrome.borrow_mut().overlays.overview = true;
-        host.force_overview_settled(true);
-
-        let theme = Theme::dark();
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let child = host.build_layout(&mut taffy, &theme, &mut node_map);
-        let root = taffy
-            .new_with_children(
-                Style {
-                    size: Size {
-                        width: Dimension::length(W),
-                        height: Dimension::length(H),
-                    },
-                    ..Default::default()
-                },
-                &[child],
-            )
-            .unwrap();
-        let mut tr = TextRenderer::new();
-        let measure_map = node_map.clone();
-        taffy
-            .compute_layout_with_measure(
-                root,
-                Size {
-                    width: AvailableSpace::Definite(W),
-                    height: AvailableSpace::Definite(H),
-                },
-                |known, avail, node_id, _, _| {
-                    if let Some(&ptr) = measure_map.get(&node_id) {
-                        unsafe { (*ptr).measure(known, avail, &mut tr) }
-                    } else {
-                        taffy::Size::ZERO
-                    }
-                },
-            )
-            .expect("compute_layout");
-        host.apply_layout(&taffy, child, Point::ORIGIN);
-
-        let mut scene = Scene::new();
-        let presence = PresenceCtx::default();
-        host.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
-
-        let accent = Theme::dark().tokens.colors.accent[5];
-        let target = (
-            (accent.components[0] * 255.0).round() as u8,
-            (accent.components[1] * 255.0).round() as u8,
-            (accent.components[2] * 255.0).round() as u8,
-        );
-        collect_solid_colors(&scene)
-            .iter()
-            .filter(|&&(r, g, b, _)| {
-                r.abs_diff(target.0) <= 2 && g.abs_diff(target.1) <= 2 && b.abs_diff(target.2) <= 2
-            })
-            .count()
-    }
 
     // Listed but powerless: collaborator records on every workspace, and
     // no capability anywhere, so every roster is empty.
@@ -2255,7 +2197,18 @@ fn overview_avatars_come_from_the_roster_not_the_collaborator_list() {
             },
         ];
     }
-    let listed_discs = accent_discs(&listed_only);
+    for ws in &listed_only.workspaces {
+        assert!(
+            overview_card_faces(ws, &listed_only).is_empty(),
+            "a person who holds no capability in the workspace gets no face on \
+             its card; workspace {:?} showed {:?}",
+            ws.name,
+            overview_card_faces(ws, &listed_only)
+                .iter()
+                .map(|(u, _)| u.clone())
+                .collect::<Vec<_>>()
+        );
+    }
 
     // The same tree, plus one person who actually holds a capability in
     // the first workspace.
@@ -2266,22 +2219,26 @@ fn overview_avatars_come_from_the_roster_not_the_collaborator_list() {
         room,
         Verb::Write,
     ));
-    let member_discs = accent_discs(&with_member);
 
+    let faces = overview_card_faces(&with_member.workspaces[0], &with_member);
     assert_eq!(
-        with_member.workspaces[0].roster().len(),
-        1,
-        "fixture must put exactly one person in the first workspace's roster"
+        faces.iter().map(|(u, _)| u.as_str()).collect::<Vec<_>>(),
+        vec!["ada"],
+        "the member who holds a capability is exactly who the card shows"
+    );
+    assert_eq!(
+        faces[0].1.map(|c| c.name.as_str()),
+        Some("Ada"),
+        "the collaborator record still supplies the display name"
     );
 
-    assert_eq!(
-        member_discs,
-        listed_discs + 1,
-        "a person holding a capability in the workspace must get exactly one \
-         avatar disc on its card (listed_only={listed_discs}, \
-         with_member={member_discs}); the card's faces have to come from the \
-         roster the Members badge counts"
-    );
+    // And only that workspace's card changed.
+    for ws in with_member.workspaces.iter().skip(1) {
+        assert!(
+            overview_card_faces(ws, &with_member).is_empty(),
+            "granting in one workspace must not put a face on another's card"
+        );
+    }
 }
 
 /// The word table in [`draw_data_words`] must account for **every** word
