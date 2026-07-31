@@ -545,6 +545,31 @@ class Session:
     def capability_ids(self) -> set[str]:
         return {c["id"] for c in (self.active_workspace().get("capabilities") or [])}
 
+    def open_permissions_tab(self) -> bool:
+        """Workspace settings, on its Permissions tab. `False` means the
+        modal itself never opened."""
+        if not self.chrome()["overlays"]["ws_settings"]:
+            self.run_palette_command("workspace settings", expect_id="result:0")
+        if not self.chrome()["overlays"]["ws_settings"]:
+            return False
+        self.settle()
+        names = {t["name"] for t in self.targets()}
+        if "ws_settings_tab[permissions]" not in names:
+            return False
+        self.click("ws_settings_tab[permissions]")
+        return self.chrome()["ws_settings_tab"] == "Permissions"
+
+    def close_ws_settings(self) -> None:
+        for _ in range(4):
+            if not self.chrome()["overlays"]["ws_settings"]:
+                return
+            self.key("Escape")
+            self.settle(0.3)
+
+    def revoke_rects(self) -> list[str]:
+        return sorted(t["name"] for t in self.targets()
+                      if t["name"].startswith("permissions_revoke["))
+
 
 def peer_id_of(s: Session) -> str:
     """The libp2p peer id the session logged at startup."""
@@ -774,6 +799,39 @@ def run(host: Session, peer: Session, shots: str) -> None:
         claim("and the window it focused is the document's",
               host.active_tab_id(), doc_win["tab_id"])
 
+    step("3.", "find it again — two chords that ask different questions")
+    # `Ctrl+K` is "search what I am looking at". The focused window is
+    # the document's, so a hit has to come from inside the document.
+    host.open_palette(machine_wide=False)
+    claim("Ctrl+K narrows the search to the focused app",
+          host.chrome()["search_scope"], "ActiveApp")
+    host.type_text(BODY_NEEDLE)
+    host.settle(1.0)
+    in_app = host.palette_rows()
+    note(f"in-app rows: {[(r['group'], r['label'], r['description']) for r in in_app][:4]}")
+    claim("searching in the app finds the word in the open document",
+          any(BODY_NEEDLE.lower() in (r.get("description") or "").lower()
+              or DOC_STEM in r["label"] for r in in_app), True)
+    host.snapshot(os.path.join(shots, "06-ctrl-k-in-app.png"))
+    host.close_palette()
+
+    # The same word under `Super+K`, which searches the machine: the file
+    # is found as a file, wherever it is, whether or not it is open.
+    rows = host.query_palette(
+        BODY_NEEDLE, until=lambda r: any(DOC_STEM in x["label"] for x in r))
+    note(f"machine-wide rows: {[(r['group'], r['label']) for r in rows][:4]}")
+    claim("Super+K searches everywhere", host.chrome()["search_scope"], "All")
+    claim("and finds the document on the machine by a word inside it",
+          any(DOC_STEM in r["label"] and r["group"] == "Files" for r in rows), True)
+    host.snapshot(os.path.join(shots, "07-super-k-machine.png"))
+    host.close_palette()
+
+    # And the two really are different: the machine-wide search offers
+    # things the in-app one does not.
+    machine_labels = {r["label"] for r in rows}
+    claim("the two scopes are not the same list",
+          machine_labels != {r["label"] for r in in_app}, True)
+
     step("4.", "where the windows went")
     # The rule is the shell's, not this script's: a new window goes
     # immediately right of the selection, and joins it as a tab when the
@@ -791,6 +849,203 @@ def run(host: Session, peer: Session, shots: str) -> None:
               [g["id"] for g in host.groups()], groups_before)
         note(f"that group's tabs now: {[t['title'] for t in (sel_group or {}).get('tabs', [])]}")
     host.snapshot(os.path.join(shots, "05-placement-tabbed.png"))
+
+    step("5.", "invite a peer, who joins and lands in the same room")
+    host_ws = host.active_workspace()
+    note(f"host room: {host_ws['room']} ({host_ws['name']})")
+    claim("the host owns the room it is sitting in", host_ws["owner"], host.user)
+    claim("and may administer it", host.chrome()["may_administer_active"], True)
+    peer_before = peer.active_workspace()
+    claim("the peer starts somewhere else",
+          peer_before["room"] != host_ws["room"], True)
+
+    host.run_palette_command("invite peer", expect_id="result:0")
+    token = wait_for(lambda: host.chrome()["peer_sync"]["invite_token"], timeout=20)
+    claim("the palette minted an invite", bool(token), True)
+    if not token:
+        note("no invite token; steps 5 to 8 have nothing to act on")
+        return
+    note(f"token is {len(token)} chars; host status "
+         f"{host.chrome()['peer_sync']['status']!r}")
+    host.snapshot(os.path.join(shots, "08-invite-token.png"))
+    host.key("Escape")
+    host.settle()
+
+    peer.run_palette_command("connect to peer", expect_id="result:0")
+    opened = wait_for(
+        lambda: peer.chrome()["peer_sync"]["connect_input"] is not None, timeout=15)
+    claim("the peer's connect prompt opened", bool(opened), True)
+    peer.type_text(token)
+    claim("the token arrived intact",
+          peer.chrome()["peer_sync"]["connect_input"], token)
+    peer.snapshot(os.path.join(shots, "09-peer-connect.png"))
+    peer.key("Enter")
+    joined = wait_for(
+        lambda: (peer.chrome()["peer_sync"]["status"] or "").startswith("Joined"),
+        timeout=20)
+    note(f"peer status: {peer.chrome()['peer_sync']['status']!r}")
+    claim("the peer joined", bool(joined), True)
+    peer.key("Escape")
+    peer.settle()
+    peer_ws = peer.active_workspace()
+    claim("the peer is in the host's room", peer_ws["room"], host_ws["room"])
+    claim("and its copy names the host as the room's owner",
+          peer_ws["owner"], host.user)
+    claim("a guest may not administer the room it joined",
+          peer.chrome()["may_administer_active"], False)
+    claim("the peer records the inviter as the room's governance authority",
+          peer.tree().get("room_authority", {}).get(peer_ws["room"]),
+          {"Peer": f"p2p:{peer_id_of(host)}"})
+    peer.snapshot(os.path.join(shots, "10-peer-joined.png"))
+
+    step("6.", "the host grants, the peer receives; the peer may not administer")
+    before_grant = peer.check_action(f"app:{WP_ID}", WP_ID, "edit")
+    claim("the peer's own gate denies the app before any grant",
+          before_grant.get("answer", {}).get("permitted"), False)
+
+    cap_id = "story-edit"
+    fs_cap_id = "story-path"
+    granted = host.grant(f"app:{WP_ID}", "workspace", "write", cap_id)
+    claim("the workspace-scoped grant was recorded",
+          granted.get("answer", {}).get("granted"), cap_id)
+    granted_fs = host.grant(f"app:{WP_ID}", f"fs:{host.doc_path}", "write", fs_cap_id)
+    claim("the path-scoped grant was recorded",
+          granted_fs.get("answer", {}).get("granted"), fs_cap_id)
+
+    arrived = wait_for(lambda: peer.capability_ids() >= {cap_id, fs_cap_id})
+    claim("both grants reached the peer's own copy", bool(arrived), True)
+    after_grant = peer.check_action(f"app:{WP_ID}", WP_ID, "edit")
+    claim("and the peer's own gate now permits the app",
+          after_grant.get("answer", {}).get("permitted"), True)
+    claim("the peer's permissions tab is reachable", peer.open_permissions_tab(), True)
+    rows = peer.revoke_rects()
+    note(f"peer permissions rows: {rows}")
+    claim("the peer's screen lists the capability that arrived over the wire",
+          f"permissions_revoke[{fs_cap_id}]" in rows, True)
+    peer.snapshot(os.path.join(shots, "11-peer-permissions.png"))
+
+    peer_grant = peer.grant("app:org.qos.Rogue", "workspace", "admin")
+    claim("a guest's grant is refused", "err" in peer_grant, True)
+    claim("for the right reason",
+          peer_grant.get("err", {}).get("code"), "grant_refused")
+    peer_revoke = peer.revoke(cap_id)
+    claim("a guest's revoke is refused", "err" in peer_revoke, True)
+    claim("and the capability it tried to revoke is still there",
+          cap_id in peer.capability_ids(), True)
+    claim("nothing the guest asked for reached the host",
+          any("Rogue" in json.dumps(c.get("subject"))
+              for c in host.active_workspace().get("capabilities") or []), False)
+    peer.close_ws_settings()
+
+    revoked = host.revoke(cap_id)
+    claim("the host's revoke succeeds", revoked.get("answer", {}).get("revoked"), True)
+    gone = wait_for(lambda: cap_id not in peer.capability_ids())
+    claim("and the peer sees it gone", bool(gone), True)
+    after_revoke = peer.check_action(f"app:{WP_ID}", WP_ID, "edit")
+    claim("the peer's gate denies the app again",
+          after_revoke.get("answer", {}).get("permitted"), False)
+    host.snapshot(os.path.join(shots, "12-after-revoke.png"))
+
+    step("7.", "both edit, and the history carries both of them")
+    host_mark = "Quarterly review"
+    rename_active_workspace(host, host_mark)
+    claim("the host's edit landed on the host",
+          host.active_workspace()["name"], host_mark)
+    crossed = wait_for(lambda: peer.active_workspace()["name"] == host_mark)
+    claim("and reached the peer's own copy",
+          peer.active_workspace()["name"], host_mark)
+    if not crossed:
+        note("the host's edit never crossed; nothing downstream would mean anything")
+
+    peer_mark = "Quarterly review — with notes"
+    rename_active_workspace(peer, peer_mark)
+    claim("the peer's edit landed on the peer",
+          peer.active_workspace()["name"], peer_mark)
+    back = wait_for(lambda: host.active_workspace()["name"] == peer_mark)
+    claim("and came back to the host — the document converged",
+          host.active_workspace()["name"], peer_mark)
+    if not back:
+        note("the peer's edit never crossed back")
+
+    # The room's own change graph, read off each replica. Two distinct
+    # automerge actors is what "two people wrote this" looks like in the
+    # document itself, independent of what either pane chose to display.
+    host.run_palette_command("show room activity", expect_id="result:0")
+    host.settle(1.2)
+    claim("the room-activity sheet opened",
+          host.chrome()["overlays"]["room_activity"], True)
+    hist = host.chrome()["room_history"]
+    actors = {c["actor"] for c in hist["changes"]}
+    note(f"{len(hist['changes'])} changes by {len(actors)} actor(s)")
+    note(f"contributors as the sheet names them: {hist['contributors']}")
+    claim("the room document records changes from two contributors",
+          len(actors) >= 2, True)
+    claim("and the sheet names both of them",
+          sorted(n.lower() for n in hist["contributors"]) == ["alice", "bob"], True)
+    host.snapshot(os.path.join(shots, "13-history-both.png"))
+
+    peer.run_palette_command("show room activity", expect_id="result:0")
+    peer.settle(1.2)
+    peer_hist = peer.chrome()["room_history"]
+    peer_actors = {c["actor"] for c in peer_hist["changes"]}
+    note(f"peer sees {len(peer_hist['changes'])} changes by "
+         f"{len(peer_actors)} actor(s): {peer_hist['contributors']}")
+    claim("the peer's replica of the history has both contributors too",
+          len(peer_actors) >= 2, True)
+    peer.snapshot(os.path.join(shots, "14-peer-history.png"))
+    peer.key("Escape")
+    peer.settle()
+
+    step("8.", "roll back, and the content is what it was")
+    rows = host.chrome()["room_history"]["rows"]
+    note(f"{len(rows)} row(s) on screen; "
+         f"{sum(1 for r in rows if r['revert_rect'])} offer a restore")
+    # The newest row is the state we are in, so restoring to it would be a
+    # no-op. Take the newest row *before* it that offers a restore.
+    restorable = [r for r in rows if r["revert_rect"]]
+    target = restorable[-2] if len(restorable) >= 2 else None
+    claim("the history offers a version to restore to", bool(target), True)
+    if target:
+        note(f"restoring to row {target['index']}: "
+             f"{target['summary']!r} by {target['author']!r}")
+        x, y, w, h = target["revert_rect"]
+        host.click_at(x + w / 2, y + h / 2)
+        host.settle(1.2)
+        restored = host.active_workspace()["name"]
+        note(f"the room is now named {restored!r}")
+        claim("restoring an earlier version brought the earlier content back",
+              restored, host_mark)
+        claim("and the restore is itself a change, not a rewrite of the past",
+              len(host.chrome()["room_history"]["changes"]) > len(hist["changes"]), True)
+        crossed_back = wait_for(
+            lambda: peer.active_workspace()["name"] == restored)
+        claim("the peer's copy followed the restore",
+              peer.active_workspace()["name"], restored)
+    host.snapshot(os.path.join(shots, "15-after-restore.png"))
+    host.key("Escape")
+    host.settle()
+    host.snapshot(os.path.join(shots, "16-final.png"))
+
+
+def rename_active_workspace(s: Session, name: str) -> None:
+    """Rename the room through the chrome's own name-edit path.
+
+    Opens workspace settings, clicks the name field, replaces what is
+    there and commits with Enter — the sequence a user performs, so the
+    change is stamped into the room document the same way theirs is.
+    """
+    s.run_palette_command("workspace settings", expect_id="result:0")
+    if not s.chrome()["overlays"]["ws_settings"]:
+        raise RuntimeError(f"{s.name}: workspace settings did not open")
+    s.click("ws_settings_name_input")
+    if s.chrome()["editing_workspace_name"] is None:
+        raise RuntimeError(f"{s.name}: the name field did not take focus")
+    for _ in range(64):
+        s.key("Backspace")
+    s.type_text(name)
+    s.key("Enter")
+    s.settle()
+    s.close_ws_settings()
 
 
 if __name__ == "__main__":
