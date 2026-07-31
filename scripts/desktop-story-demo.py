@@ -1091,9 +1091,19 @@ def rename_active_workspace(s: Session, name: str) -> None:
     # name field only exists on General.
     if s.chrome()["ws_settings_tab"] != "General":
         s.click("ws_settings_tab[general]")
-    s.click("ws_settings_name_input")
+    # The modal animates open and its rects are published by the draw
+    # pass, so a click issued in the same breath as the command that
+    # opened it can land before the field is anywhere.
+    for _ in range(8):
+        if any(t["name"] == "ws_settings_name_input" for t in s.targets()):
+            s.click("ws_settings_name_input")
+            if s.chrome()["editing_workspace_name"] is not None:
+                break
+        s.settle(0.5)
     if s.chrome()["editing_workspace_name"] is None:
-        raise RuntimeError(f"{s.name}: the name field did not take focus")
+        raise RuntimeError(
+            f"{s.name}: the name field did not take focus; targets were "
+            f"{sorted(t['name'] for t in s.targets() if 'ws_settings' in t['name'])}")
     for _ in range(64):
         s.key("Backspace")
     s.type_text(name)
