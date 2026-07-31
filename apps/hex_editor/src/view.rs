@@ -168,7 +168,8 @@ impl HexView {
 
     /// Test accessor for the last action a keystroke dispatched, so a test can
     /// prove the keystroke and the palette build the byte-identical action.
-    #[cfg(test)]
+    /// Not `#[cfg(test)]` so the integration test crate (`tests/open_save.rs`),
+    /// which compiles against the public API only, can read it too.
     pub fn last_dispatched(&self) -> Option<&EncodedAction> {
         self.last_dispatched.as_ref()
     }
