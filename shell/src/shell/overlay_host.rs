@@ -6147,6 +6147,40 @@ fn apply_composer_hit(chrome: &Chrome, hit: ComposerHit) {
     }
 }
 
+/// The faces a workspace card shows: the people who actually hold a
+/// capability in that workspace.
+///
+/// Drawing `ws.collaborators` instead put faces on a card for people
+/// with no access, and falling back to the tree-wide list put those same
+/// faces on *every* card. A permissions surface showing someone states
+/// that they can reach the workspace, so the list has to come from the
+/// capability model — the same `roster()` the Members badge counts.
+///
+/// The collaborator record supplies only display name and colour, and
+/// only when there is one; a member with no record still gets a face.
+///
+/// Split out of the draw pass so it can be asserted directly. Counting
+/// avatar-coloured fills in the rendered scene used to stand in for this,
+/// and stopped meaning anything once avatars moved to the shared
+/// `ui::Avatar` widget with a per-identity fill — the product was right
+/// and the proxy was stale.
+pub fn overview_card_faces<'a>(
+    ws: &'a crate::shell::state::Workspace,
+    tree: &'a crate::shell::state::WorkspaceTree,
+) -> Vec<(String, Option<&'a crate::shell::state::Collaborator>)> {
+    ws.roster()
+        .into_iter()
+        .map(|(user, _role)| {
+            let known = ws
+                .collaborators
+                .iter()
+                .chain(tree.collaborators.iter())
+                .find(|c| c.id == user);
+            (user, known)
+        })
+        .collect()
+}
+
 fn draw_scrim(scene: &mut Scene, transform: Affine, rect: Rect, theme: &Theme) {
     draw_scrim_at(scene, transform, rect, 1.0, theme);
 }
@@ -6842,26 +6876,7 @@ impl ShellOverlayHost {
                 card_xform * Affine::translate((sidebar_x0, collab_y0)),
                 None,
             );
-            // The people who actually hold a capability here — the same
-            // list the Members badge counts. Drawing `ws.collaborators`
-            // instead put faces on a card for people with no access, and
-            // falling back to the tree-wide list put them on *every*
-            // card; a permissions surface showing someone implies they
-            // can reach the workspace, so it has to come from the
-            // capability model. Display name and colour still come from
-            // the collaborator record when there is one.
-            let peers: Vec<(String, Option<&crate::shell::state::Collaborator>)> = ws
-                .roster()
-                .into_iter()
-                .map(|(user, _role)| {
-                    let known = ws
-                        .collaborators
-                        .iter()
-                        .chain(tree.collaborators.iter())
-                        .find(|c| c.id == user);
-                    (user, known)
-                })
-                .collect();
+            let peers = overview_card_faces(ws, &tree);
             let avatar_r = 12.0_f64;
             let avatar_step = 22.0_f64; // 28 px avatar - 6 px overlap
             let avatar_y = collab_y0 + 20.0;
