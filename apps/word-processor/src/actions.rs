@@ -943,35 +943,34 @@ mod tests {
 
     /// The full undo covenant on one action: dispatched through the executor it
     /// mutates the document and records exactly one undo boundary, and Ctrl+Z
-    /// (the host's `undo`) reverts precisely that action.
+    /// (the host's `undo`) reverts precisely that action. Uses a paragraph-style
+    /// change — a structural `kind` write the host's snapshot-diff undo reverts
+    /// (inline formatting *marks* are, by design, not undo-tracked by the
+    /// toolkit, so a bold toggle would not round-trip through Ctrl+Z).
     #[test]
     fn action_records_one_undo_boundary_and_reverts() {
-        let (mut state, ids) = seeded("Hello world\n");
+        let (mut state, ids) = seeded("Title\n");
         let block = ids[0].clone();
         let before_heads = state.doc.get_heads();
 
-        let action = set_mark_action(
-            RegionKind::Body,
-            vec![Span { block: block.clone(), start: 0, end: 5 }],
-            "strong",
-            Some(MarkVal::Bool(true)),
-            vec![],
-        );
+        let kind_of = |doc: &AutoCommit| {
+            body_blocks(doc).into_iter().find(|x| x.id == block).map(|x| x.kind)
+        };
+        assert_eq!(kind_of(&state.doc).as_deref(), Some("paragraph"), "starts as a paragraph");
+
+        let action = set_paragraph_style_action(vec![block.clone()], "heading", Some(1), None);
         dispatch(&mut state.doc, &action);
         state.record_committed_action(before_heads.clone(), None, None);
 
-        let has_bold = |doc: &AutoCommit| {
-            body_blocks(doc)
-                .into_iter()
-                .find(|x| x.id == block)
-                .map(|x| x.marks.iter().any(|m| m.name == "strong"))
-                .unwrap_or(false)
-        };
-        assert!(has_bold(&state.doc), "the action applied bold");
+        assert_eq!(kind_of(&state.doc).as_deref(), Some("heading"), "the action made it a heading");
         assert!(state.peek_last_undo().is_some(), "exactly one undo boundary recorded");
 
         state.undo(None, None).expect("an undo entry to pop");
-        assert!(!has_bold(&state.doc), "undo reverted the bold and nothing else");
+        assert_eq!(
+            kind_of(&state.doc).as_deref(),
+            Some("paragraph"),
+            "undo reverted the paragraph style and nothing else"
+        );
     }
 
     /// Single source of truth: the palette's document-level specs encode
