@@ -10043,6 +10043,196 @@ mod overlay_event_absorb_tests {
     /// Drives the production `handle_event` router against the rects the
     /// production `draw` just cached, so the two cannot drift apart.
     #[test]
+    /// **Every filter has to be reachable at every width.**
+    ///
+    /// The strip used to stop painting at the first chip that did not
+    /// fit, and a chip that is not painted has no rect — so the filter it
+    /// stands for could be listed by the registry and still be
+    /// unclickable. At 1600 px the five kinds of the day exactly filled
+    /// the row, so a sixth was invisible; under the test harness's own
+    /// metrics even `Folders` was dropped.
+    ///
+    /// Asserts on the rects the production `draw` cached, because that is
+    /// the thing a click is hit-tested against.
+    #[test]
+    fn every_kind_is_reachable_at_every_width() {
+        // 800 is the narrowest viewport `shots --sweep` renders, and the
+        // one where the palette card hits its 560 px floor: the filter
+        // band is at its tightest and the strip has the least room.
+        for (vw, vh) in [(800.0, 600.0), (1280.0, 800.0), (1600.0, 900.0)] {
+            let mut h = build_harness_sized(vw, vh);
+            h.host.set_palette_visible(true);
+            h.host.force_palette_settled();
+            settle(&mut h, vw, vh);
+
+            let kinds = h.host.search_registry.registered_kinds();
+            let rects = h.host.search_chip_rects.clone();
+            assert_eq!(
+                rects.len(),
+                kinds.len(),
+                "at {vw}x{vh} the strip painted {} of {} kinds — an \
+                 unpainted chip has no rect, so the filter it stands for \
+                 cannot be clicked at all: {:?}",
+                rects.len(),
+                kinds.len(),
+                kinds.iter().map(|k| k.label()).collect::<Vec<_>>()
+            );
+
+            let band = h.host.search_banner_rect();
+            let all = h.host.search_all_chip_rect;
+            let track = h.host.search_scope_track_rect();
+            let mut painted: Vec<(String, Rect)> = vec![("All".to_string(), all)];
+            painted.extend(
+                kinds
+                    .iter()
+                    .map(|k| k.label().to_string())
+                    .zip(rects.iter().copied()),
+            );
+            for (label, r) in &painted {
+                assert!(
+                    r.area() > 0.0,
+                    "at {vw}x{vh} the {label} chip has no area: {r:?}"
+                );
+                assert!(
+                    r.y0 >= band.y0 - 0.5 && r.y1 <= band.y1 + 0.5,
+                    "at {vw}x{vh} the {label} chip {r:?} is outside the \
+                     band {band:?} — it would paint over the results"
+                );
+                assert!(
+                    r.x0 >= band.x0 - 0.5 && r.x1 <= band.x1 + 0.5,
+                    "at {vw}x{vh} the {label} chip {r:?} runs past the \
+                     band's edges {band:?}"
+                );
+            }
+            // Nothing overlaps anything: two chips sharing pixels means
+            // one of them eats the other's clicks.
+            for i in 0..painted.len() {
+                for j in (i + 1)..painted.len() {
+                    let (a, b) = (painted[i].1, painted[j].1);
+                    assert!(
+                        a.intersect(b).area() <= 0.0,
+                        "at {vw}x{vh} the {} and {} chips overlap: {a:?} / {b:?}",
+                        painted[i].0,
+                        painted[j].0
+                    );
+                }
+                assert!(
+                    painted[i].1.intersect(track).area() <= 0.0,
+                    "at {vw}x{vh} the {} chip sits under the scope switch: \
+                     {:?} / {track:?}",
+                    painted[i].0,
+                    painted[i].1
+                );
+            }
+        }
+    }
+
+    /// The reachability claim, driven the way a user makes it: click the
+    /// **last** chip — the one that used to fall off the end of the row —
+    /// at the narrowest viewport, and the filter it stands for applies.
+    ///
+    /// Clicks the rect the production `draw` cached, through the
+    /// production `handle_event` router, so a chip that is painted but
+    /// mis-placed fails here too.
+    #[test]
+    fn the_last_chip_can_be_clicked_at_the_narrowest_width() {
+        let (vw, vh) = (800.0, 600.0);
+        let mut h = build_harness_sized(vw, vh);
+        h.host.set_palette_visible(true);
+        h.host.force_palette_settled();
+        settle(&mut h, vw, vh);
+
+        let last_kind = h
+            .host
+            .search_registry
+            .registered_kinds()
+            .last()
+            .cloned()
+            .expect("the registry has kinds");
+        assert!(
+            h.host.active_kind_filter.is_empty(),
+            "the palette starts unfiltered"
+        );
+        let target = *h
+            .host
+            .search_chip_rects
+            .last()
+            .expect("the last kind must have been painted");
+        pump(&mut h, &cursor_moved_at(target.center()));
+        pump(&mut h, &left_button_pressed());
+
+        assert_eq!(
+            h.host.active_kind_filter,
+            vec![last_kind.clone()],
+            "clicking the last chip at {vw}x{vh} must filter to {:?}; the \
+             palette instead holds {:?}",
+            last_kind.label(),
+            h.host
+                .active_kind_filter
+                .iter()
+                .map(|k| k.label())
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            h.host.palette_visible(),
+            "and the click must not be taken for a dismissal"
+        );
+    }
+
+    /// The layout rule itself, at widths no card would ever have, so the
+    /// invariant is pinned rather than inferred from one viewport: every
+    /// chip gets a positive, non-overlapping rect inside the band, even
+    /// when the rows on offer cannot hold them at natural width.
+    #[test]
+    fn the_chip_strip_places_every_chip_however_narrow_the_band() {
+        let band = Rect::new(0.0, 0.0, 240.0, 36.0);
+        let natural = [40.0, 44.0, 92.0, 50.0, 46.0, 60.0, 58.0];
+        for rows_available in [1usize, 2, 3] {
+            let strip = lay_out_chip_strip(&natural, band, band.x1 - 100.0, rows_available, 36.0, 24.0);
+            assert_eq!(
+                strip.rects.len(),
+                natural.len(),
+                "every chip gets a rect at {rows_available} row(s)"
+            );
+            assert!(
+                strip.rows_needed >= 1,
+                "the strip always needs at least one row"
+            );
+            for (i, r) in strip.rects.iter().enumerate() {
+                assert!(
+                    r.width() > 0.0 && r.height() > 0.0,
+                    "chip {i} of {} is not clickable at {rows_available} \
+                     row(s): {r:?}",
+                    natural.len()
+                );
+                assert!(
+                    r.x0 >= band.x0 - 0.001,
+                    "chip {i} starts left of the band: {r:?}"
+                );
+            }
+            for i in 0..strip.rects.len() {
+                for j in (i + 1)..strip.rects.len() {
+                    assert!(
+                        strip.rects[i].intersect(strip.rects[j]).area() <= 0.0,
+                        "chips {i} and {j} overlap at {rows_available} \
+                         row(s): {:?} / {:?}",
+                        strip.rects[i],
+                        strip.rects[j]
+                    );
+                }
+            }
+        }
+        // And when there is room, nothing is squeezed: the chips keep
+        // their natural widths.
+        let wide = Rect::new(0.0, 0.0, 900.0, 36.0);
+        let strip = lay_out_chip_strip(&natural, wide, wide.x1, 1, 36.0, 24.0);
+        assert_eq!(strip.rows_needed, 1);
+        for (i, r) in strip.rects.iter().enumerate() {
+            assert_eq!(r.width(), natural[i], "chip {i} was squeezed with room to spare");
+        }
+    }
+
+    #[test]
     fn clicking_a_kind_chip_filters_without_dismissing_the_palette() {
         let mut h = build_harness();
         h.host.set_palette_visible(true);
