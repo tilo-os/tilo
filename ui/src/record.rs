@@ -422,11 +422,23 @@ pub fn references(doc: &AutoCommit) -> Vec<RecordRef> {
 
 /// A room's index of the records it holds.
 ///
-/// The index lives in the app's package-level document — the one
-/// [`crate::persist::open`] hands back — because that document already *is*
-/// per-room state. What changes is what it contains: the records' contents
-/// moved out into their own documents, and what stays behind is the list of
-/// which records this room holds.
+/// These operations are on *an* index document; who owns it is the caller's
+/// business. The compositor keeps one per room (`shell::room_records`), which
+/// is what makes a room's holdings a fact about the room.
+///
+/// An earlier version of this comment said the index lives in the app's
+/// package-level document "because that document already *is* per-room
+/// state". It is not: `crate::cli::standalone_state_dir` takes only a package
+/// id, so `~/.local/share/<package>/` is one directory whichever room the app
+/// was launched into. The sandbox passes `QOS_WORKSPACE_ID` but nothing
+/// partitions app state by it. An app's package document is per *package*.
+///
+/// The consequence, stated plainly because it is a real gap rather than a
+/// detail: an app launched into a room does not yet read that room's index.
+/// What carries a record's room across that gap today is the record's own
+/// `home` stamp, which is why a record is attributed to its home room even
+/// when no index references it. Closing it means partitioning app state per
+/// room, which touches every app.
 ///
 /// **The reference is what grants access.** A member of a room can reach the
 /// records the room references and nothing else. Removing a reference stops
