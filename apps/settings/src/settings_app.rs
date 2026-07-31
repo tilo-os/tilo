@@ -464,6 +464,32 @@ impl Widget for SettingsApp {
     fn resources(&self, doc: &automerge::AutoCommit) -> Vec<qos_actions::Resource> {
         <Self as qos_actions::ResourceProvider>::resources(self, doc)
     }
+
+    /// Bubble an on-screen control's dispatched-action undo bracket up from
+    /// whichever pane produced it. A settings control lives deep under the shell
+    /// (`AppShell → content → Scrollable → … → pane`), and the intermediate
+    /// containers don't forward this rising-edge signal, so the root walks its
+    /// subtree and returns the first pane's captured heads. The host records one
+    /// undo boundary from it, so Ctrl+Z reverts the setting change.
+    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        fn walk(w: &mut dyn Widget) -> Option<Vec<automerge::ChangeHash>> {
+            if let Some(heads) = w.take_committed_action() {
+                return Some(heads);
+            }
+            for child in w.children_mut() {
+                if let Some(heads) = walk(child) {
+                    return Some(heads);
+                }
+            }
+            None
+        }
+        for child in self.children_mut() {
+            if let Some(heads) = walk(child) {
+                return Some(heads);
+            }
+        }
+        None
+    }
 }
 
 /// Read the sidebar search query from the document. The field writes either a
