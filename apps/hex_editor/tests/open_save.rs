@@ -111,3 +111,55 @@ fn edit_then_save_writes_back_to_disk() {
 
     std::fs::remove_file(&path).ok();
 }
+
+/// The migration covenant on the real keystroke path: typing a hex digit
+/// dispatches a `HexEditorAction` through the executor (the shared document is
+/// mutated), the keystroke builds the byte-identical `EncodedAction` the Ctrl+K
+/// palette does, and the host would record exactly one undo boundary for it.
+#[test]
+fn keystroke_dispatches_the_same_action_the_palette_does() {
+    use hex_editor::actions::{encode, overwrite_bytes_action};
+    use hex_editor::doc::HexDoc;
+
+    let mut view = HexView::new(vec![0x00, 0x11, 0x22, 0x33], "buf.bin");
+    let mut doc = AutoCommit::new();
+    let root = automerge::ROOT;
+    let (taffy, node) = dummy_layout();
+    let none = Modifiers::default();
+
+    view.sync(&mut doc, &root); // seed the shared document from the buffer
+
+    // Type "a" (hex 0xA) over byte 0 (0x00) — the high nibble → 0xA0.
+    let mut handled = false;
+    let mut focus = None;
+    view.handle_event(
+        &key_press(Key::Character("a".into())),
+        1.0, &none, &mut doc, &root, &mut handled, &mut focus, node, &taffy,
+    );
+    assert!(handled, "the hex-digit keystroke was consumed");
+
+    // The edit went through the action executor and hit the shared document.
+    assert_eq!(
+        HexDoc::read_bytes(&doc).unwrap(),
+        vec![0xA0, 0x11, 0x22, 0x33],
+        "the keystroke's action mutated the shared buffer",
+    );
+
+    // Single source of truth: the keystroke built the identical encoded action
+    // the palette's builder does for the same offset + byte.
+    let expected = encode(&overwrite_bytes_action(0, vec![0xA0]));
+    assert_eq!(
+        view.last_dispatched(),
+        Some(&expected),
+        "keystroke and palette build the byte-identical action",
+    );
+
+    // The host drains the captured heads to record ONE undo boundary; reading
+    // is rising-edge (cleared on read).
+    let before = Widget::take_committed_action(&mut view).expect("heads were captured");
+    assert!(before != doc.get_heads(), "the bracket covers a real change");
+    assert!(
+        Widget::take_committed_action(&mut view).is_none(),
+        "rising-edge: the captured heads are cleared on read",
+    );
+}

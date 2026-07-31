@@ -37,7 +37,10 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let (state, autosave) = ui::persist::open("dev.qos.hex-editor");
-    let app = ui::App::new(state, hex_editor::app_root()).with_autosave(autosave);
+    let mut app = ui::App::new(state, hex_editor::app_root()).with_autosave(autosave);
+    // Register the hex editor's actions so the shell's Ctrl+K palette can decode
+    // + replay the same buffer edits the keystroke affordances dispatch.
+    hex_editor::actions::register(app.action_registry_mut());
     app.run();
     Ok(())
 }

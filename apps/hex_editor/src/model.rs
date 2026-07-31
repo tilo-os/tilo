@@ -8,6 +8,23 @@
 
 use std::collections::BTreeSet;
 
+/// One primitive buffer mutation the model performed, recorded so the view can
+/// replay it through the qOS action model instead of persisting the whole blob.
+///
+/// These are the *only* document-mutating operations a hex editor has — every
+/// keystroke that changes the bytes reduces to an insert, a delete, or an
+/// overwrite at a concrete offset. Cursor movement, selection, scroll and the
+/// mode/column/endian toggles never appear here: they are presentation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum BufferEdit {
+    /// Splice `bytes` in *before* `offset`, growing the buffer.
+    Insert { offset: usize, bytes: Vec<u8> },
+    /// Remove `len` bytes starting at `offset`.
+    Delete { offset: usize, len: usize },
+    /// Replace the bytes already at `offset..offset+bytes.len()` in place.
+    Overwrite { offset: usize, bytes: Vec<u8> },
+}
+
 /// Which of the two parallel columns the keyboard cursor is editing.
 /// The cursor offset is shared; only the input semantics differ — hex
 /// digits in the hex column, raw characters in the ASCII column.
@@ -99,6 +116,11 @@ pub struct HexModel {
     bytes_per_row: usize,
     /// First row visible in the viewport (scroll position, in rows).
     top_row: usize,
+    /// Buffer mutations performed since the last [`take_edits`](Self::take_edits).
+    /// The view drains these each event and dispatches each as a replayable
+    /// [`crate::actions::HexEditorAction`]; the model itself never touches the
+    /// document. Cleared whenever the buffer is adopted wholesale.
+    pending_edits: Vec<BufferEdit>,
 }
 
 impl HexModel {
@@ -115,7 +137,36 @@ impl HexModel {
             endian: Endian::Little,
             bytes_per_row: 16,
             top_row: 0,
+            pending_edits: Vec::new(),
         }
+    }
+
+    // --- buffer-edit journal --------------------------------------------
+
+    /// Drain the buffer mutations performed since the last call. The view
+    /// dispatches each through the qOS action model so it replays on peers and
+    /// records one undo boundary. Presentation (cursor, selection, scroll,
+    /// mode) is never journaled here.
+    pub fn take_edits(&mut self) -> Vec<BufferEdit> {
+        std::mem::take(&mut self.pending_edits)
+    }
+
+    /// Replace the buffer with an externally-authoritative version — a peer's
+    /// edit, a Ctrl+K palette action, or an undo restoring the document. The
+    /// bytes are the shared truth, so the render cache re-derives from them:
+    /// the cursor is clamped back in range and transient nibble / selection /
+    /// dirty state that no longer maps is dropped. This produces no journal
+    /// entry (the change originated elsewhere).
+    pub fn adopt_bytes(&mut self, bytes: Vec<u8>) {
+        self.bytes = bytes;
+        let max = self.bytes.len().saturating_sub(1);
+        if self.cursor > max {
+            self.cursor = max;
+        }
+        self.anchor = None;
+        self.pending_nibble = None;
+        self.dirty.clear();
+        self.pending_edits.clear();
     }
 
     // --- read accessors -------------------------------------------------
@@ -367,6 +418,8 @@ impl HexModel {
             if *slot != value {
                 *slot = value;
                 self.dirty.insert(offset);
+                self.pending_edits
+                    .push(BufferEdit::Overwrite { offset, bytes: vec![value] });
             }
             true
         } else {
@@ -388,6 +441,8 @@ impl HexModel {
             .collect();
         self.dirty = shifted;
         self.dirty.insert(at);
+        self.pending_edits
+            .push(BufferEdit::Insert { offset: at, bytes: vec![value] });
     }
 
     /// Remove the byte at `offset`. Returns the removed byte, or None if
@@ -404,7 +459,39 @@ impl HexModel {
             .map(|&d| if d > offset { d - 1 } else { d })
             .collect();
         self.dirty = shifted;
+        self.pending_edits
+            .push(BufferEdit::Delete { offset, len: 1 });
         Some(removed)
+    }
+
+    /// Remove `len` bytes starting at `offset` as one contiguous edit (the
+    /// selection-delete path), recording a single [`BufferEdit::Delete`] so the
+    /// keystroke and the palette's "Delete selection" build the identical
+    /// action. Dirty markers inside the range are dropped; those after it shift
+    /// down.
+    fn remove_range(&mut self, offset: usize, len: usize) {
+        let end = (offset + len).min(self.bytes.len());
+        if offset >= end {
+            return;
+        }
+        let removed = end - offset;
+        self.bytes.drain(offset..end);
+        let shifted: BTreeSet<usize> = self
+            .dirty
+            .iter()
+            .filter_map(|&d| {
+                if d < offset {
+                    Some(d)
+                } else if d >= end {
+                    Some(d - removed)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        self.dirty = shifted;
+        self.pending_edits
+            .push(BufferEdit::Delete { offset, len: removed });
     }
 
     /// Type a single hex digit (`0-9a-f`) at the cursor. In overwrite
@@ -454,7 +541,14 @@ impl HexModel {
             }
             Some(_high) => {
                 let cur = self.bytes[self.cursor];
-                self.bytes[self.cursor] = (cur & 0xF0) | digit;
+                let new = (cur & 0xF0) | digit;
+                if new != cur {
+                    self.bytes[self.cursor] = new;
+                    self.pending_edits.push(BufferEdit::Overwrite {
+                        offset: self.cursor,
+                        bytes: vec![new],
+                    });
+                }
                 self.cursor += 1;
                 true
             }
@@ -508,9 +602,7 @@ impl HexModel {
     /// there is no selection). Leaves the cursor at the deletion point.
     pub fn delete_at_cursor(&mut self) {
         if let Some((lo, hi)) = self.selection() {
-            for off in (lo..=hi).rev() {
-                self.delete_byte(off);
-            }
+            self.remove_range(lo, hi - lo + 1);
             self.anchor = None;
             self.cursor = lo.min(self.bytes.len().saturating_sub(1));
         } else if self.cursor < self.bytes.len() {
