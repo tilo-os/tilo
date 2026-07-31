@@ -6288,13 +6288,16 @@ impl Widget for WordProcessorWidget {
                             _ => {}
                         }
                         match s.to_lowercase().as_str() {
-                            "b" => self.inner.toggle_mark(state, "strong"),
-                            "i" => self.inner.toggle_mark(state, "em"),
-                            "u" => self.inner.toggle_mark(state, "underline"),
+                            // Formatting shortcuts dispatch the same
+                            // `WordProcessorAction` the toolbar + Ctrl+K palette
+                            // do (one replayable source of truth).
+                            "b" => self.dispatch_toggle_mark(state, "strong"),
+                            "i" => self.dispatch_toggle_mark(state, "em"),
+                            "u" => self.dispatch_toggle_mark(state, "underline"),
                             // Ctrl+. → superscript, Ctrl+, → subscript (mutually
                             // exclusive; matches common word-processor bindings).
-                            "." | ">" => self.inner.toggle_super(state),
-                            "," | "<" => self.inner.toggle_sub(state),
+                            "." | ">" => self.dispatch_exclusive_mark(state, "super", "sub"),
+                            "," | "<" => self.dispatch_exclusive_mark(state, "sub", "super"),
                             "c" => self.clipboard_copy(state),
                             "x" => {
                                 self.clipboard_copy(state);
@@ -6306,9 +6309,9 @@ impl Widget for WordProcessorWidget {
                             "a" => self.inner.select_all(state),
                             // Ctrl+1/2/3 → heading levels. (Ctrl+0 is zoom-reset;
                             // Body paragraph is reachable via the toolbar / panel.)
-                            "1" => self.inner.set_paragraph_style(state, "heading", Some(1), None),
-                            "2" => self.inner.set_paragraph_style(state, "heading", Some(2), None),
-                            "3" => self.inner.set_paragraph_style(state, "heading", Some(3), None),
+                            "1" => self.dispatch_paragraph_style(state, "heading", Some(1), None),
+                            "2" => self.dispatch_paragraph_style(state, "heading", Some(2), None),
+                            "3" => self.dispatch_paragraph_style(state, "heading", Some(3), None),
                             // z / y (undo/redo) are handled by the host App.
                             _ => {}
                         }
@@ -6869,10 +6872,11 @@ impl WordProcessorWidget {
                 // "Heading 1" yields a *real* heading (present in the outline / TOC),
                 // picking "List Item" a real list item, not merely styled body text.
                 // Custom styles are pure visual presets and leave the kind alone.
+                // Both dispatch as actions under one undo boundary.
                 if let Some((kind, level, ordered)) = crate::styles::structural_kind_for(&id) {
-                    self.inner.set_paragraph_style(state, kind, level, ordered);
+                    self.dispatch_paragraph_style(state, kind, level, ordered);
                 }
-                self.inner.set_block_style(state, &id);
+                self.dispatch_block_attr(state, "style", crate::actions::AttrVal::Str(id));
                 self.refresh_blocks(state);
                 self.needs_commit = true;
                 self.modified = true;
@@ -6893,7 +6897,7 @@ impl WordProcessorWidget {
             // Direct paragraph formatting — applies to the current paragraph(s),
             // not the named style (the toolbar no longer carries these).
             PanelHit::ParaAlign(a) => {
-                self.inner.set_align(state, a);
+                self.dispatch_block_attr(state, "align", crate::actions::AttrVal::Str(a.to_string()));
                 self.refresh_blocks(state);
                 self.needs_commit = true;
                 self.modified = true;
@@ -6901,7 +6905,7 @@ impl WordProcessorWidget {
             }
             PanelHit::ParaLineSpacing => {
                 let next = next_line_spacing(self.inner.caret_line_spacing(state));
-                self.inner.set_line_spacing(state, next);
+                self.dispatch_block_attr(state, "line_spacing", crate::actions::AttrVal::Float(next));
                 self.refresh_blocks(state);
                 self.needs_commit = true;
                 self.modified = true;
