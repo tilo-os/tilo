@@ -249,7 +249,7 @@ fn choice_prompt_spec(
     label: &str,
     key: &'static str,
     placeholder: &str,
-    resolve: fn(&str) -> Option<String>,
+    options: &'static [&'static str],
     fallback: String,
 ) -> ActionSpec {
     ActionSpec::prompted(
@@ -261,7 +261,7 @@ fn choice_prompt_spec(
         move |raw: &str| {
             // An unrecognised choice keeps the current value, so a typo never
             // writes a surprising setting.
-            let v = resolve(raw.trim()).unwrap_or_else(|| fallback.clone());
+            let v = match_option(raw.trim(), options).unwrap_or_else(|| fallback.clone());
             encode(&set_text_action(key, v))
         },
     )
@@ -311,7 +311,7 @@ pub fn provide_resources(doc: &AutoCommit) -> Vec<Resource> {
             "Set theme",
             panes::appearance::THEME_KEY,
             "Dark, Light, Dracula, Nord, Gruvbox, Solarized",
-            |raw| match_option(raw, AppearancePrefs::THEMES),
+            AppearancePrefs::THEMES,
             cur_theme,
         ));
         sec = sec.with_action(bool_flip_spec("high_contrast", panes::appearance::HIGH_CONTRAST_KEY, b(panes::appearance::HIGH_CONTRAST_KEY, d.appearance.high_contrast), "high contrast"));
@@ -358,11 +358,11 @@ pub fn provide_resources(doc: &AutoCommit) -> Vec<Resource> {
         sec = sec.with_action(bool_flip_spec("auto_suspend", panes::power::AUTO_SUSPEND_KEY, b(panes::power::AUTO_SUSPEND_KEY, d.power.auto_suspend), "automatic suspend"));
         let power_actions = &["Suspend", "Lock screen", "Do nothing"];
         let cur_lid = s(panes::power::LID_KEY, d.power.lid_close_action.display());
-        sec = sec.with_action(choice_prompt_spec("lid", "Set lid-close action", panes::power::LID_KEY, "Suspend, Lock screen, Do nothing", |raw| match_option(raw, power_actions), cur_lid));
+        sec = sec.with_action(choice_prompt_spec("lid", "Set lid-close action", panes::power::LID_KEY, "Suspend, Lock screen, Do nothing", power_actions, cur_lid));
         let cur_key = s(panes::power::POWER_KEY_KEY, d.power.power_key_action.display());
-        sec = sec.with_action(choice_prompt_spec("power_key", "Set power-key action", panes::power::POWER_KEY_KEY, "Suspend, Lock screen, Do nothing", |raw| match_option(raw, power_actions), cur_key));
+        sec = sec.with_action(choice_prompt_spec("power_key", "Set power-key action", panes::power::POWER_KEY_KEY, "Suspend, Lock screen, Do nothing", power_actions, cur_key));
         let cur_crit = s(panes::power::CRITICAL_KEY, d.power.critical_action.display());
-        sec = sec.with_action(choice_prompt_spec("critical", "Set critical-battery action", panes::power::CRITICAL_KEY, "Suspend, Lock screen, Do nothing", |raw| match_option(raw, power_actions), cur_crit));
+        sec = sec.with_action(choice_prompt_spec("critical", "Set critical-battery action", panes::power::CRITICAL_KEY, "Suspend, Lock screen, Do nothing", power_actions, cur_crit));
         root = root.with_child(sec);
     }
 
@@ -384,7 +384,7 @@ pub fn provide_resources(doc: &AutoCommit) -> Vec<Resource> {
         sec = sec.with_action(bool_flip_spec("auto", panes::updates::AUTO_KEY, b(panes::updates::AUTO_KEY, d.updates.auto), "automatic updates"));
         let channels = &["Stable", "Testing", "Nightly"];
         let cur_channel = s(panes::updates::CHANNEL_KEY, &d.updates.channel);
-        sec = sec.with_action(choice_prompt_spec("channel", "Set update channel", panes::updates::CHANNEL_KEY, "Stable, Testing, Nightly", |raw| match_option(raw, channels), cur_channel));
+        sec = sec.with_action(choice_prompt_spec("channel", "Set update channel", panes::updates::CHANNEL_KEY, "Stable, Testing, Nightly", channels, cur_channel));
         root = root.with_child(sec);
     }
 
