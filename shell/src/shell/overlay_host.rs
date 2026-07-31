@@ -544,21 +544,45 @@ fn lay_out_chip_strip(
     let rows_available = rows_available.max(1);
     let row_x1 = |row: usize| if row == 0 { first_row_x1 } else { band.x1 };
 
-    // Greedy wrap at natural width — what the strip wants.
-    let mut plan: Vec<Vec<usize>> = vec![Vec::new()];
-    let mut x = band.x0;
-    for (i, w) in natural.iter().enumerate() {
-        let w = w.max(CHIP_MIN_W_PX);
-        let row = plan.len() - 1;
-        if !plan[row].is_empty() && x + w > row_x1(row) {
-            plan.push(Vec::new());
-            x = band.x0;
+    // Greedy wrap at natural width — what the strip wants. `per_row`
+    // additionally caps how many chips a row may take, which is what the
+    // balancing pass below uses.
+    let wrap = |per_row: usize| -> Vec<Vec<usize>> {
+        let mut plan: Vec<Vec<usize>> = vec![Vec::new()];
+        let mut x = band.x0;
+        for (i, w) in natural.iter().enumerate() {
+            let w = w.max(CHIP_MIN_W_PX);
+            let row = plan.len() - 1;
+            if !plan[row].is_empty() && (x + w > row_x1(row) || plan[row].len() >= per_row) {
+                plan.push(Vec::new());
+                x = band.x0;
+            }
+            let row = plan.len() - 1;
+            plan[row].push(i);
+            x += w + CHIP_GAP_PX;
         }
-        let row = plan.len() - 1;
-        plan[row].push(i);
-        x += w + CHIP_GAP_PX;
-    }
+        plan
+    };
+    let plan = wrap(usize::MAX);
     let rows_needed = plan.len();
+
+    // Spread the chips evenly over the rows that will be used. Filling
+    // each row to the brim leaves the last one with whatever is left —
+    // six chips and then a lone `Folders` underneath, which reads as
+    // something having gone wrong rather than as a two-row strip. The
+    // balanced plan is only adopted if it still fits in the same number
+    // of rows, so evenness never costs anyone a chip.
+    let plan = if rows_needed > 1 {
+        let per_row = natural.len().div_ceil(rows_needed);
+        let balanced = wrap(per_row);
+        if balanced.len() == rows_needed {
+            balanced
+        } else {
+            plan
+        }
+    } else {
+        plan
+    };
 
     let mut rects = vec![Rect::ZERO; natural.len()];
     let mut place = |row: usize, ids: &[usize], widths: &[f64], rects: &mut Vec<Rect>| {
@@ -2945,6 +2969,19 @@ impl ShellOverlayHost {
     /// hotkey path — the flag itself stays internal to this module.
     pub fn palette_visible(&self) -> bool {
         self.palette_visible
+    }
+
+    /// Whether the last draw discovered that the layout it was handed is
+    /// not the one it needs — the palette's filter band growing a row
+    /// when the kind chips wrap, which only a paint can measure.
+    ///
+    /// A peek, not a take: `take_structure_dirty` is the layout pass's
+    /// own call and consumes the flag. This exists so a caller that
+    /// paints exactly once (a screenshot) can notice it has to lay out
+    /// and paint again, rather than capturing a frame the user never
+    /// sees.
+    pub fn structure_dirty(&self) -> bool {
+        self.palette_layout_dirty
     }
 
     /// What the palette currently is: its query, the id Enter would
