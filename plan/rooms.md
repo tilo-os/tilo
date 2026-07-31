@@ -173,6 +173,26 @@ document exists to remove: the moment "personal" is a different sort of thing
 from "shared", every feature has to be built twice and sharing becomes a
 migration instead of a reference.
 
+## Correction: an app's state is not per-room
+
+The design assumed a room's index could live in the app's own package
+document, on the grounds that the document was already per-room state. It is
+not. `cli::standalone_state_dir` takes only a package id, so
+`~/.local/share/<package>/` is one directory whichever room the app was
+launched into; the sandbox passes `QOS_WORKSPACE_ID` but nothing partitions
+app state by it. An app's package document is per **package**.
+
+So the room index is the compositor's, one document per room, which is where a
+fact about a room belongs anyway. The gap this leaves is real and worth naming:
+**an app launched into a room does not read that room's index.** A record's own
+`home` stamp is what carries its room across the gap today — which is why a
+record is attributed to its home room even when no index references it.
+
+Closing it properly means partitioning app state per room. That touches every
+app, so it is a decision to take deliberately rather than a detail to fix in
+passing. It is also the thing standing between "an app opened in a room starts
+empty" as a design statement and as observable behaviour.
+
 ## Still open
 
 - Whether a record's *type* is app-owned or system-owned. App-owned is less
