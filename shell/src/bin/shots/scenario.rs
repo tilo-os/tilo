@@ -113,6 +113,18 @@ pub enum Action {
         app_id: &'static str,
         surface_id: u64,
     },
+    /// Open a second tab of a **shell-hosted** app — Notes, Editor —
+    /// into the active group.
+    ///
+    /// The sibling of [`Action::OpenWindow`], which adopts a foreign
+    /// Wayland toplevel and so can never produce a hosted app. Both go
+    /// the same production route: mutate the tree, bump the chrome
+    /// revision, and let the strip resync splice the new tab into the
+    /// live group — the path that gives a spliced tab its own document.
+    AddHostedTab {
+        app: &'static str,
+        title: &'static str,
+    },
     /// Sample the make-space slide at fixed points along its curve and
     /// capture each as `prefix-<ms>`.
     ///
@@ -308,6 +320,53 @@ fn apply<S: SnapshotSink>(driver: &mut ShellDriver, action: &Action, sink: &mut 
                         surface_id,
                         Some(app_id.to_string()),
                     );
+                }
+                st.bump();
+            });
+        }
+        Action::AddHostedTab { app, title } => {
+            let app = *app;
+            let title = *title;
+            driver.with_chrome(|st: &mut ChromeState| {
+                {
+                    let mut tree = st.tree_mut();
+                    // One past the highest tab id anywhere in the tree.
+                    // The production minter is crate-private, and a
+                    // scenario only needs an id no open tab already uses
+                    // — but it has to be *every* tab, not just this
+                    // group's: a tab id names the record its document
+                    // lives in, so reusing one from another workspace
+                    // would put two tabs on one document, which is the
+                    // thing this scenario exists to show cannot happen.
+                    let id = tree
+                        .workspaces
+                        .iter()
+                        .flat_map(|w| &w.strips)
+                        .flat_map(|s| &s.window_groups)
+                        .flat_map(|g| &g.tabs)
+                        .map(|t| t.id)
+                        .max()
+                        .unwrap_or(0)
+                        + 1;
+                    let Some(ws) = tree.active_workspace_mut() else {
+                        return;
+                    };
+                    let Some(group) = ws
+                        .strips
+                        .first_mut()
+                        .and_then(|s| s.window_groups.first_mut())
+                    else {
+                        return;
+                    };
+                    group.tabs.push(shell::shell::state::Tab {
+                        id,
+                        title: title.to_string(),
+                        tile: shell::shell::state::TileContent::AppPlaceholder {
+                            kind: shell::shell::state::AppKind::Other(app.to_string()),
+                            label: title.to_string(),
+                        },
+                    });
+                    group.active_tab = id;
                 }
                 st.bump();
             });
