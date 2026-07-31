@@ -48,6 +48,7 @@ pub mod qs_actions;
 pub mod quick_settings;
 pub mod remote_cursors;
 pub mod room_activity;
+pub mod room_records;
 pub mod search;
 pub mod sidebar_wheel;
 pub mod sidebar_wheel_chrome;
