@@ -402,8 +402,62 @@ impl<'a> ControlState for FrameBuilderControlState<'a> {
                 }))
                 .collect::<Vec<_>>(),
             "palette": palette_json(self.fb),
+            "room_history": room_history_json(self.fb),
         })
     }
+}
+
+/// The room's own change history, and the sheet that renders it.
+///
+/// `changes` is read straight off the room document — `qdoc::history`
+/// over the same Automerge change graph a peer reconstructs history
+/// from, so an actor appearing here appears because it authored a change
+/// in *this replica* of the document, not because the local pane
+/// remembered writing one.
+///
+/// `rows` is what the sheet is showing, and exists for one reason a
+/// script cannot work around: the room-activity sheet paints itself
+/// outside the widget-registry walk, so `list_targets` sees none of it
+/// and `revert` — the affordance a user clicks to restore a version —
+/// has no addressable name. Publishing each row's revert-chip rect lets
+/// a click land on it through the ordinary pointer path.
+fn room_history_json(fb: &FrameBuilder) -> serde_json::Value {
+    let chrome = fb.chrome();
+    let changes: Vec<serde_json::Value> = {
+        let mut tree = chrome.tree_mut();
+        qdoc::history::versions(&mut tree.doc)
+            .into_iter()
+            .map(|v| {
+                serde_json::json!({
+                    "index": v.index,
+                    "actor": v.actor_hex,
+                    "hash": v.change_hash,
+                    "time_ms": v.time_ms,
+                })
+            })
+            .collect()
+    };
+    let pane = fb.host().room_activity();
+    let timeline = pane.timeline();
+    let rows: Vec<serde_json::Value> = (0..timeline.row_count())
+        .map(|i| {
+            let entry = timeline.row_entry(i);
+            serde_json::json!({
+                "index": i,
+                "group_title": timeline.group_title_at_row(i),
+                "summary": entry.map(|e| e.summary.clone()),
+                "author": entry.map(|e| e.author.name.clone()),
+                "revert_rect": timeline.revert_chip_rect(i).map(|r| {
+                    [r.x0, r.y0, r.width(), r.height()]
+                }),
+            })
+        })
+        .collect();
+    serde_json::json!({
+        "changes": changes,
+        "contributors": pane.contributors(),
+        "rows": rows,
+    })
 }
 
 /// The command palette's live state, for `state_dump`.
