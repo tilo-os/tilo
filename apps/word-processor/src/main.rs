@@ -113,6 +113,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         let mut app = App::new(state, widget)
             .with_autosave(room_autosave)
             .with_records(records, room.doc);
+        // Register the word processor's action decoder so the Ctrl+K palette and
+        // remote replay can reconstruct every document-mutating operation.
+        word_processor::actions::register(app.action_registry_mut());
         // Announce ourselves under a stable document scope: this drives the
         // late-join handshake (peers already in the room reply with full state)
         // and is the scope under which our pointer presence is broadcast. The
