@@ -149,6 +149,21 @@ struct ScanState {
     done: bool,
 }
 
+/// What [`RoomRecords::known`] last computed, and what it was computed
+/// from.
+///
+/// Reading a room's index means walking an Automerge map and fetching
+/// every entry, which is far too much to do between two keystrokes: at
+/// 300 records it measured 19 ms, against a whole-palette budget of a few.
+/// The corpus only changes when something is referenced or when the scan
+/// lands, so the answer is cached and the cache is keyed on exactly those
+/// two things.
+struct KnownCache {
+    /// `(index generation, scanned record count, scan finished)`.
+    key: (u64, usize, bool),
+    records: std::rc::Rc<Vec<KnownRecord>>,
+}
+
 /// The rooms' record indexes, and the records that exist.
 pub struct RoomRecords {
     held: BTreeMap<RoomId, Held>,
@@ -160,6 +175,14 @@ pub struct RoomRecords {
     /// opened one) can say so without waiting for the next walk.
     seeded: Vec<ObservedRecord>,
     persistent: bool,
+    /// Bumped by **every** mutation that could change what [`Self::known`]
+    /// answers. Incremented in one place ([`Self::changed`]) which every
+    /// mutating method calls, rather than at each call site: a counter
+    /// that misses one path produces a cache that is silently stale, and
+    /// a wrong search result is worse than a slow one because nothing
+    /// tells the user it is wrong.
+    generation: u64,
+    known: std::cell::RefCell<Option<KnownCache>>,
 }
 
 impl RoomRecords {
@@ -174,7 +197,14 @@ impl RoomRecords {
             scan: None,
             seeded: Vec::new(),
             persistent: false,
+            generation: 0,
+            known: std::cell::RefCell::new(None),
         }
+    }
+
+    /// Something changed that [`Self::known`] would answer differently.
+    fn changed(&mut self) {
+        self.generation = self.generation.wrapping_add(1);
     }
 
     /// Make this index durable, and start looking for the records apps
@@ -191,6 +221,7 @@ impl RoomRecords {
         }
         self.persistent = true;
         self.scan = Some(shared_scan());
+        self.changed();
         // References made before the store was attached become durable
         // too, content and all — dropping them would make the moment of
         // attachment a silent data loss.
@@ -212,6 +243,7 @@ impl RoomRecords {
     /// by any surface that learns of a record first-hand.
     pub fn seed_observed(&mut self, records: impl IntoIterator<Item = ObservedRecord>) {
         self.seeded.extend(records);
+        self.changed();
     }
 
     /// Bring a record into `room`.
@@ -228,6 +260,9 @@ impl RoomRecords {
                 saver.request(&mut slot.doc);
             }
         }
+        // Unconditionally, not only when `added`: re-referencing an
+        // existing record refreshes its type, which is part of the answer.
+        self.changed();
         added
     }
 
@@ -248,6 +283,7 @@ impl RoomRecords {
                 saver.request(&mut slot.doc);
             }
         }
+        self.changed();
         dropped
     }
 
@@ -271,9 +307,38 @@ impl RoomRecords {
     /// indexes and from the records apps have written, sorted by id so the
     /// answer does not depend on map iteration order.
     ///
-    /// In-memory only: no disk access, no CRDT load. This runs per
-    /// keystroke.
-    pub fn known(&self) -> Vec<KnownRecord> {
+    /// **This runs on every keystroke**, so it does no disk access and —
+    /// after the first call — no CRDT reads either: reading a room's index
+    /// walks an Automerge map and fetches every entry, which measured
+    /// 19 ms over 300 records. That is longer than a frame, so every
+    /// keystroke would drop one and the palette would visibly stutter as
+    /// you type. The merged answer is therefore computed once and reused
+    /// until something changes it.
+    ///
+    /// Freshness comes from [`Self::changed`], which every mutating method
+    /// calls, plus the scan's own progress — the two things that can move
+    /// the answer.
+    pub fn known(&self) -> std::rc::Rc<Vec<KnownRecord>> {
+        let scan_key = self
+            .scan
+            .as_ref()
+            .and_then(|s| s.lock().ok().map(|st| (st.records.len(), st.done)))
+            .unwrap_or((0, true));
+        let key = (self.generation, scan_key.0, scan_key.1);
+        if let Some(cached) = self.known.borrow().as_ref() {
+            if cached.key == key {
+                return std::rc::Rc::clone(&cached.records);
+            }
+        }
+        let records = std::rc::Rc::new(self.compute_known());
+        *self.known.borrow_mut() = Some(KnownCache {
+            key,
+            records: std::rc::Rc::clone(&records),
+        });
+        records
+    }
+
+    fn compute_known(&self) -> Vec<KnownRecord> {
         let mut by_id: BTreeMap<RecordId, KnownRecord> = BTreeMap::new();
 
         let mut observe = |o: &ObservedRecord| {
@@ -628,6 +693,79 @@ mod tests {
         );
         let minted = RecordId::minted();
         assert_eq!(record_title(&minted, &RecordKind::new("playlist")), "playlist");
+    }
+
+    /// The cached corpus must never survive a change to what it answers.
+    ///
+    /// A stale search result is worse than a slow one: nothing on screen
+    /// says it is wrong. So every mutation is exercised here — reference,
+    /// re-reference into a second room, unreference, seed — and each one
+    /// has to be visible in the very next `known()`.
+    #[test]
+    fn every_change_is_visible_in_the_next_answer() {
+        let mut rr = RoomRecords::in_memory();
+        let a = room();
+        let b = room();
+        let id = RecordId::minted();
+        let kind = RecordKind::new("book");
+
+        assert!(rr.known().is_empty(), "nothing yet");
+
+        rr.reference(a, &id, &kind);
+        assert_eq!(rr.known().len(), 1, "a reference is visible immediately");
+        assert_eq!(rr.known()[0].held_by, vec![a]);
+
+        rr.reference(b, &id, &kind);
+        assert_eq!(
+            rr.known()[0].rooms(),
+            {
+                let mut r = vec![a, b];
+                r.sort();
+                r
+            },
+            "the second room is visible immediately"
+        );
+
+        // A record re-referenced with a different type: same entry, and
+        // the change still has to land — this is the path that returns
+        // `false` from `reference`, and keying the cache on that return
+        // value would have missed it.
+        rr.reference(b, &id, &RecordKind::new("field-guide"));
+        assert_eq!(rr.known()[0].kind.as_str(), "field-guide");
+
+        rr.unreference(a, &id);
+        assert_eq!(
+            rr.known()[0].held_by,
+            vec![b],
+            "dropping a reference is visible immediately"
+        );
+
+        rr.seed_observed([ObservedRecord {
+            id: RecordId::for_file("/work/other.odt"),
+            kind: RecordKind::new("document"),
+            home: Some(a),
+            package_id: "dev.qos.word-processor".into(),
+        }]);
+        assert_eq!(rr.known().len(), 2, "a seeded record is visible immediately");
+    }
+
+    /// The corpus is shared rather than rebuilt when nothing changed —
+    /// which is what keeps a keystroke off the CRDT.
+    #[test]
+    fn an_unchanged_index_hands_back_the_same_corpus() {
+        let mut rr = RoomRecords::in_memory();
+        rr.reference(room(), &RecordId::minted(), &RecordKind::new("book"));
+        let first = rr.known();
+        let second = rr.known();
+        assert!(
+            std::rc::Rc::ptr_eq(&first, &second),
+            "two reads with no change between them must not recompute"
+        );
+        rr.reference(room(), &RecordId::minted(), &RecordKind::new("book"));
+        assert!(
+            !std::rc::Rc::ptr_eq(&first, &rr.known()),
+            "and a change must produce a new one"
+        );
     }
 
     #[test]
