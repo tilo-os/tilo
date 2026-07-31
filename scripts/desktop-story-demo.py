@@ -65,6 +65,10 @@ DECOY_NAME = "Calculator"
 # on it is a hit on content.
 BODY_NEEDLE = "photovoltaic"
 
+# A word in the Notes tile's own seeded body — in no filename, and in
+# no other document. What the shell-hosted app's own search must find.
+NOTES_NEEDLE = "replicate"
+
 # The runtime bundle version `apps/word-processor/qos-app.toml` pins.
 RUNTIME_VERSION = "2026.07"
 
@@ -510,6 +514,27 @@ class Session:
         self.key("Enter")
         self.settle(0.8)
 
+    def focus_via_search(self, query: str, group: str) -> bool:
+        """Focus an app's tab by activating one of its own search hits.
+
+        Opening a result in a shell-hosted app focuses the tab holding it,
+        which is the only route to "look at that app" a script has: tab
+        pills are drawn by the group row and carry no addressable name.
+        Returns whether a row of the wanted section was the one activated.
+        """
+        self.open_palette(machine_wide=True)
+        self.type_text(query)
+        self.settle(1.0)
+        row = self.selected_row() or {}
+        hit = row.get("group") == group
+        if hit:
+            self.activate_selected()
+        else:
+            note(f"{self.name}: {query!r} selected {row.get('group')!r} "
+                 f"{row.get('label')!r}, not a {group} row")
+            self.close_palette()
+        return hit
+
     def run_palette_command(self, query: str, expect_id: str | None = None,
                             machine_wide: bool = True) -> str | None:
         self.open_palette(machine_wide)
@@ -809,10 +834,35 @@ def run(host: Session, peer: Session, shots: str) -> None:
     host.settle(1.0)
     in_app = host.palette_rows()
     note(f"in-app rows: {[(r['group'], r['label'], r['description']) for r in in_app][:4]}")
-    claim("searching in the app finds the word in the open document",
+    # A hit *inside* the document comes back with the text around the
+    # match as its subtitle. A row whose subtitle is the file's path is
+    # the machine-wide file search answering instead — same document,
+    # different question, and not what this chord asked.
+    claim("searching in the app finds the word inside the open document",
           any(BODY_NEEDLE.lower() in (r.get("description") or "").lower()
-              or DOC_STEM in r["label"] for r in in_app), True)
+              for r in in_app), True)
     host.snapshot(os.path.join(shots, "06-ctrl-k-in-app.png"))
+    host.close_palette()
+
+    # The same chord over an app the shell hosts itself, to place the
+    # boundary: if this passes and the one above fails, in-app search
+    # works and what is missing is a provider for windows the compositor
+    # only adopts.
+    # Focus it the way a user would: search for something only that app
+    # holds, and activate the row — a hit in a shell-hosted app focuses
+    # its tab.
+    focused = host.focus_via_search(NOTES_NEEDLE, "Notes")
+    claim("a search hit in a shell-hosted app focuses that app's tab", focused, True)
+    host.open_palette(machine_wide=False)
+    claim("Ctrl+K over a shell-hosted app narrows to it as well",
+          host.chrome()["search_scope"], "ActiveApp")
+    host.type_text(NOTES_NEEDLE)
+    host.settle(1.0)
+    hosted = host.palette_rows()
+    note(f"hosted-app rows: {[(r['group'], r['label'], r['description']) for r in hosted][:4]}")
+    claim("and it finds the word inside that app's own document",
+          any(NOTES_NEEDLE.lower() in (r.get("description") or "").lower()
+              for r in hosted), True)
     host.close_palette()
 
     # The same word under `Super+K`, which searches the machine: the file
@@ -1037,6 +1087,10 @@ def rename_active_workspace(s: Session, name: str) -> None:
     s.run_palette_command("workspace settings", expect_id="result:0")
     if not s.chrome()["overlays"]["ws_settings"]:
         raise RuntimeError(f"{s.name}: workspace settings did not open")
+    # The modal reopens on whichever tab it was last left on, and the
+    # name field only exists on General.
+    if s.chrome()["ws_settings_tab"] != "General":
+        s.click("ws_settings_tab[general]")
     s.click("ws_settings_name_input")
     if s.chrome()["editing_workspace_name"] is None:
         raise RuntimeError(f"{s.name}: the name field did not take focus")
