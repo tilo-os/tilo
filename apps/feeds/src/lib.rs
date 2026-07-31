@@ -13,6 +13,7 @@
 //! used by both the live `ui::App` event loop and the `--shots` offscreen
 //! renderer.
 
+pub mod actions;
 pub mod app;
 pub mod doc;
 pub mod fetch;
