@@ -19,6 +19,9 @@ use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 
+use qos_actions::{ActionEnvelope, ActionTransport};
+
+use crate::actions::{self, CalculatorAction, GraphKind};
 use crate::draw::{self, Align};
 use crate::graph2d::Graph2dScreen;
 use crate::graph3d::Graph3dScreen;
@@ -26,6 +29,14 @@ use crate::keypad::{CalcScreen, MEM_KEYS};
 use crate::model::{self, CalcModel, Mode, PlotFn};
 
 const TOPBAR_H: f64 = 60.0;
+
+/// A no-op transport for locally-applied actions. The action executor hands each
+/// applied envelope to a transport to replicate to peers; a solo calculator has
+/// no peer wiring, so it discards. A collaborative session swaps in a real one.
+struct DiscardTransport;
+impl ActionTransport for DiscardTransport {
+    fn replicate(&mut self, _env: &ActionEnvelope) {}
+}
 
 pub struct CalculatorApp {
     model: CalcModel,
@@ -59,6 +70,17 @@ pub struct CalculatorApp {
     /// coalesces into a single Ctrl+Z step once editing pauses.
     last_edit_time: Option<std::time::Instant>,
     node: Option<NodeId>,
+
+    /// Document heads captured just before the first `qos_actions` action of the
+    /// current event was dispatched. The host drains this via
+    /// [`Widget::take_committed_action`] to record exactly one undo boundary
+    /// bracketing the action(s) — the same undo path the Ctrl+K palette takes.
+    action_commit_before: Option<Vec<automerge::ChangeHash>>,
+    /// The last [`EncodedAction`](qos_actions::EncodedAction) an on-screen
+    /// affordance dispatched through [`Self::perform_action`]. Lets a test prove
+    /// an affordance and the Ctrl+K [`ActionSpec`](qos_actions::ActionSpec) build
+    /// the byte-identical action — one source of truth, not two code paths.
+    last_dispatched: Option<qos_actions::EncodedAction>,
 }
 
 /// How long editing must pause before a burst of keystrokes is sealed into one
@@ -114,6 +136,8 @@ impl CalculatorApp {
             model_dirty: false,
             last_edit_time: None,
             node: None,
+            action_commit_before: None,
+            last_dispatched: None,
         }
     }
 
@@ -178,6 +202,46 @@ impl CalculatorApp {
             funcs: self.model.funcs.clone(),
             surfaces: self.model.surfaces.clone(),
         }
+    }
+
+    /// Dispatch one [`CalculatorAction`] — the single CRDT-mutation path shared
+    /// with the Ctrl+K palette. Applied through the qOS action executor (a pinned
+    /// actor + committed change, so it replays byte-identically on peers). The
+    /// document heads captured just before the first action of the current event
+    /// are stashed so the host records **one** undo boundary bracketing it
+    /// ([`Widget::take_committed_action`]). The in-memory model is mutated by the
+    /// caller for immediate feedback; `store` then reconciles it (a no-op for the
+    /// list the action already wrote), and `sync` re-adopts the document on
+    /// undo/redo or a merged peer patch.
+    ///
+    /// Only ever call this for an action that genuinely mutates the document —
+    /// the affordances gate on a real change (a non-empty history to clear, an
+    /// existing row to toggle/delete) — because the executor commits even a
+    /// no-op action, and an empty change wedges the next dispatch.
+    fn perform_action(&mut self, doc: &mut AutoCommit, action: CalculatorAction) {
+        if self.action_commit_before.is_none() {
+            // `get_heads` flushes any pending app writes, so the bracket covers
+            // only the action's own change and this event's presentation writes.
+            self.action_commit_before = Some(doc.get_heads());
+        }
+        let encoded = actions::encode(&action);
+        self.last_dispatched = Some(encoded.clone());
+        let mut tx = DiscardTransport;
+        if let Err(e) = qos_actions::dispatch(doc, &action, encoded, &mut tx) {
+            tracing::warn!(error = %e, "calculator action dispatch failed");
+        }
+    }
+
+    /// Commit the current expression (`=` / Enter in Calc mode). Evaluates and
+    /// updates the presentation (Ans, result line) via the model, then dispatches
+    /// the [`CommitHistory`](CalculatorAction::CommitHistory) action so the new
+    /// history row lands on the shared, replayable, undoable path. A failed or
+    /// empty evaluation commits nothing and dispatches nothing.
+    fn commit_equals(&mut self, doc: &mut AutoCommit) {
+        if let Some(entry) = self.model.commit_equals() {
+            self.perform_action(doc, actions::commit_history_action(&entry.expr, &entry.result));
+        }
+        self.model_dirty = true;
     }
 
     fn set_mode(&mut self, m: Mode) {
@@ -250,7 +314,7 @@ impl CalculatorApp {
 
     // -- pointer routing -----------------------------------------------------
 
-    fn on_press(&mut self, p: Point) {
+    fn on_press(&mut self, p: Point, doc: &mut AutoCommit) {
         // header first
         for i in 0..3 {
             if self.seg_rects[i].contains(p) {
@@ -279,13 +343,13 @@ impl CalculatorApp {
         self.last_click_pos = p;
 
         match self.model.mode {
-            Mode::Calc => self.on_press_calc(p),
-            Mode::Graph2d => self.on_press_g2(p, double),
-            Mode::Graph3d => self.on_press_g3(p, double),
+            Mode::Calc => self.on_press_calc(p, doc),
+            Mode::Graph2d => self.on_press_g2(p, double, doc),
+            Mode::Graph3d => self.on_press_g3(p, double, doc),
         }
     }
 
-    fn on_press_g3(&mut self, p: Point, double: bool) {
+    fn on_press_g3(&mut self, p: Point, double: bool, doc: &mut AutoCommit) {
         // Overlay-drawer chrome takes priority over the canvas underneath.
         if self.g3.toggle_at(p) {
             self.g3.toggle_panel();
@@ -298,10 +362,12 @@ impl CalculatorApp {
         if self.g3.add_at(p) {
             self.model.surfaces.push(PlotFn { expr: String::new(), visible: true });
             self.model.active_surface = self.model.surfaces.len() - 1;
+            self.perform_action(doc, actions::add_graph_action(GraphKind::Surface3d, ""));
             self.model_dirty = true;
         } else if let Some(i) = self.g3.vis_at(p) {
-            if let Some(f) = self.model.surfaces.get_mut(i) {
-                f.visible = !f.visible;
+            if self.model.surfaces.get(i).is_some() {
+                self.model.surfaces[i].visible = !self.model.surfaces[i].visible;
+                self.perform_action(doc, actions::toggle_graph_visible_action(GraphKind::Surface3d, i));
                 self.model_dirty = true;
             }
         } else if let Some(i) = self.g3.field_at(p) {
@@ -324,7 +390,7 @@ impl CalculatorApp {
         }
     }
 
-    fn on_press_calc(&mut self, p: Point) {
+    fn on_press_calc(&mut self, p: Point, doc: &mut AutoCommit) {
         // History sidebar chrome takes priority over the keypad underneath.
         if self.calc.toggle_at(p) {
             self.calc.toggle_sidebar();
@@ -338,15 +404,26 @@ impl CalculatorApp {
         if let Some(i) = self.calc.key_at(p) {
             self.calc.pressed_key = Some(i);
             let key = self.calc.keys()[i].clone();
-            model::apply_key(&mut self.model, &key);
-            self.model_dirty = true;
+            // `=` commits to the shared history through an action; every other
+            // key is a live edit of the (presentation) expression line.
+            if matches!(key, model::Key::Equals) {
+                self.commit_equals(doc);
+            } else {
+                model::apply_key(&mut self.model, &key);
+                self.model_dirty = true;
+            }
         } else if let Some(i) = self.calc.mem_at(p) {
             let key = MEM_KEYS[i].clone();
             model::apply_key(&mut self.model, &key);
             self.model_dirty = true;
         } else if self.calc.clear_history_at(p) {
-            self.model.history.clear();
-            self.model_dirty = true;
+            // Only a non-empty history is a real mutation; clearing an empty
+            // list would be a no-op action (which wedges the executor).
+            if !self.model.history.is_empty() {
+                self.model.history.clear();
+                self.perform_action(doc, actions::clear_history_action());
+                self.model_dirty = true;
+            }
         } else if let Some(hi) = self.calc.history_at(p) {
             if let Some(e) = self.model.history.get(hi).cloned() {
                 self.model.expr = e.expr;
@@ -356,7 +433,7 @@ impl CalculatorApp {
         }
     }
 
-    fn on_press_g2(&mut self, p: Point, double: bool) {
+    fn on_press_g2(&mut self, p: Point, double: bool, doc: &mut AutoCommit) {
         // Overlay-drawer chrome takes priority over the canvas underneath.
         if self.g2.toggle_at(p) {
             self.g2.toggle_panel();
@@ -369,10 +446,12 @@ impl CalculatorApp {
         if self.g2.add_at(p) {
             self.model.funcs.push(PlotFn { expr: String::new(), visible: true });
             self.model.active_fn = self.model.funcs.len() - 1;
+            self.perform_action(doc, actions::add_graph_action(GraphKind::Curve2d, ""));
             self.model_dirty = true;
         } else if let Some(i) = self.g2.vis_at(p) {
-            if let Some(f) = self.model.funcs.get_mut(i) {
-                f.visible = !f.visible;
+            if self.model.funcs.get(i).is_some() {
+                self.model.funcs[i].visible = !self.model.funcs[i].visible;
+                self.perform_action(doc, actions::toggle_graph_visible_action(GraphKind::Curve2d, i));
                 self.model_dirty = true;
             }
         } else if let Some(i) = self.g2.field_at(p) {
@@ -502,7 +581,7 @@ impl CalculatorApp {
 
     // -- keyboard ------------------------------------------------------------
 
-    fn on_key(&mut self, key: &WKey, modifiers: &winit::event::Modifiers) {
+    fn on_key(&mut self, key: &WKey, modifiers: &winit::event::Modifiers, doc: &mut AutoCommit) {
         let ctrl = modifiers.state().control_key() || modifiers.state().super_key();
 
         // Ctrl+digit always switches mode, from any screen.
@@ -543,24 +622,26 @@ impl CalculatorApp {
 
         match key {
             WKey::Named(NamedKey::Enter) => match self.model.mode {
-                // In Calc mode Enter evaluates the expression (`=`).
+                // In Calc mode Enter evaluates the expression (`=`), committing
+                // the result to the shared history via an action.
                 Mode::Calc => {
-                    model::apply_key(&mut self.model, &model::Key::Equals);
-                    self.model_dirty = true;
+                    self.commit_equals(doc);
                 }
                 // In a graph mode Enter commits the current row and starts a new
                 // empty function/surface, focusing it — the Desmos-style "next
                 // expression" gesture. The active-row field already round-trips
                 // its edit into the model on each keystroke, so the row is
-                // committed; here we just append and focus the fresh row.
+                // committed; here we just append (an action) and focus it.
                 Mode::Graph2d => {
                     self.model.funcs.push(PlotFn { expr: String::new(), visible: true });
                     self.model.active_fn = self.model.funcs.len() - 1;
+                    self.perform_action(doc, actions::add_graph_action(GraphKind::Curve2d, ""));
                     self.model_dirty = true;
                 }
                 Mode::Graph3d => {
                     self.model.surfaces.push(PlotFn { expr: String::new(), visible: true });
                     self.model.active_surface = self.model.surfaces.len() - 1;
+                    self.perform_action(doc, actions::add_graph_action(GraphKind::Surface3d, ""));
                     self.model_dirty = true;
                 }
             },
@@ -582,7 +663,13 @@ impl CalculatorApp {
                 }
                 if self.model.mode == Mode::Calc {
                     for ch in s.chars() {
-                        model::type_char(&mut self.model, ch);
+                        // `=` commits to history via an action; everything else
+                        // is a live edit of the presentation expression line.
+                        if ch == '=' {
+                            self.commit_equals(doc);
+                        } else {
+                            model::type_char(&mut self.model, ch);
+                        }
                     }
                     self.model_dirty = true;
                 }
@@ -880,7 +967,7 @@ impl Widget for CalculatorApp {
                 *handled = true;
             }
             WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. } => {
-                self.on_press(self.mouse);
+                self.on_press(self.mouse, state);
                 *handled = true;
             }
             WindowEvent::MouseInput { state: ElementState::Released, button: MouseButton::Left, .. } => {
@@ -902,7 +989,7 @@ impl Widget for CalculatorApp {
             WindowEvent::KeyboardInput { event: key_event, .. }
                 if key_event.state == ElementState::Pressed =>
             {
-                self.on_key(&key_event.logical_key, modifiers);
+                self.on_key(&key_event.logical_key, modifiers, state);
                 *handled = true;
             }
             _ => {}
@@ -948,6 +1035,20 @@ impl Widget for CalculatorApp {
 
     fn on_commit(&mut self) {
         self.last_edit_time = None;
+    }
+
+    /// Publish the calculator's Ctrl+K resource tree (history entries + saved
+    /// graph formulas), via the [`ResourceProvider`](qos_actions::ResourceProvider)
+    /// impl in [`crate::actions`].
+    fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
+        <Self as qos_actions::ResourceProvider>::resources(self, doc)
+    }
+
+    /// Hand the host the heads captured before an on-screen affordance dispatched
+    /// its history / graph action, so it records one undo boundary for the whole
+    /// gesture (see [`Self::perform_action`]). Rising-edge: cleared on read.
+    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        self.action_commit_before.take()
     }
 
     fn test_id(&self) -> Option<&str> {
@@ -1084,21 +1185,23 @@ mod tests {
     #[test]
     fn ctrl_digit_switches_mode() {
         let mut app = CalculatorApp::new();
+        let mut st = ui::State::new();
         let ctrl = winit::event::Modifiers::from(winit::keyboard::ModifiersState::CONTROL);
-        app.on_key(&WKey::Character("3".into()), &ctrl);
+        app.on_key(&WKey::Character("3".into()), &ctrl, &mut st.doc);
         assert_eq!(app.model.mode, Mode::Graph3d);
     }
 
     #[test]
     fn typing_into_graph2d_field_updates_active_func() {
         let mut app = CalculatorApp::new();
+        let mut st = ui::State::new();
         app.set_mode(Mode::Graph2d);
         // start from a clean active row
         app.model.funcs = vec![crate::model::PlotFn { expr: String::new(), visible: true }];
         app.model.active_fn = 0;
         let none = winit::event::Modifiers::default();
         for ch in ["2", "*", "x"] {
-            app.on_key(&WKey::Character(ch.into()), &none);
+            app.on_key(&WKey::Character(ch.into()), &none, &mut st.doc);
         }
         assert_eq!(app.model.funcs[0].expr, "2*x");
     }
@@ -1106,12 +1209,13 @@ mod tests {
     #[test]
     fn backspace_in_graph3d_field_edits_surface() {
         let mut app = CalculatorApp::new();
+        let mut st = ui::State::new();
         app.set_mode(Mode::Graph3d);
         app.model.surfaces = vec![PlotFn { expr: "x+y".into(), visible: true }];
         app.model.active_surface = 0;
         // on_key_g3 resyncs the active field to the surface before editing.
         let none = winit::event::Modifiers::default();
-        app.on_key(&WKey::Named(NamedKey::Backspace), &none);
+        app.on_key(&WKey::Named(NamedKey::Backspace), &none, &mut st.doc);
         assert_eq!(app.model.surfaces[0].expr, "x+");
     }
 
@@ -1120,15 +1224,16 @@ mod tests {
         // Real key path: after editing a function, Enter appends a fresh empty
         // row and focuses it (the "next expression" gesture).
         let mut app = CalculatorApp::new();
+        let mut st = ui::State::new();
         app.set_mode(Mode::Graph2d);
         app.model.funcs = vec![PlotFn { expr: String::new(), visible: true }];
         app.model.active_fn = 0;
         let none = winit::event::Modifiers::default();
         for ch in ["s", "i", "n", "(", "x", ")"] {
-            app.on_key(&WKey::Character(ch.into()), &none);
+            app.on_key(&WKey::Character(ch.into()), &none, &mut st.doc);
         }
         assert_eq!(app.model.funcs[0].expr, "sin(x)");
-        app.on_key(&WKey::Named(NamedKey::Enter), &none);
+        app.on_key(&WKey::Named(NamedKey::Enter), &none, &mut st.doc);
         assert_eq!(app.model.funcs.len(), 2, "Enter must add a new function row");
         assert_eq!(app.model.active_fn, 1, "the new row must be focused");
         assert!(app.model.funcs[1].expr.is_empty(), "the new row starts empty");
@@ -1138,10 +1243,11 @@ mod tests {
     #[test]
     fn enter_in_graph3d_adds_and_focuses_a_new_surface() {
         let mut app = CalculatorApp::new();
+        let mut st = ui::State::new();
         app.set_mode(Mode::Graph3d); // seeds one starter surface
         let start = app.model.surfaces.len();
         let none = winit::event::Modifiers::default();
-        app.on_key(&WKey::Named(NamedKey::Enter), &none);
+        app.on_key(&WKey::Named(NamedKey::Enter), &none, &mut st.doc);
         assert_eq!(app.model.surfaces.len(), start + 1, "Enter must add a new surface row");
         assert_eq!(app.model.active_surface, app.model.surfaces.len() - 1, "the new surface is focused");
         assert!(app.model.surfaces.last().unwrap().expr.is_empty(), "the new surface starts empty");
@@ -1172,7 +1278,7 @@ mod tests {
         // App's needs_commit → commit_action coalescing does after a pause.
         let none = winit::event::Modifiers::default();
         for ch in ["2", "*", "x"] {
-            app.on_key(&WKey::Character(ch.into()), &none);
+            app.on_key(&WKey::Character(ch.into()), &none, &mut state.doc);
         }
         assert_eq!(app.model.funcs[0].expr, "2*x");
         doc::store(&mut state.doc, &app.model);
