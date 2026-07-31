@@ -13066,6 +13066,7 @@ dependencies = [
  "automerge",
  "calamine",
  "dirs 6.0.0",
+ "qos-actions",
  "rust_xlsxwriter",
  "serde",
  "serde_json",
