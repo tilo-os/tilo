@@ -38,7 +38,7 @@ use crate::customizer::{self, Customizer};
 use crate::doc;
 use crate::draw;
 use crate::gallery::Gallery;
-use crate::model::{self, default_catalog, demo_catalog, presets, ThemeSpec, TokenId, FONTS};
+use crate::model::{self, default_catalog, demo_catalog, ThemeSpec, TokenId, FONTS};
 use crate::preview::PreviewPane;
 use crate::store;
 use crate::widgets::{Btn, BtnVariant};
@@ -177,6 +177,8 @@ impl ThemesApp {
             bound_key: None,
             status: String::new(),
             structure_dirty: false,
+            action_commit_before: None,
+            last_dispatched: None,
             scroll: 0.0,
             scroll_content_h: 0.0,
             scroll_viewport_h: 0.0,
@@ -316,11 +318,35 @@ impl ThemesApp {
         uuid::Uuid::new_v4().to_string()
     }
 
-    fn max_order(catalog: &[ThemeSpec]) -> u32 {
-        catalog.iter().map(|s| s.order).max().unwrap_or(0)
+    /// Dispatch one [`ThemesAction`](crate::actions::ThemesAction) — the single
+    /// CRDT-mutation path shared with the Ctrl+K palette. The action is applied
+    /// through the qOS action executor (a pinned actor + committed change, so it
+    /// replays byte-identically on peers), exactly as the palette does. The
+    /// document heads captured just before the first action of the batch are
+    /// stashed so the host records **one** undo boundary bracketing it
+    /// ([`Widget::take_committed_action`]); Ctrl+Z then reverts it.
+    fn perform_action(&mut self, state: &mut AutoCommit, action: crate::actions::ThemesAction) {
+        if self.action_commit_before.is_none() {
+            // `get_heads` flushes any pending app writes, so the bracket covers
+            // only the action's own change.
+            self.action_commit_before = Some(state.get_heads());
+        }
+        let encoded = crate::actions::encode(&action);
+        self.last_dispatched = Some(encoded.clone());
+        let mut tx = DiscardTransport;
+        if let Err(e) = qos_actions::dispatch(state, &action, encoded, &mut tx) {
+            tracing::warn!(error = %e, "themes action dispatch failed");
+        }
     }
 
-    fn process_command(&mut self, cmd: &str, catalog: &mut Vec<ThemeSpec>, state: &mut AutoCommit, path: &ObjId) {
+    /// Route one command-bus signal. Presentation-only commands (selection, the
+    /// edited colour slot, rename-focus) write view-state directly; every
+    /// document-mutating command dispatches the matching
+    /// [`ThemesAction`](crate::actions::ThemesAction) through
+    /// [`Self::perform_action`], so a button and its Ctrl+K twin share one
+    /// dispatch + undo path.
+    fn process_command(&mut self, cmd: &str, state: &mut AutoCommit, path: &ObjId) {
+        // --- Presentation: view-state only, never an action. ---
         if let Some(id) = cmd.strip_prefix("select:") {
             doc::put_str(state, path, doc::KEY_SELECTED, id);
             self.status.clear();
@@ -330,95 +356,68 @@ impl ThemesApp {
             doc::put_str(state, path, doc::KEY_EDIT_TOKEN, key);
             return;
         }
-        // Context-menu commands carry the target theme id explicitly (the row
-        // right-clicked need not be the selected one).
-        if let Some(id) = cmd.strip_prefix("duplicate:") {
-            self.duplicate_theme(id, catalog, state, path);
-            return;
-        }
-        if let Some(id) = cmd.strip_prefix("delete:") {
-            self.delete_theme(id, catalog, state, path);
-            return;
-        }
         if let Some(id) = cmd.strip_prefix("rename:") {
             // Select the theme, then hand focus to the sidebar's inline editor.
+            // The committed name change rides the customizer reconcile into an
+            // upsert; the focus handoff itself is presentation.
             doc::put_str(state, path, doc::KEY_SELECTED, id);
             self.gallery.request_name_focus();
             self.status.clear();
             return;
         }
+
+        // --- Mutating: dispatch a ThemesAction. Context-menu commands carry the
+        // target id explicitly (the right-clicked row need not be selected). ---
+        if let Some(id) = cmd.strip_prefix("duplicate:") {
+            self.duplicate_theme(id, state, path);
+            return;
+        }
+        if let Some(id) = cmd.strip_prefix("delete:") {
+            self.delete_theme(id, state, path);
+            return;
+        }
         let selected = doc::get_str(state, path, doc::KEY_SELECTED).unwrap_or_default();
         match cmd {
-            "new" => {
-                let mut s = presets()[0].clone();
-                s.id = Self::new_id();
-                s.name = "New theme".to_string();
-                s.builtin = false;
-                s.order = Self::max_order(catalog) + 1;
-                let id = s.id.clone();
-                catalog.push(s);
-                doc::put_str(state, path, doc::KEY_SELECTED, &id);
-                self.status = "Created a new theme".to_string();
-                self.structure_dirty = true;
-            }
-            "duplicate" => self.duplicate_theme(&selected, catalog, state, path),
-            "delete" => self.delete_theme(&selected, catalog, state, path),
-            "apply" => {
-                if let Some(src) = catalog.iter().find(|s| s.id == selected).cloned() {
-                    // Persist the selected theme as the active OS theme in the
-                    // shared settings store the compositor + apps read. Live
-                    // in-session propagation to already-running apps still needs
-                    // a compositor broadcast (see `store` docs); this makes it
-                    // the look on next launch and updates the in-app "Active"
-                    // badge immediately.
-                    match store::save(&src) {
-                        Ok(_) => {
-                            doc::put_str(state, path, doc::KEY_ACTIVE, &src.id);
-                            self.status = format!("Applied “{}” as the system theme", src.name);
-                        }
-                        Err(e) => self.status = format!("Couldn't apply theme: {e}"),
-                    }
-                }
-            }
+            "new" => self.new_theme(state, path),
+            "duplicate" => self.duplicate_theme(&selected, state, path),
+            "delete" => self.delete_theme(&selected, state, path),
+            "apply" => self.apply_theme(&selected, state),
+            "reset" => self.reset_theme(&selected, state),
             "export" => {
+                // Presentation: a derived JSON blob shown in a toast, not a
+                // shared theme mutation.
+                let catalog = doc::load_catalog(state, path).unwrap_or_default();
                 if let Some(src) = catalog.iter().find(|s| s.id == selected) {
                     doc::put_text(state, path, doc::KEY_EXPORT, &src.to_json());
                     self.status = format!("Exported “{}” as JSON", src.name);
-                }
-            }
-            "reset" => {
-                if let Some(idx) = catalog.iter().position(|s| s.id == selected) {
-                    if !catalog[idx].builtin {
-                        let base = presets()[0].clone();
-                        let keep_id = catalog[idx].id.clone();
-                        let keep_name = catalog[idx].name.clone();
-                        let keep_order = catalog[idx].order;
-                        let mut reset = base;
-                        reset.id = keep_id;
-                        reset.name = keep_name;
-                        reset.builtin = false;
-                        reset.order = keep_order;
-                        catalog[idx] = reset;
-                        self.status = "Reset to defaults".to_string();
-                        // Force a control reload next frame.
-                        self.bound_key = None;
-                    }
                 }
             }
             _ => {}
         }
     }
 
-    /// Duplicate the theme `id` into a new editable custom theme and select it.
-    fn duplicate_theme(&mut self, id: &str, catalog: &mut Vec<ThemeSpec>, state: &mut AutoCommit, path: &ObjId) {
+    /// Create a new editable theme (from the base preset), dispatched as an
+    /// upsert, then select it (presentation).
+    fn new_theme(&mut self, state: &mut AutoCommit, path: &ObjId) {
+        let catalog = doc::load_catalog(state, path).unwrap_or_default();
+        let id = Self::new_id();
+        let order = crate::actions::max_order(&catalog) + 1;
+        let spec = crate::actions::new_theme_spec(&id, "New theme", order);
+        self.perform_action(state, crate::actions::upsert_custom_theme_action(&spec));
+        doc::put_str(state, path, doc::KEY_SELECTED, &id);
+        self.status = "Created a new theme".to_string();
+        self.structure_dirty = true;
+    }
+
+    /// Duplicate the theme `id` into a new editable custom theme (dispatched as
+    /// an upsert) and select it.
+    fn duplicate_theme(&mut self, id: &str, state: &mut AutoCommit, path: &ObjId) {
+        let catalog = doc::load_catalog(state, path).unwrap_or_default();
         if let Some(src) = catalog.iter().find(|s| s.id == id).cloned() {
-            let mut s = src.clone();
-            s.id = Self::new_id();
-            s.name = format!("{} copy", src.name);
-            s.builtin = false;
-            s.order = Self::max_order(catalog) + 1;
-            let new_id = s.id.clone();
-            catalog.push(s);
+            let new_id = Self::new_id();
+            let order = crate::actions::max_order(&catalog) + 1;
+            let spec = crate::actions::duplicate_spec(&src, &new_id, order);
+            self.perform_action(state, crate::actions::upsert_custom_theme_action(&spec));
             doc::put_str(state, path, doc::KEY_SELECTED, &new_id);
             self.status = format!("Duplicated “{}”", src.name);
             self.structure_dirty = true;
@@ -426,22 +425,89 @@ impl ThemesApp {
     }
 
     /// Delete the custom theme `id` (presets are protected; never empties the
-    /// catalog) and move the selection to a surviving theme.
-    fn delete_theme(&mut self, id: &str, catalog: &mut Vec<ThemeSpec>, state: &mut AutoCommit, path: &ObjId) {
+    /// catalog) via a delete action, then move the selection to a surviving
+    /// theme. The builtin / last-theme guard is enforced both here (so the
+    /// selection + status only move for a real delete) and in
+    /// [`ThemesAction::apply`](crate::actions::ThemesAction) (so a replay is a
+    /// safe no-op).
+    fn delete_theme(&mut self, id: &str, state: &mut AutoCommit, path: &ObjId) {
+        let catalog = doc::load_catalog(state, path).unwrap_or_default();
         if let Some(idx) = catalog.iter().position(|s| s.id == id) {
             if !catalog[idx].builtin && catalog.len() > 1 {
                 let name = catalog[idx].name.clone();
-                catalog.remove(idx);
-                let next = catalog.get(idx.min(catalog.len() - 1)).map(|s| s.id.clone()).unwrap_or_default();
+                self.perform_action(state, crate::actions::delete_custom_theme_action(id));
+                // Move the selection onto a surviving theme: the row that slides
+                // into `idx`, or the new last row when `idx` was the tail.
+                let survivors: Vec<String> =
+                    catalog.iter().filter(|s| s.id != id).map(|s| s.id.clone()).collect();
+                let next = survivors
+                    .get(idx.min(survivors.len().saturating_sub(1)))
+                    .cloned()
+                    .unwrap_or_default();
                 doc::put_str(state, path, doc::KEY_SELECTED, &next);
                 self.status = format!("Deleted “{name}”");
                 self.structure_dirty = true;
             }
         }
     }
+
+    /// The last action an affordance dispatched through [`Self::perform_action`],
+    /// so an integration test can prove a button built the byte-identical
+    /// [`EncodedAction`] its Ctrl+K [`ActionSpec`] exports. Rising state — it is
+    /// the most recent dispatch, not cleared on read.
+    pub fn last_dispatched(&self) -> Option<&EncodedAction> {
+        self.last_dispatched.as_ref()
+    }
+
+    /// Apply `id` as the active OS theme: persist the full spec to the shared
+    /// settings store (the on-disk contract the compositor + apps read), and —
+    /// only when that write succeeds — dispatch the [`SetActiveTheme`] action
+    /// that records the active id in the shared document.
+    ///
+    /// [`SetActiveTheme`](crate::actions::ThemesAction::SetActiveTheme)
+    fn apply_theme(&mut self, id: &str, state: &mut AutoCommit) {
+        let catalog = doc::load_catalog(state, &automerge::ROOT).unwrap_or_default();
+        if let Some(src) = catalog.iter().find(|s| s.id == id).cloned() {
+            match store::save(&src) {
+                Ok(_) => {
+                    self.perform_action(state, crate::actions::set_active_theme_action(&src.id));
+                    self.status = format!("Applied “{}” as the system theme", src.name);
+                }
+                Err(e) => self.status = format!("Couldn't apply theme: {e}"),
+            }
+        }
+    }
+
+    /// Reset the custom theme `id` back to the base preset's tokens (keeping its
+    /// identity), dispatched as an upsert.
+    fn reset_theme(&mut self, id: &str, state: &mut AutoCommit) {
+        let catalog = doc::load_catalog(state, &automerge::ROOT).unwrap_or_default();
+        if let Some(current) = catalog.iter().find(|s| s.id == id && !s.builtin).cloned() {
+            let spec = crate::actions::reset_spec(&current);
+            self.perform_action(state, crate::actions::upsert_custom_theme_action(&spec));
+            self.status = "Reset to defaults".to_string();
+            // Force a control reload next frame.
+            self.bound_key = None;
+        }
+    }
 }
 
 impl Widget for ThemesApp {
+    /// Publish the open theme library + its themes so the host's Ctrl+K action
+    /// palette scopes to them. Delegates to the
+    /// [`ResourceProvider`](qos_actions::ResourceProvider) impl in
+    /// [`crate::actions`].
+    fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
+        <Self as qos_actions::ResourceProvider>::resources(self, doc)
+    }
+
+    /// Hand the host the heads captured before an on-screen affordance dispatched
+    /// its Themes action, so it records one undo boundary for it (see
+    /// [`Self::perform_action`]). Rising-edge: cleared on read.
+    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        self.action_commit_before.take()
+    }
+
     fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
         // 1. Seed the document on first run. Live seeds the presets-only
         // default (the OS's shipped themes, never a fabricated "your theme"); a
@@ -476,14 +542,17 @@ impl Widget for ThemesApp {
             doc::put_str(state, path, doc::KEY_SELECTED, &id);
         }
 
-        // 2. Load the persisted catalog.
-        let mut catalog = doc::load_catalog(state, path).unwrap_or_else(default_catalog);
-
-        // 3. Drain and dispatch any pending command.
+        // 2. Drain and dispatch any pending command. A mutating command
+        // dispatches its ThemesAction straight into the document (via the
+        // executor), so the catalog is loaded *after* it, below, to observe the
+        // change.
         let cmd = doc::take_command(state, path);
         if !cmd.is_empty() {
-            self.process_command(&cmd, &mut catalog, state, path);
+            self.process_command(&cmd, state, path);
         }
+
+        // 3. Load the persisted catalog (now reflecting any dispatched action).
+        let mut catalog = doc::load_catalog(state, path).unwrap_or_else(default_catalog);
 
         // 4. Resolve selection + edit token.
         let mut selected = doc::get_str(state, path, doc::KEY_SELECTED).unwrap_or_default();
