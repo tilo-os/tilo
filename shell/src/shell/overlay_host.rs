@@ -481,6 +481,150 @@ fn wrap_monospace_ish(
     out
 }
 
+/// Gap between two chips in the filter band.
+const CHIP_GAP_PX: f64 = 6.0;
+/// Horizontal padding inside a chip — both sides together.
+const CHIP_PAD_PX: f64 = 18.0;
+/// Narrowest a chip is ever squeezed to. Below this a pill stops reading
+/// as a control at all; a chip this narrow is a chip whose label is an
+/// ellipsis, and the band is expected to have grown a row by the next
+/// frame anyway.
+const CHIP_MIN_W_PX: f64 = 34.0;
+
+/// Where each chip of the filter strip goes.
+#[derive(Debug, Clone, PartialEq)]
+struct ChipStrip {
+    /// One rect per chip, in the order handed in. **Every chip gets one**
+    /// — see [`lay_out_chip_strip`].
+    rects: Vec<Rect>,
+    /// Rows the chips want at their natural width. The host reserves this
+    /// many from the palette; until it does, the strip is laid out inside
+    /// however many it currently has.
+    rows_needed: usize,
+}
+
+/// Lay the filter chips out across a band that may be too narrow.
+///
+/// **The invariant is that every chip gets a rect.** The strip used to
+/// stop painting at the first chip that did not fit, and an unpainted
+/// chip has no rect, so it could not be clicked either: a filter that
+/// exists, is listed by the registry, and cannot be reached. At 1600 px
+/// the five kinds of the day exactly filled the row, so the sixth was
+/// invisible — which reads as a missing feature rather than a layout bug.
+///
+/// Three behaviours, in order of preference:
+///
+/// - Chips take their natural width while they fit.
+/// - They **wrap** to the next row when they do not, and the band is told
+///   how many rows that needs. Wrapping is chosen over eliding because a
+///   filter strip is a set of names: `Applications` squeezed to `Ap…` is
+///   reachable but no longer says what it filters.
+/// - Only when the rows on offer run out do the leftovers **share** the
+///   last one, narrowing (and, at paint time, eliding) so that all of
+///   them still land. That is the transient case — the band grows on the
+///   next layout — and it is what keeps the invariant unconditional
+///   rather than dependent on when a relayout happens to run.
+///
+/// `first_row_x1` is where the first row must stop, because the scope
+/// switch is anchored to the right of it; later rows have the whole band.
+fn lay_out_chip_strip(
+    natural: &[f64],
+    band: Rect,
+    first_row_x1: f64,
+    rows_available: usize,
+    row_h: f64,
+    control_h: f64,
+) -> ChipStrip {
+    if natural.is_empty() || band.width() <= 0.0 {
+        return ChipStrip {
+            rects: Vec::new(),
+            rows_needed: 1,
+        };
+    }
+    let rows_available = rows_available.max(1);
+    let row_x1 = |row: usize| if row == 0 { first_row_x1 } else { band.x1 };
+
+    // Greedy wrap at natural width — what the strip wants.
+    let mut plan: Vec<Vec<usize>> = vec![Vec::new()];
+    let mut x = band.x0;
+    for (i, w) in natural.iter().enumerate() {
+        let w = w.max(CHIP_MIN_W_PX);
+        let row = plan.len() - 1;
+        if !plan[row].is_empty() && x + w > row_x1(row) {
+            plan.push(Vec::new());
+            x = band.x0;
+        }
+        let row = plan.len() - 1;
+        plan[row].push(i);
+        x += w + CHIP_GAP_PX;
+    }
+    let rows_needed = plan.len();
+
+    let mut rects = vec![Rect::ZERO; natural.len()];
+    let mut place = |row: usize, ids: &[usize], widths: &[f64], rects: &mut Vec<Rect>| {
+        let cy = band.y0 + row as f64 * row_h + row_h / 2.0;
+        let mut x = band.x0;
+        for (slot, &id) in ids.iter().enumerate() {
+            let w = widths[slot];
+            rects[id] = Rect::new(x, cy - control_h / 2.0, x + w, cy + control_h / 2.0);
+            x += w + CHIP_GAP_PX;
+        }
+    };
+
+    let kept_rows = rows_needed.min(rows_available);
+    for (row, ids) in plan.iter().take(kept_rows.saturating_sub(1)).enumerate() {
+        let widths: Vec<f64> = ids.iter().map(|&i| natural[i].max(CHIP_MIN_W_PX)).collect();
+        place(row, ids, &widths, &mut rects);
+    }
+    // The last row this layout may use holds everything left over.
+    let last = kept_rows - 1;
+    let leftover: Vec<usize> = plan[last..].iter().flatten().copied().collect();
+    let widths = share_row(
+        &leftover.iter().map(|&i| natural[i]).collect::<Vec<_>>(),
+        row_x1(last) - band.x0,
+    );
+    place(last, &leftover, &widths, &mut rects);
+
+    ChipStrip { rects, rows_needed }
+}
+
+/// Widths for one row of chips that must all fit inside `available`.
+///
+/// Chips narrower than an equal share keep their natural width and hand
+/// what they do not need to the ones that are over — so squeezing costs
+/// the long labels and leaves the short ones alone, rather than shaving
+/// every chip by the same amount and making `Files` look deliberate at
+/// half its natural size.
+fn share_row(natural: &[f64], available: f64) -> Vec<f64> {
+    if natural.is_empty() {
+        return Vec::new();
+    }
+    let n = natural.len() as f64;
+    let gaps = CHIP_GAP_PX * (n - 1.0);
+    let total: f64 = natural.iter().sum();
+    if total + gaps <= available {
+        return natural.iter().map(|w| w.max(CHIP_MIN_W_PX)).collect();
+    }
+    let base = ((available - gaps) / n).max(CHIP_MIN_W_PX);
+    let spare: f64 = natural.iter().filter(|w| **w < base).map(|w| base - w).sum();
+    let over = natural.iter().filter(|w| **w >= base).count();
+    let share_over = if over > 0 {
+        base + spare / over as f64
+    } else {
+        base
+    };
+    natural
+        .iter()
+        .map(|w| {
+            if *w < base {
+                w.max(CHIP_MIN_W_PX)
+            } else {
+                share_over.min(*w).max(CHIP_MIN_W_PX)
+            }
+        })
+        .collect()
+}
+
 /// One pill in the search card's filter band. Shared by the kind chips
 /// and the "All" reset chip so they cannot drift apart.
 #[allow(clippy::too_many_arguments)]
@@ -3412,7 +3556,11 @@ impl ShellOverlayHost {
         let w = (Self::SCOPE_SEGMENT_WIDTH_PX * count as f64 + 2.0 * SEGMENT_INSET_PX)
             .min(b.width() * 0.55);
         let h = Self::FILTER_CONTROL_HEIGHT_PX;
-        let cy = (b.y0 + b.y1) / 2.0;
+        // Anchored to the *first* row of the band, not to the middle of
+        // it: when the kind chips wrap to a second row the switch must
+        // stay where it was, beside the row it shares, rather than
+        // drifting down into the gap between the two rows of chips.
+        let cy = b.y0 + self.palette.filter_strip_row_height() / 2.0;
         Rect::new(b.x1 - w, cy - h / 2.0, b.x1, cy + h / 2.0)
     }
 
@@ -8007,7 +8155,6 @@ impl ShellOverlayHost {
         let active_text = colors.text_primary;
         let idle_text = colors.text_dim;
         let control_h = Self::FILTER_CONTROL_HEIGHT_PX;
-        let cy = (band.y0 + band.y1) / 2.0;
 
         // --- Scope switch (right-anchored) -----------------------------
         let active = self
@@ -8068,53 +8215,67 @@ impl ShellOverlayHost {
         // a new provider gets a chip for free. Empty selection means
         // "everything shows", which the leading "All" chip states rather
         // than leaving the strip looking like nothing is on.
+        //
+        // Every chip is painted, whatever the width — the strip wraps,
+        // and the band grows to hold the rows. See [`lay_out_chip_strip`]
+        // for why not painting one was the bug.
         let kinds = self.search_registry.registered_kinds();
-        let mut chip_rects: Vec<Rect> = Vec::with_capacity(kinds.len());
-        let budget_x1 = track.x0 - 10.0;
-        let mut x = band.x0;
-
-        let all_active = self.active_kind_filter.is_empty();
-        let (aw, _) = text_renderer.measure("All", chip_text_size, None);
-        let all_rect = Rect::new(x, cy - control_h / 2.0, x + aw as f64 + 18.0, cy + control_h / 2.0);
-        draw_filter_chip(
-            scene,
-            transform,
-            text_renderer,
-            all_rect,
-            "All",
-            chip_text_size,
-            if all_active { active_fill } else { idle_fill },
-            if all_active { active_text } else { idle_text },
+        let labels: Vec<&str> = std::iter::once("All")
+            .chain(kinds.iter().map(|k| k.label()))
+            .collect();
+        let natural: Vec<f64> = labels
+            .iter()
+            .map(|l| text_renderer.measure(l, chip_text_size, None).0 as f64 + CHIP_PAD_PX)
+            .collect();
+        let strip = lay_out_chip_strip(
+            &natural,
+            band,
+            track.x0 - 10.0,
+            self.palette.host_filter_strip_rows(),
+            self.palette.filter_strip_row_height(),
+            control_h,
         );
-        self.search_all_chip_rect = all_rect;
-        x = all_rect.x1 + 6.0;
 
-        for kind in &kinds {
-            let label = kind.label();
-            let (lw, _) = text_renderer.measure(label, chip_text_size, None);
-            let chip_w = lw as f64 + 18.0;
-            if x + chip_w > budget_x1 {
-                // Stop rather than paint a chip under the scope switch.
-                // An unpainted chip is not in `search_chip_rects`, so it
-                // cannot be clicked either.
-                break;
-            }
-            let rect = Rect::new(x, cy - control_h / 2.0, x + chip_w, cy + control_h / 2.0);
-            let is_active = self.active_kind_filter.contains(kind);
+        let mut chip_rects: Vec<Rect> = Vec::with_capacity(kinds.len());
+        for (i, label) in labels.iter().enumerate() {
+            let rect = strip.rects[i];
+            let is_active = match i {
+                0 => self.active_kind_filter.is_empty(),
+                _ => self.active_kind_filter.contains(&kinds[i - 1]),
+            };
+            // Only a chip that had to be squeezed loses any of its label.
+            let label = text_renderer.elide_to_width(
+                label,
+                chip_text_size,
+                (rect.width() - CHIP_PAD_PX / 2.0).max(1.0) as f32,
+            );
             draw_filter_chip(
                 scene,
                 transform,
                 text_renderer,
                 rect,
-                label,
+                &label,
                 chip_text_size,
                 if is_active { active_fill } else { idle_fill },
                 if is_active { active_text } else { idle_text },
             );
-            chip_rects.push(rect);
-            x += chip_w + 6.0;
+            match i {
+                0 => self.search_all_chip_rect = rect,
+                _ => chip_rects.push(rect),
+            }
         }
         self.search_chip_rects = chip_rects;
+
+        // Ask the card for the rows the strip actually needs. The next
+        // layout grows the band and moves the result rows down; until it
+        // runs, the chips above are squeezed into the band there is —
+        // which is why they are all still clickable in the meantime.
+        if strip.rows_needed != self.search_chip_rows {
+            self.search_chip_rows = strip.rows_needed;
+            if self.palette.set_host_filter_strip_rows(strip.rows_needed) {
+                self.palette_layout_dirty = true;
+            }
+        }
     }
 
     fn draw_quick_settings(
@@ -9733,12 +9894,15 @@ mod overlay_event_absorb_tests {
     }
 
     fn build_harness() -> AbsorbHarness {
-        let tree = WorkspaceTree::bootstrap_default();
-        let chrome = ChromeState::new(tree);
-        let log = Rc::new(RefCell::new(Vec::<String>::new()));
-        let content = Box::new(RecordingContent::new(log.clone()));
-        let mut host = ShellOverlayHost::new(content).with_chrome(chrome.clone());
+        build_harness_sized(1600.0, 900.0)
+    }
 
+    /// One full layout pass over the host at `vw` × `vh`, exactly as the
+    /// compositor's frame does it. Separate from the harness constructor
+    /// so a test can lay out *again* after a paint — which is what the
+    /// shell itself does when a draw discovers the palette needs more
+    /// room than the last layout gave it.
+    fn lay_out_host(host: &mut ShellOverlayHost, vw: f64, vh: f64) -> (TaffyTree<()>, NodeId) {
         let theme = Theme::dark();
         let mut taffy: TaffyTree<()> = TaffyTree::new();
         let mut node_map: StdHashMap<NodeId, *mut dyn Widget> = StdHashMap::new();
@@ -9747,8 +9911,8 @@ mod overlay_event_absorb_tests {
             .new_with_children(
                 Style {
                     size: Size {
-                        width: Dimension::length(1600.0),
-                        height: Dimension::length(900.0),
+                        width: Dimension::length(vw as f32),
+                        height: Dimension::length(vh as f32),
                     },
                     ..Default::default()
                 },
@@ -9761,8 +9925,8 @@ mod overlay_event_absorb_tests {
             .compute_layout_with_measure(
                 viewport,
                 Size {
-                    width: AvailableSpace::Definite(1600.0),
-                    height: AvailableSpace::Definite(900.0),
+                    width: AvailableSpace::Definite(vw as f32),
+                    height: AvailableSpace::Definite(vh as f32),
                 },
                 |known, avail, node_id, _, _| {
                     if let Some(&ptr) = measure_map.get(&node_id) {
@@ -9774,6 +9938,20 @@ mod overlay_event_absorb_tests {
             )
             .expect("compute_layout");
         host.apply_layout(&taffy, child, Point::ORIGIN);
+        (taffy, child)
+    }
+
+    /// The harness at an explicit viewport, for the geometry that only
+    /// goes wrong at one end of the range — the palette card is a
+    /// fraction of the viewport, so its filter band is only as tight as
+    /// the screen is narrow.
+    fn build_harness_sized(vw: f64, vh: f64) -> AbsorbHarness {
+        let tree = WorkspaceTree::bootstrap_default();
+        let chrome = ChromeState::new(tree);
+        let log = Rc::new(RefCell::new(Vec::<String>::new()));
+        let content = Box::new(RecordingContent::new(log.clone()));
+        let mut host = ShellOverlayHost::new(content).with_chrome(chrome.clone());
+        let (taffy, child) = lay_out_host(&mut host, vw, vh);
 
         AbsorbHarness {
             host,
@@ -9827,18 +10005,35 @@ mod overlay_event_absorb_tests {
         }
     }
 
-    /// Paint once so the chip / scope rects the click router reads are
-    /// the ones that were actually drawn, then click a point.
-    fn paint_then_click(h: &mut AbsorbHarness, point_of: impl Fn(&ShellOverlayHost) -> Point) {
+    /// One production paint, so the chip / scope rects a click router
+    /// (or an assertion) reads are the ones that were actually drawn.
+    fn paint(h: &mut AbsorbHarness) {
         let theme = Theme::dark();
         let mut tr = TextRenderer::new();
         let mut scene = vello::Scene::new();
         let presence = ui::presence::PresenceCtx::default();
         h.host
             .draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+    }
+
+    /// Paint once so the chip / scope rects the click router reads are
+    /// the ones that were actually drawn, then click a point.
+    fn paint_then_click(h: &mut AbsorbHarness, point_of: impl Fn(&ShellOverlayHost) -> Point) {
+        paint(h);
         let p = point_of(&h.host);
         pump(h, &cursor_moved_at(p));
         pump(h, &left_button_pressed());
+    }
+
+    /// Paint, re-lay-out, paint again — the two-frame settle the shell
+    /// itself performs when a draw discovers the filter band needs more
+    /// rows than the last layout reserved.
+    fn settle(h: &mut AbsorbHarness, vw: f64, vh: f64) {
+        paint(h);
+        let (taffy, child) = lay_out_host(&mut h.host, vw, vh);
+        h.taffy = taffy;
+        h.root_node = child;
+        paint(h);
     }
 
     /// The kind chips and the scope switch moved inside the palette
