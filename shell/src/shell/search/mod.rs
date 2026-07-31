@@ -54,6 +54,10 @@ pub enum ResourceKind {
     Application,
     /// A note document (title + body). Enter opens/focuses the note tab.
     Note,
+    /// A record an app made, collected or imported — a book, a playlist, a
+    /// document. Enter brings it into the current room (a reference, not a
+    /// copy) and opens it if it is something openable.
+    Record,
     /// A file resource.
     File,
     /// A directory resource.
@@ -79,6 +83,7 @@ impl ResourceKind {
             ResourceKind::Action => "Actions",
             ResourceKind::Application => "Applications",
             ResourceKind::Note => "Notes",
+            ResourceKind::Record => "Records",
             ResourceKind::File => "Files",
             ResourceKind::Folder => "Folders",
             ResourceKind::Creator => "Creators",
@@ -89,10 +94,15 @@ impl ResourceKind {
     }
 
     /// Stable sort key that pins the well-known kinds to a fixed order in
-    /// the palette (Actions → Applications → Notes → Files → Folders →
-    /// Creator → Video → Playlist → Custom(alphabetical)). Two providers
-    /// registering the same kind still group together because they share
-    /// this key.
+    /// the palette (Actions → Applications → Notes → Records → Files →
+    /// Folders → Creator → Video → Playlist → Custom(alphabetical)). Two
+    /// providers registering the same kind still group together because
+    /// they share this key.
+    ///
+    /// Records sit above files because a record is the thing the user
+    /// worked on and a file is where some of them happen to be stored: a
+    /// query that names a document should offer the document, with the
+    /// room it lives in, ahead of the paths that mention the word.
     ///
     /// Applications rank second, above every content kind, because Enter
     /// activates the top row: a palette that answers a typed app name
