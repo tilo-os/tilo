@@ -1241,4 +1241,73 @@ mod tests {
         .expect("the full applied spec round-trips out of the store");
         assert_eq!(back.id, "dracula");
     }
+
+    /// One source of truth on the **live widget path**: the delete a sidebar
+    /// affordance dispatches (drained through `process_command` →
+    /// `perform_action`) is the byte-identical [`EncodedAction`] the theme's
+    /// Ctrl+K "Delete theme" [`ActionSpec`] exports.
+    #[test]
+    fn affordance_dispatches_the_same_encoded_action_as_the_palette_spec() {
+        use qos_actions::{ActionInput, ResourceProvider};
+        let (mut app, mut st) = seeded_demo();
+        assert_eq!(selected(&st), "sunset");
+
+        // The affordance path: the sidebar's "Delete" command for the sunset row.
+        run(&mut app, &mut st, "delete:sunset");
+        let from_affordance = app.last_dispatched().expect("a delete was dispatched").clone();
+
+        // The palette path: the sunset resource's exported delete spec. Rebuilt
+        // from a fresh doc that still holds sunset (the affordance already
+        // removed it from `st`), so both encode the same target.
+        let mut probe = AutoCommit::new();
+        doc::save_catalog(&mut probe, &automerge::ROOT, &demo_catalog());
+        let resources = ResourceProvider::resources(&app, &probe);
+        let sunset = resources[0]
+            .children
+            .iter()
+            .find(|r| r.id.as_str() == "themes.theme:sunset")
+            .expect("sunset resource");
+        let spec = sunset.actions.iter().find(|a| a.id == "delete").expect("delete spec");
+        let from_spec = match &spec.input {
+            ActionInput::Immediate(enc) => enc.clone(),
+            _ => panic!("delete is an immediate action"),
+        };
+
+        assert_eq!(from_affordance.type_id, from_spec.type_id);
+        assert_eq!(
+            from_affordance.payload, from_spec.payload,
+            "button and palette build the identical delete action"
+        );
+    }
+
+    /// The full undo covenant on the **live widget path**: a delete dispatched by
+    /// an affordance mutates the document, the host's `take_committed_action`
+    /// reports exactly one undo boundary bracketing it, and the host's Ctrl+Z
+    /// (`State::undo`) reverts precisely that delete.
+    #[test]
+    fn affordance_delete_is_one_undo_boundary_reverted_by_ctrl_z() {
+        let (mut app, mut st) = seeded_demo();
+        let before_len = catalog(&st).len();
+        assert!(catalog(&st).iter().any(|s| s.id == "sunset"), "custom present");
+
+        run(&mut app, &mut st, "delete:sunset");
+        assert!(!catalog(&st).iter().any(|s| s.id == "sunset"), "the delete landed");
+
+        // The host drains the affordance's captured heads (taken just before the
+        // dispatch, so the command-bus churn is outside the bracket) and records
+        // ONE boundary — exactly the `about_to_wait` path in `ui::App`.
+        let bracket = app.take_committed_action().expect("an affordance boundary was captured");
+        st.record_committed_action(bracket, None, None);
+        assert!(st.peek_last_undo().is_some(), "exactly one undo boundary recorded");
+        assert!(
+            app.take_committed_action().is_none(),
+            "rising-edge: the boundary is consumed once"
+        );
+
+        // Ctrl+Z reverts the delete.
+        st.undo(None, None).expect("an undo entry to pop");
+        app.sync(&mut st.doc, &st.root);
+        assert_eq!(catalog(&st).len(), before_len, "undo restored the theme count");
+        assert!(catalog(&st).iter().any(|s| s.id == "sunset"), "sunset is back after undo");
+    }
 }
