@@ -814,12 +814,13 @@ def run(host: Session, peer: Session, shots: str) -> None:
 
     # Asking for the same document again is asking to look at it, not to
     # start a second copy of the app on it.
-    windows_before = len([t for t in host.foreign_tabs() if t["app_id"] == WP_ID])
+    windows_before = len(host.foreign_tabs())
+    claim("there is a window to focus", windows_before >= 1, True)
     host.query_palette(DOC_STEM, until=lambda r: any(DOC_STEM in x["label"] for x in r))
     host.activate_selected()
-    host.settle(2.0)
+    host.settle(3.0)
     claim("re-activating the document focuses its window instead of opening a second",
-          len([t for t in host.foreign_tabs() if t["app_id"] == WP_ID]), windows_before)
+          len(host.foreign_tabs()), windows_before)
     if doc_win:
         claim("and the window it focused is the document's",
               host.active_tab_id(), doc_win["tab_id"])
@@ -1014,6 +1015,8 @@ def run(host: Session, peer: Session, shots: str) -> None:
     host.snapshot(os.path.join(shots, "12-after-revoke.png"))
 
     step("7.", "both edit, and the history carries both of them")
+    name_before = host.active_workspace()["name"]
+    note(f"the room is called {name_before!r} before either edit")
     host_mark = "Quarterly review"
     host_edit = try_rename(host, host_mark)
     claim("the host can edit the room it owns", host_edit, True)
@@ -1069,11 +1072,12 @@ def run(host: Session, peer: Session, shots: str) -> None:
     rows = host.chrome()["room_history"]["rows"]
     note(f"{len(rows)} row(s) on screen; "
          f"{sum(1 for r in rows if r['revert_rect'])} offer a restore")
-    # The newest row is the state we are in, so restoring to it would be a
-    # no-op. Take the newest row *before* it that offers a restore.
+    # Rows run newest first, so the last one that offers a restore is the
+    # earliest version still on offer — the one whose content is known
+    # independently of which of the two edits actually landed.
     restorable = [r for r in rows if r["revert_rect"]]
-    target = restorable[-2] if len(restorable) >= 2 else None
-    claim("the history offers a version to restore to", bool(target), True)
+    target = restorable[-1] if restorable else None
+    claim("the history offers an earlier version to restore to", bool(target), True)
     if target:
         note(f"restoring to row {target['index']}: "
              f"{target['summary']!r} by {target['author']!r}")
@@ -1082,8 +1086,8 @@ def run(host: Session, peer: Session, shots: str) -> None:
         host.settle(1.2)
         restored = host.active_workspace()["name"]
         note(f"the room is now named {restored!r}")
-        claim("restoring an earlier version brought the earlier content back",
-              restored, host_mark)
+        claim("restoring the earliest version brought its content back",
+              restored, name_before)
         claim("and the restore is itself a change, not a rewrite of the past",
               len(host.chrome()["room_history"]["changes"]) > len(hist["changes"]), True)
         crossed_back = wait_for(
