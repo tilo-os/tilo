@@ -82,7 +82,7 @@ impl SettingValue {
                 matches!(s.as_ref(), ScalarValue::F64(v) if v == f)
             }
             (SettingValue::Text(t), Ok(Some((Value::Scalar(s), _)))) => {
-                matches!(s.as_ref(), ScalarValue::Str(v) if v.as_ref() == t.as_str())
+                matches!(s.as_ref(), ScalarValue::Str(v) if v.as_str() == t.as_str())
             }
             _ => false,
         }
