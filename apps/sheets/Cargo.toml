@@ -14,6 +14,8 @@ path = "src/main.rs"
 [dependencies]
 # One owner for ~/.config/qos/settings.json.
 settings-store = { path = "../../crates/system/settings-store" }
+# The qOS action model: doc-mutating operations are replayable, undoable actions.
+qos-actions = { path = "../../crates/collab/actions" }
 ui = { path = "../../ui" }
 automerge.workspace = true
 serde.workspace = true

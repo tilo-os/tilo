@@ -31,6 +31,7 @@ use ui::widget::command_palette::{CommandEntry, CommandPalette};
 use ui::widget::Widget;
 use ui::ColorCompat;
 
+use crate::actions::{self, SheetsAction, SheetsResourceCtx};
 use crate::doc::SheetsDoc;
 use crate::formula;
 use crate::grid::{Grid, GridCmd};
@@ -242,6 +243,10 @@ pub struct SheetsApp {
     /// The Ctrl+K command palette overlay. Seeded with the app's action set
     /// each time it opens; closed by default.
     palette: CommandPalette,
+    /// Framework-owned action dispatch: every doc-mutating affordance routes
+    /// through here so undo, byte-identical peer replay, and the OS Ctrl+K
+    /// palette all work from one implementation. See [`crate::actions`].
+    actions: ui::ActionHost,
 }
 
 /// A rectangle captured by copy/cut, retaining each cell's raw input and
@@ -322,7 +327,35 @@ impl SheetsApp {
             cache: None,
             clipboard: None,
             palette: CommandPalette::commands(),
+            actions: ui::ActionHost::new(),
         }
+    }
+
+    // --- action dispatch ----------------------------------------------------
+
+    /// Dispatch one [`SheetsAction`] — the single CRDT-mutation path shared with
+    /// the Ctrl+K palette. Delegates to the framework's
+    /// [`ActionHost`](ui::ActionHost), which brackets the undo boundary and
+    /// applies the action through the executor (a pinned actor + committed
+    /// change, so it replays byte-identically on peers), exactly as the palette
+    /// does. This app supplies only its domain: the action and its type.
+    fn perform_action(&mut self, doc: &mut AutoCommit, action: SheetsAction) {
+        self.actions.dispatch(doc, actions::SHEETS_ACTION_TYPE, &action);
+    }
+
+    /// The presentation context the Ctrl+K resource tree is built from: the open
+    /// sheet names. Everything here mirrors state the document already holds.
+    pub(crate) fn sheets_resource_ctx(&self) -> SheetsResourceCtx {
+        SheetsResourceCtx { sheet_names: self.sheet_names.clone() }
+    }
+
+    /// The last [`EncodedAction`](qos_actions::EncodedAction) an on-screen
+    /// affordance dispatched, for the affordance == [`ActionSpec`](qos_actions::ActionSpec)
+    /// covenant test: a control and its Ctrl+K entry must build the identical
+    /// action.
+    #[cfg(test)]
+    fn last_dispatched(&self) -> Option<&qos_actions::EncodedAction> {
+        self.actions.last_dispatched()
     }
 
     /// Configure the app for the headless `--shots`/test path: seed the sample
@@ -529,30 +562,30 @@ impl SheetsApp {
     fn apply_cmds(&mut self, doc: &mut AutoCommit, cmds: Vec<GridCmd>) {
         let mut mutated = false;
         let cur = self.default_currency();
+        let sheet = self.active_sheet;
         for cmd in cmds {
             match cmd {
                 GridCmd::SetCell { addr, raw } => {
-                    if raw.is_empty() {
-                        SheetsDoc::set_cell_raw(doc, self.active_sheet, addr, "");
+                    // Every cell write is a SheetsAction, so undo, peer replay,
+                    // and the Ctrl+K palette all share one path. Smart type
+                    // inference runs here (authoring-side) and the normalized raw
+                    // + inferred format are baked into the action, keeping
+                    // `Action::apply` a pure write.
+                    let action = if raw.is_empty() {
+                        actions::set_cell_action(sheet, addr, "", None)
                     } else {
-                        // Smart type inference: normalize the raw and adopt
-                        // the inferred format — unless the cell already has
-                        // a user-chosen format that the new entry fits.
                         let inferred = infer_entry(&raw, cur);
-                        SheetsDoc::set_cell_raw(doc, self.active_sheet, addr, &inferred.raw);
-                        if inferred.format != CellFormat::General {
-                            SheetsDoc::set_cell_format(
-                                doc,
-                                self.active_sheet,
-                                addr,
-                                inferred.format,
-                            );
-                        }
-                    }
+                        // Adopt the inferred format only when it is non-General;
+                        // otherwise leave any user-chosen format the entry fits.
+                        let fmt = (inferred.format != CellFormat::General).then_some(inferred.format);
+                        actions::set_cell_action(sheet, addr, &inferred.raw, fmt)
+                    };
+                    self.perform_action(doc, action);
                     mutated = true;
                 }
                 GridCmd::Commit => {
-                    self.needs_commit = true;
+                    // The undo boundary is bracketed by the action host, so a
+                    // burst of cell edits in one event is already one checkpoint.
                 }
             }
         }
@@ -565,10 +598,10 @@ impl SheetsApp {
         let mut out = Vec::new();
         self.grid.flush_edit(&mut out);
         self.apply_cmds(doc, out);
+        let sheet = self.active_sheet;
         for addr in self.grid.selected_cells() {
-            SheetsDoc::set_cell_format(doc, self.active_sheet, addr, fmt);
+            self.perform_action(doc, actions::set_format_action(sheet, addr, fmt));
         }
-        self.needs_commit = true;
         self.reload(doc);
         self.status = format!(
             "Applied {} to {}",
@@ -578,10 +611,10 @@ impl SheetsApp {
     }
 
     fn clear_format(&mut self, doc: &mut AutoCommit) {
+        let sheet = self.active_sheet;
         for addr in self.grid.selected_cells() {
-            SheetsDoc::set_cell_format(doc, self.active_sheet, addr, CellFormat::General);
+            self.perform_action(doc, actions::set_format_action(sheet, addr, CellFormat::General));
         }
-        self.needs_commit = true;
         self.reload(doc);
         self.status = format!("Cleared format on {}", self.grid.selection_label());
     }
