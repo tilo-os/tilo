@@ -121,6 +121,16 @@ pub struct ShellOverlayHost {
     /// Cached from the draw pass so the click hit-test uses exactly the
     /// geometry that was painted.
     search_all_chip_rect: Rect,
+    /// Chip rows the filter band is currently reserving. Recomputed
+    /// during draw from the labels' measured widths; when it changes the
+    /// palette is told, so the card grows and the rows below the band
+    /// move down rather than being painted over. See
+    /// [`Self::draw_search_banner`].
+    search_chip_rows: usize,
+    /// Which records each room holds — shared with the records search
+    /// provider, which is what writes into it. Held here as well so the
+    /// host can seed it (`--shots`) and flush it on teardown.
+    room_records: std::rc::Rc<std::cell::RefCell<crate::shell::room_records::RoomRecords>>,
     /// Set to `true` whenever [`Self::refresh_search_results`] rewrites
     /// the palette's entry list. The next `take_structure_dirty` folds
     /// it in so the taffy layout pass rebuilds the palette node with
@@ -415,6 +425,10 @@ fn icon_for_kind(kind: &crate::shell::search::ResourceKind) -> ui::icons::Icon {
         K::Action => Icon::Settings2,
         K::Application => Icon::LayoutGrid,
         K::Note => Icon::FileText,
+        // A record is one document several rooms can reach — the stacked
+        // plates say "this is the same thing in more than one place",
+        // which is exactly what a reference is.
+        K::Record => Icon::Layers,
         K::File => Icon::File,
         K::Folder => Icon::Folder,
         K::Creator => Icon::Star,
@@ -645,6 +659,8 @@ impl ShellOverlayHost {
         // rows), `applications` (installed packages — picking a row
         // launches one), `notes` and `editor` (each text app's own
         // Automerge body, which is also what `Ctrl+K` narrows to),
+        // `records` (every record any app wrote, each row saying which
+        // room it lives in — activating one brings it into this room),
         // `files` (walkdir + tantivy content index). New providers slot
         // in via `SearchRegistry::register`; the palette picks up their
         // resource-kind chips automatically.
@@ -666,6 +682,9 @@ impl ShellOverlayHost {
         search_registry.register(std::rc::Rc::new(
             crate::shell::search::providers::EditorProvider::new(),
         ));
+        let records = crate::shell::search::providers::RecordsProvider::new();
+        let room_records = records.index();
+        search_registry.register(std::rc::Rc::new(records));
         search_registry.register(std::rc::Rc::new(
             crate::shell::search::providers::FilesProvider::new(),
         ));
@@ -682,6 +701,8 @@ impl ShellOverlayHost {
             active_kind_filter: Vec::new(),
             search_chip_rects: Vec::new(),
             search_all_chip_rect: Rect::ZERO,
+            search_chip_rows: 1,
+            room_records,
             palette_layout_dirty: false,
             palette_layout_host_w: f64::NAN,
             content_node: None,
@@ -2817,6 +2838,16 @@ impl ShellOverlayHost {
     /// staging a synthetic Ctrl+K key event through `handle_event`.
     pub fn set_palette_visible(&mut self, v: bool) {
         self.palette_visible = v;
+    }
+
+    /// The room record index the records provider reads and writes.
+    ///
+    /// Shared, not copied: a caller that references a record in here is
+    /// changing what the next keystroke finds.
+    pub fn room_records(
+        &self,
+    ) -> std::rc::Rc<std::cell::RefCell<crate::shell::room_records::RoomRecords>> {
+        std::rc::Rc::clone(&self.room_records)
     }
 
     /// Run the search fan-out directly. `bin/shots` calls this after
