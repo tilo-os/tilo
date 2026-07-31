@@ -149,19 +149,32 @@ pub fn ensure_dir(dir: &Path) -> Result<()> {
         .map_err(|e| anyhow::anyhow!("creating directory {}: {e}", dir.display()))
 }
 
+/// The directory every package's state directory is a child of.
+///
+/// Split out of [`standalone_state_dir`] because two questions are asked
+/// of it and they are not the same one: "where does *this* package keep
+/// its state" and "which packages have any". The second is what lets a
+/// surface enumerate what is stored — a compositor's search over the
+/// records apps wrote, for one — and deriving it by taking a `.parent()`
+/// off a package path is the kind of thing that silently answers `/` when
+/// the fallback branch changes.
+pub fn data_home() -> PathBuf {
+    if let Some(xdg) = std::env::var_os("XDG_DATA_HOME") {
+        return PathBuf::from(xdg);
+    }
+    if let Some(home) = std::env::var_os("HOME") {
+        return Path::new(&home).join(".local/share");
+    }
+    // Last-ditch: /tmp. Not persistent, but keeps the CLI alive
+    // rather than crashing on `HOME unset`.
+    PathBuf::from("/tmp")
+}
+
 /// The XDG data dir helper the SDK uses to place fallback state
 /// when running outside qOS. Public so an app can point its
 /// own storage at the same spot.
 pub fn standalone_state_dir(pkg_id: &str) -> PathBuf {
-    if let Some(xdg) = std::env::var_os("XDG_DATA_HOME") {
-        return PathBuf::from(xdg).join(pkg_id);
-    }
-    if let Some(home) = std::env::var_os("HOME") {
-        return Path::new(&home).join(".local/share").join(pkg_id);
-    }
-    // Last-ditch: /tmp. Not persistent, but keeps the CLI alive
-    // rather than crashing on `HOME unset`.
-    Path::new("/tmp").join(pkg_id)
+    data_home().join(pkg_id)
 }
 
 #[cfg(test)]
