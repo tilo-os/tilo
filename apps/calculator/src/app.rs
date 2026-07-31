@@ -168,6 +168,18 @@ impl CalculatorApp {
         }
     }
 
+    /// The context Ctrl+K needs to build the calculator's resource tree: the
+    /// history + saved graphs the in-memory model mirrors from the shared
+    /// document. Read-only snapshot; nothing is fabricated.
+    pub(crate) fn calc_resource_ctx(&self) -> crate::actions::CalcResourceCtx {
+        crate::actions::CalcResourceCtx {
+            mode: self.model.mode,
+            history: self.model.history.clone(),
+            funcs: self.model.funcs.clone(),
+            surfaces: self.model.surfaces.clone(),
+        }
+    }
+
     fn set_mode(&mut self, m: Mode) {
         if self.model.mode != m {
             self.model.mode = m;
