@@ -163,25 +163,11 @@ pub struct RoomRecords {
 }
 
 impl RoomRecords {
-    /// The compositor's own indexes, loaded from disk, with the record scan
-    /// running behind them.
-    ///
-    /// Reads: every room index this compositor has written. Does not write:
-    /// a room gains a file the first time something is referenced into it,
-    /// so a session that brings nothing anywhere leaves no state behind.
-    pub fn open() -> Self {
-        let mut me = Self {
-            held: BTreeMap::new(),
-            scan: Some(shared_scan()),
-            seeded: Vec::new(),
-            persistent: true,
-        };
-        me.load_indexes();
-        me
-    }
-
-    /// An instance that never touches the disk. For tests, for `--shots`,
-    /// and for any run that must not leave state behind.
+    /// An index that never touches the disk. This is what everything is
+    /// built with — a session becomes durable by being *told* to
+    /// ([`Self::attach_store`]), which is what keeps a test, a `--shots`
+    /// run and a headless harness from writing into the user's own state
+    /// merely by constructing a compositor.
     pub fn in_memory() -> Self {
         Self {
             held: BTreeMap::new(),
@@ -189,6 +175,37 @@ impl RoomRecords {
             seeded: Vec::new(),
             persistent: false,
         }
+    }
+
+    /// Make this index durable, and start looking for the records apps
+    /// have written.
+    ///
+    /// Called once by the compositor's entry point, beside where the rest
+    /// of the session's state is loaded. Reads every room index this
+    /// compositor has written before; writes nothing — a room gains a file
+    /// the first time something is referenced into it, so a session that
+    /// brings nothing anywhere leaves nothing behind.
+    pub fn attach_store(&mut self) {
+        if self.persistent {
+            return;
+        }
+        self.persistent = true;
+        self.scan = Some(shared_scan());
+        // References made before the store was attached become durable
+        // too, content and all — dropping them would make the moment of
+        // attachment a silent data loss.
+        let rooms: Vec<RoomId> = self.held.keys().copied().collect();
+        for room in rooms {
+            let Some(slot) = self.held.get_mut(&room) else {
+                continue;
+            };
+            let mut autosave = open_room_store(room, &mut slot.doc);
+            if let Some(saver) = autosave.as_mut() {
+                saver.request(&mut slot.doc);
+            }
+            slot.autosave = autosave;
+        }
+        self.load_indexes();
     }
 
     /// Add records to the known corpus without a scan. Used by tests, and
@@ -342,7 +359,9 @@ impl RoomRecords {
         })
     }
 
-    /// Load every room index already on disk.
+    /// Load every room index already on disk. Rooms already live in
+    /// memory are left alone — [`Self::index_mut`] opened their store when
+    /// the store was attached, which merged the same bytes in.
     fn load_indexes(&mut self) {
         let dir = rooms_dir();
         let Ok(entries) = std::fs::read_dir(&dir) else {
@@ -355,9 +374,7 @@ impl RoomRecords {
             let Some(room) = RoomId::parse(&name) else {
                 continue;
             };
-            let mut doc = AutoCommit::new();
-            let autosave = open_room_store(room, &mut doc);
-            self.held.insert(room, Held { doc, autosave });
+            let _ = self.index_mut(room);
         }
     }
 }

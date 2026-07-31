@@ -55,10 +55,12 @@ pub struct RecordsProvider {
 }
 
 impl RecordsProvider {
-    /// The production provider: the compositor's room indexes, with the
-    /// background record scan behind them.
+    /// A provider over a fresh index. The compositor makes that index
+    /// durable — and starts the scan for records apps wrote — by calling
+    /// [`RoomRecords::attach_store`] once at session start, so building a
+    /// palette in a test or a screenshot run reads nobody's state.
     pub fn new() -> Self {
-        Self::with_index(Rc::new(RefCell::new(RoomRecords::open())))
+        Self::with_index(Rc::new(RefCell::new(RoomRecords::in_memory())))
     }
 
     /// A provider over a caller-supplied index — the shell shares one with
@@ -304,7 +306,7 @@ mod tests {
         let mut tree = WorkspaceTree::default();
         let mut rooms = Vec::new();
         for name in names {
-            let mut ws = Workspace::new(WorkspaceId::new(), name);
+            let mut ws = Workspace::new(WorkspaceId::new(), *name);
             ws.room = RoomId::new();
             rooms.push(ws.room);
             tree.workspaces.push(ws);
