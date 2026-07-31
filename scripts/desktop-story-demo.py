@@ -65,6 +65,9 @@ DECOY_NAME = "Calculator"
 # on it is a hit on content.
 BODY_NEEDLE = "photovoltaic"
 
+# The runtime bundle version `apps/word-processor/qos-app.toml` pins.
+RUNTIME_VERSION = "2026.07"
+
 # How long to wait for a change to cross between sessions. Replication
 # is pulled on a fixed cadence; this is that cadence plus a slow frame.
 SYNC_TIMEOUT_S = 25.0
@@ -146,39 +149,80 @@ def wait_for(fn, timeout: float = SYNC_TIMEOUT_S, interval: float = 0.5):
 # --------------------------------------------------------------------
 
 
-def install_package(apps_dir: str, package_id: str, name: str, exts: list[str],
-                    binary: str | None) -> None:
-    """Write a registry entry + manifest the real `installed_apps()` reads.
+def register(apps_dir: str, package_id: str, payload: str, manifest_path: str) -> None:
+    """Add an entry to the registry `launcher::installed_apps()` reads."""
+    with open(os.path.join(apps_dir, "registry.toml"), "a") as f:
+        f.write(f"[[entry]]\nid = '{package_id}'\n"
+                f'payload_root = "{payload}"\nmanifest_path = "{manifest_path}"\n')
 
-    `binary`, when given, is hard-linked (falling back to a copy) into the
-    payload as the entrypoint — so the launch starts the actual program,
-    not a stand-in that reports success.
+
+def install_real_app(apps_dir: str, manifest_src: str, package_id: str,
+                     entry_rel: str, binary: str) -> None:
+    """Install a package built from this workspace, as shipped.
+
+    The manifest is the app's own `qos-app.toml` — its real sandbox
+    declarations, its real `[providers].ext` list — and the entrypoint is
+    the real binary. Nothing here is a stand-in: `qos-launcher` reads
+    this manifest, builds the sandbox it describes and execs this
+    program.
+    """
+    payload = os.path.join(apps_dir, "payloads", package_id)
+    dst = os.path.join(payload, entry_rel)
+    os.makedirs(os.path.dirname(dst), exist_ok=True)
+    if os.path.exists(dst):
+        os.unlink(dst)
+    try:
+        os.link(binary, dst)
+    except OSError:
+        shutil.copy2(binary, dst)
+    os.chmod(dst, os.stat(dst).st_mode | stat.S_IXUSR | stat.S_IXGRP)
+    manifest_path = os.path.join(payload, "manifest.toml")
+    shutil.copyfile(manifest_src, manifest_path)
+    register(apps_dir, package_id, payload, manifest_path)
+
+
+def install_decoy(apps_dir: str, package_id: str, name: str) -> None:
+    """A second installed package that claims no file types.
+
+    It is never launched. It exists so that "the app that owns `.md`" is
+    a different observation from "the only app installed" — without it,
+    a routing that ignored the extension entirely would look identical
+    to one that resolved it.
     """
     payload = os.path.join(apps_dir, "payloads", package_id)
     os.makedirs(os.path.join(payload, "bin"), exist_ok=True)
-    entry_bin = "bin/app"
-    if binary:
-        dst = os.path.join(payload, "bin", "app")
-        if os.path.exists(dst):
-            os.unlink(dst)
-        try:
-            os.link(binary, dst)
-        except OSError:
-            shutil.copy2(binary, dst)
-        os.chmod(dst, os.stat(dst).st_mode | stat.S_IXUSR | stat.S_IXGRP)
-    ext_list = ", ".join(f'"{e}"' for e in exts)
     manifest_path = os.path.join(payload, "manifest.toml")
     with open(manifest_path, "w") as f:
-        f.write(
-            f'[package]\nid = "{package_id}"\nname = "{name}"\n'
-            f'version = "1.0.0"\n'
-            f'[entrypoint]\nbin = "{entry_bin}"\ntype = "gui"\n'
-            f'[providers]\nmime = []\next = [{ext_list}]\n'
-        )
-    registry = os.path.join(apps_dir, "registry.toml")
-    with open(registry, "a") as f:
-        f.write(f"[[entry]]\nid = '{package_id}'\n"
-                f'payload_root = "{payload}"\nmanifest_path = "{manifest_path}"\n')
+        f.write(f'[package]\nid = "{package_id}"\nname = "{name}"\n'
+                f'version = "1.0.0"\n'
+                f'[entrypoint]\nbin = "bin/app"\ntype = "gui"\n'
+                f'[providers]\nmime = []\next = []\n')
+    register(apps_dir, package_id, payload, manifest_path)
+
+
+def bake_runtime(work: str, tools: dict) -> str:
+    """Build and sign one runtime bundle, and return its directory.
+
+    The launcher refuses an unsigned bundle, and it is right to: the
+    bundle is the shared library set every sandboxed app runs against.
+    So the fixture signs one with a freshly generated key, exactly as
+    `os/scripts/bake-runtime-bundle.sh` does for an image — no launcher
+    flag is relaxed anywhere in this run.
+    """
+    key = os.path.join(work, "runtime-key.json")
+    data_home = os.path.join(work, "runtime-data")
+    installed = os.path.join(data_home, "qos-runtime", RUNTIME_VERSION)
+    if os.path.isdir(installed):
+        return installed
+    os.makedirs(work, exist_ok=True)
+    subprocess.run([tools["bundle"], "key", "generate", "--out", key],
+                   check=True, capture_output=True)
+    env = dict(os.environ, XDG_DATA_HOME=data_home)
+    subprocess.run(
+        [tools["install"], "runtime", "install", "--version", RUNTIME_VERSION,
+         "--from-host", "--identity", key, "--force"],
+        check=True, capture_output=True, env=env)
+    return installed
 
 
 DOC_BODY = f"""# Quarterly Report
@@ -229,17 +273,23 @@ class Session:
 
     # -- lifecycle ---------------------------------------------------
 
-    def prepare(self, runtime: str) -> None:
+    def prepare(self, runtime: str, runtime_bundle: str) -> None:
         self.runtime = runtime
+        self.data_home = os.path.join(self.dir, "data")
         os.makedirs(os.path.join(self.dir, "config"), exist_ok=True)
         os.makedirs(os.path.join(self.dir, "keys"), exist_ok=True)
         os.makedirs(self.apps, exist_ok=True)
         os.makedirs(runtime, exist_ok=True)
         self.doc_path = write_home(self.home)
-        install_package(self.apps, WP_ID, WP_NAME,
-                        ["odt", "docx", "md", "markdown", "rtf"],
-                        self.app_binary)
-        install_package(self.apps, DECOY_ID, DECOY_NAME, [], None)
+        install_real_app(self.apps, os.path.join(REPO, "apps", "word-processor",
+                                                 "qos-app.toml"),
+                         WP_ID, "bin/word-processor", self.app_binary)
+        install_decoy(self.apps, DECOY_ID, DECOY_NAME)
+        # Each session gets its own copy of the signed runtime bundle,
+        # in the location the launcher looks in for this user.
+        dst = os.path.join(self.data_home, "qos-runtime", RUNTIME_VERSION)
+        if not os.path.isdir(dst):
+            shutil.copytree(runtime_bundle, dst)
 
     def start(self) -> None:
         env = dict(os.environ)
@@ -335,7 +385,13 @@ class Session:
         return self.tree().get("active_group", {}).get(str(strip["id"]))
 
     def foreign_frames(self) -> list[dict]:
-        return ok(call(self.sock, {"op": "foreign_frames"}))["frames"]
+        return ok(call(self.sock, {"op": "foreign_frames"}))["foreign_frames"]["frames"]
+
+    def frame_seq(self, surface_id: int) -> int:
+        for f in self.foreign_frames():
+            if f["surface_id"] == surface_id:
+                return f["frame_seq"]
+        return -1
 
     def targets(self) -> list[dict]:
         return ok(call(self.sock, {"op": "list_targets"}))["targets"]
@@ -521,22 +577,32 @@ def main() -> int:
     ap.add_argument("--app", default=os.path.join(REPO, "target", "debug", "word-processor"))
     ap.add_argument("--launcher",
                     default=os.path.join(REPO, "target", "debug", "qos-launcher"))
+    ap.add_argument("--installer",
+                    default=os.path.join(REPO, "target", "debug", "qos-install"))
+    ap.add_argument("--bundler",
+                    default=os.path.join(REPO, "target", "debug", "qos-runtime-bundle"))
     ap.add_argument("--size", default="1280x800", help="headless viewport")
     ap.add_argument("--keep", action="store_true",
                     help="keep the previous run directory instead of wiping it")
     args = ap.parse_args()
 
-    missing = [p for p in (args.shell, args.app, args.launcher) if not os.path.exists(p)]
+    tools = {"install": args.installer, "bundle": args.bundler}
+    missing = [p for p in (args.shell, args.app, args.launcher, args.installer,
+                           args.bundler) if not os.path.exists(p)]
     if missing:
         print("missing binaries:\n  " + "\n  ".join(missing) +
-              "\nbuild them:  cargo build -p shell --bin shell -p word-processor -p launcher",
-              file=sys.stderr)
+              "\nbuild them:  cargo build -p shell --bin shell -p word-processor "
+              "-p launcher -p install -p runtime-bundle", file=sys.stderr)
         return 2
 
     if not args.keep:
         shutil.rmtree(args.out, ignore_errors=True)
     shots = os.path.join(args.out, "shots")
     os.makedirs(shots, exist_ok=True)
+    # Baked once and shared between the sessions by copy; keeping it
+    # outside the wiped tree makes a re-run cheap.
+    bundle = bake_runtime(os.path.join(REPO, "target", "desktop-story-runtime"), tools)
+    print(f"runtime bundle: {bundle}")
 
     # Unix socket paths are capped near 108 bytes, so the sockets and the
     # per-session runtime dirs live under the runtime root.
@@ -556,7 +622,7 @@ def main() -> int:
     rc = 0
     try:
         for s in sessions:
-            s.prepare(os.path.join(runtime_root, f"qos-story-{s.name}-{tag}"))
+            s.prepare(os.path.join(runtime_root, f"qos-story-{s.name}-{tag}"), bundle)
             s.start()
         for s in sessions:
             s.wait_ready()
@@ -590,9 +656,55 @@ def main() -> int:
     return rc
 
 
+def wait_for_toplevel(s: Session, app_id: str, since: set[int],
+                      timeout: float = APP_TIMEOUT_S) -> dict | None:
+    """A toplevel for `app_id` that was not already there."""
+    return wait_for(
+        lambda: next((t for t in s.foreign_tabs()
+                      if t["app_id"] == app_id and t["surface_id"] not in since),
+                     None),
+        timeout=timeout, interval=0.5)
+
+
+def wait_for_paint(s: Session, surface_id: int, timeout: float = APP_TIMEOUT_S) -> int:
+    """Frames the compositor has taken from that client.
+
+    `frame_seq > 0` is the compositor's own bookkeeping, not a guess from
+    pixels: a tile that still shows the first-frame placeholder is
+    near-identical to a real first frame of an app that starts empty.
+    """
+    return wait_for(lambda: s.frame_seq(surface_id) or None, timeout=timeout) or 0
+
+
 def run(host: Session, peer: Session, shots: str) -> None:
-    """Filled in step by step below."""
-    raise NotImplementedError
+    step("1.", "open an app from the palette, and watch it paint")
+    before = {t["surface_id"] for t in host.foreign_tabs()}
+    rows = host.query_palette(
+        WP_NAME, until=lambda r: any(WP_NAME in x["label"] for x in r))
+    note(f"palette rows: {[r['label'] for r in rows][:5]}")
+    selected = host.selected_row()
+    claim("the palette's top row is the app",
+          (selected or {}).get("label", "").endswith(WP_NAME), True)
+    claim("the palette is searching the whole machine",
+          host.chrome()["search_scope"], "All")
+    host.snapshot(os.path.join(shots, "01-palette-app.png"))
+    host.activate_selected()
+
+    win = wait_for_toplevel(host, WP_ID, before)
+    claim("the app mapped a window the compositor adopted", bool(win), True)
+    if not win:
+        note("no toplevel; the rest of the story has nothing to act on")
+        note(f"see {host.log_path}")
+        return
+    note(f"window: {json.dumps(win)}")
+    claim("the window is attributed to the package that was launched",
+          win["app_id"], WP_ID)
+    claim("its tab is labelled with the app, not a generic app-id",
+          win["title"], WP_NAME)
+    painted = wait_for_paint(host, win["surface_id"])
+    note(f"frames taken from the client: {painted}")
+    claim("the app painted its own pixels", painted > 0, True)
+    host.snapshot(os.path.join(shots, "02-app-open.png"))
 
 
 if __name__ == "__main__":
