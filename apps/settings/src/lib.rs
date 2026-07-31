@@ -26,6 +26,7 @@
 //! - [`dispatcher`] — the `os-actions` plumbing the hardware panes share.
 
 pub mod accounts;
+pub mod actions;
 pub mod categories;
 pub mod dispatcher;
 pub mod panes;

@@ -12975,6 +12975,7 @@ dependencies = [
  "mail",
  "media",
  "os-actions",
+ "qos-actions",
  "serde",
  "serde_json",
  "settings-store",
