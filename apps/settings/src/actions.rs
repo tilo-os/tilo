@@ -172,28 +172,6 @@ fn doc_bool(doc: &AutoCommit, key: &str) -> Option<bool> {
     }
 }
 
-fn doc_f64(doc: &AutoCommit, key: &str) -> Option<f64> {
-    match doc.get(&ROOT, key) {
-        Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
-            ScalarValue::F64(f) => Some(*f),
-            ScalarValue::Int(i) => Some(*i as f64),
-            _ => None,
-        },
-        _ => None,
-    }
-}
-
-fn doc_int(doc: &AutoCommit, key: &str) -> Option<i64> {
-    match doc.get(&ROOT, key) {
-        Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
-            ScalarValue::Int(i) => Some(*i),
-            ScalarValue::Uint(u) => Some(*u as i64),
-            _ => None,
-        },
-        _ => None,
-    }
-}
-
 fn doc_str(doc: &AutoCommit, key: &str) -> Option<String> {
     match doc.get(&ROOT, key) {
         Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
@@ -286,7 +264,6 @@ pub fn provide_resources(doc: &AutoCommit) -> Vec<Resource> {
     let d = SystemPrefs::default();
 
     let b = |key: &str, default: bool| doc_bool(doc, key).unwrap_or(default);
-    let f = |key: &str, default: f64| doc_f64(doc, key).unwrap_or(default);
     let s = |key: &str, default: &str| doc_str(doc, key).unwrap_or_else(|| default.to_string());
 
     let mut root = Resource::new("settings.root", "settings.root", "Settings");
