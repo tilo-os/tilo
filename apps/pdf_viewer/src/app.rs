@@ -480,6 +480,16 @@ pub struct PdfApp {
     sel_hud: Option<ui::SelectionHud>,
     /// An in-progress drag of a sticky-note marker (reposition), if any.
     marker_drag: Option<ui::MarkerDrag>,
+
+    /// The document heads captured just before the first markup action of the
+    /// current event was dispatched through [`Self::perform_action`]. The host
+    /// drains this via [`Widget::take_committed_action`] to record exactly one
+    /// undo boundary bracketing the event's actions. Rising-edge: cleared on read.
+    action_commit_before: Option<Vec<automerge::ChangeHash>>,
+    /// The most recent [`EncodedAction`](qos_actions::EncodedAction) an on-page
+    /// affordance dispatched through [`Self::perform_action`]. Lets a test prove
+    /// a button dispatches the byte-identical action the palette would.
+    last_dispatched: Option<qos_actions::EncodedAction>,
 }
 
 impl PdfApp {
@@ -674,7 +684,59 @@ impl PdfApp {
             edit_rect: Rect::ZERO,
             sel_hud: None,
             marker_drag: None,
+            action_commit_before: None,
+            last_dispatched: None,
         }
+    }
+
+    /// Dispatch one reader [`PdfViewerAction`](crate::actions::PdfViewerAction) —
+    /// the single mutation path shared with the Ctrl+K palette. The action is
+    /// applied through the qOS action executor (a pinned actor + committed
+    /// change, so it replays byte-identically on peers), exactly as the palette
+    /// does. The doc heads captured just before the first action of the event
+    /// are stashed so the host records **one** undo boundary bracketing it
+    /// ([`Widget::take_committed_action`]).
+    pub(crate) fn perform_action(
+        &mut self,
+        state: &mut AutoCommit,
+        action: crate::actions::PdfViewerAction,
+    ) {
+        if self.action_commit_before.is_none() {
+            // `get_heads` flushes any pending app writes, so the bracket covers
+            // only the action's own change.
+            self.action_commit_before = Some(state.get_heads());
+        }
+        let encoded = crate::actions::encode(&action);
+        self.last_dispatched = Some(encoded.clone());
+        let mut tx = DiscardTransport;
+        if let Err(e) = qos_actions::dispatch(state, &action, encoded, &mut tx) {
+            tracing::warn!(error = %e, "pdf_viewer action dispatch failed");
+        }
+    }
+
+    /// The presentation context Ctrl+K needs to build the document-level action
+    /// (add a note at the current page). `None` when no document is open.
+    pub(crate) fn pdf_resource_ctx(&self) -> Option<crate::actions::PdfResourceCtx> {
+        if !self.has_document {
+            return None;
+        }
+        let doc_id = if self.doc_name.is_empty() {
+            "document".to_string()
+        } else {
+            self.doc_name.clone()
+        };
+        let title = if self.doc.title.is_empty() {
+            doc_id.clone()
+        } else {
+            self.doc.title.clone()
+        };
+        Some(crate::actions::PdfResourceCtx {
+            doc_id,
+            title,
+            page: self.current_page,
+            author: self.author.clone(),
+            created_seed: self.created_counter,
+        })
     }
 
     // ---- seeding + cache refresh ------------------------------------
@@ -1521,10 +1583,9 @@ impl PdfApp {
                         author: self.author.clone(),
                     };
                     last_id = Some(a.id.clone());
-                    PdfDoc::add_annotation(state, &a);
+                    self.perform_action(state, crate::actions::add_annotation_action(&a));
                 }
                 self.selected_anno = last_id;
-                self.commit_pending = true;
             }
             Tool::Ink => {
                 if d.points.len() >= 2 {
@@ -1535,8 +1596,7 @@ impl PdfApp {
                         color: self.swatch,
                         author: self.author.clone(),
                     };
-                    PdfDoc::add_annotation(state, &a);
-                    self.commit_pending = true;
+                    self.perform_action(state, crate::actions::add_annotation_action(&a));
                 }
             }
             _ => {}
@@ -1546,36 +1606,30 @@ impl PdfApp {
     }
 
     fn create_note(&mut self, state: &mut AutoCommit, page: usize, pt: (f64, f64)) {
-        let a = Annotation {
-            id: Annotation::new_id(),
-            page,
-            kind: AnnoKind::Note { x: pt.0, y: pt.1 },
-            color: self.swatch,
-            author: self.author.clone(),
-        };
-        let anno_id = a.id.clone();
-        PdfDoc::add_annotation(state, &a);
+        let anno_id = Annotation::new_id();
         self.created_counter += 1;
         let comment_id = Comment::new_id();
-        PdfDoc::add_comment(
+        // One action creates the note marker *and* its (empty) comment thread —
+        // one undo boundary, replayed atomically on peers.
+        self.perform_action(
             state,
-            &Comment {
-                id: comment_id.clone(),
-                anno_id: Some(anno_id.clone()),
+            crate::actions::create_note_action(
+                &anno_id,
+                &comment_id,
                 page,
-                author: self.author.clone(),
-                body: String::new(),
-                created: self.created_counter,
-                resolved: false,
-                replies: vec![],
-            },
+                pt.0,
+                pt.1,
+                self.swatch,
+                &self.author.clone(),
+                self.created_counter,
+                "",
+            ),
         );
         self.selected_anno = Some(anno_id);
         self.selected_sig = None;
         // Open the Comments rail, scroll the brand-new thread into view, and
         // drop the caret straight into it so the user just types.
         self.focus_sidebar(SidebarTab::Comments, comment_id.clone());
-        self.commit_pending = true;
         self.reload(state);
         self.begin_edit(EditTarget::CommentBody(comment_id), String::new());
         self.dirty = true;
@@ -1628,19 +1682,14 @@ impl PdfApp {
                     self.delete_target(&DeleteTarget::Comment(id), state);
                     return;
                 }
-                PdfDoc::set_comment_body(state, &id, text.trim_end());
-                self.commit_pending = true;
+                self.perform_action(state, crate::actions::set_comment_body_action(&id, text.trim_end()));
                 self.reload(state);
             }
             EditTarget::Reply(id) => {
                 let body = text.trim();
                 if !body.is_empty() {
-                    PdfDoc::add_reply(
-                        state,
-                        &id,
-                        &Reply { author: self.author.clone(), body: body.to_string() },
-                    );
-                    self.commit_pending = true;
+                    let action = crate::actions::add_reply_action(&id, &self.author.clone(), body);
+                    self.perform_action(state, action);
                     self.reload(state);
                 }
             }
@@ -1821,11 +1870,10 @@ impl PdfApp {
                 author: self.author.clone(),
             };
             last = Some(a.id.clone());
-            PdfDoc::add_annotation(state, &a);
+            self.perform_action(state, crate::actions::add_annotation_action(&a));
         }
         self.swatch = swatch;
         self.selected_anno = last;
-        self.commit_pending = true;
         self.clear_selection();
         self.reload(state);
         self.dirty = true;
@@ -1899,36 +1947,39 @@ impl PdfApp {
     fn delete_target(&mut self, target: &DeleteTarget, state: &mut AutoCommit) {
         match target {
             DeleteTarget::Annotation(id) => {
-                PdfDoc::delete_annotation(state, id);
+                self.perform_action(state, crate::actions::delete_annotation_action(id));
                 if self.selected_anno.as_deref() == Some(id.as_str()) {
                     self.selected_anno = None;
                 }
             }
             DeleteTarget::Comment(id) => {
-                // Deleting a comment also removes the annotation it pins, so
-                // the orphaned note marker doesn't linger on the page.
+                // Deleting a comment also removes the annotation it pins, so the
+                // orphaned note marker doesn't linger on the page — the
+                // `DeleteComment` action carries that cascade. Clear the local
+                // selection pointing at the pinned note.
                 if let Some(anno) = self
                     .comments
                     .iter()
                     .find(|c| &c.id == id)
                     .and_then(|c| c.anno_id.clone())
                 {
-                    PdfDoc::delete_annotation(state, &anno);
                     if self.selected_anno.as_deref() == Some(anno.as_str()) {
                         self.selected_anno = None;
                     }
                 }
-                PdfDoc::delete_comment(state, id);
+                self.perform_action(state, crate::actions::delete_comment_action(id));
             }
             DeleteTarget::Signature(id) => {
                 PdfDoc::delete_signature(state, id);
                 if self.selected_sig.as_deref() == Some(id.as_str()) {
                     self.selected_sig = None;
                 }
+                // Signatures are not (yet) on the action model; keep the
+                // snapshot-undo path for them.
+                self.commit_pending = true;
             }
         }
         self.context_menu = None;
-        self.commit_pending = true;
         self.reload(state);
         self.dirty = true;
     }
@@ -2126,9 +2177,36 @@ fn ensure_pdf_extension(path: std::path::PathBuf) -> std::path::PathBuf {
 include!("app_draw.rs");
 include!("app_events.rs");
 
+/// The action transport the reader installs for its own on-page affordances.
+/// Peers receive markup changes through ordinary CRDT sync (the executor pins
+/// each action's actor so the change is content-addressed identical to a peer's
+/// replay and dedupes on merge), so the local affordance path has nothing extra
+/// to replicate — this sink drops the envelope. The Ctrl+K palette dispatches
+/// through the host's transport, which a collaborative session swaps for a
+/// peer-aware one.
+struct DiscardTransport;
+impl qos_actions::ActionTransport for DiscardTransport {
+    fn replicate(&mut self, _env: &qos_actions::ActionEnvelope) {}
+}
+
 impl Widget for PdfApp {
     fn record_intent(&self) -> Option<ui::RecordCheckout> {
         self.markup_record.clone()
+    }
+
+    /// Publish the open document + its markup so the host's Ctrl+K action palette
+    /// scopes to them. Delegates to the
+    /// [`ResourceProvider`](qos_actions::ResourceProvider) impl in
+    /// [`crate::actions`].
+    fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
+        <Self as qos_actions::ResourceProvider>::resources(self, doc)
+    }
+
+    /// Hand the host the heads captured before an on-page affordance dispatched
+    /// its markup action, so it records one undo boundary for it (see
+    /// [`Self::perform_action`]). Rising-edge: cleared on read.
+    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        self.action_commit_before.take()
     }
 
     fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
@@ -2725,7 +2803,10 @@ mod tests {
         app.create_note(&mut st.doc, 2, (120.0, 200.0));
         assert_eq!(app.annotations.len(), a0 + 1);
         assert_eq!(app.comments.len(), c0 + 1);
-        assert!(app.commit_pending);
+        assert!(
+            app.take_committed_action().is_some(),
+            "creating a note dispatched an action and stashed one undo boundary"
+        );
         assert_eq!(app.sidebar_tab as u8, SidebarTab::Comments as u8);
     }
 
@@ -3094,7 +3175,10 @@ mod tests {
             AnnoKind::Ink { points } => assert!(points.len() >= 2, "the polyline retains its points"),
             _ => unreachable!(),
         }
-        assert!(app.commit_pending, "ink is a committed CRDT action");
+        assert!(
+            app.take_committed_action().is_some(),
+            "ink dispatched an action and stashed one undo boundary"
+        );
         assert!(
             PdfDoc::list_annotations(&st.doc).iter().any(|a| matches!(a.kind, AnnoKind::Ink { .. })),
             "and the ink stroke landed in the shared document"
