@@ -19,7 +19,8 @@
 use std::collections::HashMap;
 use std::time::Instant;
 
-use automerge::{AutoCommit, ObjId};
+use automerge::{AutoCommit, ChangeHash, ObjId};
+use qos_actions::{ActionEnvelope, ActionTransport, EncodedAction};
 use taffy::style_helpers::length;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use ui::color_compat::ColorCompat;
@@ -41,6 +42,16 @@ use crate::model::{self, default_catalog, demo_catalog, presets, ThemeSpec, Toke
 use crate::preview::PreviewPane;
 use crate::store;
 use crate::widgets::{Btn, BtnVariant};
+
+/// Standalone Themes has no peer/host wiring: an action's own committed change
+/// is content-addressed identical to a peer's replay and dedupes on ordinary
+/// CRDT sync, so the local affordance path has nothing extra to replicate — this
+/// sink drops the envelope. A collaborative session swaps in a peer-aware
+/// transport at the host's Ctrl+K dispatch.
+struct DiscardTransport;
+impl ActionTransport for DiscardTransport {
+    fn replicate(&mut self, _env: &ActionEnvelope) {}
+}
 
 const TOPBAR_H: f32 = 56.0;
 const GALLERY_W: f32 = 272.0;
