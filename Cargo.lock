@@ -13084,6 +13084,7 @@ dependencies = [
 name = "shell"
 version = "0.1.0"
 dependencies = [
+ "app-state",
  "atomic-file",
  "automerge",
  "base64 0.22.1",
@@ -13093,6 +13094,7 @@ dependencies = [
  "capnp-rpc",
  "channel-crypto",
  "chrono",
+ "cli",
  "collab-fixtures",
  "collab-types",
  "dirs 6.0.0",

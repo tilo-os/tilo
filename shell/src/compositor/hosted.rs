@@ -208,6 +208,12 @@ pub fn run_with_full_options(opts: HostedOptions) {
         enable_peer_sync,
         crate::shell::session_record_store(),
     );
+    // Which records each room holds outlives the session too, and the
+    // records apps have written are found by looking. Both are switched
+    // on here, beside the rest of the session's durable state, so
+    // building a compositor for a test or a screenshot reads and writes
+    // nobody's.
+    host.room_records().borrow_mut().attach_store();
     // Give the palette's `/invite` and `/connect` rows something that
     // actually performs them. Without this the host records an intent
     // and drops it, which is what both commands did before: reachable

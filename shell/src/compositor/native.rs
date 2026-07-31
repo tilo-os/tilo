@@ -1228,6 +1228,11 @@ pub fn run() -> ! {
     // the monitor it is on — so hand the strips the real per-display
     // geometry rather than letting them size against the bounding box.
     frame_builder.set_output_geometry(output_geometry(backend.outputs()));
+    // Which records each room holds outlives the session, and the records
+    // apps have written are found by looking. Both are switched on here,
+    // beside the rest of the session's durable state, so building a
+    // compositor for a test or a screenshot reads and writes nobody's.
+    frame_builder.host().room_records().borrow_mut().attach_store();
 
     // Peer sync. Constructed here rather than only in the hosted entry
     // point because this is the compositor that boots as the qOS
