@@ -112,6 +112,15 @@ pub struct ThemesApp {
     status: String,
     structure_dirty: bool,
 
+    /// Document heads captured just before an affordance dispatched its Themes
+    /// action, so the host records exactly one undo boundary bracketing it (see
+    /// [`Self::perform_action`] and [`Widget::take_committed_action`]). Rising
+    /// edge: cleared on read.
+    action_commit_before: Option<Vec<ChangeHash>>,
+    /// The last action an affordance dispatched, so an integration test can prove
+    /// a button built the same [`EncodedAction`] its Ctrl+K [`ActionSpec`] does.
+    last_dispatched: Option<EncodedAction>,
+
     /// Vertical scroll of the collapsed (narrow) preview+customizer stack.
     scroll: f64,
     /// Total stacked content height + its viewport, cached in `apply_layout`
