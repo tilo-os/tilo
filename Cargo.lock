@@ -3882,6 +3882,7 @@ dependencies = [
  "automerge",
  "chrono",
  "feed-rs",
+ "qos-actions",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
@@ -5460,6 +5461,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "automerge",
+ "qos-actions",
  "serde",
  "serde_json",
  "taffy",
@@ -10168,6 +10170,7 @@ dependencies = [
  "image",
  "pdf-extract",
  "pdfium-render",
+ "qos-actions",
  "serde",
  "serde_json",
  "serial_test",
