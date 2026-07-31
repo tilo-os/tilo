@@ -124,6 +124,37 @@ same way (the host records the undo boundary and attributes the author). Don't
 leave the button calling `self.delete_annotation(id)` while only Ctrl+K goes
 through the action — route the button through the action too.
 
+**You do not write the dispatch plumbing.** The toolkit owns it. Embed one
+`ui::ActionHost` field and hand it your domain action; it brackets the undo
+boundary (captures `doc.get_heads()` once, on the event's first action), encodes
+under your `type_id`, remembers the last action for the covenant test, and
+applies it through the executor (pinned actor + committed change, so it replays
+byte-identically on peers). There is no per-app `perform_action`, no
+`DiscardTransport`, no `action_commit_before` / `last_dispatched` fields — those
+were identical in every app and now live once in `ui::ActionHost`.
+
+```rust
+struct MyApp {
+    actions: ui::ActionHost,   // the ONLY action-dispatch state an app holds
+    // …
+}
+
+// At every affordance (button, swatch, context-menu row) that mutates the doc,
+// dispatch the SAME action its ActionSpec exports — one source of truth:
+self.actions.dispatch(doc, MY_ACTION_TYPE, &action);
+
+impl Widget for MyApp {
+    // The host drains this after each event and records exactly one undo
+    // boundary bracketing it — the same path a Ctrl+K palette dispatch takes.
+    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        self.actions.take_committed()
+    }
+}
+```
+
+That is the whole wiring. `ActionHost::last_dispatched()` exposes the last
+`EncodedAction` for the covenant test below (affordance == `ActionSpec`).
+
 Content *search* is a separate hook: `Widget::search_providers()` folds a
 `SearchProvider`'s hits into the same palette as their own group, and
 `Widget::activate_search_result()` handles the chosen row as **navigation**
@@ -142,9 +173,12 @@ weakened assertion:
 - Assert the toolbar/menu affordance constructs the **same** `EncodedAction` the
   palette does — one source of truth, proven.
 
-## Adoption status (2026-07-30)
+## Adoption status (2026-07-31)
 
-Landed: `qos_actions` spine; the unified Ctrl+K palette on it; adopters
-`ebook` (annotation actions — notes; highlight/comment nesting still to come),
-`tube`, and `contacts` (as a search provider). Every other app still mutates its
-CRDT directly and exports no resources — those are the migration targets.
+Landed: `qos_actions` spine; the unified Ctrl+K palette on it; the framework
+`ui::ActionHost` that gives every app the dispatch + undo-boundary plumbing by
+default. Adopters: `ebook` and `calendar` (both on `ActionHost`), `tube`, and
+`contacts` (as a search provider). Every other app still mutates its CRDT
+directly and exports no resources — those are the migration targets, and each
+now wires up by embedding `ui::ActionHost` (see "Wiring existing UI" above)
+rather than copy-pasting a `perform_action` + `DiscardTransport`.
