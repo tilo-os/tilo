@@ -12,6 +12,7 @@ pub mod applications;
 pub mod editor;
 pub mod files;
 pub mod notes;
+pub mod records;
 pub mod text_app;
 
 pub use actions::ActionsProvider;
@@ -19,3 +20,4 @@ pub use applications::ApplicationsProvider;
 pub use editor::EditorProvider;
 pub use files::FilesProvider;
 pub use notes::NotesProvider;
+pub use records::RecordsProvider;
