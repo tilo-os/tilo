@@ -8265,6 +8265,94 @@ mod tests {
         wp.model_mut().set_caret(Caret { block, offset: end });
     }
 
+    /// The `EncodedAction` a resource's immediate `ActionSpec` carries.
+    fn spec_encoded(res: &qos_actions::Resource, id: &str) -> qos_actions::EncodedAction {
+        let spec = res.actions.iter().find(|a| a.id == id).unwrap_or_else(|| panic!("spec {id}"));
+        match &spec.input {
+            qos_actions::ActionInput::Immediate(enc) => enc.clone(),
+            _ => panic!("{id} is immediate"),
+        }
+    }
+
+    /// One source of truth on the **live widget path**: the Insert-Table toolbar
+    /// button dispatches the byte-identical `EncodedAction` the Ctrl+K palette's
+    /// `insert-table` spec builds for the same document.
+    #[test]
+    fn toolbar_insert_table_matches_palette_spec() {
+        let mut state = ui::State::new();
+        let mut wp = WordProcessorWidget::new();
+        wp.sync(&mut state.doc, &state.root);
+        wp.model_mut().insert_str(&mut state.doc, "Intro");
+        wp.refresh_blocks(&state.doc);
+
+        // What the palette would dispatch, resolved before the button fires.
+        let resources = Widget::resources(&wp, &state.doc);
+        let from_palette = spec_encoded(&resources[0], "insert-table");
+
+        // The toolbar button drives the same operation.
+        wp.apply_tool(&mut state.doc, ToolAction::InsertTable);
+        let from_toolbar = wp
+            .last_dispatched_for_test()
+            .cloned()
+            .expect("the toolbar dispatched an action");
+
+        assert_eq!(from_toolbar.type_id, from_palette.type_id);
+        assert_eq!(
+            from_toolbar.payload, from_palette.payload,
+            "toolbar affordance and palette spec build the same EncodedAction"
+        );
+        // And the affordance really created the table (a 2x2 = four cells).
+        wp.refresh_blocks(&state.doc);
+        assert_eq!(
+            wp.blocks.iter().filter(|b| b.kind == "cell").count(),
+            4,
+            "the toolbar affordance inserted the table"
+        );
+    }
+
+    /// The styles panel's paragraph-align affordance dispatches an action, arms
+    /// exactly one undo boundary for the host, and matches the palette spec.
+    #[test]
+    fn panel_align_dispatches_action_and_arms_one_undo_boundary() {
+        let mut state = ui::State::new();
+        let mut wp = WordProcessorWidget::new();
+        wp.sync(&mut state.doc, &state.root);
+        wp.model_mut().insert_str(&mut state.doc, "Body text");
+        wp.refresh_blocks(&state.doc);
+        let before = state.doc.get_heads();
+
+        wp.apply_panel_hit(&mut state.doc, PanelHit::ParaAlign("center"));
+        let dispatched = wp
+            .last_dispatched_for_test()
+            .cloned()
+            .expect("the panel dispatched an action");
+
+        // The affordance mutated the document and armed one undo bracket at the
+        // pre-affordance heads (what the host records as a single undo boundary).
+        assert_ne!(state.doc.get_heads(), before, "the affordance mutated the document");
+        let bracket = Widget::take_committed_action(&mut wp).expect("an undo bracket was armed");
+        assert_eq!(bracket, before, "the boundary brackets the pre-affordance heads");
+        assert!(
+            Widget::take_committed_action(&mut wp).is_none(),
+            "the bracket is rising-edge (cleared on read)"
+        );
+
+        // It is the same EncodedAction the palette's align-center spec builds.
+        let resources = Widget::resources(&wp, &state.doc);
+        let from_palette = spec_encoded(&resources[0], "align-center");
+        assert_eq!(
+            dispatched.payload, from_palette.payload,
+            "panel align and palette spec build the same EncodedAction"
+        );
+        // The block really carries the centre alignment.
+        wp.refresh_blocks(&state.doc);
+        let aligned = wp
+            .blocks
+            .iter()
+            .any(|b| matches!(b.attrs.get("align"), Some(AttrVal::Str(s)) if s == "center"));
+        assert!(aligned, "the affordance set the paragraph alignment");
+    }
+
     #[test]
     fn highlight_mark_yields_background_span() {
         let mut state = ui::State::new();
