@@ -5,6 +5,7 @@
 //! `app_root()` is the single integration point used by both the live
 //! winit event loop and the `--shots` offscreen renderer.
 
+pub mod actions;
 pub mod app;
 pub mod customizer;
 pub mod doc;
