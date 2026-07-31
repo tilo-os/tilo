@@ -2069,6 +2069,22 @@ impl WordProcessorWidget {
         self.perform_action(state, action);
     }
 
+    /// Apply a named paragraph style (a style-picker pick) over the current
+    /// paragraph targets as one replayable action: the style attr plus, for a
+    /// built-in, the structural kind / level / ordered.
+    fn dispatch_apply_named_style(&mut self, state: &mut AutoCommit, id: &str) {
+        let blocks = self.inner.paragraph_style_targets(state);
+        if blocks.is_empty() {
+            return;
+        }
+        let (kind, level, ordered) = match crate::styles::structural_kind_for(id) {
+            Some((k, l, o)) => (Some(k), l, o),
+            None => (None, None, None),
+        };
+        let action = crate::actions::apply_named_style_action(blocks, id, kind, level, ordered);
+        self.perform_action(state, action);
+    }
+
     /// Set a block attribute (alignment / line-spacing / style) over the current
     /// target blocks, as one replayable action.
     fn dispatch_block_attr(&mut self, state: &mut AutoCommit, key: &str, value: crate::actions::AttrVal) {
@@ -6872,11 +6888,10 @@ impl WordProcessorWidget {
                 // "Heading 1" yields a *real* heading (present in the outline / TOC),
                 // picking "List Item" a real list item, not merely styled body text.
                 // Custom styles are pure visual presets and leave the kind alone.
-                // Both dispatch as actions under one undo boundary.
-                if let Some((kind, level, ordered)) = crate::styles::structural_kind_for(&id) {
-                    self.dispatch_paragraph_style(state, kind, level, ordered);
-                }
-                self.dispatch_block_attr(state, "style", crate::actions::AttrVal::Str(id));
+                // One combined action: the structural kind (for a built-in) and
+                // the named style attr land together as a single replayable
+                // operation / one undo boundary.
+                self.dispatch_apply_named_style(state, &id);
                 self.refresh_blocks(state);
                 self.needs_commit = true;
                 self.modified = true;

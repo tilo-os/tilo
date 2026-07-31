@@ -141,6 +141,18 @@ pub enum WordProcessorAction {
         level: Option<i64>,
         ordered: Option<bool>,
     },
+    /// Apply a named paragraph style to each of `blocks`: set the `style` attr,
+    /// and — when the style implies a structural kind (a built-in) — the block
+    /// `kind` / `level` / `ordered` too. One action so a style pick is a single
+    /// replayable operation / one undo boundary (rather than a kind write and a
+    /// style write racing as two changes).
+    ApplyNamedStyle {
+        blocks: Vec<String>,
+        style: String,
+        kind: Option<String>,
+        level: Option<i64>,
+        ordered: Option<bool>,
+    },
     /// Set one block attribute (`align`, `page_break_before`, `indent`,
     /// `first_line_indent`, `line_spacing`, `tab_stops`, `style`, image
     /// `width`/`height`/`flip_*`) to `value` on each of `blocks`.
@@ -348,6 +360,30 @@ impl Action for WordProcessorAction {
                 }
             }
 
+            WordProcessorAction::ApplyNamedStyle {
+                blocks,
+                style,
+                kind,
+                level,
+                ordered,
+            } => {
+                let mut sorted = blocks.clone();
+                sorted.sort();
+                let mut dm = DocMut { doc, c: &c, ids: &mut ids };
+                for block in &sorted {
+                    if let Some(k) = kind {
+                        dm.set_kind(block, k);
+                        if let Some(l) = level {
+                            dm.set_attr(block, "level", *l);
+                        }
+                        if let Some(o) = ordered {
+                            dm.set_attr(block, "ordered", *o);
+                        }
+                    }
+                    dm.set_attr(block, "style", style.as_str());
+                }
+            }
+
             WordProcessorAction::SetBlockAttr {
                 region,
                 blocks,
@@ -507,6 +543,24 @@ pub fn set_block_attr_action(
 /// Set alignment (`left`/`center`/`right`/`justify`) on `blocks`.
 pub fn set_align_action(blocks: Vec<String>, align: &str) -> WordProcessorAction {
     set_block_attr_action(RegionKind::Body, blocks, "align", AttrVal::Str(align.to_string()))
+}
+
+/// Apply a named paragraph style (and, for a built-in, its structural kind) to
+/// `blocks` in one action.
+pub fn apply_named_style_action(
+    blocks: Vec<String>,
+    style: &str,
+    kind: Option<&str>,
+    level: Option<i64>,
+    ordered: Option<bool>,
+) -> WordProcessorAction {
+    WordProcessorAction::ApplyNamedStyle {
+        blocks,
+        style: style.to_string(),
+        kind: kind.map(|k| k.to_string()),
+        level,
+        ordered,
+    }
 }
 
 /// Set the paragraph kind/level/ordered on `blocks`.
