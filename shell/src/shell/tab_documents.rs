@@ -292,6 +292,45 @@ mod tests {
         );
     }
 
+    /// Undo in the tab that typed **first**.
+    ///
+    /// The direction is the whole point, and it is not interchangeable
+    /// with the test above. Undoing in the tab that typed *last* passes
+    /// even against a single stack shared by every tab, because the entry
+    /// on top of that shared stack happens to be the right one — the
+    /// assertion holds for a reason that has nothing to do with the tab.
+    /// Undoing in the tab that typed first is the case that separates
+    /// them: on a shared stack the topmost entry is the *other* tab's, so
+    /// Ctrl+Z here reverts against a change graph this document has never
+    /// seen and tab A keeps its text.
+    #[test]
+    fn undo_in_the_tab_that_typed_first_still_reverts_that_tab() {
+        let store = RecordStore::in_memory();
+        let mut shared = AutoCommit::new();
+        let mut a = Tile::notes(TAB_A, &store);
+        let mut b = Tile::notes(TAB_B, &store);
+        a.type_str(&mut shared, "alpha");
+        b.type_str(&mut shared, "beta");
+        a.host.update(&mut shared, &automerge::ROOT);
+        b.host.update(&mut shared, &automerge::ROOT);
+
+        let ctrl = Modifiers::from(winit::keyboard::ModifiersState::CONTROL);
+        let z = key_press(Key::Character(winit::keyboard::SmolStr::new("z")));
+        a.dispatch(&mut shared, &z, &ctrl);
+
+        assert_eq!(
+            tab_body(&store, TAB_A, BODY_KEY).as_deref(),
+            Some(""),
+            "undo in tab A reverts tab A's own typing, even though tab B \
+             typed more recently",
+        );
+        assert_eq!(
+            tab_body(&store, TAB_B, BODY_KEY).as_deref(),
+            Some("beta"),
+            "and leaves tab B's text alone",
+        );
+    }
+
     /// Two tabs, distinct content, restart: each comes back with its own.
     ///
     /// A scratch tab has no file to be found by, so this is the whole of
