@@ -610,17 +610,13 @@ pub struct BooksApp {
     // --- per-frame hit regions --------------------------------------------
     hits: Vec<Hit>,
 
-    /// The document heads captured just before the first `qos_actions` action of
-    /// the current event was dispatched. The host drains this via
-    /// [`Widget::take_committed_action`] to record exactly one undo boundary
-    /// bracketing the action(s) — the same undo path the Ctrl+K palette takes.
-    action_commit_before: Option<Vec<automerge::ChangeHash>>,
-
-    /// The last [`EncodedAction`](qos_actions::EncodedAction) an on-page
-    /// affordance dispatched through [`Self::perform_action`]. Lets a test prove
-    /// an affordance and the Ctrl+K [`ActionSpec`](qos_actions::ActionSpec) build
-    /// the byte-identical action — one source of truth, not two code paths.
-    last_dispatched: Option<qos_actions::EncodedAction>,
+    /// Framework-owned action dispatch. Each on-page affordance dispatches its
+    /// [`EbookAction`](crate::actions::EbookAction) through this: the host
+    /// brackets the undo boundary, applies the action through the executor (so it
+    /// replays byte-identically on peers, exactly as the Ctrl+K palette does), and
+    /// records the last one so a test can prove an affordance and its
+    /// [`ActionSpec`](qos_actions::ActionSpec) build the identical action.
+    actions: ui::ActionHost,
 }
 
 impl BooksApp {
@@ -717,8 +713,7 @@ impl BooksApp {
             layout: None,
             cover_cache: HashMap::new(),
             hits: Vec::new(),
-            action_commit_before: None,
-            last_dispatched: None,
+            actions: ui::ActionHost::new(),
         }
     }
 
@@ -2128,24 +2123,22 @@ impl BooksApp {
     }
 
     /// Dispatch one Books [`EbookAction`](crate::actions::EbookAction) — the
-    /// single mutation path shared with the Ctrl+K palette. The action is applied
-    /// through the qOS action executor (a pinned actor + committed change, so it
-    /// replays byte-identically on peers), exactly as the palette does. The doc
-    /// heads captured just before the first action of the event are stashed so
-    /// the host records **one** undo boundary bracketing it
-    /// ([`Widget::take_committed_action`]).
+    /// single mutation path shared with the Ctrl+K palette. Delegates to the
+    /// framework's [`ActionHost`](ui::ActionHost), which brackets the undo
+    /// boundary and applies the action through the executor (a pinned actor +
+    /// committed change, so it replays byte-identically on peers), exactly as the
+    /// palette does. This app supplies only its domain: the action and its type.
     fn perform_action(&mut self, doc: &mut AutoCommit, action: crate::actions::EbookAction) {
-        if self.action_commit_before.is_none() {
-            // `get_heads` flushes any pending app writes, so the bracket covers
-            // only the action's own change.
-            self.action_commit_before = Some(doc.get_heads());
-        }
-        let encoded = crate::actions::encode(&action);
-        self.last_dispatched = Some(encoded.clone());
-        let mut tx = DiscardTransport;
-        if let Err(e) = qos_actions::dispatch(doc, &action, encoded, &mut tx) {
-            tracing::warn!(error = %e, "ebook action dispatch failed");
-        }
+        self.actions.dispatch(doc, crate::actions::EBOOK_ACTION_TYPE, &action);
+    }
+
+    /// The last [`EncodedAction`](qos_actions::EncodedAction) an on-page
+    /// affordance dispatched, for the affordance == [`ActionSpec`](qos_actions::ActionSpec)
+    /// covenant tests: a control and its Ctrl+K entry must build the identical
+    /// action.
+    #[cfg(test)]
+    fn last_dispatched(&self) -> Option<&qos_actions::EncodedAction> {
+        self.actions.last_dispatched()
     }
 
     /// The presentation context Ctrl+K needs to build the book-level actions
@@ -2457,18 +2450,6 @@ enum NoteEdit {
     Done,
 }
 
-/// The action transport Books installs for its own on-page affordances. Peers
-/// receive annotation changes through ordinary CRDT sync (the executor pins each
-/// action's actor so the change is content-addressed identical to a peer's
-/// replay and dedupes on merge), so the local affordance path has nothing extra
-/// to replicate — this sink drops the envelope. The Ctrl+K palette dispatches
-/// through the host's transport, which a collaborative session swaps for a
-/// peer-aware one.
-struct DiscardTransport;
-impl qos_actions::ActionTransport for DiscardTransport {
-    fn replicate(&mut self, _env: &qos_actions::ActionEnvelope) {}
-}
-
 /// One PAGE pill in the quick-settings popover: a colour scheme the reader can
 /// switch to. Built-in tints and (later) enabled custom schemes both flow
 /// through this so the popover doesn't care which kind it's drawing.
@@ -2515,7 +2496,7 @@ impl Widget for BooksApp {
     /// its annotation action, so it records one undo boundary for it (see
     /// [`Self::perform_action`]). Rising-edge: cleared on read.
     fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.action_commit_before.take()
+        self.actions.take_committed()
     }
 
     fn sync(&mut self, doc: &mut AutoCommit, _path: &ObjId) {
@@ -7458,7 +7439,7 @@ mod interaction_tests {
             .expect("a comment delete button");
         assert!(click(&mut app, &mut doc, del), "delete-comment click handled");
 
-        let dispatched = app.last_dispatched.clone().expect("the button dispatched an action");
+        let dispatched = app.last_dispatched().cloned().expect("the button dispatched an action");
         assert_eq!(dispatched.type_id, spec_encoded.type_id);
         assert_eq!(
             dispatched.payload, spec_encoded.payload,
@@ -7522,7 +7503,7 @@ mod interaction_tests {
 
         // Dispatch the swatch's action through the real handler a click invokes.
         app.dispatch(Action::SetColor(HiColor::Yellow), &mut doc);
-        let dispatched = app.last_dispatched.clone().expect("the swatch dispatched an action");
+        let dispatched = app.last_dispatched().cloned().expect("the swatch dispatched an action");
         assert_eq!(
             dispatched.payload, spec_encoded.payload,
             "the swatch and the palette build the identical EncodedAction",
