@@ -116,12 +116,13 @@ impl ResourceKind {
             ResourceKind::Action => (0, String::new()),
             ResourceKind::Application => (1, String::new()),
             ResourceKind::Note => (2, String::new()),
-            ResourceKind::File => (3, String::new()),
-            ResourceKind::Folder => (4, String::new()),
-            ResourceKind::Creator => (5, String::new()),
-            ResourceKind::Video => (6, String::new()),
-            ResourceKind::Playlist => (7, String::new()),
-            ResourceKind::Custom(s) => (8, s.clone()),
+            ResourceKind::Record => (3, String::new()),
+            ResourceKind::File => (4, String::new()),
+            ResourceKind::Folder => (5, String::new()),
+            ResourceKind::Creator => (6, String::new()),
+            ResourceKind::Video => (7, String::new()),
+            ResourceKind::Playlist => (8, String::new()),
+            ResourceKind::Custom(s) => (9, s.clone()),
         }
     }
 }
