@@ -456,6 +456,14 @@ impl Widget for SettingsApp {
     fn layout_needs_measure(&self) -> bool {
         self.shell.as_ref().is_some_and(|s| s.layout_needs_measure())
     }
+
+    /// Publish the settings resource tree to the shell's one Ctrl+K palette,
+    /// delegating to the [`ResourceProvider`](qos_actions::ResourceProvider) impl
+    /// in [`crate::actions`]. Level-triggered: recomputed each frame from the
+    /// shared document.
+    fn resources(&self, doc: &automerge::AutoCommit) -> Vec<qos_actions::Resource> {
+        <Self as qos_actions::ResourceProvider>::resources(self, doc)
+    }
 }
 
 /// Read the sidebar search query from the document. The field writes either a
