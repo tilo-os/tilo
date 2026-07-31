@@ -212,27 +212,32 @@ impl CalcModel {
             .map(engine::format_number)
     }
 
-    /// Commit `=`: evaluate, push history, update Ans.
-    pub fn commit_equals(&mut self) {
+    /// Commit `=`: evaluate, push history, update Ans. Returns the committed
+    /// [`HistoryEntry`] (a clone) so the caller can dispatch the matching
+    /// [`CommitHistory`](crate::actions::CalculatorAction) action — the shared,
+    /// replayable, undoable path the history list is mutated through. Returns
+    /// `None` when there is nothing to commit (empty or unparseable expression),
+    /// so no action is dispatched.
+    pub fn commit_equals(&mut self) -> Option<HistoryEntry> {
         let trimmed = self.expr.trim().to_string();
         if trimmed.is_empty() {
-            return;
+            return None;
         }
         match engine::evaluate(&trimmed, &self.ctx()) {
             Ok(v) => {
                 let result = engine::format_number(v);
-                self.history.insert(
-                    0,
-                    HistoryEntry { expr: trimmed, result: result.clone() },
-                );
+                let entry = HistoryEntry { expr: trimmed, result: result.clone() };
+                self.history.insert(0, entry.clone());
                 self.history.truncate(64);
                 self.ans = v;
                 self.expr = result;
                 self.after_equals = true;
+                Some(entry)
             }
             Err(_) => {
                 // Leave the expression intact; the result line shows the error.
                 self.after_equals = false;
+                None
             }
         }
     }
@@ -452,7 +457,9 @@ pub fn apply_key(m: &mut CalcModel, key: &Key) {
             // Pop one token-ish chunk: a trailing `name(` deletes whole.
             pop_token(&mut m.expr);
         }
-        Key::Equals => m.commit_equals(),
+        Key::Equals => {
+            m.commit_equals();
+        }
         Key::ToggleSign => {
             if m.expr.trim().is_empty() {
                 m.expr = "-".into();

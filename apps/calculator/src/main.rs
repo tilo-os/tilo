@@ -71,6 +71,10 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (state, autosave) = ui::persist::open("dev.qos.calculator");
     #[allow(unused_mut)]
     let mut app = ui::App::new(state, calculator::app_root()).with_autosave(autosave);
+    // Register the calculator's action decoder so the shell's Ctrl+K palette and
+    // remote replay can decode + replay the same history / graph actions the
+    // on-screen affordances dispatch.
+    calculator::actions::register(app.action_registry_mut());
     // Widget-debug overlays (bounds outline + widget-name labels) are a
     // development aid only. The toolkit's `App` turns them on from the
     // `QUICK_UI_DEBUG` env var alone, so a var inherited from the launching
