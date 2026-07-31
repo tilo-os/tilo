@@ -665,10 +665,16 @@ def main() -> int:
 
 def wait_for_toplevel(s: Session, app_id: str, since: set[int],
                       timeout: float = APP_TIMEOUT_S) -> dict | None:
-    """A toplevel for `app_id` that was not already there."""
+    """A toplevel for `app_id` in a tab that was not already there.
+
+    Keyed on the tab, not on the wayland surface: a `wl_surface`'s
+    protocol id is per-client, so two clients both hold low ids and
+    "a surface id I have not seen" is not the same question as "a window
+    that was not there".
+    """
     return wait_for(
         lambda: next((t for t in s.foreign_tabs()
-                      if t["app_id"] == app_id and t["surface_id"] not in since),
+                      if t["app_id"] == app_id and t["tab_id"] not in since),
                      None),
         timeout=timeout, interval=0.5)
 
@@ -685,7 +691,7 @@ def wait_for_paint(s: Session, surface_id: int, timeout: float = APP_TIMEOUT_S) 
 
 def run(host: Session, peer: Session, shots: str) -> None:
     step("1.", "open an app from the palette, and watch it paint")
-    before = {t["surface_id"] for t in host.foreign_tabs()}
+    before = {t["tab_id"] for t in host.foreign_tabs()}
     rows = host.query_palette(
         WP_NAME, until=lambda r: any(WP_NAME in x["label"] for x in r))
     note(f"palette rows: {[r['label'] for r in rows][:5]}")
@@ -716,8 +722,7 @@ def run(host: Session, peer: Session, shots: str) -> None:
     step("2.", "activate a document, and it comes up in the app that owns it")
     groups_before = [g["id"] for g in host.groups()]
     selected_group_before = host.active_group_id()
-    tabs_before = {g["id"]: len(g["tabs"]) for g in host.groups()}
-    before = {t["surface_id"] for t in host.foreign_tabs()}
+    before = {t["tab_id"] for t in host.foreign_tabs()}
     rows = host.query_palette(
         DOC_STEM, until=lambda r: any(DOC_STEM in x["label"] for x in r))
     note(f"palette rows: {[(r['group'], r['label']) for r in rows][:5]}")
