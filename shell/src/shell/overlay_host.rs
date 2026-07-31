@@ -10677,6 +10677,129 @@ mod tests {
         );
     }
 
+    /// **The gesture a room starting empty depends on.**
+    ///
+    /// A room begins with nothing in it, which is only workable if moving
+    /// one of your own records into it costs one step. That step is this:
+    /// Super+K, type the name, and a record living in *another* room is
+    /// among the answers — labelled with where it lives — and Enter
+    /// brings it here.
+    ///
+    /// Drives the whole production chain rather than the provider alone:
+    /// `handle_event` → `open_palette_with_scope` →
+    /// `refresh_search_results` → `SearchRegistry::query_grouped` →
+    /// `RecordsProvider` → palette rows → `activate_selected_result` →
+    /// the row's own `on_open`.
+    #[test]
+    fn super_k_finds_a_record_from_another_room_and_enter_brings_it_here() {
+        use crate::shell::chrome_state::SearchScope;
+        use ui::record::{RecordId, RecordKind};
+
+        let mut h = build_harness();
+        // Two rooms from the fixture tree: the one in front of the user
+        // and one they are not in.
+        let (here, there, there_name) = {
+            let st = h.chrome.borrow();
+            let tree = st.tree();
+            let here = tree.active_workspace().expect("an active room").room;
+            let other = tree
+                .workspaces
+                .iter()
+                .find(|w| w.room != here)
+                .expect("the fixture has more than one room");
+            (here, other.room, other.name.clone())
+        };
+
+        // A record that lives over there and nowhere else.
+        let book = RecordId::minted();
+        let kind = RecordKind::new("field-guide");
+        h.host
+            .room_records()
+            .borrow_mut()
+            .reference(there, &book, &kind);
+        assert!(
+            !h.host.room_records().borrow().holds(here, &book),
+            "precondition: this room starts without it"
+        );
+
+        let mut doc = AutoCommit::new();
+        let sup = Modifiers::from(ModifiersState::SUPER);
+        assert!(pump(&mut h, &key_press(Key::Character("k".into())), &sup));
+        assert_eq!(h.chrome.borrow().search_scope, SearchScope::All);
+        h.host.palette.set_query("field-guide");
+        h.host.refresh_search_results(&doc, &automerge::ROOT);
+
+        let listing = || {
+            h.host
+                .search_results
+                .iter()
+                .map(|r| (r.provider_id.clone(), r.title.clone(), r.subtitle.clone()))
+                .collect::<Vec<_>>()
+        };
+        let idx = h
+            .host
+            .search_results
+            .iter()
+            .position(|r| r.provider_id == "records")
+            .unwrap_or_else(|| {
+                panic!(
+                    "a record living in another room must be findable from \
+                     this one; got {:?}",
+                    listing()
+                )
+            });
+        assert_eq!(
+            h.host.search_results[idx].subtitle.as_deref(),
+            Some(format!("In {there_name} · field-guide").as_str()),
+            "the row has to say where the record lives — without it, two \
+             rooms' records are indistinguishable rows"
+        );
+        // The row the palette paints, not just the result behind it.
+        let title = h.host.search_results[idx].title.clone();
+        let subtitle = h.host.search_results[idx].subtitle.clone();
+        assert!(
+            h.host
+                .palette
+                .visible_entries()
+                .iter()
+                .any(|e| e.label == title && e.description == subtitle),
+            "the record must reach the palette's own rows: {:?}",
+            h.host
+                .palette
+                .visible_entries()
+                .iter()
+                .map(|e| (&e.label, &e.description))
+                .collect::<Vec<_>>()
+        );
+
+        // Enter on that row.
+        h.host.palette.set_cursor(idx);
+        h.host
+            .activate_selected_result(&mut doc, &automerge::ROOT);
+
+        let records = h.host.room_records();
+        let records = records.borrow();
+        assert!(
+            records.holds(here, &book),
+            "activating the row must bring the record into this room"
+        );
+        assert!(
+            records.holds(there, &book),
+            "and leave it in the room it came from: this is a reference, \
+             not a move"
+        );
+        let ids = |room| -> Vec<RecordId> {
+            records.records_in(room).into_iter().map(|c| c.id).collect()
+        };
+        assert_eq!(
+            ids(here),
+            ids(there),
+            "both rooms must name the same record id — a copy would have \
+             minted a new one, and the two would diverge from the next \
+             edit onward"
+        );
+    }
+
     /// The app-scope pill has to name the focused app *as an app*, or it
     /// collides with the kind-filter chip strip painted directly above
     /// it. With Notes focused the strip carried a `Notes` chip and the
