@@ -2804,6 +2804,29 @@ impl ShellOverlayHost {
         )
     }
 
+    /// Every visible palette row with its section and its subtitle.
+    ///
+    /// [`Self::palette_snapshot`] carries the label only, and the label
+    /// of a content hit is the *document's* title — the part that says
+    /// which words matched is the subtitle. So an observer reading only
+    /// labels cannot tell a search that matched inside a document from
+    /// one that merely matched its name, which is the whole difference
+    /// between the two search chords.
+    pub fn palette_row_details(&self) -> Vec<(String, String, Option<String>, Option<String>)> {
+        self.palette
+            .visible_entries()
+            .into_iter()
+            .map(|e| {
+                (
+                    e.id.clone(),
+                    e.label.clone(),
+                    e.description.clone(),
+                    e.group.clone(),
+                )
+            })
+            .collect()
+    }
+
     /// Focus the palette's query field. The live open path
     /// ([`Self::open_palette_with_scope`]) does this; screenshot
     /// harnesses that force `palette_visible` need it too or they

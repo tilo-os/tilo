@@ -384,6 +384,13 @@ class Session:
         strip = self.active_strip()
         return self.tree().get("active_group", {}).get(str(strip["id"]))
 
+    def active_tab_id(self):
+        gid = self.active_group_id()
+        for g in self.groups():
+            if g["id"] == gid:
+                return g["active_tab"]
+        return None
+
     def foreign_frames(self) -> list[dict]:
         return ok(call(self.sock, {"op": "foreign_frames"}))["foreign_frames"]["frames"]
 
@@ -705,6 +712,80 @@ def run(host: Session, peer: Session, shots: str) -> None:
     note(f"frames taken from the client: {painted}")
     claim("the app painted its own pixels", painted > 0, True)
     host.snapshot(os.path.join(shots, "02-app-open.png"))
+
+    step("2.", "activate a document, and it comes up in the app that owns it")
+    groups_before = [g["id"] for g in host.groups()]
+    selected_group_before = host.active_group_id()
+    tabs_before = {g["id"]: len(g["tabs"]) for g in host.groups()}
+    before = {t["surface_id"] for t in host.foreign_tabs()}
+    rows = host.query_palette(
+        DOC_STEM, until=lambda r: any(DOC_STEM in x["label"] for x in r))
+    note(f"palette rows: {[(r['group'], r['label']) for r in rows][:5]}")
+    hit = host.selected_row() or {}
+    claim("the palette's top row is the document",
+          DOC_STEM in hit.get("label", ""), True)
+    claim("and it is offered as a file, not as an app",
+          hit.get("group"), "Files")
+    host.snapshot(os.path.join(shots, "03-palette-document.png"))
+    host.activate_selected()
+
+    doc_win = wait_for_toplevel(host, WP_ID, before)
+    claim("activating it started a window", bool(doc_win), True)
+    record = "file:" + host.doc_path
+    opened = wait_for(
+        lambda: next((d for d in host.chrome().get("open_documents") or []
+                      if d["record"] == record), None), timeout=APP_TIMEOUT_S)
+    note(f"open documents: {json.dumps(host.chrome().get('open_documents'))}")
+    claim("the desktop records the document as open", bool(opened), True)
+    claim("in the package that declares its file type, not the other one",
+          (opened or {}).get("package_id"), WP_ID)
+    if doc_win:
+        claim("bound to the window that arrived",
+              (opened or {}).get("surface_id"), doc_win["surface_id"])
+        painted = wait_for_paint(host, doc_win["surface_id"])
+        note(f"frames taken from the document's client: {painted}")
+        claim("the document's window painted", painted > 0, True)
+
+    # The app is handed a path, not access to it. Both decisions have to
+    # be made, and this is the second one: without the grant the app
+    # opens its argument and gets ENOENT inside its own sandbox.
+    grants = [c for c in (host.active_workspace().get("capabilities") or [])
+              if c.get("effect") == "Grant"
+              and json.dumps(c.get("subject")).count(WP_ID)]
+    note(f"grants addressed to the app: {json.dumps(grants)}")
+    claim("the workspace grants the app read on exactly that file",
+          [c["scope"] for c in grants], [{"FsPath": host.doc_path}])
+    host.snapshot(os.path.join(shots, "04-document-open.png"))
+
+    # Asking for the same document again is asking to look at it, not to
+    # start a second copy of the app on it.
+    windows_before = len([t for t in host.foreign_tabs() if t["app_id"] == WP_ID])
+    host.query_palette(DOC_STEM, until=lambda r: any(DOC_STEM in x["label"] for x in r))
+    host.activate_selected()
+    host.settle(2.0)
+    claim("re-activating the document focuses its window instead of opening a second",
+          len([t for t in host.foreign_tabs() if t["app_id"] == WP_ID]), windows_before)
+    if doc_win:
+        claim("and the window it focused is the document's",
+              host.active_tab_id(), doc_win["tab_id"])
+
+    step("4.", "where the windows went")
+    # The rule is the shell's, not this script's: a new window goes
+    # immediately right of the selection, and joins it as a tab when the
+    # selection is one tab of several. Both cases are exercised, and both
+    # are read back off the tree.
+    note(f"strip before the app opened: groups {groups_before}, "
+         f"selected {selected_group_before}")
+    if win:
+        sel_group = next((g for g in host.groups() if g["id"] == win["group_id"]), None)
+        claim("the app joined the group that was selected, which was tabbed",
+              win["group_id"], selected_group_before)
+        claim("as a tab immediately right of the one that was selected",
+              win["tab_index"], 1)
+        claim("and it did not split the strip into another column",
+              [g["id"] for g in host.groups()], groups_before)
+        note(f"that group's tabs now: {[t['title'] for t in (sel_group or {}).get('tabs', [])]}")
+    host.snapshot(os.path.join(shots, "05-placement-tabbed.png"))
 
 
 if __name__ == "__main__":

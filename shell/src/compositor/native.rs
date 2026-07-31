@@ -389,6 +389,18 @@ impl<'a> ControlState for FrameBuilderControlState<'a> {
                 "capability": chrome.ws_grant_draft.choice().label(),
                 "expiry": format!("{:?}", chrome.ws_grant_draft.expiry),
             },
+            // Which documents this session has open, and the window each
+            // one landed in. A tab records the app it hosts, not the
+            // file it is showing, so this is the only place the binding
+            // between a window and its document is legible from outside.
+            "open_documents": crate::shell::doc_open::open_documents()
+                .into_iter()
+                .map(|(record, package_id, surface)| serde_json::json!({
+                    "record": record,
+                    "package_id": package_id,
+                    "surface_id": surface,
+                }))
+                .collect::<Vec<_>>(),
             "palette": palette_json(self.fb),
         })
     }
@@ -400,14 +412,23 @@ impl<'a> ControlState for FrameBuilderControlState<'a> {
 /// this keystroke do next", and a socket-driven harness cannot see it
 /// any other way.
 fn palette_json(fb: &FrameBuilder) -> serde_json::Value {
-    let (visible, query, selected, rows) = fb.host().palette_snapshot();
+    let (visible, query, selected, _) = fb.host().palette_snapshot();
     serde_json::json!({
         "visible": visible,
         "query": query,
         "selected_id": selected,
-        "rows": rows
+        "rows": fb.host()
+            .palette_row_details()
             .into_iter()
-            .map(|(id, label)| serde_json::json!({ "id": id, "label": label }))
+            .map(|(id, label, description, group)| serde_json::json!({
+                "id": id,
+                "label": label,
+                // The snippet a content match came back with. Without it
+                // "the search found this document" and "the search found
+                // these words inside it" are the same observation.
+                "description": description,
+                "group": group,
+            }))
             .collect::<Vec<_>>(),
     })
 }

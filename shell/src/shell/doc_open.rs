@@ -465,6 +465,32 @@ pub fn clear_open_documents() {
         .clear();
 }
 
+/// One entry of [`open_documents`]: which record, opened in which
+/// package, showing in which wayland surface (`None` while starting).
+pub type OpenDocumentView = (String, String, Option<u64>);
+
+/// What this session has open, for anything that has to report it.
+///
+/// The binding of a window to the document it holds is not derivable
+/// from the workspace tree — a tab records its app, not its content — so
+/// without this an observer can see that *an* app window appeared and
+/// not that it is the one showing this file. `state_dump` publishes it
+/// for that reason.
+pub fn open_documents() -> Vec<OpenDocumentView> {
+    OPEN_DOCUMENTS
+        .lock()
+        .expect("OPEN_DOCUMENTS poisoned")
+        .iter()
+        .map(|d| {
+            (
+                d.record.as_str().to_string(),
+                d.package_id.clone(),
+                d.surface,
+            )
+        })
+        .collect()
+}
+
 /// Attribute a freshly-adopted toplevel to the document it was launched
 /// for, if it was launched for one.
 ///

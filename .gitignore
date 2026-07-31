@@ -43,3 +43,6 @@ keys/*.private.pem
 .claude/worktrees/
 .claude/app-status.md
 .claude/*.log
+
+# Python bytecode from the demo scripts.
+scripts/__pycache__/
