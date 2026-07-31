@@ -921,11 +921,17 @@ def run(host: Session, peer: Session, shots: str) -> None:
     # The invite card is a modal sitting over the middle of the screen —
     # the same place the settings modal puts its fields — so it has to be
     # gone before anything else is clicked, not merely asked to go.
-    for _ in range(4):
+    for i in range(4):
         if host.chrome()["peer_sync"]["invite_token"] is None:
             break
         host.key("Escape")
         host.settle(0.4)
+        if i == 1:
+            # Escape is the card's only dismissal. If the seat is
+            # delivering keys to an app window instead of the chrome, it
+            # never arrives — so put the pointer on the desktop first,
+            # which is what a user reaching for "somewhere else" does.
+            host.click("ShellOverlayHost[0]/Container[0]/Stack[0]/DesktopBackdrop[0]")
     claim("the invite card dismisses",
           host.chrome()["peer_sync"]["invite_token"], None)
 
@@ -1009,7 +1015,8 @@ def run(host: Session, peer: Session, shots: str) -> None:
 
     step("7.", "both edit, and the history carries both of them")
     host_mark = "Quarterly review"
-    rename_active_workspace(host, host_mark)
+    host_edit = try_rename(host, host_mark)
+    claim("the host can edit the room it owns", host_edit, True)
     claim("the host's edit landed on the host",
           host.active_workspace()["name"], host_mark)
     crossed = wait_for(lambda: peer.active_workspace()["name"] == host_mark)
@@ -1019,7 +1026,8 @@ def run(host: Session, peer: Session, shots: str) -> None:
         note("the host's edit never crossed; nothing downstream would mean anything")
 
     peer_mark = "Quarterly review — with notes"
-    rename_active_workspace(peer, peer_mark)
+    peer_edit = try_rename(peer, peer_mark)
+    claim("a guest can edit the room it was invited into", peer_edit, True)
     claim("the peer's edit landed on the peer",
           peer.active_workspace()["name"], peer_mark)
     back = wait_for(lambda: host.active_workspace()["name"] == peer_mark)
@@ -1086,6 +1094,21 @@ def run(host: Session, peer: Session, shots: str) -> None:
     host.key("Escape")
     host.settle()
     host.snapshot(os.path.join(shots, "16-final.png"))
+
+
+def try_rename(s: Session, name: str) -> bool:
+    """Rename, reporting failure rather than ending the run.
+
+    Everything after this step is about what the edits did, and a step
+    that could not be performed is a fact those later claims should be
+    read against — not a reason to stop printing them.
+    """
+    try:
+        rename_active_workspace(s, name)
+        return True
+    except RuntimeError as e:
+        note(f"{e}")
+        return False
 
 
 def rename_active_workspace(s: Session, name: str) -> None:
