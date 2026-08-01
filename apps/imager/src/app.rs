@@ -1876,6 +1876,27 @@ mod tests {
         app.handle_event(ev, 1.0, &m, doc, &automerge::ROOT, &mut h, &mut ft, node, &taffy);
     }
 
+    /// Click at a point: move the pointer there (so hover state settles), then
+    /// press — exactly the real winit sequence the compositor delivers.
+    fn click_at(app: &mut ImagerApp, doc: &mut AutoCommit, p: Point) {
+        feed(app, doc, &cursor_ev(p.x, p.y));
+        feed(app, doc, &click_ev());
+    }
+
+    fn center(r: Rect) -> Point {
+        Point::new((r.x0 + r.x1) / 2.0, (r.y0 + r.y1) / 2.0)
+    }
+
+    /// The rect of the first hit matching `pred`, from this frame's layout.
+    fn hit_rect(app: &ImagerApp, pred: impl Fn(&Hit) -> bool) -> Rect {
+        app.compute_layout()
+            .hits
+            .into_iter()
+            .find(|(_, h)| pred(h))
+            .unwrap_or_else(|| panic!("expected a matching hit target this frame"))
+            .0
+    }
+
     #[test]
     fn sync_reads_demo_state_at_source_step() {
         let (app, _doc) = seeded_app();
@@ -1921,6 +1942,66 @@ mod tests {
         assert_eq!(app.step, Step::Customize);
         app.advance(&mut doc);
         assert_eq!(app.step, Step::Confirm);
+    }
+
+    /// The primary interaction, proven end to end by clicking the real
+    /// on-screen targets: walk Source → Drive → Customize → Confirm → Write,
+    /// then let the (simulated) job finish and land on Done. Every transition
+    /// goes through the actual hit-testing + dispatch path, not a shortcut.
+    #[test]
+    fn clicking_through_the_wizard_reaches_write_then_done() {
+        let (mut app, mut doc) = seeded_app();
+        app.rect = Rect::new(0.0, 0.0, 1180.0, 820.0);
+        assert_eq!(app.step, Step::Source);
+
+        // Source → Drive: click Continue.
+        let primary = app.compute_layout().primary.unwrap();
+        click_at(&mut app, &mut doc, center(primary));
+        assert_eq!(app.step, Step::Drive);
+
+        // Pick the USB stick by clicking its card.
+        let usb = hit_rect(&app, |h| matches!(h, Hit::Target(0)));
+        click_at(&mut app, &mut doc, center(usb));
+        assert_eq!(app.selected, Some(0));
+
+        // Drive → Customize (the seeded qOS image is customizable).
+        let primary = app.compute_layout().primary.unwrap();
+        click_at(&mut app, &mut doc, center(primary));
+        assert_eq!(app.step, Step::Customize);
+
+        // Customize → Confirm.
+        let primary = app.compute_layout().primary.unwrap();
+        click_at(&mut app, &mut doc, center(primary));
+        assert_eq!(app.step, Step::Confirm);
+
+        // Arm the write: click the typed-name field, then type the device name.
+        let field = hit_rect(&app, |h| matches!(h, Hit::ConfirmField));
+        click_at(&mut app, &mut doc, center(field));
+        assert!(app.confirm_focused);
+        for s in ["s", "d", "b"] {
+            feed(&mut app, &mut doc, &char_ev(s));
+        }
+        assert!(app.confirm_matches(), "typed name armed the write");
+
+        // Confirm → Write: click the (now-enabled) primary button.
+        let primary = app.compute_layout().primary.unwrap();
+        click_at(&mut app, &mut doc, center(primary));
+        assert_eq!(app.step, Step::Write);
+        assert_eq!(app.progress.phase, JobPhase::Writing);
+        assert!(app.job_rx.is_some());
+
+        // The job reports success → the flow lands on the Done station. (Drive
+        // the drain with a terminal progress so the test is deterministic and
+        // never waits on the worker thread.)
+        let (tx, rx) = std::sync::mpsc::channel();
+        tx.send(Progress { phase: JobPhase::Success, write_frac: 1.0, verify_frac: 1.0, rate_bps: 0 }).unwrap();
+        app.job_rx = Some(rx);
+        app.drain_job(&mut doc);
+        // Keep the sender alive past the drain: dropping it first would look like
+        // the worker died and be reported as a failure rather than success.
+        drop(tx);
+        assert_eq!(app.step, Step::Done);
+        assert_eq!(app.progress.phase, JobPhase::Success);
     }
 
     #[test]
