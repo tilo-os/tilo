@@ -461,7 +461,10 @@ pub fn build_bwrap_argv_for_entry(
     // fed by no manifest field — see `crate::profile` for what may go in
     // it and why. This is where the per-manifest `sandbox.fs.read` list
     // used to be expanded and bound; a package now names nothing.
-    crate::profile::push_system_profile(&mut argv);
+    crate::profile::push_system_profile(
+        &mut argv,
+        egress_decision(manifest, capabilities).shares_host_network(),
+    );
 
     // User-granted capabilities. These come after the system profile so
     // a path the user granted read-write wins over the same path the
