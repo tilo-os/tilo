@@ -21,7 +21,8 @@ use winit::keyboard::{Key, NamedKey};
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
-use ui::widget::{ModalDialog, Widget};
+use ui::icons::Icon;
+use ui::widget::{EmptyState, ModalDialog, Widget};
 use std::cell::Cell;
 use std::rc::Rc;
 
@@ -1005,7 +1006,16 @@ impl VpnApp {
         fill_round(scene, t, d, 0.0, theme.tokens.colors.surfaces.base);
 
         let Some(c) = self.vault.selected_conn() else {
-            text_w(tr, scene, t, "Select a connection", 16.0, theme.text_dim, d.x0 + 24.0, d.y0 + 24.0, TextWeight::Regular);
+            // Composed zero-state centered in the detail pane. Distinguishes
+            // "no tunnels yet" (a real onboarding prompt) from the transient
+            // "nothing selected" case. The two Add affordances already live in
+            // the header and footer, so this stays a non-interactive prompt.
+            let (title, message): (&str, &str) = if self.vault.connections.is_empty() {
+                ("No VPN connections", "Add a tunnel or import a .conf / .ovpn file to connect.")
+            } else {
+                ("Select a connection", "Choose a tunnel from the list to see its status and controls.")
+            };
+            EmptyState::paint(scene, t, tr, theme, d, Some(Icon::Shield), title, Some(message), None, Point::ZERO);
             return;
         };
         let dinner = Rect::new(d.x0 + 24.0, d.y0 + 24.0, d.x1 - 24.0, d.y1 - 24.0);
