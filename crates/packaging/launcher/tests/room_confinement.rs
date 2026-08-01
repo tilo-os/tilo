@@ -311,22 +311,51 @@ fn the_read_profile_is_all_there_is_and_it_is_read_only() {
         );
     }
 
-    // Inside the profile: readable, and not writable. `/etc/ld.so.cache`
-    // is bound because a dynamically-linked app needs it — and an app
-    // that could rewrite it would choose what every later launch loads.
+    // Inside the profile: readable.
     let read = run_in_room(payload.path(), Some("room-a"), &["readdir", "/usr/share/fonts"]);
     assert!(
         read.starts_with("OK "),
         "the profile must actually deliver fonts: {read}"
     );
-    let write = run_in_room(
+
+    // And not writable. An app that could rewrite `/etc/ld.so.cache`
+    // would choose what every later launch loads, and one that could
+    // drop a font file could do it for every other app on the machine.
+    // Asserted by attempting the write, not by reading the bind flag
+    // back out of an argv.
+    for target in [
+        "/usr/share/fonts/qos-confinement-probe",
+        "/etc/ld.so.cache",
+        "/usr/lib64/qos-confinement-probe.so",
+    ] {
+        let line = run_in_room(
+            payload.path(),
+            Some("room-a"),
+            &["writeabs", target, "owned"],
+        );
+        assert!(
+            line.starts_with("ERR "),
+            "{target} must not be writable: {line}"
+        );
+        assert!(
+            !std::path::Path::new(target)
+                .metadata()
+                .map(|m| m.len() == 5)
+                .unwrap_or(false),
+            "{target} was actually modified on the host"
+        );
+    }
+
+    // The app's own directory is writable, so the failures above are the
+    // read-only mount rather than a fixture that cannot write at all.
+    let ok = run_in_room(
         payload.path(),
         Some("room-a"),
-        &["read", "/etc/ld.so.cache"],
+        &["writeabs", "/run/qos/app/probe", "owned"],
     );
     assert!(
-        write.starts_with("OK ") || write.starts_with("ERR /etc/ld.so.cache InvalidData"),
-        "the loader cache must be readable: {write}"
+        ok.starts_with("WROTE "),
+        "the app's own directory must be writable: {ok}"
     );
 }
 

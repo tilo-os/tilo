@@ -5,6 +5,7 @@
 // list is not proof. Every line it prints is the answer a syscall gave.
 //
 //   write <relative path> <contents>   write inside $QOS_APP_DIR
+//   writeabs <path> <contents>         write to an absolute path
 //   read  <path>                       read it, print OK/ERR
 //   readdir <path>                     list it, print OK/ERR
 //   env   <name>                       print the variable's value
@@ -25,6 +26,13 @@ fn main() {
                 let _ = std::fs::create_dir_all(parent);
             }
             match std::fs::write(&path, args[2].as_bytes()) {
+                Ok(()) => writeln!(out, "WROTE {}", path.display()).unwrap(),
+                Err(e) => writeln!(out, "ERR {} {}", path.display(), e.kind_str()).unwrap(),
+            }
+        }
+        Some("writeabs") => {
+            let path = std::path::Path::new(&args[1]);
+            match std::fs::write(path, args[2].as_bytes()) {
                 Ok(()) => writeln!(out, "WROTE {}", path.display()).unwrap(),
                 Err(e) => writeln!(out, "ERR {} {}", path.display(), e.kind_str()).unwrap(),
             }
