@@ -690,8 +690,9 @@ fn execute_locked_action(action: &PlannedAction, lock: &mut LockController) {
 
 /// Re-paint the current scene into a fresh `OffscreenRenderer` and
 /// encode the resulting RGBA buffer as a PNG at `path`. Best-effort:
-/// every failure path logs to stderr and returns, so an executor
-/// invocation never panics or unwinds back into the calloop pump.
+/// a bad viewport, a missing GPU adapter, and every I/O and encoder
+/// failure log to stderr and return, so an executor invocation does not
+/// take the calloop pump down with it.
 ///
 /// Split out of `execute_planned_action` so unit tests can exercise
 /// the snapshot path against a hand-built `FrameBuilder` without going
@@ -2440,11 +2441,10 @@ mod tests {
     /// "wrote only a header" failure mode.
     ///
     /// Skipped on environments without a wgpu adapter (CI without
-    /// llvmpipe) because `OffscreenRenderer::new` panics; the executor
-    /// itself catches that panic so the assertion would silently pass
-    /// without producing a file — we explicitly check for the file's
-    /// existence and skip the rest gracefully if the renderer was
-    /// unavailable.
+    /// llvmpipe): the executor logs and returns rather than writing a
+    /// file, so the pixel assertions would have nothing to run against.
+    /// We check for the file's existence and skip the rest gracefully
+    /// if the renderer was unavailable.
     #[test]
     fn execute_snapshot_writes_a_png_at_path() {
         let tmpdir = tempfile::tempdir().expect("create tempdir for snapshot test");
