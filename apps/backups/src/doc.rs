@@ -24,6 +24,7 @@
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ReadDoc, ScalarValue, Value};
+use serde::{Deserialize, Serialize};
 
 use crate::model::{RetentionPolicy, View};
 
@@ -153,16 +154,30 @@ impl BackupsDoc {
         }
     }
 
-    /// Adjust one retention field by `delta`, clamped to `[0, 999]`.
-    pub fn bump_policy(doc: &mut AutoCommit, root: &ObjId, field: PolicyField, delta: i64) {
-        let key = field.key();
-        let cur = Self::get_int(doc, root, key).unwrap_or(0);
-        let next = (cur + delta).clamp(0, 999);
-        let _ = doc.put(root, key, next);
+    /// Read one retention field's stored count, clamped to `[0, 999]`. A missing
+    /// or foreign-typed key falls back to the seeded default for that class, so
+    /// this reads cleanly against a fresh (un-seeded) document.
+    pub fn retention(doc: &AutoCommit, root: &ObjId, field: PolicyField) -> u32 {
+        let d = RetentionPolicy::default();
+        let default = match field {
+            PolicyField::Hourly => d.hourly,
+            PolicyField::Daily => d.daily,
+            PolicyField::Weekly => d.weekly,
+            PolicyField::Monthly => d.monthly,
+        } as i64;
+        Self::get_int(doc, root, field.key()).unwrap_or(default).clamp(0, 999) as u32
+    }
+
+    /// Set one retention field to an absolute `count`, clamped to `[0, 999]`.
+    /// This is the sole document write behind the retention-policy action (see
+    /// `crate::actions`); the on-screen +/- affordances resolve their target
+    /// count at authoring time and dispatch that absolute set.
+    pub fn set_retention(doc: &mut AutoCommit, root: &ObjId, field: PolicyField, count: u32) {
+        let _ = doc.put(root, field.key(), (count as i64).clamp(0, 999));
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PolicyField {
     Hourly,
     Daily,
@@ -239,13 +254,25 @@ mod tests {
     }
 
     #[test]
-    fn bump_policy_clamps() {
+    fn set_retention_clamps_and_round_trips() {
         let mut doc = AutoCommit::new();
         BackupsDoc::seed(&mut doc, &ROOT);
-        BackupsDoc::bump_policy(&mut doc, &ROOT, PolicyField::Daily, -100);
-        assert_eq!(BackupsDoc::policy(&doc, &ROOT).daily, 0);
-        BackupsDoc::bump_policy(&mut doc, &ROOT, PolicyField::Daily, 5);
-        assert_eq!(BackupsDoc::policy(&doc, &ROOT).daily, 5);
+        // Over-large values clamp to the ceiling; the getter agrees with policy().
+        BackupsDoc::set_retention(&mut doc, &ROOT, PolicyField::Daily, 5000);
+        assert_eq!(BackupsDoc::retention(&doc, &ROOT, PolicyField::Daily), 999);
+        assert_eq!(BackupsDoc::policy(&doc, &ROOT).daily, 999);
+        // An ordinary set round-trips exactly.
+        BackupsDoc::set_retention(&mut doc, &ROOT, PolicyField::Daily, 5);
+        assert_eq!(BackupsDoc::retention(&doc, &ROOT, PolicyField::Daily), 5);
+    }
+
+    #[test]
+    fn retention_reads_default_before_seed() {
+        // The action's change-guard reads a field's current value even against a
+        // fresh doc; it must fall back to the class default, not 0.
+        let doc = AutoCommit::new();
+        assert_eq!(BackupsDoc::retention(&doc, &ROOT, PolicyField::Daily), 7);
+        assert_eq!(BackupsDoc::retention(&doc, &ROOT, PolicyField::Hourly), 24);
     }
 
     #[test]
