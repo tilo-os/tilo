@@ -15,7 +15,7 @@
 
 use std::collections::HashMap;
 
-use automerge::{AutoCommit, ChangeHash, ObjId};
+use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -32,8 +32,6 @@ use ui::widget::{
     SegmentedFace, SidebarDrawer, TextInput, Toggle, ToggleFace, ToggleGroup, Widget,
 };
 
-use qos_actions::{ActionEnvelope, ActionTransport, EncodedAction};
-
 use crate::actions::FirewallAction;
 use crate::backend::{Backend, Mode};
 use crate::doc::FirewallDoc;
@@ -41,18 +39,6 @@ use crate::model::{
     Action, FirewallConfig, Matcher, Proto, Rule, RuleId, ServiceCatalog, Target, Zone, ZoneKind,
 };
 use crate::paint;
-
-/// The transport the firewall installs for its own on-screen affordances. Peers
-/// receive rule/zone edits through ordinary CRDT sync (the executor pins each
-/// action's actor, so the change is content-addressed identical to a peer's
-/// replay and dedupes on merge), so the local affordance path has nothing extra
-/// to replicate — this sink drops the envelope. The Ctrl+K palette dispatches
-/// through the host's transport, which a collaborative session swaps for a
-/// peer-aware one.
-struct DiscardTransport;
-impl ActionTransport for DiscardTransport {
-    fn replicate(&mut self, _env: &ActionEnvelope) {}
-}
 
 // ---- geometry constants -------------------------------------------------
 const HEADER_H: f64 = 60.0;
@@ -234,13 +220,11 @@ pub struct FirewallApp {
     /// unavailable state instead of any fabricated ruleset.
     available: bool,
 
-    /// The document heads captured just before the first action of an event, so
-    /// the host records exactly **one** undo boundary bracketing it
-    /// ([`Widget::take_committed_action`]). Rising-edge: cleared on read.
-    action_commit_before: Option<Vec<ChangeHash>>,
-    /// The most recently dispatched action's wire form. Lets a test prove an
-    /// on-screen affordance builds the same [`EncodedAction`] the palette does.
-    last_dispatched: Option<EncodedAction>,
+    /// Framework-owned action dispatch: every on-screen affordance routes its
+    /// [`FirewallAction`] through here so it brackets exactly **one** undo
+    /// boundary, encodes under [`FIREWALL_ACTION_TYPE`](crate::actions::FIREWALL_ACTION_TYPE),
+    /// and replays byte-identically on peers — the same path Ctrl+K takes.
+    actions: ui::ActionHost,
 }
 
 impl FirewallApp {
@@ -285,8 +269,7 @@ impl FirewallApp {
             last_json: None,
             seeded: false,
             available,
-            action_commit_before: None,
-            last_dispatched: None,
+            actions: ui::ActionHost::new(),
         }
     }
 
@@ -324,17 +307,7 @@ impl FirewallApp {
     /// (`firewall-cmd`/`nft`, see [`Self::apply`]) is a separate side effect
     /// driven by the resulting document state — never part of an action.
     fn perform_action(&mut self, state: &mut AutoCommit, action: FirewallAction) {
-        if self.action_commit_before.is_none() {
-            // `get_heads` flushes any pending writes, so the bracket covers only
-            // the action's own change.
-            self.action_commit_before = Some(state.get_heads());
-        }
-        let encoded = crate::actions::encode(&action);
-        self.last_dispatched = Some(encoded.clone());
-        let mut tx = DiscardTransport;
-        if let Err(e) = qos_actions::dispatch(state, &action, encoded, &mut tx) {
-            tracing::warn!(error = %e, "firewall action dispatch failed");
-        }
+        self.actions.dispatch(state, crate::actions::FIREWALL_ACTION_TYPE, &action);
         // Adopt the mutated config so the in-memory view matches the document.
         if let Some(json) = FirewallDoc::load_json(state) {
             if let Some(cfg) = FirewallConfig::from_json(&json) {
@@ -342,6 +315,13 @@ impl FirewallApp {
             }
             self.last_json = Some(json);
         }
+    }
+
+    /// The last action dispatched, for the `affordance == ActionSpec` covenant
+    /// test.
+    #[cfg(test)]
+    fn last_dispatched(&self) -> Option<&qos_actions::EncodedAction> {
+        self.actions.last_dispatched()
     }
 
     /// The configuration Ctrl+K builds its resource tree from, or `None` when the
@@ -885,7 +865,7 @@ impl Widget for FirewallApp {
     /// its firewall action, so it records one undo boundary for it (see
     /// [`Self::perform_action`]). Rising-edge: cleared on read.
     fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.action_commit_before.take()
+        self.actions.take_committed()
     }
 }
 
@@ -1889,7 +1869,7 @@ mod tests {
 
         // The real button path records what it dispatched.
         a.delete_rule(id, &mut doc);
-        let dispatched = a.last_dispatched.clone().expect("the button dispatched an action");
+        let dispatched = a.last_dispatched().cloned().expect("the button dispatched an action");
         assert_eq!(dispatched, spec_encoded, "button and palette are one action");
     }
 }
