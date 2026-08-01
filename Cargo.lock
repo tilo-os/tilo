@@ -3028,6 +3028,7 @@ dependencies = [
  "automerge",
  "mysql",
  "postgres",
+ "qos-actions",
  "rusqlite",
  "serde",
  "serde_json",
