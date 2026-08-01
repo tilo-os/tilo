@@ -101,6 +101,17 @@ impl VpnDoc {
         }
     }
 
+    /// Rename one saved connection (config field only — never touches live
+    /// status/telemetry). No-op if the connection isn't present.
+    pub fn set_name(doc: &mut AutoCommit, id: ConnId, name: String) {
+        let conns = Self::connections_map(doc);
+        if let Ok(Some((Value::Object(ObjType::Map), obj))) =
+            doc.get(&conns, id.to_string().as_str())
+        {
+            let _ = doc.put(&obj, "name", name);
+        }
+    }
+
     pub fn set_conn_tor(doc: &mut AutoCommit, id: ConnId, on: bool) {
         let conns = Self::connections_map(doc);
         if let Ok(Some((Value::Object(ObjType::Map), obj))) =
