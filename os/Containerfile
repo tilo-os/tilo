@@ -30,11 +30,18 @@
 # ADD/REMOVE A PACKAGE below -> re-run the `snapshot-rpms` workflow (it prints a
 # new RPMS_REF; commit it to os/rpms-snapshot.env), else the build fails "No
 # match for argument". The snapshot's package list is derived from this file.
-# Both ARGs are declared here (before the first FROM) so they're in
+# All three ARGs are declared here (before the first FROM) so they're in
 # scope for FROM directives. An `ARG NAME` placed between two FROMs is
 # scoped to the previous stage, not global — buildkit then reports
 # `base name (${…}) should not be blank` when the next FROM tries to
 # use it.
+#
+# BASE_REF (code.podesta.ai/qos/fedora-bootc@sha256:...) is the Fedora bootc
+# base, mirrored into our registry and pinned by digest — see
+# os/base-snapshot.env for why the mirror exists and how to refresh it. Every
+# fedora-bootc stage below uses it, so builder and final share one base and
+# their glibc cannot drift.
+ARG BASE_REF
 ARG RPMS_REF
 ARG KERNEL_RPMS_REF
 FROM ${RPMS_REF} AS rpms
@@ -64,7 +71,7 @@ FROM ${KERNEL_RPMS_REF} AS kernel-rpms
 # wpewebkit version in build-wpe.sh and reused from the layer cache until
 # that changes. Folding the builddep set into the frozen snapshot is a
 # follow-up.
-FROM quay.io/fedora/fedora-bootc@sha256:69944835958dda565f8d613587535a3d90e3256cf0a0f0e29bca5ca3d2360d06 AS wpe-builder
+FROM ${BASE_REF} AS wpe-builder
 
 RUN dnf install -y 'dnf5-command(builddep)' \
     && dnf builddep -y webkitgtk6.0 \
@@ -81,11 +88,13 @@ RUN --mount=type=cache,target=/wpe-cache \
 
 
 # ---- Stage 1: builder ------------------------------------------------------
-# Base pinned by digest (security plan §9 — reproducibility + supply chain: a
-# tag can be repointed, a digest can't). fedora-bootc:44 as of 2026-07-30.
-# Builder and final MUST share the SAME digest so glibc matches (the A1 reason).
-# Bump deliberately (re-resolve the tag → update both FROM lines).
-FROM quay.io/fedora/fedora-bootc@sha256:69944835958dda565f8d613587535a3d90e3256cf0a0f0e29bca5ca3d2360d06 AS builder
+# Base pinned by digest against our own mirror (BASE_REF, os/base-snapshot.env):
+# a tag can be repointed, a digest can't — but upstream deletes the manifest a
+# digest points at within about a day, so the pin only stays real if we hold a
+# copy. Builder and final share BASE_REF, so their glibc matches by
+# construction. Bump deliberately: re-run `mirror-base`, commit the new
+# BASE_REF, re-run `snapshot-rpms`.
+FROM ${BASE_REF} AS builder
 
 # Rust toolchain + the C/-devel deps the workspace's *-sys crates link or build
 # against. Superset of the my-distrobox dev deps (repo CLAUDE.md) plus the base
@@ -205,7 +214,7 @@ RUN /out/qos-runtime-bundle key generate --out /out/runtime-bundle-identity.json
 
 
 # ---- Stage 2: final (the OS image) -----------------------------------------
-FROM quay.io/fedora/fedora-bootc@sha256:69944835958dda565f8d613587535a3d90e3256cf0a0f0e29bca5ca3d2360d06
+FROM ${BASE_REF}
 
 # Graphics stack
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
