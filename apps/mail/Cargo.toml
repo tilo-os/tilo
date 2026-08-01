@@ -13,6 +13,10 @@ path = "src/main.rs"
 
 [dependencies]
 ui = { path = "../../ui" }
+# The qOS resource + action model: Mail's collaborative-doc mutations (flags,
+# labels, local folders, drafts) are exported as replayable actions and a Ctrl+K
+# resource tree. See `src/actions.rs`.
+qos-actions = { path = "../../crates/collab/actions" }
 # The shared multi-account store + encrypted secret vault. Mail reads its
 # email accounts from here (Settings owns the write lifecycle); credentials
 # are sealed in the vault, never in the plaintext store.

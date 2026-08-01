@@ -29,6 +29,7 @@
 //! The live app does real IMAP/SMTP instead.
 
 pub mod account;
+pub mod actions;
 pub mod app;
 pub mod autoconfig;
 pub mod compose;
