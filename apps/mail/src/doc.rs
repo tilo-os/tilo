@@ -214,6 +214,9 @@ impl MailDoc {
                 {
                     m.folder = f;
                 }
+                if let Ok(Some((Value::Object(ObjType::List), list))) = doc.get(&entry, "labels") {
+                    m.labels = read_str_list(doc, &list);
+                }
             }
         }
     }
@@ -286,31 +289,206 @@ impl MailDoc {
             in_reply_to: None,
         }
     }
-}
 
-fn folder_key(f: Folder) -> &'static str {
-    match f {
-        Folder::Inbox => "inbox",
-        Folder::Starred => "starred",
-        Folder::Sent => "sent",
-        Folder::Drafts => "drafts",
-        Folder::Archive => "archive",
-        Folder::Trash => "trash",
-        Folder::Junk => "junk",
+    /// Clear the persisted draft so a later open no longer re-materialises it.
+    /// Backs [`crate::actions::MailAction::DiscardDraft`].
+    pub fn clear_draft(doc: &mut AutoCommit) {
+        let d = Self::map(doc, &ROOT, "draft");
+        for key in ["to", "cc", "bcc", "subject", "body", "html_body"] {
+            if doc.get(&d, key).ok().flatten().is_some() {
+                let _ = doc.delete(&d, key);
+            }
+        }
+    }
+
+    // ---- granular per-message flag writers (the action apply path) ----
+    //
+    // These key off the message-id *string* (not a whole `Message`), because an
+    // action carries only the id and the target value. Each is idempotent via
+    // `put_if_changed`, so a redundant write is a no-op and never grows the doc.
+
+    /// The `flags/<id>` entry map for a message id string, created if absent.
+    fn flag_entry(doc: &mut AutoCommit, id: &str) -> ObjId {
+        let flags = Self::flags_map(doc);
+        Self::map(doc, &flags, id)
+    }
+
+    /// Set a message's read flag.
+    pub fn set_read(doc: &mut AutoCommit, id: &str, read: bool) {
+        let entry = Self::flag_entry(doc, id);
+        ui::doc::put_if_changed(doc, &entry, "read", read);
+    }
+
+    /// Set a message's starred flag.
+    pub fn set_starred(doc: &mut AutoCommit, id: &str, starred: bool) {
+        let entry = Self::flag_entry(doc, id);
+        ui::doc::put_if_changed(doc, &entry, "starred", starred);
+    }
+
+    /// Move a message to `folder` (archive / delete-to-trash / junk / inbox are
+    /// all this with a specific target).
+    pub fn set_folder_for(doc: &mut AutoCommit, id: &str, folder: Folder) {
+        let entry = Self::flag_entry(doc, id);
+        ui::doc::put_if_changed(doc, &entry, "folder", folder_key(folder));
+    }
+
+    /// Read a message's stored flag entry, if any.
+    fn flag_entry_ref(doc: &AutoCommit, id: &str) -> Option<ObjId> {
+        let flags = match doc.get(&ROOT, "flags") {
+            Ok(Some((Value::Object(ObjType::Map), id))) => id,
+            _ => return None,
+        };
+        match doc.get(&flags, id) {
+            Ok(Some((Value::Object(ObjType::Map), e))) => Some(e),
+            _ => None,
+        }
+    }
+
+    /// The stored read flag for a message, or `None` if unset.
+    pub fn get_read(doc: &AutoCommit, id: &str) -> Option<bool> {
+        let entry = Self::flag_entry_ref(doc, id)?;
+        Self::read_bool(doc, &entry, "read")
+    }
+
+    /// The stored starred flag for a message, or `None` if unset.
+    pub fn get_starred(doc: &AutoCommit, id: &str) -> Option<bool> {
+        let entry = Self::flag_entry_ref(doc, id)?;
+        Self::read_bool(doc, &entry, "starred")
+    }
+
+    /// The stored folder for a message, or `None` if unset / an unknown key.
+    pub fn get_folder_for(doc: &AutoCommit, id: &str) -> Option<Folder> {
+        let entry = Self::flag_entry_ref(doc, id)?;
+        Self::read_str(doc, &entry, "folder").and_then(|s| folder_from_key(&s))
+    }
+
+    // ---- per-message labels/tags (`flags/<id>/labels`) ----
+
+    /// The `flags/<id>/labels` list for a message id, created if absent.
+    fn labels_list(doc: &mut AutoCommit, id: &str) -> ObjId {
+        let entry = Self::flag_entry(doc, id);
+        match doc.get(&entry, "labels") {
+            Ok(Some((Value::Object(ObjType::List), list))) => list,
+            _ => doc
+                .put_object(&entry, "labels", ObjType::List)
+                .expect("put_object list never fails"),
+        }
+    }
+
+    /// Read a message's labels, in stored order.
+    pub fn get_labels(doc: &AutoCommit, id: &str) -> Vec<String> {
+        let flags = match doc.get(&ROOT, "flags") {
+            Ok(Some((Value::Object(ObjType::Map), id))) => id,
+            _ => return Vec::new(),
+        };
+        let entry = match doc.get(&flags, id) {
+            Ok(Some((Value::Object(ObjType::Map), e))) => e,
+            _ => return Vec::new(),
+        };
+        let list = match doc.get(&entry, "labels") {
+            Ok(Some((Value::Object(ObjType::List), l))) => l,
+            _ => return Vec::new(),
+        };
+        read_str_list(doc, &list)
+    }
+
+    /// Add a label to a message. A no-op when the label is already present, so
+    /// the operation is deterministic and the list stays a set.
+    pub fn add_label(doc: &mut AutoCommit, id: &str, label: &str) {
+        if label.is_empty() {
+            return;
+        }
+        let list = Self::labels_list(doc, id);
+        if read_str_list(doc, &list).iter().any(|l| l == label) {
+            return;
+        }
+        let idx = doc.length(&list);
+        let _ = doc.insert(&list, idx, label);
+    }
+
+    /// Remove a label from a message. A no-op when it is not present.
+    pub fn remove_label(doc: &mut AutoCommit, id: &str, label: &str) {
+        let list = Self::labels_list(doc, id);
+        let current = read_str_list(doc, &list);
+        if let Some(idx) = current.iter().position(|l| l == label) {
+            let _ = doc.delete(&list, idx);
+        }
+    }
+
+    // ---- user-defined local folders (`folders/<id> = name`) ----
+    //
+    // A registry of local folders the user creates. Kept separate from the
+    // system `Folder` enum: system folders are fixed, these are data. Stored as a
+    // flat `id -> name` map so create/rename/delete are single, replayable puts.
+
+    fn folders_map(doc: &mut AutoCommit) -> ObjId {
+        Self::map(doc, &ROOT, "folders")
+    }
+
+    /// Create (or, given an existing id, overwrite) a local folder.
+    pub fn create_folder(doc: &mut AutoCommit, id: &str, name: &str) {
+        if id.is_empty() {
+            return;
+        }
+        let folders = Self::folders_map(doc);
+        ui::doc::put_if_changed(doc, &folders, id, name);
+    }
+
+    /// Rename a local folder. A no-op when the id is unknown, so a stray replay
+    /// can't resurrect a deleted folder.
+    pub fn rename_folder(doc: &mut AutoCommit, id: &str, name: &str) {
+        let folders = Self::folders_map(doc);
+        if doc.get(&folders, id).ok().flatten().is_some() {
+            ui::doc::put_if_changed(doc, &folders, id, name);
+        }
+    }
+
+    /// Delete a local folder from the registry.
+    pub fn delete_folder(doc: &mut AutoCommit, id: &str) {
+        let folders = Self::folders_map(doc);
+        if doc.get(&folders, id).ok().flatten().is_some() {
+            let _ = doc.delete(&folders, id);
+        }
+    }
+
+    /// List the user-defined local folders as `(id, name)`, sorted by id so the
+    /// resource tree (and any UI over it) has a stable order across replicas.
+    pub fn list_folders(doc: &AutoCommit) -> Vec<(String, String)> {
+        let folders = match doc.get(&ROOT, "folders") {
+            Ok(Some((Value::Object(ObjType::Map), id))) => id,
+            _ => return Vec::new(),
+        };
+        let mut out: Vec<(String, String)> = doc
+            .keys(&folders)
+            .filter_map(|k| Self::read_str(doc, &folders, &k).map(|name| (k, name)))
+            .collect();
+        out.sort_by(|a, b| a.0.cmp(&b.0));
+        out
     }
 }
 
+/// Read an Automerge list of strings into a `Vec<String>`, in stored order.
+fn read_str_list(doc: &AutoCommit, list: &ObjId) -> Vec<String> {
+    let n = doc.length(list);
+    let mut out = Vec::with_capacity(n);
+    for i in 0..n {
+        if let Ok(Some((Value::Scalar(v), _))) = doc.get(list, i) {
+            if let ScalarValue::Str(s) = v.as_ref() {
+                out.push(s.to_string());
+            }
+        }
+    }
+    out
+}
+
+/// The CRDT storage key for a folder. Canonical spelling lives on the model
+/// ([`Folder::as_key`]) so the action layer and this persistence layer agree.
+fn folder_key(f: Folder) -> &'static str {
+    f.as_key()
+}
+
 fn folder_from_key(s: &str) -> Option<Folder> {
-    Some(match s {
-        "inbox" => Folder::Inbox,
-        "starred" => Folder::Starred,
-        "sent" => Folder::Sent,
-        "drafts" => Folder::Drafts,
-        "archive" => Folder::Archive,
-        "trash" => Folder::Trash,
-        "junk" => Folder::Junk,
-        _ => return None,
-    })
+    Folder::from_key(s)
 }
 
 #[cfg(test)]
@@ -435,6 +613,70 @@ mod tests {
         }
         let b = doc.save().len();
         assert_eq!(a, b, "re-storing an unchanged account grew the document {a} -> {b}");
+    }
+
+    #[test]
+    fn labels_add_remove_and_round_trip() {
+        let mut doc = AutoCommit::new();
+        MailDoc::add_label(&mut doc, "m1", "work");
+        MailDoc::add_label(&mut doc, "m1", "urgent");
+        // Duplicate add is a no-op — labels stay a set.
+        MailDoc::add_label(&mut doc, "m1", "work");
+        assert_eq!(MailDoc::get_labels(&doc, "m1"), vec!["work", "urgent"]);
+        MailDoc::remove_label(&mut doc, "m1", "work");
+        assert_eq!(MailDoc::get_labels(&doc, "m1"), vec!["urgent"]);
+        // Removing an absent label is a no-op.
+        MailDoc::remove_label(&mut doc, "m1", "nope");
+        assert_eq!(MailDoc::get_labels(&doc, "m1"), vec!["urgent"]);
+    }
+
+    #[test]
+    fn local_folder_registry_crud() {
+        let mut doc = AutoCommit::new();
+        assert!(MailDoc::list_folders(&doc).is_empty());
+        MailDoc::create_folder(&mut doc, "f-a", "Receipts");
+        MailDoc::create_folder(&mut doc, "f-b", "Travel");
+        assert_eq!(
+            MailDoc::list_folders(&doc),
+            vec![("f-a".to_string(), "Receipts".to_string()), ("f-b".to_string(), "Travel".to_string())]
+        );
+        MailDoc::rename_folder(&mut doc, "f-a", "Invoices");
+        // Renaming an unknown id does nothing.
+        MailDoc::rename_folder(&mut doc, "ghost", "X");
+        MailDoc::delete_folder(&mut doc, "f-b");
+        assert_eq!(MailDoc::list_folders(&doc), vec![("f-a".to_string(), "Invoices".to_string())]);
+    }
+
+    #[test]
+    fn granular_flag_setters_and_clear_draft() {
+        let mut doc = AutoCommit::new();
+        MailDoc::set_read(&mut doc, "m1", true);
+        MailDoc::set_starred(&mut doc, "m1", true);
+        MailDoc::set_folder_for(&mut doc, "m1", Folder::Archive);
+        let mut mb = sample_mailbox();
+        // Point a real message at the same id so the overlay is observable.
+        let some = *mb.messages.keys().next().unwrap();
+        {
+            let m = mb.get_mut(some).unwrap();
+            m.read = false;
+            m.starred = false;
+            m.folder = Folder::Inbox;
+        }
+        MailDoc::set_read(&mut doc, &some.to_string(), true);
+        MailDoc::set_starred(&mut doc, &some.to_string(), true);
+        MailDoc::set_folder_for(&mut doc, &some.to_string(), Folder::Archive);
+        MailDoc::add_label(&mut doc, &some.to_string(), "work");
+        MailDoc::apply_flags(&doc, &mut mb);
+        let m = mb.get(some).unwrap();
+        assert!(m.read && m.starred);
+        assert_eq!(m.folder, Folder::Archive);
+        assert_eq!(m.labels, vec!["work"]);
+
+        let draft = Draft { to: "x@y.example".into(), subject: "Hi".into(), ..Default::default() };
+        MailDoc::store_draft(&mut doc, &draft);
+        assert!(!MailDoc::load_draft(&doc).to.is_empty());
+        MailDoc::clear_draft(&mut doc);
+        assert!(MailDoc::load_draft(&doc).to.is_empty(), "discard clears the persisted draft");
     }
 
     #[test]
