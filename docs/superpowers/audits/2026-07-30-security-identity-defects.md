@@ -203,18 +203,30 @@ our registry collects nothing. Copy with the multi-arch index intact. Fixed on t
 `mirror-base` workflow plus `os/base-snapshot.env` (`BASE_REF`), consumed by every Containerfile
 as a `--build-arg`.
 
-Two adjacent holes in the same guarantee are still open:
+Two adjacent holes in the same guarantee were found alongside it:
 
 - `os/containers/qos-relay/Containerfile:74` builds its runtime stage `FROM
   quay.io/fedora/fedora-minimal:44`, a floating tag — it never breaks, it just silently changes,
-  so the relay image is not reproducible across time.
+  so the relay image is not reproducible across time. **Still open**, and not a one-line pin:
+  `BASE_REF` is the bootc base, ~1 GB with a kernel in it, so reusing it for a runtime stage whose
+  whole point is to be small is not the fix. A digest against quay.io expires the same way the
+  bootc pin did, so this needs its own mirrored image — and `mirror-base` cannot mirror it as
+  written (it hardcodes the `qos/fedora-bootc` destination and asserts an `ostree.linux` label
+  fedora-minimal does not carry). Parameterise that workflow over source/destination, mirror
+  fedora-minimal, and add a second ref to `os/base-snapshot.env` that
+  `.forgejo/workflows/qos-relay.yaml` passes alongside `BASE_REF`.
 - `os/Containerfile`'s `wpe-builder` stage installs its build deps with `dnf builddep
-  webkitgtk6.0` against live Fedora repos, a deliberate exception noted in the file. It is
-  currently broken — `build-wpe.sh:67` exports `PKG_CONFIG_SYSROOT_DIR=/wpe`, so every system
-  `-I/usr/include` becomes `-I/wpe/usr/include` and libwpe's CMake configure fails on
-  `Imported target "XkbCommon::libxkbcommon" includes non-existent path` — and nobody noticed,
-  because the base `FROM` above failed first and the layer cache served the stage before that.
-  An unpinned stage is also an unwatched one.
+  webkitgtk6.0` against live Fedora repos, a deliberate exception noted in the file. That much is
+  still open. It was also **broken**, and is now fixed: `build-wpe.sh` exported
+  `PKG_CONFIG_SYSROOT_DIR=/wpe` to bridge the staged installs' unstaged `${prefix}`, but a sysroot
+  is a blanket rewrite — pkgconf prepends it to every `-I`/`-L` it emits, so system libraries in
+  the real `/usr` were relocated too and libwpe's CMake configure died on `Imported target
+  "XkbCommon::libxkbcommon" includes non-existent path "/wpe/usr/include"` (run 742). It now sets
+  `PKG_CONFIG_RELOCATE_PATHS` instead, which derives each `${prefix}` from its own `.pc` file's
+  location and so relocates only what was actually staged, plus a post-install assertion that each
+  staged package resolves to an include directory that exists. Nobody had noticed the breakage,
+  because the base `FROM` above failed first and the layer cache served the stage before that — an
+  unpinned stage is also an unwatched one.
 
 ---
 
