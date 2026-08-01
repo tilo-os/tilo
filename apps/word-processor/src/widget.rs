@@ -5554,9 +5554,10 @@ impl Widget for WordProcessorWidget {
         // Empty-document placeholder.
         if self.blocks.len() == 1 && self.blocks[0].kind == "paragraph" && self.blocks[0].text.is_empty() {
             if let Some(l) = laid.first() {
+                let placeholder = t("canvas-empty-placeholder");
                 text_renderer.draw_text(
                     scene,
-                    "Start writing…",
+                    &placeholder,
                     16.5,
                     PAPER_MUTED,
                     ctf * Affine::translate((l.text_x, l.y_top)),
