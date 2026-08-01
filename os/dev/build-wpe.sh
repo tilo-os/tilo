@@ -72,7 +72,7 @@ export LD_LIBRARY_PATH="$DESTDIR_ROOT$PREFIX/lib64:${LD_LIBRARY_PATH:-}"
 # NOT PKG_CONFIG_SYSROOT_DIR: that is a blanket rewrite of every -I/-L
 # pkg-config emits, including system libraries in the real /usr. With
 # DESTDIR=/wpe it turned libxkbcommon's -I/usr/include into -I/wpe/usr/include
-# and WebKit's configure died on `Imported target "XkbCommon::libxkbcommon"
+# and libwpe's configure died on `Imported target "XkbCommon::libxkbcommon"
 # includes non-existent path`.
 export PKG_CONFIG_RELOCATE_PATHS=1
 # Pin real compilers: meson otherwise auto-wraps with sccache, whose shared
@@ -92,31 +92,45 @@ check_pc() {
     echo "$1 -> $dir"
 }
 
+# Run a build step, keeping the log short on success and showing enough of it
+# to diagnose on failure. Piping straight to `tail -1` hides the compiler
+# error behind ninja's parting "build stopped: subcommand failed".
+STEP_LOG=$CACHE/step.log
+step() { # step <lines-to-show-when-it-works> <command...>
+    local keep=$1
+    shift
+    if ! "$@" >"$STEP_LOG" 2>&1; then
+        echo "FAILED: $* — last 80 lines:" >&2
+        tail -80 "$STEP_LOG" >&2
+        exit 1
+    fi
+    tail -"$keep" "$STEP_LOG"
+}
+
 echo "=== libwpe ==="
 cd "$CACHE/${LIBWPE%.tar.xz}"
-cmake -B build -GNinja -Wno-dev -DCMAKE_BUILD_TYPE=Release \
-    -DCMAKE_INSTALL_PREFIX="$PREFIX" -DCMAKE_INSTALL_LIBDIR=lib64 >/dev/null
-DESTDIR="$DESTDIR_ROOT" ninja -C build install | tail -1
+step 1 cmake -B build -GNinja -Wno-dev -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_INSTALL_PREFIX="$PREFIX" -DCMAKE_INSTALL_LIBDIR=lib64
+step 1 env DESTDIR="$DESTDIR_ROOT" ninja -C build install
 check_pc wpe-1.0
 
 echo "=== wpebackend-fdo ==="
 cd "$CACHE/${FDO%.tar.xz}"
 rm -rf build
-meson setup build --prefix="$PREFIX" --libdir lib64 --buildtype=release >/dev/null
-DESTDIR="$DESTDIR_ROOT" ninja -C build install 2>&1 | tail -1
+step 1 meson setup build --prefix="$PREFIX" --libdir lib64 --buildtype=release
+step 1 env DESTDIR="$DESTDIR_ROOT" ninja -C build install
 check_pc wpebackend-fdo-1.0
 
 echo "=== wpewebkit (long) ==="
 cd "$CACHE/${WPEWK%.tar.xz}"
 # USE_LIBBACKTRACE=OFF: Fedora ships no standalone libbacktrace (its own
 # webkitgtk builds without it).
-cmake -B build -GNinja -Wno-dev -DPORT=WPE \
+step 8 cmake -B build -GNinja -Wno-dev -DPORT=WPE \
     -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$PREFIX" \
     -DCMAKE_INSTALL_LIBDIR=lib64 \
     -DENABLE_DOCUMENTATION=OFF -DENABLE_INTROSPECTION=OFF \
     -DENABLE_MINIBROWSER=ON -DENABLE_WPE_PLATFORM=ON \
-    -DUSE_LIBBACKTRACE=OFF \
-    2>&1 | tail -8
-ninja -C build -j"$JOBS" 2>&1 | tail -5
-DESTDIR="$DESTDIR_ROOT" ninja -C build install 2>&1 | tail -1
+    -DUSE_LIBBACKTRACE=OFF
+step 5 ninja -C build -j"$JOBS"
+step 1 env DESTDIR="$DESTDIR_ROOT" ninja -C build install
 echo WPE_BUILD_OK
