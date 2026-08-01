@@ -15,7 +15,7 @@ use taffy::style_helpers::{length, percent};
 use taffy::{NodeId, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Circle, Point, Rect, RoundedRect, Stroke};
-use vello::peniko::{Color, Fill, Gradient, ImageData as PenikoImage};
+use vello::peniko::{BlendMode, Color, Fill, Gradient, ImageData as PenikoImage};
 
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
@@ -154,6 +154,10 @@ impl Thumbnail {
             .with_stops([(0.0_f32, top), (1.0_f32, bottom)]);
             scene.fill(Fill::NonZero, transform, &grad, None, &shape);
 
+            // Clip the decorative motif to the rounded tile so the offset
+            // circles never bleed past the thumbnail. Unclipped they are
+            // invisible on a dark card but paint stray blobs on a light one.
+            scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &shape);
             let glass = Color::from_rgba8(255, 255, 255, 18);
             scene.fill(
                 Fill::NonZero,
@@ -188,6 +192,7 @@ impl Thumbnail {
             tri.line_to((cx + t, cy));
             tri.close_path();
             scene.fill(Fill::NonZero, transform, Color::WHITE, None, &tri);
+            scene.pop_layer();
         }
 
         // Duration / LIVE pill, bottom-right.
