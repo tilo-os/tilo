@@ -79,7 +79,8 @@ setup_mode()  { [ "$(efivar_byte SetupMode)" = "1" ]; }
 # an unsigned kernel; the service alone only catches it one boot too late.
 resign_armed() {
   systemctl is-enabled qos-secureboot-sign.path >/dev/null 2>&1 \
-    && systemctl is-enabled qos-secureboot-sign.service >/dev/null 2>&1
+    && systemctl is-enabled qos-secureboot-sign.service >/dev/null 2>&1 \
+    && systemctl is-enabled qos-secureboot-sign-shutdown.service >/dev/null 2>&1
 }
 
 # --- the artefacts the firmware checks ---------------------------------------
@@ -125,9 +126,9 @@ cmd_status() {
     if [ -s "$KEYDIR/$v" ]; then log "factory keys  : $KEYDIR/$v captured"; fi
   done
   if resign_armed; then
-    log "re-sign       : armed ($(systemctl is-enabled qos-secureboot-sign.path 2>/dev/null || true) path, $(systemctl is-enabled qos-secureboot-sign.service 2>/dev/null || true) service)"
+    log "re-sign       : armed (path watcher, boot unit, shutdown unit)"
   else
-    log "re-sign       : NOT armed (systemctl enable --now qos-secureboot-sign.path)"
+    log "re-sign       : NOT armed (see: qos-secureboot enroll)"
   fi
   log "artefacts     :"
   local a state
@@ -255,7 +256,8 @@ cmd_enroll() {
 first, or the next OS update stages a kernel nothing has signed and the machine
 stops booting at the reboot that follows:
 
-    systemctl enable --now qos-secureboot-sign.path qos-secureboot-sign.service"
+    systemctl enable --now qos-secureboot-sign.path qos-secureboot-sign.service \\
+        qos-secureboot-sign-shutdown.service"
 
   # Gate 3: setup mode. Writing db/KEK/PK is only accepted there, and it means
   # the owner has consciously cleared the factory keys.
