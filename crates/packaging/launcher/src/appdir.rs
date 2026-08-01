@@ -200,6 +200,18 @@ pub fn prepare_host_app_dir(
 ///   where from. A second launch does not re-copy, so edits made in the
 ///   room are never overwritten by a stale original.
 ///
+/// **What it does not adopt.** Only `<data home>/<package id>` — the one
+/// directory `cli::standalone_state_dir` resolves to, which is where
+/// `app_state::DocStore` keeps a package's document and its
+/// `records/<key>/` subtree. That is the state the per-record work put on
+/// disk, so it is the part that matters. Many apps *also* used ad-hoc
+/// locations of their own choosing (`~/.local/share/qos-notes`,
+/// `~/.config/qos-browser`, `~/.cache/qos-maps`, …). Those are left
+/// where they are and the app will not see them. Adopting them would
+/// mean the launcher holding a per-package list of paths, which is the
+/// thing this whole change removes — re-introducing it through the
+/// migration door would be no better than leaving it in the manifest.
+///
 /// To reverse it: delete `<data home>/qos-rooms/personal/<package>`.
 /// The original at `<data home>/<package>` was never touched.
 fn adopt_legacy_state_into_personal_room(
