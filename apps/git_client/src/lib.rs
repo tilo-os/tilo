@@ -17,9 +17,16 @@
 //! so the screenshot shows a fully populated state offline. All rendering
 //! is theme-driven; durable UI preferences live in the CRDT via
 //! [`settings`].
+//!
+//! Every git operation is **external** — it mutates the on-disk repository
+//! through libgit2, not a shared document. The client's only shared-CRDT state
+//! is those durable view preferences, and it exports each as a replayable
+//! [`actions::GitClientAction`] so the shell's Ctrl+K palette and the on-screen
+//! controls dispatch one and the same action. See [`actions`] for the split.
 
 use ui::widget::Widget;
 
+pub mod actions;
 pub mod app;
 pub mod changes;
 pub mod diff;
