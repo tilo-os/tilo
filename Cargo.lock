@@ -11842,6 +11842,7 @@ dependencies = [
  "anyhow",
  "automerge",
  "des",
+ "qos-actions",
  "russh",
  "serde",
  "serde_json",
