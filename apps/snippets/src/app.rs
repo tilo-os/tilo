@@ -115,17 +115,13 @@ pub struct SnippetsApp {
     /// open. A staged `--shots` scenario sets this so its snap isn't undone.
     settled_layout: bool,
 
-    /// The document heads captured just before the first [`SnippetsAction`] of
-    /// the current event was dispatched. The host drains this via
-    /// [`ui::widget::Widget::take_committed_action`] to record exactly one undo
-    /// boundary bracketing the action — the same undo path Ctrl+K takes.
-    action_commit_before: Option<Vec<ChangeHash>>,
-
-    /// The last [`qos_actions::EncodedAction`] an on-screen affordance dispatched
-    /// through [`Self::perform_action`]. Lets a test prove a button and the
-    /// Ctrl+K [`qos_actions::ActionSpec`] build the byte-identical action — one
-    /// source of truth, not two code paths.
-    last_dispatched: Option<qos_actions::EncodedAction>,
+    /// Framework-owned action dispatch. Each on-screen affordance dispatches its
+    /// [`SnippetsAction`] through this: the host brackets the undo boundary,
+    /// applies the action through the executor (so it replays byte-identically on
+    /// peers, exactly as the Ctrl+K palette does), and records the last one so a
+    /// test can prove a button and its [`qos_actions::ActionSpec`] build the
+    /// identical action.
+    actions: ui::ActionHost,
 }
 
 /// A clickable region recorded during draw and resolved on mouse-down.
@@ -207,8 +203,7 @@ impl SnippetsApp {
             push: FlapState::closed_by_default(),
             push_pane: PushPane::Master,
             settled_layout: false,
-            action_commit_before: None,
-            last_dispatched: None,
+            actions: ui::ActionHost::new(),
         };
         app.recompute_visible();
         app
@@ -255,17 +250,7 @@ impl SnippetsApp {
     /// just before the first action of the event are stashed so the host records
     /// **one** undo boundary bracketing it.
     fn perform_action(&mut self, doc: &mut AutoCommit, action: SnippetsAction) {
-        if self.action_commit_before.is_none() {
-            // `get_heads` flushes any pending writes, so the bracket covers only
-            // the action's own change.
-            self.action_commit_before = Some(doc.get_heads());
-        }
-        let encoded = actions::encode(&action);
-        self.last_dispatched = Some(encoded.clone());
-        let mut tx = DiscardTransport;
-        if let Err(e) = qos_actions::dispatch(doc, &action, encoded, &mut tx) {
-            tracing::warn!(error = %e, "snippets action dispatch failed");
-        }
+        self.actions.dispatch(doc, actions::SNIPPETS_ACTION_TYPE, &action);
         self.refresh_from_doc(doc);
     }
 
@@ -572,7 +557,7 @@ impl SnippetsApp {
 
     #[doc(hidden)]
     pub fn last_dispatched_for_test(&self) -> Option<qos_actions::EncodedAction> {
-        self.last_dispatched.clone()
+        self.actions.last_dispatched().cloned()
     }
 
     /// Drive the toolbar Delete affordance exactly as a click resolves it (via
@@ -682,7 +667,7 @@ impl ui::widget::Widget for SnippetsApp {
     /// its action, so it records one undo boundary for it (see
     /// [`Self::perform_action`]). Rising-edge: cleared on read.
     fn take_committed_action(&mut self) -> Option<Vec<ChangeHash>> {
-        self.action_commit_before.take()
+        self.actions.take_committed()
     }
 
     fn build_layout(
@@ -965,18 +950,6 @@ impl ui::widget::Widget for SnippetsApp {
     ) {
         self.draw(scene, transform, tr, theme, presence);
     }
-}
-
-/// The action transport Snippets installs for its own on-screen affordances.
-/// Peers receive library changes through ordinary CRDT sync (the executor pins
-/// each action's actor so the change is content-addressed identical to a peer's
-/// replay and dedupes on merge), so the local affordance path has nothing extra
-/// to replicate — this sink drops the envelope. The Ctrl+K palette dispatches
-/// through the host's transport, which a collaborative session swaps for a
-/// peer-aware one.
-struct DiscardTransport;
-impl qos_actions::ActionTransport for DiscardTransport {
-    fn replicate(&mut self, _env: &qos_actions::ActionEnvelope) {}
 }
 
 /// Result of routing an event to the expand modal.
