@@ -24,7 +24,12 @@
 //!
 //! `app_root()` is the single integration point used by both the live event
 //! loop and the `--shots` offscreen renderer.
+//!
+//! See [`actions`] for the resource + action-model finding: the client's only
+//! shared-document state is the native SQL text buffer, so it exports no actions
+//! and publishes no Ctrl+K resource tree — proven on the production path.
 
+pub mod actions;
 pub mod app;
 pub mod connect_modal;
 pub mod doc;
