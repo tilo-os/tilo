@@ -514,49 +514,86 @@ fn shared_scan() -> Arc<Mutex<ScanState>> {
     .clone()
 }
 
-/// Walk every package's record store and read each record's identity.
+/// Walk every room's packages and read each record's identity.
 ///
-/// Deliberately shallow: `<data home>/<package>/records/<key>/state.automerge`
+/// The compositor is the one component that reads across rooms, and it has
+/// to: "bring your own is a search result" (`plan/rooms.md`) means Super+K
+/// shows records from the user's other rooms, labelled with where they live.
+/// An app cannot do this — its sandbox contains exactly one room's directory
+/// — which is the point.
+///
+/// Deliberately shallow:
+/// `<data home>/qos-rooms/<room>/<package>/.local/share/<package>/records/<key>/state.automerge`
 /// and nothing else, so the walk is bounded by the number of records rather
-/// than by the size of the user's home.
+/// than by the size of the user's home. The middle segment is the sandbox's
+/// `XDG_DATA_HOME`, which is where `cli::standalone_state_dir` resolves for
+/// an app running under the launcher.
 fn scan_record_stores(root: &Path) -> Vec<ObservedRecord> {
     let mut out = Vec::new();
-    let Ok(packages) = std::fs::read_dir(root) else {
+    let Ok(rooms) = std::fs::read_dir(root.join(launcher::appdir::ROOMS_DIR)) else {
         return out;
     };
-    for package in packages.flatten() {
-        let Some(package_id) = package.file_name().to_str().map(str::to_string) else {
+    for room in rooms.flatten() {
+        let Ok(packages) = std::fs::read_dir(room.path()) else {
             continue;
         };
-        if package_id == SHELL_PACKAGE_ID {
-            continue;
-        }
-        let records = package.path().join(app_state::RECORDS_DIR);
-        let Ok(entries) = std::fs::read_dir(&records) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            let doc_path = entry.path().join(app_state::DOCUMENT_FILE);
-            match std::fs::metadata(&doc_path) {
-                Ok(meta) if meta.len() <= MAX_RECORD_DOC_BYTES => {}
-                Ok(meta) => {
-                    tracing::debug!(
-                        path = %doc_path.display(),
-                        bytes = meta.len(),
-                        "record document too large to index for search"
-                    );
-                    continue;
-                }
-                Err(_) => continue,
-            }
-            let Some(observed) = read_record_header(&doc_path, &package_id) else {
+        for package in packages.flatten() {
+            let Some(package_id) = package.file_name().to_str().map(str::to_string) else {
                 continue;
             };
-            out.push(observed);
+            if package_id == SHELL_PACKAGE_ID {
+                continue;
+            }
+            // Inside the sandbox this is `$XDG_DATA_HOME/<package>`; from
+            // out here it is that path spelled against the host.
+            let records = package
+                .path()
+                .join(&*SANDBOX_DATA_SUBDIR)
+                .join(&package_id)
+                .join(app_state::RECORDS_DIR);
+            let Ok(entries) = std::fs::read_dir(&records) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let doc_path = entry.path().join(app_state::DOCUMENT_FILE);
+                match std::fs::metadata(&doc_path) {
+                    Ok(meta) if meta.len() <= MAX_RECORD_DOC_BYTES => {}
+                    Ok(meta) => {
+                        tracing::debug!(
+                            path = %doc_path.display(),
+                            bytes = meta.len(),
+                            "record document too large to index for search"
+                        );
+                        continue;
+                    }
+                    Err(_) => continue,
+                }
+                let Some(observed) = read_record_header(&doc_path, &package_id) else {
+                    continue;
+                };
+                out.push(observed);
+            }
         }
     }
     out
 }
+
+/// The path `XDG_DATA_HOME` takes inside an app's directory. Derived from
+/// the launcher's own announcement rather than written out again here, so
+/// the walk cannot drift from where apps actually write.
+static SANDBOX_DATA_SUBDIR: std::sync::LazyLock<PathBuf> = std::sync::LazyLock::new(|| {
+    let root = Path::new(launcher::appdir::SANDBOX_APP_DIR);
+    launcher::appdir::sandbox_env()
+        .into_iter()
+        .find(|(k, _)| k == "XDG_DATA_HOME")
+        .and_then(|(_, v)| {
+            Path::new(&v)
+                .strip_prefix(root)
+                .ok()
+                .map(Path::to_path_buf)
+        })
+        .unwrap_or_else(|| PathBuf::from(".local/share"))
+});
 
 /// Read one record document's identity, type and home room.
 fn read_record_header(path: &Path, package_id: &str) -> Option<ObservedRecord> {

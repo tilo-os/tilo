@@ -41,6 +41,77 @@ fn manifest_roundtrip() {
     assert_eq!(svc.protocol, "collab");
 }
 
+/// The install-time half of the filesystem policy.
+///
+/// `validate_manifest` is what `qos-install install` and `qos-pkg pack`
+/// both call, so this is the check a package meets before it is ever
+/// launched. Every shape the retired `[sandbox.fs]` block made possible
+/// is here, including the two that a denylist would have missed: `~`,
+/// which is the whole home directory spelled in one character, and
+/// another package's state directory, which is a perfectly ordinary
+/// path that happens to belong to someone else.
+#[test]
+fn a_manifest_that_names_a_filesystem_path_is_refused() {
+    for entry in [
+        "~",
+        "/",
+        "~/.ssh",
+        "~/../../etc",
+        "~/.local/share/dev.qos.totp",
+        "$XDG_DATA_HOME/dev.qos.totp",
+        "<scope=current>/../..",
+    ] {
+        let mut m = Manifest::from_toml_str(&render_with_dummy_key()).unwrap();
+        m.sandbox.fs.write = vec![entry.to_string()];
+        let err = validate_manifest(&m)
+            .unwrap_err_or_panic(&format!("write = [{entry:?}] must be refused"));
+        assert!(
+            matches!(err, ManifestError::FsWriteDeclared { .. }),
+            "write = [{entry:?}] produced {err:?}"
+        );
+        let text = err.to_string();
+        assert!(
+            text.contains("dev.qos.editor") && text.contains(entry),
+            "the refusal must name the package and the entry: {text}"
+        );
+    }
+
+    // A read is refused on the same terms, whether or not the system
+    // profile happens to cover it — the field is gone, not filtered.
+    for entry in ["/etc/shadow", "/var/workspace", "/usr/share/fonts"] {
+        let mut m = Manifest::from_toml_str(&render_with_dummy_key()).unwrap();
+        m.sandbox.fs.read = vec![entry.to_string()];
+        let err = validate_manifest(&m)
+            .unwrap_err_or_panic(&format!("read = [{entry:?}] must be refused"));
+        assert!(
+            matches!(err, ManifestError::FsReadDeclared { .. }),
+            "read = [{entry:?}] produced {err:?}"
+        );
+        assert!(err.to_string().contains(entry));
+    }
+
+    // And the fixture is capable of validating: with no paths named, it
+    // passes. Otherwise the refusals above would prove nothing.
+    let clean = Manifest::from_toml_str(&render_with_dummy_key()).unwrap();
+    assert!(clean.sandbox.fs.read.is_empty() && clean.sandbox.fs.write.is_empty());
+    validate_manifest(&clean).expect("a manifest naming no path validates");
+}
+
+/// `Result::unwrap_err` needs `T: Debug`; `()` has it, but the message
+/// on failure is then useless. This carries the case into the panic.
+trait UnwrapErrOrPanic<E> {
+    fn unwrap_err_or_panic(self, msg: &str) -> E;
+}
+
+impl<E> UnwrapErrOrPanic<E> for Result<(), E> {
+    fn unwrap_err_or_panic(self, msg: &str) -> E {
+        match self {
+            Ok(()) => panic!("{msg}"),
+            Err(e) => e,
+        }
+    }
+}
+
 #[test]
 fn app_without_entrypoint_fails_validation() {
     let mut m = Manifest::from_toml_str(&render_with_dummy_key()).unwrap();

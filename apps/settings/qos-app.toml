@@ -1,11 +1,14 @@
 # Settings — qOS application manifest.
 #
 # The widest exec surface in the fleet — systemctl, localectl, bootc,
-# nmcli, wpctl, lpstat, cancel — plus the host inventory files under
-# /proc, /sys and /etc that the About, Display, Power, Users and
-# Date & Time panes read. Owns the shared `~/.config/qos` tree,
-# including the account store and credential vault. Still no egress of
+# nmcli, wpctl, lpstat, cancel — and the host inventory the About,
+# Display, Power, Users and Date & Time panes read. Still no egress of
 # its own: every network action is delegated to nmcli.
+#
+# Beyond the system read profile it needs, as consented capabilities:
+# read+exec on the host bin dirs, read on the host inventory files
+# under /proc and /etc, and read+write on the shared `~/.config/qos`
+# tree including the account store and credential vault.
 #
 # Pack and install:
 #
@@ -50,58 +53,6 @@ namespaces = [
 ]
 seccomp    = "qos-default"
 landlock   = "strict"
-
-[sandbox.fs]
-read = [
-    "$XDG_RUNTIME_DIR/wayland-0",
-    "/usr/lib64",
-    "/usr/lib",
-    "/usr/share/fonts",
-    "/usr/share/fontconfig",
-    "/etc/fonts",
-    "/usr/share/vulkan",
-    "/usr/share/glvnd",
-    "/usr/share/drirc.d",
-    "/usr/share/libdrm",
-    "/usr/share/nvidia",
-    "/etc/vulkan",
-    "/etc/machine-id",
-    "/etc/ld.so.cache",
-    "/etc/ld.so.conf",
-    "/etc/ld.so.conf.d",
-    "/usr/lib/locale",
-    "/sys",
-    "/etc/os-release",
-    "/etc/passwd",
-    "/etc/group",
-    "/etc/timezone",
-    "/etc/localtime",
-    "/proc",
-    "/sys/class/drm",
-    "/sys/class/power_supply",
-    "/sys/class/backlight",
-    "/usr/share/zoneinfo",
-    "/usr/bin",
-    "/bin",
-    "/usr/sbin",
-    "/sbin",
-]
-write = [
-    # This app's own state document (`app-state`); the path is derived
-    # from the package id, so it is the same one the store computes.
-    "~/.local/share/dev.qos.settings",
-    "~/.cache/mesa_shader_cache",
-    "~/.cache/mesa_shader_cache_db",
-    "~/.cache/radv_builtin_shaders",
-    "/dev/dri",
-    "/dev/nvidia0",
-    "/dev/nvidiactl",
-    "/dev/nvidia-modeset",
-    "/dev/nvidia-uvm",
-    "/dev/nvidia-uvm-tools",
-    "/dev/nvidia-caps",
-    "~/.config/qos",
-]
 
 [sandbox.net]
 mode = "off"
