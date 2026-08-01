@@ -1523,6 +1523,13 @@ mod tests {
         let mut app = CalculatorApp::seeded(); // Graph2d, 4 visible funcs
         app.set_mode(Mode::Graph2d);
         let mut st = ui::State::new();
+        // Mirror the live frame loop, which syncs the model into the document
+        // before routing a pointer event. Without it the taps dispatch their
+        // toggle actions against an empty document: the first toggle finds no
+        // `funcs[0]` to flip, so it commits an empty change, and (per
+        // `perform_action`'s contract) an empty change wedges the next dispatch
+        // — the second tap then panics inside Automerge's transaction open.
+        app.sync(&mut st.doc, &st.root);
         app.area = Rect::new(0.0, 0.0, 1280.0, 800.0); // docked panel
         app.relayout();
         app.layout_active();
