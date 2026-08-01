@@ -47,7 +47,11 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let (state, autosave) = ui::persist::open("dev.qos.mail");
-    let app = ui::App::new(state, mail::app_root()).with_autosave(autosave);
+    let mut app = ui::App::new(state, mail::app_root()).with_autosave(autosave);
+    // Register Mail's actions so the shell's Ctrl+K palette can decode + replay
+    // the same flag / move / label / folder / draft actions the on-screen
+    // affordances dispatch.
+    mail::actions::register(app.action_registry_mut());
     app.run();
     Ok(())
 }

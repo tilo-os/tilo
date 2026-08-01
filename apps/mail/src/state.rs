@@ -10,15 +10,19 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use automerge::AutoCommit;
+use automerge::{AutoCommit, ChangeHash};
 use vello::kurbo::Point;
 
-use ui::ImageStore;
+use ui::{ActionHost, ImageStore};
 
 use crate::account::AccountStore;
+use crate::actions::{
+    move_action, save_draft_action, set_read_action, set_starred_action, MailAction,
+    MAIL_ACTION_TYPE,
+};
 use crate::doc::MailDoc;
 use crate::engine::EngineRequest;
-use crate::model::{Folder, Mailbox, Message, MessageId, Thread};
+use crate::model::{Draft, Folder, Mailbox, Message, MessageId, Thread};
 
 /// Cheap-to-clone handle every pane holds.
 pub type Shared = Rc<RefCell<MailState>>;
@@ -118,6 +122,13 @@ pub struct MailState {
     /// Any pane sets this to request a repaint.
     pub dirty: bool,
 
+    /// Framework-owned action dispatch: every document-mutating message
+    /// operation (mark read/unread, star, move/archive/delete-to-trash) routes
+    /// through here so it brackets one undo boundary, replays byte-identically on
+    /// peers, and shares its [`crate::actions::MailAction`] with the Ctrl+K
+    /// palette. See [`crate::actions`].
+    pub actions: ActionHost,
+
     intents: Vec<Intent>,
 }
 
@@ -168,8 +179,30 @@ impl MailState {
             seeded: false,
             last_mouse: Point::ZERO,
             dirty: true,
+            actions: ActionHost::new(),
             intents: Vec::new(),
         }
+    }
+
+    /// Hand the framework host the heads captured before this event's first
+    /// message action, so the app records one undo boundary bracketing it. Wired
+    /// through [`ui::widget::Widget::take_committed_action`]. Rising-edge.
+    pub fn take_committed_action(&mut self) -> Option<Vec<ChangeHash>> {
+        self.actions.take_committed()
+    }
+
+    /// Dispatch one [`MailAction`] — the single CRDT-mutation path shared with the
+    /// Ctrl+K palette. The in-memory mailbox is updated by the caller for
+    /// immediate feedback and reconciled from the document on the next `sync`.
+    fn dispatch_action(&mut self, doc: &mut AutoCommit, action: &MailAction) {
+        self.actions.dispatch(doc, MAIL_ACTION_TYPE, action);
+    }
+
+    /// Persist the in-progress draft as an action (undo boundary + replay + the
+    /// same [`MailAction`] the palette's draft actions use). The visible Drafts
+    /// message is materialised separately by the app.
+    pub fn save_draft(&mut self, doc: &mut AutoCommit, draft: &Draft) {
+        self.dispatch_action(doc, &save_draft_action(draft));
     }
 
     // ---- intents ----
@@ -335,8 +368,48 @@ impl MailState {
         items
     }
 
+    // ---- action-routed message mutations ----
+    //
+    // Each mutates the in-memory mailbox for immediate feedback AND dispatches
+    // the matching [`MailAction`] through the framework host, so the flag change
+    // is one undo boundary, replays byte-identically on peers, and is the same
+    // action the Ctrl+K palette dispatches. The `sync_*_to_server` hooks remain
+    // an *external* effect (IMAP UID STORE/MOVE), separate from the CRDT action.
+
+    /// Set a message's read flag through the action path.
+    pub fn set_read(&mut self, doc: &mut AutoCommit, id: MessageId, read: bool) {
+        if self.mailbox.get(id).is_none() {
+            return;
+        }
+        self.mailbox.mark_read(id, read);
+        self.dispatch_action(doc, &set_read_action(vec![id.to_string()], read));
+        self.sync_flag_to_server(id);
+        self.dirty = true;
+    }
+
+    /// Toggle a message's star through the action path.
+    pub fn toggle_star(&mut self, doc: &mut AutoCommit, id: MessageId) {
+        let Some(target) = self.mailbox.get(id).map(|m| !m.starred) else {
+            return;
+        };
+        self.mailbox.toggle_star(id);
+        self.dispatch_action(doc, &set_starred_action(vec![id.to_string()], target));
+        self.sync_flag_to_server(id);
+        self.dirty = true;
+    }
+
+    /// Move a message to `folder` through the action path.
+    pub fn move_message(&mut self, doc: &mut AutoCommit, id: MessageId, folder: Folder) {
+        let Some(source) = self.mailbox.get(id).cloned() else {
+            return;
+        };
+        self.mailbox.move_to(id, folder);
+        self.dispatch_action(doc, &move_action(vec![id.to_string()], folder));
+        self.sync_move_to_server(source, folder);
+    }
+
     /// Apply a message action. Reply/forward raise an intent (the app owns the
-    /// composer); the rest mutate + persist here.
+    /// composer); the rest route through the action path above.
     pub fn apply_message_action(&mut self, doc: &mut AutoCommit, id: MessageId, action: CtxAction) {
         match action {
             CtxAction::Reply => self.push_intent(Intent::Reply(id)),
@@ -344,25 +417,14 @@ impl MailState {
             CtxAction::Forward => self.push_intent(Intent::Forward(id)),
             CtxAction::ToggleRead => {
                 let now = self.mailbox.get(id).map(|m| m.read).unwrap_or(false);
-                self.mailbox.mark_read(id, !now);
-                self.persist_flags(doc, id);
-                self.sync_flag_to_server(id);
-                self.dirty = true;
+                self.set_read(doc, id, !now);
             }
             CtxAction::ToggleStar => {
-                self.mailbox.toggle_star(id);
-                self.persist_flags(doc, id);
-                self.sync_flag_to_server(id);
-                self.dirty = true;
+                self.toggle_star(doc, id);
             }
             CtxAction::Archive => {
                 let was_selected = self.selected == Some(id);
-                let source = self.mailbox.get(id).cloned();
-                self.mailbox.archive(id);
-                self.persist_flags(doc, id);
-                if let Some(src) = source {
-                    self.sync_move_to_server(src, Folder::Archive);
-                }
+                self.move_message(doc, id, Folder::Archive);
                 self.after_remove(doc, was_selected);
             }
             CtxAction::Delete => {
@@ -370,36 +432,27 @@ impl MailState {
                 // Snapshot the source before the local move so a live UID MOVE
                 // can find it in its origin mailbox.
                 let source = self.mailbox.get(id).cloned();
-                // Capture the folder the delete routed the message to (Trash),
-                // or `None` when it was purged (already in Trash).
-                let moved_to = {
-                    self.mailbox.delete(id);
-                    self.mailbox.get(id).map(|m| m.folder)
-                };
-                self.persist_flags(doc, id);
-                if let (Some(to), Some(src)) = (moved_to, source) {
-                    self.sync_move_to_server(src, to);
+                // Move to Trash, or purge if it was already there. The move is a
+                // replayable action; a purge drops the in-memory corpus copy only
+                // (message content never lived in the CRDT), so it is not one.
+                self.mailbox.delete(id);
+                let moved_to = self.mailbox.get(id).map(|m| m.folder);
+                if let Some(to) = moved_to {
+                    self.dispatch_action(doc, &move_action(vec![id.to_string()], to));
+                    if let Some(src) = source {
+                        self.sync_move_to_server(src, to);
+                    }
                 }
                 self.after_remove(doc, was_selected);
             }
             CtxAction::MoveToInbox => {
-                let source = self.mailbox.get(id).cloned();
-                self.mailbox.move_to(id, Folder::Inbox);
-                self.persist_flags(doc, id);
-                if let Some(src) = source {
-                    self.sync_move_to_server(src, Folder::Inbox);
-                }
                 let was_selected = self.selected == Some(id);
+                self.move_message(doc, id, Folder::Inbox);
                 self.after_remove(doc, was_selected);
             }
             CtxAction::Junk => {
                 let was_selected = self.selected == Some(id);
-                let source = self.mailbox.get(id).cloned();
-                self.mailbox.move_to(id, Folder::Junk);
-                self.persist_flags(doc, id);
-                if let Some(src) = source {
-                    self.sync_move_to_server(src, Folder::Junk);
-                }
+                self.move_message(doc, id, Folder::Junk);
                 self.after_remove(doc, was_selected);
             }
         }
