@@ -86,6 +86,24 @@ test against it proves nothing. Use one TPM state dir per scenario
 
 See `docs/secure-boot.md` for what these are for.
 
+Two drivers automate the scenarios end to end. Both drive the guest's own
+`/usr/libexec/` tooling, so what they exercise is the shipped path rather than a
+re-implementation of it, and both need `sshpass` on the host.
+
+```bash
+# encrypted install + boot the result. --passphrase types the secret at the
+# LUKS prompt, which is the proof that early userspace opened the root.
+./os/dev/test-encrypted-install.sh tpm      os/output/qcow2/disk.qcow2
+./os/dev/test-encrypted-install.sh no-tpm   os/output/qcow2/disk.qcow2 \
+    --no-tpm --passphrase hunter2
+# reproduce the pre-initramfs state on a real boot: same install, initrd line
+# removed from the boot entry.
+./os/dev/test-encrypted-install.sh noinitrd os/output/qcow2/disk.qcow2 --no-initrd
+
+# generate keys, sign, check enrolment refuses unsigned, enrol, reboot enforcing
+./os/dev/test-secureboot.sh os/output/qcow2/disk.qcow2
+```
+
 ## Extracting logs
 
 1. **Serial console** (`vm.sh serial [grep]`) — always available; captures the
