@@ -27,6 +27,7 @@ use ui::permissions::PermissionContext;
 use ui::presence::{PresenceCtx, PresenceKey};
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
+use ui::widget::SidebarDrawer;
 use ui::widget::link_popover::PageEntry;
 use ui::widget::page_palette::PageJumpPalette;
 
@@ -126,8 +127,11 @@ pub struct NotesApp {
     /// and `handle_event` read this so they always match the live tree,
     /// even for the one frame before a breakpoint crossing rebuilds.
     built_narrow: bool,
-    /// Whether the narrow-mode overlay drawer is currently open.
-    drawer_open: bool,
+    /// The responsive sidebar/drawer controller: it owns the docked-vs-overlay
+    /// decision (at [`NARROW_BREAKPOINT`]), the open/closed state, and the
+    /// dimming scrim, replacing the hand-rolled breakpoint + `drawer_open` flag +
+    /// scrim fill this app used to carry.
+    drawer: SidebarDrawer,
     /// Set when the window crossed the narrow breakpoint so the tree
     /// needs a structural rebuild. Drained by `take_structure_dirty`.
     pending_relayout: bool,
@@ -246,7 +250,11 @@ impl NotesApp {
             bound_page: None,
             want_narrow: false,
             built_narrow: false,
-            drawer_open: false,
+            drawer: SidebarDrawer::new()
+                .left()
+                .docked_width(SIDEBAR_WIDTH)
+                .overlay_width(DRAWER_WIDTH)
+                .breakpoint(NARROW_BREAKPOINT),
             pending_relayout: false,
             self_dirty: false,
             topbar_node: None,
@@ -420,7 +428,7 @@ impl NotesApp {
         // Hamburger glyph: three evenly-spaced rounded bars centred in
         // the button hit rect. Highlight the button while the drawer is
         // open so the toggle state reads.
-        if self.drawer_open {
+        if self.drawer.is_open() {
             scene.fill(
                 vello::peniko::Fill::NonZero,
                 transform,
@@ -472,10 +480,17 @@ impl NotesApp {
         );
     }
 
-    /// Open or close the narrow-mode overlay drawer. No-op in wide mode.
+    /// Open or close the narrow-mode overlay drawer. Snaps (no slide) so the
+    /// behaviour matches the pre-adoption instant toggle; the drawer's own
+    /// scrim and breakpoint memory come from the shared [`SidebarDrawer`].
     fn set_drawer_open(&mut self, open: bool) {
-        if self.drawer_open != open {
-            self.drawer_open = open;
+        if self.drawer.is_open() != open {
+            if open {
+                self.drawer.open();
+            } else {
+                self.drawer.close();
+            }
+            self.drawer.snap(open);
             self.self_dirty = true;
         }
     }
@@ -1040,7 +1055,7 @@ impl NotesApp {
     /// Test hook: whether the narrow-mode overlay drawer is open.
     #[doc(hidden)]
     pub fn drawer_open_for_test(&self) -> bool {
-        self.drawer_open
+        self.drawer.is_open()
     }
 
     /// Test hook: centre of the drawer-toggle button (narrow mode).
@@ -1448,17 +1463,17 @@ impl Widget for NotesApp {
         );
         let new_origin = Point::new(self.rect.x0, self.rect.y0);
 
-        // Decide the responsive mode from the real width. `> 0.0` guards
-        // the very first frame, where the window size isn't known yet.
+        // Decide the responsive mode from the real width. `> 0.0` guards the
+        // very first frame, where the window size isn't known yet. The shared
+        // drawer owns the breakpoint; at/above it the sidebar docks, below it it
+        // overlays. Entering narrow starting closed is handled by the drawer's
+        // own breakpoint reconciliation (in `resolve`, below).
         let width = self.rect.width();
-        let want = width > 0.0 && width < NARROW_BREAKPOINT;
+        let want = width > 0.0
+            && matches!(self.drawer.layout_for(width), ui::widget::SplitLayout::Overlay);
         if want != self.want_narrow {
             self.want_narrow = want;
             self.self_dirty = true;
-            // Entering narrow always starts with the drawer closed.
-            if want {
-                self.drawer_open = false;
-            }
         }
         // If the desired mode drifted from what's actually built, ask the
         // host to rebuild the tree on the next frame.
@@ -1483,6 +1498,10 @@ impl Widget for NotesApp {
                 content_origin.x + content_layout.size.width as f64,
                 content_origin.y + content_layout.size.height as f64,
             );
+            // Feed the fresh content rect to the shared drawer so its scrim
+            // geometry and breakpoint memory track this frame (this is where a
+            // stale open/closed preference is reconciled on a breakpoint cross).
+            self.drawer.resolve(self.content_rect);
             if let Some(n) = self.sidebar_node {
                 self.sidebar.apply_layout(taffy, n, content_origin);
             }
@@ -1540,27 +1559,11 @@ impl Widget for NotesApp {
         self.main.draw(scene, transform, text_renderer, theme, presence);
         if self.built_narrow {
             self.draw_topbar(scene, transform, text_renderer, theme);
-            if self.drawer_open {
-                // Dim the content area, then paint the drawer on top so
-                // the page tree reads over the editor underneath.
-                scene.fill(
-                    vello::peniko::Fill::NonZero,
-                    transform,
-                    theme.tokens.colors.surfaces.overlay,
-                    None,
-                    &self.content_rect,
-                );
+            if self.drawer.is_open() {
+                // The shared drawer paints the (subtle) dimming scrim plus a
+                // soft edge shadow behind the page tree, which draws on top.
+                self.drawer.draw_scrim(scene, transform);
                 self.sidebar.draw(scene, transform, text_renderer, theme, presence);
-                // Hairline on the drawer's trailing edge so it separates
-                // cleanly from the dimmed editor behind it.
-                let edge = self.sidebar.get_rect();
-                scene.fill(
-                    vello::peniko::Fill::NonZero,
-                    transform,
-                    theme.tokens.colors.border_standard,
-                    None,
-                    &Rect::new(edge.x1 - 1.0, edge.y0, edge.x1, edge.y1),
-                );
             }
         } else {
             self.sidebar.draw(scene, transform, text_renderer, theme, presence);
@@ -1710,12 +1713,12 @@ impl Widget for NotesApp {
             } = event
             {
                 if self.menu_btn_rect.contains(self.last_mouse) {
-                    self.set_drawer_open(!self.drawer_open);
+                    self.set_drawer_open(!self.drawer.is_open());
                     *handled = true;
                     return;
                 }
             }
-            if self.drawer_open {
+            if self.drawer.is_open() {
                 // Escape closes the drawer.
                 if let WindowEvent::KeyboardInput {
                     event:
