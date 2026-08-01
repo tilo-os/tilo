@@ -62,24 +62,49 @@ done
 
 export PKG_CONFIG_PATH="$DESTDIR_ROOT$PREFIX/lib64/pkgconfig:$DESTDIR_ROOT$PREFIX/share/pkgconfig:${PKG_CONFIG_PATH:-}"
 export LD_LIBRARY_PATH="$DESTDIR_ROOT$PREFIX/lib64:${LD_LIBRARY_PATH:-}"
-# Staged installs: make pkg-config resolve the .pc files' unstaged
-# ${prefix} paths inside the staging root.
-[ -n "$DESTDIR_ROOT" ] && export PKG_CONFIG_SYSROOT_DIR="$DESTDIR_ROOT"
+# Staged installs: each package's .pc file keeps advertising the *unstaged*
+# ${prefix} (/usr), while the files are under $DESTDIR_ROOT — so the next
+# package in the stack has to be told where they really are. Have pkgconf
+# derive ${prefix} from each .pc file's own location instead
+# (= `--define-prefix`), which relocates exactly the packages that were staged
+# and leaves everything else alone.
+#
+# NOT PKG_CONFIG_SYSROOT_DIR: that is a blanket rewrite of every -I/-L
+# pkg-config emits, including system libraries in the real /usr. With
+# DESTDIR=/wpe it turned libxkbcommon's -I/usr/include into -I/wpe/usr/include
+# and WebKit's configure died on `Imported target "XkbCommon::libxkbcommon"
+# includes non-existent path`.
+export PKG_CONFIG_RELOCATE_PATHS=1
 # Pin real compilers: meson otherwise auto-wraps with sccache, whose shared
 # daemon may run outside the build container and not see its /usr/include.
 export CC=gcc CXX=g++
+
+# Assert a just-installed package resolves to include paths that exist. A
+# misresolved .pc otherwise surfaces much later as a confusing compile error
+# inside whichever package consumed it.
+check_pc() {
+    local dir
+    dir=$(pkg-config --cflags-only-I "$1" | tr ' ' '\n' | grep -m1 '^-I' | cut -c3-) || true
+    if [ -z "$dir" ] || [ ! -d "$dir" ]; then
+        echo "pkg-config $1 resolved to a missing include dir: '${dir:-<none>}'" >&2
+        exit 1
+    fi
+    echo "$1 -> $dir"
+}
 
 echo "=== libwpe ==="
 cd "$CACHE/${LIBWPE%.tar.xz}"
 cmake -B build -GNinja -Wno-dev -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_INSTALL_PREFIX="$PREFIX" -DCMAKE_INSTALL_LIBDIR=lib64 >/dev/null
 DESTDIR="$DESTDIR_ROOT" ninja -C build install | tail -1
+check_pc wpe-1.0
 
 echo "=== wpebackend-fdo ==="
 cd "$CACHE/${FDO%.tar.xz}"
 rm -rf build
 meson setup build --prefix="$PREFIX" --libdir lib64 --buildtype=release >/dev/null
 DESTDIR="$DESTDIR_ROOT" ninja -C build install 2>&1 | tail -1
+check_pc wpebackend-fdo-1.0
 
 echo "=== wpewebkit (long) ==="
 cd "$CACHE/${WPEWK%.tar.xz}"
