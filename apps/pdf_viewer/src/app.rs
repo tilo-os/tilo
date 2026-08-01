@@ -481,15 +481,11 @@ pub struct PdfApp {
     /// An in-progress drag of a sticky-note marker (reposition), if any.
     marker_drag: Option<ui::MarkerDrag>,
 
-    /// The document heads captured just before the first markup action of the
-    /// current event was dispatched through [`Self::perform_action`]. The host
-    /// drains this via [`Widget::take_committed_action`] to record exactly one
-    /// undo boundary bracketing the event's actions. Rising-edge: cleared on read.
-    action_commit_before: Option<Vec<automerge::ChangeHash>>,
-    /// The most recent [`EncodedAction`](qos_actions::EncodedAction) an on-page
-    /// affordance dispatched through [`Self::perform_action`]. Lets a test prove
-    /// a button dispatches the byte-identical action the palette would.
-    last_dispatched: Option<qos_actions::EncodedAction>,
+    /// Framework-owned action dispatch: brackets the undo boundary (the same undo
+    /// path the Ctrl+K palette takes), encodes and dispatches each on-page markup
+    /// action, and remembers the last one so a test can prove a button dispatches
+    /// the byte-identical action the palette would.
+    actions: ui::ActionHost,
 }
 
 impl PdfApp {
@@ -684,8 +680,7 @@ impl PdfApp {
             edit_rect: Rect::ZERO,
             sel_hud: None,
             marker_drag: None,
-            action_commit_before: None,
-            last_dispatched: None,
+            actions: ui::ActionHost::new(),
         }
     }
 
@@ -701,17 +696,8 @@ impl PdfApp {
         state: &mut AutoCommit,
         action: crate::actions::PdfViewerAction,
     ) {
-        if self.action_commit_before.is_none() {
-            // `get_heads` flushes any pending app writes, so the bracket covers
-            // only the action's own change.
-            self.action_commit_before = Some(state.get_heads());
-        }
-        let encoded = crate::actions::encode(&action);
-        self.last_dispatched = Some(encoded.clone());
-        let mut tx = DiscardTransport;
-        if let Err(e) = qos_actions::dispatch(state, &action, encoded, &mut tx) {
-            tracing::warn!(error = %e, "pdf_viewer action dispatch failed");
-        }
+        self.actions
+            .dispatch(state, crate::actions::PDF_VIEWER_ACTION_TYPE, &action);
     }
 
     /// The presentation context Ctrl+K needs to build the document-level action
@@ -2177,18 +2163,6 @@ fn ensure_pdf_extension(path: std::path::PathBuf) -> std::path::PathBuf {
 include!("app_draw.rs");
 include!("app_events.rs");
 
-/// The action transport the reader installs for its own on-page affordances.
-/// Peers receive markup changes through ordinary CRDT sync (the executor pins
-/// each action's actor so the change is content-addressed identical to a peer's
-/// replay and dedupes on merge), so the local affordance path has nothing extra
-/// to replicate — this sink drops the envelope. The Ctrl+K palette dispatches
-/// through the host's transport, which a collaborative session swaps for a
-/// peer-aware one.
-struct DiscardTransport;
-impl qos_actions::ActionTransport for DiscardTransport {
-    fn replicate(&mut self, _env: &qos_actions::ActionEnvelope) {}
-}
-
 impl Widget for PdfApp {
     fn record_intent(&self) -> Option<ui::RecordCheckout> {
         self.markup_record.clone()
@@ -2206,7 +2180,7 @@ impl Widget for PdfApp {
     /// its markup action, so it records one undo boundary for it (see
     /// [`Self::perform_action`]). Rising-edge: cleared on read.
     fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.action_commit_before.take()
+        self.actions.take_committed()
     }
 
     fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
