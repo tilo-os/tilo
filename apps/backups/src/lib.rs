@@ -14,6 +14,7 @@
 //! `app_root()` builds the live tree (an empty catalog → onboarding); the
 //! headless `--shots` renderer uses `app_root_demo()` for the sample catalog.
 
+pub mod actions;
 pub mod app;
 pub mod doc;
 pub mod model;
