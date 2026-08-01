@@ -701,7 +701,9 @@ fn write_snapshot_png(fb: &mut FrameBuilder, path: &std::path::Path) {
     let (w, h) = fb.viewport();
     let (w, h) = (w as u32, h as u32);
     if w == 0 || h == 0 {
-        eprintln!("nirios compositor: test_control snapshot: viewport is {w}x{h}, nothing to write");
+        eprintln!(
+            "nirios compositor: test_control snapshot: viewport is {w}x{h}, nothing to write"
+        );
         return;
     }
     let scene = fb.paint();

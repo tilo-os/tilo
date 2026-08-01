@@ -67,9 +67,7 @@ pub enum OffscreenError {
 impl std::fmt::Display for OffscreenError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::NoAdapter => {
-                f.write_str("no wgpu adapter available — is llvmpipe installed?")
-            }
+            Self::NoAdapter => f.write_str("no wgpu adapter available — is llvmpipe installed?"),
             Self::Renderer(e) => write!(f, "vello could not build a renderer: {e}"),
             Self::ContextPoisoned => f.write_str("the shared wgpu RenderContext is poisoned"),
         }
