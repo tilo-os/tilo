@@ -29,6 +29,7 @@
 //! app drop the direct dependency when it is next touched.
 
 pub mod a11y;
+pub mod a11y_tree;
 pub mod accesskit_bridge;
 pub mod screen_reader;
 pub mod action_host;
@@ -107,6 +108,9 @@ pub use selection::SelectionModel;
 // through the module path to avoid clashing with `permissions::{Role}` /
 // `permissions::Verb`, which are already re-exported at the crate root.
 pub use a11y::{A11ySettings, AccessNode, AccessState};
+// The retained semantic tree: stable frame-to-frame node identity + diffing,
+// with per-node affordances tied to the qOS action model.
+pub use a11y_tree::{SemanticAction, SemanticActionKind, SemanticId, SemanticNode, SemanticTree, TreeDelta};
 
 // Built-in screen reader (W6): the first-party narrator over the a11y tree +
 // qos-tts. `describe` is the pure phrase-builder; `ScreenReader` the imperative
