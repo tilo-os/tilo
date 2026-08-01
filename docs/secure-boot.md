@@ -44,11 +44,23 @@ refuses its own boot artefacts. `qos-secureboot enroll` therefore refuses unless
 checking is inert. That asymmetry is why the signing side ships enabled and the
 enrolling side does not.
 
-The path unit is the one that matters in practice. It watches `/boot/ostree`, so
-a hand-run `bootc upgrade` gets its new kernel signed immediately rather than at
-the next boot — which would be the boot the firmware refuses. One gap remains:
-`bootupctl update` replaces the loaders on the ESP with unsigned copies, and
-nothing watches the ESP, so run `qos-secureboot sign` after it.
+Three things keep the artefacts signed, in decreasing order of how much they are
+relied on:
+
+- **`qos-secureboot-sign.path`** watches `/boot/ostree`, so a hand-run
+  `bootc upgrade` gets its new kernel signed immediately rather than at the next
+  boot — which would be the boot the firmware refuses. It also watches
+  `/boot/efi/EFI/systemd` and `/boot/efi/EFI/BOOT`, because `bootupctl update`
+  rewrites the loaders there and that change has no natural second chance.
+- **`qos-secureboot-sign-shutdown.service`** signs once more on the way down.
+  The path unit depends on inotify firing and on the change happening somewhere
+  we thought to watch; this one needs neither. Whatever touched the boot
+  artefacts and however it did it, the last thing before the machine goes down
+  is a signing pass — while there is still a running system to do it with.
+- **`qos-secureboot-sign.service`** at `multi-user.target`, which cannot rescue
+  the boot it runs in but does converge a machine that got here some other way.
+
+`enroll` requires all three.
 
 ```bash
 # On the machine, before touching firmware setup:
