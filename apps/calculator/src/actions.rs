@@ -792,4 +792,75 @@ mod tests {
             "add-function is one source of truth"
         );
     }
+
+    /// The retained accessibility tree surfaces the calculator's operable
+    /// resources as stable nodes, and a node's exposed affordance is the
+    /// byte-identical `EncodedAction` the on-screen control dispatches. (The
+    /// calculator custom-draws its keypad, so its *operable* semantics come from
+    /// the resource + action model, not per-key widgets.)
+    #[test]
+    fn a11y_tree_surfaces_history_delete_as_the_affordance_action() {
+        let resources = provide_resources(&ctx(), &AutoCommit::new());
+
+        // An inert root; the operable nodes come from the published resources.
+        // `HashMap::new()`'s type is inferred from `refresh`'s signature.
+        let root = ui::widget::Column::new();
+        let node_map = std::collections::HashMap::new();
+        let mut tree = ui::SemanticTree::new();
+
+        // First refresh populates the tree; a second, unchanged refresh is a
+        // no-op with identical node identity (retained, not rebuilt each frame).
+        let d1 = tree.refresh(&root, &node_map, None, &resources);
+        assert!(!d1.added.is_empty(), "the first refresh populates the tree");
+        let ws = tree
+            .node(&ui::SemanticId("r:calculator.workspace".into()))
+            .expect("workspace node present");
+        assert_eq!(ws.name.as_deref(), Some("Calculator"));
+        assert!(ws.action("clear-history").is_some(), "workspace affords clear-history");
+        let ids1: Vec<ui::SemanticId> = tree.iter().map(|n| n.id.clone()).collect();
+
+        let d2 = tree.refresh(&root, &node_map, None, &resources);
+        assert!(d2.is_empty(), "an unchanged frame yields no delta: {d2:?}");
+        let ids2: Vec<ui::SemanticId> = tree.iter().map(|n| n.id.clone()).collect();
+        assert_eq!(ids1, ids2, "node identity survives across frames");
+
+        // The newest history entry is a node whose 'delete' affordance carries
+        // the exact EncodedAction the on-screen delete control dispatches.
+        let entry = tree
+            .node(&ui::SemanticId("r:calculator.history_entry:0".into()))
+            .expect("history entry node");
+        let exposed = match &entry.action("delete").expect("delete affordance").kind {
+            ui::SemanticActionKind::App(enc) => enc.clone(),
+            other => panic!("expected an app action, got {other:?}"),
+        };
+        assert_eq!(
+            exposed,
+            encode(&delete_history_entry_action(0)),
+            "the a11y affordance and the on-screen builder are one action"
+        );
+
+        // Invoking the exposed action drives the doc exactly as the on-screen
+        // affordance's own builder does: seed two identical docs, delete through
+        // each path, and compare the results.
+        let seed = |doc: &mut AutoCommit| {
+            dispatch(doc, &commit_history_action("e0", "0"));
+            dispatch(doc, &commit_history_action("e1", "1"));
+        };
+        let mut via_a11y = AutoCommit::new();
+        seed(&mut via_a11y);
+        let mut via_affordance = AutoCommit::new();
+        seed(&mut via_affordance);
+
+        let decoded = registry().decode(&exposed).unwrap();
+        let mut tx = LocalTransport::new();
+        qos_actions::dispatch(&mut via_a11y, decoded.as_ref(), exposed, &mut tx).unwrap();
+        dispatch(&mut via_affordance, &delete_history_entry_action(0));
+
+        assert_eq!(
+            read_history(&via_a11y),
+            read_history(&via_affordance),
+            "invoking the a11y affordance deletes the same entry the control does"
+        );
+        assert_eq!(read_history(&via_a11y).len(), 1, "one entry remains after the delete");
+    }
 }
