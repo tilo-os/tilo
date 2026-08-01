@@ -91,6 +91,36 @@ impl RemoteDoc {
         let _ = doc.delete(&conns, id.to_string().as_str());
     }
 
+    /// Rename a connection, splicing only the changed run of the collaborative
+    /// `name` [`Text`](ObjType::Text) so concurrent renames merge. No-op if the
+    /// connection isn't in the document — a rename can't conjure a machine.
+    pub fn rename(doc: &mut AutoCommit, id: ConnectionId, name: &str) {
+        let conns = Self::connections_map(doc);
+        let Ok(Some((Value::Object(ObjType::Map), conn))) = doc.get(&conns, id.to_string().as_str())
+        else {
+            return;
+        };
+        let name_id = match doc.get(&conn, "name") {
+            Ok(Some((Value::Object(ObjType::Text), tid))) => tid,
+            _ => doc
+                .put_object(&conn, "name", ObjType::Text)
+                .expect("put_object name never fails"),
+        };
+        ui::doc::splice_text_diffed(doc, &name_id, name);
+    }
+
+    /// Set the favorite flag on an existing connection. The absolute target is
+    /// stored (never a read-then-flip), so the write is a pure function of its
+    /// argument and replays identically. No-op if the connection isn't present.
+    pub fn set_favorite(doc: &mut AutoCommit, id: ConnectionId, favorite: bool) {
+        let conns = Self::connections_map(doc);
+        let Ok(Some((Value::Object(ObjType::Map), conn))) = doc.get(&conns, id.to_string().as_str())
+        else {
+            return;
+        };
+        ui::doc::put_if_changed(doc, &conn, "favorite", favorite);
+    }
+
     /// Read every connection out of the document.
     pub fn list(doc: &AutoCommit) -> Vec<Connection> {
         let conns = match doc.get(&ROOT, "connections") {
@@ -295,5 +325,44 @@ mod tests {
             RemoteDoc::upsert(&mut doc, &conn("c", kind));
             assert_eq!(RemoteDoc::list(&doc)[0].kind, kind);
         }
+    }
+
+    #[test]
+    fn rename_updates_only_the_name() {
+        let mut doc = AutoCommit::new();
+        let c = conn("Before", ConnectionKind::Ssh);
+        RemoteDoc::upsert(&mut doc, &c);
+        RemoteDoc::rename(&mut doc, c.id, "After");
+        let back = RemoteDoc::list(&doc);
+        assert_eq!(back.len(), 1);
+        assert_eq!(back[0].name, "After");
+        assert_eq!(back[0].host, c.host, "rename leaves the rest of the record intact");
+        assert_eq!(back[0].favorite, c.favorite);
+    }
+
+    #[test]
+    fn rename_of_unknown_connection_is_a_noop() {
+        let mut doc = AutoCommit::new();
+        RemoteDoc::rename(&mut doc, Uuid::new_v4(), "Ghost");
+        assert!(RemoteDoc::list(&doc).is_empty(), "rename must not conjure a machine");
+    }
+
+    #[test]
+    fn set_favorite_stores_absolute_value() {
+        let mut doc = AutoCommit::new();
+        let mut c = conn("Box", ConnectionKind::Ssh);
+        c.favorite = false;
+        RemoteDoc::upsert(&mut doc, &c);
+        RemoteDoc::set_favorite(&mut doc, c.id, true);
+        assert!(RemoteDoc::list(&doc)[0].favorite);
+        RemoteDoc::set_favorite(&mut doc, c.id, false);
+        assert!(!RemoteDoc::list(&doc)[0].favorite);
+    }
+
+    #[test]
+    fn set_favorite_of_unknown_connection_is_a_noop() {
+        let mut doc = AutoCommit::new();
+        RemoteDoc::set_favorite(&mut doc, Uuid::new_v4(), true);
+        assert!(RemoteDoc::list(&doc).is_empty());
     }
 }
