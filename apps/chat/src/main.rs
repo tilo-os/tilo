@@ -59,7 +59,10 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         ),
         None => ui::persist::open("dev.qos.chat"),
     };
-    let app = ui::App::new(state, chat::app_root()).with_autosave(autosave);
+    let mut app = ui::App::new(state, chat::app_root()).with_autosave(autosave);
+    // Register Chat's actions so the shell's Ctrl+K palette can decode + replay
+    // the same message/channel mutations the on-screen affordances dispatch.
+    chat::actions::register(app.action_registry_mut());
     app.run();
     Ok(())
 }
