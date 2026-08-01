@@ -470,6 +470,11 @@ pub struct App {
     /// local-only transport; the shell/session swaps in a peer/host transport
     /// via [`Self::set_action_transport`].
     action_transport: Box<dyn qos_actions::ActionTransport>,
+    /// The retained accessibility tree — stable node identity + a frame-to-frame
+    /// diff over the widget semantics and the app's resource affordances.
+    /// Refreshed on demand via [`Self::refresh_semantic_tree`]; read via
+    /// [`Self::semantic_tree`]; driven via [`Self::invoke_semantic_action`].
+    semantic_tree: crate::a11y_tree::SemanticTree,
 }
 
 impl App {
@@ -537,6 +542,7 @@ impl App {
             action_palette: None,
             action_registry: qos_actions::ActionRegistry::new(),
             action_transport: Box::new(qos_actions::LocalTransport::new()),
+            semantic_tree: crate::a11y_tree::SemanticTree::new(),
         };
 
         // Seed the low-vision preferences from the environment so a sandbox
@@ -2219,6 +2225,122 @@ impl App {
             }
             _ => None,
         }
+    }
+
+    /// Rebuild the [retained semantic tree](crate::a11y_tree::SemanticTree) from
+    /// the current widget tree, node map, focus, and the focused app's open
+    /// resources, diffing it against the previous frame.
+    ///
+    /// Returns the [`TreeDelta`](crate::a11y_tree::TreeDelta): what nodes were
+    /// added / removed / had their content change since the last refresh. Node
+    /// identity is preserved for everything that recurred, so a consumer (an
+    /// AT-SPI incremental push, a screen reader, an AI-agent introspecting the
+    /// UI) can react to just the diff rather than re-reading a whole new tree.
+    pub fn refresh_semantic_tree(&mut self) -> crate::a11y_tree::TreeDelta {
+        let resources = self.collect_resources();
+        self.semantic_tree.refresh(
+            self.root_widget.as_ref(),
+            &self.node_map,
+            self.focused_node,
+            &resources,
+        )
+    }
+
+    /// Read access to the retained semantic tree (last
+    /// [`refresh`](Self::refresh_semantic_tree)ed state).
+    pub fn semantic_tree(&self) -> &crate::a11y_tree::SemanticTree {
+        &self.semantic_tree
+    }
+
+    /// Invoke a named affordance on a semantic node — the operate-the-tree
+    /// counterpart to reading it. This is how an assistive technology, a voice
+    /// command, or an AI agent drives the UI *by name*.
+    ///
+    /// * A [`Verb`](crate::a11y_tree::SemanticActionKind::Verb) (focus, activate,
+    ///   increment, …) routes through the same
+    ///   [`dispatch_a11y_action`](Self::dispatch_a11y_action) path an AccessKit
+    ///   `ActionRequest` takes — [`Widget::perform_action`](crate::widget::Widget::perform_action)
+    ///   first, then the generic focus/click fallback.
+    /// * An [`App`](crate::a11y_tree::SemanticActionKind::App) or
+    ///   [`AppPrompted`](crate::a11y_tree::SemanticActionKind::AppPrompted)
+    ///   affordance dispatches the resource's **exact
+    ///   [`EncodedAction`](qos_actions::EncodedAction)** through
+    ///   [`qos_actions::dispatch`] — the *identical* audited path the Ctrl+K
+    ///   palette and the on-screen control use — and records one undo boundary.
+    ///   `arg` supplies the free-text argument a prompted action needs (ignored
+    ///   otherwise).
+    ///
+    /// Returns `Ok(true)` if a matching affordance was found and driven,
+    /// `Ok(false)` if the node or action name was unknown, and `Err` if a
+    /// resolved app action failed to decode/dispatch. Call
+    /// [`refresh_semantic_tree`](Self::refresh_semantic_tree) first so the ids
+    /// are current.
+    pub fn invoke_semantic_action(
+        &mut self,
+        id: &crate::a11y_tree::SemanticId,
+        name: &str,
+        arg: Option<&str>,
+    ) -> Result<bool, String> {
+        use crate::a11y_tree::SemanticActionKind;
+        // Resolve the affordance out of the (immutably-borrowed) tree first, so
+        // the mutation below is free to borrow the doc / registry / transport.
+        let Some(action) = self.semantic_tree.action(id, name).cloned() else {
+            return Ok(false);
+        };
+        match action.kind {
+            SemanticActionKind::App(encoded) => self.dispatch_encoded_semantic(encoded),
+            SemanticActionKind::AppPrompted { .. } => {
+                let arg = arg.unwrap_or("");
+                let Some(encoded) = self.semantic_tree.build_prompted(id, name, arg) else {
+                    return Ok(false);
+                };
+                self.dispatch_encoded_semantic(encoded)
+            }
+            SemanticActionKind::Verb(verb) => {
+                let Some(taffy_raw) = self.semantic_tree.node(id).and_then(|n| n.widget_taffy_id)
+                else {
+                    return Ok(false);
+                };
+                let ak = accesskit::NodeId(taffy_raw + 1);
+                // Give the widget first refusal (its `perform_action`) and let the
+                // generic focus fallback run. A `Some((x, y))` result means the
+                // widget self-activates only via a pointer click, which needs the
+                // windowed input path (the winit handler synthesises it for an
+                // AccessKit `ActionRequest`); such widgets should implement
+                // `perform_action`. We surface the verb as dispatched either way.
+                let _pending_click = self.dispatch_a11y_action(ak, &verb);
+                Ok(true)
+            }
+        }
+    }
+
+    /// Dispatch a resolved [`EncodedAction`](qos_actions::EncodedAction) through
+    /// the qOS action model — decode via the app-registered registry, dispatch
+    /// via [`qos_actions::dispatch`] honouring its locus, and (when it mutated
+    /// the local doc) record one undo boundary. Byte-for-byte the same path as a
+    /// Ctrl+K palette selection ([`Self::action_palette_handle_key`]).
+    fn dispatch_encoded_semantic(
+        &mut self,
+        encoded: qos_actions::EncodedAction,
+    ) -> Result<bool, String> {
+        let before = self.state.doc.get_heads();
+        let action = self
+            .action_registry
+            .decode(&encoded)
+            .map_err(|e| e.to_string())?;
+        let dispatched = qos_actions::dispatch(
+            &mut self.state.doc,
+            action.as_ref(),
+            encoded,
+            self.action_transport.as_mut(),
+        )
+        .map_err(|e| e.to_string())?;
+        if dispatched.mutated_local() {
+            self.state.record_committed_action(before, None, None);
+            self.needs_sync = true;
+            self.layout_dirty = true;
+        }
+        Ok(true)
     }
 
     /// Build the initial taffy tree, seed the focus order, and (when
@@ -6159,5 +6281,260 @@ mod view_presence_tests {
         let v = <App as FreezeThaw>::capture_view(&app);
         assert_eq!(v.scroll, vec![7.0], "following an absent peer leaves the local view untouched");
         assert_eq!(app.followed_peer(), Some("ghost"), "the follow intent is still latched");
+    }
+}
+
+/// The retained semantic tree, driven through the full `ui::App`: refreshing it,
+/// reading node identity/state, and invoking a node's affordance so it dispatches
+/// the *same* `EncodedAction` the on-screen control does.
+#[cfg(test)]
+mod semantic_tree_app_tests {
+    use super::*;
+    use crate::a11y_tree::{SemanticActionKind, SemanticId};
+    use crate::state::State;
+    use crate::widget::{Button, Widget};
+    use automerge::transaction::Transactable;
+    use automerge::{ReadDoc, ScalarValue, Value, ROOT};
+    use qos_actions::{
+        Action as QAction, ActionError, ActionSpec, Doc, EncodedAction, ExecutionLocus, Resource,
+    };
+    use serde::{Deserialize, Serialize};
+    use std::collections::HashMap;
+
+    /// A minimal real action: bump a counter, or set a label. Deterministic —
+    /// the executor's contract. Registered under [`COUNTER_TYPE`].
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    enum CounterAction {
+        Bump,
+        SetLabel(String),
+    }
+    const COUNTER_TYPE: &str = "test.counter";
+
+    impl QAction for CounterAction {
+        fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
+            match self {
+                CounterAction::Bump => {
+                    let n = match doc.get(&ROOT, "n") {
+                        Ok(Some((v, _))) => v.to_i64().unwrap_or(0),
+                        _ => 0,
+                    };
+                    doc.put(&ROOT, "n", ScalarValue::Int(n + 1))?;
+                }
+                CounterAction::SetLabel(s) => {
+                    doc.put(&ROOT, "label", s.as_str())?;
+                }
+            }
+            Ok(())
+        }
+        fn locus(&self) -> ExecutionLocus {
+            ExecutionLocus::ClientLocal
+        }
+    }
+
+    /// A leaf widget that publishes one open resource ("Counter") exporting an
+    /// immediate `bump` and a prompted `set-label` — the on-screen control's
+    /// resource+action model, exactly as a real app does.
+    struct CounterCard {
+        button: Button,
+    }
+    impl CounterCard {
+        fn new() -> Self {
+            Self { button: Button::new("bump", "Bump", None) }
+        }
+    }
+    impl Widget for CounterCard {
+        fn sync(&mut self, s: &mut automerge::AutoCommit, p: &automerge::ObjId) {
+            self.button.sync(s, p);
+        }
+        fn build_layout(
+            &mut self,
+            taffy: &mut TaffyTree<()>,
+            theme: &Theme,
+            node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+        ) -> NodeId {
+            let kid = self.button.build_layout(taffy, theme, node_map);
+            let node = taffy.new_with_children(taffy::Style::default(), &[kid]).unwrap();
+            node_map.insert(node, self as *mut dyn Widget);
+            node
+        }
+        fn apply_layout(&mut self, _t: &TaffyTree<()>, _n: NodeId, _o: Point) {}
+        fn draw(
+            &mut self,
+            _s: &mut Scene,
+            _t: Affine,
+            _tr: &mut TextRenderer,
+            _th: &Theme,
+            _p: &PresenceCtx,
+        ) {
+        }
+        fn handle_event(
+            &mut self,
+            _e: &WindowEvent,
+            _sf: f64,
+            _m: &winit::event::Modifiers,
+            _s: &mut automerge::AutoCommit,
+            _p: &automerge::ObjId,
+            _h: &mut bool,
+            _ft: &mut Option<NodeId>,
+            _ni: NodeId,
+            _t: &TaffyTree<()>,
+        ) {
+        }
+        fn children(&self) -> Vec<&dyn Widget> {
+            vec![&self.button]
+        }
+        fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+            vec![&mut self.button]
+        }
+        fn name(&self) -> &str {
+            "CounterCard"
+        }
+        fn get_rect(&self) -> KurboRect {
+            KurboRect::ZERO
+        }
+        fn resources(&self, _doc: &automerge::AutoCommit) -> Vec<Resource> {
+            vec![Resource::new("test.counter", "test.counter", "Counter")
+                .with_action(
+                    ActionSpec::immediate("bump", "Bump", COUNTER_TYPE, &CounterAction::Bump)
+                        .unwrap(),
+                )
+                .with_action(ActionSpec::prompted(
+                    "set-label",
+                    "Set label",
+                    "Label",
+                    "name…",
+                    ExecutionLocus::ClientLocal,
+                    |s: &str| {
+                        EncodedAction::encode(COUNTER_TYPE, &CounterAction::SetLabel(s.to_string()))
+                            .unwrap()
+                    },
+                ))]
+        }
+    }
+
+    fn app() -> App {
+        let mut app = App::new(State::new(), Box::new(CounterCard::new()));
+        app.action_registry_mut().register::<CounterAction>(COUNTER_TYPE);
+        app.init_layout();
+        app
+    }
+
+    fn counter(app: &App) -> i64 {
+        match app.state.doc.get(&ROOT, "n") {
+            Ok(Some((v, _))) => v.to_i64().unwrap_or(0),
+            _ => 0,
+        }
+    }
+    fn label(app: &App) -> String {
+        match app.state.doc.get(&ROOT, "label") {
+            Ok(Some((Value::Scalar(v), _))) => match v.as_ref() {
+                ScalarValue::Str(s) => s.to_string(),
+                _ => String::new(),
+            },
+            _ => String::new(),
+        }
+    }
+
+    #[test]
+    fn refresh_populates_the_tree_from_app_resources() {
+        let mut app = app();
+        app.refresh_semantic_tree();
+        let tree = app.semantic_tree();
+        let node = tree
+            .node(&SemanticId("r:test.counter".into()))
+            .expect("the app's open resource is a semantic node");
+        assert_eq!(node.name.as_deref(), Some("Counter"));
+        assert!(node.action("bump").is_some(), "the resource's action is an affordance");
+        assert!(node.action("set-label").is_some());
+        // The root owns it (resources hang off the window root).
+        let root = tree.node(tree.root()).unwrap();
+        assert!(root.children.contains(&SemanticId("r:test.counter".into())));
+    }
+
+    #[test]
+    fn identity_is_stable_across_refreshes() {
+        let mut app = app();
+        app.refresh_semantic_tree();
+        let ids_before: Vec<SemanticId> = app.semantic_tree().iter().map(|n| n.id.clone()).collect();
+        // A refresh with nothing changed yields no delta and identical ids.
+        let delta = app.refresh_semantic_tree();
+        assert!(delta.is_empty(), "a stable frame yields no delta, got {delta:?}");
+        let ids_after: Vec<SemanticId> = app.semantic_tree().iter().map(|n| n.id.clone()).collect();
+        assert_eq!(ids_before, ids_after, "node identity survives a refresh");
+    }
+
+    #[test]
+    fn semantic_action_carries_the_same_encoded_action_the_affordance_dispatches() {
+        let mut app = app();
+        app.refresh_semantic_tree();
+        let bump = app
+            .semantic_tree()
+            .action(&SemanticId("r:test.counter".into()), "bump")
+            .expect("bump affordance");
+
+        // The on-screen control dispatches through ui::ActionHost — the exact
+        // path a real app's affordance takes. It must build the byte-identical
+        // EncodedAction the semantic node exposes.
+        let mut host = crate::action_host::ActionHost::new();
+        let mut host_doc = automerge::AutoCommit::new();
+        host.dispatch(&mut host_doc, COUNTER_TYPE, &CounterAction::Bump);
+        let from_affordance = host.last_dispatched().expect("the affordance dispatched").clone();
+
+        match &bump.kind {
+            SemanticActionKind::App(enc) => assert_eq!(
+                enc, &from_affordance,
+                "the a11y node exposes the same EncodedAction the on-screen control dispatches"
+            ),
+            other => panic!("expected an app action, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn invoking_an_immediate_action_dispatches_it_through_the_action_model() {
+        let mut app = app();
+        app.refresh_semantic_tree();
+        let id = SemanticId("r:test.counter".into());
+        assert_eq!(counter(&app), 0);
+
+        // Invoke by name — the operate-the-tree path an AT / agent uses.
+        assert!(app.invoke_semantic_action(&id, "bump", None).unwrap());
+        assert_eq!(counter(&app), 1, "the invoked action mutated the shared doc");
+        // Each invocation dispatches the real action again.
+        assert!(app.invoke_semantic_action(&id, "bump", None).unwrap());
+        assert_eq!(counter(&app), 2);
+
+        // An unknown action name is a graceful no-op.
+        assert!(!app.invoke_semantic_action(&id, "nope", None).unwrap());
+        assert_eq!(counter(&app), 2);
+    }
+
+    #[test]
+    fn invoking_a_prompted_action_uses_the_supplied_argument() {
+        let mut app = app();
+        app.refresh_semantic_tree();
+        let id = SemanticId("r:test.counter".into());
+        assert!(app.invoke_semantic_action(&id, "set-label", Some("hello")).unwrap());
+        assert_eq!(label(&app), "hello", "the prompted argument reached the built action");
+    }
+
+    #[test]
+    fn invoke_matches_a_direct_affordance_dispatch_byte_for_byte() {
+        // Two docs from the same start: one driven by the semantic-tree invoke,
+        // one by a direct ActionHost affordance dispatch. They must converge to
+        // the identical value — proving the a11y path and the UI path are one.
+        let mut app = app();
+        app.refresh_semantic_tree();
+        app.invoke_semantic_action(&SemanticId("r:test.counter".into()), "bump", None).unwrap();
+
+        let mut host = crate::action_host::ActionHost::new();
+        let mut host_doc = automerge::AutoCommit::new();
+        host.dispatch(&mut host_doc, COUNTER_TYPE, &CounterAction::Bump);
+
+        let via_a11y = counter(&app);
+        let via_affordance = match host_doc.get(&ROOT, "n") {
+            Ok(Some((v, _))) => v.to_i64().unwrap_or(0),
+            _ => 0,
+        };
+        assert_eq!(via_a11y, via_affordance, "both paths produce the same result");
     }
 }
