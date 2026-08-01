@@ -644,6 +644,71 @@ impl ChatDoc {
         }
     }
 
+    /// The index of an existing `(emoji, user)` reaction entry on `list`, or
+    /// `None`. Shared by the toggle / add / remove writers so they agree on what
+    /// "already reacted" means.
+    fn reaction_index(doc: &AutoCommit, list: &ObjId, emoji: &str, user: &str) -> Option<usize> {
+        for i in 0..doc.length(list) {
+            if let Ok(Some((Value::Object(ObjType::Map), e))) = doc.get(list, i) {
+                if get_str(doc, &e, "emoji") == emoji && get_str(doc, &e, "user") == user {
+                    return Some(i);
+                }
+            }
+        }
+        None
+    }
+
+    /// Add `user`'s `emoji` reaction to a message. Idempotent: a second add of
+    /// the same `(emoji, user)` is a no-op, so replaying an add never
+    /// double-counts. The counterpart of [`Self::remove_reaction`]; the on-screen
+    /// toggle picks whichever the current state calls for at authoring time.
+    pub fn add_reaction(doc: &mut AutoCommit, channel: &str, msg_id: &str, emoji: &str, user: &str) {
+        let Some(block) = Self::find_message_obj(doc, channel, msg_id) else { return };
+        let list = get_or_list(doc, &block, "reactions");
+        if Self::reaction_index(doc, &list, emoji, user).is_some() {
+            return;
+        }
+        let n = doc.length(&list);
+        let e = doc.insert_object(&list, n, ObjType::Map).expect("rxentry");
+        let _ = doc.put(&e, "emoji", emoji);
+        let _ = doc.put(&e, "user", user);
+    }
+
+    /// Remove `user`'s `emoji` reaction from a message. Idempotent: removing an
+    /// absent reaction is a no-op, so a bad replay can't wedge.
+    pub fn remove_reaction(doc: &mut AutoCommit, channel: &str, msg_id: &str, emoji: &str, user: &str) {
+        let Some(block) = Self::find_message_obj(doc, channel, msg_id) else { return };
+        let Some(list) = list_at(doc, &block, "reactions") else { return };
+        if let Some(i) = Self::reaction_index(doc, &list, emoji, user) {
+            let _ = doc.delete(&list, i);
+        }
+    }
+
+    /// Delete a message row from a channel. Idempotent — an unknown id is a
+    /// no-op. Threaded replies (if any) are left in place; they simply lose their
+    /// parent card, which is recoverable.
+    pub fn delete_message(doc: &mut AutoCommit, channel: &str, msg_id: &str) {
+        let Some(root_map) = map_at(doc, &ROOT, "messages") else { return };
+        let Some(list) = list_at(doc, &root_map, channel) else { return };
+        for i in 0..doc.length(&list) {
+            if let Ok(Some((Value::Object(ObjType::Map), m))) = doc.get(&list, i) {
+                if get_str(doc, &m, "id") == msg_id {
+                    let _ = doc.delete(&list, i);
+                    return;
+                }
+            }
+        }
+    }
+
+    /// Set (or clear) a message's pinned flag. Shared truth: every peer sees the
+    /// same pins. Guarded so a redundant write doesn't churn the document.
+    pub fn set_message_pinned(doc: &mut AutoCommit, channel: &str, msg_id: &str, pinned: bool) {
+        let Some(block) = Self::find_message_obj(doc, channel, msg_id) else { return };
+        if get_bool(doc, &block, "pinned") != pinned {
+            let _ = doc.put(&block, "pinned", pinned);
+        }
+    }
+
     /// Replace a message's body, archiving the previous text into its edit
     /// history and flagging it edited.
     pub fn edit_message(
@@ -775,9 +840,17 @@ impl ChatDoc {
     /// frame.
     pub fn mark_read(doc: &mut AutoCommit, channel: &str, user: &str) {
         let total = Self::top_level_count(doc, channel) as i64;
+        Self::set_read_watermark(doc, channel, user, total);
+    }
+
+    /// Set `user`'s read watermark for `channel` to an explicit `count`. The
+    /// action-model entry point for "Mark as read": the count is minted at
+    /// authoring time and carried in the payload, so replay never re-reads live
+    /// state. Guarded so a redundant write doesn't churn the document.
+    pub fn set_read_watermark(doc: &mut AutoCommit, channel: &str, user: &str, count: i64) {
         let m = Self::read_map(doc, user);
-        if get_i64(doc, &m, channel) != total {
-            let _ = doc.put(&m, channel, total);
+        if get_i64(doc, &m, channel) != count {
+            let _ = doc.put(&m, channel, count);
         }
     }
 
@@ -850,9 +923,37 @@ impl ChatDoc {
         kind: ChannelKind,
     ) -> String {
         let id = format!("c_{}", Uuid::new_v4().simple());
-        let order = Self::next_channel_order(doc, ws, category);
-        Self::put_channel(doc, &id, ws, category, name, "", kind, order);
+        Self::insert_channel(doc, &id, ws, category, name, kind);
         id
+    }
+
+    /// Create a channel with a **caller-chosen** id at the end of its category.
+    /// The order is derived from the document's current state, so the mint of the
+    /// id happens once at authoring time (carried in the action payload) while
+    /// replay stays deterministic. A no-op if the id already exists is not
+    /// enforced — an action mints a fresh id, and `put_channel` is an idempotent
+    /// upsert regardless.
+    pub fn insert_channel(
+        doc: &mut AutoCommit,
+        id: &str,
+        ws: &str,
+        category: &str,
+        name: &str,
+        kind: ChannelKind,
+    ) {
+        let order = Self::next_channel_order(doc, ws, category);
+        Self::put_channel(doc, id, ws, category, name, "", kind, order);
+    }
+
+    /// Set (or clear) a channel's archived flag. Archived channels drop out of
+    /// the sidebar but stay in the document. Guarded so a redundant write doesn't
+    /// churn the document.
+    pub fn set_channel_archived(doc: &mut AutoCommit, id: &str, archived: bool) {
+        if let Some(c) = map_at(doc, &map_at(doc, &ROOT, "channels").unwrap_or(ROOT), id) {
+            if get_bool(doc, &c, "archived") != archived {
+                let _ = doc.put(&c, "archived", archived);
+            }
+        }
     }
 
     pub fn rename_channel(doc: &mut AutoCommit, id: &str, name: &str) {
@@ -1140,6 +1241,7 @@ impl ChatDoc {
                     // Derived per-peer in `ChatApp::reload` from the read
                     // watermark; not stored in the shared document.
                     unread: 0,
+                    archived: get_bool(doc, &c, "archived"),
                 })
             })
             .collect();
@@ -1165,6 +1267,7 @@ impl ChatDoc {
                 parent: if parent.is_empty() { None } else { Some(parent) },
                 reactions: Self::read_reactions(doc, &m),
                 attachment: Self::read_attachment(doc, &m),
+                pinned: get_bool(doc, &m, "pinned"),
             });
         }
         out

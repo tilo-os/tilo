@@ -37,6 +37,11 @@ live-media = [
 
 [dependencies]
 ui = { path = "../../ui" }
+# The qOS action model: the serializable, replayable unit of CRDT mutation
+# behind Ctrl+K and cross-peer collaboration. Chat's messages/channels/reactions
+# are exported as `ChatAction`s (see `src/actions.rs`) dispatched through the
+# framework's `ui::ActionHost`.
+qos-actions = { path = "../../crates/collab/actions" }
 # The qOS runtime user-identity loader (QOS_USER_IDENTITY) — the canonical
 # per-peer identity the collab layer signs with. Chat uses its public key +
 # display name so every running instance is a distinct participant.

@@ -25,6 +25,7 @@
 //! `app_root()` is the single integration point used by the live event
 //! loop; [`app_root_for_shot`] stages a scenario for the offscreen renderer.
 
+pub mod actions;
 pub mod app;
 // Live call media (real microphone/Opus audio + camera/screen H.264) — compiled
 // only under `live-media`; the default build carries no GStreamer/openh264/iroh.

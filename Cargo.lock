@@ -1976,6 +1976,7 @@ dependencies = [
  "image",
  "iroh",
  "openh264",
+ "qos-actions",
  "qos-callstream",
  "runtime-identity",
  "serde",

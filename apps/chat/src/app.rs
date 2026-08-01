@@ -32,6 +32,7 @@ use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::{TextInput, VideoPlayer};
 
+use crate::actions::{self, ChatAction};
 use crate::call::{CallState, OverlayDrag, SoundEngine};
 use crate::doc::ChatDoc;
 use crate::identity::LocalIdentity;
@@ -98,8 +99,15 @@ pub(crate) enum MenuAction {
     NewVoiceChannelHere,
     NewCategory,
     ToggleCollapse,
+    /// Archive / unarchive a channel — hides it from the sidebar (reversible
+    /// from Ctrl+K). Dispatches [`ChatAction::ArchiveChannel`](crate::actions::ChatAction).
+    Archive,
     /// Load one of your own messages into the inline editor.
     EditMessage,
+    /// Pin / unpin one of your own messages (shared truth every peer sees).
+    PinMessage,
+    /// Delete one of your own messages.
+    DeleteMessage,
 }
 
 impl MenuAction {
@@ -113,16 +121,25 @@ impl MenuAction {
             MenuAction::NewVoiceChannelHere => "New voice channel",
             MenuAction::NewCategory => "New category",
             MenuAction::ToggleCollapse => "Collapse / expand",
+            MenuAction::Archive => "Archive / unarchive",
             MenuAction::EditMessage => "Edit message",
+            MenuAction::PinMessage => "Pin / unpin",
+            MenuAction::DeleteMessage => "Delete message",
         }
     }
     pub fn is_destructive(self) -> bool {
-        matches!(self, MenuAction::Delete)
+        matches!(self, MenuAction::Delete | MenuAction::DeleteMessage)
     }
     /// Menu items for a channel row, in order. The first (`Delete`) is the
     /// swipe-left action.
-    pub fn for_channel() -> [MenuAction; 4] {
-        [MenuAction::Delete, MenuAction::Rename, MenuAction::MoveUp, MenuAction::MoveDown]
+    pub fn for_channel() -> [MenuAction; 5] {
+        [
+            MenuAction::Delete,
+            MenuAction::Archive,
+            MenuAction::Rename,
+            MenuAction::MoveUp,
+            MenuAction::MoveDown,
+        ]
     }
     /// Menu items for a category row.
     pub fn for_category() -> [MenuAction; 5] {
@@ -139,8 +156,8 @@ impl MenuAction {
         Self::for_channel()[0]
     }
     /// Menu items for one of your own messages.
-    pub fn for_message() -> [MenuAction; 1] {
-        [MenuAction::EditMessage]
+    pub fn for_message() -> [MenuAction; 3] {
+        [MenuAction::EditMessage, MenuAction::PinMessage, MenuAction::DeleteMessage]
     }
 }
 
@@ -303,6 +320,13 @@ pub struct ChatApp {
     // hydration through the toolkit's permission model. Refreshed from the
     // `PermissionContext` the compositor passes into `draw`.
     pub(crate) perms: ChatPermissions,
+
+    // Framework-owned action dispatch: every doc-mutating affordance (Send, a
+    // reaction, the channel/message context menus, the Ctrl+K palette) routes
+    // through this one field. It brackets the undo boundary, encodes under
+    // `CHAT_ACTION_TYPE`, and applies through the executor so a peer replays the
+    // byte-identical change. See [`crate::actions`].
+    pub(crate) actions: ui::ActionHost,
 
     // Persistence (None for ephemeral / `--shots` instances).
 
@@ -467,6 +491,7 @@ impl ChatApp {
             // `--shots`/tests from binding a real iroh endpoint per instance.
             media: MediaEngine::simulated(),
             perms: ChatPermissions::permissive(),
+            actions: ui::ActionHost::new(),
             images: ui::ImageStore::new(crate::images::fetcher()),
             rect: Rect::ZERO,
             root_node: None,
@@ -523,6 +548,101 @@ impl ChatApp {
     /// the file — the permission boundary for a projected FUSE share.
     pub(crate) fn embed_allowed(&self, path: &str) -> bool {
         self.perms.can_embed(path)
+    }
+
+    // --- action dispatch ----------------------------------------------------
+
+    /// Dispatch one [`ChatAction`] — the single CRDT-mutation path shared by the
+    /// on-screen affordances and the Ctrl+K palette. Delegates to the framework's
+    /// [`ActionHost`](ui::ActionHost), which brackets the undo boundary and applies
+    /// the action through the executor (a pinned actor + committed change, so it
+    /// replays byte-identically on peers), exactly as the palette does. The
+    /// in-memory projection is reconciled from the document by the caller's
+    /// `reload`. This app supplies only its domain: the action and its type.
+    pub(crate) fn perform_action(&mut self, doc: &mut AutoCommit, action: ChatAction) {
+        self.actions.dispatch(doc, actions::CHAT_ACTION_TYPE, &action);
+    }
+
+    /// The last [`EncodedAction`](qos_actions::EncodedAction) an on-screen
+    /// affordance dispatched, for the affordance == [`ActionSpec`](qos_actions::ActionSpec)
+    /// covenant test: a control and its Ctrl+K entry must build the identical action.
+    #[cfg(test)]
+    pub(crate) fn last_dispatched(&self) -> Option<&qos_actions::EncodedAction> {
+        self.actions.last_dispatched()
+    }
+
+    /// The context Ctrl+K needs to build Chat's resource tree: the active
+    /// workspace, its channels (including archived, so they can be unarchived from
+    /// the palette), the open channel, and that channel's messages. Derived
+    /// entirely from the projection the document already holds.
+    pub(crate) fn chat_resource_ctx(&self) -> actions::ChatResourceCtx {
+        let workspace_name = self
+            .workspaces
+            .iter()
+            .find(|w| w.id == self.active_ws)
+            .map(|w| w.name.clone())
+            .unwrap_or_default();
+        let mut channels: Vec<&Channel> =
+            self.channels.iter().filter(|c| c.workspace == self.active_ws).collect();
+        channels.sort_by_key(|c| c.order);
+        let channels = channels
+            .into_iter()
+            .map(|c| actions::ChannelResource {
+                id: c.id.clone(),
+                name: c.name.clone(),
+                kind: c.kind,
+                archived: c.archived,
+            })
+            .collect();
+        let messages = self
+            .messages
+            .iter()
+            .map(|m| actions::MessageResource {
+                id: m.id.clone(),
+                label: self.message_resource_label(m),
+                pinned: m.pinned,
+            })
+            .collect();
+        actions::ChatResourceCtx {
+            me: self.me.id.clone(),
+            workspace_id: self.active_ws.clone(),
+            workspace_name,
+            channels,
+            active_channel: self.active_channel.clone(),
+            messages,
+        }
+    }
+
+    /// Build the reaction action a click on `msg`/`emoji` should dispatch,
+    /// deciding add-vs-remove from the currently-loaded state at authoring time.
+    /// A toggle is a presentation decision; the resulting action is a pure,
+    /// idempotent add or remove — the single source of truth both the reaction
+    /// chip and the emoji picker resolve to.
+    pub(crate) fn reaction_toggle_action(&self, msg: &str, emoji: &str) -> ChatAction {
+        let reacting = self
+            .message(msg)
+            .map(|m| m.reactions.iter().any(|r| r.emoji == emoji && r.reacted_by(&self.me.id)))
+            .unwrap_or(false);
+        if reacting {
+            actions::remove_reaction_action(&self.active_channel, msg, emoji, &self.me.id)
+        } else {
+            actions::add_reaction_action(&self.active_channel, msg, emoji, &self.me.id)
+        }
+    }
+
+    /// A palette label for a message resource: the author's name and a short
+    /// snippet of the body (or the attachment name for a media-only post).
+    fn message_resource_label(&self, m: &Message) -> String {
+        let author = self.user_name(&m.author);
+        let snippet: String = if m.text.trim().is_empty() {
+            m.attachment
+                .as_ref()
+                .map(|a| a.name().to_string())
+                .unwrap_or_else(|| "(no text)".to_string())
+        } else {
+            m.text.trim().chars().take(40).collect()
+        };
+        format!("{author}: {snippet}")
     }
 
     /// Stage a named scenario for a headless screenshot against the ephemeral
@@ -892,10 +1012,14 @@ impl ChatApp {
         self.messages.iter().find(|m| m.id == id)
     }
 
-    /// Channels in the active workspace, ordered.
+    /// Channels in the active workspace, ordered. Archived channels are hidden
+    /// from the sidebar (they stay in the document and are reachable via Ctrl+K).
     pub(crate) fn ws_channels(&self) -> Vec<&Channel> {
-        let mut v: Vec<&Channel> =
-            self.channels.iter().filter(|c| c.workspace == self.active_ws).collect();
+        let mut v: Vec<&Channel> = self
+            .channels
+            .iter()
+            .filter(|c| c.workspace == self.active_ws && !c.archived)
+            .collect();
         v.sort_by_key(|c| c.order);
         v
     }
@@ -924,12 +1048,13 @@ impl ChatApp {
         crate::model::CallSession::select(self.voice_in(&self.call.channel).len().max(1))
     }
 
-    /// Channels in `category` within the active workspace, ordered.
+    /// Channels in `category` within the active workspace, ordered. Archived
+    /// channels are hidden from the sidebar.
     pub(crate) fn category_channels(&self, category: &str) -> Vec<&Channel> {
         let mut v: Vec<&Channel> = self
             .channels
             .iter()
-            .filter(|c| c.workspace == self.active_ws && c.category == category)
+            .filter(|c| c.workspace == self.active_ws && c.category == category && !c.archived)
             .collect();
         v.sort_by_key(|c| c.order);
         v
@@ -1581,6 +1706,22 @@ impl Widget for ChatApp {
         _taffy: &TaffyTree<()>,
     ) {
         self.dispatch_event(event, scale_factor, modifiers, state, handled);
+    }
+
+    /// The resource tree Chat currently has open — the active workspace, its
+    /// channels, and the open channel's messages — each exporting the actions
+    /// Ctrl+K offers. Delegates to the [`ResourceProvider`](qos_actions::ResourceProvider)
+    /// impl in [`crate::actions`], the same builder the affordance covenant tests
+    /// drive. Recomputed each frame; empty until a workspace is selected.
+    fn resources(&self, doc: &AutoCommit) -> Vec<qos_actions::Resource> {
+        <Self as qos_actions::ResourceProvider>::resources(self, doc)
+    }
+
+    /// Hand the host the heads captured before an on-screen affordance dispatched
+    /// its action, so it records exactly one undo boundary bracketing the event —
+    /// the same path a Ctrl+K palette dispatch takes.
+    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        self.actions.take_committed()
     }
 
     fn name(&self) -> &str {
