@@ -7,6 +7,7 @@
 //! rail and a full-screen present mode. `app_root()` is the single
 //! integration point used by both the live event loop and `--shots`.
 
+pub mod actions;
 pub mod app;
 pub mod assets;
 pub mod chrome;
