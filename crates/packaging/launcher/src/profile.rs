@@ -71,18 +71,32 @@ pub const SYSTEM_READ_PATHS: &[&str] = &[
     "/etc/os-release",
     "/usr/share/zoneinfo",
     "/etc/localtime",
-    // ---- TLS + name resolution -----------------------------------
+    // ---- TLS trust -----------------------------------------------
     // Whether an app reaches the network at all is decided by
-    // `[sandbox.net]` and the egress gate. These files only decide
-    // whether a *permitted* connection can be verified and resolved —
-    // withholding them from an app that already has egress buys
-    // nothing and produces certificate errors instead of security.
+    // `[sandbox.net]` and the egress gate. The CA bundle only decides
+    // whether a *permitted* connection can be verified — withholding it
+    // from an app that already has egress produces certificate errors,
+    // not security. It is also the same bytes for every user.
     "/etc/pki",
     "/etc/ssl",
     "/etc/crypto-policies",
-    "/etc/resolv.conf",
-    "/etc/hosts",
 ];
+
+/// Read-only paths added **only** when the launch shares the host
+/// network namespace.
+///
+/// These describe the network the machine is on — the resolvers it
+/// uses, the names it has been told about — rather than the machine
+/// itself, so they are not part of what every app gets. An app under a
+/// host-scoped grant has an empty namespace and never resolves anything
+/// itself (the egress gate resolves on its behalf, after the name has
+/// passed the policy), and an app with no network has nothing to
+/// resolve at all. Only the unrestricted case has a resolver to
+/// configure.
+///
+/// This is still a system decision: the launcher derives it from the
+/// egress decision it already made, not from anything the package said.
+pub const NETWORK_READ_PATHS: &[&str] = &["/etc/resolv.conf", "/etc/hosts"];
 
 /// Device nodes every GUI app gets, bound with `--dev-bind-try`.
 ///
@@ -105,9 +119,14 @@ pub const SYSTEM_DEVICE_PATHS: &[&str] = &[
 ///
 /// Callers must splice this in *before* the trailing entrypoint token —
 /// bwrap treats everything after it as the child's argv.
-pub fn push_system_profile(argv: &mut Vec<String>) {
+pub fn push_system_profile(argv: &mut Vec<String>, shares_host_network: bool) {
     for path in SYSTEM_READ_PATHS {
         push(argv, "--ro-bind-try", path, path);
+    }
+    if shares_host_network {
+        for path in NETWORK_READ_PATHS {
+            push(argv, "--ro-bind-try", path, path);
+        }
     }
     for path in SYSTEM_DEVICE_PATHS {
         push(argv, "--dev-bind-try", path, path);
@@ -120,8 +139,17 @@ pub fn push_system_profile(argv: &mut Vec<String>) {
 /// `open()` on it returns `EACCES`, which reads from inside the app as
 /// a corrupted system rather than a policy. So the two layers are
 /// derived from one list.
-pub fn landlock_ro_paths() -> Vec<PathBuf> {
-    SYSTEM_READ_PATHS.iter().map(PathBuf::from).collect()
+pub fn landlock_ro_paths(shares_host_network: bool) -> Vec<PathBuf> {
+    let extra = if shares_host_network {
+        NETWORK_READ_PATHS
+    } else {
+        &[]
+    };
+    SYSTEM_READ_PATHS
+        .iter()
+        .chain(extra.iter())
+        .map(PathBuf::from)
+        .collect()
 }
 
 /// The device nodes as Landlock read-write rules. A GPU context is
@@ -136,6 +164,7 @@ pub fn landlock_rw_device_paths() -> Vec<PathBuf> {
 pub fn covers(path: &Path) -> bool {
     SYSTEM_READ_PATHS
         .iter()
+        .chain(NETWORK_READ_PATHS.iter())
         .chain(SYSTEM_DEVICE_PATHS.iter())
         .any(|p| path == Path::new(p) || path.starts_with(p))
 }
@@ -155,7 +184,11 @@ mod tests {
     /// this is checked mechanically rather than by review.
     #[test]
     fn the_profile_names_no_user_path() {
-        for p in SYSTEM_READ_PATHS.iter().chain(SYSTEM_DEVICE_PATHS.iter()) {
+        for p in SYSTEM_READ_PATHS
+            .iter()
+            .chain(NETWORK_READ_PATHS.iter())
+            .chain(SYSTEM_DEVICE_PATHS.iter())
+        {
             assert!(
                 p.starts_with('/'),
                 "{p} is not absolute; a relative entry resolves against \
@@ -182,7 +215,11 @@ mod tests {
     /// remove. Cheap to assert, catastrophic to miss.
     #[test]
     fn the_profile_does_not_contain_the_root() {
-        for p in SYSTEM_READ_PATHS.iter().chain(SYSTEM_DEVICE_PATHS.iter()) {
+        for p in SYSTEM_READ_PATHS
+            .iter()
+            .chain(NETWORK_READ_PATHS.iter())
+            .chain(SYSTEM_DEVICE_PATHS.iter())
+        {
             assert_ne!(*p, "/", "the root filesystem is not a profile entry");
             assert!(
                 Path::new(p).components().count() >= 2,
@@ -195,7 +232,7 @@ mod tests {
     #[test]
     fn the_profile_binds_read_only_and_devices_as_devices() {
         let mut argv = Vec::new();
-        push_system_profile(&mut argv);
+        push_system_profile(&mut argv, false);
         assert!(
             argv.windows(3).any(|w| w[0] == "--ro-bind-try"
                 && w[1] == "/usr/share/fonts"
@@ -213,5 +250,54 @@ mod tests {
             !argv.iter().any(|a| a == "--bind" || a == "--bind-try"),
             "no profile entry may be read-write: {argv:?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod network_profile_tests {
+    use super::*;
+
+    /// The machine's resolver configuration is not part of what every
+    /// app gets. An app with no network has nothing to resolve, and an
+    /// app under a host-scoped grant resolves through the gate — giving
+    /// either of them the resolver list would hand out a description of
+    /// the user's network for no functional gain.
+    #[test]
+    fn the_resolver_files_appear_only_for_an_unrestricted_network() {
+        let mut without = Vec::new();
+        push_system_profile(&mut without, false);
+        for path in NETWORK_READ_PATHS {
+            assert!(
+                !without.iter().any(|a| a == path),
+                "{path} must not be bound for a launch with no host network: {without:?}"
+            );
+        }
+
+        let mut with = Vec::new();
+        push_system_profile(&mut with, true);
+        for path in NETWORK_READ_PATHS {
+            assert!(
+                with.windows(3)
+                    .any(|w| w[0] == "--ro-bind-try" && w[1] == *path && w[2] == *path),
+                "{path} must be bound for a launch that shares the host network: {with:?}"
+            );
+        }
+    }
+
+    /// The bind list and the Landlock ruleset are derived from the same
+    /// two constants, so they cannot disagree about what is readable.
+    #[test]
+    fn the_landlock_rules_match_the_binds() {
+        for shares in [false, true] {
+            let mut argv = Vec::new();
+            push_system_profile(&mut argv, shares);
+            for rule in landlock_ro_paths(shares) {
+                let s = rule.display().to_string();
+                assert!(
+                    argv.iter().any(|a| *a == s),
+                    "landlock names {s} but nothing binds it (shares={shares})"
+                );
+            }
+        }
     }
 }
