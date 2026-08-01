@@ -132,12 +132,22 @@ fn fs_description(i: usize) -> &'static str {
     }
 }
 
-/// Explanation shown under the encryption chooser, reflecting the choice.
-fn encrypt_description(encrypt: bool) -> &'static str {
-    if encrypt {
-        "Encrypts the whole disk with LUKS. This computer's TPM2 chip unlocks it at boot, and a recovery key (shown once during install) is always generated as a backup in case the TPM is reset or fails. Requires a TPM2 device."
-    } else {
-        "The disk is not encrypted. Anyone with physical access can read your data."
+/// Does this machine have a TPM2 device? Encryption does not require one — the
+/// volume is always built around a recovery key and the TPM is an extra key slot
+/// — but it decides whether the disk can unlock itself, and therefore whether
+/// the secret below is optional convenience or the only thing standing between
+/// the user and typing a 48-character recovery key at every boot.
+fn has_tpm2() -> bool {
+    std::path::Path::new("/dev/tpmrm0").exists() || std::path::Path::new("/dev/tpm0").exists()
+}
+
+/// Explanation shown under the encryption chooser, reflecting the choice and
+/// what this machine's hardware can actually do.
+fn encrypt_description(encrypt: bool, tpm2: bool) -> &'static str {
+    match (encrypt, tpm2) {
+        (false, _) => "The disk is not encrypted. Anyone with physical access can read your data.",
+        (true, true) => "Encrypts the whole disk with LUKS. This computer's TPM2 chip unlocks it at boot, and a recovery key (shown once during install) is always generated as a backup in case the TPM is reset or fails.",
+        (true, false) => "Encrypts the whole disk with LUKS. This computer has no TPM2 chip, so it cannot unlock itself — you will type a passphrase every time it boots. A recovery key is also generated and shown once, as the backup if you forget the passphrase.",
     }
 }
 
@@ -483,6 +493,10 @@ pub struct InstallerApp {
     /// User has acknowledged they will save the install-time recovery key.
     /// Required before Begin Install when encryption is on. Default `false`.
     recovery_ack: bool,
+    /// Whether this machine has a TPM2 device, sampled once at construction.
+    /// Encryption works either way; without one the unlock secret stops being
+    /// optional, because the alternative is typing the recovery key at boot.
+    tpm2: bool,
     step: Step,
     install_state: InstallState,
     /// Streamed install output (also the success/failure summary).
@@ -545,6 +559,7 @@ impl InstallerApp {
             fido2: false,
             pin: String::new(),
             recovery_ack: false,
+            tpm2: has_tpm2(),
             step: Step::Keyboard,
             install_state: InstallState::Idle,
             status_lines: Vec::new(),
@@ -654,6 +669,19 @@ impl InstallerApp {
         layouts::by_display_name(self.keymap.trim()).unwrap_or_else(layouts::default_layout)
     }
 
+    /// May the install start, as far as encryption is concerned? The Begin
+    /// button, the Enter key and the start path all ask this, so they cannot
+    /// drift apart. Without a TPM the unlock secret is required: leaving it
+    /// empty is legal for the backend but means the 48-character recovery key
+    /// is what gets typed at every boot, which is not a choice anyone makes on
+    /// purpose.
+    fn encryption_ready(&self) -> bool {
+        if !self.encrypt {
+            return true;
+        }
+        self.recovery_ack && (self.tpm2 || !self.pin.trim().is_empty())
+    }
+
     /// Human-readable summary of the encryption factors for the Review step.
     fn encryption_summary(&self) -> String {
         if !self.encrypt {
@@ -662,10 +690,13 @@ impl InstallerApp {
         // Recovery key is always present; TPM is PIN-protected iff a PIN was
         // entered; FIDO2 is listed only when enrolling.
         let mut factors = vec!["recovery key".to_string()];
-        if self.pin.trim().is_empty() {
-            factors.push("TPM2".to_string());
-        } else {
-            factors.push("TPM2 + PIN".to_string());
+        match (self.tpm2, self.pin.trim().is_empty()) {
+            (true, true) => factors.push("TPM2".to_string()),
+            (true, false) => factors.push("TPM2 + PIN".to_string()),
+            // No TPM: the same secret is enrolled as an ordinary passphrase
+            // slot, and it is what gets typed at boot.
+            (false, false) => factors.push("boot passphrase".to_string()),
+            (false, true) => {}
         }
         if self.fido2 {
             factors.push("FIDO2".to_string());
@@ -842,6 +873,10 @@ impl InstallerApp {
         // depth — the Begin button and Enter both gate on this too).
         if self.encrypt && !self.recovery_ack {
             self.set_status("Confirm you'll save your recovery key first");
+            return;
+        }
+        if self.encrypt && !self.tpm2 && self.pin.trim().is_empty() {
+            self.set_status("No TPM2 chip — set a boot passphrase, or the recovery key becomes it");
             return;
         }
         let user = Self::read_text(state, root, USERNAME_PATH).unwrap_or_default();
@@ -1049,7 +1084,7 @@ impl InstallerApp {
                     .with_test_id("encryption_choice"),
                 ));
                 children.push(Box::new(
-                    Text::new(encrypt_description(self.encrypt))
+                    Text::new(encrypt_description(self.encrypt, self.tpm2))
                         .with_size(sm)
                         .with_color(dim),
                 ));
@@ -1057,7 +1092,12 @@ impl InstallerApp {
                 // The extra unlock factors only make sense with encryption on,
                 // so they appear only then.
                 if self.encrypt {
-                    children.push(Box::new(Text::new("Unlock PIN (optional)").with_size(base)));
+                    let pin_label = if self.tpm2 {
+                        "Unlock PIN (optional)"
+                    } else {
+                        "Boot passphrase (required — no TPM2 chip)"
+                    };
+                    children.push(Box::new(Text::new(pin_label).with_size(base)));
                     children.push(Box::new(
                         TextInput::new(Vec::new())
                             .with_id("installer.pin")
@@ -1163,7 +1203,7 @@ impl InstallerApp {
 
                 // Begin is gated on the recovery-key acknowledgement when
                 // encrypting (otherwise always enabled).
-                let begin_disabled = self.encrypt && !self.recovery_ack;
+                let begin_disabled = !self.encryption_ready();
                 children.push(nav_row(
                     Step::Review,
                     BEGIN_PATH,
@@ -1596,7 +1636,7 @@ impl Widget for InstallerApp {
                         // Enter must honour the same gate as the Begin button:
                         // when encrypting, the recovery-key acknowledgement is
                         // required before the install can start.
-                        if !(self.encrypt && !self.recovery_ack) {
+                        if self.encryption_ready() {
                             let _ = state.put(root, BEGIN_PATH, true);
                         }
                         *handled = true;
@@ -2020,6 +2060,9 @@ mod tests {
     #[test]
     fn encryption_summary_reflects_factors() {
         let mut app = InstallerApp::with_disks(sample());
+        // Pin the hardware: sampled from the host, this would assert something
+        // different on a machine with no TPM.
+        app.tpm2 = true;
         assert_eq!(app.encryption_summary(), "Off");
 
         app.encrypt = true;
@@ -2039,6 +2082,77 @@ mod tests {
     }
 
     #[test]
+    fn without_a_tpm_the_unlock_secret_is_required() {
+        // A machine with no TPM cannot unlock itself. Encryption still works —
+        // that is the point of building the volume around a recovery key — but
+        // with no passphrase enrolled, the recovery key is what gets typed at
+        // every boot. Requiring the secret is what keeps the degradation
+        // usable instead of merely correct.
+        let mut app = InstallerApp::with_disks(sample());
+        app.selected_disk = Some(0);
+        app.encrypt = true;
+        app.tpm2 = false;
+        app.recovery_ack = true;
+        assert!(
+            !app.encryption_ready(),
+            "no TPM and no passphrase must not be installable"
+        );
+
+        app.pin = "hunter2".to_string();
+        assert!(app.encryption_ready(), "a passphrase unblocks it");
+
+        // Whitespace is not a passphrase.
+        app.pin = "   ".to_string();
+        assert!(!app.encryption_ready(), "blank passphrase is still no passphrase");
+    }
+
+    #[test]
+    fn with_a_tpm_the_unlock_secret_stays_optional() {
+        let mut app = InstallerApp::with_disks(sample());
+        app.selected_disk = Some(0);
+        app.encrypt = true;
+        app.tpm2 = true;
+        app.recovery_ack = true;
+        assert!(
+            app.encryption_ready(),
+            "the TPM unlocks it, so the PIN is a choice"
+        );
+    }
+
+    #[test]
+    fn encryption_ready_is_vacuous_without_encryption() {
+        let mut app = InstallerApp::with_disks(sample());
+        app.selected_disk = Some(0);
+        app.tpm2 = false;
+        assert!(app.encryption_ready(), "no encryption, nothing to gate on");
+    }
+
+    #[test]
+    fn summary_and_description_name_the_passphrase_when_there_is_no_tpm() {
+        let mut app = InstallerApp::with_disks(sample());
+        app.encrypt = true;
+        app.tpm2 = false;
+        app.pin = "hunter2".to_string();
+        assert_eq!(
+            app.encryption_summary(),
+            "On (LUKS — recovery key, boot passphrase)",
+            "the review step must not claim a TPM factor this machine cannot provide"
+        );
+
+        app.pin = String::new();
+        assert_eq!(app.encryption_summary(), "On (LUKS — recovery key)");
+
+        assert!(
+            encrypt_description(true, false).contains("no TPM2 chip"),
+            "the chooser has to say the machine cannot unlock itself"
+        );
+        assert!(
+            !encrypt_description(true, true).contains("Requires a TPM2 device"),
+            "encryption no longer requires a TPM, and the copy must not claim it does"
+        );
+    }
+
+    #[test]
     fn review_begin_disabled_until_ack_when_encrypting() {
         // Encrypting + un-acknowledged: the Begin button (nav row's primary,
         // its last child) must be disabled (non-focusable).
@@ -2046,6 +2160,7 @@ mod tests {
         app.selected_disk = Some(0);
         app.step = Step::Review;
         app.encrypt = true;
+        app.tpm2 = true;
         let _ = build(&mut app);
         let card = app.children()[0];
         let begin_disabled = card
@@ -2059,6 +2174,7 @@ mod tests {
         app2.selected_disk = Some(0);
         app2.step = Step::Review;
         app2.encrypt = true;
+        app2.tpm2 = true;
         app2.recovery_ack = true;
         let _ = build(&mut app2);
         let card2 = app2.children()[0];

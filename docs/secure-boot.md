@@ -260,10 +260,10 @@ Everything else is a slot layered on top of it:
 | No TPM, PIN given | recovery key, passphrase | type the passphrase |
 | No TPM, no PIN | recovery key | type the recovery key |
 
-The last row works but is unpleasant, and the installer should collect a
-passphrase whenever no TPM is present. The backend already accepts one — the
-`--pin` value becomes an ordinary passphrase slot on a TPM-less machine — so this
-is a UI gap, not a capability gap.
+The installer now refuses to start an encrypted install on a machine with no TPM
+until a passphrase is given, so the last row is reachable only by driving the
+backend directly. It works, but it means typing a 48-character recovery key at
+every boot, which is not a choice anyone makes on purpose.
 
 The TPM slot binds to **PCR 7 only**, set explicitly rather than inherited.
 PCR 7 is the Secure Boot policy, so the seal breaks if the boot policy changes.
