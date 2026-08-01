@@ -548,7 +548,7 @@ fn scan_record_stores(root: &Path) -> Vec<ObservedRecord> {
             // out here it is that path spelled against the host.
             let records = package
                 .path()
-                .join(SANDBOX_DATA_SUBDIR)
+                .join(&*SANDBOX_DATA_SUBDIR)
                 .join(&package_id)
                 .join(app_state::RECORDS_DIR);
             let Ok(entries) = std::fs::read_dir(&records) else {
