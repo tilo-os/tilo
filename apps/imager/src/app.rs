@@ -1472,6 +1472,7 @@ impl ImagerApp {
             Hit::Target(i) => self.select_target(state, i),
             Hit::ToggleInternal => {
                 self.show_internal = !self.show_internal;
+                ImagerDoc::set_show_internal(state, self.show_internal);
                 // Hiding internal disks again also withdraws the system-disk
                 // acknowledgement, so re-revealing them re-arms the guard.
                 if !self.show_internal {
@@ -1545,6 +1546,7 @@ impl Widget for ImagerApp {
         self.confirm = ImagerDoc::confirm(state);
         self.status = ImagerDoc::status(state);
         self.step = ImagerDoc::step(state);
+        self.show_internal = ImagerDoc::show_internal(state);
         self.selected = ImagerDoc::selected(state).filter(|i| *i < self.targets.len());
 
         // Refresh the shared customization panel's fields from the profile
