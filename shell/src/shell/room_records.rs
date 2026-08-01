@@ -175,6 +175,21 @@ pub struct RoomRecords {
     /// opened one) can say so without waiting for the next walk.
     seeded: Vec<ObservedRecord>,
     persistent: bool,
+    /// The type each record was last labelled with, in call order.
+    ///
+    /// A type belongs to the **record**, not to a room's reference to it —
+    /// `plan/rooms.md`: every record has "a type from the app's resource
+    /// model, a stable identity, and a home room". Deriving it by merging
+    /// the room indexes instead made the answer depend on `BTreeMap<RoomId>`
+    /// order, and a `RoomId` is a random v4 uuid — so when two rooms
+    /// referenced one record under different types, which label won changed
+    /// from run to run. Keeping it here makes the answer the last label
+    /// written, which is deterministic and is what re-referencing means.
+    ///
+    /// A record observed on disk overrides this: that kind was written by
+    /// the app into the record's own document, which is the record itself
+    /// speaking rather than a room describing it.
+    labelled: BTreeMap<RecordId, RecordKind>,
     /// Bumped by **every** mutation that could change what [`Self::known`]
     /// answers. Incremented in one place ([`Self::changed`]) which every
     /// mutating method calls, rather than at each call site: a counter
@@ -197,6 +212,7 @@ impl RoomRecords {
             scan: None,
             seeded: Vec::new(),
             persistent: false,
+            labelled: BTreeMap::new(),
             generation: 0,
             known: std::cell::RefCell::new(None),
         }
@@ -262,6 +278,7 @@ impl RoomRecords {
         }
         // Unconditionally, not only when `added`: re-referencing an
         // existing record refreshes its type, which is part of the answer.
+        self.labelled.insert(id.clone(), kind.clone());
         self.changed();
         added
     }
@@ -368,24 +385,35 @@ impl RoomRecords {
 
         for (room, held) in &self.held {
             for checkout in room::references(&held.doc) {
+                // Deliberately empty: a room says *that* it holds a record,
+                // not what the record is. The type is filled in below from
+                // the record's own word, or from the last label a reference
+                // supplied — never from whichever room sorted first.
                 let entry = by_id
                     .entry(checkout.id.clone())
                     .or_insert_with(|| KnownRecord {
                         id: checkout.id.clone(),
-                        kind: checkout.kind.clone(),
+                        kind: RecordKind::new(""),
                         home: None,
                         held_by: Vec::new(),
                         package_id: None,
                     });
-                if entry.kind.as_str().is_empty() {
-                    entry.kind = checkout.kind.clone();
-                }
                 if !entry.held_by.contains(room) {
                     entry.held_by.push(*room);
                 }
             }
         }
-        for r in by_id.values_mut() {
+        // The room pass above contributes *which rooms hold what*, never
+        // the type: a room describing a record cannot rename it, and
+        // picking a winner by room order was the coin flip this replaces.
+        // An observed kind — the app's own word, from the record's document
+        // — stands; otherwise the last label a reference supplied.
+        for (id, r) in by_id.iter_mut() {
+            if r.kind.as_str().is_empty()
+                && let Some(k) = self.labelled.get(id)
+            {
+                r.kind = k.clone();
+            }
             r.held_by.sort();
         }
         by_id.into_values().collect()
