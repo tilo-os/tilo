@@ -973,9 +973,7 @@ impl Pane {
                         }
                         Hit::RowStar(id) => {
                             let mut st = self.shared.borrow_mut();
-                            st.mailbox.toggle_star(id);
-                            st.persist_flags(doc, id);
-                            st.dirty = true;
+                            st.toggle_star(doc, id);
                             *handled = true;
                         }
                         Hit::Row(id) => {
@@ -1039,9 +1037,7 @@ impl Pane {
                             Hit::Delete => st.apply_message_action(doc, id, CtxAction::Delete),
                             Hit::Star => st.apply_message_action(doc, id, CtxAction::ToggleStar),
                             Hit::Unread => {
-                                st.mailbox.mark_read(id, false);
-                                st.persist_flags(doc, id);
-                                st.dirty = true;
+                                st.set_read(doc, id, false);
                             }
                             _ => {}
                         }
