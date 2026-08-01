@@ -18,6 +18,16 @@
 //! shared queue and posting a reply are [`ExecutionLocus::ServerPreferred`]
 //! (a host serializes the shared list / moderates the reply), falling back to
 //! local execution when no host is reachable.
+//!
+//! **Why no `ui::ActionHost`:** that wrapper hoists the *app-owned* dispatch path
+//! — a `perform_action` that brackets an undo boundary, encodes a typed action,
+//! and pushes it through a local transport. Tube has none of that. Its
+//! collaborative `TubeAction`s are dispatched only through the shared Ctrl+K
+//! `ui::ActionPalette`, which decodes each `ActionSpec` and applies it through
+//! `qos_actions::LocalTransport` + the registry — already the framework path.
+//! Tube's on-screen affordances mutate the in-memory model directly, so there is
+//! no hand-rolled dispatch boilerplate for `ActionHost` to replace; embedding it
+//! would only add an unused field.
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, ScalarValue, Value, ROOT};
