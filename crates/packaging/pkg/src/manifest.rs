@@ -388,7 +388,15 @@ pub struct Sandbox {
     pub seccomp: String,
     /// Landlock strictness — `strict` | `lax` | `off`.
     pub landlock: String,
-    /// `[sandbox.fs]` block — read / write path patterns.
+    /// `[sandbox.fs]` block — **retired**, and absent from every
+    /// manifest that validates.
+    ///
+    /// Decoded only so a manifest that still carries one can be refused
+    /// by name (`validate::ManifestError::FsWriteDeclared` /
+    /// `FsReadDeclared`) rather than by a serde "unknown field" error
+    /// that says nothing about why. See `crate::validate` for what
+    /// replaced it.
+    #[serde(default, skip_serializing_if = "SandboxFs::is_empty")]
     pub fs: SandboxFs,
     /// `[sandbox.net]` block — egress policy.
     pub net: SandboxNet,
@@ -410,21 +418,38 @@ pub struct Sandbox {
     pub services: std::collections::BTreeMap<String, ServiceReq>,
 }
 
-/// A path pattern in `[sandbox.fs]`. Stored as a raw string so
-/// loader-side expansion (`~`, `<scope=current>`, …) can run
-/// without re-parsing.
+/// A path pattern in the retired `[sandbox.fs]` block. Stored as a raw
+/// string — it is never expanded into a path any more, only quoted back
+/// in the refusal that names it.
 pub type PathPattern = String;
 
-/// `[sandbox.fs]` — declarative file access.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// `[sandbox.fs]` — **retired**.
+///
+/// It used to be declarative file access: the packager listed paths and
+/// the launcher bound them, source and destination, read-write for every
+/// `write` entry. That made the sandbox enforce a policy written by the
+/// thing it was sandboxing — `write = ["/"]` was a valid manifest and
+/// produced a valid launch.
+///
+/// The fields survive so that a package still carrying them is refused
+/// with its own words quoted back. Nothing reads them to build a
+/// sandbox.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SandboxFs {
-    /// Read-only path patterns. Empty `Vec` if the package
-    /// reads nothing outside its own payload.
+    /// Read-only path patterns. Any entry is a validation failure.
     #[serde(default)]
     pub read: Vec<PathPattern>,
-    /// Read-write path patterns.
+    /// Read-write path patterns. Any entry is a validation failure.
     #[serde(default)]
     pub write: Vec<PathPattern>,
+}
+
+impl SandboxFs {
+    /// Whether the package declared no paths — the only shape that
+    /// validates, and therefore the only one re-encoded.
+    pub fn is_empty(&self) -> bool {
+        self.read.is_empty() && self.write.is_empty()
+    }
 }
 
 /// `[sandbox.net]` — egress policy.

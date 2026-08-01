@@ -1,7 +1,11 @@
 # PDF Viewer — qOS application manifest.
 #
-# Read-only on the document roots plus the host file-chooser portal
-# for Open. No write grant: the viewer does not edit.
+# The viewer does not edit, and annotations are the app's own state.
+#
+# Beyond the system read profile it needs, as a consented capability:
+# read on the document it was asked to open. Open-from-elsewhere goes
+# through the host file-chooser portal, which hands back a descriptor
+# rather than a path.
 #
 # Pack and install:
 #
@@ -46,46 +50,6 @@ namespaces = [
 ]
 seccomp    = "qos-default"
 landlock   = "strict"
-
-[sandbox.fs]
-read = [
-    "$XDG_RUNTIME_DIR/wayland-0",
-    "/usr/lib64",
-    "/usr/lib",
-    "/usr/share/fonts",
-    "/usr/share/fontconfig",
-    "/etc/fonts",
-    "/usr/share/vulkan",
-    "/usr/share/glvnd",
-    "/usr/share/drirc.d",
-    "/usr/share/libdrm",
-    "/usr/share/nvidia",
-    "/etc/vulkan",
-    "/etc/machine-id",
-    "/etc/ld.so.cache",
-    "/etc/ld.so.conf",
-    "/etc/ld.so.conf.d",
-    "/usr/lib/locale",
-    "/sys",
-    "~/Documents",
-    "~/Downloads",
-    "/var/workspace",
-]
-write = [
-    # This app's own state document (`app-state`); the path is derived
-    # from the package id, so it is the same one the store computes.
-    "~/.local/share/dev.qos.pdf-viewer",
-    "~/.cache/mesa_shader_cache",
-    "~/.cache/mesa_shader_cache_db",
-    "~/.cache/radv_builtin_shaders",
-    "/dev/dri",
-    "/dev/nvidia0",
-    "/dev/nvidiactl",
-    "/dev/nvidia-modeset",
-    "/dev/nvidia-uvm",
-    "/dev/nvidia-uvm-tools",
-    "/dev/nvidia-caps",
-]
 
 [sandbox.net]
 mode = "off"
