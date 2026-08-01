@@ -19,7 +19,7 @@
 use std::collections::HashMap;
 
 use automerge::{transaction::Transactable, AutoCommit, ChangeHash, ObjId, ReadDoc, Value};
-use qos_actions::{ActionEnvelope, ActionTransport, EncodedAction};
+use qos_actions::EncodedAction;
 use taffy::{NodeId, TaffyTree};
 use tracing::warn;
 use ui::theme::Theme;
@@ -28,19 +28,9 @@ use vello::kurbo::{Affine, Point, Rect};
 use vello::Scene;
 use winit::event::{Modifiers, WindowEvent};
 
-use crate::actions::{set_bool_action, SettingsAction};
+use crate::actions::{set_bool_action, SettingsAction, SETTINGS_ACTION_TYPE};
 use crate::prefs::{NotificationPrefs, SystemPrefs};
 use crate::widgets::{card, caption, rows, setting_row_described, status_pill, El};
-
-/// A local replication sink: the doc is already shared, and the executor pins
-/// each action's actor so the change is content-addressed identical to a peer's
-/// replay and dedupes on merge — so the on-screen affordance path has nothing
-/// extra to replicate. The Ctrl+K palette dispatches through the host's own
-/// transport, which a collaborative session swaps for a peer-aware one.
-struct DiscardTransport;
-impl ActionTransport for DiscardTransport {
-    fn replicate(&mut self, _env: &ActionEnvelope) {}
-}
 
 pub const DND_KEY: &str = "notifications.do_not_disturb";
 pub const BANNERS_KEY: &str = "notifications.show_banners";
@@ -53,14 +43,12 @@ pub struct NotificationsPane {
     needs_seed: bool,
     composed: Option<Box<dyn Widget>>,
     rect: Rect,
-    /// The document heads captured just before the first action of an event, so
-    /// the host records exactly **one** undo boundary bracketing it
-    /// ([`Widget::take_committed_action`], bubbled up by `SettingsApp`).
-    /// Rising-edge: cleared on read.
-    action_commit_before: Option<Vec<ChangeHash>>,
-    /// The most recently dispatched action's wire form, so a test can prove an
-    /// on-screen toggle builds the same [`EncodedAction`] the palette does.
-    last_dispatched: Option<EncodedAction>,
+    /// Framework-owned action dispatch: brackets the undo boundary (bubbled up by
+    /// `SettingsApp` via [`Widget::take_committed_action`], so the host records
+    /// exactly one boundary per event), encodes and dispatches each settings
+    /// action, and remembers the last one so a test can prove an on-screen toggle
+    /// builds the same [`EncodedAction`] the palette does.
+    actions: ui::ActionHost,
 }
 
 impl Default for NotificationsPane {
@@ -82,14 +70,13 @@ impl NotificationsPane {
             needs_seed: true,
             composed: None,
             rect: Rect::ZERO,
-            action_commit_before: None,
-            last_dispatched: None,
+            actions: ui::ActionHost::new(),
         }
     }
 
     /// The most recently dispatched settings action's wire form (test hook).
     pub fn last_dispatched(&self) -> Option<&EncodedAction> {
-        self.last_dispatched.as_ref()
+        self.actions.last_dispatched()
     }
 
     /// The scratch (edit-intent) key a toggle binds to for a given canonical
@@ -101,27 +88,17 @@ impl NotificationsPane {
     }
 
     /// Dispatch one [`SettingsAction`] — the single CRDT-mutation path shared
-    /// with the Ctrl+K palette. Applied through the qOS action executor (a pinned
-    /// actor + committed change, so it replays byte-identically on peers). The
-    /// document heads captured just before the first action of the frame are
-    /// stashed so the host records **one** undo boundary bracketing it.
+    /// with the Ctrl+K palette. The framework [`ActionHost`](ui::ActionHost)
+    /// brackets the undo boundary and applies the action through the qOS executor
+    /// (a pinned actor + committed change, so it replays byte-identically on
+    /// peers).
     ///
     /// This is *only* the CRDT write. Carrying the preference to the compositor's
     /// notification layer (the shared `settings.json`, see [`Self::persist`]) is a
     /// separate side effect driven by the resulting document state — never part
     /// of an action.
     fn perform_action(&mut self, state: &mut AutoCommit, action: SettingsAction) {
-        if self.action_commit_before.is_none() {
-            // `get_heads` flushes pending writes, so the bracket covers only the
-            // action's own change.
-            self.action_commit_before = Some(state.get_heads());
-        }
-        let encoded = crate::actions::encode(&action);
-        self.last_dispatched = Some(encoded.clone());
-        let mut tx = DiscardTransport;
-        if let Err(e) = qos_actions::dispatch(state, &action, encoded, &mut tx) {
-            warn!(target: "qos::settings", op = "notifications_action", error = %e, "action dispatch failed");
-        }
+        self.actions.dispatch(state, SETTINGS_ACTION_TYPE, &action);
     }
 
     /// Reconcile one boolean setting between its widget scratch key and its
@@ -426,7 +403,7 @@ impl Widget for NotificationsPane {
     /// settings action, so it records one undo boundary for it (bubbled up to the
     /// root by `SettingsApp`). Rising-edge: cleared on read.
     fn take_committed_action(&mut self) -> Option<Vec<ChangeHash>> {
-        self.action_commit_before.take()
+        self.actions.take_committed()
     }
 }
 
