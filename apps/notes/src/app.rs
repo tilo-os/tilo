@@ -30,8 +30,6 @@ use ui::theme::Theme;
 use ui::widget::link_popover::PageEntry;
 use ui::widget::page_palette::PageJumpPalette;
 
-use qos_actions::{ActionEnvelope, ActionTransport};
-
 use crate::actions::{self, NotesAction};
 use crate::doc::NotesDoc;
 use crate::main_panel::MainPanel;
@@ -67,18 +65,6 @@ const SAVE_DEBOUNCE: Duration = Duration::from_millis(500);
 /// a second instance adopts the first's workspace instead of creating a
 /// duplicate. A lone instance simply seeds after the window elapses.
 const SEED_GRACE: Duration = Duration::from_millis(1500);
-
-/// Drops the replayable envelope of a locally-dispatched action. Two Notes
-/// instances receive page-tree mutations through ordinary CRDT sync (the
-/// executor pins each action's actor so the change is content-addressed
-/// identical to a peer's replay and dedupes on merge), so the local affordance
-/// path has nothing extra to replicate. The Ctrl+K palette dispatches through
-/// the host's transport, which a collaborative session swaps for a peer-aware
-/// one.
-struct DiscardTransport;
-impl ActionTransport for DiscardTransport {
-    fn replicate(&mut self, _env: &ActionEnvelope) {}
-}
 
 pub struct NotesApp {
     workspace: Workspace,
@@ -157,16 +143,13 @@ pub struct NotesApp {
     /// Rect of the content area (between top bar and status bar). Used
     /// to place the drawer scrim in narrow mode.
     content_rect: Rect,
-    /// Document heads captured just before the first `qos_actions` action of the
-    /// current event was dispatched. The host drains this via
-    /// [`Widget::take_committed_action`] to record exactly one undo boundary
-    /// bracketing the page-tree mutation(s) — the same undo path Ctrl+K takes.
-    action_commit_before: Option<Vec<automerge::ChangeHash>>,
-    /// The last [`EncodedAction`](qos_actions::EncodedAction) an on-screen
-    /// affordance dispatched through [`Self::perform_action`]. Lets a test prove
-    /// a sidebar affordance and the Ctrl+K [`ActionSpec`](qos_actions::ActionSpec)
-    /// build the byte-identical action — one source of truth, not two paths.
-    last_dispatched: Option<qos_actions::EncodedAction>,
+    /// Framework-owned action dispatch. Each on-screen affordance dispatches its
+    /// [`NotesAction`] through this: the host brackets the undo boundary, applies
+    /// the action through the executor (so it replays byte-identically on peers,
+    /// exactly as the Ctrl+K palette does), and records the last one so a test can
+    /// prove a sidebar affordance and its [`ActionSpec`](qos_actions::ActionSpec)
+    /// build the identical action.
+    actions: ui::ActionHost,
     /// Page ids that have appeared in the shared document. Steady-state `sync`
     /// uses this to tell a never-yet-mirrored local page (push it up) from a page
     /// the document dropped — a Ctrl+Z undo of a create, or a remote delete —
@@ -270,8 +253,7 @@ impl NotesApp {
             topbar_rect: Rect::ZERO,
             menu_btn_rect: Rect::ZERO,
             content_rect: Rect::ZERO,
-            action_commit_before: None,
-            last_dispatched: None,
+            actions: ui::ActionHost::new(),
             known_in_doc: std::collections::HashSet::new(),
         };
         app.refresh_link_pages();
@@ -712,19 +694,9 @@ impl NotesApp {
     /// are stashed so the host records **one** undo boundary bracketing it
     /// ([`Widget::take_committed_action`]). The in-memory workspace is updated by
     /// the caller for immediate UI feedback and reconciled from the document on
-    /// the next `sync`.
+    /// the next `sync`. This app supplies only its domain: the action and its type.
     fn perform_action(&mut self, doc: &mut AutoCommit, action: NotesAction) {
-        if self.action_commit_before.is_none() {
-            // `get_heads` flushes any pending app writes, so the bracket covers
-            // only the action's own change.
-            self.action_commit_before = Some(doc.get_heads());
-        }
-        let encoded = actions::encode(&action);
-        self.last_dispatched = Some(encoded.clone());
-        let mut tx = DiscardTransport;
-        if let Err(e) = qos_actions::dispatch(doc, &action, encoded, &mut tx) {
-            tracing::warn!(error = %e, "notes action dispatch failed");
-        }
+        self.actions.dispatch(doc, actions::NOTES_ACTION_TYPE, &action);
     }
 
     /// The context Ctrl+K needs to build the notebook's resource tree: the page
@@ -1056,7 +1028,7 @@ impl NotesApp {
     /// [`Self::perform_action`], so a test can compare it to a palette spec.
     #[doc(hidden)]
     pub fn last_dispatched_for_test(&self) -> Option<&qos_actions::EncodedAction> {
-        self.last_dispatched.as_ref()
+        self.actions.last_dispatched()
     }
 
     /// Test hook: whether the current tree is the narrow (drawer) layout.
@@ -1277,7 +1249,7 @@ impl Widget for NotesApp {
     /// its page-tree action, so it records one undo boundary for it (see
     /// [`Self::perform_action`]). Rising-edge: cleared on read.
     fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.action_commit_before.take()
+        self.actions.take_committed()
     }
 
     fn presence_payload(&self) -> Option<(PresenceKey, PresencePayload)> {
