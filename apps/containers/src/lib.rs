@@ -11,6 +11,7 @@
 //! [`app_root`] is the single integration point used by both the live winit
 //! loop and the headless `--shots` renderer.
 
+pub mod actions;
 pub mod app;
 pub mod combobox;
 pub mod doc;
