@@ -158,6 +158,30 @@ impl Connection {
     }
 }
 
+/// Build a fresh saved connection stub with placeholder config, as created by
+/// the "add connection" affordances (the add form and the Ctrl+K palette). The
+/// `endpoint` is left blank for the caller to fill from its own input. The id is
+/// minted here, once, at authoring time — so both affordances dispatch a single
+/// [`crate::actions::VpnAction::AddConnection`] carrying an identical payload,
+/// and replay reproduces the exact same connection on a peer.
+pub fn stub_connection(name: &str, kind: ConnKind) -> Connection {
+    let name = if name.trim().is_empty() {
+        format!("New {}", kind.long_name())
+    } else {
+        name.trim().to_string()
+    };
+    let mut c = Connection::new(&name, kind);
+    c.last_used = "Just added".to_string();
+    c.address = "10.0.0.2/32".to_string();
+    c.dns = "1.1.1.1".to_string();
+    c.allowed_ips = "0.0.0.0/0".to_string();
+    c.public_key = match kind {
+        ConnKind::WireGuard => "(import .conf to populate key)".to_string(),
+        ConnKind::OpenVpn => format!("CN={name}"),
+    };
+    c
+}
+
 /// The whole saved fleet plus UI selection + global toggles.
 #[derive(Clone, Debug, Default)]
 pub struct Vault {
