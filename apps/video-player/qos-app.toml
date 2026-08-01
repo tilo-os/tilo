@@ -48,49 +48,6 @@ namespaces = [
 seccomp    = "qos-default"
 landlock   = "strict"
 
-[sandbox.fs]
-read = [
-    "$XDG_RUNTIME_DIR/wayland-0",
-    "/usr/lib64",
-    "/usr/lib",
-    "/usr/share/fonts",
-    "/usr/share/fontconfig",
-    "/etc/fonts",
-    "/usr/share/vulkan",
-    "/usr/share/glvnd",
-    "/usr/share/drirc.d",
-    "/usr/share/libdrm",
-    "/usr/share/nvidia",
-    "/etc/vulkan",
-    "/etc/machine-id",
-    "/etc/ld.so.cache",
-    "/etc/ld.so.conf",
-    "/etc/ld.so.conf.d",
-    "/usr/lib/locale",
-    "/sys",
-    "/var/workspace",
-    "~/Videos",
-    "~/Downloads",
-    "/usr/lib64/gstreamer-1.0",
-    "/usr/share/gstreamer-1.0",
-]
-write = [
-    # This app's own state document (`app-state`); the path is derived
-    # from the package id, so it is the same one the store computes.
-    "~/.local/share/dev.qos.video-player",
-    "~/.cache/mesa_shader_cache",
-    "~/.cache/mesa_shader_cache_db",
-    "~/.cache/radv_builtin_shaders",
-    "/dev/dri",
-    "/dev/nvidia0",
-    "/dev/nvidiactl",
-    "/dev/nvidia-modeset",
-    "/dev/nvidia-uvm",
-    "/dev/nvidia-uvm-tools",
-    "/dev/nvidia-caps",
-    "/dev/snd",
-]
-
 [sandbox.net]
 mode = "off"
 

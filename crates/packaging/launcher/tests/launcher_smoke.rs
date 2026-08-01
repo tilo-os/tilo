@@ -56,19 +56,12 @@ fn build_hello(out_dir: &Path) -> PathBuf {
     bin
 }
 
-/// Inject the host's dynamic linker + lib dirs into the manifest so the
-/// fixture binary can find libc inside the sandbox. We don't ship a
-/// fully static binary because that needs `musl` toolchain which isn't
-/// present in distrobox; bind-mounting host libs read-only is the
-/// pragmatic option and mirrors what real apps will do via `runtime`.
-fn with_glibc_binds(mut m: MinimalManifest) -> MinimalManifest {
-    for p in ["/usr/lib", "/usr/lib64", "/lib", "/lib64"] {
-        if std::path::Path::new(p).exists() {
-            m.sandbox.fs.read.push(p.to_string());
-        }
-    }
-    m
-}
+// `with_glibc_binds` used to live here. It pushed `/usr/lib`,
+// `/usr/lib64`, `/lib` and `/lib64` into the fixture's
+// `sandbox.fs.read` so the dynamically-linked binary could find its
+// loader inside the sandbox. Those four paths are in the launcher's
+// system read profile now — every app gets them, none of them declares
+// them — so the helper has nothing left to do.
 
 fn hello_manifest(payload_root: &Path, services: BTreeMap<String, String>) -> MinimalManifest {
     let _ = payload_root;
@@ -170,7 +163,7 @@ fn hello_world_runs() {
     let payload = tempfile::tempdir().unwrap();
     let _bin = build_hello(payload.path());
 
-    let m = with_glibc_binds(hello_manifest(payload.path(), BTreeMap::new()));
+    let m = hello_manifest(payload.path(), BTreeMap::new());
     let opts = RunOptions {
         no_services: false,
         runtime_root: None,
@@ -204,7 +197,7 @@ fn no_services_flag_skips_required() {
     let _bin = build_hello(payload.path());
     let mut svcs = BTreeMap::new();
     svcs.insert("collab".to_string(), "required@1".to_string());
-    let m = with_glibc_binds(hello_manifest(payload.path(), svcs));
+    let m = hello_manifest(payload.path(), svcs);
     let opts = RunOptions {
         no_services: true,
         runtime_root: None,
@@ -236,7 +229,7 @@ fn optional_service_missing_warns_and_runs() {
 
     let mut svcs = BTreeMap::new();
     svcs.insert("collab".to_string(), "optional@1".to_string());
-    let m = with_glibc_binds(hello_manifest(payload.path(), svcs));
+    let m = hello_manifest(payload.path(), svcs);
     let opts = RunOptions {
         no_services: false,
         runtime_root: None,
@@ -250,37 +243,17 @@ fn optional_service_missing_warns_and_runs() {
     assert!(status.success(), "optional missing should still run");
 }
 
-#[test]
-#[ignore = "requires bwrap + Landlock kernel; run with --ignored"]
-fn read_only_fs_enforced() {
-    // We declare `/usr` ro and ask the hello fixture to attempt a write
-    // there. The fixture is too simple for that; this test stays
-    // structurally present so future work that ships a richer fixture
-    // can flip it on. For now we just assert the run succeeds, which
-    // proves the ro-bind plumbing doesn't break the standard mounts.
-    let bwrap = match bwrap_path() {
-        Some(p) => p,
-        None => {
-            eprintln!("bwrap not installed; skipping");
-            return;
-        }
-    };
-    let payload = tempfile::tempdir().unwrap();
-    let _bin = build_hello(payload.path());
-    let mut m = with_glibc_binds(hello_manifest(payload.path(), BTreeMap::new()));
-    m.sandbox.fs.read.push("/usr".to_string());
-    let opts = RunOptions {
-        no_services: false,
-        runtime_root: None,
-        bwrap_bin: Some(bwrap),
-        minimal_libs: false,
-        landlock_enforce: true,
-        mode: launcher::run::LaunchMode::Gui,
-        ..Default::default()
-    };
-    let status = run_with(&m, payload.path(), &opts).expect("launch");
-    assert!(status.success());
-}
+// `read_only_fs_enforced` used to live here. It declared `/usr` as a
+// manifest read path, launched the hello fixture, and asserted the run
+// succeeded — its own comment admitted "the fixture is too simple for
+// that". A test that proves a read-only mount by observing that a
+// program which never writes exits zero proves nothing, and it is the
+// exact shape of test this change is meant to stop trusting.
+//
+// It is replaced, not deleted: `tests/room_confinement.rs` starts the
+// real thing under bwrap and has it try the reads and writes, so the
+// assertion is on a syscall's answer rather than on an argv or an exit
+// code that was never at risk.
 
 #[test]
 fn manifest_declared_runtime_missing_bundle_fails() {

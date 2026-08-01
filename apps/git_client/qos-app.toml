@@ -1,10 +1,12 @@
 # Git — qOS application manifest.
 #
 # Fetch/pull/push over https+ssh to arbitrary remotes with no feature
-# gate, so `mode = "host"` and the agent socket is bound in.
-# `Repository::discover()` walks UPWARD from the working copy, so the
-# grant has to cover ancestors — hence `$HOME` and `/var/workspace`
-# rather than a single repo path. Credential helpers exec a binary.
+# gate, so `mode = "host"`.
+#
+# Beyond the system read profile it needs, as consented capabilities:
+# read+write on the working copy AND its ancestors —
+# `Repository::discover()` walks upward — the SSH agent socket and
+# `~/.ssh`, and read+exec on the host bin dirs for credential helpers.
 #
 # Pack and install:
 #
@@ -48,59 +50,6 @@ namespaces = [
 ]
 seccomp    = "qos-default"
 landlock   = "strict"
-
-[sandbox.fs]
-read = [
-    "$XDG_RUNTIME_DIR/wayland-0",
-    "/usr/lib64",
-    "/usr/lib",
-    "/usr/share/fonts",
-    "/usr/share/fontconfig",
-    "/etc/fonts",
-    "/usr/share/vulkan",
-    "/usr/share/glvnd",
-    "/usr/share/drirc.d",
-    "/usr/share/libdrm",
-    "/usr/share/nvidia",
-    "/etc/vulkan",
-    "/etc/machine-id",
-    "/etc/ld.so.cache",
-    "/etc/ld.so.conf",
-    "/etc/ld.so.conf.d",
-    "/usr/lib/locale",
-    "/sys",
-    "~/.gitconfig",
-    "/etc/gitconfig",
-    "~/.ssh",
-    "$SSH_AUTH_SOCK",
-    "~/.config/git",
-    "/etc/resolv.conf",
-    "/etc/hosts",
-    "/etc/pki",
-    "/etc/ssl",
-    "/etc/crypto-policies",
-    "/usr/bin",
-    "/bin",
-    "/usr/sbin",
-    "/sbin",
-]
-write = [
-    # This app's own state document (`app-state`); the path is derived
-    # from the package id, so it is the same one the store computes.
-    "~/.local/share/dev.qos.git-client",
-    "~/.cache/mesa_shader_cache",
-    "~/.cache/mesa_shader_cache_db",
-    "~/.cache/radv_builtin_shaders",
-    "/dev/dri",
-    "/dev/nvidia0",
-    "/dev/nvidiactl",
-    "/dev/nvidia-modeset",
-    "/dev/nvidia-uvm",
-    "/dev/nvidia-uvm-tools",
-    "/dev/nvidia-caps",
-    "~",
-    "/var/workspace",
-]
 
 [sandbox.net]
 mode = "host"
