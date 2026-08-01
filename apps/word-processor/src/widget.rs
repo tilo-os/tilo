@@ -38,16 +38,6 @@ use crate::word_processor::{Caret, ClipBlock, WordProcessor};
 use crate::WpFormat;
 use ui::portal;
 
-/// An [`ActionTransport`](qos_actions::ActionTransport) that drops replicated
-/// envelopes: the word processor's durable form is the document itself (synced
-/// separately by the host's collaboration manager), so a locally-dispatched
-/// action needs no extra replication step — applying it to the shared doc is
-/// enough.
-struct DiscardTransport;
-impl qos_actions::ActionTransport for DiscardTransport {
-    fn replicate(&mut self, _env: &qos_actions::ActionEnvelope) {}
-}
-
 /// Convert the model's `(block, start, end)` ranges into serializable
 /// [`Span`](crate::actions::Span)s for an action payload.
 fn to_spans(ranges: Vec<(String, usize, usize)>) -> Vec<crate::actions::Span> {
@@ -1583,16 +1573,11 @@ pub struct WordProcessorWidget {
     focused: bool,
     dirty: bool,
     needs_commit: bool,
-    /// The document heads captured just before the first `qos_actions` action of
-    /// the current event was dispatched through [`Self::perform_action`]. The
-    /// host drains this via [`Widget::take_committed_action`] to record exactly
-    /// one undo boundary bracketing the affordance's mutation. Rising-edge:
-    /// `None` until an action fires, cleared on read.
-    action_commit_before: Option<Vec<automerge::ChangeHash>>,
-    /// The last [`EncodedAction`](qos_actions::EncodedAction) an on-screen
-    /// affordance dispatched through [`Self::perform_action`], so a test can
-    /// prove the affordance builds the same envelope the Ctrl+K palette does.
-    last_dispatched: Option<qos_actions::EncodedAction>,
+    /// Framework-owned action dispatch: brackets the undo boundary, encodes and
+    /// dispatches each action through the executor, and remembers the last one so
+    /// a test can prove an affordance builds the same envelope the Ctrl+K palette
+    /// does.
+    actions: ui::ActionHost,
     pointer: Point,
     drag: DragSelect,
     path: Option<PathBuf>,
@@ -1866,8 +1851,7 @@ impl WordProcessorWidget {
             focused: true,
             dirty: true,
             needs_commit: false,
-            action_commit_before: None,
-            last_dispatched: None,
+            actions: ui::ActionHost::new(),
             pointer: Point::ZERO,
             drag: DragSelect::new(),
             path: None,
@@ -1964,18 +1948,8 @@ impl WordProcessorWidget {
     /// [`Widget::take_committed_action`]); a second action in the same event
     /// extends that one boundary rather than opening another.
     fn perform_action(&mut self, state: &mut AutoCommit, action: crate::actions::WordProcessorAction) {
-        if self.action_commit_before.is_none() {
-            // `get_heads` flushes any pending app writes, so the bracket covers
-            // only the action's own change.
-            self.action_commit_before = Some(state.get_heads());
-        }
-        let encoded = crate::actions::encode(&action);
-        self.last_dispatched = Some(encoded.clone());
-        let mut tx = DiscardTransport;
-        // A malformed dispatch never wedges the editor — the affordance is a
-        // no-op and the next frame re-syncs from the document. Our own actions
-        // always encode/decode, so an error here is unreachable in practice.
-        let _ = qos_actions::dispatch(state, &action, encoded, &mut tx);
+        self.actions
+            .dispatch(state, crate::actions::WORD_PROCESSOR_ACTION_TYPE, &action);
     }
 
     /// The context Ctrl+K needs to build the document's resource tree: the caret
@@ -2004,7 +1978,7 @@ impl WordProcessorWidget {
     /// [`Self::perform_action`], so a test can compare it to a palette spec.
     #[cfg(test)]
     pub(crate) fn last_dispatched_for_test(&self) -> Option<&qos_actions::EncodedAction> {
-        self.last_dispatched.as_ref()
+        self.actions.last_dispatched()
     }
 
     // ---- formatting affordances → actions -----------------------------------
@@ -6553,7 +6527,7 @@ impl Widget for WordProcessorWidget {
     /// affordance's change (the button-driven twin of the Ctrl+K palette).
     /// Rising-edge: cleared on read.
     fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.action_commit_before.take()
+        self.actions.take_committed()
     }
     /// Publish the resource tree Ctrl+K walks (delegates to the
     /// [`ResourceProvider`](qos_actions::ResourceProvider) impl in
