@@ -175,6 +175,19 @@ impl ImagerDoc {
         let _ = doc.put(&ROOT, "status", s);
     }
 
+    /// Whether internal/fixed disks are revealed on the Drive step. Presentation
+    /// state (like `selected`/`step`), persisted for instant-on. Defaults off so
+    /// a fresh document only ever shows removable drives.
+    pub fn show_internal(doc: &AutoCommit) -> bool {
+        match doc.get(&ROOT, "show_internal") {
+            Ok(Some((Value::Scalar(v), _))) => matches!(v.as_ref(), ScalarValue::Boolean(true)),
+            _ => false,
+        }
+    }
+    pub fn set_show_internal(doc: &mut AutoCommit, on: bool) {
+        let _ = doc.put(&ROOT, "show_internal", on);
+    }
+
     // ---- helpers ----------------------------------------------------------
     fn write_json<T: serde::Serialize>(doc: &mut AutoCommit, key: &str, val: &T) {
         let json = serde_json::to_string(val).unwrap_or_else(|_| "null".into());
