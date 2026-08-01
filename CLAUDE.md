@@ -174,7 +174,7 @@ Key implications when writing or modifying widgets:
 
 ### OS image
 
-- Base: `quay.io/fedora/fedora-bootc:42`. The image is immutable; persistent state goes under `/var`.
+- Base: Fedora bootc 44, mirrored to `code.sandbox.example/qos/fedora-bootc` and pinned by digest in `os/base-snapshot.env` — upstream garbage-collects the manifest a digest points at within a day, so a pin straight at quay.io stops resolving. The image is immutable; persistent state goes under `/var`.
 - Boot chain: UEFI/GRUB → `greetd` (tuigreet) → `quick-fs.service` mounts the FUSE → `shell` starts as the Wayland session → `shell-firstboot.service` handles first-run setup.
 - `Containerfile.test` adds a validation systemd service; use it instead of shipping test code in the production image.
 

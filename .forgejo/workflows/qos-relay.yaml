@@ -47,6 +47,22 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.REGISTRY_TOKEN }}
 
+      # Same mirrored, digest-pinned base as the OS image — see
+      # os/base-snapshot.env for why the base is a mirror and not quay.io.
+      - name: Load the pinned BASE_REF
+        run: |
+          if [ ! -f os/base-snapshot.env ]; then
+            echo "::error::os/base-snapshot.env missing — run the mirror-base workflow first"
+            exit 1
+          fi
+          . os/base-snapshot.env
+          if [ -z "${BASE_REF:-}" ]; then
+            echo "::error::BASE_REF not set in os/base-snapshot.env"
+            exit 1
+          fi
+          echo "BASE_REF=$BASE_REF" >> "$GITHUB_ENV"
+          echo "base=$BASE_REF"
+
       - name: Load the pinned RPMS_REF
         run: |
           if [ ! -f os/rpms-snapshot.env ]; then
@@ -93,6 +109,7 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
             SOURCE_DATE_EPOCH=${{ env.SOURCE_DATE_EPOCH }}
+            BASE_REF=${{ env.BASE_REF }}
             RPMS_REF=${{ env.RPMS_REF }}
           provenance: false
 

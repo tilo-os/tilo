@@ -28,7 +28,7 @@ A P2P collaborative filesystem mounted at `/var/workspace`.
 
 The OS is built using `Containerfile` and converted to a bootable image via `bootc-image-builder`.
 
--   **Base**: `quay.io/fedora/fedora-bootc:42`
+-   **Base**: Fedora bootc 44, mirrored into `code.sandbox.example/qos/fedora-bootc` and pinned by digest in `os/base-snapshot.env` (see `docs/supply-chain.md` for why the mirror exists).
 -   **FUSE Support**: `fuse3` installed for userspace filesystem mounting.
 -   **Persistence**: Caching is directed to `/var/cache/qos-fs` and mounting happens in `/var/workspace` to ensure compatibility with the read-only root.
 
