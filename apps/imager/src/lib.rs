@@ -59,6 +59,7 @@ pub const SHOT_SCENARIOS: &[&str] = &[
     "source",
     "drive",
     "drive-empty",
+    "drive-internal",
     "customize",
     "confirm",
     "progress",
@@ -91,6 +92,35 @@ pub fn seed_scenario(doc: &mut automerge::AutoCommit, scenario: &str) {
         ImagerDoc::set_selected(doc, None);
         ImagerDoc::set_step(doc, Step::Drive);
         ImagerDoc::set_status(doc, "No removable drives detected");
+        return;
+    }
+
+    // Internal-disks-revealed: a USB stick plus the *system* disk, shown with
+    // the guard active (the system disk locked, both acknowledgements visible).
+    if scenario == "drive-internal" {
+        use crate::model::{sample_source, TargetDrive, TargetKind, TargetPartition};
+        let targets = vec![
+            crate::model::sample_targets().remove(0), // the USB stick
+            TargetDrive {
+                name: "nvme0n1".into(),
+                model: "Samsung SSD 990 PRO 1TB".into(),
+                size: 1_000_204_886_016,
+                kind: TargetKind::Nvme,
+                tran: Some("nvme".into()),
+                removable: false,
+                is_system: true, // the running OS boots from this disk
+                partitions: vec![
+                    TargetPartition { name: "nvme0n1p1".into(), size: 536_870_912, fstype: Some("vfat".into()), label: Some("EFI".into()) },
+                    TargetPartition { name: "nvme0n1p2".into(), size: 999_650_000_000, fstype: Some("btrfs".into()), label: Some("qos-root".into()) },
+                ],
+            },
+        ];
+        ImagerDoc::seed(doc, &targets);
+        ImagerDoc::set_source(doc, Some(&sample_source()));
+        ImagerDoc::set_selected(doc, None);
+        ImagerDoc::set_show_internal(doc, true);
+        ImagerDoc::set_step(doc, Step::Drive);
+        ImagerDoc::set_status(doc, "1 removable, 2 total");
         return;
     }
 
