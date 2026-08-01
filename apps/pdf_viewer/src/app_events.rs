@@ -1115,7 +1115,8 @@ mod event_tests {
 
         // The real affordance path (Delete key / rail button / context menu).
         app.delete_target(&DeleteTarget::Annotation(anno.id.clone()), &mut st.doc);
-        let dispatched = app.last_dispatched.clone().expect("the affordance dispatched an action");
+        let dispatched =
+            app.actions.last_dispatched().cloned().expect("the affordance dispatched an action");
         assert_eq!(dispatched.type_id, spec_encoded.type_id);
         assert_eq!(dispatched.payload, spec_encoded.payload, "one source of truth");
         assert!(
