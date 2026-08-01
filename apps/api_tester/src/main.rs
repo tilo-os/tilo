@@ -56,7 +56,11 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let (state, autosave) = ui::persist::open("dev.qos.api-tester");
-    let app = ui::App::new(state, api_tester::app_root()).with_autosave(autosave);
+    let mut app = ui::App::new(state, api_tester::app_root()).with_autosave(autosave);
+    // Register the API tester's actions so the shell's Ctrl+K palette can decode
+    // + replay the same collection / request / environment / variable actions the
+    // on-screen affordances dispatch.
+    api_tester::actions::register(app.action_registry_mut());
     app.run();
     Ok(())
 }
