@@ -2463,6 +2463,13 @@ impl MusicApp {
         self.view = View::Songs;
     }
 
+    /// Stage the Queue view with a real "Next up" list: a bundled track plays
+    /// (so the transport bar is live) and the full sample queue trails it.
+    pub fn snap_queue(&mut self) {
+        self.shot_stage = Some(ShotStage::NowPlaying);
+        self.view = View::Queue;
+    }
+
     /// Stage the synced-lyrics view with a highlighted current line.
     pub fn snap_lyrics(&mut self) {
         self.shot_stage = Some(ShotStage::Lyrics);

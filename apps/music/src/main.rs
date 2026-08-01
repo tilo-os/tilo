@@ -74,7 +74,10 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         let viewport = parse_value_arg(&args, "--viewport")
             .and_then(|s| parse_viewport(&s))
             .unwrap_or(DEFAULT_SHOTS_VIEWPORT);
-        // `--live` captures the real screen: fetch live Home/artist/album content
+        // `--theme light|dark` (or `QOS_MUSIC_THEME`) picks the OS theme the frame
+        // renders in — the shot proves the app looks right in both. Default dark.
+        let theme = pick_shot_theme(&args);
+        // `--live` captures the real screen: fetch live Home/album/artist content
         // + real cover art off-thread, wait for it to settle, then render.
         let live = args.iter().any(|a| a == "--live")
             || std::env::var("QOS_MUSIC_LIVE").map(|v| !v.is_empty()).unwrap_or(false);
@@ -82,9 +85,9 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
             let play = parse_value_arg(&args, "--play")
                 .or_else(|| std::env::var("QOS_MUSIC_PLAY").ok())
                 .filter(|s| !s.is_empty());
-            render_live_shot_to_png(viewport, &out, play.as_deref())?;
+            render_live_shot_to_png(viewport, &out, play.as_deref(), theme)?;
         } else {
-            render_shot_to_png(music::app_root_for_shot(&scenario), viewport, &out)?;
+            render_shot_to_png(music::app_root_for_shot(&scenario), viewport, &out, theme)?;
         }
         return Ok(());
     }
@@ -380,6 +383,19 @@ fn parse_viewport(s: &str) -> Option<(u32, u32)> {
     Some((w.trim().parse().ok()?, h.trim().parse().ok()?))
 }
 
+/// The OS theme a `--shots` frame renders in: `--theme light|dark` (or the
+/// `QOS_MUSIC_THEME` env), defaulting to dark. Lets the same scenario be
+/// captured in both themes to prove the app looks right either way.
+fn pick_shot_theme(args: &[String]) -> Theme {
+    let sel = parse_value_arg(args, "--theme")
+        .or_else(|| std::env::var("QOS_MUSIC_THEME").ok())
+        .unwrap_or_default();
+    match sel.to_lowercase().as_str() {
+        "light" => Theme::light(),
+        _ => Theme::dark(),
+    }
+}
+
 /// Headless benchmark: render the current view (`QOS_MUSIC_VIEW`) `n` times
 /// offscreen, timing the full per-frame CPU path (sync → layout → draw) that
 /// `QUICK_UI_PERF` reports live. No GPU submit, no display — reproducible.
@@ -490,8 +506,8 @@ fn render_shot_to_png(
     mut widget: Box<dyn Widget>,
     viewport: (u32, u32),
     out: &std::path::Path,
+    theme: Theme,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let theme = Theme::dark();
     let presence = PresenceCtx::empty();
     let permission = PermissionContext::permissive();
     let mut text_renderer = TextRenderer::new();
@@ -517,9 +533,9 @@ fn render_live_shot_to_png(
     viewport: (u32, u32),
     out: &std::path::Path,
     play: Option<&str>,
+    theme: Theme,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use std::time::Duration;
-    let theme = Theme::dark();
     let presence = PresenceCtx::empty();
     let permission = PermissionContext::permissive();
     let mut tr = TextRenderer::new();
