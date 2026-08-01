@@ -215,11 +215,21 @@ unified image embeds a command line that must name the deployment it boots, and 
 on every update. Getting there needs the content-addressed deployment backend described in §4.3,
 which upstream still marks experimental.
 
-Until it lands, three things in this document are aspirations rather than descriptions: a command
-line that cannot be edited, a single measurement that transitively attests the root filesystem
-(§4.3), and generation-bound rollback protection (§4.4). Each is written here as the target; none
-of them is in force. The order matters too — this is a prerequisite, not a parallel workstream, so
-there is no version of the plan where the others land first.
+Until it lands, two things in this document are aspirations rather than descriptions: a command line
+that cannot be edited, and a single measurement that transitively attests the root filesystem
+(§4.3). Generation-bound unlock is **not** on that list — see §4.4; it works today by a different
+route.
+
+**What the current backend actually signs, and why that is less than it sounds.** Signature
+verification covers the kernel and the boot loader. It does not cover the initramfs, which is a
+plain archive the loader hands to the kernel *after* verification — and the initramfs is where the
+encrypted root gets unlocked. Anyone who can write the boot partition therefore runs code before
+the root is open, with secure boot enabled and every signature valid. The kernel command line sits
+beside it as an editable text file, so every hardening option can be stripped the same way.
+
+Stated plainly: on this backend, secure boot buys a **verified kernel, not a verified boot**. That
+is the strongest reason to reach a unified image, and it is a larger gap than the rollback question
+that first drew attention here.
 
 ### 4.3 Sealed root filesystem
 
@@ -243,28 +253,25 @@ This is weaker than Android Verified Boot, where the rollback index lives in tam
 consulted by the bootloader *before* execution. Our check happens after the bootloader has already
 run. We accept this and state it; we do not claim parity.
 
-**This section depends entirely on §4.2, and on the deployment backend we do not yet have.** The
-mechanism binds a generation number to the unlock policy, which only means anything if that number
-is (a) inside a signature, so it cannot be edited, and (b) measured, so the policy can discriminate
-between generations. Both properties come from the kernel image being unified and stub-loaded.
+**Generation binding does not need the unified image.** An earlier reading of this design assumed
+it did — that the only register able to distinguish generations was the one a boot stub extends,
+and that without a unified image every generation would look alike. That was wrong, and the
+correction matters because it moves this mechanism from blocked to available.
 
-On the boot loader spec backend the system ships on today, neither holds:
+The firmware measures every image it loads, and each generation deploys its own kernel. So the
+register covering loaded images already differs per generation, on the backend that ships today.
+The objection to using it — that it changes on every update — is only an objection to a *fixed*
+policy. A signed per-generation prediction is exactly the mechanism for a register that moves.
 
-- **The generation number is editable.** Put it on the kernel command line and it lands in a loader
-  entry on the EFI system partition — outside every signature, writable by anything that can write
-  that partition. Shipping it there would look like compliance and provide none.
-- **The measurement register the design leans on is never extended.** The register that would carry
-  it is extended by the boot stub, and the stub only runs for a unified image. Without it the
-  register sits at its reset value, so a per-generation prediction predicts a constant that *every*
-  generation satisfies — including the rolled-back one the mechanism exists to refuse.
+**What no register gives you is the anti-rollback itself.** An old signed prediction stays valid
+forever, so an attacker who restores an older signed kernel produces a measurement the TPM will
+honour. Refusing that needs monotonic state the attacker cannot wind back — the NV counter in this
+section — and standard enrollment tooling does not expose it. This is worth stating because
+measured boot is widely assumed to prevent downgrade on its own. It does not. It proves *what* ran,
+not that what ran is *current*.
 
-The register covering firmware secure-boot state *is* extended either way, so sealing to firmware
-state works now. Generation binding does not.
-
-So the correct reading of this section is: **the mechanism is built and tested against an emulated
-TPM, and cannot be armed until the boot chain can hand it a measured, signature-covered generation
-number.** Arming it before then would produce a system that reports rollback protection it does not
-have, which is worse than reporting none.
+So: the mechanism is built and tested against an emulated TPM, and the measurement it needs is
+available now. What remains is wiring, not a blocked dependency.
 
 ### 4.5 Security policy as a signed object
 
@@ -572,10 +579,11 @@ right now. Continuous enforcement comes from the sealed root, not from attestati
   those are different things (§4.8).
 - That an unlocked machine is as trustworthy as a locked one. It is as *usable*, and it says which
   it is (§4.6).
-- That the boot chain in §4.2–4.4 is in force. A unified kernel image is not reachable on the
-  current deployment backend, and without it the command line is editable and the register that
-  would carry the generation number is never extended. The rollback mechanism is built and tested;
-  it is not armed, and arming it early would report protection that does not exist.
+- That the boot chain in §4.2–4.3 is in force. Without a unified kernel image the command line is
+  editable and the initramfs is unsigned, so secure boot delivers a verified kernel rather than a
+  verified boot (§4.2).
+- That measured boot prevents downgrade. It proves what ran, not that what ran is current; refusing
+  an old-but-validly-signed image needs monotonic state, which is a separate mechanism (§4.4).
 
 ### What is verified, and what is only built
 
