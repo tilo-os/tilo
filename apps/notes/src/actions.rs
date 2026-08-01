@@ -636,4 +636,68 @@ mod tests {
         assert!(pb.iter().any(|p| p.id == projects));
         assert!(pb.iter().any(|p| p.id == inbox));
     }
+
+    /// The retained accessibility tree surfaces the notebook's pages as stable
+    /// nodes, and a page node's exposed `delete` affordance is the byte-identical
+    /// `EncodedAction` the on-screen page control dispatches.
+    #[test]
+    fn a11y_tree_surfaces_page_delete_as_the_affordance_action() {
+        let (doc, projects, _a, _b, _inbox) = seeded();
+        let resources = provide_resources(&ctx_from(&doc), &doc);
+
+        // An inert root; the operable nodes come from the published resources.
+        // `HashMap::new()`'s type is inferred from `refresh`'s signature.
+        let root = ui::widget::Column::new();
+        let node_map = std::collections::HashMap::new();
+        let mut tree = ui::SemanticTree::new();
+
+        // First refresh populates the tree; a second, unchanged refresh is a
+        // no-op with identical node identity (retained, not rebuilt each frame).
+        let d1 = tree.refresh(&root, &node_map, None, &resources);
+        assert!(!d1.added.is_empty(), "the first refresh populates the tree");
+        let notebook = tree
+            .node(&ui::SemanticId("r:notes.notebook".into()))
+            .expect("notebook node present");
+        assert_eq!(notebook.name.as_deref(), Some("Notes"));
+        assert!(notebook.action("new-page").is_some(), "the notebook affords new-page");
+        let ids1: Vec<ui::SemanticId> = tree.iter().map(|n| n.id.clone()).collect();
+
+        let d2 = tree.refresh(&root, &node_map, None, &resources);
+        assert!(d2.is_empty(), "an unchanged frame yields no delta: {d2:?}");
+        let ids2: Vec<ui::SemanticId> = tree.iter().map(|n| n.id.clone()).collect();
+        assert_eq!(ids1, ids2, "node identity survives across frames");
+
+        // The Projects page node exposes rename (prompted) + delete (immediate);
+        // the delete affordance carries the on-screen control's exact action.
+        let page = tree
+            .node(&ui::SemanticId(format!("r:notes.page:{projects}")))
+            .expect("projects page node");
+        assert!(page.action("rename").is_some(), "page affords rename");
+        let exposed = match &page.action("delete").expect("delete affordance").kind {
+            ui::SemanticActionKind::App(enc) => enc.clone(),
+            other => panic!("expected an app action, got {other:?}"),
+        };
+        assert_eq!(
+            exposed,
+            encode(&delete_page_action(projects)),
+            "the a11y affordance and the on-screen builder are one action"
+        );
+
+        // Invoking the exposed action mutates the doc exactly as the on-screen
+        // control does: two identical docs, deleted through each path, compared.
+        let dispatch_encoded = |doc: &mut AutoCommit, enc: EncodedAction| {
+            let decoded = registry().decode(&enc).unwrap();
+            let mut tx = LocalTransport::new();
+            qos_actions::dispatch(doc, decoded.as_ref(), enc, &mut tx).unwrap();
+        };
+        let (mut via_a11y, ..) = seeded();
+        let (mut via_affordance, ..) = seeded();
+        dispatch_encoded(&mut via_a11y, exposed);
+        dispatch_encoded(&mut via_affordance, encode(&delete_page_action(projects)));
+
+        let a: Vec<_> = NotesDoc::list_pages(&via_a11y).iter().map(|p| p.id).collect();
+        let b: Vec<_> = NotesDoc::list_pages(&via_affordance).iter().map(|p| p.id).collect();
+        assert_eq!(a, b, "invoking the a11y affordance deletes the same page + subtree");
+        assert_eq!(NotesDoc::list_pages(&via_a11y).len(), 1, "only Inbox survives");
+    }
 }
